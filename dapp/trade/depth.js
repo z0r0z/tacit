@@ -6,6 +6,7 @@
 //   asks / bids: [{ price, size, ...anything }] one entry per order or per level, `size` in TAC (a number), `price` in whatever unit the axis is in
 //   take: { side: 'ask' | 'bid', size } the amount an order would fill, highlighted from the best price outward
 //   valueFmt: a total in the price's unit (what the orders up to a price come to; default priceFmt)
+//   orders: false when the entries are levels of a pool's curve and not orders, so none are counted
 //   onPick(level, side) is called with the order a click lands on.
 
 import { niceTicks } from '/trade/chart.js?cb=c0b1d232';
@@ -24,7 +25,7 @@ export function mountDepth(host, { onPick = null } = {}) {
   host.classList.add('depth-chart');
   const draw = () => {
     if (!opts || !size.w) return;
-    const { asks = [], bids = [], take = null, priceFmt = String, sizeFmt = String, valueFmt = priceFmt, label = 'Order book', empty = 'No orders.' } = opts;
+    const { asks = [], bids = [], take = null, priceFmt = String, sizeFmt = String, valueFmt = priceFmt, label = 'Order book', empty = 'No orders.', orders: counted = true } = opts;
     host.replaceChildren();
     const A = cumulative(asks, 'ask'), B = cumulative(bids, 'bid');
     if (!A.length && !B.length) { host.append(Object.assign(document.createElement('p'), { className: 'chart-empty', textContent: empty })); return; }
@@ -38,7 +39,7 @@ export function mountDepth(host, { onPick = null } = {}) {
     if (bestBid != null && bestAsk == null) { lo = bestBid * 0.55; hi = bestBid * 1.15; }
     lo = Math.min(lo, bestAsk ?? lo, bestBid ?? lo) * 0.97; hi = Math.max(hi, bestAsk ?? hi, bestBid ?? hi) * 1.03;
     const inA = A.filter((s) => s.price <= hi), inB = B.filter((s) => s.price >= lo);
-    const far = A.slice(inA.length).reduce((n, s) => n + s.orders.length, 0) + B.slice(inB.length).reduce((n, s) => n + s.orders.length, 0);
+    const far = counted ? A.slice(inA.length).reduce((n, s) => n + s.orders.length, 0) + B.slice(inB.length).reduce((n, s) => n + s.orders.length, 0) : 0;
     const maxCum = Math.max(1e-9, ...[...inA, ...inB].map((s) => s.cum));
     // One side more than twenty times the other would leave the small side a line on the floor, which hides the orders a seller or buyer
     // would meet first: heights are then a power of the running total, the one that lifts the smaller side to about a fifth of the height (the
@@ -100,7 +101,7 @@ export function mountDepth(host, { onPick = null } = {}) {
       // What a taker gets by going this far into the book: everything from the best price to this one, what it comes to and its average price.
       tip.hidden = false;
       const s = n.step, ask = n.side === 'ask', count = (ask ? A : B).slice(0, (ask ? A : B).indexOf(s) + 1).reduce((k, x) => k + x.orders.length, 0);
-      tip.innerHTML = `<b>${ask ? 'Buy' : 'Sell'} ${sizeFmt(s.cum)}</b> ${ask ? 'up' : 'down'} to ${priceFmt(s.price)}${count > 1 ? ` · ${count} orders` : ''}<br><i>${valueFmt(s.value)} in all · average ${priceFmt(s.value / s.cum)}</i>`;
+      tip.innerHTML = `<b>${ask ? 'Buy' : 'Sell'} ${sizeFmt(s.cum)}</b> ${ask ? 'up' : 'down'} to ${priceFmt(s.price)}${count > 1 && counted ? ` · ${count} orders` : ''}<br><i>${valueFmt(s.value)} in all · average ${priceFmt(s.value / s.cum)}</i>`;
       const tw = tip.offsetWidth || 180;
       tip.style.left = `${Math.max(4, Math.min(W - tw - 4, X(n.step.price) + 10))}px`; tip.style.top = `${m.t + 6}px`;
     });

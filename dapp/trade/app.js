@@ -8,7 +8,8 @@ import { DEPLOY_OVERRIDES } from '/confidential-deployments.generated.js';
 import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js';
 import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, TAPE_FINE, TAPE_COARSE, TAPE_WORDS } from '/trade/tape.js?cb=a0713849';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
-import { mountDepth } from '/trade/depth.js?cb=d4130156';
+import { mountDepth } from '/trade/depth.js?cb=4f87419e';
+import { precisionPool, tacitPool, poolBook, perLevel, roundDown, CHART_STEPS } from '/trade/pools.js?cb=8f983ea2';
 import { readBook, planBuy as planBoardBuy, planSell as planBoardSell, refine as refineBoards, buildFill as buildBoardFill, BOARD_NAMES } from '/zboards.js?cb=e8d21aec';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=f59469b9';
 import { takeEarly, hedgedRpc, nodeHealth, shareReads } from '/trade/rpc.js';
@@ -54,9 +55,9 @@ function privatePoolId(fee) {
 }
 const PRIV_TIERS = [30, 5, 100, 1];
 
-const D = { gasPrice: null, chainFailed: false, tapeFailed: false, btcFailed: false, bookFailed: false, ethUsd: null, btcUsd: null, perEth: null, priv: null, precision: null, ethSupply: null, btc: null, book: null, bidsRead: false, zb: null, zbFailed: false, tape: { fine: [], coarse: [] }, readAt: 0 };
+const D = { gasPrice: null, chainFailed: false, tapeFailed: false, btcFailed: false, bookFailed: false, ethUsd: null, btcUsd: null, perEth: null, root: null, range: null, precFee: null, priv: null, precision: null, ethSupply: null, btc: null, book: null, bidsRead: false, zb: null, zbFailed: false, tape: { fine: [], coarse: [] }, readAt: 0 };
 const ME = { pub: null, how: '', pageKey: null };
-const S = { side: 'buy', amt: '', book: null, pin: null, lane: 'eth', unit: 'usd', range: null, log: false, slip: 50, bal: null, busy: false, tf: { eth: null, btc: null }, kind: 'line', quote: null, seq: 0, zq: null, pending: null };
+const S = { side: 'buy', amt: '', book: null, pin: null, via: null, lane: 'eth', unit: 'usd', range: null, log: false, slip: 50, bal: null, busy: false, tf: { eth: null, btc: null }, kind: 'line', quote: null, seq: 0, zq: null, pending: null };
 const TF = { eth: [['5m', 300], ['15m', 900], ['1h', 3600], ['4h', 14400], ['1d', 86400]], btc: [['1h', 3600], ['4h', 14400], ['1d', 86400], ['1w', 604800]] };
 const CHART_KEY = 'tacit-trade-chart-v1';
 try {
@@ -67,8 +68,9 @@ try {
   if (['usd', 'native'].includes(v.unit)) S.unit = v.unit;
   if (typeof v.log === 'boolean') S.log = v.log;
   if (v.tf) S.tf = { eth: size('eth', v.tf.eth), btc: size('btc', v.tf.btc) };
+  if (['eth', 'btc'].includes(v.book)) S.book = v.book;                                              // the book last looked at: Ethereum's or Bitcoin's
 } catch { }
-const keepChart = () => { try { localStorage.setItem(CHART_KEY, JSON.stringify({ lane: S.lane, range: S.range, kind: S.kind, unit: S.unit, log: S.log, tf: S.tf })); } catch { } };
+const keepChart = () => { try { localStorage.setItem(CHART_KEY, JSON.stringify({ lane: S.lane, range: S.range, kind: S.kind, unit: S.unit, log: S.log, tf: S.tf, book: ['eth', 'btc'].includes(S.book) ? S.book : null })); } catch { } };
 
 async function loadChain() {
   try { await readChain(); D.chainFailed = D.perEth == null; } catch (e) { D.chainFailed = true; throw e; } finally { D.chainDone = true; }
@@ -87,7 +89,7 @@ async function readChain() {
   const fresh = (x) => (x && wordAt(x, 3) > BigInt(now() - 6 * 3600) && wordAt(x, 1) > 0n ? Number(wordAt(x, 1)) / 1e8 : null);
   D.ethUsd = fresh(r[1]); D.btcUsd = fresh(r[2]);
   const ct = r[P + PRIV_TIERS.length]; if (ct) { D.chainT = Number(wordAt(ct, 0)); D.chainAt = now(); }
-  if (r[0]) { const root = Number(wordAt(r[0], 0)) / 1e18; D.perEth = root > 0 ? root * root : null; }
+  if (r[0]) { D.root = wordAt(r[0], 0); const root = Number(D.root) / 1e18; D.perEth = root > 0 ? root * root : null; }
   if (r[3] && r[4]) D.precision = { eth: wordAt(r[3], 0), tac: wordAt(r[4], 0) };
   if (r[5]) D.ethSupply = wordAt(r[5], 0);
   D.priv = null;
@@ -96,6 +98,27 @@ async function readChain() {
     if (x && strip(x).length >= 64 * 7 && wordAt(x, 0) !== 0n && wordAt(x, 3) > 0n && wordAt(x, 4) > 0n) { D.priv = { fee, rEth: wordAt(x, 3), rTac: wordAt(x, 4), price: Number(wordAt(x, 3)) / Number(wordAt(x, 4)) }; break; }
   }
 }
+
+// The Precision pool's price range: with its reserves it gives the liquidity the pool quotes on, which is what lets the page draw the pools as a book
+// (trade/pools.js). A pool's range does not move, so the one kept in this browser serves at once; it is read again on each visit all the same, after
+// the page's first reads and not among them.
+const RANGE_KEY = 'tacit-trade-range-v1';
+try { const v = JSON.parse(localStorage.getItem(RANGE_KEY) || 'null'); if (v?.pool === PRECISION_POOL && /^\d+$/.test(v.lo) && /^\d+$/.test(v.hi)) D.range = { lo: BigInt(v.lo), hi: BigInt(v.hi) }; } catch { }
+async function loadRange() {
+  try {
+    const [lo, hi] = await batch([{ to: PRECISION_POOL, data: '0x5c5ac485' }, { to: PRECISION_POOL, data: '0x87e43840' }]);
+    if (!lo || !hi) return;
+    D.range = { lo: wordAt(lo, 0), hi: wordAt(hi, 0) };
+    try { localStorage.setItem(RANGE_KEY, JSON.stringify({ pool: PRECISION_POOL, lo: String(D.range.lo), hi: String(D.range.hi) })); } catch { }
+  } finally { D.rangeDone = true; }
+}
+// The two pools as trade/pools.js reads them, from what the page has read of the chain; null for one not read (or a Precision pool outside its range).
+const poolList = () => [
+  D.root && D.range && D.precision ? precisionPool({ sqrt: D.root, low: D.range.lo, high: D.range.hi, reserve0: D.precision.eth, reserve1: D.precision.tac, feePpm: D.precFee ?? 3000 }) : null,
+  D.priv ? tacitPool({ rEth: D.priv.rEth, rTac: D.priv.rTac, feeBps: D.priv.fee }) : null,
+];
+// The pools' book, once the range is known or its read is over (before that the Precision pool would be missing from it for a moment).
+const poolsNow = (steps) => (D.range || D.rangeDone ? poolBook(poolList(), steps) : null);
 
 const KEPT = 'tacit-trade-tape-v1';
 function keptTape() { try { const v = JSON.parse(localStorage.getItem(KEPT) || 'null'); return v?.v === 1 && v.pool === PRECISION_POOL && Array.isArray(v.coarse) ? v.coarse.filter((b) => b && Number.isFinite(b.t) && b.t % TAPE_COARSE === 0) : []; } catch { return []; } }
@@ -467,9 +490,19 @@ async function boardQuote(dir, wei) {
   if (!fine) return { ok: false, orders: list.length, stale: true };
   return { ok: true, plan: fine, out: fine.get, spent: fine.pay, full: fine.pay * 1000n >= wei * 995n, keys: fine.fills.map((f) => f.order.key) };
 }
+// The trader's own pick of route (a row of the compare table): that pool alone, or the split, in place of the page's pick, for as long as it can take
+// the amount. When it cannot, the page's pick stands again and the choice is let go.
+function withChoice(rt) {
+  if (!S.via || !rt?.single) return rt;
+  if (S.via === 'split' ? rt.split : (rt.r.ranked || []).some((x) => x.venue === S.via)) return { ...rt, pick: S.via === 'split' ? 'split' : 'single', single: S.via === 'split' ? rt.single : rt.r.ranked.find((x) => x.venue === S.via), chosen: true };
+  S.via = null;
+  return rt;
+}
+function setVia(v) { if (S.busy) return; S.via = v === 'auto' ? null : v; S.pin = null; renderPin(); requote(); }
 function routeOf(q) {
   const bd = q?.board, pools = q?.rt?.single ? (q.rt.pick === 'split' ? q.rt.split : q.rt.single) : null;
   if (S.pin) return bd?.ok ? 'boards' : null;
+  if (q?.rt?.chosen) return 'pools';
   if (!bd?.ok || !bd.full) return pools ? 'pools' : null;
   if (!pools) return 'boards';
   return bd.out * 100n >= BigInt(pools.amountOut) * 101n ? 'boards' : 'pools';
@@ -486,10 +519,12 @@ async function requote(quiet = false) {
   if (!quiet) { if (S.shown === S.side) { $('.p-ticket').classList.add('stale'); renderChips(); renderGo(); } else renderQuote({ busy: true }); }
   if (quiet) S.refreshing = true;
   try {
-    const [rt, sp, board] = await Promise.all([venues.route({ dir, amountIn: wei, account: W.account || undefined, gasPrice: gasPrice() }), ethCall(PRECISION_POOL, '0x2af1f249').catch(() => null), boardQuote(dir, wei).catch(() => null)]);
+    const [found, sp, board] = await Promise.all([venues.route({ dir, amountIn: wei, account: W.account || undefined, gasPrice: gasPrice() }), ethCall(PRECISION_POOL, '0x2af1f249').catch(() => null), boardQuote(dir, wei).catch(() => null)]);
     if (my !== S.seq) return;
+    const rt = withChoice(found);
     if (!rt.single && !sp) throw new Error('no node answered');
-    if (sp) { const root = Number(wordAt(sp, 0)) / 1e18; if (root > 0) { D.perEth = root * root; renderHead(); renderLanes(); } }
+    if (sp) { const root = Number(wordAt(sp, 0)) / 1e18; if (root > 0) { D.root = wordAt(sp, 0); D.perEth = root * root; renderHead(); renderLanes(); } }
+    if (rt.r?.precision?.feeBps != null) D.precFee = Number(rt.r.precision.feeBps);
     S.qfail = false;
     S.quote = { wei, dir, buy, rt, board, priv: privQuote(dir, wei), book: bookQuote(dir, wei), zq: S.zq?.k === `${dir}:${wei}` ? S.zq.v : null };
     renderQuote(S.quote); renderVenues(S.quote); renderBook();
@@ -515,7 +550,7 @@ function openBitcoinFor(act, q = S.quote) {
     : act === 'sell' ? { side: 'sell', type: 'market', sellBase: base, reachUnit: sp?.fills.length ? sp.worstUnit : undefined, includeManual: !!sp?.fills.some((f) => !f.bid.auto) }
     : { side: 'sell', type: 'limit', sellBase: base });
 }
-$('#venues').addEventListener('click', (e) => { const b = e.target.closest('[data-btc-row]'); if (b && S.quote) openBitcoinFor(b.dataset.btcRow); });
+$('#venues').addEventListener('click', (e) => { const b = e.target.closest('[data-btc-row]'); if (b && S.quote) openBitcoinFor(b.dataset.btcRow); const r = e.target.closest('[data-route]'); if (r) setVia(r.dataset.route); });
 $('#btc-alt')?.addEventListener('click', (e) => { const b = e.target.closest('[data-btc-alt]'); if (b) openBitcoinFor(b.dataset.btcAlt); });
 // The ticket trades on Ethereum; the same TAC trades for sats on Bitcoin. The line under the ticket says what the order book does with this amount, and opens it there.
 // The page is sent with it drawn (the general sentence, which is what it says until the book is read), so the book arriving moves nothing: it is taken away only
@@ -527,11 +562,15 @@ function renderBtcAlt(q = S.quote) {
   const bk = q && !q.busy && !q.err ? q.book : null;
   let text, act;
   const worth = (sats) => (D.btcUsd ? ` (about ${usd(sats / 1e8 * D.btcUsd)})` : '');
-  if (buy && bk?.out) { text = html`Or pay <b>${satsFmt(bk.sats)} sats</b>${worth(bk.sats)} on Bitcoin for about <b>${tacFmt(Number(bk.out) / 1e18)} TAC</b>.`; act = 'buy'; }
+  // how the Bitcoin side compares with what the ticket's route pays, for the same money
+  const here = q && bk && routeOf(q) ? planOf(q).out : null;
+  const vs = (d) => (d == null || !Number.isFinite(d) ? '' : Math.abs(d) < 0.005 ? ', about the same' : d > 0 ? html`, <b class="up">${pct(d, 1).slice(1)} more</b>` : `, ${pct(d, 1).slice(1)} less`);
+  if (buy && bk?.out) { text = html`Or pay <b>${satsFmt(bk.sats)} sats</b>${worth(bk.sats)} on Bitcoin for about <b>${tacFmt(Number(bk.out) / 1e18)} TAC</b>${vs(here ? Number(bk.out - here) / Number(here) : null)}.`; act = 'buy'; }
   else if (!buy && bk?.sell?.fills.length) {
     // The bids can be fewer than the amount: say how much of it they take, or the sats read as the price of all of it.
     const part = bk.sell.leftoverBase > 0n;
-    text = part ? html`Bitcoin bids take only <b>${tacFmt(Number(bk.sell.amount) / 1e8)} TAC</b> of this, for <b>${satsFmt(bk.sats)} sats</b>${worth(bk.sats)}.` : html`Or sell on Bitcoin for <b>${satsFmt(bk.sats)} sats</b>${worth(bk.sats)}.`; act = 'sell';
+    const d = !part && here && D.btcUsd && D.ethUsd ? (bk.sats / 1e8 * D.btcUsd) / (Number(here) / 1e18 * D.ethUsd) - 1 : null;
+    text = part ? html`Bitcoin bids take only <b>${tacFmt(Number(bk.sell.amount) / 1e8)} TAC</b> of this, for <b>${satsFmt(bk.sats)} sats</b>${worth(bk.sats)}.` : html`Or sell on Bitcoin for <b>${satsFmt(bk.sats)} sats</b>${worth(bk.sats)}${vs(d)}.`; act = 'sell';
   }
   else if (!buy && bk) { text = 'Or list it for sats on Bitcoin.'; act = 'list'; }
   else { text = `Or ${buy ? 'buy' : 'sell'} TAC for sats on the Bitcoin order book.`; act = buy ? 'buy' : 'sell'; }
@@ -595,8 +634,10 @@ function renderQuote(q) {
     perTac = buy ? Number(wei) / Number(out) : Number(out) / Number(wei);
     name = rt.pick === 'split' ? `Split: ${splitWhat(rt.split)}` : rt.single.venue === 'precision' ? 'Precision pool' : rt.single.venue === 'tacit-amm' ? 'Tacit pool' : 'Other pool';
     const gainTxt = rt.split ? `${(rt.split.gainBps / 100).toFixed(rt.split.gainBps < 100 ? 2 : 1)}%` : '';
-    if (rt.pick === 'split') note = `<p class="splitnote">Split: <b>${gainTxt}</b> ${buy ? 'more TAC' : 'more ETH'} than the better pool alone.</p>`;
-    else if (rt.split && buy && rt.split.gainBps >= 30) note = `<p class="splitnote mute">A split pays ${gainTxt} more, not enough to ${rt.single.venue === 'precision' ? 'leave the Precision pool (it earns points)' : 'be worth it'}.</p>`;
+    const back = '<button type="button" class="linkbtn" data-route="auto">Use the best route</button>';
+    if (rt.chosen) note = `<p class="splitnote">Your choice. ${back}</p>`;
+    else if (rt.pick === 'split') note = `<p class="splitnote">Split: <b>${gainTxt}</b> ${buy ? 'more TAC' : 'more ETH'} than the better pool alone.</p>`;
+    else if (rt.split && buy && rt.split.gainBps >= 30) note = `<p class="splitnote mute">A split pays ${gainTxt} more, not enough to ${rt.single.venue === 'precision' ? 'leave the Precision pool (it earns points)' : 'be worth it'}. <button type="button" class="linkbtn" data-route="split">Split anyway</button></p>`;
     else if (rt.split) note = `<p class="splitnote mute">A split pays ${gainTxt} more, less than its extra network fee.</p>`;
   }
   outEl.textContent = fmtOut(out, buy); outEl.classList.remove('ph');
@@ -608,9 +649,9 @@ function renderQuote(q) {
   const pts = buy && via === 'pools' ? PN.floor(split ? split.legs[0].amountIn : rt.single.venue === 'precision' ? wei : 0n) : '';
   route.innerHTML = (split
     ? html`<div class="kv"><span>Route</span><b>Split across two pools${split.gainBps >= 1 ? ` <i class="gain">+${(split.gainBps / 100).toFixed(split.gainBps < 100 ? 2 : 1)}%</i>` : ''}</b></div>
-      <div class="splitbar" role="img" aria-label="${esc(splitWhat(split))}"><span style="flex:${splitShare(split)}" class="pp">Precision ${splitShare(split)}%</span><span style="flex:${100 - splitShare(split)}" class="tp">Tacit ${100 - splitShare(split)}%</span></div>`
+      <div class="splitbar" role="img" aria-label="${esc(splitWhat(split))}"><span style="flex:${splitShare(split)}" class="pp" title="${esc(legTxt(split.legs[0], buy))}">Precision ${splitShare(split)}%</span><span style="flex:${100 - splitShare(split)}" class="tp" title="${esc(legTxt(split.legs[1], buy))}">Tacit ${100 - splitShare(split)}%</span></div>`
     : html`<div class="kv"><span>Route</span><b>${esc(name)}</b></div>`)
-    + html`<div class="kv"><span>Price</span><b>${esc(priceTxt)}</b></div>` + (pts ? html`<div class="kv"><span>Points</span><b>${pts}</b></div>` : '') + (split ? '' : note)
+    + html`<div class="kv"><span>Price</span><b>${esc(priceTxt)}</b></div>` + (pts ? html`<div class="kv"><span>Points</span><b>${pts}</b></div>` : '') + (split && !rt.chosen ? '' : note)
     + detailsHtml(planOf(q))
     + (q.priv && via === 'pools' ? html`<p class="privnote"><a href="${esc(privLink(q))}">Swap privately through the Tacit pool →</a></p>` : '');
   $('#tk-note').textContent = `${buy ? 'One transaction' : 'A free permit signature, then one transaction'}, checked before it is sent.${via === 'boards' ? ' If an order is filled first, nothing is sent.' : rt.pick === 'split' ? ' If the split fails the check, it goes to one pool.' : ''}`;
@@ -620,6 +661,8 @@ function renderQuote(q) {
 const privLink = (q) => (q?.priv ? `/#card=${q.buy ? 'swap:ether:tac' : 'swap:tac:ether'}:private&amt=${plain(q.wei / E10 * E10)}` : null);
 const splitShare = (sp) => Math.round(Number(sp.legs[0].amountIn * 1000n / (sp.legs[0].amountIn + sp.legs[1].amountIn)) / 10);
 const splitWhat = (sp) => `${splitShare(sp)}% Precision pool, ${100 - splitShare(sp)}% Tacit pool`;
+// What one pool of a split takes and gives.
+const legTxt = (leg, buy) => `${fmtUnits(leg.amountIn, 18, buy ? 4 : 2)} ${buy ? 'ETH' : 'TAC'} for ${fmtOut(leg.amountOut, buy)} ${buy ? 'TAC' : 'ETH'}`;
 
 function renderVenues(q) {
   const tb = $('#venues tbody'), buy = S.side === 'buy';
@@ -630,9 +673,9 @@ function renderVenues(q) {
   const add = (r) => rows.push(r);
   const p = rt.r?.precision, t = rt.r?.tacitAmm;
   const runs = via === 'boards' ? 'boards' : rt.pick === 'split' ? 'split' : rt.single?.venue;
-  add({ name: 'Precision pool', note: p ? `fee ${(Number(p.feeBps) / 1e4).toFixed(2)}%` : '', out: p?.amountOut, why: p ? null : 'could not quote', runs: runs === 'precision' });
-  add({ name: 'Tacit pool', note: 'public swap · fee 0.30%', out: t?.amountOut, why: t ? null : 'could not quote', runs: runs === 'tacit-amm' });
-  if (rt.split) add({ name: 'Both, split', note: splitWhat(rt.split), out: rt.split.amountOut, split: true, runs: runs === 'split' });
+  add({ name: 'Precision pool', note: p ? `fee ${(Number(p.feeBps) / 1e4).toFixed(2)}%` : '', out: p?.amountOut, why: p ? null : 'could not quote', runs: runs === 'precision', use: p ? 'precision' : null });
+  add({ name: 'Tacit pool', note: 'public swap · fee 0.30%', out: t?.amountOut, why: t ? null : 'could not quote', runs: runs === 'tacit-amm', use: t ? 'tacit-amm' : null });
+  if (rt.split) add({ name: 'Both, split', note: `${splitWhat(rt.split)} · ${fmtUnits(rt.split.legs[0].amountIn, 18, buy ? 4 : 0)} + ${fmtUnits(rt.split.legs[1].amountIn, 18, buy ? 4 : 0)} ${buy ? 'ETH' : 'TAC'}`, out: rt.split.amountOut, split: true, runs: runs === 'split', use: 'split' });
   const priv = q.priv;
   add({ name: 'Tacit pool, private', note: 'before the relay fee', out: priv, why: D.priv ? null : 'not read', priv: true, link: privLink(q) });
   const zqv = q.zq;
@@ -647,7 +690,7 @@ function renderVenues(q) {
     if (buy) add({ name: 'Bitcoin order book', note: `pay ${satsFmt(bk.sats)} sats${sw(bk.sats)} instead`, out: bk.out, why: bk.out ? null : bk.sats < 546 ? 'too small for Bitcoin' : 'no listing that small', btc: true, ...(bk.out ? to('buy', 'Buy on Bitcoin →') : {}) });
     else if (bk.sell?.fills.length) {
       const sp = bk.sell, manual = sp.fills.filter((f) => !f.bid.auto).length;
-      add({ name: 'Bitcoin order book', show: `${satsFmt(bk.sats)} sats`, btc: true,
+      add({ name: 'Bitcoin order book', show: `${satsFmt(bk.sats)} sats`, btc: true, sats: sp.leftoverBase ? null : bk.sats,
         note: `${D.btcUsd ? `about ${usd(bk.sats / 1e8 * D.btcUsd)} · ` : ''}${sp.fills.length} bid${sp.fills.length === 1 ? '' : 's'} · ${!manual ? 'settles within minutes' : 'settles when the bidder is online'}${sp.leftoverBase ? ` · takes ${fmtUnits(sp.amount * E10, 18, 2)} TAC` : ''} · less ~${satsFmt(sp.feesEst)} sats in fees`, out: null, ...to('sell', 'Sell on Bitcoin →') });
     } else add({ name: 'Bitcoin order book', note: bk.bids ? 'no bid takes this amount' : D.bidsRead ? 'no bids' : 'bids not read', why: `list it: ~${satsFmt(bk.sats)} sats at the last trade`, out: null, btc: true, ...to('list', 'List on Bitcoin →') });
   }
@@ -656,12 +699,17 @@ function renderVenues(q) {
   $('#cmp-sum').textContent = `Compare ${rows.length} ways to trade this`;
   tb.innerHTML = rows.map((r) => {
     const isBest = best != null && r.out != null && !r.priv && !r.btc && !r.part && BigInt(r.out) === best;
-    const delta = r.out != null && best && !r.part && !r.btc ? Number((BigInt(r.out) - best) * 10000n / best) / 10000 : null;
+    // against the best pool route: a pool row by what it pays; a Bitcoin row the same way for a purchase (the sats are worth the ETH), and in dollars for a sale that the bids take whole
+    const delta = r.out != null && best && !r.part ? Number((BigInt(r.out) - best) * 10000n / best) / 10000
+      : r.sats && best && D.btcUsd && D.ethUsd ? (r.sats / 1e8 * D.btcUsd) / (Number(best) / 1e18 * D.ethUsd) - 1 : null;
     const cell = r.out != null ? `<b class="num">${f(r.out)}</b>` : r.show ? `<b class="num">${esc(r.show)}</b>` : `<span class="mute">${esc(r.why || '')}</span>`;
-    return `<tr${isBest ? ' class="best"' : ''}><td><b>${esc(r.name)}</b>${isBest ? '<span class="tag">best</span>' : ''}${r.runs ? '<span class="tag mute">this ticket</span>' : ''}${r.priv ? '<span class="tag mute">estimate</span>' : ''}<small>${esc(r.note || '')}${r.link ? ` · <a href="${esc(r.link)}">Swap privately →</a>` : ''}${r.act ? ` · <button type="button" class="linkbtn" data-btc-row="${r.act}">${esc(r.actText)}</button>` : ''}</small></td><td class="r">${cell}</td><td class="r opt num">${delta != null && !isBest ? esc(pct(delta, 1)) : ''}</td></tr>`;
+    return `<tr${isBest ? ' class="best"' : ''}><td><b>${esc(r.name)}</b>${isBest ? '<span class="tag">best</span>' : ''}${r.runs ? '<span class="tag mute">this ticket</span>' : ''}${r.priv ? '<span class="tag mute">estimate</span>' : ''}<small>${esc(r.note || '')}${r.link ? ` · <a href="${esc(r.link)}">Swap privately →</a>` : ''}${r.act ? ` · <button type="button" class="linkbtn" data-btc-row="${r.act}">${esc(r.actText)}</button>` : ''}${r.use && !r.runs ? ` · <button type="button" class="linkbtn" data-route="${r.use}">Use this</button>` : ''}</small></td><td class="r">${cell}</td><td class="r opt num">${delta != null && !isBest ? esc(pct(delta, 1)) : ''}</td></tr>`;
   }).join('');
 }
 
+// Bitcoin trading from this page can be turned off for a browser (#btc=off) and on again (#btc=on). The address is read before anything is drawn, so a
+// book that paints early is already the one asked for.
+try { const v = new URLSearchParams(location.hash.replace(/^#/, '')).get('btc'); if (v === 'on' || v === 'off') localStorage.setItem('tacit-trade-btc', v === 'on' ? '1' : '0'); } catch { }
 const btcOn = () => { try { return localStorage.getItem('tacit-trade-btc') !== '0'; } catch { return true; } };
 let bitcoin = null;
 function notify(msg, kind = '', ms = 5000) {
@@ -789,7 +837,10 @@ async function mineAct(act, btn) {
   } finally { if (b?.el.isConnected) { b.el.disabled = false; b.el.textContent = b.text; } renderBook(); }
 }
 const PEEK_IDLE = 'Press a price to buy or sell up to it.';
-function setPeek(t) { const el = $('#ob-peek'); if (t === null || !btcOn()) { el.hidden = true; return; } el.hidden = false; el.textContent = t || PEEK_IDLE; }
+// The line under a ladder that says what the row under the pointer comes to. It belongs to the ladders whose rows can be pressed (the pools' and, with
+// Bitcoin trading on, the Bitcoin book's): `peekOn` is set as the panel is drawn, so a pointer leaving a list of trades does not bring the line back.
+let peekOn = false;
+function setPeek(t) { const el = $('#ob-peek'); if (t === null || !peekOn) { el.hidden = true; return; } el.hidden = false; el.textContent = t || PEEK_IDLE; }
 function peekText(kind, i) {
   const b = D.book; if (!b) return '';
   const want = bookPrime(kind, i), buy = kind === 'buy';
@@ -799,7 +850,11 @@ function peekText(kind, i) {
   return [`${buy ? 'Buy' : 'Sell'} ${tacFmt(Number(p.amount) / 1e8)} TAC for ${satsFmt(sats)} sats`, D.btcUsd ? `about ${usd(sats / 1e8 * D.btcUsd)}` : '', avg ? `${avg} each` : '', p.fills.length > 1 ? `${p.fills.length} ${buy ? 'listings' : 'bids'}` : ''].filter(Boolean).join(' · ');
 }
 
-const depth = mountDepth($('#depthchart'), { onPick: (e) => { if (e?.order && bookTab() === 'eth') pinOrder(e.order.key); } });
+const depth = mountDepth($('#depthchart'), { onPick: (e, side) => {
+  if (bookTab() !== 'eth') return;
+  if (e?.order) pinOrder(e.order.key);
+  else if (e?.level) useLevel(side === 'ask' ? 'buy' : 'sell', roundDown(side === 'ask' ? e.level.eth : e.level.tac));
+} });
 const SWAP_TOPIC = '0x2a9237ff5aa599ef4c5ee4b1142b53429d5755e2685fe6288b2e3320202115f5';
 // About a day of the pool's swaps (6,900 blocks) the first time; after that only the blocks since the last read, added to what is held, which is cut back to the day.
 const TRADES_BLOCKS = 6900;
@@ -838,7 +893,10 @@ function tradesHtml() {
 }
 const TRADES_ROWS = 12;
 const hasBoardOrders = () => !!D.zb && (D.zb.asks.length > 0 || D.zb.bids.length > 0);
-const bookTab = () => (S.book === 'mine' && !showMine() ? null : S.book) || (D.zb ? (hasBoardOrders() ? 'eth' : 'btc') : (D.zbFailed ? 'btc' : 'eth'));
+// The book the panel opens on: the one last chosen in this browser; else Ethereum's, where the ticket trades (its pools, or orders on zSwap's boards),
+// and Bitcoin's when neither can be read.
+const ethPending = () => !D.chainDone || (!!D.root && !D.range && !D.rangeDone) || (!D.root && !D.zb && !D.zbFailed);
+const bookTab = () => (S.book === 'mine' && !showMine() ? null : S.book) || (poolsNow() || hasBoardOrders() || ethPending() ? 'eth' : 'btc');
 const ethPx = (p) => (D.ethUsd ? p * D.ethUsd : p);
 const ethPxFmt = (v) => (D.ethUsd ? usd(v) : `${sig(v)} ETH`);
 const btcPx = (sats) => (D.btcUsd ? (sats * D.btcUsd) / 1e8 : sats);
@@ -847,7 +905,7 @@ const tacFmt = (n) => grp(n, n >= 100 ? 0 : 2);
 const left = (t) => { const d = t - now(); return d <= 0 ? 'now' : d < 3600 ? `${Math.ceil(d / 60)} min` : d < 172800 ? `${Math.round(d / 3600)} h` : `${Math.round(d / 86400)} days`; };
 const ZSWAP_LINK = `<a href="${ZSWAP_HOST}" target="_blank" rel="noopener noreferrer">Place an order on zSwap ↗</a>`;
 const BOOK_ROWS = 8;
-function stackBook({ asks, bids, totalHead, mid, levels = false }) {
+function stackBook({ asks, bids, totalHead, mid, levels = false, kind = '' }) {
   const show = (l) => (S.bookAll ? l : l.slice(0, BOOK_ROWS)), a = show(asks), b = show(bids);
   const cum = (l) => { let t = 0; return l.map((x) => (t += x.depth)); };
   const ac = cum(a), bc = cum(b), max = Math.max(ac.at(-1) || 0, bc.at(-1) || 0) || 1;
@@ -857,7 +915,7 @@ function stackBook({ asks, bids, totalHead, mid, levels = false }) {
     return x.attrs && !x.mine ? `<button type="button" class="${cls}" style="${style}" title="${esc(x.title)}" aria-label="${esc(x.label)}" ${x.attrs}>${inner}</button>` : `<div class="${cls}" style="${style}" title="${esc(x.title)}">${inner}</div>`;
   };
   const hidden = asks.length - a.length + bids.length - b.length;
-  return `<div class="ob"><div class="ob-head"><span>Price</span><span><svg class="tk xs inl" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span><span>${esc(totalHead)}</span></div>`
+  return `<div class="ob${kind ? ` ${kind}` : ''}"><div class="ob-head"><span>Price</span><span><svg class="tk xs inl" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span><span>${esc(totalHead)}</span></div>`
     + `<div class="ob-asks">${a.length ? a.map((x, i) => row(x, 'ask', ac[i])).reverse().join('') : '<div class="ob-empty">No one is selling right now.</div>'}</div>`
     + `<div class="ob-spread">${mid}</div>`
     + `<div class="ob-bids">${b.length ? b.map((x, i) => row(x, 'bid', bc[i])).join('') : '<div class="ob-empty">No one is bidding right now.</div>'}</div>`
@@ -878,8 +936,34 @@ function ethStack(z) {
       attrs: `data-fill="${esc(o.key)}"`, title: `${meta}. Click to ${ask ? 'buy' : 'sell'} this order.`, label: `${ask ? 'Buy' : 'Sell'} ${tacFmt(tac)} TAC at ${px} each` };
   };
   const ref = priceEth();
-  return stackBook({ asks: z.asks.map(lv), bids: z.bids.map(lv), totalHead: 'ETH',
+  return stackBook({ asks: z.asks.map(lv), bids: z.bids.map(lv), totalHead: 'ETH', kind: 'boards',
     mid: `${ref ? `<span class="ob-last"><b>${esc(ethPxFmt(ethPx(ref)))}</b><em>Precision pool</em></span>` : '<span></span>'}${spreadTxt(z.asks[0]?.price, z.bids[0]?.price)}` });
+}
+// The Ethereum pools as a ladder: a row is everything the two pools sell from the best price up to its own (or take down to it), which is what the
+// ticket gets for that much when it splits between them. A press puts the row's amount in the ticket.
+function poolStack(pb) {
+  const q = S.quote, via = q && !q.busy && !q.err ? routeOf(q) : null;
+  const reach = (levels, size) => (size > 0 ? levels.findIndex((l) => l.tac >= size) : -1);
+  const at = { ask: via === 'pools' && q.buy ? reach(pb.asks, Number(planOf(q).out) / 1e18) : -1, bid: via === 'pools' && !q.buy ? reach(pb.bids, Number(q.wei) / 1e18) : -1 };
+  const lv = (side) => (l, i) => {
+    const ask = side === 'ask', px = ethPxFmt(ethPx(l.price)), avg = ethPxFmt(ethPx(l.eth / l.tac));
+    const peek = [`${ask ? 'Buy' : 'Sell'} ${tacFmt(l.tac)} TAC for ${sig(l.eth)} ETH`, D.ethUsd ? `about ${usd(l.eth * D.ethUsd)}` : '', `${avg} each`].filter(Boolean).join(' · ');
+    return { price: px, small: `${ask ? '+' : '−'}${+(l.step * 100).toFixed(1)}%`, amount: tacFmt(l.tac), total: sig(l.eth), depth: l.dEth, take: at[side] === i,
+      attrs: `data-pool="${ask ? 'buy' : 'sell'}" data-amt="${ask ? roundDown(l.eth) : roundDown(l.tac)}" data-peek="${esc(peek)}"`,
+      title: `${peek}. Click to put it in the ticket.`, label: `${ask ? 'Buy' : 'Sell'} ${tacFmt(l.tac)} TAC in all, ${ask ? 'up' : 'down'} to ${px} each` };
+  };
+  // the two pools can stand apart by more than their fees (one sells for less than the other pays) until a trade through both brings them back in line: then it is the gap that is said, not a spread
+  const apart = (pb.bid - pb.ask) / pb.ask;
+  return stackBook({ asks: perLevel(pb.asks).map(lv('ask')), bids: perLevel(pb.bids).map(lv('bid')), totalHead: 'ETH', levels: true, kind: 'pools',
+    mid: `<span class="ob-last"><b>${esc(ethPxFmt(ethPx((pb.ask + pb.bid) / 2)))}</b><em>the pools’ price</em></span>${apart > 0.0005 ? `<span title="One pool sells for less than the other pays: a trade through both brings them back in line">pools ${(apart * 100).toFixed(1)}% apart</span>` : `<span title="Between buying and selling: each pool keeps its fee from a trade">spread ${(Math.max(0, -apart) * 100).toFixed(1)}%</span>`}` });
+}
+// A row of the pools' book put in the ticket: its side, and the amount that reaches it.
+function useLevel(side, amt) {
+  if (S.busy || !(Number(amt) > 0)) return;
+  S.pin = null; S.side = side; S.amt = amt; $('#amt').value = amt;
+  $('#side-seg').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.side === S.side)));
+  renderBalance(); renderPin(); requote();
+  $('.p-ticket').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 function btcStack(b, live) {
   const lvs = (rows, ask) => { let upTo = 0; return ladderLevels(rows, ask ? 'ask' : 'bid').map((l, i) => {
@@ -899,8 +983,9 @@ function renderBook() {
   mb.hidden = !showMine(); setHtml(mb, `Yours${orders.length ? `<i class="n">${orders.length}</i>` : ''}`);
   const tab = bookTab(), box = $('#ladders'), note = $('#depth-note');
   $('#book-seg').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.book === tab)));
-  $('#depthchart').hidden = tab === 'trades' || tab === 'mine' || (tab === 'eth' && !!D.zb && !hasBoardOrders());       // an empty board says so once, under the tabs, not again in a blank chart
-  setPeek(tab === 'btc' ? '' : null);
+  $('#depthchart').hidden = tab === 'trades' || tab === 'mine' || (tab === 'eth' && !poolsNow() && !ethPending() && !!D.zb && !hasBoardOrders());       // an empty board says so once, under the tabs, not again in a blank chart
+  peekOn = (tab === 'btc' && btcOn()) || (tab === 'eth' && !!poolsNow());
+  setPeek(peekOn ? '' : null);
   if (tab === 'mine') { if (W.account && (D.tradesStale || ((!D.tradesAt || now() - D.tradesAt > 120) && (!D.tradesTried || now() - D.tradesTried > 60)))) ensureTrades(); setHtml(box, mineHtml(orders)); note.textContent = ''; return; }
   if (tab === 'trades') {
     setHtml(box, tradesHtml());
@@ -908,7 +993,21 @@ function renderBook() {
     return;
   }
   if (tab === 'eth') {
-    const z = D.zb;
+    const z = D.zb, pb = poolsNow();
+    if (pb) {
+      const fine = poolsNow(CHART_STEPS), q = S.quote, via = q && !q.busy && !q.err ? routeOf(q) : null;
+      // the chart adds up everything Ethereum holds at each price: the pools' curve and, when there are any, the orders on zSwap's boards
+      const steps = (levels) => perLevel(levels).map((l) => ({ price: ethPx(l.price), size: l.dTac, level: l })), order = (o) => ({ price: ethPx(o.price), size: Number(o.base) / 1e18, order: o });
+      const P = via ? planOf(q) : null;
+      depth.update({
+        asks: [...steps(fine.asks), ...(z?.asks || []).map(order)], bids: [...steps(fine.bids), ...(z?.bids || []).map(order)], take: P ? { side: q.buy ? 'ask' : 'bid', size: Number(q.buy ? P.out : P.wei) / 1e18 } : null,
+        priceFmt: ethPxFmt, sizeFmt: (n) => `${tacFmt(n)} TAC`, label: 'What the Ethereum pools sell and take for TAC, by price', empty: '', orders: false,
+      });
+      setHtml(box, poolStack(pb) + (hasBoardOrders() ? `<p class="ob-sub">Orders on zSwap’s boards</p>${ethStack(z)}` : ''));
+      note.innerHTML = `The Precision and Tacit pools, added up.${hasBoardOrders() ? ' An order on a board is traded alone.' : ''} ${ZSWAP_LINK}`;
+      return;
+    }
+    if (ethPending()) { depth.update({ asks: [], bids: [], empty: 'Reading the pools…' }); setHtml(box, ''); note.textContent = ''; return; }
     if (!z) {
       depth.update({ asks: [], bids: [], empty: D.zbFailed ? 'Could not read zSwap’s boards.' : 'Reading zSwap’s boards…' });
       setHtml(box, D.zbFailed ? `<p class="note">Could not read zSwap’s boards. ${ZSWAP_LINK}</p>` : ''); note.textContent = ''; return;
@@ -1271,6 +1370,8 @@ $('#go').addEventListener('click', () => {
   say(''); execute(P);
 });
 $('#route').addEventListener('click', (e) => {
+  const r = e.target.closest('[data-route]');
+  if (r) { setVia(r.dataset.route); return; }
   const b = e.target.closest('[data-slip]');
   if (!b || S.busy) return;
   S.slip = Number(b.dataset.slip);
@@ -1310,15 +1411,16 @@ $('#side-seg').addEventListener('click', (e) => {
 document.addEventListener('click', (e) => { const h = $('#hints'); if (h.open && !h.contains(e.target)) h.open = false; });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#hints').open) { $('#hints').open = false; $('#hints summary').focus(); } });
 $('#depth-note').addEventListener('click', (e) => { const g = e.target.closest('[data-goto]'); if (g) { S.book = g.dataset.goto; renderBook(); } });
-$('#book-seg').addEventListener('click', (e) => { const b = e.target.closest('[data-book]'); if (b) { S.book = b.dataset.book; renderBook(); if (S.book === 'trades') ensureTrades(); } });
+$('#book-seg').addEventListener('click', (e) => { const b = e.target.closest('[data-book]'); if (b) { S.book = b.dataset.book; keepChart(); renderBook(); if (S.book === 'trades') ensureTrades(); } });
 $('#ladders').addEventListener('click', (e) => {
   if (e.target.closest('[data-more]')) { S.bookAll = !S.bookAll; renderBook(); return; }
   if (e.target.closest('[data-more-trades]')) { S.tradesAll = !S.tradesAll; renderBook(); return; }
   const f = e.target.closest('[data-fill]'); if (f) { pinOrder(f.dataset.fill); return; }
+  const lvl = e.target.closest('[data-pool]'); if (lvl) { useLevel(lvl.dataset.pool, lvl.dataset.amt); return; }
   const m = e.target.closest('[data-mine]'); if (m) { mineAct(m.dataset.mine, m); return; }
   const k = e.target.closest('[data-btc]'); if (k) openBitcoin(bookPrime(k.dataset.btc, Number(k.dataset.i)));
 });
-const peekRow = (e) => { const r = e.target.closest?.('[data-btc][data-i]'); setPeek(r ? peekText(r.dataset.btc, Number(r.dataset.i)) : ''); };
+const peekRow = (e) => { const r = e.target.closest?.('[data-btc][data-i], [data-pool]'); setPeek(r ? (r.dataset.pool ? r.dataset.peek : peekText(r.dataset.btc, Number(r.dataset.i))) : ''); };
 $('#ladders').addEventListener('mouseover', peekRow); $('#ladders').addEventListener('focusin', peekRow);
 $('#ladders').addEventListener('mouseleave', () => setPeek('')); $('#ladders').addEventListener('focusout', () => setPeek(''));
 const warm = () => getBitcoin().then((b) => b.session.load()).catch(() => {});
@@ -1337,6 +1439,7 @@ $('.p-chart').addEventListener('click', (e) => {
 function paintAll() { renderHead(); renderLanes(); renderChart(); renderBook(); renderPin(); renderAbout(); farm.paint(); renderBtcAlt(); if (S.quote) renderVenues(S.quote); }
 renderQuote(null); renderVenues(null); renderControls(); renderAbout(); renderLanes();
 const loads = [loadChain().then(paintAll), loadTapes().then(paintAll), loadBitcoin().then(paintAll), loadBoards().then(paintAll)];
+loads[0].then(() => loadRange().then(renderBook, renderBook), () => { D.rangeDone = true; });
 setTimeout(warmFormatters, 0);
 Promise.allSettled(loads).then((rs) => {
   D.readAt = now();

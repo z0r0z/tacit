@@ -6,7 +6,7 @@ import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, se
 import { ownPref, setOwnPref, devicePref, setDevicePref, deviceProver, proverFor, readCredit, proofsFor, fundFromWallet, quoteEth, quoteEthFor, fundWithEth, loadSelfProver, tokenBalance } from '/teth/prover.js?cb=d9e1968c';
 import { overlay } from '/trade/sheet.js?cb=30c6e9a1';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
-import { mountDepth } from '/trade/depth.js?cb=d4130156';
+import { mountDepth } from '/trade/depth.js?cb=4f87419e';
 import { candlesFromTrades, closeAt } from '/trade/tape.js?cb=a0713849';
 import { readMarket, isActive, bookState, refSats, premium, vsEth, satsTxt, ladders, bookPrime, summary, fillBars, BTC_ID } from '/teth/market.js?cb=2282c6db';
 import { $, esc, now, rpc, fmtUnits, plain, parseUnits, grp, sig, usd, pct, ago, short, E10, E18 } from '/trade/util.js?cb=1d2cd8d3';

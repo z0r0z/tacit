@@ -24,7 +24,7 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload-roots: /teth/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/teth/app.js?cb=94f7e16c">
+<link rel="modulepreload" href="/teth/app.js?cb=e646ed84">
 <link rel="modulepreload" href="/trade/chart.js?cb=c0b1d232">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
 <link rel="modulepreload" href="/trade/connect.js?cb=f59469b9">
@@ -54,7 +54,7 @@
 <link rel="modulepreload" href="/teth/prover.js?cb=d9e1968c">
 <link rel="modulepreload" href="/relay/abi.js?cb=190ea12d">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
-<link rel="modulepreload" href="/trade/depth.js?cb=d4130156">
+<link rel="modulepreload" href="/trade/depth.js?cb=4f87419e">
 <link rel="modulepreload" href="/trade/book.js?cb=577d1f94">
 <link rel="modulepreload" href="/trade/tape.js?cb=a0713849">
 <link rel="modulepreload" href="/teth/market.js?cb=2282c6db">
@@ -285,7 +285,7 @@ input::placeholder { color: var(--mute); opacity: .7; }
 .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; color: var(--mute); padding: 5px 0; }
 .kv b { font-weight: 400; color: var(--ink); text-align: right; overflow-wrap: anywhere; }
 .splitnote { margin: 8px 0 0; font-size: 12px; color: var(--mute); }
-.splitbar { display: flex; gap: 2px; margin: 2px 0 8px; height: 22px; font-size: 11px; letter-spacing: .02em; }
+.splitbar { display: flex; gap: 2px; margin: 2px 0 8px; height: 22px; font-size: 11px; letter-spacing: .02em; border-radius: 8px; overflow: hidden; }
 .splitbar span { display: flex; align-items: center; min-width: 0; padding: 0 8px; overflow: hidden; white-space: nowrap; color: #fff; }
 .splitbar .pp { background: #4a63d6; } .splitbar .tp { background: #15803d; }
 .kv b .gain { font-style: normal; color: var(--up); margin-left: 4px; }
@@ -372,6 +372,7 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 .ob-spread { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; padding: 0 12px; border-top: 1px solid var(--hair-2); border-bottom: 1px solid var(--hair-2); background: var(--field); font-size: 11px; color: var(--mute); }
 .ob-last { display: inline-flex; align-items: baseline; gap: 6px; } .ob-last b { font-size: 15px; font-weight: 500; color: var(--ink); } .ob-last em { font-style: normal; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
 .ob-empty { padding: 12px; font-size: 11.5px; color: var(--mute); }
+.ob-sub { margin: 16px 0 -6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .ob-peek { min-height: 1.7em; margin: 8px 0 0; font-size: 12px; color: var(--mute); }
 @media (max-width: 560px) and (hover: hover) { .ob-peek { min-height: 3.4em; } }              /* the room for a pressed row's longer line is kept where a pointer can hover; a touch opens the market at once */
 .seg button i.n { font-style: normal; margin-left: 6px; opacity: .7; }
@@ -454,7 +455,7 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 .fm-pf .d { color: var(--mute); font-size: 11.5px; } .fm-pf b { font-weight: 500; } .fm-pf i { font-style: normal; color: var(--mute); }
 @media (hover: hover) { .fm-pf:hover { background: var(--field); } .fm-pf:hover i { color: var(--ink); } }
 .fm-prog .note { margin: 6px 0 0; font-size: 11.5px; }
-.btc-alt { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; font-size: 12.5px; color: var(--mute); } .btc-alt .tk { flex: none; } .btc-alt b { color: var(--ink); font-weight: 500; } .btc-alt .linkbtn { color: var(--ink); }
+.btc-alt { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; font-size: 12.5px; color: var(--mute); } .btc-alt .tk { flex: none; } .btc-alt b { color: var(--ink); font-weight: 500; } .btc-alt b.up { color: var(--up); } .btc-alt .linkbtn { color: var(--ink); }
 .privnote { margin: 10px 0 0; font-size: 12px; color: var(--mute); text-align: center; } .privnote a { color: var(--mute); text-underline-offset: 3px; } .privnote a:hover { color: var(--ink); }
 .fm-pos, .fm-add { border-top: 1px solid var(--hair); margin-top: 14px; padding-top: 14px; }
 .p-farm h3 { font: 400 20px/1.15 var(--serif); margin: 0 0 12px; }
@@ -841,6 +842,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/teth/app.js?cb=94f7e16c"></script>
+<script type="module" src="/teth/app.js?cb=e646ed84"></script>
 </body>
 </html>
