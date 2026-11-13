@@ -13,7 +13,7 @@ const kv = () => { const m = new Map(); return { m, async get(k, t) { if (!m.has
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, opts) => { if (/^https?:\/\/(?!api\.tacit)/.test(String(url))) throw new Error('offline'); return realFetch(url, opts); };
 
-const env = { REGISTRY_KV: kv(), PROVER_HEARTBEAT_TOKEN: 'tok', CONFIDENTIAL_SETTLE: '1' };
+const env = { REGISTRY_KV: kv(), PROVER_HEARTBEAT_TOKEN: 'tok', CONFIDENTIAL_SETTLE: '1', OP_SHAPE_CHECK: '0' };   // placeholder ops: the shape doors are not under test here
 const call = (path, init = {}) => worker.fetch(new Request(`https://api.tacit.finance${path}`, { ...init, headers: { Origin: 'https://some-page.example', ...(init.headers || {}) } }), env, { waitUntil() {} });
 // The relay's heartbeat() stores `${kind}: ${detail}`; the standing notes are passed as the detail.
 const beat = (detail, extra = {}) => call('/prover-heartbeat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: 'tok', network: 'mainnet', kind: 'settle', prover_alive: true, note: `settle: ${detail}`, ...extra }) });

@@ -39,6 +39,8 @@ const CLAIM_VERIFY_DELAY_MS = 400;
 // is bounded: each queued op costs a full prove cycle (FIFO, single-prover). New submits past the cap
 // are rejected until the relayer drains the backlog; dedup of an in-flight op is unaffected.
 const MAX_PENDING_JOBS = 512;
+// One sender's share of it: well past what a person or an integrator has waiting at once, and far short of the whole queue.
+const MAX_PENDING_PER_SENDER = 32;
 const MAX_JOB_BYTES = 256 * 1024; // op + memos, serialized; the largest real op is ~15 KB
 
 // A relayed exit to an L2 may carry its ConfidentialRouter ExitRecipe, so the relay can call the permissionless
@@ -84,7 +86,11 @@ export function makeLock() {
   };
 }
 
-export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee, sleep, lock, verifyPosted, expiryOf, refund }) {
+// `checkOp({ type, op, memos })`: what is missing from an op its prover could never read (worker/src/op-input-check.js), or null; such
+// an op is refused at submit. Without it every op is queued as it comes.
+// `senders`: a Map kept across the settlers built over one store, of each queued job's sender (see servedOrder); a sender never changes, so each is
+// read once. Without it the settler keeps its own.
+export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee, sleep, lock, verifyPosted, expiryOf, refund, checkOp = null, senders = new Map() }) {
   // storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job) }
   // feeGate({ type, op }) -> bool : OPTIONAL profitability gate for the relayed (mode:'settle') flow — reject
   //   a fee below the current gas-priced floor (relay-quote.js `passesFloor`) before burning a prove cycle.
@@ -112,6 +118,30 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   const putOpen = storage.putOpen ? (ids) => storage.putOpen(ids) : async (ids) => { memOpen = ids.slice(); };
   const expiresAt = (j) => { try { const s = expiryOf ? Number(expiryOf({ type: j.type, op: j.op, publicValues: j.publicValues })) : 0; return s > 0 ? s * 1000 : 0; } catch { return 0; } };
 
+  // The queue is served by sender, not only by arrival: every sender's first job in the order they came, then every sender's second, and
+  // so on, so a sender who queues many jobs delays only their own. A sender is the submitter's network (worker/src/index.js senderOf); a
+  // job queued before senders were kept counts as one shared sender, and a job whose record is gone as one of its own.
+  async function senderOfJob(id) {
+    if (!senders.has(id)) { const j = await storage.getJob(id); senders.set(id, j ? String(j.client || '') : `gone:${id}`); }
+    return senders.get(id);
+  }
+  async function servedOrder(pend) {
+    await Promise.all(pend.filter((id) => !senders.has(id)).map(senderOfJob));
+    if (senders.size > 2 * pend.length + 64) { const keep = new Set(pend); for (const id of senders.keys()) if (!keep.has(id)) senders.delete(id); }
+    const turn = new Map();
+    return pend.map((id, i) => { const s = senders.get(id), r = turn.get(s) || 0; turn.set(s, r + 1); return { id, r, i }; })
+      .sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.id);
+  }
+  // Whether a new job may join the queue: not when it is full, nor when its sender already has their share waiting.
+  async function roomFor(pend, sender) {
+    if (pend.length >= MAX_PENDING_JOBS) throw new Error('submitJob: queue full, retry later');
+    if (!sender) return;
+    await servedOrder(pend);
+    if (pend.filter((x) => senders.get(x) === sender).length >= MAX_PENDING_PER_SENDER) {
+      throw new Error(`submitJob: ${MAX_PENDING_PER_SENDER} of your jobs are already waiting, retry once one is done`);
+    }
+  }
+
   // jobId = hash of the witness (type+op[+mode]) → idempotent: resubmitting the same op returns the same job.
   // `settle` uses the id over (type+op); a `prove`-only job for the same op is a DISTINCT id so the two can
   // coexist (e.g. the same deposit consume both prove-only for a router tx and relay-settled).
@@ -136,13 +166,15 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // given back if the relay fails it on its own account (see ackJobLocked); nothing else reads it.
   const chargeOf = (c) => (c && typeof c === 'object' && /^\d{4}-\d{2}-\d{2}$/.test(String(c.day)) && Array.isArray(c.names)
     ? { day: String(c.day), names: c.names.map(String).slice(0, 6) } : null);
-  async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null, exit = null, publicValues = null, proof = null, paid = false, sealed = null, charge = null, early = false, free = false }) {
+  // `client`: who sent it (a short key for the sender's network), for the order the queue is served in and the per-sender cap.
+  async function submitJob({ type, op, memos, mode = 'settle', feeAsset = null, exit = null, publicValues = null, proof = null, paid = false, sealed = null, charge = null, early = false, free = false, client = null }) {
     if (mode === 'preproven') return postProven({ type, memos, publicValues, proof, exit, free: !!free && FREE_POSTED_TYPES.includes(type), charge: free ? chargeOf(charge) : null });
+    const sender = typeof client === 'string' && /^[0-9A-Za-z.:/_-]{1,64}$/.test(client) ? client : null;
     if (mode === 'sealed') {
       if (!type || !SEALED_SHAPE(sealed)) throw new Error('submitJob: a sealed job needs type + sealed { worker, epk, iv, ct }');
       if (!OPEN_TYPES.includes(type)) throw new Error(`submitJob: a ${type} cannot be sent sealed (its settle is not a plain pool.settle)`);
       if (exit != null) throw new Error('submitJob: a sealed job cannot carry an exit recipe');
-      return submitSealed({ type, sealed, memos: memos || [], feeAsset });
+      return submitSealed({ type, sealed, memos: memos || [], feeAsset, sender });
     }
     if (!type || !op) throw new Error('submitJob: type + op required');
     // Drop a caller-supplied feeUsd FIRST, before anything derives from `op`.
@@ -156,6 +188,8 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     // A stored job is re-read and re-serialized on every relay poll and outlives a restart, so its size is
     // bounded at submit. Real ops are ~15 KB.
     if (JSON.stringify({ op, memos: memos || [] }).length > MAX_JOB_BYTES) throw new Error(`submitJob: op + memos exceed ${MAX_JOB_BYTES} bytes`);
+    const gap = checkOp ? checkOp({ type, op, memos: memos || [] }) : null;
+    if (gap) throw new Error(`submitJob: ${gap}`);
     if (exit != null && (mode !== 'settle' || !EXIT_TYPES.includes(type))) {
       throw new Error('submitJob: an exit recipe rides only on a relayed unwrap or sendunwrap');
     }
@@ -199,6 +233,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       exit: recipe, activateTx: null, activateError: null,
       // `early`: a proof asked for ahead of its press (a form that has settled): taken only once no job someone has pressed is waiting
       ...(early && mode === 'prove' ? { early: true } : {}),
+      ...(sender ? { client: sender } : {}),
       status: 'pending', createdAt: clock(), claimedAt: 0, txHash: null, error: null,
       publicValues: null, proof: null,
     };
@@ -218,11 +253,10 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
         }
         return { jobId: id, status: existing.status, deduped: true };
       }
-      // Backpressure: bound the unauthenticated queue (a new, non-deduped op only).
-      if (!pend.includes(id) && pend.length >= MAX_PENDING_JOBS) {
-        throw new Error('submitJob: queue full, retry later');
-      }
+      // Backpressure: bound the unauthenticated queue (a new, non-deduped op only), and each sender's share of it.
+      if (!pend.includes(id)) await roomFor(pend, sender);
       await storage.putJob(id, job);
+      senders.set(id, sender || '');
       if (!pend.includes(id)) {
         pend.push(id);
         try { await storage.putPending(pend); }
@@ -381,7 +415,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // `mode`, when given, takes only jobs of that mode ('prove' or 'settle'), oldest first; others stay queued.
   // `openable` takes only a relayed job that may go on the board once proved (the relay proves those while it cannot
   // pay for settles, so a sender can take them).
-  async function submitSealed({ type, sealed, memos, feeAsset }) {
+  async function submitSealed({ type, sealed, memos, feeAsset, sender = null }) {
     const id = hash(JSON.stringify({ type, sealed: sealed.ct }));
     return exclusive(async () => {
       const seen = await storage.getJob(id);
@@ -389,18 +423,21 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       const job = {
         id, type, op: null, mode: 'settle', sealed: { worker: sealed.worker, epk: sealed.epk, iv: sealed.iv, ct: sealed.ct }, memos,
         feeUnits: null, feeUsd: null, feeToken: null, feeAsset: feeAsset || null, exit: null, activateTx: null, activateError: null,
+        ...(sender ? { client: sender } : {}),
         status: 'pending', createdAt: clock(), claimedAt: 0, txHash: null, error: null,
       };
-      await storage.putJob(id, job);
       const pend = await storage.getPending();
+      if (!pend.includes(id)) await roomFor(pend, sender);
+      await storage.putJob(id, job);
+      senders.set(id, sender || '');
       if (!pend.includes(id)) { pend.push(id); await storage.putPending(pend); }
       return { jobId: id, status: 'pending' };
     });
   }
 
   async function nextJob({ mode = null, openable = false } = {}) {
-    const pend = await storage.getPending();
-    // two passes: every job someone has pressed first, in order, then the proofs asked for ahead of a press
+    const pend = await servedOrder(await storage.getPending());
+    // two passes: every job someone has pressed first, in the order served, then the proofs asked for ahead of a press
     for (const [i, id] of [...pend, ...pend].entries()) {
       const earlyPass = i >= pend.length;
       // Read-check-write of the job record is one step, so an ack or another claim cannot land between them.
@@ -434,7 +471,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // Claim up to `max` settle-mode jobs that can share ONE settle. The guest proves a batch against one header of
   // roots, so only jobs whose roots agree (and the same chain binding) can travel together — true for anything
   // queued between two settles. Batching splits the settle's gas across its members and stops each settle
-  // transaction from being a one-user event. FIFO order is preserved; a job that doesn't fit the batch's roots is
+  // transaction from being a one-user event. The queue's order (servedOrder) is kept; a job that doesn't fit the batch's roots is
   // simply left for the next round rather than reordered around.
   // Job types that can share one settle. This is NOT a tuning knob: the relay proves a claimed batch as
   // `batchtransfer`, a transfer-specific guest op, so anything added here without a matching guest batch
@@ -451,7 +488,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
 
   async function nextBatch({ max = 8, types = BATCHABLE_TYPES, mixed = false } = {}) {
     if (mixed) types = OPEN_TYPES;
-    const pend = await storage.getPending();
+    const pend = await servedOrder(await storage.getPending());
     const claimed = []; // { id, j, nonce } — verified in one shared wait below, not per-job
     let binding = null;
     const roots = {};
@@ -648,7 +685,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     // the pressed ones, so it does not count ahead of them), so its page can say so
     let ahead = -1;
     if (status === 'pending') {
-      const pend = await storage.getPending(), before = pend.slice(0, Math.max(0, pend.indexOf(jobId)));
+      const pend = await servedOrder(await storage.getPending()), before = pend.slice(0, Math.max(0, pend.indexOf(jobId)));
       ahead = j.early ? before.length : (await Promise.all(before.map((id) => storage.getJob(id)))).filter((x) => x && !x.early).length;
     }
     return { jobId, type: j.type, mode: j.mode || 'settle', status, txHash: j.txHash, error: j.error, lane: j.lane || null, sealed: !!j.sealed,
@@ -720,14 +757,16 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
 // KV-backed wiring for the worker runtime. KV keys: cps:pending (id[]), cps:open (id[]), cps:job:<id> (job).
 // The worker builds a settler per request, so the queue lock lives per KV namespace, not per settler.
 const kvLocks = new WeakMap();
+const kvSenders = new WeakMap();
 // A job record lives thirty days from its last write: far past the day an open job can wait and the hours a settle takes, and it is gone after.
 const JOB_TTL_SECS = 30 * 86400;
 // A job that ended failed is looked at for a day or two (its holder reads why, the operator may put it back on the queue, a late ack may promote it), and keeps its op
 // for that time only.
 const FAILED_JOB_TTL_SECS = 3 * 86400;
-export function buildConfidentialSettler(env, { hash, feeGate, priceFee, verifyPosted, expiryOf, refund }) {
+export function buildConfidentialSettler(env, { hash, feeGate, priceFee, verifyPosted, expiryOf, refund, checkOp = null }) {
   const KV = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (KV && !kvLocks.has(KV)) kvLocks.set(KV, makeLock());
+  if (KV && !kvSenders.has(KV)) kvSenders.set(KV, new Map());
   const storage = {
     getPending: async () => { const s = await KV.get('cps:pending'); return s ? JSON.parse(s) : []; },
     putPending: async (ids) => KV.put('cps:pending', JSON.stringify(ids)),
@@ -736,5 +775,5 @@ export function buildConfidentialSettler(env, { hash, feeGate, priceFee, verifyP
     getOpen: async () => { const s = await KV.get('cps:open'); return s ? JSON.parse(s) : []; },
     putOpen: async (ids) => KV.put('cps:open', JSON.stringify(ids)),
   };
-  return makeConfidentialSettler({ storage, hash, feeGate, priceFee, verifyPosted, expiryOf, refund, lock: kvLocks.get(KV) });
+  return makeConfidentialSettler({ storage, hash, feeGate, priceFee, verifyPosted, expiryOf, refund, checkOp, lock: kvLocks.get(KV), senders: kvSenders.get(KV) });
 }

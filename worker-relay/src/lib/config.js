@@ -225,6 +225,8 @@ export const CFG = {
   // /prover/* routes for PROVER_BOARD_WAIT_SECS before it goes to the prover network as before. Off until a worker runs.
   proverBoard: opt('PROVER_BOARD', '0') === '1',
   proverBoardWaitSecs: num('PROVER_BOARD_WAIT_SECS', 240),
+  // A claimed settle proof that has said nothing for this long is handed on (lib/board-prover.js claimStallMs); 0 = wait the whole wait.
+  proverBoardClaimStallSecs: num('PROVER_BOARD_CLAIM_STALL_SECS', 100),
   // The monitor warns when no board worker has polled for this long (Tacit runs one; a pod that stopped, out of credit or
   // otherwise, sends every settle proof to the prover network with a public input until it is back).
   proverBoardExpectWorkers: opt('PROVER_BOARD_EXPECT_WORKERS', '0') === '1',

@@ -12,7 +12,7 @@ function memKv() {
   const m = new Map();
   return { get: async (k, t) => { const v = m.get(k); return v == null ? null : t === 'json' ? JSON.parse(v) : v; }, put: async (k, v) => { m.set(k, String(v)); }, delete: async (k) => { m.delete(k); }, list: async () => ({ keys: [], list_complete: true }) };
 }
-const kv = memKv(), env = { CONFIDENTIAL_SETTLE: '1', REGISTRY_KV: kv, CONFIDENTIAL_KV: kv, CONFIDENTIAL_BOX_TOKEN: BOX, PROVE_RL_BURST: '1000', FREE_RELAY_GAS_TTL_MS: '0' };
+const kv = memKv(), env = { CONFIDENTIAL_SETTLE: '1', REGISTRY_KV: kv, CONFIDENTIAL_KV: kv, CONFIDENTIAL_BOX_TOKEN: BOX, PROVE_RL_BURST: '1000', FREE_RELAY_GAS_TTL_MS: '0', OP_SHAPE_CHECK: '0' };   // placeholder ops: the shape doors are not under test here
 let ip = 0, n = 0;
 const call = (path, init = {}) => worker.default.fetch(new Request(`https://api.test${path}`, { ...init, headers: { 'content-type': 'application/json', 'CF-Connecting-IP': `198.51.100.${++ip % 250}`, ...(init.headers || {}) } }), env, { waitUntil() {} });
 const wake = (secs, auth = true) => call(`/confidential/wake?wait=${secs}`, { headers: auth ? { Authorization: `Bearer ${BOX}` } : {} });

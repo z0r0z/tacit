@@ -194,3 +194,29 @@ test('prove-first wrap: when Tacit\'s worker is first, its proof is taken after 
   const r = await makeBoardProver(api).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, cls: 'public', memos: [], check: nodepositCheck(() => true) });
   assert.equal(r.worker, 'tacit-a5000');
 });
+
+test('a claim that sends nothing is handed on after claimStallMs, not after the whole wait', async () => {
+  const { api, calls } = fakeBoard({ script: [{ status: 'queued' }, { status: 'claimed', worker: 'gpu1' }] });
+  const lane = makeBoardProver({ ...api, waitMs: 240_000, claimStallMs: 100_000 });
+  const t0 = api.now();
+  await assert.rejects(lane.prove({ stdin, cycleLimit: 1n, gasLimit: 1n, cls: 'private', memos: [] }),
+    (e) => e.code === 'board_miss' && e.stalled === true && /gpu1 claimed it and sent nothing for 100 s/.test(e.message));
+  const spent = api.now() - t0;
+  assert.ok(spent >= 100_000 && spent < 110_000, `handed on after the stall, not the 240 s wait (${spent} ms)`);
+  assert.deepEqual(calls.cancel, [{ jobId: '0xjob1234567890', reason: 'timeout' }], 'the claim is cancelled');
+});
+
+test('a claim that answers within claimStallMs is taken; the stall clock is only for the pool’s own program', async () => {
+  const proved = { status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF };
+  const late = Array.from({ length: 90 }, () => ({ status: 'claimed', worker: 'gpu1' }));
+  const a = fakeBoard({ script: [{ status: 'claimed', worker: 'gpu1' }, ...late, proved] });
+  const r = await makeBoardProver({ ...a.api, waitMs: 240_000, claimStallMs: 100_000 }).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, memos: [] });
+  assert.equal(r.proof, PROOF, 'answered at about 91 s: taken');
+  const long = Array.from({ length: 150 }, () => ({ status: 'claimed', worker: 'gpu1' }));
+  const b = fakeBoard({ script: [...long, { ...proved }] });
+  const r2 = await makeBoardProver({ ...b.api, waitMs: 240_000, claimStallMs: 100_000, check: null }).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, memos: [], program: 'eth-state', check: async () => true });
+  assert.equal(r2.proof, PROOF, 'another program waits its whole wait');
+  const c = fakeBoard({ script: [...long, { ...proved }] });
+  const r3 = await makeBoardProver({ ...c.api, waitMs: 240_000, claimStallMs: 0 }).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, memos: [] });
+  assert.equal(r3.proof, PROOF, 'claimStallMs 0 turns it off');
+});

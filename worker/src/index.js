@@ -128,6 +128,7 @@ import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-sc
 import { makeBurndepAdmission, HEADER_CHUNK as BURNDEP_HEADER_CHUNK } from './burndep-admission.js';
 import { handleProverUpload, handleProverDownload, PROVER_PROXY_PATHS } from './prover-proxy.js';
 import { buildProverBoard, workerOf } from './prover-board.js';
+import { opInputGap } from './op-input-check.js';
 import { buildProofPool, verifyCalldata, clientOf, PROOF_POOL } from './proof-pool.js';
 import { makeChain } from './tacit-chain.js';
 import { makePoolSnapshotJob } from './pool-snapshot-job.js';
@@ -3511,7 +3512,8 @@ function confSettler(env) {
   if (!kv) return null;
   const hash = (s) => '0x' + [...keccak_256(new TextEncoder().encode(s))].map((b) => b.toString(16).padStart(2, '0')).join('');
   return buildConfidentialSettler(env, { hash, feeGate: buildRelayFeeGate(env), priceFee: buildFeePricer(env),
-    verifyPosted: (p) => simulateSettle(env, p), expiryOf: openExpiryOf, refund: (charge) => refundDailyBudgets(env, charge) });
+    verifyPosted: (p) => simulateSettle(env, p), expiryOf: openExpiryOf, refund: (charge) => refundDailyBudgets(env, charge),
+    checkOp: env.OP_SHAPE_CHECK === '0' ? null : opInputGap });   // OP_SHAPE_CHECK=0 switches off this door too
 }
 
 // The open board (worker/src/confidential-open.js): proofs waiting for any sender, whoever sends one paid its fee.
@@ -4151,6 +4153,12 @@ async function handleProofPool(req, env, url, cors) {
     // A board worker's token makes the lease Tacit's own (no points, only jobs that have waited: see proof-pool.js lease).
     const auth = req.headers.get('Authorization'), house = auth ? workerOf(auth, env.PROVER_WORKER_TOKENS) : null;
     if (auth && !house) return jsonResponse({ ok: false, error: 'unknown worker token' }, 401, nostore);
+    // A miner asks when it is idle, every half minute at most (the prover's POOL_EVERY_SECS): a few at once and one each five seconds
+    // from one place leave room for several machines behind one address, and none for a loop that asks without pause.
+    if (!house) {
+      const rl = await proveRateLimit(env, ip, 'pool-lease', 6, 5000);
+      if (!rl.ok) return jsonResponse({ ok: false, code: 'rate', error: `too many lease requests — retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...nostore, 'Retry-After': String(rl.retryAfter) });
+    }
     return send(await pool.lease({ miner: b.miner, client: house ? `house:${house.name}` : client, minAgeMs: Number(b.minAgeMs) || 0, house: house?.name || null }));
   }
   // Each submit asks Ethereum: a few a minute from one place.
@@ -4370,8 +4378,17 @@ async function boardLive(env) {
   _boardLive = { at: Date.now(), v };
   return v;
 }
+// The sender a queued job counts under (worker/src/confidential-settle.js servedOrder, its per-sender cap): an IPv4 client by its /24, an IPv6 one
+// by the /64 the server already counts it by (server/harness.mjs ipKey), a completed mint by its own key. A request with no address counts under none.
+export function queueSender(ip) {
+  const a = String(ip || '').trim().toLowerCase().replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/, '');
+  if (!a || a === 'anon') return null;
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.\d+$/.exec(a);
+  return (v4 ? `${v4[1]}.${v4[2]}.${v4[3]}.0/24` : a).slice(0, 64);
+}
 async function handleConfidentialSubmit(req, env, cors) {
   const q = confSettler(env);
+  const sender = queueSender(req.headers.get('CF-Connecting-IP'));
   if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
@@ -4410,7 +4427,7 @@ async function handleConfidentialSubmit(req, env, cors) {
       if (!cb.ok) return jsonResponse({ ok: false, error: `free relayed settles for today are used up (${cb.used}/${cb.cap}) — attach a fee above the floor, or prove-mode and settle it yourself`, code: 'free_budget', class: cls }, 429, { ...cors, 'Cache-Control': 'no-store', 'Retry-After': '3600' });
     }
     try {
-      const r = await q.submitJob({ type: body.type, memos: body.memos, mode: 'sealed', feeAsset: body.feeAsset, sealed: body.sealed });
+      const r = await q.submitJob({ type: body.type, memos: body.memos, mode: 'sealed', feeAsset: body.feeAsset, sealed: body.sealed, client: sender });
       if (sealedFree && !r.deduped) { await spendDailyBudget(env, 'free').catch(() => {}); await spendDailyBudget(env, `free:${freeClassOf(body.type)}`).catch(() => {}); }
       return jsonResponse({ ok: true, ...r, ...(relay ? { relay: relay.state } : {}) }, 200, { ...cors, 'Cache-Control': 'no-store' });
     } catch (e) { return jsonResponse({ ok: false, error: String(e.message || e) }, 400, { ...cors, 'Cache-Control': 'no-store' }); }
@@ -4535,7 +4552,7 @@ async function handleConfidentialSubmit(req, env, cors) {
   const charge = feeless || postedFree ? { day: new Date().toISOString().slice(0, 10), names: ['free', `free:${freeClassOf(body.type)}`, ...(mintBurn ? [`bridgemint:${mintBurn}`] : [])] } : undefined;
   try {
     const r = await q.submitJob({ type: body.type, op: body.op, memos: body.memos, mode: body.mode, feeAsset: body.feeAsset, exit: body.exit,
-      publicValues: body.publicValues, proof: body.proof, paid: paidProve || undefined, sealed: body.sealed, charge, early: submitMode === 'prove' && body.ahead === true, free: postedFree });
+      publicValues: body.publicValues, proof: body.proof, paid: paidProve || undefined, sealed: body.sealed, charge, early: submitMode === 'prove' && body.ahead === true, free: postedFree, client: sender });
     if (!r.deduped) wakeRelay();
     // Spend only on a job we actually accepted and will prove — a dedupe hit costs us nothing.
     if (!r.deduped) {

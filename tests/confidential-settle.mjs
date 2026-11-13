@@ -380,4 +380,66 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   ok('queueStats: pendingSettle counts only relayed settles');
 }
 
+// ───────────────── 20. the queue is served by sender: one who queues many jobs delays only their own ─────────────────
+{
+  const store = freshStore();
+  const q = makeConfidentialSettler({ storage: store, hash, now, sleep: instantSleep, senders: new Map() });
+  const op = (n) => ({ chainBinding: '0xcb', spendRoot: '0xr', fee: 0, n });
+  const legacy = await q.submitJob({ type: 'transfer', op: op('old'), mode: 'prove' });          // queued with no sender (as before senders were kept)
+  const busy = [];
+  for (let i = 0; i < 6; i++) busy.push((await q.submitJob({ type: 'transfer', op: op(`f${i}`), mode: 'prove', client: '203.0.113.0/24' })).jobId);
+  const alice = await q.submitJob({ type: 'transfer', op: op('alice'), mode: 'prove', client: '10.1.2.0/24' });
+  const bob = await q.submitJob({ type: 'transfer', op: op('bob'), mode: 'prove', client: '2001:db8:1:2::/64' });
+  const bob2 = await q.submitJob({ type: 'transfer', op: op('bob2'), mode: 'prove', client: '2001:db8:1:2::/64' });
+  assert.strictEqual((await q.jobStatus(alice.jobId)).ahead, 2, 'behind the older job and the busy sender’s first only, not all six');
+  assert.strictEqual((await q.jobStatus(bob.jobId)).ahead, 3);
+  assert.strictEqual((await q.jobStatus(bob2.jobId)).ahead, 5, 'a sender’s second job waits for everyone’s first and the busy sender’s second');
+  assert.strictEqual((await q.jobStatus(busy[5])).ahead, 9, 'the busy sender’s last job is last');
+  const got = [];
+  for (let k = 0; k < 10; k++) got.push((await q.nextJob()).jobId);
+  assert.deepStrictEqual(got, [legacy.jobId, busy[0], alice.jobId, bob.jobId, busy[1], bob2.jobId, ...busy.slice(2)],
+    'taken in rounds: each sender’s first in arrival order, then each one’s second, …');
+  ok('jobs are taken by sender in turn, and `ahead` counts in that same order');
+
+  // a job taken stays its sender's turn: while it proves, the sender's next waits behind the others' first
+  const q2 = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
+  const g1 = await q2.submitJob({ type: 'transfer', op: op('g1'), mode: 'prove', client: 'a/24' });
+  const g2 = await q2.submitJob({ type: 'transfer', op: op('g2'), mode: 'prove', client: 'a/24' });
+  assert.strictEqual((await q2.nextJob()).jobId, g1.jobId);
+  const h1 = await q2.submitJob({ type: 'transfer', op: op('h1'), mode: 'prove', client: 'c/24' });
+  assert.strictEqual((await q2.nextJob()).jobId, h1.jobId, 'a newcomer goes before the second job of a sender whose first is proving');
+  assert.strictEqual((await q2.nextJob()).jobId, g2.jobId);
+  ok('a sender whose job is proving waits for the others before their next');
+
+  // a settler built afresh over the same store with a shared map (the worker builds one per request) reads each sender once
+  const store3 = freshStore(), shared = new Map();
+  const q3 = makeConfidentialSettler({ storage: store3, hash, now, sleep: instantSleep, senders: new Map() });
+  for (let i = 0; i < 5; i++) await q3.submitJob({ type: 'transfer', op: op(`k${i}`), mode: 'prove', client: `s${i % 2}/24` });
+  let reads = 0;
+  const counted = { ...store3, getJob: async (id) => { reads++; return store3.getJob(id); } };
+  const fresh = () => makeConfidentialSettler({ storage: counted, hash, now, sleep: instantSleep, senders: shared });
+  await fresh().nextJob();
+  const firstLook = reads;
+  reads = 0;
+  await fresh().nextJob();
+  assert.ok(firstLook >= 5 && reads < firstLook, `a later settler over the same map reads no sender again (${firstLook} reads, then ${reads})`);
+  ok('a sender is read from the store once, across the settlers sharing a map');
+}
+
+// ───────────────── 21. one sender's share of the queue is capped; others still get in ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
+  const op = (n) => ({ chainBinding: '0xcb', spendRoot: '0xr', fee: 0, n });
+  for (let i = 0; i < 32; i++) await q.submitJob({ type: 'transfer', op: op(`c${i}`), mode: 'prove', client: '203.0.113.0/24' });
+  await assert.rejects(q.submitJob({ type: 'transfer', op: op('c32'), mode: 'prove', client: '203.0.113.0/24' }), /32 of your jobs are already waiting/);
+  const again = await q.submitJob({ type: 'transfer', op: op('c3'), mode: 'prove', client: '203.0.113.0/24' });
+  assert.ok(again.deduped, 'the same job sent again is still answered (it takes no new place)');
+  assert.strictEqual((await q.submitJob({ type: 'transfer', op: op('d0'), mode: 'prove', client: '10.0.0.0/24' })).status, 'pending', 'another sender still gets in');
+  assert.strictEqual((await q.submitJob({ type: 'transfer', op: op('e0'), mode: 'prove' })).status, 'pending', 'a job with no sender is held to no one’s share');
+  const sealed = { worker: 'w1', epk: '0x02' + '11'.repeat(32), iv: 'AAAAAAAAAAAAAAAA', ct: 'A'.repeat(32) };
+  await assert.rejects(q.submitJob({ type: 'transfer', memos: [], mode: 'sealed', sealed, client: '203.0.113.0/24' }), /32 of your jobs/);
+  assert.strictEqual((await q.submitJob({ type: 'transfer', memos: [], mode: 'sealed', sealed, client: '10.9.9.0/24' })).status, 'pending');
+  ok('a sender with 32 jobs waiting is refused a 33rd (a sealed one too); a resend, another sender and a job with no sender still get in');
+}
+
 console.log(`\n${n} confidential-settle checks passed.`);

@@ -5,9 +5,12 @@
 // never lose a job. `post`, `status`, `cancel` and `verify` are injected (lib/worker-client.js and the chain), so this is
 // tested without either.
 
+// `claimStallMs`: how long a claimed settle proof (the pool's own program) may go without an answer before the job is handed on. Tacit's
+// worker proves one in about 40 s; a claim that has said nothing for this long is not going to answer in time, and waiting out the whole
+// wait holds every job behind it in the relay's queue.
 // `race(jobId, worker, ok)`: the relay's verdict on a community machine's candidate (a public job's racers, worker/src/prover-board.js); each
 // candidate is checked as the board's own proof is, and the first that passes is the job's proof while Tacit's worker goes on with it.
-export function makeBoardProver({ post, status, cancel, verify, race = null, alive = null, waitMs = 240_000, pollMs = 1000, now = Date.now, sleep, log = () => {} } = {}) {
+export function makeBoardProver({ post, status, cancel, verify, race = null, alive = null, waitMs = 240_000, pollMs = 1000, claimStallMs = 100_000, now = Date.now, sleep, log = () => {} } = {}) {
   const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const miss = (reason, extra = {}) => Object.assign(new Error(`prover board: ${reason}`), { code: 'board_miss', reason, ...extra });
 
@@ -31,7 +34,7 @@ export function makeBoardProver({ post, status, cancel, verify, race = null, ali
       deadline: Math.floor(now() / 1000) + Math.ceil(budget / 1000) + 60, label }).catch((e) => ({ ok: false, error: String(e && e.message || e) }));
     if (!posted || !posted.ok || !posted.jobId) throw miss(`not posted: ${(posted && posted.error) || 'no answer from the API'}`);
     const { jobId } = posted;
-    let lastSeen = null;
+    let lastSeen = null, claimedAt = 0;
     const judged = new Set();
     for (;;) {
       const st = await status(jobId).catch(() => null);
@@ -62,6 +65,14 @@ export function makeBoardProver({ post, status, cancel, verify, race = null, ali
       }
       if (s === 'failed') throw miss(`${st.worker || 'the worker'} could not prove it: ${st.error || 'no reason given'}`, { jobId, worker: st.worker });
       if (s === 'expired' || s === 'cancelled') throw miss(`the job is ${s}`, { jobId });
+      // timed from when this relay first saw it claimed (its own clock), and only for the pool's program: the others take longer by nature
+      if (s === 'claimed' && program === 'confidential' && claimStallMs > 0) {
+        if (!claimedAt) claimedAt = now();
+        else if (now() - claimedAt >= claimStallMs) {
+          await cancel(jobId, 'timeout').catch(() => {});
+          throw miss(`${st.worker || 'a worker'} claimed it and sent nothing for ${Math.round(claimStallMs / 1000)} s`, { jobId, worker: st.worker, stalled: true });
+        }
+      } else if (s !== 'claimed') claimedAt = 0;
       if (now() - t0 >= budget) {
         await cancel(jobId, 'timeout').catch(() => {});
         throw miss(`nobody proved it within ${Math.round(budget / 1000)} s${s === 'claimed' ? ` (${st.worker} had claimed it)` : ''}`, { jobId });

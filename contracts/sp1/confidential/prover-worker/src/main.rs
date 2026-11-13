@@ -480,7 +480,15 @@ fn main() {
         // The answer is worth a few tries: the proof is made, and a lost answer would send the relay to the network for nothing.
         for attempt in 0..5 {
             match agent.post(&result_url).set("Authorization", &auth).send_json(body.clone()) {
-                Ok(_) => break,
+                Ok(r) => {
+                    // A delivered answer can still be one the board did not take ({ ok: false, error }): said here, so a proof that was made
+                    // and refused is not lost without a word.
+                    let reply = r.into_string().unwrap_or_default();
+                    if reply.contains("\"ok\":false") {
+                        println!("[{name}] job {} {label}: the board did not take the answer: {}", &job.job_id[..job.job_id.len().min(12)], reply.chars().take(300).collect::<String>());
+                    }
+                    break;
+                }
                 Err(e) => {
                     println!("[{name}] result not delivered (try {}): {e}", attempt + 1);
                     std::thread::sleep(Duration::from_secs(3));

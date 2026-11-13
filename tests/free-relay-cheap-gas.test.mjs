@@ -22,7 +22,7 @@ function memKv() {
 }
 const day = () => new Date().toISOString().slice(0, 10);
 // A fresh env per case: the gas reading is kept per env, and the counters per KV.
-const fresh = (extra = {}) => { const kv = memKv(); return { kv, env: { CONFIDENTIAL_SETTLE: '1', REGISTRY_KV: kv, CONFIDENTIAL_KV: kv, CONFIDENTIAL_BOX_TOKEN: BOX, PROVE_RL_BURST: '1000', FREE_RELAY_GAS_TTL_MS: '0', ...extra } }; };
+const fresh = (extra = {}) => { const kv = memKv(); return { kv, env: { CONFIDENTIAL_SETTLE: '1', REGISTRY_KV: kv, CONFIDENTIAL_KV: kv, CONFIDENTIAL_BOX_TOKEN: BOX, PROVE_RL_BURST: '1000', FREE_RELAY_GAS_TTL_MS: '0', OP_SHAPE_CHECK: '0', ...extra } }; };   // placeholder ops: the shape doors are not under test here
 const fixture = (f) => JSON.parse(readFileSync(new URL(`../contracts/sp1/confidential/fixtures/${f}.json`, import.meta.url), 'utf8'));
 const SHAPED = { cbtcmint: fixture('cbtc_mint_op'), cdpmint: fixture('cdp_mint_op'), cdptopup: fixture('cdp_topup_op') };
 let ip = 0, n = 0;

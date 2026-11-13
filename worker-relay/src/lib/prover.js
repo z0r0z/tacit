@@ -452,7 +452,7 @@ let board = null;
 const boardLog = (m) => console.log(`[prover ${new Date().toISOString()}] ${m}`);
 function boardLane() {
   if (!CFG.proverBoard) return null;
-  board ||= makeBoardProver({ post: boardPost, status: boardStatus, cancel: boardCancel, race: boardRace, verify: verifySettle, alive: boardAlive, waitMs: CFG.proverBoardWaitSecs * 1000, log: boardLog });
+  board ||= makeBoardProver({ post: boardPost, status: boardStatus, cancel: boardCancel, race: boardRace, verify: verifySettle, alive: boardAlive, waitMs: CFG.proverBoardWaitSecs * 1000, claimStallMs: CFG.proverBoardClaimStallSecs * 1000, log: boardLog });
   return board;
 }
 // Whether a worker has polled the board in the last half minute (the worker polls every few seconds), read at most every
