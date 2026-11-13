@@ -10,7 +10,7 @@ const VERIFIER = '0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2', LEADER = '0x841d9
 const BLOCK_VKEY = '0x00610fb0fa1b5d800e548c3cdcdf98ceb4288828be1cec1fb81e39004bad6ed6', SPEND_VK = '0xc85febd5ed7a2b00819d90960a17bf686b15d28183c7a207499204bd369bdfe4';
 const GH = 'https://github.com/src-company/tacit/';
 const TAC_TOKEN = '0xa1313eb9f3a445606d9583bcac3ebeb56a858279';
-const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 10, MORE = 20, UNIT = 100000000n, FLOOR = 200000n;
+const PROVER_SEEN_S = 600, STALL_S = 180, EVERY_MS = 30e3, BEAT_MS = 5e3, SHOWN = 12, MORE = 20, UNIT = 100000000n, FLOOR = 200000n;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const rpc = (method, params) => hedgedRpc(ETH_NODES, method, params, { hedgeMs: 1500, timeoutMs: 15e3 });
 const word = (n) => BigInt(n).toString(16).padStart(64, '0');
@@ -37,16 +37,19 @@ const ICON = {
 const flowOf = (c, pending) => (c.cls === 'sk' || !c.cls || c.cls === 'bad' ? 'off' : c.name === 'Provers' ? (c.cls === 'ok' ? (pending ? 'live' : 'on') : 'off') : c.cls === 'busy' ? 'live' : 'on');
 const wireOf = (a, b) => (a === 'off' || b === 'off' ? 'off' : a === 'live' || b === 'live' ? 'live' : 'on');
 
-export function mountChainLive({ top, rest }) {
+export function mountChainLive({ top, mid, rest }) {
   const cfg = tacitChain();
-  top.innerHTML = `<div class="cl-h"><h2 class="cl-name">tacit <em>chain</em></h2><span class="cl-v" data-r="verdict" data-s=""><span class="dot"></span><span>Reading…</span></span><span class="cl-sub" data-r="sub"></span></div>
-    <ol class="cl-chain" data-r="chain" aria-label="Latest blocks"></ol><div class="cl-cm"><span data-r="bn"></span><span class="cl-more" data-r="more"></span></div><div class="cl-flow" data-r="flow" aria-live="polite"></div><p class="cl-note" data-r="note"></p><div class="cl-stats" data-r="stats"></div><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
+  top.innerHTML = `<div class="cl-h"><span class="cl-v" data-r="verdict" data-s=""><span class="dot"></span><span>Reading…</span></span><span class="cl-sub" data-r="sub"></span><span class="cl-more" data-r="more"></span></div>
+    <ol class="cl-chain" data-r="chain" aria-label="Latest blocks"></ol><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
+  mid.innerHTML = `<div class="cl-flow" data-r="flow" aria-live="polite"></div><p class="cl-note" data-r="note"></p><div class="cl-stats" data-r="stats"></div>
+    <figure class="cl-pool" data-r="pool"><canvas role="img"></canvas><figcaption></figcaption></figure>`;
   rest.innerHTML = `<section class="tpg-panel"><h2 class="tpg-h">A share's worth, block by block</h2><div class="cl-chart" data-r="chart"></div></section>
-    <section class="tpg-panel"><h2 class="tpg-h">What it rests on</h2><ul class="cl-facts" data-r="facts"></ul>
-      ${cfg && !cfg.dev ? '<details class="tpg-fold cl-tech"><summary>Chain facts</summary><div><ul class="cl-facts" data-r="tech"></ul></div></details><details class="tpg-fold cl-tech"><summary>Lead blocks</summary><div><ul class="cl-facts" data-r="lead"></ul></div></details>' : ''}</section>`;
-  const el = (k) => top.querySelector(`[data-r="${k}"]`) || rest.querySelector(`[data-r="${k}"]`);
+    <section class="tpg-panel" id="tpg-part"><h2 class="tpg-h">Take part</h2><ul class="cl-part" data-r="part"></ul></section>
+    <section class="tpg-panel" id="tpg-rests"><h2 class="tpg-h">What it rests on</h2><ul class="cl-facts" data-r="facts"></ul>
+      ${cfg && !cfg.dev ? '<details class="tpg-fold cl-tech"><summary>Chain facts</summary><div><ul class="cl-facts" data-r="tech"></ul></div></details><details class="tpg-fold cl-tech" id="tpg-lead"><summary>Lead blocks</summary><div><ul class="cl-facts" data-r="lead"></ul></div></details>' : ''}</section>`;
+  const el = (k) => { for (const root of [top, mid, rest]) { const e = root.querySelector(`[data-r="${k}"]`); if (e) return e; } return null; };
   const put = (k, html) => { const e = el(k); if (e && e.__h !== html) { e.__h = html; e.innerHTML = html; } };
-  if (!cfg) { put('flow', '<p class="cl-off">The Tacit chain is not deployed here.</p>'); top.classList.remove('cl-hold'); return { start() {}, stop() {} }; }
+  if (!cfg) { put('flow', '<p class="cl-off">The Tacit chain is not deployed here.</p>'); top.classList.remove('cl-hold'); return { start() {}, stop() {}, mine() {} }; }
 
   const call = async (sel, arg = '') => BigInt(await rpc('eth_call', [{ to: cfg.blocks, data: '0x' + sel + arg }, 'latest']));
   const SEL = ['0ef26743', '2fb9bbfd', '16f0115b', '03314efa', '16049ddf', '67e41467', 'fbdc9a29', 'a53e5412'];
@@ -64,6 +67,15 @@ export function mountChainLive({ top, rest }) {
   }
 
   const R = {}, P = { h: null, since: 0 }, HAVE = new Map(), LAND = { h: null, at: 0 }, FRESH = { h: null, at: 0 }, SEEN_N = new Map();
+  const MINE = { pending: 0, heights: new Set(), since: null, moved: 0 }, POOL = { n: null, lit: 0, key: '' };
+  function mineForming() {
+    if (!(MINE.pending > 0)) { MINE.since = null; MINE.moved = 0; return false; }
+    const newest = Math.max(R.chain?.height || 0, Number(R.state?.height) || 0, ...HAVE.keys());
+    if (MINE.since == null) MINE.since = newest;
+    else if (newest > MINE.since && !MINE.moved) { MINE.moved = Date.now(); setTimeout(mark, 9100); }
+    else if (MINE.moved && Date.now() - MINE.moved > 9000) { MINE.since = newest; MINE.moved = 0; }
+    return newest === MINE.since;
+  }
   let shown = SHOWN, dirty = false, busy = false, stale = false, said = null, floor = null, olderBusy = false, olderErr = false, filled = false, introAt = 0, CH = null, timers = [];
   const mark = () => { if (!dirty) { dirty = true; queueMicrotask(draw); } };
   const nowS = () => (R.chain ? R.chain.t + (Date.now() - R.chain.at) / 1000 : Date.now() / 1000);
@@ -148,8 +160,10 @@ export function mountChainLive({ top, rest }) {
   function note(cells) {
     if (cells.some((c) => c.cls === 'sk' || !c.cls)) return '';
     const c = cells.find((x) => x.cls === 'bad') || cells.find((x) => x.cls === 'busy');
-    if (c) return `${esc(c.title)} · ${c.small}`;
-    return 'Ready for the next payment. It goes into the next block, usually within a minute.';
+    const mine = mineForming();
+    if (c && !(mine && c.cls === 'busy' && c.name === 'Payments')) return `${esc(c.title)} · ${c.small}`;
+    if (mine) return 'Yours is in the next block. It lands within about a minute.';
+    return 'Ready for the next payment. It lands within about a minute.';
   }
   function stats({ fee, chain, state }) {
     const rd = (x, f, w) => { if (x === undefined) return sk(w); try { return x === null ? '—' : f(x); } catch { return '—'; } };
@@ -157,17 +171,18 @@ export function mountChainLive({ top, rest }) {
     const up = p != null && p > 1 ? `<span class="ok">+${((p - 1) * 100).toFixed(2)}%</span>` : 'since block 1';
     const cu = (key, v, dp, text) => `<span data-k="${key}" data-v="${v}" data-dp="${dp}">${text}</span>`;
     const c = (v, k, t = '') => `<div${t ? ` title="${esc(t)}"` : ''}><span class="v num">${v}</span><span class="k">${k}</span></div>`;
-    const notes = (x) => (Number.isSafeInteger(x.leaves) && x.leaves >= 0 ? cu('notes', x.leaves, 0, int(x.leaves)) : '—');
+    const count = (k, v) => (Number.isSafeInteger(v) && v >= 0 ? cu(k, v, 0, int(v)) : '—'), spends = state === undefined || Number.isSafeInteger(state?.spends);
     return [
       c(rd(chain, (x) => `${cu('pool', Number(x.pool) / 1e8, 2, tac(x.pool))}<small>TAC</small>`, '6ch'), 'held privately'),
-      c(rd(state, notes, '4ch'), 'notes in the pool', 'Notes the pool has made. What each holds, and who, is not shown'),
+      spends ? c(rd(state, (x) => count('spends', x.spends), '4ch'), 'transactions', 'Shields, payments and withdrawals the chain has landed')
+        : c(rd(state, (x) => count('notes', x.leaves), '4ch'), 'notes in the pool', 'Notes the pool has made. What each holds, and who, is not shown'),
       c(rd(chain, () => `${cu('px', p, 5, p.toFixed(5))}<small>TAC</small>`, '6ch'), `1 share · ${up}`),
       c(rd(fee, (x) => (x.fee != null ? `${cu('fee', Number(BigInt(x.fee) + FLOOR) / 1e8, 4, tac(BigInt(x.fee) + FLOOR, 4))}<small>TAC</small>` : '—'), '5ch'), 'fee per payment'),
     ].join('');
   }
   function countUp() {
     const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    top.querySelectorAll('[data-k]').forEach((e) => {
+    mid.querySelectorAll('[data-k]').forEach((e) => {
       const k = e.dataset.k, to = Number(e.dataset.v), from = SEEN_N.has(k) ? SEEN_N.get(k) : 0, dp = Number(e.dataset.dp);
       SEEN_N.set(k, to);
       if (calm || from === to || !Number.isFinite(to)) return;
@@ -220,19 +235,61 @@ export function mountChainLive({ top, rest }) {
     if (FRESH.h != null && !FRESH.at && hist.length && hist[0].height >= FRESH.h) { FRESH.at = Date.now(); setTimeout(mark, 2900); }
     if (!hist.length) return [1, 2, 3, 4, 5, 6].map(() => '<li class="sl"><span></span></li>').join('');
     const head = chain ? { n: chain.n, t: chain.t + (Date.now() - chain.at) / 1000 } : null, lit = FRESH.h != null && LAND.at && Date.now() - LAND.at < 2600;
-    const top = Math.max(hist[0].height, chain?.height || 0), next = Number(state?.pending || 0) > 0 && Number(state?.height) <= top
-      ? `<li class="nx" title="Block ${int(top + 1)}, forming"><span><b class="num">#${int(top + 1)}</b><small>forming</small></span></li>` : '';
+    const newest = Math.max(hist[0].height, chain?.height || 0), mine = mineForming();
+    const next = (Number(state?.pending || 0) > 0 && Number(state?.height) <= newest) || mine
+      ? `<li class="nx${mine ? ' me' : ''}" title="Block ${int(newest + 1)}, forming${mine ? ', with yours in it' : ''}"><span><b class="num">#${int(newest + 1)}</b><small>${mine ? 'yours' : 'forming'}</small></span></li>` : '';
     return next + hist.slice(0, shown).map((x, i) => {
-      const at = head ? head.t - Math.max(0, head.n - x.ethBlock) * 12 : null, cls = (i ? '' : 'hd') + (!i && lit && x.height === FRESH.h ? ' in' : '');
+      const at = head ? head.t - Math.max(0, head.n - x.ethBlock) * 12 : null, me = MINE.heights.has(x.height);
+      const cls = (i ? '' : 'hd') + (!i && lit && x.height === FRESH.h ? ' in' : '') + (me ? ' me' : '');
       const age = at != null ? `<small data-at="${Math.round(at)}">${ago(nowS() - at)}</small>` : '';
-      const ok = /^0x[0-9a-fA-F]{64}$/.test(String(x.tx));
+      const ok = /^0x[0-9a-fA-F]{64}$/.test(String(x.tx)), what = `Block ${int(x.height)}${me ? ', with yours in it' : ''}`;
       const body = `<b class="num">#${int(x.height)}</b>${i ? '' : age}`;
-      return `<li${cls ? ` class="${cls.trim()}"` : ''}>${ok ? `<a href="https://etherscan.io/tx/${x.tx}" target="_blank" rel="noopener noreferrer" title="Block ${int(x.height)} on Etherscan">${body}</a>` : `<span>${body}</span>`}</li>`;
+      return `<li${cls.trim() ? ` class="${cls.trim()}"` : ''}>${ok ? `<a href="https://etherscan.io/tx/${x.tx}" target="_blank" rel="noopener noreferrer" title="${what} on Etherscan">${body}</a>` : `<span title="${what}">${body}</span>`}</li>`;
     }).join('');
+  }
+  const POOL_H = 56, POOL_MOST = 6000;
+  function pool(state) {
+    const fig = el('pool');
+    if (!fig) return;
+    const n = Number.isSafeInteger(state?.leaves) && state.leaves > 0 ? state.leaves : null;
+    if (n == null) { if (state !== undefined && POOL.n == null) fig.hidden = true; return; }
+    if (POOL.n != null && n > POOL.n) { POOL.lit = n - POOL.n; setTimeout(() => { POOL.lit = 0; mark(); }, 3200); }
+    POOL.n = n;
+    fig.hidden = false;
+    const cv = fig.firstElementChild, cap = fig.lastElementChild, spent = Number.isSafeInteger(state.nullifiers) && state.nullifiers >= 0 ? state.nullifiers : null;
+    const text = `<b class="num">${int(n)}</b> notes made${spent != null ? `, <b class="num">${int(spent)}</b> spent` : ''}. All look alike: only their owners know which are spent.`;
+    if (cap.__h !== text) { cap.__h = text; cap.innerHTML = text; }
+    cv.setAttribute('aria-label', `${int(n)} notes in the pool, drawn as dots that all look alike`);
+    const per = Math.ceil(n / POOL_MOST), dots = Math.ceil(n / per), w = cv.clientWidth, cs = getComputedStyle(cv), key = `${n}|${POOL.lit}|${w}|${cs.color}`;
+    if (!w || POOL.key === key) return;
+    POOL.key = key;
+    let cols = Math.max(1, Math.ceil(Math.sqrt(dots * w / POOL_H)));
+    while (Math.ceil(dots / cols) * (w / cols) > POOL_H) cols++;
+    const p = w / cols, dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = Math.round(w * dpr); cv.height = Math.round(POOL_H * dpr);
+    const g = cv.getContext('2d'), r = Math.max(0.5, Math.min(2.2, p * 0.24)), lit = Math.min(dots, Math.ceil(POOL.lit / per)), hot = cs.getPropertyValue('--orange').trim() || '#f7931a';
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, POOL_H);
+    for (const [from, to, fill, alpha] of [[0, dots - lit, cs.color, 0.5], [dots - lit, dots, hot, 1]]) {
+      g.fillStyle = fill; g.globalAlpha = alpha; g.beginPath();
+      for (let i = from; i < to; i++) { const x = (i % cols) * p + p / 2, y = Math.floor(i / cols) * p + p / 2; g.moveTo(x + r, y); g.arc(x, y, r, 0, 6.2832); }
+      g.fill();
+    }
+  }
+  function ways({ board, lead }) {
+    const gpus = board ? (board.workers || []).filter((w) => (w.programs || []).includes('tacit-block') && Number(w.lastSeenSeconds) < PROVER_SEEN_S).length : 0;
+    const seat = lead ? `${(Number(lead.seat / 10n ** 15n) / 1000).toLocaleString('en-US', { maximumFractionDigits: 3 })} TAC` : '1,000 TAC';
+    const li = (name, title, line, go) => `<li><i class="cl-ic">${ICON[name]}</i><div><b>${title}</b><span>${line}</span></div>${go}</li>`;
+    return [
+      li('Payments', 'Pay', 'Shield TAC, then send it to a name, a link or a code.', '<button class="link" type="button" data-tpg="priv">Shield</button>'),
+      li('Leader', 'Lead', `${lead ? (lead.held ? `${int(lead.held)} seat${lead.held === 1 ? '' : 's'} held. ` : 'No seat is held yet. ') : ''}A seat is ${seat}, back 7 days after you leave.`, cfg.dev ? '' : '<button class="link" type="button" data-part="lead">How</button>'),
+      li('Provers', 'Prove', `${gpus ? `${int(gpus)} GPU${gpus === 1 ? '' : 's'} prove its blocks. ` : ''}Any machine may: the proof is checked, not who made it.`, '<a href="/prove/">Start</a>'),
+      li('Ethereum', 'Verify', 'Every block’s data is on Ethereum. Rebuild the chain from it.', `<a href="${GH}tree/main/contracts/sp1/confidential/tacit-block/node" target="_blank" rel="noopener noreferrer">The node ↗</a>`),
+    ].join('');
   }
   function more(hist) {
     const low = hist.length ? hist.at(-1).height : null, can = mayHaveOlder(), out = [];
-    if (hist.length > shown || can) out.push(`<button class="link" type="button" data-more${olderBusy ? ' disabled' : ''}>${olderBusy ? 'Loading…' : 'Show older blocks'}</button>`);
+    if (hist.length > shown || can) out.push(`<button class="link" type="button" data-more${olderBusy ? ' disabled' : ''}>${olderBusy ? 'Loading…' : 'Older blocks'}</button>`);
     if (olderErr) out.push('<span class="err">Could not load older blocks. Try again.</span>');
     if (!can && floor != null && low != null && low > 1) out.push(`<span>Before #${int(low)}: <a href="https://etherscan.io/address/${esc(cfg.blocks)}#events" target="_blank" rel="noopener noreferrer">the contract's events ↗</a></span>`);
     return out.join('');
@@ -297,12 +354,14 @@ export function mountChainLive({ top, rest }) {
       e.dataset.s = v.s; e.lastElementChild.textContent = v.t; e.firstElementChild.className = `dot ${v.s}`;
       if (said !== v.t) { said = v.t; if (v.t !== 'Reading…') say(v.t); }
     });
-    part(() => put('sub', R.chain ? `block ${int(R.chain.height)}` : ''));
+    part(() => put('sub', R.chain?.height ? `${int(R.chain.height)} blocks<span>, each proven</span>` : ''));
     part(() => put('note', note(health(R, now))));
     part(() => { put('stats', stats(R)); countUp(); });
+    part(() => pool(R.state));
     const hist = history();
     part(() => put('chart', chart(R.blocks === undefined && !hist.length ? undefined : hist)));
-    part(() => { put('more', more(hist)); put('bn', R.chain?.height ? `${int(R.chain.height)} blocks, each proven` : ''); });
+    part(() => put('more', more(hist)));
+    part(() => put('part', ways(R)));
     part(() => put('facts', facts(R.chain)));
     part(() => { if (el('tech')) put('tech', tech(R.chain)); });
     part(() => { if (el('lead')) put('lead', lead(R.lead)); });
@@ -312,7 +371,7 @@ export function mountChainLive({ top, rest }) {
   function tick() {
     if (document.hidden) return;
     const now = nowS();
-    for (const root of [top, rest]) root.querySelectorAll('[data-at]').forEach((e) => { const t = ago(now - Number(e.dataset.at)); if (e.textContent !== t) e.textContent = t; });
+    for (const root of [top, mid, rest]) root.querySelectorAll('[data-at]').forEach((e) => { const t = ago(now - Number(e.dataset.at)); if (e.textContent !== t) e.textContent = t; });
     el('sub').classList.toggle('stale', !!R.at && Date.now() - R.at > 2 * EVERY_MS + 30e3);
   }
   async function beat() {
@@ -347,8 +406,22 @@ export function mountChainLive({ top, rest }) {
   rest.addEventListener('pointerleave', unscrub);
   rest.addEventListener('pointerout', (e) => { if (e.target.closest?.('.cl-plot') && !e.relatedTarget?.closest?.('.cl-plot')) unscrub(); });
   top.addEventListener('click', async (e) => { if (!e.target.closest?.('[data-more]')) return; shown += MORE; mark(); if (HAVE.size < shown) await older(); });
+  rest.addEventListener('click', (e) => {
+    const d = e.target.closest?.('[data-part="lead"]') ? rest.querySelector('#tpg-lead') : null;
+    if (!d) return;
+    d.open = true;
+    d.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    d.querySelector('summary')?.focus({ preventScroll: true });
+  });
+  if (typeof ResizeObserver === 'function') new ResizeObserver(() => mark()).observe(mid);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => mark());
   draw();
   return {
+    mine({ pending = null, height = null } = {}) {
+      if (pending != null) MINE.pending = Math.max(0, MINE.pending + (pending ? 1 : -1));
+      if (Number.isSafeInteger(height)) MINE.heights.add(height);
+      mark();
+    },
     start() {
       if (timers.length) return;
       timers = [setInterval(refresh, EVERY_MS), setInterval(beat, BEAT_MS), setInterval(tick, 5e3)];
