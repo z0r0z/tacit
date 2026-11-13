@@ -158,7 +158,9 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 /* a button that cannot be pressed yet stays readable: a quiet bar, not a faded one */
 .btn:disabled { color: color-mix(in srgb, var(--ink) 70%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2); cursor: not-allowed; }
 .btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); border-radius: 12px; min-height: 44px; margin-top: 0; }
+.btn.ghost:disabled { color: color-mix(in srgb, var(--ink) 55%, var(--card)); border-color: var(--hair); }   /* a quiet button that cannot be pressed looks it */
 @media (hover: hover) { .btn.ghost:hover:not(:disabled) { border-color: var(--ink); box-shadow: none; } }
+.steps button { border-radius: 8px; }   /* the small − and + beside a count */
 /* the node's button is the page's one loud thing only when it is asking for something (Start); Pause is a quiet one */
 #go.ghost { min-height: 52px; margin-top: 16px; }
 .status { font-size: 12.5px; margin-top: 12px; overflow-wrap: anywhere; }
