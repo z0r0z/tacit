@@ -1494,6 +1494,9 @@ html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data
 }
 /* the live strip, plain: no frame, one line of four steps on a hairline wire, the figures one calm row; colour only in the dots */
 .cl-top { margin: 40px 0 0; padding: 0; background: none; border: 0; }
+/* the chain's panel on TAC's page is drawn by a module of its own, a moment after the page: its place is held, so the card under it does not drop when it arrives */
+#tpg-live:empty { min-height: 373px; }
+@media (max-width: 639px) { #tpg-live:empty { min-height: 411px; } }
 .cl-h { gap: 8px 16px; margin: 0 0 24px; }
 .cl-name { font-size: 22px; }
 .cl-v { padding: 3px 10px 3px 8px; font-size: 12px; font-weight: 400; border-color: var(--hair-2); }
