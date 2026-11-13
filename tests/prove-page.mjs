@@ -157,7 +157,7 @@ try {
     check(await page.locator('#blocked').isHidden(), 'a prover that is just not installed is not called blocked');
     check((await text(page, '#cmd')).endsWith(ADDR), 'the setup line carries the address', await text(page, '#cmd'));
     await page.waitForFunction(() => document.querySelector('#btc-pay').textContent.includes('TAC'), null, { timeout: 8000 }).catch(() => {});
-    check((await page.textContent('#btc-pay')) === '10 TAC each','the GPU card says what a Bitcoin batch pays', await page.textContent('#btc-pay'));
+    check((await page.textContent('#btc-pay')) === '10 TAC a batch, 0.2 a press', 'the GPU card says what a Bitcoin batch and a press pay', await page.textContent('#btc-pay'));
     check((await text(page, '#gpu-cmd')) === `curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- ${ADDR}`, 'with the GPU command for the address', await text(page, '#gpu-cmd'));
     await page.waitForFunction(() => document.querySelector('#gpu-n').textContent !== '—', null, { timeout: 8000 }).catch(() => {});
     check((await text(page, '#gpu-n')) === '3 · Tacit\'s included', 'GPUs online: one asked for work just now, one is proving a batch, and Tacit\'s own; one gone a day and a settle-only machine are not', await text(page, '#gpu-n'));
@@ -306,7 +306,7 @@ try {
     check((await text(page, '#pays')) === '0.1 TAC a proof today (up to 0.2), up to 30 a day', 'what a proof pays today, and the most', await text(page, '#pays'));
     check((await text(page, '#net-join-pay')) === '0.1 TAC a proof today', 'and the stage\'s button says what a proof pays today, not the most it could', await text(page, '#net-join-pay'));
     await page.waitForFunction(() => document.querySelector('#btc-pay').textContent.includes('TAC'), null, { timeout: 8000 }).catch(() => {});
-    check((await page.textContent('#btc-pay')) === '5 TAC each', 'a Bitcoin batch at today\'s rate', await page.textContent('#btc-pay'));
+    check((await page.textContent('#btc-pay')) === '5 TAC a batch, 0.1 a press', 'a Bitcoin batch and a press at today\'s rate', await page.textContent('#btc-pay'));
     const rows = await page.locator('#feed li:not(.salt)').allInnerTexts();
     check(rows.some((x) => x.includes('proved in 9 min') && x.includes('+0.1 TAC')), 'a proof of today\'s at today\'s rate', rows.join(' / '));
     check(rows.some((x) => x.includes('proved in 5 min') && !x.includes('TAC')), 'a proof of an earlier day shows no TAC', rows.join(' / '));

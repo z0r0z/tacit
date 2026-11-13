@@ -551,7 +551,10 @@ function paintGpu() {
   $('#gpu-copy').textContent = gpuCopied ? 'Copied' : addr() || $('#desk').hidden ? 'Copy' : 'Add address';
   const pts = Number(boardPay?.pointsByProgram?.[BTC]), r = Number.isSafeInteger(pts) ? rewardWei(pts, pointRate()) : null;
   const bpts = Number(boardPay?.pointsByProgram?.[BLOCK]), br = Number.isSafeInteger(bpts) ? rewardWei(bpts, pointRate()) : null;
-  $('#btc-pay').textContent = r && br ? `${tac(r)} TAC a batch, ${tac(br)} a chain block` : r ? `${tac(r)} TAC each` : '';
+  // a press (a person's settle, raced as it happens) pays the board's points for one proof
+  const ppts = Number(boardPay?.pointsPerProof), pr = Number.isSafeInteger(ppts) ? rewardWei(ppts, pointRate()) : null;
+  const more = [br ? `${tac(br)} a chain block` : null, pr ? `${tac(pr)} a press` : null].filter(Boolean);
+  $('#btc-pay').textContent = r ? (more.length ? `${tac(r)} TAC a batch, ${more.join(', ')}` : `${tac(r)} TAC each`) : '';
   $('#gpu-n').textContent = gpus ? (houseGpu ? `${gpus.filter(gpuOn).length + 1} · Tacit's ${gpus.filter(gpuOn).length ? 'included' : 'own'}` : String(gpus.filter(gpuOn).length)) : '—';
   const g = gpus && me() ? gpus.find((x) => x.miner === me()) : null;
   $('#gpu-me-row').hidden = !g;
