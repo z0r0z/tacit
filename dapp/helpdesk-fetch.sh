@@ -5,7 +5,8 @@
 #   sh helpdesk-fetch.sh --no-model      only llama-server
 #   sh helpdesk-fetch.sh --model-only    only the model
 #   sh helpdesk-fetch.sh --status | --uninstall
-# Then switch the job on: curl -s -X POST 127.0.0.1:47815/helpdesk -d '{"on":true,"api":"https://<the help desk API>"}'
+# tacit-prover runs this same script itself when the job is switched on and the files are not there; run by hand, switch the job on after it:
+#   curl -s -X POST 127.0.0.1:47815/helpdesk -d '{"on":true,"api":"https://<the help desk API>"}'
 set -u
 BASE=https://github.com/ggml-org/llama.cpp/releases/download/b12211
 MODEL_URL=${HELPDESK_MODEL_URL:-https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf}
@@ -18,6 +19,14 @@ case "${1:-}" in
   --status) [ -x "$D/llama-server" ] && say "llama-server: installed" || say "llama-server: missing"; [ -f "$D/model.gguf" ] && [ "$(fsize "$D/model.gguf")" = "$MODEL_SIZE" ] && say "model: installed" || say "model: missing"; exit 0;;
   --uninstall) rm -rf "$D"; say "removed $D"; exit 0;;
 esac
+# One fetch at a time here: two would write into the same pieces. The one running leaves its process number in .fetch.pid; a number no shell answers to is a
+# fetch that was cut short, and is passed over.
+LOCK="$D/.fetch.pid"; other=; [ -f "$LOCK" ] && other=$(tr -dc 0-9 < "$LOCK")
+if [ -n "$other" ] && [ "$other" != "$$" ] && kill -0 "$other" 2>/dev/null; then
+  c=$(ps -o comm= -p "$other" 2>/dev/null || echo sh)
+  case "${c##*/}" in bash|sh|dash|-bash|-sh|-dash) die "a fetch is already running on this computer (process $other)";; esac
+fi
+echo "$$" > "$LOCK"; trap 'rm -f "$LOCK"' EXIT
 fetch_verified() {   # url file sha
   curl -fL -C - --retry 5 --retry-delay 3 -o "$2" "$1" || die "could not download $1"
   [ "$(sha "$2")" = "$3" ] || { rm -f "$2"; die "checksum mismatch for $1, refusing to use it"; }
@@ -58,7 +67,9 @@ install_model() {
     s=$(( i * ch )); e=$(( s + ch - 1 )); [ $e -ge $MODEL_SIZE ] && e=$(( MODEL_SIZE - 1 )); want=$(( e - s + 1 )); p="$parts/p$i"
     # Each chunk keeps asking until it is whole. The CDN's link expires after about an hour, so it is looked up again every time; -f means an error
     # page is never written into the chunk; a stall, a silent or dropped connection, or a sleeping computer just costs the next attempt.
-    ( for t in $(seq 1 "${HELPDESK_FETCH_TRIES:-1000}"); do have=0; [ -f "$p" ] && have=$(fsize "$p"); [ "$have" -ge "$want" ] && break
+    ( for t in $(seq 1 "${HELPDESK_FETCH_TRIES:-1000}"); do have=0; [ -f "$p" ] && have=$(fsize "$p")
+        [ "$have" -gt "$want" ] && { rm -f "$p"; have=0; }   # more than the piece holds is not this piece: it starts over
+        [ "$have" -ge "$want" ] && break
         final=$(curl -sL --connect-timeout 15 --max-time $(( STALL + 15 )) -r 0-0 -o /dev/null -w '%{url_effective}' "$MODEL_URL") || { sleep 5; continue; }
         curl -sfL --connect-timeout 15 --speed-limit 20000 --speed-time "$STALL" -r $(( s + have ))-$e "$final" >> "$p" || sleep 3; done ) &
   done; wait

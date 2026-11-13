@@ -5,7 +5,7 @@ import { cleanAddress, proveCommand, utcDay, mineLines, capOf, perPoint } from '
 import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS, dayShare } from '/prove/tabmine.js?cb=a9294239';
-import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView } from '/prove/review.js?cb=a8c503cf';
+import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView, pressTurnsOn } from '/prove/review.js?cb=ad2a8099';
 import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=a282e227';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
@@ -15,7 +15,7 @@ const $ = (s) => document.querySelector(s);
 const get = (url, ms = 6000) => fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(ms) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-let desk = null, deskStats = null, reviewBusy = false;   // the code-review card: the prover's help desk job, and the help desk's stats
+let desk = null, deskStats = null, reviewBusy = false, reviewNote = '';   // the code-review card: the prover's help desk job, and the help desk's stats
 let health = null, mine = null, pool = null, points = null, tally = null, boardDay = null, busy = false, copied = false, salts = null, cross = [], rollup = [], misses = 0;
 // The setup line's kind of computer, from the browser; the switch above the line changes it (setting up another computer).
 let os = isWindows(navigator.userAgent) ? 'win' : 'unix';
@@ -560,13 +560,15 @@ function paintReview() {
   $('#review-get').hidden = !v.cmd; $('#review-cmd').textContent = FETCH_CMD;
   const go = $('#review-go'); go.hidden = !v.button; if (v.button) go.textContent = reviewBusy ? '…' : v.button; go.disabled = reviewBusy;
   $('#review-me-row').hidden = !v.record; if (v.record) $('#review-me').textContent = v.record;
+  if (v.note !== reviewNote) { reviewNote = v.note; reviewSay(v.note, true); }   // what stopped a fetch of the model, in the prover's words; cleared when it is tried again
 }
 function reviewSay(text, bad = false) { const s = $('#review-say'); s.textContent = text; s.hidden = !text; s.classList.toggle('err', bad); }
 async function toggleReview() {
   if (!desk) return;
+  const on = pressTurnsOn(desk);
   reviewBusy = true; paintReview();
   try {
-    const r = await fetch(`${LOCAL}/helpdesk`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on: !desk.on, api: HELPDESK }) });
+    const r = await fetch(`${LOCAL}/helpdesk`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on, api: HELPDESK }) });
     const j = await r.json().catch(() => null);
     if (!r.ok) throw new Error(j?.error || `tacit-prover answered ${r.status}`);
     desk = cleanDesk(j); reviewSay('');   // the status row says what it does now; the note is for what went wrong

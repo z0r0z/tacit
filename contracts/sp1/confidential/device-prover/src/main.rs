@@ -667,7 +667,7 @@ fn handle(mut conn: TcpStream, state: &Arc<(Mutex<State>, Condvar)>, origins: &[
             reply(&mut conn, "200 OK", mine_json().to_string())
         }
         // The community help desk: on or off, where its API is, whether the model is installed and running, how many answers this
-        // run has given. POST {on, api?} switches it, kept across restarts.
+        // run has given, and how far a fetch of the model has got. POST {on, api?} switches it, kept across restarts; on fetches the model if it is not here, off stops that.
         ("GET", "/helpdesk") => reply(&mut conn, "200 OK", helpdesk::status(&store_dir(), pool::miner()).to_string()),
         ("POST", "/helpdesk") => {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
@@ -677,6 +677,9 @@ fn handle(mut conn: TcpStream, state: &Arc<(Mutex<State>, Condvar)>, origins: &[
             if let Err(e) = helpdesk::set(&store_dir(), on, v["api"].as_str()) {
                 return reply(&mut conn, "400 Bad Request", serde_json::json!({ "error": e }).to_string());
             }
+            // switched on without the model and llama-server on this computer: they are fetched now (helpdesk.rs), and the job starts once they are here;
+            // switched off while they are being fetched: the fetch stops
+            if on { helpdesk::fetch_start(&store_dir()); } else { helpdesk::fetch_stop(); }
             reply(&mut conn, "200 OK", helpdesk::status(&store_dir(), pool::miner()).to_string())
         }
         _ => reply(&mut conn, "404 Not Found", r#"{"error":"not found"}"#.into()),

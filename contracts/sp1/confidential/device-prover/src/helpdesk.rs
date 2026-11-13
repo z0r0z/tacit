@@ -11,7 +11,8 @@
 // go there. Prompts and answers are public documentation text and a visitor's question; the model sees nothing else.
 //
 // Files (in the prover's directory, ~/.tacit-prover): helpdesk.json (on, api), helpdesk/llama-server and helpdesk/model.gguf
-// (put there by dapp/helpdesk-fetch.sh, or point TACIT_HELPDESK_LLAMA and TACIT_HELPDESK_MODEL at them), helpdesk/llama.pid.
+// (fetched when the job is switched on and they are not there, by dapp/helpdesk-fetch.sh, which is built into this program: the same pinned downloads,
+// checked against their SHA-256; or point TACIT_HELPDESK_LLAMA and TACIT_HELPDESK_MODEL at files of your own), helpdesk/fetch.log, helpdesk/llama.pid.
 //
 // Env: TACIT_HELPDESK=1, TACIT_HELPDESK_API (the help desk's https:// address, or http://127.0.0.1 for testing), TACIT_HELPDESK_APIS (more hosts allowed), TACIT_HELPDESK_IDLE_SECS (300: no keyboard
 // or mouse for this long), TACIT_HELPDESK_ALWAYS=1 (ignore the idle and power checks), TACIT_HELPDESK_CTX (4096),
@@ -102,8 +103,119 @@ fn resources(dir: &Path) -> Option<(PathBuf, PathBuf)> {
 }
 pub fn status(dir: &Path, miner: Option<String>) -> Value {
     let job = NOW.lock().unwrap().clone().map(|(id, t)| json!({ "id": id, "secs": t.elapsed().as_secs_f64().round() }));
-    json!({ "on": enabled(dir), "api": api(dir), "miner": miner, "installed": resources(dir).is_some(), "model_running": LLM_UP.load(Ordering::Relaxed),
-            "served": DONE.load(Ordering::Relaxed), "job": job, "idle_secs_needed": idle_min() })
+    let mut v = json!({ "on": enabled(dir), "api": api(dir), "miner": miner, "installed": resources(dir).is_some(), "model_running": LLM_UP.load(Ordering::Relaxed),
+                        "served": DONE.load(Ordering::Relaxed), "job": job, "idle_secs_needed": idle_min() });
+    if let (Some(v), Value::Object(f)) = (v.as_object_mut(), fetch_status(dir)) { v.extend(f); }
+    v
+}
+
+// ---- getting the model. The job needs llama-server and a 2.7 GB model file. Switching the job on fetches them when they are not there, with the script the page
+// also offers as a line to paste (dapp/helpdesk-fetch.sh), built into this program at compile time: nothing is downloaded that the script does not pin by
+// SHA-256, and it carries on where it stopped if it is run again. Its output goes to helpdesk/fetch.log; how far it has got is the size of what is on disk.
+// Switching the job off stops a fetch under way (what it has stays, for the next one), and so does this program going away. TACIT_HELPDESK_FETCH=0: never fetch.
+const FETCH_SH: &str = include_str!("../../../../../dapp/helpdesk-fetch.sh");
+struct Fetch {
+    running: bool,
+    pid: u32,                // the script's process, which leads a process group of its own (0: not started yet)
+    stopped: bool,           // it was asked to stop: how it ends is then not an error
+    error: Option<String>,   // why the last one ended without the files
+}
+static FETCH: Mutex<Fetch> = Mutex::new(Fetch { running: false, pid: 0, stopped: false, error: None });
+
+fn fetch_allowed() -> bool {
+    std::env::var("TACIT_HELPDESK_FETCH").map(|v| v != "0").unwrap_or(true)
+}
+// The model's size in bytes, as the script pins it (`MODEL_SIZE=${HELPDESK_MODEL_SIZE:-<bytes>}`): what the download is measured against.
+pub fn model_size_in(script: &str) -> u64 {
+    script.split("MODEL_SIZE:-").nth(1).map(|r| r.chars().take_while(|c| c.is_ascii_digit()).collect::<String>()).and_then(|d| d.parse().ok()).unwrap_or(0)
+}
+pub fn model_size() -> u64 { model_size_in(FETCH_SH) }
+// How much of the model is on disk: the whole file, the file being put together, or the pieces still coming in (the pieces stay until the file is whole).
+pub fn fetched_bytes(dir: &Path) -> u64 {
+    let hd = dir.join("helpdesk");
+    let size = |p: PathBuf| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let pieces: u64 = std::fs::read_dir(hd.join(".model-parts")).map(|d| d.flatten().map(|e| e.metadata().map(|m| m.len()).unwrap_or(0)).sum()).unwrap_or(0);
+    size(hd.join("model.gguf")).max(size(hd.join("model.gguf.part"))).max(pieces)
+}
+// The last thing the script said went wrong (`error: ...`), cut to a line a page can show.
+pub fn last_error(log: &str) -> Option<String> {
+    log.lines().rev().find_map(|l| l.trim().strip_prefix("error: ").map(|e| e.chars().filter(|c| !c.is_control()).take(160).collect()))
+}
+// What a page is told of the fetch (nothing when this program is set never to fetch: the page then offers the line to paste).
+fn fetch_status(dir: &Path) -> Value {
+    if !fetch_allowed() { return json!({}); }
+    let f = FETCH.lock().unwrap();
+    json!({ "fetching": f.running, "fetched": fetched_bytes(dir), "fetch_total": model_size(), "fetch_error": f.error.clone() })
+}
+fn kill_group(pgid: u32) {
+    let _ = Command::new("kill").args(["-9", &format!("-{pgid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+}
+// Starts the fetch unless the files are there or one is already running. -> whether one is running now. `script` stands in for the built-in one (tests).
+pub fn fetch_start(dir: &Path) -> bool { fetch_allowed() && fetch_start_with(dir, None) }
+pub fn fetch_start_with(dir: &Path, script: Option<String>) -> bool {
+    if resources(dir).is_some() { return false; }
+    {
+        let mut f = FETCH.lock().unwrap();
+        if f.running { return !f.stopped; }
+        *f = Fetch { running: true, pid: 0, stopped: false, error: None };
+    }
+    let dir = dir.to_path_buf();
+    let spawned = std::thread::Builder::new().name("helpdesk-fetch".into()).spawn(move || {
+        let result = run_fetch(&dir, script.as_deref().unwrap_or(FETCH_SH));
+        let mut f = FETCH.lock().unwrap();
+        match &result {
+            _ if f.stopped => eprintln!("tacit-prover: help desk: stopped getting the model"),
+            Ok(()) => eprintln!("tacit-prover: help desk: the model is in place"),
+            Err(e) => eprintln!("tacit-prover: help desk: could not get the model: {e}"),
+        }
+        *f = Fetch { running: false, pid: 0, stopped: false, error: if f.stopped { None } else { result.err() } };
+    });
+    if spawned.is_err() { FETCH.lock().unwrap().running = false; return false; }
+    true
+}
+// Stops a fetch under way, and returns once it has stopped. What it had downloaded stays on disk.
+pub fn fetch_stop() {
+    {
+        let mut f = FETCH.lock().unwrap();
+        if !f.running { return; }
+        f.stopped = true;
+        if f.pid != 0 { kill_group(f.pid); }
+    }
+    for _ in 0..120 {
+        if !FETCH.lock().unwrap().running { return; }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+fn run_fetch(dir: &Path, script: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::process::CommandExt;
+    let hd = dir.join("helpdesk");
+    std::fs::create_dir_all(&hd).map_err(|e| e.to_string())?;
+    let log_path = hd.join("fetch.log");
+    let log = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
+    // A process group of its own: the script runs its downloads as further processes, and stopping the group stops them all.
+    let mut child = Command::new("bash").arg("-s").env("TACIT_PROVER_DIR", dir).process_group(0)
+        .stdin(Stdio::piped()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log)
+        .spawn().map_err(|_| "bash is needed to get the model".to_string())?;
+    let pid = child.id();
+    // A watcher in the same group holds the reading end of a pipe from this program. The pipe closes when this program ends, however it ends, and the
+    // watcher then stops the group: a download does not outlive the prover that started it.
+    let mut watcher = Command::new("sh").args(["-c", r#"cat >/dev/null; kill -9 -"$0""#, &pid.to_string()]).process_group(pid as i32)
+        .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok();
+    {
+        let mut f = FETCH.lock().unwrap();
+        f.pid = pid;
+        if f.stopped { kill_group(pid); }   // asked to stop before the script had started
+    }
+    if let Some(mut stdin) = child.stdin.take() { let _ = stdin.write_all(script.as_bytes()); }   // dropped here, so the script sees its end
+    let status = child.wait().map_err(|e| e.to_string());
+    if let Some(w) = watcher.as_mut() { let _ = w.kill(); let _ = w.wait(); }
+    // a script stopped part way leaves its mark (the file it keeps others out with): taken away, so the next one is not kept out by it
+    let mark = hd.join(".fetch.pid");
+    if std::fs::read_to_string(&mark).map(|s| s.trim() == pid.to_string()).unwrap_or(false) { let _ = std::fs::remove_file(&mark); }
+    if status?.success() && resources(dir).is_some() { return Ok(()); }
+    let said = std::fs::read_to_string(&log_path).unwrap_or_default();
+    Err(last_error(&said).unwrap_or_else(|| "the download stopped before it was done".to_string()))
 }
 
 // ---- is the computer free to lend? (plugged in, owner away). Shell tools only, no new dependencies.
@@ -336,6 +448,8 @@ fn lease_one(ctx: &Ctx, api: &str, miner: &str, llm: &mut Option<Llm>) -> Outcom
 }
 
 pub fn start(ctx: Ctx) {
+    // Switched on in an earlier run that ended before the model was here: the fetch carries on from what it had.
+    if enabled(&ctx.dir) { fetch_start(&ctx.dir); }
     // The guard: a proof comes first. Every half second, if a proof is running or waiting the model is killed on the spot; every five
     // seconds, so is a model whose owner has come back or whose help desk was switched off.
     let (busy, dir) = (ctx.busy.clone(), ctx.dir.clone());
@@ -388,6 +502,107 @@ mod tests {
         assert!(clamp_job(&json!({ "id": "a", "messages": [{ "role": "user", "content": "x".repeat(30_000) }] })).is_none());
         assert!(clamp_job(&json!({ "id": "a", "messages": [{ "role": "user" }] })).is_none());
         assert!(clamp_job(&json!({ "messages": [{ "role": "user", "content": "x" }] })).is_none());
+    }
+    #[test]
+    fn the_built_in_script_is_the_fetch_script() {
+        assert_eq!(model_size(), 2_740_937_888, "the model's size is read from the script's own pin");
+        assert!(FETCH_SH.starts_with("#!/bin/bash") && FETCH_SH.contains("MODEL_SHA") && FETCH_SH.contains("fetch_verified"), "the script built in is dapp/helpdesk-fetch.sh");
+        assert_eq!(model_size_in("X=1\nMODEL_SIZE=${HELPDESK_MODEL_SIZE:-123456}  # c"), 123_456);
+        assert_eq!(model_size_in("no size here"), 0);
+    }
+    #[test]
+    fn the_last_error_the_script_said_is_what_a_page_is_told() {
+        assert_eq!(last_error("downloading x\nerror: needs about 4 GB free in /tmp/x\n").as_deref(), Some("needs about 4 GB free in /tmp/x"));
+        assert_eq!(last_error("error: first\nmore\nerror: second\n").as_deref(), Some("second"));
+        assert_eq!(last_error("downloading the model\ndone.\n"), None);
+        assert_eq!(last_error(&format!("error: {}\u{1b}[2J", "x".repeat(400))).unwrap().len(), 160, "cut to a line, with no control characters");
+    }
+    #[test]
+    fn what_is_on_disk_is_how_far_the_fetch_has_got() {
+        let d = std::env::temp_dir().join(format!("hd-fetched-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(fetched_bytes(&d), 0);
+        let parts = d.join("helpdesk").join(".model-parts");
+        std::fs::create_dir_all(&parts).unwrap();
+        std::fs::write(parts.join("p0"), vec![0u8; 700]).unwrap();
+        std::fs::write(parts.join("p3"), vec![0u8; 300]).unwrap();
+        assert_eq!(fetched_bytes(&d), 1000, "the pieces coming in");
+        std::fs::write(d.join("helpdesk").join("model.gguf.part"), vec![0u8; 400]).unwrap();
+        assert_eq!(fetched_bytes(&d), 1000, "the file being put together from them does not count for less than they do");
+        std::fs::write(d.join("helpdesk").join("model.gguf.part"), vec![0u8; 4000]).unwrap();
+        assert_eq!(fetched_bytes(&d), 4000);
+        std::fs::write(d.join("helpdesk").join("model.gguf"), vec![0u8; 5000]).unwrap();
+        assert_eq!(fetched_bytes(&d), 5000, "the whole file");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    // One test, in order: the fetch is one at a time for the whole program.
+    #[test]
+    fn switching_on_fetches_the_files_once_and_says_what_went_wrong() {
+        let running = || FETCH.lock().unwrap().running;
+        let error = || FETCH.lock().unwrap().error.clone();
+        let wait = || { for _ in 0..400 { if !running() { return; } std::thread::sleep(Duration::from_millis(25)); } panic!("the fetch did not end"); };
+        let d = std::env::temp_dir().join(format!("hd-fetch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let hd = d.join("helpdesk");
+        // a script that fails as the real one does
+        assert!(fetch_start_with(&d, Some("echo 'downloading'; echo 'error: needs about 4 GB free in /x' >&2; exit 1".into())), "a fetch starts when the files are not there");
+        wait();
+        assert!(resources(&d).is_none());
+        assert_eq!(error().as_deref(), Some("needs about 4 GB free in /x"));
+        assert!(std::fs::read_to_string(hd.join("fetch.log")).unwrap().contains("downloading"), "what the script says is kept in the log");
+        assert_eq!(status(&d, None)["fetch_error"], "needs about 4 GB free in /x");
+        // one that stops without saying why
+        assert!(fetch_start_with(&d, Some("exit 3".into())));
+        wait();
+        assert_eq!(error().as_deref(), Some("the download stopped before it was done"));
+        // one that ends well but leaves nothing is not taken as done
+        assert!(fetch_start_with(&d, Some("exit 0".into())));
+        wait();
+        assert!(error().is_some() && resources(&d).is_none());
+
+        // stopping: the script and the downloads it started (processes of its own, as the real one's are) all end at once, and that is not an error
+        let slow = r#"D="$TACIT_PROVER_DIR/helpdesk"; echo $$ > "$D/.fetch.pid"; ( sleep 1; echo late > "$D/late-a" ) & ( sleep 1; echo late > "$D/late-b" ) & echo started > "$D/started"; wait; echo 'error: it ran to its end' >&2; exit 1"#;
+        assert!(fetch_start_with(&d, Some(slow.into())));
+        for _ in 0..200 { if hd.join("started").exists() { break; } std::thread::sleep(Duration::from_millis(10)); }
+        assert!(hd.join("started").exists() && running() && FETCH.lock().unwrap().pid != 0);
+        let t0 = Instant::now();
+        fetch_stop();
+        assert!(!running() && t0.elapsed() < Duration::from_millis(900), "a stop returns once the fetch has stopped, well before the script would have ended");
+        assert_eq!(error(), None, "a fetch that was stopped did not go wrong");
+        assert_eq!(status(&d, None)["fetching"], false);
+        assert!(!hd.join(".fetch.pid").exists(), "the stopped script's mark is taken away");
+        std::thread::sleep(Duration::from_millis(1300));
+        assert!(!hd.join("late-a").exists() && !hd.join("late-b").exists(), "the processes the script started were stopped with it");
+        fetch_stop();   // with none running, nothing happens
+        // another fetch's mark is left alone
+        std::fs::write(hd.join(".fetch.pid"), "1").unwrap();
+        assert!(fetch_start_with(&d, Some("exit 1".into())));
+        wait();
+        assert_eq!(std::fs::read_to_string(hd.join(".fetch.pid")).unwrap(), "1");
+        let _ = std::fs::remove_file(hd.join(".fetch.pid"));
+
+        // one that puts the files in place, slowly enough to be asked twice: the second ask starts nothing
+        let ok = "sleep 0.4; D=\"$TACIT_PROVER_DIR/helpdesk\"; mkdir -p \"$D\"; printf x > \"$D/llama-server\"; printf 12345 > \"$D/model.gguf\"; echo done.";
+        assert!(fetch_start_with(&d, Some(ok.into())));
+        assert_eq!(status(&d, None)["fetching"], true);
+        assert!(fetch_start_with(&d, Some("echo 'error: a second fetch ran' >&2; exit 1".into())), "one is running: nothing new starts");
+        wait();
+        assert!(resources(&d).is_some(), "the script was given the prover's directory");
+        assert_eq!(error(), None, "an earlier error is forgotten once a fetch ends well");
+        let st = status(&d, None);
+        assert_eq!((st["fetching"].clone(), st["installed"].clone(), st["fetched"].clone(), st["fetch_total"].clone()), (json!(false), json!(true), json!(5), json!(2_740_937_888u64)));
+        // with the files there, nothing is fetched
+        assert!(!fetch_start_with(&d, Some("exit 1".into())));
+        assert!(!running());
+
+        // set never to fetch: switching on starts nothing, and a page is told nothing of a fetch (it offers the line to paste)
+        let _ = std::fs::remove_dir_all(&d);
+        std::env::set_var("TACIT_HELPDESK_FETCH", "0");
+        assert!(!fetch_start(&d) && !running());
+        let st = status(&d, None);
+        assert!(st.get("fetching").is_none() && st.get("fetch_total").is_none() && st["installed"] == false);
+        std::env::remove_var("TACIT_HELPDESK_FETCH");
+        assert_eq!(status(&d, None)["fetching"], false);
     }
     #[test]
     fn settings_round_trip() {

@@ -173,6 +173,12 @@ comes back, or after 15 minutes without work. The jobs are public documentation 
 The address must be the help desk's own (`tacit-helpdesk.onrender.com` or `help.tacit.finance`; `TACIT_HELPDESK_APIS` adds hosts for a help desk of your own, and
 `http://127.0.0.1` is allowed for testing), so a page cannot point this machine's idle time at another server.
 
-It needs the mining address (the points go there) and `~/.tacit-prover/helpdesk/llama-server` plus `model.gguf` (`dapp/helpdesk-fetch.sh`
-puts both there after checking their SHA-256). Off by default. Env: `TACIT_HELPDESK_IDLE_SECS` (300), `TACIT_HELPDESK_ALWAYS=1` (skip the
-idle and power checks), `TACIT_HELPDESK_CTX` (4096), `TACIT_HELPDESK_UNLOAD_SECS` (900), `TACIT_HELPDESK_LLAMA`, `TACIT_HELPDESK_MODEL`.
+It needs the mining address (the points go there) and `~/.tacit-prover/helpdesk/llama-server` plus `model.gguf`. Switching the job on
+fetches both when they are not there: the prover runs `dapp/helpdesk-fetch.sh`, which is built into it, so the downloads are the ones that
+script pins and checks by SHA-256 (about 4 GB of free disk is needed). `GET /helpdesk` says how far it has got (`fetching`, `fetched`,
+`fetch_total`, and `fetch_error` if it stopped), and `helpdesk/fetch.log` has what the script said. Switching the job off stops the fetch,
+as does the prover ending; what was downloaded stays, and the next fetch carries on from it (a prover started with the job on and no
+model carries on by itself). `TACIT_HELPDESK_FETCH=0` turns this off: the files are then yours to put there, with the script or by hand.
+
+Off by default. Env: `TACIT_HELPDESK_IDLE_SECS` (300), `TACIT_HELPDESK_ALWAYS=1` (skip the idle and power checks), `TACIT_HELPDESK_CTX`
+(4096), `TACIT_HELPDESK_UNLOAD_SECS` (900), `TACIT_HELPDESK_LLAMA`, `TACIT_HELPDESK_MODEL`, `TACIT_HELPDESK_FETCH`.
