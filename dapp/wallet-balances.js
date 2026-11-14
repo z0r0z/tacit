@@ -1,6 +1,6 @@
 
 const NOT_BALANCE = new Set(['pts', 'farm', 'loans', 'air']);
-const ON_BITCOIN = /^(btc|btc-.+|sats-.+|tethbtc|usdtbtc|tacbridged)$/;
+const ON_BITCOIN = /^(btc|btc-.+|sats-.+|tethbtc|usdtbtc|tacbridged|xbtc-.+)$/;
 
 export function balanceRows(items, btc, tokens = {}) {
   const bitcoin = [], ethereum = [], ready = !!btc?.ready;

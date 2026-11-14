@@ -1314,5 +1314,62 @@ const UNOTE = { nullifier: withHex('6e'.repeat(32)), value: 5_000_000n, blinding
   ok(ux.list(WALLET_PUB).some((r) => r.source.ticker === 'SPX' && r.stage === 'mint-signed'), 'and the crossing already under way is still there to advance');
 }
 
+// ---- a claim already minted by another pair (another browser's copy of the same bridge) is not minted again ----
+// (seen on mainnet 2026-11-15: a second browser holding a stale 'settling' copy saw the burn settled and sent a second commit; the reflection skips a
+// second mint of a claim, so those sats were spent for nothing)
+{
+  const world = makeWorld();
+  world.setUtxos([{ txid: FUND_TXID, vout: 0, value: 200_000 }]);
+  const ux = makeUx(world, MULTI);
+  await ux.start({ note: TNOTE, walletPriv: WALLET_PRIV, fee: 0n });
+  world.setEthCovered(true);
+  const covered = await ux.advance(WALLET_PUB, TNOTE.nullifier);
+  ok(covered.stage === 'covered', 'a copy of the bridge reaches covered');
+  world.setCredit({ decided: true, minted: false, status: 'minted', mintedTxid: 'cd'.repeat(32) });
+  const done = await ux.advance(WALLET_PUB, TNOTE.nullifier, { walletPriv: WALLET_PRIV });
+  ok(done.stage === 'minted' && done.mintedElsewhere === true && done.creditedTxid === 'cd'.repeat(32) && !done.mint, 'at the Bitcoin step a claim the worker has as minted by another pair is marked minted, with nothing signed');
+  ok(world.broadcasts.length === 0, 'and nothing is sent to Bitcoin');
+  ok(/claim=/.test(new URLSearchParams(world.creditQuery()).toString()) && world.creditQuery().txid === '00'.repeat(32), 'the worker is asked about the claim, not a txid of its own');
+}
+{
+  // a pair already signed (the copy got that far) is not broadcast either
+  const world = makeWorld();
+  world.setUtxos([{ txid: FUND_TXID, vout: 0, value: 200_000 }]);
+  const ux = makeUx(world, MULTI);
+  await ux.start({ note: TNOTE, walletPriv: WALLET_PRIV, fee: 0n });
+  world.setEthCovered(true);
+  await ux.advance(WALLET_PUB, TNOTE.nullifier);
+  world.setCredit({ decided: false, minted: false });
+  const signed = await ux.advance(WALLET_PUB, TNOTE.nullifier, { walletPriv: WALLET_PRIV });
+  ok(signed.stage === 'mint-signed', 'with no mint recorded the copy signs its pair');
+  world.setCredit({ decided: true, minted: false, status: 'minted', mintedTxid: 'ef'.repeat(32) });
+  const done = await ux.advance(WALLET_PUB, TNOTE.nullifier);
+  ok(done.stage === 'minted' && done.mintedElsewhere === true && world.broadcasts.length === 0, 'a signed pair whose claim another pair minted is not broadcast');
+  // its own pair being the recorded one is not "elsewhere": the stages after follow it as before
+  const world2 = makeWorld();
+  world2.setUtxos([{ txid: FUND_TXID, vout: 0, value: 200_000 }]);
+  const ux2 = makeUx(world2, MULTI);
+  await ux2.start({ note: TNOTE, walletPriv: WALLET_PRIV, fee: 0n });
+  world2.setEthCovered(true);
+  await ux2.advance(WALLET_PUB, TNOTE.nullifier);
+  world2.setCredit({ decided: false, minted: false });
+  const own = await ux2.advance(WALLET_PUB, TNOTE.nullifier, { walletPriv: WALLET_PRIV });
+  world2.setCredit({ decided: false, minted: false, status: 'minted', mintedTxid: own.mint.revealTxid });
+  const sent = await ux2.advance(WALLET_PUB, TNOTE.nullifier);
+  ok(sent.stage === 'mint-submitted' && !sent.mintedElsewhere && world2.broadcasts.length === 2, 'a record whose own reveal is the recorded mint goes on as before');
+}
+// a worker that cannot answer does not stop the Bitcoin step (as before)
+{
+  const world = makeWorld();
+  world.setUtxos([{ txid: FUND_TXID, vout: 0, value: 200_000 }]);
+  const ux = makeUx(world, MULTI);
+  await ux.start({ note: TNOTE, walletPriv: WALLET_PRIV, fee: 0n });
+  world.setEthCovered(true);
+  await ux.advance(WALLET_PUB, TNOTE.nullifier);
+  world.setCreditDown(true);
+  const signed = await ux.advance(WALLET_PUB, TNOTE.nullifier, { walletPriv: WALLET_PRIV });
+  ok(signed.stage === 'mint-signed', 'with the worker down the copy still signs its pair');
+}
+
 console.log(`\n${n} crossout-ux checks passed${failures ? `, ${failures} FAILED` : ''}`);
 process.exit(failures ? 1 : 0);

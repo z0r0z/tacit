@@ -68,4 +68,12 @@ assert.equal(balanceRows(items, { ready: false, err: new Error('x') }, tokens).b
   assert.equal(r.bitcoin[0].pending, null);
   assert.deepEqual(r.ethereum, []);
 }
+// a token the pool escrows, bridged to Bitcoin like cUSDT, has its notes at the Taproot address: its row is a Bitcoin row before and after the address is read
+{
+  const mine = [row('xbtc-0xabc', 2000000000n, { show: true, meta: 'on Bitcoin · 1 note' }), row('teth', 5n, { core: true })];
+  assert.deepEqual(keys(balanceRows(mine, null, tokens).bitcoin), ['btc', 'xbtc-0xabc'], 'before the read it stands among the Bitcoin rows');
+  assert.deepEqual(keys(balanceRows(mine, { ready: true, sats: 1n, silent: 0n, held: [] }, tokens).bitcoin), ['btc', 'xbtc-0xabc'], 'and after it, as the bridged built-ins do');
+  assert.deepEqual(keys(balanceRows(mine, null, tokens).ethereum), ['teth'], 'and not among the Ethereum ones');
+}
+
 console.log('wallet balances checks passed');

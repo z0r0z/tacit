@@ -332,6 +332,17 @@ export function makeCrossoutUx(deps) {
     return { ok: problems.length === 0, problems, warnings, feeRate: rate, needSats, estSats, haveSats, pending, address, reflection, coverage };
   }
 
+  // A claim already minted on Bitcoin by another pair (another browser's copy of the same bridge, or one signed again) is not minted
+  // twice: the reflection skips a second mint of a claim, so its sats would be spent for nothing. The worker reports the claim's recorded
+  // mint whatever txid is asked about; a record whose own reveal is the recorded one is left to the stages that follow it.
+  async function mintedElsewhere(rec) {
+    let st = null;
+    try { st = await callWorker('GET', `/crossout/minted?asset=${stripHex(rec.source.assetId)}&claim=${stripHex(rec.settle.claimId)}&txid=${'00'.repeat(32)}`); } catch { return null; }
+    if (!st || st.error || st.status !== 'minted' || !st.mintedTxid) return null;
+    if (rec.mint && lc(stripHex(rec.mint.revealTxid)) === lc(stripHex(st.mintedTxid))) return null;
+    return putRecord({ ...rec, stage: 'minted', mintedAt: now(), creditedTxid: String(st.mintedTxid), mintedElsewhere: true });
+  }
+
   const STAGE_ADVANCE = {
     settling: async (rec) => reconcile(rec),
     settled: async (rec) => {
@@ -343,6 +354,7 @@ export function makeCrossoutUx(deps) {
       return putRecord({ ...rec, stage: 'covered', coveredAt: now() });
     },
     covered: async (rec, { walletPriv, allowHighFee }) => {
+      { const done = await mintedElsewhere(rec); if (done) return done; }
       if (!walletPriv) throw new Error('crossout-ux: this stage needs the wallet key');
       const P = freshPrims(walletPriv);
       const feeRate = await chain.getFeeRate('priority');
@@ -362,6 +374,7 @@ export function makeCrossoutUx(deps) {
       });
     },
     'mint-signed': async (rec) => {
+      { const done = await mintedElsewhere(rec); if (done) return done; }
       await chain.broadcastWithRetry(rec.mint.commitHex);
       await chain.broadcastWithRetry(rec.mint.revealHex);
       if (postHint) { try { postHint(rec.mint.revealTxid, 0); } catch {} }
@@ -371,6 +384,7 @@ export function makeCrossoutUx(deps) {
       const rv = await chainTx(rec.mint.revealTxid);
       if (rv.state === 'present' && rv.confirmed) return putRecord({ ...rec, stage: 'mint-confirmed', confirmedAt: now() });
       if (rv.state === 'unknown') return rec;
+      if (rv.state === 'absent') { const done = await mintedElsewhere(rec); if (done) return done; }
       const refused = [];
       for (const hex of [rec.mint.commitHex, rec.mint.revealHex]) {
         try { await chain.broadcastWithRetry(hex); } catch (e) { const m = String((e && e.message) || e); if (!/already|known|in block|in mempool/i.test(m)) refused.push(m); }
