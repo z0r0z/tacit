@@ -5,7 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeProverBoard, parseWorkerTokens, workerOf, proverBoardConfig, PROVER_BOARD } from '../worker/src/prover-board.js';
+import { makeProverBoard, parseWorkerTokens, workerOf, proverBoardConfig, goesByRecord, PROVER_BOARD } from '../worker/src/prover-board.js';
 import worker from '../worker/src/index.js';
 
 const store = () => {
@@ -403,7 +403,7 @@ test('points: each proof the relay takes from a community machine counts for its
 });
 
 test('points config: env sets the points and a count a day, 0 points pays nothing, no count or 0 is no count, nonsense keeps the default', () => {
-  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb } });
+  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3 });
   assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10', POINTS_BOARD_BTC_PER_PROOF: '800' }), { pointsPerProof: 50, proofsPerMinerDay: 10, ...btc(800) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0', POINTS_BOARD_BTC_PER_PROOF: '0' }), { pointsPerProof: 0, proofsPerMinerDay: Infinity, ...btc(0) });
@@ -411,6 +411,8 @@ test('points config: env sets the points and a count a day, 0 points pays nothin
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_BLOCK_PER_PROOF: '250' }), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000, 250) });
   assert.deepEqual(proverBoardConfig({ PROVER_BOARD_FIRST_MS: '0', PROVER_BOARD_BLOCK_FIRST_MS: '60000' }).communityFirstMs, { confidential: 0, 'tacit-block': 60_000 }, 'the first-pick windows: 0 is no wait');
   assert.deepEqual(proverBoardConfig({ PROVER_BOARD_FIRST_MS: 'soon' }).communityFirstMs, { confidential: 20_000, 'tacit-block': 120_000 }, 'nonsense keeps the default');
+  assert.deepEqual([proverBoardConfig({ PROVER_BOARD_BEST_PCT: '0' }).bestPct, proverBoardConfig({ PROVER_BOARD_BEST_PCT: '100' }).bestPct, proverBoardConfig({ PROVER_BOARD_BEST_PCT: '101' }).bestPct], [0, 100, 50], 'batches by record: 0 to 100, past it the default');
+  assert.deepEqual([proverBoardConfig({ PROVER_BOARD_BEST_OF: '1' }).bestOf, proverBoardConfig({ PROVER_BOARD_BEST_OF: '0' }).bestOf], [1, 3], 'at least one machine');
 });
 
 test('community first pick: a fresh public job waits for a ready community machine before Tacit\'s worker takes it, private work never waits', async () => {
@@ -682,4 +684,131 @@ test('a token machine takes the pool\'s waiting jobs before a tacit chain block,
   const other = await ask({ name: 'tacit-4090', classes: ['private', 'public'] });
   assert.equal(other.jobId, block.jobId, 'the block, once no other job waits');
   assert.equal(other.program, 'tacit-block');
+});
+
+// Batches of a fixed size (1 MB of input unless `mb` says otherwise), so a machine's time per MB is its time.
+const sizedBatches = (b) => { let k = 0; return (mb = 1) => b.post({ class: 'public', program: 'btc-state', stdin: Buffer.alloc(Math.round(mb * 1_000_000), ++k % 251).toString('base64'), cycleLimit: 1e11, gasLimit: 1e11, deadline: now() / 1000 + 7200 }); };
+// A machine's record from batches it proved in `secs` each: alone on the board (the others last asked over turnSeenMs ago), it takes each
+// batch and its proof is taken.
+const recordOf = async (b, batch, w, secs, n = 2) => {
+  for (let i = 0; i < n; i++) {
+    t += PROVER_BOARD.turnSeenMs + 1;
+    await b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });
+    const job = await batch();
+    assert.equal((await b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] })).jobId, job.jobId);
+    t += secs * 1000;
+    assert.deepEqual(await answer(b, w, job.jobId), { ok: true, status: 'proved' });
+  }
+};
+
+test('batches by record: a machine\'s record is the batches taken from it and its usual time; a refused proof or a turn given back adds nothing', async () => {
+  t = 20_000_000;
+  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, bestPct: 0 } }), batch = sizedBatches(b);
+  const f = gpu('f1');
+  await recordOf(b, batch, f, 100, 1);
+  let row = (await b.summary()).workers.find((x) => x.name === f.name);
+  assert.deepEqual([row.batches, row.batchSecs], [1, 100]);
+  await recordOf(b, batch, f, 200, 1);
+  row = (await b.summary()).workers.find((x) => x.name === f.name);
+  assert.deepEqual([row.batches, row.batchSecs], [2, 130], 'a running average: 0.7 of what it was and 0.3 of the new time');
+  // a refused proof and a given-back turn
+  t += PROVER_BOARD.turnSeenMs + 1;
+  await b.claim({ worker: f, classes: ['public'], programs: ['btc-state'] });
+  const bad = await batch();
+  await b.claim({ worker: f, classes: ['public'], programs: ['btc-state'] });
+  t += 10_000;
+  assert.deepEqual(await answer(b, f, bad.jobId, false), { ok: true, status: 'queued' });
+  row = (await b.summary()).workers.find((x) => x.name === f.name);
+  assert.deepEqual([row.batches, row.batchSecs], [2, 130], 'only a proof the relay took counts');
+  assert.equal((await b.summary()).workers.find((x) => x.name === gpu('99').name), undefined);
+  assert.equal(goesByRecord('anything', 0), false, 'at 0 no batch goes by record');
+  assert.equal(goesByRecord('anything', 100), true, 'at 100 every one does');
+  const ids = Array.from({ length: 2000 }, (_, i) => `pb_job_${i}`), share = ids.filter((x) => goesByRecord(x, 50)).length / ids.length;
+  assert.ok(share > 0.45 && share < 0.55, `about half by record at 50 (${share})`);
+  assert.equal(goesByRecord('pb_job_7', 50), goesByRecord('pb_job_7', 50), 'the same batch the same way');
+});
+
+test('batches by record: a batch that goes by record goes to the fastest machines with a record, in turn among the best few; one in turn still goes to the longest waiting', async () => {
+  t = 30_000_000;
+  const fast = gpu('a1'), quick = gpu('b2'), slow = gpu('c3'), fresh = gpu('d4');
+  for (const [pct, label] of [[100, 'by record'], [0, 'in turn']]) {
+    const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, bestPct: pct, bestOf: 2 } }), batch = sizedBatches(b);
+    await recordOf(b, batch, fast, 90);
+    await recordOf(b, batch, quick, 120);
+    await recordOf(b, batch, slow, 1500);
+    const ask = (w) => b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });
+    const got = [];
+    for (let i = 0; i < 4; i++) {
+      t += 1000;
+      for (const w of [fresh, slow, quick, fast]) await ask(w);          // all four waiting, none proving
+      const job = await batch();
+      let who = null;
+      for (const w of [fresh, slow, quick, fast]) { const r = await ask(w); if (r && r.jobId === job.jobId) { who = w; break; } }
+      got.push(who.name.slice(4, 6));
+      t += 30_000;
+      await answer(b, who, job.jobId);
+    }
+    if (pct === 100) assert.deepEqual(got, ['a1', 'b2', 'a1', 'b2'], `${label}: the two fastest take turns, the slow machine and the new one wait`);
+    else assert.deepEqual(got, ['d4', 'a1', 'b2', 'c3'], `${label}: the machine that never had a turn first, then each by how long since its last, the slow one included`);
+  }
+});
+
+test('batches by record: a machine with a record has three times its usual time to answer a turn, then the batch goes on and its place waits behind the others; one without keeps the batch\'s lease', async () => {
+  t = 40_000_000;
+  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, bestPct: 100 } }), batch = sizedBatches(b);
+  const fast = gpu('a1'), other = gpu('e5'), fresh = gpu('d4');
+  await recordOf(b, batch, fast, 150);                 // 150 s: 450 s to answer
+  const ask = (w) => b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });
+  t += PROVER_BOARD.turnSeenMs + 1;
+  await ask(other); await ask(fast);
+  const job = await batch();
+  const turn = await ask(fast);
+  assert.equal(turn.jobId, job.jobId);
+  assert.equal(turn.leaseUntil, now() + 450_000, 'it is told how long it has');
+  t += 449_000;
+  await ask(other); await ask(fast);
+  assert.equal(await ask(other), null, 'still its turn');
+  t += 2000;
+  await ask(fast);
+  assert.equal((await ask(other)).jobId, job.jobId, 'past three times its usual time, the batch goes to the next machine');
+  const s = await b.summary();
+  assert.equal(s.workers.find((x) => x.name === fast.name).lapsed, 1, 'the unanswered turn counts against it');
+  assert.equal((await b.result({ worker: fast, jobId: job.jobId, publicValues: '0x' + '11'.repeat(64 * 8), proof: '0x' + '22'.repeat(260) })).error, 'not racing this job', 'its late answer is not taken');
+  // its place now waits behind the others, under any address: a fresh machine with no record takes the next batch, and keeps it past 450 s
+  t += 1000;
+  await ask(fast); await ask(fresh);
+  const next = await batch();
+  assert.equal(await ask(fast), null, 'a place whose turn went unanswered goes after the others');
+  const mine = await ask(fresh);
+  assert.equal(mine.jobId, next.jobId);
+  assert.equal(mine.leaseUntil, Math.min(next ? (now() / 1000 + 7200) * 1000 : 0, now() + PROVER_BOARD.leaseMsByProgram['btc-state']), 'no record: the batch\'s own lease');
+  t += 30 * 60_000;
+  await ask(fresh);
+  assert.equal(await ask(other), null, 'half an hour on, still the new machine\'s turn');
+});
+
+test('batches by record: a machine is timed per MB of input, so a bigger batch gives it longer to answer and a big one proved does not make it look slow', async () => {
+  t = 50_000_000;
+  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, bestPct: 100 } }), batch = sizedBatches(b);
+  const big = gpu('a1'), small = gpu('b2');
+  // big proves 3 MB batches in 300 s (100 s per MB); small proves 1 MB batches in 150 s (150 s per MB)
+  for (let i = 0; i < 2; i++) {
+    t += PROVER_BOARD.turnSeenMs + 1;
+    await b.claim({ worker: big, classes: ['public'], programs: ['btc-state'] });
+    const job = await batch(3);
+    assert.equal((await b.claim({ worker: big, classes: ['public'], programs: ['btc-state'] })).jobId, job.jobId);
+    t += 300_000;
+    await answer(b, big, job.jobId);
+  }
+  await recordOf(b, (mb) => batch(mb), small, 150);
+  const rows = (await b.summary()).workers;
+  assert.deepEqual(['a1', 'b2'].map((h) => rows.find((x) => x.name === gpu(h).name).batchSecs), [300, 150], 'the summary shows each machine\'s usual time');
+  t += 1000;
+  const ask = (w) => b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });
+  await ask(small); await ask(big);
+  const two = await batch(2);
+  assert.equal(await ask(small), null, 'per MB, big is the faster machine though its batches took longer');
+  const turn = await ask(big);
+  assert.equal(turn.jobId, two.jobId);
+  assert.equal(turn.leaseUntil, now() + 3 * 100 * 2 * 1000, 'three times 100 s per MB for a 2 MB batch: 600 s');
 });
