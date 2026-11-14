@@ -289,7 +289,7 @@ const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'eth.drpc.org', '1rpc.io', 'ma
 const submits = [], refused = [], relays = [], walletTxs = [], walletTyped = [];   // (walletTyped: the typed data the wallet stub signed)
 // What the wallet stub does beyond sending: takes EIP-5792 batches (batch), cannot sign typed data (noTyped), turns it down (rejectTyped),
 // or signs a permit for another amount than the one asked (badPermit). The batches it was sent, and where each one landed.
-const walletWays = { batch: false, noTyped: false, rejectTyped: false, badPermit: false }, batches = [], batchHashes = {};
+const walletWays = { batch: false, noTyped: false, rejectTyped: false, badPermit: false }, batches = [], batchHashes = {}, batchErrors = [];
 let gatewayOnce = false;                                          // the next relay meets a gateway timeout (devmove)
 // Submits the relay refuses before taking them, as it does once the day's free settles are used up.
 let refuseSubmits = 0;
@@ -465,7 +465,11 @@ async function openPage({ account, key = null, host = '127.0.0.1', init = null, 
       if (!walletWays.batch) throw Object.assign(new Error('the method wallet_sendCalls does not exist'), { code: -32601 });
       const b = params[0], id = '0x' + (batches.length + 1).toString(16).padStart(8, '0'), hashes = [];
       batches.push(b);
-      for (const c of b.calls) hashes.push(await rpc('eth_sendTransaction', [{ from: account, to: c.to, data: c.data, value: c.value }]));
+      // a call of the batch that the node refuses is written down (batchErrors): a revert and a node that could not read its state say different things
+      for (const [i, c] of b.calls.entries()) {
+        try { hashes.push(await rpc('eth_sendTransaction', [{ from: account, to: c.to, data: c.data, value: c.value }])); }
+        catch (e) { batchErrors.push(`call ${i + 1} of ${b.calls.length} (${String(c.to).slice(0, 10)}): ${String(e.message).slice(0, 220)}`); throw e; }
+      }
       batchHashes[id] = hashes;
       return { id };
     }
@@ -10311,6 +10315,12 @@ await step('xtshield', async () => {
     const l0 = await balOf(LINK, XW), pool0 = await balOf(LINK, POOLA), b0 = batches.length, t0 = walletTxs.length, part = 15n * 10n ** 17n;
     await shield('1.5', 'LINK', 'First: LINK is added to the pool, once for everyone');
     const moved = await chainUntil(async () => l0 - (await balOf(LINK, XW)) === part && (await balOf(LINK, POOLA)) - pool0 === part, 300000);
+    if (!moved) {
+      // what each call of the batch did (a call that reverted says so), and what the page shows
+      const sts = []; for (const h of Object.values(batchHashes).slice(-1)[0] || []) sts.push((await rpc('eth_getTransactionReceipt', [h]))?.status ?? 'none');
+      console.log(`   batch errors: ${batchErrors.join(' ; ') || '(none)'}`);
+      console.log(`   batch receipts: ${sts.join(',') || '(none)'} | page: ${(await said(p)).slice(0, 160)} | steps: ${(await text(p, '#mv-st')).replace(/\s+/g, ' ').trim().slice(0, 240)}`);
+    }
     ok(moved && await inPool(LINK), `xtshield: 1.5 LINK left the wallet for the pool, and LINK is in the pool (wallet ${l0 - (await balOf(LINK, XW))}, pool ${(await balOf(LINK, POOLA)) - pool0})`);
     const bt = batches.slice(b0);
     ok(bt.length === 1 && bt[0].atomicRequired === true && bt[0].calls.length === 3 && bt[0].calls[0].to.toLowerCase() === POOLA.toLowerCase() && bt[0].calls[1].to.toLowerCase() === LINK && bt[0].calls[2].to.toLowerCase() === ROUTERA,
