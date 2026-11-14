@@ -1258,5 +1258,61 @@ const UNOTE = { nullifier: withHex('6e'.repeat(32)), value: 5_000_000n, blinding
   ok(!(await ux2.start({ note: NOTE, walletPriv: WALLET_PRIV, ready: true })).ready, 'an engine with no bind codec starts no ready bridge');
 }
 
+// ---- a token the pool escrows, added at run time (tacit.js addBridgedAsset pushes into the engine's own asset list) ----
+{
+  const world = makeWorld();
+  const ux = makeUx(world);
+  const SPX = withHex('45addc633189749428e8fc36ea4ca067fcb4b0c7abc186a095360db10dbe0b48');
+  ok(ux.assetOf(SPX) === null, 'an asset nobody named is not one the bridge takes');
+  const [before] = ux.eligibleNotes([{ ...NOTE, asset: SPX, value: 5_000_000n }]);
+  ok(before.eligible === false && /not an asset this bridge takes|not TAC/.test(before.reason), 'its note is refused before it is named');
+  // named, with no price yet: a limit of 0, so nothing new starts
+  const row = { assetId: SPX, ticker: 'SPX', capRaw: 0n, minRaw: 0n, dec: 8 };
+  ux.assets.push({ ...row });
+  const [unpriced] = ux.eligibleNotes([{ ...NOTE, asset: SPX, value: 5_000_000n }]);
+  ok(unpriced.eligible === false && /over the 0 SPX beta limit/.test(unpriced.reason), 'named with no price it has no limit, so no note is eligible');
+  // priced: the engine's copy is updated in place, as addBridgedAsset does
+  Object.assign(ux.assetOf(SPX), { capRaw: 20_000_000_000n, minRaw: 200_000n });
+  const [inRange, tooBig, tooSmall] = ux.eligibleNotes([{ ...NOTE, asset: SPX, value: 5_000_000n }, { ...NOTE, asset: SPX, value: 20_000_000_001n }, { ...NOTE, asset: SPX, value: 199_999n }]);
+  ok(inRange.eligible === true, 'within its limits a note of it is eligible');
+  ok(tooBig.eligible === false && /over the 200 SPX beta limit/.test(tooBig.reason), 'over the cap it is refused, the cap shown at the token\'s own 8 decimals');
+  ok(tooSmall.eligible === false && /under the 0\.002 SPX minimum/.test(tooSmall.reason), 'under the minimum it is refused, the minimum shown the same way');
+  // a six-decimal token shows its limits at six decimals
+  const T6 = withHex('11'.repeat(32));
+  ux.assets.push({ assetId: T6, ticker: 'XYZ', capRaw: 100_000_000n, minRaw: 2_000_000n, dec: 6 });
+  const [six] = ux.eligibleNotes([{ ...NOTE, asset: T6, value: 100_000_001n }]);
+  ok(six.eligible === false && /over the 100 XYZ beta limit/.test(six.reason), 'a six-decimal token\'s cap reads at six decimals');
+  const [tac] = ux.eligibleNotes([NOTE]);
+  ok(tac.eligible === true, 'TAC is unchanged by the others');
+}
+
+// ---- a token added at run time crosses by the same stages, under its own id, and is held to the limits its price gave ----
+{
+  const RT = withHex('45'.repeat(32));
+  const RNOTE = { nullifier: withHex('5a'.repeat(32)), value: 50_000_000n, blinding: 0x999n, asset: RT, confirmed: true };
+  const world = makeWorld();
+  const ux = makeUx(world, MULTI);
+  ux.assets.push({ assetId: RT, ticker: 'SPX', capRaw: 20_000_000_000n, minRaw: 200_000n, dec: 8 });
+  ok(ux.eligibleNotes([RNOTE])[0].eligible === true, 'a note of it is eligible once it is named with limits');
+  const rec = await ux.start({ note: RNOTE, walletPriv: WALLET_PRIV, fee: 0n });
+  const call = world.crossOutCalls[0];
+  ok(call.amount === 50_000_000n && call.fee === 0n, 'with no relay fee the whole note is burned, nothing left over');
+  ok(rec.source.assetId.toLowerCase() === RT.toLowerCase() && rec.source.ticker === 'SPX' && rec.source.amount === 50_000_000n, 'the record names the token it carries');
+  world.setEthCovered(true);
+  const covered = await ux.advance(WALLET_PUB, RNOTE.nullifier);
+  const signed = await ux.advance(WALLET_PUB, RNOTE.nullifier, { walletPriv: WALLET_PRIV });
+  ok(covered.stage === 'covered' && signed.stage === 'mint-signed', 'it walks the same stages as tETH');
+  ok(stripHex(signed.mint.revealHex).includes('45'.repeat(32)), 'the signed Bitcoin reveal carries the token\'s own asset id');
+  ok(!stripHex(signed.mint.revealHex).includes('a5'.repeat(32)) && !stripHex(signed.mint.revealHex).includes('3c'.repeat(32)), 'and neither TAC\'s nor tETH\'s');
+  // a repriced token: the engine's copy is updated in place and the next note is held to the new cap
+  Object.assign(ux.assetOf(RT), { capRaw: 10_000_000n });
+  ok(ux.eligibleNotes([{ ...RNOTE, nullifier: withHex('5b'.repeat(32)) }])[0].eligible === false, 'after a lower cap a note over it is refused');
+  // a cap of 0 (no price): nothing new starts, but the record already under way still advances (above)
+  Object.assign(ux.assetOf(RT), { capRaw: 0n });
+  let threw = false; try { await ux.start({ note: { ...RNOTE, nullifier: withHex('5c'.repeat(32)) }, walletPriv: WALLET_PRIV, fee: 0n }); } catch { threw = true; }
+  ok(threw, 'with no limit a new crossing is refused at start');
+  ok(ux.list(WALLET_PUB).some((r) => r.source.ticker === 'SPX' && r.stage === 'mint-signed'), 'and the crossing already under way is still there to advance');
+}
+
 console.log(`\n${n} crossout-ux checks passed${failures ? `, ${failures} FAILED` : ''}`);
 process.exit(failures ? 1 : 0);

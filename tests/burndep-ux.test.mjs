@@ -1572,6 +1572,51 @@ function storageContainsPrivkey(storage, priv) {
   return false;
 }
 
+// ==== a token the pool escrows, added at run time (tacit.js addBridgedAsset pushes into the engine's asset list): its note on Bitcoin comes back by the same steps ====
+{
+  const RT = withHex('45'.repeat(32)), XONLY = bytesToHex(WALLET_PUB.slice(1));
+  const CAP = 500_000n, AMT = 400_000n, SATS = 330;
+  const held = { txid: NOTE_TXID, vout: NOTE_VOUT, sats: SATS, amount: AMT, blinding: NOTE_BLINDING, assetId: RT, p2tr: true };
+  const setup = (named = true) => {
+    const world = makeWorld();
+    world.setBurnHomeOnChain(NOTE_TXID, '5120' + XONLY.slice(2));
+    world.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: AMT, blinding: NOTE_BLINDING, asset: RT, authKey: XONLY });
+    const ux = makeUx(world, makeMemStorage());
+    if (named) ux.assets.push({ assetId: RT, ticker: 'SPX', capRaw: CAP });
+    return { world, ux };
+  };
+  {
+    const { ux } = setup(false);
+    const pf = await ux.preflightHeld({ note: held, walletPub: WALLET_PUB });
+    ok(!pf.ok && pf.steps.some((y) => y.name === 'asset' && !y.ok), 'a token nobody named is an asset the way back cannot send, by name');
+  }
+  {
+    const { world, ux } = setup();
+    const pf = await ux.preflightHeld({ note: held, walletPub: WALLET_PUB });
+    ok(pf.ok === true && pf.path === 'reflected' && world.broadcasts.length === 0, 'once named, preflight passes for its tracked note at the key\'s own Taproot output, and sends nothing');
+    ok((await ux.preflightHeld({ note: { ...held, amount: CAP + 1n }, walletPub: WALLET_PUB })).steps.some((y) => !y.ok && y.name === 'cap'), 'over its cap is refused by name');
+    Object.assign(ux.assetOf(RT), { capRaw: 0n });
+    ok((await ux.preflightHeld({ note: held, walletPub: WALLET_PUB })).steps.some((y) => !y.ok && y.name === 'cap'), 'with a cap of 0 (no price) nothing new comes back');
+    Object.assign(ux.assetOf(RT), { capRaw: CAP });
+    let r = await ux.startReflected({ note: held, walletPriv: WALLET_PRIV, feeRate: BASE_RATE });
+    ok(r.stage === 'rburn-signed' && r.source.assetId === RT && r.source.ticker === 'SPX' && r.source.p2tr === true && world.broadcasts.length === 0, 'the burn is signed and journalled as an SPX note, with nothing sent');
+    const { cx, cy } = pool.commitXY(AMT, NOTE_BLINDING);
+    const nu = pool.nullifier(pool.btcNoteLeaf(RT, cx, cy, XONLY));
+    const dec = classifyConfidentialTx(withHex(r.burn.hex));
+    ok(dec && dec.type === 'burn' && dec.nullifier === nu && dec.assetId === RT && dec.target === withHex('7c'.repeat(32)), 'the reveal burns the note under its own nullifier, for the token, toward this pool');
+    ok(r.mint.dest.owner === pool.nkToOwner(pool.deriveNote(WALLET_PRIV, RT, 0).secret) && r.mint.dest.owner !== pool.nkToOwner(pool.deriveNote(WALLET_PRIV, ASSET, 0).secret), 'the Ethereum note is owned by the key\'s note owner for the token, not TAC\'s');
+    r = await ux.advance(r.walletPub, r.id);
+    world.setChainTx(r.burn.txid, { confirmed: true });
+    r = await ux.advance(r.walletPub, r.id);
+    world.setNoteHeight(1001); world.setChainTx(r.burn.txid, { confirmed: true }); world.foldReflected(r.burn.hex);
+    r = await ux.advance(r.walletPub, r.id);
+    ok(r.stage === 'rfolded', 'recorded by the attested state, it is ready to mint');
+    r = await ux.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV });
+    const call = world.bridgeMintCalls[0];
+    ok(r.stage === 'minted' && call.asset === RT && call.sourceClass === 1 && call.burned.owner === XONLY, 'the mint is for the token itself, naming the Taproot-owned note as class 1');
+  }
+}
+
 // ==== a tETH note at this key's own Taproot output (a cross-out made it): sent back by key path, auth key = the key ====
 {
   const TETH = withHex('3c'.repeat(32)), XONLY = bytesToHex(WALLET_PUB.slice(1));

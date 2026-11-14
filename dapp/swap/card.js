@@ -2650,7 +2650,7 @@ let lane = null, laneP = null;
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 async function openLane() {
   try {
-    laneP ||= import('/swap/bitcoin.js?cb=43ef9d82').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
+    laneP ||= import('/swap/bitcoin.js?cb=b7d030bd').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
     await laneP;
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = laneP = null; }
@@ -2898,6 +2898,8 @@ export function mountSwapCard(root, host = {}) {
     pickerBals,
     quoteEthToToken: (o) => R.quoteEthToToken({ ethCall, ...o }),
     listReady: () => loadList(),
+    // ETH's price in dollars as the card holds it (null until it is read)
+    ethUsd: () => S.px?.ethUsd ?? null,
     // a token's EIP-2612 permit (its domain's name and version), or null: what the route module reads when a token is pasted
     permitOf: (k) => R.readToken({ ethCall, keccak256: keccak_256, address: String(k || '').toLowerCase() }).then((t) => (t?.permit ? { name: t.name, version: t.permit } : null), () => null),
     // whole tokens one ETH buys, from the card's own USD prices (ETH, wstETH, WBTC, the dollars, TAC); null for a token it does not price

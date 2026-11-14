@@ -1,4 +1,4 @@
-import { ROUTES, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=d654a7d8';
+import { ROUTES, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=9689d7d6';
 import { bodyType } from '/rpc-body.js';
 { const fq = document.getElementById('fq-lim'); if (fq) fq.textContent = limitsSaid(); }
 
@@ -307,7 +307,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=edb355b4').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=fd26cd5f').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });

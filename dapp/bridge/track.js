@@ -55,10 +55,19 @@ export function limitLine(asset, dir) {
 }
 
 const lc = (s) => String(s || '').replace(/^0x/i, '').toLowerCase();
+// A token the pool escrows that the page learned of at run time (dapp/bridge/runtime.js): its asset id, its row and its limits, by the key the page
+// names it with. A record of one of these resolves to its own key; an id nothing names still reads as TAC.
+const RUNTIME_KEYS = new Map();
+export function addBridgeAsset({ key, id, route, limits }) {
+  if (!key || !/^[0-9a-f]{64}$/.test(lc(id)) || !route?.in || !route?.out || !limits?.in || !limits?.out) return false;
+  if (ROUTES[key] && !RUNTIME_KEYS.has(lc(id))) return false;   // never over a built-in
+  ROUTES[key] = route; LIMITS[key] = limits; RUNTIME_KEYS.set(lc(id), key);
+  return true;
+}
 const big = (v) => { try { return BigInt(v?.__big ?? v ?? 0); } catch { return 0n; } };
 const num = (v) => (Number.isFinite(Number(v)) && v != null ? Number(v) : null);
 const hex64 = (v) => { const x = lc(v); return /^[0-9a-f]{64}$/.test(x) ? x : null; };
-const assetKey = (id, ticker) => (lc(id) === TETH_ID || ticker === 'tETH' ? 'teth' : lc(id) === CBTC_ID || ticker === 'cBTC' ? 'cbtc' : lc(id) === CUSD_ID || ticker === 'cUSD' ? 'cusd' : lc(id) === CUSDT_ID || ticker === 'cUSDT' ? 'cusdt' : 'tac');
+const assetKey = (id, ticker) => RUNTIME_KEYS.get(lc(id)) || (lc(id) === TETH_ID || ticker === 'tETH' ? 'teth' : lc(id) === CBTC_ID || ticker === 'cBTC' ? 'cbtc' : lc(id) === CUSD_ID || ticker === 'cUSD' ? 'cusd' : lc(id) === CUSDT_ID || ticker === 'cUSDT' ? 'cusdt' : 'tac');
 
 const IN_AT = {
   'rburn-signed': 0, 'rburn-sent': 0, 'rburn-mined': 2, rfolded: 3,

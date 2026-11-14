@@ -5,14 +5,14 @@
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=09f263cb';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=42d78071';
-import { ROUTES } from '/bridge/track.js?cb=d654a7d8';
+import { ROUTES } from '/bridge/track.js?cb=9689d7d6';
 import { parseUnits } from '/trade/util.js?cb=1d2cd8d3';
 import { forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { relayWords } from '/relay-outcome.js?cb=17e48a9a';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { btcWay, btcSeen } from '/trade/btc-way.js?cb=9820720a';
+import { btcWay, btcSeen } from '/trade/btc-way.js?cb=9728fefa';
 
-const TACIT_URL = '/tacit.js?cb=b45e21d5';
+const TACIT_URL = '/tacit.js?cb=60aa9cc7';
 const PLAN_KEY = 'tacit-lite-bridge-plan-v1', SELF_PROVE = 'tacit-lite-prove-self-v1:';
 const EVERY = 75e3;                                                                  // as often as the front page's pass
 const read = (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } };

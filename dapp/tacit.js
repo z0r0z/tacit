@@ -15916,7 +15916,7 @@ function _burndepUxSingleton() {
     tacAssetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX,
     assets: [{ assetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX, ticker: 'TAC', capRaw: BURNDEP_BETA_CAP_RAW_TAC },
       ...(tethAsset ? [{ assetId: tethAsset, ticker: 'tETH', capRaw: CROSSOUT_TETH_CAP_RAW }] : []),
-      ..._bridgedPoolAssets(poolUx).map((a) => ({ assetId: a.assetId, ticker: a.ticker, capRaw: a.capRaw }))],
+      ..._bridgedPoolAssets(poolUx).map((a) => ({ assetId: a.assetId, ticker: a.ticker, capRaw: a.capRaw })), ..._runtimeBridged().map((a) => ({ assetId: a.assetId, ticker: a.ticker, capRaw: a.capRaw }))],
     chain: { getUtxos: (a, cb) => getUtxos(a, cb, { forSpend: true }), pickSafeCommitSats, broadcastWithRetry, getFeeRate },
     encodeCXferBppPayload, computeKernelMsg, deriveChangeBlinding, deriveAmountKeystreamSelf, encryptAmount, signSchnorr, modN,
     openNote: async (txid, vout) => {
@@ -15950,6 +15950,25 @@ function _bridgedPoolAssets(poolUx) {
   if (t && t.assetId && !t.bitcoinLink && t.underlying && Number(t.tacitDecimals) === CROSSOUT_CUSDT_DEC) out.push({ assetId: t.assetId, ticker: 'cUSDT', capRaw: CROSSOUT_CUSDT_CAP_RAW, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC });
   return out;
 }
+// Any other token the pool escrows crosses the way cUSDT does (its own id, no Bitcoin link). The page names each one here with the limits its market
+// price gives (dapp/bridge/runtime.js): a limit of 0 until it has a price, so nothing new starts but a crossing already under way still advances. The
+// two engines hold their own copies of an asset, so a later call updates them in place; one made after this call takes it from the registry.
+const _bridgedRuntime = new Map();
+const _runtimeBridged = () => [..._bridgedRuntime.values()].map((a) => ({ ...a }));
+function addBridgedAsset({ assetId, ticker, capRaw, minRaw = 0n, dec = 8 }) {
+  const id = '0x' + String(assetId).replace(/^0x/, '').toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(id)) return false;
+  const builtin = (ux) => !!ux?.assetOf?.(id) && !_bridgedRuntime.has(id);
+  if (builtin(_crossoutUx) || builtin(_burndepUx)) return false;   // never over an asset the bridge already knows
+  const row = { assetId: id, ticker: String(ticker), capRaw: BigInt(capRaw), minRaw: BigInt(minRaw), dec };
+  _bridgedRuntime.set(id, row);
+  for (const ux of [_crossoutUx, _burndepUx]) {
+    if (!ux) continue;
+    const e = ux.assetOf(id);
+    if (e) Object.assign(e, row); else ux.assets.push({ ...row });
+  }
+  return true;
+}
 function _crossoutUxSingleton() {
   const net = NET.name;
   if (_crossoutUx && _crossoutUxNet === net) return _crossoutUx;
@@ -15964,7 +15983,7 @@ function _crossoutUxSingleton() {
     tacAssetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX,
     assets: [{ assetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX, ticker: 'TAC', capRaw: CROSSOUT_TAC_CAP_RAW },
       ...(tethId ? [{ assetId: tethId, ticker: 'tETH', capRaw: CROSSOUT_TETH_CAP_RAW, minRaw: CROSSOUT_TETH_MIN_RAW }] : []),
-      ..._bridgedPoolAssets(poolUx)],
+      ..._bridgedPoolAssets(poolUx), ..._runtimeBridged()],
     chain: { getUtxos: (a, cb) => getUtxos(a, cb, { forSpend: true }), pickSafeCommitSats, broadcastWithRetry, getFeeRate },
     postHint,
     nullifierSpent: (nu) => makeCrossLaneGuard({ keccak256: keccak_256 }).evmNullifierSpent((a, slot, tag) => poolUx.rpc('eth_getStorageAt', [a, slot, tag || 'latest']), poolUx.cfg.pool, nu),
@@ -61942,7 +61961,7 @@ export {
   buildAndBroadcastCBurn,
   carveExactAmount,
   scanHoldings, invalidateHoldingsCache,
-  _burndepUxSingleton as bridgeUx, _crossoutUxSingleton as crossoutUx, _crossoutNotesSingleton as crossoutNotes, pickSafeCommitSats,
+  _burndepUxSingleton as bridgeUx, _crossoutUxSingleton as crossoutUx, addBridgedAsset, _crossoutNotesSingleton as crossoutNotes, pickSafeCommitSats,
   discoverStealthFromTxid, scanAssetForStealthReceipts,
   recordStealthCredit, getStealthCredit, loadStealthCredits, removeStealthCredit,
   markStealthTxidSeen, isStealthTxidSeen, _triggerStealthAutoScanInBackground, setTxReadSpacingMs, _stealthNothingFromArchive, _txArchive as _txArchiveForTests,
