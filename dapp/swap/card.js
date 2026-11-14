@@ -279,6 +279,8 @@ function flowGet(k, at) {
   if (FLOW === 'shield' && !tacitKey(k) && isListed(k) && pairOk(k, 'wallet', 'teth', 'defi')) return ['teth', 'defi'];
   return null;
 }
+// a token with no private form of its own is sold for ETH as it goes in (the 'pin' route): Shield's To side is private ETH, and the card says so
+const soldForEth = () => FLOW === 'shield' && S.get === 'teth' && !isEth(S.pay) && kindOf(S.pay, S.get) === 'pin';
 function flowFit() { const g = flowGet(S.pay, atOf('pay')); if (!g) return false; setAt('get', g[1]); S.get = g[0]; return true; }
 const FLOW_PAIR = { shield: { from: 'ETH', to: 'tETH', private: 'to' }, withdraw: { from: 'tETH', to: 'ETH', private: 'from' } };
 function coinAt(k, at) {
@@ -766,7 +768,7 @@ function paintSides() {
   setHtml($('#pay-coin'), `${coin(pay)}${esc(pay.sym)}<span class="car" aria-hidden="true">▾</span>`);
   $('#pay-coin').setAttribute('aria-label', `Pay with ${pay.sym}. Choose another`);
   setHtml($('#get-coin'), `${coin(get)}${esc(get.sym)}<span class="car" aria-hidden="true">▾</span>`);
-  $('#get-coin').setAttribute('aria-label', `Get ${get.sym}. Choose another`);
+  $('#get-coin').setAttribute('aria-label', soldForEth() ? `Get private ETH: ${pay.sym} is sold for it. Choose another` : `Get ${get.sym}. Choose another`);
   const payPriv = S.inP, out = (!moveOf() && kindOf(S.pay, S.get) === 'pout') || exiting(), inPriv = S.outP;
   if (out && !S.toAsked && ((exiting() && !intoPool()) || (!S.to && !S.toBad && !W.account && !intoPool()))) { S.toOpen = true; S.toAsked = true; }
   if (!out) S.toAsked = false;
@@ -857,13 +859,17 @@ const shareSync = () => {
 function paintQuote() { quotePaint(); flowGo(); }
 function flowGo() {
   const tip = $('#flow-tip');
-  if (tip) { tip.hidden = !(FLOW === 'withdraw' && S.amt && !S.busy); if (!tip.hidden) tip.textContent = exiting() ? 'For more privacy: a new address, a while after you shielded, and not the same amount.' : 'For more privacy: a while after you shielded, and not the same amount.'; }
+  if (tip) {
+    const sold = soldForEth();
+    tip.hidden = !(sold || (FLOW === 'withdraw' && S.amt && !S.busy));
+    if (!tip.hidden) tip.textContent = sold ? `${tokenOf(S.pay).sym} is sold for ETH as it goes in, so you hold private ETH.` : exiting() ? 'For more privacy: a new address, a while after you shielded, and not the same amount.' : 'For more privacy: a while after you shielded, and not the same amount.';
+  }
   const go = $('#go'), ask = !!FLOW && !S.busy && !S.amt && !(moveOf() && S.mq?.fixed);
   go.dataset.ask = ask ? '1' : '';
   if (!ask && FLOW === 'shield' && !go.disabled && /^(Deposit privately|Make it private)$/.test(go.textContent)) go.textContent = `Shield ${shownAt(S.pay, atOf('pay'))?.sym || ''}`.trim();
   if (!ask) return;
   const t = FLOW === 'shield' ? shownAt(S.pay, atOf('pay')) : shownAt(S.get, atOf('get'));
-  go.textContent = `${FLOW === 'shield' ? 'Shield' : 'Withdraw'} ${t?.sym || ''}`.trim(); go.disabled = false; go.className = 'go';
+  go.textContent = `${FLOW === 'shield' ? 'Shield' : 'Withdraw'} ${t?.sym || ''}${soldForEth() ? ' as ETH' : ''}`.trim(); go.disabled = false; go.className = 'go';
 }
 function quotePaint() {
   shareSync();
@@ -984,7 +990,7 @@ function button(q, r, kind, gate) {
     if (bal != null && q.wei > bal) return [`Not enough ${pay.sym}`, false];
     if (eth != null && tip + 2n * gasKeep() > eth) return ['Leave some ETH for the network fee', false];
     if (gate && !S.ack) return gateButton();
-    return [FLOW === 'shield' && !S.toTacit ? `Shield ${pay.sym}` : `Swap privately${tLabel}`, true, 'priv'];
+    return [FLOW === 'shield' && !S.toTacit ? `Shield ${pay.sym} as ETH` : `Swap privately${tLabel}`, true, 'priv'];
   }
   if (kind === 'pout') {
     const pb = privBal(S.pay);
@@ -2406,7 +2412,7 @@ function openPicker(side, again = false) {
     const twin = moving() && (k === 'teth' || k === lc(R.TAC) || isEth(k));
     const sub = a === 'defi' ? `${esc(SUB[k] || '')}${twin ? `<span class="pk-tw">${SUB[k] ? ' · ' : ''}swap, farm, borrow</span>` : ''}`
       : a === 'pay' ? `${isEth(k) ? 'private ETH' : k === USDC_K || k === USDT_K ? 'a private dollar' : 'private TAC'} · pay anyone on ${isEth(k) && chains > 1 ? chainMarks(cs) : 'Ethereum'}`
-      : a === 'chain' ? 'private TAC · on the Tacit chain' : a === 'btc' ? 'at your Bitcoin address' : esc((t.custom ? `${t.addr.slice(0, 8)}…${t.addr.slice(-6)}` : t.name) || '');
+      : a === 'chain' ? 'private TAC · on the Tacit chain' : a === 'btc' ? 'at your Bitcoin address' : esc((t.custom ? `${t.addr.slice(0, 8)}…${t.addr.slice(-6)}` : t.name) || '') + (FLOW === 'shield' && side === 'pay' && a === 'wallet' && !isEth(k) && flowGet(k, 'wallet')?.[0] === 'teth' ? ' · sold for ETH' : '');
     return { ok, at: a, html: `<button type="button" class="pk-r${ok ? '' : ' off'}"${ok ? '' : ' aria-disabled="true"'} data-k="${esc(key)}" data-kind="${KIND[a]}"${KIND[a] === kind ? '' : ' hidden'}${moving() && a !== 'wallet' ? ` title="${esc(PLACE_TIP[a] || '')}"` : ''} aria-current="${a === at && k === cur}">${coin(t, '', a === 'wallet')}<span><b>${esc(t.sym)}<i class="pk-t pk-t-${a}" data-t="${PLACE_TAG[a]}"></i></b><small>${sub}</small></span><em>${rowBal(side, key)}</em></button>` };
   };
   warmPrivate(); H.moves?.warm?.();
