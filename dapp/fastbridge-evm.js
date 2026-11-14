@@ -101,20 +101,41 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   }
 
   const own = new Map();
+  let ownBusy = 0;                                       // sends from this account under way, so a backlog does not ask the relay for all their proofs together
+  const OWN_AT_ONCE = 2, OWN_RETRY_MAX = Math.min(15 * 60 * 1000, selfRetryMs * 16);
+  // The ETH a send from this account must be able to reserve (a settle's gas limit at twice the gas price of the moment), looked at BEFORE a proof is asked
+  // for. A proof the account then could not send was thrown away and asked for again each minute: 240 of them in an afternoon, and the rate limit those
+  // requests met (631 refusals) spent the relay's proof capacity for everyone (2026-11-14).
+  async function ownEthOk() {
+    if (!ownAccount) return true;
+    try {
+      const bal = BigInt(await ux.rpc('eth_getBalance', [ownAccount.address, 'latest'])), gas = BigInt(await ux.rpc('eth_gasPrice', []));
+      return bal >= 800000n * (2n * gas + 100000000n);
+    } catch { return true; }                             // a node that cannot answer is no reason to hold a settle
+  }
+  // how long a refusal asks to be waited out ("retry in ~26s")
+  const hintMs = (e) => { const m = /retry in ~(\d+)s/i.exec(String((e && e.message) || e)), a = Number(e && (e.retryAfter ?? e.retryAfterSecs)); return m ? Number(m[1]) * 1000 : a > 0 ? a * 1000 : 0; };
   function sendOwn(id, proven, immediate = false) {
     let o = own.get(id);
-    if (!o) own.set(id, (o = { seen: immediate ? -Infinity : clock(), retryAt: 0, sending: null, done: false }));
+    if (!o) own.set(id, (o = { seen: immediate ? -Infinity : clock(), retryAt: 0, fails: 0, proof: null, sending: null, done: false }));
     if (o.done) return 'settled';
-    if (o.sending || clock() - o.seen < openGraceMs || clock() < o.retryAt) return 'pending';
-    log({ level: 'info', msg: 'the relay holds a settle: sending it from your wallet', jobId: id });
-    o.sending = Promise.resolve().then(proven)
-      .then((x) => selfSettle({ jobId: x.jobId || id, publicValues: x.publicValues, proof: x.proof, memos: Array.isArray(x.memos) ? x.memos : [] }).then((r) => [x, r]))
-      .then(([x, r]) => {
-        o.done = true;
-        if (r && r.txHash && ux.relay.landed) for (const j of new Set([id, x.jobId || id])) Promise.resolve(ux.relay.landed(j, r.txHash)).catch(() => {});
-      })
-      .catch((e) => { o.retryAt = clock() + selfRetryMs; log({ level: 'warn', msg: 'the settle was not sent from your wallet', error: String((e && e.message) || e).slice(0, 160) }); })
-      .finally(() => { o.sending = null; });
+    if (o.sending || clock() - o.seen < openGraceMs || clock() < o.retryAt || ownBusy >= OWN_AT_ONCE) return 'pending';
+    ownBusy++;
+    // the first wait is `selfRetryMs`; each failure in a row doubles it, to a cap, and never less than the wait a refusal asks for
+    const later = (e) => { o.fails++; o.retryAt = clock() + Math.max(Math.min(OWN_RETRY_MAX, selfRetryMs * 2 ** (o.fails - 1)), hintMs(e) ? hintMs(e) + 1000 : 0); };
+    o.sending = (async () => {
+      if (!o.proof && !(await ownEthOk())) { later(null); log({ level: 'warn', msg: 'the settle waits: this account has too little ETH to send it, so no proof is asked for', jobId: id }); return; }
+      log({ level: 'info', msg: 'the relay holds a settle: sending it from your wallet', jobId: id });
+      const x = o.proof || (o.proof = await proven());   // a proof that was made is kept until the settle is sent
+      const r = await selfSettle({ jobId: x.jobId || id, publicValues: x.publicValues, proof: x.proof, memos: Array.isArray(x.memos) ? x.memos : [] });
+      o.done = true; o.proof = null;
+      if (r && r.txHash && ux.relay.landed) for (const j of new Set([id, x.jobId || id])) Promise.resolve(ux.relay.landed(j, r.txHash)).catch(() => {});
+    })().catch((e) => {
+      const m = String((e && e.message) || e);
+      if (/revert|would fail|stale/i.test(m)) o.proof = null;   // the pool would not take it as it is: it is asked for again
+      later(e);
+      log({ level: 'warn', msg: 'the settle was not sent from your wallet', error: m.slice(0, 160) });
+    }).finally(() => { o.sending = null; ownBusy--; });
     return 'pending';
   }
   const relayHeld = async () => { try { const r = ux.relay.state ? await ux.relay.state() : null; return !!(r && r.state === 'held'); } catch { return false; } };

@@ -19,7 +19,7 @@ function adapter({ status = OPEN, selfSettle = null, notes = [], transfer = null
   const landed = [], reads = [];
   const ux = {
     pool: { leaf: (a, x) => x, nullifier: (l) => l },
-    rpc: async (m) => { reads.push(m); if (m === 'eth_getBalance') { if (balance instanceof Error) throw balance; return '0x' + balance.toString(16); } if (m === 'eth_gasPrice') return '0x' + gasPrice.toString(16); return null; },
+    rpc: async (m) => { reads.push(m); if (m === 'eth_getBalance') { if (balance instanceof Error) throw balance; return '0x' + (typeof balance === 'function' ? balance() : balance).toString(16); } if (m === 'eth_gasPrice') return '0x' + gasPrice.toString(16); return null; },
     identity: () => ({ pubHex: '03' }), chainBindingHex: () => '0x00',
     balance: async () => ({ byAsset: { ['0x' + ASSET]: { notes } } }),
     relay: { status: async (id) => ({ jobId: id, ...(typeof status === 'function' ? status() : status) }), landed: async (id, h) => { landed.push([id, h]); }, state: async () => ({ state: relayState || (held ? 'held' : 'ok') }), prove: prove || (async () => { throw new Error('not asked'); }), submitOp: submitOp || (async () => ({ jobId: 'relay-job' })) },
@@ -250,6 +250,79 @@ test('the wallet sends nothing off mainnet, nor what the pool would refuse; a fa
   const bad = walletStub({ receipt: { status: '0x0' } });
   await assert.rejects(walletSettle({ ux: bad.ux, wallet: () => bad.w, sleep: async () => {} })({ proof: '0x1' }), /failed \(0xhash\)/);
   await assert.rejects(walletSettle({ ux: bad.ux, wallet: () => null })({ proof: '0x1' }), /no Ethereum wallet/);
+});
+
+// ── the retry storm of 2026-11-14: a send that failed asked the relay for a new proof each minute, 240 of them for want of ETH ──
+const proofOf = (id = 'p1') => ({ jobId: id, status: 'proven', publicValues: '0x5', proof: '0x6', memos: [] });
+const lockAgain = { type: 'adaptorlock', bundle: BUNDLE };
+
+test('a proof that was made but could not be sent is kept: each try sends it, the waits double, and no other proof is asked for', async () => {
+  const proved = [], sent = []; let fails = 2;
+  const a = adapter({ status: { status: 'pending' }, held: true, prove: async (spec) => { proved.push(spec); return proofOf(); },
+    selfSettle: async (x) => { sent.push(x.jobId); if (fails-- > 0) throw new Error('insufficient ETH for gas: 0x1 holds 5 wei and this transaction reserves 9 wei up front'); return { txHash: '0xa' }; } });
+  const ask = () => a.evm.jobStatus('j', lockAgain);
+  await ask(); a.at(1000); await ask(); await tick(); await tick();
+  assert.equal(proved.length, 1, 'proved once; the send failed');
+  a.at(6000 - 1); await ask(); await tick(); assert.equal(sent.length, 1, 'the first wait is the base one, 5 s');
+  a.at(6000); await ask(); await tick(); await tick();
+  assert.equal(sent.length, 2); assert.equal(proved.length, 1, 'the same proof is sent again, not another asked for');
+  a.at(16000 - 1); await ask(); await tick(); assert.equal(sent.length, 2, 'the second failure doubled the wait to 10 s');
+  a.at(16000); await ask(); await tick(); await tick();
+  assert.deepEqual([proved.length, sent.length], [1, 3]);
+  assert.equal(await ask(), 'settled');
+});
+
+test('no proof is asked for while the account has too little ETH to send the settle, and one is asked for once it has', async () => {
+  const proved = [], sent = []; let eth = 10n ** 12n;                              // far under what a settle reserves
+  const a = adapter({ status: { status: 'pending' }, held: true, ownAccount: { address: '0x' + 'cc'.repeat(20) }, balance: () => eth,
+    prove: async (spec) => { proved.push(spec); return proofOf(); }, selfSettle: async (x) => { sent.push(x.jobId); return { txHash: '0xa' }; } });
+  const ask = () => a.evm.jobStatus('j', lockAgain);
+  await ask(); a.at(1000); await ask(); await tick(); await tick();
+  assert.equal(proved.length, 0, 'the relay is not asked for a proof that could not be sent');
+  assert.ok(a.logs.some((l) => l.level === 'warn' && /too little ETH/.test(l.msg)));
+  eth = 10n ** 18n; a.at(6000); await ask(); await tick(); await tick();
+  assert.deepEqual([proved.length, sent.length], [1, 1]);
+  assert.equal(await ask(), 'settled');
+});
+
+test('a refusal that says how long to wait is waited out, and the waits double with each failure in a row', async () => {
+  let n = 0;
+  const errs = [refuse('relay 429: too many submit requests — retry in ~26s'), new Error('prove timed out (box offline or backlogged)'), new Error('prove timed out (box offline or backlogged)')];
+  const a = adapter({ status: { status: 'pending' }, held: true, prove: async () => { if (n < errs.length) throw errs[n++]; return proofOf(); }, selfSettle: async () => ({ txHash: '0x1' }) });
+  const ask = () => a.evm.jobStatus('j', lockAgain);
+  await ask(); a.at(1000); await ask(); await tick(); await tick();
+  a.at(28000 - 1); await ask(); await tick(); assert.equal(n, 1, 'not before the 26 s it asked for (and a second)');
+  a.at(28000); await ask(); await tick(); await tick(); assert.equal(n, 2);
+  a.at(38000 - 1); await ask(); await tick(); assert.equal(n, 2, 'the second failure: 10 s');
+  a.at(38000); await ask(); await tick(); await tick(); assert.equal(n, 3);
+  a.at(58000 - 1); await ask(); await tick(); assert.equal(n, 3, 'the third: 20 s');
+  a.at(58000); await ask(); await tick(); await tick();
+  assert.equal(await ask(), 'settled');
+});
+
+test('a proof the pool refuses is not kept: the next try asks for another', async () => {
+  const proved = []; let n = 0;
+  const a = adapter({ status: { status: 'pending' }, held: true, prove: async (spec) => { proved.push(spec); return proofOf(); },
+    selfSettle: async () => { if (n++ === 0) throw new Error('execution reverted'); return { txHash: '0x2' }; } });
+  const ask = () => a.evm.jobStatus('j', lockAgain);
+  await ask(); a.at(1000); await ask(); await tick(); await tick();
+  assert.equal(proved.length, 1);
+  a.at(6000); await ask(); await tick(); await tick();
+  assert.equal(proved.length, 2, 'the pool would not take the first, so it is made again');
+  assert.equal(await ask(), 'settled');
+});
+
+test('at most two sends from the account are under way at once, so a backlog does not ask the relay for every proof together', async () => {
+  const started = []; let release;
+  const gate = new Promise((r) => { release = r; });
+  const a = adapter({ status: { status: 'pending' }, held: true, prove: async () => { started.push(1); return proofOf(); }, selfSettle: async () => { await gate; return { txHash: '0x3' }; } });
+  const ids = ['a', 'b', 'c', 'd', 'e'];
+  const all = async () => { for (const id of ids) await a.evm.jobStatus(id, lockAgain); await tick(); await tick(); };
+  await all(); a.at(1000); await all();
+  assert.equal(started.length, 2, 'two proofs are asked for, and the other three wait');
+  release(); await tick(); await tick(); await tick();
+  await all();
+  assert.equal(started.length, 4, 'two more once the first two are done');
 });
 
 let passed = 0, ran = 0;
