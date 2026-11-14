@@ -68,7 +68,7 @@ for (const [tag, viewport] of [['desktop', { width: 1280, height: 900 }], ['phon
   await page.waitForFunction(() => !document.querySelector('#pk .pk-r'));
   ok(await side('#pay-coin') === 'WBTC', `${tag}: the From coin is WBTC (${await side('#pay-coin')})`);
   ok(await side('#get-coin') === 'ETH', `${tag}: the To side reads ETH (${await side('#get-coin')})`);
-  ok(await page.$eval('#get-coin svg.tk', (s) => s.classList.contains('pvt') || /teth/.test(s.querySelector('use')?.getAttribute('href') || '')), `${tag}: and wears the private ETH mark`);
+  ok(await page.$eval('#get-coin svg.tk', (s) => s.classList.contains('pvt') && s.querySelector('use')?.getAttribute('href') === '#tk-eth'), `${tag}: and wears ETH's own logo in the private ring, not the tETH mark a token could be mistaken for`);
   ok(/DeFi pool/.test(await page.$eval('#get-at', (e) => e.textContent)), `${tag}: it lands in the DeFi pool (${await page.$eval('#get-at', (e) => e.textContent.trim())})`);
   ok(await goText() === 'Shield WBTC as ETH', `${tag}: the button says what it does (${await goText()})`);
   const tip = () => page.$eval('#flow-tip', (e) => (e.hidden ? '' : e.textContent.trim()));
@@ -78,6 +78,7 @@ for (const [tag, viewport] of [['desktop', { width: 1280, height: 900 }], ['phon
   await page.evaluate(() => [...document.querySelectorAll('#pk .pk-r')].find((b) => !b.hidden && b.querySelector('b')?.firstChild?.textContent?.trim() === 'ETH')?.click());
   await page.waitForFunction(() => !document.querySelector('#pk .pk-r'));
   ok(await side('#pay-coin') === 'ETH' && await goText() === 'Shield ETH' && await tip() === '', `${tag}: ETH goes in as itself, with no line and no 'as ETH' (${await side('#pay-coin')}, ${await goText()})`);
+  ok(await page.$eval('#get-coin svg.tk', (s) => !s.classList.contains('pvt') && s.querySelector('use')?.getAttribute('href') === '#tk-teth'), `${tag}: and its To side keeps the tETH mark`);
 
   // the card turned to Withdraw (from ETH: a token has no private form to take back) lists private coins only and has no token search
   await page.goto(`${base}/`, { waitUntil: 'load' });

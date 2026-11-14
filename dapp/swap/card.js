@@ -764,6 +764,7 @@ let PAYWARM = 0;
 function paintSides() {
   let pay = shownAt(S.pay, atOf('pay')), get = shownAt(S.get, atOf('get'));
   if (FLOW === 'shield' && get && pay) get = { ...get, sym: S.get === 'teth' ? 'ETH' : pay.sym };
+  if (get && soldForEth()) get = { ...get, icon: 'eth', pvt: true };
   if (FLOW === 'withdraw' && get && pay) pay = { ...pay, sym: get.sym };
   setHtml($('#pay-coin'), `${coin(pay)}${esc(pay.sym)}<span class="car" aria-hidden="true">▾</span>`);
   $('#pay-coin').setAttribute('aria-label', `Pay with ${pay.sym}. Choose another`);
