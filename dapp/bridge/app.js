@@ -1,6 +1,17 @@
-import { ROUTES, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=9689d7d6';
+import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol } from '/bridge/runtime.js?cb=2528e7fd';
+import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=c9fdfdf9';
 import { bodyType } from '/rpc-body.js';
 { const fq = document.getElementById('fq-lim'); if (fq) fq.textContent = limitsSaid(); }
+// The tile's picker is the assets this page explains. A token the front page met and kept (dapp/bridge/runtime.js) is not one of them, but a crossing
+// of it reads by its name, in its mark, with its steps and the limit it started under, not as TAC (the tracker's fallback).
+const TABS = Object.keys(ROUTES);
+try {
+  const host = document.getElementById('tk-usdt')?.parentNode;
+  for (const e of readRuntime(localStorage)) {
+    if (!addBridgeAsset({ key: e.key, id: e.id, route: bridgeRoute({ ticker: e.ticker, icon: runtimeIcon(e.addr), dp: e.dp, dec: e.dec }), limits: bridgeLimitEntry(e) })) continue;
+    if (host && !document.getElementById(runtimeIcon(e.addr))) host.append(runtimeSymbol(document, e));
+  }
+} catch { }
 
 const API = 'https://api.tacit.finance';
 const ESPLORA = 'https://mempool.space/api';
@@ -128,7 +139,7 @@ const PICK = { asset: 'tac', dir: 'in' };
 const hashWay = () => location.hash.replace(/^#/, '').toLowerCase().split('/');
 function readHash() {
   const [a, d] = hashWay();
-  if (!Object.hasOwn(ROUTES, a)) return !a;
+  if (!TABS.includes(a)) return !a;
   PICK.asset = a;
   PICK.dir = d === 'out' && ROUTES[PICK.asset].out ? 'out' : 'in';
   return true;
@@ -167,7 +178,7 @@ function paintTile() {
   $('#bt-cost').textContent = cost;
   $('#bt-cost').hidden = !cost;
   const want = `#${PICK.asset}${PICK.dir === 'out' ? '/out' : ''}`, at = hashWay()[0];
-  if ((!at || Object.hasOwn(ROUTES, at)) && location.hash !== want && !(want === '#tac' && !location.hash)) history.replaceState(null, '', want);
+  if ((!at || TABS.includes(at)) && location.hash !== want && !(want === '#tac' && !location.hash)) history.replaceState(null, '', want);
 }
 
 function wireTile() {
@@ -180,8 +191,8 @@ function wireTile() {
   });
   $('#bt-assets').addEventListener('keydown', (e) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-    const keys = Object.keys(ROUTES), i = keys.indexOf(PICK.asset);
-    PICK.asset = keys[(i + (e.key === 'ArrowRight' ? 1 : keys.length - 1)) % keys.length];
+    const i = TABS.indexOf(PICK.asset);
+    PICK.asset = TABS[(i + (e.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length];
     if (!ROUTES[PICK.asset].out) PICK.dir = 'in';
     paintTile();
     $(`#bt-assets [data-asset="${PICK.asset}"]`).focus();
@@ -307,7 +318,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=fd26cd5f').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=8db4d59b').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });

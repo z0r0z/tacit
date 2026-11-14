@@ -91,7 +91,7 @@ async function mock(ctx) {
   });
 }
 
-async function openPage(viewport, { scheme = 'light', seed = true, path = '/bridge/', shifts = false, reduced = false, rows = null, notifications = false } = {}) {
+async function openPage(viewport, { scheme = 'light', seed = true, path = '/bridge/', shifts = false, reduced = false, rows = null, notifications = false, kept = null } = {}) {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport, colorScheme: scheme, reducedMotion: reduced ? 'reduce' : 'no-preference' });
   await mock(ctx);
@@ -102,6 +102,8 @@ async function openPage(viewport, { scheme = 'light', seed = true, path = '/brid
     localStorage.setItem('tacit-burndep-bridge-v1:mainnet:' + pub, a);
     localStorage.setItem('tacit-crossout-bridge-v1:mainnet:' + pub, b);
   }, [PUB, JSON.stringify(rows ? rows.in : IN), JSON.stringify(rows ? rows.out : OUT)]);
+  // the tokens the front page met and kept (dapp/bridge/runtime.js)
+  if (kept) await ctx.addInitScript((k) => { localStorage.setItem('tacit-bridge-runtime-v1', JSON.stringify(k)); }, kept);
   // A notification the page asks for is recorded here (permission is granted when it is requested), so what it would say can be read.
   if (notifications) await ctx.addInitScript(() => {
     window.__notes = [];
@@ -370,6 +372,27 @@ try {
     await page.waitForTimeout(300);
     m = await read();
     ok(!m.dot && !m.tag && m.label === 'More pages', `${path}: once every bridge has arrived the dot and the count go (${JSON.stringify(m)})`);
+    await browser.close();
+  }
+
+  // ── a token the front page kept: its crossings read as it, not as TAC ──
+  {
+    const addr = '0x' + '5a'.repeat(20), KID = '5a'.repeat(32);
+    const kept = [{ addr, id: KID, ticker: 'KEPT', sym: 'KEPT', logo: '', dp: 2, dec: 8, minRaw: '400000000', capRaw: '200000000000' }];
+    const rows = { in: [], out: [{ id: '0x' + 'f1'.repeat(32), network: 'mainnet', walletPub: PUB, stage: 'covered', createdAt: NOW - 40 * 60e3,
+      source: { amount: '700000000', value: '701000000', assetId: '0x' + KID, ticker: 'KEPT' }, settle: { txHash: 'ee'.repeat(32), ethBlock: 26_225_700, claimIdVerified: true } }] };
+    const { browser, page, errors } = await openPage({ width: 1024, height: 800 }, { rows, kept });
+    await page.waitForSelector('#mine li', { timeout: 20000 });
+    const mine = (await page.textContent('#mine')).replace(/\s+/g, ' ');
+    ok(/7 KEPT/.test(mine) && !/ TAC/.test(mine), `a crossing of a kept token reads by its name, not as TAC (${mine.slice(0, 60)})`);
+    ok(await page.evaluate((a) => !!document.getElementById('tk-x' + a) && !!document.querySelector(`#mine use[href="#tk-x${a}"]`), addr), 'in its own mark');
+    const tabs = await page.$$eval('#bt-assets [data-asset]', (b) => b.map((x) => x.dataset.asset));
+    ok(tabs.join() === 'tac,teth,cbtc,cusd,cusdt', 'the tile still offers the five it explains');
+    await page.focus('#bt-assets [data-asset]');
+    for (let i = 0; i < 6; i++) await page.keyboard.press('ArrowRight');
+    const at = await page.evaluate(() => document.activeElement?.dataset?.asset || null);
+    ok(['tac', 'teth', 'cbtc', 'cusd', 'cusdt'].includes(at), `the arrow keys stay among them (${at})`);
+    ok(errors.length === 0, `no console errors (${errors.slice(0, 2).join(' | ')})`);
     await browser.close();
   }
 

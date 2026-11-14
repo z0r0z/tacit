@@ -50,7 +50,7 @@ export function limitsSaid() {
 }
 export function limitLine(asset, dir) {
   const l = LIMITS[asset]?.[dir], r = ROUTES[asset];
-  if (!l || !r) return '';
+  if (!l || !r || !l.max) return '';
   return `${l.min ? `${fmtAmount(l.min, r.dp, r.dec)} to ` : 'Up to '}${fmtAmount(l.max, r.dp, r.dec)} ${r.ticker} a bridge while it is new`;
 }
 
