@@ -124,10 +124,32 @@ test('who is grinding now and how fast: every address that sent shares lately, T
   assert.deepEqual(s.live, [], 'nobody once they stop sending');
 });
 
+test('the salt floor: a day the proofs filled still pays the salts at least the floor, never past their own most, and a floor of 0 is the old rule', async () => {
+  const t = 500 * DAY + 1000, kv = kvStore(), used = new Map();
+  const potOf = (cfg, pot = 5000) => makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, sendEveryMs: 0, ...cfg }, now: () => t, potPoints: async () => pot, proofPoints: async (d) => used.get(d) || 0 });
+  const at = async (pool) => (await pool.credits(500)).body.pointsPerDay;
+  const pool = potOf({ floorPoints: 3000 });
+  used.set(500, 1500); assert.equal(await at(pool), 3500, 'room above the floor: what the proofs leave');
+  used.set(500, 4800); assert.equal(await at(pool), 3000, 'a busy day: the floor, not the 200 left');
+  used.set(500, 6000); assert.equal(await at(pool), 3000, 'proofs past the whole pot: still the floor');
+  assert.equal(await at(potOf({ floorPoints: 3000, pointsPerDay: 1000 })), 1000, 'the floor never passes their own most');
+  assert.equal(await at(potOf({ floorPoints: 0 })), 0, 'a floor of 0 pays nothing once the proofs took the pot');
+  const blind = makeSaltPool({ kv, cfg: { ...SALT_POOL, floorPoints: 3000 }, now: () => t, potPoints: async () => { throw new Error('down'); }, proofPoints: async () => { throw new Error('down'); } });
+  assert.equal((await blind.credits(500)).body.pointsPerDay, SALT_POOL.potPoints, 'nothing readable: the default pot, the floor is under it');
+  assert.equal((await pool.summary()).body.pointsPerDay, 3000, 'the page\'s live row says the same');
+});
+
+test('the salt floor config: POINTS_SALT_FLOOR within its bounds, bad values keep the default', () => {
+  assert.equal(saltPoolConfig({}).floorPoints, 3000);
+  assert.equal(saltPoolConfig({ POINTS_SALT_FLOOR: '500' }).floorPoints, 500);
+  assert.equal(saltPoolConfig({ POINTS_SALT_FLOOR: '0' }).floorPoints, 0, '0 turns the floor off');
+  for (const bad of ['-1', '2.5', 'lots', '2000000']) assert.equal(saltPoolConfig({ POINTS_SALT_FLOOR: bad }).floorPoints, 3000, `"${bad}" keeps the default`);
+});
+
 test('the salts share what the day\'s proofs leave of the campaign\'s daily points, up to their own most', async () => {
   let t = 500 * DAY + 1000;
   const kv = kvStore(), used = new Map([[500, 1500]]);
-  const pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, sendEveryMs: 0 }, now: () => t, potPoints: async () => 5000, proofPoints: async (d) => used.get(d) || 0 });
+  const pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, sendEveryMs: 0, floorPoints: 0 }, now: () => t, potPoints: async () => 5000, proofPoints: async (d) => used.get(d) || 0 });
   await pool.submit({ miner: A, salts: [grind(500, 8).salt], client: 'c1' });
   assert.equal((await pool.summary()).body.pointsPerDay, 3500, 'today so far: 5000 less the 1500 the proofs took');
   used.set(500, 4800);
@@ -137,7 +159,7 @@ test('the salts share what the day\'s proofs leave of the campaign\'s daily poin
   assert.equal(c.miners[0].points, 200);
   used.set(500, 6000);
   assert.equal((await pool.credits(500)).body.pointsPerDay, 0, 'and nothing once the proofs took the pot');
-  const capped = makeSaltPool({ kv, cfg: { ...SALT_POOL, pointsPerDay: 1000 }, now: () => t, potPoints: async () => 5000, proofPoints: async () => 0 });
+  const capped = makeSaltPool({ kv, cfg: { ...SALT_POOL, pointsPerDay: 1000, floorPoints: 0 }, now: () => t, potPoints: async () => 5000, proofPoints: async () => 0 });
   assert.equal((await capped.credits(500)).body.pointsPerDay, 1000, 'never past their own most');
   const blind = makeSaltPool({ kv, cfg: SALT_POOL, now: () => t, potPoints: async () => { throw new Error('down'); }, proofPoints: async () => 0 });
   assert.equal((await blind.credits(500)).body.pointsPerDay, SALT_POOL.potPoints, 'the campaign\'s terms unread: the default pot');

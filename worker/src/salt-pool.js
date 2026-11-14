@@ -7,7 +7,8 @@
 //
 // A share is a salt whose address starts with at least minBits zero bits. It weighs 2^(bits − minBits), up to 2^maxWeightBits, and counts
 // once, for the first address that sends it. A day's points are what the day's proofs leave of the mining campaign's daily points (the
-// campaign's daily amount over its most a point earns), up to pointsPerDay: proofs come first, and the salts fill the rest. They are
+// campaign's daily amount over its most a point earns), up to pointsPerDay: proofs come first, and the salts fill the rest, with a floor
+// (floorPoints) so a day the proofs filled still pays the grinders something. They are
 // shared between the day's miners by weight once the day is
 // over (GET /prover/salt/credits, which the points service pays from beside the proof pool's tally): more machines share the same points,
 // so what a day costs never grows with them. The best bankKeep salts found (at least bankBits good) are kept (GET /prover/salt/bank): the addresses Tacit deploys
@@ -27,6 +28,7 @@ export const SALT_POOL = Object.freeze({
   minBits: 26,              // SALT_MIN_BITS: a share's address starts with this many zero bits (about a minute of four laptop cores)
   maxWeightBits: 20,        // SALT_MAX_WEIGHT_BITS: a share weighs at most 2^this. The lower it is, the less one connection can earn in a day (it sends 64 shares in 20 s), and the more evenly a day's points go round; at 0 every share weighs the same
   pointsPerDay: 5000,       // POINTS_SALT_DAILY: the most a day's salts may share, whatever the pot (proofs take the rest)
+  floorPoints: 3000,        // POINTS_SALT_FLOOR: the least a day's salts share even when the proofs took the whole pot (never more than pointsPerDay), so a laptop's grinding always earns something
   potPoints: 5000,          // the campaign's daily points when its terms cannot be read (50 TAC at 0.01 TAC a point)
   bankBits: 32,             // SALT_BANK_BITS: the best bankKeep salts at least this good (four zero bytes) are kept for deploys
   bankKeep: 64,
@@ -57,6 +59,7 @@ export function saltPoolConfig(env = {}) {
     minBits: n(env.SALT_MIN_BITS, SALT_POOL.minBits, 16, 64),
     maxWeightBits: n(env.SALT_MAX_WEIGHT_BITS, SALT_POOL.maxWeightBits, 0, 40),
     pointsPerDay: n(env.POINTS_SALT_DAILY, SALT_POOL.pointsPerDay, 0, 1_000_000),
+    floorPoints: n(env.POINTS_SALT_FLOOR, SALT_POOL.floorPoints, 0, 1_000_000),
     bankBits: n(env.SALT_BANK_BITS, SALT_POOL.bankBits, 24, 96),
     goodBits: n(env.SALT_GOOD_BITS, SALT_POOL.goodBits, 24, 96),
     house: String(env.SALT_HOUSE || SALT_POOL.deployer).split(',').map((a) => a.trim().toLowerCase()).filter((a) => ADDR.test(a)),
@@ -83,10 +86,12 @@ function makeLock() {
 // point earns); proofPoints(day) → the points the day's proofs earned (the proof pool's and the board's tallies). Every call answers
 // { status, body }.
 export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock = makeLock(), potPoints = async () => cfg.potPoints, proofPoints = async () => 0 }) {
-  // What a day's salts share: what its proofs leave of the pot, up to pointsPerDay.
+  // What a day's salts share: what its proofs leave of the pot, up to pointsPerDay, and at least floorPoints (itself never past pointsPerDay)
+  // however much the proofs took. The floor is points on top of the pot: the campaign shares its daily amount over every point of the day.
   const saltPot = async (day) => {
     const [pot, used] = await Promise.all([potPoints().catch(() => cfg.potPoints), proofPoints(day).catch(() => 0)]);
-    return Math.max(0, Math.min(cfg.pointsPerDay, Math.floor((Number(pot) || cfg.potPoints) - (Number(used) || 0))));
+    const left = Math.floor((Number(pot) || cfg.potPoints) - (Number(used) || 0));
+    return Math.max(0, Math.min(cfg.pointsPerDay, cfg.floorPoints || 0), Math.min(cfg.pointsPerDay, left));
   };
   const read = async (k, d) => { const s = await kv.get(k); if (s == null) return d; try { return JSON.parse(s); } catch { return d; } };
   const write = (k, v, secs) => kv.put(k, JSON.stringify(v), secs ? { expirationTtl: secs } : undefined);

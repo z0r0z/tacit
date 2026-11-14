@@ -71,7 +71,7 @@ and earns nothing. Proofs made any other way name nobody. A cross-chain block na
 (`prover-board.js`, the Bitcoin-state program).
 
 Between proofs the same machines mine deploy salts: CreateX salts that only Tacit's deployer can use, for addresses with leading zero bytes
-(`salt-pool.js`). They share what the day's proofs leave of the mining campaign's daily points.
+(`salt-pool.js`). They share what the day's proofs leave of the mining campaign's daily points, and never less than a floor (`POINTS_SALT_FLOOR`, 3,000 points a day, within their own most `POINTS_SALT_DAILY`, 5,000), so a day the proofs filled still pays the grinders something.
 
 ## Roles, now and next
 
