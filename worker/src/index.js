@@ -2522,6 +2522,12 @@ async function handleBurnDepositTrace(req, env, url, cors) {
     if (e && e.code === 'trace_pending') {
       return jsonResponse({ ok: false, pending: true, read: e.hops, retryAfter: 2, error: e.message }, 202, { ...cors, 'Cache-Control': 'no-store' });
     }
+    // Every explorer is cooling off after throttling us, for longer than the walk would wait: nothing is wrong with this trace, and what it read is
+    // kept, so it answers as it does when it runs out of time (the page asks again by itself) and not as a failure.
+    const cooling = /sources? cooling for (\d+)s/.exec(String(e && e.message));
+    if (cooling) {
+      return jsonResponse({ ok: false, pending: true, read: Number(e && e.hops) || 0, retryAfter: Math.min(10, Math.max(2, Number(cooling[1]) || 2)), error: 'the Bitcoin explorers are busy; asking again shortly' }, 202, { ...cors, 'Cache-Control': 'no-store' });
+    }
     return jsonResponse({ ok: false, error: `trace failed: ${e && e.message || e}` }, 502, { ...cors, 'Cache-Control': 'no-store' });
   }
   return jsonResponse({ ok: true, network, hops, bundle }, 200, { ...cors, 'Cache-Control': 'no-store' });
@@ -2535,8 +2541,12 @@ async function handleBurnDepositTrace(req, env, url, cors) {
 async function buildBurndepBundle({ env, network, noteTxid, noteVout, asset, maxDepth, deadline = null }) {
   const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
   const trace = makeBurnDepositTracer({ outpointKey: pool.outpointKey }).trace;
+  // The explorers throttle us now and then and then rest for a few seconds: a walk this slow sleeps through a short rest (up to 12 s) and goes on,
+  // where a request that failed at once would be read as a failed trace. A longer rest still ends it (handleBurnDepositTrace answers 202).
+  const patient = { waitCoolingMs: 12_000 };
   const res = await traceBurnDepositProvenance({
-    env, apiText, apiRawBytes, network, outpointKey: pool.outpointKey, sha256, trace, maxDepth, deadline,
+    env, apiText: (e, p, o = {}, n) => apiText(e, p, { ...patient, ...o }, n), apiRawBytes: (e, p, n, o = {}) => apiRawBytes(e, p, n, { ...patient, ...o }),
+    network, outpointKey: pool.outpointKey, sha256, trace, maxDepth, deadline,
     note: { txid: noteTxid, vout: noteVout },
     leaves: [{ txid: asset.etch_txid, vout: asset.etch_vout || 0 }],
   });

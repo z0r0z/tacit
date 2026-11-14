@@ -46,6 +46,30 @@ try {
     ok([...kv.m.keys()].some((k) => k === `burndepshallow:mainnet:${PURCHASE}`), 'what it read is kept for the next request');
     ok(asked >= 1, `the explorer was asked (${asked})`);
   }
+  // ── explorers that are resting: a short rest is slept through and the trace goes on; a long one answers 202 (the page asks again), never a 502 ──
+  {
+    const FIX = JSON.parse(readFileSync(new URL('./fixtures/burndep-listing-purchase-2026-10-16.json', import.meta.url), 'utf8'));
+    const id = (p) => Object.keys(FIX).find((k) => k.startsWith(p));
+    const PURCHASE = id('c654294c'), SPLIT_NOTE = id('57829e14'), TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
+    const seed = async () => { const kv = makeKv(); await kv.put(`asset:mainnet:${TAC}`, JSON.stringify({ asset_id: TAC, etch_txid: SPLIT_NOTE, etch_vout: 0, etched_at_height: 948242 })); return kv; };
+    const serve = (url) => { const m = /\/tx\/([0-9a-f]{64})(\/hex)?$/.exec(new URL(String(url)).pathname); const rec = m && FIX[m[1]]; return rec ? new Response(m[2] ? rec.hex : rec.json, { status: 200 }) : new Response('not found', { status: 404 }); };
+    // one 429 with a three-second rest, then the explorer answers: the walk waits the rest out inside the request
+    let throttled = 0, reads = 0;
+    const t0 = Date.now();
+    globalThis.fetch = async (url) => { if (Date.now() - t0 < 300) { throttled++; return new Response('slow down', { status: 429, headers: { 'retry-after': '3' } }); } reads++; return serve(url); };
+    const res = await post({ REGISTRY_KV: await seed(), MAINNET_API: 'https://wait.test/api' }, '/reflection/burndep/trace?network=mainnet', { note: { txid: PURCHASE, vout: 0 }, assetId: TAC, maxDepth: 256 });
+    const body = await res.json();
+    ok(throttled >= 5 && Date.now() - t0 >= 2_500 && reads >= 2 && !/cooling/.test(body.error || ''), `every explorer throttled us (${throttled} times) and rested three seconds: the rest is waited out and the walk goes on, reading ${reads} times, instead of failing at once (${res.status} after ${Date.now() - t0} ms)`);
+    // a rest of a minute: the first request meets the 429, the next finds every explorer resting and answers 202, not 502
+    globalThis.fetch = async () => new Response('slow down', { status: 429, headers: { 'retry-after': '60' } });
+    const envLong = { REGISTRY_KV: await seed(), MAINNET_API: 'https://rest.test/api' };
+    const first = await post(envLong, '/reflection/burndep/trace?network=mainnet', { note: { txid: PURCHASE, vout: 0 }, assetId: TAC, maxDepth: 256 });
+    await first.text();
+    const t1 = Date.now();
+    const second = await post(envLong, '/reflection/burndep/trace?network=mainnet', { note: { txid: PURCHASE, vout: 0 }, assetId: TAC, maxDepth: 256 });
+    const sb = await second.json();
+    ok(second.status === 202 && sb.pending === true && sb.retryAfter >= 2 && sb.retryAfter <= 10 && Date.now() - t1 < 10_000, `explorers resting for a minute: 202 with when to ask again, at once (${second.status} ${JSON.stringify(sb).slice(0, 150)})`);
+  }
   // ── the check's time budget: a first check of a deep history reading its blocks answers 202 and goes on ──
   {
     let finished = false;
