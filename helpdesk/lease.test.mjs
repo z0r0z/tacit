@@ -295,6 +295,9 @@ check('and dropped when it is long, has spaces, markup or control characters, or
   check('credits: a budget the day does not reach changes nothing', big.miners.reduce((a, m) => a + m.points, 0) === 19);
   const fit = at({ minPoints: 2, budget: 10 });
   check('credits: past the budget every address is scaled down to fit it, rounded down', fit.miners.reduce((a, m) => a + m.points, 0) <= 10 && pts(fit)['0xa1a'] === 5 && pts(fit)['0xd4d'] === 2 && pts(fit)['0xe5e'] === 2);
+  check('credits: the minimum and the budget are rules for the days from fromDay on, and a day before it is credited exactly as it was earned',
+    at({ minPoints: 2, budget: 10, fromDay: day + 1 }).miners.length === 5 && at({ minPoints: 2, budget: 10, fromDay: day + 1 }).miners.reduce((a, m) => a + m.points, 0) === 21
+    && at({ minPoints: 2, budget: 10, fromDay: day }).miners.length === 3 && at({ minPoints: 2, budget: 10, fromDay: day }).miners.reduce((a, m) => a + m.points, 0) <= 10);
   const swarm = []; for (let i = 0; i < 300; i++) swarm.push({ t: t0 + i, ev: 'canary', miner: '0x' + i.toString(16).padStart(40, '0'), points: 1 });
   fs.appendFileSync(f, swarm.map((e) => JSON.stringify(e)).join('\n') + '\n');
   const swarmed = at({ minPoints: 2, budget: 100 });

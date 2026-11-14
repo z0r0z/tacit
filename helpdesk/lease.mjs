@@ -230,7 +230,10 @@ export function makeVet(corpusText) {
 // An address that earned fewer than minPoints in the day is not credited (a single point is dust, and a day of them is a ledger entry each),
 // and the day's points together never pass `budget` (0: no budget): over it, each address's points are scaled down to fit, rounded down, so
 // review work is a fixed share of the mining pot that more machines divide between them and never enlarge (as the salt pool's day is).
-export function creditsFor(ledgerFile, day, { maxPerDay = 100, minPoints = 0, budget = 0, now = Date.now() } = {}) {
+// Both are rules for the days from `fromDay` on: a day before it is credited exactly as it was earned, so a change of rules never takes back points
+// that were earned under the old ones.
+export function creditsFor(ledgerFile, day, { maxPerDay = 100, minPoints = 0, budget = 0, fromDay = 0, now = Date.now() } = {}) {
+  if (!(day >= fromDay)) { minPoints = 0; budget = 0; }
   const today = Math.floor(now / 86400000), by = new Map();
   if (existsSync(ledgerFile)) for (const l of readFileSync(ledgerFile, 'utf8').split('\n')) {
     if (!l) continue; let e; try { e = JSON.parse(l); } catch { continue; }
