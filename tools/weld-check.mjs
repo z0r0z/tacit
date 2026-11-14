@@ -2354,6 +2354,9 @@ await step('redeemgo', async () => {
     ok(v.outs.length === 1 && v.outs[0].script === fundHex && v.outs[0].value === 20000 + 330 + 546, `redeemgo: the lock's bitcoin, with the note's and the first transaction's dust, goes to the key's own address (${v.outs.map((o) => o.value).join(', ')} sats)`);
     const kept = JSON.parse(await r.page.evaluate((k) => localStorage.getItem(k), `tacit-cbtc-redeem-v1:${pub}`) || '{}')[`0x${OP}`];
     ok(kept?.reveal === v.txid && kept?.commit === c.txid, 'redeemgo: the browser keeps the two transaction ids it sent');
+    await r.page.waitForFunction((id) => (JSON.parse(localStorage.getItem('tacit-lite-activity-v1') || '{}').items || []).some((x) => x.id === id), `btc:${v.txid}`, { timeout: 5000 }).catch(() => {});
+    const jrow = (JSON.parse(await r.page.evaluate(() => localStorage.getItem('tacit-lite-activity-v1')) || '{}').items || []).find((x) => x.id === `btc:${v.txid}`);
+    ok(jrow?.kind === 'btc' && /^Redeem 0\.0002 BTC/.test(jrow.label || '') && /bond can be taken back/.test(jrow.note || ''), `redeemgo: the redeem is in Activity, with a line on where its bond comes back (${JSON.stringify(jrow || null).slice(0, 200)})`);
     if (process.env.CBTC_REDEEM_VECTOR_OUT) writeFileSync(process.env.CBTC_REDEEM_VECTOR_OUT, JSON.stringify({ revealHex, lock: { txid: TXID, vout: 1, value: 20000 }, authKey: XONLY.slice(2), notes: notes.map((n) => ({ txid: n.txid, vout: 0, amount: n.amount.toString(), cx: n.cx, cy: n.cy })) }, null, 1));
     await shot(r.page, 'redeemgo-sent');
     // 5. from the key and Bitcoin alone: this browser's record gone, the lock's output spent by the redeem, the note spent with it
