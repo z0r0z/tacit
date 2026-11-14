@@ -31,6 +31,16 @@ export function tac(wei, places = 2) {
   return frac ? `${q / scale}.${frac}` : String(q / scale);
 }
 
+// The points a pool proof earns for taking `secs` from lease to proof, from the pool's own terms (GET /prover/pool: terms.pointsPerProof is
+// the most, terms.pay says how it falls): all of it up to fullSecs, a straight line down to floorPct of it at floorSecs, and that beyond. The
+// same sum the pool does (payFor in worker/src/proof-pool.js). With no time known, or terms that make no slope, the most.
+export function payPoints(max, secs, pay) {
+  const m = Number(max), s = Number(secs), full = Number(pay?.fullSecs), floor = Number(pay?.floorSecs), pct = Number(pay?.floorPct) / 100;
+  if (!(m > 0)) return null;
+  if (!(s > full) || !(floor > full) || !(pct >= 0 && pct < 1)) return m;
+  return Math.max(1, Math.round(m * (s >= floor ? pct : 1 - ((1 - pct) * (s - full)) / (floor - full))));
+}
+
 // A proof's reward: its points times what a point is paid (perPoint in community-prove.js), null when nothing is paid.
 export function rewardWei(points, weiPerPoint) {
   if (!(Number(points) > 0) || !weiPerPoint) return null;

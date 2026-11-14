@@ -1,5 +1,5 @@
 // node tests/prove-chain.test.mjs -- the prove page's day figures: an address's work across the proof pool and the board, and how long a proof takes
-import { dayTotals, proofSpan, cleanMiner } from '../dapp/prove/chain.js';
+import { dayTotals, proofSpan, cleanMiner, payPoints } from '../dapp/prove/chain.js';
 let fails = 0; const check = (n, c) => { console.log((c ? 'ok   ' : 'FAIL ') + n); if (!c) fails++; };
 
 const A = '0x66f5A1225e6ac772c461f2b4d8028bf9568f3db5', B = '0x9194efdf03174a804f3552f4f7b7a4bb74badb7f', a = A.toLowerCase();
@@ -29,4 +29,16 @@ const A = '0x66f5A1225e6ac772c461f2b4d8028bf9568f3db5', B = '0x9194efdf03174a804
 }
 
 console.log(fails ? `prove chain: ${fails} failed` : 'prove chain: all tests passed');
+
+// --- what a pool proof earns for the time it took, from the pool's own terms (the same sum the pool does: payFor in worker/src/proof-pool.js)
+{
+  const pay = { fullSecs: 60, floorSecs: 600, floorPct: 50 };
+  check('a quick proof earns the most', payPoints(20, 8, pay) === 20 && payPoints(20, 60, pay) === 20);
+  check('a slower one earns less, in a line down to half at ten minutes', payPoints(20, 330, pay) === 15 && payPoints(20, 480, pay) === 12 && payPoints(20, 600, pay) === 10);
+  check('and half beyond: a laptop still earns', payPoints(20, 900, pay) === 10 && payPoints(20, 86_400, pay) === 10);
+  check('with no time known it is the most', payPoints(20, null, pay) === 20 && payPoints(20, undefined, pay) === 20);
+  check('an older pool that sends no terms pays the most', payPoints(20, 900, undefined) === 20 && payPoints(20, 900, { fullSecs: null, floorSecs: null, floorPct: null }) === 20);
+  check('a floor of 100 pays every proof the same', payPoints(20, 900, { ...pay, floorPct: 100 }) === 20);
+  check('nothing is paid when no points are', payPoints(0, 900, pay) === null && payPoints(null, 900, pay) === null);
+}
 process.exit(fails ? 1 : 0);

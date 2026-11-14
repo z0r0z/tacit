@@ -12,7 +12,7 @@ import * as secp from '@noble/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
-import { makeProofPool, drawOf, readWrapStdin, wrapExpect, wrapOpens, proofFits, verifyCalldata, proofPoolConfig, clientOf, PROOF_POOL } from '../worker/src/proof-pool.js';
+import { makeProofPool, payFactor, payFor, drawOf, readWrapStdin, wrapExpect, wrapOpens, proofFits, verifyCalldata, proofPoolConfig, clientOf, PROOF_POOL } from '../worker/src/proof-pool.js';
 import { stdinFor } from '../dapp/sp1-stdin.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import worker, { ethCallVerdict, simulateSettle } from '../worker/src/index.js';
@@ -408,7 +408,7 @@ test('points: each passing proof earns its address the day\'s points up to the c
   assert.equal((await prove(MINER2, 'm2')).r.body.points, 20);
   const s = (await h.pool.stats()).body;
   assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, oldestQueuedSecs: 0, oldestLeaseSecs: 0, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
-  assert.deepEqual(s.terms, { pointsPerProof: 20, proofsPerMinerDay: 2, leaseMs: PROOF_POOL.leaseMs });
+  assert.deepEqual(s.terms, { pointsPerProof: 20, proofsPerMinerDay: 2, leaseMs: PROOF_POOL.leaseMs, pay: { fullSecs: 60, floorSecs: 600, floorPct: 50 } });
   assert.equal(JSON.stringify(s).includes(jobs[0].stdin.slice(2, 40)), false, 'no inputs');
   let c = (await h.pool.credits(DAY0)).body;
   assert.deepEqual(c, { day: DAY0, over: false, pointsPerProof: 20, miners: [{ miner: MINER, proofs: 3, points: 40 }, { miner: MINER2, proofs: 1, points: 20 }] });
@@ -602,7 +602,7 @@ test('the eth_call verdict: a return is ok; a revert with a code or data is cert
 });
 
 test('a pool proof names who made the leaf it inserts and joins the recent feed: a community miner by address, Tacit\'s own GPU as the house', async () => {
-  const h = harness();
+  const h = harness(), HALF = PROOF_POOL.pointsPerProof / 2; // the proof comes back ten minutes after its lease: the floor of the pay
   const a = wrapJob(0), b = wrapJob(1);
   await h.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'page' });
   await h.pool.request({ type: 'wrap', stdin: b.stdin, expect: b.expect, client: 'page' });
@@ -612,11 +612,11 @@ test('a pool proof names who made the leaf it inserts and joins the recent feed:
   l = (await h.pool.lease({ house: 'gpu', client: 'h' })).body;
   assert.equal((await h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(b.expect), proof: PROOF })).status, 200);
   const who = await h.pool.minedBy([a.expect.leaf.toUpperCase().replace('0X', '0x'), b.expect.leaf, '0x' + '00'.repeat(32)]);
-  assert.deepEqual(who, { [a.expect.leaf.toLowerCase()]: { miner: MINER, points: PROOF_POOL.pointsPerProof }, [b.expect.leaf.toLowerCase()]: { house: true } });
+  assert.deepEqual(who, { [a.expect.leaf.toLowerCase()]: { miner: MINER, points: HALF }, [b.expect.leaf.toLowerCase()]: { house: true } });
   const feed = (await h.pool.recent()).body.proofs;
   assert.equal(feed.length, 2);
   assert.deepEqual({ house: feed[0].house, points: feed[0].points, miner: feed[0].miner }, { house: true, points: 0, miner: undefined }, 'the house earns nothing and names no address');
-  assert.deepEqual({ miner: feed[1].miner, points: feed[1].points, secs: feed[1].secs }, { miner: MINER, points: PROOF_POOL.pointsPerProof, secs: 600 });
+  assert.deepEqual({ miner: feed[1].miner, points: feed[1].points, secs: feed[1].secs }, { miner: MINER, points: HALF, secs: 600 });
   assert.equal((await h.pool.stats()).body.top.length, 1, 'the house is never on the leaderboard');
 });
 
@@ -655,4 +655,47 @@ test('leases a client lets run out or hands back count against it for the day; T
   // the house hands back as often as it needs
   for (let i = 0; i < 4; i++) { const x = (await h.pool.lease({ house: 'gpu', client: 'h' })).body; if (!x?.lease) break; await h.pool.submit({ id: x.id, lease: x.lease, error: 'busy' }); }
   assert.notEqual((await h.pool.lease({ house: 'gpu', client: 'h' })).status, 403);
+});
+
+test('pay: a proof earns in full within a minute and less the longer it took, down to half at ten minutes, so a laptop still earns', () => {
+  const c = { ...PROOF_POOL };
+  assert.deepEqual([0, 8, 60].map((s) => payFactor(s, c)), [1, 1, 1], 'full up to payFullSecs');
+  assert.equal(payFactor(330, c), 0.75, 'a straight line between');
+  assert.deepEqual([600, 900, 86_400].map((s) => payFactor(s, c)), [0.5, 0.5, 0.5], 'half at the floor and beyond: a 15-minute laptop still earns');
+  assert.deepEqual([8, 90, 270, 480, 900].map((s) => payFor(s, c)), [20, 19, 16, 12, 10]);
+  assert.equal(payFor(500, { ...c, pointsPerProof: 1 }), 1, 'at least a point while any are paid');
+  assert.equal(payFor(500, { ...c, pointsPerProof: 0 }), 0, 'nothing when nothing is paid');
+  assert.equal(payFor(900, { ...c, payFloorPct: 100 }), 20, 'a floor of 100 pays every proof the same');
+  assert.equal(payFor(900, { ...c, payFloorSecs: 60 }), 20, 'a floor no later than the full time is no slope');
+  assert.equal(payFor(900, { ...c, payFullSecs: 700, payFloorSecs: 600 }), 20);
+  assert.equal(payFor(Number.NaN, c), 20, 'an unreadable time is not held against a proof');
+});
+
+test('pay config: each term is read within its bounds, and a bad one keeps the default', () => {
+  const c = proofPoolConfig({ POOL_PAY_FULL_SECS: '30', POOL_PAY_FLOOR_SECS: '300', POOL_PAY_FLOOR_PCT: '40' });
+  assert.deepEqual([c.payFullSecs, c.payFloorSecs, c.payFloorPct], [30, 300, 40]);
+  const d = proofPoolConfig({ POOL_PAY_FULL_SECS: 'fast', POOL_PAY_FLOOR_SECS: '0', POOL_PAY_FLOOR_PCT: '5' });
+  assert.deepEqual([d.payFullSecs, d.payFloorSecs, d.payFloorPct], [60, 600, 50], 'a floor under 10% is not read: nobody is paid next to nothing by a typo');
+  assert.equal(proofPoolConfig({ POOL_PAY_FLOOR_PCT: '100' }).payFloorPct, 100, 'flat pay is one setting away');
+});
+
+test('pay: the points a proof earns follow the time from its lease; the tally, the feed and the answer agree, and the lease still says the most', async () => {
+  const h = harness({ cfg: { pointsPerProof: 20 } });
+  const jobs = [0, 1, 2, 3].map((i) => wrapJob(i));
+  for (const j of jobs) await h.pool.request({ type: 'wrap', stdin: j.stdin, expect: j.expect, client: `page${j.id}` });
+  const prove = async (miner, client, secs) => {
+    const l = (await h.pool.lease({ miner, client })).body;
+    h.t += secs * 1000;
+    const j = jobs.find((x) => x.id === l.id);
+    return { lease: l, r: (await h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(j.expect), proof: PROOF })).body };
+  };
+  const fast = await prove(MINER, 'm1', 8);
+  const mid = await prove(MINER2, 'm2', 330);
+  const slow = await prove(MINER2, 'm2', 900);
+  assert.deepEqual([fast.r.points, mid.r.points, slow.r.points], [20, 15, 10]);
+  assert.deepEqual([fast.lease.points, mid.lease.points, slow.lease.points], [20, 20, 20], 'the lease names the most a proof can earn');
+  const c = (await h.pool.credits(DAY0)).body;
+  assert.deepEqual(c.miners.map((m) => [m.miner, m.proofs, m.points]).sort(), [[MINER, 1, 20], [MINER2, 2, 25]].sort());
+  const feed = (await h.pool.recent()).body.proofs;
+  assert.deepEqual(feed.map((e) => [e.secs, e.points]), [[900, 10], [330, 15], [8, 20]], 'the feed shows what each earned and how long it took');
 });

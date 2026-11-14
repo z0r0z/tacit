@@ -153,7 +153,7 @@ again, it updates the program and keeps the address. Cutting a new release means
   with 16 GB or more (13 minutes measured on an 8 GB MacBook Air) and uses the processor while it runs, so a laptop does best plugged in. The program makes one proof
   at a time and asks the pool for the next as soon as one is done (once a minute while the pool is empty).
 - **Costs:** nothing else. No key and no ETH are involved and nothing is signed; the address only receives points. A proof it cannot make is handed back, unpaid.
-- **Earns:** 20 points a proof, with no daily count. Once the day is over, the points service shares that day's TAC between the provers by points, no point
+- **Earns:** up to 20 points a proof, with no daily count: a proof that comes back within a minute of its lease earns all 20, and one that takes longer earns less, in a straight line down to half (10 points) at ten minutes and beyond, so a laptop's proof still earns and a fast one earns more (`POOL_PAY_FULL_SECS` 60, `POOL_PAY_FLOOR_SECS` 600, `POOL_PAY_FLOOR_PCT` 50; 100 pays every proof the same; `GET /prover/pool` shows them as `terms.pay`). Once the day is over, the points service shares that day's TAC between the provers by points, no point
   paid more than a cap, so a proof pays up to 20 times the cap. [`GET https://tacit-points.onrender.com/mine`](https://tacit-points.onrender.com/mine) gives the
   terms, when they end and what is left in the pocket; add `?address=0x…` for what an address has been credited. [tacit prove](https://tacit.finance/prove/) and `--status` read it.
 

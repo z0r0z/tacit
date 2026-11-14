@@ -45,6 +45,11 @@ export const PROOF_POOL = Object.freeze({
   keepMs: 7 * 86_400_000,            // POOL_KEEP_MS: how long a finished proof stays readable
   pointsPerProof: 20,                // POINTS_MINE_PER_PROOF
   proofsPerMinerDay: Infinity,       // POINTS_MINE_DAILY_CAP: proofs an address is credited for in a UTC day (none: every proof)
+  // A proof pays in full when it comes back within payFullSecs of its lease and less the longer it took, down to payFloorPct of the full
+  // points at payFloorSecs and beyond: a laptop's proof still earns, a fast one earns more. payFloorPct 100 pays every proof the same.
+  payFullSecs: 60,                   // POOL_PAY_FULL_SECS
+  payFloorSecs: 600,                 // POOL_PAY_FLOOR_SECS
+  payFloorPct: 50,                   // POOL_PAY_FLOOR_PCT
   strikesPerDay: 3,
   lapsesPerDay: 8,                   // POOL_LAPSES_PER_DAY: leases a client may let run out or hand back in a UTC day before it is offered nothing more
   leasesPerClient: 4,                // open leases one client may hold, one per address (a household's few machines)
@@ -77,10 +82,25 @@ export function proofPoolConfig(env = {}) {
     keepMs: n(env.POOL_KEEP_MS, PROOF_POOL.keepMs, 60_000, 30 * 86_400_000),
     pointsPerProof: n(env.POINTS_MINE_PER_PROOF, PROOF_POOL.pointsPerProof, 0, 100_000),
     proofsPerMinerDay: n(env.POINTS_MINE_DAILY_CAP, PROOF_POOL.proofsPerMinerDay, 1, 100_000),
+    payFullSecs: n(env.POOL_PAY_FULL_SECS, PROOF_POOL.payFullSecs, 0, 86_400),
+    payFloorSecs: n(env.POOL_PAY_FLOOR_SECS, PROOF_POOL.payFloorSecs, 1, 86_400),
+    payFloorPct: n(env.POOL_PAY_FLOOR_PCT, PROOF_POOL.payFloorPct, 10, 100),
     lapsesPerDay: n(env.POOL_LAPSES_PER_DAY, PROOF_POOL.lapsesPerDay, 1, 100_000),
     turnMs: n(env.POOL_TURN_MS, PROOF_POOL.turnMs, 0, 600_000),
   });
 }
+
+// The share of a proof's full points it earns for taking `secs` from lease to proof: all of it up to payFullSecs, falling in a straight
+// line to payFloorPct at payFloorSecs, and that much beyond. Terms that do not make a slope (the floor not past the full time, or a
+// floor of 100) pay every proof in full.
+export function payFactor(secs, cfg) {
+  const full = Number(cfg.payFullSecs), floor = Number(cfg.payFloorSecs), pct = Number(cfg.payFloorPct) / 100;
+  const s = Number(secs);
+  if (!(floor > full) || !(pct >= 0 && pct < 1) || !(s > full)) return 1;
+  return s >= floor ? pct : 1 - ((1 - pct) * (s - full)) / (floor - full);
+}
+// The points a proof earns: the full points scaled by how long it took, whole points, at least one while any are paid.
+export const payFor = (secs, cfg) => (cfg.pointsPerProof > 0 ? Math.max(1, Math.round(cfg.pointsPerProof * payFactor(secs, cfg))) : 0);
 
 // A fixed point in [0, 1) for a job and an address, or for a job and a client: a hash of the two.
 export const drawOf = (id, who) => {
@@ -505,7 +525,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       const dep = String(job.expect?.depositId || '').toLowerCase();
       const again = dep ? (await read(K.paid(dep), null)) != null : false;
       if (dep && !again) await write(K.paid(dep), t, cfg.daySecs);
-      const mr = minerIn(rec, l.miner), points = again ? 0 : earns(rec, l.miner);
+      const mr = minerIn(rec, l.miner), points = !again && earns(rec, l.miner) > 0 ? payFor(secs, cfg) : 0;
       mr.proofs++;
       if (points > 0) { mr.credited++; mr.points += points; rec.points += points; }
       await write(K.day(d), rec, cfg.daySecs);
@@ -559,7 +579,9 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       oldestLeaseSecs: live ? secs(Math.max(...Object.values(L).filter((l) => l.until > t).map((l) => t - (l.until - cfg.leaseMs)))) : 0,
       done24h: Math.max(day.done, rec.done), miners24h: Math.max(day.miners, miners.length),
       top: miners.map(([miner, m]) => ({ miner, proofs: m.proofs })).sort((a, b) => b.proofs - a.proofs || (a.miner < b.miner ? -1 : 1)).slice(0, cfg.top),
-      terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs },
+      // pointsPerProof is the most a proof earns; `pay` says how it falls with the time a proof took (payFor, payFactor)
+      terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs,
+        pay: { fullSecs: cfg.payFullSecs, floorSecs: cfg.payFloorSecs, floorPct: cfg.payFloorPct } },
     });
   }
 

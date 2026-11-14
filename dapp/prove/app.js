@@ -6,7 +6,7 @@ import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpd
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS, dayShare } from '/prove/tabmine.js?cb=a9294239';
 import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView, pressTurnsOn } from '/prove/review.js?cb=23bfbd4a';
-import { short, cells, opsText, tac, rewardWei, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, proofSpan, dayTotals, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=c7608249';
+import { short, cells, opsText, tac, rewardWei, payPoints, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, proofSpan, dayTotals, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=582da13e';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
 const SAVED_ADDR = 'tacit-prove-address';                          // shared with the keeper page's card
@@ -27,7 +27,8 @@ const addr = () => cleanAddress($('#addr').value);
 const count = (x) => (Number.isSafeInteger(Number(x)) && Number(x) >= 0 ? Number(x) : null);
 const cleanPool = (p) => (p ? { queued: count(p.queued), leased: count(p.leased), doneToday: count(p.doneToday), minersToday: count(p.minersToday),
   done24h: count(p.done24h), miners24h: count(p.miners24h),
-  top: (p.top || []).map(cleanMiner).filter(Boolean), terms: { pointsPerProof: count(p.terms?.pointsPerProof), proofsPerMinerDay: count(p.terms?.proofsPerMinerDay) } } : null);
+  top: (p.top || []).map(cleanMiner).filter(Boolean), terms: { pointsPerProof: count(p.terms?.pointsPerProof), proofsPerMinerDay: count(p.terms?.proofsPerMinerDay),
+    pay: { fullSecs: count(p.terms?.pay?.fullSecs), floorSecs: count(p.terms?.pay?.floorSecs), floorPct: count(p.terms?.pay?.floorPct) } } } : null);
 const me = () => addr()?.toLowerCase() || null;
 // What a point earned today is paid so far (perPoint): the day's amount over today's proof points, the pool's tally and the board's, never
 // more than the cap. Unknown until the pool's tally of today is read; a board tally not read yet counts nothing.
@@ -426,7 +427,9 @@ function paint() {
   // A proof this computer just had taken: the reward it won, for a moment.
   if (mine && typeof mine.proved === 'number') {
     if (lastProved != null && mine.proved > lastProved) {
-      const r = rewardWei(pool?.terms?.pointsPerProof, pointRate()), w = $('#win');
+      // at the pace this address has been proving (the median of its proofs in the feed): a slower machine's proof earns less (payPoints)
+      const pace = median(feed.filter((p) => String(p.miner).toLowerCase() === me()).map((p) => p.secs));
+      const r = rewardWei(payPoints(pool?.terms?.pointsPerProof, pace, pool?.terms?.pay), pointRate()), w = $('#win');
       w.textContent = r ? `+${tac(r)} TAC` : 'Proved';
       w.classList.remove('go'); void w.offsetWidth; w.classList.add('go');
       readRemote(); readFeed();
