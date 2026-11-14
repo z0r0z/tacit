@@ -60,7 +60,10 @@ export function makeLeases(opts = {}) {
     c.dayPoints += pts; const m = miner(addr); m.points += pts; return pts;
   };
   const strike = (ck, why) => { const c = client(ck), t = o.now(); c.strikes = c.strikes.filter((x) => t - x < o.strikeWindowMs); c.strikes.push(t); if (c.strikes.length >= o.strikeLimit) { c.bannedUntil = t + o.banMs; log({ ev: 'ban', client: ck, why }); } };
-  const give = (id, job, who) => { if (!job.canary) client(who.ck).sinceCanary++; const token = randomBytes(16).toString('hex'); leased.set(id, { job, token, addr: who.addr.toLowerCase(), ck: who.ck, expires: o.now() + o.leaseMs, at: o.now() }); job.tries = (job.tries || 0) + 1;
+  // A canary follows work a client has handed in (an answer taken, a review or a check that was paid), not jobs it was handed: a client that
+  // takes jobs and lets them lapse is not working, and must not be able to call up canaries (each pays a point) by asking.
+  const delivered = (ck) => { client(ck).sinceCanary++; };
+  const give = (id, job, who) => { const token = randomBytes(16).toString('hex'); leased.set(id, { job, token, addr: who.addr.toLowerCase(), ck: who.ck, expires: o.now() + o.leaseMs, at: o.now() }); job.tries = (job.tries || 0) + 1;
     return { id, lease: token, kind: job.scan ? 'scan' : job.kind, messages: job.messages, max_tokens: job.max_tokens, temperature: job.temperature }; };   // a skeptic's job goes out as a scan: a node cannot tell the roles apart
 
   function enqueue(kind, messages, { max_tokens = 300, temperature = 0.2, timeoutMs = 12000, ctxText = '', askerIp = null } = {}) {
@@ -141,6 +144,7 @@ export function makeLeases(opts = {}) {
       // which then grows with what is paid, not with every job.
       const kind = checking ? 'check' : 'scan', paid = !o.payable || o.payable(kind, job.ctx || {}) !== false;
       const pts = paid ? credit(ck, addr, kind, job) : 0; if (pts > 0) log({ ev: kind, miner: addr, job: job.id, points: pts });
+      if (paid) delivered(ck);
       return { ok: true, points: pts, ...(paid ? {} : { unpaid: true }) };
     }
     const bad = o.vet(text, job.ctxText);
@@ -150,7 +154,7 @@ export function makeLeases(opts = {}) {
       const echoed = !!bad && !!o.vet.last && asked.toLowerCase().includes(o.vet.last);
       m.errors++; if (!echoed) strike(ck, bad); log({ ev: 'rejected', miner: addr, why: bad, ...(echoed ? { echoed: true } : {}) }); requeue(); return { ok: true, points: 0 };
     }
-    clearTimeout(job.timer); m.answered++; timed(ck, L); const pts = credit(ck, addr, 'answer', job); log({ ev: 'answer', miner: addr, job: job.id, points: pts });
+    clearTimeout(job.timer); m.answered++; timed(ck, L); delivered(ck); const pts = credit(ck, addr, 'answer', job); log({ ev: 'answer', miner: addr, job: job.id, points: pts });
     job.resolve({ text, miner: addr }); return { ok: true, points: pts };
   }
 
@@ -223,13 +227,19 @@ export function makeVet(corpusText) {
 
 // The points service's contract (the proof pool's GET /prover/pool/credits): for a UTC day number, { day, over, miners: [{ miner, proofs, points }] }.
 // Built from the append-only ledger. `over` is true only once the day has ended, and an address is capped at maxPerDay whatever it earned.
-export function creditsFor(ledgerFile, day, { maxPerDay = 100, now = Date.now() } = {}) {
+// An address that earned fewer than minPoints in the day is not credited (a single point is dust, and a day of them is a ledger entry each),
+// and the day's points together never pass `budget` (0: no budget): over it, each address's points are scaled down to fit, rounded down, so
+// review work is a fixed share of the mining pot that more machines divide between them and never enlarge (as the salt pool's day is).
+export function creditsFor(ledgerFile, day, { maxPerDay = 100, minPoints = 0, budget = 0, now = Date.now() } = {}) {
   const today = Math.floor(now / 86400000), by = new Map();
   if (existsSync(ledgerFile)) for (const l of readFileSync(ledgerFile, 'utf8').split('\n')) {
     if (!l) continue; let e; try { e = JSON.parse(l); } catch { continue; }
     if (!(e.points > 0) || !isAddr(e.miner) || Math.floor(e.t / 86400000) !== day) continue;
     const a = e.miner.toLowerCase(), r = by.get(a) || { miner: a, proofs: 0, points: 0 }; r.points += e.points; if (e.ev === 'answer') r.proofs++; by.set(a, r);
   }
-  const miners = [...by.values()].map((r) => ({ ...r, points: Math.min(r.points, maxPerDay) })).filter((r) => r.points > 0).sort((x, y) => (x.miner < y.miner ? -1 : 1));
+  let miners = [...by.values()].map((r) => ({ ...r, points: Math.min(r.points, maxPerDay) })).filter((r) => r.points > 0 && r.points >= minPoints);
+  const total = miners.reduce((a, r) => a + r.points, 0);
+  if (budget > 0 && total > budget) miners = miners.map((r) => ({ ...r, points: Math.floor((r.points * budget) / total) })).filter((r) => r.points > 0);
+  miners.sort((x, y) => (x.miner < y.miner ? -1 : 1));
   return { day, over: day < today, miners };
 }

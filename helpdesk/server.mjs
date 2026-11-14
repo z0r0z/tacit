@@ -130,7 +130,11 @@ const checkFeed = SWARM ? makeCheckFeed({ source: scanFeed.source, sample: scanF
 // GET /helpdesk/credits is one of its mining feeds): /stats says so, and the prove page offers pay only when it is paid.
 const POINTS = { answer: Number(process.env.POINTS_ANSWER ?? 1), canary: Number(process.env.POINTS_CANARY ?? 1), scan: Number(process.env.POINTS_SCAN ?? 1), check: Number(process.env.POINTS_CHECK ?? 1) };
 const MAX_DAY = Number(process.env.POINTS_MAX_DAY ?? 100);
-const PAY = { paid: process.env.REVIEW_PAID === '1', points: POINTS, maxPerDay: MAX_DAY };
+// What the day's review points may add up to (a fixed share of the mining pot: past it, every address is scaled down to fit), and the least an address
+// earns in a day to be credited at all. A bad value keeps the default; POINTS_DESK_BUDGET=0 sets no budget.
+const envNum = (k, d) => { const v = process.env[k]; const x = v === undefined || v === '' ? NaN : Number(v); return Number.isFinite(x) && x >= 0 ? x : d; };
+const DESK_BUDGET = envNum('POINTS_DESK_BUDGET', 6000), DESK_MIN = envNum('POINTS_DESK_MIN', 2);
+const PAY = { paid: process.env.REVIEW_PAID === '1', points: POINTS, maxPerDay: MAX_DAY, budgetPerDay: DESK_BUDGET, minPerDay: DESK_MIN };
 const leases = makeLeases({
   ledger: path.join(DATA, 'ledger.jsonl'), persist: path.join(DATA, 'leases-state.json'),
   points: POINTS, clientMaxPerDay: MAX_DAY, vet: makeVet(corpus.chunks.map((c) => c.text).join('\n')),
@@ -243,7 +247,7 @@ if (process.argv[2] === 'serve') {
     if (pathname === '/whoami') return send(res, 200, { ip, trueClientIp: req.headers['true-client-ip'] || null, xff: req.headers['x-forwarded-for'] || null, socket: req.socket.remoteAddress, hops: HOPS, trustProxy: process.env.TRUST_PROXY === '1' });
     if (req.method === 'GET' && pathname === '/helpdesk/credits') { cors(req, res); const q = new URL(req.url, 'http://x').searchParams.get('day'); const day = /^\d{1,6}$/.test(q || '') ? Number(q) : NaN;
       if (!(day <= utcDay())) return send(res, 400, { ok: false, error: 'day must be a UTC day number, today or before' });
-      return send(res, 200, creditsCached(day, () => creditsFor(path.join(DATA, 'ledger.jsonl'), day, { maxPerDay: MAX_DAY }))); }
+      return send(res, 200, creditsCached(day, () => creditsFor(path.join(DATA, 'ledger.jsonl'), day, { maxPerDay: MAX_DAY, minPoints: DESK_MIN, budget: DESK_BUDGET }))); }
     if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff' }); return res.end(PAGE); }
     if (req.method === 'GET' && (req.url === '/health' || req.url === '/stats')) { const st = llm.stats(); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(req.url === '/health' ? { ok: st.backends.some((b) => b.up) || leases.nodesOnline() > 0, nodes: leases.nodesOnline(), capacity: leases.capacity(), dense: denseState, backends: st.backends.map((b) => ({ url: b.url, up: b.up })) } : { ...st, nodes: leases.stats(), swarm: checkFeed ? checkFeed.summary() : null, pay: PAY })); }
     if (req.url.startsWith('/helpdesk/')) return nodeApi(req, res).catch(() => { if (!res.headersSent) send(res, 500, { error: 'the help desk could not answer' }); else res.end(); });

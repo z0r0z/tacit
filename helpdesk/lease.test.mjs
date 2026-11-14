@@ -254,4 +254,51 @@ check('and dropped when it is long, has spaces, markup or control characters, or
   check('/stats shows a node\'s model only when it was a plain name', ms.filter((m) => m === 'qwen3.5-4b').length === 1 && ms.filter((m) => m === null).length === 2);
   L.close(); }
 
+// a canary follows work a client hands in, not jobs it is handed: leasing and letting jobs lapse calls up none (each pays a point)
+{ const cmsgs = [{ role: 'user', content: 'canary question' }];
+  const L = mk({ canaryEvery: 2, leaseMs: 60000, canary: async () => ({ messages: cmsgs, check: () => true }) });
+  const ip = '7.7.7.7', taken = [];
+  for (let i = 0; i < 6; i++) { L.enqueue('answer', msgs, { timeoutMs: 5000 }).catch(() => {}); taken.push(await L.lease({ miner: A, ip })); }
+  check('canary: six jobs leased and none handed in call up no canary, whatever the address', taken.every((j) => j && j.messages === msgs));
+  const fresh = []; for (let i = 0; i < 6; i++) { const a = '0x' + (0x100 + i).toString(16).padStart(40, '0'); L.enqueue('answer', msgs, { timeoutMs: 5000 }).catch(() => {}); fresh.push(await L.lease({ miner: a, ip })); }
+  check('canary: nor does naming a new address on each lease', fresh.every((j) => j && j.messages === msgs));
+  L.close();
+  const M = mk({ canaryEvery: 2, canary: async () => ({ messages: cmsgs, check: () => true }) }), ip2 = '7.7.7.8';
+  const done = async () => { const p = M.enqueue('answer', msgs, { timeoutMs: 3000 }); const j = await M.lease({ miner: A, ip: ip2 }); await M.submit({ id: j.id, lease: j.lease, miner: A, ip: ip2, text: 'ok' }); await p; };
+  await done(); await done();
+  const c = await M.lease({ miner: A, ip: ip2 });
+  check('canary: two answers handed in, and the next lease is the canary', c && c.messages === cmsgs); M.close(); }
+
+// review work counts toward a canary only when it was paid: unproven machines, and replies that are not reviews, do not call one up
+{ let k = 0, pay = false; const cmsgs = [{ role: 'user', content: 'canary question' }];
+  const feed = { next: async () => ({ id: 'rv' + (++k), kind: 'scan', messages: [{ role: 'user', content: 'File: y.js' }], meta: {} }), onResult: async () => {}, onInvalid: async () => {} };
+  const S = mk({ canaryEvery: 2, scanPerHour: 1000, scan: feed, payable: () => pay, points: { answer: 1, canary: 1, scan: 1 }, canary: async () => ({ messages: cmsgs, check: () => true }) });
+  const ip = '7.7.7.9', review = async (text) => { const j = await S.lease({ miner: A, ip, kinds: ['scan', 'answer'] }); if (j.messages === cmsgs) return j; await S.submit({ id: j.id, lease: j.lease, miner: A, ip, text }); return null; };
+  let got = null; for (let i = 0; i < 6 && !got; i++) got = await review('{"findings":[]}');
+  check('canary: reviews that earn nothing (the machine is not proven yet) call up no canary', got === null);
+  pay = true; got = null; for (let i = 0; i < 6 && !got; i++) got = await review('Looks fine.');
+  check('canary: nor do replies that are not reviews', got === null);
+  for (let i = 0; i < 6 && !got; i++) got = await review('{"findings":[]}');
+  check('canary: paid reviews do, after canaryEvery of them', got !== null); S.close(); }
+
+// the day's review points: dust is not credited, and the day's total is held to the budget by scaling every address down
+{ const fs = await import('node:fs'); const f = '/tmp/ledger-budget-test.jsonl'; const day = 20801, t0 = day * 86400000 + 1000, C = '0x' + 'c3'.repeat(20), D = '0x' + 'd4'.repeat(20), E = '0x' + 'e5'.repeat(20);
+  const rows = []; const add = (miner, n, ev = 'scan') => { for (let i = 0; i < n; i++) rows.push({ t: t0 + i, ev, miner, points: 1 }); };
+  add(A, 10); add(B, 1, 'canary'); add(C, 1, 'canary'); add(D, 5); add(E, 4);
+  fs.writeFileSync(f, rows.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  const at = (opts) => creditsFor(f, day, { now: (day + 1) * 86400000, ...opts });
+  const pts = (c) => Object.fromEntries(c.miners.map((m) => [m.miner.slice(0, 5), m.points]));
+  check('credits: with no minimum and no budget every address is credited, as before', JSON.stringify(pts(at({}))) === JSON.stringify({ '0xa1a': 10, '0xb2b': 1, '0xc3c': 1, '0xd4d': 5, '0xe5e': 4 }));
+  const dust = at({ minPoints: 2 });
+  check('credits: an address under the minimum is not credited', dust.miners.length === 3 && dust.miners.every((m) => m.points >= 2));
+  const big = at({ minPoints: 2, budget: 100 });
+  check('credits: a budget the day does not reach changes nothing', big.miners.reduce((a, m) => a + m.points, 0) === 19);
+  const fit = at({ minPoints: 2, budget: 10 });
+  check('credits: past the budget every address is scaled down to fit it, rounded down', fit.miners.reduce((a, m) => a + m.points, 0) <= 10 && pts(fit)['0xa1a'] === 5 && pts(fit)['0xd4d'] === 2 && pts(fit)['0xe5e'] === 2);
+  const swarm = []; for (let i = 0; i < 300; i++) swarm.push({ t: t0 + i, ev: 'canary', miner: '0x' + i.toString(16).padStart(40, '0'), points: 1 });
+  fs.appendFileSync(f, swarm.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  const swarmed = at({ minPoints: 2, budget: 100 });
+  check('credits: three hundred one-point addresses add nothing to a day with a minimum, and the honest ones keep their points', swarmed.miners.length === 3 && swarmed.miners.reduce((a, m) => a + m.points, 0) === 19);
+  check('credits: the budget holds whatever the swarm, and a minimum of 0 still credits dust', at({ budget: 100 }).miners.reduce((a, m) => a + m.points, 0) <= 100 && at({ minPoints: 0 }).miners.length > 300); fs.unlinkSync(f); }
+
 console.log(fails ? `${fails} lease test(s) failed` : 'lease: all tests passed'); process.exit(fails ? 1 : 0);
