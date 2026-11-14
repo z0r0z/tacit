@@ -736,16 +736,7 @@ export async function saleKeys(tacit, poolWallet, notes, asset, { addresses = []
   // outputs at a sale key that this read could not open (a transaction that did not load, or an exit whose fee note it cannot
   // read): the screen says they were not read, never "nothing there"
   const unread = [];
-  let quiet = 0, free = null;
-  for (let c = 0; quiet < SALE_GAP || free == null; c++) {
-    const k = saleKey(poolWallet, c);
-    if (!(await used(k.address))) {
-      if (await used(p2trAddress(pool.deriveExitKey(poolWallet, c, 'p2tr').scriptPubKey, poolWallet.network))) { quiet = 0; continue; }
-      quiet++;
-      if (free == null && !held.has(c)) free = c;
-      continue;
-    }
-    quiet = 0;
+  const read = async (k) => {
     const found = [];
     for (const u of (await esplora(tacit, `/address/${k.address}/utxo`)) || []) {
       const tx = await tacit.getTx(u.txid).catch(() => null);
@@ -759,8 +750,56 @@ export async function saleKeys(tacit, poolWallet, notes, asset, { addresses = []
       found.push({ txid: u.txid, vout: u.vout, value: BigInt(o.value), blinding: BigInt(o.blinding), confirmed: !!u.status?.confirmed });
     }
     keys.push({ ...k, notes: found });
+  };
+  let quiet = 0, free = null, c = 0;
+  for (; quiet < SALE_GAP || free == null; c++) {
+    const k = saleKey(poolWallet, c);
+    if (!(await used(k.address))) {
+      if (await used(p2trAddress(pool.deriveExitKey(poolWallet, c, 'p2tr').scriptPubKey, poolWallet.network))) { quiet = 0; continue; }
+      quiet++;
+      if (free == null && !held.has(c)) free = c;
+      continue;
+    }
+    quiet = 0;
+    await read(k);
   }
+  // a take-out past that run of unused keys is found from the wallet's own spends instead
+  for (const far of await spentToSaleKeys(tacit, poolWallet, notes)) if (far >= c) await read(saleKey(poolWallet, far));
   return { keys, free, unread };
+}
+
+const SALE_FAR = 256;                    // how far into the sale keys a take-out found from a spend is looked for
+const saleScripts = new WeakMap();       // pool wallet → its sale keys' scripts derived so far, by counter
+
+// The sale keys this wallet's own pool spends paid. Every spend sends its change, or a zero note in its place, to the
+// wallet's internal address, so the transactions behind its internal notes are its spends, and an exit in one of them to a
+// sale key is a take-out. The walk over the keys ends at six unused ones in a row, but each try that got as far as a proof
+// sets its key aside for a day, so tries that failed leave unused keys before the one that worked: found this way, the
+// key that worked is read however far on it is.
+async function spentToSaleKeys(tacit, poolWallet, notes) {
+  const own = tacit.wallet?.pub ? bytesToHex(tacit.p2wpkhScript(tacit.wallet.pub)) : null;
+  const want = new Set();
+  for (const txid of new Set(notes.filter((n) => n?.internal && n.txid).map((n) => strip0x(n.txid)))) {
+    const tx = await tacit.getTx(txid).catch(() => null);
+    if (!tx) throw new Error(`Could not read the pool spend ${txid.slice(0, 8)}…`);   // a failed read, never "nothing there"
+    const env = tacit.txOutputEnvelope(tx);
+    if (!env || env.opcode !== 0x6d) continue;
+    let sp;
+    try { sp = pool.parseSpend(env.payload); } catch { try { sp = pool.parseSpend(env.payload, { full: true }); } catch { continue; } }
+    const spk = String(tx.vout?.[sp.exit?.exitVout]?.scriptpubkey || '').toLowerCase();
+    if (/^0014[0-9a-f]{40}$/.test(spk) && spk !== own) want.add(spk);
+  }
+  const out = [];
+  let s = saleScripts.get(poolWallet);
+  if (want.size && !s) saleScripts.set(poolWallet, (s = []));
+  for (let c = 0; want.size && c < SALE_FAR; c++) {
+    if (c === s.length) {
+      if (c % 32 === 31) await new Promise((r) => setTimeout(r, 0));   // the page stays responsive while keys are worked out
+      s.push(saleKey(poolWallet, c).scriptPubKey);
+    }
+    if (want.delete(s[c])) out.push(c);
+  }
+  return out;
 }
 
 export async function exitToSaleKey(tacit, { poolWallet, amount, asset, key, anchor = null, maxFee = null, say = () => {}, inputs = null, requoted = false }) {

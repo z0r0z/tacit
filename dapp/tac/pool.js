@@ -1,5 +1,5 @@
 
-const SECRET_URL = '/sats/secret.js?cb=6b52277d';
+const SECRET_URL = '/sats/secret.js?cb=fe6a0439';
 const SATS_URL = '/tac/sats.js?cb=39c66414';
 const CLAIM_URL = '/tac/claim.js?cb=dc513e91';
 const WORKER = 'https://api.tacit.finance';

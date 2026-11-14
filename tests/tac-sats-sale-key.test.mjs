@@ -108,6 +108,66 @@ pool.recoverExit = (wallet, payload, notes, opts) => { if (failOpen && payload[0
   assert.deepEqual(r.unread, [{ txid: 'aa'.repeat(32), vout: 0 }, { txid: 'bb'.repeat(32), vout: 1 }], 'the two it could not open are named');
 }
 
+// ── a take-out past six unused keys in a row (failed tries each set a key aside for a day) is found from the wallet's own
+// spends: the transactions behind its internal notes (change and padding), an exit there to one of its sale keys ──
+{
+  const realParse = pool.parseSpend;
+  pool.parseSpend = (payload) => { if (payload[0] !== 3) throw new Error('btc-pool: not a spend envelope'); return { exit: { exitVout: payload[1] } }; };
+  const walletPub = secp.getPublicKey(new Uint8Array(32).fill(9), true);
+  const ownSpk = '0014' + bytesToHex(ripemd160(sha256(walletPub)));
+  const FAR = 9, spends = {
+    ['d1'.repeat(32)]: { opcode: 0x6d, exitVout: 0, vout: [{ scriptpubkey: secret.saleKey(pw, FAR).scriptPubKey }, { scriptpubkey: '0014' + '22'.repeat(20) }] },   // a take-out to key 9
+    ['d2'.repeat(32)]: { opcode: 0x6d, exitVout: 1, vout: [{ scriptpubkey: '0014' + '22'.repeat(20) }, { scriptpubkey: ownSpk }] },   // To Bitcoin, to the wallet's own address
+    ['d3'.repeat(32)]: { opcode: 0x6e, exitVout: 0, vout: [{ scriptpubkey: secret.saleKey(pw, 12).scriptPubKey }] },   // no exit: not a take-out, whatever it pays
+  };
+  const utxoReads = [];
+  const scan = (fail = null) => ({
+    ...tacitScan,
+    wallet: { pub: walletPub },
+    p2wpkhScript: (pub) => hexToBytes('0014' + bytesToHex(ripemd160(sha256(pub)))),
+    getTx: async (id) => {
+      if (id === fail) return null;
+      const s = spends[id];
+      return s ? { id, opcode: s.opcode, payload: new Uint8Array([s.opcode === 0x6d ? 3 : 0, s.exitVout]), vout: s.vout } : tx(id, id.startsWith('ee') ? 0x6d : 0x39);
+    },
+    txOutputEnvelope: (t) => ({ opcode: t.opcode, payload: t.payload || new Uint8Array([1]) }),
+  });
+  const watch = () => { const inner = globalThis.fetch; globalThis.fetch = async (url) => { const m = String(url).match(/\/address\/([^/]+)\/utxo$/); if (m) utxoReads.push(m[1]); return inner(url); }; };
+  const notes = [
+    { nf: '0x01', spent: true, txid: 'aa'.repeat(32), value: 98700000000n },                 // a shield's note, spent
+    { nf: '0x02', spent: false, internal: true, txid: 'd1'.repeat(32), value: 0n },           // the take-out's padding
+    { nf: '0x03', spent: false, internal: true, txid: 'd1'.repeat(32), value: 0n },
+    { nf: '0x04', spent: false, internal: true, txid: 'd2'.repeat(32), value: 0n },
+    { nf: '0x05', spent: false, internal: true, txid: 'd3'.repeat(32), value: 5n },
+  ];
+  const takeout = { txid: 'ee'.repeat(32), vout: 1, value: 546, status: { confirmed: true } };
+
+  chain({ wpkh: { [FAR]: [takeout] } }); watch(); utxoReads.length = 0;
+  const r = await secret.saleKeys(scan(), pw, notes, ASSET, { addresses: [relayAddr] });
+  assert.deepEqual(r.keys.map((k) => k.counter), [FAR], 'key 9 is read though the walk stopped at key 5');
+  assert.deepEqual(r.keys[0].notes, [{ txid: 'ee'.repeat(32), vout: 1, value: 250000000n, blinding: 5n, confirmed: true }], 'and its TAC is found');
+  assert.equal(r.free, 0, 'the next take-out still uses the first free key');
+  assert.deepEqual(utxoReads, [secret.saleKey(pw, FAR).address], 'only that key is read: an exit to the wallet’s own address and a spend with no exit are not looked for');
+  assert.deepEqual(r.unread, []);
+
+  // a take-out the walk reaches is read once, not twice
+  chain({ wpkh: { 2: [takeout] } }); watch();
+  spends['d1'.repeat(32)] = { ...spends['d1'.repeat(32)], vout: [{ scriptpubkey: secret.saleKey(pw, 2).scriptPubKey }] };
+  const r2 = await secret.saleKeys(scan(), pw, notes, ASSET, { addresses: [relayAddr] });
+  assert.deepEqual(r2.keys.map((k) => k.counter), [2], 'key 2 once');
+
+  // a spend that does not load is a failed read, never "nothing there"
+  chain(); watch();
+  await assert.rejects(secret.saleKeys(scan('d2'.repeat(32)), pw, notes, ASSET), /Could not read the pool spend d2d2d2d2/, 'a spend that did not load fails the read');
+  // a wallet with no internal notes fetches no transaction
+  let txReads = 0;
+  chain(); watch();
+  const quietScan = { ...scan(), getTx: async () => { txReads++; return null; } };
+  assert.deepEqual(await secret.saleKeys(quietScan, pw, [notes[0]], ASSET), { keys: [], free: 0, unread: [] });
+  assert.equal(txReads, 0, 'no transaction is fetched for a wallet that has made no pool spend');
+  pool.parseSpend = realParse;
+}
+
 // ── a first explorer that is down or erroring: the dapp's second explorer answers; both down is a failure, not "none" ──
 {
   const two = { ...tacitScan, NET: { api: 'https://down.test/api', api2: API } };
