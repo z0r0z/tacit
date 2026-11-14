@@ -16034,8 +16034,9 @@ async function _bridgedOpen(assetIdHex) {
 async function bridgedNotes(assetIdHex = CANONICAL_TAC_ASSET_ID_HEX) {
   const asset = _bridgedMoveAsset(assetIdHex);
   await ensurePrivkey();
+  // a mint the worker has decided is not its bridge's (a second mint of a claim, or a rejected one) is not a note to list or move
   const found = await _bridgedOpen(asset);
-  const notes = found.map((n) => ({ txid: n.txid, vout: n.vout, sats: n.sats, amount: n.amount, confirmed: !!n.confirmed, openErr: n.openErr || null }));
+  const notes = found.filter((n) => n.credited !== false).map((n) => ({ txid: n.txid, vout: n.vout, sats: n.sats, amount: n.amount, confirmed: !!n.confirmed, openErr: n.openErr || null }));
   return { notes, unread: found.unread || 0 };
 }
 const bridgedTacNotes = () => bridgedNotes(CANONICAL_TAC_ASSET_ID_HEX);
