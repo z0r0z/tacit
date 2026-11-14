@@ -134,6 +134,40 @@ export async function attemptFill(ctx, state, it) {
   }
 }
 
+// ---- a bridged token's bid: bound offers instead of atomic intents ----
+//
+// A bridged token other than TAC is not sold by an atomic sale (the reflection would not fold it). A seller answers a 'bound' bid
+// with a signed bound offer (worker/src/bound-offers.js): its whole note, ALL|ANYONECANPAY, for at most the bid's unit price. The
+// take (dapp/tacit.js takeBoundOffer) checks the note live and unbound in the reflection's set, checks the offer, funds the commit
+// from this bid wallet, verifies the pair (the seller's signature over THIS reveal, every output bound, the chain binding, the
+// buyer note's opening) and broadcasts, then reports the fill. Nothing is claimed first: the offer is already signed.
+export async function fetchCandidateBoundOffers(ctx) {
+  const url = `${ctx.workerBase}/assets/${ctx.assetId}/bound-offers?network=${encodeURIComponent(ctx.network)}&bid=${encodeURIComponent(ctx.bidId || '')}`;
+  let j;
+  try { const r = await fetch(url); if (!r.ok) throw new Error(`HTTP ${r.status}`); j = await r.json(); }
+  catch (e) { ctx.log('warn', 'bound-offers list failed', { err: e.message }); return []; }
+  const now = Math.floor(Date.now() / 1000);
+  return (Array.isArray(j.offers) ? j.offers : []).filter((o) => o && o.id && o.status === 'open' && Number(o.expiry || 0) > now
+    && String(o.bid_id || '') === String(ctx.bidId || '') && String(o.buyerXonly || '') === String(ctx.pubHex || '').slice(2));
+}
+
+// The policy speaks of a record's `amount` and `price_sats`, as an intent carries them.
+export const boundOfferAsRecord = (o) => ({ amount: String(o.amount), price_sats: Number(o.priceSats) });
+
+export async function attemptBoundFill(ctx, state, offer) {
+  const gate = bidPolicy(ctx, state, boundOfferAsRecord(offer));
+  if (!gate.ok) return { ok: false, refused: true, reason: `offer fails policy: ${gate.reason}` };
+  if (ctx.dryRun) { ctx.log('info', 'DRY RUN — would take the bound offer', { offer: offer.id }); return { ok: false, dry: true }; }
+  try {
+    const t = await ctx.dapp.takeBoundOffer({ offer, bidPriv: ctx.priv });
+    return { ok: true, txid: t?.revealTxid || null, settledAmt: gate.amt, note: t?.buyerNote ? { txid: t.buyerNote.txid, vout: 0, amount: String(t.buyerNote.amount) } : null };
+  } catch (e) {
+    // an offer whose checks fail is refused for good; a broadcast that did not go through is tried again next cycle
+    if (/does not check|does not verify|bound note|another asset|not in the reflection|commitment is not/.test(e.message)) return { ok: false, refused: true, reason: e.message };
+    return { ok: false, reason: `take failed: ${e.message}` };
+  }
+}
+
 // One poll cycle for one bid. Mutates `state` and calls `persist(state)` after
 // each settled/refused intent. Returns { fills, capped, idle, scanned }.
 export async function runTick(ctx, state, { persist = () => {} } = {}) {
@@ -147,17 +181,18 @@ export async function runTick(ctx, state, { persist = () => {} } = {}) {
     ctx.log('info', 'bid wallet below min — idling', { sats, min: ctx.minBidWalletSats });
     return { fills: 0, idle: true };
   }
-  const intents = await fetchCandidateIntents(ctx);
+  const bound = ctx.kind === 'bound';
+  const intents = bound ? await fetchCandidateBoundOffers(ctx) : await fetchCandidateIntents(ctx);
   let fills = 0;
   for (const it of intents) {
-    const id = String(it.intent_id).toLowerCase();
+    const id = String(bound ? it.id : it.intent_id).toLowerCase();
     if (state.processed[id]) continue;
-    const gate = bidPolicy(ctx, state, it);
+    const gate = bidPolicy(ctx, state, bound ? boundOfferAsRecord(it) : it);
     if (!gate.ok) { ctx.log('info', 'intent skipped by policy', { intent_id: id, reason: gate.reason }); continue; }
-    const r = await attemptFill(ctx, state, it);
+    const r = bound ? await attemptBoundFill(ctx, state, it) : await attemptFill(ctx, state, it);
     if (r.ok) {
       const settled = r.settledAmt != null ? r.settledAmt : gate.amt;
-      state.processed[id] = { txid: r.txid, at: Math.floor(Date.now() / 1000), amount: settled.toString() };
+      state.processed[id] = { txid: r.txid, at: Math.floor(Date.now() / 1000), amount: settled.toString(), ...(r.note ? { note: r.note } : {}) };
       state.filledBase += settled;
       await persist(state);
       fills++;
@@ -196,7 +231,8 @@ export async function returnToOwner(ctx) {
   const before = await dapp.getUtxos(ctx.address);
   if (!before.length) return { done: true, swept: 0, assets: [] };
   if (before.some((u) => u.status && u.status.confirmed === false)) return { done: false, pending: true, swept: 0, assets: [] };
-  const r = await dapp.sweepWatchtowerBidWallet(ctx.priv, [ctx.assetId], { to: ctx.ownerPub });
+  // a bound bid's note sits at the bid key's Taproot address, which the owner's key derives (dapp moveBoundNoteHome): only sats go back here
+  const r = await dapp.sweepWatchtowerBidWallet(ctx.priv, ctx.kind === 'bound' ? [] : [ctx.assetId], { to: ctx.ownerPub });
   const after = await dapp.getUtxos(ctx.address);
   return { done: after.length === 0, swept: r.swept || 0, assets: r.assets || [], txid: r.txid || r.asset_txid || null };
 }

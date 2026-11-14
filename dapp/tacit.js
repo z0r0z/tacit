@@ -28259,8 +28259,9 @@ function _bidOverCommitCheck(assetIdHex, addedSats) {
   };
 }
 
-async function publishBidIntent({ assetIdHex, amount, priceSats, expiry, minFillAmount = 0, skipOverCommitCheck = false }) {
-  _refuseBridgedPlain(assetIdHex);
+async function publishBidIntent({ assetIdHex, amount, priceSats, expiry, minFillAmount = 0, skipOverCommitCheck = false, bound = false }) {
+  // a bridged token's bid is filled only by a seller's bound offer (bound swaps, below), which the reflection folds; never by an atomic sale
+  if (!bound) _refuseBridgedPlain(assetIdHex);
   await ensurePrivkey();
   if (!skipOverCommitCheck) {
     const _oc = _bidOverCommitCheck(assetIdHex, priceSats);
@@ -28499,7 +28500,8 @@ async function watchtowerBidAddress(assetIdHex, bidIdHex) {
   return p2wpkhAddress(secp.getPublicKey(bidPriv, true));
 }
 
-async function registerWatchtowerBid({ assetIdHex, bidIdHex, amountBase, priceSats, decimals, expiry, feeBudgetSats = 10000 }) {
+async function registerWatchtowerBid({ assetIdHex, bidIdHex, amountBase, priceSats, decimals, expiry, feeBudgetSats = 10000, kind = null }) {
+  const _kind = kind || (_bridgedNonLegacy(assetIdHex) ? 'bound' : 'axfer');
   await ensurePrivkey();
   if (!WATCHTOWER_SERVICE_PUB) throw new Error('watchtower is not configured (no service pubkey)');
   if (!WORKER_BASE) throw new Error('worker disabled');
@@ -28535,13 +28537,127 @@ async function registerWatchtowerBid({ assetIdHex, bidIdHex, amountBase, priceSa
       body: JSON.stringify({
         asset_id: assetIdHex, bid_id: bidIdHex, owner_pubkey: bytesToHex(ownerPub), bid_pubkey: bytesToHex(bidPub),
         enc_bid_privkey: encBidPrivkeyHex, bid_price_sats: Number(priceSats), bid_amount_base: BigInt(amountBase).toString(),
-        decimals: decimals | 0, expiry, funding_outpoint: { txid: fundingTxidHex, vout: fundingVout }, auth_sig: bytesToHex(sig),
+        decimals: decimals | 0, expiry, funding_outpoint: { txid: fundingTxidHex, vout: fundingVout }, auth_sig: bytesToHex(sig), kind: _kind,
       }),
     });
     const j = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(j.error || `register failed (${resp.status})`);
   } catch (e) { e.bidWalletPub = bytesToHex(bidPub); throw e; }
   return { bid_id: bidIdHex, bid_address: bidAddr, bid_pubkey: bytesToHex(bidPub), funding_txid: fundingTxidHex };
+}
+
+// ── Bound swaps: a bridged token's note sold for sats into a watchtower bid (dapp/bound-swap.js, worker/src/bound-offers.js) ──
+// The reflection folds a plain transfer or sale of a bridged token other than TAC never, but folds ONE generation-bound transfer (0x39)
+// whose note signature binds every output: the seller posts its whole note, signed ALL|ANYONECANPAY, and the buyer's watchtower builds
+// the commit from the bid wallet, finishes and broadcasts. The buyer's note lands bound at P2TR(the bid key), the bid key being derived
+// from the owner's main key.
+const _boundSwapLib = () => import('./bound-swap.js');
+const _boundKit = () => ({ computeKernelMsg, deriveChangeBlinding, deriveAmountKeystreamSelf, encryptAmount, deriveBlinding, deriveAmountKeystreamECDH, decryptAmount });
+async function _boundPrims(priv) {
+  const { makeBtcWallet } = await import('./bitcoin-taproot-wallet.js');
+  return makeBtcWallet({ priv, hrp: NET.hrp, fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('bound swaps broadcast through tacit.js'); }, fetchFeeRate: async () => getFeeRate() }).prims;
+}
+// A note offered in a bound swap: in the reflection's live set (checked against Ethereum), UNBOUND (a bound note could be pulled to
+// Ethereum by the fast lane while the swap waits, leaving the buyer's note unreflected), of this asset, at the commitment its own
+// transaction carries. → { cx, cy, commitment }.
+async function _boundSwapNote(txid, vout, assetIdHex) {
+  const aid = String(assetIdHex).replace(/^0x/, '').toLowerCase();
+  const tracked = await _trackedNotesReady(30e3);
+  if (!tracked) throw new Error('the reflection\'s live set could not be checked against Ethereum right now, so this note is not swapped');
+  const t = tracked.get(txid, vout);
+  if (!t) throw new Error('this note is not in the reflection\'s live set yet: wait for Bitcoin\'s proof on Ethereum to reach its block');
+  if (t.bound) throw new Error('a bound note can be pulled to Ethereum by the fast lane while a swap waits, so it is not swapped this way');
+  if (t.asset !== aid) throw new Error('this note is another asset');
+  const tx = await getTx(txid);
+  const env = tx && _txOutputEnvelope(tx);
+  const pd = env ? await getParentEnvelopeData(env, vout, txid) : null;
+  if (!pd || String(pd.assetIdHex).toLowerCase() !== aid) throw new Error('this note\'s commitment could not be read from its transaction');
+  const a = bytesToPoint(pd.commitment).toAffine(), be = (n) => n.toString(16).padStart(64, '0');
+  if (bytesToHex(keccak_256(hexToBytes(be(a.x) + be(a.y)))) !== t.commitmentHash) throw new Error('this note\'s commitment is not the one the reflection holds');
+  return { cx: a.x, cy: a.y, commitment: pd.commitment };
+}
+// The bid book's bound bids for an asset (a watchtower bid of a bridged token: sellers answer with a bound offer to buyer_xonly).
+async function browseBoundBids(assetIdHex) {
+  const aid = String(assetIdHex).replace(/^0x/, '').toLowerCase();
+  const list = await browseBidIntents(aid).catch(() => []);
+  return (Array.isArray(list) ? list : list?.intents || []).filter((b) => b && b.bound && /^[0-9a-f]{64}$/.test(String(b.buyer_xonly || '')));
+}
+// A buyer's bid for a bridged token: a bid-intent (the book's entry) and its watchtower registration as a bound bid.
+async function placeBoundBid({ assetIdHex, amount, priceSats, expiry, decimals = 8, feeBudgetSats = 10000 }) {
+  const aid = String(assetIdHex).replace(/^0x/, '').toLowerCase();
+  const bid = await publishBidIntent({ assetIdHex: aid, amount, priceSats, expiry, bound: true, skipOverCommitCheck: true });
+  const bidId = bid?.bid_id || bid?.bidId || bid?.id;
+  if (!/^[0-9a-f]{32}$/.test(String(bidId || ''))) throw new Error('the bid was posted but its id was not returned');
+  const wt = await registerWatchtowerBid({ assetIdHex: aid, bidIdHex: bidId, amountBase: amount, priceSats, decimals, expiry, feeBudgetSats, kind: 'bound' });
+  return { bid_id: bidId, ...wt };
+}
+// The seller's one round: its WHOLE note (a cross-out mint of this asset at the key's Taproot address, live and unbound) into `bid`,
+// at the most the bid pays for that amount, payout to the key's Bitcoin address. Posts the signed offer; the seller can go offline.
+async function publishBoundOffer({ assetIdHex, bid, note = null, expirySec = 86400 }) {
+  await ensurePrivkey();
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  const aid = String(assetIdHex).replace(/^0x/, '').toLowerCase();
+  if (!bid || !bid.bound || !/^[0-9a-f]{64}$/.test(String(bid.buyer_xonly || '')) || !/^[0-9a-f]{32}$/.test(String(bid.bid_id || ''))) throw new Error('that bid is not a bound (bridged token) bid');
+  const bidAmt = BigInt(bid.remaining_amount ?? bid.amount), bidPrice = BigInt(bid.price_sats), bidTotal = BigInt(bid.amount);
+  const xonly = bytesToHex(wallet.pub.slice(1));
+  const pool = note ? [note] : (await _bridgedOpen(aid)).filter((n) => n.confirmed && n.amount != null && n.blinding != null && n.credited !== false);
+  const fits = pool.filter((n) => BigInt(n.amount) > 0n && BigInt(n.amount) <= bidAmt).sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : -1));
+  if (!fits.length) throw new Error(pool.length ? 'no note of this token here fits the bid whole (a note is sold whole)' : 'no note of this token at this key\'s Taproot address');
+  const n = fits[0], amount = BigInt(n.amount);
+  const c = await _boundSwapNote(n.txid, n.vout, aid);
+  const priceSats = Number((bidPrice * amount) / bidTotal);
+  if (priceSats < DUST) throw new Error('the bid pays less than dust for this note');
+  const bs = await _boundSwapLib(), prims = await _boundPrims(wallet.priv);
+  const offer = bs.sellerOffer({ prims, kit: _boundKit(), assetId: '0x' + aid, buyerXonly: bid.buyer_xonly, chainBinding: _confidentialChainBinding(), sellerPayoutScript: p2wpkhScript(wallet.pub), priceSats,
+    sellerNote: { txid: n.txid, vout: n.vout, value: Number(n.sats), script: '5120' + xonly, amount, blinding: BigInt(n.blinding), cx: c.cx, cy: c.cy } });
+  const expiry = Math.floor(Date.now() / 1000) + Math.max(600, Math.min(7 * 86400 - 60, expirySec | 0));
+  const sig = signSchnorr(bs.boundOfferMsg(NET.name, offer, bid.bid_id, expiry), wallet.priv);
+  const resp = await fetch(withNet(`${WORKER_BASE}/assets/${aid}/bound-offers`), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ offer, bid_id: bid.bid_id, owner_pubkey: bid.buyer_pubkey, expiry, sig: bytesToHex(sig) }) });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(j.error || `the offer was not taken (${resp.status})`);
+  return { id: j.id, offer, amount, priceSats, note: { txid: n.txid, vout: n.vout } };
+}
+async function listBoundOffers(assetIdHex, bidId = null) {
+  const aid = String(assetIdHex).replace(/^0x/, '').toLowerCase();
+  const r = await fetch(withNet(`${WORKER_BASE}/assets/${aid}/bound-offers`, bidId ? `bid=${bidId}` : ''));
+  const j = await r.json().catch(() => ({}));
+  return Array.isArray(j.offers) ? j.offers : [];
+}
+// The buyer's (its watchtower's) take of a posted offer with the bid key: the note checked live and unbound, the offer checked, the
+// commit funded from the bid wallet, the pair verified, then broadcast (commit, then reveal) and the fill reported. A reveal Bitcoin
+// refuses after the commit landed (the seller spent its note) has the commit's output reclaimed to the bid wallet by script path.
+async function takeBoundOffer({ offer, bidPriv, fundingUtxo = null, feeRate = null, broadcast = true }) {
+  const aid = String(offer.assetId).replace(/^0x/, '').toLowerCase();
+  const bidPub = secp.getPublicKey(bidPriv, true);
+  const c = await _boundSwapNote(offer.note.txid, offer.note.vout, aid);
+  const bs = await _boundSwapLib(), prims = await _boundPrims(bidPriv);
+  const rate = Number(feeRate) || Number(await getFeeRate()) || 3;
+  let fund = fundingUtxo;
+  if (!fund) {
+    const need = offer.priceSats + 4 * DUST + Math.ceil(rate * 700);
+    const coins = (await getUtxos(p2wpkhAddress(bidPub), null, { forSpend: true })).filter((u) => u.value >= need).sort((a, b) => a.value - b.value);
+    if (!coins.length) throw new Error(`the bid wallet holds no coin of ${need} sats or more`);
+    fund = { txid: coins[0].txid, vout: coins[0].vout, value: coins[0].value, script: p2wpkhScript(bidPub) };
+  }
+  const t = bs.buyerTakeOffer({ prims, kit: _boundKit(), offer, buyerKey: bidPriv, fundingUtxo: fund, feeRate: rate,
+    expected: { assetId: '0x' + aid, chainBinding: _confidentialChainBinding(), sellerNoteCommitment: { cx: c.cx, cy: c.cy } } });
+  if (!broadcast) return t;
+  await broadcastWithRetry(t.commitHex);
+  try { await broadcastWithRetry(t.revealHex); }
+  catch (e) {
+    let reclaimed = null;
+    try { const r = bs.buyerReclaim({ prims, commitHex: t.commitHex, swap: t.swap, buyerKey: bidPriv, toScript: p2wpkhScript(bidPub), feeRate: rate }); await broadcastWithRetry(r.hex); reclaimed = r.txid; } catch { }
+    throw Object.assign(new Error(`the seller's note was not spendable (${String(e?.message || e).slice(0, 120)})${reclaimed ? `; the commit's sats went back to the bid wallet in ${reclaimed}` : ''}`), { reclaimed });
+  }
+  if (offer.id && WORKER_BASE) {
+    try {
+      const sig = signSchnorr(bs.boundOfferFilledMsg(NET.name, aid, offer.id, t.revealTxid), bidPriv);
+      await fetch(withNet(`${WORKER_BASE}/assets/${aid}/bound-offers/${offer.id}/filled`), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reveal_txid: t.revealTxid, commit_txid: t.commitTxid, sig: bytesToHex(sig) }) });
+    } catch { }
+  }
+  return t;
 }
 
 async function listWatchtowerBids() {
@@ -62160,4 +62276,5 @@ export {
   _ceremonyFetchIpfsWithFailover as ceremonyFetchIpfsWithFailover,
   getUtxos,
   getBtcUsdPrice,
+  placeBoundBid, browseBoundBids, publishBoundOffer, listBoundOffers, takeBoundOffer,
 };

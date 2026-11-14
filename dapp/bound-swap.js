@@ -533,7 +533,7 @@ export function buyerTakeOffer({ prims, kit, offer, buyerKey = prims.wallet.priv
     assetId: expected.assetId, amountToBuyer: chk.amount, buyerXonly: xonlyOf(priv32(buyerKey)), buyerBlinding: chk.buyerBlinding, sellerPayoutScript: offer.payoutScript,
     priceSats: offer.priceSats, chainBinding: expected.chainBinding, sellerNoteOutpoint: offer.note, sellerNoteCommitment: expected.sellerNoteCommitment, sellerNote: offer.note } });
   if (!v.ok) fail(`the swap does not verify: ${v.reasons.join(', ')}`);
-  return { ...fin, commitFee: swap.commitFee, revealFee: swap.revealFee,
+  return { ...fin, commitFee: swap.commitFee, revealFee: swap.revealFee, swap: { envelopeScript: swap.envelopeScript, leafHash: swap.leafHash, controlBlock: swap.controlBlock },
     buyerNote: { txid: fin.revealTxid, vout: 0, amount: chk.amount, blinding: chk.buyerBlinding, script: bytesToHex(p2trScriptOf(xonlyOf(priv32(buyerKey)))) } };
 }
 
@@ -545,3 +545,18 @@ export function boundOfferMsg(network, o, bidIdHex, expiry) {
 }
 export const boundOfferCancelMsg = (network, asset, id) => sha256(new TextEncoder().encode(`tacit-bound-offer-cancel-v1|${network}|${asset}|${id}`));
 export const boundOfferFilledMsg = (network, asset, id, revealTxid) => sha256(new TextEncoder().encode(`tacit-bound-offer-filled-v1|${network}|${asset}|${id}|${revealTxid}`));
+
+// The commit's output back to the buyer by script path (it signs the envelope), when the reveal cannot go out (the seller spent its note
+// first). The envelope shows again in this transaction, which carries no note input, so it makes no note on either side.
+export function buyerReclaim({ prims, commitHex, swap, buyerKey = prims.wallet.priv, toScript, feeRate }) {
+  const commit = parseTx(commitHex), out = commit.outputs[0];
+  if (!out || !isP2tr(out.script)) fail('the commit has no envelope output');
+  const k = priv32(buyerKey);
+  const tx = { version: 2, locktime: 0, inputs: [{ txid: commit.txid, vout: 0, sequence: SEQ, witness: [new Uint8Array(64), swap.envelopeScript, swap.controlBlock] }], outputs: [{ value: 0, script: asBytes(toScript) }] };
+  const value = out.value - prims.feeFor(vsizeOf(tx), feeRate);
+  if (value < prims.DUST) fail('the commit output is too small to reclaim at this fee rate');
+  tx.outputs[0].value = value;
+  const ps = [{ value: out.value, script: out.script }];
+  tx.inputs[0].witness = [signSchnorr(prims.tapSighash(tx, 0, ps, swap.leafHash, 0x00), k), swap.envelopeScript, swap.controlBlock];
+  return { hex: bytesToHex(writeTx(tx)), txid: txidOf(tx), value };
+}

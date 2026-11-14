@@ -113,6 +113,9 @@ function ctxForBid(rec) {
     workerBase: API_BASE,
     network: NETWORK,
     assetId: rec.asset_id,
+    // 'bound': a bridged token's bid, filled from bound offers (watchtower-core fetchCandidateBoundOffers)
+    kind: rec.kind === 'bound' ? 'bound' : 'axfer',
+    bidId: rec.bid_id,
     decimals: rec.decimals | 0,
     priv: bidPriv,
     pub: bidPub,

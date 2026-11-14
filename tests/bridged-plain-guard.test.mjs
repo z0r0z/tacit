@@ -66,6 +66,9 @@ for (const [what, id] of [['TAC', TAC], ['a native token', NATIVE]]) {
   const e2 = await errOf(() => dapp.publishBidIntent({ assetIdHex: id, amount: 1n, priceSats: 10000, expiry: LATER }));
   ok(!e2?.bridgedOnly, `${what}: a bid-intent goes past the guard`);
 }
+// ---- the bound path: a bridged token's bid-intent is allowed when it is a bound (watchtower) bid, which only a bound offer fills ----
+{ const e = await errOf(() => dapp.publishBidIntent({ assetIdHex: BRIDGED.tETH, amount: 1n, priceSats: 10000, expiry: LATER, bound: true }));
+  ok(!e?.bridgedOnly, `tETH: a bound bid-intent goes past the guard (${e ? String(e.message).slice(0, 60) : 'no error'})`); }
 const eTac = await errOf(() => dapp.moveBridgedNote({ txid: TXID, vout: 0, assetIdHex: TAC }));
 ok(!eTac?.bridgedOnly && !/only TAC/.test(eTac?.message || ''), 'TAC can still be moved to the trading address');
 
