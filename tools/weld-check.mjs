@@ -218,7 +218,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,tacbuy,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,xtshield,xtout,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile,chainways').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,xtshield,xtout,xtspx,xtwst,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile,chainways').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -6656,7 +6656,7 @@ await step('activity', async () => {
 // client does), announces it, and waits for the test to let the relay finish it. A send needing a split goes back to
 // the relay on its own, a withdrawal starts meanwhile on another note, and neither reaches for the other's notes.
 // The pool's ux with jobs held at a gate the check opens (window.__rx: notes, calls, gates): a send's split, lock or exit waits there, as the relay's would.
-const rxStub = (pg) => pg.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
+const rxStub = (pg, extra = []) => pg.route(/\/confidential-pool-ux\.js\?cb=/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: `
     import * as real from '/confidential-pool-ux.js?stub=real';
     export * from '/confidential-pool-ux.js?stub=real';
     export function makeConfidentialPoolUx(o) {
@@ -6665,7 +6665,8 @@ const rxStub = (pg) => pg.route(/\/confidential-pool-ux\.js\?cb=/, (route) => ro
       let seq = 0;
       const note = (value) => { const i = ++seq; return { asset: ETH, value: String(value), leaf: '0x' + (0xabc000 + i).toString(16).padStart(64, '0'), leafIndex: 800000 + i, cx: '0x' + String(i).padStart(64, '0'), cy: '0x01', owner: '0x02', root: '0x' + '1'.padStart(64, '0'), path: [] }; };
       const TAC = String(ux.assetByTicker.cTAC.assetId).toLowerCase(), tacNote = (value) => ({ ...note(value), asset: TAC });
-      const S = window.__rx = { notes: [note(30000000n), note(20000000n), note(5000000n), tacNote(500000000n), tacNote(300000000n)], calls: [], gates: {}, spent: new Set() };
+      const S = window.__rx = { notes: [note(30000000n), note(20000000n), note(5000000n), tacNote(500000000n), tacNote(300000000n),
+        ...${JSON.stringify(extra.map(([a, v]) => [a, String(v)]))}.map(([a, v]) => ({ ...note(BigInt(v)), asset: a }))], calls: [], gates: {}, spent: new Set() };
       ux.balance = async (priv) => {
         const b = await balance(priv), add = S.notes.filter((n) => !S.spent.has(n.leaf));
         b.notes = [...b.notes, ...add];
@@ -6691,7 +6692,7 @@ const rxStub = (pg) => pg.route(/\/confidential-pool-ux\.js\?cb=/, (route) => ro
         if (out === 'fail') { fire({ jobId, type, status: 'failed', error: 'the pool refused it in this check' }); throw new Error('settle failed: the pool refused it in this check'); }
         fire({ jobId, type, status: 'proving' });
         for (const n of spend) S.spent.add(n.leaf);
-        for (const v of make) S.notes.push(note(v));
+        for (const v of make) S.notes.push({ ...note(v), asset: spend[0]?.asset || ETH });
         const txHash = '0x' + String(S.calls.length).padStart(64, 'e');
         fire({ jobId, type, status: 'settled', txHash });
         return { jobId, status: 'settled', txHash };
@@ -10378,6 +10379,124 @@ await step('xtout', async () => {
     await p.click(MV.go);
     await until(p, () => (document.querySelector('#hx-swap #mv-st, #hx-ms, #hx-swap .mv-st')?.textContent || '').trim() !== '' || (window.__said?.() || '').includes('relay'), null, 120000).catch(() => {});
     ok(r.errors.length === 0, `xtout: no page errors${r.errors.length ? ' (' + r.errors[0] + ')' : ''}`);
+  } finally { await r.browser.close(); }
+});
+
+// A token held privately in its own form (SPX, eight decimals) from notes alone, as a key that never shielded it finds them: the page learns the token
+// from the notes' asset id, Your Tacit and the Portfolio list it with its notes, its row opens Send on it, and Send moves it as it moves tETH: to a
+// Tacit address (a note cut first, then the lock) and out to an Ethereum address (the exact note, by the relay), each named in SPX.
+await step('xtspx', async () => {
+  const SPX = '0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c', hx = (b) => Buffer.from(b).toString('hex');
+  const idb = Buffer.alloc(46); idb.write('tacit-evm-token-v1'); idb.writeBigUInt64BE(1n, 18); Buffer.from(SPX.slice(2), 'hex').copy(idb, 26);
+  const id = '0x' + hx(sha256(idb)), key = `xp${SPX}`;
+  const served = {};
+  const r = await openPage({ account: A0, key: K0, viewport: { width: 1280, height: 1400 } }), p = r.page;
+  await serveStatus(r.ctx, served);
+  await rxStub(p, [[id, 2000000000n], [id, 500000000n]]);
+  const rx = () => p.evaluate(() => ({ calls: window.__rx?.calls || [], notes: (window.__rx?.notes || []).map((n) => [n.leaf, n.value, n.asset]) }));
+  const open = (jid, out = 'ok') => p.evaluate(([i, o]) => window.__rx.gates[i](o), [jid, out]);
+  const toastHas = (re, ms = 30000) => until(p, (x) => new RegExp(x).test(document.querySelector('#toast-container')?.textContent || ''), re.source, ms).then(() => true, () => false);
+  const REC = tacit1('d3'.padEnd(64, '7')), DEAD = '0x000000000000000000000000000000000000dEaD';
+  const quoted = (re) => until(p, (x) => new RegExp(x).test(document.querySelector('#hx-receipt')?.textContent || '') && !document.querySelector('#hx-go').disabled, re.source, 120000)
+    .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#hx-go')} | q: ${await text(p, '#hx-q')} | rc: ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+  try {
+    await p.goto(r.url);
+    await p.waitForSelector('#hx-body .hx-h');
+    await pasteKey(p, 'e3'.padEnd(64, '5'));
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    // TRACK: the page learns SPX from the notes' asset id and remembers it
+    await until(p, (k) => [...document.querySelectorAll('[data-dash-open]')].some((b) => b.dataset.dashOpen === `send:${k}`), key, 300000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | saved ${await p.evaluate(() => localStorage.getItem('tacit-pool-tokens-v1'))} | errors ${r.errors.slice(0, 2).join(' | ')}`); });
+    ok(await p.evaluate(() => JSON.parse(localStorage.getItem('tacit-pool-tokens-v1') || '[]')).then((l) => l.includes(SPX)), 'xtspx: the page found SPX under its notes\' asset id and remembers it');
+    const row = await p.evaluate((k) => { const b = [...document.querySelectorAll('[data-dash-open]')].find((x) => x.dataset.dashOpen === `send:${k}`); return b ? b.textContent.replace(/\s+/g, ' ').trim() : ''; }, key);
+    ok(/SPX\s*25\s*2 notes/.test(row), `xtspx: Your Tacit lists 25 private SPX in 2 notes, as a row that opens Send (${row})`);
+    await p.click('#hold-tot');
+    await until(p, () => /SPX/.test(document.querySelector('#portfolio-body')?.textContent || ''), null, 60000).catch(() => {});
+    const pf = (await text(p, '#portfolio-body')).replace(/\s+/g, ' ');
+    ok(/SPX\s*25/.test(pf), `xtspx: the Portfolio lists it too (${pf.slice(pf.indexOf('SPX') - 20, pf.indexOf('SPX') + 60)})`);
+    // the private notes list is the wallet sheet's
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); location.hash = 'wallet'; });
+    await until(p, () => !!document.querySelector('#wbal-box .w-notes'), null, 60000).catch(() => {});
+    await p.evaluate(() => { const d = document.querySelector('#wbal-box .w-notes'); if (d) d.open = true; });
+    const nl = (await text(p, '#wbal-box .w-notes')).replace(/\s+/g, ' ');
+    ok(/SPX\s*20 · 5(?![\d.])/.test(nl), `xtspx: its two notes, 20 and 5, are in the private notes list (${nl.slice(0, 160)})`);
+    ok(/\$/.test(row) || true, `xtspx: (info) its row's worth: ${row.match(/\$[\d.,]+|<\$0\.01/)?.[0] || 'no price on this fork'}`);
+    // its row opens Send on SPX
+    await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+    await p.evaluate((k) => [...document.querySelectorAll('[data-dash-open]')].find((x) => x.dataset.dashOpen === `send:${k}`).click(), key);
+    await until(p, (k) => document.querySelector('[data-hxm="send"]')?.getAttribute('aria-selected') === 'true' && document.querySelector('#hx-sa')?.value === k && /^Balance 25 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), key, 120000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | sa: ${await p.$eval('#hx-sa', (x) => x.value).catch(() => '?')} | bal: ${await text(p, '#hx-bal')}`); });
+    ok(true, 'xtspx: the row opens the Send tab on SPX with its balance, 25');
+    // SEND to a Tacit address: no note is 3, so the relay cuts the 20 note first, then the lock follows, named in SPX
+    await sheetsSeen(p);
+    await p.fill('#hx-rcpt', REC); await p.fill('#hx-amt', '3');
+    await quoted(/They get\s*about/);
+    ok(/SPX/.test(await text(p, '#hx-receipt')), `xtspx: the quote is in SPX (${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ').slice(0, 140)})`);
+    await p.click('#hx-go');
+    await until(p, () => (window.__rx?.calls || []).length >= 1, null, 120000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ss: ${await text(p, '#hx-ss')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
+    const a0 = await rx(), five = a0.notes.find(([, v, a]) => v === '500000000' && a === id);
+    ok(a0.calls[0]?.type === 'transfer' && five && a0.calls[0].spend.length === 1 && a0.calls[0].spend[0] === five[0], `xtspx: SPX to a Tacit address starts by cutting the smallest note that covers it, the 5 (${JSON.stringify(a0.calls[0] || null)})`);
+    await open(a0.calls[0].jobId);
+    await until(p, () => (window.__rx?.calls || []).length === 2, null, 120000).catch(() => {});
+    const a1 = await rx(), made = a1.notes.find(([, v, a]) => v === '300000000' && a === id);
+    ok(a1.calls[1]?.type === 'stealthlock' && made && a1.calls[1].spend[0] === made[0], `xtspx: then locks the new 3 SPX note for the recipient (${JSON.stringify(a1.calls[1] || null)})`);
+    await open(a1.calls[1]?.jobId);
+    ok(await toastHas(/Send 3 SPX privately to [^:]+: done/), 'xtspx: and the send is toasted done, in SPX');
+    // SEND out to an Ethereum address: the 20 note covers it, so it goes out through the relay with no cut (the change stays private)
+    await p.fill('#hx-rcpt', DEAD); await p.fill('#hx-amt', '5');
+    await quoted(/Relay fee/);
+    ok(/Send to the address/.test(await text(p, '#hx-go')) && /SPX/.test(await text(p, '#hx-receipt')), `xtspx: an 0x address is paid in SPX out of the pool (${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ').slice(0, 120)})`);
+    await p.click('#hx-go');
+    await until(p, () => (window.__rx?.calls || []).length === 3, null, 120000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ss: ${await text(p, '#hx-ss')} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
+    const b0 = await rx(), twenty = b0.notes.find(([, v, a]) => v === '2000000000' && a === id);
+    ok(b0.calls[2]?.type === 'sendunwrap' && twenty && b0.calls[2].spend[0] === twenty[0], `xtspx: SPX out to the address goes at once from the 20 note, its change kept (${JSON.stringify(b0.calls[2] || null)})`);
+    await open(b0.calls[2]?.jobId);
+    ok(await toastHas(/5 SPX to [^:]+: done/), 'xtspx: and is toasted done, in SPX');
+    ok(r.errors.length === 0, `xtspx: no page errors${r.errors.length ? ' (' + r.errors[0] + ')' : ''}`);
+  } finally { await r.browser.close(); }
+});
+
+// wstETH held privately in the DeFi pool (a token the pool lists by its own ticker, not as x:<address>): the key sees it somewhere on the page, with
+// a way to move it, not nowhere.
+await step('xtwst', async () => {
+  const WST = '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0', hx = (b) => Buffer.from(b).toString('hex');
+  const idb = Buffer.alloc(46); idb.write('tacit-evm-token-v1'); idb.writeBigUInt64BE(1n, 18); Buffer.from(WST.slice(2), 'hex').copy(idb, 26);
+  const id = '0x' + hx(sha256(idb));
+  const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', udb = Buffer.alloc(46); udb.write('tacit-evm-token-v1'); udb.writeBigUInt64BE(1n, 18); Buffer.from(USDC.slice(2), 'hex').copy(udb, 26);
+  const uid = '0x' + hx(sha256(udb));
+  const served = {};
+  const r = await openPage({ account: A0, key: K0, viewport: { width: 1280, height: 1400 } }), p = r.page;
+  await serveStatus(r.ctx, served);
+  // wTAC is registered like any token but is the farm's reward asset, which has a row of its own: it must not get a second one
+  const WTAC = '0x2018139a8fdd3666855be3315c7683b4d6ab7aef', tdb = Buffer.alloc(46); tdb.write('tacit-evm-token-v1'); tdb.writeBigUInt64BE(1n, 18); Buffer.from(WTAC.slice(2), 'hex').copy(tdb, 26);
+  const tid = '0x' + hx(sha256(tdb));
+  await rxStub(p, [[id, 150000000n], [uid, 25000000n], [tid, 700000000n]]);
+  try {
+    await p.goto(r.url);
+    await p.waitForSelector('#hx-body .hx-h');
+    await pasteKey(p, 'e4'.padEnd(64, '5'));
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+    // the scan has run when the tETH notes show (0.55 tETH)
+    await until(p, () => /0\.55/.test(document.querySelector('#dash')?.textContent || ''), null, 300000).catch(() => {});
+    await p.waitForTimeout(8000);
+    const rowOf = (a) => p.evaluate((k) => { const b = [...document.querySelectorAll('[data-dash-open]')].find((x) => x.dataset.dashOpen === `send:xp${k}`); return b ? b.textContent.replace(/\s+/g, ' ').trim() : null; }, a);
+    await until(p, (k) => [...document.querySelectorAll('[data-dash-open]')].some((x) => x.dataset.dashOpen === `send:xp${k}`), WST, 120000).catch(() => {});
+    const dash = (await text(p, '#dash')).replace(/\s+/g, ' '), wr = await rowOf(WST), ur = await rowOf(USDC);
+    const where = wr ? 'a row' : /also holds[^.]*wstETH/.test(dash) ? 'the also-holds line' : /also holds/.test(dash) ? 'the also-holds line, unnamed' : 'nowhere';
+    ok(where === 'a row' && /wstETH\s*1\.5\s*1 note/.test(wr), `xtwst: 1.5 private wstETH shows as a row of its own that opens Send (found: ${where}; ${wr || dash.slice(0, 160)})`);
+    ok(!!ur && /USDC\s*25\s*1 note/.test(ur), `xtwst: and 25 private USDC (six decimals, no scale) as its own row (${ur})`);
+    ok((await rowOf(WTAC)) == null, 'xtwst: the farm\'s reward token (wTAC), which has its own row, gets no second one');
+    ok(/\$[\d,]+/.test(wr || '') && /\$25\.00/.test(ur || ''), `xtwst: each row carries its worth from the market (${(wr || '').match(/\$[\d,.]+/)?.[0]}, ${(ur || '').match(/\$[\d,.]+/)?.[0]})`);
+    await p.click('[data-hxm="send"]');
+    const opts = await p.$$eval('#hx-sa option', (os) => os.map((o) => [o.value, o.textContent.trim()]));
+    ok(opts.some(([v]) => v === `xp${WST}`) && opts.some(([v]) => v === `xp${USDC}`), `xtwst: and Send offers the private wstETH and USDC themselves, not only the payments pools' (${opts.map(([v, t]) => `${t}:${v.slice(0, 8)}`).join(', ')})`);
+    // the Send tab on private USDC shows its balance in six decimals
+    await p.selectOption('#hx-sa', `xp${USDC}`);
+    await until(p, () => /^Balance 25 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 60000).catch(() => {});
+    ok(/^Balance 25 · Max/.test(await text(p, '#hx-bal')), `xtwst: Send on private USDC shows Balance 25 (${await text(p, '#hx-bal')})`);
+    ok(r.errors.length === 0, `xtwst: no page errors${r.errors.length ? ' (' + r.errors[0] + ')' : ''}`);
   } finally { await r.browser.close(); }
 });
 

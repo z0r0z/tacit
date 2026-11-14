@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-AUdQs1XMQI2fbFDq8hRbXpr8tOswG6vpBGJjWCxdiik=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-i0yI+rxhRYAnniTmLssB39x9Fw6ymQ4HfbrCLRhDuM4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -6620,8 +6620,21 @@ const icoHtml = (i, cls = 'tk') => {
   if (s.startsWith('L:')) { const [, id, ...sym] = s.split(':'); return html`<span class="${cls} letter" style="--c:${markColor(id)}" aria-hidden="true">${sym.join(':').slice(0, 2).toUpperCase()}</span>`; }
   return html`<svg class="${cls}" aria-hidden="true"><use href="#${s}"/></svg>`;
 };
-const xtSends = () => [...XT.by.values()].filter((r) => r.keep && r.registered === true && !r.builtin).map((r) => [`xp${r.addr}`, r.sym, xtIco(r), Math.min(6, r.tdec)]);
+// A token's dollar worth for the balances: ETH's price over how many of it one ETH buys on the open market (xtMarket), read at most every half hour
+// and again a minute after a miss. The swap card gives both, so a visit that has not mounted it asks for it.
+function xtUsdSoon(r) {
+  if (!r || r.usdBusy || (r.usdAt && Date.now() - r.usdAt < (r.usd != null ? 30 * 60e3 : 60e3))) return;
+  r.usdBusy = true; r.usdAt = Date.now();
+  (async () => {
+    if (!SWC.card) { hxSwap(); await swcLoad().catch(() => {}); }
+    const eu = SWC.card?.ethUsd?.(), per = eu ? await xtMarket(r) : null;
+    if (eu && per > 0) { r.usd = eu / per; dashSoon(); }
+  })().catch(() => {}).finally(() => { r.usdBusy = false; });
+}
+const xtSends = () => [...XT.by.values()].filter((r) => r.keep && r.registered === true && !(r.rowed ?? r.builtin)).map((r) => [`xp${r.addr}`, r.sym, xtIco(r), Math.min(6, r.tdec)]);
 const xtDec = (k) => (k === 'cusdt' ? 6 : xtOf(k)?.tdec ?? 8);
+// the configured assets the page has a key and a row of its own for, by their pool tickers
+const XT_ROWED = new Set(['cETH', 'TAC', 'cTAC', 'cBTC', 'cUSD', 'cUSDT']);
 function xtSave() { try { localStorage.setItem(XT.saved, JSON.stringify([...XT.by.values()].filter((r) => r.keep).map((r) => r.addr).slice(-64))); } catch { } }
 function xtTables(r) {
   const a = r.addr, w = `xw${a}`, p = `xp${a}`, c = `x${a}`, u = r.sym;
@@ -6747,9 +6760,11 @@ function xtFold() {
   const s = P.scan;
   if (!s?.byAsset) return;
   let kept = false;
+  const rowed = new Set([s.eth?.id, s.cusd?.id, s.cusdt?.id, s.tac?.id, s.cbtc?.id, s.rtac?.id].filter(Boolean).map((x) => String(x).toLowerCase()));
   for (const r of XT.by.values()) {
     const g = s.byAsset[r.id];
-    if (r.builtin) continue;
+    r.rowed = rowed.has(r.id) || XT_ROWED.has(r.ticker);
+    if (r.rowed) continue;
     s[`xp${r.addr}`] = { id: r.id, value: g ? BigInt(g.value) : 0n, notes: g ? g.notes : [] };
     if (g && BigInt(g.value) > 0n && !r.keep) { r.keep = true; kept = true; }
     if (r.keep && r.registered === true) { xtBridge(r); xtBridgePrice(r); }
@@ -11173,9 +11188,11 @@ function dashItems() {
         const ethSide = res ? (String(res.assetA).toLowerCase() === String(CETH_ID).toLowerCase() ? res.reserveA : res.reserveB) : null;
         out.push({ key: `lpx${r.addr}`, label: `tETH/${r.sym}`, icons: ['tk-teth', xtIco(r)], dec: 18, max: 6, unit: 'ETH', v: res && res.totalShares > 0n ? (2n * lx.value * ethSide * E10) / res.totalShares : null, err: scanErr, meta: 'pool share, private', show: true, noteVals: noteVals(lx) });
       }
-      if (r.builtin) continue;
+      if (r.rowed ?? r.builtin) continue;
       const x = s?.[`xp${r.addr}`];
-      out.push({ key: `xp${r.addr}`, label: r.sym, icons: [xtIco(r)], dec: r.tdec, max: Math.min(6, r.tdec), v: x ? x.value : null, err: scanErr, meta: 'private', show: x?.value > 0n, noteVals: x ? noteVals(x) : null });
+      if (x?.value > 0n) xtUsdSoon(r);
+      out.push({ key: `xp${r.addr}`, label: r.sym, icons: [xtIco(r)], dec: r.tdec, max: Math.min(6, r.tdec), v: x ? x.value : null, err: scanErr, meta: 'private', show: x?.value > 0n, noteVals: x ? noteVals(x) : null,
+        open: `send:xp${r.addr}`, usdPer: r.usd ?? null });
     }
   }
   if (who && PUBX.who === who) {
@@ -11285,6 +11302,7 @@ function dashPx() {
 const DASH_BTC_KIND = { TAC: 'tac', tETH: 'eth', cBTC: 'btc', cUSD: 'usd', cUSDT: 'usd' };
 const dashKind = (it) => it.kind || (it.key.startsWith('sats-') ? (it.label === 'TAC' ? 'tac' : 'btc') : /^lpf?-/.test(it.key) || it.key === 'pubf' ? 'eth' : /^devtok-(usdc|usdt|dai)$/.test(it.key) ? 'usd' : DASH_PX[it.key]);
 function dashRowUsd(it) {
+  if (it.usdPer != null) return it.v != null ? Number(it.v) / 10 ** it.dec * it.usdPer : null;
   const px = dashPx(), kind = dashKind(it);
   return px && kind && px[kind] != null && it.v != null ? Number(it.v) / 10 ** it.dec * px[kind] : null;
 }
@@ -11293,6 +11311,7 @@ function dashWorth(items) {
   if (!usd) { if (!TPX.p && S.key && Date.now() - (TPX.retryAt || 0) > 15e3) { TPX.retryAt = Date.now(); loadTacPrice(true).then(dashSoon, () => {}); } return null; }
   let all = 0, priv = 0;
   for (const it of items) {
+    if (it.usdPer != null) { if (it.v != null) { const n = Number(it.v) / 10 ** it.dec * it.usdPer; all += n; if (/^xp0x/.test(it.key)) priv += n; } continue; }
     const kind = dashKind(it);
     if (!kind || it.v == null) continue;
     if (usd[kind] == null) { if (it.v > 0n || it.priv > 0n) return null; continue; }
@@ -11417,7 +11436,7 @@ function paintDash0() {
 }
 function dashGo(b) {
   if (b.dataset.btcAsset) { BTC.mode = 'send'; BTC.asset = b.dataset.btcAsset; }
-  return b.dataset.dashOpen === 'chain' ? hxPreset('send:ctac') : b.dataset.dashOpen === 'loans' ? dashDo('loans') : b.dataset.dashOpen === 'borrow' ? hxPreset(`borrow:${HX.bm}`) : b.dataset.dashOpen.includes('/') ? openLink(b.dataset.dashOpen) : openSheet(b.dataset.dashOpen);
+  return b.dataset.dashOpen === 'chain' ? hxPreset('send:ctac') : b.dataset.dashOpen.startsWith('send:') ? hxPreset(b.dataset.dashOpen) : b.dataset.dashOpen === 'loans' ? dashDo('loans') : b.dataset.dashOpen === 'borrow' ? hxPreset(`borrow:${HX.bm}`) : b.dataset.dashOpen.includes('/') ? openLink(b.dataset.dashOpen) : openSheet(b.dataset.dashOpen);
 }
 function dashDo(go) {
   if (go === 'loans') { hxPreset('borrow'); setTimeout(() => $('#hx-bwl')?.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }), 400); return; }
