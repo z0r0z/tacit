@@ -166,7 +166,7 @@ fn the_solidity_cross_check_cases_are_current() {
 // venues' proofs at 5 sample blocks) and the public values it gives.
 fn mainnet() -> (Input, Vec<u8>) {
     let dir = fixtures().join("tac-proven/mainnet");
-    let input: Input = bincode::deserialize(&std::fs::read(dir.join("input.bin")).unwrap()).unwrap();
+    let input: Input = bincode::deserialize(&std::fs::read(dir.join("input.bincode")).unwrap()).unwrap();
     let pv = std::fs::read_to_string(dir.join("pv.hex")).unwrap();
     let pv: Vec<u8> = (0..pv.trim().len() / 2).map(|i| u8::from_str_radix(&pv.trim()[2 * i..2 * i + 2], 16).unwrap()).collect();
     (input, pv)
