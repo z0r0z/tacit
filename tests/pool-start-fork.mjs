@@ -6,19 +6,22 @@
 //     (buildShareWrap) is built for, so its proof settles it
 //   - the pool's reserves are the two legs, its shares the plan's plus the locked 1000, and it opens within the slippage of the market's rate
 //   - nothing is left with the router; whatever the swap brought beyond the token leg goes back to the sender
-// for SPX (8 decimals, registered) and LINK (18 decimals, registered here first). The settle of the share note's proof is the farm zap's own
+//   - liquidity is then added to it as the page's Earn adds it (index.html xtAddCore): zapPlan against the pool's reserves, half the ETH swapped
+//     inside the pool (tETH in, the token out, whichever id is lower), exactly the planned shares into the next share note's deposit
+// for SPX (8 decimals, registered), LINK (18 decimals) and WBTC (8 decimals, its id below tETH's), the last two registered here first. The settle of the share note's proof is the farm zap's own
 // (zapSettleCalldata), unchanged; it needs a prover, so it is not run here.
 // Run: anvil --fork-url <mainnet rpc> --port 8547 --chain-id 1 & node tests/pool-start-fork.mjs [anvil url]
 import assert from 'node:assert/strict';
 import { secp, sha256, keccak_256, hmac } from '../dapp/vendor/tacit-deps.min.js';
 import { makeConfidentialPoolUx } from '../dapp/confidential-pool-ux.js';
 import { setActiveNetwork } from '../dapp/confidential-deployments.js';
-import { foundingPlan, zapCalldata } from '../dapp/lp-zap.js';
+import { foundingPlan, zapCalldata, zapPlan } from '../dapp/lp-zap.js';
 import { quoteEthToToken } from '../dapp/swap/route.js';
 
 const ANVIL = process.argv[2] || 'http://127.0.0.1:8547';
 const ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992', AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
-const TOKENS = [['SPX', '0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c'], ['LINK', '0x514910771af9ca656af840dff83e8264ecf986ca']];
+// WBTC's asset id sorts below tETH's, so its pool holds the token as asset A: the orientation the page must not get wrong
+const TOKENS = [['SPX', '0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c'], ['LINK', '0x514910771af9ca656af840dff83e8264ecf986ca'], ['WBTC', '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599']];
 const call = async (method, params) => {
   const r = await (await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json();
   if (r.error) throw new Error(`${method}: ${r.error.message}${r.error.data ? ` ${JSON.stringify(r.error.data).slice(0, 200)}` : ''}`);
@@ -93,6 +96,23 @@ for (const [name, token] of TOKENS) {
     assert.ok((await balOf(token, acct.address)) >= t0, 'what the swap brought beyond the leg went back to the sender');
     const spent = e0 - BigInt(await call('eth_getBalance', [acct.address, 'latest']));
     assert.ok(spent >= plan.value && spent < plan.value + 10n ** 16n, `the ETH spent is the plan's and the gas (${spent})`);
+  });
+  await test(`0.05 ETH is added to the ${name} pool as Earn adds it: half swapped inside the pool, exactly the planned shares`, async () => {
+    const res0 = await ux.poolReserves(poolId), [ra, rb] = String(res0.assetA).toLowerCase() === ETH_ID ? [res0.reserveA, res0.reserveB] : [res0.reserveB, res0.reserveA];
+    const wei = 5n * 10n ** 16n, plan = zapPlan({ eth: wei, ra, rb, total: res0.totalShares, feeBps: BigInt(res0.feeBps), unitA: 10n ** 10n, unitB: scale });
+    assert.ok(plan && plan.shares > 0n && plan.value <= wei, 'an add plan within the ETH given');
+    const built = ux.buildShareWrap({ walletPriv: priv, poolId, shares: plan.shares, index: 1 }), deadline = head + 1800n;
+    const data = zapCalldata({ plan, router: ROUTER, amm: AMM, tokenB: token, assetA: ETH_ID, assetB: id, feeBps: Number(res0.feeBps), deadline, commit: built.commit });
+    const sim = String(await ethCall(ROUTER, data, 'latest', { from: acct.address, value: plan.value })).replace(/^0x/, '');
+    assert.equal('0x' + sim.slice(0, 64), String(built.depositId).toLowerCase(), 'the deposit is the next share note\'s');
+    assert.equal(BigInt('0x' + sim.slice(64, 128)), plan.shares, 'exactly the planned shares');
+    const r = await receipt((await ux.sendPreparedTx({ walletPriv: priv, to: ROUTER, value: plan.value, calldata: data, gasLimit: 1500000n })).txHash);
+    assert.equal(r.status, '0x1');
+    const res1 = await ux.poolReserves(poolId), [ra1, rb1] = String(res1.assetA).toLowerCase() === ETH_ID ? [res1.reserveA, res1.reserveB] : [res1.reserveB, res1.reserveA];
+    assert.equal(res1.totalShares, res0.totalShares + plan.shares, 'the pool\'s shares grew by exactly the plan\'s');
+    assert.ok(ra1 > ra && rb1 <= rb && rb - rb1 <= rb / 1000n, `the ETH reserve grew; the token side is back where it was, the in-pool swap's leg returned (${rb} -> ${rb1})`);
+    assert.equal(BigInt(await ethCall(POOL, '0x7da9874f' + w32(built.depositId))), 1n, 'the share deposit waits for its proof');
+    assert.equal(await balOf(token, ROUTER), 0n, 'nothing is left with the router');
   });
 }
 console.log(`\n${n} passed`);

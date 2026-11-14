@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-hzxdmtr9Q+YPRQ5xVhAUOLHbh112zQQwZYBHzNTDwlc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yLk13p7pfbPOEVoR0I91n21BIWD4d2IjcPIwGqftaPQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -69,7 +69,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=a0384066">
-<link rel="modulepreload" href="/swap/card.js?cb=e2a3cf73">
+<link rel="modulepreload" href="/swap/card.js?cb=02dec00f">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -4798,7 +4798,7 @@ const WAL = { mode: 'add', asset: 'eth', chain: 1, all: false };
 const L2BAL = { who: null, at: 0, p: null };
 const WB_MARK = { TAC: 'tk-tac', tETH: 'tk-teth', cBTC: 'tk-cbtc', cUSD: 'tk-cusd', cUSDT: 'tk-usdt' };
 const wbRow = (r) => {
-  const tk = (i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`;
+  const tk = (i) => icoHtml(i);
   const mark = r.icons ? html`<span class="pair${r.ring ? ' farm' : ''}">${r.icons.map(tk)}</span>` : r.mark ? html`<span class="tk letter" style="--c:${markColor(r.markId)}" aria-hidden="true">${r.mark.slice(0, 2).toUpperCase()}</span>` : tk(r.icon);
   const show = (x) => html`${r.num ? ptsFmt(x) : fmt(x, r.dec, r.max)}${r.unit ? html` <small>${r.unit}</small>` : ''}`;
   const seen = r.v == null && !r.err ? DASH.base?.v?.[r.key]?.v : null, prev = seen == null ? null : r.num ? (Number.isFinite(Number(seen)) ? Number(seen) : null) : big(seen);
@@ -6606,7 +6606,14 @@ const XT_NOT = new Set([ADDR.tac, ADDR.tacbtc, ADDR.tacusd, ADDR.tacd, ADDR.tace
 const xtAddr = (k) => { const m = /^(?:xw|xp|x:)?(0x[0-9a-f]{40})$/.exec(String(k || '').toLowerCase()); return m && !XT_NOT.has(m[1]) ? m[1] : null; };
 const xtOf = (k) => XT.by.get(xtAddr(k)) || null;
 const xtToken = (r) => ({ address: r.addr, sym: r.sym, dec: r.dec, permit2: true });
-const xtSends = () => [...XT.by.values()].filter((r) => r.keep && r.registered === true && !r.builtin).map((r) => [`xp${r.addr}`, r.sym, `L:${r.addr}:${r.sym}`, Math.min(6, r.tdec)]);
+const xtIco = (r) => (r.logo ? `I:${r.logo}` : `L:${r.addr}:${r.sym}`);
+const icoHtml = (i, cls = 'tk') => {
+  const s = String(i);
+  if (s.startsWith('I:')) return html`<img class="${cls}" src="${s.slice(2)}" alt="" aria-hidden="true" decoding="async">`;
+  if (s.startsWith('L:')) { const [, id, ...sym] = s.split(':'); return html`<span class="${cls} letter" style="--c:${markColor(id)}" aria-hidden="true">${sym.join(':').slice(0, 2).toUpperCase()}</span>`; }
+  return html`<svg class="${cls}" aria-hidden="true"><use href="#${s}"/></svg>`;
+};
+const xtSends = () => [...XT.by.values()].filter((r) => r.keep && r.registered === true && !r.builtin).map((r) => [`xp${r.addr}`, r.sym, xtIco(r), Math.min(6, r.tdec)]);
 const xtDec = (k) => (k === 'cusdt' ? 6 : xtOf(k)?.tdec ?? 8);
 function xtSave() { try { localStorage.setItem(XT.saved, JSON.stringify([...XT.by.values()].filter((r) => r.keep).map((r) => r.addr).slice(-64))); } catch { } }
 function xtTables(r) {
@@ -6622,6 +6629,12 @@ function xtTables(r) {
   POOL_TK[p] = r.ticker;
   XT.ids.set(r.id, r);
 }
+// A token's name and logo from the card's token list, once that list is in (a token the list names is shown as it names it)
+function xtName(r) {
+  if (r.named) return;
+  const ti = SWC.card?.tokenInfo?.(r.addr);
+  if (ti?.sym) { r.sym = ti.sym; r.named = true; r.name ||= ti.name || ''; r.logo ||= ti.logo || null; xtTables(r); }
+}
 function xtFrom(r, row) {
   Object.assign(r, { dec: row.decimals, tdec: row.tacitDecimals ?? Math.min(row.decimals, 8), scale: BigInt(row.unitScale || '1'), ticker: row.ticker, id: String(row.assetId).toLowerCase() });
   r.builtin = !String(row.ticker).startsWith('x:');
@@ -6636,7 +6649,7 @@ function xtEnsure(addr, info = SWC.card?.tokenInfo?.(addr)) {
   let r = XT.by.get(a);
   if (!r) {
     const dec = Number.isInteger(info?.dec) ? info.dec : 18;
-    r = { addr: a, id: erc20AssetId(1, a), sym: info?.sym || `${a.slice(0, 6)}…`, named: !!info?.sym, name: info?.name || '', dec, tdec: Math.min(dec, 8),
+    r = { addr: a, id: erc20AssetId(1, a), sym: info?.sym || `${a.slice(0, 6)}…`, named: !!info?.sym, name: info?.name || '', logo: info?.logo || null, dec, tdec: Math.min(dec, 8),
       scale: 10n ** BigInt(dec - Math.min(dec, 8)), ticker: `x:${a}`, registered: null, keep: false, p: null };
     XT.by.set(a, r);
     xtTables(r);
@@ -6649,6 +6662,7 @@ async function xtResolve(r) {
     const t = await getUx(), { row, registered } = await t.externalAsset(r.addr);
     r.registered = registered;
     xtFrom(r, row);
+    if (!r.logo) r.logo = SWC.card?.tokenInfo?.(r.addr)?.logo || null;
     try { SWC.card?.refresh?.(); } catch { }
     return r;
   } catch (e) { r.err = e; return r; } finally { if (r.registered !== true) r.p = null; }
@@ -6666,9 +6680,12 @@ function xtPooled() {
     let n = 0;
     for (const r of rs) if (r.registered === true && !r.pooled) { r.pooled = true; n++; }
     await Promise.all([...XT.by.values()].filter((r) => r.listed).map((r) => r.p || r));
+    await SWC.card?.listReady?.()?.catch?.(() => {});
+    for (const r of XT.by.values()) xtName(r);
     n++;
     if (n) xtFold();
     if (n) try { SWC.card?.refresh?.(); } catch { }
+    if (n && HX.tab === 'earn' && !HX.zapping) { HX.q = null; hxQuote(); }
   }, () => { XT.pooledAt = Date.now() - 25 * 60e3; });
 }
 // Tokens this browser has held privately are known again before the scan, so their unfinished deposits are found too.
@@ -6802,6 +6819,86 @@ async function xtPoolPlan(r, wei) {
   if (!plan) throw Object.assign(new Error('That amount cannot start a pool: try more ETH (or less, for a very large one).'), { said: true });
   return plan;
 }
+const xtSaid = (m) => Object.assign(new Error(m), { said: true });
+// The share note's proof is made first, while nothing has left the wallet; the transaction then settles it.
+async function xtShareProof({ run, t, priv, pub, poolId, shares, tell }) {
+  const index = t.nextShareIndex({ walletPriv: priv, poolId, owned: await scanOwned(), used: [...zapsKept().filter((x) => x.pub === pub && x.poolId === poolId), ...(await vouchers()).list(pub, lpTicker(poolId))].map((x) => x.index) });
+  const built = t.buildShareWrap({ walletPriv: priv, poolId, shares, index });
+  run.take(kDep(built));
+  tell(spSaid('uploading', null));
+  const proven = await t.relay.prove({ type: 'wrap', op: built.wrapOp, leaves: [built.leaf], outputs: built.outputs, memos: built.memos, ephRand: built.ephRand }, spTell(run.wait(null, 60 * 60e3, { deps: [kDep(built)] }), tell));
+  if (!t.wrapProofFits(built, proven)) throw xtSaid('The proof that came back is not for this share, so nothing was sent. Press again.');
+  run.check();
+  return { built, proven };
+}
+// One transaction from the wallet: the ETH's swap half (outside, or inside the pool), both legs in, the share shielded and its proof settled.
+// Run as a call first: exactly the shares proved, or nothing is sent.
+async function xtZapSend({ run, t, r, plan, feeBps, built, proven, swapData = null, eth, from, tell, what }) {
+  const data = zapSettleCalldata({ plan, router: ADDR.confRouter, amm: ADDR.publicAmm, tokenB: r.addr, assetA: eth, assetB: r.id, feeBps, deadline: BigInt(chainNow() + 1200),
+    commit: built.commit, swapData, publicValues: proven.publicValues, proof: proven.proof, memos: proven.memos || built.memos });
+  let sim;
+  try { sim = strip(await rpc('eth_call', [{ from, to: ADDR.confRouter, data, value: '0x' + plan.value.toString(16) }, 'latest'])); }
+  catch (e) { throw xtSaid(`Nothing was sent: the router refuses this as it stands. ${revertText(e) || ''}`.trim()); }
+  if (wordAt(sim, 0) !== plan.shares) throw xtSaid('It would not mint exactly the share proved, so nothing was sent. Press again for a fresh quote.');
+  tell(`Proved. Sending it from ${your()}: one transaction ${what} and makes your share private…`);
+  const hash = runTx(run, await sendTx({ to: ADDR.confRouter, data, value: plan.value, label: run.to.label, protect: true }), 'Pool', 'Adding');
+  tell(html`Sent ${txLink(hash)}. Waiting for it to land…`);
+  await waitTx(hash);
+  return hash;
+}
+async function xtStartCore({ run, r, wei, st }) {
+  const tell = (m) => run.say(st, m), t = await getUx(), priv = walletPriv(), from = S.wallet || S.address, pub = S.key.pubHex, eth = String(t.assetByTicker.cETH.assetId).toLowerCase();
+  if (r.registered !== true) await xtRegister(run, t, r, payer(), st);
+  for (const f of [30, 5, 100, 1]) if ((await t.poolReserves(t.routePoolId(eth, r.id, f)).catch(() => null))?.totalShares > 0n) throw xtSaid(`${r.sym} has a pool already: add to it instead.`);
+  const plan = await xtPoolPlan(r, wei), poolId = t.routePoolId(eth, r.id, POOL_START_FEE);
+  const { built, proven } = await xtShareProof({ run, t, priv, pub, poolId, shares: plan.shares, tell });
+  const fresh = await xtPoolQuote(r, plan.swapIn);
+  if (!fresh || fresh.amountLimit < plan.bLeg) throw xtSaid(`The price of ${r.sym} moved while your share was proved, so nothing was sent. Press again for a fresh quote.`);
+  const hash = await xtZapSend({ run, t, r, plan, feeBps: POOL_START_FEE, built, proven, swapData: fresh.callData, eth, from, tell, what: `buys the ${r.sym}, starts the pool` });
+  Object.assign(r, { keep: true, pooled: true, pool: { poolId, feeBps: POOL_START_FEE, lp: t.lpShareId(poolId) } }); xtSave();
+  return hash;
+}
+// Liquidity added to a token's tETH pool: half the ETH is swapped inside the pool (its own price), then both go in.
+const xtSides = (res, eth) => (String(res.assetA).toLowerCase() === eth ? [res.reserveA, res.reserveB] : [res.reserveB, res.reserveA]);
+async function xtAddPlan(t, r, wei) {
+  const eth = String(t.assetByTicker.cETH.assetId).toLowerCase(), res = await t.poolReserves(r.pool.poolId);
+  if (!(res?.totalShares > 0n)) throw xtSaid(`The tETH / ${r.sym} pool is empty: start it instead.`);
+  const [ra, rb] = xtSides(res, eth);
+  return { res, ra, rb, eth, plan: zapPlan({ eth: wei, ra, rb, total: res.totalShares, feeBps: BigInt(res.feeBps), unitA: E10, unitB: r.scale }) };
+}
+// Liquidity added at a price off the open market's is bought back by whoever trades the pool to the market, at the adder's cost. Two ways
+// in: the pool already stands off the market, or the pool is too small for the amount and the add's own swap moves it. The price an add
+// pays is its two legs' ratio, after that swap; the market's is the card's USD prices, else a small outside quote.
+const XT_GAP = 0.10;
+async function xtMarket(r) {
+  const c = SWC.card?.marketRate?.(r.addr);
+  if (c) return c;
+  const probe = 10n ** 16n, q = await xtPoolQuote(r, probe).catch(() => null);
+  return q?.amountOut ? (Number(q.amountOut) / 10 ** r.dec) / (Number(probe) / 1e18) : null;
+}
+const xtRate = (r, wei, base) => (Number(base) / 10 ** r.dec) / (Number(wei) / 1e18);
+async function xtAddCheck(r, x) {
+  const mk = await xtMarket(r);
+  if (!mk || !x?.plan) return null;
+  const pool = xtRate(r, x.ra * E10, x.rb * r.scale) / mk - 1, add = xtRate(r, x.plan.ethLeg, x.plan.bLeg) / mk - 1, pct = (g) => `${Math.round(Math.abs(g) * 100)}%`;
+  if (Math.abs(pool) > XT_GAP) return `This pool prices ${r.sym} ${pct(pool)} ${pool > 0 ? 'under' : 'over'} the open market: liquidity added at that price is bought back by whoever trades it to the market, at your cost. Swap it toward the market price first, or add elsewhere.`;
+  if (Math.abs(add) > XT_GAP) return `This pool is small for that amount: your ETH would move its price ${pct(add)}, and liquidity added there is bought back at your cost. Add less.`;
+  return null;
+}
+async function xtAddCore({ run, r, wei, st }) {
+  const tell = (m) => run.say(st, m), t = await getUx(), priv = walletPriv(), from = S.wallet || S.address, pub = S.key.pubHex;
+  const { plan, eth, ra: ra0, rb: rb0 } = await xtAddPlan(t, r, wei);
+  if (!plan) throw xtSaid('Enter a larger amount: this one is too small to make a share of the pool.');
+  { const bad = await xtAddCheck(r, { ra: ra0, rb: rb0, plan }); if (bad) throw xtSaid(bad); }
+  const { built, proven } = await xtShareProof({ run, t, priv, pub, poolId: r.pool.poolId, shares: plan.shares, tell });
+  const { res, ra, rb } = await xtAddPlan(t, r, wei);
+  const now = zapPlanFor({ shares: plan.shares, ra, rb, total: res.totalShares, feeBps: BigInt(res.feeBps), unitA: E10, unitB: r.scale, maxEth: wei + wei / 50n });
+  if (!now) throw xtSaid('The pool moved too far while your share was proved, so nothing was sent. Press again for a fresh quote.');
+  const hash = await xtZapSend({ run, t, r, plan: now, feeBps: Number(res.feeBps), built, proven, eth, from, tell, what: `adds your ETH to the tETH / ${r.sym} pool` });
+  r.keep = true; xtSave();
+  return hash;
+}
+// The swap card's Start button
 async function xtPoolStart(k, wei) {
   if (!S.key) return openSheet('wallet');
   const go = SWC.el?.querySelector('#go'), r = xtOf(k);
@@ -6812,42 +6909,53 @@ async function xtPoolStart(k, wei) {
   SWC.card?.working?.(true);
   return busy(go, async (run) => {
     PROVE_AT.el = st;
-    const tell = (m) => run.say(st, m);
     try {
-      run.go({ label: `Start the tETH/${r.sym} pool with ${fmt(wei, 18, 6)} ETH`, status: () => st, clear: () => SWC.card?.clear?.() });
-      const t = await getUx(), priv = walletPriv(), from = S.wallet || S.address, pub = S.key.pubHex, eth = String(t.assetByTicker.cETH.assetId).toLowerCase();
-      if (r.registered !== true) await xtRegister(run, t, r, payer(), st);
-      for (const f of [30, 5, 100, 1]) if ((await t.poolReserves(t.routePoolId(eth, r.id, f)).catch(() => null))?.totalShares > 0n) throw Object.assign(new Error(`${r.sym} has a pool already: swap or add to it instead.`), { said: true });
-      const plan = await xtPoolPlan(r, wei), poolId = t.routePoolId(eth, r.id, POOL_START_FEE);
-      const index = t.nextShareIndex({ walletPriv: priv, poolId, owned: await scanOwned(), used: [...zapsKept().filter((x) => x.pub === pub && x.poolId === poolId), ...(await vouchers()).list(pub, lpTicker(poolId))].map((x) => x.index) });
-      const built = t.buildShareWrap({ walletPriv: priv, poolId, shares: plan.shares, index });
-      run.take(kDep(built));
-      tell(spSaid('uploading', null));
-      const proven = await t.relay.prove({ type: 'wrap', op: built.wrapOp, leaves: [built.leaf], outputs: built.outputs, memos: built.memos, ephRand: built.ephRand }, spTell(run.wait(null, 60 * 60e3, { deps: [kDep(built)] }), tell));
-      if (!t.wrapProofFits(built, proven)) throw Object.assign(new Error('The proof that came back is not for this share, so nothing was sent. Press again.'), { said: true });
-      run.check();
-      const fresh = await xtPoolQuote(r, plan.swapIn);
-      if (!fresh || fresh.amountLimit < plan.bLeg) throw Object.assign(new Error(`The price of ${r.sym} moved while your share was proved, so nothing was sent. Press again for a fresh quote.`), { said: true });
-      const deadline = chainNow() + 1200;
-      const data = zapSettleCalldata({ plan, router: ADDR.confRouter, amm: ADDR.publicAmm, tokenB: r.addr, assetA: eth, assetB: r.id, feeBps: POOL_START_FEE, deadline: BigInt(deadline),
-        commit: built.commit, swapData: fresh.callData, publicValues: proven.publicValues, proof: proven.proof, memos: proven.memos || built.memos });
-      let sim;
-      try { sim = strip(await rpc('eth_call', [{ from, to: ADDR.confRouter, data, value: '0x' + plan.value.toString(16) }, 'latest'])); }
-      catch (e) { throw Object.assign(new Error(`Nothing was sent: the router refuses this as it stands. ${revertText(e) || ''}`.trim()), { said: true }); }
-      if (wordAt(sim, 0) !== plan.shares) throw Object.assign(new Error('It would not mint exactly the share proved, so nothing was sent. Press again for a fresh quote.'), { said: true });
-      tell(`Proved. Sending it from ${your()}: one transaction buys the ${r.sym}, starts the pool and makes your share private…`);
-      const hash = runTx(run, await sendTx({ to: ADDR.confRouter, data, value: plan.value, label: run.to.label, protect: true }), 'Start', 'Starting');
-      tell(html`Sent ${txLink(hash)}. Waiting for it to land…`);
-      await waitTx(hash);
-      Object.assign(r, { keep: true, pooled: true, pool: { poolId, feeBps: POOL_START_FEE, lp: t.lpShareId(poolId) } }); xtSave();
-      tell(html`<span class="ok">The tETH/${r.sym} pool is open, and your share in it is a private note.</span> ${txLink(hash)}`);
-      toast(`tETH/${r.sym} pool started`);
+      run.go({ label: `Start the tETH / ${r.sym} pool with ${fmt(wei, 18, 6)} ETH`, status: () => st, clear: () => SWC.card?.clear?.() });
+      const hash = await xtStartCore({ run, r, wei, st });
+      run.say(st, html`<span class="ok">The tETH / ${r.sym} pool is open, and your share in it is a private note.</span> ${txLink(hash)}`);
+      toast(`tETH / ${r.sym} pool started`);
       run.release?.();
       await scanPrivate(true).catch(() => {});
       SWC.card?.clear?.();
     } catch (e) { run.fail(st, e); } finally { PROVE_AT.el = null; }
   }).finally(() => SWC.card?.working?.(false));
 }
+// Earn's rows for any token's tETH pool (xa:<address>, add to it) or for a listed token with no pool yet (xs:<address>, start it)
+const xtEarnable = () => [...XT.by.values()].filter((r) => r.registered === true && (r.pool || !r.builtin) && (r.keep || ((r.pooled || r.listed) && !!SWC.card?.tokenInfo?.(r.addr))));
+const xtEarnRows = () => (xtPooled(), xtEarnable()).map((r) => ({ k: `${r.pool ? 'xa' : 'xs'}:${r.addr}`, name: `tETH / ${r.sym}`, note: r.pool ? 'private · LP only' : 'no pool yet · start it', icons: ['tk-teth', xtIco(r)], apr: null, day: 0, impact: 0, dry: false }));
+async function xtEarnQuote(pick, units) {
+  const r = xtOf(pick.k.slice(3)), start = pick.k.startsWith('xs:'), wei = units ? units * E10 : 0n;
+  if (!r) return { out: null, go: 'Add as private LP', warn: true, line: 'This pool could not be read.' };
+  const name = `tETH / ${r.sym}`, held = hxWalletEth(1), over = held != null && wei > held;
+  const rc = [...(start ? [['Starts', `the ${name} pool, at the market’s price`], ['How', `half the ETH buys ${r.sym}, then both go in`]] : [['How', 'half the ETH swapped in the pool, then both go in']]),
+    ['You hold', `private ${name} liquidity`], ['Take it out', 'from Your Tacit, both coins back privately'], ['Sent', 'in one transaction, once your share is proved']];
+  if (!start && wei && !over) {
+    const x = await getUx().then((t) => xtAddPlan(t, r, wei)).catch(() => null);
+    if (x && !x.plan) return { out: null, go: 'Add as private LP', warn: true, line: 'Enter a larger amount: this one is too small to make a share of the pool.' };
+    const bad = x?.plan ? await xtAddCheck(r, x) : null;
+    if (bad) return { out: null, go: 'Add as private LP', warn: true, line: bad, rc };
+    if (x?.plan) rc.unshift(['Puts in', `${fmt(x.plan.ethLeg, 18, 6)} ETH and ${fmt(x.plan.bLeg, r.dec, 6)} ${r.sym}`]);
+  }
+  return { out: null, go: start ? `Start the ${name} pool` : 'Add as private LP', warn: over, line: over ? `More ETH than ${your()} holds.` : '', rc };
+}
+async function xtEarnGo(run, key, units) {
+  const st = HX.zs, r = xtOf(key.slice(3)), wei = units * E10, start = key.startsWith('xs:');
+  if (!S.key) { openSheet('wallet'); return; }
+  if (!r || !wei) return;
+  PROVE_AT.el = st;
+  try {
+    run.go({ label: start ? `Start the tETH / ${r.sym} pool with ${fmt(wei, 18, 6)} ETH` : `Add ${fmt(wei, 18, 6)} ETH to tETH / ${r.sym}`, status: () => st, clear: hxEarnClear });
+    const hash = start ? await xtStartCore({ run, r, wei, st }) : await xtAddCore({ run, r, wei, st });
+    run.say(st, html`<span class="ok">${start ? `The tETH / ${r.sym} pool is open, and your share in it is a private note.` : `Added: your tETH / ${r.sym} share is a private note.`}</span> ${txLink(hash)}`);
+    toast(start ? `tETH / ${r.sym} pool started` : 'Liquidity added');
+    run.release?.();
+    await scanPrivate(true).catch(() => {});
+    hxEarnClear(); hxEarnAfter();
+  } catch (e) { run.fail(st, e); } finally { PROVE_AT.el = null; }
+}
+// A token pool as the farm code's take-out reads one: its two ids in pool order, its fee, its share asset and name
+const xtPoolRec = (r) => { const a = String(CETH_ID).toLowerCase(), b = r.id, [lo, hi] = a < b ? [a, b] : [b, a]; return { pid: null, pair: `cETH/${r.sym}`, feeBps: r.pool.feeBps, poolId: r.pool.poolId, lpAsset: r.pool.lp, reserves: { assetA: lo, assetB: hi } }; };
+const xtShareWorth = (r, shares) => { const res = r.pool?.res; if (!res?.totalShares) return null; const [e] = xtSides(res, String(CETH_ID).toLowerCase()); return (2n * BigInt(shares) * e * E10) / res.totalShares; };
 async function hxXWrapGo(units) {
   if (!S.key) return openSheet('wallet');
   const go = SWC.el?.querySelector('#go'), r = xtOf(HX.sf);
@@ -10878,11 +10986,11 @@ function dashItems() {
       const lx = s?.[`lpx${r.addr}`], res = r.pool?.res;
       if (lx?.value > 0n) {
         const ethSide = res ? (String(res.assetA).toLowerCase() === String(CETH_ID).toLowerCase() ? res.reserveA : res.reserveB) : null;
-        out.push({ key: `lpx${r.addr}`, label: `tETH/${r.sym}`, icons: ['tk-teth'], dec: 18, max: 6, unit: 'ETH', v: res && res.totalShares > 0n ? (2n * lx.value * ethSide * E10) / res.totalShares : null, err: scanErr, meta: 'pool share, private', show: true, noteVals: noteVals(lx) });
+        out.push({ key: `lpx${r.addr}`, label: `tETH/${r.sym}`, icons: ['tk-teth', xtIco(r)], dec: 18, max: 6, unit: 'ETH', v: res && res.totalShares > 0n ? (2n * lx.value * ethSide * E10) / res.totalShares : null, err: scanErr, meta: 'pool share, private', show: true, noteVals: noteVals(lx) });
       }
       if (r.builtin) continue;
       const x = s?.[`xp${r.addr}`];
-      out.push({ key: `xp${r.addr}`, label: r.sym, mark: r.sym, markId: r.addr, dec: r.tdec, max: Math.min(6, r.tdec), v: x ? x.value : null, err: scanErr, meta: 'private', show: x?.value > 0n, noteVals: x ? noteVals(x) : null });
+      out.push({ key: `xp${r.addr}`, label: r.sym, icons: [xtIco(r)], dec: r.tdec, max: Math.min(6, r.tdec), v: x ? x.value : null, err: scanErr, meta: 'private', show: x?.value > 0n, noteVals: x ? noteVals(x) : null });
     }
   }
   if (who && PUBX.who === who) {
@@ -11392,7 +11500,7 @@ const hxRwdSends = () => (S.key && P.scan && spendable('rtac') > 0n ? [['rtac', 
 const hxChainSends = () => (chainOn() && S.key ? [['ctac', 'TAC', 'tac', 2]] : []);
 const hxSendList = () => [...HX_SEND, ...hxChainSends(), ...hxRwdSends(), ...hxLpSends(), ...xtSends()];
 const hxSendOf = (k = HX.send) => hxSendList().find(([x]) => x === k) || HX_SEND[0];
-const hxIco = (ic, cls = 'tk') => (/^L:/.test(String(ic)) ? html`<span class="${cls} letter" style="--c:${markColor(String(ic).split(':')[1])}" aria-hidden="true">${String(ic).split(':').slice(2).join(':').slice(0, 2).toUpperCase()}</span>` : String(ic).includes('+') ? html`<span class="pair">${String(ic).split('+').map((i) => html`<svg class="${cls}" aria-hidden="true"><use href="#tk-${i}"/></svg>`)}</span>` : html`<svg class="${cls}" aria-hidden="true"><use href="#tk-${ic}"/></svg>`);
+const hxIco = (ic, cls = 'tk') => (/^[LI]:/.test(String(ic)) ? icoHtml(ic, cls) : String(ic).includes('+') ? html`<span class="pair">${String(ic).split('+').map((i) => html`<svg class="${cls}" aria-hidden="true"><use href="#tk-${i}"/></svg>`)}</span>` : html`<svg class="${cls}" aria-hidden="true"><use href="#tk-${ic}"/></svg>`);
 const hxIcoCls = (k) => (HX.tab === 'send' && (k === 'tac' || k in HX_DEVK) ? 'tk pvt' : 'tk');
 const hxSendBtc = (k = HX.send) => k === 'tacb' || k === 'btc';
 const hxSendWallet = (k = HX.send) => k in HX_WTOK;
@@ -11582,6 +11690,7 @@ async function hxFarms(amt) {
     out.push({ k: String(p.pid), name: pairName(p.pair), note: 'private', icons: ['tk-teth', LOGO[String(p.pair).split('/').find((t) => t !== 'cETH')] || 'tk-tac'],
       ...(lpOnly ? { dry: false, apr: await feeAprOf(p).then((v) => (v == null ? null : v * 100)), day: 0 } : { dry: !live, apr: live ? shieldedApr(p) : null, day: live ? farmDay(p, eth) : 0 }), impact });
   }
+  if (lpOnly) out.push(...xtEarnRows());
   return out;
 }
 const HX_QUICK = { eth: ['0.1', '0.5', '1'], tac: ['500', '1000'], sats: ['50000', '200000'], btc: ['0.005', '0.01'], cusd: ['100', '500'], cbtc: ['0.005', '0.01'], usd: ['25', '100'] };
@@ -12692,7 +12801,8 @@ async function hxQuote() {
       const jq = jp ? await hxJoinQuote(jp, units).catch((e) => ({ err: e })) : null, pq = pa ? await hxPubQuote(units).catch((e) => ({ err: e })) : null;
       if (my !== HX.seq) return;
       Object.assign(HX, { jq, jqFor: jp ? `${jp.pid}:${units}:${hxJoinMode()}` : null, pq, pqFor: pa ? `${HX.from === 'wtac' ? 'tac' : 'eth'}:${units}:${S.address}` : null });
-      for (const r of rows) { r.show = r.apr == null ? '—' : r.apr >= 10 ? Math.round(r.apr).toLocaleString('en-US') + '%' : pctFmt(r.apr); if (r.k !== 'precision') r.note = `private${r.dry ? ' · between reward periods' : ''}${hxEarnHow(units) === 'wrap' ? ' · 2 steps' : ''}${r.impact >= 0.01 ? ` · ${pctFmt(r.impact * 100)} impact` : r.small ? ' · small pool' : ''}`; }
+      for (const r of rows) { r.show = r.apr == null ? '—' : r.apr >= 10 ? Math.round(r.apr).toLocaleString('en-US') + '%' : pctFmt(r.apr); if (r.k !== 'precision' && !/^x[as]:/.test(r.k)) r.note = `private${r.dry ? ' · between reward periods' : ''}${hxEarnHow(units) === 'wrap' ? ' · 2 steps' : ''}${r.impact >= 0.01 ? ` · ${pctFmt(r.impact * 100)} impact` : r.small ? ' · small pool' : ''}`; }
+      if (/^x[as]:/.test(pick.k)) return done({ ...(await xtEarnQuote(pick, units).catch(() => ({ out: null, warn: true, line: 'This pool could not be read. Try again in a moment.' }))), rows, pick: pick.k });
       const js = jq ? hxJoinSay(jp, jq) : null, ps = pq ? hxPubSay(pq) : null, ex = js || ps;
       const zline = pp && !zq ? 'The zap could not be priced. Try again in a moment.' : zq && !zq.plan ? 'Enter a larger amount: this one is too small to make a share of the pool.'
         : HX.zq?.over ? `More ETH than ${your()} holds, with the network fee. Try Max.` : '';
@@ -13197,7 +13307,7 @@ function paintHxQ() {
     rows.hidden = !q.rows;
     const name = q.rowsName || (HX.mode === 'earn' ? (HX.lp && HX.from === 'ether' ? 'Where it earns' : 'Where it farms') : 'Route'), had = rows.contains(document.activeElement);
     rows.setAttribute('aria-label', name);
-    mount(rows, html`<div class="rows-h"><span>${name}</span>${HX.mode === 'earn' ? html`<span>${HX.lp && HX.from === 'ether' ? 'Fee APR' : 'APR'}</span>` : ''}</div>${(q.rows || []).map((r) => html`<button type="button" role="radio" class="${r.icons ? 'c' : ''}" aria-checked="${String(r.k === q.pick)}" tabindex="${r.k === q.pick ? 0 : -1}" data-hxr="${r.k}"${r.wait ? html` data-wait aria-busy="true"` : ''}${r.off ? ' disabled' : ''}>${r.icons ? html`<span class="pair" aria-hidden="true">${r.icons.map((i) => html`<svg class="tk"><use href="#${i}"/></svg>`)}</span>` : ''}<span class="rt"><b>${r.name}</b><small>${hxNb(r.note)}</small></span><span class="ra"><span>${r.show}</span>${r.best ? html`<em>best</em>` : ''}</span><span class="rd" aria-hidden="true"></span></button>`)}`);
+    mount(rows, html`<div class="rows-h"><span>${name}</span>${HX.mode === 'earn' ? html`<span>${HX.lp && HX.from === 'ether' ? 'Fee APR' : 'APR'}</span>` : ''}</div>${(q.rows || []).map((r) => html`<button type="button" role="radio" class="${r.icons ? 'c' : ''}" aria-checked="${String(r.k === q.pick)}" tabindex="${r.k === q.pick ? 0 : -1}" data-hxr="${r.k}"${r.wait ? html` data-wait aria-busy="true"` : ''}${r.off ? ' disabled' : ''}>${r.icons ? html`<span class="pair" aria-hidden="true">${r.icons.map((i) => icoHtml(i))}</span>` : ''}<span class="rt"><b>${r.name}</b><small>${hxNb(r.note)}</small></span><span class="ra"><span>${r.show}</span>${r.best ? html`<em>best</em>` : ''}</span><span class="rd" aria-hidden="true"></span></button>`)}`);
     const live = $$('[data-hxr]', rows);
     const choose = (b) => {
       for (const x of live) { x.setAttribute('aria-checked', x === b); x.tabIndex = x === b ? 0 : -1; }
@@ -13343,6 +13453,7 @@ function hxGo() {
   if (m === 'earn') {
     if (hxSentOn()) return;
     if (HX.pool === 'precision' && (HX.from === 'ether' || HX.from === 'wtac')) return void hxPubGo(units);
+    if (/^x[as]:/.test(HX.pool)) { if (HX.q?.warn) return; return void hxEarnRun((run) => xtEarnGo(run, HX.pool, units)); }
     const pid = Number(HX.pool), p = FARM.program?.pools?.find((x) => x.pid === pid), how = hxEarnHow(units);
     if (!Number.isInteger(pid) || !p) return openLink('farm');
     if (how === 'zap') return void hxZapGo(p, units);
@@ -14752,7 +14863,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=e2a3cf73').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=02dec00f').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {
@@ -15067,6 +15178,11 @@ function paintHx() {
 function hxPosRows() {
   const out = [], s = P.scan, x = FARM.precision && FARM.precision.who === S.address ? FARM.precision : null;
   if (x?.staked > 0n) out.push({ pub: x, icons: ['tk-tac', 'tk-eth'] });
+  if (S.key && s) for (const r of XT.by.values()) {
+    if (!r.pool?.lp) continue;
+    const loose = freeNotes(s.notes).filter((n) => String(n.asset).toLowerCase() === r.pool.lp).reduce((a, n) => a + BigInt(n.value), 0n);
+    if (loose > 0n) out.push({ p: xtPoolRec(r), loose, icons: ['tk-teth', xtIco(r)], xt: r });
+  }
   if (!S.key || !FARM.program?.pools) return out;
   for (const p of FARM.program.pools) {
     const icons = ['tk-teth', LOGO[String(p.pair).split('/').find((t) => t !== 'cETH')] || 'tk-tac'];
@@ -15083,7 +15199,7 @@ function hxPosPaint() {
   if (S.key && FARM.positions == null && !HX.posAsk && !resting) { HX.posAsk = true; loadPositions().then(hxPosPaint, () => {}).finally(() => { HX.posAsk = false; }); }
   const rows = hxPosRows();
   el.hidden = !rows.length;
-  const pair = (r) => html`<span class="pair${r.pos || r.pub ? ' farm' : ''}">${r.icons.map((i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`)}</span>`;
+  const pair = (r) => html`<span class="pair${r.pos || r.pub ? ' farm' : ''}">${r.icons.map((i) => icoHtml(i))}</span>`;
   const row = (r, i) => {
     if (r.pub) {
       const e = earnedNow(r.pub), has = e > 0n;
@@ -15092,8 +15208,8 @@ function hxPosPaint() {
         <button class="link" type="button" data-padd="${i}">Add</button>
         <button class="link" type="button" data-pwd="${i}"${HX.posBusy ? ' disabled' : ''} title="Takes out the whole stake as ETH and TAC, with the TAC it earned">Withdraw all</button></span></div>`;
     }
-    const worth = sharesEth(r.p, r.pos ? big(r.pos.shares) : r.loose), name = pairName(r.p.pair), off = HX.posBusy ? ' disabled' : '';
-    if (!r.pos) return html`<div class="hx-pr">${pair(r)}<span class="rt"><b>${name}</b><small>${worth != null ? `${aboutEth(worth)} · ` : ''}LP only</small></span><span class="hx-pa"><button class="link" type="button" data-pbond="${i}"${off}>Farm it</button><button class="link" type="button" data-ptake="${i}"${off}>Take out</button></span></div>`;
+    const worth = r.xt ? xtShareWorth(r.xt, r.loose) : sharesEth(r.p, r.pos ? big(r.pos.shares) : r.loose), name = pairName(r.p.pair), off = HX.posBusy ? ' disabled' : '';
+    if (!r.pos) return html`<div class="hx-pr">${pair(r)}<span class="rt"><b>${name}</b><small>${worth != null ? `${aboutEth(worth)} · ` : ''}LP only</small></span><span class="hx-pa">${r.xt ? html`<button class="link" type="button" data-padd="${i}"${off}>Add</button>` : html`<button class="link" type="button" data-pbond="${i}"${off}>Farm it</button>`}<button class="link" type="button" data-ptake="${i}"${off}>Take out</button></span></div>`;
     const locked = Number(r.pos.unlockAt || 0) > chainNow(), earned = BigInt(r.pos.pendingUnits || 0) > 0n;
     return html`<div class="hx-pr">${pair(r)}<span class="rt"><b>${name}</b><small>${worth != null ? `${aboutEth(worth)} · ` : ''}${earned ? `+${r.pos.pendingTac} TAC` : 'farming'}</small></span><span class="hx-pa">
       <button class="link" type="button" data-pharv="${i}"${earned && !HX.posBusy ? '' : ' disabled'}>Harvest</button>
@@ -15110,7 +15226,8 @@ function hxPosPaint() {
     if (!r && !turn) return;
     if (b.dataset.padd != null) {
       if (r.pub) HX.ern = HX.ern === 'wtac' ? 'wtac' : 'ether'; else if (HX.ern === 'wtac' || (HX.ern === 'tac' && !String(r.p.pair).split('/').includes('TAC'))) HX.ern = 'ether';
-      HX.pool = HX.earnPick = r.pub ? 'precision' : String(r.p.pid); HX.q = null; paintHx(); $('#hx-amt')?.focus(); return;
+      if (r.xt) HX.ern = 'ether';
+      HX.pool = HX.earnPick = r.pub ? 'precision' : r.xt ? `xa:${r.xt.addr}` : String(r.p.pid); HX.q = null; paintHx(); $('#hx-amt')?.focus(); return;
     }
     if (b.dataset.pwd != null) {
       if (!(Date.now() - (HX.pwdSure || 0) < 6e3)) { HX.pwdSure = Date.now(); say(at(), 'Press again to withdraw it all: the whole stake as ETH and TAC, and the TAC it earned.'); return; }

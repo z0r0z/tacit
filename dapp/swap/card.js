@@ -2897,7 +2897,10 @@ export function mountSwapCard(root, host = {}) {
     closePicker: () => pkClose?.({ quiet: true }),
     pickerBals,
     quoteEthToToken: (o) => R.quoteEthToToken({ ethCall, ...o }),
-    tokenInfo: (k) => { const t = tokenOf(String(k || '').toLowerCase()); return t ? { sym: t.sym, dec: t.dec, name: t.name || '' } : null; },
+    listReady: () => loadList(),
+    // whole tokens one ETH buys, from the card's own USD prices (ETH, wstETH, WBTC, the dollars, TAC); null for a token it does not price
+    marketRate: (k) => { const key = String(k || '').toLowerCase(), t = tokenOf(key); if (!t) return null; const e = usdOf('teth', 10n ** 18n), u = usdOf(key, 10n ** BigInt(t.dec)); return e && u ? e / u : null; },
+    tokenInfo: (k) => { const key = String(k || '').toLowerCase(), t = tokenOf(key); return t ? { sym: t.sym, dec: t.dec, name: t.name || '', logo: LOGO[t.addr] || null } : null; },
     get busy() { return S.busy; },
   };
 }
