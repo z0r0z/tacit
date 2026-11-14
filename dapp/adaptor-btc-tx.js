@@ -30,6 +30,10 @@ export function tacitKit(tacit, { rangeProve = bppRangeProve, encodePayload = ta
     deriveChangeBlinding: tacit.deriveChangeBlinding,
     deriveAmountKeystreamSelf: tacit.deriveAmountKeystreamSelf,
     encryptAmount: tacit.encryptAmount,
+    // the CXFER recipient path's channel (one ECDH, either side's key): a bound swap's buyer note (bound-swap.js buyerNoteEcdh)
+    deriveBlinding: tacit.deriveBlinding,
+    deriveAmountKeystreamECDH: tacit.deriveAmountKeystreamECDH,
+    decryptAmount: tacit.decryptAmount,
   };
 }
 
