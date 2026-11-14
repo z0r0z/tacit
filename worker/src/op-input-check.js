@@ -4,9 +4,12 @@
 // than after it has taken a turn in the relay's queue and a share of the day's proving budgets. Ops a page builds read cleanly.
 // An op type the reader does not know is left to the relay.
 import { stdinFor, SELF_PROVE_TYPES } from '../../dapp/sp1-stdin.js';
-import { readWrapStdin, wrapOpens } from './proof-pool.js';
+import { readWrapStdin, readDepositHead, wrapOpens } from './proof-pool.js';
 
 const ZERO_HASH = '0x' + '00'.repeat(32);
+// OP_WRAPTRANSFER's type byte and the intent tag its deposit's signature is made under (contracts/sp1/confidential/src/main.rs).
+const OP_WRAPTRANSFER = 27;
+const WRAPTRANSFER_TAG = 'tacit-wraptransfer-intent-v1';
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 // The batch program (exec-batchtransfer.rs) takes one to 256 transfers under the batch's chain binding and spend root.
@@ -29,9 +32,16 @@ export function opInputGap({ type, op, memos = [] } = {}) {
   }
   if (!SELF_PROVE_TYPES.includes(type) || !isObj(op)) return null;
   try {
-    stdinFor(type, { ...op, memoHashes: (Array.isArray(memos) ? memos : []).map(() => ZERO_HASH) });
+    const stdin = stdinFor(type, { ...op, memoHashes: (Array.isArray(memos) ? memos : []).map(() => ZERO_HASH) });
     // A wrap's program also stops on a signature that does not open its commitment (proof-pool.js wrapOpens, as the program checks it).
     if (type === 'wrap' && !wrapOpens(readWrapStdin(stdinFor('wrap', { ...op, memoHashes: [ZERO_HASH] })))) return 'the wrap op\'s signature does not open its commitment';
+    // So does a wrap-transfer's, for the deposit it spends, under its own tag. The deposit is read from the input just built, which is what
+    // the program reads; an input this cannot read the deposit from is left to the program rather than refused on a guess.
+    if (type === 'wraptransfer') {
+      let deposit = null;
+      try { deposit = readDepositHead(stdin, OP_WRAPTRANSFER); } catch { /* not read here */ }
+      if (deposit && !wrapOpens(deposit, WRAPTRANSFER_TAG)) return 'the wraptransfer op\'s deposit signature does not open its commitment';
+    }
     return null;
   } catch (e) {
     return `the ${type} op cannot be read: ${String(e?.message || e).replace(/^sp1-stdin \S+: /, '').slice(0, 160)}`;

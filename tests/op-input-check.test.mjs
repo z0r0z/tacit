@@ -8,6 +8,9 @@ import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import { opInputGap } from '../worker/src/op-input-check.js';
 import { makeConfidentialSettler } from '../worker/src/confidential-settle.js';
 import { stdinFor } from '../dapp/sp1-stdin.js';
+import * as secp from '@noble/secp256k1';
+import { sha256 } from '@noble/hashes/sha256';
+import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import { readFileSync } from 'node:fs';
 
 let n = 0;
@@ -29,6 +32,31 @@ ok(/cx is not valid hex/.test(opInputGap({ type: 'wrap', op: { ...wrap, cx: 'not
 ok(/value must be a decimal string/.test(opInputGap({ type: 'wrap', op: { ...wrap, value: '-1' } }) || ''), 'and one with a value out of range');
 ok(opInputGap({ type: 'nosuchop', op: {} }) === null, 'an op type the reader does not know is left alone');
 ok(opInputGap({ type: 'wrap', op: null }) === null && opInputGap({ type: 'wrap', op: [] }) === null, 'and so is an op that is not an object (the queue refuses those itself)');
+
+// a wrap-transfer (exec-wraptransfer.rs): the deposit it spends is opened by a signature under its own tag, which the program stops on as well
+const KIT = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
+const { memoHashes: _wm, ...wt0 } = JSON.parse(readFileSync(new URL('./fixtures/sp1-stdin/wraptransfer.op.json', import.meta.url), 'utf8'));
+const signedWt = (over = {}, tag = 'tacit-wraptransfer-intent-v1') => {
+  const value = BigInt(over.value ?? wt0.value), r = 0x1234n, owner = wt0.deposit.owner;
+  const { cx, cy } = KIT.commitXY(value, r);
+  const dep = KIT.depositId(wt0.asset, value, cx, cy, owner);
+  const sig = KIT.openingSigma(value, r, KIT.intentContext(tag, wt0.chainBinding, wt0.asset, dep, [[cx, cy, owner]], [value]), 0x77n);
+  return { ...wt0, ...over, deposit: { cx, cy, owner, sigR: sig.R, sigZ: sig.z } };
+};
+const wt = signedWt();
+ok(stdinFor('wraptransfer', { ...wt, memoHashes: [h('00')] }) instanceof Uint8Array, 'the signed wrap-transfer builds a program input');
+ok(opInputGap({ type: 'wraptransfer', op: wt, memos: ['0x01'] }) === null, 'a wrap-transfer whose deposit is signed as a page signs it is let through');
+ok(/deposit signature does not open its commitment/.test(opInputGap({ type: 'wraptransfer', op: { ...wt, value: 1501 } }) || ''), 'a wrap-transfer whose value is not the one signed is refused');
+ok(/deposit signature does not open its commitment/.test(opInputGap({ type: 'wraptransfer', op: { ...wt, deposit: { ...wt.deposit, sigZ: h('22') } } }) || ''), 'and one with another z');
+ok(/deposit signature does not open its commitment/.test(opInputGap({ type: 'wraptransfer', op: { ...wt, deposit: { ...wt.deposit, cx: h('c1'), cy: h('c2') } } }) || ''), 'and one whose commitment is no point');
+ok(/deposit signature does not open its commitment/.test(opInputGap({ type: 'wraptransfer', op: signedWt({}, 'tacit-wrap-intent-v1') }) || ''), 'and one signed as a plain wrap (the program binds the tag, so a plain wrap\'s signature cannot be reused)');
+ok(/deposit signature does not open its commitment/.test(opInputGap({ type: 'wraptransfer', op: { ...wt, chainBinding: h('11') } }) || ''), 'and one under another chain binding');
+ok(/cannot be read/.test(opInputGap({ type: 'wraptransfer', op: { ...wt, deposit: undefined } }) || ''), 'a wrap-transfer with no deposit is still refused as unreadable');
+
+// the op the SP1 guest itself proves (contracts/sp1/confidential/fixtures, whose deposit is signed as a page signs it) goes through; a changed value does not
+const { memoHashes: _gm, ...guestWt } = JSON.parse(readFileSync(new URL('../contracts/sp1/confidential/fixtures/wraptransfer_op.json', import.meta.url), 'utf8'));
+ok(opInputGap({ type: 'wraptransfer', op: guestWt }) === null, 'the guest\'s own wrap-transfer op is let through');
+ok(/deposit signature does not open its commitment/.test(opInputGap({ type: 'wraptransfer', op: { ...guestWt, value: String(BigInt(guestWt.value) + 1n) } }) || ''), 'and refused with its value changed');
 
 // a batch of transfers (exec-batchtransfer.rs): one to 256 transfers under the batch's chain binding and spend root, each input's secret read as `nk`
 const tx = JSON.parse(readFileSync(new URL('./fixtures/sp1-stdin/transfer.op.json', import.meta.url), 'utf8'));
