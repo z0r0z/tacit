@@ -99,6 +99,7 @@ import { buildFlow, appendSeries, flowPoint } from './flow-feed.js';
 import { ethStatsBody, pageStatsBody } from './stats-views.js';
 import { preauthSalesBookBody } from './book-views.js';
 import { buildCrossoutConsumer, crossoutMintLeaf } from './crossout-consumer.js';
+import { makeBoundOffers } from './bound-offers.js';
 import { buildGovernance } from './governance.js';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS } from '../../dapp/discord/message.js';
 import { DISCORD_VERIFY_BUTTON_ID } from '../../discord/panel.js';
@@ -22141,6 +22142,8 @@ async function handlePreauthBidsList(assetIdHex, env, network, cors) {
 function watchtowerBidKey(network, ownerH160, bidIdHex) {
   return `wtbid:${network}:${ownerH160}:${bidIdHex}`;
 }
+// Bound swap offers of bridged tokens into watchtower bids (bound-offers.js); POST off unless BOUND_OFFERS_ENABLED=true.
+const boundOffers = makeBoundOffers({ jsonResponse, verifySchnorr, watchtowerBidKey });
 function watchtowerBidPrefix(network, ownerH160) {
   return ownerH160 ? `wtbid:${network}:${ownerH160}:` : `wtbid:${network}:`;
 }
@@ -22242,6 +22245,8 @@ async function handleWatchtowerBidPost(req, env, network, cors) {
     decimals,
     funding_outpoint: { txid: fundingTxidHex, vout: fundingVout },
     expiry,
+    // 'bound': a bridged token's bid, filled by a seller's bound offer (bound-offers.js) instead of an atomic intent
+    kind: String(body.kind ?? '') === 'bound' ? 'bound' : 'axfer',
     status: 'active',
     filled_base: '0',
     processed_intents: {},
@@ -23549,7 +23554,11 @@ async function handleBidIntentList(assetIdHex, env, network, cors) {
       if (/^0[23][0-9a-f]{64}$/.test(String(v.buyer_pubkey || ''))) {
         const h160 = bytesToHex(hash160(hexToBytes(v.buyer_pubkey)));
         const wt = await env.REGISTRY_KV.get(watchtowerBidKey(network, h160, v.bid_id), 'json');
-        if (wt && wt.status === 'active' && Number(wt.expiry || 0) > now) v.watchtower = true;
+        if (wt && wt.status === 'active' && Number(wt.expiry || 0) > now) {
+          v.watchtower = true;
+          // a bridged token's bid: sellers answer with a bound offer to this key (bound-offers.js)
+          if (wt.kind === 'bound') { v.bound = true; v.buyer_xonly = String(wt.bid_pubkey || '').slice(2); }
+        }
       }
     } catch {}
   }));
@@ -30727,6 +30736,14 @@ async function _routeFetch(req, env, ctx) {
     // owner. POST is flag-gated; GET (by ?owner=pubkey) + DELETE stay open.
     if (url.pathname === '/watchtower/bids' && req.method === 'POST')   return handleWatchtowerBidPost(req, env, network, cors);
     if (url.pathname === '/watchtower/bids' && req.method === 'GET')    return handleWatchtowerBidsList(url, env, network, cors);
+    // Bound swap offers (bridged tokens into watchtower bids). POST off unless BOUND_OFFERS_ENABLED=true; reads stay open.
+    const mbo = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bound-offers$/);
+    if (mbo && req.method === 'POST')                          return _mutateAndBust(mbo[1], () => boundOffers.post(mbo[1], req, env, network, cors));
+    if (mbo && req.method === 'GET')                           return boundOffers.list(mbo[1], url, env, network, cors);
+    const mbo2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bound-offers\/([0-9a-f]{64})$/);
+    if (mbo2 && req.method === 'DELETE')                       return _mutateAndBust(mbo2[1], () => boundOffers.cancel(mbo2[1], mbo2[2], req, env, network, cors));
+    const mbo3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bound-offers\/([0-9a-f]{64})\/filled$/);
+    if (mbo3 && req.method === 'POST')                         return _mutateAndBust(mbo3[1], () => boundOffers.filled(mbo3[1], mbo3[2], req, env, network, cors));
     const mwt = url.pathname.match(/^\/watchtower\/bids\/([0-9a-f]{32})$/);
     if (mwt && req.method === 'DELETE')                        return handleWatchtowerBidDelete(mwt[1], req, env, network, cors);
 

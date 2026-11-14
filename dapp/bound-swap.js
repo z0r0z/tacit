@@ -536,3 +536,12 @@ export function buyerTakeOffer({ prims, kit, offer, buyerKey = prims.wallet.priv
   return { ...fin, commitFee: swap.commitFee, revealFee: swap.revealFee,
     buyerNote: { txid: fin.revealTxid, vout: 0, amount: chk.amount, blinding: chk.buyerBlinding, script: bytesToHex(p2trScriptOf(xonlyOf(priv32(buyerKey)))) } };
 }
+
+// What the seller signs when it posts an offer (worker/src/bound-offers.js boundOfferMsg is the same function): every field of the
+// offer, the bid it answers, and how long it stands.
+export function boundOfferMsg(network, o, bidIdHex, expiry) {
+  return sha256(new TextEncoder().encode(['tacit-bound-offer-v1', network, o.assetId, bidIdHex, `${o.note.txid}:${o.note.vout}`, o.note.value, o.note.script, o.amount, o.priceSats,
+    o.payoutScript, o.payload, (o.noteScripts || []).join(','), (o.witness || []).join(','), o.sellerPub, o.buyerXonly, o.chainBinding, expiry].join('|')));
+}
+export const boundOfferCancelMsg = (network, asset, id) => sha256(new TextEncoder().encode(`tacit-bound-offer-cancel-v1|${network}|${asset}|${id}`));
+export const boundOfferFilledMsg = (network, asset, id, revealTxid) => sha256(new TextEncoder().encode(`tacit-bound-offer-filled-v1|${network}|${asset}|${id}|${revealTxid}`));
