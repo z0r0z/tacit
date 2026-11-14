@@ -16021,8 +16021,27 @@ function bridgedAtTaproot({ force = false } = {}) {
 // The assets a page can move off the Taproot address: the ones the bridge to Bitcoin carries (TAC, and tETH under its Bitcoin id).
 function _bridgedMoveAsset(assetIdHex) {
   const id = String(assetIdHex || '').toLowerCase().replace(/^0x/, '');
-  if (id !== CANONICAL_TAC_ASSET_ID_HEX && id !== BRIDGED_TETH_ASSET_ID_HEX) throw new Error('only TAC and tETH bridged to Bitcoin can be moved here');
+  if (id !== CANONICAL_TAC_ASSET_ID_HEX) { _refuseBridgedPlain(id); throw new Error('only TAC bridged to Bitcoin can be moved here'); }
   return id;
+}
+// A note of a token bridged from the pool, other than TAC, returns to Ethereum only as the note the bridge minted: the reflection folds the outputs of a
+// plain transfer or an atomic sale for TAC alone (cxfer-core LEGACY_BRIDGE_ASSETS), so a send, split, move, listing or sale of it on Bitcoin would leave
+// the new note unable to go back. Such a note leaves Bitcoin by the bridge. Tokens native to Bitcoin are not bridged and are not refused here.
+let _bridgedFixed = null;
+function _bridgedNonLegacy(assetIdHex) {
+  const id = String(assetIdHex || '').toLowerCase().replace(/^0x/, '');
+  if (!/^[0-9a-f]{64}$/.test(id) || id === CANONICAL_TAC_ASSET_ID_HEX) return null;
+  _bridgedFixed ||= new Map([[BRIDGED_TETH_ASSET_ID_HEX, 'tETH'], ['62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', 'cBTC'],
+    ['8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d', 'cUSD'], ['c50e8dd9666f64a23e5457d686382901f08aaea3554328fc4ac25d2f9fac6c00', 'cUSDT']]);
+  if (_bridgedFixed.has(id)) return _bridgedFixed.get(id);
+  const rt = _bridgedRuntime.get('0x' + id);
+  if (rt) return rt.ticker;
+  for (const ux of [_crossoutUx, _burndepUx]) { try { const a = ux?.assetOf?.('0x' + id); if (a) return a.ticker || 'This token'; } catch { } }
+  return null;
+}
+function _refuseBridgedPlain(assetIdHex) {
+  const tk = _bridgedNonLegacy(assetIdHex);
+  if (tk) throw Object.assign(new Error(`${tk} bridged to Bitcoin goes back to Ethereum through the bridge. It is not sent, split, moved or sold on Bitcoin, which would leave it unable to return.`), { bridgedOnly: true });
 }
 async function _bridgedOpen(assetIdHex) {
   const pubHex = bytesToHex(wallet.pub);
@@ -23751,7 +23770,8 @@ async function tacPickCandidates(assetIdHex, sorted, amount) {
   return sorted;
 }
 
-async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = bppEnabled(), assetSigner = null }) {
+async function buildAndBroadcastCXferMulti(args) { _refuseBridgedPlain(args?.assetIdHex); return _buildAndBroadcastCXferMulti(args); }
+async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = bppEnabled(), assetSigner = null }) {
   await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   if (!Array.isArray(recipients) || recipients.length === 0) {
@@ -24144,7 +24164,8 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   };
 }
 
-async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, stealthAddress = null, amount, forceUtxos = null, onProgress = null, useBpp = bppEnabled() }) {
+async function buildAndBroadcastCXfer(args) { _refuseBridgedPlain(args?.assetIdHex); return _buildAndBroadcastCXfer(args); }
+async function _buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, stealthAddress = null, amount, forceUtxos = null, onProgress = null, useBpp = bppEnabled() }) {
   const recipient = stealthAddress
     ? { stealthAddress, amount }
     : { pubHex: recipientPubHex, amount };
@@ -24288,6 +24309,7 @@ async function buildAxferOffer({ utxoTxid, utxoVout, recipientPubHex, priceSats,
   } else {
     ({ target, assetIdHex } = await _resolveHoldingsUtxo(utxoTxid, utxoVout));
   }
+  _refuseBridgedPlain(assetIdHex);
   const amt = target.amount;
   const inBlinding = BigInt(target.blinding);
 
@@ -25071,6 +25093,7 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onPro
   } else {
     ({ target, assetIdHex } = await _resolveHoldingsUtxo(utxoTxid, utxoVout));
   }
+  _refuseBridgedPlain(assetIdHex);
   const _conflict = _localUtxoListedConflict(assetIdHex, utxoTxid, utxoVout);
   if (_conflict) throw new Error(`UTXO ${utxoTxid}:${utxoVout} is already listed as a live ${_conflict.kind} — cancel that listing first`);
 
@@ -25240,6 +25263,7 @@ async function publishAxferVarIntent({ utxoTxid, utxoVout, priceSats, expiry, mi
   } else {
     ({ target, assetIdHex } = await _resolveHoldingsUtxo(utxoTxid, utxoVout));
   }
+  _refuseBridgedPlain(assetIdHex);
   const _conflict = _localUtxoListedConflict(assetIdHex, utxoTxid, utxoVout);
   if (_conflict) throw new Error(`UTXO ${utxoTxid}:${utxoVout} is already listed as a live ${_conflict.kind} — cancel that listing first`);
 
@@ -26229,6 +26253,7 @@ async function publishPreauthSale({ utxoTxid, utxoVout, minPriceSats, expiry, se
   } else {
     ({ target, assetIdHex } = await _resolveHoldingsUtxo(utxoTxid, utxoVout));
   }
+  _refuseBridgedPlain(assetIdHex);
   const _conflict = _localUtxoListedConflict(assetIdHex, utxoTxid, utxoVout);
   if (_conflict) throw new Error(`UTXO ${utxoTxid}:${utxoVout} is already listed as a live ${_conflict.kind} — cancel that listing first`);
 
@@ -27559,7 +27584,8 @@ async function fetchPreauthSale({ assetIdHex, saleIdHex }) {
   return j.sale;
 }
 
-async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress = null, _skipApiFailurePrompt = false }) {
+async function takePreauthSale(args) { _refuseBridgedPlain(args?.assetIdHex); return _takePreauthSale(args); }
+async function _takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress = null, _skipApiFailurePrompt = false }) {
   let _commitTxidHexForRecovery = null;
   let _commitValueForRecovery = 0;
   const opts = { _skipApiFailurePrompt };
@@ -27818,7 +27844,8 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   }
 }
 
-async function takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
+async function takePreauthSaleBatch(args) { _refuseBridgedPlain(args?.assetIdHex); return _takePreauthSaleBatch(args); }
+async function _takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
   let _commitTxidHexForRecovery = null;
   let _commitValueForRecovery = 0;
   try {
@@ -28233,6 +28260,7 @@ function _bidOverCommitCheck(assetIdHex, addedSats) {
 }
 
 async function publishBidIntent({ assetIdHex, amount, priceSats, expiry, minFillAmount = 0, skipOverCommitCheck = false }) {
+  _refuseBridgedPlain(assetIdHex);
   await ensurePrivkey();
   if (!skipOverCommitCheck) {
     const _oc = _bidOverCommitCheck(assetIdHex, priceSats);

@@ -1770,7 +1770,7 @@ function loadBridgedHere(force = false) {
   if (BNOTES.loading) return BNOTES.loading;
   if (!force && BNOTES.pub === pub && Date.now() - BNOTES.at < 60e3) return Promise.resolve();
   return (BNOTES.loading = withKey(async (t) => {
-    const read = await Promise.all(BTC_NOTE_ASSETS.filter((a) => a === CHAIN_ASSETS.tac || a === CHAIN_ASSETS.teth).map((a) => t.bridgedNotes(a.id).then((r) => r.notes.map((n) => ({ ...n, aid: a.id })))));
+    const read = await Promise.all(BTC_NOTE_ASSETS.filter((a) => a === CHAIN_ASSETS.tac).map((a) => t.bridgedNotes(a.id).then((r) => r.notes.map((n) => ({ ...n, aid: a.id })))));
     try { MOVE_SATS = BigInt(await (await import('/btc-book.js?cb=3a43da09')).moveSatsNeeded(() => t.getFeeRate())); } catch {}
     return read.flat();
   }, pub).then((v) => { if (S.key?.pubHex === pub) Object.assign(BNOTES, { pub, at: Date.now(), bridged: v, err: null }); },
@@ -1790,9 +1790,10 @@ function btcNotes(f, status, b) {
       const ready = a.notes.filter((n) => n.confirmed), pick = a.notes.find((n) => noteKey(n) === BNOTES.pick[a.id]);
       return html`<div class="blk" data-bnasset="${a.id}">
         <div class="lbl"><span>${a.ticker}</span><span>${fmt(a.balance, a.decimals, 8)} in ${a.notes.length} note${a.notes.length === 1 ? '' : 's'}</span></div>
-        ${a.notes.map((n) => noteLi(a, n))}
+        ${a.id !== CHAIN_ASSETS.tac.id ? html`${a.notes.map((n) => html`<div class="kv"><span class="num">${fmt(n.amount, a.decimals, 8)} ${a.ticker}</span><span>${n.confirmed ? '' : 'waiting for its confirmation'}</span></div>`)}
+          <p class="note">${a.ticker} on Bitcoin goes back to Ethereum from the Bridge tab. It is not split, combined or sent here.</p>` : html`${a.notes.map((n) => noteLi(a, n))}
         <div class="amt"><input id="bn-amt-${a.id}" data-bnamt="${a.id}" inputmode="decimal" placeholder="Amount to split off" autocomplete="off" aria-label="Amount to split off from the picked ${a.ticker} note"><span class="u">${a.ticker}</span></div>
-        <div class="brr-a"><button class="btn ghost" type="button" data-bnsplit="${a.id}" ${pick ? '' : 'disabled'}>Split</button>${ready.length > 1 ? html`<button class="btn ghost" type="button" data-bncombine="${a.id}">Combine ${Math.min(ready.length, NOTES_MAX)} notes</button>` : ''}</div>
+        <div class="brr-a"><button class="btn ghost" type="button" data-bnsplit="${a.id}" ${pick ? '' : 'disabled'}>Split</button>${ready.length > 1 ? html`<button class="btn ghost" type="button" data-bncombine="${a.id}">Combine ${Math.min(ready.length, NOTES_MAX)} notes</button>` : ''}</div>`}
       </div>`;
     }) : html`<p class="note">${b?.got >= 2 ? 'No TAC or tETH notes at this key’s Bitcoin address yet.' : 'Reading your notes…'}</p>`}
     ${bridged.length ? html`<div class="blk"><div class="lbl sep"><span>Bridged to Bitcoin</span></div>
