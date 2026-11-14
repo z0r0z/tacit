@@ -6,7 +6,7 @@ import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpd
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
 import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS, dayShare } from '/prove/tabmine.js?cb=a9294239';
 import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView, pressTurnsOn } from '/prove/review.js?cb=23bfbd4a';
-import { short, cells, opsText, tac, rewardWei, payPoints, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, proofSpan, dayTotals, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=582da13e';
+import { short, cells, opsText, tac, rewardWei, payPoints, payRuleText, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, proofSpan, dayTotals, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=e4dfccf1';
 
 const API = 'https://api.tacit.finance', POINTS = 'https://tacit-points.onrender.com', LOCAL = 'http://127.0.0.1:47815';
 const SAVED_ADDR = 'tacit-prove-address';                          // shared with the keeper page's card
@@ -380,6 +380,9 @@ function paintBoard() {
   const per = pointRate(), daily = points?.terms?.dailyWei, said = per && /^[1-9]\d*$/.test(String(daily ?? ''));
   $('#board-rate').hidden = !said;
   if (said) $('#board-rate').textContent = `${Number(tac(daily, 0)).toLocaleString('en-US')} TAC a day, shared by points: ${tac(per, 4)} TAC a point so far`;
+  // how a proof's points follow the time it took (the pool's terms.pay), so a faster proof earning more is no surprise
+  const rule = payRuleText(pool?.terms?.pay, pool?.terms?.pointsPerProof);
+  $('#board-rule').textContent = rule; $('#board-rule').hidden = !rule;
   const by = (m) => (day.size ? m.points : m.proofs) || 0, lead = Math.max(1, ...top.map(by));
   if (!top.length) { if (!$('#board .empty')) $('#board').innerHTML = '<li class="empty">Nobody yet. Be first.</li>'; return; }
   const row = (m, i) => {

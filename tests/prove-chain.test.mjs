@@ -1,5 +1,5 @@
 // node tests/prove-chain.test.mjs -- the prove page's day figures: an address's work across the proof pool and the board, and how long a proof takes
-import { dayTotals, proofSpan, cleanMiner, payPoints } from '../dapp/prove/chain.js';
+import { dayTotals, proofSpan, cleanMiner, payPoints, payRuleText } from '../dapp/prove/chain.js';
 let fails = 0; const check = (n, c) => { console.log((c ? 'ok   ' : 'FAIL ') + n); if (!c) fails++; };
 
 const A = '0x66f5A1225e6ac772c461f2b4d8028bf9568f3db5', B = '0x9194efdf03174a804f3552f4f7b7a4bb74badb7f', a = A.toLowerCase();
@@ -28,7 +28,14 @@ const A = '0x66f5A1225e6ac772c461f2b4d8028bf9568f3db5', B = '0x9194efdf03174a804
   check('zero and negative times are not proofs', proofSpan([0, 0, 0, 120]) === '2 min');
 }
 
-console.log(fails ? `prove chain: ${fails} failed` : 'prove chain: all tests passed');
+// --- the pay rule in a line, from the pool's terms
+{
+  const pay = { fullSecs: 60, floorSecs: 600, floorPct: 50 };
+  check('the rule says what the pool pays and how it falls', payRuleText(pay, 20) === 'A proof pays up to 20 points: all of them within 60 s, down to half at 10 min and after.');
+  check('another floor is said as a percent', payRuleText({ fullSecs: 30, floorSecs: 300, floorPct: 40 }, 20) === 'A proof pays up to 20 points: all of them within 30 s, down to 40% at 5 min and after.');
+  check('no line when the terms are missing, flat or not a slope', payRuleText(undefined, 20) === '' && payRuleText({ fullSecs: null, floorSecs: null, floorPct: null }, 20) === '' && payRuleText({ ...pay, floorPct: 100 }, 20) === '' && payRuleText({ ...pay, floorSecs: 60 }, 20) === '' && payRuleText(pay, 0) === '');
+}
+
 
 // --- what a pool proof earns for the time it took, from the pool's own terms (the same sum the pool does: payFor in worker/src/proof-pool.js)
 {
@@ -41,4 +48,6 @@ console.log(fails ? `prove chain: ${fails} failed` : 'prove chain: all tests pas
   check('a floor of 100 pays every proof the same', payPoints(20, 900, { ...pay, floorPct: 100 }) === 20);
   check('nothing is paid when no points are', payPoints(0, 900, pay) === null && payPoints(null, 900, pay) === null);
 }
+
+console.log(fails ? `prove chain: ${fails} failed` : 'prove chain: all tests passed');
 process.exit(fails ? 1 : 0);

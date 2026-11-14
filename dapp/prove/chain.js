@@ -41,6 +41,14 @@ export function payPoints(max, secs, pay) {
   return Math.max(1, Math.round(m * (s >= floor ? pct : 1 - ((1 - pct) * (s - full)) / (floor - full))));
 }
 
+// The pool's pay rule in a line, from its own terms (see payPoints): '' when the terms are not read or pay every proof the same.
+export function payRuleText(pay, points) {
+  const m = Number(points), full = Number(pay?.fullSecs), floor = Number(pay?.floorSecs), pct = Number(pay?.floorPct);
+  if (!(m > 0) || !(floor > full) || !(pct >= 0 && pct < 100)) return '';
+  const t = (s) => (s < 120 ? `${s} s` : `${Math.round(s / 60)} min`);
+  return `A proof pays up to ${m} points: all of them within ${t(full)}, down to ${pct === 50 ? 'half' : `${pct}%`} at ${t(floor)} and after.`;
+}
+
 // A proof's reward: its points times what a point is paid (perPoint in community-prove.js), null when nothing is paid.
 export function rewardWei(points, weiPerPoint) {
   if (!(Number(points) > 0) || !weiPerPoint) return null;
