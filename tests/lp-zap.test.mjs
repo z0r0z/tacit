@@ -3,7 +3,7 @@
 // remove): with nothing in between, it mints exactly the shares its note commits to; with any trade, add or remove landing first, it mints at
 // most that many, so with minShares set to them the transaction mints exactly them or reverts, and no deposit is left a note cannot open.
 //   node tests/lp-zap.test.mjs
-import { zapPlan, zapPlanFor, zapSplitPlan, zapSplitSearch, zapWorth, zapCalldata, zapSettleCalldata, ammOut, addShares } from '../dapp/lp-zap.js';
+import { zapPlan, zapPlanFor, zapSplitPlan, zapSplitSearch, zapWorth, zapCalldata, zapSettleCalldata, ammOut, addShares, foundingPlan } from '../dapp/lp-zap.js';
 
 let n = 0; const ok = (c, m) => { if (c) { n++; } else { console.error('FAIL -', m); process.exitCode = 1; } };
 let seed = 7n; const rnd = () => { seed = (seed * 6364136223846793005n + 1442695040888963407n) & ((1n << 64n) - 1n); return seed >> 11n; };
@@ -255,6 +255,22 @@ ok(exact > 0 && reverted > 0, `with something landing first a zap is exact or re
   const got = zapSettleCalldata({ ...a, plan, deadline: BigInt(a.deadline) }), plain = zapCalldata({ ...a, plan, deadline: BigInt(a.deadline) });
   ok(got === fx.calldata && got.startsWith('0xc4294fac'), 'zapSettleCalldata is zapETHIntoFarm as cast encodes it');
   ok(got.includes(plain.slice(10 + 9 * 64)), 'and its swap leg is the plain zap\'s');
+}
+
+// founding a tETH pool for a token: legs cut to whole pool units, the ETH leg at the quoted rate, shares = isqrt less the 1000 locked
+{
+  const isq = (v) => { let x = v, y = (x + 1n) / 2n; while (y < x) { x = y; y = (x + v / x) / 2n; } return x; };
+  const E10 = 10n ** 10n, swapIn = 5n * 10n ** 16n;
+  const p8 = foundingPlan({ swapIn, amountOut: 1234567890123n, amountLimit: 1222222222222n, unitB: 1n });
+  ok(p8 && p8.bLeg === 1222222222222n && p8.ethLeg % E10 === 0n && p8.ethLeg <= swapIn && p8.value === swapIn + p8.ethLeg, 'an 8-decimal token (scale 1): the token leg is the least the swap brings, the ETH leg whole pool units');
+  ok(p8.shares === isq((p8.ethLeg / E10) * p8.bLeg) - 1000n && p8.total === p8.shares + 1000n, 'its shares are isqrt(vA·vB) less the 1000 the founding add locks');
+  const r8 = Number(p8.bLeg) / Number(p8.ethLeg), q8 = 1234567890123 / Number(swapIn);
+  ok(Math.abs(r8 / q8 - 1) < 0.0001, 'and the two legs stand at the quoted rate');
+  const p18 = foundingPlan({ swapIn, amountOut: 123456789123456789123n, amountLimit: 122222222222222222222n, unitB: E10 });
+  ok(p18 && p18.bLeg % E10 === 0n && p18.bLeg <= 122222222222222222222n, 'an 18-decimal token (scale 1e10): its leg is cut to whole pool units');
+  ok(foundingPlan({ swapIn: 2n * E10, amountOut: 100n, amountLimit: 99n, unitB: 1n }) === null, 'too small a pool (its shares not over the 1000 locked) is refused');
+  ok(foundingPlan({ swapIn, amountOut: 2n ** 70n, amountLimit: 2n ** 70n, unitB: 1n }) === null, 'a leg beyond a u64 of pool units is refused');
+  ok(foundingPlan({ swapIn, amountOut: 100n, amountLimit: 200n, unitB: 1n }) === null && foundingPlan({ swapIn: 0n, amountOut: 1n, amountLimit: 1n, unitB: 1n }) === null, 'a quote that makes no sense is refused');
 }
 
 console.log(`${n} checks`);

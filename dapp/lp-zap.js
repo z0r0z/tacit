@@ -6,6 +6,17 @@ const bytes = (h) => { const s = String(h).replace(/^0x/, ''); return word(s.len
 const ceil = (x, y) => (x + y - 1n) / y;
 function isqrt(n) { if (n < 2n) return n; let x = n, y = (x + 1n) / 2n; while (y < x) { x = y; y = (x + n / x) / 2n; } return x; }
 
+// The legs that found a tETH pool for a token at the rate an outside swap of `swapIn` wei quotes (amountOut, at least amountLimit after
+// slippage): the token leg is what the swap surely brings, cut to whole pool units (`unitB`); the ETH leg matches it at the quoted rate. The
+// founding add mints isqrt(vA·vB) shares and keeps 1000 of them locked, so the share note is for the rest. Reserves and shares fit a u64.
+export function foundingPlan({ swapIn, amountOut, amountLimit, unitA = 10n ** 10n, unitB }) {
+  swapIn = BigInt(swapIn); amountOut = BigInt(amountOut); amountLimit = BigInt(amountLimit); unitA = BigInt(unitA); unitB = BigInt(unitB);
+  if (!(swapIn > 0n && amountOut > 0n && amountLimit > 0n && amountLimit <= amountOut && unitB > 0n)) return null;
+  const bLeg = (amountLimit / unitB) * unitB, ethLeg = ((swapIn * bLeg) / amountOut / unitA) * unitA, vA = ethLeg / unitA, vB = bLeg / unitB, total = isqrt(vA * vB);
+  if (total <= 1000n || vA >= 2n ** 64n || vB >= 2n ** 64n) return null;
+  return { swapIn, ethLeg, bLeg, shares: total - 1000n, value: swapIn + ethLeg, total };
+}
+
 export function ammOut(rIn, rOut, vIn, feeBps) {
   const g = vIn * (10000n - BigInt(feeBps));
   const out = (rOut * g) / (rIn * 10000n + g);

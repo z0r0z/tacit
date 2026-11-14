@@ -645,7 +645,7 @@ async function privQuote(units, from, sym) {
   for (const k of stops) {
     const next = id(k);
     const best = await bestTier(t, cur, next, amt);
-    if (!best) return { rows: [], why: 'The Tacit pool has no price for this pair right now.' };
+    if (!best) return stops.length === 1 && at === 'eth' && ownPool(k) ? { rows: [], why: `No pool trades tETH for ${esc(PSYM[k] || 'it')} yet.`, start: k } : { rows: [], why: 'The Tacit pool has no price for this pair right now.' };
     const h = best.hops[0], lo = BigInt(cur) <= BigInt(next);
     pools.push({ a: at, b: k, feeBps: Number(h.feeBps), ra: BigInt(lo ? h.reserveAPre : h.reserveBPre), rb: BigInt(lo ? h.reserveBPre : h.reserveAPre) });
     cur = next; amt = best.amountOut; at = k;
@@ -684,7 +684,7 @@ const PK = new Proxy({ teth: 'eth', [lc(R.TAC)]: 'tac', [lc(R.CUSD)]: 'cusd', [l
 const POOL_TK = new Proxy({ eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' }, { get: (o, k) => (k in o ? o[k] : ownPool(k)?.ticker) });
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=66848265'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=e596c03f'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));
@@ -949,6 +949,7 @@ function quotePaint() {
     if (rows.hidden && q.more > 0) lines.push(['Price', `checking ${q.more} more route${q.more > 1 ? 's' : ''}…`, '', 'A better price may still arrive. Wait a moment before sending.']);
     { const p = !rows.hidden ? null : laterOn(kind) ? laterPts(q, r) : rowPts(r, q); if (p) lines.push(['TAC points', ptsSaid(p, false), 'ok', p.why ? `${p.why}. An estimate: the program counts it from its own records.` : 'An estimate: the program counts it from its own records.']); }
   }
+  if (!r && q?.start && !q.busy && isEth(S.pay) && !S.inP) lines.push(['Starts', `the tETH/${get.sym} pool, at the market’s price`], ['How', `half the ETH buys ${get.sym}, then both go in`], ['Yours', 'the pool’s share, as a private note'], ['Sent', 'in one transaction, once your share is proved']);
   rc.hidden = !lines.length;
   rc.innerHTML = lines.map(([k, v, c, t, href, act]) => `<div${t ? ` title="${esc(t)}"` : ''}><dt>${k === 'TAC points' ? TAC_MARK : ''}${esc(k)}</dt><dd class="${c || ''}">${href ? `<a href="${esc(href)}">${esc(v)}</a>` : act ? `<button type="button" class="flip-px" data-${act} aria-label="${esc(v)}. Turn it around">${esc(v)}</button>` : cell(v)}</dd></div>`).join('');
   paintLater(q, r, kind);
@@ -981,6 +982,7 @@ function button(q, r, kind, gate) {
   if (S.toBad && !S.outP) return ['Check the address', false];
   if (q?.busy) return ['Finding the best price…', false];
   if (!q) return ['Finding the best price…', false];
+  if (!r && q?.start && isEth(S.pay) && !S.inP) return W.account ? [`Start the ${get.sym} pool`, true, 'priv'] : ['Connect wallet', true];
   if (!r) return [q?.err ? 'Try again' : q?.tiny ? 'Amount too small' : 'No route', !!q?.err];
   if (S.toBusy && !S.outP) return ['Finding the address…', false];
   const tTyped = S.outP && S.toOpen && $('#to-in').value.trim() !== '', tLabel = S.toTacit ? ` → ${esc(tacitName(S.toTacit))}` : '';
@@ -1090,6 +1092,7 @@ async function go() {
   const mk = moveOf();
   if (mk) { if (!S.busy && !S.mq?.busy) H.moves.go(mk, S.amt); return; }
   if (exiting()) { if (S.q?.err) requote(true); else await exitGo(); return; }
+  if (!picked() && S.q?.start && !S.q.busy && isEth(S.pay) && !S.inP && !S.busy) { if (!W.account) { await H.connect(); return; } H.moves?.startPool?.(S.q.start, parseUnits(S.amt, 18)); return; }
   const kind = kindOf(S.pay, S.get), r = picked();
   if (S.busy) return;
   if (!r) { if (S.q?.err) requote(true); return; }
@@ -2893,6 +2896,7 @@ export function mountSwapCard(root, host = {}) {
     clear: () => { clearTimeout(qTimer); S.seq++; S.amt = ''; S.q = null; S.mq = null; changed(); paint(); const mk = moveOf(); if (mk) H.moves?.cleared?.(mk); },
     closePicker: () => pkClose?.({ quiet: true }),
     pickerBals,
+    quoteEthToToken: (o) => R.quoteEthToToken({ ethCall, ...o }),
     tokenInfo: (k) => { const t = tokenOf(String(k || '').toLowerCase()); return t ? { sym: t.sym, dec: t.dec, name: t.name || '' } : null; },
     get busy() { return S.busy; },
   };

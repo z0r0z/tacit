@@ -5,7 +5,7 @@
 // Whatever stops it after the transaction leaves a private share note in the key's balance, which `bondShare` farms later.
 // The front page's Earn card has more ways in (a proof kept ready, a swap split with the Precision pool, your own prover, LP only);
 // this is the one path a page with a wallet and a key needs. Everything it calls is the pool module's (confidential-pool-ux.js).
-import { zapPlan, zapPlanFor, zapSettleCalldata } from '/lp-zap.js?cb=a43160fd';
+import { zapPlan, zapPlanFor, zapSettleCalldata } from '/lp-zap.js?cb=d20f5b5a';
 import { relayedOrOwn } from '/farm-ops.js?cb=f872de9d';
 
 export const PUBLIC_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
