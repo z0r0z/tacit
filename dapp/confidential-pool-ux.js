@@ -184,6 +184,47 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { row: registered ? addAsset(row) : row, registered };
   }
   const registerTokenCall = (token) => ({ to: cfg.pool, data: '0x' + _selector('registerWrappedAuto(address,bytes32)') + String(token).replace(/^0x/, '').toLowerCase().padStart(64, '0') + '0'.repeat(64) });
+  // Every outside token anyone has registered with the pool, from its AssetRegistered events: read once from the pool's deploy block, then
+  // from where the last read ended (kept in this browser). Pool-minted assets (cUSD, cBTC) name their canonical token here too; the page's
+  // externalAsset check drops those, as their id is not the token's own.
+  const _REG_KEY = `tacit-pool-registered-v1:${cfg.chainId}`;
+  // mainnet's registrations up to the block named, so a first visit reads only what came after
+  const _REG_SEED = Number(cfg.chainId) === 1 ? { through: 26412611, list: [['0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', '0xa1313eb9f3a445606d9583bcac3ebeb56a858279'], ['0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8', '0xdf1d99148beb7a9aff1d95c49b3d22b7ed90d696'], ['0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d', '0x23cacffac2674514a6d4f6cd420b4cc2ac921564'], ['0xc50e8dd9666f64a23e5457d686382901f08aaea3554328fc4ac25d2f9fac6c00', '0xdac17f958d2ee523a2206206994597c13d831ec7'], ['0xb649504659bb1ec4d8680cfae2e9d14b7bc151f8ba75d983e3323d8015dccd06', '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0'], ['0xc05bfed4c4eb61d2b39b643f841b78964ec96715a5795853b94be0dbc569c1d6', '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'], ['0x1097c9e552ae4fce2a8c416b93403953fa445a5f2cdae8ced36d9a78cfe40832', '0x2018139a8fdd3666855be3315c7683b4d6ab7aef'], ['0x9cb6a17c0a61a40fa936296e9ec2b428e2a3b7c70cdb76ed25c6937124a3cc11', '0xa0f6b02561c8ef08335b69ad25e022c0b342147c'], ['0xda4acdbe7c276dd82c39c3fd470aa1d18d562504b678cfa5a8144c8afddd5db4', '0x9de27883c5dc9db47be12e595d59b8f1abec8570'], ['0x45addc633189749428e8fc36ea4ca067fcb4b0c7abc186a095360db10dbe0b48', '0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c']].map(([assetId, underlying]) => ({ assetId, underlying })) } : null;
+  let _regP = null, _regAt = 0;
+  function registeredTokens() {
+    if (_regP && Date.now() - _regAt < 10 * 60e3) return _regP;
+    _regAt = Date.now();
+    return (_regP = (async () => {
+      let known = null;
+      try { known = JSON.parse(_store?.getItem(_REG_KEY) || 'null'); } catch { }
+      if (_REG_SEED && !(known?.through >= _REG_SEED.through)) known = { through: _REG_SEED.through, list: [...(known?.list || []), ..._REG_SEED.list] };
+      const deploy = Number(cfg.deployBlock || 0), head = await headBlock();
+      if (!Number.isFinite(head)) throw new Error('no head block');
+      const from = known?.through ? Math.max(deploy, known.through + 1) : deploy;
+      const logs = from <= head ? await getLogsChunked({ address: cfg.pool, topics: [_topic('AssetRegistered(bytes32,address,uint256,string,string,uint8)')] }, from, head) : [];
+      const all = new Map((known?.list || []).map((x) => [x.assetId, x]));
+      for (const l of logs) {
+        const id = lc(l.topics?.[1]), u = '0x' + lc(l.topics?.[2]).slice(26);
+        if (/^0x[0-9a-f]{64}$/.test(id) && /^0x[0-9a-f]{40}$/.test(u) && !/^0x0{40}$/.test(u)) all.set(id, { assetId: id, underlying: u });
+      }
+      const list = [...all.values()];
+      try { _store?.setItem(_REG_KEY, JSON.stringify({ through: head, list })); } catch { }
+      return list;
+    })().catch((e) => { _regP = null; throw e; }));
+  }
+  // The registered tokens a private swap reaches: those with a tETH pool holding reserves at one of the fee tiers the swap card quotes.
+  const SWAP_TIERS = [30, 5, 100, 1];
+  async function pooledTokens() {
+    const eth = assetByTicker.cETH?.assetId, list = await registeredTokens(), out = [];
+    if (!eth) return out;
+    await Promise.all(list.map(async (x) => {
+      for (const feeBps of SWAP_TIERS) {
+        const r = await poolReserves(routePoolId(eth, x.assetId, feeBps)).catch(() => null);
+        if (r && r.reserveA > 0n && r.reserveB > 0n) { out.push({ ...x, feeBps }); return; }
+      }
+    }));
+    return out;
+  }
 
   function account(walletPriv) { return evm.deriveEvmAccount(walletPriv, cfg.evmNetwork); }
 
@@ -3566,7 +3607,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     ux: { cfg, assetByTicker, buildWrap, nextWrapIndex, submitWrapSettle },
   });
 
-  return { cfg, assets: _poolAssets, assetByTicker, addAsset, externalAsset, readAsset, registerTokenCall, tokenTicker, account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
+  return { cfg, assets: _poolAssets, assetByTicker, addAsset, externalAsset, readAsset, registerTokenCall, tokenTicker, registeredTokens, pooledTokens, account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
     deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
     settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,

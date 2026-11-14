@@ -200,7 +200,12 @@ const recipient = () => (S.to && !S.inP && !S.outP && lc(S.to) !== lc(W.account 
 const outTo = () => (kindOf(S.pay, S.get) === 'pout' ? S.to || (W.account ? lc(W.account) : null) : null);
 
 const POOL_COINS = ['teth', lc(R.TAC), lc(R.CUSD), lc(R.CBTC)];
-const inPool = (k) => POOL_COINS.includes(k);
+// Any other token the pool holds in its own form, as the page knows it (registered, and held here or traded in a pool): its ticker, asset id,
+// Tacit precision (tdec) and scale (the token's smallest units in one pool unit; 1e10 for an 18-decimal token, as for tETH).
+const ownPool = (k) => (typeof k === 'string' && /^0x[0-9a-f]{40}$/.test(k) && !POOL_COINS.includes(k) && H.moves?.poolCoin ? H.moves.poolCoin(k) : null);
+const inPool = (k) => POOL_COINS.includes(k) || !!ownPool(k);
+const scOf = (k) => { const o = ownPool(k); return o ? BigInt(o.scale) : E10; };
+const pdOf = (k) => ownPool(k)?.tdec ?? 8;
 const isListed = (k) => !!listedAt(k);
 function kindOf(pay, get, inP = S.inP, outP = S.outP) {
   if (arguments.length < 3 && (S.at.pay || S.at.get)) return null;
@@ -613,8 +618,8 @@ async function quote(my, wei) {
     const q = await privQuote(units, 'eth', 'ETH');
     return done(q.rows?.length ? { ...q, pin: r1, ethIn: units * E10, rows: q.rows.map((x) => ({ ...x, name: `${r1.name} → ${x.name === 'Made private' ? 'private' : x.name}`, pin: true })) } : q);
   }
-  const units = parseUnits(S.amt, 8);
-  if (!units) return done({ rows: [], why: 'Enter an amount with at most 8 decimal places.' });
+  const pd = S.inP ? pdOf(S.pay) : 8, units = parseUnits(S.amt, pd);
+  if (!units) return done({ rows: [], why: `Enter an amount with at most ${pd} decimal places.` });
   if (kind === 'pout') return done(await quoteOut(units, pay, get));
   return done(await privQuote(units, isEth(S.pay) ? 'eth' : PK[S.pay], pay.sym));
 }
@@ -634,7 +639,7 @@ async function privQuote(units, from, sym) {
   const id = (k) => (k === 'cbtc' ? String(t.pool.CBTC_ZK_ASSET_ID) : String(t.assetByTicker[POOL_TK[k]]?.assetId || '')).toLowerCase();
   const stops = from === 'eth' || to === 'eth' ? [to] : ['eth', to];
   const f0 = await opFee(t, POOL_TK[from], 'route'), fee = stops.length > 1 ? twoDigits((f0 * 14n) / 10n) : f0;
-  if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, 8, 6)} ${esc(sym)}: the relay’s fee is ${fmtUnits(fee, 8, 6)}.`, tiny: true };
+  if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, pdOf(from), 6)} ${esc(sym)}: the relay’s fee is ${fmtUnits(fee, pdOf(from), 6)}.`, tiny: true };
   let cur = id(from), amt = units - fee, at = from;
   const pools = [];
   for (const k of stops) {
@@ -645,7 +650,7 @@ async function privQuote(units, from, sym) {
     pools.push({ a: at, b: k, feeBps: Number(h.feeBps), ra: BigInt(lo ? h.reserveAPre : h.reserveBPre), rb: BigInt(lo ? h.reserveBPre : h.reserveAPre) });
     cur = next; amt = best.amountOut; at = k;
   }
-  return { rows: [{ k: 'private', name: 'Tacit pool', note: '', out: amt * E10, best: true, priv: true }], fee, feeTick: from, pools, tip: tipP ? await tipP : null };
+  return { rows: [{ k: 'private', name: 'Tacit pool', note: '', out: amt * scOf(S.get), best: true, priv: true }], fee, feeTick: from, pools, tip: tipP ? await tipP : null };
 }
 const ACT_GAS = 450000n;
 async function quoteOut(units, pay, get) {
@@ -655,7 +660,7 @@ async function quoteOut(units, pay, get) {
   const pools = [];
   if (from !== 'eth') {
     fee = await opFee(t, POOL_TK[from], 'route');
-    if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, 8, 6)} ${esc(pay.sym)}: the relay’s fee is ${fmtUnits(fee, 8, 6)}.`, tiny: true };
+    if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, pdOf(from), 6)} ${esc(pay.sym)}: the relay’s fee is ${fmtUnits(fee, pdOf(from), 6)}.`, tiny: true };
     const cur = IDS[from], next = IDS.eth;
     const best = await bestTier(t, cur, next, units - fee);
     if (!best) return { rows: [], why: 'The Tacit pool has no price for this pair right now.' };
@@ -675,15 +680,15 @@ async function quoteOut(units, pay, get) {
   const venue = `${sale.name}${sale.feeBps ? ` ${Number(sale.feeBps) / 100}%` : ''}`;
   return { ...base, rows: [{ k: 'pout', name: `${via}${venue}`, sale: venue, out: sale.amountOut, min: sale.amountLimit, wei, best: true, priv: true, pout: true }] };
 }
-const PK = { teth: 'eth', [lc(R.TAC)]: 'tac', [lc(R.CUSD)]: 'cusd', [lc(R.CBTC)]: 'cbtc' };
-const POOL_TK = { eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' };
+const PK = new Proxy({ teth: 'eth', [lc(R.TAC)]: 'tac', [lc(R.CUSD)]: 'cusd', [lc(R.CBTC)]: 'cbtc' }, { get: (o, k) => (k in o ? o[k] : ownPool(k) ? k : undefined) });
+const POOL_TK = new Proxy({ eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' }, { get: (o, k) => (k in o ? o[k] : ownPool(k)?.ticker) });
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=7a499a7d'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=66848265'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));
-const IDS = {};
+const IDS = new Proxy({}, { get: (o, k) => (k in o ? o[k] : ownPool(k)?.id) });
 const idsOf = (t) => { for (const k of ['eth', 'tac', 'cusd']) IDS[k] = String(t.assetByTicker[POOL_TK[k]]?.assetId || '').toLowerCase(); IDS.cbtc = String(t.pool.CBTC_ZK_ASSET_ID).toLowerCase(); return IDS; };
 const TIPS = new Map();
 const tipFor = (units) => {
@@ -713,7 +718,7 @@ function warmPrivate() {
 }
 const twoDigits = (v) => { if (v <= 0n) return 0n; const d = BigInt(String(v).length); if (d <= 2n) return v; const m = 10n ** (d - 2n); return ((v + m - 1n) / m) * m; };
 
-const spentOf = (q, r) => (r?.via ? r.via.spend : r?.pin ? q.wei : r?.any ? r.any.spend : r?.buy ? r.buy.spend : r?.sell ? r.sell.amountIn : r?.priv && q.fee != null ? q.wei - q.fee * E10 : q.wei);
+const spentOf = (q, r) => (r?.via ? r.via.spend : r?.pin ? q.wei : r?.any ? r.any.spend : r?.buy ? r.buy.spend : r?.sell ? r.sell.amountIn : r?.priv && q.fee != null ? q.wei - q.fee * scOf(S.pay) : q.wei);
 function vsMarket(q = S.q, r = picked(q)) {
   if (!q || !r) return null;
   const vin = usdOf(S.pay, spentOf(q, r)) ?? (r.any ? usdOf(lc(R.ZERO), r.any.weth) : null), vout = usdOf(S.get, r.val ?? r.out);
@@ -820,18 +825,18 @@ function paintSides() {
 }
 const QUICK = { ETH: ['0.1', '0.5', '1'], TAC: ['500', '1000'], USDC: ['100', '500'], USDT: ['100', '500'], DAI: ['100', '500'], cUSD: ['100', '500'], tacUSD: ['100', '500'], cBTC: ['0.001', '0.01'], tacBTC: ['0.001', '0.01'], WBTC: ['0.005', '0.01'], WETH: ['0.1', '0.5'], wstETH: ['0.1', '0.5'], tETH: ['0.1', '0.5'] };
 const QUICK_PRIV = { ETH: ['0.02', '0.05', '0.1'], tETH: ['0.02', '0.05', '0.1'], TAC: ['500', '2000'], cUSD: ['50', '100'], cBTC: ['0.0005', '0.001'] };
-const PSYM = { eth: 'tETH', tac: 'TAC', cusd: 'cUSD', cbtc: 'cBTC' }, PICON = { eth: 'teth', tac: 'tac', cusd: 'cusd', cbtc: 'cbtc' };
+const PSYM = new Proxy({ eth: 'tETH', tac: 'TAC', cusd: 'cUSD', cbtc: 'cBTC' }, { get: (o, k) => (k in o ? o[k] : ownPool(k)?.sym) }), PICON = { eth: 'teth', tac: 'tac', cusd: 'cusd', cbtc: 'cbtc' };
 const farmOn = (p) => (S.farms || []).find((f) => f.pid != null && [PICON[p.a], PICON[p.b]].every((i) => f.icons.includes(i))) || null;
 const fitSize = (el) => { const n = (el.value || el.textContent || '').length; el.classList.toggle('long', n > 8); el.classList.toggle('longer', n > 11); };
 
 function feeLines(q, r) {
   const coin = isEth(S.pay) || S.pay === 'teth' || r.pin ? 'teth' : S.pay;
   const parts = [];
-  if (q.fee != null) parts.push(['Relay fee', `${fmtUnits(q.fee, 8, 6)} ${tokenOf(coin, true).sym}`, usdOf(coin, q.fee * E10)]);
+  if (q.fee != null) parts.push(['Relay fee', `${fmtUnits(q.fee, pdOf(coin), 6)} ${tokenOf(coin, true).sym}`, usdOf(coin, q.fee * scOf(coin))]);
   if (q.xfee != null) parts.push(['Exit fee', `${fmtUnits(q.xfee, 8, 6)} tETH`, usdOf('teth', q.xfee * E10)]);
   if (q.tip != null) parts.push(['Deposit tip', `${fmtUnits(q.tip, 18, 6)} ETH`, usdOf(lc(R.ZERO), q.tip)]);
   if (!parts.length) return [];
-  const share = q.fee != null ? Number(q.fee * E10) / Number(r.pin ? q.ethIn : q.wei) : 0, said = share >= 0.02 ? ` · ${(share * 100).toFixed(share >= 0.1 ? 0 : 1)}% of the swap` : '';
+  const share = q.fee != null ? Number(q.fee * scOf(coin)) / Number(r.pin ? q.ethIn : q.wei) : 0, said = share >= 0.02 ? ` · ${(share * 100).toFixed(share >= 0.1 ? 0 : 1)}% of the swap` : '';
   if (parts.every((x) => x[2] != null)) {
     const t = parts.reduce((a, x) => a + x[2], 0);
     return [['Fees', `about ${t < 1 ? `$${t.toFixed(2)}` : usd(t)}${said}`, share >= 0.05 ? 'warn' : '', parts.map((x) => `${x[0]} ${x[1]}`).join(' + ')]];
@@ -905,7 +910,7 @@ function quotePaint() {
     if (inAmt > 0 && outAmt > 0) lines.push(['Price', (outAmt >= inAmt) !== !!S.pxFlip ? `1 ${pay.sym} = ${sig(outAmt / inAmt)} ${get.sym}` : `1 ${get.sym} = ${sig(inAmt / outAmt)} ${pay.sym}`, '', depth, null, 'px-flip']);
     if (laterOn(kind)) { }
     else if (!r.priv || (r.pout && !isEth(S.get))) lines.push(['At least', `${tidy(amtFmt(r.min ?? (r.out * BigInt(10000 - S.slip)) / 10000n, get.dec))} ${get.sym}`]);
-    else if (r.priv && !r.pout) lines.push(['At least', `${tidy(amtFmt(poolFloor(r.out / E10) * E10, get.dec))} ${get.sym}`]);
+    else if (r.priv && !r.pout) lines.push(['At least', `${tidy(amtFmt(poolFloor(r.out / scOf(S.get)) * scOf(S.get), get.dec))} ${get.sym}`]);
     if (r.sell?.rest > 0n) lines.push(['Plus', `about ${tidy(amtFmt(r.sell.rest, 18))} WETH`]);
     const routed = r.agg || r.sv ? (q.rows || []).length < 2 : r.any?.hop || r.sell || r.buy || r.pin || r.via || r.hop;
     const hopEth = laterOn(kind) && isEth(S.pay) && !r.hop && !r.via && rows.hidden;
@@ -2102,7 +2107,7 @@ const pvLoad = () => (PVP ||= import('/swap/private.js?cb=98e01226').then((m) =>
   PV.mod = m;
   return PV;
 }).catch((e) => { PVP = null; throw e; }));
-const aheadArgs = (q) => { const p = q?.pools; const units = parseUnits(S.amt, 8); return q?.kind === 'private' && !S.inP && isEth(S.pay) && S.get !== 'teth' && p?.length === 1 && units && IDS[p[0].b] ? { wei: units * E10, toAsset: IDS[p[0].b], feeBps: p[0].feeBps } : null; };
+const aheadArgs = (q) => { const p = q?.pools; const units = parseUnits(S.amt, 8); return !ownPool(S.get) && q?.kind === 'private' && !S.inP && isEth(S.pay) && S.get !== 'teth' && p?.length === 1 && units && IDS[p[0].b] ? { wei: units * E10, toAsset: IDS[p[0].b], feeBps: p[0].feeBps } : null; };
 const KEEP_SWAP = ['0.01', '0.1'];
 const KS = { tier: {}, at: 0 };
 const keptPair = () => (!S.inP && isEth(S.pay) && S.get !== 'teth' && PK[S.get] && kindOf(S.pay, S.get) === 'private' && IDS[PK[S.get]] && (PV?.unlocked || H.key?.session?.unlocked) ? IDS[PK[S.get]] : null);
@@ -2158,6 +2163,7 @@ function keptChips() {
 }
 const routeAheadArgs = (q) => {
   if (q?.kind !== 'private' || !S.inP || !S.outP || isEth(S.pay) || !q.pools?.length) return null;
+  if (ownPool(S.pay) || ownPool(S.get)) return null;
   const r = picked(q), units = parseUnits(S.amt, 8), k0 = PK[S.pay];
   if (S.pay === 'teth' && q.pools.length === 1 && units && PV?.stagedSizes?.()?.includes(units)) return null;
   return r && units && IDS[k0] ? { wallet: false, asset: IDS[k0], units, ticker: POOL_TK[k0], fee: q.fee ?? 0n, path: q.pools.map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })), minOut: poolFloor(r.out / E10) } : null;
@@ -2172,7 +2178,7 @@ function aheadSoon() {
     pvLoad().then((pv) => { const p = a ? pv.ahead(a) : pv.routeAhead(ra); paintQuote(); return p; }).then(() => { if (S.q === q) paintQuote(); }, () => {});
   }, 1500);
 }
-const privBal = (k) => { const id = IDS[PK[k]]; return PV?.held && id ? PV.of(id).value * E10 : null; };
+const privBal = (k) => { const id = IDS[PK[k]]; return PV?.held && id ? PV.of(id).value * scOf(k) : null; };
 const stagedFits = (k, wei) => k === 'teth' && wei > 0n && wei % E10 === 0n && !!PV?.stagedSizes?.()?.includes(wei / E10);
 function privUp() {
   if (!H.key?.session?.unlocked || !(S.inP || S.outP)) return;
@@ -2237,7 +2243,7 @@ const HERE_SAY = {
 async function privateGo(r, kind = 'private', here = false) {
   if (kind === 'pin') return pinGo(r);
   let q = S.q;
-  const fromWallet = isEth(S.pay), units = parseUnits(S.amt, 8);
+  const fromWallet = isEth(S.pay), units = parseUnits(S.amt, fromWallet ? 8 : pdOf(S.pay));
   if (!q || !units) return;
   if (fromWallet && !W.account) { await H.connect({ key: true }); return; }
   const slip = S.slip, toTacit = S.toTacit, outAddr = kind === 'pout' ? outTo() : null;
@@ -2285,10 +2291,10 @@ async function privateGo(r, kind = 'private', here = false) {
     const k0 = fromWallet ? 'eth' : PK[S.pay];
     const plan = { wallet: fromWallet, wei: units * E10, units, asset: IDS[k0], ticker: POOL_TK[k0], fee: q.fee ?? 0n,
       path: S.get === 'teth' && fromWallet ? [] : (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })),
-      minOut: poolFloor(r.out / E10, slip), label: `Swap ${what} for ${get.sym} privately`, sendTo: toTacit, outTicker: POOL_TK[PK[S.get]] };
+      minOut: poolFloor(r.out / scOf(S.get), slip), label: `Swap ${what} for ${get.sym} privately`, sendTo: toTacit, outTicker: POOL_TK[PK[S.get]] };
     const res = await (here ? pv.swapHere(plan, { wallet, from: W.account, say: step }) : pv.swap(plan, { wallet, from: W.account, say: step }));
     if (!popped) { popped = true; reward(earned); }
-    const got = res.made != null ? `${tidy(plain(res.made, 8))} tETH` : `${tidy(amtFmt(res.out * E10, 18))} ${get.sym}`;
+    const got = res.made != null ? `${tidy(plain(res.made, 8))} tETH` : `${tidy(amtFmt(res.out * scOf(S.get), get.dec))} ${get.sym}`;
     if (res.txHash) remember(res.txHash, res.made != null ? `Made ${what} private` : `Swapped ${what} for ${got} privately`);
     if (S.pay === payKey) { S.amt = ''; S.q = null; }
     const where = res.sent ? `was sent to ${esc(res.sent.to || tacitName(toTacit))}. They claim it in their Tacit wallet.` : 'is in your private balance.';
@@ -2329,7 +2335,7 @@ async function pinGo(r) {
     await pv.open();
     say('Reading the price again…');
     await pv.relayOpen();
-    if (getKey !== 'teth') await pv.priceOk(IDS.eth, q.ethIn / E10, (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })), q.fee ?? 0n, poolFloor(r.out / E10, slip));
+    if (getKey !== 'teth') await pv.priceOk(IDS.eth, q.ethIn / E10, (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })), q.fee ?? 0n, poolFloor(r.out / scOf(getKey), slip));
     const r1 = await within(A.bestRoute({ ethCall, to: from, refundTo: from, tokenIn: payKey, tokenOut: R.ZERO, amountIn: q.wei, slippageBps: slip, deadline: chainDeadline(1200) }), 20e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
     if (!r1 || r1.min < q.ethIn) { say('The price moved below what was quoted. Nothing was sent; the quote above is the new one.', '', true); requote(true); return; }
     const tx = await aggTx(r1, from);
@@ -2343,12 +2349,12 @@ async function pinGo(r) {
     remember(h, `${what} → ETH, to be made private`);
     const plan = { wallet: true, wei: q.ethIn, units: q.ethIn / E10, asset: IDS.eth, ticker: 'cETH', fee: q.fee ?? 0n,
       path: getKey === 'teth' ? [] : (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })),
-      minOut: poolFloor(r.out / E10, slip), label: `Swap ${what} for ${get.sym} privately`, sendTo: toTacit, outTicker: POOL_TK[PK[getKey]] };
+      minOut: poolFloor(r.out / scOf(getKey), slip), label: `Swap ${what} for ${get.sym} privately`, sendTo: toTacit, outTicker: POOL_TK[PK[getKey]] };
     const step = (k, x) => (paced(k), say({ prepare: 'Swapped to ETH. Preparing the deposit…', confirm: 'Confirm the deposit in your wallet…', sent: `Deposit sent ${x ? txLink(x) : ''}. Waiting for it to land…`,
       proving: `Deposited ${x ? txLink(x) : ''}. The relay is making it private, about a minute…`, note: 'Private now. Finding its note…', route: 'The relay is proving your private swap, about a minute…', ahead: 'Finishing the proof of your swap…', posted: 'The relay is sending your private swap, its proof is made, a few moments…', own: 'Proving your swap with your own prover, about a minute. Nothing has left your wallet yet…', check: 'Checking it first…', swap: `Deposited ${x ? txLink(x) : ''}. The relay is proving your swap, about a minute…`, send: 'The relay is sending it on to them, about a minute…' }[k] || ''));
     const res = await pv.swap(plan, { wallet, from, say: step });
     if (!popped) { popped = true; reward(earned); }
-    const got = res.made != null ? `${tidy(plain(res.made, 8))} tETH` : `about ${tidy(amtFmt(res.out * E10, 18))} ${get.sym}`;
+    const got = res.made != null ? `${tidy(plain(res.made, 8))} tETH` : `about ${tidy(amtFmt(res.out * scOf(getKey), get.dec))} ${get.sym}`;
     if (res.txHash) remember(res.txHash, `Swapped ${what} for ${got} privately`);
     if (S.pay === payKey) { S.amt = ''; S.q = null; }
     const where = res.sent ? `was sent to ${esc(res.sent.to || tacitName(toTacit))}. They claim it in their Tacit wallet.` : 'is in your private balance.';
@@ -2789,7 +2795,7 @@ function wire() {
     if (e.target.closest('#copy')) { const u = shareLink(); if (u) H.copy(u, 'Link copied'); return; }
     if (e.target.closest('#max') && S.inP && PV) {
       const was = S.pay, k = PK[S.pay], same = `${S.get}${S.inP}${S.outP}${LATER.on}`;
-      PV.most(IDS[k], POOL_TK[k]).then((v) => { if (v == null || S.pay !== was || `${S.get}${S.inP}${S.outP}${LATER.on}` !== same) return; S.amt = tidy(plain(v, 8)); S.note = ''; changed(); paintSides(); requote(true); }, () => {});
+      PV.most(IDS[k], POOL_TK[k]).then((v) => { if (v == null || S.pay !== was || `${S.get}${S.inP}${S.outP}${LATER.on}` !== same) return; S.amt = tidy(plain(v, pdOf(was))); S.note = ''; changed(); paintSides(); requote(true); }, () => {});
       return;
     }
     if (e.target.closest('#max') && exiting() && !exitOf().wallet) {
