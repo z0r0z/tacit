@@ -4,6 +4,7 @@
 // than after it has taken a turn in the relay's queue and a share of the day's proving budgets. Ops a page builds read cleanly.
 // An op type the reader does not know is left to the relay.
 import { stdinFor, SELF_PROVE_TYPES } from '../../dapp/sp1-stdin.js';
+import { readWrapStdin, wrapOpens } from './proof-pool.js';
 
 const ZERO_HASH = '0x' + '00'.repeat(32);
 
@@ -29,6 +30,8 @@ export function opInputGap({ type, op, memos = [] } = {}) {
   if (!SELF_PROVE_TYPES.includes(type) || !isObj(op)) return null;
   try {
     stdinFor(type, { ...op, memoHashes: (Array.isArray(memos) ? memos : []).map(() => ZERO_HASH) });
+    // A wrap's program also stops on a signature that does not open its commitment (proof-pool.js wrapOpens, as the program checks it).
+    if (type === 'wrap' && !wrapOpens(readWrapStdin(stdinFor('wrap', { ...op, memoHashes: [ZERO_HASH] })))) return 'the wrap op\'s signature does not open its commitment';
     return null;
   } catch (e) {
     return `the ${type} op cannot be read: ${String(e?.message || e).replace(/^sp1-stdin \S+: /, '').slice(0, 160)}`;

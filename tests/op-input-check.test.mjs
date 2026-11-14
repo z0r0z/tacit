@@ -13,10 +13,15 @@ import { readFileSync } from 'node:fs';
 let n = 0;
 const ok = (c, m) => { assert.ok(c, m); console.log('  ok -', m); n++; };
 const h = (b) => '0x' + b.repeat(32);
-// a wrap op with every field its program reads (the values need only be well formed here)
-const wrap = { chainBinding: h('cb'), asset: h('a1'), value: '1000', cx: h('c1'), cy: h('c2'), owner: h('0f'), sigR: '0x02' + '11'.repeat(32), sigZ: h('22') };
+// a page's wrap op (the fixture is signed as a page signs it, so its signature opens its commitment)
+const { memoHashes: _m, ...wrap } = JSON.parse(readFileSync(new URL('./fixtures/sp1-stdin/wrap.op.json', import.meta.url), 'utf8'));
 ok(stdinFor('wrap', { ...wrap, memoHashes: [h('00')] }) instanceof Uint8Array, 'the complete wrap builds a program input');
 ok(opInputGap({ type: 'wrap', op: wrap, memos: ['0x01'] }) === null, 'a complete wrap is let through');
+ok(opInputGap({ type: 'wrap', op: wrap, memos: [] }) === null, 'with no memo as well');
+// one that reads but whose signature does not open its commitment stops the program (it reaches the prover network as unexecutable)
+ok(/signature does not open its commitment/.test(opInputGap({ type: 'wrap', op: { ...wrap, value: String(BigInt(wrap.value) + 1n) } }) || ''), 'a wrap whose value is not the one signed is refused');
+ok(/signature does not open its commitment/.test(opInputGap({ type: 'wrap', op: { ...wrap, sigZ: h('22') } }) || ''), 'and one with another z');
+ok(/signature does not open its commitment/.test(opInputGap({ type: 'wrap', op: { ...wrap, cx: h('c1'), cy: h('c2') } }) || ''), 'and one whose commitment is no point');
 const { asset, ...noAsset } = wrap;
 ok(/^the wrap op cannot be read: asset is missing$/.test(opInputGap({ type: 'wrap', op: noAsset, memos: [] }) || ''), `a wrap with no asset is refused: ${opInputGap({ type: 'wrap', op: noAsset })}`);
 ok(/owner is missing/.test(opInputGap({ type: 'wrap', op: { ...wrap, owner: undefined } }) || ''), 'and one with no owner');
