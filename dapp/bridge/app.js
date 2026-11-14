@@ -1,4 +1,4 @@
-import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol } from '/bridge/runtime.js?cb=2528e7fd';
+import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol } from '/bridge/runtime.js?cb=3a0fe591';
 import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=c9fdfdf9';
 import { bodyType } from '/rpc-body.js';
 { const fq = document.getElementById('fq-lim'); if (fq) fq.textContent = limitsSaid(); }

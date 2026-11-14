@@ -95,8 +95,10 @@ export function saveRuntime(storage, e) {
   const one = entry(e);
   if (!one) return false;
   try {
-    const rest = readRuntime(storage).filter((x) => x.key !== one.key);
-    const out = [...rest, one].slice(-MAX_SAVED).map((x) => ({ ...x, minRaw: String(x.minRaw), capRaw: String(x.capRaw) }));
+    const all = readRuntime(storage), had = all.find((x) => x.key === one.key), rest = all.filter((x) => x.key !== one.key);
+    // a session that has not priced the token yet (limits 0) keeps the limits an earlier one priced, and updates only its name and mark
+    const next = one.capRaw === 0n && had && had.capRaw > 0n ? { ...one, minRaw: had.minRaw, capRaw: had.capRaw, dp: had.dp } : one;
+    const out = [...rest, next].slice(-MAX_SAVED).map((x) => ({ ...x, minRaw: String(x.minRaw), capRaw: String(x.capRaw) }));
     storage.setItem(RUNTIME_STORE, JSON.stringify(out));
     return true;
   } catch { return false; }

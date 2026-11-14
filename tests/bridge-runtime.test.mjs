@@ -85,6 +85,10 @@ const ok = (c, m) => { if (c) { console.log('  ok -', m); n++; } else { console.
   ok(readRuntime(st).length === 1 && readRuntime(st)[0].capRaw === 100_000_000_000n, 'the same token again replaces its record');
   saveRuntime(st, { ...e, addr: '0x' + 'ab'.repeat(20), ticker: 'XYZ' });
   ok(readRuntime(st).length === 2, 'another token is another record');
+  // a later session that has not priced the token yet does not wipe the limits an earlier one saved
+  saveRuntime(st, { ...e, minRaw: 0n, capRaw: 0n, logo: '' });
+  ok(readRuntime(st).find((x) => x.key === `x${addr}`).capRaw === 100_000_000_000n && readRuntime(st).find((x) => x.key === `x${addr}`).minRaw === 400_000_000n, 'an unpriced session keeps the limits already saved');
+  saveRuntime(st, { ...e, minRaw: 400_000_000n, capRaw: 100_000_000_000n, logo: '/assets/tokens/spx.png' });
   // a record kept for the bridge tab's dark token: no limits, still read
   saveRuntime(st, { ...e, addr: '0x' + 'cd'.repeat(20), ticker: 'NOPRICE', minRaw: 0n, capRaw: 0n });
   ok(readRuntime(st).some((x) => x.ticker === 'NOPRICE' && x.capRaw === 0n), 'a token with no limit is kept as well');
