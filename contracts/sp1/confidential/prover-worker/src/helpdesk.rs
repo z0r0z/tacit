@@ -1,4 +1,4 @@
-// Code review and help desk answers on this machine's GPU while it has no proof to make (community mode, HELPDESK=1 by default).
+// Code review and help desk answers on this machine's GPU while it has no proof to make (community mode, HELPDESK=1; off unless set).
 //
 // The community help desk (helpdesk/, tacit-helpdesk.onrender.com) hands out jobs: a visitor's question with Tacit's documentation, or a window of
 // Tacit's code to review or a finding to check. This leases one, runs it on a small local model (llama.cpp's llama-server and the 2.7 GB

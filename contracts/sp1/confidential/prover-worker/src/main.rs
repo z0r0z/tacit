@@ -36,11 +36,12 @@
 // turns: a card under 24 GB, which the installer gives a smaller GPU server, proves the pool's wraps and presses alone. CONFIDENTIAL
 // (default 1) also races the board's public settle jobs, a person's press as it happens (programs gains "confidential"): the board gives
 // a ready community machine first pick of each before Tacit's own worker, and the first sound proof is the one the relay takes.
-// HELPDESK (default 1, community mode): a machine that has made no proof for REVIEW_AFTER_IDLE_SECS (600) hands its GPU to the community help desk
+// HELPDESK (default 0, community mode; HELPDESK=1 turns it on): a machine that has made no proof for REVIEW_AFTER_IDLE_SECS (600) hands its GPU to the community help desk
 // for a review spell: it exits (code 5) so the loop around it lets SP1's GPU server go, and starts again in the spell, running the help desk's jobs,
 // code review and visitors' questions, on a small local model for the same address (helpdesk.rs), without building the prover. The spell ends
 // after REVIEW_SPELL_SECS (1800) or as soon as the pool has wraps waiting, with another exit 5, and the worker starts again to prove. While a spell
-// lasts the machine claims nothing at the board, so presses and batches go to the machines ready for them. The warm-up pings, which are
+// lasts the machine claims nothing at the board, so presses and batches go to the machines ready for them (a machine that is in line for the board's
+// batches should leave it off, and it is off until it has run on a real card). The warm-up pings, which are
 // for Tacit's own tokens, are off. Between jobs its spare CPU cores grind deploy salts for the same address (salt.rs; SALT_THREADS, half
 // the cores by default, 0 is off). Tacit's own box grinds too, earning nothing (the pool gives the house no weight), when SALT_MINER
 // names the house address (the deployer).
@@ -664,11 +665,11 @@ fn gpu_gone(e: &str) -> bool {
     e.contains("early eof") || e.contains("Could not connect") || e.contains("Connection reset") || e.contains("Broken pipe")
 }
 
-// The help desk's settings for a review spell, or None: community mode only, HELPDESK=1 (the default), the help desk's own https:// address.
+// The help desk's settings for a review spell, or None: community mode only, HELPDESK=1 (off unless set), the help desk's own https:// address.
 fn review_cfg(community: Option<&str>, name: &str) -> Option<helpdesk::Cfg> {
     let miner = community?.to_string();
     let api = env_or("HELPDESK_API", "https://tacit-helpdesk.onrender.com").trim_end_matches('/').to_string();
-    if env_or("HELPDESK", "1") != "1" { return None; }
+    if env_or("HELPDESK", "0") != "1" { return None; }
     if !helpdesk::api_ok(&api) { println!("[{name}] no review spells: HELPDESK_API must be the help desk's own https:// address"); return None; }
     let dir = std::env::var("HELPDESK_DIR").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".into())).join(".tacit-gpu"));
