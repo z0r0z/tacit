@@ -12,7 +12,7 @@ import * as secp from '@noble/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
-import { makeProofPool, readWrapStdin, wrapExpect, wrapOpens, proofFits, verifyCalldata, proofPoolConfig, clientOf, PROOF_POOL } from '../worker/src/proof-pool.js';
+import { makeProofPool, turnOf, readWrapStdin, wrapExpect, wrapOpens, proofFits, verifyCalldata, proofPoolConfig, clientOf, PROOF_POOL } from '../worker/src/proof-pool.js';
 import { stdinFor } from '../dapp/sp1-stdin.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import worker, { ethCallVerdict, simulateSettle } from '../worker/src/index.js';
@@ -57,7 +57,7 @@ const T0 = Date.UTC(2026, 9, 26, 1), DAY0 = Math.floor(T0 / 86_400_000);
 function harness({ cfg = {}, verdict = () => ({ ok: true }) } = {}) {
   const h = { t: T0, calls: 0, store: kv(), verdict };
   let n = 0;
-  h.pool = makeProofPool({ kv: h.store, cfg: { ...PROOF_POOL, ...cfg }, now: () => h.t, random: () => `lease-${++n}`, verify: async (p) => { h.calls++; return h.verdict(p); } });
+  h.pool = makeProofPool({ kv: h.store, cfg: { ...PROOF_POOL, drawMs: 0, ...cfg }, now: () => h.t, random: () => `lease-${++n}`, verify: async (p) => { h.calls++; return h.verdict(p); } });
   return h;
 }
 
@@ -118,6 +118,9 @@ test('config: the environment sets each number within its bounds, and a bad valu
   assert.equal(c.reqPerClientDay, 4); assert.equal(c.maxPending, 10); assert.equal(c.leaseMs, 600_000);
   assert.equal(c.keepMs, PROOF_POOL.keepMs); assert.equal(c.pointsPerProof, 25); assert.equal(c.proofsPerMinerDay, PROOF_POOL.proofsPerMinerDay);
   assert.deepEqual(proofPoolConfig({}), { ...PROOF_POOL });
+  assert.equal(proofPoolConfig({ POOL_DRAW_MS: '0' }).drawMs, 0, 'POOL_DRAW_MS=0 puts first-to-ask back');
+  assert.equal(proofPoolConfig({ POOL_DRAW_MS: '45000' }).drawMs, 45_000);
+  assert.equal(proofPoolConfig({ POOL_DRAW_MS: '-5' }).drawMs, PROOF_POOL.drawMs);
 });
 
 test('request: the input names the job, the same input is one job, expect must be what the input proves; a client\'s day and the pool\'s size are capped', async () => {
@@ -178,6 +181,87 @@ test('opening: an input opens only as the program checks it; one that does not i
   assert.equal(JSON.parse(await h.store.get(`pp:job:${fresh.id}`)).opens, true);
 });
 
+test('draw: a miner is offered a young job only once it has waited its turn, however often or from however many places it asks; past the draw, and to Tacit\'s own prover, a job goes to whoever asks', async () => {
+  const D = 20_000, h = harness({ cfg: { drawMs: D } });
+  const a = wrapJob(0);
+  await h.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'page' });
+  // two addresses whose turns for this job are well apart, inside the draw
+  const addr = (i) => '0x' + i.toString(16).padStart(40, '0');
+  const turn = (m) => turnOf(a.id, m, D);
+  const pick = Array.from({ length: 200 }, (_, i) => addr(i + 1)).filter((m) => turn(m) > 2000 && turn(m) < D - 2000).sort((x, y) => turn(x) - turn(y));
+  const early = pick[0], late = pick[pick.length - 1];
+  assert.ok(turn(late) - turn(early) > 4000);
+  assert.equal(turnOf(a.id, early.toUpperCase().replace('0X', '0x'), D), turn(early), 'an address is the same address in any case');
+  assert.equal(turnOf(a.id, early, 0), 0, 'no draw, no turn');
+
+  for (let i = 0; i < 30; i++) assert.equal((await h.pool.lease({ miner: early, client: `place${i}` })).status, 204, 'asking from thirty places, before its turn, brings nothing');
+  h.t += turn(early) - 500;
+  assert.equal((await h.pool.lease({ miner: early, client: 'place0' })).status, 204, 'just before its turn');
+  h.t += 1000;
+  assert.equal((await h.pool.lease({ miner: late, client: 'laggard' })).status, 204, 'the later turn has not come');
+  const got = await h.pool.lease({ miner: early, client: 'place0' });
+  assert.deepEqual([got.status, got.body.id], [200, a.id], 'the earlier turn takes it');
+
+  // a job that has waited the whole draw is open to any address
+  const b = wrapJob(1);
+  await h.pool.request({ type: 'wrap', stdin: b.stdin, expect: b.expect, client: 'page2' });
+  h.t += D + 1;
+  assert.deepEqual([(await h.pool.lease({ miner: late, client: 'laggard' })).status], [200], 'past the draw it goes to whoever asks');
+
+  // a job given back keeps its age, so it is open at once
+  h.t += PROOF_POOL.leaseMs + 1;
+  const again = await h.pool.lease({ miner: early, client: 'place9' });
+  assert.equal(again.status, 200, 'a lease that ran out puts its job back where it was, past its draw');
+
+  // Tacit's own prover is not made to wait for a turn
+  const c = wrapJob(2);
+  await h.pool.request({ type: 'wrap', stdin: c.stdin, expect: c.expect, client: 'page3' });
+  assert.equal((await h.pool.lease({ house: 'box', client: 'house:box' })).status, 200);
+
+  // stats say how long the oldest job has waited and the longest a lease has been out
+  const d = wrapJob(3);
+  await h.pool.request({ type: 'wrap', stdin: d.stdin, expect: d.expect, client: 'page4' });
+  h.t += 90_000;
+  const s = (await h.pool.stats()).body;
+  assert.equal(s.oldestQueuedSecs, 90);
+  assert.ok(s.oldestLeaseSecs >= 90 && s.oldestLeaseSecs <= 90 + 1, `the leases taken a minute and a half ago (${s.oldestLeaseSecs})`);
+});
+
+// Twenty addresses ask for each of 150 jobs; one asks every second from three places, the others every five seconds from one. Whoever is
+// offered a job proves it at once. With the draw each address takes about its share; without it the one asking fastest takes nearly all.
+async function race(drawMs, jobs = 150) {
+  const h = harness({ cfg: { drawMs } });
+  const miners = Array.from({ length: 20 }, (_, i) => '0x' + (i + 1).toString(16).padStart(2, '0').repeat(20));
+  const wins = new Array(20).fill(0);
+  for (let j = 0; j < jobs; j++) {
+    const w = wrapJob(100 + j);
+    await h.pool.request({ type: 'wrap', stdin: w.stdin, expect: w.expect, client: `page${j}` });
+    let won = null;
+    for (let s = 1; s <= 40 && !won; s++) {
+      h.t += 1000;
+      for (let i = 0; i < 20 && !won; i++) {
+        if (i && (s + i) % 5) continue;
+        for (const c of i ? [`c${i}`] : ['f1', 'f2', 'f3']) {
+          const r = await h.pool.lease({ miner: miners[i], client: c });
+          if (r.status === 200) { won = { i, body: r.body }; break; }
+        }
+      }
+    }
+    assert.ok(won, 'every job is taken');
+    await h.pool.submit({ id: won.body.id, lease: won.body.lease, publicValues: pvFor(w.expect), proof: PROOF });
+    wins[won.i]++;
+  }
+  return wins;
+}
+test('draw: asking fast from several places does not win a job; without it the fastest asker takes nearly all', async () => {
+  const jobs = 150, drawn = await race(PROOF_POOL.drawMs, jobs), plain = await race(0, jobs);
+  const share = (w) => w[0] / jobs, others = (w) => Math.max(...w.slice(1));
+  console.log(`# the fast asker's share of ${jobs} jobs: ${(100 * share(drawn)).toFixed(1)}% with the draw (a fair share is 5%, the busiest other takes ${others(drawn)}), ${(100 * share(plain)).toFixed(1)}% without`);
+  assert.ok(share(plain) > 0.6, 'first to ask takes nearly everything');
+  assert.ok(share(drawn) < 0.2, `with the draw the fast asker takes ${(100 * share(drawn)).toFixed(1)}%`);
+  assert.ok(drawn.slice(1).filter((n) => n > 0).length >= 15, 'the jobs are spread over most of the other addresses');
+});
+
 test('lease: the oldest job first, one lease per address on a client and a few on a client, 204 when nothing waits; a lease that runs out puts its job back at its age; three tries and it is dropped', async () => {
   const h = harness({ cfg: { leaseMs: 60_000 } });
   const a = wrapJob(0), b = wrapJob(1);
@@ -211,7 +295,7 @@ test('lease: the oldest job first, one lease per address on a client and a few o
   const r2 = await h.pool.lease({ miner: '0x' + '55'.repeat(20), client: 'm5' });
   assert.equal(r2.body.id, b.id);
   assert.equal((await h.pool.results([a.id])).body.results[a.id].status, 'gone');
-  assert.deepEqual({ ...(await h.pool.stats()).body, top: undefined, terms: undefined }, { queued: 1, leased: 1, doneToday: 0, minersToday: 0, done24h: 0, miners24h: 0, top: undefined, terms: undefined });
+  assert.deepEqual({ ...(await h.pool.stats()).body, top: undefined, terms: undefined }, { queued: 1, leased: 1, doneToday: 0, minersToday: 0, done24h: 0, miners24h: 0, oldestQueuedSecs: 120, oldestLeaseSecs: 0, top: undefined, terms: undefined });
 });
 
 test('submit: public values that are not the job\'s are refused before the verifier is asked; ones the verifier refuses are refused after; either is a strike and the job goes back', async () => {
@@ -293,7 +377,7 @@ test('points: each passing proof earns its address the day\'s points up to the c
   assert.deepEqual(third.r.body, { ok: true, points: 0 }, 'past the cap: kept, not credited');
   assert.equal((await prove(MINER2, 'm2')).r.body.points, 20);
   const s = (await h.pool.stats()).body;
-  assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
+  assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, oldestQueuedSecs: 0, oldestLeaseSecs: 0, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
   assert.deepEqual(s.terms, { pointsPerProof: 20, proofsPerMinerDay: 2, leaseMs: PROOF_POOL.leaseMs });
   assert.equal(JSON.stringify(s).includes(jobs[0].stdin.slice(2, 40)), false, 'no inputs');
   let c = (await h.pool.credits(DAY0)).body;
@@ -407,7 +491,7 @@ test('urgent: the size a page expects to press first is taken by Tacit\'s own pr
 });
 
 test('routes: open to any origin; a page requests, a miner leases and submits (the verifier asked over eth_call), the page reads the proof', async () => {
-  const env = { REGISTRY_KV: kv() };
+  const env = { REGISTRY_KV: kv(), POOL_DRAW_MS: '0' };
   const seen = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
@@ -526,7 +610,7 @@ test('a note is paid for once: its input posted again with another signature is 
 });
 
 test('leases a client lets run out or hands back count against it for the day; Tacit\'s own provers are not counted', async () => {
-  const h = harness({ cfg: { ...PROOF_POOL, lapsesPerDay: 3 } });
+  const h = harness({ cfg: { lapsesPerDay: 3 } });
   for (let i = 0; i < 6; i++) { const j = wrapJob(10 + i); await h.pool.request({ type: 'wrap', stdin: j.stdin, expect: j.expect, client: 'page' + i }); }
   // two hand-backs and one lease left to run out, from one place under three addresses
   let l = (await h.pool.lease({ miner: MINER, client: 'm1' })).body;

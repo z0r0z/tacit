@@ -48,6 +48,7 @@ export const PROOF_POOL = Object.freeze({
   strikesPerDay: 3,
   lapsesPerDay: 8,                   // POOL_LAPSES_PER_DAY: leases a client may let run out or hand back in a UTC day before it is offered nothing more
   leasesPerClient: 4,                // open leases one client may hold, one per address (a household's few machines)
+  drawMs: 30_000,                    // POOL_DRAW_MS: each address's place in line for a job is spread over the job's first seconds, so asking more often brings none sooner (0: first to ask)
   minerIdleMs: 5 * 60_000,           // POOL_MINER_IDLE_MS: a house prover's wait for the miners holds only while one has asked this recently
   holdMs: 45_000,                    // POOL_HOLD_MS: how long a page's hold keeps Tacit's own provers off the pool (a typed amount's proof is asked within seconds)
   holdMaxMs: 10 * 60_000,            // POOL_HOLD_MAX_MS: holds that run on longer than this unbroken are ignored until they lapse, so the pool is never starved
@@ -77,8 +78,18 @@ export function proofPoolConfig(env = {}) {
     pointsPerProof: n(env.POINTS_MINE_PER_PROOF, PROOF_POOL.pointsPerProof, 0, 100_000),
     proofsPerMinerDay: n(env.POINTS_MINE_DAILY_CAP, PROOF_POOL.proofsPerMinerDay, 1, 100_000),
     lapsesPerDay: n(env.POOL_LAPSES_PER_DAY, PROOF_POOL.lapsesPerDay, 1, 100_000),
+    drawMs: n(env.POOL_DRAW_MS, PROOF_POOL.drawMs, 0, 600_000),
   });
 }
+
+// An address's turn for a job: a fixed point in [0, drawMs) from a hash of the two. A miner is offered a job once the job has waited
+// its turn, so the first address offered it is the one with the earliest turn among those asking, whatever their pace or number of
+// places; past drawMs the job is open to anyone.
+export const turnOf = (id, miner, drawMs) => {
+  if (!drawMs) return 0;
+  const h = sha256(new TextEncoder().encode(`tacit-pool-turn|${id}|${String(miner).toLowerCase()}`));
+  return ((h[0] << 8 | h[1]) / 65536) * drawMs;
+};
 
 // ── the input and the proof ──
 
@@ -310,7 +321,8 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   }
 
   // A miner takes the oldest job its client has not had before, and holds it for the lease: one open lease per address on a client,
-  // and a few on a client in all. `minAgeMs`: only a job that has waited at least that long. `house`: one of Tacit's own provers (a
+  // and a few on a client in all. A job younger than `drawMs` is offered to an address only once it has waited that address's turn
+  // (turnOf), so how often an address asks, and from how many places, does not decide who takes it. `minAgeMs`: only a job that has waited at least that long. `house`: one of Tacit's own provers (a
   // board worker, by its token), which takes what has waited and earns nothing: its proofs are kept for the pages but never enter
   // the day's tally, so the miners' share is never paid to Tacit. A house prover's wait is for the miners: it holds only while a
   // miner has asked for work within `minerIdleMs`; with none about, a page's proofs are made at once.
@@ -348,6 +360,8 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
         // the wait for the miners holds for ordinary jobs; one marked urgent is taken at once, and the younger ones behind an unripe job are looked at too
         if (minAge && t - e.at < minAge && !e.urgent) { i++; continue; }
         if ((e.skip || []).includes(client)) { i++; continue; }
+        // a miner takes a young job once it has waited its turn; an older one, or any job for Tacit's own prover, goes to whoever asks
+        if (!house && cfg.drawMs && t - e.at < cfg.drawMs && t - e.at < turnOf(e.id, m, cfg.drawMs)) { i++; continue; }
         q.splice(i, 1);
         changed = true;
         const job = await read(K.job(e.id), null);
@@ -510,9 +524,13 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
     const live = Object.values(L).filter((l) => l.until > t).length;
     const miners = Object.entries(rec.miners).filter(([, m]) => m.proofs > 0);
     const day = await lastDay(t);
+    const secs = (ms) => Math.max(0, Math.round(ms / 1000));
     return reply(200, {
       // today is inside the last 24 hours, so never fewer than today's (the hours count only from when this began keeping them)
       queued: q.length + Object.keys(L).length - live, leased: live, doneToday: rec.done, minersToday: miners.length,
+      // how long the oldest waiting job has waited, and the longest a lease has been out: a pool that is stuck shows in these
+      oldestQueuedSecs: q.length ? secs(t - Math.min(...q.map((e) => e.at))) : 0,
+      oldestLeaseSecs: live ? secs(Math.max(...Object.values(L).filter((l) => l.until > t).map((l) => t - (l.until - cfg.leaseMs)))) : 0,
       done24h: Math.max(day.done, rec.done), miners24h: Math.max(day.miners, miners.length),
       top: miners.map(([miner, m]) => ({ miner, proofs: m.proofs })).sort((a, b) => b.proofs - a.proofs || (a.miner < b.miner ? -1 : 1)).slice(0, cfg.top),
       terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs },
