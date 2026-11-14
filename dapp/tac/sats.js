@@ -24,6 +24,7 @@ const el = (tag, attrs = {}, ...kids) => {
   n.append(...kids.filter((x) => x != null).map((x) => (typeof x === 'string' ? document.createTextNode(x) : x)));
   return n;
 };
+const addrLink = (a) => el('a', { href: `https://mempool.space/address/${a}`, target: '_blank', rel: 'noopener noreferrer' }, `${a.slice(0, 12)}…${a.slice(-6)}`);
 
 async function markPriceSats() {
   const r = await fetch(`${WORKER}/assets/${ASSET}?network=mainnet`, { cache: 'no-store' });
@@ -259,11 +260,15 @@ export function mount(host, ctx) {
     const pickable = !l && counted && listable().length > 1;
     // only a note the pool has counted can be shielded again
     const back = counted ? el('button', { class: 'link', type: 'button', onclick: (e) => busy(e.currentTarget, 'st-sats-2', () => doPutBack(n)) }, l ? 'Cancel and put back' : 'Put back') : null;
-    return el('div', { class: 'kv' },
-      pickable
-        ? el('label', {}, el('input', on ? { type: 'radio', name: 'sats-pick', checked: '' } : { type: 'radio', name: 'sats-pick' }), ` ${fmt(n.value)} TAC`)
-        : el('span', {}, `${fmt(n.value)} TAC`),
-      el('b', {}, state, ...(back ? [' · ', back] : [])));
+    return el('div', {},
+      el('div', { class: 'kv' },
+        pickable
+          ? el('label', {}, el('input', on ? { type: 'radio', name: 'sats-pick', checked: '' } : { type: 'radio', name: 'sats-pick' }), ` ${fmt(n.value)} TAC`)
+          : el('span', {}, `${fmt(n.value)} TAC`),
+        el('b', {}, state, ...(back ? [' · ', back] : []))),
+      // where it sits, to check on an explorer: the sale key's address and the take-out that paid it
+      el('div', { class: 'sats-where', style: 'font-size:12px;color:var(--mute);margin:-3px 0 5px;overflow-wrap:anywhere' },
+        'at ', addrLink(n.key.address), ', taken out in ', txLink(n.txid)));
   }
 
   function render() {

@@ -194,7 +194,7 @@ const TOTAL = 10_000_000_000n;   // 100 TAC: the 2.5 TAC taken out, the 15 TAC f
 const notes = [{ asset: '0x' + ASSET, value: TOTAL.toString(), nf: '0x01', txid: 'aa'.repeat(32), leafIndex: 0 }];
 const FEE = 1500000000n;
 let log;
-function stub({ fee = FEE, quoteFee = fee, quote = 'ok', submit = [], status = (n) => (n === 2 ? { carrier: 'cc'.repeat(32) } : { state: 'queued' }), wait = null } = {}) {
+function stub({ fee = FEE, quoteFee = fee, quote = 'ok', submit = [], status = (n) => (n === 2 ? { carrier: 'cc'.repeat(32) } : { state: 'queued' }), wait = null, prove = 'ok' } = {}) {
   log = { quotes: [], submits: 0, statuses: 0, proofs: 0, builds: [], posts: 0, opened: [] };
   client.relayInfo = async () => (fee == null ? null : { fees: { ['0x' + ASSET]: fee.toString() } });
   client.quote = async (body) => {
@@ -210,7 +210,7 @@ function stub({ fee = FEE, quoteFee = fee, quote = 'ok', submit = [], status = (
   secret.poolClient.system = async () => ({});
   pool.selectInputs = (live) => ({ inputs: live, total: live.reduce((t, x) => t + BigInt(x.value), 0n) });
   pool.buildSpendBody = (a) => { log.builds.push(a); return { exit: { exitVout: a.exit.exitVout, blinding: '0x' + '09'.padStart(64, '0') } }; };
-  pool.prove = async () => { log.proofs++; return { payload: new Uint8Array(4), payloadHex: '00000000' }; };
+  pool.prove = async () => { log.proofs++; if (prove === 'fail') throw new Error('out of memory while proving'); return { payload: new Uint8Array(4), payloadHex: '00000000' }; };
 }
 const tacit = { DUST: 546, recordOpening: (...a) => log.opened.push(a), wallet: { pub: new Uint8Array(33), xonly() { log.posts++; throw new Error('SELF_POST'); } } };
 const key = secret.saleKey(pw, 3);
@@ -288,6 +288,39 @@ assert.equal(log.posts, 0);
 stub({ status: () => ({ state: 'confirmed' }) });
 r = await out();
 assert.equal(r.revealTxid, null); assert.equal(log.opened.length, 0);
+
+// A try that sent nothing gives its key back, so the next take-out uses it and the keys stay in order; a try the relay may
+// still post, and one that went through, keep it.
+{
+  const heldNow = () => JSON.parse(store.get('tacit-pool-sale-keys-v1') || '{}')[pw.addressString.slice(-16)]?.[3] != null;
+  const busy = Object.assign(new Error('carrier full'), { status: 503, body: { error: 'carrier full' } });
+  for (const [what, opts, keeps] of [
+    ['a proof that failed', { prove: 'fail' }, false],
+    ['the relay refusing it before taking it', { submit: [busy] }, false],
+    ['a submit the relay turned down', { submit: [Object.assign(new Error('bad payload'), { status: 400 })] }, false],
+    ['a second proof that failed after a conflict', { submit: [conflict(2)], prove: 'fail' }, false],
+    ['the quote running out twice', { submit: [new Error('quote expired'), Object.assign(new Error('quote expired'), { status: 410 })] }, false],
+    ['the relay dropping it', { status: () => ({ state: 'dropped', reason: 'anchor expired' }) }, false],
+    ['its notes spent by another payment', { status: () => ({ state: 'rejected', reason: 'nullifier already spent' }) }, false],
+    ['no answer to the submit', { submit: [new TypeError('fetch failed')] }, true],
+    ['a server error on the submit', { submit: [Object.assign(new Error('internal error'), { status: 500 })] }, true],
+    ['no post within sixty polls', { status: () => ({ state: 'queued' }) }, true],
+  ]) {
+    stub(opts); store.clear();
+    await assert.rejects(out());
+    assert.equal(heldNow(), keeps, `${what}: the key is ${keeps ? 'kept' : 'given back'}`);
+  }
+  stub(); store.clear();
+  await out();
+  assert.equal(heldNow(), true, 'a take-out that went through keeps its key');
+  // giving one key back leaves the others held
+  stub(); store.clear();
+  await secret.exitToSaleKey(tacit, { poolWallet: pw, amount: 250000000n, asset: ASSET, key: secret.saleKey(pw, 1) });
+  stub({ prove: 'fail' });
+  await assert.rejects(out());
+  const left = JSON.parse(store.get('tacit-pool-sale-keys-v1'))[pw.addressString.slice(-16)];
+  assert.deepEqual(Object.keys(left), ['1'], 'key 1, taken, stays held; key 3 is given back');
+}
 
 // ── payoutScriptFor: bc1q / bc1p with their own checksums; everything else refused ──
 {

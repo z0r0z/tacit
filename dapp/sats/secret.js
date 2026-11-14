@@ -725,6 +725,15 @@ function saleHold(poolWallet, counter) {
     localStorage.setItem(SALE_KEYS_KEY, JSON.stringify({ ...v, [tag]: mine }));
   } catch {}
 }
+function saleRelease(poolWallet, counter) {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const v = JSON.parse(localStorage.getItem(SALE_KEYS_KEY) || 'null') || {}, tag = ownerTag(poolWallet), mine = { ...(v[tag] || {}) };
+    if (!(counter in mine)) return;
+    delete mine[counter];
+    localStorage.setItem(SALE_KEYS_KEY, JSON.stringify({ ...v, [tag]: mine }));
+  } catch {}
+}
 
 export async function saleKeys(tacit, poolWallet, notes, asset, { addresses = [] } = {}) {
   const assetHex = strip0x(asset), held = saleHeld(poolWallet);
@@ -773,9 +782,9 @@ const saleScripts = new WeakMap();       // pool wallet → its sale keys' scrip
 
 // The sale keys this wallet's own pool spends paid. Every spend sends its change, or a zero note in its place, to the
 // wallet's internal address, so the transactions behind its internal notes are its spends, and an exit in one of them to a
-// sale key is a take-out. The walk over the keys ends at six unused ones in a row, but each try that got as far as a proof
-// sets its key aside for a day, so tries that failed leave unused keys before the one that worked: found this way, the
-// key that worked is read however far on it is.
+// sale key is a take-out. The walk over the keys ends at six unused ones in a row, but a try the relay may still post, or
+// one whose page closed mid-proof, keeps its key aside for a day, so unused keys can come before one that was used: found
+// this way, a used key is read however far on it is.
 async function spentToSaleKeys(tacit, poolWallet, notes) {
   const own = tacit.wallet?.pub ? bytesToHex(tacit.p2wpkhScript(tacit.wallet.pub)) : null;
   const want = new Set();
@@ -817,6 +826,8 @@ export async function exitToSaleKey(tacit, { poolWallet, amount, asset, key, anc
   const a = await prepare(poolWallet, assetHex, amount + fee, anchor, inputs);
   if (a.wait) return { wait: a.wait, tip: a.tip };
   saleHold(poolWallet, key.counter);
+  // a try that sent nothing gives its key back, so the next take-out uses it and the keys stay in order; any other end keeps it
+  const gaveBack = (e) => { saleRelease(poolWallet, key.counter); return e; };
   const self = { address: poolWallet.internalAddress, network: poolWallet.network };
   const change = a.total - amount - fee;
   const outputs = [{ address: q.address, value: fee }];
@@ -828,13 +839,14 @@ export async function exitToSaleKey(tacit, { poolWallet, amount, asset, key, anc
   });
   // a submit with no answer, or a server error, may be one the relay took: its notes are set aside as when it has not posted yet, and the error says so
   const unsure = (e) => {
-    if (e?.status >= 400 && e?.status < 500) return e;
-    if (e?.status === 503 && e?.body?.error) return e;                         // the relay's own refusal (busy, behind, carrier full), said before it took anything
+    if (e?.status >= 400 && e?.status < 500) return gaveBack(e);
+    if (e?.status === 503 && e?.body?.error) return gaveBack(e);               // the relay's own refusal (busy, behind, carrier full), said before it took anything
     pendingMark(a.notes, null, 0n, assetHex, 0n, ownerTag(poolWallet), { hold: MAY_STILL_MS });
     return relayDeclined('The relay did not answer, and it may still take this payment. Nothing else was sent; check your balance before paying again.');
   };
+  const prove = (b) => proveHere(b, say).catch((e) => { throw gaveBack(e); });
   let built = build(q.exitVout);
-  let { payloadHex } = await proveHere(built, say);
+  let { payloadHex } = await prove(built);
   say('Handing it to the relay…');
   let sub;
   try { sub = await client.submit({ payload: payloadHex, quoteId: q.quoteId }); }
@@ -845,7 +857,7 @@ export async function exitToSaleKey(tacit, { poolWallet, amount, asset, key, anc
     }
     if (e?.status !== 409 || !Number.isInteger(e?.body?.exitVout)) throw unsure(e);
     built = build(e.body.exitVout);
-    ({ payloadHex } = await proveHere(built, say));
+    ({ payloadHex } = await prove(built));
     try { sub = await client.submit({ payload: payloadHex, quoteId: q.quoteId }); } catch (e2) { throw unsure(e2); }
   }
   const exitVout = built.exit.exitVout;
@@ -858,8 +870,8 @@ export async function exitToSaleKey(tacit, { poolWallet, amount, asset, key, anc
       return { revealTxid: carrier, exitVout, amount, fee };
     }
     if (st && (['dropped', 'rejected'].includes(st.state) || spentElsewhere(st.state))) {
-      if (spentElsewhere(st.reason || st.state)) throw new Error('Those notes are already being spent by another payment. Wait for it to settle, then try again.');
-      throw new Error(`The relay could not post it (${st.reason || st.state}). Nothing was sent.`);
+      if (spentElsewhere(st.reason || st.state)) throw gaveBack(new Error('Those notes are already being spent by another payment. Wait for it to settle, then try again.'));
+      throw gaveBack(new Error(`The relay could not post it (${st.reason || st.state}). Nothing was sent.`));
     }
     say('Waiting for the relay’s batch…');
     await new Promise((r) => setTimeout(r, 5000));

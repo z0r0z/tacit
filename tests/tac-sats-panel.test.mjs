@@ -83,6 +83,16 @@ assert.match(text, /This wallet’s address takes no part/);
 assert.match(text, /The relay sees your connection when it takes the TAC out and the market when you list, so Tor or a VPN for the listing keeps the two apart/, 'the panel says what each side sees');
 assert.match(text, /The relay’s fee is 15 TAC/);
 assert.match(text, /2,500 TAC\s*ready to list/, 'the note at the sale key shows, ready');
+{
+  // under it, where it sits: the sale key's address and the take-out that paid it, each to look up
+  const where = host.querySelector('.sats-where');
+  assert.ok(where, 'the held note says where it is');
+  const a = where.querySelector('a[href]');
+  assert.equal(a.getAttribute('href'), `https://mempool.space/address/${saleKey.address}`, 'the sale key’s address links to an explorer');
+  assert.equal(a.getAttribute('rel'), 'noopener noreferrer');
+  assert.equal(a.textContent, `${saleKey.address.slice(0, 12)}…${saleKey.address.slice(-6)}`);
+  assert.equal(where.textContent, `at ${a.textContent}, taken out in ${NOTE.txid.slice(0, 10)}`, 'and the take-out, through the page’s transaction link');
+}
 assert.equal(host.querySelector('#sats-price').value, '168', 'priced at the mark');
 const [btnOut, btnList] = [...host.querySelectorAll('button.btn')];
 assert.equal(btnList.disabled, false);

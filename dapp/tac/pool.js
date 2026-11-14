@@ -1,6 +1,6 @@
 
-const SECRET_URL = '/sats/secret.js?cb=fe6a0439';
-const SATS_URL = '/tac/sats.js?cb=39c66414';
+const SECRET_URL = '/sats/secret.js?cb=0ef3409d';
+const SATS_URL = '/tac/sats.js?cb=93448200';
 const CLAIM_URL = '/tac/claim.js?cb=dc513e91';
 const WORKER = 'https://api.tacit.finance';
 const ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
