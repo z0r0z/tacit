@@ -82,7 +82,7 @@ function actFoot(it) {
     confirmed: () => html`${it.flip ? 'Confirmed' : `Confirmed in ${took}`} · ${link}`,
     stale: () => html`${it.kind === 'btc' ? 'Not confirmed after three days.' : 'Not seen after half an hour; it may have been dropped or replaced.'} ${link}`,
   }[it.status];
-  return html`<div class="actr-f">${say_ ? say_() : ''}</div>${it.warn ? html`<div class="actr-f err">${it.warn}</div>` : ''}${selfLine(it)}${openLine(it)}`;
+  return html`<div class="actr-f">${say_ ? say_() : ''}</div>${it.note ? html`<div class="actr-f">${it.note}</div>` : ''}${it.warn ? html`<div class="actr-f err">${it.warn}</div>` : ''}${selfLine(it)}${openLine(it)}`;
 }
 function selfLine(it) {
   if (SELF.has(it.id)) return html`<div class="actr-f">${SELF.get(it.id)}</div>`;
@@ -3065,13 +3065,14 @@ function bondsBlock() {
   const what = { pending: 'not minted yet, can come back', backing: 'backs your cBTC until you redeem', free: 'can come back', forfeit: 'forfeit', slashed: 'in the insurance reserve' };
   const link = (l) => (l.txid ? html`<a href="${MEMPOOL}/tx/${l.txid}" target="_blank" rel="noopener">${short(l.txid, 6)} ↗</a>` : html`<span class="mono">${short(l.op, 6)}</span>`);
   const everyday = locks.filter((l) => l.everyday).length;
+  const sentOf = (l) => (l.state === 'backing' && redeemOn() ? redeemSent(l) : null);
   return html`<div class="blk" id="bw-bonds">
     <div class="lbl"><span>Your bonds</span></div>
     ${locks.filter((l) => l.state === 'forfeit').map((l) => html`<div class="callout bad"><span>Lock ${link(l)} was spent on Bitcoin before its cBTC was redeemed, so its ${fmt(l.total, 18, 5)} wstETH bond cannot come back. It goes to the insurance reserve, which backs the ${fmt(l.vBtc, 8, 8)} cBTC minted on it.</span></div>`)}
     ${locks.filter((l) => l.health && !l.health.healthy).map((l) => html`<div class="callout bad"><span>Lock ${link(l)}: its bond is ${fmt(l.health.want - l.health.have, 18, 5)} wstETH short of what the engine asks for. Top it up${l.health.due ? ` by ${bondDue(l.health.due)}` : ''}, or it can go to the insurance reserve.</span><button class="btn ghost" type="button" data-bond-topup="${l.op}">Top up</button></div>`)}
-    ${locks.map((l) => html`<div class="kv"><span>${l.vBtc ? `${fmt(l.vBtc, 8, 8)} BTC` : 'Lock'} · ${link(l)}${l.everyday ? ' · everyday address' : ''}</span><b class="${l.state === 'forfeit' ? 'err' : ''}">${fmt(l.total, 18, 5)} wstETH${l.par ? ` · ${fmt(l.total * 100n / l.par, 2, 2)}× the BTC` : ''} · ${what[l.state]}</b></div>
-      ${l.state === 'backing' && l.par ? html`<button class="btn ghost" type="button" data-bond-add="${l.op}">Add 0.25× to this bond</button>` : ''}
-      ${l.state === 'backing' && l.txid && redeemOn() ? html`<button class="btn ghost" type="button" data-redeem="${l.op}">Redeem this lock</button>` : ''}
+    ${locks.map((l) => html`<div class="kv"><span>${l.vBtc ? `${fmt(l.vBtc, 8, 8)} BTC` : 'Lock'} · ${link(l)}${l.everyday ? ' · everyday address' : ''}</span><b class="${l.state === 'forfeit' ? 'err' : ''}">${fmt(l.total, 18, 5)} wstETH${l.par ? ` · ${fmt(l.total * 100n / l.par, 2, 2)}× the BTC` : ''} · ${sentOf(l) ? 'redeem sent, can come back once Bitcoin’s proof on Ethereum holds it' : what[l.state]}</b></div>
+      ${l.state === 'backing' && l.par && !sentOf(l) ? html`<button class="btn ghost" type="button" data-bond-add="${l.op}">Add 0.25× to this bond</button>` : ''}
+      ${l.state === 'backing' && l.txid && redeemOn() ? html`<button class="btn ghost" type="button" data-redeem="${l.op}">${sentOf(l) ? 'See the redeem' : 'Redeem this lock'}</button>` : ''}
       ${l.bonds.filter((b) => b.take && bondVia(b.account)).map((b) => html`<button class="btn ghost" type="button" data-bond-take="${l.op}|${b.contract}|${b.account}">Take back ${fmt(b.share, 18, 5)} wstETH to your ${bondVia(b.account) === 'tacit' ? 'Key address' : 'wallet'}</button>`)}
       ${bondElsewhere(l) ? html`<button class="btn ghost" type="button" data-bond-conn>Connect the wallet that posted it</button>` : ''}`)}
     ${everyday ? html`<p class="note">${everyday === 1 ? 'One lock holds its' : `${everyday} locks hold their`} BTC at your everyday Bitcoin address, where early locks put it. This app never spends it, but another Bitcoin wallet using this key would see it as spendable, and spending it gives up its bond. Keep this key out of other Bitcoin wallets until you redeem.</p>` : ''}
