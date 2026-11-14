@@ -808,17 +808,59 @@ async function spentToSaleKeys(tacit, poolWallet, notes) {
     const spk = String(tx.vout?.[sp.exit?.exitVout]?.scriptpubkey || '').toLowerCase();
     if (/^0014[0-9a-f]{40}$/.test(spk) && spk !== own) want.add(spk);
   }
-  const out = [];
+  return [...(await saleCounters(poolWallet, want)).values()];
+}
+
+// Which of the scripts in `want` pay this wallet's sale keys, as script → counter, looked for up to SALE_FAR keys.
+async function saleCounters(poolWallet, want) {
+  const left = new Set(want), out = new Map();
   let s = saleScripts.get(poolWallet.addressString);
-  if (want.size && !s) saleScripts.set(poolWallet.addressString, (s = []));
-  for (let c = 0; want.size && c < SALE_FAR; c++) {
+  if (left.size && !s) saleScripts.set(poolWallet.addressString, (s = []));
+  for (let c = 0; left.size && c < SALE_FAR; c++) {
     if (c === s.length) {
       if (c % 32 === 31) await new Promise((r) => setTimeout(r, 0));   // the page stays responsive while keys are worked out
       s.push(saleKey(poolWallet, c).scriptPubKey);
     }
-    if (want.delete(s[c])) out.push(c);
+    if (left.delete(s[c])) out.set(s[c], c);
   }
   return out;
+}
+
+// This wallet's own history in the pool, newest first: each transaction behind its notes (spent ones too) and the change it
+// made to the shielded balance. A transaction with no change note of the wallet's brought TAC in, a shield or a payment to it;
+// one with a change note is the wallet's own spend, whose spent notes its nullifiers name: withdrawn, taken out for sale, sent,
+// or notes combined. A carrier the relay paid for (an input from `relayFund`) holds one more output, the relay's fee.
+export async function poolHistory(tacit, poolWallet, notes, { relayFund = null } = {}) {
+  const byTx = new Map(), byNf = new Map();
+  for (const n of notes || []) {
+    if (n?.nf) byNf.set(strip0x(n.nf), n);
+    if (!n?.txid) continue;
+    const t = strip0x(n.txid);
+    if (!byTx.has(t)) byTx.set(t, []);
+    byTx.get(t).push(n);
+  }
+  const own = tacit.wallet?.pub ? bytesToHex(tacit.p2wpkhScript(tacit.wallet.pub)) : null;
+  const sum = (ns) => ns.reduce((t, n) => t + BigInt(n.value), 0n);
+  const rows = [];
+  for (const [txid, ns] of byTx) {
+    const tx = await tacit.getTx(txid).catch(() => null);
+    const env = tx ? tacit.txOutputEnvelope(tx) : null;
+    const row = { txid, height: ns[0].height ?? tx?.status?.block_height ?? null, time: tx?.status?.block_time ?? null };
+    if (!ns.some((n) => n.internal)) { rows.push({ ...row, kind: env?.opcode === 0x6c ? 'shielded' : 'received', delta: sum(ns) }); continue; }
+    let sp = null;
+    if (env?.opcode === 0x6d) { try { sp = pool.parseSpend(env.payload); } catch { try { sp = pool.parseSpend(env.payload, { full: true }); } catch {} } }
+    if (!sp) { rows.push({ ...row, kind: 'unread', delta: null }); continue; }
+    const delta = sum(ns) - sum(sp.nullifiers.map((nf) => byNf.get(strip0x(nf))).filter(Boolean));
+    if (sp.exit) {
+      const o = tx.vout?.[sp.exit.exitVout] || {}, spk = String(o.scriptpubkey || '').toLowerCase();
+      const sale = /^0014[0-9a-f]{40}$/.test(spk) && spk !== own && (await saleCounters(poolWallet, [spk])).size > 0;
+      rows.push({ ...row, kind: own && spk === own ? 'withdrawn-home' : sale ? 'for-sale' : 'withdrawn', delta, to: o.scriptpubkey_address || null });
+      continue;
+    }
+    const relayed = !!relayFund && (tx.vin || []).some((i) => i.prevout?.scriptpubkey_address === relayFund);
+    rows.push({ ...row, kind: sp.outputs.length - ns.length - (relayed ? 1 : 0) > 0 ? 'sent' : 'combined', delta });
+  }
+  return rows.sort((a, b) => (b.height ?? Infinity) - (a.height ?? Infinity));
 }
 
 export async function exitToSaleKey(tacit, { poolWallet, amount, asset, key, anchor = null, maxFee = null, say = () => {}, inputs = null, requoted = false }) {

@@ -1,5 +1,5 @@
 
-const SECRET_URL = '/sats/secret.js?cb=fc3fdbe4';
+const SECRET_URL = '/sats/secret.js?cb=5eb8a697';
 const SATS_URL = '/tac/sats.js?cb=93448200';
 const CLAIM_URL = '/tac/claim.js?cb=dc513e91';
 const WORKER = 'https://api.tacit.finance';
@@ -91,6 +91,7 @@ export function makeTacPool(ctx) {
   let relayLive = null, relayFee = null, relayP = null, markSats = null, priceP = null;
   let busyId = null, afterBusy = null, stealthScanned = false, satsMounted = false;
   let opened = false, satsHeld = null;   // the panel has been opened; what To sats read at this key's sale keys, once it has read
+  let relayFund = null, histOpen = false, hist = null;   // the relay's funding address; the wallet's pool history, read when asked for
   let feedKept = null, shieldedP = null;
 
   const q = (id) => host?.querySelector(`#${id}`) || document.getElementById(id);
@@ -156,6 +157,7 @@ export function makeTacPool(ctx) {
   function loadRelay() {
     return (relayP ||= loadSecret().then(() => S.poolClientFor('mainnet').relayInfo()).then((info) => {
       relayLive = !!info; const f = info?.fees?.['0x' + S.TAC_ASSET_MAINNET]; relayFee = f == null ? null : BigInt(f);
+      relayFund = info?.fundAddress || null;
     }, () => { relayLive = false; relayFee = null; }).finally(() => paintSendComb()));
   }
   const relayFeeUnits = () => (relayLive && relayFee != null ? relayFee : 0n);
@@ -207,6 +209,8 @@ export function makeTacPool(ctx) {
       const notes = kept ? (await S.poolClientFor('mainnet').walletNotes(S.pool, w, { notes: await kept })).filter((n) => lc(n.asset).replace(/^0x/, '') === S.TAC_ASSET_MAINNET) : await S.poolNotes(w, S.TAC_ASSET_MAINNET);
       if (wallet() !== w) return;
       shielded = { loading: false, notes, read: true };
+      hist = null;
+      if (histOpen) readHist().catch(() => {});
     } catch (e) { if (wallet() !== w) return; shielded = { ...shielded, loading: false }; errSay('tp-st-recv', e); }
     paintBalances();
     ctx.changed?.();
@@ -268,10 +272,61 @@ export function makeTacPool(ctx) {
       b.onclick = offerCombine;
       el.append(' · ', b);
     }
+    if (unlocked() && shielded.read && shielded.notes?.length) {
+      const b = Object.assign(document.createElement('button'), { className: 'link', type: 'button', id: 'tp-hist-go', textContent: histOpen ? 'Hide history' : 'History' });
+      b.setAttribute('aria-expanded', String(histOpen)); b.setAttribute('aria-controls', 'tp-hist');
+      b.onclick = () => { histOpen = !histOpen; paintBalances(); if (histOpen && !hist) readHist().catch(() => {}); };
+      el.append(' · ', b);
+    }
     q('tp-refresh').hidden = !unlocked();
     el.closest('.tp-bal').hidden = !unlocked();
     paintHeld();
+    paintHist();
     paintSendComb();
+  }
+  // The wallet's own history in the pool, read when asked for: each transaction behind its notes and what it did to the balance.
+  async function readHist() {
+    const w = wallet();
+    hist = { loading: true }; paintHist();
+    try {
+      await loadRelay();
+      const rows = await ctx.withKey((t) => S.poolHistory(t, w, shielded.notes || [], { relayFund }));
+      if (wallet() === w) hist = { rows };
+    } catch { if (wallet() === w) hist = { err: true }; }
+    paintHist();
+  }
+  const HIST_SHOWN = 30;
+  const shortAddr = (a) => (a ? `${a.slice(0, 12)}…${a.slice(-6)}` : 'an address');
+  const histLabel = (r) => ({
+    shielded: 'Shielded', received: 'Received', sent: 'Sent', combined: 'Notes combined', 'withdrawn-home': 'Withdrawn to your Bitcoin address',
+    withdrawn: `Withdrawn to ${shortAddr(r.to)}`, 'for-sale': `Taken out for sale, to ${shortAddr(r.to)}`, unread: 'A spend this page could not read',
+  })[r.kind] || 'In the pool';
+  function histRow(r) {
+    const at = r.time ? new Date(r.time * 1000) : null;
+    const when = at ? at.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(at.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) }) : 'pending';
+    const row = Object.assign(document.createElement('div'), { className: 'kv' });
+    const left = document.createElement('span'), right = document.createElement('b');
+    left.textContent = `${when} · ${histLabel(r)}`;
+    if (r.delta != null) right.append(`${r.delta < 0n ? '−' : r.delta > 0n ? '+' : ''}${fmt(r.delta < 0n ? -r.delta : r.delta)} TAC`, document.createElement('br'));
+    right.append(txLink(r.txid));
+    row.append(left, right);
+    return row;
+  }
+  function paintHist() {
+    const box = q('tp-hist');
+    if (!box) return;
+    box.hidden = !histOpen || !unlocked();
+    if (box.hidden) return;
+    const line = (...kids) => { const p = Object.assign(document.createElement('p'), { className: 'note' }); p.append(...kids); return p; };
+    if (!hist || hist.loading) return box.replaceChildren(line('Reading your history in the pool…'));
+    if (hist.err) {
+      const again = Object.assign(document.createElement('button'), { className: 'link', type: 'button', textContent: 'Retry' });
+      again.onclick = () => readHist().catch(() => {});
+      return box.replaceChildren(line('Could not read your history in the pool. ', again));
+    }
+    if (!hist.rows.length) return box.replaceChildren(line('Nothing in the pool yet.'));
+    const more = hist.rows.length - HIST_SHOWN;
+    box.replaceChildren(...hist.rows.slice(0, HIST_SHOWN).map(histRow), ...(more > 0 ? [line(`and ${more} earlier`)] : []));
   }
   // TAC taken out of the pool for a sale waits at a sale key, which the balance above does not count: it gets its own line, from
   // the read To sats makes, and an output that read could not open is said rather than left out.
@@ -663,6 +718,7 @@ export function makeTacPool(ctx) {
     return html`<div class="seg sub" role="tablist" aria-label="TAC in the Bitcoin pool">${TABS.map(([k, t]) => html`<button type="button" role="tab" id="tp-t-${k}" aria-controls="tp-p-${k}" aria-selected="false" tabindex="-1" data-tp="${k}">${t}</button>`)}</div>
     <div class="kv tp-bal"><span id="tp-bal"></span><button class="link" type="button" id="tp-refresh" hidden>Refresh</button></div>
     <div class="kv tp-bal" id="tp-held-row" hidden><span id="tp-held"></span><button class="link" type="button" id="tp-held-go">To sats</button></div>
+    <div id="tp-hist" class="tp-hist" hidden></div>
     <div class="status" id="tp-st-comb" role="status"></div>
 
     <div id="tp-p-shield" role="tabpanel" aria-labelledby="tp-t-shield">
@@ -767,7 +823,7 @@ export function makeTacPool(ctx) {
     pw = null; pwPub = null; stealthScanned = false;
     pub = { loading: false, notes: [], read: false }; shielded = { loading: false, notes: [], read: false };
     for (const id of ['tp-st-shield', 'tp-st-send', 'tp-st-exit', 'tp-st-recv', 'tp-st-comb', 'tp-st-claim-make']) say(id);
-    satsHeld = null;
+    satsHeld = null; histOpen = false; hist = null;
     window.dispatchEvent(new Event('tac:wallet'));
     if (!host) return;
     paintBalances(); paintShieldPicker(); paintReceive();

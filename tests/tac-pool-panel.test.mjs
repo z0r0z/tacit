@@ -22,14 +22,23 @@ const { makeTacPool, parseAmount, CLAIM_HASH } = await import('../dapp/tac/pool.
 const ASSET = 'f0'.repeat(32), TAC = 100000000n;
 const pw = { addressString: 'bp1qmine', network: 'mainnet' };
 const notes = [{ nf: '01', value: String(30n * TAC), asset: ASSET }, { nf: '02', value: String(20n * TAC), asset: ASSET }];
-const calls = { pay: [], exit: [], shield: [], create: [], sweep: [] };
+const calls = { pay: [], exit: [], shield: [], create: [], sweep: [], hist: [] };
+let histFail = false;
+const Y = new Date().getUTCFullYear(), noon = (y, m, d) => Date.UTC(y, m, d, 12) / 1000;
+const HIST = [
+  { txid: '1a'.repeat(32), height: 973509, time: noon(Y, 0, 15), kind: 'for-sale', delta: -98707564851n, to: 'bc1qzwnfncdgxs0hx0rmsuhd0jhgat37rfvzttg50z' },
+  { txid: '61'.repeat(32), height: 973499, time: noon(Y, 0, 14), kind: 'shielded', delta: 98700000000n },
+  { txid: '93'.repeat(32), height: 973494, time: noon(Y, 0, 13), kind: 'withdrawn-home', delta: -98700000000n, to: 'bc1qsedwallet' },
+  { txid: '0e'.repeat(32), height: 950000, time: noon(Y - 1, 5, 1), kind: 'received', delta: 2000000000n },
+];
 const S = {
   TAC_ASSET_MAINNET: ASSET, pool: { id: 'pool' },
   poolWalletFor: (priv) => { assert.ok(priv instanceof Uint8Array, 'the pool wallet is derived from the key’s bytes'); return pw; },
   pendingView: (ns) => ({ live: ns.filter((n) => !n.spent) }),
   poolNotes: async () => notes,
   combinePlan: () => null,
-  poolClientFor: () => ({ relayInfo: async () => ({ address: 'bp1qrelay', fees: { ['0x' + ASSET]: String(2n * TAC) } }), allNotes: async () => [], walletNotes: async () => notes }),
+  poolClientFor: () => ({ relayInfo: async () => ({ address: 'bp1qrelay', fundAddress: 'bc1qrelayfund', fees: { ['0x' + ASSET]: String(2n * TAC) } }), allNotes: async () => [], walletNotes: async () => notes }),
+  poolHistory: async (t, w, ns, o) => { calls.hist.push({ w, n: ns.length, o }); if (histFail) throw new Error('explorer 429'); return HIST; },
   payPrivately: async (t, o) => { calls.pay.push(o); return { revealTxid: 'aa'.repeat(32), relayed: true }; },
   exitToWallet: async (t, o) => { calls.exit.push(o); return { revealTxid: 'bb'.repeat(32) }; },
   shieldNote: async (t, o) => { calls.shield.push(o); return { revealTxid: 'cc'.repeat(32), poolNote: { value: o.note.amount } }; },
@@ -68,6 +77,36 @@ await settle();
 assert.deepEqual([...host.querySelectorAll('[data-tp]')].map((b) => b.textContent), ['Shield', 'Send', 'Withdraw', 'Receive']);
 assert.match(st('tp-bal'), /50 TAC shielded, in 2 notes/, 'the shielded balance is read for the key');
 assert.deepEqual(tp.totals(), { shielded: 50n * TAC, public: 7n * TAC, forSale: null });
+{
+  // History, read only when asked for: each transaction, when, what it was and what it did to the balance, with its link
+  assert.equal($('tp-hist').hidden, true, 'no history until asked for');
+  assert.equal(calls.hist.length, 0, 'and nothing is read for it');
+  await click('tp-hist-go');
+  assert.equal(calls.hist.length, 1);
+  assert.equal(calls.hist[0].w, pw); assert.equal(calls.hist[0].n, notes.length, 'read from all of the wallet’s notes');
+  assert.deepEqual(calls.hist[0].o, { relayFund: 'bc1qrelayfund' }, 'with the relay’s funding address, to tell its fee output apart');
+  const rows = [...$('tp-hist').querySelectorAll('.kv')].map((r) => r.textContent.replace(/\s+/g, ' ').trim());
+  assert.equal(rows.length, 4);
+  assert.match(rows[0], /^Jan 15 · Taken out for sale, to bc1qzwnfncdg…ttg50z\s*−987\.07564851 TAC\s*1a1a1a1a1a…$/);
+  assert.match(rows[1], /^Jan 14 · Shielded\s*\+987 TAC\s*6161616161…$/);
+  assert.match(rows[2], /^Jan 13 · Withdrawn to your Bitcoin address\s*−987 TAC\s*9393939393…$/);
+  assert.equal(rows[3].startsWith(`Jun 1, ${Y - 1} · Received`), true, `a past year is named: ${rows[3]}`);
+  assert.equal($('tp-hist-go').textContent, 'Hide history');
+  await click('tp-hist-go');
+  assert.equal($('tp-hist').hidden, true, 'pressed again, it closes');
+  await click('tp-hist-go');
+  assert.equal(calls.hist.length, 1, 'opened again, the history already read is shown');
+  await click('tp-hist-go');
+  // a read that fails says so and can be tried again
+  histFail = true;
+  tp.keyChanged(); await settle();
+  await click('tp-hist-go');
+  assert.match(st('tp-hist'), /Could not read your history in the pool\. Retry/);
+  histFail = false;
+  $('tp-hist').querySelector('button').click(); await settle();
+  assert.equal($('tp-hist').querySelectorAll('.kv').length, 4, 'tried again, it reads');
+  await click('tp-hist-go');
+}
 assert.match($('tp-shield-pick').textContent, /^7 TAC/, 'the key’s TAC on Bitcoin is offered to shield');
 assert.equal($('tp-shield-go').textContent, 'Shield', 'with a key the button shields');
 assert.equal($('tp-shield-pick').closest('.amt').hidden, false, 'with a key the list of notes to shield shows');
