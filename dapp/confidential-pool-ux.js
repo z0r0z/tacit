@@ -1,5 +1,5 @@
 
-import { getConfidentialDeployment, activeNetwork, syncProtectedOutpoints, shownTicker } from './confidential-deployments.js';
+import { getConfidentialDeployment, activeNetwork, syncProtectedOutpoints, shownTicker, nativeEvmAssetId } from './confidential-deployments.js';
 import { bodyType } from './rpc-body.js';
 import { hedgedRpc, nodeHealth, QUOTA } from './trade/rpc.js';
 import { walletNode, connectedInjected, logSpan, refuses, isShared } from './eth-nodes.js';
@@ -128,6 +128,62 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   const _poolAssets = cfg.assets.filter((a) => a.assetId);
   const assetByTicker = Object.fromEntries(_poolAssets.map((a) => [a.ticker, a]));
+
+  // Any ERC-20 the pool has registered (anyone may, with registerWrappedAuto) is a pool asset in its own form. An external
+  // token's id comes from its address, so a token no list names resolves on chain and joins the lookups here (by ticker,
+  // by id, the wrap walk) without a config entry.
+  const tokenTicker = (addr) => `x:${String(addr).toLowerCase()}`;
+  function addAsset(row) {
+    const id = String(row.assetId).toLowerCase(), had = _poolAssets.find((a) => String(a.assetId).toLowerCase() === id);
+    if (had) return had;
+    if (!cfg.assets.some((a) => String(a.assetId || '').toLowerCase() === id)) cfg.assets.push(row);
+    _poolAssets.push(row);
+    assetByTicker[row.ticker] = row;
+    return row;
+  }
+  const _shown = (s, n) => String(s || '').replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/g, '').trim().slice(0, n);
+  function _abiText(hex) {
+    const h = String(hex || '').replace(/^0x/, ''), text = (x) => new TextDecoder().decode(Uint8Array.from((x.match(/../g) || []).map((b) => parseInt(b, 16))));
+    if (h.length >= 128) {
+      const off = Number(BigInt('0x' + h.slice(0, 64))) * 2;
+      if (off + 64 <= h.length) {
+        const n = Number(BigInt('0x' + h.slice(off, off + 64)));
+        if (n <= 256 && off + 64 + n * 2 <= h.length) return text(h.slice(off + 64, off + 64 + n * 2));
+      }
+    }
+    return h.length === 64 ? text(h.replace(/(00)+$/, '')) : '';
+  }
+  async function readAsset(assetId) {
+    const out = String(await ethCall(cfg.pool, '0x' + _selector('assets(bytes32)') + String(assetId).replace(/^0x/, '').toLowerCase().padStart(64, '0')) || '').replace(/^0x/, '');
+    if (out.length < 6 * 64) return null;
+    const w = (i) => BigInt('0x' + out.slice(i * 64, i * 64 + 64));
+    return { registered: w(0) === 1n, underlying: '0x' + out.slice(88, 128), unitScale: w(2), poolMinted: w(4) === 1n, decimals: Number(w(5)) };
+  }
+  async function tokenMeta(token) {
+    const q = (sig) => ethCall(token, '0x' + _selector(sig)).catch(() => '0x');
+    const [s, n, d] = await Promise.all([q('symbol()'), q('name()'), q('decimals()')]);
+    const dec = /^0x[0-9a-f]{64}/i.test(String(d)) ? BigInt(String(d).slice(0, 66)) : null;
+    return { symbol: _shown(_abiText(s), 16), name: _shown(_abiText(n), 40), decimals: dec != null && dec <= 77n ? Number(dec) : null };
+  }
+  // A token as a pool asset: its row (what every pool call reads) and whether the pool has registered it yet. Before the
+  // first shield registers it, the row carries the scale registerWrappedAuto will give it: min(decimals, 8) on Tacit.
+  async function externalAsset(token) {
+    const underlying = String(token || '').toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(underlying) || /^0x0{40}$/.test(underlying)) throw new Error('not a token address');
+    const assetId = nativeEvmAssetId(cfg.chainId, underlying);
+    const had = _poolAssets.find((a) => String(a.assetId).toLowerCase() === assetId);
+    if (had) return { row: had, registered: true };
+    const [onPool, meta] = await Promise.all([readAsset(assetId), tokenMeta(underlying)]);
+    const registered = !!onPool?.registered;
+    if (registered && (onPool.poolMinted || onPool.underlying.toLowerCase() !== underlying)) throw new Error('the pool holds a different asset under this id');
+    const decimals = registered ? onPool.decimals : meta.decimals;
+    if (decimals == null) throw new Error('the token does not say how many decimals it has');
+    const tacitDecimals = Math.min(decimals, 8);
+    const row = { ticker: tokenTicker(underlying), assetId, underlying, unitScale: String(registered ? onPool.unitScale : 10n ** BigInt(decimals - tacitDecimals)),
+      decimals, tacitDecimals, native: false, live: true, runtime: true, symbol: meta.symbol, name: meta.name };
+    return { row: registered ? addAsset(row) : row, registered };
+  }
+  const registerTokenCall = (token) => ({ to: cfg.pool, data: '0x' + _selector('registerWrappedAuto(address,bytes32)') + String(token).replace(/^0x/, '').toLowerCase().padStart(64, '0') + '0'.repeat(64) });
 
   function account(walletPriv) { return evm.deriveEvmAccount(walletPriv, cfg.evmNetwork); }
 
@@ -3510,7 +3566,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     ux: { cfg, assetByTicker, buildWrap, nextWrapIndex, submitWrapSettle },
   });
 
-  return { cfg, assets: _poolAssets, assetByTicker, account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
+  return { cfg, assets: _poolAssets, assetByTicker, addAsset, externalAsset, readAsset, registerTokenCall, tokenTicker, account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
     deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
     settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,

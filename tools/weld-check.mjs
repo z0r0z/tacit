@@ -10,6 +10,8 @@
 //   usdtwrap USDT made private from the Bridge tab: the card says so first, and the press sends the deposit through Permit2 in one transaction, the steps under the button, no sheet
 //   usdtout  private USDT withdrawn from the USDT sheet: the Withdraw tab shows what the key holds and its press moves each note by the relay, said in the sheet
 //   usdtwrapw USDT made private from the USDT sheet with the connected wallet paying: an approval of exactly the amount to Permit2, the permit signed in the wallet, one deposit; nothing left over
+//   xtshield any token as its own private form: LINK, not yet in the pool, picked on the Swap card's Shield is added to the pool on the press, then approved to Permit2, permitted and deposited
+//   xtout    notes of a token no table names are found by their asset id, shown as that token, offered in Withdraw and quoted in it
 //   hxbridgeu USDT on the Bridge tab and its sheet: private USDT out quoted with its fee and the 2 to 1,000 limits in six decimals, a seventh decimal refused, the press bridging from the tile; USDT on Bitcoin back; the wallet's USDT made private first; the USDT sheet's tabs and links
 //   hxbridgec cBTC and cUSD on the Bridge tab: private cUSD out quoted with its fee and limits, the press opening the Borrow sheet's form with the amount; cBTC back
 //   ux       the page's shell: a toast over an open sheet can be pressed, a drag ending on the backdrop leaves the sheet open, an
@@ -216,7 +218,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,tacbuy,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile,chainways').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,xtshield,xtout,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile,chainways').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -10256,6 +10258,83 @@ await step('usdtwrapw', async () => {
     await until(p, () => (document.querySelector('#us-status')?.textContent || '').trim() !== '', null, 120000);
     ok(true, `usdtwrapw: the steps are said in the sheet (${(await text(p, '#us-status')).trim().slice(0, 100)})`);
     if (r.errors.length) { fails++; console.log('FAIL usdtwrapw page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
+// Any token in its own private form: LINK, which the pool does not hold yet, picked as the Swap card's Shield From goes in as private LINK. The press adds LINK
+// to the pool (registerWrappedAuto, once, for everyone), approves exactly the amount to Permit2, signs the router's permit and deposits, so the pool holds it
+// under LINK's own asset id and the wallet keeps the rest. The relay's settle is the stub's here.
+await step('xtshield', async () => {
+  const LINK = '0x514910771af9ca656af840dff83e8264ecf986ca', POOLA = '0x000000000Ed1eabD231Be41d93b719056F7febFC', PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3', E18 = 10n ** 18n;
+  const KXW = '0x' + 'c0de'.padEnd(64, '8'), XW = '0x' + Buffer.from(keccak_256(secp.getPublicKey(KXW.slice(2), false).slice(1))).toString('hex').slice(-40);
+  await rpc('anvil_impersonateAccount', [XW]); await rpc('anvil_setBalance', [XW, '0x' + E18.toString(16)]);
+  const w32 = (a) => a.replace(/^0x/, '').toLowerCase().padStart(64, '0'), hx = (b) => Buffer.from(b).toString('hex');
+  const balOf = async (a) => BigInt(await rpc('eth_call', [{ to: LINK, data: '0x70a08231' + w32(a) }, 'latest']));
+  const allowed = async (o, s) => BigInt(await rpc('eth_call', [{ to: LINK, data: '0xdd62ed3e' + w32(o) + w32(s) }, 'latest']));
+  const idb = Buffer.alloc(46); idb.write('tacit-evm-token-v1'); idb.writeBigUInt64BE(1n, 18); Buffer.from(w32(LINK).slice(24), 'hex').copy(idb, 26);
+  const id = hx(sha256(idb)), inPool = async () => /1$/.test((await rpc('eth_call', [{ to: POOLA, data: '0x' + hx(keccak_256(Buffer.from('assets(bytes32)'))).slice(0, 8) + id }, 'latest'])).slice(2, 66));
+  // 20 LINK for the account: each candidate slot of the balances mapping is written and read back through balanceOf
+  const want = 20n * E18;
+  let funded = false;
+  for (let i = 0; i < 12 && !funded; i++) {
+    const at = '0x' + hx(keccak_256(Buffer.from(w32(XW) + i.toString(16).padStart(64, '0'), 'hex'))), was = await rpc('eth_getStorageAt', [LINK, at, 'latest']);
+    await rpc('anvil_setStorageAt', [LINK, at, '0x' + want.toString(16).padStart(64, '0')]);
+    if ((await balOf(XW)) === want) funded = true; else await rpc('anvil_setStorageAt', [LINK, at, was]);
+  }
+  ok(funded && !(await inPool()), 'xtshield: the account holds 20 LINK, and the pool does not hold LINK yet');
+  const r = await openPage({ account: XW, key: KXW, viewport: { width: 1280, height: 1500 } }), p = r.page;
+  try {
+    await p.goto(r.url);
+    await moveFrom(p, 'ether');
+    await p.click('#hx-swap #pay-coin'); await p.waitForSelector('#hx-swap #pk-q');
+    await p.fill('#hx-swap #pk-q', 'chainlink');
+    await until(p, () => [...document.querySelectorAll('#hx-swap #pk .pk-r')].some((b) => !b.hidden && b.querySelector('b')?.firstChild?.textContent?.trim() === 'LINK'), null, 60000);
+    await p.evaluate(() => [...document.querySelectorAll('#hx-swap #pk .pk-r')].find((b) => !b.hidden && b.querySelector('b')?.firstChild?.textContent?.trim() === 'LINK').click());
+    await until(p, () => (document.querySelector('#hx-swap #get-coin')?.textContent || '').includes('LINK') && /DeFi pool/.test(document.querySelector('#hx-swap #get-at')?.textContent || ''), null, 60000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | get ${await text(p, '#hx-swap #get-coin')} at ${await text(p, '#hx-swap #get-at')}`); });
+    ok(await p.$eval('#hx-swap #get-coin .tk', (e) => e.classList.contains('pvt')), 'xtshield: LINK goes to the DeFi pool as private LINK, in its own logo with the private ring');
+    await p.fill(MV.amt, '1.5');
+    await until(p, () => /First: LINK is added to the pool, once for everyone/.test(window.__said?.() || document.querySelector('#hx-swap #rcpt')?.textContent || '') && document.querySelector('#hx-swap #go')?.textContent === 'Shield LINK' && !document.querySelector('#hx-swap #go').disabled, null, 120000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | said ${await said(p)} | go ${await goText(p)}`); });
+    ok(true, `xtshield: the card says LINK is added to the pool first, and the button says Shield LINK (${(await said(p)).slice(0, 120)})`);
+    const l0 = await balOf(XW), pool0 = await balOf(POOLA), part = 15n * 10n ** 17n;
+    await p.click(MV.go);
+    const moved = await chainUntil(async () => l0 - (await balOf(XW)) === part && (await balOf(POOLA)) - pool0 === part, 300000);
+    ok(await inPool(), 'xtshield: the press added LINK to the pool');
+    ok(moved, `xtshield: 1.5 LINK left the wallet for the pool (wallet ${l0 - (await balOf(XW))}, pool ${(await balOf(POOLA)) - pool0})`);
+    ok((await allowed(XW, PERMIT2)) === 0n, 'xtshield: and the allowance to Permit2 was exactly the amount, so none is left over');
+    ok((await p.evaluate(() => JSON.parse(localStorage.getItem('tacit-pool-tokens-v1') || '[]'))).includes(LINK), 'xtshield: this browser remembers LINK, so its notes and any unfinished deposit are read next time');
+    if (r.errors.length) { fails++; console.log('FAIL xtshield page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
+// A key holding notes of a token no table names (LINK, which xtshield put in the pool): the page finds what the pool holds under that id, so the notes read
+// as private LINK in Your Tacit, LINK is offered in Withdraw's private list, and Withdraw quotes LINK's relay fee in LINK and takes it out by the relay from
+// the card. The stub's notes cannot make a real proof, so what is checked is that it went, in LINK.
+await step('xtout', async () => {
+  const LINK = '0x514910771af9ca656af840dff83e8264ecf986ca', hx = (b) => Buffer.from(b).toString('hex');
+  const idb = Buffer.alloc(46); idb.write('tacit-evm-token-v1'); idb.writeBigUInt64BE(1n, 18); Buffer.from(LINK.slice(2), 'hex').copy(idb, 26);
+  const id = '0x' + hx(sha256(idb));
+  const r = await openFarmKey('c062'.padEnd(64, '6'), { notes: [[id, 500000000n]], positions: [], fees: { transfer: 0, sendunwrap: 0, unwrap: 0 } }, { width: 1280, height: 1500 });
+  const p = r.page;
+  try {
+    await until(p, () => /LINK/.test(document.querySelector('#dash, #wb, body')?.textContent || '') && [...document.querySelectorAll('*')].some((e) => e.children.length === 0 && /^LINK$/.test(e.textContent.trim())), null, 300000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | errors ${r.errors.slice(0, 2).join(' | ')}`); });
+    ok(await p.evaluate(() => JSON.parse(localStorage.getItem('tacit-pool-tokens-v1') || '[]')).then((l) => l.includes(LINK)), 'xtout: the page found LINK under the notes\' asset id and remembers it');
+    await moveFrom(p, 'eth');
+    await p.click('#hx-swap #pay-coin'); await p.waitForSelector('#hx-swap #pk .pk-r');
+    const priv = await p.evaluate(() => [...document.querySelectorAll('#hx-swap #pk .pk-r')].map((b) => b.querySelector('b')?.firstChild?.textContent?.trim()));
+    ok(priv.includes('LINK'), `xtout: Withdraw's private list offers LINK (${priv.join(', ')})`);
+    await p.evaluate(() => [...document.querySelectorAll('#hx-swap #pk .pk-r')].find((b) => b.querySelector('b')?.firstChild?.textContent?.trim() === 'LINK').click());
+    await until(p, () => (document.querySelector('#hx-swap #get-coin')?.textContent || '').includes('LINK') && /Wallet/.test(document.querySelector('#hx-swap #get-at')?.textContent || ''), null, 60000);
+    await p.fill(MV.amt, '2');
+    await until(p, () => /Relay fee: 0\.006 LINK, out of it/.test(window.__said?.() || '') && document.querySelector('#hx-swap #go')?.textContent === 'Withdraw LINK', null, 120000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | said ${await said(p)} | go ${await goText(p)}`); });
+    ok(true, `xtout: Withdraw quotes LINK's relay fee in LINK, 30 basis points of 2 (${(await said(p)).slice(0, 140)})`);
+    ok((await text(p, MV.out)).trim() === '1.994', `xtout: and what arrives, 1.994 LINK (${(await text(p, MV.out)).trim()})`);
+    await p.click(MV.go);
+    await until(p, () => (document.querySelector('#hx-swap #mv-st, #hx-ms, #hx-swap .mv-st')?.textContent || '').trim() !== '' || (window.__said?.() || '').includes('relay'), null, 120000).catch(() => {});
+    ok(r.errors.length === 0, `xtout: no page errors${r.errors.length ? ' (' + r.errors[0] + ')' : ''}`);
   } finally { await r.browser.close(); }
 });
 

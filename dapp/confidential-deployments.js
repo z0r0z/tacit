@@ -37,7 +37,7 @@ function _concat(...parts) {
   return out;
 }
 
-function nativeEvmAssetId(chainId, underlying = '0x0000000000000000000000000000000000000000') {
+export function nativeEvmAssetId(chainId, underlying = '0x0000000000000000000000000000000000000000') {
   const tag = new TextEncoder().encode('tacit-evm-token-v1');
   const b = new Uint8Array(46);
   b.set(tag, 0);

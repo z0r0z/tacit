@@ -208,7 +208,7 @@ function kindOf(pay, get, inP = S.inP, outP = S.outP) {
   if (outP) {
     if (!inPool(get)) return null;
     if (isEth(pay)) return 'private';
-    return isListed(pay) && !tacitKey(pay) && pay !== lc(R.WETH) ? 'pin' : null;
+    return isListed(pay) && !tacitKey(pay) && pay !== lc(R.WETH) && FLOW !== 'shield' ? 'pin' : null;
   }
   if (inP) return inPool(pay) && (isEth(get) || (isListed(get) && !tacitKey(get) && get !== lc(R.WETH))) ? 'pout' : null;
   if (pay === get || get === 'teth' || pay === 'teth') return null;
@@ -276,15 +276,16 @@ function flowGet(k, at) {
   if (at !== 'wallet') return null;
   const cur = isPrivAt(atOf('get')) ? atOf('get') : 'defi';
   for (const h of [cur, ...['defi', 'pay', 'chain'].filter((x) => x !== cur)]) { const g = coinAt(k, h); if (sameMoney(k, g) && pairOk(k, 'wallet', g, h)) return [g, h]; }
-  if (FLOW === 'shield' && !tacitKey(k) && isListed(k) && pairOk(k, 'wallet', 'teth', 'defi')) return ['teth', 'defi'];
   return null;
 }
-// a token with no private form of its own is sold for ETH as it goes in (the 'pin' route): Shield's To side is private ETH, and the card says so
-const soldForEth = () => FLOW === 'shield' && S.get === 'teth' && !isEth(S.pay) && kindOf(S.pay, S.get) === 'pin';
+// Any other listed token has a private form of its own in the DeFi pool (the page registers it with the pool on the first
+// shield). ETH, TAC and the dollars keep their own homes; Tacit's public tokens and WETH have theirs.
+const ownForm = (k) => moving() && isListed(k) && !isEth(k) && !tacitKey(k) && k !== lc(R.WETH) && k !== lc(R.TAC) && !PAY_COINS.includes(k);
+const ownHeld = () => (moving() ? (H.moves.poolCoins?.() || []).filter((k) => !POOL_COINS.includes(k)) : []);
 function flowFit() { const g = flowGet(S.pay, atOf('pay')); if (!g) return false; setAt('get', g[1]); S.get = g[0]; return true; }
 const FLOW_PAIR = { shield: { from: 'ETH', to: 'tETH', private: 'to' }, withdraw: { from: 'tETH', to: 'ETH', private: 'from' } };
 function coinAt(k, at) {
-  if (at === 'defi') return isEth(k) ? 'teth' : inPool(k) ? k : 'teth';
+  if (at === 'defi') return isEth(k) ? 'teth' : inPool(k) || ownForm(k) ? k : 'teth';
   if (at === 'wallet') return k === 'teth' ? lc(R.ZERO) : k;
   if (at === 'pay') return payPool(k) ? k : lc(R.ZERO);
   if (at === 'chain') return lc(R.TAC);
@@ -678,7 +679,7 @@ const PK = { teth: 'eth', [lc(R.TAC)]: 'tac', [lc(R.CUSD)]: 'cusd', [lc(R.CBTC)]
 const POOL_TK = { eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' };
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=fe25485f'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=7a499a7d'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));
@@ -759,17 +760,16 @@ function paintMode() {
   ROOT.classList.toggle('btc', S.btc); if ($('#btc')) $('#btc').hidden = !S.btc; $('.sw-foot').hidden = !slips;
   ROOT.querySelectorAll('.mode [data-mode]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === 'bitcoin' ? S.btc : !S.btc)));
 }
-const shownAt = (k, at) => { const t = tokenOf(k, at === 'defi'); return at === 'chain' && t ? { ...t, pvt: true } : at === 'pay' && t ? (isEth(k) ? { ...t, icon: 'peth' } : { ...t, pvt: true }) : at === 'defi' && t && k === lc(R.TAC) ? { ...t, pvt: true } : t; };
+const shownAt = (k, at) => { const t = tokenOf(k, at === 'defi'); return at === 'chain' && t ? { ...t, pvt: true } : at === 'pay' && t ? (isEth(k) ? { ...t, icon: 'peth' } : { ...t, pvt: true }) : at === 'defi' && t && (k === lc(R.TAC) || ownForm(k)) ? { ...t, pvt: true } : t; };
 let PAYWARM = 0;
 function paintSides() {
   let pay = shownAt(S.pay, atOf('pay')), get = shownAt(S.get, atOf('get'));
   if (FLOW === 'shield' && get && pay) get = { ...get, sym: S.get === 'teth' ? 'ETH' : pay.sym };
-  if (get && soldForEth()) get = { ...get, icon: 'eth', pvt: true };
   if (FLOW === 'withdraw' && get && pay) pay = { ...pay, sym: get.sym };
   setHtml($('#pay-coin'), `${coin(pay)}${esc(pay.sym)}<span class="car" aria-hidden="true">▾</span>`);
   $('#pay-coin').setAttribute('aria-label', `Pay with ${pay.sym}. Choose another`);
   setHtml($('#get-coin'), `${coin(get)}${esc(get.sym)}<span class="car" aria-hidden="true">▾</span>`);
-  $('#get-coin').setAttribute('aria-label', soldForEth() ? `Get private ETH: ${pay.sym} is sold for it. Choose another` : `Get ${get.sym}. Choose another`);
+  $('#get-coin').setAttribute('aria-label', `Get ${get.sym}. Choose another`);
   const payPriv = S.inP, out = (!moveOf() && kindOf(S.pay, S.get) === 'pout') || exiting(), inPriv = S.outP;
   if (out && !S.toAsked && ((exiting() && !intoPool()) || (!S.to && !S.toBad && !W.account && !intoPool()))) { S.toOpen = true; S.toAsked = true; }
   if (!out) S.toAsked = false;
@@ -860,17 +860,13 @@ const shareSync = () => {
 function paintQuote() { quotePaint(); flowGo(); }
 function flowGo() {
   const tip = $('#flow-tip');
-  if (tip) {
-    const sold = soldForEth();
-    tip.hidden = !(sold || (FLOW === 'withdraw' && S.amt && !S.busy));
-    if (!tip.hidden) tip.textContent = sold ? `${tokenOf(S.pay).sym} is sold for ETH as it goes in, so you hold private ETH.` : exiting() ? 'For more privacy: a new address, a while after you shielded, and not the same amount.' : 'For more privacy: a while after you shielded, and not the same amount.';
-  }
+  if (tip) { tip.hidden = !(FLOW === 'withdraw' && S.amt && !S.busy); if (!tip.hidden) tip.textContent = exiting() ? 'For more privacy: a new address, a while after you shielded, and not the same amount.' : 'For more privacy: a while after you shielded, and not the same amount.'; }
   const go = $('#go'), ask = !!FLOW && !S.busy && !S.amt && !(moveOf() && S.mq?.fixed);
   go.dataset.ask = ask ? '1' : '';
   if (!ask && FLOW === 'shield' && !go.disabled && /^(Deposit privately|Make it private)$/.test(go.textContent)) go.textContent = `Shield ${shownAt(S.pay, atOf('pay'))?.sym || ''}`.trim();
   if (!ask) return;
   const t = FLOW === 'shield' ? shownAt(S.pay, atOf('pay')) : shownAt(S.get, atOf('get'));
-  go.textContent = `${FLOW === 'shield' ? 'Shield' : 'Withdraw'} ${t?.sym || ''}${soldForEth() ? ' as ETH' : ''}`.trim(); go.disabled = false; go.className = 'go';
+  go.textContent = `${FLOW === 'shield' ? 'Shield' : 'Withdraw'} ${t?.sym || ''}`.trim(); go.disabled = false; go.className = 'go';
 }
 function quotePaint() {
   shareSync();
@@ -991,7 +987,7 @@ function button(q, r, kind, gate) {
     if (bal != null && q.wei > bal) return [`Not enough ${pay.sym}`, false];
     if (eth != null && tip + 2n * gasKeep() > eth) return ['Leave some ETH for the network fee', false];
     if (gate && !S.ack) return gateButton();
-    return [FLOW === 'shield' && !S.toTacit ? `Shield ${pay.sym} as ETH` : `Swap privately${tLabel}`, true, 'priv'];
+    return [FLOW === 'shield' && !S.toTacit ? `Shield ${pay.sym}` : `Swap privately${tLabel}`, true, 'priv'];
   }
   if (kind === 'pout') {
     const pb = privBal(S.pay);
@@ -2396,9 +2392,9 @@ function openPicker(side, again = false) {
   });
   const pk = $('#pk'), at = atOf(side), cur = side === 'pay' ? S.pay : S.get;
   const wl = held(listed().map((t) => t.addr)), top = wl.filter((k) => tacitPooled(k) || S.bal[k] > 0n), rest = wl.filter((k) => !top.includes(k));
-  const groups = [['Wallet', top, 'wallet', 'wallet'], ['Private', [...POOL_COINS.map((k) => `@defi:${k}`), ...(moving() ? placeCoins(side, 'pay').map((k) => `@pay:${k}`) : []), ...placeCoins(side, 'chain').map((k) => `@chain:${k}`)], 'private', 'defi'],
+  const groups = [['Wallet', top, 'wallet', 'wallet'], ['Private', [...POOL_COINS.map((k) => `@defi:${k}`), ...ownHeld().map((k) => `@defi:${k}`), ...(moving() ? placeCoins(side, 'pay').map((k) => `@pay:${k}`) : []), ...placeCoins(side, 'chain').map((k) => `@chain:${k}`)], 'private', 'defi'],
     ...(moving() ? [['Bitcoin', placeCoins(side, 'btc').map((k) => `@btc:${k}`), 'bitcoin', 'btc']] : []),
-    [FLOW === 'shield' ? 'More tokens, sold for ETH on the way in' : 'More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
+    ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
   const kinds = ['wallet', 'private', 'bitcoin'].filter((kd) => groups.some((g) => g[2] === kd));
   const first = KIND[PKAT || at];
   let kind = again && kinds.includes(PKKIND) ? PKKIND : kinds.includes(first) ? first : kinds[0];
@@ -2413,7 +2409,7 @@ function openPicker(side, again = false) {
     const twin = moving() && (k === 'teth' || k === lc(R.TAC) || isEth(k));
     const sub = a === 'defi' ? `${esc(SUB[k] || '')}${twin ? `<span class="pk-tw">${SUB[k] ? ' · ' : ''}swap, farm, borrow</span>` : ''}`
       : a === 'pay' ? `${isEth(k) ? 'private ETH' : k === USDC_K || k === USDT_K ? 'a private dollar' : 'private TAC'} · pay anyone on ${isEth(k) && chains > 1 ? chainMarks(cs) : 'Ethereum'}`
-      : a === 'chain' ? 'private TAC · on the Tacit chain' : a === 'btc' ? 'at your Bitcoin address' : esc((t.custom ? `${t.addr.slice(0, 8)}…${t.addr.slice(-6)}` : t.name) || '') + (FLOW === 'shield' && side === 'pay' && a === 'wallet' && !isEth(k) && flowGet(k, 'wallet')?.[0] === 'teth' ? ' · sold for ETH' : '');
+      : a === 'chain' ? 'private TAC · on the Tacit chain' : a === 'btc' ? 'at your Bitcoin address' : esc((t.custom ? `${t.addr.slice(0, 8)}…${t.addr.slice(-6)}` : t.name) || '');
     return { ok, at: a, html: `<button type="button" class="pk-r${ok ? '' : ' off'}"${ok ? '' : ' aria-disabled="true"'} data-k="${esc(key)}" data-kind="${KIND[a]}"${KIND[a] === kind ? '' : ' hidden'}${moving() && a !== 'wallet' ? ` title="${esc(PLACE_TIP[a] || '')}"` : ''} aria-current="${a === at && k === cur}">${coin(t, '', a === 'wallet')}<span><b>${esc(t.sym)}<i class="pk-t pk-t-${a}" data-t="${PLACE_TAG[a]}"></i></b><small>${sub}</small></span><em>${rowBal(side, key)}</em></button>` };
   };
   warmPrivate(); H.moves?.warm?.();
@@ -2891,6 +2887,7 @@ export function mountSwapCard(root, host = {}) {
     clear: () => { clearTimeout(qTimer); S.seq++; S.amt = ''; S.q = null; S.mq = null; changed(); paint(); const mk = moveOf(); if (mk) H.moves?.cleared?.(mk); },
     closePicker: () => pkClose?.({ quiet: true }),
     pickerBals,
+    tokenInfo: (k) => { const t = tokenOf(String(k || '').toLowerCase()); return t ? { sym: t.sym, dec: t.dec, name: t.name || '' } : null; },
     get busy() { return S.busy; },
   };
 }
