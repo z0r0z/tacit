@@ -753,9 +753,41 @@ test('batches by record: a batch that goes by record goes to the fastest machine
   }
 });
 
+test('batches by record: a lane of one is no ranking, so with fewer than two machines with a record waiting the batch goes in turn and a machine without a record takes it', async () => {
+  t = 35_000_000;
+  const first = gpu('a1'), second = gpu('b2'), fresh = gpu('d4');
+  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, bestPct: 100 } }), batch = sizedBatches(b);   // bestOf 3, the default
+  const ask = (w) => b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });
+  await recordOf(b, batch, first, 300);                          // the only record on the board: slow, 300 s
+  const takes = async (waiting) => {
+    t += PROVER_BOARD.turnSeenMs + 1;
+    for (const w of waiting) await ask(w);
+    const job = await batch();
+    let who = null;
+    for (const w of waiting) { const r = await ask(w); if (r && r.jobId === job.jobId) { who = w; break; } }
+    t += 20_000;
+    if (who) await answer(b, who, job.jobId);
+    return who && who.name.slice(4, 6);
+  };
+  assert.equal(await takes([first, fresh]), 'd4', 'one record alone does not take every by-record batch: the machine that never had a turn does');
+  assert.equal(await takes([first, fresh]), 'a1', 'and then the machine longest since its turn, as in turn');
+  // by now two machines have a record ('a1' slow, 'd4' fresh and fast), so a batch that goes by record goes to one of them: a third with a record joins, a fourth without never takes one
+  await recordOf(b, batch, second, 120);
+  const rookie = gpu('e5'), by = [];
+  for (let i = 0; i < 4; i++) by.push(await takes([first, second, fresh, rookie]));
+  assert.ok(by.every((x) => ['a1', 'b2', 'd4'].includes(x)), `with records waiting the batch goes by record, never to the machine without one (${by})`);
+  assert.ok(new Set(by).size >= 2, `and round the machines that have one (${by})`);
+  const solo = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, bestPct: 100, bestOf: 1 } }), soloBatch = sizedBatches(solo);
+  await recordOf(solo, soloBatch, first, 300);
+  t += PROVER_BOARD.turnSeenMs + 1;
+  await solo.claim({ worker: first, classes: ['public'], programs: ['btc-state'] }); await solo.claim({ worker: fresh, classes: ['public'], programs: ['btc-state'] });
+  const job = await soloBatch();
+  assert.equal((await solo.claim({ worker: first, classes: ['public'], programs: ['btc-state'] })).jobId, job.jobId, 'with bestOf 1 a lane of one is what was asked for');
+});
+
 test('batches by record: a machine with a record has three times its usual time to answer a turn, then the batch goes on and its place waits behind the others; one without keeps the batch\'s lease', async () => {
   t = 40_000_000;
-  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, bestPct: 100 } }), batch = sizedBatches(b);
+  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, bestPct: 100, bestOf: 1 } }), batch = sizedBatches(b);
   const fast = gpu('a1'), other = gpu('e5'), fresh = gpu('d4');
   await recordOf(b, batch, fast, 150);                 // 150 s: 450 s to answer
   const ask = (w) => b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });

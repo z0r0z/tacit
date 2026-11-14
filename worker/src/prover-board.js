@@ -56,7 +56,8 @@ export const PROVER_BOARD = Object.freeze({
   // a machine asking from a place whose last turn was refused, given back or not answered goes after the others for turnTroubleMs, whatever
   // address it names. A turn not answered leaves the batch to the prover network once the relay stops waiting, as a batch nobody took would.
   // Batches also go by record: bestPct of them (chosen by the batch's id) go to the fastest machines that have one, in turn among the bestOf
-  // fastest waiting and in no trouble; a record is the batches the relay took from a machine and its usual time from turn to proof per MB of
+  // fastest waiting and in no trouble (once at least two machines with a record are waiting: until then the batch goes in turn, and a machine
+  // that has never had a turn comes first, so records form among many machines and not one); a record is the batches the relay took from a machine and its usual time from turn to proof per MB of
   // input (a batch with more Bitcoin blocks has more input and takes longer), so it is earned only by proving. A machine with a record has
   // turnLeaseFactor times its usual time for a batch of that size (at least turnLeaseMinMs) to answer a turn before the batch goes on to the
   // next; one without keeps the batch's lease.
@@ -469,7 +470,9 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   // Whose turn a batch is: of the machines that prove its program, asked for work in the last turnSeenMs, are proving nothing and have not
   // had this batch, the one longest since its last turn; one asking from a place with a refused, given-back or unanswered turn in the last
   // turnTroubleMs (`troubles`, by place) after the rest, and the name breaks a tie. A batch that goes by record (byRecord) goes, in the same
-  // order, to the bestOf fastest of those with a record and no trouble, and in turn to all when none is waiting.
+  // order, to the bestOf fastest of those with a record and no trouble, and in turn to all when fewer than two of them are waiting (a lane of
+  // one is no ranking: it would hand every such batch to whichever machine happened to take the first, however slow, and a faster machine could
+  // not earn a record; in turn, a machine that has never had a turn comes first, which is how the others earn theirs).
   function nextTurn(ws, open, j, troubles = {}) {
     const t = clock(), busy = new Set(open.flatMap(liveRacers));
     const trouble = (w) => { const at = w.client ? troubles[w.client] : null; return at != null && t - at < PROVER_BOARD.turnTroubleMs ? 1 : 0; };
@@ -479,7 +482,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     if (byRecord(j)) {
       const fastest = waiting.filter(([, w]) => !trouble(w) && hasRecord(w))
         .sort(([na, a], [nb, b]) => a.batchRate - b.batchRate || (na < nb ? -1 : na > nb ? 1 : 0)).slice(0, best.of);
-      if (fastest.length) return fastest.sort(inTurn)[0][0];
+      if (fastest.length >= Math.min(best.of, 2)) return fastest.sort(inTurn)[0][0];
     }
     waiting.sort(inTurn);
     return waiting.length ? waiting[0][0] : null;
