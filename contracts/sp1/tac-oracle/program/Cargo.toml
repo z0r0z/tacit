@@ -1,0 +1,20 @@
+# The TacProvenOracle SP1 program: reads an Input, commits the public values TacProvenOracle.record takes.
+[package]
+name = "tac-oracle-program"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tac_oracle"
+path = "src/main.rs"
+
+[dependencies]
+# The SP1 the GPU prover hosts run (6.2.4), whose Groth16 wrap is the v6.1.0 circuit TacProvenOracle checks.
+sp1-zkvm = "=6.2.4"
+tac-oracle-core = { path = "../core" }
+
+[workspace]
+
+# keccak through the zkVM's precompile (alloy-primitives hashes with tiny-keccak).
+[patch.crates-io]
+tiny-keccak = { git = "https://github.com/sp1-patches/tiny-keccak", tag = "patch-2.0.2-sp1-6.0.0" }

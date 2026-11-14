@@ -1,0 +1,31 @@
+# Builds a TacProvenOracle program input from an Ethereum node, runs it (natively, in SP1's executor) and proves it.
+[package]
+name = "tac-oracle-host"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tac-oracle-host"
+path = "src/main.rs"
+
+[dependencies]
+tac-oracle-core = { path = "../core" }
+sp1-sdk = { version = "=6.2.3", features = ["blocking", "network", "native-gnark", "profiling"] }
+alloy-primitives = { version = "1.3.0", features = ["serde", "rlp"] }
+alloy-rlp = "0.3.15"
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1.3.3"
+hex = "0.4"
+
+[features]
+# The GPU prover. On a GPU box also pin the SP1 stack as eth-reflection/prover-host does (sp1-prover, sp1-primitives,
+# sp1-core-machine, sp1-core-executor and the recursion crates at =6.2.4), so the CUDA client fetches the 6.2.4 GPU
+# server that matches the program's sp1-zkvm 6.2.
+cuda = ["sp1-sdk/cuda"]
+
+[workspace]
+
+[profile.release]
+opt-level = 3

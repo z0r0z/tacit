@@ -19,7 +19,7 @@ cbor_metadata = false
 # clean-cache dance). Consumed by verify-reflection-slots.sh, which pins the eth-reflection *_SLOT_INDEX
 # constants to the compiled ConfidentialPool layout. No bytecode/behavior impact (build-output selection only).
 extra_output = ["storageLayout"]
-fs_permissions = [{ access = "read", path = "./test/fixtures" }, { access = "read", path = "./sp1/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/fixtures" }, { access = "read-write", path = "./deployments" }]
+fs_permissions = [{ access = "read", path = "./test/fixtures" }, { access = "read", path = "./sp1/elf-vkey-pin.json" }, { access = "read", path = "./sp1/tac-oracle/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/elf-vkey-pin.json" }, { access = "read", path = "./sp1/confidential/fixtures" }, { access = "read-write", path = "./deployments" }]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
 
