@@ -122,11 +122,11 @@ test('the attest gate: nothing matured builds no job (but probes now and then), 
   const few = attestGate({ ...base, relayTip: 973813, attested: 973786, probedAt: base.now });
   assert.deepEqual([few.go, few.key, few.matured, few.since], [false, 'company', 3, base.now], '3 blocks matured: the wait starts now');
   const wanted = attestGate({ ...base, relayTip: 973813, attested: 973786, probedAt: base.now, urgent: 'Ethereum has moved past the last batch' });
-  assert.deepEqual([wanted.go, wanted.why], [true, 'Ethereum has moved past the last batch'], 'someone waiting: it goes now');
+  assert.deepEqual([wanted.go, wanted.why, wanted.urgent], [true, 'Ethereum has moved past the last batch', true], 'someone waiting: it goes now');
   const later = attestGate({ ...base, relayTip: 973813, attested: 973786, since: base.now - 61 * 60_000, probedAt: base.now });
   assert.equal(later.go, true, 'an hour on, it goes');
   const full = attestGate({ ...base, relayTip: 973820, attested: 973786, probedAt: base.now });
-  assert.deepEqual([full.go, full.matured], [true, 10]);
+  assert.deepEqual([full.go, full.matured, full.urgent], [true, 10, false]);
   assert.equal(attestGate({ ...base, relayTip: 973813, attested: null }), null, 'the cursor cannot be read: proceed as before');
   assert.equal(attestGate({ ...base, relayTip: 0, attested: 973786 }), null);
 });

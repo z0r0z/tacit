@@ -59,3 +59,25 @@ test('no worker, no input or a board miss leaves the batch to the network', asyn
   const r = await rig({ lane: { prove: async () => { throw miss; } } }).board.prove({});
   assert.deepEqual([r.ok, r.reason], [false, 'nobody took it within the wait']);
 });
+
+test('an input over the board\'s limit is not posted, and says how big it was so a smaller batch can be asked for', async () => {
+  const sized = (bytes, maxBytes) => {
+    const posted = [];
+    const board = makeBtcBoard({
+      capable: async () => true, buildInput: async () => new Uint8Array(bytes), maxBytes,
+      lane: { prove: async (a) => { posted.push(a); return { publicValues: pv, proof, worker: 'tacit-a5000', jobId: 'pb_1' }; } },
+      verify: async () => true, cycleLimit: 1e11, gasLimit: 1e11, waitMs: 3600_000,
+    });
+    return { board, posted };
+  };
+  const big = sized(1001, 1000);
+  const r = await big.board.prove({ priorDigest: PRIOR, newDigest: NEW });
+  assert.deepEqual([r.ok, r.tooBig, big.posted.length], [false, { bytes: 1001, maxBytes: 1000 }, 0]);
+  assert.match(r.reason, /over the board's 1000-byte limit/);
+  const fits = sized(1000, 1000);
+  assert.equal((await fits.board.prove({ priorDigest: PRIOR, newDigest: NEW })).ok, true);
+  assert.equal(fits.posted.length, 1);
+  const off = sized(5000, 0);
+  assert.equal((await off.board.prove({ priorDigest: PRIOR, newDigest: NEW })).ok, true, 'no limit: posted as before');
+  assert.equal((await rig().board.prove({})).tooBig, undefined);
+});

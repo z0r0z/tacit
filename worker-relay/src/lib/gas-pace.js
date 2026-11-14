@@ -117,7 +117,7 @@ export function attestPace({ matured, ageMin, urgent = null, params: p }) {
 //   relayTip / attested / confirmations   the relay's tip, the API's attested height, the pool's maturity depth
 //   urgent, params                        as attestPace
 // → null when there is nothing to go on (the folder proceeds as before), else
-//   { go, matured, since, probedAt, key?, text?, beat?, why? }   `since`/`probedAt` are the state to keep
+//   { go, matured, since, probedAt, key?, text?, beat?, why?, urgent? }   `since`/`probedAt` are the state to keep; `urgent`: someone waits
 // With nothing matured no job is built (the relay is behind), except one probe every `probeEveryMs` so the folder's drift and
 // lost-ack checks, which live behind the job, still run.
 export function attestGate({ relayTip, attested, confirmations, now, since = null, probedAt = 0, probeEveryMs = 10 * 60_000, urgent = null, params }) {
@@ -130,6 +130,6 @@ export function attestGate({ relayTip, attested, confirmations, now, since = nul
   }
   const first = since ?? now;
   const pace = attestPace({ matured, ageMin: (now - first) / 60_000, urgent, params });
-  if (pace.go) return { go: true, matured, since: first, probedAt, why: pace.reason };
+  if (pace.go) return { go: true, matured, since: first, probedAt, why: pace.reason, urgent: !!urgent };
   return { go: false, matured, since: first, probedAt, key: 'company', text: pace.reason, beat: `holding ${matured} matured block(s) for company` };
 }

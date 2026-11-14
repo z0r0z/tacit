@@ -32,8 +32,10 @@ export function btcCheck({ priorDigest, newDigest, verify }) {
   };
 }
 
-export function makeBtcBoard({ capable, buildInput, lane, verify, cycleLimit, gasLimit, waitMs, now = Date.now, log = () => {} } = {}) {
-  // → { ok: true, publicValues, proofBytes, worker, jobId, ms }, or { ok: false, reason, ms } for the network to take over.
+export function makeBtcBoard({ capable, buildInput, lane, verify, cycleLimit, gasLimit, waitMs, maxBytes = 0, now = Date.now, log = () => {} } = {}) {
+  // → { ok: true, publicValues, proofBytes, worker, jobId, ms }, or { ok: false, reason, ms } for the network to take over. An input
+  // over the board's `maxBytes` is not posted (the board would refuse it) and also carries `tooBig: { bytes, maxBytes }`, so the
+  // caller can ask for a smaller batch instead.
   async function prove({ priorDigest = null, newDigest = null } = {}) {
     const t0 = now();
     const out = (reason) => ({ ok: false, reason, ms: now() - t0 });
@@ -41,6 +43,9 @@ export function makeBtcBoard({ capable, buildInput, lane, verify, cycleLimit, ga
     let stdin;
     try { stdin = await buildInput(); } catch (e) { return out(`the input was not built: ${say(e)}`); }
     if (!(stdin instanceof Uint8Array) || !stdin.length) return out('the input was not built');
+    if (maxBytes > 0 && stdin.length > maxBytes) {
+      return { ...out(`the input (${stdin.length} bytes) is over the board's ${maxBytes}-byte limit`), tooBig: { bytes: stdin.length, maxBytes } };
+    }
     log(`btc-state: input built (${stdin.length} bytes); asking the board`);
     try {
       const r = await lane.prove({ stdin, cycleLimit, gasLimit, cls: 'public', program: 'btc-state', mode: 'groth16', label: 'btc-state', timeoutMs: waitMs,

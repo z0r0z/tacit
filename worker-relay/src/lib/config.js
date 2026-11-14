@@ -470,6 +470,9 @@ export const CFG = {
   // proves it, as before. Off until BTC_STATE_BOARD=1, once a worker with the btc-state program is running.
   btcStateBoard: opt('BTC_STATE_BOARD', '0') === '1',
   btcStateBoardWaitSecs: num('BTC_STATE_BOARD_WAIT_SECS', 60 * 60),
+  // The board's limit on a btc-state input (worker/src/prover-board.js maxStdinBytesByProgram). A batch over it is asked for again
+  // with fewer blocks (lib/block-cap.js), unless someone waits on the attest; 0 sends it to the network as before.
+  btcStateBoardMaxBytes: num('BTC_STATE_BOARD_MAX_BYTES', 16 * 1024 * 1024),
   // What the board's worker may spend on one batch, as bitcoin_prove's network request declares it (REFLECT_CYCLE_LIMIT/REFLECT_GAS_LIMIT).
   reflectCycleLimit: num('REFLECT_CYCLE_LIMIT', 100_000_000_000),
   reflectGasLimit: num('REFLECT_GAS_LIMIT', 100_000_000_000),

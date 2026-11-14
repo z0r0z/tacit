@@ -62,3 +62,42 @@ test('isUnexecutable reads the network refusal off stderr and nothing else', () 
   assert.equal(isUnexecutable('ENOENT: no such file or directory'), false);
   assert.equal(isUnexecutable(undefined), false);
 });
+
+// The prover board's limit on a btc-state input (worker/src/prover-board.js), and batches the lane built on 2026-11-14 that were over it.
+const BOARD = 16 * 1024 * 1024;
+
+test('a batch over the board\'s limit is asked for again at the share of its blocks that fits, with room to spare', () => {
+  assert.equal(nextBlockCap(null, { blocks: 16, bytes: 46_700_924, maxBytes: BOARD }), 4);
+  assert.equal(nextBlockCap(null, { blocks: 10, bytes: 28_176_757, maxBytes: BOARD }), 5);
+  assert.equal(nextBlockCap(6, { blocks: 6, bytes: 17_603_580, maxBytes: BOARD }), 4);
+  // Just over: still one block fewer, so the next job is smaller.
+  assert.equal(nextBlockCap(null, { blocks: 6, bytes: BOARD + 1, maxBytes: BOARD }), 5);
+});
+
+test('one block over the board\'s limit cannot be cut, and a batch within it is not cut', () => {
+  assert.equal(nextBlockCap(null, { blocks: 1, bytes: BOARD * 2, maxBytes: BOARD }), null);
+  assert.equal(nextBlockCap(3, { blocks: 1, bytes: BOARD * 2, maxBytes: BOARD }), 3);
+  assert.equal(nextBlockCap(5, { blocks: 5, bytes: BOARD, maxBytes: BOARD }), 5);
+  assert.equal(nextBlockCap(5, { proved: true, blocks: 5, bytes: BOARD - 1, maxBytes: BOARD }), 6);
+  assert.equal(nextBlockCap(5, { blocks: 5, bytes: BOARD * 2, maxBytes: 0 }), 5, 'no limit set');
+});
+
+test('a catch-up after a long header wait is cut until every batch fits the board, and the ask settles near the size that fits', () => {
+  // Blocks of 1.5 to 4 MB of input; 16 blocks matured at once; each cut asks again at once.
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+  const sizes = Array.from({ length: 400 }, () => Math.round(1.5e6 + rnd() * 2.5e6));
+  let cap = null, at = 0, builds = 0, posted = 0, over = 0;
+  while (at < sizes.length) {
+    assert.ok(builds < 1000, 'the cuts made no progress');
+    const n = Math.min(cap ?? 16, 16, sizes.length - at);
+    const bytes = sizes.slice(at, at + n).reduce((a, b) => a + b, 0);
+    builds++;
+    if (bytes > BOARD && n > 1) { over++; cap = nextBlockCap(cap, { blocks: n, bytes, maxBytes: BOARD }); continue; }
+    assert.ok(bytes <= BOARD, `a ${n}-block batch of ${bytes} bytes went out`);
+    posted++; at += n;
+    cap = nextBlockCap(cap, { proved: true, blocks: n });
+  }
+  assert.ok(posted >= 70 && posted <= 110, `${posted} batches for 400 blocks`);
+  assert.ok(over / builds < 0.45, `${over} of ${builds} builds were over the limit`);
+});

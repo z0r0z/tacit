@@ -232,9 +232,20 @@ async function cycle() {
   } else {
     log(`job attestedTo=${attestedTo} pending=${job.pending ?? '?'} blocks=${job.blocks ?? '?'} ask=${blockCap ?? 'none'} — proving (groth16)...`);
     await heartbeat('reflection', `proving ${newDigest}`);
+    // A batch too big for the prover board may be asked for again with fewer blocks, so the board can still prove it: not when
+    // someone waits on the attest (the network takes the whole batch sooner), and only for a job that kept to the ask.
+    const n = Math.floor(Number(job.blocks)) || 0;
+    const split = n > 1 && !gate?.urgent && (!(ask > 0) || n <= ask);
     try {
-      proved = await proveReflection(job.input, { priorDigest: job.priorDigest, newDigest });
+      proved = await proveReflection(job.input, { priorDigest: job.priorDigest, newDigest, split });
     } catch (e) {
+      if (e?.overBoard) {
+        const mb = (b) => `${(b / 1e6).toFixed(1)} MB`;
+        const next = nextBlockCap(blockCap, { blocks: n, ...e.overBoard });
+        log(`the ${n}-block batch's input (${mb(e.overBoard.bytes)}) is over the prover board's ${mb(e.overBoard.maxBytes)} — asking for at most ${next} block(s) so the board can take it`);
+        blockCap = next;
+        return true;
+      }
       // The prover account cannot pay what the request reserves (REFLECT_GAS_LIMIT at the price cap, plus the base fee), whatever the
       // batch will really use. Pause on the figures the network gave, so the credit is read again rather than a job built each time.
       const short = creditShort(e) && creditRefusal(e.refusal);

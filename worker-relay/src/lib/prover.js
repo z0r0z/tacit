@@ -124,7 +124,9 @@ async function writeEthProofFor(ethPv) {
 // own modeB field.
 const priceCap = makeReflectPriceCap({ capWei: CFG.reflectMaxPricePerPgu, waitSecs: CFG.reflectCapWaitSecs });
 
-// `expect`: the batch's prior and new digests, which a board proof's public values must carry.
+// `expect`: the batch's prior and new digests, which a board proof's public values must carry, and `split`: whether an input
+// too big for the board may be answered with a smaller batch (an error carrying `overBoard: { bytes, maxBytes }`, before anything
+// is paid) rather than go to the network.
 export async function proveReflection(input, expect = {}) {
   await mkdir(CFG.fixtureDir, { recursive: true });
   await mkdir(CFG.proverOut, { recursive: true });
@@ -141,6 +143,10 @@ export async function proveReflection(input, expect = {}) {
     if (b.ok) {
       boardLog(`btc-state: proved on the board by ${b.worker} in ${Math.round(b.ms / 1000)} s`);
       return { publicValues: b.publicValues, proofBytes: b.proofBytes, lane: 'board', worker: b.worker };
+    }
+    if (b.tooBig && expect.split) {
+      boardLog(`btc-state: ${b.reason}; asking for a smaller batch`);
+      throw Object.assign(new Error(`btc-state: ${b.reason}`), { overBoard: b.tooBig });
     }
     boardLog(`btc-state: ${b.reason}; proving it on the network`);
     timeoutMs = Math.max(20 * 60_000, timeoutMs - b.ms);
@@ -329,7 +335,7 @@ function btcBoardLane() {
       try { await publicClient.call({ to: SP1_VERIFIER, data: encodeFunctionData({ abi: VERIFY_ABI, functionName: 'verifyProof', args: [BITCOIN_RELAY_VKEY, publicValues, proof] }) }); return true; }
       catch (e) { return /revert|execution|invalid/i.test(String(e && (e.shortMessage || e.message))) ? false : 'unchecked'; }
     },
-    cycleLimit: CFG.reflectCycleLimit, gasLimit: CFG.reflectGasLimit, waitMs: CFG.btcStateBoardWaitSecs * 1000, log: boardLog,
+    cycleLimit: CFG.reflectCycleLimit, gasLimit: CFG.reflectGasLimit, waitMs: CFG.btcStateBoardWaitSecs * 1000, maxBytes: CFG.btcStateBoardMaxBytes, log: boardLog,
   });
   return btcBoard;
 }
