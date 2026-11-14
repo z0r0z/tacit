@@ -275,8 +275,18 @@ export function mount(host, ctx) {
     const f = fee(), rows = held(), miss = unread();
     // the field being typed in keeps its place: putting it back under the host takes its focus
     const at = document.activeElement, kept = at && host.contains(at) ? at : null, s0 = kept?.selectionStart, s1 = kept?.selectionEnd;
+    // what is at the sale keys leads the panel: someone sent here from a balance line comes for it, and the form below starts at
+    // the shielded balance, which does not count it
+    const lead = readErr || miss.length || rows.length;
     fill(host,
-      el('p', { class: 'note', style: 'margin-top:0' },
+      lead ? el('p', { class: 'eyebrow', style: 'margin-top:0' }, 'Taken out for sale') : null,
+      readErr ? el('p', { class: 'note', style: 'margin-top:0' }, 'Could not read what you have taken out. Nothing is lost: it stays at its own key. ',
+        el('button', { class: 'link', type: 'button', onclick: retry }, 'Retry')) : null,
+      miss.length ? el('p', { class: 'note', style: 'margin-top:0' }, `Could not read ${miss.length === 1 ? 'one output' : `${miss.length} outputs`} at your sale keys: ${miss.map((u) => `${u.txid.slice(0, 8)}…:${u.vout}`).join(', ')}. `,
+        el('button', { class: 'link', type: 'button', onclick: retry }, 'Retry')) : null,
+      ...rows.map(heldRow),
+      rows.length ? el('p', { class: 'note' }, 'Put back returns it to your shielded balance. To list it, set the price and address below, then press List for sats in Step 2.') : null,
+      el('p', { class: 'note', style: lead ? 'margin-top:22px' : 'margin-top:0' },
         'Sell shielded TAC for sats. A new key made for this sale lists it, and the buyer pays sats straight to an address you name. This wallet’s address takes no part, so nothing ties those sats to it.'),
 
       el('div', { class: 'lbl' }, el('label', { for: 'sats-amt' }, 'Amount to take out'),
@@ -301,13 +311,8 @@ export function mount(host, ctx) {
       statusStep1,
 
       el('p', { class: 'eyebrow', style: 'margin-top:18px' }, 'Step 2: list for sats'),
-      readErr ? el('p', { class: 'note' }, 'Could not read what you have taken out. Nothing is lost: it stays at its own key. ',
-        el('button', { class: 'link', type: 'button', onclick: retry }, 'Retry')) : null,
-      miss.length ? el('p', { class: 'note' }, `Could not read ${miss.length === 1 ? 'one output' : `${miss.length} outputs`} at your sale keys: ${miss.map((u) => `${u.txid.slice(0, 8)}…:${u.vout}`).join(', ')}. `,
-        el('button', { class: 'link', type: 'button', onclick: retry }, 'Retry')) : null,
       // said only once the read has finished, and never over an output it could not open
       sale && !readErr && !rows.length && !miss.length ? el('p', { class: 'note' }, 'Found no TAC at this wallet’s sale keys.') : null,
-      ...rows.map(heldRow),
       btnList,
       statusStep2,
       el('p', { class: 'note' }, 'Listing is a free signature and stands until it ends. The relay sees your connection when it takes the TAC out and the market when you list, so Tor or a VPN for the listing keeps the two apart.'),

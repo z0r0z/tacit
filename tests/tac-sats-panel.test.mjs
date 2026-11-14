@@ -93,6 +93,21 @@ assert.match(text, /2,500 TAC\s*ready to list/, 'the note at the sale key shows,
   assert.equal(a.textContent, `${saleKey.address.slice(0, 12)}…${saleKey.address.slice(-6)}`);
   assert.equal(where.textContent, `at ${a.textContent}, taken out in ${NOTE.txid.slice(0, 10)}`, 'and the take-out, through the page’s transaction link');
 }
+{
+  // what is at the sale keys leads the panel, before the form that starts at the shielded balance; Step 2 keeps only the list button
+  const before = (x, y) => !!(x && y && x.compareDocumentPosition(y) & 4);
+  const lead = host.querySelector('.eyebrow');
+  assert.equal(lead.textContent, 'Taken out for sale', 'the first thing in the panel');
+  assert.equal(host.firstElementChild, lead);
+  const row = host.querySelector('.sats-where').parentElement;
+  assert.ok(before(lead, row) && before(row, host.querySelector('#sats-amt')), 'the lot comes before the amount field');
+  const eyebrows = [...host.querySelectorAll('.eyebrow')].map((e) => e.textContent);
+  assert.deepEqual(eyebrows, ['Taken out for sale', 'Step 1: take it out', 'Step 2: list for sats']);
+  const step2 = [...host.querySelectorAll('.eyebrow')][2];
+  assert.equal(host.querySelectorAll('.sats-where').length, 1, 'shown once, not again under Step 2');
+  assert.ok(before(host.querySelector('.sats-where'), step2));
+  assert.match(lead.parentElement.textContent, /Put back returns it to your shielded balance\. To list it, set the price and address below/, 'with what each button does');
+}
 assert.equal(host.querySelector('#sats-price').value, '168', 'priced at the mark');
 const [btnOut, btnList] = [...host.querySelectorAll('button.btn')];
 assert.equal(btnList.disabled, false);
@@ -188,6 +203,9 @@ assert.match(said['st-sats-1'], /on its way to a new key, posted by the relay in
   mount(host3, { ...ctx, S: S3 });
   await settle();
   assert.match(host3.textContent, /Could not read what you have taken out\. Nothing is lost/);
+  assert.equal(host3.firstElementChild.textContent, 'Taken out for sale', 'a failed read leads the panel as well');
+  const retry3 = [...host3.querySelectorAll('button.link')].find((b) => b.textContent === 'Retry');
+  assert.ok(retry3 && (retry3.compareDocumentPosition(host3.querySelector('#sats-amt')) & 4), 'with its Retry before the form');
   assert.doesNotMatch(host3.textContent, /2,500 TAC/, 'no note is shown for a read that failed');
   [...host3.querySelectorAll('button.link')].find((b) => b.textContent === 'Retry').click();
   await settle();
