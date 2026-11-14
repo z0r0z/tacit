@@ -150,6 +150,19 @@ pool.recoverExit = (wallet, payload, notes, opts) => { if (failOpen && payload[0
   assert.deepEqual(utxoReads, [secret.saleKey(pw, FAR).address], 'only that key is read: an exit to the wallet’s own address and a spend with no exit are not looked for');
   assert.deepEqual(r.unread, []);
 
+  // the page's balance read: the same lot from the spends alone, with no walk over the keys
+  const walked = chain({ wpkh: { [FAR]: [takeout] } }); watch(); utxoReads.length = 0;
+  const f = await secret.saleKeysFromSpends(scan(), pw, notes, ASSET, { addresses: [relayAddr] });
+  assert.deepEqual(f.keys.map((k) => k.counter), [FAR]);
+  assert.deepEqual(f.keys[0].notes, r.keys[0].notes, 'the same lot');
+  assert.deepEqual(f.unread, []);
+  assert.deepEqual(walked, [], 'no key is asked about one by one');
+  assert.deepEqual(utxoReads, [secret.saleKey(pw, FAR).address], 'only the key a spend paid is read');
+  let fetched = 0;
+  const none = chain(); { const inner = globalThis.fetch; globalThis.fetch = async (u) => { fetched++; return inner(u); }; }
+  assert.deepEqual(await secret.saleKeysFromSpends({ ...scan(), getTx: async () => { fetched++; return null; } }, pw, [notes[0]], ASSET), { keys: [], unread: [] }, 'a wallet that never spent in the pool has none');
+  assert.equal(fetched, 0, 'and asks nothing to find that out'); assert.deepEqual(none, []);
+
   // a take-out the walk reaches is read once, not twice
   chain({ wpkh: { 2: [takeout] } }); watch();
   spends['d1'.repeat(32)] = { ...spends['d1'.repeat(32)], vout: [{ scriptpubkey: secret.saleKey(pw, 2).scriptPubKey }] };

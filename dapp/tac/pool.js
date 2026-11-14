@@ -1,5 +1,5 @@
 
-const SECRET_URL = '/sats/secret.js?cb=0ef3409d';
+const SECRET_URL = '/sats/secret.js?cb=fc3fdbe4';
 const SATS_URL = '/tac/sats.js?cb=93448200';
 const CLAIM_URL = '/tac/claim.js?cb=dc513e91';
 const WORKER = 'https://api.tacit.finance';
@@ -638,7 +638,8 @@ export function makeTacPool(ctx) {
       get markSats() { return markSats; }, get notes() { return shielded.notes; },
       ensureKey: ready, busy, say, errSay, fmt, blocksText, parseUnits, shieldedTotal, txLink, loadShielded, relayFeeUnits, feeCap, feeMoved,
       turn: (fn) => ctx.withKey(fn),
-      held: (s) => { satsHeld = s; paintHeld(); },
+      // the page's list of where the TAC is hears of a new amount, not of every redraw
+      held: (s) => { const was = satsHeld?.units ?? null; satsHeld = s; paintHeld(); if ((s?.units ?? null) !== was) ctx.changed?.(); },
     })).catch((e) => { satsMounted = false; errSay('tp-st-exit', e); });
   }
   const tabsKeys = (sel, attr, onPick) => {
@@ -788,7 +789,7 @@ export function makeTacPool(ctx) {
     keyChanged,
     refresh: () => (unlocked() ? refreshAll() : Promise.resolve()),
     busy: () => busyId != null,
-    totals: () => ({ shielded: shielded.read ? shieldedTotal() : null, public: pub.read ? publicTotal() : null }),
+    totals: () => ({ shielded: shielded.read ? shieldedTotal() : null, public: pub.read ? publicTotal() : null, forSale: satsHeld ? satsHeld.units : null }),
     pay: (to, amount) => {
       pick('send');
       q('tp-send-to').value = String(to || ''); q('tp-send-amt').value = String(amount || '');

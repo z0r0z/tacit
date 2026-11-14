@@ -735,31 +735,33 @@ function saleRelease(poolWallet, counter) {
   } catch {}
 }
 
+// One sale key's coins, each pool exit at it opened from the wallet's notes. An output the read could not open (a transaction
+// that did not load, or an exit whose fee note it cannot read) goes to `unread`: the screen says it was not read, never
+// "nothing there".
+async function readSaleKey(tacit, poolWallet, notes, assetHex, addresses, k, unread) {
+  const found = [];
+  for (const u of (await esplora(tacit, `/address/${k.address}/utxo`)) || []) {
+    const tx = await tacit.getTx(u.txid).catch(() => null);
+    if (!tx) { unread.push({ txid: u.txid, vout: u.vout }); continue; }
+    const env = tacit.txOutputEnvelope(tx);
+    if (!env || env.opcode !== 0x6d) continue;
+    let o;
+    try { o = pool.recoverExit(poolWallet, env.payload, notes, { addresses }); } catch { unread.push({ txid: u.txid, vout: u.vout }); continue; }
+    if (o.exitVout !== u.vout) continue;
+    tacit.recordOpening(u.txid, u.vout, assetHex, BigInt(o.value), BigInt(o.blinding));
+    found.push({ txid: u.txid, vout: u.vout, value: BigInt(o.value), blinding: BigInt(o.blinding), confirmed: !!u.status?.confirmed });
+  }
+  return { ...k, notes: found };
+}
+
 export async function saleKeys(tacit, poolWallet, notes, asset, { addresses = [] } = {}) {
   const assetHex = strip0x(asset), held = saleHeld(poolWallet);
   const used = async (addr) => {
     const i = await esplora(tacit, `/address/${addr}`);
     return !!i && [i.chain_stats, i.mempool_stats].some((x) => x?.tx_count > 0);
   };
-  const keys = [];
-  // outputs at a sale key that this read could not open (a transaction that did not load, or an exit whose fee note it cannot
-  // read): the screen says they were not read, never "nothing there"
-  const unread = [];
-  const read = async (k) => {
-    const found = [];
-    for (const u of (await esplora(tacit, `/address/${k.address}/utxo`)) || []) {
-      const tx = await tacit.getTx(u.txid).catch(() => null);
-      if (!tx) { unread.push({ txid: u.txid, vout: u.vout }); continue; }
-      const env = tacit.txOutputEnvelope(tx);
-      if (!env || env.opcode !== 0x6d) continue;
-      let o;
-      try { o = pool.recoverExit(poolWallet, env.payload, notes, { addresses }); } catch { unread.push({ txid: u.txid, vout: u.vout }); continue; }
-      if (o.exitVout !== u.vout) continue;
-      tacit.recordOpening(u.txid, u.vout, assetHex, BigInt(o.value), BigInt(o.blinding));
-      found.push({ txid: u.txid, vout: u.vout, value: BigInt(o.value), blinding: BigInt(o.blinding), confirmed: !!u.status?.confirmed });
-    }
-    keys.push({ ...k, notes: found });
-  };
+  const keys = [], unread = [];
+  const read = async (k) => { keys.push(await readSaleKey(tacit, poolWallet, notes, assetHex, addresses, k, unread)); };
   let quiet = 0, free = null, c = 0;
   for (; quiet < SALE_GAP || free == null; c++) {
     const k = saleKey(poolWallet, c);
@@ -777,8 +779,16 @@ export async function saleKeys(tacit, poolWallet, notes, asset, { addresses = []
   return { keys, free, unread };
 }
 
+// The TAC this wallet has taken out for sale, read only at the sale keys its own spends paid: a page that already holds the
+// wallet's notes shows it for the cost of those spends' transactions, with no walk over the keys.
+export async function saleKeysFromSpends(tacit, poolWallet, notes, asset, { addresses = [] } = {}) {
+  const assetHex = strip0x(asset), keys = [], unread = [];
+  for (const c of await spentToSaleKeys(tacit, poolWallet, notes)) keys.push(await readSaleKey(tacit, poolWallet, notes, assetHex, addresses, saleKey(poolWallet, c), unread));
+  return { keys, unread };
+}
+
 const SALE_FAR = 256;                    // how far into the sale keys a take-out found from a spend is looked for
-const saleScripts = new WeakMap();       // pool wallet → its sale keys' scripts derived so far, by counter
+const saleScripts = new Map();           // pool address → its sale keys' scripts derived so far, by counter
 
 // The sale keys this wallet's own pool spends paid. Every spend sends its change, or a zero note in its place, to the
 // wallet's internal address, so the transactions behind its internal notes are its spends, and an exit in one of them to a
@@ -799,8 +809,8 @@ async function spentToSaleKeys(tacit, poolWallet, notes) {
     if (/^0014[0-9a-f]{40}$/.test(spk) && spk !== own) want.add(spk);
   }
   const out = [];
-  let s = saleScripts.get(poolWallet);
-  if (want.size && !s) saleScripts.set(poolWallet, (s = []));
+  let s = saleScripts.get(poolWallet.addressString);
+  if (want.size && !s) saleScripts.set(poolWallet.addressString, (s = []));
   for (let c = 0; want.size && c < SALE_FAR; c++) {
     if (c === s.length) {
       if (c % 32 === 31) await new Promise((r) => setTimeout(r, 0));   // the page stays responsive while keys are worked out

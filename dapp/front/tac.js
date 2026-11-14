@@ -521,6 +521,7 @@ function tacPlaces(k, who) {
   const ch = chainOn(), way = (sf, w) => hxWays(sf).includes(w), hx = (t, spec) => ({ t, hx: spec });
   const btcTac = k && BTC.pub === k ? BTC.held.find((a) => a.id === TAC_BTC_ID) : null, chainV = ch ? chainHeld() : null, payV = devBal('tac', k);
   const pool = ctx.TPOOL.api?.totals().shielded ?? (HELD.pub === k ? HELD.sats?.find((a) => a.ticker === 'TAC')?.value ?? null : null);
+  const forSale = ctx.TPOOL.api?.totals().forSale ?? (HELD.pub === k ? HELD.forSale : null);
   const out = [
     { key: 'wallet', t: 'Wallet', s: 'public', m: 1, core: true, v: TACB.who === who ? TACB.erc : null, bad: !!TACB.err && TACB.who !== who,
       acts: (v) => (v > 0n ? [ch && way('wtac', 'chain') && hx('Tacit chain', 'shield:wtac:chain'), way('wtac', 'defi') && hx('DeFi pool', 'shield:wtac:defi'), hx('Swap', 'swap:tac:ether'), hx('Send', 'send:wtac')] : [hx('Buy', 'swap:ether:tac')]) },
@@ -532,6 +533,8 @@ function tacPlaces(k, who) {
       acts: (v) => (v > 0n ? [{ t: 'Shield', th: 'pool:shield' }, { t: 'To Ethereum', th: 'bridge:in' }, hx('Send', 'send:tacb')] : []) },
     { key: 'pool', t: 'Bitcoin pool', s: 'shielded', m: 'btc', v: pool == null ? null : pool * E10,
       acts: (v) => [...(v > 0n ? [{ t: 'Send', th: 'pool:send' }, { t: 'Withdraw', th: 'pool:withdraw' }] : []), { t: 'Receive', th: 'pool:receive' }] },
+    // taken out of the pool to sell: at the wallet's own sale keys, listed or waiting to be, until sold or put back
+    ...(forSale > 0n ? [{ key: 'sale', t: 'For sale', s: 'taken out, on Bitcoin', m: 'btc', v: forSale * E10, acts: () => [{ t: 'List or put back', th: 'pool:withdraw:sats' }] }] : []),
   ];
   if (payV > 0n) out.push({ key: 'pay', t: 'Pay pool', s: 'private', m: 1, v: payV, acts: () => [hx('Send', 'send:ptac'), { t: 'Withdraw', link: 'device/tac/withdraw' }] });
   return out;
@@ -546,8 +549,8 @@ function tacPlacesView(places) {
   })}</ul>`;
 }
 function tacPlaceGo(what) {
-  const [kind, arg] = what.split(':');
-  if (kind === 'pool') return arg === 'hide' ? tacPoolHide() : tacPoolOpen(arg);
+  const [kind, arg, sub] = what.split(':');
+  if (kind === 'pool') return arg === 'hide' ? tacPoolHide() : tacPoolOpen(arg, sub || null);
   if (kind === 'pub' || kind === 'forms') { TACW[kind] = !TACW[kind]; return rerender('tac'); }
   if (kind !== 'bridge') return;
   BRM.mode = arg === 'out' ? 'out' : 'in';
@@ -555,7 +558,7 @@ function tacPlaceGo(what) {
   load.tac().then(() => rerender('tac')).catch(() => {});
 }
 function tacPool() {
-  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=551fd19c').then((m) => {
+  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=27c16466').then((m) => {
     const api = m.makeTacPool({
       key: () => (S.key ? { pubHex: S.key.pubHex } : null),
       priv: () => walletPriv(),
@@ -638,7 +641,7 @@ function tpgHave() {
   return { chain: by.chain ?? (chainOn() ? null : 0n), pool: by.pool ?? null, defi: by.defi ?? null, wallet: by.wallet ?? null, btc: by.btc ?? null, pay: by.pay ?? 0n };
 }
 const TPG_ROWS = [['chain', 'Tacit chain', 'var(--c-chain)'], ['pool', 'Bitcoin pool', 'var(--c-pool)'], ['defi', 'DeFi pool', 'var(--c-defi)'], ['pay', 'Pay pool', 'var(--c-pay)'],
-  ['wallet', 'Wallet', 'var(--c-wallet)'], ['btc', 'Bitcoin address', 'var(--c-btc)']];
+  ['wallet', 'Wallet', 'var(--c-wallet)'], ['btc', 'Bitcoin address', 'var(--c-btc)'], ['sale', 'For sale', 'var(--c-btc)']];
 function tpgTop(el) {
   const who = tacWho(), k = S.key?.pubHex;
   el.hidden = !k && !who;
@@ -649,7 +652,7 @@ function tpgTop(el) {
   const places = k ? tacSeenOn(k, read) : read, by = Object.fromEntries(places.map((p) => [p.key, p])), stale = places.some((p) => p.seen);
   const total = places.reduce((s, p) => s + (p.v || 0n), 0n), known = places.filter((p) => p.core).every((p) => p.v != null), failed = places.some((p) => p.bad);
   const pub = (by.wallet?.v || 0n) + (by.btc?.v || 0n), usd = hxUsd('tac', Number(total) / 1e18);
-  const note = { chain: `private, for payments${k && ctx.CH.pub === k && (ctx.CH.incoming ?? 0n) > 0n ? ` · ${fmt(ctx.CH.incoming, 8, 2)} incoming` : ''}`, pool: 'private on Bitcoin', defi: 'trade · farm · borrow', pay: 'from before the Tacit chain', wallet: 'public on Ethereum', btc: 'amounts hidden, address seen' };
+  const note = { chain: `private, for payments${k && ctx.CH.pub === k && (ctx.CH.incoming ?? 0n) > 0n ? ` · ${fmt(ctx.CH.incoming, 8, 2)} incoming` : ''}`, pool: 'private on Bitcoin', defi: 'trade · farm · borrow', pay: 'from before the Tacit chain', wallet: 'public on Ethereum', btc: 'amounts hidden, address seen', sale: 'taken out of the pool to sell' };
   const rows = TPG_ROWS.filter(([key]) => by[key] && ((by[key].v || 0n) > 0n || (key === 'chain' && chainOn())));
   const seg = rows.filter(([key]) => (by[key].v || 0n) > 0n);
   const nudge = chainOn() && (by.defi?.v || 0n) > 0n && hxWays('tac').includes('chain');

@@ -67,7 +67,7 @@ tp.mount(host);
 await settle();
 assert.deepEqual([...host.querySelectorAll('[data-tp]')].map((b) => b.textContent), ['Shield', 'Send', 'Withdraw', 'Receive']);
 assert.match(st('tp-bal'), /50 TAC shielded, in 2 notes/, 'the shielded balance is read for the key');
-assert.deepEqual(tp.totals(), { shielded: 50n * TAC, public: 7n * TAC });
+assert.deepEqual(tp.totals(), { shielded: 50n * TAC, public: 7n * TAC, forSale: null });
 assert.match($('tp-shield-pick').textContent, /^7 TAC/, 'the key’s TAC on Bitcoin is offered to shield');
 assert.equal($('tp-shield-go').textContent, 'Shield', 'with a key the button shields');
 assert.equal($('tp-shield-pick').closest('.amt').hidden, false, 'with a key the list of notes to shield shows');
@@ -150,7 +150,7 @@ window.addEventListener('tac:wallet', () => walletEvents++);
 tp.keyChanged();
 await settle();
 assert.equal(walletEvents, 1, 'the To sats panel hears of the key change');
-assert.deepEqual(tp.totals(), { shielded: null, public: null }, 'what was read for the last key is let go of');
+assert.deepEqual(tp.totals(), { shielded: null, public: null, forSale: null }, 'what was read for the last key is let go of');
 await click('tp-t-send');
 type('tp-send-to', 'tacit1someone'); type('tp-send-amt', '1');
 await click('tp-send-go');
@@ -179,9 +179,9 @@ assert.equal($('tp-shield-go').textContent, 'Sign in', 'the button says what the
 // The read starts when the page opens the panel with a key (mount runs for every visitor and starts nothing), and after a sign-in
 // with the panel open.
 {
-  let k = { pubHex: '02' + 'cd'.repeat(32) }, mounts = 0, report = null;
+  let k = { pubHex: '02' + 'cd'.repeat(32) }, mounts = 0, report = null, told = 0;
   const t3 = makeTacPool({ key: () => k, priv: () => new Uint8Array(32).fill(1), ensureKey: async () => {}, withKey: async (fn) => fn(T), tacitAddress: () => 'tacit1example',
-    toast: () => {}, changed: () => {}, viewChanged: () => {}, usd: () => '', mods: { secret: S, claim: C, sats: { mount: (box, c) => { mounts++; report = c.held; } } } });
+    toast: () => {}, changed: () => { told++; }, viewChanged: () => {}, usd: () => '', mods: { secret: S, claim: C, sats: { mount: (box, c) => { mounts++; report = c.held; } } } });
   const h3 = document.createElement('div'); document.body.append(h3);
   const row = () => h3.querySelector('#tp-held-row'), line = () => h3.querySelector('#tp-held').textContent;
   t3.mount(h3); await settle();
@@ -189,9 +189,15 @@ assert.equal($('tp-shield-go').textContent, 'Sign in', 'the button says what the
   assert.equal(row().hidden, true);
   t3.show('shield'); await settle();
   assert.equal(mounts, 1, 'the page opening the panel with a key starts the read');
+  assert.equal(t3.totals().forSale, null, 'no amount for sale before the read reports');
+  told = 0;
   report({ units: 97207564851n, count: 1, unread: 0 });
   assert.equal(row().hidden, false);
   assert.match(line(), /^972\.07564851 TAC taken out for sale$/);
+  assert.equal(t3.totals().forSale, 97207564851n, 'the page’s list of where the TAC is gets the amount');
+  assert.equal(told, 1, 'and is told once');
+  report({ units: 97207564851n, count: 1, unread: 0 });
+  assert.equal(told, 1, 'a redraw with the same amount tells it nothing');
   report({ units: 0n, count: 0, unread: 1 });
   assert.equal(line(), '1 output at a sale key not read', 'an output the read could not open is said, not left out');
   report({ units: 0n, count: 0, unread: 0 });
