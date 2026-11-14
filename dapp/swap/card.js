@@ -684,7 +684,7 @@ const PK = new Proxy({ teth: 'eth', [lc(R.TAC)]: 'tac', [lc(R.CUSD)]: 'cusd', [l
 const POOL_TK = new Proxy({ eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' }, { get: (o, k) => (k in o ? o[k] : ownPool(k)?.ticker) });
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=e596c03f'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=af9a7f14'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));
@@ -2898,6 +2898,8 @@ export function mountSwapCard(root, host = {}) {
     pickerBals,
     quoteEthToToken: (o) => R.quoteEthToToken({ ethCall, ...o }),
     listReady: () => loadList(),
+    // a token's EIP-2612 permit (its domain's name and version), or null: what the route module reads when a token is pasted
+    permitOf: (k) => R.readToken({ ethCall, keccak256: keccak_256, address: String(k || '').toLowerCase() }).then((t) => (t?.permit ? { name: t.name, version: t.permit } : null), () => null),
     // whole tokens one ETH buys, from the card's own USD prices (ETH, wstETH, WBTC, the dollars, TAC); null for a token it does not price
     marketRate: (k) => { const key = String(k || '').toLowerCase(), t = tokenOf(key); if (!t) return null; const e = usdOf('teth', 10n ** 18n), u = usdOf(key, 10n ** BigInt(t.dec)); return e && u ? e / u : null; },
     tokenInfo: (k) => { const key = String(k || '').toLowerCase(), t = tokenOf(key); return t ? { sym: t.sym, dec: t.dec, name: t.name || '', logo: LOGO[t.addr] || null } : null; },

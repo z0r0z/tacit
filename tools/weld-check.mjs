@@ -10261,51 +10261,81 @@ await step('usdtwrapw', async () => {
   } finally { await r.browser.close(); }
 });
 
-// Any token in its own private form: LINK, which the pool does not hold yet, picked as the Swap card's Shield From goes in as private LINK. The press adds LINK
-// to the pool (registerWrappedAuto, once, for everyone), approves exactly the amount to Permit2, signs the router's permit and deposits, so the pool holds it
-// under LINK's own asset id and the wallet keeps the rest. The relay's settle is the stub's here.
+// Any token in its own private form, in as few confirmations as the token and the wallet allow. LINK, which the pool does not hold yet, picked as the
+// Swap card's Shield From goes in as private LINK: with a wallet that sends calls together (EIP-5792, atomic) the pool's registration, the approval
+// to Permit2 (in full, once) and the deposit are ONE confirmation after a Permit2 signature; a second shield with a wallet that does not batch is a
+// signature and one transaction, no approval; wstETH, which takes an EIP-2612 permit, is a signature and one transaction with no approval at all.
+// The relay's settle is the stub's here.
 await step('xtshield', async () => {
-  const LINK = '0x514910771af9ca656af840dff83e8264ecf986ca', POOLA = '0x000000000Ed1eabD231Be41d93b719056F7febFC', PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3', E18 = 10n ** 18n;
+  const LINK = '0x514910771af9ca656af840dff83e8264ecf986ca', WSTETH = '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0', POOLA = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
+  const ROUTERA = '0x000000005da3e3b73726af3c774deeb9472d4992', PERMIT2 = '0x000000000022d473030f116ddee9f6b43ac78ba3', E18 = 10n ** 18n;
   const KXW = '0x' + 'c0de'.padEnd(64, '8'), XW = '0x' + Buffer.from(keccak_256(secp.getPublicKey(KXW.slice(2), false).slice(1))).toString('hex').slice(-40);
   await rpc('anvil_impersonateAccount', [XW]); await rpc('anvil_setBalance', [XW, '0x' + E18.toString(16)]);
   const w32 = (a) => a.replace(/^0x/, '').toLowerCase().padStart(64, '0'), hx = (b) => Buffer.from(b).toString('hex');
-  const balOf = async (a) => BigInt(await rpc('eth_call', [{ to: LINK, data: '0x70a08231' + w32(a) }, 'latest']));
-  const allowed = async (o, s) => BigInt(await rpc('eth_call', [{ to: LINK, data: '0xdd62ed3e' + w32(o) + w32(s) }, 'latest']));
-  const idb = Buffer.alloc(46); idb.write('tacit-evm-token-v1'); idb.writeBigUInt64BE(1n, 18); Buffer.from(w32(LINK).slice(24), 'hex').copy(idb, 26);
-  const id = hx(sha256(idb)), inPool = async () => /1$/.test((await rpc('eth_call', [{ to: POOLA, data: '0x' + hx(keccak_256(Buffer.from('assets(bytes32)'))).slice(0, 8) + id }, 'latest'])).slice(2, 66));
-  // 20 LINK for the account: each candidate slot of the balances mapping is written and read back through balanceOf
-  const want = 20n * E18;
-  let funded = false;
-  for (let i = 0; i < 12 && !funded; i++) {
-    const at = '0x' + hx(keccak_256(Buffer.from(w32(XW) + i.toString(16).padStart(64, '0'), 'hex'))), was = await rpc('eth_getStorageAt', [LINK, at, 'latest']);
-    await rpc('anvil_setStorageAt', [LINK, at, '0x' + want.toString(16).padStart(64, '0')]);
-    if ((await balOf(XW)) === want) funded = true; else await rpc('anvil_setStorageAt', [LINK, at, was]);
-  }
-  ok(funded && !(await inPool()), 'xtshield: the account holds 20 LINK, and the pool does not hold LINK yet');
+  const balOf = async (t, a) => BigInt(await rpc('eth_call', [{ to: t, data: '0x70a08231' + w32(a) }, 'latest']));
+  const allowed = async (t, o, sp) => BigInt(await rpc('eth_call', [{ to: t, data: '0xdd62ed3e' + w32(o) + w32(sp) }, 'latest']));
+  const idOf = (tok) => { const b = Buffer.alloc(46); b.write('tacit-evm-token-v1'); b.writeBigUInt64BE(1n, 18); Buffer.from(w32(tok).slice(24), 'hex').copy(b, 26); return hx(sha256(b)); };
+  const inPool = async (tok) => /1$/.test((await rpc('eth_call', [{ to: POOLA, data: '0x' + hx(keccak_256(Buffer.from('assets(bytes32)'))).slice(0, 8) + idOf(tok) }, 'latest'])).slice(2, 66));
+  // a balance for the account: each candidate slot of the token's balances mapping is written and read back through balanceOf
+  const give = async (tok, want) => {
+    for (let i = 0; i < 12; i++) {
+      const at = '0x' + hx(keccak_256(Buffer.from(w32(XW) + i.toString(16).padStart(64, '0'), 'hex'))), was = await rpc('eth_getStorageAt', [tok, at, 'latest']);
+      await rpc('anvil_setStorageAt', [tok, at, '0x' + want.toString(16).padStart(64, '0')]);
+      if ((await balOf(tok, XW)) === want) return true;
+      await rpc('anvil_setStorageAt', [tok, at, was]);
+    }
+    return false;
+  };
+  ok((await give(LINK, 20n * E18)) && (await give(WSTETH, 2n * E18)) && !(await inPool(LINK)) && (await inPool(WSTETH)), 'xtshield: the account holds 20 LINK and 2 wstETH; the pool holds wstETH already, not LINK');
   const r = await openPage({ account: XW, key: KXW, viewport: { width: 1280, height: 1500 } }), p = r.page;
+  const pick = async (q, sym) => {
+    await p.click('#hx-swap #pay-coin'); await p.waitForSelector('#hx-swap #pk-q');
+    await p.fill('#hx-swap #pk-q', q);
+    await until(p, (s) => [...document.querySelectorAll('#hx-swap #pk .pk-r')].some((b) => !b.hidden && b.querySelector('b')?.firstChild?.textContent?.trim() === s), sym, 60000);
+    await p.evaluate((s) => [...document.querySelectorAll('#hx-swap #pk .pk-r')].find((b) => !b.hidden && b.querySelector('b')?.firstChild?.textContent?.trim() === s).click(), sym);
+    await until(p, (s) => (document.querySelector('#hx-swap #get-coin')?.textContent || '').includes(s) && /DeFi pool/.test(document.querySelector('#hx-swap #get-at')?.textContent || ''), sym, 60000);
+  };
+  const shield = async (amt, sym, want) => {
+    await p.fill(MV.amt, amt);
+    await until(p, (x) => new RegExp(x.want).test(window.__said?.() || '') && document.querySelector('#hx-swap #go')?.textContent === `Shield ${x.sym}` && !document.querySelector('#hx-swap #go').disabled, { want, sym }, 120000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | said ${await said(p)} | go ${await goText(p)}`); });
+    await p.click(MV.go);
+  };
   try {
     await p.goto(r.url);
     await moveFrom(p, 'ether');
-    await p.click('#hx-swap #pay-coin'); await p.waitForSelector('#hx-swap #pk-q');
-    await p.fill('#hx-swap #pk-q', 'chainlink');
-    await until(p, () => [...document.querySelectorAll('#hx-swap #pk .pk-r')].some((b) => !b.hidden && b.querySelector('b')?.firstChild?.textContent?.trim() === 'LINK'), null, 60000);
-    await p.evaluate(() => [...document.querySelectorAll('#hx-swap #pk .pk-r')].find((b) => !b.hidden && b.querySelector('b')?.firstChild?.textContent?.trim() === 'LINK').click());
-    await until(p, () => (document.querySelector('#hx-swap #get-coin')?.textContent || '').includes('LINK') && /DeFi pool/.test(document.querySelector('#hx-swap #get-at')?.textContent || ''), null, 60000)
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | get ${await text(p, '#hx-swap #get-coin')} at ${await text(p, '#hx-swap #get-at')}`); });
+    // A: a batching wallet, LINK not yet in the pool
+    await pick('chainlink', 'LINK');
     ok(await p.$eval('#hx-swap #get-coin .tk', (e) => e.classList.contains('pvt')), 'xtshield: LINK goes to the DeFi pool as private LINK, in its own logo with the private ring');
-    await p.fill(MV.amt, '1.5');
-    await until(p, () => /First: LINK is added to the pool, once for everyone/.test(window.__said?.() || document.querySelector('#hx-swap #rcpt')?.textContent || '') && document.querySelector('#hx-swap #go')?.textContent === 'Shield LINK' && !document.querySelector('#hx-swap #go').disabled, null, 120000)
-      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | said ${await said(p)} | go ${await goText(p)}`); });
-    ok(true, `xtshield: the card says LINK is added to the pool first, and the button says Shield LINK (${(await said(p)).slice(0, 120)})`);
-    const l0 = await balOf(XW), pool0 = await balOf(POOLA), part = 15n * 10n ** 17n;
-    await p.click(MV.go);
-    const moved = await chainUntil(async () => l0 - (await balOf(XW)) === part && (await balOf(POOLA)) - pool0 === part, 300000);
-    ok(await inPool(), 'xtshield: the press added LINK to the pool');
-    ok(moved, `xtshield: 1.5 LINK left the wallet for the pool (wallet ${l0 - (await balOf(XW))}, pool ${(await balOf(POOLA)) - pool0})`);
-    ok((await allowed(XW, PERMIT2)) === 0n, 'xtshield: and the allowance to Permit2 was exactly the amount, so none is left over');
-    ok((await p.evaluate(() => JSON.parse(localStorage.getItem('tacit-pool-tokens-v1') || '[]'))).includes(LINK), 'xtshield: this browser remembers LINK, so its notes and any unfinished deposit are read next time');
+    Object.assign(walletWays, { batch: true, noTyped: false, rejectTyped: false, badPermit: false });
+    const l0 = await balOf(LINK, XW), pool0 = await balOf(LINK, POOLA), b0 = batches.length, t0 = walletTxs.length, part = 15n * 10n ** 17n;
+    await shield('1.5', 'LINK', 'First: LINK is added to the pool, once for everyone');
+    const moved = await chainUntil(async () => l0 - (await balOf(LINK, XW)) === part && (await balOf(LINK, POOLA)) - pool0 === part, 300000);
+    ok(moved && await inPool(LINK), `xtshield: 1.5 LINK left the wallet for the pool, and LINK is in the pool (wallet ${l0 - (await balOf(LINK, XW))}, pool ${(await balOf(LINK, POOLA)) - pool0})`);
+    const bt = batches.slice(b0);
+    ok(bt.length === 1 && bt[0].atomicRequired === true && bt[0].calls.length === 3 && bt[0].calls[0].to.toLowerCase() === POOLA.toLowerCase() && bt[0].calls[1].to.toLowerCase() === LINK && bt[0].calls[2].to.toLowerCase() === ROUTERA,
+      `xtshield: one confirmation, atomic: the registration, the approval and the deposit together (${bt.map((x) => x.calls.map((c) => c.to.slice(0, 8)).join('+')).join(' | ')})`);
+    ok(walletTxs.length === t0, `xtshield: and no transaction of its own besides the batch (${walletTxs.length - t0})`);
+    ok((await allowed(LINK, XW, PERMIT2)) > 10n ** 30n, 'xtshield: Permit2 holds the approval in full, so the next shield needs none');
+    ok((await p.evaluate(() => JSON.parse(localStorage.getItem('tacit-pool-tokens-v1') || '[]'))).includes(LINK), 'xtshield: this browser remembers LINK');
+    // B: a wallet that does not batch, LINK in the pool and Permit2 approved: a signature and one transaction
+    await until(p, () => !document.querySelector('#hx-swap #go')?.getAttribute('aria-busy'), null, 300000).catch(() => {});
+    await p.goto(r.url); await moveFrom(p, 'ether'); await pick('chainlink', 'LINK');
+    Object.assign(walletWays, { batch: false });
+    const l1 = await balOf(LINK, XW), t1 = walletTxs.length, y1 = walletTyped.length, b1 = batches.length;
+    await shield('2', 'LINK', 'Sent: from');
+    ok(await chainUntil(async () => l1 - (await balOf(LINK, XW)) === 2n * E18, 300000), 'xtshield: a second shield of 2 LINK lands');
+    ok(walletTxs.length - t1 === 1 && walletTyped.length - y1 === 1 && batches.length === b1, `xtshield: as a signature and ONE transaction, no approval (${walletTxs.length - t1} tx, ${walletTyped.length - y1} signature)`);
+    // C: wstETH takes an EIP-2612 permit: a signature and one transaction, no approval at all
+    await p.goto(r.url); await moveFrom(p, 'ether'); await pick('wsteth', 'wstETH');
+    const w0 = await balOf(WSTETH, XW), t2 = walletTxs.length, y2 = walletTyped.length, a2 = await allowed(WSTETH, XW, PERMIT2);
+    await shield('0.5', 'wstETH', 'Sent: from');
+    ok(await chainUntil(async () => w0 - (await balOf(WSTETH, XW)) === 5n * 10n ** 17n, 300000), 'xtshield: 0.5 wstETH lands');
+    ok(walletTxs.length - t2 === 1 && walletTyped.length - y2 === 1 && (await allowed(WSTETH, XW, PERMIT2)) === a2, `xtshield: by its own EIP-2612 permit, a signature and ONE transaction, no approval (${walletTxs.length - t2} tx, ${walletTyped.length - y2} signature)`);
+    const tw = walletTyped.slice(y2)[0];
+    ok(/Permit/.test(JSON.stringify(tw || {})) && !/PermitSingle/.test(JSON.stringify(tw || {})), 'xtshield: and the signature is the token\'s own permit, not Permit2\'s');
     if (r.errors.length) { fails++; console.log('FAIL xtshield page errors: ' + r.errors.slice(0, 3).join(' | ')); }
-  } finally { await r.browser.close(); }
+  } finally { Object.assign(walletWays, { batch: false }); await r.browser.close(); }
 });
 
 // A key holding notes of a token no table names (LINK, which xtshield put in the pool): the page finds what the pool holds under that id, so the notes read

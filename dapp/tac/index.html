@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-gWvq32Nis4RfL5OeoIGBR0ooSbnj6FUEb6I0Gp4XJbQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-VbMYJ1DvMtnl4Ixtiv3dQLHiKNai7MZeV2/6/bCzBYI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -2486,7 +2486,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 for (const u of ["/weld/stats/read.js?cb=1df039da","/trade/lp-campaign.js?cb=8da1c942","/trade/batch.js","/tacit-chain-config.js?cb=74171404"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
 // preload-later:end
 // preload-intent:begin
-const WARM_MODULES = ["/confidential-pool-ux.js?cb=e596c03f","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
+const WARM_MODULES = ["/confidential-pool-ux.js?cb=af9a7f14","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
 // preload-intent:end
 import '/storage-fallback.js';
 import { secp, keccak_256, sha256, hmac, bytesToHex, hexToBytes, concatBytes } from '/vendor/tacit-deps.min.js';
@@ -4709,9 +4709,9 @@ function permitFromTacit({ token, name, version, owner, spender, value, nonce, d
   return { v: 27 + sig.recovery, r: '0x' + sig.r.toString(16).padStart(64, '0'), s: '0x' + sig.s.toString(16).padStart(64, '0') };
 }
 const PERMIT_WAIT = { cancel: null };
-async function permitSig({ token, name, spender, value, deadline, status, what }) {
+async function permitSig({ token, name, spender, value, deadline, status, what, version = '1' }) {
   const owner = await payingAccount(), nonce = wordAt(await ethCall(token, '7ecebe00' + addrWord(owner)), 0);
-  const permit = { token, name, version: '1', owner, spender, value, nonce, deadline };
+  const permit = { token, name, version, owner, spender, value, nonce, deadline };
   if (payer() === 'tacit') return permitFromTacit(permit);
   const tk = what || (name === 'Tacit Token' ? 'TAC' : /^Wrapped liquid staked/.test(name) ? 'wstETH' : 'LP');
   const ask = (more = '') => say(status, html`Sign the ${tk} permit in your wallet: a signature, not a transaction.${more} <button class="link" type="button" data-permit-cancel>Cancel</button>`);
@@ -5240,7 +5240,7 @@ function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.oncl
 const warmPool = (() => { let on = false; return () => { if (on) return; on = true; for (const u of WARM_MODULES) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u })); }; })();
 const getUx = lazy(async () => {
   warmPool();
-  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=e596c03f'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=af9a7f14'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   setExternalTacHolders(() => (S.wallet ? [S.wallet] : []));
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
@@ -6509,9 +6509,9 @@ function loadUsdtBal(force = false) {
 }
 // The Permit2 signature for a token the router takes by Permit2 (USDT, or any token in its own private form): its own
 // address, decimals and name, so no token is ever signed for as another.
-async function permit2Args({ t, via, value, status, token: tk = USDT_TOKEN }) {
+async function permit2Args({ t, via, value, status, token: tk = USDT_TOKEN, approve = true }) {
   const owner = usdtOwner(via), token = tk.address.toLowerCase(), sym = tk.sym, spender = t.cfg.router, tell = (m) => say(status, m), show = fmt(value, tk.dec ?? 6, 6);
-  const held = wordAt(await ethCall(token, SEL.allowance + addrWord(owner) + addrWord(PERMIT2_ADDR)).catch(() => '0x'), 0);
+  const held = approve ? wordAt(await ethCall(token, SEL.allowance + addrWord(owner) + addrWord(PERMIT2_ADDR)).catch(() => '0x'), 0) : value;
   if (held < value) {
     if (held > 0n) {
       tell(`Reset the ${sym} allowance in ${your()} first (some tokens, USDT among them, ask for this), then the approval and the deposit follow…`);
@@ -6635,7 +6635,7 @@ function xtFrom(r, row) {
   xtTables(r);
 }
 // The record for a token, made at once from what the card knows of it (its list entry) and checked against the pool after.
-function xtEnsure(addr, info = SWC.card?.tokenInfo?.(addr)) {
+function xtEnsure(addr, info = SWC.card?.tokenInfo?.(addr), resolve = true) {
   const a = xtAddr(addr);
   if (!a) return null;
   let r = XT.by.get(a);
@@ -6646,8 +6646,22 @@ function xtEnsure(addr, info = SWC.card?.tokenInfo?.(addr)) {
     XT.by.set(a, r);
     xtTables(r);
   }
-  if (!r.p && r.registered !== true) r.p = xtResolve(r);
+  if (resolve && !r.p && r.registered !== true) r.p = xtResolve(r);
   return r;
+}
+// Many tokens from one pool read (the module's externalAssets: one Multicall3 call): each record is filled from its row; a token the
+// batch could not settle is read on its own.
+async function xtLoadMany(t, addrs) {
+  const rs = addrs.map((a) => xtEnsure(a, null, false)).filter((r) => r && r.registered == null);
+  if (!rs.length) return;
+  const got = await t.externalAssets(rs.map((r) => r.addr)).catch(() => []);
+  for (const g of got) {
+    const r = XT.by.get(String(g.row?.underlying || g.token || '').toLowerCase());
+    if (!r || g.error) continue;
+    r.registered = g.registered; xtFrom(r, g.row);
+    if (!r.logo) r.logo = SWC.card?.tokenInfo?.(r.addr)?.logo || null;
+  }
+  for (const r of rs) if (r.registered == null) r.p ||= xtResolve(r);
 }
 async function xtResolve(r) {
   try {
@@ -6666,8 +6680,9 @@ function xtPooled() {
   XT.pooledAt = Date.now();
   getUx().then(async (t) => [t, await t.pooledTokens(), await t.registeredTokens()]).then(async ([t, list, reg]) => {
     const eth = String(t.assetByTicker.cETH?.assetId || '').toLowerCase();
-    for (const x of reg) { const r = xtEnsure(x.underlying, null); if (r) r.listed = true; }
-    const rs = list.map((x) => { const r = xtEnsure(x.underlying, null); if (r && eth) { const poolId = t.routePoolId(eth, x.assetId, x.feeBps); r.pool ||= { poolId, feeBps: x.feeBps, lp: t.lpShareId(poolId) }; } return r; }).filter(Boolean);
+    await xtLoadMany(t, [...new Set([...reg, ...list].map((x) => x.underlying))]);
+    for (const x of reg) { const r = xtEnsure(x.underlying, null, false); if (r) r.listed = true; }
+    const rs = list.map((x) => { const r = xtEnsure(x.underlying, null, false); if (r && eth) { const poolId = t.routePoolId(eth, x.assetId, x.feeBps); r.pool ||= { poolId, feeBps: x.feeBps, lp: t.lpShareId(poolId) }; } return r; }).filter(Boolean);
     await Promise.all(rs.map((r) => r.p || r));
     let n = 0;
     for (const r of rs) if (r.registered === true && !r.pooled) { r.pooled = true; n++; }
@@ -6685,9 +6700,9 @@ function xtBoot() {
   if (XT.boot) return XT.boot;
   let saved = [];
   try { saved = JSON.parse(localStorage.getItem(XT.saved) || '[]') || []; } catch { }
-  const rs = (Array.isArray(saved) ? saved : []).map((a) => xtEnsure(a, null)).filter(Boolean);
+  const rs = (Array.isArray(saved) ? saved : []).map((a) => xtEnsure(a, null, false)).filter(Boolean);
   rs.forEach((r) => { r.keep = true; });
-  return (XT.boot = Promise.race([Promise.all(rs.map((r) => r.p || r)), sleep(8e3)]).catch(() => {}));
+  return (XT.boot = Promise.race([getUx().then((t) => xtLoadMany(t, rs.map((r) => r.addr))).then(() => Promise.all(rs.map((r) => r.p || r))), sleep(8e3)]).catch(() => {}));
 }
 // A note of an asset the page has no table for: if the pool holds an outside token under that id, the token joins XT.
 async function xtFind(t, ids) {
@@ -6740,15 +6755,59 @@ async function xtRegister(run, t, r, src, status) {
   if (!now.registered) throw new Error(`${r.sym} is not in the pool yet. Press again in a moment.`);
   r.registered = true; xtFrom(r, now.row);
 }
-async function xtWrapDeposit(t, priv, r, wei, src, status, index) {
+// A token's EIP-2612 permit (its name and version, read from its domain), or null when it has none: the card's route module reads it.
+async function xtPermitOf(r) {
+  if (r.perm === undefined) r.perm = await (SWC.card?.permitOf?.(r.addr) ?? Promise.resolve(null)).catch(() => null);
+  return r.perm;
+}
+const MAX256 = 2n ** 256n - 1n;
+// The deposit from the wallet in as few confirmations as the token and the wallet allow:
+//   - a registered token with an EIP-2612 permit: a signature and one transaction
+//   - a wallet that sends calls together atomically (EIP-5792): a Permit2 signature, then the pool's registration (when the token is new),
+//     the approval (when Permit2 has none) and the deposit as one confirmation: all of them land or none does
+//   - otherwise one by one: the registration, the approval (in full to Permit2, once: each later deposit is a signature and one transaction,
+//     and Permit2 moves nothing without a signature for it), the signature, the deposit
+async function xtWrapDeposit(t, priv, r, wei, src, status, index, run) {
   if (src === 'tacit') return t.routerWrap({ walletPriv: priv, amountWei: wei.toString(), ticker: r.ticker, index });
-  const w = t.buildWrap({ walletPriv: priv, amountWei: wei.toString(), ticker: r.ticker, index }), from = S.wallet || S.address;
-  const { permit2 } = await permit2Args({ t, via: src, value: wei, status, token: xtToken(r) });
-  const data = t.router.wrapWithPermit2Calldata({ token: r.addr, amount: wei, commit: w.commit, permitSingle: permit2.permitSingle, signature: permit2.signature });
-  try { await rpc('eth_call', [{ ...(from ? { from } : {}), to: t.cfg.router, data, value: '0x0' }, 'latest']); }
-  catch (e) { throw Object.assign(new Error(`Nothing was sent: the pool refuses this ${r.sym} deposit (${revertText(e) || 'a token that takes a fee on transfer, or limits who may hold it'}).`), { said: true }); }
+  const owner = S.wallet || S.address, token = r.addr, router = t.cfg.router, label = `Deposit ${fmt(wei, r.dec, 6)} ${r.sym} to shield`;
+  const needReg = r.registered !== true, w = t.buildWrap({ walletPriv: priv, amountWei: wei.toString(), ticker: r.ticker, index });
+  const sim = (data) => rpc('eth_call', [{ from: owner, to: router, data, value: '0x0' }, 'latest']);
+  const refused = (e) => Object.assign(new Error(`Nothing was sent: the pool refuses this ${r.sym} deposit (${revertText(e) || 'a token that takes a fee on transfer, or limits who may hold it'}).`), { said: true });
+  const perm = await xtPermitOf(r);
+  const byPermit = async () => {
+    const deadline = BigInt(chainNow() + 1800), p = await permitSig({ token, name: perm.name, version: perm.version, what: r.sym, spender: router, value: wei, deadline, status });
+    return t.router.wrapWithPermitCalldata({ token, amount: wei, commit: w.commit, deadline, v: p.v, r: p.r, s: p.s });
+  };
+  const byPermit2 = async () => {
+    const { permit2 } = await permit2Args({ t, via: src, value: wei, status, token: xtToken(r), approve: false });
+    return t.router.wrapWithPermit2Calldata({ token, amount: wei, commit: w.commit, permitSingle: permit2.permitSingle, signature: permit2.signature });
+  };
+  if (perm && !needReg) {
+    const data = await byPermit();
+    if (await sim(data).then(() => true, () => false)) { say(status, 'Confirm the deposit in your wallet…'); return { ...w, txHash: await sendTx({ to: router, data, value: 0n, label }) }; }
+  }
+  const held = wordAt(await ethCall(token, SEL.allowance + addrWord(owner) + addrWord(PERMIT2_ADDR)).catch(() => '0x'), 0);
+  const approvals = held >= wei ? [] : [...(held > 0n ? [{ to: token, data: '0x095ea7b3' + addrWord(PERMIT2_ADDR) + word(0n), value: 0n, label: `Reset the ${r.sym} allowance for Permit2` }] : []),
+    { to: token, data: '0x095ea7b3' + addrWord(PERMIT2_ADDR) + word(MAX256), value: 0n, label: `Approve ${r.sym} for Permit2, once` }];
+  if ((needReg || approvals.length) && (await canBatch())) {
+    const dep = await byPermit2();
+    if (!needReg && !approvals.length) await sim(dep).catch((e) => { throw refused(e); });
+    say(status, `Confirm in your wallet: ${[needReg && `${r.sym} added to the pool`, approvals.length && 'the approval', 'the deposit'].filter(Boolean).join(', ')}, together…`);
+    try {
+      const hash = await sendBatch([...(needReg ? [t.registerTokenCall(token)] : []), ...approvals, { to: router, data: dep, value: 0n }], label);
+      return { ...w, txHash: hash, batched: true };
+    } catch (e) { if (!e?.noBatch) throw e; }
+  }
+  if (needReg) await xtRegister(run, t, r, src, status);
+  if (perm) {
+    const data = await byPermit();
+    if (await sim(data).then(() => true, () => false)) { say(status, 'Confirm the deposit in your wallet…'); return { ...w, txHash: await sendTx({ to: router, data, value: 0n, label }) }; }
+  }
+  for (const c of approvals) { say(status, `${c.label} in ${your()}…`); await waitTx(await sendTx({ to: c.to, data: c.data, value: 0n, via: src, label: c.label }), { timeoutMs: 180e3, chainId: 1 }); }
+  const data = await byPermit2();
+  await sim(data).catch((e) => { throw refused(e); });
   say(status, 'Confirm the deposit in your wallet…');
-  return { ...w, txHash: await sendTx({ to: t.cfg.router, data, value: 0n, label: `Deposit ${fmt(wei, r.dec, 6)} ${r.sym} to shield` }) };
+  return { ...w, txHash: await sendTx({ to: router, data, value: 0n, label }) };
 }
 async function xtWrapNow({ run, r, wei, src, status, line, sheet = '', clear, after }) {
   run.go({ label: `Make ${fmt(wei, r.dec, 6)} ${r.sym} private`, status: line, clear });
@@ -6756,10 +6815,13 @@ async function xtWrapNow({ run, r, wei, src, status, line, sheet = '', clear, af
   const refresh = () => Promise.allSettled([scanPrivate(true), hxWalletBals(true)]);
   try {
     const t = await getUx(), priv = walletPriv();
-    if (r.registered !== true) await xtRegister(run, t, r, src, status);
+    const own = ownNow(['wrap']) && (await proveOwn(['wrap']));
+    // the key's own account and this device's prover register first; a wallet's deposit carries the registration (see xtWrapDeposit)
+    if (r.registered !== true && (src === 'tacit' || own)) await xtRegister(run, t, r, src, status);
+    if (r.registered !== true) { const f = await t.externalAsset(r.addr); if (f.registered) { r.registered = true; xtFrom(r, f.row); } else t.addAsset(f.row); }
     r.keep = true; xtSave();
     run.check();
-    if (ownNow(['wrap']) && (await proveOwn(['wrap']))) {
+    if (own) {
       await ownReady('wrap');
       await proveFirstWrap({ run, t, priv, via: src, wei, status, sheet, ticker: r.ticker, token: xtToken(r) });
       await refresh(); after(); return;
@@ -6767,13 +6829,14 @@ async function xtWrapNow({ run, r, wei, src, status, line, sheet = '', clear, af
     say(status, src === 'wallet' ? 'Preparing your note, about half a minute…' : 'Sending from this key’s address…');
     const index = await t.nextWrapIndex({ walletPriv: priv, ticker: r.ticker });
     giveBack = () => { try { t.releaseWrapIndex?.({ walletPriv: priv, ticker: r.ticker, index }); } catch { } };
-    const w = await xtWrapDeposit(t, priv, r, wei, src, status, index);
+    const w = await xtWrapDeposit(t, priv, r, wei, src, status, index, run);
     sent = true;
     run.take(kDep(w));
     runTx(run, src === 'wallet' ? w.txHash : actTx(w.txHash, { label: `Deposit ${fmt(wei, r.dec, 6)} ${r.sym} to shield` }), 'Deposit', 'Depositing');
     say(status, html`Sent ${txLink(w.txHash)}. Waiting for it to land…`);
     await waitTx(w.txHash);
     landed = true;
+    if (r.registered !== true) { const f = await t.externalAsset(r.addr); if (f.registered) { r.registered = true; xtFrom(r, f.row); } }
     say(status, html`Deposited ${txLink(w.txHash)}. The relay is proving your note…`);
     await proveOr({ run, types: ['wrap'], offer: false, label: run.to.label, sheet, status: line,
       go: (y) => t.submitWrapSettle({ built: w, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
@@ -6825,9 +6888,18 @@ async function xtShareProof({ run, t, priv, pub, poolId, shares, tell }) {
 }
 // One transaction from the wallet: the ETH's swap half (outside, or inside the pool), both legs in, the share shielded and its proof settled.
 // Run as a call first: exactly the shares proved, or nothing is sent.
-async function xtZapSend({ run, t, r, plan, feeBps, built, proven, swapData = null, eth, from, tell, what }) {
+async function xtZapSend({ run, t, r, plan, feeBps, built, proven, swapData = null, eth, from, tell, what, pre = [] }) {
   const data = zapSettleCalldata({ plan, router: ADDR.confRouter, amm: ADDR.publicAmm, tokenB: r.addr, assetA: eth, assetB: r.id, feeBps, deadline: BigInt(chainNow() + 1200),
     commit: built.commit, swapData, publicValues: proven.publicValues, proof: proven.proof, memos: proven.memos || built.memos });
+  if (pre.length) {
+    // the token's registration and the zap as one atomic batch: the zap cannot be run as a call before the registration exists, and the
+    // batch lands whole or not at all, so a zap that would not mint the shares proved reverts the registration with it
+    tell(`Proved. Confirm in your wallet: ${r.sym} added to the pool and the transaction that ${what}, together…`);
+    const hash = runTx(run, await sendBatch([...pre, { to: ADDR.confRouter, data, value: plan.value }], run.to.label), 'Pool', 'Adding');
+    tell(html`Sent ${txLink(hash)}. Waiting for it to land…`);
+    await waitTx(hash);
+    return hash;
+  }
   let sim;
   try { sim = strip(await rpc('eth_call', [{ from, to: ADDR.confRouter, data, value: '0x' + plan.value.toString(16) }, 'latest'])); }
   catch (e) { throw xtSaid(`Nothing was sent: the router refuses this as it stands. ${revertText(e) || ''}`.trim()); }
@@ -6840,13 +6912,16 @@ async function xtZapSend({ run, t, r, plan, feeBps, built, proven, swapData = nu
 }
 async function xtStartCore({ run, r, wei, st }) {
   const tell = (m) => run.say(st, m), t = await getUx(), priv = walletPriv(), from = S.wallet || S.address, pub = S.key.pubHex, eth = String(t.assetByTicker.cETH.assetId).toLowerCase();
-  if (r.registered !== true) await xtRegister(run, t, r, payer(), st);
+  if (r.registered !== true) { const f = await t.externalAsset(r.addr); if (f.registered) { r.registered = true; xtFrom(r, f.row); } }
+  const batchReg = r.registered !== true && payer() === 'wallet' && (await canBatch());
+  if (r.registered !== true && !batchReg) await xtRegister(run, t, r, payer(), st);
   for (const f of [30, 5, 100, 1]) if ((await t.poolReserves(t.routePoolId(eth, r.id, f)).catch(() => null))?.totalShares > 0n) throw xtSaid(`${r.sym} has a pool already: add to it instead.`);
   const plan = await xtPoolPlan(r, wei), poolId = t.routePoolId(eth, r.id, POOL_START_FEE);
   const { built, proven } = await xtShareProof({ run, t, priv, pub, poolId, shares: plan.shares, tell });
   const fresh = await xtPoolQuote(r, plan.swapIn);
   if (!fresh || fresh.amountLimit < plan.bLeg) throw xtSaid(`The price of ${r.sym} moved while your share was proved, so nothing was sent. Press again for a fresh quote.`);
-  const hash = await xtZapSend({ run, t, r, plan, feeBps: POOL_START_FEE, built, proven, swapData: fresh.callData, eth, from, tell, what: `buys the ${r.sym}, starts the pool` });
+  const hash = await xtZapSend({ run, t, r, plan, feeBps: POOL_START_FEE, built, proven, swapData: fresh.callData, eth, from, tell, what: `buys the ${r.sym}, starts the pool`, pre: batchReg ? [t.registerTokenCall(r.addr)] : [] });
+  if (batchReg) { const f = await t.externalAsset(r.addr); if (f.registered) { r.registered = true; xtFrom(r, f.row); } }
   Object.assign(r, { keep: true, pooled: true, pool: { poolId, feeBps: POOL_START_FEE, lp: t.lpShareId(poolId) } }); xtSave();
   return hash;
 }
@@ -11723,7 +11798,7 @@ function hxHandoff(m, units) {
     const r = xtOf(HX.sf);
     return r && { out: amt, go: `Shield ${r.sym}`, rc: [['Arrives', n(`${r.sym}, private`)], r.registered === false
       ? ['First', `${r.sym} is added to the pool, once for everyone`, '', 'A transaction anyone may send: it lets the pool hold the token, and says nothing about it']
-      : ['Sent', `from ${your()}, with a Permit2 signature`]] };
+      : ['Sent', `from ${your()}, with a signature`]] };
   }
   if (m === 'xout') { const r = xtOf(HX.sf); return r && { out: amt, go: `Withdraw ${r.sym}`, rc: [['Arrives', `${r.sym} in your wallet`], ['Relay fee', 'out of it, shown next']] }; }
   if (m === 'tacpub') return { out: 'All', all: true, go: 'Withdraw TAC', rc: [['Arrives', 'all your private TAC, as ERC-20 TAC'], ['Relay fee', 'shown next']] };
@@ -14855,7 +14930,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=02dec00f').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=87b3de84').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

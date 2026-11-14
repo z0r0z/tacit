@@ -6,6 +6,10 @@
 //   - an amount finer than the scale is refused before anything is built
 //   - the key's account deposits 1.5 LINK through the router by Permit2: the pool escrows exactly that, and its Wrap event carries LINK's own asset id
 //   - a token already registered (SPX, 8 decimals, scale 1) deposits the same way
+//   - the page's one-confirmation shield (index.html xtWrapDeposit), the calls it hands a batching wallet, run here in the order it sends them:
+//     a token the pool does not hold yet (LINK) is registered, approved to Permit2 in full and deposited with a Permit2 signature made BEFORE any
+//     of the three exist; a second deposit then needs only its signature and one call (the approval was once)
+//   - a token with an EIP-2612 permit (wstETH): a signature and the deposit, no approval of any kind
 // Run: anvil --fork-url <mainnet rpc> --port 8547 --chain-id 1 & node tests/pool-token-own-form-fork.mjs [anvil url]
 import assert from 'node:assert/strict';
 import { secp, sha256, keccak_256, hmac } from '../dapp/vendor/tacit-deps.min.js';
@@ -97,4 +101,58 @@ for (const [name, token, amount, scale] of [['LINK', LINK, 15n * 10n ** 17n, 10n
     assert.equal(ev.topics[1], w.depositId);
   });
 }
+const PERMIT2 = '0x000000000022D473030F116dDEE9F6B43aC78BA3', MAX256 = 2n ** 256n - 1n;
+const allowance = async (t, o, sp) => BigInt(await call('eth_call', [{ to: t, data: '0xdd62ed3e' + w32(o) + w32(sp) }, 'latest']));
+const send = async (to, data, value = 0n) => { const r = await receipt((await ux.sendPreparedTx({ walletPriv: priv, to, value, calldata: data, gasLimit: 1500000n })).txHash); assert.equal(r.status, '0x1', `${to} reverted`); return r; };
+const p2nonce = async (token) => BigInt('0x' + String(await call('eth_call', [{ to: PERMIT2, data: '0x927da105' + w32(acct.address) + w32(token) + w32(ux.cfg.router) }, 'latest'])).slice(2).slice(128, 192));
+const LINK2 = '0x514910771af9ca656af840dff83e8264ecf986ca', WSTETH = '0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0';
+await test('one confirmation: a new token\'s registration, its approval to Permit2 and the deposit, with a signature made before any of them', async () => {
+  const token = '0x6982508145454ce325ddbe47a25d4ec3d2311933'; // PEPE: 18 decimals, not in the pool at this block
+  const pre = await ux.externalAsset(token);
+  assert.equal(pre.registered, false);
+  const amount = 3n * 10n ** 18n;
+  await give(token, acct.address, amount * 2n);
+  assert.equal(await allowance(token, acct.address, PERMIT2), 0n);
+  const w = ux.buildWrap({ walletPriv: priv, amountWei: amount.toString(), ticker: (ux.addAsset(pre.row), pre.row.ticker), index: 0 });
+  const expiration = Math.floor(Date.now() / 1000) + 1800, nonce = await p2nonce(token);
+  const sg = ux.router.signPermit2Single({ token, amount, expiration, nonce, sigDeadline: expiration, priv: acct.priv, spender: ux.cfg.router });
+  const calls = [ux.registerTokenCall(token), { to: token, data: '0x095ea7b3' + w32(PERMIT2) + MAX256.toString(16).padStart(64, '0') },
+    { to: ux.cfg.router, data: ux.router.wrapWithPermit2Calldata({ token, amount, commit: w.commit, permitSingle: sg.permitSingle, signature: sg.signature }) }];
+  const a0 = await balOf(token, acct.address), p0 = await balOf(token, POOL);
+  for (const c of calls) await send(c.to, c.data);
+  assert.equal(a0 - (await balOf(token, acct.address)), amount);
+  assert.equal((await balOf(token, POOL)) - p0, amount);
+  assert.equal((await ux.readAsset(nativeEvmAssetId(1, token))).registered, true, 'registered by the first call');
+  assert.ok((await allowance(token, acct.address, PERMIT2)) > 10n ** 60n, 'Permit2 holds the approval in full');
+  // the second deposit: a signature (the next nonce) and one call
+  const w2 = ux.buildWrap({ walletPriv: priv, amountWei: amount.toString(), ticker: pre.row.ticker, index: 1 }), n2 = await p2nonce(token);
+  assert.equal(n2, nonce + 1n, 'Permit2 counted the first signature');
+  const sg2 = ux.router.signPermit2Single({ token, amount, expiration, nonce: n2, sigDeadline: expiration, priv: acct.priv, spender: ux.cfg.router });
+  const p1 = await balOf(token, POOL);
+  await send(ux.cfg.router, ux.router.wrapWithPermit2Calldata({ token, amount, commit: w2.commit, permitSingle: sg2.permitSingle, signature: sg2.signature }));
+  assert.equal((await balOf(token, POOL)) - p1, amount, 'the second deposit needed no approval');
+});
+await test('a signature made for one amount does not move another: the deposit is refused, nothing is taken', async () => {
+  const { row } = await ux.externalAsset(SPX);
+  await give(SPX, acct.address, 10n ** 12n);
+  const amount = 10n ** 9n, w = ux.buildWrap({ walletPriv: priv, amountWei: amount.toString(), ticker: row.ticker, index: 9 });
+  const exp = Math.floor(Date.now() / 1000) + 1800, nonce = await p2nonce(SPX);
+  const sg = ux.router.signPermit2Single({ token: SPX, amount: amount / 2n, expiration: exp, nonce, sigDeadline: exp, priv: acct.priv, spender: ux.cfg.router });
+  const data = ux.router.wrapWithPermit2Calldata({ token: SPX, amount, commit: w.commit, permitSingle: sg.permitSingle, signature: sg.signature });
+  await assert.rejects(call('eth_call', [{ from: acct.address, to: ux.cfg.router, data }, 'latest']));
+});
+await test('wstETH takes its own EIP-2612 permit: a signature and the deposit, no approval of any kind', async () => {
+  const { row, registered } = await ux.externalAsset(WSTETH);
+  assert.equal(registered, true);
+  row.permitName = 'Wrapped liquid staked Ether 2.0'; row.permitVersion = '1'; row.permitType = 'eip2612';
+  const amount = 5n * 10n ** 17n;
+  await give(WSTETH, acct.address, amount * 2n);
+  const a0 = await balOf(WSTETH, acct.address), p0 = await balOf(WSTETH, POOL), al0 = await allowance(WSTETH, acct.address, PERMIT2);
+  const w = await ux.routerWrap({ walletPriv: priv, amountWei: amount.toString(), ticker: row.ticker, index: 0 });
+  assert.equal((await receipt(w.txHash)).status, '0x1');
+  assert.equal(a0 - (await balOf(WSTETH, acct.address)), amount);
+  assert.equal((await balOf(WSTETH, POOL)) - p0, amount);
+  assert.equal(await allowance(WSTETH, acct.address, PERMIT2), al0, 'no approval to Permit2');
+  assert.equal(await allowance(WSTETH, acct.address, ux.cfg.router), 0n, 'none to the router either: the permit was spent');
+});
 console.log(`\n${n} passed`);
