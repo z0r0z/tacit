@@ -152,41 +152,6 @@ export function readWrapStdin(bytes) {
   return { chainBinding, asset, value, cx, cy, owner, sigR, sigZ, memoHash };
 }
 
-// The deposit a wrap-style op opens, read from the head of its program input, which the ops that open one write alike: the chain binding,
-// five roots, one op, its type byte, the asset, the value, the deposit's commitment (cx, cy), owner and opening signature (R, z). OP_WRAP
-// is type 0 and OP_WRAPTRANSFER 27; what follows differs per op and is not read. Returns what wrapOpens takes, or an Error saying why not.
-export function readDepositHead(bytes, opType) {
-  let off = 0;
-  const u64 = () => {
-    if (off + 8 > bytes.length) throw new Error('the input ends early');
-    let x = 0n;
-    for (let i = 7; i >= 0; i--) x = (x << 8n) | BigInt(bytes[off + i]);
-    off += 8;
-    return x;
-  };
-  const count = u64();
-  if (count < 15n) throw new Error('the input is too short to hold a deposit');
-  const e = [];
-  for (let i = 0; i < 15; i++) {
-    const len = u64();
-    if (len > BigInt(bytes.length - off)) throw new Error('the input ends early');
-    e.push(bytes.subarray(off, off + Number(len)));
-    off += Number(len);
-  }
-  const vec = (i, n, what) => {
-    const b = e[i];
-    if (b.length !== 8 + n || b[0] !== n || b.subarray(1, 8).some((x) => x)) throw new Error(`${what} must be ${n} bytes`);
-    return b.subarray(8);
-  };
-  if (e[6].length !== 4 || e[6][0] !== 1 || e[6][1] || e[6][2] || e[6][3]) throw new Error('the input must hold one op');
-  if (e[7].length !== 1 || e[7][0] !== opType) throw new Error(`the op must be type ${opType}`);
-  if (e[9].length !== 8) throw new Error('the value must be a u64');
-  let value = 0n;
-  for (let i = 7; i >= 0; i--) value = (value << 8n) | BigInt(e[9][i]);
-  return { chainBinding: vec(0, 32, 'the chain binding'), asset: vec(8, 32, 'the asset'), value, cx: vec(10, 32, 'cx'), cy: vec(11, 32, 'cy'),
-    owner: vec(12, 32, 'the owner'), sigR: vec(13, 33, 'the signature\'s R'), sigZ: vec(14, 32, 'the signature\'s z'), memoHash: new Uint8Array(32) };
-}
-
 // What a wrap's proof must commit to, from the wrap itself (dapp/confidential-pool.js leaf, depositId; cxfer-core memo_root): the
 // leaf keccak(asset ‖ cx ‖ cy ‖ owner), the deposit keccak(asset ‖ value as 32 bytes ‖ keccak(cx ‖ cy ‖ owner)), the chain binding,
 // and the memo root keccak(0³² ‖ memo hash).
@@ -233,6 +198,41 @@ export function verifyCalldata({ vkey, publicValues, proof }) {
   const bytes = (hex) => num(hex.length / 2) + hex + '0'.repeat((64 - (hex.length % 64)) % 64);
   const pv = bytes(strip(publicValues)), pf = bytes(strip(proof));
   return VERIFY_SELECTOR + strip(vkey).padStart(64, '0') + num(96) + num(96 + pv.length / 2) + pv + pf;
+}
+
+// The deposit a wrap-style op opens, read from the head of its program input, which the ops that open one write alike: the chain binding,
+// five roots, one op, its type byte, the asset, the value, the deposit's commitment (cx, cy), owner and opening signature (R, z). OP_WRAP
+// is type 0 and OP_WRAPTRANSFER 27; what follows differs per op and is not read. Returns what wrapOpens takes, or an Error saying why not.
+export function readDepositHead(bytes, opType) {
+  let off = 0;
+  const u64 = () => {
+    if (off + 8 > bytes.length) throw new Error('the input ends early');
+    let x = 0n;
+    for (let i = 7; i >= 0; i--) x = (x << 8n) | BigInt(bytes[off + i]);
+    off += 8;
+    return x;
+  };
+  const count = u64();
+  if (count < 15n) throw new Error('the input is too short to hold a deposit');
+  const e = [];
+  for (let i = 0; i < 15; i++) {
+    const len = u64();
+    if (len > BigInt(bytes.length - off)) throw new Error('the input ends early');
+    e.push(bytes.subarray(off, off + Number(len)));
+    off += Number(len);
+  }
+  const vec = (i, n, what) => {
+    const b = e[i];
+    if (b.length !== 8 + n || b[0] !== n || b.subarray(1, 8).some((x) => x)) throw new Error(`${what} must be ${n} bytes`);
+    return b.subarray(8);
+  };
+  if (e[6].length !== 4 || e[6][0] !== 1 || e[6][1] || e[6][2] || e[6][3]) throw new Error('the input must hold one op');
+  if (e[7].length !== 1 || e[7][0] !== opType) throw new Error(`the op must be type ${opType}`);
+  if (e[9].length !== 8) throw new Error('the value must be a u64');
+  let value = 0n;
+  for (let i = 7; i >= 0; i--) value = (value << 8n) | BigInt(e[9][i]);
+  return { chainBinding: vec(0, 32, 'the chain binding'), asset: vec(8, 32, 'the asset'), value, cx: vec(10, 32, 'cx'), cy: vec(11, 32, 'cy'),
+    owner: vec(12, 32, 'the owner'), sigR: vec(13, 33, 'the signature\'s R'), sigZ: vec(14, 32, 'the signature\'s z'), memoHash: new Uint8Array(32) };
 }
 
 // Whether a wrap opens as the program checks it (contracts/sp1/confidential/src/main.rs, OP_WRAP): the commitment is a point on the
