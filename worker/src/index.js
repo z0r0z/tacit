@@ -4154,7 +4154,7 @@ async function handleProofPool(req, env, url, cors) {
     // A board worker's token makes the lease Tacit's own (no points, only jobs that have waited: see proof-pool.js lease).
     const auth = req.headers.get('Authorization'), house = auth ? workerOf(auth, env.PROVER_WORKER_TOKENS) : null;
     if (auth && !house) return jsonResponse({ ok: false, error: 'unknown worker token' }, 401, nostore);
-    // A miner asks when it is idle, every half minute at most (the prover's POOL_EVERY_SECS): a few at once and one each five seconds
+    // A miner asks when it is idle, every ten seconds (the prover's POOL_EVERY_SECS): a few at once and one each five seconds
     // from one place leave room for several machines behind one address, and none for a loop that asks without pause.
     if (!house) {
       const rl = await proveRateLimit(env, ip, 'pool-lease', 6, 5000);

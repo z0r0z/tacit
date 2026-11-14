@@ -102,7 +102,7 @@ fn main() {
                 let mined = pool::mine_one(&client, &pk, &miner);
                 salt::PROVING.store(false, std::sync::atomic::Ordering::Relaxed);
                 if !mined {
-                    std::thread::sleep(std::time::Duration::from_secs(60));
+                    std::thread::sleep(std::time::Duration::from_secs(10));
                 }
             }
         }
@@ -490,12 +490,12 @@ fn serve(client: sp1_sdk::blocking::CpuProver, pk: sp1_sdk::SP1ProvingKey, vkey:
             let (id, stdin) = {
                 let (m, cv) = &*state;
                 let mut s = m.lock().unwrap();
-                // While mining, a minute with nothing of its own to prove is spent on the proof pool, one job at a time, and the
-                // next job is leased as soon as one is proved; a proof asked for meanwhile waits for that one to finish. Mining
-                // switched on from the page starts at once.
+                // While mining, ten seconds with nothing of its own to prove are spent asking the proof pool for a job, one at a time,
+                // and the next job is asked for as soon as one is proved; a proof asked for meanwhile waits for that one to finish.
+                // Mining switched on from the page starts at once.
                 let mut mined = false;
                 while s.queue.is_empty() {
-                    let wait = if mined || std::mem::take(&mut s.kick) { 1 } else { 60 };
+                    let wait = if mined || std::mem::take(&mut s.kick) { 1 } else { 10 };
                     let (g, t) = cv.wait_timeout(s, std::time::Duration::from_secs(wait)).unwrap();
                     s = g;
                     let kick = std::mem::take(&mut s.kick);

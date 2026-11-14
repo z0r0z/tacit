@@ -14,7 +14,7 @@
 // no secret). Tacit's own box leases with its token, which the API credits nothing, and only a job that has waited POOL_MIN_AGE_SECS
 // (default 600, so the people mining it for points get it first); a community worker leases in its miner's name, as a miner, for the
 // pool's points (until the pool pays the address nothing more that UTC day, unless POOL_UNPAID=1). A lease is asked for at most every
-// POOL_EVERY_SECS (default 30), and the lease in hand is kept in POOL_LEASE_FILE (default /workspace/pool-lease.json) until its proof is
+// POOL_EVERY_SECS (default 10), and the lease in hand is kept in POOL_LEASE_FILE (default /workspace/pool-lease.json) until its proof is
 // sent, so a worker that restarts proves it again instead of letting it run out.
 //   POST {BOARD_URL}/prover/pool/lease  { minAgeMs } (token) | { miner } (community)  → { id, stdin (0x bincode SP1Stdin), lease, points } | 204
 //   POST {BOARD_URL}/prover/pool/submit { id, lease, publicValues, proof } | { id, lease, error }
@@ -288,7 +288,7 @@ fn main() {
     // the UTC day on which the pool will lease this worker nothing more (or pay its address nothing more)
     let mut pool_rest_day: Option<u64> = None;
     let pool_min_age_ms = env_or("POOL_MIN_AGE_SECS", "600").parse::<u64>().unwrap_or(600) * 1000;
-    let pool_every = Duration::from_secs(env_or("POOL_EVERY_SECS", "30").parse::<u64>().unwrap_or(30));
+    let pool_every = Duration::from_secs(env_or("POOL_EVERY_SECS", "10").parse::<u64>().unwrap_or(10));
     let mut pool_last: Option<Instant> = None;
     // Users first on a single box. A proof cannot be stopped once it starts, so a user's job that arrives while a pool wrap runs waits
     // for it (measured 2026-10-26: 41 of 247 user jobs started the moment a pool wrap ended). So pool wraps fill quiet stretches only:

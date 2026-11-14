@@ -48,7 +48,7 @@ export const PROOF_POOL = Object.freeze({
   strikesPerDay: 3,
   lapsesPerDay: 8,                   // POOL_LAPSES_PER_DAY: leases a client may let run out or hand back in a UTC day before it is offered nothing more
   leasesPerClient: 4,                // open leases one client may hold, one per address (a household's few machines)
-  drawMs: 30_000,                    // POOL_DRAW_MS: each address's place in line for a job is spread over the job's first seconds, so asking more often brings none sooner (0: first to ask)
+  turnMs: 30_000,                    // POOL_TURN_MS: a miner counts as asking for this long after it last asked, and a new job is held this long for the one whose turn it is (0: first to ask)
   minerIdleMs: 5 * 60_000,           // POOL_MINER_IDLE_MS: a house prover's wait for the miners holds only while one has asked this recently
   holdMs: 45_000,                    // POOL_HOLD_MS: how long a page's hold keeps Tacit's own provers off the pool (a typed amount's proof is asked within seconds)
   holdMaxMs: 10 * 60_000,            // POOL_HOLD_MAX_MS: holds that run on longer than this unbroken are ignored until they lapse, so the pool is never starved
@@ -78,17 +78,14 @@ export function proofPoolConfig(env = {}) {
     pointsPerProof: n(env.POINTS_MINE_PER_PROOF, PROOF_POOL.pointsPerProof, 0, 100_000),
     proofsPerMinerDay: n(env.POINTS_MINE_DAILY_CAP, PROOF_POOL.proofsPerMinerDay, 1, 100_000),
     lapsesPerDay: n(env.POOL_LAPSES_PER_DAY, PROOF_POOL.lapsesPerDay, 1, 100_000),
-    drawMs: n(env.POOL_DRAW_MS, PROOF_POOL.drawMs, 0, 600_000),
+    turnMs: n(env.POOL_TURN_MS, PROOF_POOL.turnMs, 0, 600_000),
   });
 }
 
-// An address's turn for a job: a fixed point in [0, drawMs) from a hash of the two. A miner is offered a job once the job has waited
-// its turn, so the first address offered it is the one with the earliest turn among those asking, whatever their pace or number of
-// places; past drawMs the job is open to anyone.
-export const turnOf = (id, miner, drawMs) => {
-  if (!drawMs) return 0;
-  const h = sha256(new TextEncoder().encode(`tacit-pool-turn|${id}|${String(miner).toLowerCase()}`));
-  return ((h[0] << 8 | h[1]) / 65536) * drawMs;
+// A fixed point in [0, 1) for a job and an address, or for a job and a client: a hash of the two.
+export const drawOf = (id, who) => {
+  const h = sha256(new TextEncoder().encode(`tacit-pool-turn|${id}|${String(who).toLowerCase()}`));
+  return (h[0] * 65536 + h[1] * 256 + h[2]) / 16777216;
 };
 
 // ── the input and the proof ──
@@ -239,6 +236,33 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   const minerIn = (rec, m) => rec.miners[m] || (rec.miners[m] = { proofs: 0, credited: 0, points: 0 });
   const earns = (rec, m) => ((rec.miners[m]?.credited || 0) < cfg.proofsPerMinerDay ? cfg.pointsPerProof : 0);
 
+  // Who is asking for work, by (address, client), kept in memory: a miner asks every few seconds, and a restart only means the next
+  // asks fill it again. A new job is held for the asker whose turn for it comes first. A turn is the later of the address's and the
+  // client's draw for the job, so extra addresses from one place, or one address from extra places, bring no earlier turn; the pace
+  // of asking does not matter while it stays inside `turnMs`.
+  const askers = new Map(), holders = new Map();
+  let sweptAt = 0;
+  function noteAsker(m, client, t) {
+    askers.set(`${m}|${client}`, { m, client, at: t });
+    if (t - sweptAt < 1000) return;
+    sweptAt = t;
+    for (const [k, a] of askers) if (t - a.at > cfg.turnMs) askers.delete(k);
+    for (const [id, h] of holders) if (t - h.at > 60_000) holders.delete(id);
+  }
+  // the asker a young job is held for: the earliest turn among those who asked within `turnMs` and may take it; read again each second
+  function holderOf(e, t) {
+    const memo = holders.get(e.id);
+    if (memo && t - memo.at < 1000) return memo.key;
+    let key = null, best = Infinity;
+    for (const [k, a] of askers) {
+      if (t - a.at > cfg.turnMs || (e.skip || []).includes(a.client)) continue;
+      const v = Math.max(drawOf(e.id, a.m), drawOf(e.id, a.client));
+      if (v < best || (v === best && k < key)) { best = v; key = k; }
+    }
+    holders.set(e.id, { at: t, key });
+    return key;
+  }
+
   // A job back in the queue at its age, or dropped once it has had its tries (`tried`: a lease that ran out or was handed back,
   // not a proof that failed, which is the miner's fault and not the job's). The miner that had it is not offered it again.
   async function giveBack(q, id, l, tried) {
@@ -321,8 +345,8 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   }
 
   // A miner takes the oldest job its client has not had before, and holds it for the lease: one open lease per address on a client,
-  // and a few on a client in all. A job younger than `drawMs` is offered to an address only once it has waited that address's turn
-  // (turnOf), so how often an address asks, and from how many places, does not decide who takes it. `minAgeMs`: only a job that has waited at least that long. `house`: one of Tacit's own provers (a
+  // and a few on a client in all. A job younger than `turnMs` is held for the asker whose turn it is (holderOf), so how often a miner
+  // asks, and from how many places, does not decide who takes it. `minAgeMs`: only a job that has waited at least that long. `house`: one of Tacit's own provers (a
   // board worker, by its token), which takes what has waited and earns nothing: its proofs are kept for the pages but never enter
   // the day's tally, so the miners' share is never paid to Tacit. A house prover's wait is for the miners: it holds only while a
   // miner has asked for work within `minerIdleMs`; with none about, a page's proofs are made at once.
@@ -355,13 +379,14 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       const held = Object.entries(L).filter(([, l]) => l.client === client), open = held.find(([, l]) => l.miner === m);
       if (open) { await save(); return reply(429, { ok: false, code: 'lease_open', id: open[0], error: 'one lease at a time: send its proof (or hand it back) first' }); }
       if (held.length >= cfg.leasesPerClient) { await save(); return reply(429, { ok: false, code: 'lease_open', error: `at most ${cfg.leasesPerClient} leases from one place at a time` }); }
+      if (!house && cfg.turnMs) noteAsker(m, client, t);
       for (let i = 0; i < q.length;) {
         const e = q[i];
         // the wait for the miners holds for ordinary jobs; one marked urgent is taken at once, and the younger ones behind an unripe job are looked at too
         if (minAge && t - e.at < minAge && !e.urgent) { i++; continue; }
         if ((e.skip || []).includes(client)) { i++; continue; }
-        // a miner takes a young job once it has waited its turn; an older one, or any job for Tacit's own prover, goes to whoever asks
-        if (!house && cfg.drawMs && t - e.at < cfg.drawMs && t - e.at < turnOf(e.id, m, cfg.drawMs)) { i++; continue; }
+        // a miner takes a young job only when it is the one the job is held for; an older one, or any job for Tacit's own prover, goes to whoever asks
+        if (!house && cfg.turnMs && t - e.at < cfg.turnMs && holderOf(e, t) !== `${m}|${client}`) { i++; continue; }
         q.splice(i, 1);
         changed = true;
         const job = await read(K.job(e.id), null);
@@ -370,6 +395,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
         if (!job.opens && !stdinOpens(job.stdin)) { await kv.delete(K.job(e.id)); continue; }
         const l = { lease: token(), until: t + cfg.leaseMs, miner: m, client, at: e.at, tries: e.tries || 0, skip: e.skip || [], ...(e.urgent ? { urgent: true } : {}), ...(house ? { house: true } : {}) };
         L[e.id] = l;
+        askers.delete(`${m}|${client}`);          // proving now: not asking again until it asks
         await save();
         return reply(200, { ok: true, id: e.id, type: job.type, stdin: job.stdin, lease: l.lease, leaseMs: cfg.leaseMs, points: house ? 0 : earns(rec, m) });
       }

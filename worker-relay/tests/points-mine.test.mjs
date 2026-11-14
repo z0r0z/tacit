@@ -52,7 +52,7 @@ test('the rules: a tally is read only for its own day once the API calls it over
 function world(over = {}) {
   const clock = { t: T(D0, 1) }, dir = mkdtempSync(join(tmpdir(), 'mine-')), said = [], m = new Map();
   const kv = { async get(k) { return m.has(k) ? m.get(k) : null; }, async put(k, v) { m.set(k, String(v)); }, async delete(k) { m.delete(k); } };
-  const pool = makeProofPool({ kv, cfg: { ...PROOF_POOL, drawMs: 0, proofsPerMinerDay: 2 }, now: () => clock.t * 1000, verify: async () => ({ ok: true }) });
+  const pool = makeProofPool({ kv, cfg: { ...PROOF_POOL, turnMs: 0, proofsPerMinerDay: 2 }, now: () => clock.t * 1000, verify: async () => ({ ok: true }) });
   const days = new Map(), bw = {}, jobs = new Map(); let pend = [];
   const board = makeProverBoard({ now: () => clock.t * 1000, cfg: { ...PROVER_BOARD, proofsPerMinerDay: 2 }, storage: {
     getPending: async () => pend.slice(), putPending: async (ids) => { pend = ids.slice(); }, getJob: async (id) => (jobs.has(id) ? JSON.parse(jobs.get(id)) : null), putJob: async (id, j) => { jobs.set(id, JSON.stringify(j)); },
