@@ -130,19 +130,20 @@ zRouter, Permit2): code at that address on any chain is this contract, whoever d
 
 What is deployed where:
 
-| Piece | Ethereum | Base | Robinhood Chain | MegaETH |
-|---|---|---|---|---|
-| Pool, router, verifier, PoseidonT5 | yes | yes | yes | yes |
-| Zap | yes | yes | yes | no |
-| zRouter (swap aggregator), zQuoter | yes | yes | yes | no |
-| Token list (token.list.wei; one registry, on Ethereum, that names the chain of each token) | yes | no | no | no |
-| Router's own zap entry points | on | on | on | off (the router was deployed with zRouter set to zero, and cannot change) |
-| Relay (keeper) | yes | yes | yes | yes |
-| Token pools anyone opens, and their relay | yes | yes | yes | no |
-| TAC, TACD and TACE pools | yes | no | no | no |
-| Catch-up registry | yes | yes | yes | yes |
-| Catch-up hub | yes | yes | yes | no |
-| V1 wrap boxes and `withdrawToV1` | yes | no | no | no |
+| Piece | Ethereum | Base | Robinhood Chain | MegaETH | Sepolia |
+|---|---|---|---|---|---|
+| Pool, router, verifier, PoseidonT5 | yes | yes | yes | yes | yes |
+| Zap | yes | yes | yes | no | no |
+| zRouter (swap aggregator), zQuoter | yes | yes | yes | no | zRouter only |
+| Token list (token.list.wei; one registry, on Ethereum, that names the chain of each token) | yes | no | no | no | no |
+| Router's own zap entry points | on | on | on | off (the router was deployed with zRouter set to zero, and cannot change) | on |
+| Relay (keeper) | yes | yes | yes | yes | no |
+| Token pools anyone opens, and their relay | yes | yes | yes | no | no |
+| TAC, TACD and TACE pools | yes | no | no | no | no |
+| Catch-up registry | yes | yes | yes | yes | no |
+| Catch-up hub | yes | yes | yes | no | no |
+| V1 wrap boxes and `withdrawToV1` | yes | no | no | no | no |
+| 4337 paymaster (a note pays its own gas) | no | no | no | no | yes |
 
 Everything the pool does (shield, private send, withdraw, deposit addresses, withdraw-and-call) needs only the first
 row. The rest is optional periphery for DeFi flows: see [Swaps and zaps](#swaps-and-zaps).
@@ -157,6 +158,32 @@ Related Ethereum mainnet contracts:
 
 ABIs: [`docs/evm-pool/abi/`](./evm-pool/abi/). The script that deploys them is
 `contracts/script/DeployEvmPoolCreateX.s.sol`; it refuses any verifier other than the ceremony's.
+
+## Trying it on Sepolia
+
+The pool, router, verifier and PoseidonT5 are on Sepolia (chainId 11155111) at the same addresses as on Ethereum, so
+an integration written against mainnet runs there unchanged apart from the chain id and the RPC. The pool was created
+in block 11999020. What differs: there is no keeper, so every spend is sent by the user's own account rather than
+relayed; there is no V1 pool, so the router's `withdrawToV1` wrap boxes are off; and no token pools are open, so it is
+ETH only.
+
+### A note that pays for its own gas (4337)
+
+Sepolia also carries a [`TacitPaymaster`](https://sepolia.etherscan.io/address/0xac99d6ef0dfc4c1b9e6d5a1862acc0a1646e9bd0#code)
+at `0xAC99d6ef0DFc4c1B9e6D5A1862aCc0a1646E9BD0`. It is an ERC-4337 paymaster built on Kohaku's
+[`BasePrivacyPaymaster`](https://github.com/ethereum/kohaku-contracts/tree/master/privacy-paymaster): during
+validation it calls `transact` with itself as the `relayer`, so the pool pays it the proof's fee in the same call, the
+rest of the note goes to the recipient, and it refunds whatever the gas did not cost. That lets a brand-new account
+withdraw without holding any ETH and without a trusted relayer.
+
+It takes only a whole-note withdrawal — one that inserts nothing, so its proof names a root the pool has held and
+cannot go stale — and the operation's sender must be the withdrawal's recipient, since nothing in a proof commits to
+the operation carrying it. Measured on Sepolia: a 0.02 ETH note delivered 0.019036 ETH to an account that had never
+held ETH, with the paymaster's deposit covering 0.000885 ETH of gas.
+
+Clients: the Rust crate [`kohaku-tacit-paymaster`](https://github.com/ethereum/kohaku-rs/pull/130) builds the
+operation, and `encodeTacitPaymasterData` in the paymaster repo's SDK encodes `paymasterAndData` for JavaScript. The
+paymaster is CREATE3-deployed, so the same address is reserved on Ethereum; it is unaudited and not deployed there.
 
 ## Proving on the user's device
 

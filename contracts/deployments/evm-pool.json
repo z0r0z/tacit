@@ -122,6 +122,43 @@
         "etherscan"
       ],
       "note": "Core only. zRouter is not on this chain, so the router was deployed with zRouter set to zero and its zap entry points are off. The zap contract is not deployed."
+    },
+    "11155111": {
+      "pool": "0x000000c2A20657CE25f2Ba99737933D031AFBEE9",
+      "router": "0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5",
+      "verifier": "0x000000b1c0e84CEc8AdF8278B90c4d6400DfB153",
+      "poseidonT5": "0x555333f3f677Ca3930Bf7c56ffc75144c51D9767",
+      "createX": "0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed",
+      "deployer": "0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7",
+      "zRouter": "0x000000000000FB114709235f1ccBFfb925F600e4",
+      "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+      "network": "sepolia",
+      "v1": "0x0000000000000000000000000000000000000000",
+      "poseidonT5Tx": null,
+      "verifierTx": "0x181d80d611b6bc6764a52f7d6c88f7df8ce93f9ccd1e3f77890be1738611a4e7",
+      "verifierBlock": 11999019,
+      "poolTx": "0xd85ea935c7d2edc2b13db814c87b75af59cf509404b8bfc7446915515aa984ba",
+      "deployBlock": 11999020,
+      "routerTx": "0x9e04361e2a43dbd302d6b0a28ae20a746c8c23ec7700e055b87fc3ce6028b18b",
+      "routerBlock": 12136865,
+      "keeper": null,
+      "keeperAddress": null,
+      "verified": [
+        "sourcify",
+        "etherscan"
+      ],
+      "erc4337Paymaster": {
+        "address": "0xAC99d6ef0DFc4c1B9e6D5A1862aCc0a1646E9BD0",
+        "tx": "0xb0a32235e51ef91edbfd8634c66b69e291df92c7e757f44b71eafb8ac5c911dd",
+        "block": 12136602,
+        "entryPoint": "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108",
+        "owner": "0xF57DD85bCeE9E79208614483FF8E8DB790Af94AF",
+        "verified": [
+          "sourcify",
+          "etherscan"
+        ]
+      },
+      "note": "Testnet. The pool, router, verifier and PoseidonT5 are at their Ethereum addresses. There is no keeper, so every spend is sent by the user's own account, and no V1 pool exists here, so the router's withdrawToV1 wrap boxes are off. `erc4337Paymaster` is a TacitPaymaster (ethereum/kohaku-contracts), which lets a note pay for the gas of its own withdrawal as a 4337 operation; it is CREATE3-deployed, so the same address is reserved on Ethereum. Unaudited."
     }
   }
 }

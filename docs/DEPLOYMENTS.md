@@ -276,7 +276,7 @@ docs: [tacit.finance/docs/chain](https://tacit.finance/docs/chain/); live view: 
 | Bootstrap leader (`BOOTSTRAP()`, leads while no seat is held) | `0x841d93ae315E3D9AF5Fd98C09299CA62148Ff65d` |
 | Leader API | `https://tacit-chain-leader.onrender.com` |
 
-## EVM pool (Ethereum, Base, Robinhood Chain, MegaETH)
+## EVM pool (Ethereum, Base, Robinhood Chain, MegaETH, Sepolia)
 
 A separate, smaller pool: one fixed Groth16 circuit, proved on the user's own device — not part of the
 `ConfidentialPool`/SP1 suite above. The native-ETH pool is at the same addresses on all four chains (CreateX CREATE3,
@@ -300,6 +300,14 @@ run ERC-20 pools (TAC, TACD, TACE, USDC, USDT, and any token's pool anyone opens
 | Base (8453) | 51864014 | Sourcify, Blockscout | `https://tacit-evm-pool-keepers.onrender.com/8453/evm-pool/keeper` |
 | Robinhood Chain (4663) | 73991661 | Etherscan, Sourcify | `https://tacit-evm-pool-keepers.onrender.com/4663/evm-pool/keeper` |
 | MegaETH (4326) | 28397750 | Sourcify, Etherscan | `https://tacit-evm-pool-keepers.onrender.com/4326/evm-pool/keeper` |
+| Sepolia (11155111) | 11999020 | Etherscan, Sourcify | none: every spend is sent by the user's own account |
+
+**Sepolia** is the testnet mirror, at the same four addresses, for integrators who want to try the pool
+without mainnet funds. It has no keeper and no V1 pool, so spends are sent by the user's own account and
+the router's `withdrawToV1` wrap boxes are off. It also carries a `TacitPaymaster`
+(`0xAC99d6ef0DFc4c1B9e6D5A1862aCc0a1646E9BD0`), a 4337 paymaster that lets a note pay for the gas of its
+own withdrawal, so a fresh account needs no ETH and no trusted relayer; it is CREATE3-deployed, so the
+same address is reserved on Ethereum. The paymaster is unaudited and not deployed on mainnet.
 
 Integration guide: [`EVM-POOL.md`](./EVM-POOL.md). Machine-readable source of truth:
 [`contracts/deployments/evm-pool.json`](../contracts/deployments/evm-pool.json). This pool and the
