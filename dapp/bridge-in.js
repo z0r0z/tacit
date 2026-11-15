@@ -40,7 +40,6 @@ export function checkText(s, errText) {
 export const needsSend = (n) => n.form === 'old' || n.form === 'private';
 export const firstStep = (n) => (n.form === 'old' ? 'Older note form: pick it to send it to your own address once, then bridge it.'
   : n.form === 'private' ? 'Received privately: pick it to send it to your own address once, then bridge it.' : '');
-export const overCap = (n) => !n.eligible && /beta limit/.test(n.reason || '');
 export const marked = (n, deep = new Map()) => (n.eligible && deep.has(noteId(n)) ? { ...n, eligible: false, reason: longReason(deep.get(noteId(n))) }
   : n.eligible && BigInt(n.amount) === 0n ? { ...n, eligible: false, reason: 'Holds no TAC' } : n);
 export const proofWait = (n) => (n.eligible && n.tracking === 'new' ? { ...n, eligible: false, reason: 'proof' } : n);

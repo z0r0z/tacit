@@ -1,7 +1,7 @@
 // TAC's page. index.html imports this when TAC's page opens (its address, /tac/, preloads it) or a link to it is pointed at, and calls
 // install() with what this code reads from its module: let and var bindings are read as ctx.X, so their changes there are seen here.
 export default function install(ctx) {
-const { $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brLongReason, brMarked, brOver, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your } = ctx;
+const { $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your } = ctx;
 const TCD_FILL = { at: 0 };   // (a Stake press made before the wallet's TAC was read: see tcardStakeFill)
 function idMark(a, size = 40) {
   const h = addressId(a).replace(/·/g, ''), hue = Math.round((parseInt(h.slice(0, 2), 16) / 256) * 360);
@@ -79,17 +79,14 @@ const brArrived = (pub) => {
     .sort((a, b) => (b.mintedAt || 0) - (a.mintedAt || 0));
 };
 const cap1 = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-const brReason = (n) => (n.reason === 'unconfirmed' || n.reason === 'proof' ? cap1(brWhy(n)) : /beta limit/.test(n.reason || '') ? html`Over 1,000 TAC, the most one bridge takes. <a href="/classic.html" target="_blank" rel="noopener">Split it in the classic app</a> first.`
+const brReason = (n) => (n.reason === 'unconfirmed' || n.reason === 'proof' ? cap1(brWhy(n))
   : /stealth/.test(n.reason || '') ? html`Received privately: <a href="/classic.html" target="_blank" rel="noopener">open it in the classic app</a> first.` : n.reason);
 const brTag = (n) => cap1(brTagged(n) || '');
 const brSmall = (n) => {
   const tag = brTag(n), why = !n.eligible ? brReason(n) : brFirst(n);
   return tag || why ? html`<small>${tag ? html`${tag}${why ? ' · ' : ''}` : ''}${why}</small>` : '';
 };
-const brNote = (n) => brOver(n) ? html`<div class="brn brsp"><span><b class="num">${fmt(BigInt(n.amount), 8, 4)} TAC</b><small>${n.confirmed === false ? 'Over 1,000 TAC, the most one bridge takes, and waiting for its Bitcoin confirmation. Split it once it has one.' : 'Over 1,000 TAC, the most one bridge takes. Split some off to your own address, then bridge that. The rest stays with you in a note of its own.'}</small></span>
-  <div class="amt"><input id="brsp-${n.txid.slice(0, 8)}-${n.vout}" inputmode="decimal" value="1000" autocomplete="off" aria-label="TAC to split off"><span class="u">TAC</span></div>
-  <button class="btn ghost" type="button" data-brsplit="${brId(n)}" data-brsplit-in="brsp-${n.txid.slice(0, 8)}-${n.vout}" ${n.confirmed === false ? 'disabled' : ''}>Split off</button></div>`
-  : html`<label class="pick brn${n.eligible ? '' : ' off'}"><input type="radio" name="br-note" value="${brId(n)}" ${n.eligible ? '' : 'disabled'} ${BR.pick === brId(n) ? 'checked' : ''}>
+const brNote = (n) => html`<label class="pick brn${n.eligible ? '' : ' off'}"><input type="radio" name="br-note" value="${brId(n)}" ${n.eligible ? '' : 'disabled'} ${BR.pick === brId(n) ? 'checked' : ''}>
   <span><b class="num">${fmt(BigInt(n.amount), 8, 4)} TAC</b>${brSmall(n)}</span></label>`;
 function brMarkLong(el, n, step) {
   BR.deep.set(brId(n), step);
@@ -150,7 +147,7 @@ function renderBridgeIn(el) {
   const pub = S.key.pubHex, b = BR.pub === pub ? BR : null;
   if (!b?.notes && !BR.loading && !b?.err) loadBridge().then(() => rerender('tac')).catch(() => {});
   brDiscover(pub, true);
-  const recs = brRecords(pub), done = brArrived(pub), notes = (b?.notes || []).filter((n) => n.reason !== 'already bridging').map(brMarked), open = notes.filter((n) => n.eligible), big = notes.filter(brOver);
+  const recs = brRecords(pub), done = brArrived(pub), notes = (b?.notes || []).filter((n) => n.reason !== 'already bridging').map(brMarked), open = notes.filter((n) => n.eligible);
   const preps = brPreps(pub);
   if (preps.some((p) => !p.height || brPrepState(p) !== 'ready')) brPrepTick().catch(() => {});
   const swaps = BSW.pub === pub ? BSW.recs.filter((r) => r.phase !== 'refunded' && !(r.phase === 'done' && Date.now() / 1000 - (r.doneAt || 0) > 86400)) : [];
@@ -174,10 +171,9 @@ function renderBridgeIn(el) {
     ${!b?.notes ? (b?.err ? html`<p class="note err">${errText(b.err)} <button class="link" type="button" id="br-re">Try again</button></p>` : html`<p class="note">Reading your TAC on Bitcoin…</p>`)
       : !notes.length ? (brSplitLooking(pub) ? html`<p class="note">${brSplitLooking(pub)}</p>` : html`<p class="note">No TAC on this key’s Bitcoin address. <a href="#bitcoin/receive" data-link="bitcoin/receive">Receive TAC on Bitcoin</a>${xoShown(pub, XA.tac) ? ' TAC bridged from Ethereum is listed under To Bitcoin.' : ''}</p>`)
       : html`<div class="brns" role="radiogroup" aria-label="TAC to bridge">${notes.map(brNote)}</div>${notes.length > 1 ? html`<p class="note">Each amount is one note on Bitcoin and goes whole.</p>` : ''}
-        ${[!open.length && big.length ? 'Bridge to Ethereum takes one note of up to 1,000 TAC. Split the larger note first: what you do not split off stays with you.' : '', brLineWaiting(notes), brSplitLooking(pub)].filter(Boolean).map((t) => html`<p class="note">${t}</p>`)}
+        ${[brLineWaiting(notes), brSplitLooking(pub)].filter(Boolean).map((t) => html`<p class="note">${t}</p>`)}
         ${bulk ? html`<div class="brr-a brall">${bulk.merge.groups.length ? html`<button class="btn ghost" type="button" id="br-merge" aria-pressed="false">Merge notes</button>` : ''}<button class="btn ghost" type="button" id="br-all" aria-pressed="false">Bridge all</button></div>
         <div class="rcpt" id="br-allp" hidden></div>` : ''}`}
-    <div class="status" role="status" id="br-splitst"></div>
     <div class="rcpt" id="br-rcpt" hidden></div>
     ${BR_TO_ON ? html`<div id="br-towrap" hidden>
       <div class="amt text"><input id="br-to" placeholder="Send it to someone else: their Tacit address or name" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Send it to someone else"></div>
@@ -301,23 +297,6 @@ function renderBridgeIn(el) {
   };
   let paintBulk = null;
   $$('input[name="br-note"]', el).forEach((r) => r.onchange = () => { BR.pick = r.value; BR.act = null; paintBulk?.(); check(); });
-  $$('[data-brsplit]', el).forEach((x) => x.onclick = () => busy(x, async (run) => {
-    const st = $('#br-splitst'), n = notes.find((y) => brId(y) === x.dataset.brsplit), v = parseUnits($(`#${x.dataset.brsplitIn}`).value, 8);
-    if (!n) return;
-    if (!v) return say(st, html`<span class="err">Enter an amount to split off.</span>`);
-    if (v >= BigInt(n.amount)) return say(st, html`<span class="err">Enter less than this note holds.</span>`);
-    if (n.confirmed === false) return say(st, html`<span class="err">This note is waiting for its Bitcoin confirmation. Split it once it has one.</span>`);
-    const key = `split|${pub}|${brId(n)}|${v}`, rest = BigInt(n.amount) - v, sats = (s) => `${Number(s).toLocaleString('en-US')} sats`;
-    if (!(BR.splitSure?.key === key && Date.now() - BR.splitSure.at < 180e3)) {
-      BR.splitSure = { key, at: Date.now() };
-      run.say(st, 'Checking the Bitcoin fee…');
-      const sf = await brSplitFee(pub, n);
-      if (sf?.short) { BR.splitSure = null; return say(st, html`<span class="err">This key’s Bitcoin address has ${fmt(BigInt(sf.free || 0), 8, 8)} BTC free for fees, short of the ${sats(sf.need)} this needs. <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>, then press again.</span>`); }
-      return say(st, `One Bitcoin transaction sends ${fmt(v, 8, 4)} TAC of this note to your own address and keeps ${fmt(rest, 8, 4)} TAC in a note of its own. The Bitcoin fee is ${sf ? `about ${sats(sf.fee)}` : 'a small amount of sats'}, paid from your Bitcoin address. Both notes then wait for Bitcoin’s proof on Ethereum, usually a few hours. Press Split off again to do it.`);
-    }
-    BR.splitSure = null;
-    return brSplit(run, n, v);
-  }));
   $$('[data-brprep]', el).forEach((x) => x.onclick = () => busy(x, async () => {
     const p = brPreps(pub).find((y) => y.txid === x.dataset.brprep);
     const find = () => (BR.notes || []).filter((n) => n.txid === p?.txid && n.eligible).sort((a, b) => (String(a.amount) === p.amount ? -1 : 0) - (String(b.amount) === p.amount ? -1 : 0))[0];
@@ -402,16 +381,6 @@ function brPlanFrom(root, { burnMaxRate = null, autoMaxFee = null } = {}) {
   return plan;
 }
 const brNoSats = (e) => (/insufficient sats|no plain-sats/i.test(String(e?.message)) ? new Error('Not enough BTC for this and its Bitcoin fee.') : brFail(e));
-async function brSplit(run, n, v) {
-  const st = $('#br-splitst'), pub = S.key.pubHex, amt = `${fmt(v, 8, 4)} TAC`;
-  try {
-    run.say(st, `Splitting ${amt} off…`);
-    const { txid } = await toSelf(pub, TAC_BTC_ID, [n], v);
-    actBtc(txid, `Split off ${amt}`);
-    dashSoon();
-    brSplitDone({ pub, txid, sent: v, rest: BigInt(n.amount) - v, said: (m) => say(st, m), after: () => rerender('tac') });
-  } catch (e) { run.fail(st, brNoSats(e)); }
-}
 const brPrep = (run, n, plan = null) => brSend(run, n, plan);
 async function brSend(run, n, plan = null) {
   const status = $('#br-status'), pub = S.key.pubHex, amt = `${fmt(BigInt(n.amount), 8, 4)} TAC`;

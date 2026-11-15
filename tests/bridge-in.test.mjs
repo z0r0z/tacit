@@ -3,7 +3,7 @@
 // to one's own address that an older note needs first.
 //   node tests/bridge-in.test.mjs
 import assert from 'node:assert/strict';
-import { TAC_BTC_ID, noteId, bridgeError, checkText, needsSend, firstStep, overCap, marked, longReason, listNotes, review, checkNote, priceNote, planSet, burnMaxRate, PLAN_KEY, begin, toSelf, NO_SATS, isShort, halts, haltText, PREP_KEY, preps, prepAdd, mergeSend, startNote, tryAgain, bulkFee, sendCost, prepsAfterPass, runMerge, runAll, proofWait, whyText, splitTag, waitFor, splitFee } from '../dapp/bridge-in.js';
+import { TAC_BTC_ID, noteId, bridgeError, checkText, needsSend, firstStep, marked, longReason, listNotes, review, checkNote, priceNote, planSet, burnMaxRate, PLAN_KEY, begin, toSelf, NO_SATS, isShort, halts, haltText, PREP_KEY, preps, prepAdd, mergeSend, startNote, tryAgain, bulkFee, sendCost, prepsAfterPass, runMerge, runAll, proofWait, whyText, splitTag, waitFor, splitFee } from '../dapp/bridge-in.js';
 
 const say = (e) => `said: ${e?.message || e}`;
 
@@ -33,7 +33,6 @@ assert.match(T({ name: 'cap', detail: 'x' }), /^Could not check this TAC: said: 
 // the notes: which need a send first, which are over the limit, which a check or an empty amount takes off the list
 assert.ok(needsSend({ form: 'old' }) && needsSend({ form: 'private' }) && !needsSend({ form: 'tacit' }) && !needsSend({}));
 assert.match(firstStep({ form: 'old' }), /^Older note form/); assert.match(firstStep({ form: 'private' }), /^Received privately/); assert.equal(firstStep({ form: 'tacit' }), '');
-assert.ok(overCap({ eligible: false, reason: 'over the 1,000 TAC beta limit — send part' }) && !overCap({ eligible: true, reason: null }) && !overCap({ eligible: false, reason: 'unconfirmed' }));
 const n1 = { txid: 'aa', vout: 0, amount: '500', eligible: true };
 assert.equal(noteId(n1), 'aa:0');
 assert.equal(marked(n1, new Map()), n1);

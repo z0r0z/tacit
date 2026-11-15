@@ -113,7 +113,7 @@ async function tileBridge() {
   await page.waitForSelector('#hx-tab-bridge[aria-selected="true"]', { timeout: 10000 }).catch(() => {});
 }
 const until = (re, sel = '#hx', ms = 40000) => page.waitForFunction(({ re, sel }) => new RegExp(re).test(document.querySelector(sel)?.innerText || ''), { re, sel }, { timeout: ms }).then(() => true, () => false);
-async function sheet(want = 'label.brn, .brsp') {
+async function sheet(want = 'label.brn') {
   await page.goto(BASE + '/tac/#bridge', { waitUntil: 'commit' });
   await page.waitForSelector('#bridge-body', { timeout: 60000, state: 'attached' }).catch(() => {});
   await page.evaluate(() => { const d = document.querySelector('#tpg-where'); if (d) d.open = true; }).catch(() => {});
