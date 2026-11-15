@@ -39,6 +39,17 @@ async function sha256Hex(bytes) {
   return hex(d);
 }
 
+// Where what a wallet's reads found is kept between page loads (scanMine): the page's localStorage, and nowhere in Node or where it is blocked, where every load reads from the start.
+function browserStore() {
+  try {
+    const l = globalThis.localStorage;
+    if (!l || typeof l.getItem !== 'function') return null;
+    return { get: (k) => { try { return l.getItem(k); } catch { return null; } }, set: (k, v) => { try { l.setItem(k, v); } catch { /* full or blocked: the next load reads from the start */ } } };
+  } catch { return null; }
+}
+const SCAN_CK = 'tacit-btc-scan-ck-v1', SCAN_CK_KEEP = 6;
+const textBytes = (t) => new TextEncoder().encode(t);
+
 // Reads a response body with progress(loaded, total).
 async function readWithProgress(resp, total, progress) {
   if (!resp.body || typeof resp.body.getReader !== 'function') {
@@ -63,7 +74,7 @@ async function readWithProgress(resp, total, progress) {
 }
 
 // base: where pin.json and the artifacts are served. readFile(name) → bytes replaces fetch (Node).
-export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-pool/', fetchImpl = (...a) => globalThis.fetch(...a), readFile = null } = {}) {
+export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-pool/', fetchImpl = (...a) => globalThis.fetch(...a), readFile = null, store = browserStore() } = {}) {
   const baseUrl = base.endsWith('/') ? base : base + '/';
   let pinP = null;
   const cache = new Map();
@@ -187,16 +198,53 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
   // The feed's notes that open under `wallet` (pool.scan's results). Each leaf is tried once per wallet object and the
   // answer kept: the feed only grows, so a later read tries just the leaves it has not seen, and one whose leaf changed
   // under the same index. Every leaf is still tried alike; a long first read yields to the page between batches.
+  //
+  // Trying a leaf is a point multiplication or two (about 2.5 ms) and a page load starts with no memory of the last, so every load tried
+  // every leaf again, more of them as the pool grows. What a read found is kept for the next load, and none of it is secret: for a wallet,
+  // named by the public keys that decide what it can see (the view tier is part of the name), how many leaves of the feed were tried, a digest
+  // of those leaves as the feed gave them, and the indexes of those that opened. A load whose feed begins with the same leaves tries only
+  // what came after and opens the kept notes again to read them under the wallet in hand; if the feed differs, a kept note no longer opens,
+  // or the record is not what was written, it reads from the start as before.
   const scanned = new WeakMap();
+  const walletTag = async (w) => {
+    if (!w || !w.network || !w.V || !w.A || !w.N || (w.vInt != null && !w.VInt)) return null;
+    return (await sha256Hex(textBytes(['btc-scan-v1', w.network, strip(w.V), strip(w.A), strip(w.N), w.vInt != null ? strip(w.VInt) : ''].join('|')))).slice(0, 32);
+  };
+  const feedDigest = (feed, n) => sha256Hex(textBytes(feed.slice(0, n).map((f) => `${strip(f.leaf)}:${strip(f.asset)}:${strip(f.pkEph)}:${strip(f.ctNote)}`).join(',')));
+  const contiguous = (feed, n) => { for (let i = 0; i < n; i++) if (!feed[i] || feed[i].leafIndex !== i) return false; return true; };
+  const keptRead = () => { try { const j = JSON.parse(store.get(SCAN_CK) || 'null'); return j && j.v === 1 && Array.isArray(j.e) ? j.e : []; } catch { return []; } };
+  async function restoreScan(pool, wallet, feed, memo) {
+    if (!store || !feed.length) return;
+    try {
+      const k = await walletTag(wallet), rec = k && keptRead().find((e) => e && e.k === k);
+      if (!rec || !Number.isInteger(rec.n) || rec.n < 1 || rec.n > feed.length || !Array.isArray(rec.mine) || typeof rec.d !== 'string') return;
+      if (!rec.mine.every((i) => Number.isInteger(i) && i >= 0 && i < rec.n) || !contiguous(feed, rec.n) || await feedDigest(feed, rec.n) !== rec.d) return;
+      const opened = new Map();
+      for (const i of rec.mine) { const x = pool.scan(wallet, [feed[i]])[0]; if (!x) return; opened.set(i, x); }
+      for (let i = 0; i < rec.n; i++) memo.set(i, { leaf: feed[i].leaf, x: opened.get(i) || null });
+    } catch { memo.clear(); }
+  }
+  async function keepScan(wallet, feed, memo) {
+    if (!store || !feed.length || !contiguous(feed, feed.length)) return;
+    try {
+      const k = await walletTag(wallet);
+      if (!k) return;
+      const mine = []; feed.forEach((f, i) => { if (memo.get(i)?.x) mine.push(i); });
+      const e = keptRead().filter((x) => x && x.k !== k);
+      e.unshift({ k, n: feed.length, d: await feedDigest(feed, feed.length), mine });
+      store.set(SCAN_CK, JSON.stringify({ v: 1, e: e.slice(0, SCAN_CK_KEEP) }));
+    } catch { /* not kept: the next load reads from the start */ }
+  }
   async function scanMine(pool, wallet, feed) {
     let memo = scanned.get(wallet);
-    if (!memo) scanned.set(wallet, (memo = new Map()));
+    if (!memo) { scanned.set(wallet, (memo = new Map())); await restoreScan(pool, wallet, feed, memo); }
     const todo = feed.filter((f) => memo.get(f.leafIndex)?.leaf !== f.leaf);
     for (let i = 0; i < todo.length; i += 16) {
       if (i) await new Promise((r) => setTimeout(r, 0));
       const batch = todo.slice(i, i + 16), found = new Map(pool.scan(wallet, batch).map((x) => [x.leafIndex, x]));
       for (const f of batch) memo.set(f.leafIndex, { leaf: f.leaf, x: found.get(f.leafIndex) || null });
     }
+    if (todo.length) await keepScan(wallet, feed, memo);
     return feed.map((f) => memo.get(f.leafIndex).x).filter(Boolean);
   }
   // A wallet's notes from the feed, each with its height, txid and spent flag. Spent flags come from the whole list of
