@@ -492,7 +492,7 @@ header.top .top-r { position: relative; display: flex; align-items: center; gap:
 .sn > a, .sn summary {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: none;
   height: 40px; min-width: 40px; padding: 0 9px; border-radius: 12px; color: var(--mute);
-  font: 500 12.5px/1 var(--mono); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  font: 400 14px/1 var(--sans, var(--mono)); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
   transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 .sn summary::-webkit-details-marker { display: none; }
@@ -531,15 +531,15 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 /* the account chip (and, on the front page, Activity and the total): a quiet outline on the page's own ground, not a block; the dot says whether a wallet is open */
 header.top .chip {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: 0 1 auto; min-width: 0; height: 40px; margin: 0; padding: 0 16px 0 13px;
-  color: var(--ink); background: transparent; border: 1px solid var(--hair-2, var(--hair-strong, var(--hair))); border-radius: 999px;
-  font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  color: var(--ink); background: var(--card, transparent); border: 1px solid var(--hair-2, var(--hair-strong, var(--hair))); border-radius: 10px;
+  font: 500 14px/1 var(--sans, var(--mono)); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
 header.top .chip .dot.on { background: var(--ok); }
 header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); }
-header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; }
+header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); background: transparent; border-color: transparent; }
 header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
 @media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
 header.top .chip:active { transform: scale(.97); }
@@ -566,7 +566,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
-.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
+.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 14px/1 var(--sans, var(--mono)); text-decoration: none; }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
 .sm-p a[aria-current="page"] { background: var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
@@ -582,7 +582,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 /* the footer: where it is said to be, then the places outside the app. In a wide footer the protocol's own (paper, build, security, source, contract, stats) are words and the
    places that have a mark of their own are that mark; in a narrow one every place is an icon that says its name on hover and to a screen reader (they narrow a little on a small
    phone before they would run off the page) */
-footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
+footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 13px/1.4 var(--sans, var(--mono)); }
 footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
 footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); text-decoration: none; transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
 footer.sf nav a:active { transform: scale(.92); }
@@ -599,11 +599,21 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @media (max-width: 480px) { footer.sf nav { margin: 0 0 0 -11px; } }
 
 /* what only one page has to point at (papers, the pool on each chain): a quiet line above the footer */
-.sf-x { display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; margin-top: 48px; color: var(--mute); font: 400 12px/1.4 var(--mono); }
+.sf-x { display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; margin-top: 48px; color: var(--mute); font: 400 13px/1.4 var(--sans, var(--mono)); }
 .sf-x + footer.sf { margin-top: 12px; }
 .sf-x span { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
 .sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
 @media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
+
+/* The grotesk the header, the menu and the footer are set in, for every page that wears them (the front page names it in its own head as well, for its first paint), and a
+   local face scaled to its width and line metrics that shows until it arrives; the same for Newsreader, the front page's serif. Measured against each font's own advances. */
+@font-face { font-family: 'Schibsted Grotesk'; font-weight: 400 600; font-display: swap; src: url('/fonts/schibsted-grotesk-latin.woff2') format('woff2'); }
+:root { --sans: 'Schibsted Grotesk', 'Schibsted Grotesk Fallback', system-ui, sans-serif; }
+@font-face { font-family: 'Schibsted Grotesk Fallback'; src: local('Arial'), local('Helvetica'), local('Liberation Sans'), local('Arimo'); size-adjust: 103.5%; ascent-override: 94.7%; descent-override: 25.1%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback'; src: local('Georgia'); size-adjust: 96.1%; ascent-override: 77%; descent-override: 27.1%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback'; font-style: italic; src: local('Georgia Italic'), local('Georgia-Italic'); size-adjust: 89.1%; ascent-override: 83.1%; descent-override: 29.2%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback T'; src: local('Times New Roman'), local('TimesNewRomanPSMT'), local('Liberation Serif'), local('Tinos'); size-adjust: 105%; ascent-override: 70.5%; descent-override: 24.8%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 98.9%; ascent-override: 74.8%; descent-override: 26.3%; line-gap-override: 0%; }
 
 /* A serif scaled to Instrument Serif's width and line metrics (Georgia, Times or Noto Serif, whichever the device has) shows until the font arrives, so the swap moves nothing */
 @font-face { font-family: 'Instrument Serif Fallback'; src: local('Georgia'); size-adjust: 75.8%; ascent-override: 130.6%; descent-override: 40.9%; line-gap-override: 0%; }
