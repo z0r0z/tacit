@@ -284,7 +284,9 @@ const WORKER_BAD_SESS_KEY = 'tacit-worker-bad-v1';
 const WORKER_BAD_TTL_MS = 5 * 60_000;
 // A page reads the chain from public explorers directly. A headless host whose address those explorers throttle (the hosted watchtower
 // on Render) sets __TACIT_CHAIN_VIA_WORKER__ before loading, and reads through the Tacit API's chain proxy first.
-let _workerKnownBad = !(typeof globalThis !== 'undefined' && globalThis.__TACIT_CHAIN_VIA_WORKER__ === true);
+// On such a host the proxy is known to be deployed, so its 404 (a transaction not on chain yet) is an answer, never a sign to stop using it.
+const _CHAIN_VIA_WORKER = typeof globalThis !== 'undefined' && globalThis.__TACIT_CHAIN_VIA_WORKER__ === true;
+let _workerKnownBad = !_CHAIN_VIA_WORKER;
 try {
   const raw = (typeof sessionStorage !== 'undefined') ? sessionStorage.getItem(WORKER_BAD_SESS_KEY) : null;
   if (raw) {
@@ -293,7 +295,7 @@ try {
   }
 } catch {}
 function _markWorkerKnownBad() {
-  if (_workerKnownBad) return;
+  if (_workerKnownBad || _CHAIN_VIA_WORKER) return;
   _workerKnownBad = true;
   try { sessionStorage.setItem(WORKER_BAD_SESS_KEY, String(Date.now())); } catch {}
   try { IPFS_GATEWAY = _ipfsGateway(); } catch {}
@@ -2252,7 +2254,8 @@ async function _apiFetchUncached(path, opts = {}) {
     let healthyWithSlots = healthy.filter(b => _baseSlotsFree(b) > 0);
     // A transaction is read from whichever explorer is up, and the first of them takes every read while it has a free place; the reads are taken in turns instead, so one visitor's
     // requests count against each explorer's limit for an address a share at a time (every explorer limits by address, and one scan is hundreds of reads).
-    if (healthyWithSlots.length > 1 && /^\/tx\/[0-9a-f]{64}$/.test(path) && String(opts.method || 'GET').toUpperCase() === 'GET') {
+    // (not on a host that reads through the proxy: the proxy spreads them over the explorers itself, which throttle the host directly)
+    if (!_CHAIN_VIA_WORKER && healthyWithSlots.length > 1 && /^\/tx\/[0-9a-f]{64}$/.test(path) && String(opts.method || 'GET').toUpperCase() === 'GET') {
       const k = _txReadTurn++ % healthyWithSlots.length;
       healthyWithSlots = [...healthyWithSlots.slice(k), ...healthyWithSlots.slice(0, k)];
     }
@@ -2317,7 +2320,7 @@ async function _apiFetchUncached(path, opts = {}) {
           const t = await r.text();
           if (
             r.status === 404
-            && WORKER_BASE
+            && WORKER_BASE && !_CHAIN_VIA_WORKER
             && (base.startsWith(WORKER_BASE) || t === '{"error":"not found"}')
           ) {
             _markUnhealthy(base, 10 * 60_000, 'not-deployed');
