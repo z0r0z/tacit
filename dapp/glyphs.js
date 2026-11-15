@@ -2,7 +2,7 @@
 // (`.` is dim, `@` is bright), so from reading distance the marks fuse into a shaded picture and up close it is ciphertext
 // that keeps quietly changing. Three uses, each standing for something the page says in words elsewhere:
 //
-//   1. the field    a quiet field of glyphs behind the page, kept off the header and the card's column, off on a phone;
+//   1. the field    a quiet field of glyphs behind the first screen, kept off the header and the card's column, off on a phone;
 //   2. the stamp    in the card, the mark of whatever a move goes INTO, struck across its "To" side, see-through, with the
 //                   light behind each side taken from its asset's own mark (--tone);
 //   3. the cipher   a tile of glyphs the stylesheet lays under whatever side of a move is private (--cipher).
@@ -40,7 +40,8 @@ function field(canvas, quiet) {
   let cells = [], raf = 0, last = 0;
 
   function resize() {
-    const dpr = Math.min(devicePixelRatio || 1, 2), w = innerWidth, h = innerHeight;
+    // the page's own width, not the window's: the canvas lies in the page, and must never be the thing that makes it scroll sideways
+    const dpr = Math.min(devicePixelRatio || 1, 2), w = document.documentElement.clientWidth, h = innerHeight;
     canvas.width = w * dpr; canvas.height = h * dpr; canvas.style.width = `${w}px`; canvas.style.height = `${h}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
     cells = [];
@@ -71,7 +72,7 @@ function field(canvas, quiet) {
     }
   }
   function draw() {
-    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.font = FIELD.font;
     for (const c of cells) {
       const moved = Math.hypot(c.ox, c.oy), speed = Math.hypot(c.vx, c.vy);
@@ -88,9 +89,10 @@ function field(canvas, quiet) {
     for (let i = 0; i < cells.length * 0.01; i++) { const c = cells[(Math.random() * cells.length) | 0]; if (Math.abs(c.ox) + Math.abs(c.oy) < 1) c.ch = pick(LIGHT); }   // only glyphs at rest
     draw();
   }
-  const onMove = (e) => { if (ptr.px < -9000) { ptr.px = e.clientX; ptr.py = e.clientY; } ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; };
+  // the canvas lies over the first screen and scrolls with the page, so the pointer is placed in the page, not the window
+  const onMove = (e) => { const y = e.clientY + scrollY; if (ptr.px < -9000) { ptr.px = e.clientX; ptr.py = y; } ptr.x = e.clientX; ptr.y = y; ptr.on = true; };
   const onLeave = () => { ptr.on = false; ptr.vx = ptr.vy = 0; };
-  const onDown = (e) => rings.push({ x: e.clientX, y: e.clientY, r: 0, life: 40 });
+  const onDown = (e) => rings.push({ x: e.clientX, y: e.clientY + scrollY, r: 0, life: 40 });
   const onHide = () => { cancelAnimationFrame(raf); if (!document.hidden && !calm) raf = requestAnimationFrame(tick); };
   resize();
   addEventListener('resize', resize);
