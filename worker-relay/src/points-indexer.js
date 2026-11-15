@@ -2179,7 +2179,16 @@ async function main() {
     wd.stage('zrouter');
     for (const chain of ZROUTER_CHAINS) {
       try {
-        await scanZRouterCycle(store, chain);
+        // A chain that makes blocks faster than one chunk covers in a cycle fell further behind every hour (Robinhood Chain makes about ten a second, a chunk is
+        // 2,000 blocks and a cycle takes minutes) and held the day's settlement back with it. A log-only chain reads up to ZROUTER_LOG_MAX_CHUNKS chunks a cycle
+        // while its cursor moves, for at most ZROUTER_LOG_BUDGET_SECS; Ethereum's block-by-block scan keeps its one small chunk.
+        const chunks = chain.signal1 ? 1 : Math.max(1, CFG.zrouterLogMaxChunks), t0 = Date.now();
+        for (let i = 0; i < chunks; i++) {
+          const before = store.loadZrouterCursor(chain.chainId);
+          await scanZRouterCycle(store, chain);
+          const after = store.loadZrouterCursor(chain.chainId);
+          if (after == null || after === before || Date.now() - t0 > CFG.zrouterLogBudgetSecs * 1000) break;   // caught up, or nothing moved (a refusal, a throttle): next cycle
+        }
       } catch (err) {
         log(`zRouter scan cycle failed (chain ${chain.chainId}):`, err?.message || err);
       }
