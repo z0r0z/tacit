@@ -72,7 +72,7 @@ for (const [vname, viewport] of Object.entries(VIEWS)) {
     const tag = `${vname} ${path}`;
     if (path === '/chain/') ok(seen.at === '/tac/', `${tag}: the old address goes on to TAC's page`, seen.at);
     ok(seen.menu === MENU && seen.dividers === 0, `${tag}: the menu is the pages a holder goes to, with no divider`, seen.menu);
-    if (vname === 'desktop') ok(seen.header === HEADER, `${tag}: and Assets, Rewards and Prove sit beside it`, seen.header);
+    if (vname === 'desktop') ok(seen.header === HEADER, `${tag}: and Assets, Farm, Rewards and Prove sit beside it`, seen.header);
     else ok(seen.phone === HEADER, `${tag}: and on a phone it holds them first`, seen.phone);
     ok(seen.chain === 0, `${tag}: the Tacit chain has no entry of its own`);
     ok(seen.marked === (here || ''), `${tag}: the page you are on is marked${here ? ` (${here})` : ' (none)'}`, seen.marked);
