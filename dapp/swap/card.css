@@ -439,31 +439,33 @@
    dashed outline, carrying the site's own lock mark through to the whole side, and takes --cipher as its texture when the page
    provides one. Facts under the fields are tiles: the question small, its answer large. A fallback follows each token the
    swap page (/swap/) does not define, so the card keeps its shape there on that page's own colours. */
-.swc .f { --tone: transparent; position: relative; isolation: isolate; padding: 14px 16px 12px; border: 0; border-radius: 14px; }
-.swc .f:focus-within { box-shadow: inset 0 0 0 1px var(--hair-2); }
-.swc .f::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none; background: radial-gradient(20rem 9rem at 100% 42%, color-mix(in srgb, var(--tone) 20%, transparent), transparent 72%); }
-.swc .f:has(.coin use[href*="eth"]) { --tone: #627EEA; }
-.swc .f:has(.coin use[href*="btc"]), .swc .f:has(.coin use[href*="tac"]) { --tone: #F7931A; }
-.swc .f:has(.coin use[href*="usdc"]) { --tone: #2775CA; }
-.swc .f:has(.coin use[href*="usdt"]), .swc .f:has(.coin use[href*="cusd"]) { --tone: #26A17B; }
-.swc .f:has(.where.priv), .swc .f.priv { outline: 1px dashed var(--hair-2); outline-offset: -1px; }
-.swc .f:has(.where.priv)::after, .swc .f.priv::after { content: ''; position: absolute; inset: 1px; z-index: -1; border-radius: inherit; pointer-events: none; background: var(--cipher, none) 4px 3px / 220px 126px;
-  -webkit-mask-image: linear-gradient(90deg, rgba(0,0,0,.25), #000 62%); mask-image: linear-gradient(90deg, rgba(0,0,0,.25), #000 62%); }
-.swc .fh, .swc .ff { font-size: 13px; }
-.swc .fm .amt, .swc .fm .big { font: 400 38px/1.15 var(--mono); letter-spacing: -.04em; }
-.swc .fm .say { font: 400 15px/1.4 var(--sans, inherit); }
-.swc .ff .link, .swc .where { font-family: var(--sans, inherit); }
-.swc .coin { border-color: var(--hair-2); font-family: var(--sans, inherit); box-shadow: 0 1px 0 color-mix(in srgb, #fff 6%, transparent) inset, 0 6px 16px -10px #000; }
-.swc .quick button { border-radius: 8px; border-color: var(--hair); }
-.swc .mid .flip { width: 40px; height: 40px; margin: -20px 0 0 -20px; border-color: var(--hair-2); box-shadow: 0 0 0 4px var(--card); }
-.swc .mode { background: var(--field); font-family: var(--sans, inherit); }
-.swc .mode button[aria-checked="true"] { background: var(--raise, var(--card)); }
-.swc .rcpt:not(.hx-pts .rcpt) { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 14px 0 0; }
-.swc .rcpt:not(.hx-pts .rcpt) > div { display: grid; gap: 4px; align-content: start; padding: 10px 12px 11px; border-radius: 12px; background: var(--field); }
-.swc .rcpt:not(.hx-pts .rcpt) > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
-.swc .rcpt:not(.hx-pts .rcpt) dt { font-size: 11.5px; line-height: 1.2; color: var(--faint, var(--mute)); white-space: normal; }
-.swc .rcpt:not(.hx-pts .rcpt) dd { text-align: left; font-size: 13.5px; font-weight: 500; line-height: 1.3; }
-.swc .go { border-radius: 12px; font-size: 15.5px; }
-.swc .go:disabled { color: var(--faint, var(--mute)); background: var(--field); border-color: transparent; }
-.swc .to input { border-radius: 10px; border-color: var(--hair); background: var(--card); }
-.swc .slip button[aria-pressed="true"] { background: var(--raise, color-mix(in srgb, var(--ink) 12%, transparent)); }
+html:not([data-page="spx"]) {
+  & .swc .f { --tone: transparent; position: relative; isolation: isolate; padding: 14px 16px 12px; border: 0; border-radius: 14px; }
+  & .swc .f:focus-within { box-shadow: inset 0 0 0 1px var(--hair-2); }
+  & .swc .f::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none; background: radial-gradient(20rem 9rem at 100% 42%, color-mix(in srgb, var(--tone) 20%, transparent), transparent 72%); }
+  & .swc .f:has(.coin use[href*="eth"]) { --tone: #627EEA; }
+  & .swc .f:has(.coin use[href*="btc"]), & .swc .f:has(.coin use[href*="tac"]) { --tone: #F7931A; }
+  & .swc .f:has(.coin use[href*="usdc"]) { --tone: #2775CA; }
+  & .swc .f:has(.coin use[href*="usdt"]), & .swc .f:has(.coin use[href*="cusd"]) { --tone: #26A17B; }
+  & .swc .f:has(.where.priv), & .swc .f.priv { outline: 1px dashed var(--hair-2); outline-offset: -1px; }
+  & .swc .f:has(.where.priv)::after, & .swc .f.priv::after { content: ''; position: absolute; inset: 1px; z-index: -1; border-radius: inherit; pointer-events: none; background: var(--cipher, none) 4px 3px / 220px 126px;
+    -webkit-mask-image: linear-gradient(90deg, rgba(0,0,0,.25), #000 62%); mask-image: linear-gradient(90deg, rgba(0,0,0,.25), #000 62%); }
+  & .swc .fh, & .swc .ff { font-size: 13px; }
+  & .swc .fm .amt, & .swc .fm .big { font: 400 38px/1.15 var(--mono); letter-spacing: -.04em; }
+  & .swc .fm .say { font: 400 15px/1.4 var(--sans, inherit); }
+  & .swc .ff .link, & .swc .where { font-family: var(--sans, inherit); }
+  & .swc .coin { border-color: var(--hair-2); font-family: var(--sans, inherit); box-shadow: 0 1px 0 color-mix(in srgb, #fff 6%, transparent) inset, 0 6px 16px -10px #000; }
+  & .swc .quick button { border-radius: 8px; border-color: var(--hair); }
+  & .swc .mid .flip { width: 40px; height: 40px; margin: -20px 0 0 -20px; border-color: var(--hair-2); box-shadow: 0 0 0 4px var(--card); }
+  & .swc .mode { background: var(--field); font-family: var(--sans, inherit); }
+  & .swc .mode button[aria-checked="true"] { background: var(--raise, var(--card)); }
+  & .swc .rcpt:not(.hx-pts .rcpt) { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 14px 0 0; }
+  & .swc .rcpt:not(.hx-pts .rcpt) > div { display: grid; gap: 4px; align-content: start; padding: 10px 12px 11px; border-radius: 12px; background: var(--field); }
+  & .swc .rcpt:not(.hx-pts .rcpt) > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  & .swc .rcpt:not(.hx-pts .rcpt) dt { font-size: 11.5px; line-height: 1.2; color: var(--faint, var(--mute)); white-space: normal; }
+  & .swc .rcpt:not(.hx-pts .rcpt) dd { text-align: left; font-size: 13.5px; font-weight: 500; line-height: 1.3; }
+  & .swc .go { border-radius: 12px; font-size: 15.5px; }
+  & .swc .go:disabled { color: var(--faint, var(--mute)); background: var(--field); border-color: transparent; }
+  & .swc .to input { border-radius: 10px; border-color: var(--hair); background: var(--card); }
+  & .swc .slip button[aria-pressed="true"] { background: var(--raise, color-mix(in srgb, var(--ink) 12%, transparent)); }
+}
