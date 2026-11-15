@@ -108,6 +108,31 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   ok(seen.length > 0 && seen.every((k) => k === 'true|false|0') && logos >= 2, `the tile never shows the default pair or a letter mark for SPX: its first paint is SPX with its logo (${seen.join(' > ')}, ${logos} logos)`);
   await ctx.close();
 }
+// a farm zap's Activity row reads the line under it from the farm-bond step's own status, so a page that closed before the bond landed does not leave "Putting it in the farm…" under a share that is in
+for (const [bond, want, not, said] of [['settled', /In the farm\./, /Putting it in the farm/, 'once the bond has landed: In the farm.'], ['proving', /Putting it in the farm…/, /In the farm\./, 'while the bond is still going: Putting it in the farm…'], ['failed', /Not in the farm yet: farm it from Your Tacit\./, /Putting it in the farm/, 'if the bond failed: not in the farm yet, farm it from Your Tacit']]) {
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage(), t0 = Date.now() - 300e3;
+  await p.addInitScript(([bond, t0]) => {
+    const h = (c) => '0x' + c.repeat(64), at = { at: t0, up: t0 + 50e3, end: t0 + 50e3 };
+    const items = [
+      { id: 'op:t1', kind: 'op', label: 'Add 0.0002 ETH to tETH / SPX', status: 'settled', mid: 'added, putting it in the farm…', note: 'Putting it in the farm…', ...at,
+        steps: [{ id: `job:${h('a')}`, main: true, step: null, doing: null }, { id: `tx:1:${h('1')}`, main: false, step: 'Pool', doing: 'Adding' }, { id: `job:${h('b')}`, main: false, step: 'Farm your tETH / SPX share', doing: 'Farming' }] },
+      { id: `job:${h('a')}`, kind: 'job', type: 'wrap', status: 'settled', in: 'op:t1', proveOnly: true, hash: h('1'), ...at },
+      { id: `tx:1:${h('1')}`, kind: 'tx', status: 'confirmed', in: 'op:t1', hash: h('1'), chain: 1, label: 'Add 0.0002 ETH to tETH / SPX', ...at },
+      { id: `job:${h('b')}`, kind: 'job', type: 'farmbond', status: bond, in: 'op:t1', ...(bond === 'proving' ? { at: t0 + 50e3, up: t0 + 50e3 } : { at: t0 + 50e3, up: t0 + 100e3, end: t0 + 100e3 }), ...(bond === 'failed' ? { err: 'refused' } : {}) },
+    ];
+    try { localStorage.setItem('tacit-lite-activity-v1', JSON.stringify({ items })); } catch { }
+  }, [bond, t0]);
+  // the page asks the relay about a step that has not ended: it answers with that step's status (else the made-up job reads as one the relay lost)
+  await p.route('**/confidential/status**', (r) => r.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ jobId: '0x' + 'b'.repeat(64), type: 'farmbond', status: bond, ...(bond === 'failed' ? { error: 'refused' } : {}) }) }));
+  await p.goto(BASE + '/spx/', { waitUntil: 'load' });
+  await p.waitForSelector('#hx .go', { timeout: 40000 }).catch(() => {});
+  await p.waitForSelector('#act:not([hidden])', { timeout: 15000 }).catch(() => {});
+  await p.evaluate(() => document.querySelector('#act')?.click());
+  await p.waitForTimeout(1200);
+  const t = await p.evaluate(() => (document.querySelector('#act-body')?.innerText || '').replace(/\s+/g, ' '));
+  ok(/Add 0\.0002 ETH to tETH \/ SPX/.test(t) && want.test(t) && !not.test(t), `a farm zap's Activity row says ${said}`);
+  await ctx.close();
+}
 {
   const { ctx, p, bad } = await open('/spx/');
   ok(/SHIELD SPX/i.test(await waitFor(p, /Shield SPX/i)), 'the tile opens on Shield SPX, from the wallet into the DeFi pool');

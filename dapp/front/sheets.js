@@ -60,6 +60,14 @@ function opWhere(it) {
   if (cur.it.kind === 'tx') return html`${cur.doing || cur.step}: waiting for it to land · <a href="${txUrl(cur.it)}" target="_blank" rel="noopener">${txMark(cur.it)}${txSite(cur.it)} ↗</a>`;
   return `${cur.doing || cur.step}. ${jobWhere(cur.it)}`;
 }
+// A farm zap's item is done when its transaction lands, and the line under it follows the step that puts the share in the farm: read from that step's own
+// status, so a page that closed before it landed (and wrote nothing more) does not leave "Putting it in the farm…" under a share that is in.
+function bondNote(it) {
+  if (!it.mid) return it.note;
+  const b = opParts(it).map((x) => x.it).find((j) => j?.type === 'farmbond');
+  if (b) return okStatus(b.status) ? 'In the farm.' : badStatus(b.status) ? 'Not in the farm yet: farm it from Your Tacit.' : 'Putting it in the farm…';
+  return it.end && Date.now() - it.end > 120e3 ? 'Your share is a private note. If it is not in the farm yet, farm it from Your Tacit.' : it.note;
+}
 function actFoot(it) {
   if (it.kind === 'chain') {
     return it.status === 'settled' ? html`<div class="actr-f">Landed on Ethereum${it.end ? html` in ${clock(it.end - it.at)}` : ''}${it.height ? html`, block <span class="num">${it.height}</span>` : ''}</div>`
@@ -82,7 +90,8 @@ function actFoot(it) {
     confirmed: () => html`${it.flip ? 'Confirmed' : `Confirmed in ${took}`} · ${link}`,
     stale: () => html`${it.kind === 'btc' ? 'Not confirmed after three days.' : 'Not seen after half an hour; it may have been dropped or replaced.'} ${link}`,
   }[it.status];
-  return html`<div class="actr-f">${say_ ? say_() : ''}</div>${it.note ? html`<div class="actr-f">${it.note}</div>` : ''}${it.warn ? html`<div class="actr-f err">${it.warn}</div>` : ''}${selfLine(it)}${openLine(it)}`;
+  const note = bondNote(it);
+  return html`<div class="actr-f">${say_ ? say_() : ''}</div>${note ? html`<div class="actr-f">${note}</div>` : ''}${it.warn ? html`<div class="actr-f err">${it.warn}</div>` : ''}${selfLine(it)}${openLine(it)}`;
 }
 function selfLine(it) {
   if (SELF.has(it.id)) return html`<div class="actr-f">${SELF.get(it.id)}</div>`;
