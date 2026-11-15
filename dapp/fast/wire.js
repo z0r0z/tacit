@@ -12,10 +12,10 @@
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=882f11ad';
-import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=d8b85602';
+import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=04c24703';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=a59760d0';
-import { makeLpService } from '/fastbridge-provider.js?cb=20585d3a';
+import { makeLpService } from '/fastbridge-provider.js?cb=36620f82';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, gatewayOf } from '/fastbridge-mailbox.js?cb=e88908a8';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { signSchnorr } from '/bulletproofs.js';
