@@ -44,6 +44,7 @@ import { prfRegister, prfLogin, loadPrfMap, savePrfMap, clearPrfMap, isPasskeyAv
 import { bppRangeProve, bppRangeVerify } from './bulletproofs-plus.js';
 import { makeConfidentialPool } from './confidential-pool.js';
 import { loadTrackedNotes } from './tracked-notes.js';
+import { sharedTreeWorkers } from './confidential-tree-workers-shared.js';
 import { makeConfidentialPoolUx, setExternalTacHolders, forgetKeys as forgetPoolKeys } from './confidential-pool-ux.js';
 import { makeBurnDepositUx } from './burndep-ux.js';
 import { makeTxArchive } from './tx-archive.js';
@@ -13496,8 +13497,9 @@ function _trackedNotesLoad() {
   if (_tracked.p) return _tracked.p;
   if (_tracked.set && Date.now() - _tracked.at < TRACKED_TTL_MS) return Promise.resolve(_tracked.set);
   if (!dep.pool || !WORKER_BASE || _trackedOff()) return Promise.resolve(null);
+  sharedTreeWorkers.warm?.().catch(() => {});          // the workers that make the live set's root start while it is fetched
   const p = loadTrackedNotes({
-    pool: _leafKitOf(), keccak256: keccak_256,
+    pool: _leafKitOf(), keccak256: keccak_256, treeWorkers: sharedTreeWorkers,
     fetchLive: async () => {
       const r = await fetch(`${WORKER_BASE}/reflection/live?network=${encodeURIComponent(net)}`);
       if (!r.ok) throw new Error(`reflection/live ${r.status}`);

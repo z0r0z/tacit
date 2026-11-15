@@ -1,5 +1,5 @@
 
-import { makeTreeCore } from './confidential-tree-core.js';
+import { makeTreeCore, LIVE_PRE } from './confidential-tree-core.js';
 import { makeConfidentialProver } from './evm-confidential.js';
 import { verifySchnorr, bpRangeVerify, bpClassicProofLen } from './bulletproofs.js';
 import { bppRangeVerify, bytesToPoint as bppPoint, ZERO as bppZero } from './bulletproofs-plus.js';
@@ -19,8 +19,33 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   const prover = makeConfidentialProver({ secp, keccak256, sha256 });
   const N = secp.CURVE.n;
 
-  const hexToBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
-  const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  // These two are the pool's every conversion (a leaf, a hash, an id: some two hundred uses), and read a character or a byte at a time through a table where the answer is the same as the generic
+  // one's: hex of even length with nothing but hex digits, and bytes in a Uint8Array. Anything else (an odd length, a character that is not a digit, '0X', a plain array) is made as it always was.
+  // tests/confidential-hex.test.mjs holds the two to each other.
+  const HEXB = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+  const NIB = new Int8Array(128).fill(-1);
+  for (let i = 0; i < 10; i++) NIB[48 + i] = i;
+  for (let i = 0; i < 6; i++) { NIB[97 + i] = 10 + i; NIB[65 + i] = 10 + i; }
+  const hexToBytesSlow = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
+  const hexToBytes = (h) => {
+    const s = String(h).replace(/^0x/, '');
+    if (s.length & 1) return hexToBytesSlow(h);       // (the generic one is given what was given, not what is left of it: it takes the 0x off itself)
+    const out = new Uint8Array(s.length >> 1);
+    for (let i = 0; i < out.length; i++) {
+      const a = s.charCodeAt(2 * i), b = s.charCodeAt(2 * i + 1);
+      const x = a < 128 ? NIB[a] : -1, y = b < 128 ? NIB[b] : -1;
+      if (x < 0 || y < 0) return hexToBytesSlow(h);
+      out[i] = (x << 4) | y;
+    }
+    return out;
+  };
+  const bytesToHexSlow = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  const bytesToHex = (b) => {
+    if (!(b instanceof Uint8Array)) return bytesToHexSlow(b);
+    let s = '';
+    for (let i = 0; i < b.length; i++) s += HEXB[b[i]];
+    return s;
+  };
   const hx = (b) => '0x' + bytesToHex(b);
   const b32 = (v) => {
     if (v instanceof Uint8Array) return v.length === 32 ? v : padL(v, 32);
@@ -310,16 +335,23 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return { insert, remove, setNodes, root, leaves, membershipWitness, low, predecessor, contains, nodes: () => nodes.map((n) => n.slice()) };
   }
 
-  const liveLeaf = (key, value, asset, authKey, bound) =>
-    hx(keccak256(concat([b32(key), b32(asset), b32(value), b32(authKey), Uint8Array.of(bound & 1)])));
+  // The 129 bytes a live-set leaf is the hash of: key ‖ asset ‖ value ‖ authKey ‖ bound. One definition, for a leaf by itself and for the batch the workers hash (LIVE_PRE bytes at `off` in `out`).
+  const livePre = (key, value, asset, authKey, bound, out = new Uint8Array(LIVE_PRE), off = 0) => {
+    out.set(b32(key), off); out.set(b32(asset), off + 32); out.set(b32(value), off + 64); out.set(b32(authKey), off + 96); out[off + 128] = bound & 1;
+    return out;
+  };
+  const liveLeaf = (key, value, asset, authKey, bound) => hx(keccak256(livePre(key, value, asset, authKey, bound)));
+  const NORM32 = /^0x[0-9a-f]{64}$/;
   function makeLiveUtxoSet() {
-    const norm = (x) => hx(b32(x));
+    // a value that is already 0x and 64 lower-case digits is what hx(b32(x)) gives it back, so it is kept as it is (the entries the API gives are all of this form)
+    const norm = (x) => (typeof x === 'string' && NORM32.test(x) ? x : hx(b32(x)));
     const big = (x) => BigInt(norm(x));
     let entries = [];
     let keyMap = null;
     const buildKeyMap = () => { keyMap = new Map(); for (let i = 0; i < entries.length; i++) keyMap.set(entries[i][0], i); };
     const idxOf = (key) => { if (!keyMap) buildKeyMap(); const i = keyMap.get(norm(key)); return i === undefined ? -1 : i; };
-    const sort = () => { entries.sort((a, b) => (big(a[0]) < big(b[0]) ? -1 : big(a[0]) > big(b[0]) ? 1 : 0)); keyMap = null; };
+    // the keys are normalized (0x and 64 lower-case digits), so their order as strings is the order of the numbers they are
+    const sort = () => { entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)); keyMap = null; };
     function get(keyIn) { const i = idxOf(norm(keyIn)); return i < 0 ? null : [entries[i][1], entries[i][2], entries[i][3]]; }
     function boundTag(keyIn) { const i = idxOf(norm(keyIn)); return i < 0 ? null : entries[i][4]; }
     function insert(keyIn, valueIn, assetIn, authKeyIn, boundIn) {
@@ -335,9 +367,23 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       const [, v, a, ak] = entries[i]; entries.splice(i, 1); keyMap = null; return [v, a, ak];
     }
     function root() { const t = new Tree(); for (const [k, v, a, ak, b] of entries) t.insert(liveLeaf(k, v, a, ak, b)); return t.root(); }
+    // The same root with the work of it (a hash for each entry and a hash for each pair above them, about two for each) done in `workers` (confidential-tree-workers.js hashed), so a set of thousands
+    // does not hold the page's thread. What they give is put together and checked at its edges here (the first and last leaf of every chunk against its preimage, the first and last node of
+    // every chunk at every level); anything less (too few entries, no workers, a failed or odd answer) leaves the root to root(), so it is the same root whatever the workers do.
+    async function rootAsync(workers) {
+      const n = entries.length;
+      if (!workers || typeof workers.hashed !== 'function' || n === 0) return root();
+      try {
+        const pre = new Uint8Array(n * LIVE_PRE);
+        entries.forEach(([k, v, a, ak, b], i) => livePre(k, v, a, ak, b, pre, i * LIVE_PRE));
+        const w = await workers.hashed(pre, n);
+        if (w && treeCore.leafEdgesHold(pre, n, w.leaves, w.h) && treeCore.edgesHold(w.leaves, n, w.lower, w.h)) return hx(treeCore.finish(w.leaves, n, w.lower, w.h).top);
+      } catch { /* made here */ }
+      return root();
+    }
     const triples = () => entries.map(([k, v, a, ak, b]) => [k, v, a, ak, b]);
     function load(ts) { entries = ts.map(([k, v, a, ak, b]) => [norm(k), norm(v), norm(a), norm(ak || ZERO32), (b ? 1 : 0)]); sort(); }
-    return { get, insert, remove, root, triples, load, boundTag, len: () => entries.length };
+    return { get, insert, remove, root, rootAsync, triples, load, boundTag, len: () => entries.length };
   }
 
   const commitmentHash = (cx, cy) => hx(keccak(cx, cy));
@@ -2164,7 +2210,8 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     imtLeaf, imtRoot, imtEmptyRoot, makeImtAccumulator,
     utxoLeaf, makeUtxoAccumulator, pendingDepositValue, ETH_GENESIS_SYNC_COMMITTEE, commitmentHash, decompressCommitment, compressXY, outpointKey, getAmountOut, hx, swapVarIntentMsg, swapRouteIntentMsg, bridgeBurnId, protofeeBlind,
     makeReflectionState, assembleReflectionInput, openingSigma, verifyOpeningSigma, openingPokBlind, verifyOpeningPokBlind, deriveOpeningNonce, intentContext,
-    liveLeaf, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput, generationalRebaseAnchor,
+    liveLeaf, livePre, makeLiveUtxoSet, makeScanReflectionState, assembleReflectionScanInput, generationalRebaseAnchor,
+    _hex: { hexToBytes, bytesToHex, hexToBytesSlow, bytesToHexSlow },     // for tests/confidential-hex.test.mjs, which holds the fast conversions to the generic ones
     farmReceiptLeaf, farmReceiptNullifier, makeFarmRewardSet, makeFarmEntrySet, FARM_RPS_PRECISION,
     evmLpHarvestOwnerMsg, evmLpUnbondOwnerMsg, evmPoolId, evmLpShareId, nkToOwner, nativeNullifier, nativeNu,
     DEST_CHAIN_BITCOIN, ethCrossoutLeaf, ethConsumedLeaf, ethCrossoutMember, buildEthPv, buildModeBBatch,

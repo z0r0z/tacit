@@ -34,7 +34,7 @@ import { randomScalar, bppH, G as BPP_G } from './bulletproofs-plus.js';
 import { hmac, sha256 as vendorSha256 } from './vendor/tacit-deps.min.js';
 import { loadSnapshot, pointerCall, readPointer, poolTrees, sameTrees, selectLogs, snapshotCovers, treesOf } from './pool-snapshot.js';
 import * as poolSnap from './pool-snapshot.js';
-import { makeTreeWorkers } from './confidential-tree-workers.js';
+import { sharedTreeWorkers as treeWorkers } from './confidential-tree-workers-shared.js';
 import { makeConfidentialRecovery, privBytes, deriveOutputKeys } from './confidential-recovery.js';
 import { makeImportedFarmStore } from './confidential-secret-store.js';
 import { makeBtcHistoryProvider } from './confidential-recovery-btc.js';
@@ -62,9 +62,8 @@ function browserLogStore() {
 }
 
 const _keyForgetters = new Set();
-// The workers that make the levels of the pool's trees (Tree.prepare): one set for the page, kept a few seconds after a tree. Namespace imports and optional calls below, as these sit in plain
+// treeWorkers (above): the workers that make the levels of the pool's trees (Tree.prepare), one set for the page. Namespace imports and optional calls below, as these sit in plain
 // modules that can be a copy apart for a few minutes after a deploy: a tree or a module without them is made as it always was.
-const treeWorkers = makeTreeWorkers();
 
 export function forgetKeys() {
   for (const forget of _keyForgetters) { try { forget(); } catch { } }

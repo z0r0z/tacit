@@ -161,5 +161,38 @@ const trackedOf = (entries) => ({ get: (txid, vout) => entries.get(`${txid}:${vo
   T._testSetTrackedNotes(null);
 }
 
+// ── the live set's root in workers (treeWorkers): the same set is accepted, the same sets are refused, and workers that are missing or wrong change nothing ──
+{
+  const { makeTreeWorkers } = await import('../dapp/confidential-tree-workers.js');
+  const { makeTreeCore } = await import('../dapp/confidential-tree-core.js');
+  const core = makeTreeCore({ keccak256: keccak_256 });
+  const calls = [];
+  const stand = ({ corruptLeaf = false } = {}) => makeTreeWorkers({
+    available: () => true, count: () => 2, minLeaves: 1, idleMs: 100,
+    make: () => ({ onmessage: null, onerror: null, terminate() {}, postMessage(m) {
+      calls.push(!!m.pre);
+      setTimeout(() => {
+        const made = m.pre ? core.hashLeaves(new Uint8Array(m.leaves), m.count) : new Uint8Array(m.leaves);
+        if (corruptLeaf) made[0] ^= 1;
+        const levels = core.lower(made, m.count, m.h).map((b) => b.buffer);
+        this.onmessage({ data: m.pre ? { id: m.id, leaves: made.buffer, levels } : { id: m.id, levels } });
+      }, 1);
+    } }),
+  });
+  const withWorkers = (live, treeWorkers, digest = onChain, p = pool) => loadTrackedNotes({ pool: p, keccak256: keccak_256, fetchLive: async () => live, attestedDigest: async () => digest, treeWorkers });
+  const t = await withWorkers(answer, stand());
+  ok(calls.length > 0 && calls.every(Boolean) && t.size === 2 && t.get(NOTE_TXID, 1)?.commitmentHash === hex32(0x1234n).slice(2), 'a set whose root the workers made is accepted, as the same set is without them');
+  let refused = 0;
+  for (const live of [{ ...answer, liveTriples: triples.slice(1) }, { ...answer, liveTriples: triples.map((x, i) => (i ? x : [x[0], hex32(0x9999n), x[2], x[3], x[4]])) }]) {
+    try { await withWorkers(live, stand()); } catch { refused++; }
+  }
+  ok(refused === 2, 'a set that is not the attested one is refused with the workers as without them');
+  const lying = await withWorkers(answer, stand({ corruptLeaf: true }));
+  ok(lying.size === 2, 'workers whose leaf is wrong at its edge are not taken, and the set is checked on the root made here');
+  const noRoot = { ...pool, makeLiveUtxoSet: () => { const s = pool.makeLiveUtxoSet(); delete s.rootAsync; return s; } };
+  ok((await withWorkers(answer, stand(), onChain, noRoot)).size === 2, 'a pool from before rootAsync is checked as it always was');
+  ok((await withWorkers(answer, null)).size === 2, 'no workers: as it always was');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

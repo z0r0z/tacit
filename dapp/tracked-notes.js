@@ -15,14 +15,16 @@ function bytesOf(words) {
 const hexOf = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 
 // → { height, get(txid, vout) → { commitmentHash, asset, authKey, bound } | null, size }, or throws when the set does not check out.
-export async function loadTrackedNotes({ pool, keccak256, fetchLive, attestedDigest }) {
+export async function loadTrackedNotes({ pool, keccak256, fetchLive, attestedDigest, treeWorkers = null }) {
   const [live, onChain] = await Promise.all([fetchLive(), attestedDigest()]);
   const parts = live && Array.isArray(live.parts) ? live.parts : null;
   const triples = live && Array.isArray(live.liveTriples) ? live.liveTriples : null;
   if (!parts || parts.length <= LIVE_ROOT_AT + 1 || !triples) throw new Error('tracked notes: the API answer is not a live set');
   const set = pool.makeLiveUtxoSet();
   set.load(triples);
-  if (strip(set.root()) !== strip(parts[LIVE_ROOT_AT]) || BigInt('0x' + strip(parts[LIVE_ROOT_AT + 1])) !== BigInt(set.len())) {
+  // the root of a set of thousands is a hash for each entry and for each pair above them: in `treeWorkers` where the set has the way to (rootAsync), else here, the same root
+  const root = typeof set.rootAsync === 'function' && treeWorkers ? await set.rootAsync(treeWorkers) : set.root();
+  if (strip(root) !== strip(parts[LIVE_ROOT_AT]) || BigInt('0x' + strip(parts[LIVE_ROOT_AT + 1])) !== BigInt(set.len())) {
     throw new Error('tracked notes: the live set does not match the digest words it came with');
   }
   const digest = hexOf(keccak256(bytesOf(parts)));

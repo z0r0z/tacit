@@ -9,7 +9,7 @@
 // could be made, or a worker failed, was too long or gave an answer that is not the size it has to be, and the page makes the whole of it, as it always did. The workers are
 // kept `idleMs` after the last tree, as a page asks for more than one (the pool's, the snapshot's, the live set's).
 import { startWorker } from './worker-start.js';
-import { chunkHeight, nodesAt } from './confidential-tree-core.js';
+import { chunkHeight, nodesAt, LIVE_PRE } from './confidential-tree-core.js';
 
 export const MIN_LEAVES = 1024;
 export const CHUNK_MS = 60e3;
@@ -33,8 +33,10 @@ export function makeTreeWorkers({
     try { w.postMessage(msg, [msg.leaves]); } catch { clearTimeout(timer); w.bad = true; done(null); }
   });
 
-  async function run(leaves, n) {
+  // `data`: the n leaves packed 32 bytes each, or (pre) the n preimages of leaves packed LIVE_PRE bytes each, which the workers hash into leaves first and the leaves come back with the levels
+  async function run(data, n, pre = false) {
     clearTimeout(parked);
+    const rec = pre ? LIVE_PRE : 32;
     const k = Math.min(Math.max(1, Number(count()) || 1), Math.ceil(n / 256));
     const h = chunkHeight(n, k), size = 2 ** h, parts = Math.ceil(n / size);
     while (pool.length < Math.min(k, parts)) { try { pool.push(make(url)); } catch { break; } }
@@ -44,9 +46,12 @@ export function makeTreeWorkers({
     const drive = async (w) => {
       while (!w.bad && next < parts) {
         const part = next++, from = part * size, c = Math.min(size, n - from);
-        const r = await ask(w, { id: ++seq, leaves: leaves.slice(from * 32, (from + c) * 32).buffer, count: c, h });
-        const ok = r && Array.isArray(r.levels) && r.levels.length === h && r.levels.every((b, j) => b instanceof ArrayBuffer && b.byteLength === nodesAt(c, j + 1) * 32);
-        if (ok) pieces[part] = r.levels.map((b) => new Uint8Array(b)); else w.bad = true;
+        const msg = { id: ++seq, leaves: data.slice(from * rec, (from + c) * rec).buffer, count: c, h };
+        if (pre) msg.pre = true;
+        const r = await ask(w, msg);
+        const ok = r && Array.isArray(r.levels) && r.levels.length === h && r.levels.every((b, j) => b instanceof ArrayBuffer && b.byteLength === nodesAt(c, j + 1) * 32)
+          && (!pre || (r.leaves instanceof ArrayBuffer && r.leaves.byteLength === c * 32));
+        if (ok) pieces[part] = { levels: r.levels.map((b) => new Uint8Array(b)), leaves: pre ? new Uint8Array(r.leaves) : null }; else w.bad = true;
       }
     };
     try { await Promise.all(pool.slice(0, Math.min(k, parts)).map(drive)); }
@@ -61,11 +66,15 @@ export function makeTreeWorkers({
     for (let j = 0; j < h; j++) {
       const out = new Uint8Array(nodesAt(n, j + 1) * 32);
       let off = 0;
-      for (const p of pieces) { out.set(p[j], off); off += p[j].length; }
+      for (const p of pieces) { out.set(p.levels[j], off); off += p.levels[j].length; }
       if (off !== out.length) return null;
       lower.push(out);
     }
-    return { h, lower };
+    if (!pre) return { h, lower };
+    const leaves = new Uint8Array(n * 32);
+    let at = 0;
+    for (const p of pieces) { leaves.set(p.leaves, at); at += p.leaves.length; }
+    return { h, lower, leaves };
   }
 
   // Starts the workers and has each make a small tree (about two hundred hashes), so the first real tree finds them loaded and their code compiled. The page asks for this when it
@@ -93,6 +102,13 @@ export function makeTreeWorkers({
   const treeWorkers = async function treeWorkers(leaves, n) {
     if (!available() || !(leaves instanceof Uint8Array) || leaves.length !== n * 32 || n < minLeaves) return null;
     const mine = queue.then(() => run(leaves, n));
+    queue = mine.catch(() => {});
+    return mine;
+  };
+  // The same for a set whose leaves are hashes of records: `pre` is the n preimages packed LIVE_PRE bytes each → { h, lower, leaves } | null, the leaves made by the workers as well.
+  treeWorkers.hashed = async function hashed(pre, n) {
+    if (!available() || !(pre instanceof Uint8Array) || pre.length !== n * LIVE_PRE || n < minLeaves) return null;
+    const mine = queue.then(() => run(pre, n, true));
     queue = mine.catch(() => {});
     return mine;
   };

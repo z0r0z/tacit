@@ -9,6 +9,8 @@
 // Deps are passed in (`keccak256`) so the page and the worker bring their own.
 
 export const TREE_DEPTH = 32;
+// A leaf of the live UTXO set is the hash of 129 bytes: key ‖ asset ‖ value ‖ authKey ‖ bound (confidential-pool.js livePre), packed one after another for the workers.
+export const LIVE_PRE = 129;
 
 // The height h of a chunk so that about `k` chunks cover `n` leaves: the least h with 2^h >= ceil(n / k).
 export function chunkHeight(n, k) {
@@ -87,5 +89,23 @@ export function makeTreeCore({ keccak256, depth = TREE_DEPTH }) {
     return true;
   }
 
-  return { zeros, up, lower, finish, edgesHold };
+  // `count` leaves from their preimages (LIVE_PRE bytes each): a worker's first step for a set whose leaves are hashes of records
+  function hashLeaves(pre, count) {
+    const out = new Uint8Array(count * 32);
+    for (let i = 0; i < count; i++) out.set(keccak256(pre.subarray(LIVE_PRE * i, LIVE_PRE * (i + 1))), 32 * i);
+    return out;
+  }
+  // The leaves a worker made, checked where it matters to the page: the first and last leaf of every chunk is the hash of its preimage. (As with edgesHold, a check of the ends, not of the whole.)
+  function leafEdgesHold(pre, n, leaves, h) {
+    if (leaves.length !== n * 32 || pre.length !== n * LIVE_PRE) return false;
+    const size = 2 ** h, parts = Math.ceil(n / size), ks = new Set();
+    for (let c = 0; c < parts; c++) { ks.add(c * size); ks.add(Math.min((c + 1) * size, n) - 1); }
+    for (const i of ks) {
+      const want = keccak256(pre.subarray(LIVE_PRE * i, LIVE_PRE * (i + 1)));
+      for (let b = 0; b < 32; b++) if (leaves[32 * i + b] !== want[b]) return false;
+    }
+    return true;
+  }
+
+  return { zeros, up, lower, finish, edgesHold, hashLeaves, leafEdgesHold };
 }

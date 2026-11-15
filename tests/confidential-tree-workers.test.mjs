@@ -30,23 +30,26 @@ const same = (a, b, what) => {
 };
 
 // Stand-in workers that run the same function in this thread, a tick later.
-function fake({ failAt = null, hangAt = null, shortAt = null, wrongAt = null, corrupt = null, made = [], opts = {}, calls = [] } = {}) {
+function fake({ failAt = null, hangAt = null, shortAt = null, wrongAt = null, corrupt = null, noLeaves = false, corruptLeaf = null, ignorePre = false, made = [], opts = {}, calls = [] } = {}) {
   let n = 0;
   return makeTreeWorkers({
     available: () => true, count: () => 3, minLeaves: 1, chunkMs: 20e3, idleMs: 800, ...opts,
     make: () => {
       if (opts.makeThrows) throw new Error('no workers here');
       const w = { ended: false, onmessage: null, onerror: null, terminate() { this.ended = true; },
-        postMessage({ id, leaves, count, h }) {
-          const nth = n++; calls.push({ count, h });
+        postMessage({ id, leaves, count, h, pre }) {
+          const nth = n++; calls.push({ count, h, pre: !!pre });
           setTimeout(() => {
             if (w.ended || nth === hangAt) return;
             if (nth === failAt) return w.onerror?.(new Error('boom'));
-            let levels = core.lower(new Uint8Array(leaves), count, h).map((b) => b.buffer);
+            const hashed = pre && !ignorePre;                       // ignorePre: a worker script from before the live set's job, which takes the preimages for leaves
+            const made = hashed ? core.hashLeaves(new Uint8Array(leaves), count) : new Uint8Array(leaves);
+            if (corruptLeaf && nth === corruptLeaf.at) made[corruptLeaf.byte < 0 ? made.length + corruptLeaf.byte : corruptLeaf.byte] ^= 1;
+            let levels = core.lower(made, count, h).map((b) => b.buffer);
             if (nth === shortAt) levels = levels.slice(1);
             if (nth === wrongAt) levels = levels.map((b, j) => (j === 0 ? b.slice(32) : b));
             if (corrupt && nth === corrupt.at) { const b = new Uint8Array(levels[corrupt.level]); b[corrupt.byte < 0 ? b.length + corrupt.byte : corrupt.byte] ^= 1; }
-            w.onmessage?.({ data: { id, levels } });
+            w.onmessage?.({ data: hashed && !noLeaves ? { id, leaves: made.buffer, levels } : { id, levels } });
           }, 1);
         } };
       made.push(w);
@@ -196,5 +199,78 @@ test('the shipped worker file, run in threads, makes the levels the tree makes',
     same(t.levels(), treeOf(n).levels(), `${n} leaves`);
   }
   assert.ok(threads.length >= 2);
+  await pause(1800);
+});
+
+// The live UTXO set: the root with the work of it in workers
+const word = (i, salt) => '0x' + Buffer.from(keccak_256(new TextEncoder().encode(`w${salt}-${i}`))).toString('hex');
+const liveSet = (n) => { const s = pool.makeLiveUtxoSet(); s.load(Array.from({ length: n }, (_, i) => [word(i, 'k'), word(i, 'v'), word(i, 'a'), i % 3 ? word(i, 'u') : null, i % 2])); return s; };
+
+test('the root of a live set made in workers is the root the set makes itself, for every size and any number of workers', async () => {
+  for (const count of [1, 2, 3, 4, 7]) {
+    for (const n of [1, 2, 3, 5, 100, 255, 256, 257, 1000, 1023, 1024, 1025, 3000]) {
+      const calls = [], workers = fake({ calls, opts: { count: () => count } }), set = liveSet(n);
+      assert.strictEqual(await set.rootAsync(workers), set.root(), `${n} entries, ${count} workers`);
+      assert.ok(calls.length > 0 && calls.every((c) => c.pre), `${n} entries, ${count} workers: the workers made it`);
+    }
+  }
+});
+
+test('an empty set, no workers, a manager without the live-set job, and a handful of entries (default threshold) are the set\'s own root', async () => {
+  const empty = pool.makeLiveUtxoSet();
+  assert.strictEqual(await empty.rootAsync(fake()), empty.root());
+  const set = liveSet(500);
+  assert.strictEqual(await set.rootAsync(null), set.root());
+  assert.strictEqual(await set.rootAsync(async () => null), set.root(), 'a manager from before the live-set job has no hashed()');
+  const calls = [];
+  assert.strictEqual(await set.rootAsync(makeTreeWorkers({ available: () => true, make: () => { calls.push(1); throw new Error('should not start'); } })), set.root(), 'under the default threshold');
+  assert.strictEqual(calls.length, 0, 'workers are not started for a handful');
+});
+
+test('workers that fail, hang, answer short, answer the wrong size, leave out the leaves (a script from before the job) or take the preimages for leaves give the set\'s own root', async () => {
+  const set = liveSet(3000), want = set.root();
+  const cases = {
+    'a worker that fails': fake({ failAt: 1 }),
+    'a worker that never answers': fake({ hangAt: 0, opts: { chunkMs: 300 } }),
+    'a worker whose answer is short': fake({ shortAt: 1 }),
+    'a worker whose answer is the wrong size': fake({ wrongAt: 0 }),
+    'a worker script that does not give the leaves back': fake({ noLeaves: true }),
+    'a worker script that takes the preimages for leaves': fake({ ignorePre: true }),
+    'workers that cannot be made': fake({ opts: { makeThrows: true } }),
+    'Workers that are not there': makeTreeWorkers({ available: () => false, minLeaves: 1 }),
+  };
+  for (const [name, workers] of Object.entries(cases)) assert.strictEqual(await set.rootAsync(workers), want, name);
+});
+
+test('a leaf wrong at a chunk edge, or a level wrong at one, is not taken: the root is the set\'s own', async () => {
+  const set = liveSet(3000), want = set.root(), h = chunkHeight(3000, 3);
+  for (const [name, workers] of [
+    ['the first leaf of a chunk', fake({ corruptLeaf: { at: 1, byte: 0 } })],
+    ['the last leaf of the last chunk', fake({ corruptLeaf: { at: 2, byte: -1 } })],
+    ['the last node of a level', fake({ corrupt: { at: 2, level: 1, byte: -1 } })],
+    ['the top of a middle chunk', fake({ corrupt: { at: 1, level: h - 1, byte: -1 } })],
+  ]) assert.strictEqual(await set.rootAsync(workers), want, name);
+});
+
+test('the shipped worker file, run in threads, makes the root of a live set', async () => {
+  const workerFile = fileURLToPath(new URL('../dapp/confidential-tree-worker.js', import.meta.url));
+  const boot = `const { parentPort } = require('node:worker_threads');
+    globalThis.self = { postMessage: (m, t) => parentPort.postMessage(m, t) };
+    const held = []; let up = false;
+    parentPort.on('message', (data) => { if (up) globalThis.self.onmessage({ data }); else held.push(data); });
+    import(${JSON.stringify('file://' + workerFile)}).then(() => { up = true; for (const d of held.splice(0)) globalThis.self.onmessage({ data: d }); }, (e) => parentPort.postMessage({ failed: String(e) }));`;
+  const calls = [];
+  const real = makeTreeWorkers({
+    available: () => true, count: () => 3, minLeaves: 1, chunkMs: 60e3, idleMs: 800,
+    make: () => {
+      const th = new ThreadWorker(boot, { eval: true });
+      const w = { onmessage: null, onerror: null, postMessage: (m, tr) => { calls.push(m.pre); th.postMessage(m, tr); }, terminate: () => th.terminate() };
+      th.on('message', (data) => { if (data.failed) return w.onerror?.(new Error(data.failed)); w.onmessage?.({ data }); });
+      th.on('error', (e) => w.onerror?.(e));
+      return w;
+    },
+  });
+  for (const n of [1500, 3000]) { const set = liveSet(n); assert.strictEqual(await set.rootAsync(real), set.root(), `${n} entries`); }
+  assert.ok(calls.length > 0 && calls.every(Boolean), 'the shipped worker made the leaves');
   await pause(1800);
 });
