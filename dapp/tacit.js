@@ -62169,7 +62169,7 @@ export {
   getFeeRate, getFeeTierPref, setFeeTierPref, FEE_TIERS,
   broadcast, broadcastWithRetry, getTx,
   validateOutpoint, requireValidatedLot, _explorerTx, _crossCheckedFetcher, _lotProvedSession, verifyDiscoverAsset, enrichDiscoverMints, getCachedDiscoverMint,
-  bridgedAtTaproot, bridgedAtTaprootCount, bridgedNotes, bridgedTacNotes, bridgedHeldNotes, swapReceiptNotes, moveBridgedNote, _bridgedSwapHint,
+  bridgedAtTaproot, bridgedAtTaprootCount, bridgedNotes, bridgedTacNotes, bridgedHeldNotes, swapReceiptNotes, moveBridgedNote, _bridgedSwapHint, _bridgedNonLegacy as boundAssetTicker,
   getParentEnvelopeData, clearBtcPoolExitCache, _txOutputEnvelope as txOutputEnvelope,
   setStrictValidation, clearValidatorCaches, ValidationUnavailableError, rememberValidated,
   _txMarkNotFound as txMarkNotFound, _txIsRecentlyNotFound as txIsRecentlyNotFound,
