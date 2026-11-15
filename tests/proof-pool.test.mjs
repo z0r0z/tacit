@@ -329,7 +329,7 @@ test('lease: the oldest job first, one lease per address on a client and a few o
   const r2 = await h.pool.lease({ miner: '0x' + '55'.repeat(20), client: 'm5' });
   assert.equal(r2.body.id, b.id);
   assert.equal((await h.pool.results([a.id])).body.results[a.id].status, 'gone');
-  assert.deepEqual({ ...(await h.pool.stats()).body, top: undefined, terms: undefined }, { queued: 1, leased: 1, doneToday: 0, minersToday: 0, done24h: 0, miners24h: 0, oldestQueuedSecs: 120, oldestLeaseSecs: 0, lapsedToday: 4, lapsedPlacesToday: 4, top: undefined, terms: undefined });
+  assert.deepEqual({ ...(await h.pool.stats()).body, top: undefined, terms: undefined }, { queued: 1, leased: 1, doneToday: 0, minersToday: 0, done24h: 0, miners24h: 0, oldestQueuedSecs: 120, oldestLeaseSecs: 0, lapsedToday: 4, lapsedPlacesToday: 4, houseToday: 0, takeoversToday: 0, top: undefined, terms: undefined });
 });
 
 test('submit: public values that are not the job\'s are refused before the verifier is asked; ones the verifier refuses are refused after; either is a strike and the job goes back', async () => {
@@ -411,7 +411,7 @@ test('points: each passing proof earns its address the day\'s points up to the c
   assert.deepEqual(third.r.body, { ok: true, points: 0 }, 'past the cap: kept, not credited');
   assert.equal((await prove(MINER2, 'm2')).r.body.points, 20);
   const s = (await h.pool.stats()).body;
-  assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, oldestQueuedSecs: 0, oldestLeaseSecs: 0, lapsedToday: 0, lapsedPlacesToday: 0, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
+  assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, oldestQueuedSecs: 0, oldestLeaseSecs: 0, lapsedToday: 0, lapsedPlacesToday: 0, houseToday: 0, takeoversToday: 0, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
   assert.deepEqual(s.terms, { pointsPerProof: 20, proofsPerMinerDay: 2, leaseMs: PROOF_POOL.leaseMs, pay: { fullSecs: 60, floorSecs: 600, floorPct: 50 }, takeoverSecs: PROOF_POOL.houseTakeoverMs / 1000 });
   assert.equal(JSON.stringify(s).includes(jobs[0].stdin.slice(2, 40)), false, 'no inputs');
   let c = (await h.pool.credits(DAY0)).body;
@@ -577,6 +577,72 @@ test('routes: open to any origin; a page requests, a miner leases and submits (t
     // The client is kept as a hash, never the address.
     assert.equal([...env.REGISTRY_KV.m.keys()].some((k) => k.includes('203.0.113.7')), false);
     assert.ok([...env.REGISTRY_KV.m.keys()].some((k) => k.includes(clientOf('203.0.113.7'))));
+  } finally { globalThis.fetch = realFetch; }
+});
+
+// Tacit's own prover is the pool's backstop. Through the real route, with a worker token as the box sends it: a job a miner leaves waiting goes to it once it has waited
+// the age it asks for; a lease a miner sits on is taken over past the takeover time; with no miner about, or for a job a page marked urgent, it has the job at once.
+// Real time with short settings (the route builds the pool from env on each request), so this takes about seven seconds.
+test('house backstop, through the route with a worker token: a waiting job after minAge, a lease sat on after the takeover time, an idle pool or an urgent job at once', async () => {
+  const tok = 'h'.repeat(24);
+  const env = { REGISTRY_KV: kv(), POOL_TURN_MS: '0', POOL_MINER_IDLE_MS: '4000', POOL_HOUSE_TAKEOVER_MS: '1500', PROVER_WORKER_TOKENS: `a5000:${tok}` };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  try {
+    const call = (path, init = {}, ip = '203.0.113.7') => worker.fetch(new Request(`https://api.tacit.finance${path}`, { ...init, headers: { Origin: 'https://tacit.finance', 'CF-Connecting-IP': ip, ...(init.headers || {}) } }), env, { waitUntil() {} });
+    const post = (o, headers = {}) => ({ method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(o) });
+    const page = async (j, urgent = false) => assert.equal((await call('/prover/pool/request', post({ type: 'wrap', stdin: j.stdin, expect: { depositId: j.expect.depositId, leaf: j.expect.leaf }, ...(urgent ? { urgent: true } : {}) }), '203.0.113.' + (60 + Math.floor(Math.random() * 100)))).status, 200);
+    const house = (minAgeMs) => call('/prover/pool/lease', post({ minAgeMs }, { Authorization: 'Bearer ' + tok }), '198.51.100.99');
+    const miner = (addr, ip) => call('/prover/pool/lease', post({ miner: addr }), ip);
+    const submit = (j, lease, ip) => call('/prover/pool/submit', post({ id: j.id, lease, publicValues: pvFor(j.expect), proof: PROOF }), ip);
+    const [A, B, C, D] = [70, 71, 72, 73].map((i) => wrapJob(i));
+
+    // a miner is about; a job nobody takes is left for the miners until it has waited minAge, then it is the house's
+    assert.equal((await miner(MINER, '198.51.100.20')).status, 204, 'a miner asks, nothing waits');
+    await page(A);
+    assert.equal((await house(1200)).status, 204, 'a young job is left for the miners that are about');
+    // a page marked this one urgent: the house has it at once, even with a miner about and an older job waiting
+    await page(D, true);
+    let r = await house(600_000);
+    let l = await r.json();
+    assert.deepEqual([r.status, l.id, l.points], [200, D.id, 0], 'urgent: at once, and it earns nothing');
+    r = await submit(D, l.lease, '198.51.100.98');
+    assert.deepEqual(await r.json(), { ok: true, points: 0 });
+    await sleep(1300);
+    r = await house(1200);
+    l = await r.json();
+    assert.deepEqual([r.status, l.id, l.points], [200, A.id, 0], 'the job nobody took has waited minAge: the house has it');
+    assert.deepEqual(await (await submit(A, l.lease, '198.51.100.97')).json(), { ok: true, points: 0 });
+
+    // a miner leases a job and sits on it: the house takes it over once the lease has been held the takeover time, and the miner's late proof is refused
+    await page(B);
+    r = await miner(MINER2, '198.51.100.21');
+    const held = await r.json();
+    assert.deepEqual([r.status, held.id], [200, B.id], 'the miner has it');
+    assert.equal((await house(1200)).status, 204, 'a lease that is young is the miner\'s');
+    await sleep(1700);
+    r = await house(1200);
+    l = await r.json();
+    assert.deepEqual([r.status, l.id, l.points], [200, B.id, 0], 'held past the takeover time: the house has it');
+    r = await submit(B, held.lease, '198.51.100.21');
+    assert.deepEqual([r.status, (await r.json()).code], [409, 'no_lease'], 'the late proof is not taken');
+    assert.deepEqual(await (await submit(B, l.lease, '198.51.100.96')).json(), { ok: true, points: 0 });
+
+    // no miner has asked for a while: a page's job is the house's at once, however long it asks to wait
+    await sleep(2600);
+    await page(C);
+    r = await house(600_000);
+    l = await r.json();
+    assert.deepEqual([r.status, l.id], [200, C.id], 'nobody is asking: the house does not wait for them');
+    assert.deepEqual(await (await submit(C, l.lease, '198.51.100.95')).json(), { ok: true, points: 0 });
+
+    // what the pages and the tally see
+    const res = await (await call(`/prover/pool/result?ids=${[A, B, C, D].map((j) => j.id).join(',')}`)).json();
+    assert.deepEqual(Object.values(res.results).map((x) => x.status), ['done', 'done', 'done', 'done'], 'all four proofs are there for the pages');
+    const stats = await (await call('/prover/pool')).json();
+    assert.deepEqual([stats.doneToday, stats.houseToday, stats.takeoversToday, stats.lapsedToday, stats.terms.takeoverSecs], [4, 4, 1, 1, 2], 'four proofs, all the house\'s, one of them a takeover from the miner that sat on it (its lapse), the takeover time shown');
+    assert.deepEqual([stats.minersToday, stats.top], [0, []], 'none of it earned any miner anything (the credits route is cached for 15 s across tests, so this reads the stats)');
   } finally { globalThis.fetch = realFetch; }
 });
 
@@ -839,6 +905,7 @@ test('house: Tacit\'s own prover takes over a lease held past the takeover time 
   const z = await house();
   assert.equal(z.body.id, b.id, 'then the miner\'s old lease');
   assert.equal((await h.pool.stats()).body.lapsedToday, 2);
+  assert.deepEqual([(await h.pool.stats()).body.houseToday, (await h.pool.stats()).body.takeoversToday], [2, 2], 'two house proofs so far (the first takeover and the queued job) and two takeovers (the second is not proved yet)');
   assert.equal((await h.pool.stats()).body.terms.takeoverSecs, TAKE / 1000);
   // off at 0: the lease runs its whole time
   const off = harness({ cfg: { houseTakeoverMs: 0 } });

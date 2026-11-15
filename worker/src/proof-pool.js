@@ -474,6 +474,9 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
         if (stale && job && job.status === 'open') {
           const [id, old] = stale;
           await lapsed(old, t);
+          const dr = await dayRec(dayOf(t));
+          dr.takeovers = (dr.takeovers || 0) + 1;
+          await write(K.day(dayOf(t)), dr, cfg.daySecs);
           const l = { lease: token(), until: t + cfg.leaseMs, miner: m, client, at: old.at, tries: (old.tries || 0) + 1, skip: [...new Set([...(old.skip || []), old.client])].slice(-16), ...(old.urgent ? { urgent: true } : {}), house: true };
           L[id] = l;
           changed = true;
@@ -645,6 +648,8 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       done24h: Math.max(day.done, rec.done), miners24h: Math.max(day.miners, miners.length),
       // leases let run out or handed back today, and the places that did: a pool whose leases are sat on shows here (honest ones are rare)
       lapsedToday: Object.values(rec.lapses || {}).reduce((a, n) => a + n, 0), lapsedPlacesToday: Object.keys(rec.lapses || {}).length,
+      // proofs Tacit's own prover made today (the backstop: nobody else took the job in time) and the leases it took over from a miner that sat on them
+      houseToday: rec.house || 0, takeoversToday: rec.takeovers || 0,
       top: miners.map(([miner, m]) => ({ miner, proofs: m.proofs })).sort((a, b) => b.proofs - a.proofs || (a.miner < b.miner ? -1 : 1)).slice(0, cfg.top),
       // pointsPerProof is the most a proof earns; `pay` says how it falls with the time a proof took (payFor, payFactor)
       terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs,
