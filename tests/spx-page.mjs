@@ -110,6 +110,7 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   ok(/SHIELD SPX/i.test(await waitFor(p, /Shield SPX/i)), 'the tile opens on Shield SPX, from the wallet into the DeFi pool');
   ok(await p.evaluate(() => location.pathname === '/spx/'), 'the address bar stays on /spx/ (the front page’s routing script turns any other path into /)');
   ok(/From wallet/.test(await tile(p)) && /DeFi pool/.test(await tile(p)), 'paid from the wallet, into the DeFi pool');
+  ok(JSON.stringify(await p.evaluate(() => [...document.querySelectorAll('#hx .hx-where .w')].map((e) => e.textContent.trim()))) === JSON.stringify(['From wallet', 'Back from Bitcoin']), 'Shield’s two ways in read From wallet and Back from Bitcoin (the second is the bridge’s way back: SPX held on Bitcoin, burned there, minted privately here)');
   for (const [i, name, re] of [[2, 'Send', /Send privately/i], [3, 'Withdraw', /Withdraw SPX/i], [4, 'Bridge', /Bridge SPX to Bitcoin/i]]) {
     await p.click(`#spx-ops li:nth-child(${i}) button`);
     const t = await waitFor(p, re);
@@ -207,6 +208,7 @@ for (const w of [820, 390]) {
   const { ctx, p, bad } = await open('/spx/', w);
   await waitFor(p, /Shield SPX/i);
   ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `at ${w} nothing scrolls sideways`);
+  ok(await p.evaluate(() => { const l = [...document.querySelectorAll('#hx .hx-where .w')]; return l.length === 2 && l.every((e) => e.scrollWidth <= e.clientWidth + 1); }), `at ${w} the Shield way-in labels are not cut off`);
   ok(await p.evaluate(() => { const r = (s) => document.querySelector(s).getBoundingClientRect(); return r('#hx').top > r('.spx-ops').bottom - 1 && r('#hx').left >= 0 && r('#hx').right <= innerWidth + 1; }), `at ${w} the tile follows the four moves and fits the screen`);
   ok(bad.length === 0, `at ${w}: no script error and no CSP violation${bad.length ? ': ' + bad.join(' | ') : ''}`);
   await ctx.close();
@@ -225,6 +227,7 @@ for (const w of [820, 390]) {
   const { ctx, p, bad } = await open('/');
   const t = await waitFor(p, /Shield ETH/i, 15000);
   ok(/Shield ETH/i.test(t) && !/SPX/.test(t), 'the front page still opens on Shield ETH');
+  ok(JSON.stringify(await p.evaluate(() => [...document.querySelectorAll('#hx .hx-where .w')].map((e) => e.textContent.trim()))) === JSON.stringify(['From wallet', 'From Bitcoin']), 'and its Shield ways in still read From wallet and From Bitcoin');
   ok(await p.evaluate(() => !document.querySelector('.spx-top, #spx-below') && !document.documentElement.dataset.page), 'and has none of this page’s parts');
   await p.click('#hx-tab-send'); await p.waitForTimeout(1500);
   ok(await p.evaluate(() => ![...(document.querySelector('#hx-sa')?.options || [])].some((o) => /^x[bp]0x/.test(o.value))), 'and its Send list has no SPX rows (they are this page’s)');
