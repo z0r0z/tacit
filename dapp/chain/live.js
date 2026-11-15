@@ -38,17 +38,19 @@ const ICON = {
 const flowOf = (c, pending) => (c.cls === 'sk' || !c.cls || c.cls === 'bad' ? 'off' : c.name === 'Provers' ? (c.cls === 'ok' ? (pending ? 'live' : 'on') : 'off') : c.cls === 'busy' ? 'live' : 'on');
 const wireOf = (a, b) => (a === 'off' || b === 'off' ? 'off' : a === 'live' || b === 'live' ? 'live' : 'on');
 
-export function mountChainLive({ top, mid, rest, earn = document.createElement('div') }) {
+// `hero` is the line under the page's title that says what holders earned; `onYield(y)` hears the same figure ({ ppm, sum, young } or null) for the card.
+export function mountChainLive({ top, mid, rest, earn = document.createElement('div'), plot = document.createElement('div'), hero = null, onYield = null }) {
   const cfg = tacitChain();
   top.innerHTML = `<div class="cl-h"><span class="cl-v" data-r="verdict" data-s=""><span class="dot"></span><span>Reading…</span></span><span class="cl-sub" data-r="sub"></span><span class="cl-more" data-r="more"></span></div>
     <ol class="cl-chain" data-r="chain" aria-label="Latest blocks"></ol><div class="sr" data-r="live" role="status" aria-live="polite"></div>`;
   mid.innerHTML = `<div class="cl-flow" data-r="flow" aria-live="polite"></div><p class="cl-note" data-r="note"></p><div class="cl-stats" data-r="stats"></div>
     <figure class="cl-pool" data-r="pool"><canvas role="img"></canvas><figcaption></figcaption></figure>`;
-  earn.innerHTML = '<p class="cl-earned" data-r="earned"></p><div class="cl-chart" data-r="chart"></div>';
+  earn.innerHTML = '<div class="cl-stats cl-yield" data-r="yield"></div><p class="cl-earned" data-r="earned"></p>';
+  plot.innerHTML = '<p class="cl-ct">What one share was worth, block by block</p><div class="cl-chart" data-r="chart"></div>';
   rest.innerHTML = `<section class="tpg-panel" id="tpg-part"><h2 class="tpg-h">Take part</h2><ul class="cl-part" data-r="part"></ul></section>
     <section class="tpg-panel" id="tpg-rests"><h2 class="tpg-h">What it rests on</h2><ul class="cl-facts" data-r="facts"></ul>
       ${cfg && !cfg.dev ? '<details class="tpg-fold cl-tech"><summary>Chain facts</summary><div><ul class="cl-facts" data-r="tech"></ul></div></details><details class="tpg-fold cl-tech" id="tpg-lead"><summary>Lead blocks</summary><div><ul class="cl-facts" data-r="lead"></ul></div></details>' : ''}</section>`;
-  const el = (k) => { for (const root of [top, mid, earn, rest]) { const e = root.querySelector(`[data-r="${k}"]`); if (e) return e; } return null; };
+  const el = (k) => { for (const root of [top, mid, earn, plot, rest]) { const e = root.querySelector(`[data-r="${k}"]`); if (e) return e; } return null; };
   const put = (k, html) => { const e = el(k); if (e && e.__h !== html) { e.__h = html; e.innerHTML = html; } };
   if (!cfg) { put('flow', '<p class="cl-off">The Tacit chain is not deployed here.</p>'); top.classList.remove('cl-hold'); return { start() {}, stop() {}, mine() {} }; }
 
@@ -166,7 +168,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     if (mine) return 'Yours is in the next block. It lands within about a minute.';
     return 'Ready for the next payment. It lands within about a minute.';
   }
-  function stats({ fee, chain, state }) {
+  function stats({ fee, chain, state }, wk) {
     const rd = (x, f, w) => { if (x === undefined) return sk(w); try { return x === null ? '—' : f(x); } catch { return '—'; } };
     const p = chain ? price(chain.pool, chain.shares) : null;
     const up = p != null && p > 1 ? `<span class="ok">+${((p - 1) * 100).toFixed(2)}%</span>` : 'since block 1';
@@ -177,7 +179,8 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
       c(rd(chain, (x) => `${cu('pool', Number(x.pool) / 1e8, 2, tac(x.pool))}<small>TAC</small>`, '6ch'), 'held privately'),
       spends ? c(rd(state, (x) => count('spends', x.spends), '4ch'), 'transactions', 'Shields, payments and withdrawals the chain has landed')
         : c(rd(state, (x) => count('notes', x.leaves), '4ch'), 'notes in the pool', 'Notes the pool has made. What each holds, and who, is not shown'),
-      c(rd(chain, () => `${cu('px', p, 5, p.toFixed(5))}<small>TAC</small>`, '6ch'), `1 share · ${up}`),
+      wk && chain ? c(`<span class="ok">${pct(wk.ppm)}</span>`, `to holders · ${wk.young ? 'since block 1' : '7 days'}`, `What holders earned from fees ${span(wk)}. 1 share is worth ${p.toFixed(5)} TAC now`)
+        : c(rd(chain, () => `${cu('px', p, 5, p.toFixed(5))}<small>TAC</small>`, '6ch'), `1 share · ${up}`),
       c(rd(fee, (x) => (x.fee != null ? `${cu('fee', Number(BigInt(x.fee) + FLOOR) / 1e8, 4, tac(BigInt(x.fee) + FLOOR, 4))}<small>TAC</small>` : '—'), '5ch'), 'fee per payment'),
     ].join('');
   }
@@ -200,8 +203,8 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     if (rollup === undefined) return '<figure><div class="cl-plot cl-skp"></div><figcaption>&nbsp;</figcaption></figure>';
     const pts = [...rollup].reverse().map((b) => [b.height, price(b.pool, b.shares)]);
     if (pts.length < 2) return pts.length ? `<p class="cl-off">After block ${int(pts[0][0])}, 1 share = ${pts[0][1].toFixed(5)} TAC. It started at 1.</p>` : '';
-    const x0 = pts[0][0], x1 = pts.at(-1)[0], ys = pts.map((q) => q[1]), lo = Math.min(1, ...ys), hi = Math.max(...ys), span = hi - lo || 1e-9;
-    const X = (x) => ((x - x0) / (x1 - x0 || 1)) * W, Y = (y) => H - PAD - ((y - lo) / span) * (H - 2 * PAD);
+    const x0 = pts[0][0], x1 = pts.at(-1)[0], ys = pts.map((q) => q[1]), lo = Math.min(...ys), hi = Math.max(...ys), range = hi - lo || 1e-9;
+    const X = (x) => ((x - x0) / (x1 - x0 || 1)) * W, Y = (y) => H - PAD - ((y - lo) / range) * (H - 2 * PAD);
     const d = pts.map(([x, y], i) => (i ? `H${X(x).toFixed(1)} V${Y(y).toFixed(1)}` : `M${X(x).toFixed(1)} ${Y(y).toFixed(1)}`)).join(' ');
     CH = { pts, xs: pts.map(([x]) => X(x) / W), ys: pts.map(([, y]) => Y(y) / H) };
     const few = pts.length <= 40, from = few ? 0 : pts.length - 1;
@@ -211,25 +214,48 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
       <span class="yl num">${lo.toFixed(5)}</span><i class="xh" hidden></i><span class="tip num" hidden></span></div>
       <figcaption><span>block ${int(x0)} · ${pts[0][1].toFixed(5)}</span><span>block ${int(x1)} · ${pts.at(-1)[1].toFixed(5)} TAC</span></figcaption></figure>`;
   }
-  function earned(hist, chain) {
-    if (!chain || !hist.length) return '';
+  // What holders earned over the past 7 days, or since the first block while the chain is younger: the fees that went into the pool, and what a share
+  // from the start of the window is worth now against then (a share's worth moves only by fees, so that ratio is what a holder was paid). null until the
+  // blocks read reach back that far.
+  function weekly(hist, chain) {
+    if (!chain || !hist.length) return null;
     const from = chain.n - WEEK * DAY_BLOCKS;
-    let sum = 0n, low = null, short = false;
+    let sum = 0n, low = null, p0 = 0n, s0 = 0n, short = false;
     for (let i = 0; i < hist.length; i++) {
       const b = hist[i], was = hist[i + 1];
       if (b.ethBlock < from) break;
       if ((!was && b.height > 1) || (was && was.height !== b.height - 1)) { short = true; break; }
-      const p0 = (was ? BigInt(was.pool) : 0n) + UNIT, s0 = (was ? BigInt(was.shares) : 0n) + UNIT, fee = BigInt(b.pool) + UNIT - (BigInt(b.shares) + UNIT) * p0 / s0;
+      const bp = was ? BigInt(was.pool) : 0n, bs = was ? BigInt(was.shares) : 0n, fee = BigInt(b.pool) + UNIT - (BigInt(b.shares) + UNIT) * (bp + UNIT) / (bs + UNIT);
       if (fee > 0n) sum += fee;
-      low = b;
+      low = b; p0 = bp; s0 = bs;
     }
-    if (short) { if (filled && !olderBusy && mayHaveOlder() && weekAsked < WEEK_PAGES) { weekAsked++; older(); } return ''; }
-    if (!low || sum <= 0n) return '';
-    const week = low.height !== 1;
-    return `Holders earned <b class="num">${tac(sum)} TAC</b> in fees ${week ? 'in the past 7 days' : 'since the first block'}.`;
+    if (short) { if (filled && !olderBusy && mayHaveOlder() && weekAsked < WEEK_PAGES) { weekAsked++; older(); } return null; }
+    if (!low || sum <= 0n) return null;
+    const ppm = (BigInt(chain.pool) + UNIT) * (s0 + UNIT) * 1000000n / ((BigInt(chain.shares) + UNIT) * (p0 + UNIT)) - 1000000n;
+    return ppm > 0n ? { sum, ppm, young: low.height === 1 } : null;
   }
+  const pct = (ppm) => (ppm < 100n ? '<0.01%' : `+${(Number(ppm) / 1e4).toFixed(2)}%`);
+  const span = (wk) => (wk.young ? 'since the first block' : 'in the past 7 days');
+  function yields({ chain }, wk) {
+    const c = (v, k, t = '') => `<div${t ? ` title="${esc(t)}"` : ''}><span class="v num">${v}</span><span class="k">${k}</span></div>`;
+    // (placeholders keep the row's three places while the blocks are read; a week that could not be read says so with dashes)
+    const wait = !R.at || olderBusy || (mayHaveOlder() && weekAsked < WEEK_PAGES);
+    const idle = (w) => (wait ? sk(w) : '—');
+    return [
+      c(wk ? `<span class="ok">${pct(wk.ppm)}</span>` : idle('5ch'), wk ? `to holders, ${wk.young ? 'since block 1' : 'past 7 days'}` : 'to holders', 'What the fees added to every share'),
+      c(wk ? `${tac(wk.sum)}<small>TAC</small>` : idle('6ch'), 'paid in fees', 'Shield, payment and withdrawal fees that went into the pool'),
+      c(chain ? `${price(chain.pool, chain.shares).toFixed(5)}<small>TAC</small>` : chain === undefined ? sk('6ch') : '—', '1 share, started at 1', 'What one share of the pool is worth now'),
+    ].join('');
+  }
+  function earned(wk) {
+    if (!wk) return '';
+    const worth = (1000 * (1 + Number(wk.ppm) / 1e6)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `<b class="num">1,000 TAC</b> staked ${wk.young ? 'at the first block' : 'a week ago'} is worth <b class="num">${worth} TAC</b> now.`;
+  }
+  const heroLine = (wk) => `<a href="#tpg-earn" data-tpg-to="tpg-earn">${wk ? `<b class="num">${pct(wk.ppm)}</b> to holders ${span(wk)}` : 'Holders earn a share of every fee'}<i aria-hidden="true">→</i></a>`;
+  let yk = null;
   function scrub(e) {
-    const pl = earn.querySelector('.cl-plot');
+    const pl = plot.querySelector('.cl-plot');
     if (!pl || !CH) return;
     const r = pl.getBoundingClientRect(), f = (e.clientX - r.left) / (r.width || 1);
     let i = 0;
@@ -242,7 +268,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     pl.querySelectorAll('.pt').forEach((p) => p.classList.toggle('on', Number(p.dataset.i) === i));
   }
   function unscrub() {
-    const pl = earn.querySelector('.cl-plot');
+    const pl = plot.querySelector('.cl-plot');
     if (!pl) return;
     pl.querySelectorAll('.xh, .tip').forEach((x) => { x.hidden = true; });
     pl.querySelectorAll('.pt.on').forEach((p) => p.classList.remove('on'));
@@ -375,11 +401,18 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     });
     part(() => put('sub', R.chain?.height ? `${int(R.chain.height)} blocks<span>, each proven</span>` : ''));
     part(() => put('note', note(health(R, now))));
-    part(() => { put('stats', stats(R)); countUp(); });
-    part(() => pool(R.state));
     const hist = history();
+    let wk = null;
+    part(() => { wk = weekly(hist, R.chain); });
+    part(() => { put('stats', stats(R, wk)); countUp(); });
+    part(() => pool(R.state));
     part(() => put('chart', chart(R.blocks === undefined && !hist.length ? undefined : hist)));
-    part(() => put('earned', earned(hist, R.chain)));
+    part(() => { put('yield', yields(R, wk)); put('earned', earned(wk)); });
+    part(() => { if (hero) { const h = heroLine(wk); if (hero.__h !== h) { hero.__h = h; hero.innerHTML = h; } } });
+    part(() => {
+      const k = wk ? `${wk.ppm}|${wk.sum}|${wk.young}` : '';
+      if (k !== yk) { yk = k; onYield?.(wk ? { ppm: Number(wk.ppm), sum: wk.sum, young: wk.young } : null); }
+    });
     part(() => put('more', more(hist)));
     part(() => put('part', ways(R)));
     part(() => put('facts', facts(R.chain)));
@@ -422,9 +455,9 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     } finally { busy = false; if (R.at) top.classList.remove('cl-hold'); mark(); if (stale) { stale = false; refresh(); } }
   }
   const onVis = () => { if (!document.hidden && Date.now() - (R.at || 0) > 20e3) refresh(); };
-  earn.addEventListener('pointermove', (e) => { if (e.target.closest?.('.cl-plot')) scrub(e); });
-  earn.addEventListener('pointerleave', unscrub);
-  earn.addEventListener('pointerout', (e) => { if (e.target.closest?.('.cl-plot') && !e.relatedTarget?.closest?.('.cl-plot')) unscrub(); });
+  plot.addEventListener('pointermove', (e) => { if (e.target.closest?.('.cl-plot')) scrub(e); });
+  plot.addEventListener('pointerleave', unscrub);
+  plot.addEventListener('pointerout', (e) => { if (e.target.closest?.('.cl-plot') && !e.relatedTarget?.closest?.('.cl-plot')) unscrub(); });
   top.addEventListener('click', async (e) => { if (!e.target.closest?.('[data-more]')) return; shown += MORE; mark(); if (HAVE.size < shown) await older(); });
   rest.addEventListener('click', (e) => {
     const d = e.target.closest?.('[data-part="lead"]') ? rest.querySelector('#tpg-lead') : null;

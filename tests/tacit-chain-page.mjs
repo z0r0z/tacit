@@ -44,6 +44,8 @@ const asset = assetField(Uint8Array.from([...new Array(12).fill(0), ...Buffer.fr
 const assetHex = asset.toString(16).padStart(64, '0');
 const NOW_S = Math.floor(Date.now() / 1000);
 const RATE = { pool: 12_345n * UNIT + 6_700_000n, shares: 12_300n * UNIT };
+// what the page says holders earned: the stand-in chain is younger than a week, so a share from block 1 (worth 1) against its worth now
+const WK = (() => { const ppm = (RATE.pool + UNIT) * 1_000_000n / (RATE.shares + UNIT) - 1_000_000n; return { pct: `+${(Number(ppm) / 1e4).toFixed(2)}%`, worth: (1000 * (1 + Number(ppm) / 1e6)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }; })();
 const KEY = 'a11c'.padEnd(64, '4');
 const POSEIDON = { 2: poseidon2, 3: poseidon3, 4: poseidon4, 5: poseidon5 }, poseidon = (xs) => POSEIDON[xs.length](xs);
 
@@ -306,7 +308,7 @@ try {
     ok(wide.card.left >= wide.live.right && wide.card.top < wide.live.bottom && wide.go.bottom <= wide.screen, `on a wide screen the card is beside the chain, its button on the first screen (${JSON.stringify(wide)})`);
     // before sign-in the card already says what a shield brings and costs, from what anyone can read
     const out = await shieldQuote(page, '250');
-    ok(/^≈ 249\.\d+ TAC, private$/.test(out.Arrives) && out.Earns === 'a share of every fee, no lock' && out.Gas === '0.04 TAC, or your own ETH' && /^One signature · about a minute$/.test(out.Takes) && (await text(page, '#tcd-go')) === 'Sign in',
+    ok(/^≈ 249\.\d+ TAC, private$/.test(out.Arrives) && /^(a share of every fee|\+\d+\.\d\d% so far), no lock$/.test(out.Earns) && out.Gas === '0.04 TAC, or your own ETH' && /^One signature · about a minute$/.test(out.Takes) && (await text(page, '#tcd-go')) === 'Sign in',
       `signed out, a shield is quoted from the chain's public figures (${JSON.stringify(out)})`);
     await page.fill('#tcd-amt', '');
     await page.click('#tpg-how > summary');
@@ -315,9 +317,11 @@ try {
     ok(r.Blocks === '1,234' && /^[4-8]\d s ago$/.test(r['Last block']) && r['Share price'] === sharePrice(RATE.pool, RATE.shares, 5) && r['Pool, TAC'] === fmtTac(RATE.pool, 2)
       && r['Leader fee, TAC'] === '0.015' && r['Shield cap, TAC'] === '1,000', `the chain's figures (${JSON.stringify(r)})`);
     // a share's worth, and what the chain has landed, are figures in the chain panel; the pool's notes are drawn under them, a dot each
-    await page.waitForFunction((want) => [...document.querySelectorAll('#tpg-mid .cl-stats [data-k="px"]')].some((e) => e.textContent === want), sharePrice(RATE.pool, RATE.shares, 5), { timeout: 20000 }).catch(() => {});
+    // (once the blocks are read the third figure is what holders earned, and a share's worth is the staking section's third)
+    await page.waitForFunction((want) => [...document.querySelectorAll('#tpg-mid .cl-stats > div .v')].some((e) => e.textContent === want), WK.pct, { timeout: 20000 }).catch(() => {});
     const figs = await page.$$eval('#tpg-mid .cl-stats > div', (ds) => Object.fromEntries(ds.map((d) => [d.querySelector('.k').textContent.replace(/\s+/g, ' ').trim(), d.querySelector('.v').textContent.replace(/\s+/g, ' ').trim()])));
-    ok(figs[Object.keys(figs).find((k) => /^1 share/.test(k))] === `${sharePrice(RATE.pool, RATE.shares, 5)}TAC`, `what a share is worth (${JSON.stringify(figs)})`);
+    const worth = await page.$$eval('#tpg-earn .cl-yield > div', (ds) => ds.map((d) => [d.querySelector('.k').textContent.trim(), d.querySelector('.v').textContent.replace(/\s+/g, ' ').trim()]));
+    ok(figs['to holders · since block 1'] === WK.pct && worth.find(([k]) => /^1 share/.test(k))?.[1] === `${sharePrice(RATE.pool, RATE.shares, 5)}TAC`, `what holders earned, and what a share is worth (${JSON.stringify(figs)} ${JSON.stringify(worth)})`);
     ok(figs.transactions === String(SPENDS), `the transactions are the leader's count (${figs.transactions})`);
     await page.waitForFunction(() => document.querySelector('#tpg-mid .cl-pool canvas')?.height > 1, null, { timeout: 20000 }).catch(() => {});
     const pool = await page.evaluate(() => {
@@ -343,8 +347,16 @@ try {
     const pages = apiAsked.filter((x) => x.startsWith('/prover/rollup')).length;
     ok(/^block 1 ·/.test(await text(page, '#tpg-earn .cl-chart figcaption')) && pages === 3, `the chart runs from the first block, the API's pages taken until none is left (${pages} asked)`);
     // staking has its own section over the chain's: what it is, what the fees have added to every share (here 0.03 TAC a block over 250 blocks), then the chart
-    const earn = await page.evaluate(() => { const s = document.querySelector('#tpg-earn'), c = document.querySelector('#tpg-chain'); return { h: s?.querySelector('h2')?.textContent, says: s?.querySelector('.tpg-feeline')?.textContent.trim(), earned: s?.querySelector('.cl-earned')?.textContent.trim(), over: !!(s && c && s.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING), shown: !!s && !s.hidden }; });
-    ok(earn.shown && earn.over && earn.h === 'Stake and earn' && /^Shielded TAC is staked: held as shares of one pool\./.test(earn.says || '') && / No lock\.$/.test(earn.says || '') && earn.earned === 'Holders earned 7.50 TAC in fees since the first block.', `staking is told in its own section, with what holders earned from the blocks themselves (${JSON.stringify(earn)})`);
+    await page.waitForFunction(() => /^\+\d/.test(document.querySelector('#tpg-earn .cl-yield .v')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
+    const earn = await page.evaluate(() => {
+      const s = document.querySelector('#tpg-earn'), c = document.querySelector('#tpg-chain'), v = [...s.querySelectorAll('.cl-yield .v')].map((e) => e.textContent.replace(/\s+/g, ' ').trim());
+      return { h: s?.querySelector('h2')?.textContent, says: s?.querySelector('.tpg-feeline')?.textContent.trim(), earned: s?.querySelector('.cl-earned')?.textContent.trim(), cells: v, cta: s?.querySelector('[data-tpg="priv"]')?.textContent.trim(),
+        hero: document.querySelector('#tpg-yield')?.textContent.trim(), tile: [...document.querySelectorAll('#tpg-mid .cl-stats .v')].map((e) => e.textContent.trim())[2],
+        order: [...s.children].map((e) => e.id || e.tagName.toLowerCase()).join(' '), over: !!(s && c && s.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING), shown: !!s && !s.hidden };
+    });
+    ok(earn.shown && earn.over && earn.h === 'Stake and earn' && /^Staking is shielding: your TAC is held as shares of one private pool\./.test(earn.says || '') && /with no lock\. Joining costs .* and leaving 0\.1%, both paid to the holders who stay/.test(earn.says || '') && earn.cta === 'Stake TAC', `staking is told in its own section, what it costs on the way in and out, with a button to the card (${JSON.stringify(earn)})`);
+    ok(earn.cells[0] === WK.pct && /^7\.50\s?TAC$/.test(earn.cells[1]) && earn.earned === `1,000 TAC staked at the first block is worth ${WK.worth} TAC now.`, `what holders earned is read from the blocks themselves: the share's gain, the fees paid, and what 1,000 TAC became (${JSON.stringify(earn.cells)} ${earn.earned})`);
+    ok(earn.hero === `${WK.pct} to holders since the first block→` && earn.tile === WK.pct && earn.order === 'tpg-earn-h tpg-earn-live tpg-why tpg-earn-plot tpg-fees', `the same figure heads the page and the figures row, and the section reads figures, what it is, then the chart (${earn.hero} / ${earn.tile} / ${earn.order})`);
     ok((await page.$$('#tpg-earn .cl-plot .pt')).length === 1 && await page.$eval('#tpg-earn .cl-plot .pt', (e, last) => e.classList.contains('last') && e.dataset.i === last, String(SPAN - 1)), 'past forty blocks the chart marks only the newest');
     ok(/about 0\.017 TAC/.test(await text(page, '.tpg-fees')) && /0\.015 TAC/.test(await text(page, '.tpg-fees')), `the fee cards take the leader's terms (${(await text(page, '.tpg-fees')).slice(0, 120)})`);
     await shot('status');
