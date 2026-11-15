@@ -108,6 +108,19 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   ok(seen.length > 0 && seen.every((k) => k === 'true|false|0') && logos >= 2, `the tile never shows the default pair or a letter mark for SPX: its first paint is SPX with its logo (${seen.join(' > ')}, ${logos} logos)`);
   await ctx.close();
 }
+// a browser that last left the tile on another tab (the tile remembers it) still gets the page: it opens on Shield SPX, with no script error, and the wallet sheet works.
+// On the Send tab the page's Send list is tETH alone until its token is read: it has no picker then, and its start stopped on that (the wallet sheet stayed empty).
+for (const tab of ['send', 'earn', 'swap']) {
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage(), bad = [];
+  p.on('pageerror', (e) => bad.push(e.message));
+  await p.addInitScript((tab) => { try { localStorage.setItem('tacit-hx-card-v1', JSON.stringify({ tab, flow: null, sf: 'ether', sd: 'defi', ern: 'ether' })); } catch { } }, tab);
+  await p.goto(BASE + '/spx/', { waitUntil: 'load' });
+  const t = await waitFor(p, /Shield SPX/i, 20000);
+  await p.evaluate(() => { location.hash = '#wallet'; });
+  const paste = await p.waitForSelector('#wallet-body [data-in="paste"]', { timeout: 8000 }).then(() => true, () => false);
+  ok(bad.length === 0 && /Shield SPX/i.test(t) && paste, `a browser that last left the tile on ${tab} gets the page on Shield SPX, with no script error and a working wallet sheet${bad.length ? ` (${bad.join(' | ')})` : ''}`);
+  await ctx.close();
+}
 // a farm zap's Activity row reads the line under it from the farm-bond step's own status, so a page that closed before the bond landed does not leave "Putting it in the farm…" under a share that is in
 for (const [bond, want, not, said] of [['settled', /In the farm\./, /Putting it in the farm/, 'once the bond has landed: In the farm.'], ['proving', /Putting it in the farm…/, /In the farm\./, 'while the bond is still going: Putting it in the farm…'], ['failed', /Not in the farm yet: farm it from Your Tacit\./, /Putting it in the farm/, 'if the bond failed: not in the farm yet, farm it from Your Tacit']]) {
   const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage(), t0 = Date.now() - 300e3;
