@@ -1365,22 +1365,27 @@ const PAGED_LAG_SECS = 300; // how far behind the chain a freshly read explorer 
 
 // The earliest moment any scanner has read up to, or null when that cannot be known. Block-ranged scanners are
 // read from their cursor block's own timestamp; a scanner that has not completed a cycle since start is unknown.
+// The scanner that held the coverage back at the last reading, named in the settle's wait message: the day's settlement waits for the slowest one.
+let slowestScanner = '';
 async function scannersCoveredThrough(store, evmState) {
   const blockTime = async (client, block) => Number((await client.getBlock({ blockNumber: block })).timestamp);
   const times = [];
   const wrap = store.loadCursor();
-  if (wrap) times.push(await blockTime(publicClient, wrap.lastScannedBlock));
+  if (wrap) times.push(['the main scan', await blockTime(publicClient, wrap.lastScannedBlock)]);
   for (const { chainId, client } of ZROUTER_CHAINS) {
     const z = store.loadZrouterCursor(chainId);
-    if (z != null) times.push(await blockTime(client, z));
+    if (z != null) times.push([`zRouter on chain ${chainId}`, await blockTime(client, z)]);
     const e = evmState.loadCursor(chainId);
-    if (e != null) times.push(await blockTime(client, e));
+    if (e != null) times.push([`the EVM pool on chain ${chainId}`, await blockTime(client, e)]);
   }
   for (const name of PAGED_SCANNERS()) {
     if (scanOkAt[name] == null) return null;
-    times.push(scanOkAt[name] - PAGED_LAG_SECS);
+    times.push([`the ${name} scan`, scanOkAt[name] - PAGED_LAG_SECS]);
   }
-  return times.length ? Math.min(...times) : null;
+  if (!times.length) return null;
+  const slowest = times.reduce((a, b) => (b[1] < a[1] ? b : a));
+  slowestScanner = slowest[0];
+  return slowest[1];
 }
 
 // Whether the distributor holds enough TAC for the days still to publish (lib/points-funding.js), read at most once a
@@ -1496,7 +1501,7 @@ export async function settleCycle(store, coverage = null) {
   const settleThroughDay = gateThroughDay({ ...gate, coveredThroughSec });
   if (settleThroughDay < byTime && nowSec - lastGateLogSec > 600) {
     lastGateLogSec = nowSec;
-    log(`settle: day ${state.lastSettledDay + 1} waits for the scanners (${coveredThroughSec == null ? 'coverage unknown' : `read through ${new Date(coveredThroughSec * 1000).toISOString()}`})`);
+    log(`settle: day ${state.lastSettledDay + 1} waits for the scanners (${coveredThroughSec == null ? 'coverage unknown' : `read through ${new Date(coveredThroughSec * 1000).toISOString()}, held back by ${slowestScanner || 'a scanner'}`})`);
   }
 
   for (let d = state.lastSettledDay + 1; d <= settleThroughDay; d++) {
