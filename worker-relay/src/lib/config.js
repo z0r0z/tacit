@@ -650,6 +650,7 @@ export const CFG = {
   // everything main()'s loop runs after it (a real incident: zRouter and the ETH-wrap scanner froze for over
   // an hour). 40 blocks (~15s at that rate) comfortably outpaces mainnet's own ~5 blocks/min production.
   zrouterBlockScanChunk: num('ZROUTER_BLOCK_SCAN_CHUNK', 40),
+  zrouterLogScanChunk: num('ZROUTER_LOG_SCAN_CHUNK', 0),   // blocks a log-only chain's zRouter scan reads in a cycle; 0 = POINTS_SCAN_CHUNK
   // Wait this many blocks behind head before scanning, so a reorg can't hand out points for a wrap that
   // then disappears. 12 covers ordinary reorgs; the wrap is still irreversible well before finality.
   pointsConfirmations: num('POINTS_CONFIRMATIONS', 12),

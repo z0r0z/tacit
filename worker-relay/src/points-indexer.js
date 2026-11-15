@@ -1032,7 +1032,10 @@ async function scanZRouterCycle(store, { chainId, client, wethAddr, signal1 = tr
   // same regardless of how many blocks it spans, only how many matches it returns, so there's no equivalent
   // risk to cap tightly for. Either way, saving the cursor after each chunk means an interrupted catch-up
   // resumes from where it left off instead of restarting the backlog from scratch.
-  const chunkSize = signal1 ? CFG.zrouterBlockScanChunk : Math.min(CFG.pointsScanChunk, ZROUTER_SPANS.get(chainId) ?? Infinity);
+  // A log-only chain's chunk is its own setting (ZROUTER_LOG_SCAN_CHUNK, the general getLogs span when unset): a fast chain makes more blocks in a cycle than a chunk of
+  // the general span covers, and the day's settlement waits for this scan to read through the day's end.
+  const logChunk = CFG.zrouterLogScanChunk > 0 ? CFG.zrouterLogScanChunk : CFG.pointsScanChunk;
+  const chunkSize = signal1 ? CFG.zrouterBlockScanChunk : Math.min(logChunk, ZROUTER_SPANS.get(chainId) ?? Infinity);
   const chunkTip = from + BigInt(chunkSize) - 1n;
   if (chunkTip < confirmedTip) confirmedTip = chunkTip;
 
