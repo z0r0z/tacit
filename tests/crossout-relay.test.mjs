@@ -195,6 +195,17 @@ function rig({ coins = [{ txid: 'f1'.repeat(32), vout: 0, value: 20_000, status:
   ok((await ch.feeRate()) === 3 && calls[0][0] === 'https://api.x/chain/v1/fees/recommended?network=mainnet', 'reads go to the API\'s chain proxy, with the network');
   ok((await ch.broadcast('00')) === 'txid' && calls.filter((c) => c[1] === 'POST').length === 2, 'a busy explorer is passed over for the next');
   ok((await ch.txStatus('ab'.repeat(32))) === null, 'a transaction no explorer has reads as not on Bitcoin');
+  // the proxy cooling: reads fall back to the backups, and an Esplora with only estimates still gives a rate
+  const cool = async (url, init) => {
+    if (url.startsWith('https://api.x/')) return { ok: false, status: 503, json: async () => ({ error: 'all upstreams cooling' }) };
+    if (url.startsWith('https://bs.x/v1/fees')) return { ok: false, status: 404, json: async () => null };
+    if (url.startsWith('https://bs.x/fee-estimates')) return { ok: true, status: 200, json: async () => ({ 1: 4.2, 3: 2.4, 6: 1.1 }) };
+    if (url.startsWith('https://bs.x/address/')) return { ok: true, status: 200, json: async () => [{ txid: 'aa', vout: 0, value: 5, status: { confirmed: true } }] };
+    return f(url, init);
+  };
+  const backed = makeEsplora({ read: 'https://api.x/chain', query: 'network=mainnet', backup: ['https://bs.x'] }, cool);
+  ok((await backed.feeRate()) === 3, 'with the proxy cooling, the rate comes from a backup\'s estimates (rounded up)');
+  ok((await backed.utxos('bc1q')).length === 1, 'and so do the coins');
   const refuse = makeEsplora({ read: 'https://api.x/chain', send: ['https://r.x', 'https://b.x'] }, f);
   let msg = ''; try { await refuse.broadcast('00'); } catch (e) { msg = e.message; }
   ok(/bad-txns/.test(msg) && !calls.some((c) => c[0] === 'https://b.x/tx' && calls.filter((d) => d[0] === 'https://r.x/tx').length && c === calls.at(-1)), 'a transaction Bitcoin refuses is not offered to every explorer');

@@ -135,13 +135,25 @@ export function makeCrossoutRelay({
 }
 
 // Bitcoin by Esplora: reads from `read` (the Tacit API's /chain proxy in the watchtower: a public explorer throttles a server's address),
-// with `query` appended (its network), and broadcasts to each of `send` in turn until one takes the transaction.
-export function makeEsplora({ read = 'https://mempool.space/api', query = '', send = null } = {}, fetchImpl = (...a) => fetch(...a)) {
-  const q = (p) => `${read}${p}${query ? (p.includes('?') ? '&' : '?') + query : ''}`;
-  const get = async (p) => { const r = await fetchImpl(q(p), { signal: AbortSignal.timeout(15e3) }); if (r.status === 404) return null; if (!r.ok) throw new Error(`esplora ${p} ${r.status}`); return r.json(); };
+// with `query` appended (its network), then from each of `backup` when it fails (the proxy too can be cooling on its upstreams); and
+// broadcasts to each of `send` in turn until one takes the transaction.
+export function makeEsplora({ read = 'https://mempool.space/api', query = '', backup = [], send = null } = {}, fetchImpl = (...a) => fetch(...a)) {
+  const sources = [[read, query], ...backup.map((b) => [b, ''])];
+  const get1 = async ([base, qs], p) => {
+    const r = await fetchImpl(`${base}${p}${qs ? (p.includes('?') ? '&' : '?') + qs : ''}`, { signal: AbortSignal.timeout(15e3) });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`esplora ${p} ${r.status}`);
+    return r.json();
+  };
+  const get = async (p) => { let last; for (const s of sources) { try { return await get1(s, p); } catch (e) { last = e; } } throw last; };
   return {
     utxos: (addr) => get(`/address/${addr}/utxo`),
-    feeRate: async () => { const f = await get('/v1/fees/recommended'); return f ? f.halfHourFee || f.fastestFee : null; },
+    // mempool.space's recommended rates, or an Esplora's estimates (Blockstream has only those): the rate for about three blocks
+    feeRate: async () => {
+      try { const f = await get('/v1/fees/recommended'); if (f && (f.halfHourFee || f.fastestFee)) return f.halfHourFee || f.fastestFee; } catch {}
+      const e = await get('/fee-estimates');
+      return e ? Math.ceil(Number(e['3'] ?? e['2'] ?? e['6']) || 0) || null : null;
+    },
     // null: not on Bitcoin; { confirmed }: in the mempool or a block
     txStatus: async (txid) => { const s = await get(`/tx/${txid}/status`); return s ? { confirmed: !!s.confirmed } : null; },
     broadcast: async (hex) => {
