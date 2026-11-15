@@ -7,7 +7,7 @@ import { makePools } from '/vault/pools.js?cb=577c8070';
 import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=cdfdc3d7';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=b758e60b';
 import { tabKeyRead } from '/tab-key.js?cb=ad0c42e2';
-import { promptOpen } from '/wallet-prompts.js';
+import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -41,7 +41,7 @@ const WALLET_READS = new Set(['eth_call', 'eth_blockNumber', 'eth_getBlockByNumb
 let walletNow = null;
 const walletNode = (order) => ({
   id: 'wallet', timeout: 8e3, ...order,
-  usable: (m) => !promptOpen() && !!walletNow?.prov && !walletNow.prov.isWalletConnect && walletNow.chain === '0x1' && WALLET_READS.has(m),
+  usable: (m) => !WP.promptOpen?.() && !!walletNow?.prov && !walletNow.prov.isWalletConnect && walletNow.chain === '0x1' && WALLET_READS.has(m),
   send: (m, p) => walletNow.prov.request({ method: m, params: p }),
 });
 const rpc = makeRpc([...RPCS, walletNode({ last: true })]);

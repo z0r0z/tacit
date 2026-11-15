@@ -1,4 +1,5 @@
-import { promptOpen } from './wallet-prompts.js';
+// a namespace import, and `?.`: this file and wallet-prompts.js are served without a cache token, so for a few minutes after a change a visit can hold one of them new and the other old
+import * as prompts from './wallet-prompts.js';
 
 export const ETH_NODES = [
   'https://ethereum-rpc.publicnode.com',
@@ -85,7 +86,7 @@ export function walletNode(get) {
     id: 'wallet',
     usable: (m, p) => {
       const w = get();
-      return !promptOpen() && WALLET_READS.has(m) && typeof w?.request === 'function' && !w.isWalletConnect && !(m === 'eth_call' && (p[0]?.gas || p[2]));
+      return !prompts.promptOpen?.() && WALLET_READS.has(m) && typeof w?.request === 'function' && !w.isWalletConnect && !(m === 'eth_call' && (p[0]?.gas || p[2]));
     },
     send: (m, p) => get().request({ method: m, params: p }),
   };

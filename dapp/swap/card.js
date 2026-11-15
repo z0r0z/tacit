@@ -1,7 +1,8 @@
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmTradeVenues, _internal as V, MULTICALL3, SPLIT_EXTRA_GAS } from '/evm-trade-venues.js?cb=196b14fb';
 import { UserStopped } from '/trade/wallet.js?cb=5d19a733';
-import { declinedWords, promptOpen } from '/wallet-prompts.js';
+import { declinedWords } from '/wallet-prompts.js';
+import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=1d2cd8d3';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js';
 import * as R from '/swap/route.js?cb=44449874';
@@ -36,7 +37,7 @@ const health = nodeHealth({ store: memory }), scanHealth = nodeHealth({ store: m
 const WALLET_READS = new Set(['eth_call', 'eth_getBalance', 'eth_gasPrice', 'eth_blockNumber', 'eth_getCode', 'eth_getTransactionReceipt']);
 const walletNode = {
   id: 'wallet',
-  usable: (m, p) => !promptOpen() && WALLET_READS.has(m) && typeof W?.prov?.request === 'function' && !W.prov.isWalletConnect && W.prov.chainId === '0x1' && !(m === 'eth_call' && (p[0]?.gas || p[2])),
+  usable: (m, p) => !WP.promptOpen?.() && WALLET_READS.has(m) && typeof W?.prov?.request === 'function' && !W.prov.isWalletConnect && W.prov.chainId === '0x1' && !(m === 'eth_call' && (p[0]?.gas || p[2])),
   send: (m, p) => W.prov.request({ method: m, params: p }),
 };
 const light = (method, params) => rpc(method, params, [...NODES, walletNode], { health, hedgeMs: hedgeDelay(1000) });
