@@ -164,15 +164,17 @@ by the USDT still in the pool's escrow. The pool's registry refuses to give an e
 that comes back names the same id and resolves to the escrow directly. The USDT in a wallet is made private in the pool first (Permit2: one approval for
 exactly the amount and one signature), and is taken out again to an Ethereum address once it is back.
 
-### Limits and costs, while the bridge is new
+### Limits and costs
+
+No cap either way: one bridge carries as much as a single note holds. A bridge to Bitcoin has a minimum, so it is more than its fees.
 
 | | To Bitcoin | Back from Bitcoin |
 | --- | --- | --- |
-| TAC | 20 to 1,000 TAC a bridge | up to 1,000 TAC, a note goes whole |
-| tETH | 0.001 to 0.5 tETH a bridge | up to 0.5 tETH, a note goes whole |
-| cBTC | 0.00001 to 0.5 cBTC a bridge | up to 0.5 cBTC, a note goes whole |
-| cUSD | 10 to 1,000 cUSD a bridge | up to 1,000 cUSD, a note goes whole |
-| USDT | 2 to 100 USDT a bridge | up to 100 USDT, a note goes whole |
+| TAC | at least 20 TAC a bridge | a note goes whole |
+| tETH | at least 0.001 tETH a bridge | a note goes whole |
+| cBTC | at least 0.00001 cBTC a bridge | a note goes whole |
+| cUSD | at least 10 cUSD a bridge | a note goes whole |
+| USDT | at least 2 USDT a bridge | a note goes whole |
 
 A TAC note going back in two steps carries up to 255 transfers of history.
 
@@ -205,7 +207,7 @@ browser has no record of from the key's own Bitcoin address, or from the burn's 
 For TAC it also starts a bridge from Bitcoin to Ethereum: it lists the TAC at the key's Bitcoin address with why a note
 cannot go, checks the one picked and prices it against the coins the key has free for fees, asks for the same
 acknowledgement, and sends the burn (one Bitcoin transaction) or, for a note the reflection does not yet track, the move
-that comes first; a note in an older form is first sent to the key's own address, and a note over 1,000 TAC is split.
+that comes first; a note in an older form is first sent to the key's own address.
 With several notes it also offers Merge notes (the tracked notes packed within the limit, each pack sent to the key's own
 address in one transaction) and Bridge all (the older notes sent first, a burn for each tracked note, a move then a burn for
 a note the proof does not track yet), planned by the same rules as the front page, with the fee quoted first and, for Bridge
