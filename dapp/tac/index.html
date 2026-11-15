@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-AZpGyPj+X/uPBZP371rzRhKurq7xUED9XGz37Mplfdk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-GTfCE7N9BYuoqtE1fXpJSrcS8DXD/4xMca3Dea+zUf0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -20,7 +20,7 @@
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-<script defer src="/front-route.js?cb=467aad9c"></script>
+<script defer src="/front-route.js?cb=605d737b"></script>
 <title>tacit TAC</title>
 <link rel="canonical" href="https://tacit.finance/tac/">
 <meta name="description" content="The Tacit chain: stake TAC privately, earn from every payment and pay in about a minute. A zk-rollup settled on Ethereum, connected to Bitcoin by proof.">
@@ -67,7 +67,7 @@
 <link rel="modulepreload" href="/bridge-out.js?cb=9662a160">
 <link rel="modulepreload" href="/bridge/track.js?cb=c9fdfdf9">
 <link rel="modulepreload" href="/bridge/runtime.js?cb=3a0fe591">
-<link rel="modulepreload" href="/bridge-in.js?cb=ba07ee86">
+<link rel="modulepreload" href="/bridge-in.js?cb=708f1d37">
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=a0384066">
@@ -78,7 +78,7 @@
 <link rel="modulepreload" href="/reward-pop.js?cb=88973dac">
 <link rel="modulepreload" href="/evm-pool-tokens.js?cb=16e0e196">
 <link rel="modulepreload" href="/net-pick.js?cb=9229f173">
-<link rel="modulepreload" href="/front/tac.js?cb=67989b62">
+<link rel="modulepreload" href="/front/tac.js?cb=e7e5de41">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -2523,7 +2523,7 @@ import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge
 import { bridgeLimits, bridgeDp, bridgeRoute, bridgeLimitEntry, markColor, runtimeSymbol, saveRuntime } from '/bridge/runtime.js?cb=3a0fe591';
 import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, addBridgeAsset as brAddAsset, satsOut, satsBack, readBridges, nextOf as brNext, fmtAmount as brRowAmt } from '/bridge/track.js?cb=c9fdfdf9';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=16e0e196';
-import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll } from '/bridge-in.js?cb=ba07ee86';
+import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll, proofWait as brProofWait, whyText as brWhy, splitTag as brSplitTag, waitFor as brWaitFor, splitFee as brSplitFeeOf } from '/bridge-in.js?cb=708f1d37';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=42d78071';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead } from '/activity.js?cb=a0384066';
@@ -4129,10 +4129,10 @@ function resumeActivity() {
 const render = {}, load = {};
 // TAC's page is front/tac.js: it loads when TAC's page opens (/tac/ preloads it), or when a link to it is pointed at or focused.
 // front-tac:begin
-const tacCtx = () => ({ $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLongReason, brMarkDeep, brMarkEmpty, brOver, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brTk, brTransfers, brTry, brUx, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your, get CH() { return CH; }, get T() { return T; }, get TACP() { return TACP; }, get TCARD() { return TCARD; }, get TCO() { return TCO; }, get TPOOL() { return TPOOL; }, get TREQ() { return TREQ; }, get brLooking() { return brLooking; } });
+const tacCtx = () => ({ $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brLongReason, brMarked, brOver, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your, get CH() { return CH; }, get T() { return T; }, get TACP() { return TACP; }, get TCARD() { return TCARD; }, get TCO() { return TCO; }, get TPOOL() { return TPOOL; }, get TREQ() { return TREQ; }, get brLooking() { return brLooking; } });
 // front-tac:end
 let TAC_CODE = null;
-const tacReady = lazy(() => import('/front/tac.js?cb=67989b62').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
+const tacReady = lazy(() => import('/front/tac.js?cb=e7e5de41').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
 const withTac = (f) => (TAC_CODE ? f() : tacReady().then(f, () => {}));
 for (const k of ["tac"]) render[k] = () => { if (!TAC_CODE) withTac(() => rerender(k)); };
 for (const k of ["tac"]) load[k] = () => tacReady().then(() => load[k]());
@@ -4148,7 +4148,7 @@ for (const t of ['pointerover', 'focusin']) document.addEventListener(t, tacWarm
 const sheetsCtx = () => ({ $, $$, ACT, ADDR, ASSET_SEND_SATS, BASE_NODES, BF, BR_DONE, BTC, BTC_NOTE_ASSETS, BTC_TOKENS, BWB, BWX, CETH_ID, CHAIN_ASSETS, CHAIN_META, CSEND, CS_ASSETS, DEV, DEVICE_CHAINS, DEV_JOB, DEV_PREF, DISTRIBUTOR, E10, ETHERSCAN, ETH_DP, ETH_LOG_NODES, EVM_POOL, EVM_ROUTER, EXIT_AHEAD, FARM, FLASH, HARVEST_WORTH, HOLD, HOLD_CONSENT, HX, HX_FLIGHT, JOBS, JOIN, KEEP_READY, KEPT, L2BAL, LK, LOCAL, LOCK, LOGO, LP_KEEP_ETH, MEMPOOL, NOTIFY_KEY, OFFERED, OPENISH, OPEN_OFFERED, OUT, P, PGM, POOL_TK, PTS, PTS_BOARD, REDEEM, RETRY, REVERTS, REWARD_PAID, RS, RUNS, Raw, S, SATS_DUST, SEALED, SEL, SELF, SELFDO, SP, SP_PREF, SP_SEAL, SWAP_ASSETS, TAB, TAC_BTC_ID, TAC_DP, TK, TOKEN_POOLS, US, V1, VOUCH, WAIT_WHY, WAL, WNS, WTAC, XA, XA_REDEEM, XO_AT, XO_STEPS, ZAP_SETTLE_GAS, ZROUTER, ZSWAP, aFor, aboutEth, acked, actBridge, actBtc, actDone, actGet, actSave, addrFlat, addrWord, addressFor, addressId, ago, alts, aprLong, aprOf, aprShort, assetById, assetSendForm, bFor, badStatus, big, bondAck, bondDue, bondElsewhere, bondFunds, bondNoWallet, bondNotes, bondVia, bondsNow, brJournal, btcQr, btcRouteM, btcSendNow, busy, bwCanWst, byValue, bytesToHex, chainFull, chainMark, chainMarks, chainNow, chainRpc, chainTag, clearField, clock, concatBytes, connect, copy, cutAhead, dashGo, dashSoon, dayFmt, dayShort, deadline, debounce, depositCallout, devBal, devDepositSend, devNow, devOn, devOutSend, devProver, devResolve, devSaid, deviceSync, deviceWallet, dfmt, earnRows, earnedNow, ended, errText, etaWords, ethBalance, ethBase, ethCall, ethKeep, ethOfTac, evm, exitAheadFor, exitGo, exitKind, exitPosition, failText, feeRoom, feesLine, fmt, freeNotes, getDeviceMods, getUx, heldLabel, hexToBytes, hmac, holdBehind, holdConsented, holdPayTo, holderTier, holdingRound, html, hxBwInflight, hxDraft, hxLive, hxPts, hxWarmWrap, idRow, inUse, joinAhead, joinMax, joinNow, joinOnePlan, joinPairPlan, joinSides, joinTerms, kLock, kNote, kOfAsset, kPos, keccak_256, keep, keepKey, keepReady, keepSizes, keeperDown, keeperRead, keeperTrouble, keeperTx, keyRow, knownWallet, lastEnd, lastSeen, leftWords, linkNote, linked, listed, loadBonds, loadBorrow, loadBtc, loadFarms, loadHeld, loadLocks, loadPoints, loadPositions, loadUnified, loadUsdtBal, lockAhead, lockId, lockLine, lockList, lockNext, lossGate, lossOk, lpCost, lpKeep, lpPoolFor, lpSays, lpSendNow, lpShare, lpTicker, lsKv, maxAria, midAction, mine, mount, multicall, needKey, nfmt, noRelayFee, noteFor, noteKeep, now, offerMore, offerSelf, okStatus, onEdit, onTheWay, opParts, openLink, openOf, openProve, openSheet, openerOn, otherKey, otherSelf, otherWallet, overBalance, ownAccount, ownJob, ownNow, ownOn, ownWord, paceOf, paintAct, paintProve, paintSp, paintWallet, paintWalletBal, pairName, parseUnits, payFrom, payFromTok, payer, payingAccount, pct, pctFmt, pendingFor, pendingSent, perProof, permitSig, plain, pointsWho, poolLine, poolMaking, poolVsMarket, poolWorth, potTac, precisionApr, privateOf, proofsBusy, proofsFor, proveAhead, proveFmt, proveFor, proveOr, proveOwn, prover, provingNote, ptChain, ptsDays, ptsEnd, ptsFmt, ptsWhy, pubExitSend, pubOutData, pubPreview, pubSend, quoteErr, rankRows, rateStr, reProve, readOutlook, readPublicTac, readRow, readWrapTip, recipientOf, redeemBuild, redeemOn, redeemRefresh, redeemSend, redeemSent, redeemStep, refreshAll, refreshFarm, refreshWalletBal, relayDeposit, relayProving, relayWhy, render, rerender, resetPrivate, resolveToM, revertText, rewardPop, rewardWorth, rpc, running, samePos, say, sayErr, sayLive, scanIfNew, scanPrivate, scanShielded, scheduled, sealOn, secp, segSub, selfDo, selfOffer, selfWork, sendTx, setDeviceChain, setNotify, setPayer, settleBorrow, shLookingNote, sha256, sharePct, sharesEth, sheetOf, shieldedApr, short, shown, shownAs, sig, signIn, sizesNow, sleep, spApply, spMod, spOn, spRead, spSaid, spendable, stealthSendNow, stepBond, stepHarvest, stepLi, stepOf, stepRedeem, stepTakeOut, stepUnbond, store, strip, swapAsset, syncAccount, syncLink, tacOf, tacShort, tacitShort, takeBond, takeDraft, takenByOther, tickerOf, tkPin, toSelf, toast, tokDepositSend, tokRecipient, tokenSync, tokenWallet, tooFine, txFail, txLink, txMark, txSite, txUrl, unharvested, unitOf, unwrapNow, usdtExitFee, usdtOwner, usdtWrapNow, utcDay, viaText, viewAddr, vouchers, waitRanOut, waitTx, walletBalances, walletPriv, warn, wireAck, wireFinish, wireSignIn, wireSub, withKey, word, wordAt, wrapMax, wrapNow, wtacHere, xaOf, xbHeld, xbOf, xoCovered, xoDue, xoErr, xoFundRow, xoJournal, xoKeyOpen, xoLink, xoNoteText, xoOut, xoRecords, xoShown, your, zapAhead, zapNow, zapQuote, zapUnit, zapsFinish, zapsMine, zapsRead, get PTSINFO() { return PTSINFO; }, get T() { return T; }, get UNI() { return UNI; } });
 // front-sheets:end
 let SHEET_CODE = null;
-const sheetsReady = lazy(() => import('/front/sheets.js?cb=9edf2c47').then((m) => { SHEET_CODE ||= m.default(sheetsCtx()); }));
+const sheetsReady = lazy(() => import('/front/sheets.js?cb=f47bf2d1').then((m) => { SHEET_CODE ||= m.default(sheetsCtx()); }));
 const withSheets = (f) => (SHEET_CODE ? f() : sheetsReady().then(f, () => {}));
 for (const k of ["wallet","eth","usdt","btc","pts","farm","borrow"]) render[k] = () => { if (!SHEET_CODE) withSheets(() => rerender(k)); };
 function renderProve(...a) { if (SHEET_CODE) return SHEET_CODE.renderProve(...a); withSheets(() => { if ($('#sheet-prove').open) reProve(); }); }
@@ -8129,7 +8129,44 @@ function brRow(rec) {
 const brArmed = (id) => BR.drop?.id === id && Date.now() - BR.drop.at < 120e3;
 const brMarkDeep = (n) => (n.eligible && BR.deep.has(brId(n)) ? { ...n, eligible: false, reason: brLongReason(BR.deep.get(brId(n))) } : n);
 const brMarkEmpty = (n) => (n.eligible && BigInt(n.amount) === 0n ? { ...n, eligible: false, reason: 'Holds no TAC' } : n);
-const bswMod = lazy(() => import('/btcswap-page.js?cb=0ec3ac64'));
+const brMarked = (n) => brProofWait(brMarkEmpty(brMarkDeep(n)));
+const brTagged = (n) => brSplitTag(n, brPreps(S.key?.pubHex).find((p) => p.txid === n.txid));
+const brSplitLooking = (pub) => {
+  const ns = BR.pub === pub ? BR.notes : null;
+  return ns && brPreps(pub).some((p) => p.keep && Date.now() - p.at < 30 * 60e3 && ns.filter((n) => n.txid === p.txid).length < 2)
+    ? 'Looking for the two notes of your split: Bitcoin’s network has not listed them yet, usually within a minute. This page looks again by itself.' : '';
+};
+const brLineWaiting = (notes) => {
+  const conf = notes.filter((n) => n.reason === 'unconfirmed').length, proof = notes.filter((n) => n.reason === 'proof').length, many = (n) => `${n} note${n === 1 ? '' : 's'}`;
+  return [conf ? `${many(conf)} waiting for the Bitcoin confirmation.` : '', proof ? `${many(proof)} confirmed, waiting for Bitcoin’s proof on Ethereum to reach ${proof === 1 ? 'it' : 'them'}, usually a few hours.` : '', conf || proof ? 'This page looks again by itself.' : ''].filter(Boolean).join(' ');
+};
+async function brSplitFee(pub, n) {
+  const coins = await withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
+  return brSplitFeeOf(await loadTacit(), { noteSats: n.sats, coins }).catch(() => null);
+}
+function brSplitDone({ pub, txid, sent, rest, said, after }) {
+  brPrepSet(pub, [...brPreps(pub).filter((x) => x.txid !== txid), { txid, amount: String(sent), keep: String(rest), at: Date.now() }]);
+  BR.pick = null; BR.rv = null; BR.at = 0;
+  said(html`<span class="ok">✓ Split: ${fmt(sent, 8, 4)} TAC to your own address, ${fmt(rest, 8, 4)} TAC kept in a note of its own</span> <a href="${MEMPOOL}/tx/${txid}" target="_blank" rel="noopener">${short(txid, 6)} ↗</a>. Both wait for the Bitcoin confirmation, then for Bitcoin’s proof on Ethereum to reach them, usually a few hours in all. ${rest > BR_LIMITS.tac.in.max ? `The first can then be bridged; the kept note is still over the ${fmt(BR_LIMITS.tac.in.max, 8, 4)} TAC a bridge takes, so split it again once it confirms.` : 'Each can then be bridged.'} They are listed under TAC on Bitcoin, and this page looks for both.`);
+  Promise.allSettled([loadBridge(true), loadBtc(true)]).then(() => after?.());
+  brWaitFor({ delays: [2000, 6000, 12000, 24000, 45000, 90000], live: () => S.key?.pubHex === pub,
+    read: async () => { if (BR.loading) await BR.loading.catch(() => {}); await Promise.allSettled([loadBridge(true), loadBtc(true)]); after?.(); return BR.notes || []; },
+    done: (ns) => (ns || []).filter((n) => n.txid === txid).length >= 2 }).catch(() => {});
+}
+function brWaitTick() {
+  const pub = S.key?.pubHex, ns = pub && BR.pub === pub ? BR.notes : null;
+  if (!ns || BR.loading || document.hidden || Date.now() - BR.at < 110e3 || !ns.some((n) => n.reason === 'unconfirmed' || n.tracking === 'new')) return;
+  loadBridge(true).then(() => { rerender('tac'); if (HX.tab === 'bridge') hxSendAfter(); }).catch(() => {});
+}
+async function openAddresses() {
+  openSheet('wallet');
+  for (let i = 0; i < 40; i++) {
+    const d = $('#w-keys details');
+    if (d) { d.open = true; d.scrollIntoView?.({ block: 'nearest' }); return; }
+    await sleep(100);
+  }
+}
+const bswMod =lazy(() => import('/btcswap-page.js?cb=0ec3ac64'));
 const BSW = { pub: null, s: null, say: null, recs: [] };
 const bswHas = (pub) => { try { return Object.keys(localStorage).some((k) => k.startsWith(`tacit-btcswap-v1:mainnet:${pub}:`)); } catch { return false; } };
 async function bswOpen() {
@@ -11356,8 +11393,9 @@ function paintDash0() {
     if (lost.length) due.push([lost.length === 1 ? bondText(lost[0]) : `${lost.length} locks were spent on Bitcoin before their cBTC was redeemed, so their bonds go to the insurance reserve.`, 'bonds', 'See']);
     const preps = brPreps(k), prepsReady = preps.filter((p) => brPrepState(p) === 'ready' && (!p.plan?.auto || p.autoHold)), prepAmt = (p) => `${fmt(BigInt(p.amount), 8, 4)} TAC`;
     if (preps.length) brPrepTick().catch(() => {});
-    if (prepsReady.length) due.push([prepsReady.length === 1 ? `${prepAmt(prepsReady[0])} you sent to your own address is ready to bridge to Ethereum.` : `${prepsReady.length} notes you sent to your own address are ready to bridge to Ethereum.`, 'bridge', 'Bridge']);
-    else if (preps.length) due.push([preps.length === 1 ? `${prepAmt(preps[0])} is getting ready to bridge: it can go once Bitcoin’s proof on Ethereum reaches it, usually within a few hours.`
+    const prepKeep = (p) => `${prepAmt(p)} and ${fmt(BigInt(p.keep), 8, 4)} TAC`;
+    if (prepsReady.length) due.push([prepsReady.length === 1 ? (prepsReady[0].keep ? `The ${prepKeep(prepsReady[0])} you split are ready to bridge to Ethereum, one at a time.` : `${prepAmt(prepsReady[0])} you sent to your own address is ready to bridge to Ethereum.`) : `${prepsReady.length} notes you sent to your own address are ready to bridge to Ethereum.`, 'bridge', 'Bridge']);
+    else if (preps.length) due.push([preps.length === 1 ? (preps[0].keep ? `${prepKeep(preps[0])} from your split are getting ready to bridge: they can go once Bitcoin’s proof on Ethereum reaches them, usually within a few hours.` : `${prepAmt(preps[0])} is getting ready to bridge: it can go once Bitcoin’s proof on Ethereum reaches it, usually within a few hours.`)
       : `${preps.length} notes are getting ready to bridge: they can go once Bitcoin’s proof on Ethereum reaches them, usually within a few hours.`, 'bridge', 'Follow']);
     const brs =brJournal(k, null).filter((r) => !BR_DONE.includes(r.stage) && r.stage !== 'recovered'), held = brs.filter(brHeld), need = brs.filter(brDue),
       stuck = brs.filter((r) => r.stage === 'not-recorded' && !brDue(r)), back = brs.filter((r) => r.stage === 'recovering' || r.stage === 'reclaim-sent'), going = brs.filter((r) => !brHeld(r) && !stuck.includes(r) && !back.includes(r));
@@ -13123,20 +13161,28 @@ function hxHave() {
   el.__h = '';
   if (!pub || HX.mode !== 'btc' || HX.dir !== 'in') { el.hidden = true; return; }
   const b = BR.pub === pub ? BR : null, recs = brRecords(pub), due = recs.filter((r) => brDue(r)).length;
-  const notes = (b?.notes || []).filter((n) => n.reason !== 'already bridging'), open = notes.filter((n) => n.eligible), over = notes.filter(brOver).length, other = notes.length - open.length - over;
+  const notes = (b?.notes || []).filter((n) => n.reason !== 'already bridging').map(brMarked), open = notes.filter((n) => n.eligible), over = notes.filter(brOver).length;
+  const waiting = notes.filter((n) => n.reason === 'unconfirmed' || n.reason === 'proof').length, other = notes.length - open.length - over - waiting;
   const sum = (xs) => xs.reduce((a, n) => a + BigInt(n.amount), 0n), many = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const looking = b?.notes ? brSplitLooking(pub) : '';
   const main = b?.notes ? (notes.length ? html`<b>${fmt(sum(notes), 8, 4)} TAC</b> on Bitcoin, in ${many(notes.length, 'note')}`
-      : html`No TAC on this key’s Bitcoin address yet. <a href="#bitcoin/receive" data-link="bitcoin/receive">Receive TAC there</a>`)
+      : looking ? 'Your split is on its way.' : html`No TAC on this key’s Bitcoin address yet. <a href="#bitcoin/receive" data-link="bitcoin/receive">Receive TAC there</a>`)
     : b?.err ? 'Your TAC on Bitcoin could not be read. The Bridge tab reads it again.' : BR.loading ? 'Reading your TAC on Bitcoin…' : '';
   const lines = [
     recs.length ? `${many(recs.length, 'bridge')} on ${recs.length === 1 ? 'its' : 'their'} way${due ? `: ${due === recs.length ? (due === 1 ? 'it needs' : 'they need') : `${due} need`} you` : ''}.` : '',
     open.length ? `${many(open.length, 'note')} to pick from (${fmt(sum(open), 8, 4)} TAC). Each bridges whole, and is checked first.` : '',
     open.some(brNeedsSend) ? `${open.filter(brNeedsSend).length === open.length ? (open.length === 1 ? 'It goes' : 'They go') : `${many(open.filter(brNeedsSend).length, 'note')} go${open.filter(brNeedsSend).length === 1 ? 'es' : ''}`} to your own address once first: the Bridge tab does it, then says when it can be bridged.` : '',
-    brPreps(pub).length ? `${many(brPreps(pub).length, 'note')} getting ready to bridge.` : '',
-    other > 0 ? `${many(other, 'note')} not ready yet: the Bridge tab says why.` : '',
+    looking,
+    over > 0 ? `${many(over, 'note')} over the ${fmt(BR_LIMITS.tac.in.max, 8, 4)} TAC a bridge takes: pick ${over === 1 ? 'it' : 'one'} to split ${fmt(BR_LIMITS.tac.in.max, 8, 4)} TAC off it.` : '',
+    waiting > 0 ? brLineWaiting(notes) : brPreps(pub).length ? `${many(brPreps(pub).length, 'note')} getting ready to bridge.` : '',
+    other > 0 ? `${many(other, 'note')} cannot be bridged as they are: the list says why.` : '',
   ].filter(Boolean);
   el.hidden = !main && !lines.length;
-  if (!el.hidden) mount(el, html`${main ? html`<span class="hx-pl"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span>${main}</span></span>` : ''}${lines.map((l) => html`<span class="hx-hv">${l}</span>`)}`);
+  if (!el.hidden) {
+    mount(el, html`${main ? html`<span class="hx-pl"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span>${main}</span></span>` : ''}${lines.map((l) => html`<span class="hx-hv">${l}</span>`)}${b?.notes ? html`<span class="hx-do"><button class="link" type="button" data-hxaddr>Your addresses: where this TAC and the fee sats are</button></span>` : ''}`);
+    const ad = $('[data-hxaddr]', el);
+    if (ad) ad.onclick = () => openAddresses();
+  }
 }
 const hxStay = (el) => { el.tabIndex = -1; el.focus({ preventScroll: true }); };
 function hxHaveTeth(el) {
@@ -14764,7 +14810,8 @@ async function brReview(pub, n, onProgress) {
 }
 async function hxBridgeInQuote(my, done) {
   const [btcFee, time] = brxRows('in');
-  const base = { out: 'Private', go: 'Bridge TAC from Bitcoin', rc: [['Arrives', 'private TAC on Ethereum'], ['Limit', `${fmt(BR_LIMITS.tac.in.max, 8, 4)} TAC a bridge`, '', 'While the bridge is new'], btcFee, time] };
+  const gas = ['Ethereum gas', 'none: the relay sends it', '', 'The relay sends the Ethereum side of a bridge from Bitcoin and pays its gas. If its free settles for the day are used up, it waits and asks again every hour.'];
+  const base = { out: 'Private', go: 'Bridge TAC from Bitcoin', rc: [['Arrives', 'private TAC on Ethereum'], ['Limit', `${fmt(BR_LIMITS.tac.in.max, 8, 4)} TAC a bridge`, '', 'While the bridge is new'], btcFee, gas, time] };
   if (!S.key) return done({ ...base, go: 'Open your Tacit wallet to bridge' });
   const pub = S.key.pubHex;
   if (!(BR.pub === pub && BR.notes)) done({ ...base, line: 'Reading your TAC on Bitcoin…' });
@@ -14772,18 +14819,35 @@ async function hxBridgeInQuote(my, done) {
   if (my !== HX.seq) return;
   const b = BR.pub === pub ? BR : null;
   if (!b?.notes) return done({ ...base, line: b?.err ? errText(b.err) : 'Reading your TAC on Bitcoin…', warn: !!b?.err });
-  const notes = b.notes.filter((n) => n.reason !== 'already bridging').map(brMarkDeep).map(brMarkEmpty), open = notes.filter((n) => n.eligible), big = notes.filter(brOver);
+  const notes = b.notes.filter((n) => n.reason !== 'already bridging').map(brMarked), open = notes.filter((n) => n.eligible), big = notes.filter(brOver);
   if (!notes.length) return done(base);      // the line over the button says there is none, and where to receive some
-  if (BR.pick && ![...open, ...big].some((n) => brId(n) === BR.pick)) BR.pick = null;
+  const fastable = (n) => n.reason === 'proof' && fastOn();
+  if (BR.pick && ![...open, ...big, ...notes.filter(fastable)].some((n) => brId(n) === BR.pick)) BR.pick = null;
   if (!BR.pick && open.length === 1) BR.pick = brId(open[0]);
   if (!BR.pick && !open.length && big.length === 1) BR.pick = brId(big[0]);
   const cap = BR_LIMITS.tac.in.max, capText = `${fmt(cap, 8, 4)} TAC`;
-  const shown = { ...base, rowsName: 'Your TAC on Bitcoin', rows: notes.map((n) => ({ k: brId(n), name: `${fmt(BigInt(n.amount), 8, 4)} TAC`, note: n.eligible ? 'ready to bridge' : brOver(n) ? `over the ${capText} a bridge takes: split ${capText} off it to bridge` : n.reason, show: '', off: !n.eligible && !brOver(n) })) };
+  const why = (n) => [n.eligible ? 'ready to bridge' : brOver(n) ? `over the ${capText} a bridge takes: split ${capText} off it to bridge` : brWhy(n) + (fastable(n) ? '; pick it to see if the fast bridge can take it now' : ''), brTagged(n)].filter(Boolean).join(' · ');
+  const shown = { ...base, rowsName: 'Your TAC on Bitcoin', rows: notes.map((n) => ({ k: brId(n), name: `${fmt(BigInt(n.amount), 8, 4)} TAC`, note: why(n), show: '', off: !n.eligible && !brOver(n) && !fastable(n) })) };
+  const w = notes.filter(fastable).find((x) => brId(x) === BR.pick);
+  if (w) {
+    done({ ...shown, pick: BR.pick, line: 'Looking for a provider…' });
+    const Fw = await hxFastOffer(w).catch(() => null);
+    if (my !== HX.seq) return;
+    if (Fw?.ok) return done({ ...hxFastShown(Fw, { ...shown, pick: BR.pick }), alt: null });
+    return done({ ...shown, pick: BR.pick, warn: true, line: `${brWhy(w).replace(/^./, (c) => c.toUpperCase())}. The fast bridge has no provider for it right now.` });
+  }
   const s = big.find((x) => brId(x) === BR.pick);
-  if (s) return done({ ...shown, pick: BR.pick, go: `Split off ${capText}`,
-    rc: [['Splits off', `${capText} to your own address`], ['Keeps', `${fmt(BigInt(s.amount) - cap, 8, 4)} TAC in a note of its own`], ['Bitcoin fee', 'in sats, from your Bitcoin address'], ['Then', 'bridge it here once Bitcoin’s proof has seen it, usually a few hours']] });
+  if (s) {
+    const sats = (v) => `${Number(v).toLocaleString('en-US')} sats`, wait = s.confirmed === false ? 'This note is waiting for its Bitcoin confirmation. Split it once it has one.' : '';
+    const rc = (fee) => [['Splits off', `${capText} to your own address`], ['Keeps', `${fmt(BigInt(s.amount) - cap, 8, 4)} TAC in a note of its own`], ['Bitcoin fee', fee || 'in sats, from your Bitcoin address'], gas, ['Then', 'bridge either note here once Bitcoin’s proof has seen it, usually a few hours; the kept note waits the same']];
+    done({ ...shown, pick: BR.pick, go: `Split off ${capText}`, rc: rc(), line: wait, warn: !!wait });
+    const sf = wait ? null : await brSplitFee(pub, s);
+    if (my !== HX.seq || !sf) return;
+    return done({ ...shown, pick: BR.pick, go: `Split off ${capText}`, rc: rc(`about ${sats(sf.fee)}${hxUsd('sats', Number(sf.fee)) ? ` (${hxUsd('sats', Number(sf.fee))})` : ''}`),
+      warn: sf.short, line: sf.short ? `This key’s Bitcoin address has ${fmt(BigInt(sf.free || 0), 8, 8)} BTC free for fees, short of the ${sats(sf.need)} this needs. Add some from Receive on the Bitcoin tab.` : '' });
+  }
   const n = open.find((x) => brId(x) === BR.pick);
-  if (!n) return done({ ...shown, line: open.length ? 'Pick the note to bridge.' : '' });
+  if (!n) return done({ ...shown, line: open.length ? 'Pick the note to bridge.' : brLineWaiting(notes) });
   if (fastOn()) done({ ...shown, pick: BR.pick, line: 'Looking for a provider…' });
   const F = await hxFastOffer(n).catch(() => null);
   if (my !== HX.seq) return;
@@ -14794,7 +14858,7 @@ async function hxBridgeInQuote(my, done) {
   if (my !== HX.seq) return;
   if (!R.r) return done({ ...shown, ...(R.sheet ? { alt: { label: 'Open the TAC bridge', link: 'bridge' } } : {}), ...other, pick: BR.pick, warn: true, line: R.stop || '' });
   const sats = (v) => `${Number(v).toLocaleString('en-US')} sats`, amtText = fmt(BigInt(n.amount), 8, 4);
-  return done({ ...shown, ...other, pick: BR.pick, out: amtText, rc: [['Arrives', `${amtText} private TAC on Ethereum`], ['Bitcoin fee', `about ${sats(R.cost.fee)}${hxUsd('sats', Number(R.cost.fee)) ? ` (${hxUsd('sats', Number(R.cost.fee))})` : ''}`], ['Relay fee', 'none'], time, hxFastWhy(F)].filter(Boolean),
+  return done({ ...shown, ...other, pick: BR.pick, out: amtText, rc: [['Arrives', `${amtText} private TAC on Ethereum`], ['Bitcoin fee', `about ${sats(R.cost.fee)}${hxUsd('sats', Number(R.cost.fee)) ? ` (${hxUsd('sats', Number(R.cost.fee))})` : ''}`], ['Relay fee', 'none'], gas, time, hxFastWhy(F)].filter(Boolean),
     warn: R.r.short, line: R.r.short ? `This key’s Bitcoin address has ${fmt(BigInt(R.cost.have || 0), 8, 8)} BTC free for fees, short of the ${sats(R.cost.need)} this needs. Add some from Receive on the Bitcoin tab.` : '' });
 }
 async function hxBridgeInGo() {
@@ -14804,9 +14868,9 @@ async function hxBridgeInGo() {
     const st = HX.ss;
     let fast = false;
     try {
-      const all = (BR.pub === pub ? BR.notes || [] : []).map(brMarkDeep).map(brMarkEmpty), big = all.find((x) => brOver(x) && brId(x) === BR.pick);
+      const all = (BR.pub === pub ? BR.notes || [] : []).map(brMarked), big = all.find((x) => brOver(x) && brId(x) === BR.pick);
       if (big) return await hxBridgeSplit(run, st, pub, big);
-      const n = all.find((x) => x.eligible && brId(x) === BR.pick);
+      const n = all.find((x) => (x.eligible || (x.reason === 'proof' && fastOn())) && brId(x) === BR.pick);
       if (!n) { say(st, html`<span class="err">Pick the note to bridge.</span>`); return; }
       const F = FASTR.slow === brId(n) ? null : await hxFastOffer(n).catch(() => null);
       if (F?.ok) { fast = true; return await hxFastGo({ st, pub, n, F }); }
@@ -14825,20 +14889,18 @@ async function hxBridgeInGo() {
   });
 }
 async function hxBridgeSplit(run, st, pub, n) {
-  const cap = BR_LIMITS.tac.in.max, amt = `${fmt(cap, 8, 4)} TAC`, key = `split|${pub}|${brId(n)}`;
+  const cap = BR_LIMITS.tac.in.max, amt = `${fmt(cap, 8, 4)} TAC`, rest = BigInt(n.amount) - cap, key = `split|${pub}|${brId(n)}`;
+  if (n.confirmed === false) { say(st, html`<span class="err">This note is waiting for its Bitcoin confirmation. Split it once it has one.</span>`); return; }
   if (!(HX.xoSure?.key === key && Date.now() - HX.xoSure.at < 180e3)) {
     HX.xoSure = { key, at: Date.now() };
-    say(st, `One Bitcoin transaction sends ${amt} of this note to your own address, paid in sats from your Bitcoin address, and keeps the rest in a note of its own. Press again to split it.`);
+    say(st, `One Bitcoin transaction sends ${amt} of this note to your own address, paid in sats from your Bitcoin address, and keeps ${fmt(rest, 8, 4)} TAC in a note of its own. Both then wait for Bitcoin’s proof on Ethereum, usually a few hours. Press again to split it.`);
     return;
   }
   HX.xoSure = null;
   run.say(st, `Splitting ${amt} off…`);
   const { txid } = await toSelf(pub, TAC_BTC_ID, [n], cap).catch((e) => { throw /insufficient sats|no plain-sats/i.test(String(e?.message)) ? new Error('Not enough BTC at your Bitcoin address for its fee. Add a little from Receive on the Bitcoin tab.') : e; });
   actBtc(txid, `Split off ${amt}`);
-  brPrepSet(pub, [...brPreps(pub).filter((x) => x.txid !== txid), { txid, amount: String(cap), at: Date.now() }]);
-  BR.pick = null; BR.rv = null; BR.at = 0;
-  run.say(st, html`<span class="ok">✓ ${amt} split off to your own address</span> <a href="${MEMPOOL}/tx/${txid}" target="_blank" rel="noopener">${short(txid, 6)} ↗</a>. It can be bridged here once it confirms and Bitcoin’s proof on Ethereum has seen it, usually within a few hours.`);
-  Promise.allSettled([loadBridge(true), loadBtc(true)]).then(hxSendAfter);
+  brSplitDone({ pub, txid, sent: cap, rest, said: (m) => run.say(st, m), after: hxSendAfter });
 }
 async function hxBridgeWrapGo(units) {
   if (!S.key) return openSheet('wallet');
@@ -15826,7 +15888,7 @@ restoring.then(() => tabKeyOpen(true), () => tabKeyOpen(true));
 Promise.race([restoring, new Promise((r) => setTimeout(() => r(false), 1500))]).then((restored) => { if (!restored && !S.key) refreshAll(); });
 evm.onElsewhere(restoreWallet);
 let lastTick = Date.now();
-const tick = () => { lastTick = Date.now(); paintEarn(); if (!TACP.on) refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); bswTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (!TACP.on && lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if (shown(n) && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
+const tick = () => { lastTick = Date.now(); paintEarn(); if (!TACP.on) refreshTape(); loadTacPrice().catch(() => {}); brTick(); brPrepTick().catch(() => {}); brWaitTick(); bswTick().catch(() => {}); fastTick().catch(() => {}); xoTick(); if (!TACP.on && lastTick - numsAt > NUMS_MS) refreshNums(); for (const n of SHEETS) if (shown(n) && !running(n)) load[n]?.().then(() => rerender(n)).catch(() => {}); };
 setInterval(() => { if (!document.hidden) tick(); }, 60e3);
 const CHL = { p: null };
 const chlAgo = (s) => (s < 90 ? 'just now' : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`);

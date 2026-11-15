@@ -196,8 +196,8 @@ function wbClick(e) {
   dashGo(b);
 }
 const walletKeys = (open = false) => html`<details class="w-acc"${open ? ' open' : ''}><summary>Addresses and public key</summary>
-  ${keyRow('Bitcoin address', plainAddr(), 'Bitcoin address', 'Sats from any wallet or exchange.', { qr: true })}
-  ${keyRow('Ethereum address', S.acct.address, 'Ethereum address', 'This key’s own. ETH sent here can pay instead of a wallet.')}
+  ${keyRow('Bitcoin address', plainAddr(), 'Bitcoin address', 'Holds your TAC on Bitcoin, and pays Bitcoin fees in sats. Send sats to it from any wallet or exchange.', { qr: true })}
+  ${keyRow('Ethereum address', S.acct.address, 'Ethereum address', 'This key’s own. It pays Ethereum gas only if you choose it below: ETH sent here can pay instead of a wallet. A bridge from Bitcoin needs none.')}
   ${keyRow('Public key', S.key.pubHex, 'Public key', 'For a Send box that asks for a key.')}</details>`;
 render.wallet = () => {
   const el = $('#wallet-body');

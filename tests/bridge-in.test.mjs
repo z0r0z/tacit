@@ -3,7 +3,7 @@
 // to one's own address that an older note needs first.
 //   node tests/bridge-in.test.mjs
 import assert from 'node:assert/strict';
-import { TAC_BTC_ID, noteId, bridgeError, checkText, needsSend, firstStep, overCap, marked, longReason, listNotes, review, checkNote, priceNote, planSet, burnMaxRate, PLAN_KEY, begin, toSelf, NO_SATS, isShort, halts, haltText, PREP_KEY, preps, prepAdd, mergeSend, startNote, tryAgain, bulkFee, sendCost, prepsAfterPass, runMerge, runAll } from '../dapp/bridge-in.js';
+import { TAC_BTC_ID, noteId, bridgeError, checkText, needsSend, firstStep, overCap, marked, longReason, listNotes, review, checkNote, priceNote, planSet, burnMaxRate, PLAN_KEY, begin, toSelf, NO_SATS, isShort, halts, haltText, PREP_KEY, preps, prepAdd, mergeSend, startNote, tryAgain, bulkFee, sendCost, prepsAfterPass, runMerge, runAll, proofWait, whyText, splitTag, waitFor, splitFee } from '../dapp/bridge-in.js';
 
 const say = (e) => `said: ${e?.message || e}`;
 
@@ -292,5 +292,50 @@ assert.equal(haltText(new Error('burndep-ux: nope'), say), 'said: Nope');
   assert.deepEqual(r.did, { burns: 0, sends: 0, sent: 0 }); assert.equal(r.left.length, 1); assert.match(r.left[0], /only so many unconfirmed transactions/, 'a full chain stops the run before any burn');
   r = await runAll({ all, merge, start: async (n) => { if (n.amount === 10) throw new Error('insufficient sats'); return { rec: {} }; }, tryAgain: again, errText: say, amountText: (n) => `${n.amount} TAC` });
   assert.deepEqual(r.did, { burns: 0, sends: 2, sent: 3 }); assert.deepEqual(r.left, [`10 TAC: ${NO_SATS}`], 'a shortage at a burn stops the burns after it');
+}
+// a note Bitcoin's proof on Ethereum has not reached is not ready, and says why in words; a ready or already-held-back one is left as it is
+{
+  const ready = { eligible: true, reason: null, tracking: 'tracked', amount: '5' };
+  assert.deepEqual(proofWait(ready), ready, 'a tracked note is ready');
+  assert.deepEqual(proofWait({ ...ready, tracking: undefined }), { ...ready, tracking: undefined }, 'no tracking read: the note is left as it was, the check on picking decides');
+  const waiting = proofWait({ ...ready, tracking: 'new' });
+  assert.equal(waiting.eligible, false); assert.equal(waiting.reason, 'proof');
+  const held = { eligible: false, reason: 'unconfirmed', tracking: 'new' };
+  assert.deepEqual(proofWait(held), held, 'a note already held back keeps its own reason');
+  assert.match(whyText(waiting), /confirmed, waiting for Bitcoin’s proof on Ethereum to reach it, usually a few hours/);
+  assert.equal(whyText({ reason: 'unconfirmed' }), 'waiting for its Bitcoin confirmation');
+  assert.equal(whyText({ reason: 'Holds no TAC' }), 'Holds no TAC', 'any other reason is its own words');
+}
+// the two notes of one split are told apart by what they hold, or called by one name when they are equal
+{
+  const p = { txid: 'aa', amount: '100', keep: '250' };
+  assert.equal(splitTag({ txid: 'aa', amount: '100' }, p), 'split off, to bridge');
+  assert.equal(splitTag({ txid: 'aa', amount: '250' }, p), 'kept from the split');
+  assert.equal(splitTag({ txid: 'aa', amount: '100' }, { ...p, keep: '100' }), 'from your split');
+  assert.equal(splitTag({ txid: 'bb', amount: '100' }, p), '', 'a note of another transaction');
+  assert.equal(splitTag({ txid: 'aa', amount: '100' }, { txid: 'aa', amount: '100' }), '', 'a send to oneself has no kept note');
+  assert.equal(splitTag({ txid: 'aa', amount: '100' }, undefined), '');
+}
+// looking again for what a broadcast has not shown yet stops when it shows, when the key changes, and after the last wait
+{
+  const slept = []; let reads = 0, alive = true;
+  const base = { sleep: async (ms) => { slept.push(ms); }, delays: [1, 2, 3, 4], live: () => alive };
+  assert.equal(await waitFor({ ...base, read: async () => ++reads, done: (n) => n >= 3 }), true); assert.deepEqual(slept, [1, 2, 3], 'read three times, then stopped');
+  slept.length = 0; reads = 0;
+  assert.equal(await waitFor({ ...base, read: async () => ++reads, done: () => false }), false); assert.deepEqual(slept, [1, 2, 3, 4], 'gave up after the last wait');
+  slept.length = 0; alive = false;
+  assert.equal(await waitFor({ ...base, read: async () => { throw new Error('no'); }, done: () => true }), false); assert.deepEqual(slept, [1], 'a changed key stops the looking');
+  alive = true; slept.length = 0;
+  assert.equal(await waitFor({ ...base, delays: [1, 2], read: async () => { throw new Error('indexer down'); }, done: (r) => r === null }), true, 'a failed read counts as nothing seen, and the looking goes on');
+}
+// the fee of splitting one note: one transaction priced from the free coins, the shortage said
+{
+  const t = { bridgeUx: () => ({ quoteRate: async () => 10 }), DUST: 546, feeFor: (vb, r) => Math.ceil(vb * r), estCXferRevealVb: () => 200, estCommitVb: (n) => 100 + 60 * n };
+  const f = await splitFee(t, { noteSats: 546, coins: [{ value: 100000 }] });
+  assert.equal(f.short, false); assert.ok(f.fee > 0 && f.need > 0 && f.free === 100000);
+  const s = await splitFee(t, { noteSats: 546, coins: [{ value: 600 }] });
+  assert.equal(s.short, true, 'free coins under what the split needs');
+  assert.equal((await splitFee(t, { noteSats: 546, coins: null })).short, false, 'coins that could not be read are not called short');
+  assert.equal(await splitFee({ bridgeUx: () => ({ quoteRate: async () => { throw new Error('x'); } }) }, { noteSats: 546, coins: [] }), null, 'no fee rate: no figure');
 }
 console.log('bridge-in: all checks passed');

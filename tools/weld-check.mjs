@@ -3574,7 +3574,7 @@ await step('bridge', async () => {
   // three that can be picked (the Bridge tab checks each one's proof when it is picked), the one over the limit, and the bridges under way (four, two of them waiting for a press from the holder).
   await until(r.page, () => /1,820 TAC on Bitcoin, in 4 notes/.test(document.querySelector('#hx-have')?.textContent || ''), null, 240000);
   const have = (await text(r.page, '#hx-have')).replace(/\s+/g, ' ');
-  ok(/3 notes to pick from \(320 TAC\)\. Each bridges whole, and is checked first/.test(have) && /1 note over 1,000 TAC: split it in the Bridge tab first/.test(have) && !/not ready yet/.test(have) && /4 bridges on their way: 2 need you/.test(have),
+  ok(/3 notes to pick from \(320 TAC\)\. Each bridges whole, and is checked first/.test(have) && /1 note over the 1,000 TAC a bridge takes: pick it to split 1,000 TAC off it/.test(have) && !/not ready yet/.test(have) && /4 bridges on their way: 2 need you/.test(have),
     `bridge: the tile's Bridge tab says what the key holds on Bitcoin and what is under way (${have.slice(0, 260)})`);
   await shot(r.page, 'hx-bitcoin-have');
   // its list: the notes the key holds, the one over the limit and the ones already bridging not offered

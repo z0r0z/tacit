@@ -43,6 +43,29 @@ export const firstStep = (n) => (n.form === 'old' ? 'Older note form: pick it to
 export const overCap = (n) => !n.eligible && /beta limit/.test(n.reason || '');
 export const marked = (n, deep = new Map()) => (n.eligible && deep.has(noteId(n)) ? { ...n, eligible: false, reason: longReason(deep.get(noteId(n))) }
   : n.eligible && BigInt(n.amount) === 0n ? { ...n, eligible: false, reason: 'Holds no TAC' } : n);
+export const proofWait = (n) => (n.eligible && n.tracking === 'new' ? { ...n, eligible: false, reason: 'proof' } : n);
+export const whyText = (n) => (n.reason === 'unconfirmed' ? 'waiting for its Bitcoin confirmation'
+  : n.reason === 'proof' ? 'confirmed, waiting for Bitcoin’s proof on Ethereum to reach it, usually a few hours' : n.reason);
+export const splitTag = (n, p) => {
+  if (!p || !p.keep || n.txid !== p.txid) return '';
+  const a = String(n.amount);
+  return p.keep === p.amount ? 'from your split' : a === p.amount ? 'split off, to bridge' : a === p.keep ? 'kept from the split' : '';
+};
+export async function waitFor({ read, done, delays = [4000, 8000, 16000, 30000, 60000], sleep = (ms) => new Promise((r) => setTimeout(r, ms)), live = () => true }) {
+  for (const d of delays) {
+    await sleep(d);
+    if (!live()) return false;
+    if (done(await read().catch(() => null))) return true;
+  }
+  return false;
+}
+export async function splitFee(t, { noteSats, coins }) {
+  const rate = await t.bridgeUx().quoteRate().catch(() => null);
+  if (!rate) return null;
+  const c = sendCost(t, { rate, coins, noteSats: Number(noteSats) || 0, k: 1 });
+  const free = (coins || []).reduce((s, x) => s + Math.max(0, Number(x?.value) || 0), 0);
+  return { fee: c.fee, need: c.need, free, short: !!coins && free < c.need };
+}
 
 export async function listNotes(t, { force = false, esplora, assetId = TAC_BTC_ID } = {}) {
   const h = await t.scanHoldings(force);
