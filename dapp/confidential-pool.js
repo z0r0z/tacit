@@ -1,4 +1,5 @@
 
+import { makeTreeCore } from './confidential-tree-core.js';
 import { makeConfidentialProver } from './evm-confidential.js';
 import { verifySchnorr, bpRangeVerify, bpClassicProofLen } from './bulletproofs.js';
 import { bppRangeVerify, bytesToPoint as bppPoint, ZERO as bppZero } from './bulletproofs-plus.js';
@@ -129,9 +130,38 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
     return z;
   })();
 
+  const treeCore = makeTreeCore({ keccak256, depth: TREE_DEPTH });
+
   class Tree {
-    constructor() { this.leaves = []; this._made = null; }
-    insert(leafHex) { this.leaves.push(b32(leafHex)); this._made = null; return this.leaves.length - 1; }
+    constructor() { this.leaves = []; this._made = null; this._ver = 0; this._preparing = null; }
+    insert(leafHex) { this.leaves.push(b32(leafHex)); this._made = null; this._ver++; return this.leaves.length - 1; }
+
+    // Makes the levels in `workers` (confidential-tree-workers.js) so that the first root or path of a tree does not hold the page's thread (about a hash for each leaf: a few
+    // hundred milliseconds for a pool of seven thousand): asked before that first root, the levels are there when it comes. What comes back is put together and checked at its edges
+    // here, and kept only if no leaf was inserted meanwhile; anything less (no workers, a failed or odd answer) leaves the levels to levels() as they always were, so a tree is the same
+    // tree whatever the workers do. Asked again while one is under way, it waits for that one.
+    async prepare(workers) {
+      const n = this.leaves.length, v = this._ver;
+      if (!workers || (this._made && this._made.n === n)) return this;
+      if (this._preparing && this._preparing.v === v) { await this._preparing.p; return this; }
+      const p = (async () => {
+        let made = null;
+        try {
+          const packed = new Uint8Array(n * 32);
+          for (let i = 0; i < n; i++) packed.set(this.leaves[i], 32 * i);
+          const w = await workers(packed, n);
+          if (w && treeCore.edgesHold(packed, n, w.lower, w.h)) {
+            const r = treeCore.finish(packed, n, w.lower, w.h);
+            const nodes = (buf, count) => Array.from({ length: count }, (_, k) => buf.subarray(32 * k, 32 * k + 32));
+            made = { n, levels: r.levels.map((buf, i) => nodes(buf, r.counts[i])), top: [r.top] };
+          }
+        } catch { made = null; }
+        if (made && this._ver === v && !(this._made && this._made.n === n)) this._made = made;
+      })();
+      this._preparing = { v, p };
+      try { await p; } finally { if (this._preparing && this._preparing.p === p) this._preparing = null; }
+      return this;
+    }
 
     // Every level of the tree, level 0 the leaves and level i what level i-1 hashes to in pairs (the missing side of the last pair is zeros[i-1]), and
     // the top. Made once for the leaves the tree has and kept until one is inserted: the root and the path of each note were each a hash of every leaf

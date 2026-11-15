@@ -33,6 +33,8 @@ import { signSchnorr, SECP_N } from './bulletproofs.js';
 import { randomScalar, bppH, G as BPP_G } from './bulletproofs-plus.js';
 import { hmac, sha256 as vendorSha256 } from './vendor/tacit-deps.min.js';
 import { loadSnapshot, pointerCall, readPointer, poolTrees, sameTrees, selectLogs, snapshotCovers, treesOf } from './pool-snapshot.js';
+import * as poolSnap from './pool-snapshot.js';
+import { makeTreeWorkers } from './confidential-tree-workers.js';
 import { makeConfidentialRecovery, privBytes, deriveOutputKeys } from './confidential-recovery.js';
 import { makeImportedFarmStore } from './confidential-secret-store.js';
 import { makeBtcHistoryProvider } from './confidential-recovery-btc.js';
@@ -60,6 +62,10 @@ function browserLogStore() {
 }
 
 const _keyForgetters = new Set();
+// The workers that make the levels of the pool's trees (Tree.prepare): one set for the page, kept a few seconds after a tree. Namespace imports and optional calls below, as these sit in plain
+// modules that can be a copy apart for a few minutes after a deploy: a tree or a module without them is made as it always was.
+const treeWorkers = makeTreeWorkers();
+
 export function forgetKeys() {
   for (const forget of _keyForgetters) { try { forget(); } catch { } }
 }
@@ -402,7 +408,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
   async function _treesHold(logs, to) {
     try {
-      const mine = treesOf(logs, { decodeLogs: evmLog.decodeLogs, Tree: indexer._pool.Tree, pool: cfg.pool });
+      const opts = { decodeLogs: evmLog.decodeLogs, Tree: indexer._pool.Tree, pool: cfg.pool };
+      const mine = poolSnap.treesOfAsync ? await poolSnap.treesOfAsync(logs, { ...opts, workers: treeWorkers }) : treesOf(logs, opts);
       const tag = '0x' + to.toString(16);
       return sameTrees(mine, await poolTrees((slot) => rpc('eth_getStorageAt', [cfg.pool, slot, tag])));
     } catch { return false; }
@@ -791,6 +798,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const id = identity(walletPriv);
     const { leaves, spent } = indexer.index(events);
     const tree = indexer.buildTree(leaves);
+    await tree.prepare?.(treeWorkers);
     const root = tree.root();
     const slot = new Map();
     leaves.forEach((l, i) => { if (l) slot.set(lc(l.leaf), i); });
@@ -985,6 +993,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   async function balance(scanPriv, opts) {
     const o = opts || {};
+    treeWorkers.warm?.().catch(() => {});          // the workers that make the tree's levels start while the history is read
     const events = withSavedMemos(await fetchEvents({ fromBlock: o.fromBlock, toBlock: o.toBlock, include: o.positions ? ['wraps', 'bonds'] : ['wraps'] }));
     const st = await _scanNotes({ walletPriv: scanPriv, events, cbtc: o.cbtc !== false, btcHistory: o.btcHistory || null, bridge: o.bridge !== false, bridgeAmounts: o.bridgeAmounts || [], recent: o.recent || 0 });
     const notes = st.notes;

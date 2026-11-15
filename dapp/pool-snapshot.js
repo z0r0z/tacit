@@ -117,8 +117,8 @@ export async function encodePiece(logs, addresses, sha256, maxPiece = SNAPSHOT.m
   return [...await encodePiece(logs.slice(0, mid), addresses, sha256, maxPiece), ...await encodePiece(logs.slice(mid), addresses, sha256, maxPiece)];
 }
 
-// The three trees the logs build: { note, lock, cdp: { count, root } }. Leaves must arrive at the positions their logs name, or this throws.
-export function treesOf(logs, { decodeLogs, Tree, pool }) {
+// The three trees the logs build, before their roots are asked for. Leaves must arrive at the positions their logs name, or this throws.
+function treesBuilt(logs, { decodeLogs, Tree, pool }) {
   const t = { note: new Tree(), lock: new Tree(), cdp: new Tree() };
   for (const ev of decodeLogs(logs.filter((l) => lc(l.address) === lc(pool)))) {
     if (!ev) continue;
@@ -130,7 +130,16 @@ export function treesOf(logs, { decodeLogs, Tree, pool }) {
       for (const l of ev.lockLeaves) t.lock.insert(l);
     } else if (ev.type === 'CdpPositionInserted') t.cdp.insert(ev.leaf);
   }
-  return Object.fromEntries(Object.entries(t).map(([k, tree]) => [k, { count: tree.leaves.length, root: tree.root() }]));
+  return t;
+}
+const rootsOf = (t) => Object.fromEntries(Object.entries(t).map(([k, tree]) => [k, { count: tree.leaves.length, root: tree.root() }]));
+// The three trees the logs build: { note, lock, cdp: { count, root } }.
+export function treesOf(logs, opts) { return rootsOf(treesBuilt(logs, opts)); }
+// The same, with the levels of the trees made in `workers` first (Tree.prepare) so the page's thread is not held while the roots are worked out; a tree they leave to the page is made there.
+export async function treesOfAsync(logs, { workers, ...opts }) {
+  const t = treesBuilt(logs, opts);
+  await Promise.all(Object.values(t).map((tree) => (typeof tree.prepare === 'function' ? tree.prepare(workers) : null)));
+  return rootsOf(t);
 }
 // The trees as the pool keeps them, so a builder adds a day's leaves without the history: { note, lock, cdp: { count, root, filled[32] } },
 // each leaf inserted as ConfidentialPool._insertTreeLeaf does (keccak, zeros[i] = keccak(zeros[i-1] ‖ zeros[i-1]), depth 32).
