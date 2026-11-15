@@ -6,6 +6,7 @@ import { walletNode, connectedInjected, logSpan, refuses, isShared } from './eth
 import { pace, once } from './rpc-pace.js';
 import { makeEvmAccount } from './evm-account.js';
 import { makeConfidentialIndexer } from './confidential-indexer.js';
+import { makeMemoWorkers } from './confidential-memo-workers.js';
 import { makeConfidentialEvmLog } from './confidential-evm-log.js';
 import { makeConfidentialRelay } from './confidential-relay.js';
 import { verifyConfidentialInvoice } from './confidential-invoice.js';
@@ -71,6 +72,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const indexer = makeConfidentialIndexer({ secp, keccak256, sha256 });
   const evmLog = makeConfidentialEvmLog({ keccak256 });
   const memo = indexer._memo;
+  const _memoFilter = makeMemoWorkers();
   const _ownKeys = new Map();
   const guard = makeRecoveryGuard({ memo, openKeyFor: (pub) => _ownKeys.get(String(pub).toLowerCase()) || null });
   const relay = makeConfidentialRelay({ base: cfg.relayBase, others: cfg.relays || [], fetchImpl: _fetch, guard, checkEmittedMemos, saveMismatchedMemos });
@@ -816,7 +818,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (btcHist) btcHist.catch(() => {});
 
     const held = leaves.filter(Boolean);
-    const fromMemos = await memo.scanSliced(_scanKeyHex(id.priv), quick ? held.slice(-recent) : held, [], memoNu, { covered });
+    const fromMemos = await memo.scanSliced(_scanKeyHex(id.priv), quick ? held.slice(-recent) : held, [], memoNu, { covered, filter: _memoFilter });
     if (!quick) _saveMemoCk(_ck, leaves, fromMemos);
     diag.quick = quick;
     for (const n of fromMemos) all.set(lc(n.leaf), { ...n, inboundUnverified: true });

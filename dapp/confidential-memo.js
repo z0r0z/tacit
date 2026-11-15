@@ -13,8 +13,7 @@
 // to exactly the on-chain leaf.
 
 import { bppH, G } from './bulletproofs-plus.js';
-
-const MEMO_LEN = 136; // value(8) ‖ blinding(32) ‖ secret(32) ‖ asset(32) ‖ owner(32)
+import { makeMemoProbe } from './confidential-memo-probe.js';
 
 export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   const H = bppH();
@@ -22,7 +21,6 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   const hexToBytes = (h) => Uint8Array.from((String(h).replace(/^0x/, '').match(/../g) || []).map((x) => parseInt(x, 16)));
   const beBytes = (n, len) => hexToBytes(BigInt(n).toString(16).padStart(len * 2, '0'));
   const beHex = (n) => '0x' + n.toString(16).padStart(64, '0');
-  const bToBig = (b) => (b.length ? BigInt('0x' + bytesToHex(b)) : 0n);
   const concat = (a) => { const t = a.reduce((s, x) => s + x.length, 0); const o = new Uint8Array(t); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
   const b32 = (h) => { const b = hexToBytes(h); if (b.length > 32) throw new Error('over 32 bytes'); const o = new Uint8Array(32); o.set(b, 32 - b.length); return o; };
   const u8 = (x) => Uint8Array.of(x);
@@ -39,17 +37,14 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   const commitXY = (value, blinding) => { const a = H.multiply(BigInt(value)).add(G.multiply(BigInt(blinding))).toAffine(); return { cx: beHex(a.x), cy: beHex(a.y) }; };
   // leaf = keccak(asset ‖ Cx ‖ Cy ‖ owner) — mirror of confidential-pool.leaf() and the contract.
   const leafHash = (asset, cx, cy, owner) => '0x' + bytesToHex(keccak256(concat([b32(asset), b32(cx), b32(cy), b32(owner)])));
-  // owner = keccak(nk ‖ "tacit-native-owner-v1") — mirror of confidential-pool.nkToOwner() and the guest.
-  const NATIVE_OWNER_DOM = new TextEncoder().encode('tacit-native-owner-v1');
-  const nkToOwner = (nk) => '0x' + bytesToHex(keccak256(concat([b32(nk), NATIVE_OWNER_DOM])));
+  // The decrypt-and-owner-check half of opening a memo is shared with the worker that tries a pool's memos off the page's thread.
+  const { unseal, decodeMemo, RECEIVE_TAG } = makeMemoProbe({ secp, sha256, keccak256 });
 
   // A receive memo: a payment to an owner the receiver gave out (its receive code) carries, where a note's nk goes, a tag and the receive
   // index the receiver derives that nk from. The sender never knows the nk, so only the receiver can spend the note. openMemo returns such
   // an opening with `receiveIndex` and no secret: the leaf still authenticates value, blinding, asset and owner, and the wallet, which holds
   // the spend key, derives the nk for that index and keeps the note only if it hashes to the owner.
-  const RECEIVE_TAG = sha256(new TextEncoder().encode('tacit-receive-memo-v1')).subarray(0, 24);
   const receiveSecret = (index) => '0x' + bytesToHex(RECEIVE_TAG) + BigInt(index).toString(16).padStart(16, '0');
-  const receiveIndexOf = (s) => (s.subarray(0, 24).every((x, i) => x === RECEIVE_TAG[i]) ? Number(bToBig(s.subarray(24, 32))) : null);
 
   // Seal a note's opening to ownerPub. note = {value, blinding, secret, asset,
   // owner}; ephRand() → a fresh scalar.
@@ -63,11 +58,6 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
 
   // Wire form for the on-chain `bytes` memo: ephemeralPub(33) ‖ ciphertext(136).
   function encodeMemo(memo) { return '0x' + String(memo.ephemeralPub).replace(/^0x/, '') + String(memo.ciphertext).replace(/^0x/, ''); }
-  function decodeMemo(hex) {
-    const b = hexToBytes(hex);
-    if (b.length !== 33 + MEMO_LEN) return null;
-    return { ephemeralPub: '0x' + bytesToHex(b.subarray(0, 33)), ciphertext: '0x' + bytesToHex(b.subarray(33)) };
-  }
 
   // Try to open a memo against an on-chain leaf hash with my private key. Returns
   // the recovered opening iff the decrypted fields rehash to `leaf`; else null
@@ -79,20 +69,9 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   // never abort a scan over the rest of the chain's memos.
   function openMemo(myPriv, leaf, memo) {
     try {
-      if (typeof memo === 'string') { memo = decodeMemo(memo); if (!memo) return null; }
-      if (!memo || typeof memo !== 'object') return null;
-      const shared = pt(memo.ephemeralPub).multiply(BigInt(myPriv));
-      const ss = sha256(compress(shared));
-      const plain = xor(hexToBytes(memo.ciphertext), ss);
-      if (plain.length !== MEMO_LEN) return null;
-      const value = bToBig(plain.subarray(0, 8));
-      const blinding = beHex(bToBig(plain.subarray(8, 40)));
-      const secret = '0x' + bytesToHex(plain.subarray(40, 72));
-      const asset = '0x' + bytesToHex(plain.subarray(72, 104));
-      const owner = '0x' + bytesToHex(plain.subarray(104, 136));
-      const receiveIndex = BigInt(owner) !== 0n ? receiveIndexOf(plain.subarray(40, 72)) : null;
-      // Noise from a memo that is not mine fails the owner binding in one hash, so it is asked before the commitment's two multiplications.
-      if (BigInt(owner) !== 0n && receiveIndex == null && nkToOwner(secret) !== owner.toLowerCase()) return null;
+      const u = unseal(myPriv, memo);
+      if (!u) return null;
+      const { value, blinding, secret, asset, owner, receiveIndex } = u;
       // The decrypted value/blinding are sender-chosen for a memo sealed to my public key: a zero or
       // out-of-range scalar has no commitment, so it is not an opening of any leaf.
       const { cx, cy } = commitXY(value, blinding);
@@ -140,7 +119,11 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   });
   // `covered` ({ upTo, mine }): an earlier scan of these same leaves and memos below `upTo` found the key's own at leaf indices `mine`
   // (the caller has checked the list is unchanged), so the rest below `upTo` are not tried.
-  async function scanSliced(myPriv, events, spentNullifiers, nullifierOf, { sliceMs = 12, covered = null } = {}) {
+  // `filter` (key, memos) -> Promise<Int8Array | null>: a way to rule out many memos at once, off this thread (workers running the probe,
+  // confidential-memo-workers.js). One entry per memo asked about: 0 it is not the key's, 1 it may be, -1 not known. A memo it does not
+  // rule out is opened here in full, exactly as without it, so a filter that is slow, fails, or says nothing changes what is found
+  // only in how long it takes.
+  async function scanSliced(myPriv, events, spentNullifiers, nullifierOf, { sliceMs = 12, covered = null, filter = null } = {}) {
     const known = covered ? new Set(covered.mine) : null;
     const spent = new Set((spentNullifiers || []).map((n) => n.toLowerCase()));
     const kid = bytesToHex(sha256(utf8.encode('tacit-memo-tried-v1:' + String(myPriv).toLowerCase())));
@@ -148,6 +131,7 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
     if (!tried || tried.size > TRIED_CAP) _tried.set(kid, tried = new Map());
     const mine = [];
     let t0 = Date.now();
+    const plan = [];
     for (const ev of events) {
       if (Date.now() - t0 > sliceMs) { await handBack(); t0 = Date.now(); }
       try {
@@ -155,6 +139,22 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
         const m = ev && ev.memo, text = typeof m === 'string' ? m : null;
         const id = text && text.length > 2 ? bytesToHex(sha256(utf8.encode(String(ev.leaf).toLowerCase() + '|' + text))).slice(0, 32) : null;
         if (id && tried.get(id) === false) continue;
+        plan.push({ ev, m, text, id, said: -1 });
+      } catch { /* an event that cannot be processed is skipped; the rest of the scan continues */ }
+    }
+    if (filter) {
+      const asked = plan.filter((p) => p.id);
+      if (asked.length) {
+        let said = null;
+        try { said = await filter(myPriv, asked.map((p) => p.text)); } catch { said = null; }
+        if (said && said.length === asked.length) asked.forEach((p, i) => { p.said = said[i]; });
+      }
+    }
+    for (const { ev, m, id, said } of plan) {
+      if (Date.now() - t0 > sliceMs) { await handBack(); t0 = Date.now(); }
+      try {
+        if (id && tried.get(id) === false) continue;
+        if (id && said === 0) { tried.set(id, false); continue; }
         const note = openMemo(myPriv, ev && ev.leaf, m);
         if (id) tried.set(id, !!note);
         if (!note) continue;
