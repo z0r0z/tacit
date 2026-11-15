@@ -860,8 +860,9 @@ await step('hxbridge', async () => {
     await p.waitForSelector('#hx-body .hx-h');
     ok((await tabs()) === 'shield swap send earn more', `hxbridge: the tile's tabs are Shield, Swap, Send, Earn and More (${await tabs()})`);
     await bridgeTo(p, 'btc');
-    ok((await text(p, BRG.go)).trim() === 'Bridge TAC from Bitcoin' && (await heldAt(p)) === 'bitcoin' && /^Burned on Bitcoin > Confirmed > Proven on Ethereum > Minted privately$/.test(await steps()) && !(await p.$('#hx-amt')),
-      `hxbridge: #card=bridge:btc opens TAC from Bitcoin, its notes picked next, with the way in's steps (${await steps()})`);
+    // no Tacit wallet is open here, and TAC on Bitcoin only shows once it is, so the button asks for the wallet first
+    ok((await text(p, BRG.go)).trim() === 'Open your Tacit wallet to bridge' && (await heldAt(p)) === 'bitcoin' && /^Burned on Bitcoin > Confirmed > Proven on Ethereum > Minted privately$/.test(await steps()) && !(await p.$('#hx-amt')),
+      `hxbridge: #card=bridge:btc opens TAC from Bitcoin, its notes picked next, with the way in's steps, the button asking for the wallet (${await steps()}; button "${(await text(p, BRG.go)).trim()}"; held ${await heldAt(p)}; amount field ${!!(await p.$('#hx-amt'))})`);
     const opts = await p.$$eval('#hx-from option', (os) => os.map((o) => `${o.value}:${o.dataset.sub}`).join(' '));
     ok(/btc:to Ethereum, private/.test(opts) && /tac:to Bitcoin/.test(opts) && /ether:to Bitcoin, as tETH/.test(opts), `hxbridge: its From lists what crosses, each with where it goes (${opts})`);
     ok(!!(await p.$('#hx-brl a[href="/fast/"]')), 'hxbridge: TAC from Bitcoin also leads to the fast bridge page');
@@ -872,7 +873,7 @@ await step('hxbridge', async () => {
     await p.evaluate(() => { location.hash = ''; });
     await p.click('[data-hxm="swap"]');
     await p.click('.wd-wire[data-hx="shield:btc:eth"]');
-    await until(p, () => document.querySelector('[data-hxm="bridge"]')?.getAttribute('aria-selected') === 'true' && document.querySelector('#hx-go')?.textContent === 'Bridge TAC from Bitcoin', null, 60000);
+    await until(p, () => document.querySelector('[data-hxm="bridge"]')?.getAttribute('aria-selected') === 'true' && document.querySelector('#hx-go')?.textContent === 'Open your Tacit wallet to bridge' && /^Burned on Bitcoin/.test(document.querySelector('#hx-panel .hx-brs li')?.textContent.trim() || ''), null, 60000);
     ok(true, "hxbridge: the page's bridge between TAC on Bitcoin and private TAC opens the Bridge tab");
     await moveFrom(p, 'btc');
     await until(p, () => /Shield TAC on Bitcoin/.test(document.querySelector('#hx-swap #go')?.textContent || '') && !!document.querySelector('#hx-have [data-hxin="bridge:btc"]'), null, 60000);
