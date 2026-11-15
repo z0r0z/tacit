@@ -205,10 +205,10 @@ await test('opening the kept notes hands the thread back between them', async ()
   await read(store, alice(), grown);
   const c = counted();
   const slow = { ...c.pool, scan: (w, b) => { const t0 = Date.now(); while (Date.now() - t0 < 15); return c.pool.scan(w, b); } };      // each open takes longer than a slice
-  let yields = 0; const real = globalThis.setTimeout;
-  globalThis.setTimeout = (fn, ms, ...a) => { if (!ms) yields++; return real(fn, ms, ...a); };
+  let yields = 0; const Real = globalThis.MessageChannel;                  // the thread is handed back by a message to oneself
+  globalThis.MessageChannel = class extends Real { constructor() { super(); yields++; } };
   let notes;
-  try { notes = await makePoolClient({ store }).scanMine(slow, alice(), grown); } finally { globalThis.setTimeout = real; }
+  try { notes = await makePoolClient({ store }).scanMine(slow, alice(), grown); } finally { globalThis.MessageChannel = Real; }
   assert.equal(json(notes), json(bare.notes));
   assert.ok(yields >= bare.notes.length - 1, `the thread was handed back between the ${bare.notes.length} opens (${yields} times)`);
 });

@@ -231,7 +231,7 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
     let at = Date.now();
     for (let i = 0; i < leaves.length; i++) {
       if (told && told[i] !== undefined) { out[i] = told[i] || null; continue; }
-      out[i] = pool.scan(wallet, [leaves[i]])[0] || null;
+      out[i] = pool.scan(wallet, [leaves[i]]).find((x) => x.leafIndex === leaves[i].leafIndex) || null;     // matched by index, as a scan of a whole batch is
       if (Date.now() - at > 12) { await handBack(); at = Date.now(); }
     }
     return out;
