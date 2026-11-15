@@ -75,7 +75,11 @@ if (RELAY_SK_HEX) {
   const { makeCrossoutMintReveal } = await import('../dapp/crossout-mint-reveal.js');
   const { CONFIDENTIAL_POOL_DEPLOYMENTS } = await import('../dapp/confidential-crossout-consumer.js');
   const deps = await import('../dapp/vendor/tacit-deps.min.js');
-  const esplora = makeEsplora((process.env.CROSSOUT_RELAY_ESPLORA || (NETWORK === 'mainnet' ? 'https://mempool.space/api' : 'https://mempool.space/signet/api')).replace(/\/+$/, ''));
+  // reads through the Tacit API's chain proxy (a public explorer throttles this server's address); broadcasts straight to the explorers
+  const esplora = makeEsplora({
+    read: (process.env.CROSSOUT_RELAY_ESPLORA || `${API_BASE}/chain`).replace(/\/+$/, ''), query: process.env.CROSSOUT_RELAY_ESPLORA ? '' : `network=${NETWORK}`,
+    send: NETWORK === 'mainnet' ? ['https://mempool.space/api', 'https://blockstream.info/api'] : ['https://mempool.space/signet/api'],
+  });
   const prims = makeBtcWallet({ priv: hexToBytes(RELAY_SK_HEX), hrp: NETWORK === 'mainnet' ? 'bc' : 'tb', fetchUtxos: async () => [], broadcastTx: esplora.broadcast, fetchFeeRate: esplora.feeRate }).prims;
   const rpcs = (process.env.CROSSOUT_RELAY_ETH_RPCS || 'https://ethereum-rpc.publicnode.com,https://eth.merkle.io,https://rpc.mevblocker.io').split(',').map((u) => u.trim()).filter(Boolean);
   const ethRpc = async (method, params) => {

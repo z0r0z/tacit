@@ -134,19 +134,28 @@ export function makeCrossoutRelay({
   return { tick, address };
 }
 
-// Bitcoin by Esplora (mempool.space by default): coins, a fee rate, a transaction's state, and a broadcast.
-export function makeEsplora(base = 'https://mempool.space/api', fetchImpl = (...a) => fetch(...a)) {
-  const get = async (p) => { const r = await fetchImpl(base + p, { signal: AbortSignal.timeout(15e3) }); if (r.status === 404) return null; if (!r.ok) throw new Error(`esplora ${p} ${r.status}`); return r.json(); };
+// Bitcoin by Esplora: reads from `read` (the Tacit API's /chain proxy in the watchtower: a public explorer throttles a server's address),
+// with `query` appended (its network), and broadcasts to each of `send` in turn until one takes the transaction.
+export function makeEsplora({ read = 'https://mempool.space/api', query = '', send = null } = {}, fetchImpl = (...a) => fetch(...a)) {
+  const q = (p) => `${read}${p}${query ? (p.includes('?') ? '&' : '?') + query : ''}`;
+  const get = async (p) => { const r = await fetchImpl(q(p), { signal: AbortSignal.timeout(15e3) }); if (r.status === 404) return null; if (!r.ok) throw new Error(`esplora ${p} ${r.status}`); return r.json(); };
   return {
     utxos: (addr) => get(`/address/${addr}/utxo`),
     feeRate: async () => { const f = await get('/v1/fees/recommended'); return f ? f.halfHourFee || f.fastestFee : null; },
     // null: not on Bitcoin; { confirmed }: in the mempool or a block
     txStatus: async (txid) => { const s = await get(`/tx/${txid}/status`); return s ? { confirmed: !!s.confirmed } : null; },
     broadcast: async (hex) => {
-      const r = await fetchImpl(base + '/tx', { method: 'POST', body: hex, signal: AbortSignal.timeout(15e3) });
-      const t = await r.text();
-      if (!r.ok) throw new Error(t || `broadcast ${r.status}`);
-      return t.trim();
+      let last = null;
+      for (const base of send || [read]) {
+        try {
+          const r = await fetchImpl(base + '/tx', { method: 'POST', body: hex, signal: AbortSignal.timeout(15e3) });
+          const t = await r.text();
+          if (r.ok) return t.trim();
+          last = new Error(t || `broadcast ${r.status}`);
+          if (r.status === 400) throw last;            // the transaction itself is refused: another explorer will say the same
+        } catch (e) { last = e; if (/^(sendrawtransaction|RPC error|bad-|txn-|non-mandatory|mandatory|missing-inputs|insufficient)/i.test(String(e?.message || ''))) throw e; }
+      }
+      throw last || new Error('no explorer took the transaction');
     },
   };
 }

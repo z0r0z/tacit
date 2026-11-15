@@ -10,7 +10,7 @@ import { sha256 } from '@noble/hashes/sha256';
 import {
   parseRelayRequest, claimLeaf, claimSlot, recordedTopic, verifyClaim, relayKey, relayInfoKey, relaySpentKey, publicStatus,
 } from '../worker/src/crossout-relay.js';
-import { makeCrossoutRelay } from '../fulfiller/crossout-relay.mjs';
+import { makeCrossoutRelay, makeEsplora } from '../fulfiller/crossout-relay.mjs';
 
 let n = 0, failures = 0;
 const ok = (c, m) => { if (c) { console.log('  ok -', m); n++; } else { console.error('  FAIL -', m); failures++; } };
@@ -178,6 +178,26 @@ function rig({ coins = [{ txid: 'f1'.repeat(32), vout: 0, value: 20_000, status:
   r.state.covered = false;
   await r.relay.tick();
   ok((await r.rec()).status === 'expired', 'an ask that never became sendable is let go after three days');
+}
+
+// ---- the chain: reads through the API's proxy, broadcasts to explorers in turn ----
+{
+  const calls = [];
+  const f = async (url, init) => {
+    calls.push([url, init?.method || 'GET']);
+    if (url.startsWith('https://api.x/chain/v1/fees')) return { ok: true, status: 200, json: async () => ({ halfHourFee: 3, fastestFee: 5 }) };
+    if (url.startsWith('https://a.x/tx')) return { ok: false, status: 503, text: async () => 'busy' };
+    if (url.startsWith('https://b.x/tx')) return { ok: true, status: 200, text: async () => 'txid\n' };
+    if (url.startsWith('https://r.x/tx')) return { ok: false, status: 400, text: async () => 'sendrawtransaction RPC error: bad-txns-inputs-missingorspent' };
+    return { ok: false, status: 404, json: async () => null };
+  };
+  const ch = makeEsplora({ read: 'https://api.x/chain', query: 'network=mainnet', send: ['https://a.x', 'https://b.x'] }, f);
+  ok((await ch.feeRate()) === 3 && calls[0][0] === 'https://api.x/chain/v1/fees/recommended?network=mainnet', 'reads go to the API\'s chain proxy, with the network');
+  ok((await ch.broadcast('00')) === 'txid' && calls.filter((c) => c[1] === 'POST').length === 2, 'a busy explorer is passed over for the next');
+  ok((await ch.txStatus('ab'.repeat(32))) === null, 'a transaction no explorer has reads as not on Bitcoin');
+  const refuse = makeEsplora({ read: 'https://api.x/chain', send: ['https://r.x', 'https://b.x'] }, f);
+  let msg = ''; try { await refuse.broadcast('00'); } catch (e) { msg = e.message; }
+  ok(/bad-txns/.test(msg) && !calls.some((c) => c[0] === 'https://b.x/tx' && calls.filter((d) => d[0] === 'https://r.x/tx').length && c === calls.at(-1)), 'a transaction Bitcoin refuses is not offered to every explorer');
 }
 
 console.log(`\n${n} crossout-relay checks passed${failures ? `, ${failures} FAILED` : ''}`);
