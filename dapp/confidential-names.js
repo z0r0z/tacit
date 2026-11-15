@@ -4,6 +4,16 @@ import { bodyType } from './rpc-body.js';
 import { ETH_NODES } from './eth-nodes.js';
 
 export const RECORD_KEY = 'finance.tacit';
+// A second record on the same name: the deposit address that takes plain ETH (a receive box, paid from any wallet or exchange),
+// written `<n>:<ns>`: the box's note key as 64 hex, then the owner's signature of it (128 hex) under the view key in the
+// pool address the name points to. Anyone can check the signature, so a name whose record was swapped pays no one else.
+export const BOX_KEY = 'finance.tacit.box';
+const BOX_RECORD = /^([0-9a-f]{64}):([0-9a-f]{128})$/;
+export function parseBoxRecord(value) {
+  const m = BOX_RECORD.exec(String(value == null ? '' : value).trim().toLowerCase());
+  if (!m) throw new NameError('bad-record', `Not a deposit address record: expected "<64 hex>:<128 hex>".`);
+  return { n: m[1], ns: m[2] };
+}
 export const WNS = '0x0000000000696760E15f265e828DB644A0c242EB';
 export const GNS = '0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6';
 export const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e';
@@ -240,18 +250,26 @@ export function makeConfidentialNames({ call, send = null, secp, keccak256 }) {
     }
   }
 
-  async function readRecord(name) {
+  async function readRecord(name, key = RECORD_KEY) {
     const c = classify(name);
     const node = namehash(c.name);
     let out;
     if (c.source === 'ENS') {
-      ({ out } = await ensQuery(c.name, textCalldata(node, RECORD_KEY)));
+      ({ out } = await ensQuery(c.name, textCalldata(node, key)));
     } else {
-      out = await guardedCall({ to: c.contract, data: textCalldata(node, RECORD_KEY) });
+      out = await guardedCall({ to: c.contract, data: textCalldata(node, key) });
     }
     if (emptyOut(out)) return null;
     const value = decodeString(out).trim();
     return value === '' ? null : value;
+  }
+
+  async function readBox(name) {
+    const value = await readRecord(name, BOX_KEY);
+    if (value == null) return null;
+    try { return { name: classify(name).name, ...parseBoxRecord(value) }; } catch {
+      throw new NameError('bad-record', `${classify(name).name} has a "${BOX_KEY}" record that is not a deposit address record.`, { name: classify(name).name });
+    }
   }
 
   async function resolveAddress(name) {
@@ -385,27 +403,38 @@ export function makeConfidentialNames({ call, send = null, secp, keccak256 }) {
     return { pubHex: r.pubHex };
   }
 
-  async function planPublish({ owner, tacitAddress }) {
+  async function planPublishKey({ owner, key, next }) {
     const from = '0x' + normAddress(owner);
-    const next = decodeTacitAddress(tacitAddress).address;
     const { primary, skipped } = await findPrimary(from);
     if (!primary) {
       throw new NameError('no-primary-name', 'No verified primary name for this wallet. Set a primary name (.wei, .gwei or .eth) that points back at this address first.', { skipped });
     }
-    const current = await readRecord(primary.name);
+    const current = await readRecord(primary.name, key);
     let to, data;
     if (primary.source === 'ENS') {
       const r = await ensResolver(primary.name);
       if (!r || !r.atName) {
-        throw new NameError('resolver-cannot-hold', `${primary.name} uses a resolver that cannot hold records set from here. Set the "${RECORD_KEY}" record where that name’s records are managed.`, { primary });
+        throw new NameError('resolver-cannot-hold', `${primary.name} uses a resolver that cannot hold records set from here. Set the "${key}" record where that name’s records are managed.`, { primary });
       }
       to = r.resolver;
-      data = setTextNodeCalldata(primary.node, RECORD_KEY, next);
+      data = setTextNodeCalldata(primary.node, key, next);
     } else {
       to = primary.source === 'WNS' ? WNS : GNS;
-      data = setTextIdCalldata(BigInt(primary.node), RECORD_KEY, next);
+      data = setTextIdCalldata(BigInt(primary.node), key, next);
     }
     return { ...primary, owner: from, current, next, changed: current !== next, tx: { from, to, data } };
+  }
+
+  async function planPublish({ owner, tacitAddress }) {
+    const next = decodeTacitAddress(tacitAddress).address;
+    return planPublishKey({ owner, key: RECORD_KEY, next });
+  }
+
+  // The plan to publish a deposit address to the owner's primary name. `n` is the box's note key (64 hex, or a bigint) and `ns` its signature.
+  async function planPublishBox({ owner, n, ns }) {
+    const nHex = typeof n === 'bigint' ? n.toString(16).padStart(64, '0') : String(n).replace(/^0x/, '');
+    const { n: n2, ns: ns2 } = parseBoxRecord(`${nHex}:${String(ns).replace(/^0x/, '')}`);
+    return planPublishKey({ owner, key: BOX_KEY, next: `${n2}:${ns2}` });
   }
 
   function revertReason(e) {
@@ -434,7 +463,7 @@ export function makeConfidentialNames({ call, send = null, secp, keccak256 }) {
 
   return {
     RECORD_KEY, namehash, normalizeName, classify, looksLikeName, dnsName, selector,
-    readRecord, resolveName, resolveAddress, resolveRecipient, primaryName, findPrimary,
-    decodeTacitAddress, planPublish, simulatePublish, publish,
+    readRecord, readBox, resolveName, resolveAddress, resolveRecipient, primaryName, findPrimary,
+    decodeTacitAddress, planPublish, planPublishBox, simulatePublish, publish,
   };
 }

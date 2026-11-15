@@ -84,6 +84,11 @@ const env = {
   ensureChain: async () => {}, toast: (m, bad) => say(m, bad ? 'err' : ''), errText: (e) => e?.message || String(e),
   say: (t) => say(t, 'ok'), done: (c, h, t) => say(t + ' ' + h, 'ok'),
   depositAddress: async () => '${BOX}',
+  // names: what the test puts in window.__nameCfg ({ 'ross.wei': { pool, n, ns } }) is what the name service says
+  names: async () => ({
+    resolveName: async (name) => { const r = (window.__nameCfg || {})[name]; if (!r) { const e = new Error(name + ' has not published a Tacit address.'); e.code = 'no-record'; throw e; } return { name, pool: r.pool, address: 'tacit1x' }; },
+    readBox: async (name) => { const r = (window.__nameCfg || {})[name]; return r && r.n ? { name, n: r.n, ns: r.ns } : null; },
+  }),
   setAmount: (wei) => { const el = document.getElementById('amt'); el.value = wei ? (Number(wei) / 1e18).toString() : ''; el.dispatchEvent(new Event('input')); },
   act: async (btn, fn) => {
     if (window.__log.busy) return;
@@ -305,6 +310,49 @@ await test('Paste a note: something that is not a note, a note for another netwo
   await page.click('#lg-pgo');
   assert.match(await note(), /Enter the address that should receive it/);
   assert.equal(sent.length, before, 'nothing sent');
+});
+// a payee with a name: a view key, the pool address that carries it, and a deposit-address key signed with it
+const { poolAddressOf } = await import('../dapp/tacit-address.js');
+const { signBox, boxValue } = await import('../dapp/fixed-pool-box.js');
+const { receiveBoxAddress, RECEIVE_FEE_BPS, EVM_POOL_ROUTER } = await import('../dapp/evm-pool-gateway.js');
+const { secp, hexToBytes: h2b } = await import('../dapp/vendor/tacit-deps.min.js');
+const keys97 = (v) => { const k = new Uint8Array(97); k.set(secp.getPublicKey(h2b(v.toString(16).padStart(64, '0')), true), 0); k.fill(7, 33); return k; };
+const VIEW = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdefn, OTHER_VIEW = 0x0badc0ffee0badc0ffee0badc0ffee0badc0ffee0badc0ffee0badc0ffee0bn;
+const BOXKEY = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefn;
+const hex64n = (x) => x.toString(16).padStart(64, '0');
+const THEIR_BOX = receiveBoxAddress(BOXKEY, RECEIVE_FEE_BPS, EVM_POOL_ROUTER);
+const setNames = (cfg) => page.evaluate((c) => { window.__nameCfg = c; }, cfg);
+const sendToName = async (name, noteByte) => {
+  const text = noteString({ denomination: 10n ** 18n, chainId: 1, preimage: new Uint8Array(62).fill(noteByte) });
+  await chunkCache(page, commitmentBytes32(parseNoteString(text).commitment));
+  await page.evaluate(() => { window.__spentAll = false; });
+  await pasteNote(text, name);
+};
+await test('Paste a note to a name: its deposit address is looked up, checked against the name\'s own key, shown in the fee panel, and paid', async () => {
+  await setNames({ 'ross.wei': { pool: poolAddressOf(keys97(VIEW)), n: hex64n(BOXKEY), ns: await signBox(VIEW, BOXKEY) } });
+  const before = sent.length;
+  await sendToName('ross.wei', 21);
+  await page.waitForSelector('#lg-ask:not([hidden]) #lg-send', { timeout: 240000 });
+  const ask = await page.locator('#lg-ask').innerText();
+  assert.match(ask, /To ross\.wei's deposit address/); assert.ok(ask.toLowerCase().includes(THEIR_BOX.toLowerCase()), 'the address is shown');
+  await page.click('#lg-send');
+  await page.waitForFunction(() => /is on its way to ross\.wei's deposit address/.test(document.querySelector('#status').textContent), null, { timeout: 120000 });
+  assert.equal(sent.length, before + 1);
+  assert.ok(sent.at(-1).paymasterData.toLowerCase().includes(THEIR_BOX.slice(2).toLowerCase()), 'pays the name\'s deposit address');
+});
+await test('Pasted notes to a name with no deposit address, to one signed by another key and to one that does not exist are each refused, with nothing sent', async () => {
+  const before = sent.length;
+  await setNames({
+    'none.wei': { pool: poolAddressOf(keys97(VIEW)) },
+    'fake.wei': { pool: poolAddressOf(keys97(VIEW)), n: hex64n(BOXKEY), ns: await signBox(OTHER_VIEW, BOXKEY) },
+  });
+  await sendToName('none.wei', 22);
+  await page.waitForFunction(() => /has not published a deposit address/.test(document.querySelector('#status').textContent));
+  await sendToName('fake.wei', 23);
+  await page.waitForFunction(() => /not signed by fake\.wei's own key/.test(document.querySelector('#status').textContent));
+  await sendToName('ghost.wei', 24);
+  await page.waitForFunction(() => /ghost\.wei has not published a Tacit address/.test(document.querySelector('#status').textContent));
+  assert.equal(sent.length, before, 'nothing was sent');
 });
 await test('no errors reached the console', async () => { assert.deepEqual(problems, []); });
 

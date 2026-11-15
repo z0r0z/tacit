@@ -14,6 +14,7 @@ import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, co
 import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=0f50365d';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 import { PAYMASTERS } from '/fixed-pool-paymaster.js?cb=40893745';
+import { depositAddressOfName, signBox } from '/fixed-pool-box.js?cb=a2192b2d';
 import { keccak_256 } from './vendor/tacit-deps.min.js';
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -62,7 +63,28 @@ export function attach(env) {
   const provider = composeProvider({ read: env.read, wallet: env.walletProvider });
   const flowFor = () => makeFlow({ provider, account: env.account(), chainId, store: env.store, poll: 3000, timeout: 10 * 60 * 1000 });
   const reader = makeFlow({ provider, account: null, chainId, poll: 3000 });
-  const st = { smallest: DEFAULT_MIN_DENOMINATION, notes: [], spent: new Map(), open: null, confirm: null };
+  const st = { smallest: DEFAULT_MIN_DENOMINATION, notes: [], spent: new Map(), open: null, confirm: null, target: null };
+  const looksLikeName = (x) => /^[^\s]+\.(g?wei|eth)$/i.test(x);
+  // empty: the user's own deposit address; a name: the deposit address it publishes, checked against its own key; else an address
+  async function resolveTarget(raw) {
+    if (!raw) {
+      const to = await env.depositAddress();
+      if (!to) throw new Error('Open your private balance first.');
+      return { to, label: 'your deposit address' };
+    }
+    if (looksLikeName(raw)) {
+      const r = await depositAddressOfName(await env.names(), raw.toLowerCase());
+      return { to: r.box, label: `${r.name}'s deposit address` };
+    }
+    return { to: raw, label: short(raw) };
+  }
+  // what the "Send to" fields take: an address (checked here) or a name (looked up and checked when it is sent)
+  const addressProblem = (to) => {
+    if (looksLikeName(to)) return null;
+    if (!/^0x[0-9a-fA-F]{40}$/.test(to) || /^0x0{40}$/.test(to)) return 'Enter the address that should receive it, or a name.';
+    if (!checksumOk(to)) return 'That address\'s capitalization does not match its checksum. Check it.';
+    return null;
+  };
 
   // ---- card one: the split ----
   const plan = () => {
@@ -151,7 +173,8 @@ export function attach(env) {
       const ask = notesHost.querySelector('#lg-ask');
       const pct = Number((fee * 10000n) / denomination) / 100;
       ask.hidden = false;
-      ask.innerHTML = `<p class="note">Gas is paid from the note: up to ${formatEther(fee)} ETH (${pct.toFixed(2)}% of it), and what is not used comes back to the address. The address gets at least ${formatEther(receive)} ETH.</p>
+      const where = st.target ? `<p class="note">To ${esc(st.target.label)}: <code>${esc(st.target.to)}</code></p>` : '';
+      ask.innerHTML = `${where}<p class="note">Gas is paid from the note: up to ${formatEther(fee)} ETH (${pct.toFixed(2)}% of it), and what is not used comes back to the address. The address gets at least ${formatEther(receive)} ETH.</p>
         <div style="display:flex;gap:8px"><button class="btn" type="button" id="lg-send" style="margin-top:6px">Send</button><button class="btn ghost" type="button" id="lg-cancel" style="margin-top:6px">Cancel</button></div>`;
       const done = (ok) => { clearTimeout(t); ask.hidden = true; ask.innerHTML = ''; resolve(ok); };
       const t = setTimeout(() => done(false), 3 * 60 * 1000);
@@ -161,14 +184,15 @@ export function attach(env) {
   }
   // Runs inside the page's busy wrapper (`step` and `c` come from it), so it must not open another.
   // `n` is a stored note (its number is signed for again to get the secrets) or { text }, the text of any note, which needs no
-  // signature. `recipient` null means the user's own deposit address.
-  async function exitNote(step, c, n, recipient, doneText) {
+  // signature. `raw` is where it goes: empty (the user's own deposit address), a name or an address.
+  async function exitNote(step, c, n, raw, doneText) {
     if (!PAYMASTERS[chainId]) throw new Error('Paying the gas from the note is not available on this network.');
     const flow = flowFor();
     let text = n.text;
     if (!text) { await env.ensureChain(c); text = await flow.noteText(n); }
-    const to = recipient || (await env.depositAddress());
-    if (!to) throw new Error('Open your private balance first.');
+    const target = await resolveTarget(raw);
+    const to = target.to;
+    st.target = target;
     const prover = workerProver(env.workerUrl);
     try {
       const out = await flow.withdrawSponsored({
@@ -176,17 +200,17 @@ export function attach(env) {
         onStep: (s) => step(s.step === 'read' ? (s.of ? `reading the pool's deposits (${s.done} of ${s.of})` : 'reading the pool\'s deposits') : s.step === 'tree' ? `building the tree from ${s.count} deposits` : s.step === 'prove' ? 'proving' : s.step === 'estimate' ? 'asking the bundler about the gas' : s.step === 'price' ? 'gas is high right now, waiting for a calmer price' : s.step === 'quote' ? 'check the fee below' : s.step === 'wait' ? 'waiting for the withdrawal to be mined' : 'working'),
       });
       if (n.nh) st.spent.set(n.nh, !!out.spent);
-      if (out.spent) env.done(c, out.hash, doneText(out, to)); else env.say('Sent; the pool has not shown it yet.');
+      if (out.spent) env.done(c, out.hash, doneText(out, target)); else env.say('Sent; the pool has not shown it yet.');
     } catch (e) {
       if (!e?.cancelled) throw e;
       env.say('Cancelled. Nothing was sent.');
-    } finally { prover.close(); }
+    } finally { prover.close(); st.target = null; }
     loadNotes();
   }
   function moveInto(btn, n) {
     return env.act(btn, async (step, c) => {
       // the private balance's own deposit address, which opens it if it is not open yet
-      return exitNote(step, c, n, null, (out) => `${formatEther(out.receive)} ETH is on its way to your deposit address; it joins your private balance within minutes.`);
+      return exitNote(step, c, n, '', (out) => `${formatEther(out.receive)} ETH is on its way to your deposit address; it joins your private balance within minutes.`);
     });
   }
   function askPaste() {
@@ -194,8 +218,8 @@ export function attach(env) {
     ask.hidden = false;
     ask.innerHTML = `<div class="lbl"><span>Note</span><span></span></div>
       <div class="amt text"><textarea id="lg-note" rows="3" placeholder="tornado-eth-…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Note" style="width:100%;font:inherit;resize:vertical"></textarea></div>
-      <div class="lbl"><span>Send to</span><span>empty: your private balance</span></div>
-      <div class="amt text"><input id="lg-pto" placeholder="Your deposit address, or an address" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Send to"></div>
+      <div class="lbl"><span>Send to</span><span>empty: your own deposit address</span></div>
+      <div class="amt text"><input id="lg-pto" placeholder="Empty: your deposit address. Or an address, or a name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Send to"></div>
       <p class="note">The note stays in this page. Nothing here is signed by your wallet.</p>
       <div style="display:flex;gap:8px"><button class="btn" type="button" id="lg-pgo" style="margin-top:6px">Withdraw</button><button class="btn ghost" type="button" id="lg-pno" style="margin-top:6px">Cancel</button></div>`;
     ask.querySelector('#lg-pno').onclick = () => { ask.hidden = true; ask.innerHTML = ''; };
@@ -203,26 +227,25 @@ export function attach(env) {
     go.onclick = () => {
       const text = ask.querySelector('#lg-note').value.trim(), to = ask.querySelector('#lg-pto').value.trim();
       try { parseNoteString(text); } catch { return env.toast('That is not a note.', true); }
-      if (to && (!/^0x[0-9a-fA-F]{40}$/.test(to) || /^0x0{40}$/.test(to))) return env.toast('Enter the address that should receive it, or leave it empty.', true);
-      if (to && !checksumOk(to)) return env.toast('That address\'s capitalization does not match its checksum. Check it.', true);
+      const problem = to ? addressProblem(to) : null;
+      if (problem) return env.toast(problem, true);
       ask.hidden = true; ask.innerHTML = '';
-      env.act(go, (step, c) => exitNote(step, c, { text }, to || null, (out, at) => (to ? `${formatEther(out.receive)} ETH is on its way to ${short(at)}.` : `${formatEther(out.receive)} ETH is on its way to your deposit address; it joins your private balance within minutes.`)));
+      env.act(go, (step, c) => exitNote(step, c, { text }, to, (out, t) => (to ? `${formatEther(out.receive)} ETH is on its way to ${t.label}.` : `${formatEther(out.receive)} ETH is on its way to your deposit address; it joins your private balance within minutes.`)));
     };
   }
   function askAddress(n) {
     const ask = notesHost.querySelector('#lg-ask');
     ask.hidden = false;
     ask.innerHTML = `<div class="lbl"><span>Withdraw to</span><span></span></div>
-      <div class="amt text"><input id="lg-to" placeholder="0x…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Withdraw to"></div>
+      <div class="amt text"><input id="lg-to" placeholder="0x… or a name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Withdraw to"></div>
       <div style="display:flex;gap:8px"><button class="btn" type="button" id="lg-out" style="margin-top:6px">Withdraw</button><button class="btn ghost" type="button" id="lg-no" style="margin-top:6px">Cancel</button></div>`;
     ask.querySelector('#lg-no').onclick = () => { ask.hidden = true; ask.innerHTML = ''; };
     const go = ask.querySelector('#lg-out');
     go.onclick = () => {
-      const to = ask.querySelector('#lg-to').value.trim();
-      if (!/^0x[0-9a-fA-F]{40}$/.test(to) || /^0x0{40}$/.test(to)) return env.toast('Enter the address that should receive it.', true);
-      if (!checksumOk(to)) return env.toast('That address\'s capitalization does not match its checksum. Check it.', true);
+      const to = ask.querySelector('#lg-to').value.trim(), problem = addressProblem(to);
+      if (problem) return env.toast(problem, true);
       ask.hidden = true; ask.innerHTML = '';
-      env.act(go, (step, c) => exitNote(step, c, n, to, (out) => `${formatEther(out.receive)} ETH is on its way to ${short(to)}.`));
+      env.act(go, (step, c) => exitNote(step, c, n, to, (out, t) => `${formatEther(out.receive)} ETH is on its way to ${t.label}.`));
     };
   }
 
@@ -230,4 +253,52 @@ export function attach(env) {
   paintSplit();
   loadNotes();
   return { repaint() { paintSplit(); loadNotes(); } };
+}
+
+
+// The deposit-address row of the exchange-deposit panel (Ethereum, ?fixed=1): the owner's primary name can carry the deposit address,
+// so that anyone can pay "name.wei" in plain ETH from a Tacit page (the record is signed with the view key, and checked by payers).
+// `env` is what the page owns: the wallet, a node for names, one that can send, the wallet's own box key and the address it shows.
+export function attachName(env) {
+  const { host } = env;
+  const say = (html) => { host.innerHTML = html ? `<div class="blk" style="margin-top:16px"><div class="lbl"><span>Your name</span><span></span></div>${html}</div>` : ''; };
+  async function paint() {
+    const owner = env.account();
+    if (!owner) return say('');
+    let names, primary;
+    try { names = await env.names(); ({ primary } = await names.findPrimary(owner)); } catch { return say(''); }
+    if (!primary) return say('');
+    // what the page shows as the deposit address must be the one this key makes, and the name must point at this key
+    const k = await env.boxKey();
+    if (k.box.toLowerCase() !== String(env.shownBox()).toLowerCase()) return say('');
+    let point;
+    try { point = await names.resolveName(primary.name); } catch { return say(`<p class="note">${esc(primary.name)} has not published a Tacit address yet, so it cannot carry a deposit address either.</p>`); }
+    if (String(point.pool || '').toLowerCase() !== String(env.ownPool()).toLowerCase()) {
+      return say(`<p class="note">${esc(primary.name)} points to a different Tacit address than this one, so its deposit address cannot be published from here.</p>`);
+    }
+    const ns = await signBox(k.v, k.n);
+    const plan = await (await env.publishNames()).planPublishBox({ owner, n: k.n, ns });
+    if (!plan.changed) return say(`<p class="note">${esc(primary.name)} carries this deposit address: anyone can pay it in plain ETH from a Tacit page that takes names, and it comes here.</p>`);
+    say(`<div class="kv"><span>${esc(primary.name)}</span><b>${plan.current ? 'carries another deposit address' : 'has none yet'}</b></div>
+      <button class="btn ghost" type="button" id="lg-pub">Put this address in ${esc(primary.name)}</button>
+      <p class="note">One transaction on Ethereum from your wallet. It makes the address public next to the name, and lets Tacit pages pay the name in plain ETH. The record is signed with your view key, so no one else can swap it.</p>`);
+    const btn = host.querySelector('#lg-pub');
+    btn.onclick = () => env.act(btn, async (step, c) => {
+      step('confirm the update in your wallet');
+      const r = await (await env.publishNames()).publish(plan);
+      if (r.skipped) return env.say(`${primary.name} already carries it.`);
+      step('waiting for the update');
+      const end = Date.now() + 3 * 60 * 1000;
+      for (;;) {
+        const rc = await (await env.read())('eth_getTransactionReceipt', [r.txHash]).catch(() => null);
+        if (rc) { if (rc.status === '0x1' || Number(rc.status) === 1) break; throw new Error(`The update of ${primary.name} failed, so nothing changed. Try again.`); }
+        if (Date.now() > end) throw new Error(`The update of ${primary.name} is not confirmed yet. Check it in your wallet.`);
+        await new Promise((res) => setTimeout(res, 4000));
+      }
+      env.done(c, r.txHash, `${primary.name} now carries your deposit address.`);
+      paint().catch(() => {});
+    });
+  }
+  paint().catch(() => say(''));
+  return { repaint: () => paint().catch(() => say('')) };
 }

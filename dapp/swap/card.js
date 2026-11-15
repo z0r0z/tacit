@@ -194,7 +194,7 @@ const htmlVal = (html) => ({ html });
 const cell = (v) => (v && v.html != null ? v.html : esc(v));
 const isName = (t) => /^[^\s/@]+\.(eth|wei|gwei)$/i.test(t);
 let namesP = null;
-const names = () => (namesP ||= Promise.all([import('/confidential-names.js?cb=d41cb8bd'), import('/vendor/tacit-deps.min.js')])
+const names = () => (namesP ||= Promise.all([import('/confidential-names.js?cb=26ecda09'), import('/vendor/tacit-deps.min.js')])
   .then(([n, d]) => n.makeConfidentialNames({ call: n.makeMainnetCall(), secp: d.secp, keccak256: d.keccak_256 })).catch((e) => { namesP = null; throw e; }));
 const tacitName = (t) => t.name || `tacit1…${String(t.pubHex).slice(-6)}`;
 const recipient = () => (S.to && !S.inP && !S.outP && lc(S.to) !== lc(W.account || '') ? S.to : null);
@@ -2154,7 +2154,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=3a63dd40').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=1514c9ee').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;

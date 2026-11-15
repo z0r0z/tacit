@@ -112,6 +112,9 @@ await test('without the flag the deposit form has no large-pool cards and the mo
   await page.fill('#f-damt', '2.5');
   assert.equal(await page.locator('#lg-split').count(), 0);
   assert.equal(await page.locator('#lg-notes').count(), 0);
+  await page.click('#dep-addr'); // From an exchange
+  await page.waitForSelector('#f-check', { timeout: 30000 });
+  assert.equal(await page.locator('#lg-name').count(), 0, 'no deposit-address row without the flag');
   assert.deepEqual(asked, []);
   assert.deepEqual(problems, []);
   await ctx.close();
@@ -129,6 +132,8 @@ await test('?fixed=1 on Ethereum: the cards load under the page\'s policy and th
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'paypage-cards.png'), fullPage: true });
   await page.fill('#f-damt', '0.9');
   await page.waitForFunction(() => !document.querySelector('#lg-go'));
+  await page.click('#dep-addr'); // From an exchange: the row for the name's deposit address has its place
+  await page.waitForSelector('#lg-name', { state: 'attached', timeout: 30000 });
   assert.deepEqual(problems, []);
   await ctx.close();
 });
