@@ -31,11 +31,20 @@ export const LAUNCH_POOL_IDS = {
   '0x0a0cce175bc483945822c8de3d3926e813269f5e1bbe1f9c853e09ed48b68254': '0x8359cd1f812e3a9040129e186e1477f60f2188bad1bd6a56e5506b22bf5cd331',
 };
 
+// Standalone farms: a FarmController per pool with its own wTAC treasury and rate, never sharing the manager's stream
+// (dapp/confidential-deployments.js MAINNET_FARM.standalone). Listed after the manager's pools, under pids from 1000.
+export const STANDALONE_FARMS_MAINNET = [
+  { pair: 'SPX/cTAC', controller: '0x000000000000917d198a89a23de930db25a47066', lpAsset: '0x6aeed821ff89a3e1416a4e1ae85965dfc1a30478f98a9bd7fadd45ed527d2725', poolId: '0x5d7a58efb396f266f8bd36364e86448ceab4f3d69c8aa54133a1a0cf38b5a842' },
+  { pair: 'SPX/cETH', controller: '0x000000000000bc710a42716bf0e4a9186d833b9b', lpAsset: '0x302984ec4f357aed29e6e2be3533ccd72c1e4766e42484f332b3855926af9ad7', poolId: '0xe2686416a328f6bb44fdea23c821916de148d3d73ab00d38cc25e55ff5047d4a' },
+];
+export const STANDALONE_PID = 1000;
+
 const SEL = {
   gov: '0x12d43a51', pendingGov: '0x25240810', rate: '0x2c4e722e', periodFinish: '0xebe2b12b',
   totalAllocPoint: '0x17caf6f1', poolLength: '0x081e3eda', poolInfo: '0x1526fe27',
   POOL: '0x7535d246', REWARD_ASSET: '0xf7b87410', REWARD_TOKEN: '0x99248ea7',
   farmTreasury: '0x48aa7283', pools: '0xb5217bb4',
+  totalShares: '0x3a98ef39', lockUntil: '0x3c78929e', outstandingReward: '0x0efc9dc3',
 };
 export const FARM_SELECTORS = SEL;
 
@@ -94,7 +103,7 @@ export function makeRpc(urls, fetchFn = (...a) => globalThis.fetch(...a), timeou
 }
 
 // Read everything the checks need at ONE block, so treasury, liabilities and the clock agree with each other.
-export async function readFarmRaw(rpc, manager = FARM_MANAGER_MAINNET) {
+export async function readFarmRaw(rpc, manager = FARM_MANAGER_MAINNET, standalone = STANDALONE_FARMS_MAINNET) {
   const blk = await rpc.latestBlock();
   const tag = '0x' + blk.number.toString(16);
   const code = await rpc.getCode(manager, tag);
@@ -123,8 +132,27 @@ export async function readFarmRaw(rpc, manager = FARM_MANAGER_MAINNET) {
       } };
     } catch { return { poolId, reserves: null }; }
   }));
+  const ammOf = async (poolId) => {
+    try {
+      const r = await c(SEL.pools + poolId.slice(2), poolAddr);
+      if (String(r || '').length < 2 + 64 * 7 || uintOf(r, 0) === 0n) return { poolId, reserves: null };
+      return { poolId, feeBps: Number(uintOf(r, 5)), reserves: {
+        assetA: '0x' + wordOf(r, 1), assetB: '0x' + wordOf(r, 2), reserveA: uintOf(r, 3), reserveB: uintOf(r, 4), lpTotalShares: uintOf(r, 6),
+      } };
+    } catch { return { poolId, reserves: null }; }
+  };
+  // Each standalone farm at the same block. Best effort: one that cannot be read is left out, never a failure of the launch farm's read.
+  const solo = (await Promise.all((standalone || []).map(async (f) => {
+    try {
+      const [rate, fin, ts, lock, out, tr, amm] = await Promise.all([
+        c(SEL.rate, f.controller), c(SEL.periodFinish, f.controller), c(SEL.totalShares, f.controller), c(SEL.lockUntil, f.controller),
+        c(SEL.outstandingReward, f.controller), c(SEL.farmTreasury + pad32(BigInt(f.controller)), poolAddr), ammOf(f.poolId),
+      ]);
+      return { ...f, rate: uintOf(rate), periodFinish: uintOf(fin), totalShares: uintOf(ts), lockUntil: uintOf(lock), outstanding: uintOf(out), treasury: uintOf(tr), amm };
+    } catch { return null; }
+  }))).filter(Boolean);
   return {
-    manager, blockNumber: blk.number, timestamp: blk.timestamp, codeMissing: false,
+    manager, blockNumber: blk.number, timestamp: blk.timestamp, codeMissing: false, standalone: solo,
     gov: addrOf(gov), pendingGov: addrOf(pendingGov),
     rate: uintOf(rate), periodFinish: uintOf(periodFinish), totalAllocPoint: uintOf(totalAllocPoint),
     pool: poolAddr, rewardAsset: bytes32Of(rewardAsset), rewardToken: addrOf(rewardToken),
@@ -182,8 +210,8 @@ export function buildProgram(raw, { network = 'mainnet' } = {}) {
       requiredTac: fmtUnits(owed),
       fundedRunwaySeconds: raw.rate === 0n ? null : Number(surplus / raw.rate),
     },
-    pools: raw.pools.map((p, pid) => ({
-      pid,
+    pools: [...raw.pools.map((p, pid) => ({
+      pid, controller: raw.manager,
       pair: LAUNCH_POOLS[p.stakeAsset] || `pid ${pid}`,
       lpAsset: p.stakeAsset,
       allocPoint: Number(p.allocPoint),
@@ -200,11 +228,37 @@ export function buildProgram(raw, { network = 'mainnet' } = {}) {
         reserveA: p.amm.reserves.reserveA.toString(), reserveB: p.amm.reserves.reserveB.toString(),
         lpTotalShares: p.amm.reserves.lpTotalShares.toString(),
       } : null,
-    })),
+    })), ...(raw.standalone || []).map((f, i) => soloPool(f, i, now))],
     block: Number(raw.blockNumber),
     // Internal, stripped before serving: exact integers the health checks compare.
     _n: { now, remaining, active, outstanding, owed, treasury: raw.treasury, rate: raw.rate, totalAlloc: raw.totalAllocPoint,
-          poolDay: raw.pools.map(poolDayUnits) },
+          poolDay: raw.pools.map(poolDayUnits), standalone: (raw.standalone || []).map(soloNums(now)) },
+  };
+}
+
+// A standalone farm's own numbers: what it owes (outstanding now, plus its rate over what is left) against its own treasury.
+const soloNums = (now) => (f) => {
+  const remaining = f.periodFinish > now ? f.periodFinish - now : 0n;
+  return { pair: f.pair, controller: f.controller, active: f.rate > 0n && remaining > 0n, treasury: f.treasury, outstanding: f.outstanding,
+    owed: f.outstanding + f.rate * remaining, rate: f.rate, remaining };
+};
+const reservesOf = (amm) => (amm && amm.reserves ? {
+  assetA: amm.reserves.assetA, assetB: amm.reserves.assetB,
+  reserveA: amm.reserves.reserveA.toString(), reserveB: amm.reserves.reserveB.toString(), lpTotalShares: amm.reserves.lpTotalShares.toString(),
+} : null);
+function soloPool(f, i, now) {
+  const n = soloNums(now)(f), dayUnits = n.active ? f.rate * BigInt(DAY) : 0n;
+  const surplus = f.treasury > f.outstanding ? f.treasury - f.outstanding : 0n;
+  return {
+    pid: STANDALONE_PID + i, pair: f.pair, lpAsset: f.lpAsset, controller: f.controller, standalone: true,
+    allocPoint: 0, sharePct: null, totalShares: f.totalShares.toString(), idle: f.totalShares === 0n,
+    tacPerDayForPool: fmtUnits(dayUnits), lockSeconds: Math.max(0, Number(f.lockUntil) - Number(now)),
+    poolId: f.poolId, feeBps: f.amm && f.amm.reserves ? f.amm.feeBps : null, reserves: reservesOf(f.amm),
+    epoch: {
+      active: n.active, ratePerSecUnits: f.rate.toString(), ratePerDayTac: fmtUnits(f.rate * BigInt(DAY)), periodFinish: Number(f.periodFinish),
+      remainingSeconds: Number(n.remaining), treasuryTac: fmtUnits(f.treasury), outstandingTac: fmtUnits(f.outstanding), requiredTac: fmtUnits(n.owed),
+      fundedRunwaySeconds: f.rate === 0n ? null : Number(surplus / f.rate),
+    },
   };
 }
 
@@ -253,6 +307,14 @@ export function farmHealth(program) {
     checks.push({ name: 'idle-pools', status: 'warn',
       detail: `${idle.map((p) => `${p.pair} (pid ${p.pid})`).join(', ')} funded with no stake${n.active ? `; ${fmtUnits(wasted)} TAC/day going unearned` : ''}` });
   } else checks.push({ name: 'idle-pools', status: 'ok', detail: 'every weighted pool has stake' });
+
+  // each standalone farm against its own treasury (never the manager's)
+  for (const f of n.standalone || []) {
+    const fshort = f.owed - f.treasury;
+    checks.push(fshort > 0n
+      ? { name: `farm ${f.pair}`, status: 'critical', detail: `${f.controller}: treasury ${fmtUnits(f.treasury)} TAC is short of ${fmtUnits(f.owed)} TAC owed by ${fmtUnits(fshort)} TAC` }
+      : { name: `farm ${f.pair}`, status: 'ok', detail: `${f.controller}: treasury ${fmtUnits(f.treasury)} TAC covers ${fmtUnits(f.owed)} TAC owed${f.active ? `, ${dur(f.remaining)} left` : ' (not streaming)'}` });
+  }
 
   checks.push(program.pendingGov !== ZERO_ADDR
     ? { name: 'governor', status: 'warn', detail: `governor handover awaiting acceptance by ${program.pendingGov}` }

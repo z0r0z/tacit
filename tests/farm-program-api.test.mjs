@@ -2,7 +2,7 @@
 // Offline: node tests/farm-program-api.test.mjs
 import http from 'node:http';
 import { spawnSync, spawn } from 'node:child_process';
-import { fmtUnits, buildProgram, farmHealth, publicProgram, FARM_SELECTORS as S, FARM_MANAGER_MAINNET, LAUNCH_POOLS, LAUNCH_POOL_IDS, DAY } from '../worker-relay/src/lib/farm-health.js';
+import { fmtUnits, buildProgram, farmHealth, publicProgram, FARM_SELECTORS as S, FARM_SELECTORS, FARM_MANAGER_MAINNET, STANDALONE_FARMS_MAINNET, LAUNCH_POOLS, LAUNCH_POOL_IDS, DAY } from '../worker-relay/src/lib/farm-health.js';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex } from '@noble/hashes/utils';
 
@@ -32,9 +32,17 @@ st.treasury = RATE * 90n * BigInt(DAY) + 10n * TAC;
 
 const w = (v) => BigInt(v).toString(16).padStart(64, '0');
 const addrW = (a) => '0'.repeat(24) + a.slice(2).toLowerCase();
+// The standalone farms answer as their own contracts (idle unless st.solo says otherwise), never with the manager's numbers.
+const SOLO = new Map(STANDALONE_FARMS_MAINNET.map((f) => [f.controller.toLowerCase(), f]));
 function answerCall(to, data) {
   const sel = data.slice(0, 10);
-  if (sel === S.farmTreasury) return '0x' + w(st.treasury);
+  if (SOLO.has(to.toLowerCase())) {
+    const f = (st.solo || {})[to.toLowerCase()] || {};
+    const v = { [S.rate]: f.rate, [S.periodFinish]: f.periodFinish, [FARM_SELECTORS.totalShares]: f.totalShares, [FARM_SELECTORS.lockUntil]: f.lockUntil, [FARM_SELECTORS.outstandingReward]: f.outstanding }[sel];
+    if (sel in { [S.rate]: 1, [S.periodFinish]: 1, [FARM_SELECTORS.totalShares]: 1, [FARM_SELECTORS.lockUntil]: 1, [FARM_SELECTORS.outstandingReward]: 1 }) return '0x' + w(v || 0n);
+    throw new Error('unstubbed controller selector ' + sel);
+  }
+  if (sel === S.farmTreasury) { const c = '0x' + data.slice(34, 74); return '0x' + w(SOLO.has(c) ? ((st.solo || {})[c] || {}).treasury || 0n : st.treasury); }
   if (sel === S.gov) return '0x' + addrW(st.gov);
   if (sel === S.pendingGov) return '0x' + addrW(st.pendingGov);
   if (sel === S.rate) return '0x' + w(st.rate);
@@ -106,11 +114,15 @@ console.log('\nnormal state:');
   ok('treasury is a decimal string', b.epoch.treasuryTac === fmtUnits(st.treasury));
   ok('nothing earned yet at the start of the epoch', b.epoch.outstandingTac === '0');
   ok('funded runway is the surplus over the rate', b.epoch.fundedRunwaySeconds === (90 * 86400) + Math.floor(Number(10n * TAC) / Number(RATE)));
-  ok('three pools with launch labels', b.pools.length === 3 && b.pools.map((p) => p.pair).join() === 'TAC/cETH,cETH/cUSD,cETH/cBTC');
+  const L = b.pools.filter((p) => !p.standalone);
+  ok('three pools with launch labels', L.length === 3 && L.map((p) => p.pair).join() === 'TAC/cETH,cETH/cUSD,cETH/cBTC');
+  ok('then the standalone farms, each under its own controller, idle and not streaming', (() => { const X = b.pools.filter((p) => p.standalone); return X.length === STANDALONE_FARMS_MAINNET.length
+    && X.every((p, i) => p.pid === 1000 + i && p.controller === STANDALONE_FARMS_MAINNET[i].controller && p.lpAsset === STANDALONE_FARMS_MAINNET[i].lpAsset && p.idle && p.tacPerDayForPool === '0' && p.epoch.active === false)
+    && L.every((p) => p.controller === FARM_MANAGER_MAINNET); })(), JSON.stringify(b.pools.slice(3)));
   ok('share percent and per-pool TAC/day', b.pools[0].sharePct === '50' && b.pools[1].sharePct === '30' && b.pools[2].tacPerDayForPool === fmtUnits((RATE * 86400n * 20n) / 100n));
-  ok('lock seconds and shares reported', b.pools[1].lockSeconds === 604800 && b.pools[0].totalShares === '5000000' && b.pools.every((p) => p.idle === false));
+  ok('lock seconds and shares reported', L[1].lockSeconds === 604800 && L[0].totalShares === '5000000' && L.every((p) => p.idle === false));
   ok('no internal fields leak', !('_n' in b) && typeof b.updatedAt === 'string' && b.stale === false);
-  ok('each launch pool carries its pool id, fee tier and reserves', b.pools.every((p, i) => p.poolId === LAUNCH_POOL_IDS[p.lpAsset]
+  ok('each launch pool carries its pool id, fee tier and reserves', L.every((p, i) => p.poolId === LAUNCH_POOL_IDS[p.lpAsset]
     && p.feeBps === 30 && p.reserves && p.reserves.reserveA === String(1000 + i) && p.reserves.reserveB === String(2000 + i)
     && p.reserves.lpTotalShares === String(500 + i) && p.reserves.assetA === '0x' + '0a'.repeat(32)), JSON.stringify(b.pools[0]));
   ok('every launch pool id derives its LP asset', Object.entries(LAUNCH_POOL_IDS).every(([lp, id]) =>
@@ -119,7 +131,7 @@ console.log('\nnormal state:');
   await get('/farm/program?network=mainnet'); await get('/farm/health?network=mainnet');
   ok('repeat calls inside the window reuse one read', calls === before);
   const h = await (await get('/farm/health?network=mainnet')).json();
-  ok('health ok with every check present', h.status === 'ok' && h.checks.map((c) => c.name).join() === 'manager,solvency,runway,emission,idle-pools,governor', JSON.stringify(h));
+  ok('health ok with every check present', h.status === 'ok' && h.checks.map((c) => c.name).join() === 'manager,solvency,runway,emission,idle-pools,farm SPX/cTAC,farm SPX/cETH,governor', JSON.stringify(h));
   const s = await get('/farm/program?network=signet');
   ok('signet is a clean 404', s.status === 404);
 }

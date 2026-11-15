@@ -1940,38 +1940,52 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   function farmProgram() {
     return makeConfidentialFarmProgram({ rpc, config: { pool: cfg.pool, ..._farmCfg() } });
   }
+  // The controller holding positions in an LP-share asset: a standalone farm's own (cfg.farm.standalone), else the manager.
+  const _farmControllerOf = (lpAsset) => {
+    const f = (_farmCfg().standalone || []).find((x) => String(x.lpAsset).toLowerCase() === String(lpAsset || '').toLowerCase());
+    return f ? f.controller : _farmCfg().manager;
+  };
+  const _farmSolo = (lpAsset) => (_farmCfg().standalone || []).some((x) => String(x.lpAsset).toLowerCase() === String(lpAsset || '').toLowerCase());
+  // A standalone farm emits no Harvested events: a position's harvests are counted by the reward notes this wallet holds whose
+  // keys are the receipt's harvest keys (deriveOutput(…, 'harvest', k)), k = 0, 1, … until one is not there.
+  async function _soloHarvestCount(walletPriv, receiptLeaf, st) {
+    const nks = new Set((st || await _scanNotes({ walletPriv, events: await fetchEvents({ include: ['wraps', 'bonds'] }), cbtc: false, bridge: false })).owned
+      .map((n) => String(n.secret || '').toLowerCase()).filter(Boolean));
+    let k = 0;
+    while (k < 10000 && nks.has(String(deriveOutput(walletPriv, receiptLeaf, 'harvest', k).nk).toLowerCase())) k++;
+    return k;
+  }
 
   async function farmBond({ walletPriv, controller, lpNote, selfSettle = null, waitOpts } = {}) {
     const farm = _farmCfg();
     if (!lpNote) throw new Error('farm-bond: an LP-share note is required');
-    if (controller && String(controller).toLowerCase() !== farm.manager.toLowerCase()) throw new Error('farm-bond: controller is not the configured farm manager');
-    const lpAsset = String(lpNote.asset).toLowerCase();
+    const lpAsset = String(lpNote.asset).toLowerCase(), ctl = _farmControllerOf(lpAsset);
+    if (controller && String(controller).toLowerCase() !== String(ctl).toLowerCase()) throw new Error('farm-bond: controller is not the farm for this LP asset');
     const pid = await farmProgram().pidOf(lpAsset);
     if (pid == null) throw new Error('farm-bond: the farm has no pool for this LP asset');
     const anchorLeaf = _noteLeaf(lpNote);
-    const { owner, nonce } = lpBondPosition({ walletPriv, controller: farm.manager, lpAsset, anchorLeaf });
+    const { owner, nonce } = lpBondPosition({ walletPriv, controller: ctl, lpAsset, anchorLeaf });
     const leg = { cx: lpNote.cx, cy: lpNote.cy, value: String(lpNote.value), index: Number(lpNote.leafIndex), path: lpNote.path, blinding: lpNote.blinding, owner: lpNote.owner, nk: lpNote.secret };
-    const r = await defiActions(walletPriv).bondFarm({ controller: farm.manager, nonce, lpAsset, legs: [leg], spendRoot: lpNote.root, receiptOwner: owner, selfSettle, waitOpts });
-    const receiptLeaf = pool.farmReceiptLeaf(_farmC32(farm.manager), lpAsset, BigInt(lpNote.value), owner, nonce);
-    return { ...r, pid, lpAsset, shares: String(lpNote.value), anchorLeaf, receiptLeaf, receiptOwner: owner };
+    const r = await defiActions(walletPriv).bondFarm({ controller: ctl, nonce, lpAsset, legs: [leg], spendRoot: lpNote.root, receiptOwner: owner, selfSettle, waitOpts });
+    const receiptLeaf = pool.farmReceiptLeaf(_farmC32(ctl), lpAsset, BigInt(lpNote.value), owner, nonce);
+    return { ...r, pid, controller: ctl, lpAsset, shares: String(lpNote.value), anchorLeaf, receiptLeaf, receiptOwner: owner };
   }
 
   async function farmPositions({ walletPriv, events, _scan = null, _diag = null } = {}) {
     const farm = _farmCfg();
-    const lpAssets = new Set((farm.pools || []).map((p) => String(p.lpAsset).toLowerCase()));
+    const lpAssets = new Set([...(farm.pools || []), ...(farm.standalone || [])].map((p) => String(p.lpAsset).toLowerCase()));
     const evs = events || await fetchEvents({ include: ['wraps', 'bonds'] });
     const st = _scan || await _scanNotes({ walletPriv, events: evs, cbtc: false, bridge: false });
     const { slot } = st;
-    const c32 = _farmC32(farm.manager);
     const hits = new Map();
     const held = st.owned.filter((n) => lpAssets.has(String(n.asset).toLowerCase()));
     for (const n of held) {
-      const lpAsset = String(n.asset).toLowerCase();
+      const lpAsset = String(n.asset).toLowerCase(), ctl = _farmControllerOf(lpAsset);
       const anchorLeaf = _noteLeaf(n);
-      const { owner, nonce } = lpBondPosition({ walletPriv, controller: farm.manager, lpAsset, anchorLeaf });
-      const receiptLeaf = pool.farmReceiptLeaf(c32, lpAsset, BigInt(n.value), owner, nonce);
+      const { owner, nonce } = lpBondPosition({ walletPriv, controller: ctl, lpAsset, anchorLeaf });
+      const receiptLeaf = pool.farmReceiptLeaf(_farmC32(ctl), lpAsset, BigInt(n.value), owner, nonce);
       const receiptIndex = slot.get(receiptLeaf.toLowerCase());
-      if (receiptIndex != null) hits.set(receiptLeaf.toLowerCase(), { lpAsset, anchorLeaf, receiptLeaf, receiptIndex, via: 'lp-note' });
+      if (receiptIndex != null) hits.set(receiptLeaf.toLowerCase(), { lpAsset, anchorLeaf, receiptLeaf, receiptIndex, shares: String(n.value), via: 'lp-note' });
     }
     const bonded = evs.filter((e) => e && e.type === 'Bonded');
     const derived = recovery().deriveFarmPositions({
@@ -1986,12 +2000,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     for (const rec of await _importedFarmRecords(walletPriv)) {
       const receiptIndex = slot.get(String(rec.receiptLeaf).toLowerCase());
       if (receiptIndex == null || hits.has(String(rec.receiptLeaf).toLowerCase())) continue;
-      hits.set(String(rec.receiptLeaf).toLowerCase(), { lpAsset: rec.lpAsset, anchorLeaf: null, receiptLeaf: rec.receiptLeaf, receiptIndex, via: 'imported-record' });
+      hits.set(String(rec.receiptLeaf).toLowerCase(), { lpAsset: rec.lpAsset, anchorLeaf: null, receiptLeaf: rec.receiptLeaf, receiptIndex, shares: rec.shares, via: 'imported-record' });
       imported.push(rec.receiptLeaf);
     }
     const prog = farmProgram();
     const list = [...hits.values()];
-    const live = await Promise.all(list.map((h) => prog.position(h.receiptLeaf)));
+    const live = await Promise.all(list.map((h) => prog.position(h.receiptLeaf, { lpAsset: h.lpAsset, shares: h.shares })));
     if (_diag) {
       Object.assign(_diag, {
         bondedEvents: bonded.length, derivedFromEvents: derived.found.length, anchorsTried: st.owned.length,
@@ -2001,13 +2015,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       });
     }
     return list.map((h, i) => ({ h, p: live[i] })).filter(({ p }) => p.live).map(({ h, p }) => ({
-      pid: p.pid, pair: (_farmPoolOf(h.lpAsset) || {}).pair || null, controller: farm.manager, lpAsset: h.lpAsset,
+      pid: p.pid, pair: (_farmPoolOf(h.lpAsset) || {}).pair || null, controller: _farmControllerOf(h.lpAsset), lpAsset: h.lpAsset,
+      ...(_farmSolo(h.lpAsset) ? { standalone: true } : {}),
       shares: p.shares, receiptLeaf: h.receiptLeaf, receiptIndex: h.receiptIndex, anchorLeaf: h.anchorLeaf,
       unlockAt: p.unlockAt, pendingUnits: p.pendingUnits, pendingTac: p.pendingTac,
       ...(h.via === 'imported-record' ? { imported: true } : {}),
     })).sort((a, b) => a.receiptIndex - b.receiptIndex);
   }
-  const _farmPoolOf = (lpAsset) => (_farmCfg().pools || []).find((p) => String(p.lpAsset).toLowerCase() === String(lpAsset).toLowerCase());
+  const _farmPoolOf = (lpAsset) => [...(_farmCfg().pools || []), ...(_farmCfg().standalone || [])].find((p) => String(p.lpAsset).toLowerCase() === String(lpAsset).toLowerCase());
 
   const _farmStore = makeImportedFarmStore({ sha256 });
   const _importedFarmRecords = (walletPriv) => _farmStore.list(walletPriv);
@@ -2019,9 +2034,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       lpAsset: hex32(r.lpAsset, 'lpAsset'), receiptLeaf: hex32(r.receiptLeaf, 'receiptLeaf'),
       owner: hex32(r.owner, 'owner'), nonce: hex32(r.nonce, 'nonce'), ownerPriv: hex32(r.ownerPriv, 'ownerPriv'), shares: String(BigInt(r.shares)),
     };
-    if (r.controller && String(r.controller).toLowerCase() !== farm.manager.toLowerCase()) throw new Error('farm-import: the record is for a different farm manager');
+    const ctl = _farmControllerOf(rec.lpAsset);
+    if (r.controller && String(r.controller).toLowerCase() !== String(ctl).toLowerCase()) throw new Error('farm-import: the record is for a different farm');
     if (!_farmPoolOf(rec.lpAsset)) throw new Error('farm-import: the farm has no pool for this LP asset');
-    const derivedLeaf = pool.farmReceiptLeaf(_farmC32(farm.manager), rec.lpAsset, BigInt(rec.shares), rec.owner, rec.nonce);
+    const derivedLeaf = pool.farmReceiptLeaf(_farmC32(ctl), rec.lpAsset, BigInt(rec.shares), rec.owner, rec.nonce);
     if (derivedLeaf.toLowerCase() !== rec.receiptLeaf) throw new Error('farm-import: the record keys do not reproduce the receipt leaf');
     const xOnly = '0x' + _hex(secp.getPublicKey(Uint8Array.from((rec.ownerPriv.slice(2).match(/../g)).map((h) => parseInt(h, 16))), true).subarray(1));
     if (xOnly !== rec.owner) throw new Error('farm-import: ownerPriv is not the private key of the receipt owner');
@@ -2029,8 +2045,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const { leaves } = indexer.index(evs);
     if (!leaves.some((l) => l && String(l.leaf).toLowerCase() === rec.receiptLeaf)) throw new Error('farm-import: the receipt leaf is not in the pool tree');
     const prog = farmProgram();
-    const cur = await prog.position(rec.receiptLeaf);
-    if (!cur.live) throw new Error('farm-import: the manager does not hold this position live (already unbonded?)');
+    const cur = await prog.position(rec.receiptLeaf, { lpAsset: rec.lpAsset, shares: rec.shares });
+    if (!cur.live) throw new Error('farm-import: the farm does not hold this position live (already unbonded?)');
     const pid = await prog.pidOf(rec.lpAsset);
     if (pid == null || Number(cur.pid) !== Number(pid) || String(cur.shares) !== rec.shares) throw new Error('farm-import: the record does not match the manager\'s position');
     const saved = await _farmStore.add(walletPriv || null, rec);
@@ -2045,25 +2061,27 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const shares = BigInt(position.shares);
     const stored = (await _importedFarmRecords(walletPriv)).find((r) => String(r.receiptLeaf).toLowerCase() === String(position.receiptLeaf).toLowerCase());
     if (!stored && !position.anchorLeaf) throw new Error('farm: a position from farmPositions is required');
+    const ctl = _farmControllerOf(position.lpAsset);
     const keys = stored ? { owner: stored.owner, nonce: stored.nonce, ownerPriv: stored.ownerPriv }
-      : lpBondPosition({ walletPriv, controller: farm.manager, lpAsset: position.lpAsset, anchorLeaf: position.anchorLeaf });
-    const leaf = pool.farmReceiptLeaf(_farmC32(farm.manager), position.lpAsset, shares, keys.owner, keys.nonce);
+      : lpBondPosition({ walletPriv, controller: ctl, lpAsset: position.lpAsset, anchorLeaf: position.anchorLeaf });
+    const leaf = pool.farmReceiptLeaf(_farmC32(ctl), position.lpAsset, shares, keys.owner, keys.nonce);
     if (leaf.toLowerCase() !== String(position.receiptLeaf).toLowerCase()) throw new Error('farm: this position does not belong to this wallet');
-    const cur = await farmProgram().position(leaf);
+    const cur = await farmProgram().position(leaf, { lpAsset: position.lpAsset, shares });
     if (!cur.live) throw new Error('farm: position is not live (already unbonded?)');
     const evs = await fetchEvents({ include: ['bonds'] });
     const { leaves } = indexer.index(evs);
     const idx = leaves.findIndex((l) => l && String(l.leaf).toLowerCase() === leaf.toLowerCase());
     if (idx < 0) throw new Error('farm: receipt leaf not in the pool tree yet');
     const tree = indexer.buildTree(leaves);
-    const harvestCount = evs.filter((e) => e && e.type === 'Harvested' && lc(e.receipt) === lc(leaf)).length;
-    return { keys, shares, idx, path: tree.rootAndPath(idx).path, root: tree.root(), cur, receiptLeaf: leaf, harvestCount };
+    const harvestCount = _farmSolo(position.lpAsset) ? await _soloHarvestCount(walletPriv, leaf)
+      : evs.filter((e) => e && e.type === 'Harvested' && lc(e.receipt) === lc(leaf)).length;
+    return { keys, shares, idx, path: tree.rootAndPath(idx).path, root: tree.root(), cur, receiptLeaf: leaf, harvestCount, controller: ctl };
   }
 
   async function poolLeafCount() { return Number(BigInt(await rpc('eth_call', [{ to: cfg.pool, data: '0x0be4f422' }, 'latest']))); }
   async function refreshFarmPending(positions) {
     const prog = farmProgram();
-    const live = await Promise.all((positions || []).map((x) => prog.position(x.receiptLeaf).catch(() => null)));
+    const live = await Promise.all((positions || []).map((x) => prog.position(x.receiptLeaf, { lpAsset: x.lpAsset, shares: x.shares }).catch(() => null)));
     return (positions || []).map((x, i) => (live[i] === null ? x : live[i].live ? { ...x, shares: live[i].shares, unlockAt: live[i].unlockAt, pendingUnits: live[i].pendingUnits, pendingTac: live[i].pendingTac } : null)).filter(Boolean);
   }
   async function farmHarvest({ walletPriv, position, fee = 0n, claimBps = 10000n, selfSettle = null, waitOpts } = {}) {
@@ -2076,7 +2094,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const rb = rk.blinding, rewardNk = rk.nk;
     const rewardNote = { ...pool.commitXY(reward - fee, rb), blinding: rb };
     const r = await defiActions(walletPriv).harvestFarm({
-      controller: farm.manager, shares: rc.shares, nonce: rc.keys.nonce, harvestNonce: deriveOutput(walletPriv, rc.receiptLeaf, 'harvestNonce', rc.harvestCount).nk,
+      controller: rc.controller, shares: rc.shares, nonce: rc.keys.nonce, harvestNonce: deriveOutput(walletPriv, rc.receiptLeaf, 'harvestNonce', rc.harvestCount).nk,
       reward, oldIndex: rc.idx, oldPath: rc.path, lpAsset: position.lpAsset, rewardAsset: farm.rewardAsset, rewardNote, rewardNk,
       fee, spendRoot: rc.root, receiptOwner: rc.keys.owner, receiptOwnerPriv: rc.keys.ownerPriv, selfSettle, waitOpts,
     });
@@ -2096,7 +2114,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const ub = uk.blinding, lpNk = uk.nk;
     const releaseNote = { ...pool.commitXY(rc.shares, ub), blinding: ub };
     const r = await defiActions(walletPriv).unbondFarm({
-      controller: farm.manager, shares: rc.shares, nonce: rc.keys.nonce, lpAsset: position.lpAsset, oldIndex: rc.idx, oldPath: rc.path,
+      controller: rc.controller, shares: rc.shares, nonce: rc.keys.nonce, lpAsset: position.lpAsset, oldIndex: rc.idx, oldPath: rc.path,
       releaseNote, lpNk, fee: 0n, spendRoot: rc.root, receiptOwner: rc.keys.owner, receiptOwnerPriv: rc.keys.ownerPriv, selfSettle, waitOpts,
     });
     return { ...r, shares: rc.shares };

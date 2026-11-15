@@ -121,8 +121,14 @@ const MAINNET_FARM = {
     { pid: 1, pair: 'cETH/cUSD', poolId: '0x5925c0c2954c5b11bedd20e444f0cb22f3827f6197814f97d193e7a44e909da7', lpAsset: '0xd608b0c3806e782cc213e2d52245c3c2fbef455a10410a1f5ccc61ba45262571', feeBps: 30, allocPoint: 30, lockSeconds: 0 },
     { pid: 2, pair: 'cETH/cBTC', poolId: '0x8359cd1f812e3a9040129e186e1477f60f2188bad1bd6a56e5506b22bf5cd331', lpAsset: '0x0a0cce175bc483945822c8de3d3926e813269f5e1bbe1f9c853e09ed48b68254', feeBps: 30, allocPoint: 20, lockSeconds: 0 },
   ],
+  // Standalone farms: a FarmController per pool with its own wTAC treasury and rate (confidential-farm-program.js), deployed
+  // from the ops deployer at salt-pool vanity addresses; their stream never touches the launch farm's.
+  standalone: [
+    { pair: 'SPX/cTAC', poolId: '0x5d7a58efb396f266f8bd36364e86448ceab4f3d69c8aa54133a1a0cf38b5a842', lpAsset: '0x6aeed821ff89a3e1416a4e1ae85965dfc1a30478f98a9bd7fadd45ed527d2725', feeBps: 30, controller: '0x000000000000917d198a89a23de930db25a47066' },
+    { pair: 'SPX/cETH', poolId: '0xe2686416a328f6bb44fdea23c821916de148d3d73ab00d38cc25e55ff5047d4a', lpAsset: '0x302984ec4f357aed29e6e2be3533ccd72c1e4766e42484f332b3855926af9ad7', feeBps: 30, controller: '0x000000000000bc710a42716bf0e4a9186d833b9b' },
+  ],
 };
-const MAINNET_FARM_CONTROLLERS = Object.fromEntries(MAINNET_FARM.pools.map((p) => [p.poolId, MAINNET_FARM.manager]));
+const MAINNET_FARM_CONTROLLERS = Object.fromEntries([...MAINNET_FARM.pools.map((p) => [p.poolId, MAINNET_FARM.manager]), ...MAINNET_FARM.standalone.map((f) => [f.poolId, f.controller])]);
 
 export const CONFIDENTIAL_DEPLOYMENTS = {
   signet: {

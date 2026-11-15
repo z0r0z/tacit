@@ -17,6 +17,8 @@ const { encodeAbiParameters, decodeFunctionData, encodeFunctionData, parseAbi } 
   await import('../worker-relay/node_modules/viem/_esm/index.js');
 
 const FARM = getConfidentialDeployment('mainnet').farm;
+// the launch farm by itself (the standalone farms have their own tests below)
+const LAUNCH = { ...FARM, standalone: [] };
 const MANAGER = FARM.manager.toLowerCase();
 const POOL = getConfidentialDeployment('mainnet').pool.toLowerCase();
 const MULTICALL = '0xca11bde05977b3631167028862be2a173976ca11';
@@ -30,7 +32,22 @@ function makeChain(state) {
   const single = (to, data) => {
     const s = data.slice(2, 10), arg = data.slice(10);
     if (to === MULTICALL && s === sel('getCurrentBlockTimestamp()')) return '0x' + w(state.now);
-    if (to === POOL && s === sel('farmTreasury(address)')) return '0x' + w(state.treasury);
+    if (to === POOL && s === sel('farmTreasury(address)')) { const c = '0x' + arg.slice(24, 64); return '0x' + w((state.solo || {})[c] ? state.solo[c].treasury : state.treasury); }
+    const solo = (state.solo || {})[to];
+    if (solo) {
+      const k = ('0x' + arg.slice(0, 64)).toLowerCase(), e = solo.entries[k] || { rps: 0n, stamped: false };
+      switch (s) {
+        case sel('rate()'): return '0x' + w(solo.rate);
+        case sel('periodFinish()'): return '0x' + w(solo.periodFinish);
+        case sel('totalShares()'): return '0x' + w(solo.totalShares);
+        case sel('lockUntil()'): return '0x' + w(solo.lockUntil || 0n);
+        case sel('outstandingReward()'): return '0x' + w(solo.outstanding || 0n);
+        case sel('currentRps()'): return '0x' + w(solo.currentRps);
+        case sel('entryRps(bytes32)'): return '0x' + w(e.rps);
+        case sel('entryStamped(bytes32)'): return '0x' + w(e.stamped ? 1n : 0n);
+        default: throw new Error('unhandled controller selector ' + s);
+      }
+    }
     if (to === POOL && s === sel('pools(bytes32)')) {
       const p = state.amm[('0x' + arg).toLowerCase()];
       return '0x' + (p ? [1n, p.a, p.b, p.rA, p.rB, 30n, p.shares] : [0n, 0n, 0n, 0n, 0n, 0n, 0n]).map(w).join('');
@@ -96,15 +113,21 @@ test('config: mainnet farm block + farmControllers wired to the manager; other n
   const m = getConfidentialDeployment('mainnet');
   assert.equal(m.farm.pools.length, 3);
   assert.equal(m.farm.pools.reduce((s, p) => s + p.allocPoint, 0), 100);
-  for (const p of m.farm.pools) assert.equal(m.farmControllers[p.poolId.toLowerCase()], m.farm.manager, 'each pool bonds into the manager');
-  assert.deepEqual(Object.keys(m.farmControllers).length, 3);
+  for (const p of m.farm.pools) assert.equal(m.farmControllers[p.poolId.toLowerCase()], m.farm.manager, 'each launch pool bonds into the manager');
+  assert.equal(m.farm.standalone.length, 2, 'the SPX farms are standalone');
+  for (const f of m.farm.standalone) {
+    assert.equal(m.farmControllers[f.poolId.toLowerCase()], f.controller, 'a standalone pool bonds into its own controller');
+    assert.notEqual(f.controller.toLowerCase(), m.farm.manager.toLowerCase());
+    assert.ok(!m.farm.pools.some((p) => p.lpAsset === f.lpAsset), 'never one of the launch farm\'s pools');
+  }
+  assert.deepEqual(Object.keys(m.farmControllers).length, 5);
   const s = getConfidentialDeployment('signet');
   assert.equal(s.farm, null); assert.deepEqual(s.farmControllers, {});
 });
 
 test('program(): active epoch, per-pool split, idle pool earns nothing', async () => {
   const st = baseState();
-  const fp = makeConfidentialFarmProgram({ rpc: makeChain(st), config: { pool: POOL, ...FARM } });
+  const fp = makeConfidentialFarmProgram({ rpc: makeChain(st), config: { pool: POOL, ...LAUNCH } });
   const p = await fp.program();
   assert.equal(p.manager, MANAGER);
   assert.equal(p.rewardAsset, FARM.rewardAsset);
@@ -127,20 +150,20 @@ test('program(): active epoch, per-pool split, idle pool earns nothing', async (
 
 test('program(): finished epoch reports zero emission everywhere; a 100%-idle program too', async () => {
   const fin = baseState({ periodFinish: 1_799_000_000n });
-  const p = await makeConfidentialFarmProgram({ rpc: makeChain(fin), config: { pool: POOL, ...FARM } }).program();
+  const p = await makeConfidentialFarmProgram({ rpc: makeChain(fin), config: { pool: POOL, ...LAUNCH } }).program();
   assert.equal(p.epoch.active, false);
   assert.equal(p.epoch.remainingSeconds, 0);
   assert.equal(p.epoch.ratePerDayTac, '0');
   assert.equal(p.epoch.rate, '11574', 'the stored rate is reported as-is');
   assert.deepEqual(p.pools.map((x) => x.tacPerDayForPool), ['0', '0', '0']);
   const idle = baseState({ pools: baseState().pools.map((x) => ({ ...x, shares: 0n })) });
-  const q = await makeConfidentialFarmProgram({ rpc: makeChain(idle), config: { pool: POOL, ...FARM } }).program();
+  const q = await makeConfidentialFarmProgram({ rpc: makeChain(idle), config: { pool: POOL, ...LAUNCH } }).program();
   assert.ok(q.pools.every((x) => x.idle && x.tacPerDayForPool === '0'));
 });
 
 test('program(): falls back to parallel eth_calls when Multicall3 is unavailable; unknown pools keep chain data', async () => {
   const st = baseState({ noMulticall: true, pools: [...baseState().pools, { stake: '0x' + '77'.repeat(32), shares: 5n, alloc: 0n }] });
-  const p = await makeConfidentialFarmProgram({ rpc: makeChain(st), config: { pool: POOL, ...FARM } }).program();
+  const p = await makeConfidentialFarmProgram({ rpc: makeChain(st), config: { pool: POOL, ...LAUNCH } }).program();
   assert.equal(p.pools.length, 4);
   assert.equal(p.pools[3].pair, null, 'a pool the config does not know is still reported');
   assert.equal(p.pools[3].tacPerDayForPool, '0', 'zero allocation earns nothing');
@@ -150,7 +173,7 @@ test('program(): falls back to parallel eth_calls when Multicall3 is unavailable
 test('position / pending / pidOf', async () => {
   const leaf = '0x' + '12'.repeat(32);
   const st = baseState({ positions: { [leaf]: { entryRps: 9n, shares: 250n, unlockAt: 1_900_000_000n, pid: 1n, live: true, pending: 250000000n } } });
-  const fp = makeConfidentialFarmProgram({ rpc: makeChain(st), config: { pool: POOL, ...FARM } });
+  const fp = makeConfidentialFarmProgram({ rpc: makeChain(st), config: { pool: POOL, ...LAUNCH } });
   assert.deepEqual(await fp.pending(leaf), { units: '250000000', tac: '2.5' });
   const pos = await fp.position(leaf);
   assert.equal(pos.live, true); assert.equal(pos.shares, '250'); assert.equal(pos.pid, 1); assert.equal(pos.unlockAt, 1_900_000_000);
@@ -164,7 +187,7 @@ test('position / pending / pidOf', async () => {
 
 test('aprInputs(): yearly emission per pool + the AMM state to value a share', async () => {
   const st = baseState({ amm: { [FARM.pools[0].poolId.toLowerCase()]: { a: 1n, b: 2n, rA: 4000n, rB: 9000n, shares: 2000n } } });
-  const a = await makeConfidentialFarmProgram({ rpc: makeChain(st), config: { pool: POOL, ...FARM } }).aprInputs();
+  const a = await makeConfidentialFarmProgram({ rpc: makeChain(st), config: { pool: POOL, ...LAUNCH } }).aprInputs();
   assert.equal(a.pools[0].tacPerYearUnits, (11574n * 31536000n * 50n / 100n).toString());
   assert.equal(a.pools[0].stakedShares, '1000');
   assert.equal(a.pools[0].amm.reserveA, '4000'); assert.equal(a.pools[0].amm.totalShares, '2000');
@@ -323,7 +346,18 @@ test('farmBond(): derives the deterministic position key from the LP note; refus
   assert.equal(submitted.at(-1).op.nonce, expect.nonce, 'a retry re-derives the identical position');
   assert.ok(!dump(r).includes(expect.ownerPriv.slice(2)), 'no secret in the result');
   await assert.rejects(ux.farmBond({ walletPriv, lpNote: { ...note, asset: '0x' + '99'.repeat(32) }, waitOpts }), /no pool for this LP asset/);
-  await assert.rejects(ux.farmBond({ walletPriv, lpNote: note, controller: '0x' + 'fa'.repeat(20), waitOpts }), /not the configured farm manager/);
+  await assert.rejects(ux.farmBond({ walletPriv, lpNote: note, controller: '0x' + 'fa'.repeat(20), waitOpts }), /not the farm for this LP asset/);
+  // an LP note of a standalone farm's pool bonds into THAT farm: its controller in the op and in the receipt key, its own pid
+  const F = FARM.standalone[0], soloNote = mkLeg({ ...s.loose, asset: F.lpAsset });
+  soloNote.path = tree.rootAndPath(soloNote.leafIndex).path; soloNote.root = tree.root();
+  const r2 = await ux.farmBond({ walletPriv, lpNote: soloNote, waitOpts });
+  const sub2 = submitted.at(-1);
+  const exp2 = ux.lpBondPosition({ walletPriv, controller: F.controller, lpAsset: F.lpAsset.toLowerCase(), anchorLeaf: s.pool.leaf(F.lpAsset, soloNote.cx, soloNote.cy, soloNote.owner) });
+  assert.equal(String(sub2.op.controller).toLowerCase(), F.controller.toLowerCase(), 'the bond goes to the standalone controller');
+  assert.equal(sub2.op.nonce, exp2.nonce);
+  assert.equal(r2.receiptLeaf, s.pool.farmReceiptLeaf('0x' + '00'.repeat(12) + F.controller.slice(2).toLowerCase(), F.lpAsset.toLowerCase(), BigInt(soloNote.value), exp2.owner, exp2.nonce));
+  assert.equal(r2.pid, 1000); assert.equal(r2.controller, F.controller);
+  await assert.rejects(ux.farmBond({ walletPriv, lpNote: soloNote, controller: FARM.manager, waitOpts }), /not the farm for this LP asset/, 'never into the launch manager');
   await assert.rejects(ux.farmBond({ walletPriv, waitOpts }), /LP-share note is required/);
 });
 
@@ -347,4 +381,38 @@ test('farmRedeem(): unwraps the wTAC note and returns the withdraw + wrap steps 
   assert.equal(r.next[0].amountWei, wei.toString());
   assert.equal(r.next[1].step, 'wrap'); assert.equal(r.next[1].token, FARM.tac);
   await assert.rejects(ux.farmRedeem({ walletPriv, note: { ...note, asset: LP0 } }), /wTAC/);
+});
+
+test('standalone farms: their own stream, treasury and period, listed after the launch pools; pending from the checkpoints', async () => {
+  const [f0, f1] = FARM.standalone, c0 = f0.controller.toLowerCase(), c1 = f1.controller.toLowerCase();
+  const leaf = '0x' + 'cd'.repeat(32), P = 2n ** 64n;
+  const st = baseState({
+    solo: {
+      [c0]: { rate: 77160n, periodFinish: 1_800_000_000n + 2_592_000n, totalShares: 500n, treasury: 200_000_000_000n, outstanding: 5n,
+        currentRps: 3n * P, entries: { [leaf]: { rps: P, stamped: true } } },
+      [c1]: { rate: 38580n, periodFinish: 1_700_000_000n, totalShares: 0n, treasury: 100_000_000_000n, currentRps: 0n, entries: {} },
+    },
+  });
+  const fp = makeConfidentialFarmProgram({ rpc: makeChain(st), config: { pool: POOL, ...FARM } });
+  const p = await fp.program();
+  assert.equal(p.pools.length, 5);
+  assert.deepEqual(p.pools.slice(0, 3).map((x) => x.sharePct), ['50.00', '30.00', '20.00'], 'the launch pools keep their split: nothing diluted');
+  assert.deepEqual(p.pools.slice(0, 3).map((x) => x.controller), [MANAGER, MANAGER, MANAGER]);
+  const [a, b] = p.pools.slice(3);
+  assert.equal(a.pid, 1000); assert.equal(b.pid, 1001);
+  assert.equal(a.controller, c0); assert.equal(a.standalone, true); assert.equal(a.pair, f0.pair);
+  assert.equal(a.epoch.active, true); assert.equal(a.epoch.treasuryTac, '2000'); assert.equal(a.tacPerDayForPool, '66.66624');
+  assert.equal(b.epoch.active, false, 'not started (period in the past)'); assert.equal(b.tacPerDayForPool, '0'); assert.equal(b.epoch.treasuryTac, '1000');
+  assert.equal(await fp.pidOf(f0.lpAsset), 1000);
+  assert.equal(fp.controllerOf(f0.lpAsset), c0);
+  assert.equal(fp.controllerOf(FARM.pools[0].lpAsset), MANAGER);
+  const pos = await fp.position(leaf, { lpAsset: f0.lpAsset, shares: 250n });
+  assert.equal(pos.live, true); assert.equal(pos.pendingUnits, '500', 'shares x (currentRps - entryRps) / 2^64 = 250 x 2');
+  assert.equal(pos.controller, c0); assert.equal(pos.pid, 1000);
+  const none = await fp.position('0x' + 'ee'.repeat(32), { lpAsset: f0.lpAsset, shares: 250n });
+  assert.equal(none.live, false); assert.equal(none.pendingUnits, '0');
+  const apr = await fp.aprInputs();
+  assert.deepEqual(apr.pools.slice(0, 3).map((x) => x.tacPerYearUnits), (await makeConfidentialFarmProgram({ rpc: makeChain(baseState()), config: { pool: POOL, ...LAUNCH } }).aprInputs()).pools.map((x) => x.tacPerYearUnits), 'the launch APRs are unchanged');
+  assert.equal(apr.pools[3].tacPerYearUnits, (77160n * 365n * 86400n).toString());
+  assert.equal(apr.pools[4].tacPerYearUnits, '0');
 });
