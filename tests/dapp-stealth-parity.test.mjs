@@ -20,6 +20,8 @@ secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m
 
 import * as ref from './stealth-dapp-patch.mjs';
 import { makeTacitAddress } from '../dapp/tacit-address.js';
+// the scan-side functions moved out of tacit.js into the module the stealth scan worker shares (stealth-scan-core.js); the block below is what is left of the stealth helpers in tacit.js, which calls them
+import * as core from '../dapp/stealth-scan-core.js';
 
 const src = fs.readFileSync(new URL('../dapp/tacit.js', import.meta.url), 'utf8');
 
@@ -57,14 +59,17 @@ const exposed = [
   'senderComputeStealthCommit', 'recipientScanTxForStealth',
 ];
 const wrapped = `${block}\nreturn { ${exposed.join(', ')} };`;
+const moved = ['_stealthNetworkTagByte', 'isStealthEligibleKind', 'aggregateStealthEligibleInputPubkeys', 'deriveStealthEcdhSharedSecret', 'deriveStealthBlindingFromShared', 'computeStealthCommit', 'computeStealthTweakedSk', '_stealthU32le', 'recipientScanTxForStealth'];
 const dapp = new Function(
   'secp', 'sha256', 'hmac', 'hexToBytes', 'bytesToHex', 'concatBytes',
   'SECP_N', 'G', 'ZERO', 'reverseBytes', 'bytesToPoint',
   'p2wpkhScript', 'p2trScript', 'hash160', 'makeTacitAddress',
+  ...moved,
   wrapped,
 )(secp, sha256, hmac, hexToBytes, bytesToHex, concatBytes,
   SECP_N, G, ZERO, reverseBytes, bytesToPoint,
-  p2wpkhScript, p2trScript, hash160, makeTacitAddress);
+  p2wpkhScript, p2trScript, hash160, makeTacitAddress,
+  ...moved.map((n) => core[n]));
 
 // ===== tests =====
 let pass = 0, fail = 0;

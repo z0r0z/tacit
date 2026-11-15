@@ -235,6 +235,40 @@ await test('a scan reads from an explorer only the transfers the archive does no
 });
 
 
+await test('a scan whose transfers are worked out by workers reads and finds exactly what a scan on this thread does, whatever the workers say', async () => {
+  asWallet(V, Vpub);
+  const core = await import('../dapp/stealth-scan-core.js');
+  // each scan has transfers of its own: the page keeps what it has read from an explorer, so a second scan of the same transfers would read fewer of them
+  let tagN = 0xd0;
+  const nextTag = () => (tagN++).toString(16);                 // two hex digits, as transfer() wants, and none used by another case
+  const fixtures = (asset) => {
+    const mine = transfer(nextTag(), { senderPriv: A, recipientPub: Vpub }), o0 = transfer(nextTag(), { senderPriv: A, recipientPub: Wpub }), o1 = transfer(nextTag(), { senderPriv: A, recipientPub: Wpub });
+    INDEX[asset] = [mine.X, o0.X, single, o1.X];
+    return { asset, mine, role: new Map([[mine.X, 'mine'], [o0.X, 'other'], [o1.X, 'other'], [single, 'single']]) };
+  };
+  const scan = async (set, workers) => {
+    reads.length = 0;
+    const r = await T.scanAssetForStealthReceipts(set.asset, { pageLimit: 50, maxPages: 1, gapMs: 0, useSeenCache: false, workers });
+    return { found: r.discovered.map((d) => [d.txid === set.mine.X, d.amount]), scanned: r.txsScanned, fromArchive: r.txsFromArchive, failed: r.txsFailed, read: reads.filter((id) => set.role.has(id)).map((id) => set.role.get(id)).sort() };
+  };
+  const asked = [];
+  const inProcess = async (key, jobs) => { asked.push(jobs.length); return jobs.map((j) => { try { return core.recipientScanTxForStealth({ ...j, walletPriv: key.walletPriv, walletPub: key.walletPub, networkTag: key.networkTag }).length === 0; } catch { return undefined; } }); };
+  const local = await scan(fixtures('ad'.repeat(32)), null);
+  assert.deepEqual(local.found, [[true, 400n]], 'the scan on this thread finds the one payment');
+  assert.deepEqual(local.read, ['mine'], 'and reads only that transfer from an explorer');
+  assert.equal(local.fromArchive, 3, 'the others, and the one with one input, are cleared');
+  const viaWorkers = await scan(fixtures('ae'.repeat(32)), inProcess);
+  assert.deepEqual(viaWorkers, local, 'the same finds, the same reads from an explorer, the same transfers cleared from the archive');
+  assert.deepEqual(asked, [3], 'the three transfers that need curve work went to the workers; the one with one input was decided without');
+  let k = 0;
+  for (const [name, w] of [['say nothing', async () => null], ['throw', async () => { throw new Error('boom'); }], ['work out none', async (kk, jobs) => jobs.map(() => undefined)], ['claim a credit on every transfer', async (kk, jobs) => jobs.map(() => false)]]) {
+    const r = await scan(fixtures(`b${k++}`.repeat(32)), w);
+    assert.deepEqual(r.found, local.found, `workers that ${name}: the same finds`);
+    assert.equal(r.failed, 0, `workers that ${name}: nothing fails`);
+    if (name !== 'claim a credit on every transfer') assert.deepEqual(r, local, `workers that ${name}: the scan is the one on this thread`);
+  }
+});
+
 await test('a transfer funded by an ordinary transaction only the API\'s second store holds is cleared from the archive, with no explorer read, and never when it pays this key', async () => {
   asWallet(V, Vpub);
   const toOther = transfer('31', { senderPriv: A, recipientPub: Wpub, plainParent: true }), toMe = transfer('32', { senderPriv: A, recipientPub: Vpub, plainParent: true });

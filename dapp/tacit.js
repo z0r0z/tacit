@@ -8,6 +8,8 @@ import { hexToBytes, bytesToHex, concatBytes } from './vendor/tacit-deps.min.js'
 import { bech32, base58, base32 } from './vendor/tacit-deps.min.js';
 import { assertFreshRefundKey } from './amm-refund-key.js';
 import { buyerOpeningMsg } from './buyer-opening-msg.js';
+import { makeStealthWorkers } from './stealth-scan-workers.js';
+import { _stealthNetworkTagByte, isStealthEligibleKind, aggregateStealthEligibleInputPubkeys, deriveStealthEcdhSharedSecret, deriveStealthBlindingFromShared, computeStealthCommit, computeStealthTweakedSk, _stealthU32le, recipientScanTxForStealth } from './stealth-scan-core.js';
 let _satsConnectMod = null;
 let _satsConnectLoadP = null;
 function _satsConnectProviderPresent() {
@@ -3606,13 +3608,6 @@ const MIXER_EMITTING_OPCODES = new Set([
   0x44,
 ]);
 
-function _stealthNetworkTagByte(net) {
-  if (net === 'mainnet') return 0x00;
-  if (net === 'signet')  return 0x01;
-  if (net === 'regtest') return 0x02;
-  if (typeof net === 'number') return net & 0xff;
-  throw new Error(`unknown network: ${net}`);
-}
 
 const _BECH32M_ALPHABET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 const _BECH32M_CONST = 0x2bc830a3;
@@ -3837,23 +3832,7 @@ const evmTradeLaneWallet = {
   },
 };
 
-function deriveStealthEcdhSharedSecret({ ourPriv, theirPub }) {
-  if (ourPriv.length !== 32) throw new Error('ourPriv must be 32 bytes');
-  if (theirPub.length !== 33) throw new Error('theirPub must be 33 bytes compressed');
-  const ourPrivBig = BigInt('0x' + bytesToHex(ourPriv));
-  const theirPt = secp.ProjectivePoint.fromHex(bytesToHex(theirPub));
-  const sharedPt = theirPt.multiply(ourPrivBig);
-  const sharedXonly = sharedPt.toRawBytes(true).slice(1);
-  return sha256(sharedXonly);
-}
 
-function deriveStealthBlindingFromShared({ shared, networkTag, domain, txAnchor }) {
-  const tag = new Uint8Array([_stealthNetworkTagByte(networkTag) & 0xff]);
-  const mac = hmac(sha256, shared, concatBytes(domain, tag, txAnchor));
-  const b = BigInt('0x' + bytesToHex(mac)) % SECP_N;
-  if (b === 0n) throw new Error('ECDH blinding derived zero (statistically impossible)');
-  return b;
-}
 
 function deriveStealthEcdhBlinding({
   ourPriv, theirPub, networkTag, domain, txAnchor,
@@ -3862,23 +3841,7 @@ function deriveStealthEcdhBlinding({
   return deriveStealthBlindingFromShared({ shared, networkTag, domain, txAnchor });
 }
 
-function computeStealthCommit({ underlyingPub, blinding }) {
-  if (underlyingPub.length !== 33) throw new Error('underlyingPub must be 33 bytes compressed');
-  const Pt = secp.ProjectivePoint.fromHex(bytesToHex(underlyingPub));
-  const commitPt = Pt.add(G.multiply(blinding));
-  if (commitPt.equals(ZERO)) throw new Error('stealth commit equals point at infinity');
-  return commitPt.toRawBytes(true);
-}
 
-function computeStealthTweakedSk({ underlyingPriv, blinding }) {
-  if (underlyingPriv.length !== 32) throw new Error('underlyingPriv must be 32 bytes');
-  const d = BigInt('0x' + bytesToHex(underlyingPriv));
-  if (d <= 0n || d >= SECP_N) throw new Error('underlyingPriv scalar out of range');
-  const tweaked = (d + blinding) % SECP_N;
-  if (tweaked === 0n) throw new Error('tweaked secret derived zero (statistically impossible)');
-  let hex = tweaked.toString(16); while (hex.length < 64) hex = '0' + hex;
-  return hexToBytes(hex);
-}
 
 function classifyStealthInput({ witness, prevoutScript, prevoutOpReturn }) {
   if (prevoutOpReturn != null && MIXER_EMITTING_OPCODES.has(prevoutOpReturn)) {
@@ -3907,21 +3870,7 @@ function classifyStealthInput({ witness, prevoutScript, prevoutOpReturn }) {
   return { kind: 'unknown', pub: null };
 }
 
-function isStealthEligibleKind(kind) {
-  return kind === 'p2wpkh' || kind === 'p2tr-keypath';
-}
 
-function aggregateStealthEligibleInputPubkeys(inputs) {
-  let acc = ZERO, count = 0;
-  for (const inp of inputs) {
-    if (!isStealthEligibleKind(inp.kind)) continue;
-    if (!inp.pub || inp.pub.length !== 33) continue;
-    const Pt = secp.ProjectivePoint.fromHex(bytesToHex(inp.pub));
-    acc = acc.add(Pt); count += 1;
-  }
-  if (count === 0 || acc.equals(ZERO)) return { aggregatePub: null, eligibleCount: 0 };
-  return { aggregatePub: acc.toRawBytes(true), eligibleCount: count };
-}
 
 function isMixerDerivedInput({ prevoutTx, prevoutVout }) {
   if (!prevoutTx || !Array.isArray(prevoutTx.outputs) || prevoutTx.outputs.length === 0) return false;
@@ -3960,11 +3909,6 @@ function stealthTxAnchorHead(firstAssetInTxidHex, firstAssetInVout) {
   return concatBytes(txidLE, voutLE);
 }
 
-function _stealthU32le(n) {
-  const b = new Uint8Array(4);
-  new DataView(b.buffer).setUint32(0, n >>> 0, true);
-  return b;
-}
 
 function senderComputeStealthCommit({
   senderEligibleInputPrivs, recipientPub, networkTag, domain, txAnchorHead, voutIndex,
@@ -3990,40 +3934,6 @@ function senderComputeStealthCommit({
   return { commit, blinding: b };
 }
 
-function recipientScanTxForStealth({
-  classifiedInputs, outputs, walletPriv, walletPub, networkTag, domain, txAnchorHead,
-}) {
-  const { aggregatePub } = aggregateStealthEligibleInputPubkeys(classifiedInputs);
-  if (!aggregatePub) return [];
-  let shared;
-  try {
-    shared = deriveStealthEcdhSharedSecret({ ourPriv: walletPriv, theirPub: aggregatePub });
-  } catch { return []; }
-  const credits = [];
-  for (let v = 0; v < outputs.length; v++) {
-    const txAnchor = concatBytes(txAnchorHead, _stealthU32le(v));
-    let b;
-    try {
-      b = deriveStealthBlindingFromShared({ shared, networkTag, domain, txAnchor });
-    } catch { continue; }
-    let commit;
-    try { commit = computeStealthCommit({ underlyingPub: walletPub, blinding: b }); }
-    catch { continue; }
-    const wpkh = p2wpkhScript(commit);
-    const tr = p2trScript(commit.slice(1));
-    const out = outputs[v].script;
-    let scriptKind = null;
-    if (out.length === wpkh.length && out.every((x, i) => x === wpkh[i])) scriptKind = 'p2wpkh';
-    else if (out.length === tr.length && out.every((x, i) => x === tr[i])) scriptKind = 'p2tr';
-    if (scriptKind) {
-      const tweakedSk = computeStealthTweakedSk({ underlyingPriv: walletPriv, blinding: b });
-      credits.push({
-        voutIndex: v, scriptKind, tweakedSk, commit, blinding: b, senderAggregatePub: aggregatePub,
-      });
-    }
-  }
-  return credits;
-}
 
 const BIP352_HRP_BY_NETWORK = {
   mainnet: 'sp',
@@ -23507,21 +23417,50 @@ function _stealthShape(tx) {
 // witness alone and is never counted, whatever it spends: its previous output is not needed.
 const _stealthNeedsPrevout = (vin) => { const n = (vin.witness || []).length; return n === 1 || n === 2; };
 // The credits a stealth transfer holds for this key (none when it pays someone else): its inputs classified, and every output tried against the shared secret they make.
-function _stealthCreditsOf(tx, shape) {
+// What a stealth transfer's credits are worked out from: its inputs classified, its output scripts, the domain its envelope names and the anchor of its first input. Bookkeeping
+// that costs next to nothing; the shared secret and every output tried against it (recipientScanTxForStealth) are the part that costs, here or in a worker (stealth-scan-workers.js).
+function _stealthJobOf(tx, shape) {
   const classifiedInputs = tx.vin.map((vin) => {
     const witness = (vin.witness || []).map(h => { try { return hexToBytes(h); } catch { return new Uint8Array(0); } });
     const prevoutScript = vin.prevout?.scriptpubkey
       ? hexToBytes(vin.prevout.scriptpubkey) : null;
     return classifyStealthInput({ witness, prevoutScript });
   });
-  return recipientScanTxForStealth({
+  return {
     classifiedInputs,
     outputs: tx.vout.map(o => ({ script: hexToBytes(o.scriptpubkey || '') })),
-    walletPriv: wallet.priv, walletPub: wallet.pub,
-    networkTag: currentNetworkName(),
     domain: STEALTH_DOMAIN_BY_OPCODE.get(shape.env.opcode),
     txAnchorHead: stealthTxAnchorHead(tx.vin[1].txid, tx.vin[1].vout),
+  };
+}
+// The credits a stealth transfer holds for this key (none when it pays someone else).
+function _stealthCreditsOf(tx, shape) {
+  const job = _stealthJobOf(tx, shape);
+  return recipientScanTxForStealth({
+    ...job,
+    walletPriv: wallet.priv, walletPub: wallet.pub,
+    networkTag: currentNetworkName(),
   });
+}
+// The checks _stealthNothingFromArchive makes before it works out any credits, which need no curve work: { verdict } when they decide it, else { tx, shape } to work the credits out of.
+function _stealthArchiveCheck(txidHex) {
+  const A = _txArchive(), tx = A.get(txidHex);
+  if (!tx || !Array.isArray(tx.vin) || !Array.isArray(tx.vout)) return { verdict: false };
+  const shape = _stealthShape(tx);
+  if (shape.notShielded) return { verdict: true };
+  if (shape.unread || tx.vin.some((v) => !(v.witness?.length) && !v.scriptsig)) return { verdict: false };
+  if (shape.none) return { verdict: true };
+  const vin = [];
+  for (const v of tx.vin) {
+    if (!_stealthNeedsPrevout(v)) { vin.push(v); continue; }
+    const out = (A.get(v.txid) || A.getFunding(v.txid))?.vout?.[v.vout];       // a funding transaction is an ordinary one the API keeps apart (tx-archive.js getFunding)
+    if (!out) return { verdict: false };
+    if (/^0014[0-9a-f]{40}$/.test(out.scriptpubkey || '') && v.witness.length === 2) {
+      try { if (bytesToHex(hash160(hexToBytes(v.witness[1]))) !== out.scriptpubkey.slice(4)) return { verdict: false }; } catch { return { verdict: false }; }
+    }
+    vin.push({ ...v, prevout: out });
+  }
+  return { tx: { ...tx, vin }, shape };
 }
 // Whether the API's archive proves that a transfer holds nothing for this key, so that no explorer is asked for it. The transfer is held, and so is each transaction it spends from for
 // the inputs whose previous output matters (_stealthNeedsPrevout), every one of them checked against its txid when the archive handed it over; the credits are then worked out by the
@@ -23530,23 +23469,9 @@ function _stealthCreditsOf(tx, shape) {
 // a native segwit input names in its witness is the one its previous output commits to. Everything else (a transfer or a parent the archive lacks, a credit found, a shape it cannot
 // read, a witness that is missing or does not agree) is not told here, and is read from an explorer as always, a credit found going through the whole of discoverStealthFromTxid.
 function _stealthNothingFromArchive(txidHex) {
-  const A = _txArchive(), tx = A.get(txidHex);
-  if (!tx || !Array.isArray(tx.vin) || !Array.isArray(tx.vout)) return false;
-  const shape = _stealthShape(tx);
-  if (shape.notShielded) return true;
-  if (shape.unread || tx.vin.some((v) => !(v.witness?.length) && !v.scriptsig)) return false;
-  if (shape.none) return true;
-  const vin = [];
-  for (const v of tx.vin) {
-    if (!_stealthNeedsPrevout(v)) { vin.push(v); continue; }
-    const out = (A.get(v.txid) || A.getFunding(v.txid))?.vout?.[v.vout];       // a funding transaction is an ordinary one the API keeps apart (tx-archive.js getFunding)
-    if (!out) return false;
-    if (/^0014[0-9a-f]{40}$/.test(out.scriptpubkey || '') && v.witness.length === 2) {
-      try { if (bytesToHex(hash160(hexToBytes(v.witness[1]))) !== out.scriptpubkey.slice(4)) return false; } catch { return false; }
-    }
-    vin.push({ ...v, prevout: out });
-  }
-  try { return _stealthCreditsOf({ ...tx, vin }, shape).length === 0; } catch { return false; }
+  const c = _stealthArchiveCheck(txidHex);
+  if ('verdict' in c) return c.verdict;
+  try { return _stealthCreditsOf(c.tx, c.shape).length === 0; } catch { return false; }
 }
 
 async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
@@ -23697,11 +23622,35 @@ async function discoverStealthFromTxid(txidHex, { merge = true } = {}) {
 
 // The scan reads transfers a few at a time (the rate they are started at is the page's, see TX_READ_SPACING_MS). After a window in which a read failed (an explorer saying it is being
 // asked too much) it rests as well, twice as long after each failed window up to the most, and less after each clean one; it does not rest while all goes well.
+// The transfers of a page that the archive holds, worked out together in workers: for each, true (it holds nothing for this key: no explorer is asked, as _stealthNothingFromArchive
+// says), false (it holds a credit: it is read in full), absent (not told: the scan works it out itself, as it always did). The checks that need no curve work are made here;
+// the shared secret and every output tried are what the workers do (stealth-scan-core.js, the function the page runs).
+const _stealthWorkers = makeStealthWorkers();
+const _stealthHandBack = () => new Promise((r) => { if (typeof MessageChannel === 'undefined') return setTimeout(r, 0); const c = new MessageChannel(); c.port1.onmessage = () => { c.port1.close(); r(); }; c.port2.postMessage(0); });
+async function _stealthTellInWorkers(txids, workers) {
+  const told = new Map();
+  if (!workers || !txids.length) return told;
+  const jobs = [], ids = [];
+  let at = Date.now();
+  for (const t of txids) {
+    if (Date.now() - at > 12) { await _stealthHandBack(); at = Date.now(); }
+    try {
+      const c = _stealthArchiveCheck(t);
+      if ('verdict' in c) continue;
+      jobs.push(_stealthJobOf(c.tx, c.shape)); ids.push(t);
+    } catch { /* not told here: the scan reads it as it always did */ }
+  }
+  if (!jobs.length) return told;
+  let out = null;
+  try { out = await workers({ walletPriv: wallet.priv, walletPub: wallet.pub, networkTag: currentNetworkName() }, jobs); } catch { out = null; }
+  if (out) ids.forEach((t, i) => { if (out[i] === true || out[i] === false) told.set(t, out[i]); });
+  return told;
+}
 const STEALTH_SCAN_WINDOW = 4;
 const STEALTH_SCAN_GAP_MS = 0;
 const STEALTH_SCAN_FAIL_GAP_MS = 500;
 const STEALTH_SCAN_GAP_MAX_MS = 8000;
-async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxPages = 4, pageLimit = 50, useSeenCache = true, window: win = STEALTH_SCAN_WINDOW, gapMs = STEALTH_SCAN_GAP_MS, failGapMs = STEALTH_SCAN_FAIL_GAP_MS } = {}) {
+async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxPages = 4, pageLimit = 50, useSeenCache = true, window: win = STEALTH_SCAN_WINDOW, gapMs = STEALTH_SCAN_GAP_MS, failGapMs = STEALTH_SCAN_FAIL_GAP_MS, workers = _stealthWorkers } = {}) {
   if (!WORKER_BASE) throw new Error('worker base URL not configured');
   if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) throw new Error('invalid assetIdHex');
   await ensurePrivkey();
@@ -23733,13 +23682,16 @@ async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxP
     // The API's archive holds most of these transfers and the transactions they spend from, and gives them 64 roots to a request with each transaction checked against its txid.
     // A transfer it proves holds nothing for this key (_stealthNothingFromArchive) is not read from an explorer; every other transfer, and every one the archive lacks or fails to give, is read as always.
     if (todo.length) { try { await _txArchive().prefetch(todo, { depth: 1, fund: true }); } catch { } }
+    const told = await _stealthTellInWorkers(todo, workers);
+    let sliceAt = Date.now();
     for (let i = 0; i < todo.length; i += win) {
       const startedBefore = _apiFetchStarts, failedBefore = txsFailed;
       await Promise.all(todo.slice(i, i + win).map(async (t) => {
         txsScanned++;
         let cleanScan = false;
         try {
-          if (_stealthNothingFromArchive(t)) { txsFromArchive++; cleanScan = true; }
+          const said = told.get(t);
+          if (said === true || (said === undefined && _stealthNothingFromArchive(t))) { txsFromArchive++; cleanScan = true; }
           else {
             const credits = await discoverStealthFromTxid(t, { merge: true });
             for (const c of credits) discovered.push(c);
@@ -23751,6 +23703,8 @@ async function scanAssetForStealthReceipts(assetIdHex, { onProgress = null, maxP
         if (cleanScan) markStealthTxidSeen(assetIdHex, t);
         if (onProgress) { try { onProgress({ pagesScanned, txsScanned, txsSkipped, txsFailed, found: discovered.length }); } catch {} }
       }));
+      // a window that was all archive reads and curve work holds the thread; hand it back between windows so a long page of them never does
+      if (Date.now() - sliceAt > 12) { await _stealthHandBack(); sliceAt = Date.now(); }
       // rest before the next window if this one used the network: the first rest after a window in which a read failed, twice as long after each such window, back toward the usual after a clean one
       gap = txsFailed > failedBefore ? Math.min(STEALTH_SCAN_GAP_MAX_MS, gap > 0 ? gap * 2 : failGapMs) : (gap > gapMs ? Math.max(gapMs, gap >> 1) : gapMs);
       if (gap > 0 && _apiFetchStarts > startedBefore && (i + win < todo.length || (!j.done && j.next_cursor))) await new Promise((r) => setTimeout(r, gap));

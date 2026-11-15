@@ -1,6 +1,6 @@
 import { declinedWords } from '../wallet-prompts.js';
 
-const TACIT_URL = '/tacit.js?cb=4eb1a705';
+const TACIT_URL = '/tacit.js?cb=23076b7a';
 const SECRET_URL = '/sats/secret.js?cb=5eb8a697';
 const MIX_URL = '/sats/mix.js?cb=65890c7a';
 const ETH_URL = '/sats/eth.js?cb=90dc23f8';
