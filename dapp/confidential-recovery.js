@@ -1,5 +1,6 @@
 
 import { makeBridgeMintRecovery } from './bridge-mint-recovery.js';
+import { valuePoints, walkNullifiers } from './confidential-bridge-walk.js';
 
 const lc = (h) => String(h == null ? '' : h).toLowerCase();
 const strip0x = (h) => String(h == null ? '' : h).replace(/^0x/, '');
@@ -7,6 +8,9 @@ const hexToBytes = (h) => Uint8Array.from((strip0x(h).match(/../g) || []).map((x
 const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 const w32 = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 const ZERO32 = '0x' + '00'.repeat(32);
+
+// How many nullifiers of the bridge-mint walk go to a worker at a time, and the fewest it is worth starting workers for.
+const BRIDGE_CHUNK = 6, BRIDGE_MIN = 12;
 
 export function privBytes(p) {
   if (p instanceof Uint8Array) return p;
@@ -62,7 +66,8 @@ export function roundAmounts(max = (1n << 64n) - 1n) {
   return [...out];
 }
 
-export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sha256, curveOrder, lockScan, airdrop, cdp, bpp }) {
+// `bridgeWorkers` (optional): runs the bridge-mint walk's per-nullifier work in workers (confidential-bridge-workers.js); see walkBridgeMints.
+export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sha256, curveOrder, lockScan, airdrop, cdp, bpp, bridgeWorkers = null }) {
   const { H, G } = bpp;
   const N = BigInt(curveOrder);
   const cat = (arrs) => { const t = arrs.reduce((s, a) => s + a.length, 0); const o = new Uint8Array(t); let p = 0; for (const a of arrs) { o.set(a, p); p += a.length; } return o; };
@@ -207,24 +212,6 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
     return { found, skipped };
   }
 
-  const FIELD_P = 2n ** 256n - 0x1000003d1n;
-  const _fieldInv = (x) => { let a = ((x % FIELD_P) + FIELD_P) % FIELD_P, m = FIELD_P, u = 1n, v = 0n; while (a) { const q = m / a; [a, m] = [m - q * a, a]; [u, v] = [v - q * u, u]; } return ((v % FIELD_P) + FIELD_P) % FIELD_P; };
-function _be32(x, out, off) { const dv = new DataView(out.buffer, out.byteOffset + off, 32); for (let j = 24; j >= 0; j -= 8) { dv.setBigUint64(j, x & 0xffffffffffffffffn); x >>= 64n; } }
-function _toAffineBatch(ps) {
-    if (!ps.length || ps.some((q) => typeof q.pz !== 'bigint' || q.pz === 0n)) return ps.map((q) => q.toAffine());
-    const pre = new Array(ps.length);
-    let acc = 1n;
-    for (let k = 0; k < ps.length; k++) { pre[k] = acc; acc = (acc * ps[k].pz) % FIELD_P; }
-    let inv = _fieldInv(acc);
-    const out = new Array(ps.length);
-    for (let k = ps.length - 1; k >= 0; k--) {
-      const zi = (inv * pre[k]) % FIELD_P;
-      inv = (inv * ps[k].pz) % FIELD_P;
-      out[k] = { x: (ps[k].px * zi) % FIELD_P, y: (ps[k].py * zi) % FIELD_P };
-    }
-    return out;
-  }
-
   async function walkBridgeMints({ priv, tx, unexplained, assets, values = [], roundValues = true, destIndexes = 8, maxNullifiers = 16, maxExp = 18 }) {
     const p = privBytes(priv);
     const groups = [];
@@ -246,51 +233,29 @@ function _toAffineBatch(ps) {
     // blinding below, so no stretch of this search holds it for a third of a second
     let t0 = Date.now();
     const breathe = async () => { if (Date.now() - t0 > 12) { await handBack(); t0 = Date.now(); } };
-    const points = new Map();
-    for (const v of values) { const b = BigInt(v); if (b > 0n && !points.has(b)) points.set(b, H.multiply(b)); }
-    if (roundValues) {
-      for (let k = 0; k <= maxExp; k++) {
-        await breathe();
-        const base = H.multiply(10n ** BigInt(k));
-        let acc = base;
-        for (let m = 1; m < 100; m++) { const v = BigInt(m) * 10n ** BigInt(k); if (!points.has(v)) points.set(v, acc); acc = acc.add(base); if (m % 16 === 0) await breathe(); }
-      }
-    }
-    const found = [];
-    let tried = 0;
-    const buf = new Uint8Array(128);
     const owners = assets.map((asset) => ({ asset, idBytes: hexToBytes(asset.assetId).subarray(0, 32), notes: Array.from({ length: destIndexes }, (_, i) => {
       const dn = pool.deriveNote(p, asset.assetId, i); const owner = pool.nkToOwner(dn.secret);
       return { i, secret: dn.secret, owner, ownerBytes: hexToBytes(owner) };
     }) }));
-    const pts = [...points];
-    const same = (d, w) => { for (let j = 0; j < 32; j++) if (d[j] !== w[j]) return false; return true; };
-    for (const { n, want } of nulls) {
-      await breathe();
-      const b = deriveBridgeMintBlinding(p, n);
-      const Gb = G.multiply(b);
-      const wanted = [...want].map((w) => hexToBytes(w));
-      const sums = [];
-      for (const [, Pv] of pts) { sums.push(Pv.add(Gb)); if (sums.length % 32 === 0) await breathe(); }
-      const cands = _toAffineBatch(sums).map((a, k) => {
-        const xy = new Uint8Array(64);
-        _be32(a.x, xy, 0); _be32(a.y, xy, 32);
-        return { v: pts[k][0], x: a.x, y: a.y, xy };
-      });
-      for (const { asset, idBytes, notes } of owners) {
-        buf.set(idBytes, 0);
-        for (const dn of notes) {
-          await breathe();
-          buf.set(dn.ownerBytes, 96);
-          for (const c of cands) {
-            tried++;
-            buf.set(c.xy, 32);
-            const d = keccak256(buf);
-            if (!wanted.some((w) => same(d, w))) continue;
-            found.push({ value: c.v, blinding: w32(b), secret: dn.secret, asset: asset.assetId, owner: dn.owner, cx: w32(c.x), cy: w32(c.y), leaf: '0x' + bytesToHex(d), burnNullifier: n, destIndex: dn.i });
-          }
-        }
+    // The nullifiers go in chunks. With workers, each chunk is searched there; a chunk they did not answer (no Workers, one that failed or took too
+    // long) is searched here, as the whole walk always was, so what is found never depends on the workers.
+    const chunks = [];
+    for (let i = 0; i < nulls.length; i += BRIDGE_CHUNK) chunks.push(nulls.slice(i, i + BRIDGE_CHUNK));
+    let said = [];
+    if (bridgeWorkers && nulls.length >= BRIDGE_MIN) {
+      try { said = (await bridgeWorkers({ p, owners, values, roundValues, maxExp }, chunks)) || []; } catch { said = []; }
+    }
+    let pts = null;
+    const found = [];
+    let tried = 0;
+    for (let i = 0; i < chunks.length; i++) {
+      let r = said[i];
+      if (!r || !Array.isArray(r.found) || !Number.isFinite(r.tried)) {
+        pts ||= await valuePoints({ H, values, roundValues, maxExp, breathe });
+        r = await walkNullifiers({ G, keccak256, deriveBlinding: deriveBridgeMintBlinding, p, owners, pts, nulls: chunks[i], breathe });
       }
+      found.push(...r.found);
+      tried += r.tried;
     }
     return { found, tried, searched };
   }

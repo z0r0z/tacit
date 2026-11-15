@@ -7,6 +7,7 @@ import { pace, once } from './rpc-pace.js';
 import { makeEvmAccount } from './evm-account.js';
 import { makeConfidentialIndexer } from './confidential-indexer.js';
 import { makeMemoWorkers } from './confidential-memo-workers.js';
+import { makeBridgeWorkers } from './confidential-bridge-workers.js';
 import { makeConfidentialEvmLog } from './confidential-evm-log.js';
 import { makeConfidentialRelay } from './confidential-relay.js';
 import { verifyConfidentialInvoice } from './confidential-invoice.js';
@@ -73,6 +74,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   const evmLog = makeConfidentialEvmLog({ keccak256 });
   const memo = indexer._memo;
   const _memoFilter = makeMemoWorkers();
+  const _bridgeWorkers = makeBridgeWorkers();
   const _ownKeys = new Map();
   const guard = makeRecoveryGuard({ memo, openKeyFor: (pub) => _ownKeys.get(String(pub).toLowerCase()) || null });
   const relay = makeConfidentialRelay({ base: cfg.relayBase, others: cfg.relays || [], fetchImpl: _fetch, guard, checkEmittedMemos, saveMismatchedMemos });
@@ -496,7 +498,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   let _rec = null;
   const recovery = () => _rec || (_rec = makeConfidentialRecovery({
     pool, memo, keccak256, secp, hmac, sha256: vendorSha256, curveOrder: SECP_N, lockScan: _lockScan, airdrop: _airdrop, cdp: _cdp,
-    bpp: { H: bppH(), G: BPP_G },
+    bpp: { H: bppH(), G: BPP_G }, bridgeWorkers: _bridgeWorkers,
   }));
   const _rev = (h) => (String(h).replace(/^0x/, '').match(/../g) || []).reverse().join('');
   const _ckKey = (pubHex) => `tacit-memo-ck-v1:${network || activeNetwork()}:${_hex(sha256(new TextEncoder().encode('tacit-memo-ck-v1:' + lc(pubHex)))).slice(0, 32)}`;
