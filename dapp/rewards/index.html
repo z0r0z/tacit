@@ -32,7 +32,7 @@
 <link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /rewards/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/rewards/app.js?cb=dcfa8228">
+<link rel="modulepreload" href="/rewards/app.js?cb=85093a84">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/confidential-names.js?cb=26ecda09">
 <link rel="modulepreload" href="/tacit-address.js">
@@ -40,10 +40,10 @@
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
 <link rel="modulepreload" href="/tac-airdrop.js">
-<link rel="modulepreload" href="/trade/connect.js?cb=b758e60b">
+<link rel="modulepreload" href="/trade/connect.js?cb=5725b977">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
-<link rel="modulepreload" href="/trade/sheet.js?cb=d857446c">
+<link rel="modulepreload" href="/trade/sheet.js?cb=71cade73">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-pace.js">
@@ -492,6 +492,19 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 87.8%; ascent-override: 112.8%; descent-override: 35.3%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
+
+/* Shared navigation and footer: a clear current location and consistent control corners. */
+header.top { border-bottom: 1px solid var(--hair); }
+.sn > a, .sn summary, .sm-p a { border-radius: 6px; }
+.sn > a[aria-current="page"], .sn summary.here { box-shadow: inset 0 -2px 0 var(--orange); }
+header.top .chip { border-radius: 7px; background: var(--card); }
+header.top .chip.act { background: transparent; }
+.sm-p { padding: 8px; border-radius: 10px; box-shadow: 0 18px 48px -24px rgba(0,0,0,.45); }
+.sm-p a { min-height: 44px; }
+.sm-p a[aria-current="page"] { box-shadow: inset 2px 0 0 var(--orange); }
+footer.sf { padding-top: 18px; padding-bottom: 24px; }
+footer.sf nav a { border-radius: 6px; }
+@media (hover: hover) { footer.sf nav a:hover { background: var(--hair); } }
 </style>
 <script src="/chrome.js?cb=3cafe52f" defer></script>
 <!-- chrome:head:end -->
@@ -614,6 +627,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/rewards/app.js?cb=dcfa8228"></script>
+<script type="module" src="/rewards/app.js?cb=85093a84"></script>
 </body>
 </html>

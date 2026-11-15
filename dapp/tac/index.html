@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-PpR2yR0/W0pEudKzpSFn7aQvGwmTrS58pgZq/CE00nU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-dEvRdwKPNZeo5w6kLDljmNzQ4zD6L5Gp/dq4Ne9bQ6Q=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -31,8 +31,8 @@
 <meta property="og:description" content="The Tacit chain: stake TAC privately, earn from every payment and pay in about a minute. A zk-rollup settled on Ethereum, connected to Bitcoin by proof.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F3F6FA" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101923" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /swap/card.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
@@ -87,16 +87,16 @@
 @font-face { font-family: 'Instrument Serif'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/instrument-serif-400i-latin.woff2') format('woff2'); }
 
 :root {
-  --paper: #E8E0CC;
-  --card: #F2EBD4;
-  --field: #FAF6EA;
+  --paper: #F3F6FA;
+  --card: #FFFFFF;
+  --field: #F3F6FA;
   --soft: color-mix(in srgb, #fff 40%, var(--card));
-  --ink: #1A1A1A;
-  --mute: #625C4F;
-  --faint: #807A68;
-  --hair: rgba(26,26,26,.12);
-  --hair-2: rgba(26,26,26,.28);
-  --orange: #f7931a;
+  --ink: #142333;
+  --mute: #536476;
+  --faint: #647589;
+  --hair: rgba(20,35,51,.13);
+  --hair-2: rgba(20,35,51,.3);
+  --orange: #185BD4;
   --ok: #0a7234;
   --warn: #9a4a00;
   --err: #b8341d;
@@ -105,10 +105,11 @@
   --sheet-shadow: 0 40px 90px -40px rgba(0,0,0,.6);
   --skel: rgba(26,26,26,.08);
   --skel-hi: rgba(26,26,26,.02);
-  --bar: #8F8979;
+  --bar: #647589;
   --blue: #627eea;
   --green: #16a34a;
   --float: 0 1px 2px rgba(26,26,26,.05), 0 26px 50px -34px rgba(26,26,26,.38);
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --serif: 'Instrument Serif', 'Instrument Serif Fallback', 'Instrument Serif Fallback T', 'Instrument Serif Fallback N', Georgia, serif;
   --tap: 44px;
@@ -119,23 +120,24 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #15130E;
-    --card: #1F1C15;
-    --field: #191711;
+    --paper: #101923;
+    --card: #182534;
+    --field: #111D2B;
     --soft: color-mix(in srgb, var(--ink) 4.5%, var(--card));
-    --ink: #EDE5CF;
-    --mute: #A39B85;
-    --faint: #8A8470;
-    --hair: rgba(237,229,207,.12);
-    --hair-2: rgba(237,229,207,.28);
+    --ink: #EEF4FC;
+    --mute: #B0C0D2;
+    --faint: #91A6BD;
+    --hair: rgba(217,232,250,.14);
+    --hair-2: rgba(217,232,250,.32);
     --ok: #8fcf9a;
+    --orange: #88B5FF;
     --warn: #f7931a;
     --err: #f08a6c;
     --scrim: rgba(0,0,0,.6);
     --lift: 0 22px 44px -28px rgba(0,0,0,.9);
     --skel: rgba(237,229,207,.07);
     --skel-hi: rgba(237,229,207,.15);
-    --bar: #6F6958;
+    --bar: #91A6BD;
     --float: 0 0 0 1px rgba(237,229,207,.04), 0 34px 70px -30px rgba(0,0,0,.95);
     color-scheme: dark;
   }
@@ -145,8 +147,8 @@
 html { -webkit-text-size-adjust: 100%; }
 html, body { margin: 0; background: var(--paper); color: var(--ink); }
 body {
-  font: 14px/1.6 var(--mono); letter-spacing: -.01em; overflow-x: hidden;
-  background-image: radial-gradient(ellipse 54rem 30rem at 50% 26rem, color-mix(in srgb, var(--card) 70%, transparent), transparent 72%); background-repeat: no-repeat;
+  font: 14px/1.6 var(--ui); letter-spacing: -.01em; overflow-x: hidden;
+  background-image: none;
   padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
 }
 a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
@@ -406,11 +408,9 @@ main:focus { outline: none; }
 .hx { position: relative; width: 100%; max-width: 480px; min-width: 0; margin: 0 auto; background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 22px; box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent); }
 /* The card is filled by script, so until it is, it holds the height its Swap tab settles at (measured at each width, with the way the card opens: ETH to private tETH, which
    has the "Private in" block): what is below it does not move when it appears. tests/front-tile-height.mjs measures it again. */
-.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 571px; }
-@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 562px; } }
-@media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
-@media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
-@media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
+.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 582px; }
+@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 579px; } }
+@media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -1937,6 +1937,110 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .sk { background: var(--skel); }
 }
+
+/* Front-page surfaces. Functional hooks, address contents and transaction states stay in their existing markup. */
+.hero { padding-top: 40px; }
+.hero-t { margin-bottom: 28px; }
+.hero h1 { letter-spacing: -.045em; }
+.hero .sub { font: 400 17px/1.55 var(--ui); max-width: 36ch; }
+.hero .sub b { font: 500 .9em var(--mono); }
+.hx { border-color: var(--hair-2); border-radius: 12px; box-shadow: 0 4px 8px -6px var(--hair-2), 0 24px 60px -42px var(--ink); }
+.hx-h { padding-top: 8px; border-bottom-color: var(--hair); }
+.hx-h button { min-height: 44px; margin-bottom: 8px; padding: 10px 0; font: 600 13px/20px var(--ui); letter-spacing: 0; border-radius: 6px; }
+.hx-h button[aria-selected="true"] { color: var(--orange); background: color-mix(in srgb, var(--orange) 9%, transparent); }
+.hx-h::after { background: var(--orange); bottom: 0; height: 2px; }
+#hx :is(.f, .rows, .snt > div) { border-radius: 8px; border-color: var(--hair); }
+#hx .f { background: var(--field); }
+#hx .f:focus-within { border-color: var(--orange); box-shadow: 0 0 0 2px color-mix(in srgb, var(--orange) 14%, transparent); }
+#hx .fh { font: 500 12px/22px var(--ui); }
+#hx .fm :is(.amt, .big) { font-family: var(--mono); font-size: 36px; letter-spacing: -.055em; }
+#hx .fm :is(.amt.long, .big.long) { font-size: 29px; }
+#hx .fm :is(.amt.longer, .big.longer) { font-size: 23px; }
+#hx .fm .big.word { font: 500 27px/1.1 var(--ui); letter-spacing: -.02em; }
+#hx .coin { border-radius: 8px; font: 600 14px var(--ui); }
+#hx .coin .tk { width: 28px; height: 28px; }
+#hx .rows .rt b { font: 600 14px/21px var(--ui); letter-spacing: 0; }
+#hx .rows .rt small { font-family: var(--ui); line-height: 1.4; }
+#hx .rows .ra { font-family: var(--mono); font-size: 13px; }
+#hx .rows [aria-checked="true"] { background: color-mix(in srgb, var(--orange) 6%, var(--field)); }
+#hx .rows [aria-checked="true"] .rd { border-color: var(--orange); box-shadow: inset 0 0 0 3.5px var(--field), inset 0 0 0 9px var(--orange); }
+#hx :is(.go, .btn) { border-radius: 8px; font-family: var(--ui); font-weight: 600; }
+#hx .go { background: var(--orange); border-color: var(--orange); color: #fff; }
+#hx .go:disabled { color: var(--mute); background: var(--field); border-color: var(--hair); opacity: 1; }
+#hx :is(.mode, .mode button, .sides, .sides button, .quick button, .hx-mode, .hx-mode button) { border-radius: 6px; }
+#hx .q, #hx .hx-lead { font-family: var(--ui); font-size: 13px; }
+#hx .rcpt { padding: 10px 0 0; border-top: 1px solid var(--hair); }
+#hx .rcpt:empty { padding: 0; border: 0; }
+#hx :is(.ack, .hx-ack) { border-radius: 8px; }
+#hx :is(.hx-st, .hx-bw-box, .hx-pos) { border-radius: 8px; }
+#hx :is(input, button, select, a):focus-visible { outline: 2px solid var(--orange); outline-offset: 3px; }
+#hx input:is(.amt, .hx-amt):focus-visible { outline-offset: 0; }
+#hx .rows button:focus-visible { outline-offset: -3px; }
+#hx [aria-invalid="true"] { border-color: var(--err); }
+.hx-sk i { border-radius: 8px; }
+.hx-sk .g { background: color-mix(in srgb, var(--orange) 12%, transparent); }
+.hints { gap: 8px; }
+.hints button, .hints a { border: 1px solid var(--hair); border-radius: 6px; background: var(--card); }
+.chb { border-radius: 6px; background: var(--card); }
+.proof b { font-family: var(--mono); font-size: 32px; letter-spacing: -.05em; }
+.trust { font-family: var(--ui); font-weight: 400; }
+
+/* A compact work surface on phones, with the context alongside it when there is room. */
+@media (min-width: 1040px) {
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) 480px; gap: 24px 64px; padding-top: 64px; }
+  .hero-t { grid-column: 1; grid-row: 1; margin: 0; text-align: left; align-self: end; }
+  .hero h1 { max-width: 7ch; margin: 0 0 24px; font-size: 88px; line-height: .95; }
+  .hero h1 .hero-pair { margin: 18px 0 0; display: flex; gap: 8px; }
+  .hero h1 .hero-pair .tk { width: 32px; height: 32px; }
+  .hero .sub { margin: 0; text-wrap: initial; }
+  .hero > .hx { grid-column: 2; grid-row: 1 / span 4; align-self: start; }
+  .hero > .hints { grid-column: 1; grid-row: 2; flex-wrap: wrap; justify-content: flex-start; overflow: visible; margin: 0; align-self: start; }
+  .hero > .hints > * { margin-inline: 0; }
+  .hero > .chl { grid-column: 1; grid-row: 3; align-items: flex-start; margin: 0; text-align: left; }
+  .hero .chl-l { justify-content: flex-start; }
+  .hero .chb { justify-content: flex-start; }
+  .hero > .proof-row { grid-column: 1; grid-row: 4; justify-items: start; text-align: left; margin: 0; gap: 12px; }
+  .hero .proof-f { justify-content: flex-start; }
+  .hero > :is(.newsl, .fms, .tape) { grid-column: 1 / -1; }
+  .hero > .newsl { margin-top: 12px; padding-top: 24px; border-top: 1px solid var(--hair); }
+  .hero > .fms { margin-top: 0; }
+}
+@media (max-width: 640px) {
+  .hero { padding-top: 24px; }
+  .hero-t { text-align: left; max-width: 480px; margin: 0 auto 24px; }
+  .hero h1 { font-size: clamp(38px, 10vw, 58px); margin-bottom: 10px; }
+  .hero h1 .hero-pair .tk { width: .55em; height: .55em; }
+  .hero .sub { margin: 0; font-size: 14px; text-wrap: initial; }
+  .hx-h button { font-size: 12px; }
+  #hx .fm :is(.amt, .big) { font-size: 32px; }
+  #hx .fm :is(.amt.long, .big.long) { font-size: 26px; }
+  #hx .fm :is(.amt.longer, .big.longer) { font-size: 21px; }
+  #hx .fm .big.word { font-size: 24px; }
+  #hx .coin { gap: 6px; font-size: 13px; padding-right: 8px; }
+}
+
+/* Wallet rows and all sign-in routes use the same surface, focus and status treatment. */
+dialog.sheet { border-radius: 12px; box-shadow: var(--sheet-shadow); }
+.sheet-head { border-bottom: 1px solid var(--hair); margin-bottom: 18px; }
+.sheet-head h2 { font: 600 24px/1.2 var(--ui); letter-spacing: -.03em; }
+.sheet .x { border-radius: 6px; background: var(--field); }
+.sheet :is(.opt, .way, .picker button, .who, .amt, .seg, .btn) { border-radius: 8px; }
+.sheet .seg { overflow: hidden; }
+.sheet .opt { background: var(--field); border-color: var(--hair); }
+.sheet .opt-t { font-family: var(--ui); font-weight: 600; }
+.sheet :is(.opt, .way, .picker button):hover:not(:disabled) { border-color: var(--orange); }
+.sheet :is(button, input, textarea, select, a):focus-visible { outline: 2px solid var(--orange); outline-offset: 3px; }
+.sheet :is(.opt, .way)[aria-busy="true"] { border-color: var(--orange); background: color-mix(in srgb, var(--orange) 7%, var(--field)); }
+.sheet .status:not(:empty) { padding: 10px 12px; border-radius: 6px; background: var(--field); }
+.sheet .status.err:not(:empty) { border-left: 3px solid var(--err); }
+.sheet .status.ok:not(:empty) { border-left: 3px solid var(--ok); }
+.sheet .who { border-color: var(--hair-2); }
+.sheet .seg button:focus-visible { outline-offset: -3px; }
+@media (max-width: 640px) { dialog.sheet { border-radius: 16px 16px 0 0; } }
+@media (prefers-color-scheme: dark) { #hx .go:not(:disabled) { color: #101923; } }
+@media (prefers-reduced-motion: reduce) {
+  #hx *, .sheet *, #hx *::before, #hx *::after { animation: none !important; transition: none !important; }
+}
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
 <link rel="stylesheet" href="/swap/card.css?cb=2ee3c6c7" media="print">
@@ -2074,6 +2178,19 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 87.8%; ascent-override: 112.8%; descent-override: 35.3%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
+
+/* Shared navigation and footer: a clear current location and consistent control corners. */
+header.top { border-bottom: 1px solid var(--hair); }
+.sn > a, .sn summary, .sm-p a { border-radius: 6px; }
+.sn > a[aria-current="page"], .sn summary.here { box-shadow: inset 0 -2px 0 var(--orange); }
+header.top .chip { border-radius: 7px; background: var(--card); }
+header.top .chip.act { background: transparent; }
+.sm-p { padding: 8px; border-radius: 10px; box-shadow: 0 18px 48px -24px rgba(0,0,0,.45); }
+.sm-p a { min-height: 44px; }
+.sm-p a[aria-current="page"] { box-shadow: inset 2px 0 0 var(--orange); }
+footer.sf { padding-top: 18px; padding-bottom: 24px; }
+footer.sf nav a { border-radius: 6px; }
+@media (hover: hover) { footer.sf nav a:hover { background: var(--hair); } }
 </style>
 <script src="/chrome.js?cb=3cafe52f" defer></script>
 <!-- chrome:head:end -->
@@ -15449,7 +15566,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=5819780a').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=9033f89c').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

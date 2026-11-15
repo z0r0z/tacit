@@ -93,6 +93,20 @@ const CSS = `
 .bsheet .amt:focus-within { border-color: var(--ink); }
 .bsheet .amt input { flex: 1; min-width: 0; font: 400 14px/1.4 var(--mono); letter-spacing: -.02em; color: var(--ink); background: none; border: 0; padding: 14px; outline: none; }
 .bsheet .amt .link { flex: none; padding: 0 14px; align-self: stretch; }
+/* Match the front-page wallet surface while keeping each page's own colour tokens. */
+.bsheet-in { border-radius: 12px; }
+.bsheet-head { border-radius: 11px 11px 0 0; border-bottom: 1px solid var(--hair); margin-bottom: 18px; }
+.bsheet-head h2 { font: 600 24px/1.2 var(--ui, system-ui, sans-serif); letter-spacing: -.03em; }
+.bsheet .x { border-radius: 6px; background: var(--field); }
+.bsheet :is(.opt, .way, .amt, .btn) { border-radius: 8px; }
+.bsheet .opt { border-color: var(--hair); background: var(--field); }
+.bsheet .opt-t { font-family: var(--ui, system-ui, sans-serif); font-weight: 600; }
+.bsheet :is(.opt, .way)[aria-busy="true"] { border-color: var(--orange); background: color-mix(in srgb, var(--orange) 7%, var(--field)); }
+.bsheet :is(button, input, a):focus-visible { outline: 2px solid var(--orange); outline-offset: 3px; }
+@media (hover: hover) { .bsheet :is(.opt, .way):hover:not(:disabled) { border-color: var(--orange); } }
+@media (max-width: 640px) { .bsheet-in { border-radius: 16px 16px 0 0; } }
+@media (prefers-reduced-motion: reduce) { .bsheet *, .bsheet *::before, .bsheet *::after { animation: none !important; transition: none !important; } }
+
 `;
 
 // The wallet's marks, as the front page draws them: the Tacit wallet, Ethereum, Bitcoin and a key (a passkey or a saved key). Under ids of their own, so a page
