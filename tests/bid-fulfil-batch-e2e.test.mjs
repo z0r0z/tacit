@@ -203,10 +203,12 @@ globalThis.fetch = async (url, opts = {}) => {
 
   // The wallet's Bitcoin history, read before coin selection to rebuild its cBTC lock reservations: none here.
   if (u.includes('/scripthash/')) return json([]);
-  // Seller's sat-funding UTXOs — fixed pool, generous, so ensureSatsFunded passes.
-  if (u.includes(`/address/${SELLER_ADDR}/utxo`)) return json([
-    { txid: 'ee'.repeat(32), vout: 0, value: 5_000_000, status: { confirmed: true } },
-  ]);
+  // Seller's sat-funding UTXOs — fixed pool, generous, so ensureSatsFunded passes. The wallet does not fund a second transaction from an output it has just spent (getUtxos leaves out
+  // the outpoints it spent a moment ago, as a node may not yet say they are spent), and this mock does not serve the change of what is broadcast, so there is one coin for each of the
+  // four commits (the CXFER split and the two atomic-intent commits) and one over.
+  if (u.includes(`/address/${SELLER_ADDR}/utxo`)) return json(
+    ['ee', 'ef', 'f0', 'f1'].map((b) => ({ txid: b.repeat(32), vout: 0, value: 5_000_000, status: { confirmed: true } })),
+  );
 
   // Broadcast capture. The second POST /tx is the CXFER reveal — flip
   // scanPhase to 'after' so the next scanHoldings call sees the split

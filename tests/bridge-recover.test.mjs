@@ -90,13 +90,19 @@ test('a completed, pending, or not yet passed bridge is not recoverable', async 
   assert.match((await later.r.verifyClaim(claim, { ...later.chain, state: later.state })).reason, /not yet passed/);
 });
 
-test('amounts above the per-note cap are refused before anything is fetched', async () => {
+test('amounts above what one note holds are refused before anything is fetched, and a bridge has no cap below it', async () => {
   const { r, state } = world();
-  const claim = r.buildClaim({ burnTxid: BURN, amount: 100000000001n, blinding: BLINDING, walletPriv: WALLET });
+  const claim = r.buildClaim({ burnTxid: BURN, amount: 10n ** 18n + 1n, blinding: BLINDING, walletPriv: WALLET });
   let fetched = false;
   const v = await r.verifyClaim(claim, { getTx: async () => { fetched = true; return null; }, getTxHex: async () => '', state });
   assert.match(v.reason, /out of range/);
   assert.equal(fetched, false);
+  // the bridge's own cap of 1,000 TAC (1e11 units) is gone: an amount above it is read like any other, and only fails here for what the world holds
+  const big = r.buildClaim({ burnTxid: BURN, amount: 100000000001n, blinding: BLINDING, walletPriv: WALLET });
+  fetched = false;
+  const w = await r.verifyClaim(big, { getTx: async () => { fetched = true; return null; }, getTxHex: async () => '', state });
+  assert.doesNotMatch(w.reason, /out of range/);
+  assert.equal(fetched, true, 'its burn is looked up');
 });
 
 test('a burn from before the in-app bridge is not recoverable here', async () => {
