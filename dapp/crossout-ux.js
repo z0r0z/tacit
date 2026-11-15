@@ -336,7 +336,9 @@ export function makeCrossoutUx(deps) {
   // owner is read from the reveal's output only). The page asks once the burn is settled and the relay says it is ready, and waits on
   // it; a step the relay declines (its budget, its coins, a limit), or one it has not started RELAY_GRACE_MS after the proof covers the
   // burn, is the page's to send from the holder's own sats, as it always was.
-  const RELAY_GRACE_MS = 3 * 3600e3, RELAY_PAGE_SENDS = new Set(['declined', 'rejected', 'expired', 'failed']);
+  // A step the relay says it sent is waited on for 12 hours; if it has not credited by then (the relay stopped, or its transaction is stuck
+  // under a fee spike), the page sends its own: the reflection credits a claim once, so the worst case is the holder's sats spent on the second.
+  const RELAY_GRACE_MS = 3 * 3600e3, RELAY_SENT_GRACE_MS = 12 * 3600e3, RELAY_PAGE_SENDS = new Set(['declined', 'rejected', 'expired', 'failed']);
   const RELAY_BUSY = new Set(['signing', 'sent', 'minted', 'elsewhere']);
   let relayInfoAt = 0, relayInfoV = null;
   async function relayInfo() {
@@ -361,10 +363,11 @@ export function makeCrossoutUx(deps) {
     let r = null;
     try { r = await callWorker('GET', `/crossout/relay?claim=${stripHex(rec.settle.claimId)}`); } catch {}
     const st = r && !r.error && r.status ? r.status : rec.relay.status;
-    if (st !== rec.relay.status || (r && r.revealTxid && r.revealTxid !== rec.relay.revealTxid)) {
-      rec = putRecord({ ...rec, relay: { ...rec.relay, status: st, ...(r && r.revealTxid ? { revealTxid: r.revealTxid } : {}), ...(r && r.reason ? { reason: r.reason } : {}) } });
+    if (st !== rec.relay.status || (r && r.revealTxid && r.revealTxid !== rec.relay.revealTxid) || (r && r.sentAt && r.sentAt !== rec.relay.sentAt)) {
+      rec = putRecord({ ...rec, relay: { ...rec.relay, status: st, ...(r && r.revealTxid ? { revealTxid: r.revealTxid } : {}), ...(r && r.sentAt ? { sentAt: r.sentAt } : {}), ...(r && r.reason ? { reason: r.reason } : {}) } });
     }
     if (RELAY_PAGE_SENDS.has(st)) return [false, rec];
+    if (st === 'sent' && Number(rec.relay.sentAt) && now() - Number(rec.relay.sentAt) > RELAY_SENT_GRACE_MS) return [false, rec];
     if (RELAY_BUSY.has(st)) return [true, rec];
     return [now() - Number(rec.coveredAt || now()) < RELAY_GRACE_MS, rec];
   }

@@ -195,6 +195,16 @@ function rig({ coins = [{ txid: 'f1'.repeat(32), vout: 0, value: 20_000, status:
   ok((await ch.feeRate()) === 3 && calls[0][0] === 'https://api.x/chain/v1/fees/recommended?network=mainnet', 'reads go to the API\'s chain proxy, with the network');
   ok((await ch.broadcast('00')) === 'txid' && calls.filter((c) => c[1] === 'POST').length === 2, 'a busy explorer is passed over for the next');
   ok((await ch.txStatus('ab'.repeat(32))) === null, 'a transaction no explorer has reads as not on Bitcoin');
+  // a transaction nobody has seen: the explorers answer {"confirmed":false} from /status (HTTP 200) and 404 from /tx, and it is NOT on Bitcoin
+  const seen = async (url) => {
+    if (/\/tx\/[0-9a-f]{64}\/status/.test(url)) return { ok: true, status: 200, json: async () => ({ confirmed: false }) };
+    if (url.includes('/tx/' + 'aa'.repeat(32))) return { ok: true, status: 200, json: async () => ({ txid: 'aa'.repeat(32), status: { confirmed: false } }) };
+    if (url.includes('/tx/' + 'bb'.repeat(32))) return { ok: true, status: 200, json: async () => ({ txid: 'bb'.repeat(32), status: { confirmed: true, block_height: 1 } }) };
+    return { ok: false, status: 404, json: async () => { throw new Error('Transaction not found'); } };
+  };
+  const sch = makeEsplora({ read: 'https://api.x/chain', query: 'network=mainnet' }, seen);
+  ok((await sch.txStatus('cc'.repeat(32))) === null, 'a transaction no explorer has is NOT on Bitcoin, though /status says confirmed:false for it');
+  ok((await sch.txStatus('aa'.repeat(32))).confirmed === false && (await sch.txStatus('bb'.repeat(32))).confirmed === true, 'one in the mempool is unconfirmed, one in a block confirmed');
   // the proxy cooling: reads fall back to the backups, and an Esplora with only estimates still gives a rate
   const cool = async (url, init) => {
     if (url.startsWith('https://api.x/')) return { ok: false, status: 503, json: async () => ({ error: 'all upstreams cooling' }) };

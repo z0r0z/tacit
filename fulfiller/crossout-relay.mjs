@@ -154,8 +154,9 @@ export function makeEsplora({ read = 'https://mempool.space/api', query = '', ba
       const e = await get('/fee-estimates');
       return e ? Math.ceil(Number(e['3'] ?? e['2'] ?? e['6']) || 0) || null : null;
     },
-    // null: not on Bitcoin; { confirmed }: in the mempool or a block
-    txStatus: async (txid) => { const s = await get(`/tx/${txid}/status`); return s ? { confirmed: !!s.confirmed } : null; },
+    // null: not on Bitcoin; { confirmed }: in the mempool or a block. Asked of the transaction itself: /tx/:id/status answers
+    // {"confirmed":false} (HTTP 200) for a transaction nobody has seen, which reads as "in the mempool" and is never sent.
+    txStatus: async (txid) => { const t = await get(`/tx/${txid}`); return t ? { confirmed: !!t.status?.confirmed } : null; },
     broadcast: async (hex) => {
       let last = null;
       for (const base of send || [read]) {

@@ -1416,6 +1416,26 @@ const UNOTE = { nullifier: withHex('6e'.repeat(32)), value: 5_000_000n, blinding
     const minted = await ux.advance(WALLET_PUB, NOTE.nullifier);
     ok(minted.stage === 'minted' && minted.creditedTxid === 'ab'.repeat(32), 'relay: once credited, the bridge is minted with the relay\'s reveal');
   }
+  // sent but never credited: after 12 hours the page sends its own step
+  {
+    const { world, st } = relayWorld();
+    const base = world.fetchImpl;
+    world.fetchImpl = async (url, init) => {
+      const u = new URL(url, 'http://x');
+      if (u.pathname.endsWith('/crossout/relay') && !(init && init.method === 'POST') && st.status === 'sent') return { ok: true, json: async () => ({ status: 'sent', revealTxid: 'ab'.repeat(32), sentAt: sentAtV }) };
+      return base(url, init);
+    };
+    let t = 9_000_000, sentAtV = t + 3600e3;
+    const ux = makeUx(world, { clock: () => t });
+    await walk(ux, world);
+    st.status = 'sent';
+    t += 4 * 3600e3;
+    const held = await ux.advance(WALLET_PUB, NOTE.nullifier);
+    ok(held.stage === 'covered' && held.relay.sentAt === sentAtV && world.broadcasts.length === 0, 'relay: a sent step within twelve hours of being sent is waited on');
+    t += 10 * 3600e3;
+    const own = await ux.advance(WALLET_PUB, NOTE.nullifier, { walletPriv: WALLET_PRIV });
+    ok(own.stage === 'mint-signed', 'relay: a step sent twelve hours ago that never credited is the page\'s to send');
+  }
   // declined: the page sends it from the holder's own sats
   {
     const { world, st } = relayWorld();
