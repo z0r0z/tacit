@@ -2,9 +2,12 @@
 //
 // Two cards under the deposit form:
 //   - an amount from a whole note up goes into the large pools in whole notes (the pool takes only those sizes) and
-//     what is left stays for the form above, which deposits it as it always does;
+//     what is left goes into the private balance as it always does: the card shows the split and hands the page a plan,
+//     and the form's own button deposits both in one press (the page asks for `depositRest` for the part that is left);
 //   - the notes in those pools: found again from the wallet, and moved into the Tacit balance (the withdrawal pays the
 //     user's own deposit address, its gas paid from the note) or withdrawn to any address.
+// And one block under the Withdraw form (`attachWithdraw`): the notes the wallet holds there, which a withdrawal of a
+// whole note or more takes first, the rest coming from the private balance.
 //
 // The page hands in what it owns (`env`): its node, the wallet, the user's deposit address, its busy/status wrapper and
 // the amount field. Notes are never kept: only where a note is (nonce, pool) and what it is called on chain, since its
@@ -13,14 +16,34 @@
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32, parseNoteString } from '/fixed-pool-notes.js?cb=ab06e6d2';
 import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=0f50365d';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
-import { PAYMASTERS } from '/fixed-pool-paymaster.js?cb=40893745';
+import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=40893745';
 import { depositAddressOfName, signBox } from '/fixed-pool-box.js?cb=24625493';
 import { keccak_256 } from './vendor/tacit-deps.min.js';
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const WALLET_METHODS = new Set(['eth_signTypedData_v4', 'eth_sendTransaction', 'wallet_sendCalls', 'wallet_getCallsStatus', 'wallet_getCapabilities']);
-const SMALLEST = [{ wei: DEFAULT_MIN_DENOMINATION, label: '1 ETH' }, { wei: 10n ** 17n, label: '0.1 ETH' }];
+const SMALLEST = [{ wei: DEFAULT_MIN_DENOMINATION, label: '1 ETH' }, { wei: 10n ** 17n, label: '0.1 ETH' }, { wei: 0n, label: 'off' }];
+const MIN_KEY = (chainId) => `tacit-fixed-min:${chainId}`;
+
+// Whole notes for a withdrawal of `amount`: the largest first, each only if it still fits under the amount, so that what the
+// notes pay never passes what was asked. `dens` are the sizes (wei) of the notes held; the picks are indices into it.
+export function planExit(amount, dens) {
+  const order = dens.map((d, i) => [BigInt(d), i]).sort((x, y) => (x[0] === y[0] ? x[1] - y[1] : x[0] < y[0] ? 1 : -1));
+  const picks = [];
+  let total = 0n;
+  for (const [d, i] of order) if (d > 0n && total + d <= amount) { picks.push(i); total += d; }
+  return { picks, total };
+}
+
+const exitWords = (s) => (s.step === 'read' ? (s.of ? `reading the pool's deposits (${s.done} of ${s.of})` : 'reading the pool\'s deposits') : s.step === 'tree' ? `building the tree from ${s.count} deposits` : s.step === 'prove' ? 'proving' : s.step === 'estimate' ? 'asking the bundler about the gas' : s.step === 'price' ? 'gas is high right now, waiting for a calmer price' : s.step === 'quote' ? 'check the fee below' : s.step === 'wait' ? 'waiting for the withdrawal to be mined' : 'working');
+// One note out, its gas paid from the note: proved in a worker, `confirm` asked once the fee is fixed and before anything is sent.
+async function sponsoredExit({ flow, text, to, step, confirm, workerUrl }) {
+  const prover = workerProver(workerUrl);
+  try { return await flow.withdrawSponsored({ noteText: text, recipient: to, prover, confirm, onStep: (s) => step(exitWords(s)) }); } finally { prover.close(); }
+}
+// Notes found by signing numbers again (Find) and which of them are spent are shared by the cards, so a note that was seen spent is not asked about again.
+const SPENT = new Set();
 
 // A mixed-case address must carry its checksum (EIP-55); an all-lowercase one is taken as typed.
 export function checksumOk(address) {
@@ -63,7 +86,9 @@ export function attach(env) {
   const provider = composeProvider({ read: env.read, wallet: env.walletProvider });
   const flowFor = () => makeFlow({ provider, account: env.account(), chainId, store: env.store, poll: 3000, timeout: 10 * 60 * 1000 });
   const reader = makeFlow({ provider, account: null, chainId, poll: 3000 });
-  const st = { smallest: DEFAULT_MIN_DENOMINATION, notes: [], spent: new Map(), open: null, confirm: null, target: null };
+  const saved = (() => { try { const v = env.store.get(MIN_KEY(chainId)); return v == null ? null : BigInt(v); } catch { return null; } })();
+  const st = { smallest: SMALLEST.some((x) => x.wei === saved) ? saved : DEFAULT_MIN_DENOMINATION, notes: [], spent: new Map(), open: null, confirm: null, target: null };
+  const setSmallest = (v) => { st.smallest = v; try { env.store.set(MIN_KEY(chainId), v.toString()); } catch { /* a convenience */ } };
   const looksLikeName = (x) => /^[^\s]+\.(g?wei|eth)$/i.test(x);
   // empty: the user's own deposit address; a name: the deposit address it publishes, checked against its own key; else an address
   async function resolveTarget(raw) {
@@ -90,38 +115,55 @@ export function attach(env) {
   const plan = () => {
     const wei = parseEther(env.amountInput.value);
     if (!wei) return null;
-    return { wei, ...planSplit(wei, chainId, { minDenominationWei: st.smallest, maxNotes: DEFAULT_MAX_NOTES }) };
+    const off = st.smallest === 0n;
+    return { wei, off, ...planSplit(wei, chainId, { minDenominationWei: off ? DEFAULT_MIN_DENOMINATION : st.smallest, maxNotes: DEFAULT_MAX_NOTES }) };
   };
+  const noteTotalOf = (p) => p.notes.reduce((t, n) => t + n.denomination * BigInt(n.count), 0n);
+  const selectHtml = () => `<label>Smallest note <select id="lg-min" aria-label="Smallest note">${SMALLEST.map((s) => `<option value="${s.wei}"${s.wei === st.smallest ? ' selected' : ''}>${s.label}</option>`).join('')}</select></label>`;
   function paintSplit() {
     const p = plan();
-    if (!p || !p.notes.length) { host.innerHTML = ''; return; }
+    if (!p || !p.notes.length) { host.innerHTML = ''; env.onPlan?.(null); return; }
+    const frame = (inner) => `<div class="blk" style="margin-top:22px;padding-top:14px;border-top:1px solid var(--hair)">${inner}</div>`;
+    if (p.off) {
+      host.innerHTML = frame(`<div class="lbl"><span>Large amount</span><span>${selectHtml()}</span></div><p class="note">The large pools are off: all of it goes into your private balance.</p>`);
+      host.querySelector('#lg-min').onchange = (e) => { setSmallest(BigInt(e.target.value)); paintSplit(); };
+      env.onPlan?.(null);
+      return;
+    }
     const rows = p.notes.map((n) => `<div class="kv"><span>${n.count} × ${formatEther(n.denomination)} ETH</span><b>whole notes, large pool</b></div>`).join('');
-    host.innerHTML = `<div class="blk" style="margin-top:22px;padding-top:14px;border-top:1px solid var(--hair)">
-      <div class="lbl"><span>Large amount</span><span><label>Smallest note <select id="lg-min" aria-label="Smallest note">${SMALLEST.map((s) => `<option value="${s.wei}"${s.wei === st.smallest ? ' selected' : ''}>${s.label}</option>`).join('')}</select></label></span></div>
+    host.innerHTML = frame(`<div class="lbl"><span>Large amount</span><span>${selectHtml()}</span></div>
       ${rows}
-      <div class="kv"><span>${p.remainder === 0n ? 'Nothing' : esc(formatEther(p.remainder)) + ' ETH'}</span><b>${p.remainder === 0n ? 'left for the deposit above' : 'stays for the deposit above'}</b></div>
-      <button class="btn ghost" type="button" id="lg-go">${env.account() ? `Deposit ${p.noteCount} whole ${p.noteCount === 1 ? 'note' : 'notes'}` : 'Connect wallet'}</button>
-      <p class="note">The notes go to the large pools from your wallet; the note numbers come from your wallet's signature, so they can be found again with it. The deposit above then takes what is left.</p>
-    </div>`;
-    host.querySelector('#lg-min').onchange = (e) => { st.smallest = BigInt(e.target.value); paintSplit(); };
-    host.querySelector('#lg-go').onclick = (e) => depositNotes(e.currentTarget, p);
+      <div class="kv"><span>${p.remainder === 0n ? 'Nothing' : esc(formatEther(p.remainder)) + ' ETH'}</span><b>${p.remainder === 0n ? 'left for your private balance' : 'into your private balance'}</b></div>
+      <p class="note">One press above deposits both. The notes go to the large pools from your wallet; the note numbers come from your wallet's signature, so they can be found again with it.</p>`);
+    host.querySelector('#lg-min').onchange = (e) => { setSmallest(BigInt(e.target.value)); paintSplit(); };
+    const noteTotal = noteTotalOf(p);
+    env.onPlan?.({
+      label: `Deposit ${formatEther(p.wei)} ETH: ${p.noteCount} whole ${p.noteCount === 1 ? 'note' : 'notes'}${p.remainder > 0n ? ` + ${formatEther(p.remainder)}` : ''}`,
+      noteCount: p.noteCount, noteTotal, remainder: p.remainder,
+      run: (step, c) => depositBoth(p, noteTotal, step, c),
+    });
   }
 
-  async function depositNotes(btn, p) {
-    if (!env.account()) return env.connect().catch((e) => env.toast(env.errText(e), true));
-    return env.act(btn, async (step, c) => {
-      await env.ensureChain(c);
-      const need = p.notes.reduce((s, n) => s + n.denomination * BigInt(n.count), 0n);
-      const bal = BigInt(await (await env.read())('eth_getBalance', [env.account(), 'latest']));
-      if (bal < need) throw new Error(`Your wallet holds ${formatEther(bal)} ETH on ${c.full}, less than the ${formatEther(need)} ETH of notes.`);
-      const out = await flowFor().deposit(p, {
-        onStep: (s) => step(s.step === 'find' ? 'looking for the next free note number' : s.step === 'sign' ? `sign for note ${s.i + 1} of ${s.of}` : s.step === 'send' ? 'confirm the deposits in your wallet' : `deposit ${s.i} of ${s.of} confirmed`),
-      });
-      writeNotes(env.store, chainId, env.account(), [...readNotes(env.store, chainId, env.account()), ...out.notes.map(metaOf)]);
-      env.setAmount(p.remainder);
-      env.say(`${out.notes.length === 1 ? 'The note is' : 'The notes are'} in the large ${out.notes.length === 1 ? 'pool' : 'pools'}. ${p.remainder > 0n ? `The amount above is now what is left, ${formatEther(p.remainder)} ETH.` : ''}`);
-      loadNotes();
+  // The whole notes from the wallet, then what is left through the page (`depositRest`), in the page's busy wrapper (`step`, `c`).
+  // If the part that is left does not go in, the notes are already placed and the amount above says what remains.
+  async function depositBoth(p, noteTotal, step, c) {
+    if (!env.account()) throw new Error('Connect your wallet first.');
+    await env.ensureChain(c);
+    const bal = BigInt(await (await env.read())('eth_getBalance', [env.account(), 'latest']));
+    if (bal < p.wei) throw new Error(`Your wallet holds ${formatEther(bal)} ETH on ${c.full}, less than the ${formatEther(p.wei)} ETH to deposit.`);
+    const out = await flowFor().deposit(p, {
+      onStep: (s) => step(s.step === 'find' ? 'looking for the next free note number' : s.step === 'sign' ? `sign for note ${s.i + 1} of ${s.of}` : s.step === 'send' ? 'confirm the deposits in your wallet' : `deposit ${s.i} of ${s.of} confirmed`),
     });
+    writeNotes(env.store, chainId, env.account(), [...readNotes(env.store, chainId, env.account()), ...out.notes.map(metaOf)]);
+    env.setAmount(p.remainder);
+    loadNotes();
+    const placed = `${out.notes.length === 1 ? 'The note is' : 'The notes are'} in the large ${out.notes.length === 1 ? 'pool' : 'pools'} (${formatEther(noteTotal)} ETH)`;
+    if (p.remainder === 0n) return { text: `${placed}.`, h: null };
+    let h;
+    try { h = await env.depositRest(p.remainder, step, c); } catch (e) {
+      throw new Error(`${placed}. The rest, ${formatEther(p.remainder)} ETH, did not go in: ${env.errText(e)} The amount above is what is left; press the button again.`);
+    }
+    return { text: `${placed}, and ${formatEther(p.remainder)} ETH went into your private balance.`, h };
   }
 
   // ---- card two: the notes ----
@@ -133,7 +175,7 @@ export function attach(env) {
     for (const n of st.notes) {
       const pool = poolOf(n.pool);
       if (!pool || n.nh == null) continue;
-      reader.spent(pool, BigInt(n.nh)).then((v) => { st.spent.set(n.nh, v); if (notesHost.isConnected) paintNotes(); }, () => {});
+      reader.spent(pool, BigInt(n.nh)).then((v) => { st.spent.set(n.nh, v); if (v) SPENT.add(n.nh); if (notesHost.isConnected) paintNotes(); }, () => {});
     }
   }
   function paintNotes() {
@@ -193,18 +235,14 @@ export function attach(env) {
     const target = await resolveTarget(raw);
     const to = target.to;
     st.target = target;
-    const prover = workerProver(env.workerUrl);
     try {
-      const out = await flow.withdrawSponsored({
-        noteText: text, recipient: to, prover, confirm: confirmFee,
-        onStep: (s) => step(s.step === 'read' ? (s.of ? `reading the pool's deposits (${s.done} of ${s.of})` : 'reading the pool\'s deposits') : s.step === 'tree' ? `building the tree from ${s.count} deposits` : s.step === 'prove' ? 'proving' : s.step === 'estimate' ? 'asking the bundler about the gas' : s.step === 'price' ? 'gas is high right now, waiting for a calmer price' : s.step === 'quote' ? 'check the fee below' : s.step === 'wait' ? 'waiting for the withdrawal to be mined' : 'working'),
-      });
+      const out = await sponsoredExit({ flow, text, to, step, confirm: confirmFee, workerUrl: env.workerUrl });
       if (n.nh) st.spent.set(n.nh, !!out.spent);
       if (out.spent) env.done(c, out.hash, doneText(out, target)); else env.say('Sent; the pool has not shown it yet.');
     } catch (e) {
       if (!e?.cancelled) throw e;
       env.say('Cancelled. Nothing was sent.');
-    } finally { prover.close(); st.target = null; }
+    } finally { st.target = null; }
     loadNotes();
   }
   function moveInto(btn, n) {
@@ -253,6 +291,86 @@ export function attach(env) {
   paintSplit();
   loadNotes();
   return { repaint() { paintSplit(); loadNotes(); } };
+}
+
+
+// The notes block of the Withdraw form (Ethereum, ?fixed=1): the unspent notes this wallet holds in the large pools, which the form
+// counts first for an amount of a whole note or more (`planExit`); the rest of the amount comes from the private balance, through
+// the page. `exit` sends the chosen notes to an address one after the other, each with its gas paid from the note. Whatever the
+// fee turns out to be, a note is only sent if it is within the ceiling the form states (MAX_FEE_PERCENT of the note), so the
+// one press covers every note. `env.onNotes(list)` is told whenever the list changes.
+export function attachWithdraw(env) {
+  const { host } = env;
+  const chainId = env.chain.chainId;
+  const provider = composeProvider({ read: env.read, wallet: env.walletProvider });
+  const flowFor = () => makeFlow({ provider, account: env.account(), chainId, store: env.store, poll: 3000, timeout: 10 * 60 * 1000 });
+  const reader = makeFlow({ provider, account: null, chainId, poll: 3000 });
+  const st = { list: [], gen: 0 };
+  const poolOf = (addr) => FIXED_POOLS[chainId]?.find((x) => x.address.toLowerCase() === addr.toLowerCase());
+  const publish = () => env.onNotes?.(st.list);
+  function paint() {
+    if (!host.isConnected) return;
+    const account = env.account(), total = st.list.reduce((t, x) => t + x.den, 0n);
+    host.innerHTML = `<div class="blk" style="margin-top:18px;padding-top:12px;border-top:1px solid var(--hair)">
+      <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lw-find">${account ? 'Look for notes' : 'Connect wallet'}</button></span></div>
+      ${st.list.length
+        ? `<div class="kv"><span>${st.list.length} whole ${st.list.length === 1 ? 'note' : 'notes'}</span><b>${formatEther(total)} ETH</b></div>
+           <p class="note">An amount of a whole note or more takes these first, and the rest comes from your private balance. The notes pay their own gas, at most ${MAX_FEE_PERCENT}% of each.</p>`
+        : '<p class="note">None known in this browser. Looking asks your wallet for a signature for each note number it tries.</p>'}
+    </div>`;
+    host.querySelector('#lw-find').onclick = (e) => (account ? find(e.currentTarget) : env.connect().then(load, (err) => env.toast(env.errText(err), true)));
+  }
+  async function load() {
+    const account = env.account(), gen = ++st.gen;
+    const stored = account ? readNotes(env.store, chainId, account) : [];
+    st.list = stored.map((meta) => ({ meta, den: poolOf(meta.pool)?.denomination ?? 0n })).filter((x) => x.den > 0n && !(x.meta.nh != null && SPENT.has(x.meta.nh)));
+    paint(); publish();
+    for (const x of [...st.list]) {
+      const pool = poolOf(x.meta.pool);
+      if (x.meta.nh == null) continue;
+      reader.spent(pool, BigInt(x.meta.nh)).then((v) => {
+        if (!v || gen !== st.gen) return;
+        SPENT.add(x.meta.nh);
+        st.list = st.list.filter((y) => y !== x); paint(); publish();
+      }, () => {});
+    }
+  }
+  function find(btn) {
+    return env.act(btn, async (step, c) => {
+      await env.ensureChain(c);
+      const { found } = await flowFor().scan({ from: 0, onProbe: (n) => step(`sign for number ${n}`) });
+      writeNotes(env.store, chainId, env.account(), [...readNotes(env.store, chainId, env.account()), ...found.map(metaOf)]);
+      for (const f of found) if (f.spent) SPENT.add(commitmentBytes32(f.secrets.nullifierHash));
+      env.say(found.length ? `${found.length} found.` : 'No deposits found for this wallet.');
+      load();
+    });
+  }
+  // Runs inside the page's busy wrapper. `notes` are entries of the list; `to` is a checked address. Returns what each withdrawal
+  // came to; if one fails, the notes before it are out and the error says so (with `done`: what went out).
+  async function exit(step, c, notes, to) {
+    if (!PAYMASTERS[chainId]) throw new Error('Paying the gas from a note is not available on this network.');
+    if (!env.account()) throw new Error('Connect your wallet first.');
+    await env.ensureChain(c);
+    const flow = flowFor(), outs = [];
+    for (let k = 0; k < notes.length; k++) {
+      const n = notes[k].meta ?? notes[k];
+      const tag = (m) => step(notes.length > 1 ? `note ${k + 1} of ${notes.length}: ${m}` : m);
+      try {
+        const text = await flow.noteText(n);
+        const out = await sponsoredExit({ flow, text, to, step: tag, confirm: ({ fee, denomination }) => fee * 100n <= denomination * MAX_FEE_PERCENT, workerUrl: env.workerUrl });
+        outs.push(out);
+        if (out.spent && n.nh) SPENT.add(n.nh);
+      } catch (e) {
+        const out = outs.reduce((t, o) => t + o.receive, 0n);
+        const why = e?.cancelled ? 'The fee came to more than the notes\' ceiling, so it was not sent.' : env.errText(e);
+        throw Object.assign(new Error(outs.length ? `${outs.length} of ${notes.length} notes went out to ${short(to)} (${formatEther(out)} ETH). Note ${k + 1} did not: ${why}` : why), { done: outs });
+      }
+    }
+    load();
+    return outs;
+  }
+  load();
+  return { get list() { return st.list; }, exit, repaint: load };
 }
 
 

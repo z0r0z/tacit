@@ -11,7 +11,7 @@ export async function resolve(spec, ctx, next) {
   return next(spec, ctx);
 }`));
 
-const { checksumOk, composeProvider, readNotes, writeNotes, metaOf } = await import('../dapp/fixed-pool-pay.js');
+const { checksumOk, composeProvider, readNotes, writeNotes, metaOf, planExit } = await import('../dapp/fixed-pool-pay.js');
 const { FIXED_POOLS } = await import('../dapp/fixed-pool-notes.js');
 
 let pass = 0, fail = 0;
@@ -76,6 +76,33 @@ await test('notes are kept per chain and account, without duplicates, and surviv
 await test('a store that throws does not break writing', () => {
   const s = { get: () => null, set: () => { throw new Error('quota'); } };
   eq(writeNotes(s, 1, '0xabc', [{ nonce: 0, pool: pool.address }]).length, 1);
+});
+
+console.log('whole notes for a withdrawal');
+const E = 10n ** 18n, T = E / 10n;
+const sum = (dens, picks) => picks.reduce((t, i) => t + dens[i], 0n);
+await test('the notes pay up to the amount and never past it: largest first, each only if it still fits', () => {
+  eq(planExit(5n * E / 2n, [E, E, E]).total, 2n * E, '2.5 with three 1 ETH notes');
+  eq(planExit(E / 2n, [E, E]).total, 0n, 'less than a note takes none');
+  eq(planExit(E, [E, E]).total, E, 'exactly one');
+  eq(planExit(3n * E, [E, E]).total, 2n * E, 'more than the notes hold takes them all');
+  eq(planExit(12n * E + E / 2n, [10n * E, E, E, E]).total, 12n * E, 'a 10 ETH note first, then 1 ETH notes');
+  eq(planExit(9n * E + E / 2n, [10n * E, E, E, E]).total, 3n * E, 'a note that does not fit is skipped, the smaller ones are used');
+});
+await test('mixed sizes: the picks are indices into the list, the larger sizes first, and the total is their sum', () => {
+  const dens = [T, E, T, 10n * E, E];
+  const r = planExit(11n * E + 3n * T, dens);
+  eq(r.total, sum(dens, r.picks), 'the total is what the picks add up to');
+  eq(r.total, 11n * E + 2n * T, '10 + 1 + 1 + 0.1 + 0.1 fits, a third 0.1 would not exist');
+  eq(new Set(r.picks).size, r.picks.length, 'no note twice');
+  eq(dens[r.picks[0]], 10n * E, 'largest first');
+});
+await test('nothing to pay, nothing held, a zero-size note: no picks', () => {
+  eq(planExit(0n, [E]).picks.length, 0); eq(planExit(E, []).picks.length, 0); eq(planExit(E, [0n]).picks.length, 0);
+});
+await test('the same sizes give the same picks, whatever order the notes are listed in', () => {
+  const a = planExit(2n * E + T, [E, T, E, T, E]), b = planExit(2n * E + T, [T, E, E, E, T]);
+  eq(a.total, b.total); eq(a.picks.length, b.picks.length);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

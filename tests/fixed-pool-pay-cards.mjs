@@ -37,13 +37,14 @@ const WALLET = '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23';
 // the stand-in page: the cards, and the few things the Pay page would give them
 const HARNESS = `<!doctype html><meta charset="utf-8"><title>cards</title>
 <style>body{font:14px monospace;max-width:520px;margin:20px auto} .btn{display:block;width:100%;padding:10px;margin-top:8px} .kv{display:flex;justify-content:space-between} .note{color:#555} .link{background:none;border:0;text-decoration:underline;cursor:pointer}</style>
-<input id="amt" value="" placeholder="amount"><div id="host"></div><div id="notes"></div><div id="status" role="status"></div>
+<input id="amt" value="" placeholder="amount"><div id="host"></div><div id="main"></div><div id="notes"></div><div id="wd"></div><button id="wd-go" class="btn">exit</button><div id="status" role="status"></div>
 <script type="module">
-import { attach } from '/fixed-pool-pay.js?cb=00000000';
+import { attach, attachWithdraw } from '/fixed-pool-pay.js?cb=00000000';
 const SEL = ${JSON.stringify({ den: sel('denomination()'), com: sel('commitments(bytes32)'), spent: sel('isSpent(bytes32)'), root: sel('isKnownRoot(bytes32)') })};
 const pools = new Map(${JSON.stringify(POOLS.map((p) => [p.address.toLowerCase(), { d: p.denomination.toString() }]))}.map(([a, v]) => [a, { d: BigInt(v.d), seen: new Set() }]));
 window.__log = { signs: 0, sends: 0, accountRequests: 0, busy: 0 };
 window.__spentAll = false;
+window.__rest = []; window.__restFail = false; window.__spentN = 0; window.__order = null;
 const hex = (n, w) => BigInt(n).toString(16).padStart(w, '0');
 const read = async () => async (method, params = []) => {
   switch (method) {
@@ -60,7 +61,7 @@ const read = async () => async (method, params = []) => {
       const s = data.slice(2, 10), arg = data.slice(10);
       if (s === SEL.den) return '0x' + hex(p.d, 64);
       if (s === SEL.com) return '0x' + (p.seen.has(arg) ? '1' : '0').padStart(64, '0');
-      if (s === SEL.spent) return '0x' + (window.__spentAll ? '1' : '0').padStart(64, '0');
+      if (s === SEL.spent) return '0x' + ((window.__order ? window.__order.slice(0, window.__spentN).includes('0x' + arg) : window.__spentAll) ? '1' : '0').padStart(64, '0');
       if (s === SEL.root) return '0x' + '1'.padStart(64, '0');
       throw new Error('call ' + s);
     }
@@ -80,7 +81,17 @@ const env = {
   host: document.getElementById('host'), notesHost: document.getElementById('notes'), amountInput: document.getElementById('amt'),
   chain: { chainId: 1, full: 'Ethereum' }, store: { get: (k) => localStorage.getItem(k), set: (k, v) => localStorage.setItem(k, v) }, workerUrl: '/fixed-pool-worker.js?cb=00000000',
   account: () => account, walletProvider: () => (account ? wallet : null), read,
-  connect: async () => { window.__log.accountRequests++; account = '${WALLET}'; handle.repaint(); return account; },
+  connect: async () => { window.__log.accountRequests++; account = '${WALLET}'; handle.repaint(); window.__wd?.repaint(); return account; },
+  // the page's own button: it shows the plan the card hands over, connects first, and runs it in its busy wrapper, which finishes with the text
+  onPlan: (p) => {
+    const m = document.getElementById('main');
+    if (!p) { m.innerHTML = ''; return; }
+    m.innerHTML = '<button class="btn" id="lg-go"></button>';
+    const b = m.firstChild;
+    b.textContent = account ? p.label : 'Connect wallet';
+    b.onclick = () => (account ? env.act(b, async (step, c) => { const r = await p.run(step, c); say(r.text + (r.h ? ' ' + r.h : ''), 'ok'); }) : env.connect());
+  },
+  depositRest: async (a) => { if (window.__restFail) throw new Error('the wallet refused'); window.__rest.push(a.toString()); return '0x' + 'cd'.repeat(32); },
   ensureChain: async () => {}, toast: (m, bad) => say(m, bad ? 'err' : ''), errText: (e) => e?.message || String(e),
   say: (t) => say(t, 'ok'), done: (c, h, t) => say(t + ' ' + h, 'ok'),
   depositAddress: async () => '${BOX}',
@@ -97,7 +108,16 @@ const env = {
   },
 };
 handle = attach(env);
-window.__repaint = () => handle.repaint();
+const env2 = { ...env, host: document.getElementById('wd'), onNotes: (l) => { window.__wdList = l.map((x) => ({ den: x.den.toString(), nonce: x.meta.nonce })); } };
+const wdCtl = attachWithdraw(env2);
+window.__wd = wdCtl;
+document.getElementById('wd-go').onclick = (e) => env2.act(e.currentTarget, async (step, c) => {
+  const q = window.__wdReq;
+  window.__wdOut = null; window.__wdErr = null; window.__wdDone = null;
+  try { window.__wdOut = (await wdCtl.exit(step, c, q.picks.map((i) => wdCtl.list[i]), q.to)).map((o) => o.receive.toString()); }
+  catch (err) { window.__wdErr = err.message; window.__wdDone = (err.done || []).length; throw err; }
+});
+window.__repaint = () => { handle.repaint(); wdCtl.repaint(); };
 window.__ready = true;
 </script>`;
 
@@ -123,10 +143,10 @@ const test = async (label, fn) => {
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `paycards-${name}.png`), fullPage: true }); };
 
 // a chunk cache for the 1 ETH pool on Ethereum holding six deposits, `commitment` among them
-function chunkCache(page, commitment) {
+function chunkCache(page, commitments) {
   const topic = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Deposit(bytes32,uint32,uint256)')));
   const hex = (n) => n.toString(16).padStart(64, '0');
-  const leaves = [1, 2, 3].map((i) => '0x' + hex(BigInt(i) * 104729n)).concat([commitment], [5, 6].map((i) => '0x' + hex(BigInt(i) * 104729n)));
+  const leaves = [1, 2, 3].map((i) => '0x' + hex(BigInt(i) * 104729n)).concat([].concat(commitments), [5, 6].map((i) => '0x' + hex(BigInt(i) * 104729n)));
   const raw = Buffer.from(leaves.map((c, i) => JSON.stringify({ contractAddress: ONE.address.toLowerCase(), eventTopic: topic, topics: [topic, c], data: '0x' + hex(BigInt(i)) + hex(1n), blockNumber: '0x' + (100 + i).toString(16), logIndex: '0x0' })).join('\n') + '\n');
   const manifest = { availableProtocols: { 'tornado-cash-1-eth-1': { trackedAddresses: [ONE.address.toLowerCase()], trackedEventTopics: [topic], chunks: [], hotHead: { fromBlock: '0x0', toBlock: '0x384', file: 'hot.jsonl.gz', size: '0x1', digest: { type: 'sha256', data: '0x' + createHash('sha256').update(raw).digest('hex') } } } } };
   return page.route('https://saga.0000000000.org/**', (route) => {
@@ -137,6 +157,7 @@ function chunkCache(page, commitment) {
     return route.fulfill({ status: 404, headers, body: 'no' });
   });
 }
+const bundlerMode = { failAt: null };   // the operation sent when this many have been sent is refused
 function stubBundler(page, sent) {
   return page.route('https://public.pimlico.io/**', async (route) => {
     const { id, method, params } = route.request().postDataJSON();
@@ -145,7 +166,11 @@ function stubBundler(page, sent) {
     const answer = (result) => route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify({ jsonrpc: '2.0', id, result }) });
     if (method === 'pimlico_getUserOperationGasPrice') return answer({ standard: { maxFeePerGas: '0x17d78400', maxPriorityFeePerGas: '0x5f5e100' } });
     if (method === 'eth_estimateUserOperationGas') return answer({ callGasLimit: '0x0', verificationGasLimit: '0x9c40', preVerificationGas: '0xea60', paymasterVerificationGasLimit: '0x55730', paymasterPostOpGasLimit: '0x7530' });
-    if (method === 'eth_sendUserOperation') { sent.push(params[0]); await page.evaluate(() => { window.__spentAll = true; }); return answer('0x1'); }
+    if (method === 'eth_sendUserOperation') {
+      if (bundlerMode.failAt === sent.length) { bundlerMode.failAt = null; return route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32500, message: 'AA31 paymaster deposit too low' } }) }); }
+      sent.push(params[0]); await page.evaluate(() => { window.__spentAll = true; window.__spentN++; }); return answer('0x1');
+    }
+    if (method === 'eth_getUserOperationByHash') return answer(null);   // after a refused send the client asks whether the operation is known: it is not
     if (method === 'eth_getUserOperationReceipt') return answer({ success: true, receipt: { transactionHash: '0x' + 'ee'.repeat(32) } });
     return route.fulfill({ status: 404, headers, body: 'no' });
   });
@@ -156,7 +181,7 @@ const ctx = await browser.newContext({ viewport: { width: 540, height: 1000 } })
 const page = await ctx.newPage();
 const problems = [];
 page.on('pageerror', (e) => problems.push('pageerror ' + e.message));
-page.on('console', (m) => { if (m.type() === 'error') problems.push('console ' + m.text()); });
+page.on('console', (m) => { if (m.type() === 'error') problems.push('console ' + m.text() + ' ' + (m.location()?.url || '')); });
 await page.goto(base + '/__harness.html');
 await page.waitForFunction(() => window.__ready === true);
 const sent = [];
@@ -169,7 +194,7 @@ await test('an amount under a whole note shows no card; a large one shows the sp
   assert.equal(await page.locator('#lg-go').count(), 0, 'under 1 ETH: nothing');
   await typeAmount('2.5');
   const text = await page.locator('#host').innerText();
-  assert.match(text, /2 × 1 ETH/); assert.match(text, /0\.5 ETH\s+stays for the deposit above/);
+  assert.match(text, /2 × 1 ETH/); assert.match(text, /0\.5 ETH\s+into your private balance/);
   assert.equal((await page.locator('#lg-go').innerText()).trim(), 'Connect wallet');
   await shot(page, 'split');
 });
@@ -183,11 +208,13 @@ await test('the smallest note can be lowered to 0.1 ETH', async () => {
 });
 await test('connecting, then depositing the whole notes: signed and sent for each, kept without secrets, and the amount above becomes what is left', async () => {
   await page.click('#lg-go'); // connect
-  await page.waitForFunction(() => /Deposit 2 whole notes/.test(document.querySelector('#lg-go')?.textContent || ''));
+  await page.waitForFunction(() => /Deposit 2\.5 ETH: 2 whole notes \+ 0\.5/.test(document.querySelector('#lg-go')?.textContent || ''));
   await page.click('#lg-go');
   await page.waitForFunction(() => /are in the large pools/.test(document.querySelector('#status').textContent), null, { timeout: 60000 });
-  assert.match(await note(), /The amount above is now what is left, 0\.5 ETH/);
+  await page.waitForFunction(() => /0\.5 ETH went into your private balance/.test(document.querySelector('#status').textContent), null, { timeout: 60000 });
+  assert.match(await note(), /\(2 ETH\), and 0\.5 ETH went into your private balance/);
   assert.equal(await page.inputValue('#amt'), '0.5');
+  assert.deepEqual(await page.evaluate(() => window.__rest), ['500000000000000000'], 'what was left went to the page to deposit');
   const log = await page.evaluate(() => window.__log);
   assert.equal(log.sends, 2, 'one deposit per note');
   const kept = JSON.parse(await page.evaluate(() => localStorage.getItem(`tacit-fixed-notes:1:${'0x2c7536e3605d9c16a7a3d7b1898e529396a65c23'}`)));
@@ -353,6 +380,85 @@ await test('Pasted notes to a name with no deposit address, to one signed by ano
   await sendToName('ghost.wei', 24);
   await page.waitForFunction(() => /ghost\.wei has not published a Tacit address/.test(document.querySelector('#status').textContent));
   assert.equal(sent.length, before, 'nothing was sent');
+});
+// ---- one press for a large amount, and the Withdraw block's notes ----
+const NOTES_KEY = 'tacit-fixed-notes:1:0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
+const keptNotes = async () => JSON.parse(await page.evaluate((k) => localStorage.getItem(k), NOTES_KEY) || '[]');
+const status = async () => page.locator('#status').innerText();
+await test('one press, the part that is left refused: the notes are placed, and the message says what remains and to press again', async () => {
+  await page.reload(); await page.waitForFunction(() => window.__ready === true);
+  await page.evaluate((k) => { localStorage.removeItem(k); window.__restFail = true; window.__repaint(); }, NOTES_KEY);
+  await page.fill('#amt', '2.5');
+  await page.click('#lg-go'); // connect
+  await page.waitForFunction(() => /Deposit 2\.5 ETH: 2 whole notes \+ 0\.5/.test(document.querySelector('#lg-go')?.textContent || ''));
+  await page.click('#lg-go');
+  await page.waitForFunction(() => /did not go in/.test(document.querySelector('#status').textContent), null, { timeout: 60000 });
+  const text = await status();
+  assert.match(text, /The notes are in the large pools \(2 ETH\)\. The rest, 0\.5 ETH, did not go in: the wallet refused/);
+  assert.match(text, /press the button again/);
+  assert.equal(await page.inputValue('#amt'), '0.5', 'the amount is what is left');
+  assert.equal((await keptNotes()).length, 2, 'the notes are kept');
+  assert.deepEqual(await page.evaluate(() => window.__rest), [], 'nothing of the rest went in');
+});
+await test('an exact multiple of a note deposits only whole notes in one press, with nothing left for the page', async () => {
+  await page.evaluate(() => { window.__restFail = false; });
+  await page.fill('#amt', '1');
+  await page.waitForFunction(() => /^Deposit 1 ETH: 1 whole note$/.test(document.querySelector('#lg-go')?.textContent || ''));
+  assert.match(await page.locator('#host').innerText(), /Nothing\s+left for your private balance/);
+  await page.click('#lg-go');
+  await page.waitForFunction(() => /The note is in the large pool \(1 ETH\)\./.test(document.querySelector('#status').textContent), null, { timeout: 60000 });
+  assert.deepEqual(await page.evaluate(() => window.__rest), []);
+  assert.equal((await keptNotes()).length, 3, 'the note joins the two kept before');
+});
+await test('the large pools can be turned off, and the choice is kept', async () => {
+  await page.fill('#amt', '2.5');
+  await page.selectOption('#lg-min', '0');
+  assert.match(await page.locator('#host').innerText(), /large pools are off/);
+  assert.equal(await page.locator('#lg-go').count(), 0, 'no button of the card: the form deposits it all as it always did');
+  assert.equal(await page.evaluate(() => localStorage.getItem('tacit-fixed-min:1')), '0');
+  await page.selectOption('#lg-min', String(10n ** 18n));
+  await page.waitForSelector('#lg-go');
+  assert.equal(await page.evaluate(() => localStorage.getItem('tacit-fixed-min:1')), String(10n ** 18n));
+});
+await test('the Withdraw block lists the unspent notes this wallet holds', async () => {
+  await page.evaluate(() => window.__wd.repaint());
+  await page.waitForFunction(() => window.__wdList?.length === 3);
+  assert.deepEqual(await page.evaluate(() => window.__wdList), (await keptNotes()).map((n) => ({ den: '1000000000000000000', nonce: n.nonce })), 'each kept note, at the size of its pool');
+  const text = await page.locator('#wd').innerText();
+  assert.match(text, /3 whole notes\s+3 ETH/); assert.match(text, /Look for notes/); assert.match(text, /at most 3% of each/);
+  await shot(page, 'withdraw-block');
+});
+const exitNotes = async (picks, to) => {
+  await page.evaluate((q) => { window.__wdReq = q; }, { picks, to });
+  await page.click('#wd-go');
+};
+await test('two notes out in one press: each proved and sent with its gas from the note and no confirm between, and the second refused by the bundler leaves the first out and says so', async () => {
+  const kept = await keptNotes();
+  await chunkCache(page, kept.map((n) => n.c));
+  await page.evaluate((order) => { window.__order = order; window.__spentN = 0; window.__spentAll = false; }, kept.map((n) => n.nh.toLowerCase()));
+  const before = sent.length;
+  bundlerMode.failAt = before + 1;
+  await exitNotes([0, 1], '0x000000000000000000000000000000000000dEaD');
+  await page.waitForFunction(() => window.__wdErr != null, null, { timeout: 480000 });
+  const err = await page.evaluate(() => ({ msg: window.__wdErr, done: window.__wdDone }));
+  assert.match(err.msg, /1 of 2 notes went out to 0x0000…dEaD \(0\.\d+ ETH\)\. Note 2 did not: .*AA31/);
+  assert.equal(err.done, 1);
+  assert.equal(sent.length, before + 1, 'one operation went out');
+  assert.ok(sent.at(-1).paymasterData.toLowerCase().includes('000000000000000000000000000000000000dead'), 'to that address');
+  assert.equal(await page.locator('#lg-ask').isVisible(), false, 'no confirm panel: the ceiling was stated before the press');
+});
+await test('the notes still held go out together the next time, and what comes back per note is the note less its gas', async () => {
+  await page.evaluate(() => window.__wd.repaint());
+  await page.waitForFunction(() => window.__wdList?.length === 2);
+  const before = sent.length;
+  await exitNotes([0, 1], '0x000000000000000000000000000000000000dEaD');
+  await page.waitForFunction(() => window.__wdOut != null, null, { timeout: 480000 });
+  const out = await page.evaluate(() => window.__wdOut);
+  assert.equal(out.length, 2);
+  for (const r of out) { const v = BigInt(r); assert.ok(v < 10n ** 18n && v > 97n * 10n ** 16n, `a note less its gas: ${r}`); }
+  assert.equal(sent.length, before + 2);
+  await page.waitForFunction(() => window.__wdList?.length === 0);
+  assert.match(await page.locator('#wd').innerText(), /None known in this browser/);
 });
 await test('no errors reached the console', async () => { assert.deepEqual(problems, []); });
 

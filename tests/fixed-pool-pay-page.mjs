@@ -19,6 +19,7 @@ const { poseidon2, poseidon3, poseidon4, poseidon5, poseidon7 } = await import('
 const { makeEvmPoolZk } = await import('../dapp/evm-pool-zk.js');
 const { evmPoolKeys } = await import('../dapp/evm-pool-wallet.js');
 const { signBox } = await import('../dapp/fixed-pool-box.js');
+const { FIXED_POOLS } = await import('../dapp/fixed-pool-notes.js');
 const { receiveBoxAddress, RECEIVE_FEE_BPS, EVM_POOL_ROUTER } = await import('../dapp/evm-pool-gateway.js');
 
 const require = createRequire(import.meta.url);
@@ -77,11 +78,12 @@ async function unlock(page) {
 }
 
 // what the page asks of nodes and services, answered with the least that keeps it going
-const rpcAnswer = (method) => {
+const rpcAnswer = (method, params = []) => {
   switch (method) {
     case 'eth_chainId': return '0x1';
     case 'eth_blockNumber': return '0x1c9c380';
-    case 'eth_getBalance': case 'eth_gasPrice': return '0x0';
+    case 'eth_getBalance': return String(params[0]).toLowerCase() === ADDR.toLowerCase() ? '0x' + (100n * 10n ** 18n).toString(16) : '0x0';   // the test wallet holds 100 ETH
+    case 'eth_gasPrice': return '0x0';
     case 'eth_getLogs': return [];
     case 'eth_getCode': return '0x';
     case 'eth_getTransactionReceipt': return { status: '0x1', blockNumber: '0x1c9c380', logs: [] };
@@ -115,11 +117,36 @@ export function makeEvmPoolWallet(o) {
   w.notes = () => fake.map((v) => ({ v: BigInt(v) }));
   return w;
 }`;
-async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, notes = null } = {}) {
+// payWrap: the card module served with the parts that need a wallet's signatures and a prover replaced by recorders (the flags are set
+// on the page: __fakeRun makes the split's run place notes at once, __fakeExit makes a note withdrawal come back at once)
+const PAY_WRAP = `
+export function attach(env) {
+  const o = env.onPlan;
+  return __realAttach({ ...env, onPlan: (p) => o(p && globalThis.__fakeRun ? { ...p, run: async (step) => { globalThis.__ran = (globalThis.__ran || 0) + 1; step('fake'); return { text: 'Fake: the notes are placed.', h: globalThis.__fakeH ?? null }; } } : p) });
+}
+export function attachWithdraw(env) {
+  const ctl = __realAttachWithdraw(env);
+  if (!globalThis.__fakeExit) return ctl;
+  return { get list() { return ctl.list; }, repaint: ctl.repaint, exit: async (step, c, notes, to) => {
+    (globalThis.__exits ||= []).push({ n: notes.length, to }); step('fake');
+    if (globalThis.__exitFail) throw Object.assign(new Error('1 of 2 notes went out (fake). Note 2 did not: fake'), { done: [] });
+    return notes.map((x, i) => ({ receive: x.den - 10n ** 15n, spent: true, hash: '0x' + (i + 1).toString(16).padStart(64, 'a') }));
+  } };
+}`;
+const POOL1 = FIXED_POOLS[1][1].address;
+async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, notes = null, payWrap = false, fixedNotes = null } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 560, height: 1100 } });
   const page = await ctx.newPage();
   const problems = [], sent = [], told = [];
   await page.exposeFunction('__send', async (tx) => { sent.push(tx); return '0x' + 'ab'.repeat(32); });
+  if (payWrap) {
+    const real = readFileSync(join(DAPP, 'fixed-pool-pay.js'), 'utf8').replace('export function attach(', 'function __realAttach(').replace('export function attachWithdraw(', 'function __realAttachWithdraw(');
+    assert.ok(real.includes('function __realAttach(') && real.includes('function __realAttachWithdraw('), 'the card module is wrapped');
+    await page.route(/\/fixed-pool-pay\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: real + PAY_WRAP }));
+  }
+  if (fixedNotes) {
+    await page.addInitScript(([k, v]) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }, [`tacit-fixed-notes:1:${ADDR.toLowerCase()}`, fixedNotes]);
+  }
   if (notes) {
     await page.addInitScript((n) => { window.__fakeNotes = n; }, notes.map(String));
     const real = readFileSync(join(DAPP, 'evm-pool-wallet.js'), 'utf8').replace('export function makeEvmPoolWallet(', 'function __realMakeEvmPoolWallet(');
@@ -147,7 +174,7 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
     if (keeper && req.method() === 'POST' && /\/evm-pool\/keeper\/receive/.test(req.url())) { told.push(req.postDataJSON()); return route.fulfill({ status: 200, headers, contentType: 'application/json', body: '{"ok":true}' }); }
     if (req.method() === 'POST') {
       let body = null; try { body = req.postDataJSON(); } catch { /* not JSON */ }
-      const one = (b) => ({ jsonrpc: '2.0', id: b?.id ?? 1, result: rpcAnswer(b?.method) });
+      const one = (b) => ({ jsonrpc: '2.0', id: b?.id ?? 1, result: rpcAnswer(b?.method, b?.params) });
       if (body) return route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify(Array.isArray(body) ? body.map(one) : one(body)) });
     }
     return route.fulfill({ status: 404, headers, body: '{}' });
@@ -179,12 +206,15 @@ await test('?fixed=1 on Ethereum: the cards load under the page\'s policy and th
   await page.fill('#f-damt', '2.5');
   await page.waitForFunction(() => /2 × 1 ETH/.test(document.querySelector('#lg-split')?.textContent || ''), null, { timeout: 30000 });
   const text = await page.locator('#lg-split').innerText();
-  assert.match(text, /0\.5 ETH\s+stays for the deposit above/);
+  assert.match(text, /0\.5 ETH\s+into your private balance/);
   assert.match(await page.locator('#lg-notes').innerText(), /Notes in the large pools/);
-  assert.match(await page.locator('#lg-go').innerText(), /Deposit 2 whole notes/, 'the wallet that opened the page is the one that deposits');
+  assert.equal(await page.locator('#lg-go').count(), 0, 'the card has no button of its own: the form\'s is the one');
+  assert.match(await page.locator('#f-go').innerText(), /Deposit 2\.5 ETH: 2 whole notes \+ 0\.5/, 'the wallet that opened the page is the one that deposits');
+  assert.match(await page.locator('#f-rcpt').innerText(), /Into the large pools\s+2 whole notes · 2 ETH/);
+  assert.match(await page.locator('#f-rcpt').innerText(), /Into your private balance\s+0\.5 ETH/);
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'paypage-cards.png'), fullPage: true });
   await page.fill('#f-damt', '0.9');
-  await page.waitForFunction(() => !document.querySelector('#lg-go'));
+  await page.waitForFunction(() => /^Deposit privately$/.test(document.querySelector('#f-go')?.textContent || ''));
   await page.click('#dep-addr'); // From an exchange: the row for the name's deposit address has its place
   await page.waitForSelector('#lg-name', { state: 'attached', timeout: 30000 });
   assert.deepEqual(problems, []);
@@ -383,6 +413,108 @@ await test('without the flag a funded Send form has no wallet link', async () =>
   assert.match(await receiptText(page, /They receive/), /0\.5 ETH/);
   await page.waitForTimeout(1500);
   assert.equal(await page.locator('#f-viawallet').count(), 0);
+  await ctx.close();
+});
+
+// ── Deposit: one press for a large amount ──
+const NAMES = async () => ({ 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } });
+await test('Deposit: the form\'s one button deposits the whole notes and the rest, and the split can be turned off there', async () => {
+  const { ctx, page, problems } = await open({ search: '?fixed=1', payWrap: true });
+  await unlock(page);
+  await page.evaluate(() => { window.__fakeRun = true; window.__fakeH = '0x' + 'ab'.repeat(32); });
+  await page.fill('#f-damt', '3');
+  await page.waitForFunction(() => /^Deposit 3 ETH: 3 whole notes$/.test(document.querySelector('#f-go')?.textContent || ''), null, { timeout: 30000 });
+  assert.doesNotMatch(await page.locator('#f-rcpt').innerText(), /Into your private balance/, 'nothing left over');
+  await page.fill('#f-damt', '2.5');
+  await page.waitForFunction(() => /Deposit 2\.5 ETH: 2 whole notes \+ 0\.5/.test(document.querySelector('#f-go')?.textContent || ''));
+  if (SHOTS) await page.screenshot({ path: join(SHOTS, 'deposit-one-press.png'), fullPage: true });
+  await page.selectOption('#lg-min', '0');
+  await page.waitForFunction(() => /^Deposit privately$/.test(document.querySelector('#f-go')?.textContent || ''));
+  assert.match(await page.locator('#f-rcpt').innerText(), /Into your private balance\s+2\.5 ETH/);
+  await page.selectOption('#lg-min', '1000000000000000000');
+  await page.waitForFunction(() => /2 whole notes \+ 0\.5/.test(document.querySelector('#f-go')?.textContent || ''));
+  await page.click('#f-go');
+  await page.waitForFunction(() => /Fake: the notes are placed/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 30000 });
+  assert.equal(await page.evaluate(() => window.__ran), 1, 'the plan ran once, inside the form\'s busy wrapper');
+  assert.match(await page.locator('#status').innerText(), /Fake: the notes are placed\./);
+  assert.equal(await page.locator('#status a').count() > 0, true, 'the transaction of what was left is linked');
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('Deposit: to someone else the notes are not used, and the form says so', async () => {
+  const { ctx, page } = await open({ search: '?fixed=1', payWrap: true, names: await NAMES() });
+  await unlock(page);
+  await page.fill('#f-damt', '2.5');
+  await page.waitForFunction(() => /2 whole notes/.test(document.querySelector('#f-go')?.textContent || ''));
+  await page.fill('#f-dto', 'ross.wei');
+  await page.waitForFunction(() => /Deposit to them privately/.test(document.querySelector('#f-go')?.textContent || ''), null, { timeout: 30000 });
+  assert.match(await page.locator('#f-rcpt').innerText(), /Whole notes are for your own balance/);
+  await page.fill('#f-dto', '');
+  await page.waitForFunction(() => /2 whole notes/.test(document.querySelector('#f-go')?.textContent || ''));
+  await ctx.close();
+});
+
+// ── Withdraw: whole notes first, the rest from the private balance ──
+const DEAD = '0x00000000000000000000000000000000000dead1';
+const held = (n) => Array.from({ length: n }, (_, i) => ({ nonce: i, pool: POOL1, c: '0x' + (0xc0 + i).toString(16).padStart(64, '0'), nh: '0x' + (0xd0 + i).toString(16).padStart(64, '0') }));
+// flags are set on the page before the Withdraw form opens, which is when the notes block attaches
+const toWithdraw = async (page, amount, flags = null) => {
+  await unlock(page);
+  if (flags) await page.evaluate((f) => Object.assign(window, f), flags);
+  await page.click('#tab-withdraw');
+  await page.fill('#f-wto', DEAD);
+  await page.fill('#f-wamt', amount);
+};
+const WD = { search: '?fixed=1', payWrap: true, keeper: QUOTE, notes: [ETH], fixedNotes: held(2) };
+await test('Withdraw: the notes are counted first, the rest comes from the private balance, and the receipt says which is which', async () => {
+  const { ctx, page, problems } = await open(WD);
+  await toWithdraw(page, '2.3');
+  const text = await receiptText(page, /From whole notes/);
+  assert.match(text, /From whole notes\s+2 × 1 ETH/); assert.match(text, /paid from the notes, at most 3% of each/);
+  assert.match(text, /From your private balance\s+0\.3 ETH/); assert.match(text, /at least 2\.24 ETH/);
+  assert.match(await page.locator('#lg-wd').innerText(), /2 whole notes\s+2 ETH/);
+  if (SHOTS) await page.screenshot({ path: join(SHOTS, 'withdraw-combined.png'), fullPage: true });
+  await page.fill('#f-wamt', '0.4');
+  await page.waitForFunction(() => /Arrives/.test(document.querySelector('#f-rcpt')?.textContent || '') && !/From whole notes/.test(document.querySelector('#f-rcpt')?.textContent || ''));
+  await page.click('#f-max');
+  const v = Number(await page.inputValue('#f-wamt'));
+  assert.ok(v > 2.99 && v <= 3, 'Max is the notes and what the private balance can send: ' + v);
+  assert.match(await receiptText(page, /From whole notes/), /2 × 1 ETH/);
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('Withdraw: only notes, one press: the address is sent both, and nothing is asked of the private balance', async () => {
+  const { ctx, page } = await open(WD);
+  await toWithdraw(page, '2', { __fakeExit: true });
+  const text = await receiptText(page, /From whole notes/);
+  assert.doesNotMatch(text, /From your private balance/);
+  await page.click('#f-go');
+  await page.waitForFunction(() => /Withdrew 1\.998 ETH from 2 whole notes/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 30000 });
+  assert.deepEqual(await page.evaluate(() => window.__exits), [{ n: 2, to: DEAD }]);
+  await ctx.close();
+});
+await test('Withdraw: when the notes fail partway the module\'s message is shown, and the private balance is not touched', async () => {
+  const { ctx, page } = await open(WD);
+  await toWithdraw(page, '2.3', { __fakeExit: true, __exitFail: true });
+  await receiptText(page, /From whole notes/);
+  await page.click('#f-go');
+  await page.waitForFunction(() => /1 of 2 notes went out/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 30000 });
+  assert.doesNotMatch(await page.locator('#status').innerText(), /The other 0\.3 ETH/, 'the rest was never attempted');
+  await ctx.close();
+});
+await test('Withdraw: an amount under a whole note is the ordinary withdrawal, with no notes in it', async () => {
+  const { ctx, page } = await open(WD);
+  await toWithdraw(page, '0.4');
+  const text = await receiptText(page, /Arrives/);
+  assert.doesNotMatch(text, /whole notes/);
+  await ctx.close();
+});
+await test('Withdraw: without the flag the form has no notes block and counts none', async () => {
+  const { ctx, page } = await open({ ...WD, search: '' });
+  await toWithdraw(page, '2.3');
+  assert.equal(await page.locator('#lg-wd').count(), 0);
+  const text = await receiptText(page, /Arrives|More than your private balance/);
+  assert.doesNotMatch(text, /From whole notes/);
   await ctx.close();
 });
 

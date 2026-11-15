@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KucU6HArmHVzC8LOtK5TSj52kL+Aqwhw+usWRLNhgS0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-+kf4PbrzxgMm2Biks0I/oSOOY96N79k+bYHIh4rpiiY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -2824,16 +2824,42 @@ function poolDeposit(f, seg) {
 }
 
 // The large-pool cards: loaded when asked for, given what the page owns. A failure leaves the deposit form as it was.
-async function largeCards(c, amountInput) {
+// What is left of a split deposit after the whole notes: the form's ordinary deposit into the private balance.
+async function depositRest(c, a, step) {
+  const W = await walletOn(c);
+  await signerFor(c).ready();
+  const h = await W.deposit({ amount: a, onStep: step });
+  ptsExpect(c, a);
+  justDid(c, { kind: 'dep', v: a, from: lc(S.wallet), tx: h });
+  return h;
+}
+// The notes block of the Withdraw form: given what the page owns, it lists the wallet's whole notes and sends the ones a withdrawal takes.
+async function largeWithdraw(c, onNotes) {
+  const host = $('#lg-wd');
+  if (!host) return null;
+  try {
+    const m = await import('/fixed-pool-pay.js?cb=844bb6de');
+    if (!host.isConnected) return null;
+    const ctl = m.attachWithdraw({
+      host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
+      account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c),
+      connect: () => connectWallet(), ensureChain: () => ensureChain(c.chainId),
+      act, toast, errText, say: (t) => say($('#status'), html`<span class="ok">${t}</span>`), onNotes,
+    });
+    return { ctl, planExit: m.planExit };
+  } catch (e) { console.warn('large-pool withdraw:', e); return null; }
+}
+async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=e3c101d6');
+    const m = await import('/fixed-pool-pay.js?cb=844bb6de');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
       account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c), names: () => getNames(),
       connect: () => connectWallet(), ensureChain: () => ensureChain(c.chainId),
+      onPlan: hooks.onPlan, depositRest: (a, step, cc) => depositRest(cc, a, step),
       act, toast, errText,
       say: (t) => say($('#status'), html`<span class="ok">${t}</span>`),
       done: (cc, h, t) => done(cc, h, t),
@@ -2847,7 +2873,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=e3c101d6');
+    const m = await import('/fixed-pool-pay.js?cb=844bb6de');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -2920,7 +2946,7 @@ function formDeposit(f) {
       <div class="rcpt" id="f-rcpt" role="status" hidden></div>
       <button class="btn" type="button" id="f-go" aria-describedby="f-rcpt" disabled>${S.wallet ? 'Deposit privately' : 'Connect wallet'}</button>
       <p class="note">Proved on this device. You pay the network fee, with no relay fee. The deposit and your wallet show on chain; whose balance it lands in does not.</p>${LARGE_ON && c.chainId === 1 ? html`<div id="lg-split"></div><div id="lg-notes"></div>` : ''}`);
-    let wb = null, dto = null, lastDto = '';
+    let wb = null, dto = null, lastDto = '', split = null;
     const amt = $('#f-damt'), go = $('#f-go'), rc = $('#f-rcpt'), toEl = $('#f-dto');
     $('#f-conn')?.addEventListener('click', () => connectWallet().catch((e) => toast(errText(e), true)));
     const wbEl = $('#f-wb'), mx = $('#f-max');
@@ -2945,12 +2971,22 @@ function formDeposit(f) {
       if (raw && !dto) { go.disabled = true; return /\.(g?wei|eth)$/i.test(raw) ? say_(html`<p class="note">Looking up ${raw.toLowerCase()}…</p>`) : undefined; }
       if (raw && dto.error) { go.disabled = true; return say_(html`<p class="note err" role="alert">${dto.error}</p>`); }
       if (a && wb != null && a > wb) { say_(html`<p class="note err" role="alert">More than your wallet holds on ${c.full}.</p>`); go.disabled = true; }
-      else if (a && dto?.bp) say_(html`${kvRow('To', html`${dto.label ? `${dto.label} → ` : ''}${viewAddr(dto.bp, 8)}`)}${dto.id ? kvRow('ID', dto.id) : ''}${kvRow('Into their private balance', html`${fmt(a, 18, 6)} ETH on ${cname(c)}`)}${kvRow('Relay fee', 'none · your wallet pays the network fee')}${pointsRow(a)}`);
+      else if (a && dto?.bp) say_(html`${kvRow('To', html`${dto.label ? `${dto.label} → ` : ''}${viewAddr(dto.bp, 8)}`)}${dto.id ? kvRow('ID', dto.id) : ''}${kvRow('Into their private balance', html`${fmt(a, 18, 6)} ETH on ${cname(c)}`)}${kvRow('Relay fee', 'none · your wallet pays the network fee')}${pointsRow(a)}${split ? html`<p class="note">Whole notes are for your own balance. Clear “To” to deposit this amount as notes and the rest.</p>` : ''}`);
+      else if (a && split && !raw) say_(html`${kvRow('Into the large pools', `${split.noteCount} whole ${split.noteCount === 1 ? 'note' : 'notes'} · ${fmt(split.noteTotal, 18, 6)} ETH`)}${split.remainder ? kvRow('Into your private balance', `${fmt(split.remainder, 18, 6)} ETH`) : ''}${kvRow('Relay fee', 'none · your wallet pays the network fees')}`);
       else if (a) say_(html`${kvRow('Into your private balance', `${fmt(a, 18, 6)} ETH`)}${kvRow('Relay fee', 'none · your wallet pays the network fee')}${pointsRow(a)}`);
-      go.textContent = !S.wallet ? 'Connect wallet' : dto?.bp ? 'Deposit to them privately' : 'Deposit privately';
+      go.textContent = !S.wallet ? 'Connect wallet' : dto?.bp ? 'Deposit to them privately' : split && !raw ? split.label : 'Deposit privately';
     };
     go.onclick = () => {
       if (!S.wallet) return connectWallet().catch((e) => toast(errText(e), true));
+      if (split && !toEl.value.trim()) {
+        const sp = split;
+        return act(go, async (step, c) => {
+          const r = await sp.run(step, c);
+          clearDraft('f-damt');
+          if (r.h) return finish(c, r.h, 'self', r.text);
+          say($('#status'), html`<span class="ok">${r.text}</span>`);
+        });
+      }
       act(go, async (step) => {
         const a = parseUnits(amt.value);
         if (!a) throw new Error('Enter an amount.');
@@ -2977,7 +3013,7 @@ function formDeposit(f) {
         await finish(c, h, 'self', `Deposited ${exact(a)} ETH.`);
       });
     };
-    if (LARGE_ON && c.chainId === 1) largeCards(c, amt);
+    if (LARGE_ON && c.chainId === 1) largeCards(c, amt, { onPlan: (p) => { split = p; FORM.check?.(); } });
   }
   $$('[data-dep]', f).forEach((b) => b.onclick = () => setDepMode(b.dataset.dep));
 }
@@ -3500,7 +3536,7 @@ function payDue(id) {
 }
 
 function formWithdraw(f) {
-  const c = S.chain, tab = 'withdraw', l2 = S.dest !== 'addr' ? chainOf(S.dest) : null;
+  const c = S.chain, tab = 'withdraw', l2 = S.dest !== 'addr' ? chainOf(S.dest) : null, wdOn = LARGE_ON && c.chainId === 1 && !l2;
   const bridgeFee = BRIDGE_Q.fee?.[S.dest];
   mount(f, html`
     ${c.chainId === 1 ? html`<div class="seg sub" role="tablist" aria-label="Withdraw to">
@@ -3515,14 +3551,21 @@ function formWithdraw(f) {
     <div class="rcpt" id="f-rcpt" role="status" hidden></div>
     <button class="btn" type="button" id="f-go" aria-describedby="f-rcpt" disabled>${l2 ? `Move to ${l2.full}` : 'Withdraw'}</button>
     <p class="note">${l2 ? `Moves ETH over ${l2.full}’s canonical bridge into your private balance there, usually within minutes. The move, its amount and your deposit address there show on Ethereum; which of your notes paid does not.`
-      : html`The address and the amount show on chain, ${routeNote(tab, 'but nothing links them to you, and the relay cannot change them.', 'and so does your wallet as the sender.')}`}</p>`);
+      : html`The address and the amount show on chain, ${routeNote(tab, 'but nothing links them to you, and the relay cannot change them.', 'and so does your wallet as the sender.')}`}</p>${wdOn ? html`<div id="lg-wd"></div>` : ''}`);
   wireRoute(f, tab);
   $$('[data-dest]', f).forEach((b) => b.onclick = () => { S.dest = b.dataset.dest; renderForm(); if (S.dest !== 'addr') bridgeQuote(S.dest); });
   const to = $('#f-wto'), amt = $('#f-wamt'), go = $('#f-go'), rc = $('#f-rcpt');
+  // whole notes in the large pools (?fixed=1): an amount of a whole note or more takes these first, the rest comes from the private balance
+  let wd = null, wdPlan = null, wdList = [];
+  const notesFor = (a) => (!l2 && wdPlan && wdList.length && a ? wdPlan(a, wdList.map((x) => x.den)) : null);
   $('#f-me')?.addEventListener('click', () => { to.value = S.wallet; to.dispatchEvent(new Event('input')); });
   const feeNow = () => (l2 ? (BRIDGE_Q.fee[S.dest] ?? null) : relayFee(tab));
   const prepay = () => (l2 ? BRIDGE_Q.prepay[S.dest] || 0n : 0n);
-  $('#f-max').onclick = () => { const fee = feeNow(); if (fee == null || cur().bal == null) return; const cap = atCap(fee), v = maxSpend(cap, prepay()); amt.value = v ? plain(v) : ''; markMax(amt, !l2 && v && spendPlan(v, cap)?.merges === 0); amt.dispatchEvent(new Event('input')); };
+  $('#f-max').onclick = () => {
+    const fee = feeNow(); if (fee == null || cur().bal == null) return;
+    const cap = atCap(fee), extra = !l2 && wdPlan ? wdList.reduce((t, x) => t + x.den, 0n) : 0n, v = maxSpend(cap, prepay()) + extra;
+    amt.value = v ? plain(v) : ''; markMax(amt, !extra && !l2 && v && spendPlan(v, cap)?.merges === 0); amt.dispatchEvent(new Event('input'));
+  };
   const R = receipt(rc);
   rc.addEventListener('click', (e) => {
     const b = e.target.closest('#pv-round');
@@ -3533,7 +3576,7 @@ function formWithdraw(f) {
   const check = () => {
     const a = parseUnits(amt.value), fee = feeNow(), bal = cur().bal, raw = to?.value.trim() || '';
     maxOff($('#f-max'), l2 && fee == null ? 'Max fills in once the relay’s fee for the move is read' : maxWhy(fee, bal));
-    go.disabled = true;
+    go.disabled = true; go.textContent = l2 ? `Move to ${l2.full}` : 'Withdraw';
     const bad = (t) => R.set(html`<p class="note err" role="alert">${t}</p>`);
     if (!l2 && raw && !isAddr(raw)) return /^0x[0-9a-fA-F]{0,39}$/.test(raw) ? undefined : bad(/^bp1/i.test(raw) ? 'That is a pool address. Use Send to pay it privately.' : /^0x/i.test(raw) ? NOT_ADDR : 'Withdraw takes a 0x address. To pay a Tacit address or a name, use Send.');
     if (!l2 && raw && badSum(raw)) return bad(SUM_MSG);
@@ -3543,6 +3586,27 @@ function formWithdraw(f) {
       return R.set(!relayUp() || BRIDGE_Q.failed[S.dest]
         ? html`<p class="note err" role="alert">A move to ${l2.full} needs the relay, and it ${relayUp() ? 'did not give its fee for the move' : 'can’t take this one right now'}. <button class="link" type="button" id="f-bq">Try again</button></p>`
         : html`<p class="note">Reading the relay’s fee for the move…</p>`);
+    }
+    const px = notesFor(a), fromNotes = px?.total || 0n, rest = a - fromNotes;
+    if (fee == null && rest > 0n) return R.set(html`<p class="note">${relayUp() ? 'Reading the relay’s fee…' : 'The relay can’t take this one right now. Send it from your wallet instead, or try again in a moment.'}</p>`);
+    if (fromNotes > 0n) {
+      const capN = rest > 0n ? atCap(fee) : 0n, selfN = routeOf(tab) === 'wallet', planN = rest > 0n ? spendPlan(rest, capN) : null;
+      if (rest > 0n && bal != null && !planN) return bad(`Whole notes cover ${fmt(fromNotes, 18, 6)} ETH of this. The other ${fmt(rest, 18, 6)} ETH is more than your private balance covers with the fee.`);
+      const groups = new Map();
+      for (const i of px.picks) groups.set(wdList[i].den, (groups.get(wdList[i].den) || 0) + 1);
+      const words = [...groups].sort((x, y) => (x[0] < y[0] ? 1 : -1)).map(([d, n]) => `${n} × ${fmt(d, 18, 6)} ETH`).join(', ');
+      const changeN = planN && bal != null ? bal - planN.total : null;
+      R.set(html`${kvRow('From whole notes', words)}
+        ${kvRow('Their gas', `paid from the notes, at most ${MAX_NOTE_FEE_PERCENT}% of each`)}
+        ${rest > 0n ? kvRow('From your private balance', `${fmt(rest, 18, 6)} ETH`) : ''}
+        ${kvRow('Arrives', html`at least ${fmt(a - (fromNotes * BigInt(MAX_NOTE_FEE_PERCENT)) / 100n, 18, 6)} ETH on ${cname(c)}`)}
+        ${rest > 0n ? feeRow(fee, selfN) : ''}
+        ${rest > 0n ? mergeRow(fee, planN?.merges, selfN) : ''}
+        ${changeN != null ? keptRow(changeN, fee) : ''}
+        ${rest > 0n ? privacyView(c, rest, raw, selfN ? 'self' : null) : ''}`);
+      go.textContent = S.wallet ? 'Withdraw' : 'Connect wallet to use the notes';
+      go.disabled = false;
+      return;
     }
     if (fee == null) return R.set(html`<p class="note">${relayUp() ? 'Reading the relay’s fee…' : 'The relay can’t take this one right now. Send it from your wallet instead, or try again in a moment.'}</p>`);
     const cap = atCap(fee), plan = spendPlan(a + prepay(), cap), self = !l2 && routeOf(tab) === 'wallet';
@@ -3557,9 +3621,31 @@ function formWithdraw(f) {
       ${privacyView(c, a, l2 ? null : raw, l2 ? null : routeOf(tab) === 'wallet' ? 'self' : null)}`);
     go.disabled = false;
   };
-  go.onclick = () => { const maxFee = capOf(feeNow()); act(go, async (step) => {
+  go.onclick = () => { const maxFee = capOf(feeNow());
+    if (notesFor(parseUnits(amt.value))?.total && !S.wallet) return connectWallet().catch((e) => toast(errText(e), true));
+    act(go, async (step) => {
     const a = parseUnits(amt.value);
     if (!a) throw new Error('Enter an amount.');
+    const px = notesFor(a);
+    if (px?.total) {
+      const raw = to.value.trim(), rest = a - px.total;
+      if (badSum(raw)) throw new Error(SUM_MSG);
+      const outs = await wd.exit(step, c, px.picks.map((i) => wdList[i]), raw), got = outs.reduce((t, o) => t + o.receive, 0n);
+      const many = outs.length === 1 ? 'note' : 'notes';
+      let h = null, via = null;
+      if (rest > 0n) {
+        try {
+          via = viaFor(tab);
+          if (via) await signerFor(c).ready();
+          h = await (await walletOn(c)).withdraw({ to: raw, amount: rest, via, maxFee, onStep: step });
+        } catch (e) { throw new Error(`The ${many} went out (${fmt(got, 18, 6)} ETH to ${short(raw)}). The other ${fmt(rest, 18, 6)} ETH did not: ${errText(e)} It is still in your private balance.`); }
+      }
+      clearDraft('f-wamt');
+      const text = rest > 0n ? `Withdrew about ${exact(a)} ETH: ${outs.length} whole ${many} and ${exact(rest)} ETH from your private balance.` : `Withdrew ${fmt(got, 18, 6)} ETH from ${outs.length} whole ${many}.`;
+      if (h) return finish(c, h, via, text);
+      if (outs.every((o) => o.spent)) return done(c, outs[outs.length - 1].hash, text);
+      return say($('#status'), html`<span class="ok">${text}</span> <span class="mute">The pool has not shown all of it yet.</span>`);
+    }
     const W = await walletOn(c);
     if (l2) {
       const ok = (x) => !!CH[x.chainId].hist && !CH[x.chainId].histErr && !CH[x.chainId].hist.partial, missing = () => CHAINS.filter((x) => !ok(x) && (x === CHAINS[0] || boxTop(x) == null));
@@ -3586,7 +3672,9 @@ function formWithdraw(f) {
     await finish(c, h, via, `Withdrew ${whole ? 'at least ' : ''}${exact(a)} ETH.`);
   }, { bridge: l2 ? S.dest : null }); };
   if (l2 && BRIDGE_Q.fee?.[S.dest] == null) bridgeQuote(S.dest);
+  if (wdOn) largeWithdraw(c, (list) => { wdList = list; FORM.check?.(); }).then((x) => { if (x) { wd = x.ctl; wdPlan = x.planExit; FORM.check?.(); } });
 }
+const MAX_NOTE_FEE_PERCENT = 3;
 const BRIDGE_Q = { fee: {}, prepay: {}, busy: {}, failed: {} };
 async function bridgeQuote(dest) {
   if (BRIDGE_Q.busy[dest]) return;
