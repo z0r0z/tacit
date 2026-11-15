@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-O1j16gK3g/CEUh2Hg28BHsLT3yym8BRveN+L80KvUt4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-NIBjIelix56xglJMwD/f6rjrFEgYMQ4V0Dfk6OcqVsk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -3230,7 +3230,7 @@ function runJob(run, jobId, step, self = null) {
   if (to && !run.away && !OWN_JOB.test(jobId)) { try { handoff(run, main, step); } catch (e) { console.error('hand-off', e); } }
   else if (to?.doing && main && run.away) { const d = document.querySelector(`[data-op="${run.op}"] .hx-step`); if (d) d.textContent = `${stepWord(to.steps, to.steps)}${to.doing}. ${KEEP_OPEN}`; }
   if (!to?.one) return;
-  const op = actGet(run.op) || actPut(run.op, { kind: 'op', label: to.label, steps: [], status: 'pending', pub: run.pub, dest: to.dest || null, closing: to.done || undefined, share: to.share || undefined, sheet: run.sheet || undefined, own: OWN_JOB.test(jobId) ? (DEV_JOB.test(jobId) ? 'device' : true) : undefined });
+  const op = actGet(run.op) || actPut(run.op, { kind: 'op', label: to.label, steps: [], status: 'pending', pub: run.pub, dest: to.dest || null, closing: to.done || undefined, mid: to.mid || undefined, share: to.share || undefined, sheet: run.sheet || undefined, own: OWN_JOB.test(jobId) ? (DEV_JOB.test(jobId) ? 'device' : true) : undefined });
   for (const t of run.txs.splice(0)) { const x = actGet(t.id); if (x) { x.in = run.op; op.steps.push({ id: t.id, main: false, step: t.step, doing: t.doing }); } }
   op.steps.push({ id, main, step: main ? null : step.step, doing: main ? null : step.doing });
   if (self && main) op.self = self;
@@ -3412,7 +3412,7 @@ function actSaid(it, prev) {
   const link = it.hash ? html`<a href="${txUrl(it)}" target="_blank" rel="noopener">${txMark(it)}${txSite(it)} ↗</a>` : '';
   const good = it.status === 'settled' || it.status === 'confirmed', bad = it.status === 'failed' || it.status === 'unknown';
   const line = it.kind === 'op' && (good || bad) ? document.querySelector(`[data-op="${it.id}"]`)?.closest(STATUS_AT) : null;
-  if (line) say(line, good ? html`<span class="ok">✓ ${it.label}: done.</span>${it.dest ? html` Now at ${it.dest}.` : ''}${it.closing ? html` ${it.closing}` : ''}${it.share ? html` <button class="link" type="button" data-share="${it.share}">Copy a note for them</button>` : ''} ${link}` : html`<span class="err">${it.label} did not go through: ${linked(failText(it))}</span>`);
+  if (line) say(line, good ? html`<span class="ok">✓ ${it.label}: ${it.mid || 'done.'}</span>${it.dest ? html` Now at ${it.dest}.` : ''}${it.closing ? html` ${it.closing}` : ''}${it.share ? html` <button class="link" type="button" data-share="${it.share}">Copy a note for them</button>` : ''} ${link}` : html`<span class="err">${it.label} did not go through: ${linked(failText(it))}</span>`);
   const shown = !!line && inView;
   const spn = ownJob(it.id) || it.own;
   if ((it.kind === 'job' || it.kind === 'op') && prev == null && !ended(it)) {
@@ -3420,7 +3420,7 @@ function actSaid(it, prev) {
     else if (!(run?.noted && inView)) toast(html`${it.label}: queued for the relay. ${view}`);
   }
   else if (good && ['failed', 'stale', 'unknown'].includes(prev) && !it.sent) toast(html`${it.label} went through after all. ${link}`, false, 9000);
-  else if (good && !mine && !shown) toast(html`${it.label}: done.${it.closing ? html` ${it.closing}` : ''} ${link}`, false, 7000);
+  else if (good && !mine && !shown) toast(html`${it.label}: ${it.mid || 'done.'}${it.closing ? html` ${it.closing}` : ''} ${link}`, false, 7000);
   else if (bad && !shown && !(mine && inView)) toast(html`${it.label} did not go through: ${linked(failText(it))} ${view}`, true, 9000);
   if (good || bad) notifyOS(it, good);
   if ((good || bad) && !mine && prev != null) afterActivity();
@@ -7221,13 +7221,25 @@ async function xtAddCore({ run, r, wei, st }) {
 // The standalone farm that takes a token pool's share (the SPX page's Earn zaps into it), and the step that puts a share there.
 const farmEpoch = (p) => p?.epoch || FARM.program?.epoch;
 const spxFarmOf = (r) => (FARM.program?.pools || []).find((x) => x.standalone && r?.pool?.lp && String(x.lpAsset).toLowerCase() === String(r.pool.lp).toLowerCase()) || null;
+// A farm zap's item is done when its transaction lands, and the step that puts the share in the farm comes after it (a few minutes). Until that lands, the
+// item's line says so, in Activity and on the tile; the tile's line is only written over while it is still the one that says it is being put in.
+const FARMING = 'Putting it in the farm…';
+const farmNote = (run, text) => { if (run.op && actGet(run.op)) { actPut(run.op, { note: text }); paintAct(); } };
+const farmSay = (run, st, view) => { if (!run.away) run.say(st, view); else if (st?.isConnected && /putting it in the farm/i.test(st.textContent || '')) say(st, view); };
 async function xtBondShare(run, farm, built, st) {
   const leaf = String(built.leaf).toLowerCase(), tell = (m) => run.say(st, m);
   let note = null;
+  farmNote(run, FARMING);
   for (let i = 0; i < 8 && !note; i++) { await scanPrivate(true).catch(() => {}); note = (P.scan?.notes || []).find((n) => String(n.leaf).toLowerCase() === leaf); if (!note && i < 7) await sleep(4000); }
-  if (!note || !freeNotes([note]).length) { tell(html`<span class="ok">Your share is a private note.</span> It is not in the farm yet: farm it from Your Tacit.`); return; }
+  if (!note || !freeNotes([note]).length) {
+    farmNote(run, 'Your share is a private note. It is not in the farm yet: farm it from Your Tacit.');
+    farmSay(run, st, html`<span class="ok">Your share is a private note.</span> It is not in the farm yet: farm it from Your Tacit.`);
+    return;
+  }
   await stepBond(run, farm, [note], tell, st);
-  tell(html`<span class="ok">${farmEpoch(farm)?.active ? 'In the farm: TAC is streaming to your private position.' : 'In the farm. It earns once its TAC stream starts.'}</span>`);
+  const inFarm = farmEpoch(farm)?.active ? 'In the farm: TAC is streaming to your private position.' : 'In the farm. It earns once its TAC stream starts.';
+  farmNote(run, inFarm);
+  farmSay(run, st, html`<span class="ok">✓ ${inFarm}</span>`);
   toast('In the farm');
   await Promise.allSettled([scanPrivate(true), loadPositions(), loadFarms(true, { private: true })]);
 }
@@ -7277,13 +7289,20 @@ async function xtEarnGo(run, key, units) {
   if (!r || !wei) return;
   PROVE_AT.el = st;
   try {
-    run.go({ label: start ? `Start the tETH / ${r.sym} pool with ${fmt(wei, 18, 6)} ETH` : `Add ${fmt(wei, 18, 6)} ETH to tETH / ${r.sym}`, status: () => st, clear: hxEarnClear, mine: true });
     const farm = !start && SPXP && !HX.lp ? spxFarmOf(r) : null;
+    run.go({ label: start ? `Start the tETH / ${r.sym} pool with ${fmt(wei, 18, 6)} ETH` : `Add ${fmt(wei, 18, 6)} ETH to tETH / ${r.sym}`, status: () => st, clear: hxEarnClear, mine: true, mid: farm ? `added, ${FARMING.charAt(0).toLowerCase()}${FARMING.slice(1)}` : undefined });
     let hash, built = null;
     if (start) hash = await xtStartCore({ run, r, wei, st }); else ({ hash, built } = await xtAddCore({ run, r, wei, st }));
     run.say(st, html`<span class="ok">${start ? `The tETH / ${r.sym} pool is open, and your share in it is a private note.` : `Added: your tETH / ${r.sym} share is a private note.${farm ? ' Putting it in the farm…' : ''}`}</span> ${txLink(hash)}`);
     toast(start ? `tETH / ${r.sym} pool started` : 'Liquidity added');
-    if (farm && built) await xtBondShare(run, farm, built, st);
+    if (farm && built) {
+      try { await xtBondShare(run, farm, built, st); }
+      catch (e) {
+        farmNote(run, 'Added, but not in the farm yet: farm it from Your Tacit.');
+        farmSay(run, st, html`<span class="err">Added, but not in the farm yet: ${errText(e)} Farm it from Your Tacit.</span>`);
+        throw e;
+      }
+    }
     run.release?.();
     await scanPrivate(true).catch(() => {});
     hxEarnClear(); hxEarnAfter();

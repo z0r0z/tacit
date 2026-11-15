@@ -27,7 +27,10 @@ ok(/<html lang="en" data-page="spx">/.test(page) && /<html lang="en">/.test(fron
   // and the hand-off says the page sends it
   const zap = front.slice(front.indexOf('async function xtZapSend('), front.indexOf('async function xtStartCore('));
   ok(/finishes: \[nest, proven\.jobId && 'job:' \+ proven\.jobId\]\.filter\(Boolean\)/.test(zap) && /nest, finishes/.test(zap), 'the zap transaction is nested in its op and finishes the proof job, so Activity closes when it lands');
-  ok((front.match(/clear: [^}]*, mine: true \}\);/g) || []).length === 2 && /run\.to\.mine \? `It is proved in about a minute, then sent from your account\./.test(front), 'both zap runs say the page sends it, not "you can close this"');
+  ok((front.match(/, mine: true\b/g) || []).length === 2 && /run\.to\.mine \? `It is proved in about a minute, then sent from your account\./.test(front), 'both zap runs say the page sends it, not "you can close this"');
+  // a farm zap's item is done when its transaction lands, but the share is not in the farm for minutes more: the tile line and the Activity row say so until it is
+  ok(/mid: farm \? `added, \$\{FARMING\.charAt\(0\)\.toLowerCase\(\)\}\$\{FARMING\.slice\(1\)\}` : undefined/.test(front) && front.includes("const FARMING = 'Putting it in the farm…';") && (front.match(/\$\{it\.mid \|\| 'done\.'\}/g) || []).length === 2 && /closing: to\.done \|\| undefined, mid: to\.mid \|\| undefined/.test(front), 'a farm zap’s line says “added, putting it in the farm…”, not “done”, when its transaction lands');
+  ok(/farmNote\(run, FARMING\);/.test(front) && /farmNote\(run, inFarm\);\s+farmSay\(run, st, html`<span class="ok">✓ \$\{inFarm\}<\/span>`\);/.test(front) && /Added, but not in the farm yet: \$\{errText\(e\)\} Farm it from Your Tacit\./.test(front), 'and then that it is in the farm, or that it is not yet and why (Activity row and tile)');
   ok(/const PROTECT_RPC = 'https:\/\/rpc\.flashbots\.net\/fast\?hint=hash';/.test(front), 'a protected send goes to Flashbots Protect in fast mode (every builder), not the default that left a zap unmined for minutes');
 }
 ok(/<title>tacit SPX<\/title>/.test(page) && /<link rel="canonical" href="https:\/\/tacit\.finance\/spx\/">/.test(page), 'it is called tacit SPX, at /spx/');
