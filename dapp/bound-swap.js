@@ -560,3 +560,15 @@ export function buyerReclaim({ prims, commitHex, swap, buyerKey = prims.wallet.p
   tx.inputs[0].witness = [signSchnorr(prims.tapSighash(tx, 0, ps, swap.leafHash, 0x00), k), swap.envelopeScript, swap.controlBlock];
   return { hex: bytesToHex(writeTx(tx)), txid: txidOf(tx), value };
 }
+
+// How a bought note goes home by the fast lane: through the relay, for its fee in the token, when the relay quotes one; else the
+// wallet settles it itself (fee 0, Ethereum gas from the wallet), since a runtime token the relay does not price has no quote.
+// quote: async () => the relay's fee in base units (throws or returns null when there is none).
+export async function homeFeePlan({ quote, amount }) {
+  const total = asBig(amount);
+  let fee = null;
+  try { const q = await quote(); fee = q == null ? null : asBig(q); } catch { fee = null; }
+  if (fee == null || fee < 0n) return { fee: 0n, selfRelay: true };
+  if (fee >= total) fail('this note is smaller than the fee of moving it');
+  return { fee, selfRelay: false };
+}

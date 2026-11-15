@@ -28707,10 +28707,10 @@ async function moveBoundNoteHome(note) {
   const lane = await fastLaneNote({ pool: ux.pool, roots, witnessFor, chainBinding: binding, authKey: '0x' + bytesToHex(secp.getPublicKey(authPriv, true).slice(1)),
     note: { txid: note.txid, vout: note.vout, value: note.value ?? DUST, amount: BigInt(note.amount), blinding: BigInt(note.blinding), asset: aid } });
   if (!lane.ready) throw new Error(lane.why === 'reflecting' ? 'this note is not ready yet: Bitcoin\'s proof on Ethereum has not reached its block' : lane.why === 'spent' ? 'this note is already spent' : 'the relay and the pool differ for now: try again in a few minutes');
-  let fee = 0n;
-  try { const row = ux.assetById ? ux.assetById(aid) : null; fee = BigInt(await ux.quoteTransferFee(BigInt(note.amount), row?.ticker || aid)); } catch { fee = 0n; }
-  if (fee >= BigInt(note.amount)) throw new Error('this note is smaller than the fee of moving it');
-  return ux.fastlaneExit({ walletPriv: wallet.priv, notes: [lane.input], authPriv: '0x' + bytesToHex(authPriv), spendRoot: lane.spendRoot, bitcoinSpentRoot: lane.bitcoinSpentRoot, fee, selfRelay: false });
+  // the relay settles it for its quoted fee in the token; with no quote (a runtime token it does not price) the wallet settles it itself
+  const { homeFeePlan } = await _boundSwapLib();
+  const plan = await homeFeePlan({ amount: note.amount, quote: async () => { const row = ux.assetById ? ux.assetById(aid) : null; return ux.quoteTransferFee(BigInt(note.amount), row?.ticker || aid); } });
+  return ux.fastlaneExit({ walletPriv: wallet.priv, notes: [lane.input], authPriv: '0x' + bytesToHex(authPriv), spendRoot: lane.spendRoot, bitcoinSpentRoot: lane.bitcoinSpentRoot, fee: plan.fee, selfRelay: plan.selfRelay });
 }
 
 async function listWatchtowerBids() {
