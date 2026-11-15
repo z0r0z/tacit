@@ -10,7 +10,8 @@ globalThis.window = dom.window;
 globalThis.document = dom.window.document;
 globalThis.localStorage = dom.window.localStorage;
 globalThis.location = dom.window.location;
-globalThis.navigator = dom.window.navigator;
+// Node 22 has its own read-only navigator: define it rather than assign it
+Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true, writable: true });
 globalThis.prompt = () => null;
 globalThis.alert = () => {};
 globalThis.confirm = () => false;
