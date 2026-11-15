@@ -183,6 +183,37 @@ try {
     ok(errs2.length === 0, `no page errors${errs2.length ? ': ' + errs2.slice(0, 2).join(' | ') : ''}`);
     await c2.close();
   }
+
+  // notes of 0 TAC (the change and padding a transfer leaves): not listed in the Bridge tab, not counted, and the one note that holds TAC still is
+  for (const [label, spec, want] of [
+    ['a 1,000 TAC note and two of 0 TAC', [{ asset: TAC, id: 'cc', amount: '100000000000' }, { asset: TAC, id: 'ee', amount: '0' }, { asset: TAC, id: 'ff', amount: '0' }], 1],
+    ['only notes of 0 TAC', [{ asset: TAC, id: 'ee', amount: '0' }, { asset: TAC, id: 'ff', amount: '0' }], 0],
+  ]) {
+    const c3 = await contextWith(spec);
+    const p3 = await c3.newPage();
+    const errs3 = []; p3.on('pageerror', (e) => errs3.push(String(e.message || e)));
+    const t3 = (sel) => p3.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
+    await p3.goto(BASE + '/', { waitUntil: 'commit' });
+    await p3.waitForSelector('#wallet', { timeout: 30000 });
+    await p3.click('#wallet');
+    await p3.waitForSelector('#ws-in', { timeout: 15000 });
+    await p3.click('#ws-in [data-in="paste"]');
+    await p3.fill('#ws-hex', KEY);
+    await p3.click('#ws-in [data-in="key"]');
+    await p3.waitForFunction(() => (document.querySelector('#wd-id')?.textContent || '').length > 12, null, { timeout: 30000 });
+    await p3.keyboard.press('Escape');
+    await p3.waitForFunction(() => !document.querySelector('dialog.sheet[open]'), null, { timeout: 10000 }).catch(() => {});
+    await p3.click('#hx [data-hxm="more"]');
+    await p3.click('#hx [data-hxm="bridge"]').catch(() => {});
+    await p3.waitForFunction(() => /Bitcoin/.test(document.querySelector('#hx-have')?.textContent || ''), null, { timeout: 40000 }).catch(() => {});
+    await p3.waitForTimeout(1500);
+    const rows3 = await p3.$$eval('#hx-routes [data-hxr]', (bs) => bs.map((b) => b.textContent.replace(/\s+/g, ' ').trim()));
+    ok(rows3.length === want && !rows3.some((r) => /Holds no TAC|^0 TAC/.test(r)), `${label}: ${want} row${want === 1 ? '' : 's'} in the note list, none of 0 TAC: ${JSON.stringify(rows3)}`);
+    const have = await t3('#hx-have');
+    ok(want ? /in 1 note(?!s)/.test(have) && !/cannot be bridged/.test(have) : /No TAC on this key/.test(have), `${label}: the line over the button counts only what holds TAC: "${have}"`);
+    ok(errs3.length === 0, `no page errors${errs3.length ? ': ' + errs3.slice(0, 2).join(' | ') : ''}`);
+    await c3.close();
+  }
 } finally {
   await browser.close(); server.close();
 }
