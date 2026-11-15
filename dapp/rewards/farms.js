@@ -32,7 +32,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
   const jr = joinAt || root;                                                           // where the join's form and fields are
   let lockedWhy = '';                                                                  // why the key was locked, when the wallet that opened it moved
   const now = () => (D?.clock ? D.clock.t + (Date.now() - D.clock.at) / 1000 : undefined);   // the chain's time, carried on from its read
-  const key = session || makeKeySession({ moved: (why) => forget(why || '') });
+  const key = session || makeKeySession({ moved: (why) => forget(why || ''), busy: () => !!D?.busy });
   const run = () => (runner ||= makeRunner({ api: API, base: async () => (await import('/confidential-deployments.js')).getConfidentialDeployment('mainnet')?.relayBase || API, pub: () => key.key?.pubHex || null }));
   const settled = (r) => { if (r?.jobId) run().journal.put('job:' + r.jobId, { status: 'settled', hash: r.txHash || undefined }); };
   function forget(why = null) { if (typeof why === 'string') lockedWhy = why; key.lock(); forgetUx(); seq++; D = null; paint(); }

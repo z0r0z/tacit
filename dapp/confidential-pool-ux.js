@@ -502,16 +502,19 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }));
   const _rev = (h) => (String(h).replace(/^0x/, '').match(/../g) || []).reverse().join('');
   const _ckKey = (pubHex) => `tacit-memo-ck-v1:${network || activeNetwork()}:${_hex(sha256(new TextEncoder().encode('tacit-memo-ck-v1:' + lc(pubHex)))).slice(0, 32)}`;
-  function _leavesDigest(leaves, upTo) {
-    const enc = new TextEncoder();
-    let h = new Uint8Array(32);
-    for (let i = 0; i < upTo; i += 256) {
-      let s = '';
-      for (let j = i; j < Math.min(upTo, i + 256); j++) { const l = leaves[j]; s += lc(l.leaf) + '|' + (typeof l.memo === 'string' ? l.memo : JSON.stringify(l.memo ?? '')) + ';'; }
-      const b = enc.encode(s), c = new Uint8Array(32 + b.length); c.set(h); c.set(b, 32);
-      h = sha256(c);
-    }
-    return _hex(h);
+  // A digest of the leaves below `upTo`, taken a block of 256 at a time, each block folded into the one before. `state` ({ at, h }, the fold over the
+  // whole blocks below `at`) lets a caller that asks again for a larger `upTo` carry on from where it stopped instead of reading every leaf again; the value
+  // is the same either way, and the same as before the state existed, so a checkpoint kept by an older page is still read.
+  const _enc = new TextEncoder();
+  function _leavesBlock(leaves, from, to) {
+    let s = '';
+    for (let j = from; j < to; j++) { const l = leaves[j]; s += lc(l.leaf) + '|' + (typeof l.memo === 'string' ? l.memo : JSON.stringify(l.memo ?? '')) + ';'; }
+    return _enc.encode(s);
+  }
+  const _fold = (h, b) => { const c = new Uint8Array(32 + b.length); c.set(h); c.set(b, 32); return sha256(c); };
+  function _leavesDigest(leaves, upTo, state = { at: 0, h: new Uint8Array(32) }) {
+    while (state.at + 256 <= upTo) { state.h = _fold(state.h, _leavesBlock(leaves, state.at, state.at + 256)); state.at += 256; }
+    return _hex(state.at < upTo ? _fold(state.h, _leavesBlock(leaves, state.at, upTo)) : state.h);
   }
   function _loadMemoCk(key, leaves) {
     if (typeof localStorage === 'undefined') return null;
@@ -521,9 +524,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       return o.digest === _leavesDigest(leaves, o.upTo) ? o : null;
     } catch { return null; }
   }
-  function _saveMemoCk(key, leaves, found) {
-    if (typeof localStorage === 'undefined' || !leaves.length) return;
-    try { localStorage.setItem(key, JSON.stringify({ v: 1, upTo: leaves.length, digest: _leavesDigest(leaves, leaves.length), mine: found.map((n) => n.leafIndex) })); } catch {}
+  // `upTo` below the end of the leaves is a partial checkpoint: a scan cut short keeps how far it got (everything below it opened or ruled out) and the next one
+  // starts there; it is read back by _loadMemoCk like any other, whose digest says whether the leaves below it are still the same.
+  function _saveMemoCk(key, leaves, found, upTo = leaves.length, state = undefined) {
+    if (typeof localStorage === 'undefined' || !leaves.length || !(upTo >= 1) || upTo > leaves.length) return;
+    try { localStorage.setItem(key, JSON.stringify({ v: 1, upTo, digest: _leavesDigest(leaves, upTo, state), mine: found.filter((n) => n.leafIndex < upTo).map((n) => n.leafIndex) })); } catch {}
   }
   const _bridgeFound = new Map();
   const _bridgeFastTried = new Set();
@@ -820,8 +825,17 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (btcHist) btcHist.catch(() => {});
 
     const held = leaves.filter(Boolean);
-    const fromMemos = await memo.scanSliced(_scanKeyHex(id.priv), quick ? held.slice(-recent) : held, [], memoNu, { covered, filter: _memoFilter });
-    if (!quick) _saveMemoCk(_ck, leaves, fromMemos);
+    // a partial checkpoint stops at a whole block of 256 leaves, so the digest of what is kept is carried on from the one before and every leaf is read once
+    let ckAt = 0, ckUpTo = 0;
+    const ckState = { at: 0, h: new Uint8Array(32) };
+    const keepProgress = quick ? null : ({ upTo, mine }) => {
+      const now = Date.now(), at = upTo - (upTo % 256);
+      if (now - ckAt < 2500 || at <= ckUpTo) return;
+      ckAt = now; ckUpTo = at;
+      _saveMemoCk(_ck, leaves, mine, at, ckState);
+    };
+    const fromMemos = await memo.scanSliced(_scanKeyHex(id.priv), quick ? held.slice(-recent) : held, [], memoNu, { covered, filter: _memoFilter, onProgress: keepProgress });
+    if (!quick) _saveMemoCk(_ck, leaves, fromMemos, leaves.length, ckState);
     diag.quick = quick;
     for (const n of fromMemos) all.set(lc(n.leaf), { ...n, inboundUnverified: true });
     diag.memoNotes = all.size;

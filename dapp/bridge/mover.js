@@ -30,7 +30,7 @@ const BURN_SENT = ['burn-submitted', 'burn-mined', 'registered', 'folded', 'mint
 
 // `repaint()` reads the journals again; `say(text, front)` writes the status line (`front`: the text ends with the way to the front page).
 export function mountMover({ pick, repaint = () => {}, say = () => {}, onState = () => {} } = {}) {
-  const key = makeKeySession({ moved: (why) => { lockNow(); say(why); }, ways: { btc: btcWay(), btcSeen } });
+  const key = makeKeySession({ moved: (why) => { lockNow(); say(why); }, busy: () => busy, ways: { btc: btcWay(), btcSeen } });
   const TS = makeTacitSession({ url: TACIT_URL, key: () => (key.unlocked ? { pubHex: key.key.pubHex, priv: bytesToHex(key.priv()) } : null), secp, bytesToHex, hexToBytes });
   let timer = null, busy = false, pressing = false, last = 0, loadSaid = false;     // busy: a pass is running (a press runs beside it: the engines lease each bridge, and a mint's wait for the relay lasts minutes); pressing: a press is running (the tick waits for it, so a ready step is not taken by itself meanwhile)
   const rechecked = {};                                                              // when a burn whose claim was not matched was last looked at again (stepOut waits ten minutes)

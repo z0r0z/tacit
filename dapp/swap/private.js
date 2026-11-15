@@ -31,7 +31,7 @@ const EXIT_TTL = 1800;
 const nonce = () => BigInt('0x' + Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')).toString();
 
 export function makePrivate({ getUx, pick, onKey = () => {}, session = null, openKey = null, wait = null, selfSettle = null, here = null, now = Date.now } = {}) {
-  const key = session || makeKeySession({ moved: (why) => { lock(); onKey(why); } });
+  const key = session || makeKeySession({ moved: (why) => { lock(); onKey(why); }, busy: () => busy.size > 0 });
   let held = null, heldP = null, runner = null, opening = null;
   const busy = new Map();
   const free = (n) => !(Date.now() - (busy.get(lc(n.leaf)) || 0) < IN_USE_MS);

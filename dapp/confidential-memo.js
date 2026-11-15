@@ -123,7 +123,9 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   // confidential-memo-workers.js). One entry per memo asked about: 0 it is not the key's, 1 it may be, -1 not known. A memo it does not
   // rule out is opened here in full, exactly as without it, so a filter that is slow, fails, or says nothing changes what is found
   // only in how long it takes.
-  async function scanSliced(myPriv, events, spentNullifiers, nullifierOf, { sliceMs = 12, covered = null, filter = null } = {}) {
+  // `onProgress({ upTo, mine })` after each batch of `batch` memos: every event below leaf index `upTo` has been opened or ruled out, and `mine` are the notes found
+  // so far (all below it). A caller keeps it as a checkpoint, so a scan that is cut short (a tab closed, a page left) starts again from there, not from nothing.
+  async function scanSliced(myPriv, events, spentNullifiers, nullifierOf, { sliceMs = 12, covered = null, filter = null, onProgress = null, batch = 1500 } = {}) {
     const known = covered ? new Set(covered.mine) : null;
     const spent = new Set((spentNullifiers || []).map((n) => n.toLowerCase()));
     const kid = bytesToHex(sha256(utf8.encode('tacit-memo-tried-v1:' + String(myPriv).toLowerCase())));
@@ -142,26 +144,36 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
         plan.push({ ev, m, text, id, said: -1 });
       } catch { /* an event that cannot be processed is skipped; the rest of the scan continues */ }
     }
-    if (filter) {
-      const asked = plan.filter((p) => p.id);
-      if (asked.length) {
-        let said = null;
-        try { said = await filter(myPriv, asked.map((p) => p.text)); } catch { said = null; }
-        if (said && said.length === asked.length) asked.forEach((p, i) => { p.said = said[i]; });
+    // a frontier is only a frontier when the events come in leaf order, as the indexer gives them
+    const inOrder = plan.every((x, i) => i === 0 || Number(x.ev.leafIndex) >= Number(plan[i - 1].ev.leafIndex));
+    for (let from = 0; from < plan.length; from += batch) {
+      const part = plan.slice(from, from + batch);
+      if (filter) {
+        const asked = part.filter((p) => p.id);
+        if (asked.length) {
+          let said = null;
+          try { said = await filter(myPriv, asked.map((p) => p.text)); } catch { said = null; }
+          if (said && said.length === asked.length) asked.forEach((p, i) => { p.said = said[i]; });
+        }
       }
-    }
-    for (const { ev, m, id, said } of plan) {
-      if (Date.now() - t0 > sliceMs) { await handBack(); t0 = Date.now(); }
-      try {
-        if (id && tried.get(id) === false) continue;
-        if (id && said === 0) { tried.set(id, false); continue; }
-        const note = openMemo(myPriv, ev && ev.leaf, m);
-        if (id) tried.set(id, !!note);
-        if (!note) continue;
-        const nullifier = nullifierOf(note, ev.leaf);
-        if (spent.has(nullifier.toLowerCase())) continue;
-        mine.push({ ...note, leaf: ev.leaf, leafIndex: ev.leafIndex, nullifier });
-      } catch { /* an event that cannot be processed is skipped; the rest of the scan continues */ }
+      for (const { ev, m, id, said } of part) {
+        if (Date.now() - t0 > sliceMs) { await handBack(); t0 = Date.now(); }
+        try {
+          if (id && tried.get(id) === false) continue;
+          if (id && said === 0) { tried.set(id, false); continue; }
+          const note = openMemo(myPriv, ev && ev.leaf, m);
+          if (id) tried.set(id, !!note);
+          if (!note) continue;
+          const nullifier = nullifierOf(note, ev.leaf);
+          if (spent.has(nullifier.toLowerCase())) continue;
+          mine.push({ ...note, leaf: ev.leaf, leafIndex: ev.leafIndex, nullifier });
+        } catch { /* an event that cannot be processed is skipped; the rest of the scan continues */ }
+      }
+      if (onProgress && inOrder && from + batch < plan.length) {
+        const last = part[part.length - 1];
+        const at = Number(last.ev && last.ev.leafIndex);
+        if (Number.isInteger(at)) { try { onProgress({ upTo: at + 1, mine }); } catch { /* a checkpoint that could not be kept does not stop the scan */ } }
+      }
     }
     return mine;
   }

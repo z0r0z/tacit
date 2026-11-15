@@ -493,7 +493,7 @@ const getUx = () => (uxP ||= import('/trade/poolux.js?cb=59d125e5').then((m) => 
 function session() {
   return keyP ||= import('/trade/key.js?cb=67d4d4de').then((m) => {
     K = m;
-    key = m.makeKeySession({ moved: (why) => { mineUi ? mineUi.forget(why) : key.lock(); statusEl.innerHTML = `<span class="err">${esc(why)}</span>`; } });
+    key = m.makeKeySession({ moved: (why) => { mineUi ? mineUi.forget(why) : key.lock(); statusEl.innerHTML = `<span class="err">${esc(why)}</span>`; }, busy: () => !!Z.busy });
     key.onChange(onKey);
     // The key this tab already held is opened again in the background, once its wallet answers: a wallet that never does (locked, or
     // busy with another request) holds nothing up, and the panel and the presses are there at once.
@@ -671,7 +671,7 @@ $('#pz-loose').addEventListener('click', async (e) => {
 
 // the key's positions in the private farms: the rewards page's panel, on this page's key
 function mountMine() {
-  return mineP ||= import('/rewards/farms.js?cb=246db255').then((m) => {
+  return mineP ||= import('/rewards/farms.js?cb=00c8a7fb').then((m) => {
     mineUi = m.mountFarms($('#pf-mine'), { pick: pickProvider, session: key, wallet, W, connect: () => connect.connect(), program: () => S.prog,
       names: () => new Map(S.priv.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = S.priv.find((x) => String(x.pid) === String(pid))?.icons; return icons ? pairIcons(icons) : ''; },
       onRead: (list) => { S.mine = new Map(list.map((p) => [Number(p.pid), p])); paint(); },

@@ -69,7 +69,7 @@ const getUx = async () => { const ux = await loadUx(); ux.useWallet(() => wallet
 // a Bitcoin wallet opens the key through tacit.js, which this page loads for the bridge anyway. The wallet that opened the key moving to
 // another account, or locking, locks the key in full (the session, the pool module's copies and the provider go with it, through onChange),
 // and then the card says why.
-const keyS = makeKeySession({ moved: (why) => { keyS.lock(); ui?.lock(why); }, ways: { btc: (k) => TS.turn(() => openBtcWallet(TS.T, { k, tPriv: TS.tPriv, passkey: isPasskeyAvailable() })) } });
+const keyS = makeKeySession({ moved: (why) => { keyS.lock(); ui?.lock(why); }, busy: () => !!provide?.busy?.(), ways: { btc: (k) => TS.turn(() => openBtcWallet(TS.T, { k, tPriv: TS.tPriv, passkey: isPasskeyAvailable() })) } });
 TS = makeTacitSession({ url: TACIT_URL, key: () => (keyS.unlocked ? { pubHex: keyS.key.pubHex, priv: bytesToHex(keyS.priv()) } : null), secp, bytesToHex, hexToBytes });
 keyS.onChange(() => { if (!keyS.unlocked) { TS.drop(); forgetUx(); } });
 

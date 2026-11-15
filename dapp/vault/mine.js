@@ -47,7 +47,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
   let D = null, seq = 0, histP = null, runner = null;
   const gone = new Set();                                                              // locks taken back here, left out before Bitcoin's history says so
   let lockedWhy = '';                                                                  // why the key was locked, when the wallet that opened it moved
-  const key = makeKeySession({ moved: (why) => { lockedWhy = why || ''; forget(); }, ways: { btc: btcWay(), btcSeen } });
+  const key = makeKeySession({ moved: (why) => { lockedWhy = why || ''; forget(); }, busy: () => !!D?.busy, ways: { btc: btcWay(), btcSeen } });
   const LN = makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex: () => key.key?.pubHex });
   const run = () => (runner ||= makeRunner({ api: API, base: async () => (await import('/confidential-deployments.js')).getConfidentialDeployment('mainnet')?.relayBase || API, pub: () => key.key?.pubHex || null, btcConfirmed: async (txid) => !!(await esplora(`/tx/${txid}/status`))?.confirmed }));
   const history = () => (histP ||= import('/confidential-recovery-btc.js').then(({ makeBtcHistoryProvider }) => makeBtcHistoryProvider({ sha256, hrp: 'bc', fetchImpl: (u, o) => fetch(u, o) })));

@@ -296,7 +296,7 @@ function paintSteps(now_ = null, { failed = false, all = false } = {}) {
   el.innerHTML = list.map(([k, t], i) => `<li data-s="${all ? 'done' : i < at ? 'done' : i === at ? (failed ? 'fail' : 'now') : 'todo'}"><span>${esc(t).replace('{eth}', chainMark('eth', 'Ethereum'))}</span></li>`).join('');
 }
 
-const key = makeKeySession({ moved: (why) => { lockKey(); say(why, true); } });
+const key = makeKeySession({ moved: (why) => { lockKey(); say(why, true); }, busy: () => !!S.busy });
 const connect = makeConnect({
   describe: 'Make ETH private',
   rows: () => `${D.bal?.eth != null ? `<div class="kv"><span>ETH</span><b class="num">${esc(fmtUnits(D.bal.eth, 18, 4))}</b></div>` : ''}${key.unlocked ? `<div class="kv"><span>Tacit wallet</span><b class="addr-s">${esc(key.key.address ? short(key.key.address, 6) : key.key.label || short(key.key.pubHex, 6))} <button class="linkbtn" type="button" id="sheet-lock">Lock</button></b></div>` : ''}`,
