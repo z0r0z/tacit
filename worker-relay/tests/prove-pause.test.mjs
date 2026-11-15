@@ -127,7 +127,7 @@ test('the settle loop sends board proofs while paused, claims nothing, and says 
   assert.ok(at('await openCycle()') < at('if (paused) return false;'), 'sending from the open board (gas, not PROVE) runs while paused');
   assert.ok(at('if (paused) return false;') < at('await batchCycle()') && at('if (paused) return false;') < at('await confidentialJob('), 'nothing is claimed while paused');
   assert.ok(at('await pauseOn(e);') < at('error: `prove failed: ${safeErr(e)}`'), 'the pause (and its note) comes before the failed ack');
-  assert.match(src, /if \(!worked\) \{ if \(!standing\) await heartbeatIdle\(/, 'an idle beat never hides the standing note');
+  assert.match(src, /if \(!worked\) \{ if \(!standing\) await sendBeatIdle\(/, 'an idle beat never hides the standing note');
   assert.match(src, /async function settleOne\(j\) \{\n\s*if \(pause\.paused\(\)\)/, 'a batch member claimed before the pause is not proved');
 });
 

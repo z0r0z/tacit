@@ -584,6 +584,9 @@ async function settleOne(j) {
     return;
   }
   if (await skipConsumed(j)) return;
+  // Beat before the proof, as the ordinary single path does: `beating` only starts beating after four minutes, so a job that
+  // fails faster than that (every member of a batch the chain refuses comes through here) would pass without one.
+  await beat(`proving ${j.jobId} ${j.type}`);
   try {
     const proof = await beating(`proving ${j.jobId} ${j.type}`, () => proveSettle({ type: j.type, op: j.op, memos: j.memos || [], timeoutMs: CFG.settleJobTimeoutSecs * 1000 }))
       .catch(async (e) => { await pauseOn(e); throw e; });
@@ -885,10 +888,10 @@ let standing = null, standingAt = 0;
 async function standWith(note) {
   const was = standing;
   standing = note;
-  if (!note) { if (was) await heartbeat('settle', 'taking jobs again'); return; }
+  if (!note) { if (was) await sendBeat('taking jobs again'); return; }
   if (note === was && Date.now() - standingAt < 60_000) return;
   standingAt = Date.now();
-  await heartbeat('settle', note);
+  await sendBeat(note);
 }
 // Proofs that failed in the last hour (the board and the network both refusing, say) ride on every heartbeat note, so the monitor
 // (balance-monitor.js checkProverKinds) can say so: a relay that is up and failing every job otherwise reads as healthy.
@@ -896,7 +899,15 @@ const proveFailAt = [];
 function noteProveFailure() { proveFailAt.push(Date.now()); }
 function recentProveFailures(now = Date.now()) { while (proveFailAt.length && now - proveFailAt[0] > 3_600_000) proveFailAt.shift(); return proveFailAt.length; }
 const withFailures = (detail) => { const n = recentProveFailures(); return n ? `${detail || ''} · ${n} prove failure${n === 1 ? '' : 's'} in the last hour` : detail; };
-const beat = (detail) => heartbeat('settle', withFailures(standing || detail));
+// Every beat of this loop's goes through here, so the loop below can tell a cycle that beat from one that has gone quiet
+// while still working (see the floor there).
+let lastBeatAt = 0;
+// Well inside the ten quiet minutes after which /prover-health calls a kind down, so a working loop is never read as a dead one.
+const BEAT_FLOOR_MS = 3 * 60_000;
+// Every heartbeat this file sends goes through sendBeat, so `lastBeatAt` means what it says whichever path sent it.
+const sendBeat = (detail) => { lastBeatAt = Date.now(); return heartbeat('settle', detail); };
+const sendBeatIdle = (detail) => { lastBeatAt = Date.now(); return heartbeatIdle('settle', detail); };
+const beat = (detail) => sendBeat(withFailures(standing || detail));
 // What a failed proof tells the job (and so the holder's page): a reason in the op is kept in the relay's words (it is theirs to act
 // on); a reason on the relay's side (its prover did not run, the board was away, a timeout) is said plainly, with nothing of the
 // relay's insides in it. The full error is in the log either way.
@@ -1242,7 +1253,7 @@ async function main() {
       if ((Date.now() - t0) / 1000 > CFG.cronBudgetSecs) { log('cron budget reached — exiting'); break; }
       let worked;
       try { worked = await cycle(); }
-      catch (e) { log('cycle error — exiting cron run:', e.message); await heartbeat('settle', `error ${safeErr(e)}`); break; }
+      catch (e) { log('cycle error — exiting cron run:', e.message); await sendBeat(`error ${safeErr(e)}`); break; }
       if (!worked) { log('queue drained — cron run done'); await beat('queue drained'); break; }
     }
     return;
@@ -1261,7 +1272,13 @@ async function main() {
       // goes stale (and "down") after 10 quiet minutes on a perfectly healthy relay. heartbeat() itself
       // only fires on real activity (proving/settled/error), so idle time needs its own signal. While the relay is short or
       // paused, its standing note is the signal (standWith), and an idle beat would hide it.
-      if (!worked) { if (!standing) await heartbeatIdle('settle', 'idle — queue empty'); await abandoned.sweep(); }
+      if (!worked) { if (!standing) await sendBeatIdle('idle — queue empty'); await abandoned.sweep(); }
+      // A cycle that worked beats from the paths above — but one that fails FAST does not have to: a job the chain refuses is
+      // acked failed and dropped in well under `beating`'s four minutes, so a steady stream of them can hold the loop for
+      // ten minutes without a beat, and /prover-health then calls the relay "down" while it is up and failing every job
+      // (which is the moment the reading matters most). This floor makes that case beat; withFailures() puts the count of
+      // recent prove failures in the note, so "up and failing" is not mistaken for "up and well".
+      else if (Date.now() - lastBeatAt > BEAT_FLOOR_MS) await beat('working');
       // Between jobs as well as when idle: a steady stream of jobs is when the prover credit drains fastest, and the top-up
       // has to be able to run then (it is awaited here, so it still never overlaps a settle on the same nonce).
       await maybeReplenish();
@@ -1269,7 +1286,7 @@ async function main() {
       if (!worked) await idleWait();
     } catch (e) {
       log('cycle error (continuing):', e.message);
-      await heartbeat('settle', `error ${safeErr(e)}`);
+      await sendBeat(`error ${safeErr(e)}`);
       await sleep(CFG.settlePollSecs);
     }
   }
