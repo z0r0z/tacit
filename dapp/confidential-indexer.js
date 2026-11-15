@@ -14,6 +14,9 @@
 import { makeConfidentialPool } from './confidential-pool.js';
 import { makeConfidentialMemo } from './confidential-memo.js';
 
+// the tree built last, shared by every indexer on the page (the front page's and its swap card's): { keys: the leaf hashes, tree }
+let lastBuilt = null;
+
 export function makeConfidentialIndexer({ secp, keccak256, sha256 }) {
   const pool = makeConfidentialPool({ secp, keccak256, sha256 });
   const memo = makeConfidentialMemo({ secp, sha256, keccak256 });
@@ -40,12 +43,19 @@ export function makeConfidentialIndexer({ secp, keccak256, sha256 }) {
 
   // Rebuild the Merkle tree from indexed leaves (slot order). Throws on a gap —
   // the append-only tree must be contiguous from 0, so a hole means a missed event.
+  // A balance reads the pool's history several times (the quick pass and the full one, the swap card's own), and a tree is made of its leaves alone,
+  // so the tree built last is handed out again when the leaves are the same ones; every caller only reads it (root, paths), and it keeps the levels it
+  // computed, so the hashing is done once.
   function buildTree(leaves) {
-    const tree = new pool.Tree();
+    const keys = new Array(leaves.length);
     for (let i = 0; i < leaves.length; i++) {
       if (!leaves[i]) throw new Error(`leaf gap at index ${i} (missed a LeavesInserted event?)`);
-      tree.insert(leaves[i].leaf);
+      keys[i] = leaves[i].leaf;
     }
+    if (lastBuilt && lastBuilt.keys.length === keys.length && lastBuilt.keys.every((k, i) => k === keys[i])) return lastBuilt.tree;
+    const tree = new pool.Tree();
+    for (let i = 0; i < keys.length; i++) tree.insert(keys[i]);
+    lastBuilt = { keys, tree };
     return tree;
   }
 

@@ -130,10 +130,44 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
   })();
 
   class Tree {
-    constructor() { this.leaves = []; }
-    insert(leafHex) { this.leaves.push(b32(leafHex)); return this.leaves.length - 1; }
+    constructor() { this.leaves = []; this._made = null; }
+    insert(leafHex) { this.leaves.push(b32(leafHex)); this._made = null; return this.leaves.length - 1; }
+
+    // Every level of the tree, level 0 the leaves and level i what level i-1 hashes to in pairs (the missing side of the last pair is zeros[i-1]), and
+    // the top. Made once for the leaves the tree has and kept until one is inserted: the root and the path of each note were each a hash of every leaf
+    // again (about fifteen thousand hashes for a pool of seven thousand), asked for once per note and once per scan.
+    levels() {
+      const n = this.leaves.length;
+      if (this._made && this._made.n === n) return this._made;
+      const levels = [];
+      let level = this.leaves.slice();
+      for (let i = 0; i < TREE_DEPTH; i++) {
+        levels.push(level);
+        const next = [];
+        for (let k = 0; k * 2 < level.length; k++) {
+          const l = level[2 * k];
+          const r = 2 * k + 1 < level.length ? level[2 * k + 1] : zeros[i];
+          next.push(keccak256(concat([l, r])));
+        }
+        level = next.length ? next : [zeros[i + 1] || ZERO32];
+      }
+      return (this._made = { n, levels, top: level });
+    }
 
     rootAndPath(index) {
+      const { levels, top } = this.levels();
+      const path = [];
+      for (let i = 0; i < TREE_DEPTH; i++) {
+        const sib = (index >>> i) ^ 1;
+        path.push(hx(sib < levels[i].length ? levels[i][sib] : zeros[i]));
+      }
+      return { root: hx(top[0]), path };
+    }
+
+    root() { return this.rootAndPath(0).root; }
+
+    // what rootAndPath was before levels were kept: every level made again from the leaves. tests/confidential-tree-levels.test.mjs holds the two to each other.
+    rootAndPathFresh(index) {
       let level = this.leaves.slice();
       const path = [];
       for (let i = 0; i < TREE_DEPTH; i++) {
@@ -150,8 +184,6 @@ export function makeConfidentialPool({ secp, keccak256, sha256 }) {
       }
       return { root: hx(level[0]), path };
     }
-
-    root() { return this.rootAndPath(0).root; }
   }
 
   const imtLeaf = (value, next) => hx(keccak(value, next));
