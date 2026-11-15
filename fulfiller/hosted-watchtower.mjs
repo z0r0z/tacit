@@ -124,6 +124,8 @@ globalThis.alert = () => {};
 globalThis.confirm = () => true;
 globalThis.__TACIT_NO_INIT__ = true;
 globalThis.__TACIT_WORKER_BASE__ = API_BASE;
+// the public explorers throttle this server's address: the engine reads the chain through the API's proxy first (they stay as fallbacks)
+globalThis.__TACIT_CHAIN_VIA_WORKER__ = true;
 globalThis.localStorage.setItem('tacit-network-v1', NETWORK);
 // The dapp fires UI renders from claim/take tails; under jsdom a missing
 // element rejects in a timer no sync try/catch sees. Every settlement step is

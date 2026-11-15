@@ -282,7 +282,9 @@ const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 
 const WORKER_BAD_SESS_KEY = 'tacit-worker-bad-v1';
 const WORKER_BAD_TTL_MS = 5 * 60_000;
-let _workerKnownBad = true;
+// A page reads the chain from public explorers directly. A headless host whose address those explorers throttle (the hosted watchtower
+// on Render) sets __TACIT_CHAIN_VIA_WORKER__ before loading, and reads through the Tacit API's chain proxy first.
+let _workerKnownBad = !(typeof globalThis !== 'undefined' && globalThis.__TACIT_CHAIN_VIA_WORKER__ === true);
 try {
   const raw = (typeof sessionStorage !== 'undefined') ? sessionStorage.getItem(WORKER_BAD_SESS_KEY) : null;
   if (raw) {
