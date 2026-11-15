@@ -38,6 +38,7 @@ const { makeNodeBtcChain } = await import('./lib/btc-chain.mjs');
 const { makeLpService } = await import('./lib/service.mjs');
 const { makeHttpServer } = await import('./lib/http.mjs');
 const { makeAlert } = await import('./lib/alert.mjs');
+const { makeSerial } = await import('./lib/serial.mjs');
 
 const network = C.network || 'mainnet';
 setActiveNetwork(network);
@@ -62,11 +63,13 @@ if (savedLocation) Object.defineProperty(globalThis, 'location', savedLocation);
 // What the relay will not send (its free settles for the day are used up, it is held, it is busy) this process sends from its own account, the
 // Ethereum address of the key, which holds the ETH for it. The settle is tried first, so one the pool would refuse costs nothing.
 const acct = ux.account(key);
-const selfSettle = async (x) => {
+// The address is sent from by the settles below and by the refill: they take turns, one send at a time, so two begun together never read one nonce.
+const turn = makeSerial();
+const selfSettle = (x) => turn(async () => {
   if (!x || !x.publicValues || !x.proof) throw new Error('there is no proof to send');
   await ux.rpc('eth_call', [{ from: acct.address, to: ux.cfg.pool, data: ux.settleCalldata(x) }, 'latest']);
   return ux.settleFromAccount({ settlerPriv: key, publicValues: x.publicValues, proof: x.proof, memos: x.memos || [] });
-};
+});
 const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs }, selfSettle, ownAccount: { address: acct.address }, selfRetryMs: 60000, log });
 const btc = makeNodeBtcChain({
   bases: C.btcBases, tacit, prims, builder, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]),
@@ -79,6 +82,7 @@ const tacUnits = (t) => { const [whole, frac = ''] = String(t).split('.'); retur
 const config = {
   claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
   lowFree: C.lowFreeTac != null ? tacUnits(C.lowFreeTac) : null,
+  lowEth: C.lowEth != null ? tacUnits(C.lowEth) * 10n ** 10n : null,        // an ETH amount ("0.002") in wei: the units helper reads up to 8 places
   quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset },
   policy: {
     minCsv: C.policy.minCsv ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, minClaimSecs: C.policy.minClaimSecs ?? 3600, claimSlackSecs: C.policy.claimSlackSecs ?? 7200,
@@ -126,14 +130,13 @@ if (C.refill && !DRY) {
       const need = REFILL_GAS * (2n * price + 100000000n);         // at twice the gas price of the moment and a 0.1 gwei tip, as a send reserves
       return bal >= (need > minEth ? need : minEth);
     },
-    // a swap that is locking or refunding sends from this address: a refill waits for them, so two sends do not take one nonce
-    quiet: async () => !(await swapStore.list()).some((r) => r.phase === 'locking' || r.phase === 'refunding'),
-    pull: async (amount) => {
+    // its sends take their turn with the provider's own settles (`turn`), so a refill no longer waits for a quiet hour that a busy one never has
+    pull: (amount) => turn(async () => {
       const sent = await ux.sendPreparedTx({ walletPriv: key, to: token, calldata: '0x23b872dd' + word(treasury) + word(acct.address) + word(amount), gasLimit: 120000n });
       await ux.waitReceipt(sent.txHash);
-    },
+    }),
     shield: async (amount) => {
-      const sent = await ux.routerWrap({ walletPriv: key, amountWei: amount, ticker: 'TAC' });
+      const sent = await turn(() => ux.routerWrap({ walletPriv: key, amountWei: amount, ticker: 'TAC' }));
       let deposited = false;
       try {
         await ux.waitReceipt(sent.txHash);

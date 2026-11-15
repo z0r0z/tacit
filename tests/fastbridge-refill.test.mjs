@@ -208,6 +208,12 @@ test('the daemon makes it only when the config names a treasury, never in a dry 
   assert.match(src, /0x23b872dd/, 'transferFrom(address,address,uint256)');
   assert.match(src, /'0x23b872dd' \+ word\(treasury\) \+ word\(acct\.address\) \+ word\(amount\)/, 'from the treasury to its own address, and no other recipient');
   assert.match(src, /ux\.warmWrapLogs\(\{ ticker: 'TAC' \}\)/, 'the wrap logs are read a little after start, so the first real shield is not the slow one');
+  // every send from the provider's address takes its turn: the provider's own settles, the pull and the deposit, so two never read one nonce
+  assert.match(src, /const turn = makeSerial\(\)/);
+  assert.match(src, /const selfSettle = \(x\) => turn\(/, 'the settles the provider sends itself take turns');
+  assert.match(src, /pull: \(amount\) => turn\(/, 'the pull takes its turn');
+  assert.match(src, /await turn\(\(\) => ux\.routerWrap\(/, 'and the deposit takes its own, outside the settle that follows it, which takes another');
+  assert.doesNotMatch(src, /quiet:/, 'a refill does not wait for an hour in which no swap is locking or refunding: in a busy hour there is none');
 });
 
 let passed = 0;

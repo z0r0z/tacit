@@ -316,5 +316,12 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return { op, leaves: [op.outLeaf], outputs: [output], ephSeed: scalarHex(derive('claim-eph', id)) };
   }
 
-  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, cutReserve, recipient, claimOp };
+  // the ETH the account that sends its own settles holds, in wei (null when there is no such account or the node cannot say): the provider tells its
+  // operator before it is short, and not only when it has stopped taking bridges for want of it
+  async function ownEth() {
+    if (!ownAccount) return null;
+    try { return BigInt(await ux.rpc('eth_getBalance', [ownAccount.address, 'latest'])); } catch { return null; }
+  }
+
+  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, cutReserve, recipient, claimOp, ownEth };
 }

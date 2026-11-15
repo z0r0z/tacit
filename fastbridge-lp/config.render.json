@@ -13,6 +13,7 @@
   "tickSecs": 15,
   "alertSecs": 3600,
   "lowFreeTac": 2000,
+  "lowEth": "0.002",
   "refill": {
     "treasury": "0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2",
     "lowWaterTac": 5000,

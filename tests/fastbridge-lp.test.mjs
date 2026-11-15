@@ -371,6 +371,42 @@ test('free() is the private TAC not promised: the pool balance less what a reser
   await s.close();
 });
 
+test('a provider short of ETH for the settles it sends itself tells its operator before it stops taking bridges, again each alertSecs while it stays short, and says nothing when it has enough or no mark is set', async () => {
+  const lows = (s) => s.alerts.filter((a) => /low on ETH/.test(a.msg));
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+  const { w } = httpWorld();
+  w.lEvm.fund(6000n, 'inv'); manyCoins(w);
+  let eth = 1_000_000_000_000_000n;                                               // 0.001 ETH
+  w.lEvmCtx.ownEth = async () => eth;
+  const s = await serve(w, { config: { ...configFor(w, { alertSecs: 3600 }), lowEth: 2_000_000_000_000_000n } });   // the mark is 0.002 ETH
+  await s.svc.tick(); await settle();
+  assert.equal(lows(s).length, 1);
+  assert.deepEqual([lows(s)[0].level, lows(s)[0].eth], ['warn', '1000000000000000']);
+  w.clock.advance(301); await s.svc.tick(); await settle();
+  assert.equal(lows(s).length, 1, 'not again within alertSecs');
+  w.clock.advance(3601); await s.svc.tick(); await settle();
+  assert.equal(lows(s).length, 2, 'again after it, while it stays short');
+  eth = 5_000_000_000_000_000n; w.clock.advance(3601); await s.svc.tick(); await settle();
+  assert.equal(lows(s).length, 2, 'with enough ETH, nothing more is said');
+  const enough = httpWorld().w;
+  enough.lEvm.fund(6000n, 'inv'); manyCoins(enough); enough.lEvmCtx.ownEth = async () => 10n ** 18n;
+  const t = await serve(enough, { config: { ...configFor(enough), lowEth: 2_000_000_000_000_000n } });
+  await t.svc.tick(); await settle();
+  assert.equal(lows(t).length, 0);
+  const unset = httpWorld().w;
+  unset.lEvm.fund(6000n, 'inv'); manyCoins(unset); unset.lEvmCtx.ownEth = async () => 1n;
+  const u = await serve(unset);
+  await u.svc.tick(); await settle();
+  assert.equal(lows(u).length, 0, 'no mark set: no alert');
+  const none = httpWorld().w;
+  none.lEvm.fund(6000n, 'inv'); manyCoins(none);                                   // an adapter that holds no account to send from reads null
+  none.lEvmCtx.ownEth = async () => null;
+  const v = await serve(none, { config: { ...configFor(none), lowEth: 2_000_000_000_000_000n } });
+  await v.svc.tick(); await settle();
+  assert.equal(lows(v).length, 0, 'no account to read: nothing said');
+  await s.close(); await t.close(); await u.close(); await v.close();
+});
+
 test('a provider that cannot get a lock into the pool says so: nothing to take in /info, a quote, a reservation and a new offer are turned away with the reason, the one who runs it is told once, a swap it holds goes on, and it takes bridges again when it can', async () => {
   const { w } = httpWorld();
   w.lEvm.fund(6000n, 'inv'); manyCoins(w);

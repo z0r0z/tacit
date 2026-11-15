@@ -52,6 +52,7 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `policy.maxOfferAgeSecs` | an offer for a lock whose first confirmation is older than this is not answered (2 h in `config.render.json`; 1 h when unset). It is counted from the first confirmation, and a bridge of 1,000 TAC waits for three: with the blocks coming slowly the third can come after an hour, and an offer turned away then costs the user a day of locked Bitcoin. The pool deadline is four hours from the block that reached the confirmations, so an offer inside two hours leaves the user at least an hour and a half to claim |
 | `policy.holdAgeSecs` | a hold for a lock older than this is let go to free the room (`maxOfferAgeSecs` when unset; 1 h in `config.render.json`). A later offer is still answered if the room is there when it comes |
 | `lowFreeTac` | the provider tells its operator (an alert, below) when the TAC it holds free is under this, again each `alertSecs` while it stays low; unset for no alert |
+| `lowEth` | the same for the ETH of its own address, in ETH (`"0.002"`): when the relay is not sending settles each one this address sends costs about 0.0002 ETH, and with none left the provider stops taking bridges. Unset for no alert |
 | `mailboxPollSecs` | how often the board is read for requests left for this provider (3 s unless set; `config.render.json` sets 1): a request waits for the next read |
 | `name`, `boards` | the name shown in the LP's ad, and the boards it is on (URLs of `fastbridge-lp/board.mjs`): it posts its ad there every minute and answers the requests left for it, so a user finds it without its own URL |
 | `alertSecs`, `tickSecs`, `port`, `origins`, `trustProxy` | alert interval, tick length, the HTTP face; `trustProxy` reads the client from `X-Forwarded-For`, only behind a proxy you control |
@@ -121,8 +122,8 @@ bridge too big for it waits on the board); with `refill` in the config it brings
    start) for an amount of TAC first; the provider can pull nothing beyond it, beyond what the treasury holds, beyond `chunkTac`, or beyond
    `maxPerDayTac` in a day. The treasury takes the permission back at any time with an approval of 0.
 
-It needs ETH at its address for the pull, the deposit and a settle sent from it when the relay is not sending them (enough for about 1.5 million gas at twice the gas price of the moment; `minEth` sets a floor under that), and it
-waits while a swap is locking or refunding, which send from the same address. An attempt that shielded is followed by the next after `afterShieldSecs` (default 60); one that failed, or found nothing to bring in, after `minIntervalSecs` (default 1800). It does nothing
+It needs ETH at its address for the pull, the deposit and a settle sent from it when the relay is not sending them (enough for about 1.5 million gas at twice the gas price of the moment; `minEth` sets a floor under that). Its sends take turns with the settles the provider sends itself from the same
+address (one send at a time, each reading the nonce the one before left), so it does not wait for a quiet hour. An attempt that shielded is followed by the next after `afterShieldSecs` (default 60); one that failed, or found nothing to bring in, after `minIntervalSecs` (default 1800). It does nothing
 until the config names a treasury, and nothing in a dry run. A deposit whose settle fails stops it for good, with the deposit named in an alert: the TAC is
 in the pool's hands until it is settled. Try it first with a small `chunkTac` (100) and a small approval.
 
@@ -139,6 +140,7 @@ line for Slack and Discord incoming webhooks, so one of those can be the webhook
 | `a swap record cannot be read` | a file in `swaps/` is torn or corrupt and has no readable backup | restore it from the backup; the other swaps go on |
 | `tick failed` in the log, `/health` 503 | a read of the store failed | the disk; the process retries on the next tick |
 | `the provider is running out of private TAC to lend` | the TAC held free is under `lowFreeTac` | shield more TAC to the pool account, or set up `refill` (above) |
+| `the provider is running low on ETH for the settles it sends itself` | the ETH at the pool account is under `lowEth` | send ETH to `poolAccount`; if the relay keeps not sending settles, look at its settle wallet and its limits as well |
 | `bridges are waiting for a provider` | a want on a board this process is on, for its asset, that it has not seen before (read every five minutes) | raise `quote.maxAmount` or the TAC in the pool if it is more than this process can take |
 
 The same swap in the log: `swap` lines show each phase change (`accepted`, `locking`, `locked`, `offered`, `taking`,

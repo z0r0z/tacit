@@ -185,7 +185,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     if (r.ok !== lockableSaid) { lockableSaid = r.ok; alert({ level: r.ok ? 'info' : 'alert', msg: r.ok ? 'the provider can lock again' : 'the provider is not taking bridges', why: r.ok ? null : r.why }); }
   }
 
-  let capacitySaid = -Infinity, lowSaid = -Infinity;
+  let capacitySaid = -Infinity, lowSaid = -Infinity, lowEthSaid = -Infinity;
   async function sayCapacity() {
     if (now() - capacitySaid < 300) return;
     capacitySaid = now();
@@ -196,6 +196,15 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       if (free < BigInt(config.lowFree) && now() - lowSaid >= (config.alertSecs ?? 3600)) {
         lowSaid = now();
         alert({ level: 'warn', msg: 'the provider is running out of private TAC to lend', free: String(free), held: String(i.held), promised: String(p.sum) });
+      }
+    }
+    // the ETH of the account that sends its own settles, in wei (`lowEth`): said before it is short, and again each alertSecs while it stays low. The
+    // relay not sending settles costs about 0.0002 ETH for each one this account sends, and when it is out the provider stops taking bridges
+    if (config.lowEth != null && evm.ownEth) {
+      const eth = await evm.ownEth().catch(() => null);
+      if (eth != null && eth < BigInt(config.lowEth) && now() - lowEthSaid >= (config.alertSecs ?? 3600)) {
+        lowEthSaid = now();
+        alert({ level: 'warn', msg: 'the provider is running low on ETH for the settles it sends itself', eth: String(eth) });
       }
     }
   }
