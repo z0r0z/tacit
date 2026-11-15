@@ -113,9 +113,12 @@ function paintRecent() {
 const SLIP_KEY = 'tacit-swap-slip-v1';
 try { const v = Number(localStorage.getItem(SLIP_KEY)); if ([10, 50, 100, 300].includes(v)) S.slip = v; } catch { }
 try { S.custom = (JSON.parse(localStorage.getItem(CUSTOM_KEY) || '[]') || []).filter((t) => /^0x[0-9a-f]{40}$/.test(t?.addr) && Number.isInteger(t.dec)).slice(0, 20); } catch { }
-const TL = { rows: [], at: 0, p: null };
+// The SPX page opens on its token: its name, decimals and logo are known from the first paint, not once the token list has loaded (else the tile shows its
+// default pair, then a letter, then the logo). The list replaces this row when it arrives; the logo is the list's own file.
+const SPX_SEED = document.documentElement.dataset.page === 'spx' ? { sym: 'SPX', name: 'SPX6900', addr: '0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c', dec: 8 } : null;
+const TL = { rows: SPX_SEED ? [SPX_SEED] : [], at: 0, p: null };
 const SKIP = new Set(['0xae7ab96520de3a18e5e111b5eaab095312d7fe84']);
-const LOGO = {};
+const LOGO = SPX_SEED ? { [SPX_SEED.addr]: `/swap/logos/${SPX_SEED.addr}.webp` } : {};
 const okLogo = (l) => (typeof l === 'string' && /^data:image\/(svg\+xml|png);base64,[A-Za-z0-9+/=]+$/.test(l) && l.length < 40000 ? l : null);
 function takeList(rows, uni = []) {
   const out = [], have = new Set();
@@ -132,6 +135,7 @@ function takeList(rows, uni = []) {
     if (o.l === 1) LOGO[a] ||= `/swap/logos/${a}.webp`;
     out.push({ sym: String(o.s || '?').slice(0, 12), name: String(o.n || '').slice(0, 40), addr: a, dec: o.d, uni: true }); have.add(a);
   }
+  if (SPX_SEED && !have.has(SPX_SEED.addr)) out.push(SPX_SEED);
   TL.rows = out;
 }
 try { localStorage.removeItem('tacit-swap-list-v1'); } catch { }

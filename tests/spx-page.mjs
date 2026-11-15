@@ -86,6 +86,26 @@ const tile = (p) => p.evaluate(() => (document.querySelector('#hx')?.innerText |
 const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''; while (Date.now() - t0 < ms) { t = await tile(p); if (re.test(t)) return t; await p.waitForTimeout(400); } return t; };
 
 {
+  // the tile's first paint is already on SPX with its logo: no default ETH / tETH pair, and no letter mark waiting for the token list
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage();
+  await p.addInitScript(() => {
+    window.__seen = [];
+    const snap = () => {
+      const h = document.querySelector('#hx');
+      if (!h || !h.querySelector('.go')) return;
+      const t = (h.innerText || '').replace(/\s+/g, ' '), k = `${/SPX/.test(t)}|${/\bt?ETH\b/.test(t)}|${h.querySelectorAll('.tk.letter').length}`;
+      if (window.__seen.at(-1) !== k) window.__seen.push(k);
+    };
+    new MutationObserver(snap).observe(document, { childList: true, subtree: true, characterData: true });
+  });
+  await p.goto(BASE + '/spx/', { waitUntil: 'load' });
+  await waitFor(p, /Shield SPX/i);
+  await p.waitForTimeout(5000);
+  const seen = await p.evaluate(() => window.__seen), logos = await p.evaluate(() => document.querySelectorAll('#hx img.tk').length);
+  ok(seen.length > 0 && seen.every((k) => k === 'true|false|0') && logos >= 2, `the tile never shows the default pair or a letter mark for SPX: its first paint is SPX with its logo (${seen.join(' > ')}, ${logos} logos)`);
+  await ctx.close();
+}
+{
   const { ctx, p, bad } = await open('/spx/');
   ok(/SHIELD SPX/i.test(await waitFor(p, /Shield SPX/i)), 'the tile opens on Shield SPX, from the wallet into the DeFi pool');
   ok(await p.evaluate(() => location.pathname === '/spx/'), 'the address bar stays on /spx/ (the front page’s routing script turns any other path into /)');
