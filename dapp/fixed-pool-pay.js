@@ -126,6 +126,7 @@ export function attach(env) {
       <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lg-find">${account ? 'Find' : 'Connect wallet'}</button></span></div>
       ${rows || '<p class="note">None found in this browser. Find looks through this wallet\'s deposits and asks for a signature for each number it tries.</p>'}
       <div id="lg-ask" hidden></div>
+      <p class="note">If paying the gas from a note is not available, these notes follow <a href="https://github.com/ethereum/kohaku" target="_blank" rel="noopener noreferrer">Kohaku</a>'s format, so it can withdraw them too.</p>
     </div>`;
     notesHost.querySelector('#lg-find').onclick = () => (account ? find(notesHost.querySelector('#lg-find')) : env.connect().then(loadNotes, (e) => env.toast(env.errText(e), true)));
     notesHost.querySelectorAll('[data-move]').forEach((b) => { b.onclick = () => moveInto(b, st.notes[Number(b.dataset.move)]); });

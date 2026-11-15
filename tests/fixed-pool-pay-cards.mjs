@@ -92,6 +92,7 @@ const env = {
   },
 };
 handle = attach(env);
+window.__repaint = () => handle.repaint();
 window.__ready = true;
 </script>`;
 
@@ -213,6 +214,21 @@ await test('Move into Tacit: proved in a worker, the fee shown and pressed, one 
 });
 await test('a note that has been moved shows spent and offers nothing', async () => {
   await page.waitForFunction(() => /· spent/.test(document.querySelector('#notes').textContent));
+});
+await test('Find brings the notes back from the wallet alone: both are listed again, and each number tried is signed for', async () => {
+  const key = 'tacit-fixed-notes:1:0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
+  await page.evaluate((k) => { localStorage.removeItem(k); window.__spentAll = false; window.__repaint(); }, key);
+  assert.match(await page.locator('#notes').innerText(), /None found in this browser/);
+  const signsBefore = await page.evaluate(() => window.__log.signs);
+  await page.click('#lg-find');
+  await page.waitForFunction(() => /2 found/.test(document.querySelector('#status').textContent), null, { timeout: 60000 });
+  await page.waitForFunction(() => /note 1/.test(document.querySelector('#notes').textContent));
+  const text = await page.locator('#notes').innerText();
+  assert.match(text, /note 0/); assert.match(text, /note 1/);
+  assert.ok((await page.evaluate(() => window.__log.signs)) - signsBefore >= 4, 'a signature for each of the numbers 0 to 3 it tried');
+  const kept = JSON.parse(await page.evaluate((k) => localStorage.getItem(k), key));
+  assert.deepEqual(kept.map((n) => n.nonce), [0, 1], 'kept again, without secrets');
+  assert.match(text, /Kohaku/, 'the way out that does not need the paymaster is named');
 });
 await test('Withdraw to an address: a mistyped checksum is refused before anything is read or signed', async () => {
   await page.reload(); await page.waitForFunction(() => window.__ready === true);
