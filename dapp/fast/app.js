@@ -1,6 +1,6 @@
 import { openBtcWallet } from '/trade/btc-session.js?cb=6347dddd';
 import { isPasskeyAvailable } from '/prf-wallet.js';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=67d4d4de';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=13ae2eb4';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
