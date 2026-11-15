@@ -14,7 +14,7 @@ import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, co
 import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=0f50365d';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 import { PAYMASTERS } from '/fixed-pool-paymaster.js?cb=40893745';
-import { depositAddressOfName, signBox } from '/fixed-pool-box.js?cb=a2192b2d';
+import { depositAddressOfName, signBox } from '/fixed-pool-box.js?cb=24625493';
 import { keccak_256 } from './vendor/tacit-deps.min.js';
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));

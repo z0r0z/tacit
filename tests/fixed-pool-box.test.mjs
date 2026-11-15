@@ -72,6 +72,7 @@ await test('a name with a published, signed record gives the router\'s box for t
   const ns = await sigOf(V_SCALAR, N);
   const r = await B.depositAddressOfName(stub({ readBox: async () => ({ n: hex64(N), ns }) }), 'ross.wei');
   eq(r.box, receiveBoxAddress(N, RECEIVE_FEE_BPS, EVM_POOL_ROUTER)); eq(r.name, 'ross.wei'); eq(r.n, hex64(N));
+  eq(r.pool, POOL, 'the pool address the name points to comes back, so a payer can hold it against the address it resolved');
 });
 await test('a name that has published none says so', async () => {
   const e = await rejects(B.depositAddressOfName(stub(), 'ross.wei'), 'no-box');

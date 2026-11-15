@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-qA13h7ElRLDsS0D8hb2foqBZaI9FUN1nAyG44pNt0Eg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5Nq/7YFkWi0fTpCeQ5lIGZZE9Q3yuNSidf0XIs+AlcE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -2828,7 +2828,7 @@ async function largeCards(c, amountInput) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=5715fd80');
+    const m = await import('/fixed-pool-pay.js?cb=e3c101d6');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2847,7 +2847,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=5715fd80');
+    const m = await import('/fixed-pool-pay.js?cb=e3c101d6');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -3109,7 +3109,8 @@ function formSend(f) {
     <p class="note" id="f-note"></p>`);
   wireRoute(f, tab);
   const to = $('#f-to'), amt = $('#f-amt'), go = $('#f-go'), rc = $('#f-rcpt'), later = $('#f-later'), save = $('#f-save'), pname = $('#f-pname');
-  let okTo = null, lastTo = '', dep = null, shownFee = null;
+  let okTo = null, lastTo = '', dep = null, shownFee = null, boxPay = null;
+  const boxSeen = new Map();
   $('#f-bylink').onclick = () => { S.sendMode = 'link'; renderForm(); writeHash(); };
   $$('[data-person]', f).forEach((b) => b.onclick = () => { to.value = b.dataset.person; to.dispatchEvent(new Event('input')); amt.focus(); });
   $$('[data-unperson]', f).forEach((b) => b.onclick = () => { dropPerson(b.dataset.unperson); renderForm(); });
@@ -3126,7 +3127,7 @@ function formSend(f) {
     maxOff($('#f-max'), maxWhy(fee, bal));
     if (raw !== lastTo) { lastTo = raw; okTo = null; if (raw && !addr) resolveRecipient(raw).then((r) => { if (to.value.trim() === raw) { okTo = r; FORM.check?.(); } }, (e) => { if (to.value.trim() === raw) { okTo = { error: errText(e) }; FORM.check?.(); } }); }
     if (addr) okTo = badSum(raw) ? { error: SUM_MSG } : payable(raw) ? { addr: raw } : { error: 'That address cannot receive a payment.' };
-    go.disabled = true; later.hidden = true; dep = null; shownFee = null; go.textContent = 'Send privately';
+    go.disabled = true; later.hidden = true; dep = null; shownFee = null; boxPay = null; go.textContent = 'Send privately';
     const known = nameFor(raw), valid = !!(okTo?.bp || okTo?.addr) && lc(okTo?.bp) !== lc(S.key.bp);
     save.hidden = !valid || !!known;
     say($('#f-note'), addr
@@ -3142,6 +3143,25 @@ function formSend(f) {
     if (fee == null) return R.set(html`<p class="note">${relayUp() ? 'Reading the relay’s fee…' : 'The relay can’t take this one right now. Send it from your wallet instead, or try again in a moment.'}</p>`);
     const cap = atCap(fee), plan = spendPlan(a, cap), who = known || okTo.label, self = routeOf(tab) === 'wallet';
     const change = bal != null && plan ? bal - plan.total : null;
+    // A name that publishes a deposit address can be paid from the wallet when the private balance cannot cover it
+    const nm = LARGE_ON && okTo.bp && bal != null && !plan && chainKeeper(c) ? nameOf(raw) : null, seen = nm && boxSeen.get(nm);
+    if (nm && !seen) {
+      boxOfName(nm).then((r) => { boxSeen.set(nm, r); if (to.value.trim().toLowerCase() === nm) FORM.check?.(); });
+      return R.set(html`<p class="note">Checking whether ${nm} takes ETH from a wallet…</p>`);
+    }
+    if (seen?.box && lc(seen.pool) === lc(okTo.bp)) {
+      const min = minOf(CH[c.chainId].quote);
+      if (min && a < min) return bad(`On ${c.full}, a payment from a wallet needs at least ${fmt(min, 18, 6)} ETH for the relay to move it in. Send more.`);
+      boxPay = { name: nm, box: seen.box, pool: seen.pool };
+      R.set(html`${kvRow('To', html`${nm} → ${viewAddr(seen.box, 8)}`)}
+        ${kvRow('You send', html`${fmt(a, 18, 6)} ETH from your wallet`)}
+        ${kvRow('They receive', html`at least ${fmt(a - (a * 25n) / 10000n, 18, 6)} ETH, in their private balance`)}
+        <p class="note">Your private balance can’t cover this, so it comes from your wallet. ${nm} publishes this deposit address, and the relay moves what arrives into their private balance, usually within minutes, for at most 0.25%.</p>`);
+      say($('#f-note'), `Your wallet, the amount and ${nm}’s deposit address show on chain.`);
+      go.textContent = S.wallet ? `Pay ${nm} from my wallet` : 'Connect wallet to pay';
+      go.disabled = false;
+      return;
+    }
     if (bal != null && !plan && tooSpread(a, cap)) return bad(spreadText(c, cur(), maxSpend(cap), 'Send up to'));
     if (okTo.addr && bal != null && !plan) {
       const have = maxSpend(cap);
@@ -3152,7 +3172,7 @@ function formSend(f) {
       go.textContent = S.wallet ? `Deposit ${fmt(dep, 18, 6)} ETH, pay later` : 'Connect wallet to deposit';
       return;
     }
-    if (bal != null && !plan) return bad('More than your private balance covers with the fee.');
+    if (bal != null && !plan) return bad(`More than your private balance covers with the fee.${seen?.code === 'no-box' ? ` ${nm} has not published a deposit address, so it cannot be paid from a wallet here. The Deposit tab can deposit into its private balance.` : ''}`);
     shownFee = fee;
     const whole = !self && fee > 0n && !(REQ.v && !REQ.v.paid) && maxed(amt);
     R.set(html`${who ? kvRow('To', html`${who} → ${viewAddr(okTo.bp || okTo.addr, 8)}`) : ''}
@@ -3174,11 +3194,17 @@ function formSend(f) {
     toast(`Held. Pay ${nameFor(raw) || short(raw)} from the card above once it blends in.`);
   };
   go.onclick = () => {
-    if (dep && !S.wallet) return connectWallet().catch((e) => toast(errText(e), true));
-    const deposit = dep, maxFee = capOf(shownFee);
+    if ((dep || boxPay) && !S.wallet) return connectWallet().catch((e) => toast(errText(e), true));
+    const deposit = dep, maxFee = capOf(shownFee), toBox = boxPay;
     act(go, async (step) => {
       const a = parseUnits(amt.value), raw = to.value.trim();
       if (!a) throw new Error('Enter an amount.');
+      if (toBox) {
+        if (nameOf(raw) !== toBox.name) throw new Error('The recipient changed. Check it and press again.');
+        const h = await payBox(c, toBox, a, step);
+        clearDraft('f-amt', 'f-to');
+        return finish(c, h, 'self', `Paid ${toBox.name} ${exact(a)} ETH. It reaches their private balance within minutes.`);
+      }
       const W = await walletOn(c);
       if (isAddr(raw)) {
         if (badSum(raw)) throw new Error(SUM_MSG);
@@ -3842,6 +3868,39 @@ async function payerWallet(c) {
   const W = await giftWallet(crypto.getRandomValues(new Uint8Array(32)), c);
   W.connect(signerFor(c));
   return W;
+}
+// A payment to a name from the wallet: plain ETH to the deposit address the name publishes, which the relay moves into the
+// name's private balance. The address is read again, from the record, and must be the one shown; the relay is asked for
+// its minimum and told of the address so it collects it.
+const NAME_BOXES = new Map();
+const nameOf = (raw) => (/^[^\s]+\.(g?wei|eth)$/i.test(String(raw).trim()) ? String(raw).trim().toLowerCase() : null);
+const minOf = (q) => (q?.receiveMin ? ((BigInt(q.receiveMin) + 10n ** 12n - 1n) / 10n ** 12n) * 10n ** 12n : null);
+function boxOfName(name, fresh = false) {
+  const hit = NAME_BOXES.get(name);
+  if (hit && !fresh && Date.now() - hit.at < 60e3) return hit.p;
+  const p = (async () => {
+    try { return await (await import('/fixed-pool-box.js?cb=24625493')).depositAddressOfName(await getNames(), name, ROUTER); }
+    catch (e) { return { error: errText(e), code: e?.code }; }
+  })();
+  NAME_BOXES.set(name, { at: Date.now(), p });
+  p.then((r) => { if (!r.box && !r.code) NAME_BOXES.delete(name); });
+  return p;
+}
+async function payBox(c, shown, a, step) {
+  const found = await boxOfName(shown.name, true);
+  if (!found.box) throw new Error(found.error || `${shown.name} has not published a deposit address.`);
+  if (lc(found.box) !== lc(shown.box) || lc(found.pool) !== lc(shown.pool)) throw new Error('Where that name points changed. Check it and pay again.');
+  const m = await mods(), q = await keeperJson(c, '/quote').catch(() => null);
+  if (!q) throw new Error('Could not read the relay’s minimum just now. Try again in a moment.');
+  const min = minOf(q);
+  if (min && a < min) throw new Error(`On ${c.full}, a payment from a wallet needs at least ${fmt(min, 18, 6)} ETH for the relay to move it in. Send more.`);
+  if (!S.wallet || !S.provider) await connectWallet();
+  await ensureChain(c.chainId);
+  keeperFetch(`${chainKeeper(c)}/receive`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chainId: c.chainId, npk: BigInt('0x' + found.n).toString(), feeBps: m.RECEIVE_FEE_BPS }), signal: AbortSignal.timeout?.(20e3) }).catch(() => {});
+  step('confirm in your wallet');
+  const h = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.wallet, to: found.box, value: '0x' + a.toString(16), chainId: '0x' + c.chainId.toString(16) }] });
+  ptsExpect(c, a);
+  return h;
 }
 async function shieldTo(r, a, c) {
   const res = await resolveRecipient(r.bp);

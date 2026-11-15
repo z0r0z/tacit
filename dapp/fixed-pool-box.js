@@ -29,8 +29,9 @@ export function boxSigOk(V, n, ns) {
 // The record's text for box key `n` (a bigint or 64 hex) and its signature.
 export const boxValue = (n, ns) => `${hex64(typeof n === 'bigint' ? n : BigInt('0x' + String(n).replace(/^0x/, '')))}:${String(ns).replace(/^0x/, '')}`;
 
-// A name's deposit address, checked: { name, n, box }. `names` is a confidential-names instance. Throws, with a `code`
-// of 'no-box' when the name has published none, 'bad-sig' when what it published is not signed by its own key.
+// A name's deposit address, checked: { name, pool, n, box }, `pool` being the pool address the name points to. `names` is
+// a confidential-names instance. Throws, with a `code` of 'no-box' when the name has published none, 'bad-sig' when what
+// it published is not signed by its own key.
 export async function depositAddressOfName(names, name, router = EVM_POOL_ROUTER) {
   const r = await names.resolveName(name);
   if (!r.pool) throw Object.assign(new Error(`${r.name} points to an address with no pool key, so it has no deposit address to check.`), { code: 'no-pool' });
@@ -38,5 +39,5 @@ export async function depositAddressOfName(names, name, router = EVM_POOL_ROUTER
   if (!rec) throw Object.assign(new Error(`${r.name} has not published a deposit address. They can publish it from Pay (Deposit, From an exchange), or give you the address.`), { code: 'no-box' });
   const V = poolKeysOf(r.pool).slice(0, 33);
   if (!boxSigOk(V, rec.n, rec.ns)) throw Object.assign(new Error(`The deposit address in ${r.name}'s record is not signed by ${r.name}'s own key, so it is not used.`), { code: 'bad-sig' });
-  return { name: r.name, n: rec.n, box: receiveBoxAddress(BigInt('0x' + rec.n), RECEIVE_FEE_BPS, router) };
+  return { name: r.name, pool: r.pool, n: rec.n, box: receiveBoxAddress(BigInt('0x' + rec.n), RECEIVE_FEE_BPS, router) };
 }

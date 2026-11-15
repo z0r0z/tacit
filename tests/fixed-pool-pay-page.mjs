@@ -3,12 +3,23 @@
 // and the split shows for an amount. Every request that leaves the machine is answered by a stand-in.
 //   PLAYWRIGHT=<path to playwright-core> node tests/fixed-pool-pay-page.mjs        (SHOTS=<dir> saves screenshots)
 
+import { register } from 'node:module';
+register('data:text/javascript,' + encodeURIComponent(`const D = ${JSON.stringify(new URL('../dapp', import.meta.url).href)};
+export async function resolve(spec, ctx, next) {
+  if (spec.startsWith('/') && !spec.startsWith('//')) return next(D + spec.split('?')[0], ctx);
+  return next(spec, ctx);
+}`));
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { extname, join, normalize } from 'node:path';
 import assert from 'node:assert/strict';
 import { keccak_256, secp, hexToBytes, bytesToHex, concatBytes } from '../dapp/vendor/tacit-deps.min.js';
+const { poseidon2, poseidon3, poseidon4, poseidon5, poseidon7 } = await import('../dapp/vendor/tacit-poseidon.min.js');
+const { makeEvmPoolZk } = await import('../dapp/evm-pool-zk.js');
+const { evmPoolKeys } = await import('../dapp/evm-pool-wallet.js');
+const { signBox } = await import('../dapp/fixed-pool-box.js');
+const { receiveBoxAddress, RECEIVE_FEE_BPS, EVM_POOL_ROUTER } = await import('../dapp/evm-pool-gateway.js');
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -45,6 +56,8 @@ const WALLET_SCRIPT = (addr) => {
       case 'eth_accounts': case 'eth_requestAccounts': return [addr];
       case 'eth_chainId': return '0x1';
       case 'personal_sign': return window.__sign(params[0]);
+      case 'eth_sendTransaction': return window.__send(params[0]);
+      case 'wallet_switchEthereumChain': return null;
       case 'wallet_requestPermissions': case 'wallet_revokePermissions': return [];
       default: throw Object.assign(new Error('unsupported ' + method), { code: 4200 });
     }
@@ -71,14 +84,35 @@ const rpcAnswer = (method) => {
     case 'eth_getBalance': case 'eth_gasPrice': return '0x0';
     case 'eth_getLogs': return [];
     case 'eth_getCode': return '0x';
+    case 'eth_getTransactionReceipt': return { status: '0x1', blockNumber: '0x1c9c380', logs: [] };
     case 'eth_getBlockByNumber': return { number: '0x1c9c380', timestamp: '0x6a000000', baseFeePerGas: '0x5f5e100', transactions: [] };
     default: return '0x';
   }
 };
-async function open({ search = '', flagged = null, chain = 1 } = {}) {
+// names: records the name service holds ({ 'ross.wei': { pool, address, box } }), swapped in for the page's own lookups;
+// keeper: the relay's quote, answered for the chain. What the page sent from the wallet and told the relay is returned.
+const NAMES_STUB = `export const makeMainnetCall = () => async () => '0x';
+export function makeConfidentialNames() {
+  const calls = {};
+  const base = {
+    resolveName: async (n) => { const r = window.__names?.[n]; if (!r) { const e = new Error(n + ' has not published a Tacit address.'); e.code = 'no-record'; throw e; }
+      calls[n] = (calls[n] || 0) + 1; const pool = r.flip && calls[n] % 2 === 0 ? r.flip : r.pool; return { name: n, pool, address: r.address }; },
+    readBox: async (n) => window.__names?.[n]?.box ?? null,
+    findPrimary: async () => ({ primary: null }),
+    planPublish: async () => ({ changed: false }),
+  };
+  // any other call answers null; "then" must stay undefined or awaiting the object waits on it forever
+  return new Proxy(base, { get: (t, k) => (k in t || k === 'then' || typeof k === 'symbol' ? t[k] : async () => null) });
+}`;
+async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 560, height: 1100 } });
   const page = await ctx.newPage();
-  const problems = [];
+  const problems = [], sent = [], told = [];
+  await page.exposeFunction('__send', async (tx) => { sent.push(tx); return '0x' + 'ab'.repeat(32); });
+  if (names) {
+    await page.addInitScript((n) => { window.__names = n; }, names);
+    await page.route(/\/confidential-names\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: NAMES_STUB }));
+  }
   page.on('pageerror', (e) => problems.push('pageerror ' + e.message));
   page.on('console', (m) => { if (/Content Security Policy|Refused to/i.test(m.text())) problems.push('csp ' + m.text()); });
   await page.exposeFunction('__sign', async (msgHex) => {
@@ -92,6 +126,8 @@ async function open({ search = '', flagged = null, chain = 1 } = {}) {
     const req = route.request();
     const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+    if (keeper && /\/evm-pool\/keeper\/quote/.test(req.url())) return route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify(keeper) });
+    if (keeper && req.method() === 'POST' && /\/evm-pool\/keeper\/receive/.test(req.url())) { told.push(req.postDataJSON()); return route.fulfill({ status: 200, headers, contentType: 'application/json', body: '{"ok":true}' }); }
     if (req.method() === 'POST') {
       let body = null; try { body = req.postDataJSON(); } catch { /* not JSON */ }
       const one = (b) => ({ jsonrpc: '2.0', id: b?.id ?? 1, result: rpcAnswer(b?.method) });
@@ -100,7 +136,7 @@ async function open({ search = '', flagged = null, chain = 1 } = {}) {
     return route.fulfill({ status: 404, headers, body: '{}' });
   });
   await page.goto(base + '/pay/eth/' + search);
-  return { ctx, page, problems };
+  return { ctx, page, problems, sent, told };
 }
 
 console.log('Pay page');
@@ -151,6 +187,107 @@ await test('with the flag on another chain (Base) the deposit form is untouched'
   await page.fill('#f-damt', '2.5');
   assert.equal(await page.locator('#lg-split').count(), 0);
   assert.deepEqual(problems, []);
+  await ctx.close();
+});
+
+// ── Send: a name that publishes a deposit address can be paid from the wallet when the private balance cannot cover it ──
+const PO = { 2: poseidon2, 3: poseidon3, 4: poseidon4, 5: poseidon5, 7: poseidon7 };
+const zk = makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) });
+const payee = evmPoolKeys(zk, new Uint8Array(32).fill(21)), other = evmPoolKeys(zk, new Uint8Array(32).fill(22));
+const hex64 = (n) => n.toString(16).padStart(64, '0');
+const N1 = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefn, N2 = N1 + 1n;
+const BOX1 = receiveBoxAddress(N1, RECEIVE_FEE_BPS, EVM_POOL_ROUTER), BOX2 = receiveBoxAddress(N2, RECEIVE_FEE_BPS, EVM_POOL_ROUTER);
+const rec = async (v, n) => ({ n: hex64(n), ns: await signBox(v, n) });
+const ENTRY = { pool: payee.address, address: '0x' + 'cd'.repeat(20) };
+const QUOTE = { chainId: 1, pool: '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', relayer: '0x' + '11'.repeat(20), fee: '100000000000000', receiveMin: '856000000000000' };
+const toSend = async (page, to, amount) => {
+  await unlock(page);
+  await page.click('#tab-send');
+  await page.fill('#f-to', to);
+  await page.fill('#f-amt', amount);
+};
+const receiptText = async (page, re) => {
+  await page.waitForFunction((src) => new RegExp(src).test(document.querySelector('#f-rcpt')?.textContent || ''), re.source, { timeout: 60000 });
+  return page.locator('#f-rcpt').innerText();
+};
+console.log('Send');
+await test('a name with a deposit address, an empty private balance: the wallet pays the box, and the relay is told of it', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
+  const { ctx, page, problems, sent, told } = await open({ search: '?fixed=1', names, keeper: QUOTE });
+  await toSend(page, 'ross.wei', '0.5');
+  const text = await receiptText(page, /You send/);
+  assert.match(text, /ross\.wei/); assert.match(text, /0\.5 ETH from your wallet/); assert.match(text, /at least 0\.49875 ETH/);
+  assert.match(await page.locator('#f-note').innerText(), /deposit address show on chain/);
+  assert.match(await page.locator('#f-go').innerText(), /Pay ross\.wei from my wallet/);
+  if (SHOTS) await page.screenshot({ path: join(SHOTS, 'send-from-wallet.png'), fullPage: true });
+  await page.click('#f-go');
+  await page.waitForFunction(() => /Paid ross\.wei 0\.5 ETH/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 60000 });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to.toLowerCase(), BOX1.toLowerCase(), 'plain ETH to the box the record names');
+  assert.equal(sent[0].value, '0x' + (5n * 10n ** 17n).toString(16));
+  assert.equal(sent[0].from.toLowerCase(), ADDR.toLowerCase());
+  assert.equal(sent[0].data, undefined, 'no call data: a plain transfer');
+  // the page also tells the relay of its own wallet's boxes, so only what names the payee's box key counts
+  assert.deepEqual(told.filter((b) => b.npk === N1.toString()), [{ chainId: 1, npk: N1.toString(), feeBps: RECEIVE_FEE_BPS }]);
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('below the relay\'s minimum nothing is offered', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
+  const { ctx, page, sent } = await open({ search: '?fixed=1', names, keeper: QUOTE });
+  await toSend(page, 'ross.wei', '0.0005');
+  assert.match(await receiptText(page, /needs at least/), /needs at least 0\.000856 ETH/);
+  assert.equal(await page.locator('#f-go').isDisabled(), true);
+  assert.equal(sent.length, 0);
+  await ctx.close();
+});
+await test('a name with no deposit address cannot be paid from the wallet here, and the form says what to do', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: null } };
+  const { ctx, page, sent } = await open({ search: '?fixed=1', names, keeper: QUOTE });
+  await toSend(page, 'ross.wei', '0.5');
+  assert.match(await receiptText(page, /has not published a deposit address/), /Deposit tab/);
+  assert.equal(await page.locator('#f-go').isDisabled(), true);
+  assert.equal(sent.length, 0);
+  await ctx.close();
+});
+await test('a record signed by another key is refused: nothing is offered', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(other.v, N1) } };
+  const { ctx, page, sent } = await open({ search: '?fixed=1', names, keeper: QUOTE });
+  await toSend(page, 'ross.wei', '0.5');
+  assert.match(await receiptText(page, /More than your private balance covers/), /^((?!from my wallet)[\s\S])*$/);
+  assert.equal(await page.locator('#f-go').isDisabled(), true);
+  assert.equal(sent.length, 0);
+  await ctx.close();
+});
+await test('a name whose pool address moved between the two lookups is refused', async () => {
+  const names = { 'ross.wei': { ...ENTRY, flip: other.address, box: await rec(other.v, N1) } };
+  const { ctx, page, sent } = await open({ search: '?fixed=1', names, keeper: QUOTE });
+  await toSend(page, 'ross.wei', '0.5');
+  assert.match(await receiptText(page, /More than your private balance covers/), /^((?!from my wallet)[\s\S])*$/);
+  assert.equal(await page.locator('#f-go').isDisabled(), true);
+  assert.equal(sent.length, 0);
+  await ctx.close();
+});
+await test('a record that changes after it is shown is read again at the press, and nothing is sent', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
+  const { ctx, page, sent, told } = await open({ search: '?fixed=1', names, keeper: QUOTE });
+  await toSend(page, 'ross.wei', '0.5');
+  await receiptText(page, /You send/);
+  const next = await rec(payee.v, N2);
+  await page.evaluate((b) => { window.__names['ross.wei'].box = b; }, next);
+  await page.click('#f-go');
+  await page.waitForFunction(() => /Where that name points changed/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 30000 });
+  assert.equal(sent.length, 0); assert.deepEqual(told.filter((b) => b.npk === N1.toString() || b.npk === N2.toString()), []);
+  assert.notEqual(BOX1, BOX2);
+  await ctx.close();
+});
+await test('without the flag the Send form never looks for a deposit address', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
+  const { ctx, page, sent } = await open({ names, keeper: QUOTE });
+  await toSend(page, 'ross.wei', '0.5');
+  assert.match(await receiptText(page, /More than your private balance covers/), /^((?!from my wallet)[\s\S])*$/);
+  assert.equal(await page.locator('#f-go').isDisabled(), true);
+  assert.equal(sent.length, 0);
   await ctx.close();
 });
 
