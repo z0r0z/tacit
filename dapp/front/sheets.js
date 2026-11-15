@@ -2469,6 +2469,7 @@ function renderPrecision(el) {
   if (!FARM.mode) FARM.mode = x.tac >= 10n ** 18n ? 'pair' : 'eth';
   if (hxLive('farm')?.tac) FARM.mode = 'tac';
   const has = x.staked > 0n, mode = FARM.mode, withEth = mode !== 'tac', withTac = mode !== 'eth';
+  const stakeWorth = has && x.supply > 0n && x.value > 0 ? BigInt(Math.round(x.value * Number(x.staked) / Number(x.supply))) : 0n;
   const myDay = has && x.totalStaked ? x.perDay * x.staked / x.totalStaked : 0n;
   const ethOf = (tac, p = x) => ethOfTac(tac, p);
   const paid = FARM.paid?.who === x.who ? FARM.paid.v : null, e0 = earnedNow(x);
@@ -2499,7 +2500,10 @@ function renderPrecision(el) {
       <div class="status" role="status" id="pf-lp-status"></div>` : ''}
     ${has ? html`
       <div class="lbl"><span>Withdraw</span></div>
-      ${segSub('pfp', FARM.outPct, [['25', '25%'], ['50', '50%'], ['100', 'All']])}
+      ${segSub('pfp', FARM.outPct, [['25', '25%'], ['50', '50%'], ['100', 'All'], ['custom', 'Custom']])}
+      ${FARM.outPct === 'custom' ? html`
+        <div class="amt"><input id="pf-wamt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount to withdraw, in ETH"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
+        <p class="note">Counted in ETH at the pool’s price. Your stake is worth about ${fmt(stakeWorth, 18, 5)} ETH.</p>` : ''}
       ${segSub('pfr', FARM.outAs, [['both', 'ETH + TAC'], ['eth', 'As ETH'], ['tac', 'As TAC']])}
       <div class="rcpt" id="pf-out-rcpt" hidden></div>
       <div id="pf-out-ack"></div>
@@ -2676,16 +2680,28 @@ function renderPrecision(el) {
   let w = null, wseq = 0;
   const outGateOk = () => { ex.disabled = !w || !lossOk(outAck, w.loss); };
   const preview = async () => {
-    const my = ++wseq, all = FARM.outPct === '100', as = FARM.outAs, shares = all ? x.staked : x.staked * BigInt(FARM.outPct) / 100n;
+    const my = ++wseq, custom = FARM.outPct === 'custom', all = FARM.outPct === '100', as = FARM.outAs;
+    let shares = all ? x.staked : custom ? 0n : x.staked * BigInt(FARM.outPct) / 100n, what = all ? 'all' : `${FARM.outPct}%`;
     w = null; ex.disabled = true; mount(outAck, html``);
+    if (custom) {
+      const raw = ($('#pf-wamt')?.value || '').trim(), amt = raw ? parseUnits(raw, 18) : 0n;
+      const stop = (msg) => { ex.textContent = 'Withdraw'; mount(outRc, msg ? html`<p class="note err">${msg}</p>` : html``); outRc.hidden = !msg; };
+      if (amt == null) return stop('Type an amount in ETH, like 0.05.');
+      if (!(amt > 0n)) return stop('');
+      if (amt > stakeWorth) return stop(html`That is more than your stake, which is worth about ${fmt(stakeWorth, 18, 5)} ETH. Choose All to take all of it.`);
+      shares = x.staked * amt / stakeWorth;
+      if (!(shares > 0n)) return stop('That amount is too small to withdraw.');
+      what = `${fmt(amt, 18, 6)} ETH`;
+    }
     try {
       const r = strip(await ethCall(ADDR.precisionFarm, outData(all, as, shares, 0n, 0n, deadline()), { from: S.address }));
       if (my !== wseq || !ex.isConnected) return;
       const worth = x.value * Number(shares) / Number(x.supply);
       const got = as === 'both' ? null : wordAt(r, 0);
       const loss = got == null ? 0 : Math.max(0, (1 - Number(got) / (as === 'eth' ? worth : worth / x.tacEth)) * 100);
-      w = { all, as, shares, loss };
+      w = { all, as, shares, loss, what };
       mount(outRc, html`
+        ${custom ? html`<div class="kv"><span>Of your stake</span><b>${pctFmt(Number(shares) * 100 / Number(x.staked))}</b></div>` : ''}
         <div class="kv"><span>You get about</span><b>${as === 'both' ? `${fmt(wordAt(r, 0), 18, 5)} ETH + ${fmt(wordAt(r, 1), 18, 2)} TAC` : `${fmt(got, 18, as === 'eth' ? 5 : 2)} ${as === 'eth' ? 'ETH' : 'TAC'}`}</b></div>
         ${all && x.earned > 0n ? html`<div class="kv"><span>Plus earned</span><b>${fmt(x.earned, 18, 2)} TAC</b></div>` : ''}
         ${lossLine(loss)}
@@ -2694,18 +2710,20 @@ function renderPrecision(el) {
       outRc.hidden = false;
       mount(outAck, lossGate('pf-outv', loss, 'withdrawal'));
       wireAck(outAck, 'pf-outv', loss, outGateOk);
-      ex.textContent = all ? 'Withdraw all' : `Withdraw ${FARM.outPct}%`;
+      ex.textContent = all ? 'Withdraw all' : `Withdraw ${what}`;
       outGateOk();
     } catch (e) { if (my === wseq) quoteErr(outRc, e); }
   };
-  wireSub(el, 'pfp', (v) => { FARM.outPct = v; keep($('#sheet-farm'), render.farm); });
+  wireSub(el, 'pfp', (v) => { FARM.outPct = v; keep($('#sheet-farm'), render.farm); if (v === 'custom' && !matchMedia('(pointer: coarse)').matches) $('#pf-wamt')?.focus(); });
   wireSub(el, 'pfr', (v) => { FARM.outAs = v; keep($('#sheet-farm'), render.farm); });
+  const wamt = $('#pf-wamt');
+  if (wamt) onEdit([wamt], ex, preview);
   preview();
   ex.onclick = () => busy(ex, async (run) => {
     const z = w;
     if (!z || !lossOk(outAck, z.loss)) return;
     try {
-      const hash = await pubExitSend({ all: z.all, as: z.as, shares: z.shares, label: `Withdraw ${z.all ? 'all' : `${FARM.outPct}%`} from the farm${z.as === 'both' ? '' : ` as ${z.as === 'eth' ? 'ETH' : 'TAC'}`}` });
+      const hash = await pubExitSend({ all: z.all, as: z.as, shares: z.shares, label: `Withdraw ${z.what} from the farm${z.as === 'both' ? '' : ` as ${z.as === 'eth' ? 'ETH' : 'TAC'}`}` });
       delete acked['pf-outv'];
       await done(hash, 'Withdrawing', `Withdrawn to ${your()}.`, outStatus);
       toast(`Withdrawn to ${your()}`);

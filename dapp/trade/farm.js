@@ -24,7 +24,7 @@ const now = () => Math.floor(Date.now() / 1000);
 
 export function mountFarm(host, ctx) {
   const { ethCall, batch, api, wallet, W, connect, fmtUnits: fmt, parseUnits, esc, usd, ethUsd, txLink, onDone, refarm = false, gasPrice = () => null } = ctx;
-  const F = { wdOpen: false, rseq: 0, ackKey: null, x: null, prog: null, mode: 'eth', outPct: '100', outAs: 'both', q: null, seq: 0, w: null, wseq: 0, busy: false, tick: 0, err: false };
+  const F = { wdOpen: false, rseq: 0, ackKey: null, x: null, prog: null, mode: 'eth', outPct: '100', outAmt: '', outAs: 'both', q: null, seq: 0, w: null, wseq: 0, busy: false, tick: 0, err: false };
   const $ = (s) => host.querySelector(s);
   const plain = (v) => { const n = BigInt(v), b = 10n ** 18n, f = (n % b).toString().padStart(18, '0').replace(/0+$/, ''); return `${n / b}${f ? `.${f}` : ''}`; };
   const amt = (v, dp) => { let d = dp; const n = BigInt(v); while (n > 0n && d < 12 && fmt(n, 18, d).replace(/[^1-9]/g, '').length < 2) d++; return fmt(n, 18, d); };
@@ -116,6 +116,7 @@ export function mountFarm(host, ctx) {
   // The block is drawn again only when something it shows has changed (the earned figure ticks by itself), so the minute's read does not flicker it, close a
   // choice being read or lose a box ticked in it.
   let posKey = '';
+  const stakeWorthOf = (x) => (x.supply > 0n && x.value > 0 ? BigInt(Math.round(x.value * Number(x.staked) / Number(x.supply))) : 0n);
   function renderPos() {
     const x = F.x, el = $('#fm-pos');
     if (!x || !W.account || x.who !== W.account || !(x.staked > 0n || x.lp > 0n)) { clearInterval(F.tick); posKey = ''; el.hidden = true; el.innerHTML = ''; $('#fm-add-h').textContent = 'Farm TAC/ETH'; return; }
@@ -125,17 +126,21 @@ export function mountFarm(host, ctx) {
     posKey = key; clearInterval(F.tick);
     el.hidden = false; $('#fm-add-h').textContent = 'Add more';
     const worth = Number(x.mine.eth) + Number(x.mine.tac) * x.tacEth, worthUsd = ethUsd() ? usd(worth / 1e18 * ethUsd()) : '';
+    const typing = document.activeElement?.id === 'fm-wamt' ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
     el.innerHTML = (has ? `<h3>Your stake</h3>
       <div class="kv"><span>In the farm</span><b>${amt(x.mine.eth, 4)} ETH + ${amt(x.mine.tac, 0)} TAC</b></div>
       <div class="kv"><span>Worth</span><b>${worthUsd ? `about ${worthUsd} · ` : ''}${share(x.staked, x.totalStaked)} of the farm</b></div>
       <div class="kv"><span>Earning</span><b>${amt(day, 2)} TAC a day${tacUsd(day) ? ` · ${tacUsd(day)}` : ''}</b></div>
       <div class="kv earned"><span>Earned</span><span class="rt"><b class="num" id="fm-earned">${fmt(earnedNow(x), 18, 4)} TAC</b><button class="btn sm" type="button" id="fm-claim"${earnedNow(x) > 0n ? '' : ' disabled'}${feeTxt(GAS.claim, x) ? ` title="Network fee ${feeTxt(GAS.claim, x)}"` : ''}>Claim</button></span></div>
       <details class="wd" id="fm-wd"${F.wdOpen ? ' open' : ''}><summary>Withdraw</summary>
-      <div class="fm-out"><div class="seg" id="fm-pct" role="group" aria-label="How much">${[['25', '25%'], ['50', '50%'], ['100', 'All']].map(([v, l]) => `<button type="button" data-pct="${v}" aria-pressed="${F.outPct === v}">${l}</button>`).join('')}</div>
+      <div class="fm-out"><div class="seg" id="fm-pct" role="group" aria-label="How much">${[['25', '25%'], ['50', '50%'], ['100', 'All'], ['custom', 'Custom']].map(([v, l]) => `<button type="button" data-pct="${v}" aria-pressed="${F.outPct === v}">${l}</button>`).join('')}</div>
       <div class="seg" id="fm-as" role="group" aria-label="Withdraw as">${[['both', 'ETH + TAC'], ['eth', 'ETH'], ['tac', 'TAC']].map(([v, l]) => `<button type="button" data-as="${v}" aria-pressed="${F.outAs === v}">${l}</button>`).join('')}</div></div>
+      ${F.outPct === 'custom' ? `<div class="amt"><input id="fm-wamt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount to withdraw, in ETH" value="${esc(F.outAmt)}"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
+      <p class="note">Counted in ETH at the pool’s price. Your stake is worth about ${amt(stakeWorthOf(x), 5)} ETH.</p>` : ''}
       <div class="fm-rcpt" id="fm-out-rcpt" hidden></div>
       <button class="btn ghost" type="button" id="fm-exit" disabled>Withdraw</button></details>` : '')
       + (x.lp > 0n ? `<div class="kv"><span>LP shares not staked</span><b>${fmt(x.lp, 18, 6)}</b></div>${feeRow(GAS.stake, x)}<button class="btn ghost" type="button" id="fm-stake">Stake them</button>` : '');
+    if (typing) { const i = $('#fm-wamt'); if (i) { i.focus(); try { i.setSelectionRange(...typing); } catch {} } }
     if (has && x.live) F.tick = setInterval(() => {
       const e = $('#fm-earned'), c = $('#fm-claim'), cur = F.x;                      // the latest read, so a block that is not drawn again keeps its figure true
       if (!e || !cur || cur.who !== W.account) return clearInterval(F.tick);
@@ -310,6 +315,13 @@ export function mountFarm(host, ctx) {
     });
   };
 
+  let wt = 0;
+  host.addEventListener('input', (e) => {
+    if (e.target.id !== 'fm-wamt') return;
+    F.outAmt = e.target.value.replace(/[^\d.,]/g, '');
+    F.w = null; const ex = $('#fm-exit'); if (ex) ex.disabled = true;
+    clearTimeout(wt); wt = setTimeout(() => { if (F.x && F.wdOpen && F.outPct === 'custom') previewOut(); }, 300);
+  });
   host.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b || F.busy) return;
@@ -324,7 +336,11 @@ export function mountFarm(host, ctx) {
       requote(next === 'pair' ? (ethIn.value ? ethIn : tacIn.value ? tacIn : null) : null);
       return;
     }
-    if (b.dataset.pct) { F.outPct = b.dataset.pct; say($('#fm-pos-status'), ''); renderPos(); return; }
+    if (b.dataset.pct) {
+      F.outPct = b.dataset.pct; say($('#fm-pos-status'), ''); renderPos();
+      if (F.outPct === 'custom' && !matchMedia('(pointer: coarse)').matches) $('#fm-wamt')?.focus();
+      return;
+    }
     if (b.dataset.as) { F.outAs = b.dataset.as; say($('#fm-pos-status'), ''); renderPos(); return; }
     const x = F.x;
     if ((b.id === 'fm-emax' || b.id === 'fm-tmax') && x && mineX(x)) {
@@ -369,7 +385,18 @@ export function mountFarm(host, ctx) {
     ? (all ? SEL.exitAndRemove : SEL.withdrawAndRemove + word(shares)) + word(m0) + word(m1) + word(dl)
     : (all ? SEL.exitTo + word(as === 'eth' ? 1 : 0) : SEL.withdrawTo + word(as === 'eth' ? 1 : 0) + word(shares)) + word(m0) + word(dl));
   async function previewOut() {
-    const x = F.x, my = ++F.wseq, all = F.outPct === '100', as = F.outAs, shares = all ? x.staked : x.staked * BigInt(F.outPct) / 100n, el = $('#fm-out-rcpt'), ex = $('#fm-exit');
+    const x = F.x, my = ++F.wseq, custom = F.outPct === 'custom', all = F.outPct === '100', as = F.outAs, el = $('#fm-out-rcpt'), ex = $('#fm-exit');
+    let shares = all ? x.staked : custom ? 0n : x.staked * BigInt(F.outPct) / 100n, what = all ? 'all' : `${F.outPct}%`;
+    if (custom) {
+      const raw = F.outAmt.trim(), want = raw ? parseUnits(raw) : 0n, worthWei = stakeWorthOf(x);
+      const stop = (msg) => { F.w = null; if (ex) { ex.disabled = true; ex.textContent = 'Withdraw'; } if (el) { el.hidden = !msg; el.innerHTML = msg ? `<p class="note err">${msg}</p>` : ''; } };
+      if (want == null) return stop('Type an amount in ETH, like 0.05.');
+      if (!(want > 0n)) return stop('');
+      if (want > worthWei) return stop(`That is more than your stake, which is worth about ${amt(worthWei, 5)} ETH. Choose All to take all of it.`);
+      shares = x.staked * want / worthWei;
+      if (!(shares > 0n)) return stop('That amount is too small to withdraw.');
+      what = `${fmt(want, 18, 6)} ETH`;
+    }
     const wkey = `${as}|${shares}`;
     if (F.w?.wkey !== wkey) F.w = null;           // another choice's figures are not this one's; the same choice read again keeps its own until the new ones are in
     try {
@@ -384,7 +411,7 @@ export function mountFarm(host, ctx) {
         + (loss >= 0.5 ? `<div class="kv"><span>Swap price impact</span><b class="${loss >= 5 ? 'err' : ''}">${loss.toFixed(loss < 10 ? 1 : 0)}%</b></div>` : '')
         + feeRow(GAS.out)
         + (loss >= 15 ? ackBox('fm-out-ack', loss, 'withdrawal', F.outAck === ackId) : '');
-      ex.textContent = all ? 'Withdraw all' : `Withdraw ${F.outPct}%`;
+      ex.textContent = all ? 'Withdraw all' : `Withdraw ${what}`;
       const outGate = () => { ex.disabled = F.busy || !accepted('fm-out-ack', loss); };
       for (const ev of ['input', 'change']) $('#fm-out-ack')?.addEventListener(ev, () => { F.outAck = accepted('fm-out-ack', loss) ? ackId : null; outGate(); });
       outGate();

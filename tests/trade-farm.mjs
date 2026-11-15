@@ -149,7 +149,7 @@ try {
   await until(p, () => /Could not read that amount/.test(document.querySelector('#fm-rcpt')?.textContent || ''), null, 30000);
   ok(await p.$eval('#fm-go', (b) => b.disabled) && (await p.$eval('#fm-amt', (i) => i.hasAttribute('aria-invalid'))), 'an amount that cannot be read is said and marked, and nothing can be sent');
   // A deposit whose swap costs 30% or more is accepted by typing its figure, not by ticking a box.
-  await p.fill('#fm-amt', '20');
+  await p.fill('#fm-amt', '30');
   await until(p, () => /Swap price impact/.test(document.querySelector('#fm-rcpt')?.textContent || '') && !!document.querySelector('#fm-ack'), null, 120000);
   const big = await p.evaluate(() => { const a = document.querySelector('#fm-ack'); return { typed: a.type !== 'checkbox', n: (a.getAttribute('aria-label') || '').replace(/\D/g, ''), off: document.querySelector('#fm-go').disabled }; });
   ok(big.typed && Number(big.n) >= 30 && big.off, `a deposit that loses ${big.n}% to the swap asks for the figure to be typed, and waits for it`);
@@ -212,6 +212,27 @@ try {
   await p.click('[data-as="eth"]');
   await until(p, () => document.querySelector('[data-as="eth"]')?.getAttribute('aria-pressed') === 'true', null, 30000);
   await until(p, () => /Withdraw all/.test(document.querySelector('#fm-exit')?.textContent || '') && /You get about\s*[\d.]+ ETH/.test(document.querySelector('#fm-out-rcpt')?.textContent || ''), null, 120000);
+  {
+    // a custom amount, typed in ETH: more than the stake is refused; a share of the stake's worth takes that share of the stake
+    const tickAck = async () => { if (await p.$('#fm-out-ack')) { if (await p.$eval('#fm-out-ack', (i) => i.type === 'checkbox')) await p.check('#fm-out-ack'); else await p.fill('#fm-out-ack', await p.$eval('#fm-out-ack', (i) => (i.getAttribute('aria-label') || '').replace(/\D/g, ''))); } };
+    const s0 = await staked(me.account);
+    await p.click('[data-pct="custom"]');
+    await p.fill('#fm-wamt', '100000');
+    await until(p, () => /more than your stake/.test(document.querySelector('#fm-out-rcpt')?.textContent || ''), null, 30000);
+    ok(await p.$eval('#fm-exit', (b) => b.disabled), 'a custom amount above the stake cannot be withdrawn');
+    const worthEth = parseFloat(((await text(p, '#fm-pos')).match(/Your stake is worth about ([\d.,]+) ETH/) || [])[1]?.replace(/,/g, ''));
+    const want = (worthEth * 0.25).toFixed(4);
+    await p.fill('#fm-wamt', want);
+    await until(p, () => /Withdraw \d[\d.]* ETH/.test(document.querySelector('#fm-exit')?.textContent || '') && /You get about\s*[\d.]+ ETH/.test(document.querySelector('#fm-out-rcpt')?.textContent || ''), null, 120000);
+    await tickAck();
+    await p.click('#fm-exit');
+    await until(p, () => /Withdrawn/.test(document.querySelector('#fm-pos-status')?.textContent || '') || document.querySelector('#fm-pos-status .err'), null, 240000);
+    const s1 = await staked(me.account), cutShare = Number(s0 - s1) / Number(s0);
+    ok(s1 > 0n && Math.abs(cutShare - Number(want) / worthEth) < 0.02, `a custom ${want} ETH of a ${worthEth} ETH stake took ${(cutShare * 100).toFixed(1)}% of it`);
+    await sleep(1500);
+    await p.click('[data-pct="100"]');
+    await until(p, () => /Withdraw all/.test(document.querySelector('#fm-exit')?.textContent || '') && /You get about\s*[\d.]+ ETH/.test(document.querySelector('#fm-out-rcpt')?.textContent || ''), null, 120000);
+  }
   if (await p.$('#fm-out-ack')) {
     ok(await p.$eval('#fm-exit', (b) => b.disabled), 'a withdrawal as one asset with a large swap waits for its box to be ticked (or its figure typed)');
     if (await p.$eval('#fm-out-ack', (i) => i.type === 'checkbox')) await p.check('#fm-out-ack');

@@ -1126,6 +1126,21 @@ await step('tacfarm', async () => {
   await chainUntil(async () => (await stakedOf(A0)) === st2);
   ok((await stakedOf(A0)) === st2, `tacfarm: LP held is staked again with a permit ${await text(page, '#pf-lp-status')}`);
   await page.waitForSelector('#pf-stake', { state: 'detached', timeout: 120000 });     // the page ignores tab presses until the stake has finished drawing
+  // A custom amount, typed in ETH: more than the stake is refused; a share of it takes that share of the stake.
+  await page.waitForSelector('[data-pfp="custom"]');
+  await page.click('[data-pfp="custom"]');
+  await page.fill('#pf-wamt', '1000');
+  await page.waitForSelector('#pf-out-rcpt:not([hidden]) .err');
+  ok(await page.isDisabled('#pf-exit'), 'tacfarm: a custom amount above the stake cannot be withdrawn');
+  const worthEth = parseFloat(((await text(page, '#sheet-farm')).match(/Your stake is worth about ([\d.,]+) ETH/) || [])[1]?.replace(/,/g, ''));
+  const wantEth = (worthEth * 0.3).toFixed(5), s3 = await stakedOf(A0);
+  await page.fill('#pf-wamt', wantEth);
+  await acceptLoss(page, '#pf-exit', '#pf-outv');
+  ok((await text(page, '#pf-exit')).includes(`${wantEth}`.slice(0, 6)), `tacfarm: the custom button names the amount ${await text(page, '#pf-exit')}`);
+  await page.click('#pf-exit');
+  await chainUntil(async () => (await stakedOf(A0)) < s3);
+  const s4 = await stakedOf(A0), cutShare = Number(s3 - s4) / Number(s3);
+  ok(s4 > 0n && Math.abs(cutShare - Number(wantEth) / worthEth) < 0.02, `tacfarm: custom ${wantEth} ETH of a ${worthEth} ETH stake took ${(cutShare * 100).toFixed(1)}% of it ${await text(page, '#pf-status')}`);
   await page.waitForSelector('[data-pfp="100"]');
   await page.click('[data-pfp="100"]'); await page.click('[data-pfr="tac"]');
   await acceptLoss(page, '#pf-exit', '#pf-outv');
