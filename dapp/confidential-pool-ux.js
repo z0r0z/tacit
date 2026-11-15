@@ -1885,9 +1885,16 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (dShares <= 0n) throw new Error('lp-bond: zero derived shares (check the add ratio / reserves)');
 
     const addr20 = (a) => '0x' + String(a).replace(/^0x/, '').padStart(40, '0').slice(-40);
+    const pid = pool.evmPoolId(assetA, assetB, feeBps), lpAsset = pool.evmLpShareId(pid);
+    // The farm a pool's shares bond into is the farm program's to say, not the caller's: a standalone farm holds only its own pool's shares, and
+    // the launch manager holds none of them. A controller that does not fit the pool is refused by the pool AFTER the proof has been made, so the
+    // pool's own farm is used here, and a standalone farm named for another pool is refused before anything is proved.
+    const solo = (cfg.farm && cfg.farm.standalone) || [], low = (x) => String(x || '').toLowerCase();
+    const owning = solo.find((x) => low(x.lpAsset) === low(lpAsset));
+    if (owning) controller = owning.controller;
+    else if (solo.some((x) => low(x.controller) === low(addr20(controller)))) throw new Error('lp-bond: that farm takes a different pool’s liquidity than this one');
     const controller32 = '0x' + '00'.repeat(12) + addr20(controller).replace(/^0x/, '');
     const cb = chainBindingHex();
-    const pid = pool.evmPoolId(assetA, assetB, feeBps), lpAsset = pool.evmLpShareId(pid);
     const aOwner = nA.owner || id.owner, bOwner = nB.owner || id.owner;
     const anchorLeaf = pool.leaf(assetA, nA.cx, nA.cy, aOwner);
     const position = lpBondPosition({ walletPriv, controller: addr20(controller), lpAsset, anchorLeaf });
@@ -1909,7 +1916,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       opDeadline: Number(opDeadline), fee: fee.toString(),
     };
     const receiptLeaf = pool.farmReceiptLeaf(controller32, lpAsset, dShares, owner, bondNonce);
-    return { op, dShares, assetA, assetB, dA, dB, lpAsset, pid, bondNonce, receiptOwner: owner, receiptLeaf, anchorLeaf };
+    return { op, dShares, assetA, assetB, dA, dB, lpAsset, pid, bondNonce, receiptOwner: owner, receiptLeaf, anchorLeaf, controller: addr20(controller) };
   }
 
   async function sameRoot(walletPriv, a, b, { scan = balance } = {}) {
@@ -1937,7 +1944,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand: freshEph });
     guard.assertOutputsRecoverable({ leaves, outputs, memos: sealedMemos });
     const r = await _dispatch({ type: 'lpbond', spec: { op: b.op, leaves, outputs, ephRand: freshEph }, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts });
-    return { ...r, dShares: b.dShares, bondNonce: b.bondNonce, receiptOwner: b.receiptOwner, receiptLeaf: b.receiptLeaf, anchorLeaf: b.anchorLeaf, lpAsset: b.lpAsset, assetA: b.assetA, assetB: b.assetB };
+    return { ...r, dShares: b.dShares, bondNonce: b.bondNonce, receiptOwner: b.receiptOwner, receiptLeaf: b.receiptLeaf, anchorLeaf: b.anchorLeaf, lpAsset: b.lpAsset, assetA: b.assetA, assetB: b.assetB, controller: b.controller };
   }
 
   const _farmCfg = () => {

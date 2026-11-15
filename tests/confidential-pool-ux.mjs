@@ -1489,3 +1489,51 @@ test('two notes spent together: paths from different scans are replaced by one f
   const byCoords = await ux.sameRoot(priv, { cx: '0x1', cy: '0x2', root: '0x09' }, B, { scan });
   assert.equal(byCoords[0].root, '0x02', 'a note without its leaf is matched by its commitment');
 });
+
+// A pool whose shares belong to a standalone farm (the SPX pairs) bonds into THAT farm's controller, whichever controller the caller names:
+// the launch manager takes none of those shares, and a settle sent to it reverts (WrongStakeAsset) after the proof has been made and paid for.
+test('buildLpBondOp: an SPX pair bonds into its own farm, never the launch manager; a standalone farm named for another pool is refused', async () => {
+  const { sha256: nsha } = await import('../node_modules/@noble/hashes/sha2.js');
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '{}' }) });
+  const farm = getConfidentialDeployment('mainnet').farm;
+  const erc20Id = (token) => { const b = new Uint8Array(46); b.set(new TextEncoder().encode('tacit-evm-token-v1')); new DataView(b.buffer).setBigUint64(18, 1n); b.set(Uint8Array.from(Buffer.from(token.replace(/^0x/, ''), 'hex')), 26); return '0x' + Buffer.from(nsha(b)).toString('hex'); };
+  const SPX = erc20Id('0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c');
+  const other = { 'SPX/TAC': ux.assetByTicker.cTAC.assetId, 'SPX/cETH': ux.assetByTicker.cETH.assetId };
+  const walletPriv = '0x' + 'c5'.repeat(32), id = ux.identity(walletPriv), pool = ux.pool;
+  assert.equal(farm.standalone.length, 2);
+  for (const f of farm.standalone) {
+    // the dapp's own derivations land on the farm's configured pool and share asset
+    const [lo, hi] = BigInt(SPX) < BigInt(other[f.pair]) ? [SPX, other[f.pair]] : [other[f.pair], SPX];
+    const pid = pool.evmPoolId(lo, hi, f.feeBps);
+    assert.equal(pid.toLowerCase(), f.poolId.toLowerCase(), `${f.pair}: the pool id the dapp derives is the configured one`);
+    assert.equal(pool.evmLpShareId(pid).toLowerCase(), f.lpAsset.toLowerCase(), `${f.pair}: so is its share asset`);
+    const tree = new pool.Tree();
+    const mk = (asset, idx) => {
+      const dn = pool.deriveNote(id.priv, asset, idx), blinding = '0x' + BigInt(dn.blinding).toString(16).padStart(64, '0'), owner = pool.nkToOwner(dn.secret), c = pool.commitXY(1000n, blinding);
+      return { asset, value: '1000', ...c, owner, secret: dn.secret, blinding, leafIndex: tree.insert(pool.leaf(asset, c.cx, c.cy, owner)) };
+    };
+    const a = mk(lo, 0), b = mk(hi, 1);
+    for (const n of [a, b]) { n.path = tree.rootAndPath(n.leafIndex).path; n.root = tree.root(); }
+    const args = { walletPriv, aNote: a, bNote: b, feeBps: f.feeBps, reserveAPre: 10000n, reserveBPre: 10000n, sharesPre: 10000n };
+    for (const named of [farm.manager, f.controller]) {
+      const built = ux.buildLpBondOp({ ...args, controller: named });
+      assert.equal(String(built.op.controller).toLowerCase(), f.controller.toLowerCase(), `${f.pair}: bonded into its own farm even when ${named === farm.manager ? 'the manager' : 'its own controller'} is named`);
+      assert.equal(built.controller.toLowerCase(), f.controller.toLowerCase());
+      assert.equal(built.lpAsset.toLowerCase(), f.lpAsset.toLowerCase());
+    }
+    // the other SPX farm's controller, named for this pool's notes, is the same override (this pool's own farm wins)
+    const otherFarm = farm.standalone.find((x) => x !== f);
+    assert.equal(String(ux.buildLpBondOp({ ...args, controller: otherFarm.controller }).op.controller).toLowerCase(), f.controller.toLowerCase());
+  }
+  // a launch pool still goes to whatever controller is named (the manager), and a standalone farm named for a pool that is not its own is refused
+  const tree = new pool.Tree(), assetLow = '0x0a' + 'a'.repeat(62), assetHigh = '0x' + 'b0'.repeat(32);
+  const mk = (asset, idx) => {
+    const dn = pool.deriveNote(id.priv, asset, idx), blinding = '0x' + BigInt(dn.blinding).toString(16).padStart(64, '0'), owner = pool.nkToOwner(dn.secret), c = pool.commitXY(1000n, blinding);
+    return { asset, value: '1000', ...c, owner, secret: dn.secret, blinding, leafIndex: tree.insert(pool.leaf(asset, c.cx, c.cy, owner)) };
+  };
+  const a = mk(assetLow, 0), b = mk(assetHigh, 1);
+  for (const n of [a, b]) { n.path = tree.rootAndPath(n.leafIndex).path; n.root = tree.root(); }
+  const launch = { walletPriv, aNote: a, bNote: b, feeBps: 30, reserveAPre: 10000n, reserveBPre: 10000n, sharesPre: 10000n };
+  assert.equal(String(ux.buildLpBondOp({ ...launch, controller: farm.manager }).op.controller).toLowerCase(), farm.manager.toLowerCase(), 'a launch pool bonds into the manager');
+  assert.throws(() => ux.buildLpBondOp({ ...launch, controller: farm.standalone[0].controller }), /takes a different pool/, 'an SPX farm named for another pool is refused before any proof');
+});

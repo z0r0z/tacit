@@ -11,7 +11,7 @@
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=67d4d4de';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { makeRunner } from '/activity.js';
-import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=82280a4d';
+import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=0b9322e9';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
 import { esc, wordAt, parseUnits, rpc } from '/trade/util.js?cb=1d2cd8d3';
 
@@ -270,7 +270,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     // proved and sent a little later by the relay ("open"), or still in its queue when the wait runs out: followed until it lands
     const w = run().wait(`Add ${name(pool)} liquidity and farm it`, 20 * 60e3);
     let jid = null;
-    try { settled(await bond(t, priv(), { manager: prog.manager, aNote: nA, bNote: nB, feeBps: now.res.feeBps ?? pool.feeBps, own: own(t), onOwn, waitOpts: { ...w, onJob: (id, ty) => { jid = id; w.onJob?.(id, ty); } } })); }
+    try { settled(await bond(t, priv(), { manager: prog.manager, pool, aNote: nA, bNote: nB, feeBps: now.res.feeBps ?? pool.feeBps, own: own(t), onOwn, waitOpts: { ...w, onJob: (id, ty) => { jid = id; w.onJob?.(id, ty); } } })); }
     catch (e) {
       const id = e?.open?.jobId || jid;
       if (!id || !(e?.code === 'open' || e?.open || /settle timed out|status polling for job/i.test(String(e?.message || '')))) throw e;
