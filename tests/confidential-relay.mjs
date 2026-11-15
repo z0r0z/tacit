@@ -74,6 +74,18 @@ const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100
   ok('a box-reported prove failure throws out of waitForSettle');
 }
 
+// ───────────────── 2b. a fee the relay's gate turns down after taking the job reads as a fee under the floor ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash });
+  const relay = makeConfidentialRelay({ base: '', fetchImpl: mockFetch(q) });
+  const { jobId } = await relay.submitOp({ type: 'lp', op: { reserveAPre: 1, reserveBPre: 2 } });
+  await q.nextJob();
+  await q.ackJob(jobId, { error: 'feeGate: bound fee is below the marginal cost of $0.2404 at current gas and PROVE prices' });
+  await assert.rejects(() => relay.waitForSettle(jobId, { intervalMs: 0, sleep: noSleep }),
+    (e) => /^settle failed: relay fee below the current floor \(bound fee is below the marginal cost of \$0\.2404/.test(e.message) && !/feeGate/.test(e.message));
+  ok('a feeGate refusal throws as a fee under the floor, so the pages ask again at a higher fee or offer the account');
+}
+
 // ───────────────── 3. settle() convenience returns immediately on a deduped-settled job ─────────────────
 {
   const q = makeConfidentialSettler({ storage: freshStore(), hash });

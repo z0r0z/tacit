@@ -204,6 +204,13 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
     }
   }
 
+  // A job the relay's fee check turned down after taking it is the same thing as a fee under the floor at submit: the
+  // pages ask again at a higher fee, or offer to send it from the account, on that wording.
+  function failedError(kind, st) {
+    const said = String(st.error || 'unknown'), gate = /^feeGate:\s*/i.exec(said);
+    return new Error(gate ? `${kind} failed: relay fee below the current floor (${said.slice(gate[0].length)})` : `${kind} failed: ${said}`);
+  }
+
   function openError(st) {
     const e = new Error(`settle held: proved and waiting for a sender (job ${st.jobId}); it can be sent from any account now`);
     e.code = 'open';
@@ -220,7 +227,7 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
       const st = await pollStatus(jobId, pollState, { wait, intervalMs });
       if (st.status !== last) { last = st.status; announce(st); if (onUpdate) onUpdate(st); }
       if (st.status === 'settled') return st;
-      if (st.status === 'failed') throw new Error(`settle failed: ${st.error || 'unknown'}`);
+      if (st.status === 'failed') throw failedError('settle', st);
       if (st.status === 'unknown') throw new Error('relay lost the job (worker restart / KV miss)');
       if (st.status === 'open' && st.publicValues && st.proof) {
         if (!openAt) openAt = Date.now();
@@ -272,7 +279,7 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
       if (st.status !== last) { last = st.status; announce(st); if (onUpdate) onUpdate(st); }
       if (st.status === 'proven') return st;
       if (st.status === 'settled') return st;
-      if (st.status === 'failed') throw new Error(`prove failed: ${st.error || 'unknown'}`);
+      if (st.status === 'failed') throw failedError('prove', st);
       if (st.status === 'unknown') throw new Error('relay lost the job (worker restart / KV miss)');
       if (Date.now() > deadline) throw new Error('prove timed out (box offline or backlogged)');
       await wait(intervalMs);

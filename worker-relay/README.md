@@ -112,8 +112,9 @@ displayed_bps = min(fee / trade_size, BPS_CAP)
 ```
 
 Gas dominates, so this is mostly a gas-abstraction fee. Measured settle gas per op type is in
-`OP_GAS` (`src/lib/config.js`). By default the gate holds a fee to the op's marginal cost;
-`RELAY_REQUIRE_PRICED_FEE=1` refuses ops that carry no priced fee. The fee is paid to the relayer
+`OP_GAS` (`src/lib/config.js`). By default the gate holds a fee to the op's marginal cost, less the
+share the relay carries itself (`RELAY_GATE_SUBSIDY_BPS`, 4000 = 40%; 0 holds every fee to the full
+cost); `RELAY_REQUIRE_PRICED_FEE=1` refuses ops that carry no priced fee. The fee is paid to the relayer
 as the underlying asset by the pool's `_payout`, so replenish swaps it directly; native ETH is
 kept as gas up to `ETH_SWEEP_ABOVE_WEI`.
 

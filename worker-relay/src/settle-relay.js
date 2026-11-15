@@ -140,12 +140,16 @@ export async function feeGate(job, liveGasGwei, provePriceUsd, ethPriceUsd) {
   // carried by the margin, not charged to each op.
   const need = CFG.gateIncludesMaintenance ? q.costUsd : q.marginalCostUsd;
   const label = CFG.gateIncludesMaintenance ? 'cost' : 'marginal cost';
-  if (feeUsd + 1e-9 < need) {
+  // The relay carries up to gateSubsidyBps of that cost itself (see config), so a fee quoted a little earlier, at a
+  // lower gas price, is still taken.
+  const least = need * (1 - CFG.gateSubsidyBps / 10_000);
+  if (feeUsd + 1e-9 < least) {
     // `reason` is logged AND acked to the job, where the submitter can read it. It must not carry the dollar value
     // of their fee: for an asset priced from private config (cTAC) that value is units x the private reference
     // price, which stays private. Our own cost is not sensitive.
     return { ok: false, reason: `bound fee $${feeUsd.toFixed(4)} < ${label} $${need.toFixed(4)}`, publicReason: `bound fee is below the ${label} of $${need.toFixed(4)} at current gas and PROVE prices` };
   }
+  if (feeUsd + 1e-9 < need) return { ok: true, reason: `fee $${feeUsd.toFixed(4)} is under the ${label} $${need.toFixed(4)}: relayed, the relay carries the rest`, quote: q };
   return { ok: true, reason: `fee $${feeUsd.toFixed(4)} ≥ ${label} $${need.toFixed(4)}`, quote: q };
 }
 

@@ -8,7 +8,7 @@ import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverE
 import { ROUTES } from '/bridge/track.js?cb=20103ab7';
 import { parseUnits } from '/trade/util.js?cb=1d2cd8d3';
 import { forgetUx } from '/trade/poolux.js?cb=59d125e5';
-import { relayWords } from '/relay-outcome.js?cb=17e48a9a';
+import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=75ad0882';
 

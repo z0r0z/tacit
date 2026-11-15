@@ -8,7 +8,8 @@ const err = (message, extra = {}) => Object.assign(new Error(message), extra);
 assert.equal(relayCode(err('x', { code: 'relay_held' })), 'relay_held'); assert.equal(relayCode(err('x', { code: 4 })), ''); assert.equal(relayCode(null), '');
 // turned down or held
 for (const e of [err('x', { code: 'relay_held' }), err('x', { code: 'free_budget' }), err('relay 429: slow down'), err('relay 503: down'), err('the relay can’t take this one right now'),
-  err('free relayed settles for today are used up'), err('fee below the current floor'), err('FEE_MOVED'), err('temporarily unavailable')]) assert.equal(relayRefused(e), true, e.message);
+  err('free relayed settles for today are used up'), err('fee below the current floor'), err('FEE_MOVED'), err('temporarily unavailable'),
+  err('settle failed: relay fee below the current floor (bound fee is below the marginal cost of $0.24)'), err('feeGate: bound fee is below the marginal cost')]) assert.equal(relayRefused(e), true, e.message);
 for (const e of [err('relay 400: bad op'), err('relay 404: not found'), err('reverted'), err('x', { code: 'relay_paused' }), err('x', { code: 'prove_reserved' }), err('prove_budget', { code: 'prove_budget' }), err('network error')]) assert.equal(relayRefused(e), false, e.message);
 // proved and held for a sender
 const open = err('settle held: proved and waiting for a sender (job 1)', { code: 'open', open: { proof: '0x1', memos: [] } });

@@ -553,6 +553,11 @@ export const CFG = {
   // maintenance per op is stricter than the published floor and rejected the dapp's standard fee from about
   // 0.06 gwei up, AFTER the job had queued. Set RELAY_GATE_INCLUDE_MAINTENANCE=1 to hold ops to the full cost.
   gateIncludesMaintenance: opt('RELAY_GATE_INCLUDE_MAINTENANCE', '0') === '1',
+  // How much of that cost the relay will carry itself, in basis points of it. A fee is bound into the proof when the
+  // page quotes it and the gate runs later, at the live gas and PROVE prices, so a fee that was right when quoted can
+  // sit a little under by the time the job is taken. Within this share the job is relayed anyway; past it the job is
+  // refused and the page asks again at a higher fee. 0 holds every fee to the full cost.
+  gateSubsidyBps: Math.min(9000, Math.max(0, num('RELAY_GATE_SUBSIDY_BPS', 4000))),
 
   // ── Replenish / monitor thresholds ──
   ethGasBufferWei: BigInt(opt('ETH_GAS_BUFFER_WEI', '30000000000000000')), // 0.03 ETH

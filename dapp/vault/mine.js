@@ -9,7 +9,7 @@ import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=ac332664';
 import { makeLoans, exactNotes, bondGap, bondCall, bondShareCall, bondBackCall, outpointOf, lockPad, lockRate, loanHealth, liqPhrase, healthLine, loanTag, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=739f4312';
 import { makeRunner } from '/activity.js';
-import { relayRefused, relayWords } from '/relay-outcome.js?cb=17e48a9a';
+import { relayRefused, relayWords } from '/relay-outcome.js?cb=ad7c898d';
 import { esc, short, grp, plain, parseUnits, word, wordAt } from '/trade/util.js?cb=1d2cd8d3';
 
 const API = 'https://api.tacit.finance';

@@ -6,7 +6,7 @@ export const proveCapped = (e) => relayCode(e) === 'prove_budget' || /\bprove_bu
 export const proved = (e) => relayCode(e) === 'open' && !!e?.open?.proof && Array.isArray(e.open.memos);
 export const relayRefused = (e) => !proveCapped(e) && relayCode(e) !== 'relay_paused' && relayCode(e) !== 'prove_reserved'
   && (proved(e) || ['relay_held', 'free_budget'].includes(relayCode(e))
-    || /fee below the current floor|FEE_MOVED|can.t take this one|free relayed settles|relay (5\d\d|429)\b|temporarily unavailable/i.test(`${relayCode(e)} ${e?.message || e || ''}`));
+    || /fee below the current floor|feeGate|FEE_MOVED|can.t take this one|free relayed settles|relay (5\d\d|429)\b|temporarily unavailable/i.test(`${relayCode(e)} ${e?.message || e || ''}`));
 export const waitRanOut = (e) => /settle timed out|status polling for job/i.test(e?.message || '');
 export const jobSaid = (e) => /^(settle|prove) failed:|relay lost the job/i.test(e?.message || '');
 

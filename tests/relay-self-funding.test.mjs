@@ -921,13 +921,20 @@ test('gate: an unpriced (fee-less) op is accepted as a subsidy, not refused', as
   const [v] = await gateVerdicts({}, [{ job: { type: 'cbtcmint', mode: 'settle', feeUsd: null, op: {} }, gwei: 0.06 }]);
   ok(v.ok === true && /not priced|subsid/i.test(v.reason), `an unpriced op must be accepted: ${v.reason}`);
 });
-test('gate: the dapp standard fee is accepted at 0.1 gwei (marginal cost), refused only if it loses money', async () => {
-  const [ok01, low01, ok15] = await gateVerdicts({}, [
-    { job: job(0.257), gwei: 0.1 }, { job: job(0.10), gwei: 0.1 }, { job: job(0.257), gwei: 0.15 },
-  ]);
+test('gate: the dapp standard fee is accepted at 0.1 gwei (marginal cost), a fee far under the cost is refused', async () => {
+  const [ok01, low01] = await gateVerdicts({}, [{ job: job(0.257), gwei: 0.1 }, { job: job(0.10), gwei: 0.1 }]);
   ok(ok01.ok === true, `0.257 at 0.1 gwei must pass on marginal cost: ${ok01.reason}`);
-  ok(low01.ok === false && /marginal cost/.test(low01.reason), `a fee below marginal cost must be refused: ${low01.reason}`);
-  ok(ok15.ok === false, 'at 0.15 gwei the op loses money on its own and must be refused');
+  ok(low01.ok === false && /marginal cost/.test(low01.reason), `a fee far below marginal cost must be refused: ${low01.reason}`);
+});
+test('gate: a fee a little under the cost is relayed, the relay carrying the rest; a fee far under it is still refused', async () => {
+  const [near, far, exact] = await gateVerdicts({}, [{ job: job(0.257), gwei: 0.15 }, { job: job(0.257), gwei: 0.3 }, { job: job(0.257), gwei: 0.05 }]);
+  ok(near.ok === true && /carries the rest/.test(near.reason), `0.257 at 0.15 gwei is a little under its cost and must be relayed: ${near.reason}`);
+  ok(far.ok === false && /marginal cost/.test(far.reason), `0.257 at 0.3 gwei is far under its cost and must be refused: ${far.reason}`);
+  ok(exact.ok === true && !/carries the rest/.test(exact.reason), `a fee that covers its cost is taken without a subsidy: ${exact.reason}`);
+});
+test('gate: RELAY_GATE_SUBSIDY_BPS=0 holds every fee to the full marginal cost', async () => {
+  const [d] = await gateVerdicts({ RELAY_GATE_SUBSIDY_BPS: '0' }, [{ job: job(0.257), gwei: 0.15 }]);
+  ok(d.ok === false && /marginal cost/.test(d.reason), `with no subsidy the same fee must be refused: ${d.reason}`);
 });
 test('gate: RELAY_GATE_INCLUDE_MAINTENANCE=1 holds ops to the full cost', async () => {
   const [d] = await gateVerdicts({ RELAY_GATE_INCLUDE_MAINTENANCE: '1' }, [{ job: job(0.257), gwei: 0.1 }]);
