@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // The front page's Bridge tab, bridging back from Bitcoin, in a real browser under the page's own CSP, with a pasted key. The Bitcoin read is the page's own
 // (loadBtc -> scanHoldings) with the holdings the scan would return put in its place (tacit.js has a hook for it, and this test appends the line that reaches
-// it); the Bitcoin address's coins are answered here and every other host refused:
+// it), and the bridge's check of a note (preflight, which reads the note's history from Bitcoin) answers that it burns in one Bitcoin transaction; the Bitcoin
+// address's coins are answered here and every other host refused:
 //   · with no Tacit wallet open, the From field asks for it (a button that opens it) and so does the main button;
 //   · with the wallet open and TAC from Bitcoin picked, the From field says how much TAC the key holds on Bitcoin, at TAC's 4 places as the wallet sheet
 //     does, and offers no Max (notes go whole);
-//   · a note over the 1,000 TAC a bridge takes can be picked, and the card offers to split 1,000 TAC off it (asking for a second press first);
+//   · a bridge takes a note of any size: the one note, of millions of TAC, is picked, the card quotes bridging all of it, and a first press asks for a second;
 //   · the From picker gives the amount beside "TAC, on Bitcoin", and beside tETH on Bitcoin when that way is offered.
 //
 //   PLAYWRIGHT=/Users/z/tacit/node_modules/playwright-core node tests/bridge-btc-balance.mjs      (DAPP=<dir> to try another build, INDEX=<file> another front page)
@@ -34,7 +35,18 @@ const KEY = '11'.repeat(31) + '22';
 const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', TETH = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const CORS = { 'access-control-allow-origin': '*', 'content-type': 'application/json' };
 const COIN = [{ txid: 'aa'.repeat(32), vout: 0, value: 250000, status: { confirmed: true, block_height: 900000, block_time: 1700000000 } }];
-const TACIT_JS = readFileSync(join(DAPP, 'tacit.js'), 'utf8') + '\n_testSetScanHoldingsOverride(() => (globalThis.__held ? globalThis.__held() : new Map()));\n';
+const STUBS = `
+_testSetScanHoldingsOverride(() => (globalThis.__held ? globalThis.__held() : new Map()));
+{
+  const ux = _burndepUxSingleton;
+  _burndepUxSingleton = function () {
+    const u = ux.apply(this, arguments);
+    u.preflight = async () => ({ ok: true, path: 'reflected', burnFeeRate: 5, steps: [{ name: 'reflected', ok: true }, { name: 'fee-estimate', ok: true }] });
+    return u;
+  };
+}
+`;
+const TACIT_JS = readFileSync(join(DAPP, 'tacit.js'), 'utf8') + '\n' + STUBS;
 
 const browser = await chromium.launch({ args: ['--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1'] });
 // a fresh browser context whose Bitcoin address holds `spec` ([{ asset, id, amount }], amount in the asset's smallest unit, as a string)
@@ -109,19 +121,20 @@ try {
   ok(!(await page.$('#hx-bal .quick')), 'and no quick amounts');
   ok(/whole notes, picked below/.test(await text('#hx .f .say')), `the From field points to where the note is picked: "${await text('#hx .f .say')}"`);
 
-  // the one note is over the 1,000 TAC a bridge takes: it is picked and the card offers the split
-  await page.waitForFunction(() => /Split off 1,000 TAC/.test(document.querySelector('#hx-go')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+  // the one note, of millions of TAC, bridges whole: it is picked and the card quotes all of it
+  await page.waitForFunction(() => /Bitcoin fee\s*about/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
   const row = await page.$eval('#hx-routes [data-hxr]', (b) => ({ off: b.disabled, on: b.getAttribute('aria-checked'), t: b.textContent.replace(/\s+/g, ' ').trim() })).catch(() => null);
-  ok(!!row && !row.off && row.on === 'true' && /split 1,000 TAC off it to bridge/.test(row.t), `the note over the cap can be picked, and is: ${row && row.t}`);
-  ok(/Split off 1,000 TAC/.test(await text('#hx-go')), `the button offers the split: "${await text('#hx-go')}"`);
+  ok(!!row && !row.off && row.on === 'true' && /ready to bridge/.test(row.t) && !/split/i.test(row.t), `the note is picked and ready to bridge, with no split asked: ${row && row.t}`);
+  ok(/^Bridge TAC from Bitcoin$/.test(await text('#hx-go')), `the button bridges it: "${await text('#hx-go')}"`);
   const rc = await text('#hx-receipt');
-  ok(/Splits off\s*1,000 TAC to your own address/.test(rc) && /Keeps\s*6,387,437\.4905 TAC/.test(rc), `the receipt says what goes and what stays: ${rc}`);
-  await shot('split');
+  ok(/Arrives\s*6,388,437\.4905 private TAC on Ethereum/.test(rc) && /Bitcoin fee\s*about [\d,]+ sats/.test(rc) && !/Splits off|Keeps/.test(rc), `the receipt says all of it arrives, and the Bitcoin fee: ${rc}`);
+  await shot('whole');
   await page.click('#hx-max');
   ok(await page.evaluate(() => !!document.activeElement?.matches('#hx-routes [data-hxr]')), 'pressing Balance goes to the notes list and lands on the note');
   await page.click('#hx-go');
-  await page.waitForFunction(() => /Press again to split it/.test(document.querySelector('#hx-ss')?.textContent || ''), null, { timeout: 15000 }).catch(() => {});
-  ok(/Press again to split it/.test(await text('#hx-ss')), `a first press asks for a second: "${await text('#hx-ss')}"`);
+  await page.waitForFunction(() => /Press again to bridge it/.test(document.querySelector('#hx-ss')?.textContent || ''), null, { timeout: 15000 }).catch(() => {});
+  const ask = await text('#hx-ss');
+  ok(/^Bridging 6,388,437\.4905 TAC costs about [\d,]+ sats from your Bitcoin address\. .*Press again to bridge it\.$/.test(ask), `a first press asks for a second, naming all of it: "${ask}"`);
 
   await page.click('[data-pk="hx-from"]');
   await page.waitForSelector('.pk .pk-r[data-v="btc"]', { timeout: 10000 });

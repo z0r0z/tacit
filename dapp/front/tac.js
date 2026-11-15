@@ -1802,7 +1802,7 @@ function tacNotesOpen() {
   if (S.key && !BR.loading) loadBridge(true).then(() => { if (!TN.step) tnPaint(); tnEntry(); }, () => tnPaint());
 }
 function tnClose() {
-  TN.open = false; TN.step = null; TN.seq++;
+  TN.open = false; TN.step = null; TN.seq++; delete FLASH['tn-st'];
   const d = $('#tac-notes');
   if (d?.open) d.close();
 }
@@ -1835,7 +1835,7 @@ function tnPaint() {
   const preps = brPreps(pub).length, recs = brRecords(pub).length;
   mount(el, html`${head}
     <p class="tn-sum">${brTac(full.reduce((s, r) => s + BigInt(r.n.amount), 0n))} on Bitcoin · ${brNotes(full.length)}</p>
-    ${full.length ? html`<ul class="tn-l">${full.map(row)}</ul>` : html`<p class="note">No TAC on this key’s Bitcoin address.</p>`}
+    ${full.length ? html`<ul class="tn-l">${full.map(row)}</ul>` : html`<p class="note">${brSplitLooking(pub) || 'No TAC on this key’s Bitcoin address.'}</p>`}
     ${empty.length ? html`<button class="link tn-e" type="button" data-tn-empty>${TN.empty ? 'Hide the' : 'Show the'} ${brNotes(empty.length)} holding no TAC</button>${TN.empty ? html`<ul class="tn-l">${empty.map(row)}</ul>` : ''}` : ''}
     ${lock ? html`<div class="tn-cf" id="tn-cf"></div>` : html`<div class="tn-bar">
       <p class="tn-pk">${picked.length ? html`<b>${picked.length} picked</b> · ${brTac(total)}` : 'Tick the notes to act on.'}</p>
@@ -1843,6 +1843,7 @@ function tnPaint() {
       ${why ? html`<p class="tn-why">${why}</p>` : ''}</div>`}
     <div class="status" role="status" id="tn-st"></div>
     ${preps || recs ? html`<p class="tn-follow">${[preps ? `${preps} getting ready` : '', recs ? `${recs} on the way` : ''].filter(Boolean).join(' · ')}. <button class="link" type="button" data-tn-follow>Follow them</button></p>` : ''}`);
+  if (FLASH['tn-st']) mount($('#tn-st', el), FLASH['tn-st']);   // what the last action said stays through the redraw
   if (lock) tnConfirm(list, picked);
 }
 async function tnConfirm(list, picked) {

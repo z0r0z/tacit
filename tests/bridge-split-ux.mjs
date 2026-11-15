@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-// Bridging TAC from Bitcoin when the note is over the 1,000 TAC a bridge takes: the split, and what the front page's Bridge tab and TAC's page say
-// before it, while its two notes wait, and once they can go. In a real browser under the page's own CSP, with a pasted key. The Bitcoin read is the
-// page's own (loadBridge -> scanHoldings) with the holdings the scan would return put in its place per phase (pre: one confirmed 2,000 TAC note;
-// post: the split's two 1,000 TAC notes in the mempool; conf: both confirmed, Bitcoin's proof not at their block; ready: and the proof there), and
-// the broadcast of the split is answered here (it moves the phase to post, after `lag` scans that still show nothing, as a slow indexer does):
-//   · the Bridge tab offers the split with what goes, what stays, and that no Ethereum gas is needed; a first press asks for a second;
+// Splitting a TAC note on Bitcoin and bridging the two notes: what the front page's Bridge tab and TAC's page say before the split, while its two notes
+// wait, and once they can go. In a real browser under the page's own CSP, with a pasted key. The Bitcoin read is the page's own (loadBridge -> scanHoldings)
+// with the holdings the scan would return put in its place per phase (pre: one confirmed 2,000 TAC note the proof tracks; post: the split's two 1,000 TAC
+// notes in the mempool; conf: both confirmed, Bitcoin's proof not at their block; ready: and the proof there), the fee rates are answered here, and the
+// broadcast of the split is answered here (it moves the phase to post, after `lag` scans that still show nothing, as a slow indexer does):
+//   · a bridge takes a note of any size, so the Bridge tab offers the 2,000 TAC note whole and no split, and says no Ethereum gas is needed;
+//   · TAC's page splits it (Manage your TAC, tick the note, Split): the card says what stays and sends nothing until its own press;
 //   · after the split both notes are named (what was split off, what was kept), both are listed once the indexer shows them, without a refresh,
 //     and the page says each is waiting for the Bitcoin confirmation;
 //   · once confirmed, a note Bitcoin's proof has not reached says so and cannot be picked; once it has, both can;
-//   · TAC's page: the over-limit note says what to do, its split asks for a second press and shows what stays, "Getting ready" names both notes,
-//     and the page has a way to every address and says no Ethereum gas is needed.
+//   · TAC's page: "Getting ready" names both notes, and the page has a way to every address and says no Ethereum gas is needed.
 //
 //   PLAYWRIGHT=/Users/z/tacit/node_modules/playwright-core node tests/bridge-split-ux.mjs      (DAPP=<dir> to try another build)
 import { createRequire } from 'node:module';
@@ -49,7 +49,7 @@ _testSetScanHoldingsOverride(() => (globalThis.__held ? globalThis.__held() : ne
     const u = ux.apply(this, arguments);
     if (!u.__split) {
       u.__split = true;
-      u.noteTracking = async (ns) => new Map(ns.map((x) => [x.txid + ':' + x.vout, sessionStorage.getItem('__phase') === 'ready' ? 'tracked' : 'new']));
+      u.noteTracking = async (ns) => new Map(ns.map((x) => [x.txid + ':' + x.vout, /^(pre|ready)$/.test(sessionStorage.getItem('__phase') || 'pre') ? 'tracked' : 'new']));
     }
     return u;
   };
@@ -79,6 +79,8 @@ await ctx.route('**/*', (r) => {
   }
   if (/\/address\/[^/]+\/utxo/.test(u)) return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify(COIN) });
   if (/\/reflection\/status/.test(u)) return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify({ attestedHeight: globalThis.__refl || 899000 }) });
+  if (/\/v1\/fees\/recommended/.test(u)) return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify({ fastestFee: 4, halfHourFee: 3, hourFee: 2, economyFee: 1, minimumFee: 1 }) });
+  if (/\/fee-estimates/.test(u)) return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify({ 1: 4, 3: 3, 6: 2, 144: 1 }) });
   return r.abort();
 });
 const page = await ctx.newPage();
@@ -120,25 +122,43 @@ async function sheet(want = 'label.brn, .brsp') {
 }
 
 try {
-  // ── the Bridge tab, one 2,000 TAC note
+  // ── the Bridge tab, one 2,000 TAC note: a bridge takes it whole
   await page.goto(BASE + '/', { waitUntil: 'commit' });
   await openWallet();
   await tileBridge();
-  ok(await until('Split off 1,000 TAC', '#hx-go'), 'tile: the button offers the split');
+  ok(await until('ready to bridge', '#hx-routes'), `tile: the 2,000 TAC note is ready to bridge (${JSON.stringify((await rows()).map((r) => r.t))})`);
+  ok(/^Bridge TAC from Bitcoin$/.test(await text('#hx-go')) && !/split/i.test(await text('#hx-routes') + await text('#hx-go') + await text('#hx-receipt')), `tile: the button bridges it, and nothing offers a split (${await text('#hx-go')})`);
   let rc = await text('#hx-receipt');
-  ok(/Splits off\s*1,000 TAC to your own address/.test(rc) && /Keeps\s*1,000 TAC in a note of its own/.test(rc), `tile: the receipt says what goes and what stays (${rc.slice(0, 120)})`);
-  ok(/Ethereum gas\s*none: the relay sends it/.test(rc), 'tile: and that no Ethereum gas is needed');
-  ok(/either note/.test(rc), 'tile: and that both notes wait the same');
+  ok(/Ethereum gas\s*none: the relay sends it/.test(rc), 'tile: and no Ethereum gas is needed');
+  await shot('#hx', 'tile-1-whole');
 
-  // ── the press: a second press, then the split; the indexer shows nothing for the first two scans
-  await shot('#hx', 'tile-1-split');
-  await page.click('#hx-go');
-  ok(await until('Press again to split it', '#hx-ss'), 'tile: a first press asks for a second');
-  ok(/keeps 1,000 TAC in a note of its own/.test(await text('#hx-ss')), `tile: and the ask names the note that stays (${(await text('#hx-ss')).slice(0, 200)})`);
-  await page.click('#hx-go');
-  ok(await until('Split: 1,000 TAC to your own address, 1,000 TAC kept in a note of its own', '#hx-ss', 30000), `tile: the split says both notes (${(await text('#hx-ss')).slice(0, 220)})`);
-  ok(!/No TAC on this key’s Bitcoin address/.test(await text('#hx-have')), `tile: while the indexer shows nothing yet the line under does not say the key holds no TAC (${(await text('#hx-have')).slice(0, 160)})`);
-  ok(await page.waitForFunction(() => document.querySelectorAll('#hx-routes [data-hxr]').length === 2, null, { timeout: 60000 }).then(() => true, () => false), 'tile: both notes are listed without a refresh, though the indexer showed nothing at first');
+  // ── TAC's page splits it: a card that says what stays, then its press; the indexer shows nothing for the first two scans after
+  await page.goto(BASE + '/tac/', { waitUntil: 'commit' });
+  await page.waitForSelector('#tpg-notes:not([hidden]) [data-tn-open]', { timeout: 60000 }).catch(() => {});
+  await page.click('#tpg-notes [data-tn-open]');
+  await page.waitForSelector('#tac-notes[open] input[data-tn]:not([disabled])', { timeout: 30000 }).catch(() => {});
+  await page.click('#tac-notes input[data-tn]');
+  await page.click('#tac-notes [data-tn-act="split"]');
+  await page.fill('#tn-amt', '1000');
+  ok(/Split 2,000 TAC/.test(await text('#tn-cf')) && /^1,000 TAC$/.test(await text('#tn-keep')), `sheet: Split asks how much and says what stays (${(await text('#tn-cf')).slice(0, 160)})`);
+  ok(await page.waitForSelector('#tn-go:not([disabled])', { timeout: 30000 }).then(() => true, () => false), `sheet: and its press opens once the Bitcoin fee is read (${await text('#tn-fee')})`);
+  ok((await page.evaluate(() => Number(sessionStorage.getItem('__sent')) || 0)) === 0, 'sheet: nothing is sent before that press');
+  await shot('#tac-notes', 'sheet-1-split');
+  await page.click('#tn-go');
+  ok(await until('Split: 1,000 TAC to your own address, 1,000 TAC kept in a note of its own', '#tn-st', 30000), `sheet: the split says both notes (${(await text('#tn-st')).slice(0, 220)})`);
+  ok((await page.evaluate(() => Number(sessionStorage.getItem('__sent')) || 0)) === 1, 'sheet: and sent one transaction');
+  ok(!/No TAC on this key’s Bitcoin address/.test(await text('#tac-notes')), `sheet: while the indexer shows nothing yet it does not say the key holds no TAC (${(await text('#tac-notes')).slice(0, 160)})`);
+  ok(await page.waitForFunction(() => document.querySelectorAll('#tac-notes input[data-tn]').length === 2, null, { timeout: 60000 }).then(() => true, () => false), 'sheet: both notes are listed without a refresh, though the indexer showed nothing at first');
+  const tn = await page.$$eval('#tac-notes label.tn-r', (xs) => xs.map((e) => ({ t: e.innerText.replace(/\s+/g, ' ').trim(), off: e.querySelector('input').disabled }))).catch(() => []);
+  ok(tn.length === 2 && tn.every((r) => r.off && /1,000 TAC/.test(r.t) && /waiting for its confirmation/.test(r.t)), `sheet: each waits for the Bitcoin confirmation and cannot be ticked yet (${JSON.stringify(tn)})`);
+  ok(/1 getting ready/.test(await text('#tac-notes')), `sheet: and the split is followed as getting ready (${(await text('#tac-notes')).slice(-160)})`);
+  await shot('#tac-notes', 'sheet-2-after-split');
+  await page.keyboard.press('Escape');
+
+  // ── the Bridge tab, the split's two notes in the mempool
+  await page.goto(BASE + '/', { waitUntil: 'commit' });
+  await tileBridge();
+  ok(await page.waitForFunction(() => document.querySelectorAll('#hx-routes [data-hxr]').length === 2, null, { timeout: 60000 }).then(() => true, () => false), 'tile: both notes are listed');
   ok(await until('Balance 2,000', '#hx-bal', 30000), `tile: and the From field's balance follows (${await text('#hx-bal')})`);
   let rs = await rows();
   ok(rs.length === 2 && rs.every((r) => /waiting for its Bitcoin confirmation/.test(r.t) && /from your split/.test(r.t) && !/unconfirmed/.test(r.t)), `tile: each says it waits for the confirmation and is from the split, in words (${JSON.stringify(rs.map((r) => r.t))})`);
@@ -186,26 +206,12 @@ try {
   rs = await rows();
   ok(rs.length === 2 && rs.every((r) => !r.off && /ready to bridge · from your split/.test(r.t)), `tile: and can be picked (${JSON.stringify(rs.map((r) => r.t))})`);
 
-  // ── TAC's page, one 2,000 TAC note
-  await phase('pre', { prep: null });
+  // ── TAC's page, the two notes ready
   await sheet();
   body = await text('#bridge-body');
-  ok(/Over 1,000 TAC, the most one bridge takes\. Split some off to your own address, then bridge that\. The rest stays with you in a note of its own\./.test(body), 'sheet: the note over the limit says what to do and that the rest stays');
-  ok(/Bridge to Ethereum takes one note of up to 1,000 TAC\. Split the larger note first/.test(body), 'sheet: and the grey button has its reason beside it');
-  ok(/needs no Ethereum gas: the relay sends the Ethereum side/.test(body), 'sheet: and says no Ethereum gas is needed');
-  await page.click('#bridge-body [data-brsplit]');
-  await page.waitForFunction(() => /Press Split off again/.test(document.querySelector('#br-splitst')?.innerText || ''), null, { timeout: 30000 }).catch(() => {});
-  const ask = await text('#br-splitst');
-  ok(/sends 1,000 TAC of this note to your own address and keeps 1,000 TAC in a note of its own/.test(ask) && /Press Split off again/.test(ask), `sheet: a first press asks for a second and names the note that stays (${ask.slice(0, 160)})`);
-  ok(((await page.evaluate(() => Number(sessionStorage.getItem('__sent')) || 0)) === 1), 'sheet: and sent nothing');
-  await page.click('#bridge-body [data-brsplit]');
-  await page.waitForFunction(() => /Split: 1,000 TAC to your own address/.test(document.querySelector('#br-splitst')?.innerText || ''), null, { timeout: 40000 }).catch(() => {});
-  ok(!/No TAC on this key’s Bitcoin address/.test(await text('#bridge-body')), `sheet: while the indexer shows nothing yet the list does not say the key holds no TAC (${(await text('#bridge-body')).slice(-420, -240)})`);
-  await shot('#bridge-body', 'sheet-2-split-done');
-  ok(/Split: 1,000 TAC to your own address, 1,000 TAC kept in a note of its own/.test(await text('#br-splitst')), 'sheet: the second press splits, and the message names both notes next to the split');
-  ok(await page.waitForFunction(() => document.querySelectorAll('#bridge-body label.brn').length === 2 && /Getting ready 1,000 TAC and 1,000 TAC Split/.test(document.querySelector('#bridge-body').innerText.replace(/\s+/g, ' ')), null, { timeout: 60000 }).then(() => true, () => false), 'sheet: Getting ready names both, and both notes are listed without a refresh');
-  const lab2 = await page.$$eval('#bridge-body label.brn', (xs) => xs.map((e) => e.innerText.replace(/\s+/g, ' ').trim()));
-  ok(lab2.every((t) => /From your split · Waiting for its Bitcoin confirmation/.test(t)), `sheet: each says it is from the split and waits for the confirmation (${JSON.stringify(lab2)})`);
+  ok(/needs no Ethereum gas: the relay sends the Ethereum side/.test(body), 'sheet: says no Ethereum gas is needed');
+  const lab2 = await page.$$eval('#bridge-body label.brn', (xs) => xs.map((e) => ({ t: e.innerText.replace(/\s+/g, ' ').trim(), off: e.querySelector('input').disabled })));
+  ok(lab2.length === 2 && lab2.every((l) => !l.off && /From your split/.test(l.t)), `sheet: both notes from the split can be picked (${JSON.stringify(lab2)})`);
 
   // ── the way to the addresses
   await page.click('#br-addrs');
