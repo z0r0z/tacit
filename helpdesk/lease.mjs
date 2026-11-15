@@ -225,6 +225,21 @@ export function makeVet(corpusText) {
   return vet;
 }
 
+// A day's credits kept, so a page asking again and again does not read the ledger each time: a reading of a day still running lasts `ttlMs`; a reading
+// that says the day is over (`over: true`, made after the day ended, so it has everything) is final and kept. A reading made while the day was running is
+// never kept past its time, however old the day has since become: the points service refuses a day that is not over and would be held on it.
+export function makeCreditCache({ ttlMs = 30000, max = 400, now = Date.now } = {}) {
+  const kept = new Map();
+  return (day, load) => {
+    const t = now(), hit = kept.get(day);
+    if (hit && (hit.v.over === true || t - hit.at < ttlMs)) return hit.v;
+    const v = load();
+    if (kept.size >= max) kept.clear();
+    kept.set(day, { at: t, v });
+    return v;
+  };
+}
+
 // The points service's contract (the proof pool's GET /prover/pool/credits): for a UTC day number, { day, over, miners: [{ miner, proofs, points }] }.
 // Built from the append-only ledger. `over` is true only once the day has ended, and an address is capped at maxPerDay whatever it earned.
 // An address that earned fewer than minPoints in the day is not credited (a single point is dust, and a day of them is a ledger entry each),

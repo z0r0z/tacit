@@ -11,7 +11,7 @@ import path from 'node:path';
 import { buildIndex } from './retrieval.mjs';
 import { looksLikeSecret } from './guard.mjs';
 import { makeBackend, BusyError } from './backend.mjs';
-import { makeLeases, makeVet, isAddr, creditsFor } from './lease.mjs';
+import { makeLeases, makeVet, isAddr, creditsFor, makeCreditCache } from './lease.mjs';
 import { makeScanFeed } from './scanfeed.mjs';
 import { makeDigestPoster } from './reviewdigest.mjs';
 import { makeCheckFeed } from './checkfeed.mjs';
@@ -183,10 +183,8 @@ const leaseHits = new Map(), holding = new Map();
 // The three tables above hold only what is still counting: an address that has been quiet for a minute (or holds nothing) is dropped, so they follow the
 // clients now and not every address that ever asked.
 setInterval(() => { const now = Date.now(); for (const m of [hits, leaseHits]) for (const [k, a] of m) if (!a.length || now - a[a.length - 1] >= 60000) m.delete(k); for (const [k, v] of holding) if (!v) holding.delete(k); }, 60000).unref();
-// A day's credits are read from the ledger once a half minute (a past day does not change: lines are written with the time they are made); the ledger is
-// read whole each time otherwise, by anyone who asks.
-const creditCache = new Map();
-const creditsCached = (day, load) => { const now = Date.now(), hit = creditCache.get(day); if (hit && (day < utcDay() || now - hit.at < 30000)) return hit.v; const v = load(); if (creditCache.size >= 400) creditCache.clear(); creditCache.set(day, { at: now, v }); return v; };
+// A day's credits are read from the ledger once a half minute while the day runs; a day that is over is read once and kept (makeCreditCache in lease.mjs).
+const creditsCached = makeCreditCache();
 // Behind a proxy (TRUST_PROXY=1) the client is, in order: the True-Client-IP header (on Render, its Cloudflare sets it to the address it accepted the
 // connection from), else the entry TRUST_PROXY_HOPS from the RIGHT of X-Forwarded-For (each proxy adds one; everything to the left is whatever the client
 // chose to send; on Render the client is the second from the right, before the edge's own entry; count too few rather than too many: a miss lands on a shared edge address, a hit too far left on one the caller chose). Check it on the deployed service with GET /whoami (it only tells a caller their own address, as seen here).

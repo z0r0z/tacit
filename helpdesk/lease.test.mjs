@@ -1,5 +1,5 @@
 // node lease.test.mjs -- the lease side of the help desk: queueing, long-poll, canaries, vetting, strikes, interruptions, hijack attempts
-import { makeLeases, makeVet, isAddr, creditsFor, cleanHw, tierOf, cleanModel } from './lease.mjs';
+import { makeLeases, makeVet, isAddr, creditsFor, cleanHw, tierOf, cleanModel, makeCreditCache } from './lease.mjs';
 let fails = 0; const check = (name, cond) => { console.log((cond ? 'ok   ' : 'FAIL ') + name); if (!cond) fails++; };
 const A = '0x' + 'a1'.repeat(20), B = '0x' + 'b2'.repeat(20), msgs = [{ role: 'user', content: 'q' }];
 const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, canaryEvery: 1000, ...extra });
@@ -303,5 +303,29 @@ check('and dropped when it is long, has spaces, markup or control characters, or
   const swarmed = at({ minPoints: 2, budget: 100 });
   check('credits: three hundred one-point addresses add nothing to a day with a minimum, and the honest ones keep their points', swarmed.miners.length === 3 && swarmed.miners.reduce((a, m) => a + m.points, 0) === 19);
   check('credits: the budget holds whatever the swarm, and a minimum of 0 still credits dust', at({ budget: 100 }).miners.reduce((a, m) => a + m.points, 0) <= 100 && at({ minPoints: 0 }).miners.length > 300); fs.unlinkSync(f); }
+
+// the credits cache: a reading of a day that was still running is not kept once the day is over (the points service refuses a day that is not over)
+{ let clock = 1000, loads = 0; const day = 20771;
+  const cache = makeCreditCache({ ttlMs: 30000, now: () => clock });
+  const reading = (over) => () => { loads++; return { day, over, miners: [{ miner: A, proofs: 1, points: loads }] }; };
+  const a = cache(day, reading(false)); const b = cache(day, reading(false));
+  check('credits cache: a day still running is read once within its half minute', loads === 1 && a === b);
+  clock += 31_000; const c = cache(day, reading(false));
+  check('credits cache: and again after it', loads === 2 && c !== a);
+  clock += 5_000; const d = cache(day, reading(true));
+  check('credits cache: a reading of a running day is served for its half minute at most', d === c && loads === 2);
+  clock += 26_000; const e = cache(day, reading(true));
+  check('credits cache: then the day is read again, and a reading that says over is kept', e.over === true && loads === 3 && cache(day, reading(true)) === e && loads === 3);
+  const stale = makeCreditCache({ ttlMs: 30000, now: () => clock }); clock = 10_000; let calls = 0;
+  stale(day, () => { calls++; return { day, over: false, miners: [] }; });
+  clock = 10_000 + 3_600_000;                                           // an hour later, the day long over
+  const fresh = stale(day, () => { calls++; return { day, over: true, miners: [{ miner: A, proofs: 1, points: 9 }] }; });
+  check('credits cache: an old reading that said the day was not over is read again, never served for ever', calls === 2 && fresh.over === true && fresh.miners[0].points === 9);
+  const again = stale(day, () => { calls++; return { day, over: true, miners: [] }; });
+  check('credits cache: a reading that says the day is over is final and kept', calls === 2 && again === fresh);
+  let n = 0; const small = makeCreditCache({ max: 2, now: () => clock });
+  for (const dd of [1, 2, 3]) small(dd, () => { n++; return { over: true }; });
+  small(1, () => { n++; return { over: true }; });                 // cleared when the third came: read again
+  check('credits cache: it holds a bounded number of days', n === 4); }
 
 console.log(fails ? `${fails} lease test(s) failed` : 'lease: all tests passed'); process.exit(fails ? 1 : 0);
