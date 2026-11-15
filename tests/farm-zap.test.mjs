@@ -38,7 +38,9 @@ const RES = { assetA: CETH, assetB: A_TAC, reserveA: 10n ** 9n, reserveB: 10n **
   eq(m.plan.shares, plan.shares, 'the plan is lp-zap.js’s');
   ok(m.impact > 0.45 && m.impact < 0.55, `0.1 ETH into 10 tETH a side moves the price half a percent (${m.impact.toFixed(3)}%)`);
   ok(m.against < 0.5, `a pool at the market’s price takes little more than its fee from the half swapped (${m.against.toFixed(3)}% of the deposit)`);
-  eq(m.cost, Math.max(m.impact, m.against));
+  eq(m.cost, Math.max(m.impact * Number(m.plan.swapIn) / Number(WEI), m.against), 'the cost is the deposit’s own share: the swap’s impact on the part swapped, or the price against the market');
+  ok(m.cost < 0.6 && m.cost < m.impact, `a pool at the market costs a quarter of a percent of the deposit, not the swap’s half percent (${m.cost.toFixed(3)}%)`);
+  ok(m.checked === true && zapMath({ res: RES, wei: WEI }).checked === false, 'a pool is checked against the market only when a market price is known');
   // the same pool with TAC worth a third less at the market: the half of the deposit that buys TAC here overpays by a third
   const dear = zapMath({ res: RES, wei: WEI, market: 0.0001 * 2 / 3 });
   ok(dear.against > 16 && dear.against < 17.5 && dear.cost === dear.against, `a pool that prices the other coin half again over the market takes a sixth of the deposit (${dear.against.toFixed(2)}%)`);

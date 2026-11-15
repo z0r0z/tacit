@@ -14,7 +14,7 @@ import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=f872de9d';
 import { relayWords } from '/relay-outcome.js?cb=17e48a9a';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, ZAP_GAS } from '/farm/zap.js?cb=3b42f44f';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, ZAP_GAS } from '/farm/zap.js?cb=1c9bc735';
 
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 const E10 = 10n ** 10n, HINT = 10n ** 17n;                                      // a tenth of an ETH: the deposit a tile's entry cost is said for
@@ -31,12 +31,14 @@ const pairIcons = (icons) => `<span class="pairtk">${icons.map(tk).join('')}</sp
 const pctTxt = (x) => `${x.toFixed(x < 10 ? 1 : 0)}%`;
 const tacTxt = (n) => (n >= 99.5 ? Math.round(n).toLocaleString('en-US') : n >= 0.995 ? String(Number(n.toFixed(2))) : n > 0 ? String(Number(n.toPrecision(2))) : '0');
 const slug = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+const joining = () => !!mineUi?.busy?.();                                         // the both-sides join in the card is under way (minutes, through the relay)
+const busyNow = () => !!Z.busy || joining();
 const note = $('#note'), said = (t) => { note.textContent = ''; setTimeout(() => { note.textContent = t; }, 30); };
 
 const connect = makeConnect({
   describe: 'Farm TAC with ETH, in public or in private.',
   name: 'tacit farm',
-  busy: () => Z.busy || !!pubUi?.busy(),
+  busy: () => busyNow() || !!pubUi?.busy(),
   say: (html, bad) => { const el = $('#menu-note'); el.innerHTML = html; el.classList.toggle('err', !!bad); },
   onChange: () => onWallet(),
 });
@@ -105,7 +107,7 @@ const tacEth = () => S.pub?.tacEth || 0;
 const marketFor = (pool) => marketOf(pool.pair, { tacEth: tacEth(), ethUsd: S.px.ethUsd || 0, btcUsd: S.px.btcUsd || 0 });
 // What a tenth of an ETH gives up on its way into a farm, in percent: the swap of half of it, and for a pool priced away from the market, that.
 function entryCost(f) {
-  if (f.kind === 'public') { const r0 = Number(S.pub?.r0 || 0) / 1e18, half = Number(HINT) / 2e18; return r0 > 0 ? half / (r0 + half) * 100 : null; }
+  if (f.kind === 'public') { const r0 = Number(S.pub?.r0 || 0) / 1e18, half = Number(HINT) / 2e18; return r0 > 0 ? half / (r0 + half) * 50 : null; }          // the swap moves the price by half/(r0+half), on the half of the deposit that is swapped
   const r = f.pool?.reserves;
   if (!r || !Number(r.lpTotalShares)) return null;
   try { return zapMath({ res: { reserveA: BigInt(r.reserveA), reserveB: BigInt(r.reserveB), totalShares: BigInt(r.lpTotalShares), feeBps: f.pool.feeBps ?? 30 }, wei: HINT, market: marketFor(f.pool) })?.cost ?? null; } catch { return null; }
@@ -152,14 +154,14 @@ async function readAll() {
   const synths = Object.fromEntries(DEPLOYMENTS.vaults.map((v) => [v.key, v.hint?.synth]).filter(([, a]) => a));
   facts.then((f) => { if (f) { S.pub = f; paint(); readStakeNow(); } });
   Promise.all([facts, prog, spot]).then(([f, p, px]) => {
-    S.px = px || {};
+    S.px = { ethUsd: px?.ethUsd ?? S.px.ethUsd ?? null, btcUsd: px?.btcUsd ?? S.px.btcUsd ?? null };            // a price that cannot be read now keeps the last good one: the market check is what a deposit's loss is held to
     if (p?.pools) { S.prog = p; S.priv = privateFarms(p, f?.tacEth || 0, S.px); }
     S.read = true; S.failed = !f && !p;
     paint();
     if (keyPub && looseFor !== keyPub) readLoose();                              // a key opened before the program was read
     if (!VIEW && location.hash.length > 1) route();                             // a link to a farm only the program names
   });
-  Promise.all([readCampaign({ ethCall: (to, data) => call({ to, data }), synths }).catch(() => null), spot, facts]).then(([c, px, f]) => { S.camp = { c, tacUsd: (px?.ethUsd || 0) * (f?.tacEth || 0) }; paintMarkets(); });
+  Promise.all([readCampaign({ ethCall: (to, data) => call({ to, data }), synths }).catch(() => null), spot, facts]).then(([c, px, f]) => { S.camp = { c, tacUsd: (px?.ethUsd ?? S.px.ethUsd ?? 0) * (f?.tacEth || 0) }; paintMarkets(); });
 }
 async function readStakeNow() {
   const who = W.account;
@@ -208,7 +210,7 @@ function flag(a, cls, text, title = '') {
 function costWhy(f) {
   if (f.kind !== 'private' || !f.pool) return 'A small pool: half of a deposit of ETH is swapped inside it, which moves its price.';
   const r = f.pool.reserves, m = marketFor(f.pool), ratio = m ? Number(r.reserveA) / Number(r.reserveB) / m : 1, other = otherOf(f.pool.pair);
-  return Math.abs(ratio - 1) >= 0.05 ? `This pool’s price for ${other} is ${pctTxt(Math.abs(ratio - 1) * 100)} ${ratio > 1 ? 'above' : 'below'} the market’s, and half of a deposit of ETH is swapped at it.`
+  return ratio - 1 >= 0.05 ? `This pool’s price for ${other} is ${pctTxt((ratio - 1) * 100)} above the market’s, and half of a deposit of ETH is swapped at it.`
     : 'A small pool: half of a deposit of ETH is swapped inside it, which moves its price.';
 }
 function paintMarkets() {
@@ -223,6 +225,7 @@ function paintMarkets() {
 }
 function paint() {
   FARMS = farms();
+  if (VIEW && S.read && !farmOf(VIEW.id)) route();                                // the farm opened from a link is not one the program names: back to the menu
   paintTiles();
   $('#menu-note').textContent = S.failed ? 'The farms could not be read. Trying again shortly.' : $('#menu-note').classList.contains('err') ? $('#menu-note').textContent : '';
   if (VIEW) paintStation();
@@ -241,7 +244,7 @@ function show(f, { first = false } = {}) {
   const was = VIEW;
   if (shown && (was?.id || null) === (f?.id || null) && !first) return;
   shown = true;
-  if (Z.busy && was && was.id !== f?.id) { history.replaceState(null, '', `#${was.id}`); return; }      // a deposit under way keeps its farm on screen
+  if (busyNow() && was && was.id !== f?.id) { history.replaceState(null, '', `#${was.id}`); return; }      // a deposit under way keeps its farm on screen
   const swap = () => {
     if (!was) menuY = scrollY;
     VIEW = f;
@@ -262,10 +265,10 @@ function show(f, { first = false } = {}) {
   if (f) react('pick', 900);
 }
 addEventListener('hashchange', () => route());
-$('#bk').addEventListener('click', (e) => { e.preventDefault(); if (Z.busy) return; history.pushState(null, '', location.pathname + location.search); route(); });
+$('#bk').addEventListener('click', (e) => { e.preventDefault(); if (busyNow()) return; history.pushState(null, '', location.pathname + location.search); route(); });
 // Escape leaves a field being typed in, and from anywhere else closes the farm
 addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || !VIEW || Z.busy || document.querySelector('.bsheet')) return;
+  if (e.key !== 'Escape' || !VIEW || busyNow() || document.querySelector('.bsheet')) return;
   if (/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName || '')) { document.activeElement.blur(); return; }
   $('#bk').click();
 });
@@ -298,7 +301,7 @@ function paintStation() {
 // ── the TAC/ETH farm: the Precision farm's form, with amounts a press away under its ETH field ──
 let pubP = null, pubUi = null;
 function mountPublic() {
-  return pubP ||= Promise.all([import('/trade/farm.js?cb=2b278029'), import('/evm-trade-venues.js?cb=196b14fb')]).then(([{ mountFarm }, E]) => {
+  return pubP ||= Promise.all([import('/trade/farm.js?cb=64237e49'), import('/evm-trade-venues.js?cb=196b14fb')]).then(([{ mountFarm }, E]) => {
     const ethCall = (to, data, block = 'latest', o = {}) => rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: `0x${BigInt(o.value).toString(16)}` } : {}) }, block]);
     const batch = async (calls) => E._internal.decAggregate3(await ethCall(E.MULTICALL3, E._internal.encAggregate3(calls)), calls.length);
     const host = $('#farm-host');
@@ -339,16 +342,32 @@ function openPrivate(f) {
 // Deposit with ETH (half swapped in the pool, one transaction), or with both coins from the private balance at the pool's ratio (the
 // positions panel's join, drawn in this card). Both sides needs the farm to be open to joins, which a farm between periods is not.
 const bothOk = (f) => !!f?.live && f.pid != null;
+// Where each coin of a private pool comes from, for a deposit that brings both and so swaps nothing here: links into the front page's cards.
+// cBTC is minted one for one against bitcoin locked at the key's own address (or bridged in from Bitcoin), and cUSD is borrowed against it.
+const GET = {
+  tETH: [['Shield ETH', 'shield:ether:defi', 'ETH in your wallet, made private one for one']],
+  TAC: [['Buy TAC', 'swap:ether:tac:private', 'ETH swapped for private TAC']],
+  cBTC: [['Lock BTC for cBTC', 'borrow:cbtc', 'Bitcoin locked at an address only your key spends mints cBTC one for one. A refundable wstETH bond backs the lock, and Bitcoin’s proof takes a few hours.'],
+    ['Bridge cBTC from Bitcoin', 'bridge:kb', 'cBTC you already hold on Bitcoin, brought here']],
+  cUSD: [['Borrow cUSD', 'borrow:cusd', 'Lock bitcoin and borrow dollars against it, or borrow against cBTC you hold']],
+};
+// A private coin held on its own goes in as a single-sided farm on the front page's Earn card (half is swapped inside the pool).
+const ALONE = { tETH: 'earn:eth', TAC: 'earn:tac' };
+const getRow = (tk, { pid = null, alone = null } = {}) => {
+  const links = [...(GET[tk] || []), ...(alone && ALONE[alone] && pid != null ? [[`Farm ${alone} alone`, `${ALONE[alone]}:p${Number(pid)}`, `Put your private ${alone} in on its own: half of it is swapped inside the pool`]] : [])];
+  return links.length ? `<div class="getrow" role="group" aria-label="Get ${esc(tk)}">${links.map(([t, c, w]) => `<a href="/#card=${c}" title="${esc(w)}">${esc(t)}</a>`).join('')}</div>` : '';
+};
 function setMode(m) {
   if (Z.busy) return;
   Z.mode = m === 'both' && bothOk(Z.f) ? 'both' : 'eth';
   for (const b of $$('#pz-mode button')) b.setAttribute('aria-pressed', String(b.dataset.pm === Z.mode));
   $('#pz-eth').hidden = Z.mode !== 'eth'; $('#pz-join').hidden = Z.mode !== 'both';
   const other = Z.f?.name?.split(' / ')[1] || 'TAC';
-  $('#pz-how').textContent = Z.mode === 'both' ? `From your private tETH and ${other}, at the pool’s ratio: nothing is swapped.` : 'Half is swapped inside the pool, then both go in privately: one transaction.';
+  $('#pz-how').textContent = Z.mode === 'both' ? `From your private tETH and ${other}, at the pool’s ratio: nothing is swapped. Holding only ETH? Use the ETH tab.` : 'Half is swapped inside the pool, then both go in privately: one transaction.';
   if (Z.mode === 'both' && Z.joinFor !== Z.f.pid) { Z.joinFor = Z.f.pid; session().then(() => mountMine()).then((ui) => ui?.choose(Z.f.pid), () => { Z.joinFor = null; }); }
 }
 $('#pz-mode').addEventListener('click', (e) => { const b = e.target.closest('[data-pm]'); if (b && !b.disabled) setMode(b.dataset.pm); });
+rcpt.addEventListener('click', (e) => { if (e.target.closest('[data-alt="both"]')) { setMode('both'); $('#pz-mode').scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'nearest' }); } });
 // The join's way in and the positions' Show mine open the key as a deposit does: the wallet connected here signs, with no sheet on a first
 // visit. Show mine works before the panel has mounted too (it mounts, then reads).
 for (const host of ['#pz-join', '#pf-mine']) $(host).addEventListener('click', (e) => {
@@ -374,6 +393,7 @@ function paintPrivate() {
   setMode(Z.mode);
   maxLine();
   gate();
+  if (f.pool && !Z.busy && amtIn.value.trim() && Z.quotedPool !== f.pool.poolId) requote();     // an amount typed before this farm's pool was read
 }
 let bal = null;                                                                // the wallet's ETH, for Max and the fee check: { who, wei, gp }
 async function readBal() {
@@ -392,7 +412,7 @@ function maxLine() {
 }
 $('#pz-max').addEventListener('click', () => { if (Z.busy) return; const v = spendable(); amtIn.value = v > 0n ? plain(v) : ''; typed(); });
 
-const acked = () => { const q = Z.q; if (!q?.plan || !(q.cost >= 15)) return true; const el = $('#pz-ack'); return !!el && (el.type === 'checkbox' ? el.checked : el.value.trim() === String(Math.round(q.cost))); };
+const acked = () => { const q = Z.q; if (!q?.plan || !(q.cost >= 15 || !q.checked)) return true; const el = $('#pz-ack'); return !!el && (el.type === 'checkbox' ? el.checked : el.value.trim() === String(Math.round(q.cost))); };
 function gate() {
   if (Z.busy) return;
   const f = Z.f, q = Z.q, wei = parseUnits(amtIn.value) || 0n;
@@ -414,6 +434,7 @@ async function requote() {
   amtIn.toggleAttribute('aria-invalid', !!text && wei == null);
   if (text && wei == null) return bad('Could not read that amount. Write 0.05 or 1.');
   if (!wei || !f?.pool) { rcpt.hidden = true; rcpt.innerHTML = ''; return; }
+  Z.quotedPool = f.pool.poolId;
   if (wei % E10 !== 0n) return bad('Up to 8 decimals.');
   try {
     const q = await quoteOf(f, wei);
@@ -432,8 +453,12 @@ function paintQuote() {
     : q.against >= 5 ? `This pool’s price for ${esc(other)} is ${pctTxt(Math.abs(ratio - 1) * 100)} ${ratio > 1 ? 'above' : 'below'} the market’s, and half of the deposit is swapped at it.`
     : q.impact >= 5 ? 'The swap inside the pool costs a lot at this size. A smaller deposit costs less.'
     : !f.live ? 'Between reward periods: nothing streams until the next one starts.' : '';
+  // a pool this thin takes a real swap at this size: the other way in swaps nothing, and the links say where the other coin comes from
+  const skip = q.cost >= 5 && bothOk(f) ? `<p class="note">Skip the swap: <button class="linkbtn" type="button" data-alt="both">add the tETH and ${esc(other)} you already hold</button>${GET[other] ? `, or get ${esc(other)} first.</p>${getRow(other)}` : '.</p>'}` : '';
+  // with no market price to check against (its read failed), the pool's own price is all there is: said, and held to a tick
   const ack = q.cost >= 30 ? `<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this deposit to the pool’s price.</span><input id="pz-ack" inputmode="numeric" autocomplete="off" aria-label="Type ${n} to accept" value="${Z.ack === key ? n : ''}"></label>`
-    : q.cost >= 15 ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>I accept losing about ${n}% of this deposit to the pool’s price.</span></label>` : '';
+    : q.cost >= 15 ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>I accept losing about ${n}% of this deposit to the pool’s price.</span></label>`
+    : !q.checked ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>The market’s price for ${esc(other)} could not be read, so this pool’s price is not checked against it. I accept that.</span></label>` : '';
   rcpt.innerHTML = (f.live ? row('Earns about', `${tacTxt(q.day)} TAC a day${dayUsd ? ` · ${dayUsd}` : ''}`) + row('APR', q.apr == null ? '—' : aprText(q.apr)) : '')
     + (q.impact >= 0.5 ? row('Price impact', pctTxt(q.impact), q.impact >= 5 ? 'err' : '') : '')
     + (q.against >= 1 ? row('Against the market', `${pctTxt(q.against)} of this deposit`, q.against >= 5 ? 'err' : '') : '')
@@ -441,11 +466,12 @@ function paintQuote() {
     + row('Exit', esc(exitSaid(f.pool.lockSeconds, f.name) || 'any time'))
     + row('Chain sees', 'ETH in, private after', '', 'The deposit is public: your wallet, the amount and the swap. The position it makes, what it earns and its exit are private.')
     + row('Network fee', fee, '', `About ${ZAP_GAS.toLocaleString('en-US')} gas at ${(Number(q.gp) / 1e9).toPrecision(2)} gwei, the gas price now`)
-    + (line ? `<p class="note${q.over || q.cost >= 5 ? ' err' : ''}">${line}</p>` : '') + ack;
+    + (line ? `<p class="note${q.over || q.cost >= 5 ? ' err' : ''}">${line}</p>` : '') + skip + ack;
   for (const ev of ['input', 'change']) $('#pz-ack')?.addEventListener(ev, () => { Z.ack = acked() ? key : null; gate(); });
 }
 function typed() {
   clearTimeout(Z.timer);
+  Z.seq++;                                                                       // a quote still on its way is for the amount before this one
   dropReady(); Z.q = null; gate();
   if (!Z.busy) { statusEl.innerHTML = ''; if (!Z.share) cookHide(); }
   Z.timer = setTimeout(requote, 260);
@@ -493,7 +519,7 @@ const getUx = () => (uxP ||= import('/trade/poolux.js?cb=59d125e5').then((m) => 
 function session() {
   return keyP ||= import('/trade/key.js?cb=67d4d4de').then((m) => {
     K = m;
-    key = m.makeKeySession({ moved: (why) => { mineUi ? mineUi.forget(why) : key.lock(); statusEl.innerHTML = `<span class="err">${esc(why)}</span>`; }, busy: () => !!Z.busy });
+    key = m.makeKeySession({ moved: (why) => { mineUi ? mineUi.forget(why) : key.lock(); statusEl.innerHTML = `<span class="err">${esc(why)}</span>`; }, busy: busyNow });
     key.onChange(onKey);
     // The key this tab already held is opened again in the background, once its wallet answers: a wallet that never does (locked, or
     // busy with another request) holds nothing up, and the panel and the presses are there at once.
@@ -555,7 +581,7 @@ const lock = (on) => { amtIn.disabled = on; for (const b of $$('#pz .quick butto
 const frontLink = (f, wei) => `<a href="/#card=earn:ether:p${f.pid}&amt=${plain(wei)}">The front page can prove it another way →</a>`;
 
 goBtn.addEventListener('click', async () => {
-  if (Z.busy) return;
+  if (busyNow()) return;
   if (!W.account) { await connect.connect(); return; }
   const f = Z.f;
   let q = Z.q;
@@ -610,6 +636,12 @@ function failed(f, q, e, hash) {
     react('down', 1600); readLoose();
     return;
   }
+  if (e?.reverted) {                                                            // sent and failed: the fee is gone, the share was not made, the proof is kept
+    steps('send', true);
+    sayEl.innerHTML = `<span class="err">${msg}</span>`;
+    react('down', 1600);
+    return;
+  }
   if (e?.sent || hash) {                                                        // sent, and not seen to land
     steps('send', true); clearForm();
     sayEl.innerHTML = `<span class="err">Sent, not confirmed yet.</span> ${txLink(e.sent || hash)} Check it there before sending anything again. Once it lands, your share shows under Your private farms.`;
@@ -636,7 +668,8 @@ async function readLoose() {
 }
 let LOOSE = [], looseFor = null;
 async function farmIt(pool, note0, btn = null) {
-  if (Z.busy) return;
+  if (busyNow()) return;
+  if (Z.mode === 'both') setMode('eth');                                          // its steps are said in the ETH form's card, which is the one on screen
   const f = FARMS.find((x) => x.pool && x.pool.poolId === pool.poolId) || { name: pairName(pool.pair), pid: Number(pool.pid) };
   Z.busy = true; lock(true); if (btn) btn.disabled = true;
   steps('farm'); acts.innerHTML = ''; react('cook');
@@ -671,11 +704,11 @@ $('#pz-loose').addEventListener('click', async (e) => {
 
 // the key's positions in the private farms: the rewards page's panel, on this page's key
 function mountMine() {
-  return mineP ||= import('/rewards/farms.js?cb=00c8a7fb').then((m) => {
+  return mineP ||= import('/rewards/farms.js?cb=91c214a1').then((m) => {
     mineUi = m.mountFarms($('#pf-mine'), { pick: pickProvider, session: key, wallet, W, connect: () => connect.connect(), program: () => S.prog,
       names: () => new Map(S.priv.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = S.priv.find((x) => String(x.pid) === String(pid))?.icons; return icons ? pairIcons(icons) : ''; },
       onRead: (list) => { S.mine = new Map(list.map((p) => [Number(p.pid), p])); paint(); },
-      joinAt: $('#pz-join'), onAct: (name, ok) => { if (name !== 'join') return; if (ok) { cheer('In the farm'); readLoose(); } else react('down', 1600); } });
+      joinAt: $('#pz-join'), more: getRow, onAct: (name, ok) => { if (name !== 'join') return; if (ok) { cheer('In the farm'); readLoose(); } else react('down', 1600); } });
     if (Z.mode === 'both' && Z.f?.pid != null) { Z.joinFor = Z.f.pid; mineUi.choose(Z.f.pid); }
     return mineUi;
   }).catch((e) => { mineP = null; console.warn('your farms:', e?.message || e); });

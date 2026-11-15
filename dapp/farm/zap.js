@@ -34,15 +34,17 @@ export function marketOf(pair, { tacEth = 0, ethUsd = 0, btcUsd = 0 } = {}) {
   return m > 0 ? m : null;
 }
 
-// What `wei` of ETH becomes in this pool as its reserves stand: the plan (the swap, the legs, the shares), the swap's own price impact,
-// and what the deposit gives up against the market when the pool's price sits away from it (both in percent; `cost` is the larger, the
-// figure a deposit is held to). `res` is { reserveA, reserveB, totalShares, feeBps } with tETH as A.
+// What `wei` of ETH becomes in this pool as its reserves stand: the plan (the swap, the legs, the shares), the swap's own price impact
+// (of the half swapped), and what the deposit gives up against the market when the pool's price sits away from it (of the deposit). `cost`
+// is what the deposit gives up, as a share of the deposit, the figure it is held to: the larger of the swap's impact over the part of the
+// deposit it is taken on, and the price against the market. `checked` is false when no market price is known to check the pool's against.
+// `res` is { reserveA, reserveB, totalShares, feeBps } with tETH as A.
 export function zapMath({ res, wei, market = null }) {
   const plan = zapPlan({ eth: wei, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps: BigInt(res.feeBps ?? 30) });
   if (!plan) return null;
-  const impact = plan.impact * 100, y = Number(plan.swapIn) / 1e18, got = Number(plan.out) / 1e18;
-  const against = market && y > 0 ? Math.max(0, (y - got * market) / (Number(wei) / 1e18) * 100) : 0;
-  return { plan, impact, against, cost: Math.max(impact, against) };
+  const impact = plan.impact * 100, y = Number(plan.swapIn) / 1e18, got = Number(plan.out) / 1e18, dep = Number(wei) / 1e18;
+  const against = market && y > 0 ? Math.max(0, (y - got * market) / dep * 100) : 0;
+  return { plan, impact, against, cost: Math.max(dep > 0 ? impact * y / dep : 0, against), checked: market != null };
 }
 
 // A deposit priced for the form: the plan and its costs, what it earns a day (its shares against the shares bonded) and a year, the
@@ -125,7 +127,7 @@ export async function zapSend({ t, rpc, wallet, from, pool, ready, say = () => {
   say('sent', hash);
   let rc;
   try { rc = await wallet.receipt(hash); } catch (e) { throw Object.assign(e, { sent: hash }); }
-  if (rc.status !== '0x1') throw said(`The transaction failed (${hash.slice(0, 10)}…). Nothing was lost but its network fee.`, { reverted: true });
+  if (rc.status !== '0x1') throw said(`The transaction failed (${hash.slice(0, 10)}…). Nothing was lost but its network fee. Your share’s proof is kept: press again to send it.`, { reverted: true, ready });
   if (ready.proven.jobId) Promise.resolve(t.relay.landed?.(ready.proven.jobId, hash)).catch(() => {});
   return { hash, value: plan.value };
 }

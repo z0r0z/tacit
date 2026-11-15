@@ -101,6 +101,7 @@ function chain(st) {
   };
   function call(c) {
     const to = lc(c.to), data = lc(c.data || '0x'), sel = data.slice(0, 10), arg = (i) => BigInt('0x' + (data.slice(10 + i * 64, 74 + i * 64) || '0'));
+    if (st.noPrices && (to === CHAINLINK_ETH || to === CHAINLINK_BTC)) { st.pricesAsked = (st.pricesAsked || 0) + 1; throw Object.assign(new Error('execution reverted'), { code: 3 }); }      // the price feeds not answering
     if (to === MC3 && sel === '0x82ad56cb') {                                          // aggregate3: each call answered as it would be alone
       const h = data.slice(10), at = (i) => Number(BigInt('0x' + h.slice(64 * i, 64 * (i + 1)))), k = at(1), items = [];
       for (let i = 0; i < k; i++) {
@@ -134,7 +135,7 @@ function chain(st) {
     if (method === 'eth_blockNumber') return '0x1700000';
     if (method === 'eth_chainId') return '0x1';
     if (method === 'eth_getBlockByNumber') return { number: '0x1700000', timestamp: '0x' + t.toString(16) };
-    if (method === 'eth_getTransactionReceipt') return st.sent.some((x) => x.hash === params?.[0]) ? { status: '0x1', transactionHash: params[0], blockNumber: '0x1700001', logs: [] } : null;
+    if (method === 'eth_getTransactionReceipt') return st.sent.some((x) => x.hash === params?.[0]) ? { status: st.revert ? '0x0' : '0x1', transactionHash: params[0], blockNumber: '0x1700001', logs: [] } : null;
     throw Object.assign(new Error(`the stub has no ${method}`), { code: -32601 });
   };
 }
@@ -181,7 +182,7 @@ const t = {
   settleCalldata: ({ publicValues, proof }) => '0x8b8c6b4b' + String(publicValues).slice(2) + String(proof).slice(2),
   rpc: async (m) => { note('rpc', m); if (m === 'eth_estimateGas') return '0x7a120'; throw new Error('the stand-in has no ' + m); },
   farmPositions: async () => (T().bonded ? [{ pid: 0, receiptLeaf: '0x' + '77'.repeat(32), pendingUnits: '0', pendingTac: '0', shares: '1' }] : (T().positions || [])),
-  ethCall: async () => '0x' + '0'.repeat(64), identity: () => ({ pubHex: '02' + 'ab'.repeat(32) }), poolTickerOf: (id) => ({ '${A_TAC}': 'TAC', '${A_CUSD}': 'cUSD', '${A_CBTC}': 'cBTC' })[String(id).toLowerCase()] || 'cETH', quoteOpFee: async () => 0n, quoteUnwrapFee: () => ({ net: 1n, fee: 0n }),
+  ethCall: async () => '0x' + '0'.repeat(64), identity: () => ({ pubHex: '02' + 'ab'.repeat(32) }), poolTickerOf: (id) => ({ '${A_TAC}': 'TAC', '${A_CUSD}': 'cUSD', '${A_CBTC}': 'cBTC' })[String(id).toLowerCase()] || 'cETH', quoteOpFee: async () => { if (T().opFeeFail) throw new Error('relay fee unavailable'); return BigInt(T().opFee || 0); }, quoteUnwrapFee: () => ({ net: 1n, fee: 0n }),
 };
 export const getUx = async () => t;
 export const forgetUx = async () => { note('forget'); };
@@ -209,7 +210,7 @@ async function openPage({ hash = '', prog = program(), lp = campaign(), viewport
     try { return json(route, { jsonrpc: '2.0', id, result: answer(method, params) }); }
     catch (e) { return json(route, { jsonrpc: '2.0', id, error: { code: e.code ?? -32000, message: e.message } }); }
   });
-  await ctx.route('https://api.tacit.finance/**', (route) => (/farm\/program/.test(route.request().url()) && st.prog ? json(route, st.prog) : json(route, null, 404)));
+  await ctx.route('https://api.tacit.finance/**', async (route) => { if (st.progDelay) await sleep(st.progDelay); return /farm\/program/.test(route.request().url()) && st.prog ? json(route, st.prog) : json(route, null, 404); });
   await ctx.route('https://tacit-points.onrender.com/**', (route) => (lp ? json(route, lp) : json(route, { error: 'down' }, 503)));
   await ctx.route('https://ipfs.filebase.io/**', (route) => route.fulfill({ status: 404, body: '' }));
   if (fake) {
@@ -271,7 +272,7 @@ const sayIs = (page, re, ms = 20000) => until(page, (s) => new RegExp(s).test(do
 
 try {
   const prog = program(), priv = privateFarms(prog, TAC_ETH, PX);
-  const costs = prog.pools.map((p) => costOf(p).cost), pubCost = 0.05 / (3 + 0.05) * 100;
+  const costs = prog.pools.map((p) => costOf(p).cost), pubCost = 0.05 / (3 + 0.05) * 50;
   const nets = [['tac-eth', PUBLIC_APR * 7 / 365 - pubCost], ...priv.map((x, i) => [['teth-tac', 'teth-cusd', 'teth-cbtc'][i], x.apr * 7 / 365 - costs[i]])];
   const pick = nets.filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1])[0][0];
 
@@ -422,7 +423,10 @@ try {
       ok(m1.cost >= 15 && await page.evaluate(() => !!document.querySelector('#pz-ack') && document.querySelector('#pz-go').disabled && document.querySelector('#pz-go').textContent === 'Farm privately'), 'at 15% or more the button waits for the loss to be accepted');
       await page.check('#pz-ack');
       ok(await until(page, () => !document.querySelector('#pz-go').disabled), 'and is ready once it is');
+      ok(await page.evaluate(() => !!document.querySelector('#pz-rcpt [data-alt="both"]') && [...document.querySelectorAll('#pz-rcpt .getrow a')].map((a) => a.getAttribute('href')).join() === '/#card=borrow:cusd'), 'a costly pool offers the way in that swaps nothing, and where to borrow the cUSD for it');
       await shot(page, 'private-dear');
+      await page.click('#pz-rcpt [data-alt="both"]');
+      ok(await page.evaluate(() => !document.querySelector('#pz-join').hidden && document.querySelector('#pz-eth').hidden && document.querySelector('#pz-mode [data-pm="both"]').getAttribute('aria-pressed') === 'true'), 'and one press moves to tETH + cUSD');
       await r.browser.close();
     }
     {
@@ -563,6 +567,60 @@ try {
       clean(r, 'a share in no farm');
       await r.browser.close();
     }
+    {
+      // the transaction reverts: its fee is gone and no share was made, which is said (not "nothing was sent"); the proof is kept and the next press sends it
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, st: { revert: true } }), { page, st } = r;
+      await until(page, () => /Enter an amount/.test(document.querySelector('#pz-go').textContent));
+      await page.click('#pz .quick [data-q="0.1"]'); await quoted(page);
+      await until(page, () => !document.querySelector('#pz-go').disabled);
+      await page.click('#pz-go');
+      await until(page, () => /transaction failed/.test(document.querySelector('#pz-say')?.textContent || ''), null, 20000);
+      const say = await text(page, '#pz-say');
+      ok(/network fee/.test(say) && /proof is kept/.test(say) && !/Nothing was sent/.test(say), `a reverted deposit says the fee was spent and the proof is kept (${say})`);
+      st.revert = false;
+      await until(page, () => !document.querySelector('#pz-go').disabled);
+      await page.click('#pz-go');
+      ok(await sayIs(page, /In the farm/), 'the next press sends the same proof');
+      ok(await page.evaluate(() => window.__ux.filter((x) => x.startsWith('prove')).length === 1), 'without proving again');
+      await r.browser.close();
+    }
+    {
+      // the price feeds stop answering after the page has them: the last prices stand, and the pool is still held to the market's price
+      const r = await openPage({ hash: '#teth-cusd', fake: true, wallet: true }), { page, st } = r;
+      await until(page, () => /Enter an amount/.test(document.querySelector('#pz-go').textContent));
+      await page.waitForTimeout(600);
+      st.noPrices = true;
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })));
+      for (let i = 0; i < 60 && !st.pricesAsked; i++) await sleep(100);
+      await page.waitForTimeout(700);
+      await page.click('#pz .quick [data-q="0.1"]'); await quoted(page);
+      ok(st.pricesAsked > 0 && await page.evaluate(() => !!document.querySelector('#pz-ack') && /accept losing about/.test(document.querySelector('#pz-rcpt').textContent) && document.querySelector('#pz-go').disabled), 'after a refresh that read no prices, a pool priced far from the market still waits for the loss to be accepted');
+      await r.browser.close();
+    }
+    {
+      // no price was ever read: the pool’s price cannot be checked against the market, which is said and has to be accepted
+      const r = await openPage({ hash: '#teth-cusd', fake: true, wallet: true, st: { noPrices: true } }), { page } = r;
+      await until(page, () => /Enter an amount/.test(document.querySelector('#pz-go').textContent));
+      await page.click('#pz .quick [data-q="0.05"]'); await quoted(page);
+      ok(await page.evaluate(() => /could not be read, so this pool’s price is not checked/.test(document.querySelector('#pz-ack')?.parentElement?.textContent || '') && document.querySelector('#pz-go').disabled), 'with no market price the card says so and waits for it to be accepted');
+      await page.check('#pz-ack');
+      ok(await until(page, () => !document.querySelector('#pz-go').disabled), 'and is ready once it is');
+      await r.browser.close();
+    }
+    {
+      // an amount typed before the farm’s pool is read is priced when it arrives
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, st: { progDelay: 1800 } }), { page } = r;
+      await page.fill('#pz-amt', '0.1');
+      ok(await until(page, () => !document.querySelector('#pz-rcpt').hidden && /Network fee/.test(document.querySelector('#pz-rcpt').textContent) && !document.querySelector('#pz-go').disabled, null, 15000), 'once the pool is read, the amount already typed is priced and the button is ready');
+      await r.browser.close();
+    }
+    {
+      // a link to a farm the program does not list: once the program is read the page goes back to the menu, not a farm that never loads
+      const two = program(); two.pools = two.pools.slice(0, 2);
+      const r = await openPage({ hash: '#teth-cbtc', prog: two }), { page } = r;
+      ok(await until(page, () => !document.querySelector('#menu').hidden && document.querySelector('#station').hidden && location.hash === ''), 'a farm the program does not name leaves the menu showing');
+      await r.browser.close();
+    }
   }
 
   // 4b. Both coins from the private balance: the positions panel's join, drawn in the farm's card.
@@ -577,12 +635,14 @@ try {
       ok(await until(page, () => !document.querySelector('#pz-join').hidden && document.querySelector('#pz-eth').hidden && !!document.querySelector('#pz-join #pf-a')), 'tETH + TAC shows the join in the card, in place of the ETH form');
       ok(/From your private tETH and TAC, at the pool’s ratio: nothing is swapped/.test(await text(page, '#pz-how')), `and says how it goes in: ${await text(page, '#pz-how')}`);
       ok(await page.evaluate(() => !document.querySelector('#pf-mine #pf-a') && !document.querySelector('#pf-mine .pf-join')), 'the positions panel no longer carries a second join form');
-      ok(await until(page, () => /Held 0\.1/.test(document.querySelector('#pz-join [data-pf="max"]')?.textContent || '')), 'what the key holds of tETH is a press away');
+      ok(await until(page, () => /Max 0\.1/.test(document.querySelector('#pz-join [data-pf="max"]')?.textContent || '')), 'the most both sides cover is a press away');
+      ok(/You hold\s*0\.1\s+tETH · 1,000\s+TAC/.test(await text(page, '#pz-join')), `and the card says what the key holds of each side: ${(await text(page, '#pz-join')).slice(0, 120)}`);
       await page.click('#pz-join [data-pf="max"]');
       ok(await until(page, () => document.querySelector('#pz-join #pf-a').value === '0.1' && /TAC, at the pool’s ratio\s*1,000/.test(document.querySelector('#pf-info').textContent)), `Held fills 0.1 and the second side is worked out: ${await text(page, '#pf-info')}`);
       ok(await until(page, () => !document.querySelector('#pz-join [data-pf="join"]').disabled), 'notes of exactly those sizes need no cut, and the button is ready');
       await shot(page, 'private-both');
       await page.click('#pz-join [data-pf="join"]');
+      ok(await page.evaluate(() => { document.querySelector('#bk').click(); return !document.querySelector('#station').hidden; }), 'the way back to the menu is held while the join runs');
       ok(await until(page, () => /In the farm/.test(document.querySelector('#pj-said')?.textContent || ''), null, 20000), `the join ends in the farm, said in the card (${await text(page, '#pz-join')})`);
       const ux = await page.evaluate(() => window.__ux);
       ok(ux.filter((x) => x.startsWith('lpbond')).length === 1 && ux.includes(`lpbond:${a}+${b}@0x000031`) && !ux.includes('transfer'), `one proof adds both and farms the share, with nothing cut first (${ux.filter((x) => /^(lpbond|transfer)/.test(x)).join(', ')})`);
@@ -602,6 +662,87 @@ try {
       await page.click('#pz-join [data-pf="open"]');
       ok(await until(page, () => !!document.querySelector('#pz-join #pf-a')), 'and once it is open the join is there');
       ok(await page.evaluate(() => window.__keyOpens === 1 && !window.__sheets), 'opened by the wallet connected here, with no sheet');
+      await r.browser.close();
+    }
+    {
+      // holding tETH and none of the other coin: the card says so and where to get it (cBTC: lock bitcoin, or bridge it in), and Max waits
+      const tethOnly = [privNotes[0]];
+      const r = await openPage({ hash: '#teth-cbtc', fake: true, wallet: true, t: { keyOpen: true, privNotes: tethOnly } }), { page } = r;
+      await until(page, () => !document.querySelector('#pz-mode').hidden);
+      await page.click('#pz-both');
+      ok(await until(page, () => /No private cBTC right now/.test(document.querySelector('#pz-join')?.textContent || '')), `with no cBTC the card says so (${(await text(page, '#pz-join')).slice(0, 160)})`);
+      const hrefs = () => page.evaluate(() => [...document.querySelectorAll('#pz-join .getrow a')].map((a) => a.getAttribute('href')));
+      ok((await hrefs()).join() === `/#card=borrow:cbtc,/#card=bridge:kb,/#card=earn:eth:p${prog.pools[2].pid}`, `and links the lock, the bridge, and farming the tETH alone (${(await hrefs()).join(' ')})`);
+      ok(await page.evaluate(() => !document.querySelector('#pz-join [data-pf="max"]')), 'with nothing to pair, there is no Max');
+      await page.fill('#pz-join #pf-a', '0.05');
+      ok(await until(page, () => /does not cover it/.test(document.querySelector('#pz-join #pf-info')?.textContent || '')) && (await hrefs()).length === 3 && await page.evaluate(() => document.querySelector('#pz-join [data-pf="join"]').disabled), 'an amount the notes cannot pair says so, keeps the links, and the press waits');
+      await shot(page, 'private-both-short');
+      clean(r, 'both coins, one short');
+      await r.browser.close();
+    }
+    {
+      // the same card on a phone: the links wrap, nothing is wider than the screen
+      const r = await openPage({ hash: '#teth-cbtc', fake: true, wallet: true, viewport: { width: 375, height: 800 }, t: { keyOpen: true, privNotes: [privNotes[0]] } }), { page } = r;
+      await until(page, () => !document.querySelector('#pz-mode').hidden);
+      await page.click('#pz-both');
+      await until(page, () => /No private cBTC/.test(document.querySelector('#pz-join')?.textContent || ''));
+      ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && [...document.querySelectorAll('#pz-join .getrow a')].every((a) => a.getBoundingClientRect().right <= innerWidth)), 'on a phone the links wrap and nothing is wider than the screen');
+      await shot(page, 'private-both-short-phone');
+      await r.browser.close();
+    }
+    {
+      // a farm the program lists without its reserves cannot be joined from its own card, and must not be joined in another farm's pool
+      const noRes = program(); noRes.pools[1] = { ...noRes.pools[1], reserves: null };
+      const r = await openPage({ hash: '#teth-cusd', fake: true, wallet: true, prog: noRes, t: { keyOpen: true, privNotes } }), { page } = r;
+      await until(page, () => !document.querySelector('#pz-mode').hidden);
+      await page.click('#pz-both');
+      await until(page, () => /Reading your private balance|cannot be joined|You hold|tETH, private/.test(document.querySelector('#pz-join')?.textContent || ''));
+      await page.waitForTimeout(800);
+      const j = await text(page, '#pz-join');
+      ok(!/\bTAC\b/.test(j) && !(await page.evaluate(() => !!document.querySelector('#pz-join [data-pf="join"]:not([disabled])'))), `the card of a farm with no reserves joins nothing, and shows no other farm's coin (${j.slice(0, 140)})`);
+      await r.browser.close();
+    }
+    {
+      // several tETH notes and a relay fee to cut one: the whole sum cannot go in (a note must be cut and the fee taken from it), so Max is the sum less the fee
+      const pieces = [5000000n, 3000000n, 2000000n].map((v, i) => ({ leaf: '0x' + `d${i}`.repeat(32), asset: CETH, value: String(v), owner: '0x03' }));
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { keyOpen: true, privNotes: [...pieces, privNotes[1]], opFee: 1000 } }), { page } = r;
+      await until(page, () => !document.querySelector('#pz-mode').hidden);
+      await page.click('#pz-both');
+      ok(await until(page, () => /Max 0\.09999\b/.test(document.querySelector('#pz-join [data-pf="max"]')?.textContent || '')), `Max is the sum less the relay’s fee (${await text(page, '#pz-join [data-pf="max"]')})`);
+      await page.click('#pz-join [data-pf="max"]');
+      ok(await until(page, () => document.querySelector('#pz-join #pf-a').value === '0.09999' && !document.querySelector('#pz-join [data-pf="join"]').disabled && !/does not cover/.test(document.querySelector('#pf-info').textContent)), `and it is a join that can be made (${(await text(page, '#pf-info')).slice(0, 140)})`);
+      await r.browser.close();
+    }
+    {
+      // the pool's terms cannot be read: the card says so and asks again on a press, instead of waiting for ever
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { keyOpen: true, privNotes, opFeeFail: true } }), { page } = r;
+      await until(page, () => !document.querySelector('#pz-mode').hidden);
+      await page.click('#pz-both');
+      ok(await until(page, () => /The pool could not be read/.test(document.querySelector('#pz-join')?.textContent || '')), 'a pool that cannot be read is said, with Try again');
+      await page.evaluate(() => { window.__t.opFeeFail = false; });
+      await page.click('#pz-join [data-pf="retry"]');
+      ok(await until(page, () => /Max 0\.1\b/.test(document.querySelector('#pz-join [data-pf="max"]')?.textContent || '')), 'and the press reads it again');
+      await r.browser.close();
+    }
+    {
+      // a share in no farm, farmed while the card shows tETH + TAC: its steps are said in the card on screen
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { keyOpen: true, loose: LPA[0] } }), { page } = r;
+      await until(page, () => /share of yours is private and not in the farm/.test(document.querySelector('#pz-loose')?.textContent || ''));
+      await page.click('#pz-both');
+      await page.click('#pz-loose [data-loose="0"]');
+      ok(await until(page, () => !document.querySelector('#pz-eth').hidden && !document.querySelector('#pz-cook').hidden || /In the farm/.test(document.querySelector('#pz-say')?.textContent || '')), 'Farm it brings the steps into view');
+      ok(await sayIs(page, /In the farm/), 'and says where it ended');
+      await r.browser.close();
+    }
+    {
+      // the second side runs out first: Max is what both cover, not what the first side holds
+      const half = [privNotes[0], { ...privNotes[1], value: String(b / 2n) }];
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { keyOpen: true, privNotes: half } }), { page } = r;
+      await until(page, () => !document.querySelector('#pz-mode').hidden);
+      await page.click('#pz-both');
+      ok(await until(page, () => /Max 0\.05\b/.test(document.querySelector('#pz-join [data-pf="max"]')?.textContent || '')), `Max is 0.05, the half the TAC covers (${await text(page, '#pz-join [data-pf="max"]')})`);
+      await page.click('#pz-join [data-pf="max"]');
+      ok(await until(page, () => document.querySelector('#pz-join #pf-a').value === '0.05' && /TAC, at the pool’s ratio\s*500/.test(document.querySelector('#pf-info').textContent) && !document.querySelector('#pz-join [data-pf="join"]').disabled), `it fills 0.05 with 500 TAC beside it, ready (${await text(page, '#pf-info')})`);
       await r.browser.close();
     }
     {

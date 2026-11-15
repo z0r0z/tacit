@@ -158,7 +158,7 @@ export function mountFarm(host, ctx) {
     $('#fm-mode').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.fm === m)));
     $('#fm-eth').hidden = m === 'tac'; $('#fm-tac').hidden = m === 'eth';
     const em = $('#fm-emax'), tm = $('#fm-tmax'), mine = x && W.account && x.who === W.account;
-    $('#fm-how').innerHTML = m === 'pair' ? (mine && x.tac === 0n ? 'You hold no TAC in this wallet, and ETH + TAC takes both. <button class="linkbtn" type="button" data-fm="eth">Farm with ETH alone</button>.' : 'Both go in at the pool’s ratio, then are staked.')
+    $('#fm-how').innerHTML = m === 'pair' ? (mine && x.tac === 0n ? 'You hold no TAC in this wallet, and ETH + TAC takes both. <button class="linkbtn" type="button" data-fm="eth">Farm with ETH alone</button>, or <a href="/#card=swap:ether:tac">buy TAC</a> first.' : 'Both go in at the pool’s ratio, then are staked.')
       : `Half is swapped to ${m === 'eth' ? 'TAC' : 'ETH'} inside the pool, then both are staked: one transaction.`;
     em.hidden = !(mine && x.bal != null); tm.hidden = !mine;
     if (mine && x.bal != null) em.textContent = `Balance ${fmt(x.bal, 18, 4)} · Max`;
@@ -441,7 +441,7 @@ export function mountFarm(host, ctx) {
   }
 
   let t = 0;
-  const typed = (i) => () => { clearTimeout(t); F.q = null; gate(); if (!F.busy) unsay(); t = setTimeout(() => requote(i), 300); };
+  const typed = (i) => () => { clearTimeout(t); F.seq++; F.q = null; gate(); if (!F.busy) unsay(); t = setTimeout(() => requote(i), 300); };      // a quote still on its way is for the amount before this one
   for (const i of [ethIn, tacIn]) {
     i.addEventListener('input', typed(i));
     i.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && !F.busy && !go.disabled) go.click(); });

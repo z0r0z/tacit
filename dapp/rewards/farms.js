@@ -6,11 +6,12 @@
 // A page that opens the key for something of its own (the farm page's deposits) passes its `session`, so one sign-in serves both: it
 // then calls `forget(why)` when the wallet behind the key has moved. `onRead(list)` is told the positions each time they are read.
 // `joinAt` is an element the join with both sides is drawn in instead (the farm page's own card, on the farm `choose` names), with what
-// it says as it runs; `onAct(name, ok)` is told when an action ends.
+// it says as it runs; `onAct(name, ok)` is told when an action ends. `more(tk, { pid, alone })` is the page's own words for getting a coin the
+// key holds none of (links, as HTML; `alone` names the other coin when the key holds that one), drawn in that card when a side is missing.
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=67d4d4de';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { makeRunner } from '/activity.js';
-import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=f872de9d';
+import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=f872de9d';
 import { relayWords } from '/relay-outcome.js?cb=17e48a9a';
 import { esc, wordAt, parseUnits, rpc } from '/trade/util.js?cb=1d2cd8d3';
 
@@ -27,7 +28,7 @@ const MULTICALL3 = '0xca11bde05977b3631167028862be2a173976ca11';
 // the chain's clock, read with the positions: whether a bond is over goes by it, not by this device's
 const chainNow = async (ux) => ({ at: Date.now(), t: Number(wordAt(await ux.ethCall(MULTICALL3, '0x0f28c97d'), 0)) });
 
-export function mountFarms(root, { pick, names = () => new Map(), pair = () => '', program = () => null, wallet = null, W = null, connect = null, session = null, onRead = () => {}, joinAt = null, onAct = () => {} } = {}) {
+export function mountFarms(root, { pick, names = () => new Map(), pair = () => '', program = () => null, wallet = null, W = null, connect = null, session = null, onRead = () => {}, joinAt = null, onAct = () => {}, more = null } = {}) {
   let D = null, seq = 0, runner = null, wanted = null;
   const jr = joinAt || root;                                                           // where the join's form and fields are
   let lockedWhy = '';                                                                  // why the key was locked, when the wallet that opened it moved
@@ -180,7 +181,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
   // ── joining ──
   // the farms open to join, and the one picked
   const openFarms = () => (program()?.pools || []).filter((p) => p.reserves?.assetA && Number(p.tacPerDayForPool) > 0);
-  const chosen = () => { const fs = openFarms(), pid = String(D?.form?.pool ?? fs[0]?.pid); return fs.find((p) => String(p.pid) === pid) || fs[0] || null; };
+  const chosen = () => { const fs = openFarms(), pid = String(D?.form?.pool ?? fs[0]?.pid); return fs.find((p) => String(p.pid) === pid) || (joinAt ? null : fs[0]) || null; };
   // The pool's terms, kept for QUOTE_FRESH while the form is in use: what the form quotes is what a press is held to.
   async function terms(pool, fresh = false) {
     const t = await getUx(), k = String(pool.pid), j = D?.terms?.[k];
@@ -196,17 +197,46 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     const cutFee = fA + (fB ? (fB * BigInt(tm.res.reserveA)) / BigInt(tm.res.reserveB) : 0n);          // in the first side's units
     return { a, b, nA, nB, pA, pB, fA, fB, cutFee, short: !nA && !pA ? 'A' : !nB && !pB ? 'B' : null, dear: cutFee * 20n >= 2n * a, pct: Number((cutFee * 1000n) / (2n * a)) / 10 };
   }
-  // what the form shows under the amount: the second side, what splitting notes costs, and what is wrong with it
+  // What the key holds of the pool's two coins, each in note units (the sum of its notes)
+  const held = (pool) => {
+    const sum = (asset) => notesOf(D.notes, asset).reduce((s, x) => s + BigInt(x.value), 0n);
+    return { a: sum(pool.reserves.assetA), b: sum(pool.reserves.assetB) };
+  };
+  // The most of the first side that goes in with the second at the pool's ratio, from the notes held: each side a note of exactly its size, or
+  // cut to it for the relay's fee. Taken from the side that runs out first, then stepped down to what the notes can actually be cut to.
+  function maxJoin(pool, tm) {
+    const h = held(pool), top = aFor(h.b, tm.res);
+    let hi = h.a < top ? h.a : top;
+    if (hi <= 0n) return 0n;
+    const fits = (a) => a > 0n && !plan(pool, tm, a, D.notes).short;
+    if (fits(hi)) return hi;
+    let lo = 0n;
+    while (hi - lo > 1n) { const mid = (lo + hi) / 2n; if (fits(mid)) lo = mid; else hi = mid; }
+    return lo;
+  }
+  // what the form shows under the amount: the second side, what splitting notes costs, and what is wrong with it. The farm page's card also
+  // says what the key holds of each side, and where to get one it holds none of.
   function joinInfo(pool, tm, a) {
-    if (!tm) return '<p class="more">Reading the pool…</p>';
-    if (!a) return '';
+    if (!tm) return D?.termsErr?.[String(pool.pid)] ? '<p class="more err">The pool could not be read. <button class="linkbtn" type="button" data-pf="retry">Try again</button></p>' : '<p class="more">Reading the pool…</p>';
+    const own = joinAt && D.notesOk ? held(pool) : null;
+    const bal = own ? `<div><dt>You hold</dt><dd class="num">${esc(units8(own.a))}\u00a0${esc(tm.tkA)} · ${esc(units8(own.b))}\u00a0${esc(tm.tkB)}</dd></div>` : '';
+    // the page's words for a coin the key holds none of; when it holds some of the other, it can also farm that one alone
+    const get = (tk) => {
+      if (!own || !more) return '';
+      const first = tk === tm.tkA, miss = first ? own.a : own.b, other = first ? own.b : own.a;
+      return more(tk, { pid: pool.pid, alone: miss === 0n && other > 0n ? (first ? tm.tkB : tm.tkA) : null });
+    };
+    if (!a) {
+      const none = own ? [own.a === 0n ? tm.tkA : '', own.b === 0n ? tm.tkB : ''].filter(Boolean) : [];
+      return own ? `<dl class="kv">${bal}</dl>${none.length ? `<p class="more">No private ${esc(none.join(' or '))} right now, and both sides need some. Get it below, or farm with ETH.</p>${none.map(get).join('')}` : ''}` : '';
+    }
     const p = plan(pool, tm, a, D.notes);
-    let h = `<dl class="kv"><div><dt>${esc(tm.tkB)}, at the pool’s ratio</dt><dd class="num" id="pf-b">${esc(units8(p.b))}</dd></div>`;
+    let h = `<dl class="kv">${bal}<div><dt>${esc(tm.tkB)}, at the pool’s ratio</dt><dd class="num" id="pf-b">${esc(units8(p.b))}</dd></div>`;
     if (p.fA || p.fB) h += `<div><dt>Relay fee to split your notes</dt><dd class="num">${esc([p.fA ? `${units8(p.fA)} ${tm.tkA}` : '', p.fB ? `${units8(p.fB)} ${tm.tkB}` : ''].filter(Boolean).join(' + '))}</dd></div>`;
     h += '</dl>';
     if (D.notesOk) {
-      if (p.short === 'A') h += `<p class="more err">Your private ${esc(tm.tkA)} does not cover ${esc(units8(a))} and the relay’s fee to split a note.</p>`;
-      else if (p.short === 'B') h += `<p class="more err">This needs ${esc(units8(p.b))} ${esc(tm.tkB)} at the pool’s ratio, and your private ${esc(tm.tkB)} does not cover it and the relay’s fee to split a note.</p>`;
+      if (p.short === 'A') h += `<p class="more err">Your private ${esc(tm.tkA)} does not cover ${esc(units8(a))} and the relay’s fee to split a note.</p>${get(tm.tkA)}`;
+      else if (p.short === 'B') h += `<p class="more err">This needs ${esc(units8(p.b))} ${esc(tm.tkB)} at the pool’s ratio, and your private ${esc(tm.tkB)} does not cover it and the relay’s fee to split a note.</p>${get(tm.tkB)}`;
       else if (p.dear) h += `<p class="more">The relay’s fees to split your notes are ${esc(p.pct.toFixed(1))}% of this deposit: a larger one, or notes that are already this size, spreads them.</p>`;
     }
     return h;
@@ -253,13 +283,15 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
   function joinForm() {
     const fs = openFarms();
     if (!fs.length) return '';
-    const f = D.form, pool = chosen(), pid = String(pool.pid), tm = D.terms?.[pid], a = parseUnits(f.a || '', 8);
-    if (!tm && !D.termsAsked?.[pid]) { (D.termsAsked ||= {})[pid] = true; terms(pool).then(() => paint(), () => {}); }
+    const f = D.form, pool = chosen();
+    if (!pool) return joinAt ? '<p class="note">This farm cannot be joined from here right now.</p>' : '';        // the card's own farm is not open to join: no other is put in its place
+    const pid = String(pool.pid), tm = D.terms?.[pid], a = parseUnits(f.a || '', 8);
+    if (!tm && !D.termsAsked?.[pid]) { (D.termsAsked ||= {})[pid] = true; const mine = D; terms(pool).then(() => paint(), () => { if (D === mine) { (D.termsErr ||= {})[pid] = true; paint(); } }); }
     const short = tm && a && D.notesOk && plan(pool, tm, a, D.notes).short;
     if (joinAt) {
       // the page's own card: its farm, the first side's amount, the second at the pool's ratio, one press
-      const held = tm && D.notesOk ? notesOf(D.notes, pool.reserves.assetA).reduce((s, x) => s + BigInt(x.value), 0n) : null;
-      return `<div class="lbl"><span>${esc(tm?.tkA || 'tETH')}, private</span>${held ? `<button class="linkbtn" type="button" data-pf="max">Held ${esc(units8(held))}</button>` : ''}</div>
+      const mx = tm && D.notesOk ? maxJoin(pool, tm) : 0n;
+      return `<div class="lbl"><span>${esc(tm?.tkA || 'tETH')}, private</span>${mx > 0n ? `<button class="linkbtn" type="button" data-pf="max" title="The most both sides cover, from your private balance">Max ${esc(units8(mx))}</button>` : ''}</div>
         <div class="amt"><input id="pf-a" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${esc(tm?.tkA || 'tETH')} to put in" value="${esc(f.a || '')}"${D.busy ? ' disabled' : ''}><span class="u">${esc(tm?.tkA || 'tETH')}</span></div>
         <div class="fm-rcpt" id="pf-info">${joinInfo(pool, tm, a) || '<p class="note">The second side is worked out at the pool’s ratio.</p>'}</div>
         <button class="btn" type="button" data-pf="join"${D.busy || !tm || short ? ' disabled' : ''}>${D.busy === 'join' ? 'Adding…' : `Add both and farm`}</button>`;
@@ -341,9 +373,14 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     const b = e.target.closest('[data-pf]');
     if (!b || b.disabled) return;
     const what = b.dataset.pf, i = Number(b.dataset.i);
-    if (what === 'max') {                                                              // every note of the first side held
-      const pool = chosen(), held = pool ? notesOf(D.notes, pool.reserves.assetA).reduce((s, x) => s + BigInt(x.value), 0n) : 0n;
-      if (held > 0n) { D.form.a = units8(held).replace(/,/g, ''); paint(); updateInfo(); }
+    if (what === 'max') {                                                              // the most of the first side that goes in with the second
+      const pool = chosen(), tm = pool && D.terms?.[String(pool.pid)], mx = tm ? maxJoin(pool, tm) : 0n;
+      if (mx > 0n) { D.form.a = units8(mx).replace(/,/g, ''); paint(); updateInfo(); }
+      return;
+    }
+    if (what === 'retry') {                                                            // the pool's terms asked for again
+      const pool = chosen();
+      if (pool && D) { delete D.termsAsked?.[String(pool.pid)]; delete D.termsErr?.[String(pool.pid)]; paint(); }
       return;
     }
     if (what === 'lock') return forget();
@@ -363,5 +400,5 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     if (D?.form) { D.form = { ...wanted, a: D.form.pool === wanted.pool ? D.form.a : undefined }; paint(); }
   }
 
-  return { read, forget, choose };
+  return { read, forget, choose, busy: () => !!D?.busy };
 }
