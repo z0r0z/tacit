@@ -67,8 +67,60 @@ export function makeConfidentialEvmLog({ keccak256 }) {
     return out;
   }
 
+  // The same reading over the log's data as the hex string it arrives as: a field is cut out of it with slice, never turned into bytes and back into
+  // hex, which is most of what decoding a pool's history cost. Plain hex only (any case, even length); anything else is read by decodeLogSlow, as it
+  // always was. tests/confidential-evm-log.mjs holds the two to each other on random and on malformed logs.
+  const PLAIN = /^[0-9a-f]*$/;
+  const sU = (s, byteOff) => BigInt('0x' + (s.slice(2 * byteOff, 2 * byteOff + 64) || '0'));
+  const sW = (s, byteOff) => '0x' + s.slice(2 * byteOff, 2 * byteOff + 64);
+  function sBytes32Array(s, at) {
+    const len = Number(sU(s, at));
+    const out = [];
+    for (let i = 0; i < len; i++) out.push(sW(s, at + 32 + 32 * i));
+    return out;
+  }
+  function sBytesArray(s, at) {
+    const len = Number(sU(s, at));
+    const base = at + 32;
+    const out = [];
+    for (let i = 0; i < len; i++) {
+      const pos = base + Number(sU(s, base + 32 * i));
+      const blen = Number(sU(s, pos));
+      out.push('0x' + s.slice(2 * (pos + 32), 2 * (pos + 32 + blen)));
+    }
+    return out;
+  }
+  // the log's data as lowercase hex without its 0x, or null when it is not plain hex of whole bytes
+  function plainData(log) {
+    const raw = log.data || '0x';
+    if (typeof raw !== 'string') return null;
+    const t = (raw.startsWith('0x') ? raw.slice(2) : raw).toLowerCase();
+    return t.length % 2 === 0 && PLAIN.test(t) ? t : null;
+  }
+
   // Decode one raw log. Returns a structured event, or null if not one of ours.
   function decodeLog(log) {
+    const topics = log.topics || [];
+    if (!topics.length) return null;
+    const kind = byTopic0[String(topics[0]).toLowerCase()];
+    if (!kind) return null;
+    const t = plainData(log);
+    if (t === null) return decodeLogSlow(log);
+    if (kind === 'LeavesInserted') {
+      return { type: 'LeavesInserted', firstLeafIndex: Number(BigInt(topics[1])), leaves: sBytes32Array(t, Number(sU(t, 0))), memos: sBytesArray(t, Number(sU(t, 32))) };
+    }
+    if (kind === 'LockLeavesInserted') return { type: 'LockLeavesInserted', firstLockIndex: Number(BigInt(topics[1])), lockLeaves: sBytes32Array(t, Number(sU(t, 0))) };
+    if (kind === 'NullifiersSpent') return { type: 'NullifiersSpent', nullifiers: sBytes32Array(t, Number(sU(t, 0))) };
+    if (kind === 'CrossOutRecorded') return { type: 'CrossOutRecorded', claimId: String(topics[1]), destChain: Number(sU(t, 0)), destCommitment: sW(t, 32), nullifier: sW(t, 64), assetId: sW(t, 96) };
+    if (kind === 'Wrap') return { type: 'Wrap', depositId: String(topics[1]), assetId: String(topics[2]), amount: sU(t, 0) };
+    if (kind === 'Bonded') return { type: 'Bonded', receipt: String(topics[1]), pid: Number(BigInt(topics[2])), shares: sU(t, 0), unlockAt: Number(sU(t, 32)) };
+    if (kind === 'Harvested') return { type: 'Harvested', receipt: String(topics[1]), pid: Number(BigInt(topics[2])), reward: sU(t, 0) };
+    if (kind === 'CdpPositionInserted') return { type: 'CdpPositionInserted', leaf: String(topics[1]) };
+    return null;
+  }
+
+  // The reading over bytes: what every log was read by before, and still reads the ones that are not plain hex.
+  function decodeLogSlow(log) {
     const topics = log.topics || [];
     if (!topics.length) return null;
     const kind = byTopic0[String(topics[0]).toLowerCase()];
@@ -148,16 +200,28 @@ export function makeConfidentialEvmLog({ keccak256 }) {
   // stealth-lock scan needs the tx hash: lock leaves come from LockLeavesInserted, while their memos (which
   // LeavesInserted carries only when the settle also minted notes) are read from the settle transaction's
   // calldata; the block/log index orders events as the chain emitted them.
+  // A log object is decoded once: the same logs are decoded again by every read of the pool's history (the quick pass and the full one of a balance, the
+  // swap card's own, a lock scan), and each decode of a few thousand logs is a few hundred milliseconds. What comes back is a copy of the event, so a
+  // caller that sets a field on one does not set it on the next caller's; the arrays inside are shared and are not changed by anyone.
+  const decoded = new WeakMap();
   function decodeLogs(logs) {
-    return (logs || []).map((log) => {
-      const ev = decodeLog(log);
-      if (!ev) return null;
-      ev.txHash = log.transactionHash || null;
-      ev.blockNumber = log.blockNumber == null ? null : Number(BigInt(log.blockNumber));
-      ev.logIndex = log.logIndex == null ? null : Number(BigInt(log.logIndex));
-      return ev;
-    }).filter(Boolean);
+    const out = [];
+    for (const log of logs || []) {
+      const keep = log !== null && typeof log === 'object';
+      let ev = keep ? decoded.get(log) : undefined;
+      if (ev === undefined) {
+        ev = decodeLog(log);
+        if (ev) {
+          ev.txHash = log.transactionHash || null;
+          ev.blockNumber = log.blockNumber == null ? null : Number(BigInt(log.blockNumber));
+          ev.logIndex = log.logIndex == null ? null : Number(BigInt(log.logIndex));
+        }
+        if (keep) decoded.set(log, ev || null);
+      }
+      if (ev) out.push({ ...ev });
+    }
+    return out;
   }
 
-  return { decodeLog, decodeLogs, TOPIC0, SIGS };
+  return { decodeLog, decodeLogs, decodeLogSlow, TOPIC0, SIGS };
 }

@@ -416,7 +416,9 @@ test('farmHarvest / farmUnbond: reward and released-share keys derive from the r
   const REWARD = 2500000000n;
   const submitted = [];
   const handler = async (method, params) => {
-    if (method === 'eth_blockNumber') return '0x' + (CFG.deployBlock + 10).toString(16);
+    // the head moves on as events land, as a chain's does: an identical range asked twice is answered once (rpc-pace once), so a head that stood still
+    // would give the second harvest the first one's logs
+    if (method === 'eth_blockNumber') return '0x' + (CFG.deployBlock + 10 + events.length).toString(16);
     if (method === 'eth_getLogs') return farmLogs(events);
     if (method !== 'eth_call') return undefined;
     const { to, data } = params[0];

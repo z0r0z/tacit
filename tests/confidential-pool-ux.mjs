@@ -99,7 +99,7 @@ test('fetchEvents: scans that ask at the same moment share one walk of the histo
   assert.deepEqual(got.map((g) => g.length), [0, 0, 0]);
   const full = reads.filter((r) => r.fromBlock === '0x' + DEPLOY_BLOCK.toString(16));
   assert.equal(full.length, 1, 'the history is walked once, not once for each scan that asked');
-  assert.equal(reads.length, 3, 'the two that waited read only what the first did not');
+  assert.ok(reads.length >= 2 && reads.length <= 3, `the two that waited read at most what the first did not (${reads.length} reads)`);   // a waiter whose read is already covered by the one before it reads nothing
   for (const r of reads.filter((x) => !full.includes(x))) assert.equal(r.fromBlock, '0x' + (head - 63).toString(16), 'the last 64 blocks');
 });
 
@@ -900,7 +900,14 @@ test('route: minted notes use a fresh per-note nk, never the identity owner', as
   const inNote = { ...w.note, leafIndex, path: tree.rootAndPath(leafIndex).path, root: tree.root() };
   const other = ux.assets.find((a) => a.ticker !== 'cETH' && a.ticker !== 'TAC').assetId;
   const path = [{ assetNext: other, feeBps: 30 }];
-  await assert.rejects(ux.route({ walletPriv, inNote, amountIn: BigInt(inNote.value) / 2n, path, minOut: 0n }), /partial-spend change/);
+  // a swap from a larger note is one route with a change leg (it used to be refused as a partial spend): both outputs are sealed to the wallet, and
+  // neither is minted to the identity owner
+  await ux.route({ walletPriv, inNote, amountIn: BigInt(inNote.value) / 2n, path, minOut: 0n });
+  const partial = captured.at(-1);
+  assert.equal(partial.memos.length, 2, 'partial-spend route: the routed output and the change, each sealed');
+  assert.equal(partial.op.change.length, 1, 'one change leg');
+  assert.notEqual(String(partial.op.out.owner).toLowerCase(), id.owner.toLowerCase(), 'the routed output is not minted to the identity owner');
+  assert.notEqual(String(partial.op.change[0].owner).toLowerCase(), id.owner.toLowerCase(), 'nor is the change');
   await ux.route({ walletPriv, inNote, amountIn: BigInt(inNote.value), path, minOut: 0n });
   const sub = captured.at(-1);
   assert.equal(sub.memos.length, 1, 'whole-note route: one routed output, sealed');
@@ -1027,7 +1034,7 @@ test('self-settled wrap: proved by the relay, sent by the caller with the memos 
   proofMemos = first.memos;
   const r = await ux.submitWrapSettle({ built: again, waitOpts, depositTx: '0x' + 'ee'.repeat(32), selfSettle });
   assert.equal(subs[0].mode, 'prove', 'the relay is asked for a proof only');
-  assert.ok(!('depositTx' in subs[0]), 'nothing for the relay to be paid by');
+  assert.equal(subs[0].depositTx, '0x' + 'ee'.repeat(32), 'the deposit transaction goes with the proof request: submitWrapSettle sends it when it has one (the caller still sends the settle itself)');
   assert.deepEqual(sent[0], { jobId: 'p', publicValues: '0x01', proof: '0x02', memos: first.memos }, 'the job it settles, and the memos the proof commits to, not a fresh seal');
   assert.equal(r.status, 'settled');
   assert.equal(r.txHash, '0x' + 'dd'.repeat(32));

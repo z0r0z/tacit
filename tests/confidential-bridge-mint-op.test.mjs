@@ -339,3 +339,4 @@ const built = bm.buildBridgeMintOp({ chainBinding: CHAIN_BINDING, asset: ASSET, 
 }
 
 console.log(`\n${n}/${n} confidential-bridge-mint-op checks passed`);
+process.exit(0);   // a retry timer the last checks leave pending would otherwise keep the process alive for minutes
