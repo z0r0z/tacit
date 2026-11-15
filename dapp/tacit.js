@@ -23879,8 +23879,11 @@ async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos
     }
   }
 
-  const totalOuts = K + 1;
-  const m = totalOuts <= 2 ? 2 : totalOuts <= 4 ? 4 : 8;
+  // A transfer that spends its inputs whole has no change note: the outputs are the recipients' and, only to reach 1, 2, 4 or 8 (the sizes
+  // the range proof and the guest accept), padding of 0. Each output is a reveal output of DUST sats at this address.
+  const hasChange = changeAmt > 0n;
+  const totalOuts = K + (hasChange ? 1 : 0);
+  const m = totalOuts <= 1 ? 1 : totalOuts <= 2 ? 2 : totalOuts <= 4 ? 4 : 8;
 
   const firstAssetIn = pickedAssetUtxos[0].utxo;
   const anchorBytes = concatBytes(
@@ -23899,10 +23902,12 @@ async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos
     blindings.push(deriveBlinding(amountChannelSenderPriv, parsed[i].pub, anchorBytes, i));
     keystreams.push(deriveAmountKeystreamECDH(amountChannelSenderPriv, parsed[i].pub, anchorBytes, i));
   }
-  amounts.push(changeAmt);
-  blindings.push(deriveChangeBlinding(wallet.priv, anchorBytes, K));
-  keystreams.push(deriveAmountKeystreamSelf(wallet.priv, anchorBytes, K));
-  for (let v = K + 1; v < m; v++) {
+  if (hasChange) {
+    amounts.push(changeAmt);
+    blindings.push(deriveChangeBlinding(wallet.priv, anchorBytes, K));
+    keystreams.push(deriveAmountKeystreamSelf(wallet.priv, anchorBytes, K));
+  }
+  for (let v = K + (hasChange ? 1 : 0); v < m; v++) {
     amounts.push(0n);
     blindings.push(deriveChangeBlinding(wallet.priv, anchorBytes, v));
     keystreams.push(deriveAmountKeystreamSelf(wallet.priv, anchorBytes, v));
@@ -24162,9 +24167,9 @@ async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos
       blinding: blindings[i], commitmentBytes: commitmentBytesList[i],
     })),
     changeAmount: changeAmt,
-    changeVout: K,
-    changeBlinding: blindings[K],
-    paddingVouts: Array.from({ length: m - K - 1 }, (_, i) => K + 1 + i),
+    changeVout: hasChange ? K : null,
+    changeBlinding: hasChange ? blindings[K] : null,
+    paddingVouts: Array.from({ length: m - K - (hasChange ? 1 : 0) }, (_, i) => K + (hasChange ? 1 : 0) + i),
     commitFee, revealFee,
   };
 }
