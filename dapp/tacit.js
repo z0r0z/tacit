@@ -2083,7 +2083,11 @@ function _noteTxServedBy(path, base) {
   if (m) _noteServed(_txServedBy, m[1], base);
 }
 const _explorerOperator = (base) => { try { const h = new URL(base).hostname; return /(^|\.)mempool\.space$/.test(h) ? 'mempool.space' : h; } catch { return String(base); } };
+// On a host that reads through the API's proxy the proxy is its one working source (the explorers throttle the host), and the proxy
+// already rests whichever explorer behind it is throttled: it is rested for a few seconds at most, never the minutes a Retry-After asks.
+const _PROXY_REST_MAX_MS = 5_000;
 function _markUnhealthy(base, ms, label) {
+  if (_CHAIN_VIA_WORKER && WORKER_BASE && String(base).startsWith(`${WORKER_BASE}/chain`)) ms = Math.min(ms, _PROXY_REST_MAX_MS);
   _apiHealth.set(base, { cooldownUntil: Date.now() + ms, lastErr: label });
   if (label === 'network') {
     try {
@@ -2268,6 +2272,7 @@ async function _apiFetchUncached(path, opts = {}) {
       && cooling.length > 0
       && _coolingMsLeft(cooling[0]) > 2000
       && cooling.every(_isRateLimitCooling)
+      && !(_CHAIN_VIA_WORKER && cooling.some((b) => b.startsWith(`${WORKER_BASE}/chain`)))
     ) {
       throw new Error(_API_RATE_LIMITED_MSG);
     }
