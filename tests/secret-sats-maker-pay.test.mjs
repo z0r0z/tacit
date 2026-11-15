@@ -78,7 +78,10 @@ globalThis.fetch = async (url, init = {}) => {
       return json({ height: 1006, from, notes: rows, next: rows.length ? 1 : from });
     }
     if (p.startsWith('/btc-pool/nullifier/')) return json({ spent: false });
+    // a wallet's spent flags come from the replay's whole list of nullifiers (none spent), and the paths it works out from the feed are checked against the replay's own root
+    if (p === '/btc-pool/nullifiers') return json({ nullifiers: [], next: null });
     let m;
+    if ((m = p.match(/^\/btc-pool\/root\/(\d+)$/))) return json({ height: Number(m[1]), root: '0x' + bytesToHex(st.tree.rootAndPathAt(0, 1).root), retained: true });
     if ((m = p.match(/^\/btc-pool\/path\/(\d+)$/))) {
       const at = Number(u.searchParams.get('at'));
       const { root, path } = st.tree.rootAndPathAt(Number(m[1]), 1);
