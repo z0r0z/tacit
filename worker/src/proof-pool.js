@@ -54,6 +54,7 @@ export const PROOF_POOL = Object.freeze({
   lapsesPerDay: 4,                   // POOL_LAPSES_PER_DAY: leases a client may let run out or hand back in a UTC day before it is offered nothing more (honest lapses are rare: leases and proofs matched to within five over 38 hours)
   leasesPerClient: 4,                // open leases one client may hold, one per address (a household's few machines)
   houseTakeoverMs: 25 * 60_000,      // POOL_HOUSE_TAKEOVER_MS: a miner's lease held this long without a proof can be taken over by Tacit's own prover when it is free (0: never); 99.6% of honest proofs come back inside it
+  ticketsPerAddress: 3,              // POOL_TICKETS_PER_ADDRESS: at most this many of an address's places count toward a turn at once (one address leasing through a pool of proxy IPs held a ticket per IP)
   turnMs: 30_000,                    // POOL_TURN_MS: a miner counts as asking for this long after it last asked, and a new job is held this long for the one whose turn it is (0: first to ask)
   minerIdleMs: 5 * 60_000,           // POOL_MINER_IDLE_MS: a house prover's wait for the miners holds only while one has asked this recently
   holdMs: 45_000,                    // POOL_HOLD_MS: how long a page's hold keeps Tacit's own provers off the pool (a typed amount's proof is asked within seconds)
@@ -88,6 +89,7 @@ export function proofPoolConfig(env = {}) {
     payFloorPct: n(env.POOL_PAY_FLOOR_PCT, PROOF_POOL.payFloorPct, 10, 100),
     lapsesPerDay: n(env.POOL_LAPSES_PER_DAY, PROOF_POOL.lapsesPerDay, 1, 100_000),
     turnMs: n(env.POOL_TURN_MS, PROOF_POOL.turnMs, 0, 600_000),
+    ticketsPerAddress: n(env.POOL_TICKETS_PER_ADDRESS, PROOF_POOL.ticketsPerAddress, 1, 1000),
     houseTakeoverMs: n(env.POOL_HOUSE_TAKEOVER_MS, PROOF_POOL.houseTakeoverMs, 0, 86_400_000),
   });
 }
@@ -316,10 +318,21 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
     const memo = holders.get(e.id);
     if (memo && t - memo.at < 1000) return memo.key;
     let key = null, best = Infinity;
+    // An address counts at most `ticketsPerAddress` of its places at once, the same few whichever job it is (a fixed order by the address's and the place's
+    // own hash, not by the job's draws, which would let more places mean a better best): one address leasing through a pool of proxy IPs had held a ticket
+    // for every one of them. It can still spread over more addresses; that is a wallet each, and its points are spread with it.
+    const live = new Map();
     for (const [k, a] of askers) {
       if (t - a.at > cfg.turnMs || (e.skip || []).includes(a.client)) continue;
-      const v = drawOf(e.id, a.client) + drawOf(e.id, a.m) / 1e4 + (a.lapses > 0 ? 1 : 0);
-      if (v < best || (v === best && k < key)) { best = v; key = k; }
+      if (!live.has(a.m)) live.set(a.m, []);
+      live.get(a.m).push([k, a]);
+    }
+    for (const list of live.values()) {
+      if (list.length > cfg.ticketsPerAddress) list.sort((x, y) => drawOf(`ticket|${x[1].m}`, x[1].client) - drawOf(`ticket|${y[1].m}`, y[1].client) || (x[0] < y[0] ? -1 : 1));
+      for (const [k, a] of list.slice(0, cfg.ticketsPerAddress)) {
+        const v = drawOf(e.id, a.client) + drawOf(e.id, a.m) / 1e4 + (a.lapses > 0 ? 1 : 0);
+        if (v < best || (v === best && k < key)) { best = v; key = k; }
+      }
     }
     holders.set(e.id, { at: t, key });
     return key;
@@ -653,7 +666,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       top: miners.map(([miner, m]) => ({ miner, proofs: m.proofs })).sort((a, b) => b.proofs - a.proofs || (a.miner < b.miner ? -1 : 1)).slice(0, cfg.top),
       // pointsPerProof is the most a proof earns; `pay` says how it falls with the time a proof took (payFor, payFactor)
       terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs,
-        pay: { fullSecs: cfg.payFullSecs, floorSecs: cfg.payFloorSecs, floorPct: cfg.payFloorPct }, takeoverSecs: Math.round(cfg.houseTakeoverMs / 1000) },
+        pay: { fullSecs: cfg.payFullSecs, floorSecs: cfg.payFloorSecs, floorPct: cfg.payFloorPct }, takeoverSecs: Math.round(cfg.houseTakeoverMs / 1000), ticketsPerAddress: cfg.ticketsPerAddress },
     });
   }
 

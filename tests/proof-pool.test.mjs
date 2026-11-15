@@ -124,6 +124,8 @@ test('config: the environment sets each number within its bounds, and a bad valu
   assert.equal(proofPoolConfig({ POOL_HOUSE_TAKEOVER_MS: '0' }).houseTakeoverMs, 0, 'POOL_HOUSE_TAKEOVER_MS=0 turns the takeover off');
   assert.equal(proofPoolConfig({ POOL_HOUSE_TAKEOVER_MS: '900000' }).houseTakeoverMs, 900_000);
   assert.equal(proofPoolConfig({ POOL_HOUSE_TAKEOVER_MS: 'soon' }).houseTakeoverMs, PROOF_POOL.houseTakeoverMs);
+  assert.equal(proofPoolConfig({ POOL_TICKETS_PER_ADDRESS: '5' }).ticketsPerAddress, 5);
+  assert.equal(proofPoolConfig({ POOL_TICKETS_PER_ADDRESS: '0' }).ticketsPerAddress, PROOF_POOL.ticketsPerAddress, 'at least one ticket');
 });
 
 test('request: the input names the job, the same input is one job, expect must be what the input proves; a client\'s day and the pool\'s size are capped', async () => {
@@ -412,7 +414,7 @@ test('points: each passing proof earns its address the day\'s points up to the c
   assert.equal((await prove(MINER2, 'm2')).r.body.points, 20);
   const s = (await h.pool.stats()).body;
   assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, oldestQueuedSecs: 0, oldestLeaseSecs: 0, lapsedToday: 0, lapsedPlacesToday: 0, houseToday: 0, takeoversToday: 0, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
-  assert.deepEqual(s.terms, { pointsPerProof: 20, proofsPerMinerDay: 2, leaseMs: PROOF_POOL.leaseMs, pay: { fullSecs: 60, floorSecs: 600, floorPct: 50 }, takeoverSecs: PROOF_POOL.houseTakeoverMs / 1000 });
+  assert.deepEqual(s.terms, { pointsPerProof: 20, proofsPerMinerDay: 2, leaseMs: PROOF_POOL.leaseMs, pay: { fullSecs: 60, floorSecs: 600, floorPct: 50 }, takeoverSecs: PROOF_POOL.houseTakeoverMs / 1000, ticketsPerAddress: PROOF_POOL.ticketsPerAddress });
   assert.equal(JSON.stringify(s).includes(jobs[0].stdin.slice(2, 40)), false, 'no inputs');
   let c = (await h.pool.credits(DAY0)).body;
   assert.deepEqual(c, { day: DAY0, over: false, pointsPerProof: 20, miners: [{ miner: MINER, proofs: 3, points: 40 }, { miner: MINER2, proofs: 1, points: 20 }] });
@@ -760,15 +762,17 @@ async function swarmShare(wallets, places, jobs = 120) {
   }
   return won / jobs;
 }
-test('turns: wallets add no turns, a swarm gains only by places (equally for every place), and the same swarm held to the older pair rule would have taken most jobs', async () => {
-  const one = await swarmShare(1, 1), wallets = await swarmShare(10, 1), places = await swarmShare(1, 10), grid = await swarmShare(10, 10);
+test('turns: wallets add no turns, and one address holds at most three tickets however many IPs it leases through (a swarm that spreads over addresses still gains by places)', async () => {
+  const one = await swarmShare(1, 1), wallets = await swarmShare(10, 1), three = await swarmShare(1, 3), many = await swarmShare(1, 20), grid = await swarmShare(10, 10);
   const pct = (x) => (100 * x).toFixed(0) + '%';
-  console.log(`# against 30 honest places: 1 wallet at 1 place ${pct(one)} (fair 3%), 10 wallets at 1 place ${pct(wallets)}, 1 wallet at 10 places ${pct(places)}, 10 wallets x 10 places ${pct(grid)} (ten places in forty, 25%; the old pair rule gave this swarm about 60%)`);
-  assert.ok(wallets < 0.1, `ten wallets at one place take ${pct(wallets)}: one place has one turn`);
-  assert.ok(grid < 0.4, `ten wallets over ten places take ${pct(grid)}: ten places, and the wallets add nothing`);
-  assert.ok(Math.abs(grid - places) < 0.15, `the wallets change nothing: ${pct(grid)} with ten, ${pct(places)} with one`);
-  assert.ok(places > one * 2, `ten places do take more than one (${pct(places)} against ${pct(one)}): a place is the scarce thing`);
+  console.log(`# against 30 honest places: 1 wallet at 1 place ${pct(one)} (fair 3%), 10 wallets at 1 place ${pct(wallets)}, 1 wallet at 3 places ${pct(three)}, 1 wallet at 20 places ${pct(many)} (a proxy pool under one address; three tickets, not twenty), 10 wallets x 10 places ${pct(grid)} (one wallet each three places: ten tickets)`);
+  assert.equal(PROOF_POOL.ticketsPerAddress, 3);
+  assert.ok(wallets < 0.12, `ten wallets at one place take ${pct(wallets)}: one place has one turn`);
+  assert.ok(many < 0.2, `one address leasing through twenty IPs takes ${pct(many)}, three tickets' worth (20 tickets would be about 40%)`);
+  assert.ok(Math.abs(many - three) < 0.1, `twenty places or three, the same address: ${pct(many)} against ${pct(three)}`);
+  assert.ok(grid > many + 0.1, `spread over ten addresses the same IPs do count (${pct(grid)} against ${pct(many)}): the cap makes a swarm split across addresses; it cannot stop one that does`);
 });
+
 
 test('turns: a lease that runs out puts its job back for a fresh turn, not for whoever asks first; the place that sat on it is not the one it is held for', async () => {
   const { T, h, ask, order } = turnRig();
