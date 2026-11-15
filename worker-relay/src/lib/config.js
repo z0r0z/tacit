@@ -855,6 +855,8 @@ export const CFG = {
   // its end (lib/points-settle-gate.js). A scanner that stays behind no longer holds rewards back after the
   // maximum wait.
   pointsSettleGraceSecs: num('POINTS_SETTLE_GRACE_SECS', 1800),
+  // The points service's one loop (scanners, settlement, campaigns' payouts) is restarted when a single stage runs this long (lib/loop-watchdog.js); 0 turns it off.
+  pointsStallSecs: num('POINTS_STALL_SECS', 1800),
   // One-off add-only ledger credits as a JSON array of { id, address, wei } (lib/points-adjustments.js). Each id is
   // applied once; empty means none.
   pointsLedgerAdjustments: opt('POINTS_LEDGER_ADJUSTMENTS', ''),

@@ -30,6 +30,7 @@ import { createLp } from './lib/points-lp-service.js';
 import { createTokPool } from './lib/points-tokpool-service.js';
 import { parseTokPools } from './lib/points-tokpool.js';
 import { createMine } from './lib/points-mine-service.js';
+import { makeLoopWatchdog } from './lib/loop-watchdog.js';
 import { parseLpSchedule, parseLpPools, parseLpSettings, parseLpFarms } from './lib/points-lp.js';
 import { checkJob, stepChain } from './lib/points-tasks.js';
 import { quoteTacForEth } from './lib/tac-quote.js';
@@ -2117,8 +2118,13 @@ async function main() {
   try { mine = setupMine(store); } catch (err) { log('proof mining not started:', err?.message || err); mine = null; }
   startHttp(store, evmState);
 
+  // One loop runs every scanner, the daily settlement and every campaign's payout in turn, so a call that never answers would hold all of them back
+  // (it went quiet for an hour on 2026-11-14 and a day's payout waited). Each stage says it has begun; one that runs past POINTS_STALL_SECS restarts the service.
+  const wd = makeLoopWatchdog({ limitMs: CFG.pointsStallSecs * 1000, onStall: ({ stage, idleMs }) => { log(`watchdog: the loop has been in "${stage}" for ${Math.round(idleMs / 60000)} min: restarting the service`); process.exit(1); } });
+  wd.start();
   for (;;) {
     // First, so every scan below can score up to the block each replay reached.
+    wd.stage('tac-transfers');
     if (tacBoost) {
       try {
         await scanTacTransfers(tacBoost, publicClient, { token: ADDR.tacToken, confirmations: CFG.pointsConfirmations, chunk: CFG.pointsScanChunk });
@@ -2126,6 +2132,7 @@ async function main() {
         log('TAC transfer scan cycle failed:', err?.message || err);
       }
     }
+    wd.stage('zshare-transfers');
     if (zShareBoost) {
       try {
         await scanTacTransfers(zShareBoost, publicClient, { token: ADDR.zShareToken, confirmations: CFG.pointsConfirmations, chunk: CFG.pointsScanChunk });
@@ -2135,21 +2142,25 @@ async function main() {
     }
     // Runs before scanCycle so any Privacy Pools withdrawal that landed this cycle is already cached by the
     // time a same-cycle wrap is scored against it.
+    wd.stage('privacy-pool');
     try {
       await ran('pp', () => scanPrivacyPoolCycle(store));
     } catch (err) {
       log('privacy pool scan cycle failed:', err?.message || err);
     }
+    wd.stage('collateral-engine');
     try {
       await ran('ce', () => scanCollateralEngineCycle(store));
     } catch (err) {
       log('collateral engine scan cycle failed:', err?.message || err);
     }
+    wd.stage('pm');
     try {
       await ran('pm', () => scanPmCycle(store));
     } catch (err) {
       log('PM scan cycle failed:', err?.message || err);
     }
+    wd.stage('weiname');
     if (CFG.weinameEnabled) {
       try {
         await ran('weiname', () => scanWeinameCycle(store));
@@ -2157,6 +2168,7 @@ async function main() {
         log('weiname scan cycle failed:', err?.message || err);
       }
     }
+    wd.stage('zrouter');
     for (const chain of ZROUTER_CHAINS) {
       try {
         await scanZRouterCycle(store, chain);
@@ -2164,6 +2176,7 @@ async function main() {
         log(`zRouter scan cycle failed (chain ${chain.chainId}):`, err?.message || err);
       }
     }
+    wd.stage('evm-pools');
     for (const chain of ZROUTER_CHAINS) {
       const ctx = evmPoolCtx(store, evmState, chain);
       try {
@@ -2177,25 +2190,32 @@ async function main() {
         log(`EVM pool box resolution failed (chain ${chain.chainId}):`, err?.message || err);
       }
     }
+    wd.stage('scan');
     try {
       await scanCycle(store);
     } catch (err) {
       log('scan cycle failed:', err?.message || err);
     }
+    wd.stage('snapshots');
     try {
       await snapshotPools(store);
     } catch (err) {
       log('pool snapshot cycle failed:', err?.message || err);
     }
+    wd.stage('tasks');
     if (tasks) await tasks.cycle();
+    wd.stage('settle');
     try {
       await settleCycle(store, () => scannersCoveredThrough(store, evmState));
     } catch (err) {
       log('settle cycle failed:', err?.message || err);
     }
+    wd.stage('campaigns');
     // After the regular settlement, which comes first: the campaign's own scan and credits can wait a cycle, the daily pot cannot.
     for (const c of lpCampaigns()) { try { await c.cycle(); } catch (err) { log(`${c === tokpool ? "token pools' campaign" : c === mine ? 'proof mining' : c.name ? `virtual farm "${c.name}"` : 'liquidity campaign'} cycle failed:`, err?.message || err); } }
+    wd.stage('holding');
     if (holding) { try { await holding.cycle(); } catch (err) { log('holding cycle failed:', err?.message || err); } }
+    wd.stage('sleep');
     await new Promise((r) => setTimeout(r, CFG.pointsPollSecs * 1000));
   }
 }
