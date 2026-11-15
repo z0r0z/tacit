@@ -205,6 +205,8 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
   // of those leaves as the feed gave them, and the indexes of those that opened. A load whose feed begins with the same leaves tries only
   // what came after and opens the kept notes again to read them under the wallet in hand; if the feed differs, a kept note no longer opens,
   // or the record is not what was written, it reads from the start as before.
+  // one entry per wallet object: its memo, and the record's restore into it, which every read of that wallet waits for (a second read made while the first is still opening
+  // the kept notes must not read the whole feed)
   const scanned = new WeakMap();
   const walletTag = async (w) => {
     if (!w || !w.network || !w.V || !w.A || !w.N || (w.vInt != null && !w.VInt)) return null;
@@ -219,8 +221,15 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
       const k = await walletTag(wallet), rec = k && keptRead().find((e) => e && e.k === k);
       if (!rec || !Number.isInteger(rec.n) || rec.n < 1 || rec.n > feed.length || !Array.isArray(rec.mine) || typeof rec.d !== 'string') return;
       if (!rec.mine.every((i) => Number.isInteger(i) && i >= 0 && i < rec.n) || !contiguous(feed, rec.n) || await feedDigest(feed, rec.n) !== rec.d) return;
+      // opening a note is most of what it costs to hold one (about 40 ms: its keys, its leaf and its nullifier), so the thread is handed back between them
       const opened = new Map();
-      for (const i of rec.mine) { const x = pool.scan(wallet, [feed[i]])[0]; if (!x) return; opened.set(i, x); }
+      let at = Date.now();
+      for (const i of rec.mine) {
+        const x = pool.scan(wallet, [feed[i]])[0];
+        if (!x) return;
+        opened.set(i, x);
+        if (Date.now() - at > 12) { await new Promise((r) => setTimeout(r, 0)); at = Date.now(); }
+      }
       for (let i = 0; i < rec.n; i++) memo.set(i, { leaf: feed[i].leaf, x: opened.get(i) || null });
     } catch { memo.clear(); }
   }
@@ -236,8 +245,10 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
     } catch { /* not kept: the next load reads from the start */ }
   }
   async function scanMine(pool, wallet, feed) {
-    let memo = scanned.get(wallet);
-    if (!memo) { scanned.set(wallet, (memo = new Map())); await restoreScan(pool, wallet, feed, memo); }
+    let entry = scanned.get(wallet);
+    if (!entry) { const m = new Map(); scanned.set(wallet, (entry = { memo: m, ready: restoreScan(pool, wallet, feed, m) })); }
+    await entry.ready;
+    const memo = entry.memo;
     const todo = feed.filter((f) => memo.get(f.leafIndex)?.leaf !== f.leaf);
     for (let i = 0; i < todo.length; i += 16) {
       if (i) await new Promise((r) => setTimeout(r, 0));

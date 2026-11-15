@@ -190,6 +190,29 @@ await test('only the six wallets read last are kept', async () => {
   assert.equal(twice.c.tried, 1, 'her record is there now: only her one note (leaf 0) is opened');
 });
 
+await test('two reads of one wallet made together open the kept notes once and read nothing else', async () => {
+  const store = mem();
+  await read(store, alice(), grown);
+  const c = counted(), client = makePoolClient({ store }), w = alice();
+  const [a, b] = await Promise.all([client.scanMine(c.pool, w, grown), client.scanMine(c.pool, w, grown)]);
+  assert.equal(c.tried, bare.notes.length, 'one open for each kept note, nothing tried twice, no leaf read');
+  assert.equal(json(a), json(bare.notes));
+  assert.equal(json(b), json(bare.notes));
+});
+
+await test('opening the kept notes hands the thread back between them', async () => {
+  const store = mem();
+  await read(store, alice(), grown);
+  const c = counted();
+  const slow = { ...c.pool, scan: (w, b) => { const t0 = Date.now(); while (Date.now() - t0 < 15); return c.pool.scan(w, b); } };      // each open takes longer than a slice
+  let yields = 0; const real = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...a) => { if (!ms) yields++; return real(fn, ms, ...a); };
+  let notes;
+  try { notes = await makePoolClient({ store }).scanMine(slow, alice(), grown); } finally { globalThis.setTimeout = real; }
+  assert.equal(json(notes), json(bare.notes));
+  assert.ok(yields >= bare.notes.length - 1, `the thread was handed back between the ${bare.notes.length} opens (${yields} times)`);
+});
+
 await test('an empty feed reads nothing and keeps nothing', async () => {
   const store = mem();
   const r = await read(store, alice(), []);
