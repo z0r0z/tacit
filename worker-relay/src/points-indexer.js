@@ -31,6 +31,7 @@ import { createTokPool } from './lib/points-tokpool-service.js';
 import { parseTokPools } from './lib/points-tokpool.js';
 import { createMine } from './lib/points-mine-service.js';
 import { makeLoopWatchdog } from './lib/loop-watchdog.js';
+import { makeStageRunner } from './lib/stage-runner.js';
 import { parseLpSchedule, parseLpPools, parseLpSettings, parseLpFarms } from './lib/points-lp.js';
 import { checkJob, stepChain } from './lib/points-tasks.js';
 import { quoteTacForEth } from './lib/tac-quote.js';
@@ -2130,12 +2131,15 @@ async function main() {
   // (it went quiet for an hour on 2026-11-14 and a day's payout waited). Each stage says it has begun; one that runs past POINTS_STALL_SECS restarts the service.
   const wd = makeLoopWatchdog({ limitMs: CFG.pointsStallSecs * 1000, warnMs: 5 * 60_000, onSlow: ({ stage, idleMs }) => log(`watchdog: the loop has been in "${stage}" for ${Math.round(idleMs / 60000)} min`), onStall: ({ stage, idleMs }) => { log(`watchdog: the loop has been in "${stage}" for ${Math.round(idleMs / 60000)} min: restarting the service`); process.exit(1); } });
   wd.start();
+  // Each stage below runs through `stage`: one that is still running after POINTS_STAGE_BUDGET_SECS is left to finish and the loop goes on (its next turn is skipped until it
+  // ends), so a scanner stuck on a hung call cannot hold the others, the daily settlement or any campaign's payout back (lib/stage-runner.js).
+  const stage = makeStageRunner({ budgetMs: CFG.pointsStageBudgetSecs * 1000, log });
   for (;;) {
     // First, so every scan below can score up to the block each replay reached.
     wd.stage('tac-transfers');
     if (tacBoost) {
       try {
-        await scanTacTransfers(tacBoost, publicClient, { token: ADDR.tacToken, confirmations: CFG.pointsConfirmations, chunk: CFG.pointsScanChunk });
+        await stage('tac-transfers', () => scanTacTransfers(tacBoost, publicClient, { token: ADDR.tacToken, confirmations: CFG.pointsConfirmations, chunk: CFG.pointsScanChunk }));
       } catch (err) {
         log('TAC transfer scan cycle failed:', err?.message || err);
       }
@@ -2143,7 +2147,7 @@ async function main() {
     wd.stage('zshare-transfers');
     if (zShareBoost) {
       try {
-        await scanTacTransfers(zShareBoost, publicClient, { token: ADDR.zShareToken, confirmations: CFG.pointsConfirmations, chunk: CFG.pointsScanChunk });
+        await stage('zshare-transfers', () => scanTacTransfers(zShareBoost, publicClient, { token: ADDR.zShareToken, confirmations: CFG.pointsConfirmations, chunk: CFG.pointsScanChunk }));
       } catch (err) {
         log('Z-share transfer scan cycle failed:', err?.message || err);
       }
@@ -2152,26 +2156,26 @@ async function main() {
     // time a same-cycle wrap is scored against it.
     wd.stage('privacy-pool');
     try {
-      await ran('pp', () => scanPrivacyPoolCycle(store));
+      await stage('privacy-pool', () => ran('pp', () => scanPrivacyPoolCycle(store)));
     } catch (err) {
       log('privacy pool scan cycle failed:', err?.message || err);
     }
     wd.stage('collateral-engine');
     try {
-      await ran('ce', () => scanCollateralEngineCycle(store));
+      await stage('collateral-engine', () => ran('ce', () => scanCollateralEngineCycle(store)));
     } catch (err) {
       log('collateral engine scan cycle failed:', err?.message || err);
     }
     wd.stage('pm');
     try {
-      await ran('pm', () => scanPmCycle(store));
+      await stage('pm', () => ran('pm', () => scanPmCycle(store)));
     } catch (err) {
       log('PM scan cycle failed:', err?.message || err);
     }
     wd.stage('weiname');
     if (CFG.weinameEnabled) {
       try {
-        await ran('weiname', () => scanWeinameCycle(store));
+        await stage('weiname', () => ran('weiname', () => scanWeinameCycle(store)));
       } catch (err) {
         log('weiname scan cycle failed:', err?.message || err);
       }
@@ -2183,12 +2187,14 @@ async function main() {
         // 2,000 blocks and a cycle takes minutes) and held the day's settlement back with it. A log-only chain reads up to ZROUTER_LOG_MAX_CHUNKS chunks a cycle
         // while its cursor moves, for at most ZROUTER_LOG_BUDGET_SECS; Ethereum's block-by-block scan keeps its one small chunk.
         const chunks = chain.signal1 ? 1 : Math.max(1, CFG.zrouterLogMaxChunks), t0 = Date.now();
-        for (let i = 0; i < chunks; i++) {
-          const before = store.loadZrouterCursor(chain.chainId);
-          await scanZRouterCycle(store, chain);
-          const after = store.loadZrouterCursor(chain.chainId);
-          if (after == null || after === before || Date.now() - t0 > CFG.zrouterLogBudgetSecs * 1000) break;   // caught up, or nothing moved (a refusal, a throttle): next cycle
-        }
+        await stage(`zrouter-${chain.chainId}`, async () => {
+          for (let i = 0; i < chunks; i++) {
+            const before = store.loadZrouterCursor(chain.chainId);
+            await scanZRouterCycle(store, chain);
+            const after = store.loadZrouterCursor(chain.chainId);
+            if (after == null || after === before || Date.now() - t0 > CFG.zrouterLogBudgetSecs * 1000) break;   // caught up, or nothing moved (a refusal, a throttle): next cycle
+          }
+        });
       } catch (err) {
         log(`zRouter scan cycle failed (chain ${chain.chainId}):`, err?.message || err);
       }
@@ -2197,41 +2203,41 @@ async function main() {
     for (const chain of ZROUTER_CHAINS) {
       const ctx = evmPoolCtx(store, evmState, chain);
       try {
-        await scanEvmPoolChain(ctx);
+        await stage(`evm-pool-${chain.chainId}`, () => scanEvmPoolChain(ctx));
       } catch (err) {
         log(`EVM pool scan cycle failed (chain ${chain.chainId}):`, err?.message || err);
       }
       try {
-        await resolvePendingBoxes(ctx);
+        await stage(`evm-pool-boxes-${chain.chainId}`, () => resolvePendingBoxes(ctx));
       } catch (err) {
         log(`EVM pool box resolution failed (chain ${chain.chainId}):`, err?.message || err);
       }
     }
     wd.stage('scan');
     try {
-      await scanCycle(store);
+      await stage('scan', () => scanCycle(store));
     } catch (err) {
       log('scan cycle failed:', err?.message || err);
     }
     wd.stage('snapshots');
     try {
-      await snapshotPools(store);
+      await stage('snapshots', () => snapshotPools(store));
     } catch (err) {
       log('pool snapshot cycle failed:', err?.message || err);
     }
     wd.stage('tasks');
-    if (tasks) await tasks.cycle();
+    if (tasks) await stage('tasks', () => tasks.cycle());
     wd.stage('settle');
     try {
-      await settleCycle(store, () => scannersCoveredThrough(store, evmState));
+      await stage('settle', () => settleCycle(store, () => scannersCoveredThrough(store, evmState)));
     } catch (err) {
       log('settle cycle failed:', err?.message || err);
     }
     wd.stage('campaigns');
     // After the regular settlement, which comes first: the campaign's own scan and credits can wait a cycle, the daily pot cannot.
-    for (const c of lpCampaigns()) { try { await c.cycle(); } catch (err) { log(`${c === tokpool ? "token pools' campaign" : c === mine ? 'proof mining' : c.name ? `virtual farm "${c.name}"` : 'liquidity campaign'} cycle failed:`, err?.message || err); } }
+    for (const c of lpCampaigns()) { try { await stage(`campaign-${c === tokpool ? 'tokpool' : c === mine ? 'mine' : c.name ? `farm-${c.name}` : 'lp'}`, () => c.cycle()); } catch (err) { log(`${c === tokpool ? "token pools' campaign" : c === mine ? 'proof mining' : c.name ? `virtual farm "${c.name}"` : 'liquidity campaign'} cycle failed:`, err?.message || err); } }
     wd.stage('holding');
-    if (holding) { try { await holding.cycle(); } catch (err) { log('holding cycle failed:', err?.message || err); } }
+    if (holding) { try { await stage('holding', () => holding.cycle()); } catch (err) { log('holding cycle failed:', err?.message || err); } }
     wd.stage('sleep');
     await new Promise((r) => setTimeout(r, CFG.pointsPollSecs * 1000));
   }
