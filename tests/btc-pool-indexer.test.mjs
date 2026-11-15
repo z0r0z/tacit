@@ -1420,21 +1420,25 @@ test('dapp validateOutpoint: T_CXFER_BOUND is a note while the pool has not spen
   const etch = etchTx(9n, rE);
   const dep = CONFIDENTIAL_DEPLOYMENTS.signet;
   const binding = keccak(hexToBytes(BigInt(dep.chainId).toString(16).padStart(64, '0') + dep.pool.replace(/^0x/, '').toLowerCase()));
-  const boundOf = (ins, outs, { forge = false, target = binding } = {}) => {
+  // `taproot` false: the outputs are at addresses with no Taproot key (a bridged token's notes held at P2WPKH, which the fast lane cannot spend)
+  const boundOf = (ins, outs, { forge = false, target = binding, taproot = true } = {}) => {
     const Cs = outs.map((o) => compress(pedersen(o.value, o.r)));
     const { proof } = bpRangeAggProve(outs.map((o) => o.value), outs.map((o) => o.r));
     const msg = tacit.computeKernelMsg(etch.asset, ins.map((i) => i.outpoint), Cs, 0n);
     const d = outs.reduce((a, o) => a + o.r, 0n) - ins.reduce((a, i) => a + i.r, 0n);
     const cx = tacit.encodeCXferPayload({ assetId: etch.asset, kernelSig: schnorrSign(msg, forge ? scalar('bf') : d), outputs: Cs.map((commitment) => ({ commitment, encryptedAmount: noAmount })), rangeproof: proof });
     const payload = concat(Uint8Array.of(0x39), target, cx.subarray(1));
-    return carrier(payload, { inputs: ins.map((i) => i.outpoint), outputs: outs.map((_, k) => ({ spk: Uint8Array.of(0x51, k) })) });
+    return carrier(payload, { inputs: ins.map((i) => i.outpoint), outputs: outs.map((_, k) => ({ spk: taproot ? Uint8Array.of(0x51, 0x20, ...new Uint8Array(32).fill(0x40 + k)) : Uint8Array.of(0x51, k) })) });
   };
   const ins = [{ outpoint: { txid: etch.txid, vout: 0 }, value: 9n, r: rE }];
   const good = boundOf(ins, [{ value: 4n, r: r1 }, { value: 5n, r: r2 }]);
   const forged = boundOf(ins, [{ value: 900n, r: r1 }], { forge: true });
   const elsewhere = boundOf(ins, [{ value: 9n, r: r1 }], { target: keccak(te('another pool')) });
   const next = cxferTx(etch.asset, [{ outpoint: { txid: good.txid, vout: 1 }, value: 5n, r: r2 }], [{ value: 5n, r: scalar('bnd-3') }]);
-  const f = fetchFrom(etch, good, forged, elsewhere, next);
+  // the same transfer to addresses with no Taproot key, and a CXFER spending one of its outputs
+  const held = boundOf(ins, [{ value: 4n, r: r1 }, { value: 5n, r: r2 }], { taproot: false });
+  const heldNext = cxferTx(etch.asset, [{ outpoint: { txid: held.txid, vout: 1 }, value: 5n, r: r2 }], [{ value: 5n, r: scalar('bnd-4') }]);
+  const f = fetchFrom(etch, good, forged, elsewhere, next, held, heldNext);
   // Ethereum: the pool's nullifier map reads unspent, and the reflection has passed nothing.
   const hook = (url, init) => {
     const body = String(init?.body || '');
@@ -1448,7 +1452,11 @@ test('dapp validateOutpoint: T_CXFER_BOUND is a note while the pool has not spen
     assert.equal((await validate(f, good.txid, 2)).ok, false, 'no third output');
     assert.equal((await validate(f, forged.txid, 0)).ok, false, 'forged kernel');
     assert.deepEqual(await validate(f, elsewhere.txid, 0), { ok: false, reason: 'fetch-failed' }, 'bound to a pool this wallet cannot read: pending');
-    assert.deepEqual(await validate(f, next.txid, 0), { ok: false, reason: 'fetch-failed' }, 'a CXFER spending a bound output waits for the reflection');
+    assert.deepEqual(await validate(f, next.txid, 0), { ok: false, reason: 'fetch-failed' }, 'a CXFER spending a bound Taproot output waits for the reflection');
+    // no Taproot key: no signature can spend it by the fast lane, so it is held like any note, and a spend of it does not wait on the reflection
+    assert.deepEqual(await validate(f, held.txid, 0), { ok: true, reason: undefined }, 'a bound note held at an address with no Taproot key is a note');
+    assert.equal((await validate(f, held.txid, 1)).ok, true);
+    assert.deepEqual(await validate(f, heldNext.txid, 0), { ok: true, reason: undefined }, 'a CXFER spending it does not wait for the reflection');
   });
   const env = tacit.txOutputEnvelope(espTx(good));
   const pd = await tacit.getParentEnvelopeData(env, 1, good.txid);
