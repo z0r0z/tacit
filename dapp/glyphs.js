@@ -194,7 +194,8 @@ if (!page || page === 'tac') {   // the front page, and TAC's page (the same doc
   if (card) {
     const stamp = canvasOf('gx-stamp');
     let art = null, shown = '', paint = null;
-    const toSide = () => [...card.querySelectorAll('.swc .f')].find((f) => f.querySelector('.fh > span')?.textContent.trim() === 'To') || null;
+    // the side a move goes into is the one after the arrow between the two ("To", "You earn"); it is stamped when it names an asset
+    const toSide = () => [...card.querySelectorAll('.swc .mid + .f')].find((f) => f.offsetParent && f.querySelector('.coin')) || null;
     const markOf = (f) => { const c = f?.querySelector('.coin'); return c?.querySelector('svg.tk use')?.getAttribute('href') || c?.querySelector('img.tk')?.getAttribute('src') || ''; };
     // a mark's pixels at 192 px, read once for each asset
     const marks = new Map();
@@ -236,8 +237,9 @@ if (!page || page === 'tac') {   // the front page, and TAC's page (the same doc
       x.putImageData(px, 0, 0);
       return c;
     });
-    // right of centre, turned about 22° clockwise, and a quarter taller than the side, so its disc runs off the edge like a stamp that missed the paper
-    const strike = (ctx, w, h) => { if (!paint) return; const d = Math.max(h * 1.275, 133); ctx.translate(w * 0.66, h * 0.5); ctx.rotate(0.38); ctx.drawImage(paint, -d / 2, -d / 2, d, d); };
+    // right of centre, turned about 22° clockwise, and a quarter taller than the side, so its disc runs off the edge like a stamp that missed the paper;
+    // never wider than six tenths of the side, so on a narrow phone it stays clear of the amount
+    const strike = (ctx, w, h) => { if (!paint) return; const d = Math.min(Math.max(h * 1.275, 133), w * 0.6); ctx.translate(w * 0.66, h * 0.5); ctx.rotate(0.38); ctx.drawImage(paint, -d / 2, -d / 2, d, d); };
     const place = () => {
       for (const f of card.querySelectorAll('.swc .f')) {   // the light behind each side
         const key = markOf(f);
