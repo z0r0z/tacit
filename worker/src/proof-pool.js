@@ -51,7 +51,7 @@ export const PROOF_POOL = Object.freeze({
   payFloorSecs: 600,                 // POOL_PAY_FLOOR_SECS
   payFloorPct: 50,                   // POOL_PAY_FLOOR_PCT
   strikesPerDay: 3,
-  lapsesPerDay: 8,                   // POOL_LAPSES_PER_DAY: leases a client may let run out or hand back in a UTC day before it is offered nothing more
+  lapsesPerDay: 4,                   // POOL_LAPSES_PER_DAY: leases a client may let run out or hand back in a UTC day before it is offered nothing more (honest lapses are rare: leases and proofs matched to within five over 38 hours)
   leasesPerClient: 4,                // open leases one client may hold, one per address (a household's few machines)
   turnMs: 30_000,                    // POOL_TURN_MS: a miner counts as asking for this long after it last asked, and a new job is held this long for the one whose turn it is (0: first to ask)
   minerIdleMs: 5 * 60_000,           // POOL_MINER_IDLE_MS: a house prover's wait for the miners holds only while one has asked this recently
@@ -293,13 +293,17 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   const earns = (rec, m) => ((rec.miners[m]?.credited || 0) < cfg.proofsPerMinerDay ? cfg.pointsPerProof : 0);
 
   // Who is asking for work, by (address, client), kept in memory: a miner asks every few seconds, and a restart only means the next
-  // asks fill it again. A new job is held for the asker whose turn for it comes first. A turn is the later of the address's and the
-  // client's draw for the job, so extra addresses from one place, or one address from extra places, bring no earlier turn; the pace
-  // of asking does not matter while it stays inside `turnMs`.
+  // asks fill it again. A new job is held for the asker whose turn for it comes first. A turn belongs to the place (the client): its draw for the
+  // job, and nothing of the address, which anyone may name as often as they like. Every place has the same chance, however many addresses
+  // it asks under or how often it asks (inside `turnMs`); a swarm gains by places and not by wallets. (An earlier rule took the later of the
+  // address's and the place's draw, so a swarm of N addresses over M places held N x M pairs and took the best: 20 x 20 won four jobs in five
+  // against thirty honest askers; by places alone it is about two in five.) Within one place the address with the earlier draw goes first.
   const askers = new Map(), holders = new Map();
   let sweptAt = 0;
-  function noteAsker(m, client, t) {
-    askers.set(`${m}|${client}`, { m, client, at: t });
+  // `lapses`: leases this client has let run out or handed back today. Such a client's turn comes after every other asker's: a place that takes a lease and
+  // sits on it (so the job waits out the whole lease for whoever asks first) must not win the next turn too, and can only pick up what nobody else is asking for.
+  function noteAsker(m, client, t, lapses = 0) {
+    askers.set(`${m}|${client}`, { m, client, at: t, lapses });
     if (t - sweptAt < 1000) return;
     sweptAt = t;
     for (const [k, a] of askers) if (t - a.at > cfg.turnMs) askers.delete(k);
@@ -312,7 +316,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
     let key = null, best = Infinity;
     for (const [k, a] of askers) {
       if (t - a.at > cfg.turnMs || (e.skip || []).includes(a.client)) continue;
-      const v = Math.max(drawOf(e.id, a.m), drawOf(e.id, a.client));
+      const v = drawOf(e.id, a.client) + drawOf(e.id, a.m) / 1e4 + (a.lapses > 0 ? 1 : 0);
       if (v < best || (v === best && k < key)) { best = v; key = k; }
     }
     holders.set(e.id, { at: t, key });
@@ -321,10 +325,13 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
 
   // A job back in the queue at its age, or dropped once it has had its tries (`tried`: a lease that ran out or was handed back,
   // not a proof that failed, which is the miner's fault and not the job's). The miner that had it is not offered it again.
-  async function giveBack(q, id, l, tried) {
+  // `returned`: when it came back. It is held for a fresh turn from then (lease), not offered to whoever asks first because it is old: a job that waited out
+  // a lease would otherwise go to whoever asked in the very second the lease ran out, and the one who sat on it knows that second.
+  async function giveBack(q, id, l, tried, t = null) {
     const tries = (l.tries || 0) + (tried ? 1 : 0), skip = [...new Set([...(l.skip || []), l.client])].slice(-16);
     if (tries >= cfg.maxTries) { await kv.delete(K.job(id)); return; }
-    const e = { id, at: l.at, tries, skip, ...(l.urgent ? { urgent: true } : {}) };
+    holders.delete(id);                       // whom it was held for before is no longer the question
+    const e = { id, at: l.at, tries, skip, ...(t != null ? { returned: t } : {}), ...(l.urgent ? { urgent: true } : {}) };
     const i = q.findIndex((x) => x.at > e.at);
     if (i < 0) q.push(e); else q.splice(i, 0, e);
   }
@@ -343,7 +350,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
     for (const [id, l] of Object.entries(L)) {
       if (l.until > t) continue;
       delete L[id];
-      await giveBack(q, id, l, true);
+      await giveBack(q, id, l, true, t);
       await lapsed(l, t);
       changed = true;
     }
@@ -435,14 +442,14 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       const held = Object.entries(L).filter(([, l]) => l.client === client), open = held.find(([, l]) => l.miner === m);
       if (open) { await save(); return reply(429, { ok: false, code: 'lease_open', id: open[0], error: 'one lease at a time: send its proof (or hand it back) first' }); }
       if (held.length >= cfg.leasesPerClient) { await save(); return reply(429, { ok: false, code: 'lease_open', error: `at most ${cfg.leasesPerClient} leases from one place at a time` }); }
-      if (!house && cfg.turnMs) noteAsker(m, client, t);
+      if (!house && cfg.turnMs) noteAsker(m, client, t, (rec.lapses || {})[client] || 0);
       for (let i = 0; i < q.length;) {
         const e = q[i];
         // the wait for the miners holds for ordinary jobs; one marked urgent is taken at once, and the younger ones behind an unripe job are looked at too
         if (minAge && t - e.at < minAge && !e.urgent) { i++; continue; }
         if ((e.skip || []).includes(client)) { i++; continue; }
         // a miner takes a young job only when it is the one the job is held for; an older one, or any job for Tacit's own prover, goes to whoever asks
-        if (!house && cfg.turnMs && t - e.at < cfg.turnMs && holderOf(e, t) !== `${m}|${client}`) { i++; continue; }
+        if (!house && cfg.turnMs && t - (e.returned ?? e.at) < cfg.turnMs && holderOf(e, t) !== `${m}|${client}`) { i++; continue; }
         q.splice(i, 1);
         changed = true;
         const job = await read(K.job(e.id), null);
@@ -480,7 +487,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   async function refuse(L, id, l, t, strike) {
     const q = await read(K.queue, []);
     delete L[id];
-    await giveBack(q, id, l, false);
+    await giveBack(q, id, l, false, t);
     await write(K.queue, q);
     await write(K.leases, L);
     if (!strike) return;
@@ -504,7 +511,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       if (error != null) {
         const q = await read(K.queue, []);
         delete L[id];
-        await giveBack(q, id, l, true);
+        await giveBack(q, id, l, true, t);
         await write(K.queue, q);
         await write(K.leases, L);
         await lapsed(l, t);
@@ -614,6 +621,8 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       oldestQueuedSecs: q.length ? secs(t - Math.min(...q.map((e) => e.at))) : 0,
       oldestLeaseSecs: live ? secs(Math.max(...Object.values(L).filter((l) => l.until > t).map((l) => t - (l.until - cfg.leaseMs)))) : 0,
       done24h: Math.max(day.done, rec.done), miners24h: Math.max(day.miners, miners.length),
+      // leases let run out or handed back today, and the places that did: a pool whose leases are sat on shows here (honest ones are rare)
+      lapsedToday: Object.values(rec.lapses || {}).reduce((a, n) => a + n, 0), lapsedPlacesToday: Object.keys(rec.lapses || {}).length,
       top: miners.map(([miner, m]) => ({ miner, proofs: m.proofs })).sort((a, b) => b.proofs - a.proofs || (a.miner < b.miner ? -1 : 1)).slice(0, cfg.top),
       // pointsPerProof is the most a proof earns; `pay` says how it falls with the time a proof took (payFor, payFactor)
       terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs,

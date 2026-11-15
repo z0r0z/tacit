@@ -181,24 +181,25 @@ test('opening: an input opens only as the program checks it; one that does not i
   assert.equal(JSON.parse(await h.store.get(`pp:job:${fresh.id}`)).opens, true);
 });
 
-test('turns: a new job is held for the asker whose turn it is, however often or from how many places the others ask; a holder that is gone stops holding it; Tacit\'s own prover is not held', async () => {
+test('turns: a new job is held for the place whose turn it is, however often or under how many addresses the others ask; a holder that is gone stops holding it; Tacit\'s own prover is not held', async () => {
   const T = 30_000, h = harness({ cfg: { turnMs: T } });
   const addr = (i) => '0x' + i.toString(16).padStart(40, '0'), place = (i) => 'place' + i;
   const ask = (i, client = place(i)) => h.pool.lease({ miner: addr(i), client });
   const a = wrapJob(0);
-  const turn = (id, i) => Math.max(drawOf(id, addr(i)), drawOf(id, place(i)));
+  const turn = (id, i) => drawOf(id, place(i));                                                   // a turn belongs to the place
   const ids = Array.from({ length: 60 }, (_, i) => i + 1);
   const X = ids.slice().sort((p, q) => turn(a.id, p) - turn(a.id, q))[0];                       // the earliest turn for this job
-  const Y = ids.slice().sort((p, q) => drawOf(a.id, addr(q)) - drawOf(a.id, addr(p)))[0];       // an address whose own draw is later than X's whole turn
-  assert.ok(drawOf(a.id, addr(Y)) > turn(a.id, X) + 0.2);
+  const Y = ids.slice().sort((p, q) => turn(a.id, q) - turn(a.id, p))[0];                       // a place whose turn is later than X's by a wide margin
+  assert.ok(turn(a.id, Y) > turn(a.id, X) + 0.2);
   assert.equal(drawOf(a.id, addr(X)), drawOf(a.id, addr(X).toUpperCase().replace('0X', '0x')), 'an address is the same address in any case');
 
   await ask(X); await ask(Y);                                    // both are asking before the job comes
   h.t += 1000;
   await h.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'page' });
-  for (let s = 0; s < 20; s++) {                                 // Y asks every second, from five places, and is offered nothing
+  for (let s = 0; s < 20; s++) {                                 // Y asks every second, under five different addresses, and is offered nothing
     h.t += 1000;
-    assert.equal((await ask(Y, `${place(Y)}-${s % 5}`)).status, 204, `second ${s}: it is not Y's turn however often Y asks`);
+    const r = await h.pool.lease({ miner: addr(Y + 100 + (s % 5)), client: place(Y) });
+    assert.equal(r.status, 204, `second ${s}: it is not Y's place's turn however often or under whatever address Y asks`);
   }
   const got = await ask(X);                                      // X, asking only now, takes it
   assert.deepEqual([got.status, got.body.id], [200, a.id]);
@@ -206,7 +207,7 @@ test('turns: a new job is held for the asker whose turn it is, however often or 
   // a holder that asked once and is gone holds a job only until it stops counting as asking
   const b = wrapJob(1);
   const Z = ids.slice().sort((p, q) => turn(b.id, p) - turn(b.id, q))[0];
-  const W = ids.filter((i) => i !== Z && i !== X && i !== Y).sort((p, q) => drawOf(b.id, addr(q)) - drawOf(b.id, addr(p)))[0];
+  const W = ids.filter((i) => i !== Z && i !== X && i !== Y).sort((p, q) => turn(b.id, q) - turn(b.id, p))[0];
   await ask(Z); await ask(W);
   const asked = h.t;
   h.t += 1000;
@@ -225,7 +226,7 @@ test('turns: a new job is held for the asker whose turn it is, however often or 
   h.t += 2 * T;                                                  // the earlier askers have stopped counting
   const d = wrapJob(3);
   const P = ids.slice().sort((p, q) => turn(d.id, p) - turn(d.id, q))[0];
-  const Q = ids.filter((i) => i !== P).sort((p, q) => drawOf(d.id, addr(q)) - drawOf(d.id, addr(p)))[0];
+  const Q = ids.filter((i) => i !== P).sort((p, q) => turn(d.id, q) - turn(d.id, p))[0];
   await ask(P); await ask(Q);
   await h.pool.request({ type: 'wrap', stdin: d.stdin, expect: d.expect, client: 'page4' });
   const first = (await ask(P)).body;
@@ -280,12 +281,12 @@ async function race(turnMs, jobs = 200) {
   waited.sort((x, y) => x - y);
   return { wins, share: (i) => wins[i] / jobs, median: waited[waited.length >> 1], max: waited[waited.length - 1] };
 }
-test('turns: asking fast, or from several places, does not win jobs, and a miner asking every 10 s gets close to its share; no job waits past turnMs', async () => {
+test('turns: asking fast does not win jobs, a place has the same chance however it asks, and a miner asking every 10 s gets close to its share; no job waits past turnMs', async () => {
   const plain = await race(0), turns = await race(PROOF_POOL.turnMs);
   const pct = (x) => (100 * x).toFixed(1) + '%', rest = turns.wins.slice(5);
   console.log(`# first to ask: the fast asker takes ${pct(plain.share(0))}. With turns (fair share 5%): fast asker from three places ${pct(turns.share(0))}, every 5 s ${pct(turns.share(1))}, 10 s ${pct(turns.share(2))}, 20 s ${pct(turns.share(3))}, 30 s ${pct(turns.share(4))}, the fifteen at 4 s average ${pct(rest.reduce((x, y) => x + y, 0) / 15 / 200)}; a job waits ${turns.median} s at the median and ${turns.max} s at most`);
   assert.ok(plain.share(0) > 0.9, 'first to ask takes nearly everything');
-  assert.ok(turns.share(0) < 0.12, `the fast asker takes ${pct(turns.share(0))}`);
+  assert.ok(turns.share(0) < 0.22, `the fast asker, with three places and so three draws, takes ${pct(turns.share(0))} (three places in twenty-two, about 14%)`);
   assert.ok(turns.share(2) > 0.025 && turns.share(1) > 0.035, 'a miner asking every 5 or 10 s gets at least half its share');
   assert.ok(turns.wins.every((n) => n > 0), 'every address wins some');
   assert.ok(rest.every((n) => n / 200 > 0.02 && n / 200 < 0.09), 'the fifteen alike take alike');
@@ -325,7 +326,7 @@ test('lease: the oldest job first, one lease per address on a client and a few o
   const r2 = await h.pool.lease({ miner: '0x' + '55'.repeat(20), client: 'm5' });
   assert.equal(r2.body.id, b.id);
   assert.equal((await h.pool.results([a.id])).body.results[a.id].status, 'gone');
-  assert.deepEqual({ ...(await h.pool.stats()).body, top: undefined, terms: undefined }, { queued: 1, leased: 1, doneToday: 0, minersToday: 0, done24h: 0, miners24h: 0, oldestQueuedSecs: 120, oldestLeaseSecs: 0, top: undefined, terms: undefined });
+  assert.deepEqual({ ...(await h.pool.stats()).body, top: undefined, terms: undefined }, { queued: 1, leased: 1, doneToday: 0, minersToday: 0, done24h: 0, miners24h: 0, oldestQueuedSecs: 120, oldestLeaseSecs: 0, lapsedToday: 4, lapsedPlacesToday: 4, top: undefined, terms: undefined });
 });
 
 test('submit: public values that are not the job\'s are refused before the verifier is asked; ones the verifier refuses are refused after; either is a strike and the job goes back', async () => {
@@ -407,7 +408,7 @@ test('points: each passing proof earns its address the day\'s points up to the c
   assert.deepEqual(third.r.body, { ok: true, points: 0 }, 'past the cap: kept, not credited');
   assert.equal((await prove(MINER2, 'm2')).r.body.points, 20);
   const s = (await h.pool.stats()).body;
-  assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, oldestQueuedSecs: 0, oldestLeaseSecs: 0, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
+  assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, oldestQueuedSecs: 0, oldestLeaseSecs: 0, lapsedToday: 0, lapsedPlacesToday: 0, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
   assert.deepEqual(s.terms, { pointsPerProof: 20, proofsPerMinerDay: 2, leaseMs: PROOF_POOL.leaseMs, pay: { fullSecs: 60, floorSecs: 600, floorPct: 50 } });
   assert.equal(JSON.stringify(s).includes(jobs[0].stdin.slice(2, 40)), false, 'no inputs');
   let c = (await h.pool.credits(DAY0)).body;
@@ -655,6 +656,102 @@ test('leases a client lets run out or hands back count against it for the day; T
   // the house hands back as often as it needs
   for (let i = 0; i < 4; i++) { const x = (await h.pool.lease({ house: 'gpu', client: 'h' })).body; if (!x?.lease) break; await h.pool.submit({ id: x.id, lease: x.lease, error: 'busy' }); }
   assert.notEqual((await h.pool.lease({ house: 'gpu', client: 'h' })).status, 403);
+});
+
+// A turn for a job is its place's draw. Holding a lease without proving it makes the job wait out the whole lease (45 minutes),
+// and a job that old used to go to whoever asked first, in the very second the lease ran out, which the one that sat on it knows: it could then have it for itself.
+const turnRig = (cfg = {}) => {
+  const T = 30_000, h = harness({ cfg: { turnMs: T, ...cfg } });
+  const addr = (i) => '0x' + i.toString(16).padStart(40, '0'), place = (i) => 'place' + i;
+  const ask = (i, client = place(i)) => h.pool.lease({ miner: addr(i), client });
+  const ids = Array.from({ length: 60 }, (_, i) => i + 1);
+  const order = (job) => ids.slice().sort((p, q) => drawOf(job.id, place(p)) - drawOf(job.id, place(q)));
+  return { T, h, addr, place, ask, ids, order };
+};
+
+// Thirty honest askers (one address, one place each) and a swarm that asks under every (wallet, place) pair it has. Each job is posted with everyone asking; whoever
+// is offered it proves it at once. The share the swarm takes is what the turn rule gives it.
+async function swarmShare(wallets, places, jobs = 120) {
+  const h = harness({ cfg: { turnMs: PROOF_POOL.turnMs } });
+  const hex = (n) => '0x' + n.toString(16).padStart(40, '0');
+  const askers = Array.from({ length: 30 }, (_, i) => ({ miner: hex(i + 1), client: `honest${i}`, swarm: false }));
+  for (let w = 0; w < wallets; w++) for (let p = 0; p < places; p++) askers.push({ miner: hex(1000 + w), client: `swarm${p}`, swarm: true });
+  let won = 0;
+  for (let j = 0; j < jobs; j++) {
+    h.t += 2000;
+    for (const a of askers) await h.pool.lease({ miner: a.miner, client: a.client });
+    const w = wrapJob(300 + j);
+    await h.pool.request({ type: 'wrap', stdin: w.stdin, expect: w.expect, client: `page${j}` });
+    h.t += 1000;
+    let took = null;
+    for (const a of askers) { const r = await h.pool.lease({ miner: a.miner, client: a.client }); if (r.status === 200) { took = { a, body: r.body }; break; } }
+    assert.ok(took, 'every job is taken');
+    if (took.a.swarm) won++;
+    await h.pool.submit({ id: took.body.id, lease: took.body.lease, publicValues: pvFor(w.expect), proof: PROOF });
+  }
+  return won / jobs;
+}
+test('turns: wallets add no turns, a swarm gains only by places (equally for every place), and the same swarm held to the older pair rule would have taken most jobs', async () => {
+  const one = await swarmShare(1, 1), wallets = await swarmShare(10, 1), places = await swarmShare(1, 10), grid = await swarmShare(10, 10);
+  const pct = (x) => (100 * x).toFixed(0) + '%';
+  console.log(`# against 30 honest places: 1 wallet at 1 place ${pct(one)} (fair 3%), 10 wallets at 1 place ${pct(wallets)}, 1 wallet at 10 places ${pct(places)}, 10 wallets x 10 places ${pct(grid)} (ten places in forty, 25%; the old pair rule gave this swarm about 60%)`);
+  assert.ok(wallets < 0.1, `ten wallets at one place take ${pct(wallets)}: one place has one turn`);
+  assert.ok(grid < 0.4, `ten wallets over ten places take ${pct(grid)}: ten places, and the wallets add nothing`);
+  assert.ok(Math.abs(grid - places) < 0.15, `the wallets change nothing: ${pct(grid)} with ten, ${pct(places)} with one`);
+  assert.ok(places > one * 2, `ten places do take more than one (${pct(places)} against ${pct(one)}): a place is the scarce thing`);
+});
+
+test('turns: a lease that runs out puts its job back for a fresh turn, not for whoever asks first; the place that sat on it is not the one it is held for', async () => {
+  const { T, h, ask, order } = turnRig();
+  const a = wrapJob(0);
+  const o = order(a), X = o[0], Z = o[1], W = o[o.length - 1];          // X sits on the lease; Z has the next best turn; W the worst
+  await ask(X); await ask(Z); await ask(W);
+  h.t += 1000;
+  await h.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'page' });
+  h.t += 1000;
+  const first = await ask(X);
+  assert.deepEqual([first.status, first.body.id], [200, a.id], 'X, whose turn it is, takes the job and sits on it');
+  h.t += PROOF_POOL.leaseMs - 5000;
+  await ask(Z); await ask(W);                                           // both are asking as the lease runs out
+  h.t += 5000;                                                          // the second it ends
+  assert.equal((await ask(W)).status, 204, 'W, asking in that very second, is not given the job: it is old, but it goes by turn again');
+  const got = await ask(Z);
+  assert.deepEqual([got.status, got.body.id], [200, a.id], 'Z, whose turn it is, has it');
+  assert.equal((await ask(X)).status, 204, 'and X, which sat on it, is not offered it again');
+  assert.equal((await h.pool.stats()).body.lapsedToday, 1);
+});
+
+test('turns: a place that let a lease run out is last in line for the rest of the day, and picks up only what nobody else is asking for', async () => {
+  const { T, h, ask, order, ids } = turnRig({ lapsesPerDay: 4 });
+  const j0 = wrapJob(20), d = wrapJob(21), e = wrapJob(22);
+  const o = order(d), P = o[0], Q = o[1], R = ids.filter((i) => i !== P && i !== Q)[0];    // P has the earliest turn for d, Q the next
+  // P takes a job and hands it back; R takes it from there and proves it
+  await ask(P);
+  await h.pool.request({ type: 'wrap', stdin: j0.stdin, expect: j0.expect, client: 'pageA' });
+  h.t += 1000;
+  const l0 = (await ask(P)).body;
+  assert.equal(l0.id, j0.id);
+  await h.pool.submit({ id: l0.id, lease: l0.lease, error: 'cannot' });
+  const r0 = await ask(R);
+  assert.equal(r0.status, 200);
+  assert.equal((await h.pool.submit({ id: r0.body.id, lease: r0.body.lease, publicValues: pvFor(j0.expect), proof: PROOF })).status, 200);
+  const st = (await h.pool.stats()).body;
+  assert.deepEqual([st.lapsedToday, st.lapsedPlacesToday], [1, 1], 'one lapse, from one place');
+  // for d, P's own draw is the earlier, but P let a lease run out today: Q is the one it is held for
+  h.t += 2 * T;
+  await ask(P); await ask(Q);
+  await h.pool.request({ type: 'wrap', stdin: d.stdin, expect: d.expect, client: 'pageB' });
+  h.t += 1000;
+  assert.equal((await ask(P)).status, 204, 'P is behind every place that has kept its leases');
+  const q = await ask(Q);
+  assert.deepEqual([q.status, q.body.id], [200, d.id], 'Q has it, though its draw was later');
+  // with nobody else asking, P still gets what is there: it is behind the others, not shut out
+  h.t += 2 * T;
+  await ask(P);
+  await h.pool.request({ type: 'wrap', stdin: e.stdin, expect: e.expect, client: 'pageC' });
+  h.t += 1000;
+  const p = await ask(P);
+  assert.deepEqual([p.status, p.body.id], [200, e.id], 'alone, P takes the next job');
 });
 
 test('pay: a proof earns in full within a minute and less the longer it took, down to half at ten minutes, so a laptop still earns', () => {
