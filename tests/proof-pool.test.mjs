@@ -12,7 +12,7 @@ import * as secp from '@noble/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
-import { makeProofPool, payFactor, payFor, drawOf, readWrapStdin, wrapExpect, wrapOpens, proofFits, verifyCalldata, proofPoolConfig, clientOf, PROOF_POOL } from '../worker/src/proof-pool.js';
+import { makeProofPool, buildProofPool, payFactor, payFor, drawOf, readWrapStdin, wrapExpect, wrapOpens, proofFits, verifyCalldata, proofPoolConfig, clientOf, PROOF_POOL } from '../worker/src/proof-pool.js';
 import { stdinFor } from '../dapp/sp1-stdin.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import worker, { ethCallVerdict, simulateSettle } from '../worker/src/index.js';
@@ -773,6 +773,28 @@ test('turns: wallets add no turns, and one address holds at most three tickets h
   assert.ok(grid > many + 0.1, `spread over ten addresses the same IPs do count (${pct(grid)} against ${pct(many)}): the cap makes a swarm split across addresses; it cannot stop one that does`);
 });
 
+
+// The route builds the pool afresh for every request. A turn rule whose record of who is asking lives inside the pool then holds nothing: each request sees only its own
+// asker, who is always the one whose turn it is, and the first to poll wins everything. This is the shape of production, with the real clock: one call, one pool.
+test('turns hold across requests: the pool is built afresh for each one, so who is asking must outlive it', async () => {
+  const env = { REGISTRY_KV: kv() };                             // default turnMs: 30 s
+  const fresh = () => buildProofPool(env, { verify: async () => ({ ok: true }) });
+  const addr = (i) => '0x' + i.toString(16).padStart(40, '0'), place = (i) => 'place' + i;
+  const ask = (i) => fresh().lease({ miner: addr(i), client: place(i) });
+  const a = wrapJob(80);
+  const ids = Array.from({ length: 40 }, (_, i) => i + 1), turn = (job, i) => drawOf(job.id, place(i));
+  const X = ids.slice().sort((p, q) => turn(a, p) - turn(a, q))[0], Y = ids.slice().sort((p, q) => turn(a, q) - turn(a, p))[0];
+  await ask(X); await ask(Y);                                    // both are asking, each in a request of its own
+  assert.equal((await fresh().request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'page' })).status, 200);
+  for (let s = 0; s < 5; s++) assert.equal((await ask(Y)).status, 204, `ask ${s}: the job is held for X, not for the first to ask`);
+  const got = await ask(X);
+  assert.deepEqual([got.status, got.body.id], [200, a.id], 'X, whose turn it is, has it');
+  const seen = (await fresh().stats()).body.askers;
+  assert.ok(seen.places >= 1 && seen.addresses >= 1, `the registry is what every request sees: ${JSON.stringify(seen)}`);
+  // another KV is another pool: its askers are its own
+  const other = (await buildProofPool({ REGISTRY_KV: kv() }, { verify: async () => ({ ok: true }) }).stats()).body.askers;
+  assert.deepEqual([other.places, other.addresses], [0, 0]);
+});
 
 test('stats show who is asking: places and addresses registered, the tickets they count for under the per-address cap, and the addresses with the most places', async () => {
   const h = harness({ cfg: { turnMs: 30_000 } });

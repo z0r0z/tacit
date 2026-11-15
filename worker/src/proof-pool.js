@@ -283,7 +283,7 @@ const same = (a, b) => {
 // verify({ publicValues, proof }) → { ok } when the verifier takes the proof, { reverted, definite } when it refuses it, and
 // neither when it could not be asked (index.js ethCallVerdict).
 // Every call answers { status, body }; 204 has no body.
-export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random } = {}) {
+export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random, registry } = {}) {
   if (!kv) throw new Error('proof-pool: kv is required');
   if (typeof verify !== 'function') throw new Error('proof-pool: verify is required');
   const clock = now || (() => Date.now());
@@ -302,14 +302,16 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   // it asks under or how often it asks (inside `turnMs`); a swarm gains by places and not by wallets. (An earlier rule took the later of the
   // address's and the place's draw, so a swarm of N addresses over M places held N x M pairs and took the best: 20 x 20 won four jobs in five
   // against thirty honest askers; by places alone it is about two in five.) Within one place the address with the earlier draw goes first.
-  const askers = new Map(), holders = new Map();
-  let sweptAt = 0;
+  // `registry` is where they are kept: the route builds a pool afresh for every request, so a registry made inside one would hold only the asker of that request, who
+  // would always be the one whose turn it is (that is how the turn rule went unused in production from 11-14 until it was found: the tests reuse one pool). buildProofPool
+  // gives every pool on a KV the same registry.
+  const reg = registry || { askers: new Map(), holders: new Map(), sweptAt: 0 }, askers = reg.askers, holders = reg.holders;
   // `lapses`: leases this client has let run out or handed back today. Such a client's turn comes after every other asker's: a place that takes a lease and
   // sits on it (so the job waits out the whole lease for whoever asks first) must not win the next turn too, and can only pick up what nobody else is asking for.
   function noteAsker(m, client, t, lapses = 0) {
     askers.set(`${m}|${client}`, { m, client, at: t, lapses });
-    if (t - sweptAt < 1000) return;
-    sweptAt = t;
+    if (t - reg.sweptAt < 1000) return;
+    reg.sweptAt = t;
     for (const [k, a] of askers) if (t - a.at > cfg.turnMs) askers.delete(k);
     for (const [id, h] of holders) if (t - h.at > 60_000) holders.delete(id);
   }
@@ -710,10 +712,11 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
   return { request, lease, hold, submit, results, stats, credits, minedBy, recent };
 }
 
-const kvLocks = new WeakMap();
+const kvLocks = new WeakMap(), kvRegistries = new WeakMap();
 export function buildProofPool(env, { verify } = {}) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv) return null;
   if (!kvLocks.has(kv)) kvLocks.set(kv, makeLock());
-  return makeProofPool({ kv, cfg: proofPoolConfig(env), verify, lock: kvLocks.get(kv) });
+  if (!kvRegistries.has(kv)) kvRegistries.set(kv, { askers: new Map(), holders: new Map(), sweptAt: 0 });
+  return makeProofPool({ kv, cfg: proofPoolConfig(env), verify, lock: kvLocks.get(kv), registry: kvRegistries.get(kv) });
 }
