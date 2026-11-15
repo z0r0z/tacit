@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OJGDyPDKufuI+YpXS5HYyEOYA9zQ9Jixc32XZHgaNIc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0Pu49BU0n4aKTGvTMzQIztgp6jbwJl0JzgezBcptAds=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -14923,7 +14923,7 @@ async function xoReview(a, units, pub) {
   const stop = limit || (units + size > held ? feeRoom(units, size, held, P.scan?.[a.k].notes, (v) => `${fmt(v, xdec(a), 6)} ${a.ticker}`) || overBalance() : '') || (pf.problems[0] ? xoProblemText() : '') || null;
   return { fee, size, pf, stop };
 }
-async function hxBridgeOutGo(a, units) {
+async function hxBridgeOutGo(a, units, lead = '') {
   if (!S.key) return openSheet('wallet');
   const pub = S.key.pubHex, key = `${a.key}|${pub}|${units}`, amtText = `${fmt(units, xdec(a), a.dp)} ${a.ticker}`;
   return hxSendRun(async (run) => {
@@ -14937,7 +14937,7 @@ async function hxBridgeOutGo(a, units) {
       if (!sure) {
         HX.xoSure = { key, at: Date.now() };
         const warns = pf.warnings.filter((w) => w.name !== 'funding').map((w) => xoWarn(w, pf.reflection?.lagBlocks || 0)).filter(Boolean);
-        say(st, pf.relay?.ready ? html`${XO_RELAY_NOTE(pf)}${warns.map((w) => html` ${w}`)} A bridge can’t be undone once it is burned on Ethereum. Press again to bridge ${amtText}.` : html`The Bitcoin step is sent hours from now and costs about ${pf.estSats.toLocaleString('en-US')} sats from ${viewAddr(pf.address, 6)}.${pf.warnings.some((w) => w.name === 'funding') ? html` ${xoFundingText(pf)} Send bitcoin to it from any wallet or exchange: ${addrLine(pf.address)}` : html` Keep about ${pf.needSats.toLocaleString('en-US')} sats on it until then.`}${warns.map((w) => html` ${w}`)} A bridge can’t be undone once it is burned on Ethereum. Press again to bridge ${amtText}.`);
+        say(st, pf.relay?.ready ? html`${lead}${XO_RELAY_NOTE(pf)}${warns.map((w) => html` ${w}`)} A bridge can’t be undone once it is burned on Ethereum. Press again to bridge ${amtText}.` : html`${lead}The Bitcoin step is sent hours from now and costs about ${pf.estSats.toLocaleString('en-US')} sats from ${viewAddr(pf.address, 6)}.${pf.warnings.some((w) => w.name === 'funding') ? html` ${xoFundingText(pf)} Send bitcoin to it from any wallet or exchange: ${addrLine(pf.address)}` : html` Keep about ${pf.needSats.toLocaleString('en-US')} sats on it until then.`}${warns.map((w) => html` ${w}`)} A bridge can’t be undone once it is burned on Ethereum. Press again to bridge ${amtText}.`);
         return;
       }
       HX.xoSure = null;
@@ -15112,8 +15112,9 @@ async function hxBridgeSplit(run, st, pub, n) {
 }
 async function hxBridgeWrapGo(units) {
   if (!S.key) return openSheet('wallet');
-  const wei = units * E10, key = `wrap|${S.key.pubHex}|${units}`;
-  return hxSendRun(async (run) => {
+  const wei = units * E10, key = `wrap|${S.key.pubHex}|${units}`, amt = HX.amt;
+  let job = null;
+  await hxSendRun(async (run) => {
     const st = HX.ss;
     PROVE_AT.el = st;
     try {
@@ -15128,20 +15129,25 @@ async function hxBridgeWrapGo(units) {
       HX.xoSure = null;
       if (!fresh.own && fresh.tip * 2n > named * 3n) { say(st, 'The relay’s tip moved while this was open. Press again to see it afresh.'); return; }
       const x = { wei, tip: fresh.own ? 0n : fresh.tip < named ? fresh.tip : named, to: fresh.to, at: Date.now() };
+      job = run;
       await wrapNow({ run, x, status: st, line: () => st, anchor: $('#hx-go'), sheet: '', clear: hxSendClear, moved: () => { HX.q = null; hxQuote(); }, after: hxSendAfter });
     } catch (e) { run.fail(st, e); } finally { PROVE_AT.el = null; }
   });
+  hxThenBridge(job, XA.teth, units, amt, 'ETH', () => !hxTwo(units));
 }
 async function hxBridgeTacWrapGo(units) {
   if (!S.key) return openSheet('wallet');
   const wei = units * E10, held = hxWalletBal('wtac');
   if (held != null && wei > held) return hxSendRun(async () => { say(HX.ss, html`<span class="err">More than the ${fmt(held, 18, 4)} TAC in ${your()}.</span>`); });
-  return hxSendRun(async (run) => {
+  const amt = HX.amt;
+  let job = null;
+  await hxSendRun(async (run) => {
     const st = HX.ss;
-    PROVE_AT.el = st;
+    PROVE_AT.el = st; job = run;
     try { await tacWrapNow({ run, wei, src: payer(), status: st, line: () => st, sheet: '', clear: hxSendClear, after: hxSendAfter }); }
     catch (e) { run.fail(st, e); } finally { PROVE_AT.el = null; }
   });
+  hxThenBridge(job, XA.tac, units, amt, 'TAC');
 }
 // the bridge tab's wallet sources: USDT, and a token the pool holds that was bridged
 const hxBrWallet = () => HX.sf === 'wusdt' || /^xw0x/.test(HX.sf);
@@ -15151,23 +15157,52 @@ async function hxBridgeTokenWrapGo(units) {
   if (!r || !units) return;
   const wei = units * r.scale, held = hxWalletBal(HX.sf);
   if (held != null && wei > held) return hxSendRun(async () => { say(HX.ss, html`<span class="err">More than the ${fmt(held, r.dec, 6)} ${r.sym} in ${your()}.</span>`); });
-  return hxSendRun(async (run) => {
+  const a = XA[HX.xa], amt = HX.amt;
+  let job = null;
+  await hxSendRun(async (run) => {
     const st = HX.ss;
-    PROVE_AT.el = st;
+    PROVE_AT.el = st; job = run;
     try { await xtWrapNow({ run, r, wei, src: payer(), status: st, line: () => st, sheet: '', clear: hxSendClear, after: hxSendAfter }); }
     catch (e) { run.fail(st, e); } finally { PROVE_AT.el = null; }
   });
+  hxThenBridge(job, a, units, amt, r.sym);
 }
 async function hxBridgeUsdtWrapGo(units) {
   if (!S.key) return openSheet('wallet');
   const held = hxWalletBal('wusdt');
   if (held != null && units > held) return hxSendRun(async () => { say(HX.ss, html`<span class="err">More than the ${fmt(held, 6, 4)} USDT in ${your()}.</span>`); });
-  return hxSendRun(async (run) => {
+  const amt = HX.amt;
+  let job = null;
+  await hxSendRun(async (run) => {
     const st = HX.ss;
-    PROVE_AT.el = st;
+    PROVE_AT.el = st; job = run;
     try { await usdtWrapNow({ run, units, src: payer(), status: st, line: () => st, sheet: '', clear: hxSendClear, after: hxSendAfter }); }
     catch (e) { run.fail(st, e); } finally { PROVE_AT.el = null; }
   });
+  hxThenBridge(job, XA.cusdt, units, amt, 'USDT');
+}
+// A wallet source bridged to Bitcoin is made private first, which the relay settles in its own time. Once it has, the
+// amount is put back and the bridge's review is shown, so the next press bridges it: a burn can't be undone, so it is
+// never sent without that press. A new key, source or amount meanwhile ends the wait, as does a wrap that did not land.
+async function hxThenBridge(run, a, units, amt, sym, covered = () => HX.q?.needPrivate === false) {
+  const pub = S.key?.pubHex, sf = HX.sf, from = HX.from, mode = HX.mode;
+  if (!run || !pub || !a || !units || !amt) return;
+  const same = () => S.key?.pubHex === pub && HX.tab === 'bridge' && HX.sf === sf && HX.from === from && HX.mode === mode && (HX.amt === '' || HX.amt === amt);
+  try {
+    for (const t0 = Date.now(); ; await sleep(4000)) {
+      if (!same() || Date.now() - t0 > 30 * 60e3) return;
+      const op = run.op ? actGet(run.op) : null;
+      if (op && badStatus(op.status)) return;
+      if (op ? okStatus(op.status) : !run.away) break;
+    }
+    await scanPrivate(true).catch(() => {});
+    if (!same() || spendable(a.k) < units) return;
+    if (HX.amt !== amt) { HX.amt = amt; const box = $('#hx-amt'); if (box) box.value = amt; }
+    hxTyped(true);
+    for (let i = 0; i < 120 && (HX.q?.busy || !covered()); i++) await sleep(500);
+    if (!same() || !covered() || $('#hx-go')?.getAttribute('aria-busy') === 'true') return;
+    await hxBridgeOutGo(a, units, `Your ${sym} is private. `);
+  } catch {}
 }
 async function hxDepositGo(m, amt) {
   if (!S.key) return openSheet('wallet');
