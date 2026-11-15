@@ -1,4 +1,5 @@
-// Bound swap offers: a holder's signed offer to sell its WHOLE bridged note into a watchtower bid, completed by the watchtower
+// Bound swap offers: a holder's signed offer to sell its WHOLE bridged note (v1) or a part of it (v2, pinned to one of the bid wallet's
+// coins, signed SIGHASH_ALL: dapp/bound-swap.js sellerPinnedOffer) into a watchtower bid, completed by the watchtower
 // (fulfiller/watchtower-core.mjs) as ONE generation-bound transfer (T_CXFER_BOUND 0x39, dapp/bound-swap.js). The reflection folds
 // a plain transfer or sale (0x22/0x26) only for TAC, but folds 0x39 for any asset when the note's signature binds every output
 // and the payload names this deployment; the offer's signature is ALL|ANYONECANPAY, made before the watchtower builds the commit,
@@ -24,7 +25,8 @@ const H = (n) => new RegExp(`^[0-9a-f]{${n}}$`);
 // how long it stands.
 export function boundOfferMsg(network, o, bidIdHex, expiry) {
   return sha256(te.encode(['tacit-bound-offer-v1', network, o.assetId, bidIdHex, `${o.note.txid}:${o.note.vout}`, o.note.value, o.note.script, o.amount, o.priceSats,
-    o.payoutScript, o.payload, (o.noteScripts || []).join(','), (o.witness || []).join(','), o.sellerPub, o.buyerXonly, o.chainBinding, expiry].join('|')));
+    o.payoutScript, o.payload, (o.noteScripts || []).join(','), (o.witness || []).join(','), o.sellerPub, o.buyerXonly, o.chainBinding, expiry,
+    ...(o.v === 2 ? ['v2', `${o.fund?.txid}:${o.fund?.vout}`, o.fund?.value, o.fund?.script, o.feeRate, o.commitTxid, o.revealTxid, o.buyerPub] : [])].join('|')));
 }
 export const boundOfferCancelMsg = (network, asset, id) => sha256(te.encode(`tacit-bound-offer-cancel-v1|${network}|${asset}|${id}`));
 export const boundOfferFilledMsg = (network, asset, id, revealTxid) => sha256(te.encode(`tacit-bound-offer-filled-v1|${network}|${asset}|${id}|${revealTxid}`));
@@ -32,7 +34,7 @@ export const boundOfferFilledMsg = (network, asset, id, revealTxid) => sha256(te
 // The offer's own shape (null, or what is wrong). Ownership of the note: its script is the seller key's untweaked P2TR (a cross-out
 // mint's address) or its P2WPKH; the payload's notes are the buyer's P2TR and the seller's zero change at its P2TR.
 export function boundOfferShape(o, asset) {
-  if (!o || typeof o !== 'object' || o.v !== 1) return 'offer.v must be 1';
+  if (!o || typeof o !== 'object' || (o.v !== 1 && o.v !== 2)) return 'offer.v must be 1 (a whole note) or 2 (a pinned part)';
   if (o.kind !== 'taproot' && o.kind !== 'p2wpkh') return 'offer.kind must be taproot or p2wpkh';
   if (o.assetId !== asset) return 'offer.assetId is not this asset';
   if (!H(64).test(o.chainBinding || '')) return 'offer.chainBinding must be 32-byte hex';
@@ -45,11 +47,21 @@ export function boundOfferShape(o, asset) {
   const tr = '5120' + o.sellerXonly, wpkh = '0014' + bytesToHex(hash160(hexToBytes(o.sellerPub)));
   if (o.kind === 'taproot' ? n.script !== tr : n.script !== wpkh) return 'offer.note.script is not the seller key\'s';
   if (!/^39[0-9a-f]+$/.test(o.payload || '') || o.payload.length % 2 || o.payload.length > 16384) return 'offer.payload must be a 0x39 payload';
-  if (!Array.isArray(o.noteScripts) || o.noteScripts.length !== 2 || o.noteScripts[0] !== '5120' + o.buyerXonly || o.noteScripts[1] !== tr) return 'offer.noteScripts must be the buyer\'s P2TR, then the seller\'s';
+  // a whole note's zero change sits at the seller's P2TR; a pinned part's change at its P2WPKH (a note its wallet reads and can sell again)
+  if (!Array.isArray(o.noteScripts) || o.noteScripts.length !== 2 || o.noteScripts[0] !== '5120' + o.buyerXonly || o.noteScripts[1] !== (o.v === 2 ? wpkh : tr)) return 'offer.noteScripts must be the buyer\'s P2TR, then the seller\'s';
   if (!/^[0-9a-f]{4,160}$/.test(o.payoutScript || '') || o.payoutScript.length % 2) return 'offer.payoutScript must be a script';
   const w = o.witness;
   if (!Array.isArray(w) || !w.every((x) => /^[0-9a-f]+$/.test(x) && x.length % 2 === 0)) return 'offer.witness must be hex items';
-  if (o.kind === 'taproot' ? !(w.length === 1 && w[0].length === 130 && w[0].endsWith('81')) : !(w.length === 2 && w[0].endsWith('81') && w[1] === o.sellerPub)) return 'offer.witness must be the note key\'s ALL|ANYONECANPAY signature';
+  const ht = o.v === 2 ? '01' : '81';
+  if (o.kind === 'taproot' ? !(w.length === 1 && w[0].length === 130 && w[0].endsWith(ht)) : !(w.length === 2 && w[0].endsWith(ht) && w[1] === o.sellerPub)) return o.v === 2 ? 'offer.witness must be the note key\'s SIGHASH_ALL signature' : 'offer.witness must be the note key\'s ALL|ANYONECANPAY signature';
+  if (o.v === 2) {
+    const f = o.fund || {}, bx = o.buyerXonly;
+    if (!/^0[23][0-9a-f]{64}$/.test(o.buyerPub || '') || o.buyerPub.slice(2) !== bx) return 'offer.buyerPub must be the bid\'s 33-byte key';
+    if (!H(64).test(f.txid || '') || !Number.isInteger(f.vout) || f.vout < 0 || !Number.isInteger(f.value) || f.value < 1) return 'offer.fund must name the bid wallet\'s coin and its value';
+    if (f.script !== '0014' + bytesToHex(hash160(hexToBytes(o.buyerPub))) && f.script !== '5120' + bx) return 'offer.fund.script is not the bid key\'s';
+    if (!(typeof o.feeRate === 'number' && o.feeRate > 0 && o.feeRate <= 500)) return 'offer.feeRate must be a positive number of sats a vbyte';
+    if (!H(64).test(o.commitTxid || '') || !H(64).test(o.revealTxid || '')) return 'offer.commitTxid / revealTxid must be 32-byte hex';
+  }
   return null;
 }
 
@@ -78,6 +90,7 @@ export function makeBoundOffers(deps) {
     if (wt.kind !== 'bound') return jsonResponse({ error: 'that bid is not a bound (bridged token) bid' }, 409, cors);
     if (wt.asset_id !== asset) return jsonResponse({ error: 'that bid is for another asset' }, 409, cors);
     if (String(wt.bid_pubkey || '').slice(2) !== o.buyerXonly) return jsonResponse({ error: 'offer.buyerXonly is not that bid\'s key' }, 409, cors);
+    if (o.v === 2 && String(wt.bid_pubkey || '') !== o.buyerPub) return jsonResponse({ error: 'offer.buyerPub is not that bid\'s key' }, 409, cors);
     const amount = BigInt(o.amount), remaining = BigInt(wt.bid_amount_base || '0') - BigInt(wt.filled_base || '0');
     if (amount > remaining) return jsonResponse({ error: `the bid takes at most ${remaining} more` }, 409, cors);
     // the seller asks no more per unit than the buyer bid: priceSats / amount <= bid_price_sats / bid_amount_base

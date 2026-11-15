@@ -33,6 +33,17 @@ await tick(); await tick();
 ok(calls.unlocks === 1 && calls.offers.length === 1 && calls.offers[0].assetIdHex === ID && calls.offers[0].bid.bid_id === 'cd'.repeat(16), 'Sell into this bid opens the wallet and posts the holder\'s bound offer for that bid');
 ok(notes.some(([k, m]) => k === 'ok' && /Offered 20 SPX for 9,000 sats/.test(m)), 'and says what was offered, and that the watchtower completes it');
 
+ok(calls.offers[0].part === undefined, 'with no amount entered the offer is the note as it fits (no part named)');
+for (let i = 0; i < 6; i++) await tick();
+box.querySelector('[data-part]').value = '1.5';
+box.querySelector('[data-sell]').click();
+await tick(); await tick();
+ok(calls.offers.length === 2 && calls.offers[1].part === 150000000n, 'an amount entered on the row sells that part, in the token\'s decimals');
+for (let i = 0; i < 6; i++) await tick();
+box.querySelector('[data-part]').value = 'abc';
+box.querySelector('[data-sell]').click();
+await tick(); await tick();
+ok(calls.offers.length === 2 && notes.some(([k, m]) => k === 'error' && /Enter an amount of SPX/.test(m)), 'an amount that does not read is refused before anything is offered');
 for (let i = 0; i < 6; i++) await tick();   // the sell's refresh repaints the view first
 box.querySelector('#bb-amt').value = '2.5'; box.querySelector('#bb-sats').value = '1200';
 box.querySelector('[data-bid-place]').click();

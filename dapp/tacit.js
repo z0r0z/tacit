@@ -28597,9 +28597,11 @@ async function placeBoundBid({ assetIdHex, amount, priceSats, expiry, decimals =
   const wt = await registerWatchtowerBid({ assetIdHex: aid, bidIdHex: bidId, amountBase: amount, priceSats, decimals, expiry, feeBudgetSats, kind: 'bound' });
   return { bid_id: bidId, ...wt };
 }
-// The seller's one round: its WHOLE note (a cross-out mint of this asset at the key's Taproot address, live and unbound) into `bid`,
-// at the most the bid pays for that amount, payout to the key's Bitcoin address. Posts the signed offer; the seller can go offline.
-async function publishBoundOffer({ assetIdHex, bid, note = null, expirySec = 86400 }) {
+// The seller's one round: a note of this asset (a cross-out mint at the key's Taproot address, or a note at its P2WPKH address, live
+// and not fast-lane spendable) into `bid`, at the most the bid pays for that amount, payout to the key's Bitcoin address. A note that
+// fits is sold whole; `part` (base units), or a bid smaller than every note, sells a part of one (bound-swap.js sellerPinnedOffer).
+// Posts the signed offer; the seller can go offline.
+async function publishBoundOffer({ assetIdHex, bid, note = null, part = null, expirySec = 86400 }) {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   const aid = String(assetIdHex).replace(/^0x/, '').toLowerCase();
@@ -28609,15 +28611,40 @@ async function publishBoundOffer({ assetIdHex, bid, note = null, expirySec = 864
   // the notes the bridge minted at the Taproot address, then the ones held at the P2WPKH address (sent or moved there by the bound transfer)
   const pool = note ? [note] : [...(await _bridgedOpen(aid)), ...(await bridgedHeldNotes(aid).catch(() => []))]
     .filter((n) => n.confirmed && n.amount != null && n.blinding != null && n.credited !== false);
-  const fits = pool.filter((n) => BigInt(n.amount) > 0n && BigInt(n.amount) <= bidAmt).sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : -1));
-  if (!fits.length) throw new Error(pool.length ? 'no note of this token here fits the bid whole (a note is sold whole)' : 'no note of this token at this key\'s Bitcoin addresses');
-  const n = fits[0], amount = BigInt(n.amount);
+  if (!pool.length) throw new Error('no note of this token at this key\'s Bitcoin addresses');
+  const want = part == null ? null : BigInt(part);
+  if (want != null && (want <= 0n || want > bidAmt)) throw new Error(`the bid takes at most ${bidAmt} more`);
+  // a whole note that fits the bid (or is exactly the part asked for) is offered whole; else the smallest note holding the part is
+  // offered in part (a pinned offer: the rest comes back to this key's Bitcoin address as a note it can sell again)
+  const fits = pool.filter((n) => BigInt(n.amount) > 0n && (want == null ? BigInt(n.amount) <= bidAmt : BigInt(n.amount) === want)).sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : -1));
+  const wantPart = want ?? bidAmt;
+  const holds = fits.length ? [] : pool.filter((n) => BigInt(n.amount) > wantPart).sort((a, b) => (BigInt(a.amount) > BigInt(b.amount) ? 1 : -1));
+  if (!fits.length && !holds.length) throw new Error('no note of this token here holds that much');
+  const n = fits[0] || holds[0], amount = fits.length ? BigInt(n.amount) : wantPart;
   const c = await _boundSwapNote(n.txid, n.vout, aid);
   const priceSats = Number((bidPrice * amount) / bidTotal);
-  if (priceSats < DUST) throw new Error('the bid pays less than dust for this note');
+  if (priceSats < DUST) throw new Error('the bid pays less than dust for this amount');
   const bs = await _boundSwapLib(), prims = await _boundPrims(wallet.priv);
-  const offer = bs.sellerOffer({ prims, kit: _boundKit(), assetId: '0x' + aid, buyerXonly: bid.buyer_xonly, chainBinding: _confidentialChainBinding(), sellerPayoutScript: p2wpkhScript(wallet.pub), priceSats,
-    sellerNote: { txid: n.txid, vout: n.vout, value: Number(n.sats), script: n.p2tr === false ? bytesToHex(p2wpkhScript(wallet.pub)) : '5120' + xonly, amount, blinding: BigInt(n.blinding), cx: c.cx, cy: c.cy } });
+  const sellerNote = { txid: n.txid, vout: n.vout, value: Number(n.sats), script: n.p2tr === false ? bytesToHex(p2wpkhScript(wallet.pub)) : '5120' + xonly, amount: BigInt(n.amount), blinding: BigInt(n.blinding), cx: c.cx, cy: c.cy };
+  const base = { prims, kit: _boundKit(), assetId: '0x' + aid, chainBinding: _confidentialChainBinding(), sellerPayoutScript: p2wpkhScript(wallet.pub), priceSats, sellerNote };
+  let offer;
+  if (fits.length) offer = bs.sellerOffer({ ...base, buyerXonly: bid.buyer_xonly });
+  else {
+    // the bid wallet's coins (its P2WPKH, under whichever parity of the bid's x-only key holds them), smallest first that pays the pair
+    const feeRate = Number(await getFeeRate()) || 3;
+    let tried = 0, lastErr = null;
+    for (const par of ['02', '03']) {
+      const bpub = hexToBytes(par + bid.buyer_xonly);
+      const coins = (await getUtxos(p2wpkhAddress(bpub)).catch(() => [])).sort((a, b) => a.value - b.value);
+      for (const u of coins) {
+        tried++;
+        try { offer = bs.sellerPinnedOffer({ ...base, toBuyer: amount, buyerPub: bpub, feeRate, fund: { txid: u.txid, vout: u.vout, value: u.value, script: p2wpkhScript(bpub) } }); break; }
+        catch (e) { lastErr = e; if (!/too small/.test(e.message)) throw e; }
+      }
+      if (offer) break;
+    }
+    if (!offer) throw new Error(tried ? `the bid wallet holds no coin large enough for this sale right now (${lastErr?.message || ''})` : 'the bid wallet holds no coin right now: a part of a note is sold against one of its coins');
+  }
   const expiry = Math.floor(Date.now() / 1000) + Math.max(600, Math.min(7 * 86400 - 60, expirySec | 0));
   const sig = signSchnorr(bs.boundOfferMsg(NET.name, offer, bid.bid_id, expiry), wallet.priv);
   const resp = await fetch(withNet(`${WORKER_BASE}/assets/${aid}/bound-offers`), { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -28641,14 +28668,21 @@ async function takeBoundOffer({ offer, bidPriv, fundingUtxo = null, feeRate = nu
   const c = await _boundSwapNote(offer.note.txid, offer.note.vout, aid);
   const bs = await _boundSwapLib(), prims = await _boundPrims(bidPriv);
   const rate = Number(feeRate) || Number(await getFeeRate()) || 3;
-  let fund = fundingUtxo;
-  if (!fund) {
+  let fund = fundingUtxo, maxFeeRate = null;
+  if (offer.v === 2) {
+    // a pinned offer names the bid wallet's coin: still unspent, or the offer is stale (another fill spent it first) and is refused
+    const coins = await getUtxos(p2wpkhAddress(bidPub), null, { forSpend: true });
+    if (!coins.some((u) => u.txid === offer.fund?.txid && u.vout === offer.fund?.vout && u.value === offer.fund?.value)) throw new Error('the offer does not check: the bid wallet coin it was signed against is spent');
+    // and its fee rate is the seller's, within reason: up to three times today's rate (at least 25 sats a vbyte)
+    maxFeeRate = Math.max(25, 3 * rate);
+    fund = null;
+  } else if (!fund) {
     const need = offer.priceSats + 4 * DUST + Math.ceil(rate * 700);
     const coins = (await getUtxos(p2wpkhAddress(bidPub), null, { forSpend: true })).filter((u) => u.value >= need).sort((a, b) => a.value - b.value);
     if (!coins.length) throw new Error(`the bid wallet holds no coin of ${need} sats or more`);
     fund = { txid: coins[0].txid, vout: coins[0].vout, value: coins[0].value, script: p2wpkhScript(bidPub) };
   }
-  const t = bs.buyerTakeOffer({ prims, kit: _boundKit(), offer, buyerKey: bidPriv, fundingUtxo: fund, feeRate: rate,
+  const t = bs.buyerTakeOffer({ prims, kit: _boundKit(), offer, buyerKey: bidPriv, fundingUtxo: fund, feeRate: rate, maxFeeRate,
     expected: { assetId: '0x' + aid, chainBinding: _confidentialChainBinding(), sellerNoteCommitment: { cx: c.cx, cy: c.cy } } });
   if (!broadcast) return t;
   await broadcastWithRetry(t.commitHex);

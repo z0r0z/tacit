@@ -198,7 +198,7 @@ export function buyerNoteSecrets({ kit, buyerKey, sellerNoteOutpoint, amount }) 
 // sellerNote: { txid, vout, amount, blinding, cx?, cy? } (cx/cy: its commitment, checked against amount/blinding).
 // The seller's change note (amount − toBuyer, possibly zero: the payload needs 2, 4 or 8 outputs) uses the seller's own
 // change channel at vout 1 and sits at P2TR(the seller's x-only key), untweaked, as btc-bind's bound notes do.
-export function sellerPayload({ prims, kit, assetId, sellerNote, toBuyer, buyerXonly, buyerBlinding, buyerAmountCt = null, chainBinding, sellerKey = prims.wallet.priv, rangeProve = bppRangeProve }) {
+export function sellerPayload({ prims, kit, assetId, sellerNote, toBuyer, buyerXonly, buyerBlinding, buyerAmountCt = null, chainBinding, sellerKey = prims.wallet.priv, rangeProve = bppRangeProve, changeScript = null }) {
   const asset = bytes32(assetId, 'asset id');
   const target = bytes32(chainBinding, 'chain binding');
   const amount = asBig(sellerNote.amount), give = asBig(toBuyer);
@@ -213,7 +213,7 @@ export function sellerPayload({ prims, kit, assetId, sellerNote, toBuyer, buyerX
   const change = amount - give;
   const outs = [
     { vout: 0, amount: give, blinding: modN(asBig(buyerBlinding)), script: p2trScriptOf(buyerXonly), ct: buyerAmountCt ? asBytes(buyerAmountCt) : new Uint8Array(8) },
-    { vout: 1, amount: change, blinding: kit.deriveChangeBlinding(k, anchor, 1), script: p2trScriptOf(xonlyOf(k)), ct: kit.encryptAmount(change, kit.deriveAmountKeystreamSelf(k, anchor, 1)) },
+    { vout: 1, amount: change, blinding: kit.deriveChangeBlinding(k, anchor, 1), script: changeScript ? asBytes(changeScript) : p2trScriptOf(xonlyOf(k)), ct: kit.encryptAmount(change, kit.deriveAmountKeystreamSelf(k, anchor, 1)) },
   ];
   if (outs[0].ct.length !== 8) fail('the buyer\'s amount ciphertext must be 8 bytes');
   const { proof, commitments } = rangeProve(outs.map((o) => o.amount), outs.map((o) => o.blinding));
@@ -238,7 +238,9 @@ export const revealOutputs = ({ prims, noteScripts, sellerPayoutScript, priceSat
 // ---- buyer: commit and reveal --------------------------------------------------------------------------------------------
 // fundingUtxo / sellerNote: { txid, vout, value (sats), script }. The funding coin is the buyer key's P2TR or P2WPKH.
 // noteScripts: the payload outputs' scripts (sellerPayload), the first the buyer's own P2TR.
-export function buyerTxs({ prims, payload, noteScripts, buyerKey = prims.wallet.priv, fundingUtxo, sellerNote, sellerPayoutScript, priceSats, feeRate, changeScript = null }) {
+// With buyerKey null (and buyerXonly, plus buyerPub for a P2WPKH funding coin) the pair is built unsigned: the commit's txid does not
+// depend on its witness, so the seller of a pinned offer builds the very commit and reveal the buyer will sign.
+export function buyerTxs({ prims, payload, noteScripts, buyerKey = prims.wallet.priv, buyerXonly = null, buyerPub: buyerPubIn = null, fundingUtxo, sellerNote, sellerPayoutScript, priceSats, feeRate, changeScript = null }) {
   const { DUST } = prims;
   const pl = asBytes(payload);
   if (pl[0] !== T_CXFER_BOUND) fail('a bridged token is swapped by a generation-bound transfer (0x39) only');
@@ -247,15 +249,16 @@ export function buyerTxs({ prims, payload, noteScripts, buyerKey = prims.wallet.
   const n = dec.commitments.length;
   const scripts = noteScripts.map(asBytes);
   if (scripts.length !== n) fail(`the payload has ${n} outputs, ${scripts.length} scripts were given`);
-  const k = priv32(buyerKey), bx = xonlyOf(k);
+  const k = buyerKey == null ? null : priv32(buyerKey), bx = k ? xonlyOf(k) : bytes32(buyerXonly, 'buyer x-only key');
   if (!eqBytes(scripts[0], p2trScriptOf(bx))) fail('the payload\'s first output is not at the buyer key\'s Taproot address');
   if (!Number.isInteger(priceSats) || priceSats < DUST) fail('the price must be a whole number of sats, at least dust');
   const note = { txid: sellerNote.txid, vout: sellerNote.vout, value: sellerNote.value, script: asBytes(sellerNote.script) };
   if (!isP2tr(note.script) && !isP2wpkh(note.script)) fail('the seller note must sit at a P2TR or P2WPKH script');
   const fund = { txid: fundingUtxo.txid, vout: fundingUtxo.vout, value: fundingUtxo.value, script: asBytes(fundingUtxo.script) };
-  const buyerPub = secp.getPublicKey(k, true);
+  const buyerPub = k ? secp.getPublicKey(k, true) : buyerPubIn ? asBytes(buyerPubIn) : null;
+  if (buyerPub && !eqBytes(buyerPub.slice(1), bx)) fail('the buyer key and its x-only half differ');
   const fundTaproot = eqBytes(fund.script, p2trScriptOf(bx));
-  if (!fundTaproot && !eqBytes(fund.script, p2wpkhScriptOf(buyerPub))) fail('the funding coin is not the buyer key\'s P2TR or P2WPKH');
+  if (!fundTaproot && !(buyerPub && eqBytes(fund.script, p2wpkhScriptOf(buyerPub)))) fail('the funding coin is not the buyer key\'s P2TR or P2WPKH');
 
   const envelopeScript = prims.encodeEnvelopeScript(bx, pl);
   const leafHash = prims.tapLeafHash(envelopeScript);
@@ -286,7 +289,7 @@ export function buyerTxs({ prims, payload, noteScripts, buyerKey = prims.wallet.
   const changeValue = fund.value - commitValue - commitFee;
   if (changeValue < 0) fail(`the funding coin is too small (need ${commitValue + commitFee} sats, it holds ${fund.value})`);
   const commitTx = commitOf(changeValue);
-  if (fundTaproot) {
+  if (!k) { /* unsigned: the witness placeholders stand (the txid is the same) */ } else if (fundTaproot) {
     commitTx.inputs[0].witness = [signSchnorr(prims.tapSighashKeyPath(commitTx, 0, [fund], 0x00), k)];
   } else {
     const sh = bip143Sighash(commitTx, 0, fund, 0x01);
@@ -474,6 +477,42 @@ export function sellerOffer({ prims, kit, assetId, sellerNote, buyerXonly, chain
   };
 }
 
+// The seller's PINNED offer (v2): any part of its note. The seller builds the exact pair the buyer will sign (the commit from one of
+// the bid wallet's coins at a fee rate it names, the reveal spending that commit and its note) and signs its note SIGHASH_ALL, which
+// covers the commit's outpoint and so the envelope the payload rides in: no one can re-wrap the payload in an envelope the
+// reflection skips, so the seller's change (at its own P2WPKH address, a note its wallet reads and can sell again) is never stranded.
+// Still one round: the seller posts and can go offline. The price of the pin: the offer names one coin of the bid wallet, and goes
+// stale if that coin is spent first (another fill); the seller posts again.
+// buyerPub: the bid's 33-byte key (its P2WPKH holds the coin); fund: { txid, vout, value, script } of that coin.
+export function sellerPinnedOffer({ prims, kit, assetId, sellerNote, toBuyer, buyerPub, fund, feeRate, chainBinding, sellerPayoutScript, priceSats, sellerKey = prims.wallet.priv, rangeProve = bppRangeProve }) {
+  const k = priv32(sellerKey), pub = secp.getPublicKey(k, true);
+  const note = { txid: strip(sellerNote.txid), vout: sellerNote.vout >>> 0, value: sellerNote.value, script: asBytes(sellerNote.script) };
+  const kind = isP2tr(note.script) ? 'taproot' : isP2wpkh(note.script) ? 'p2wpkh' : fail('the seller note must sit at a P2TR or P2WPKH script');
+  if (!Number.isInteger(note.value) || note.value < 1) fail('the seller note\'s sats value is needed for its signature');
+  if (!Number.isInteger(priceSats) || priceSats < prims.DUST) fail('the price must be a whole number of sats, at least dust');
+  if (!(Number(feeRate) > 0)) fail('a pinned offer names its fee rate');
+  const bpub = asBytes(buyerPub);
+  if (bpub.length !== 33) fail('the bid\'s 33-byte key is needed (its P2WPKH holds the coin)');
+  const buyerXonly = bpub.slice(1), give = asBig(toBuyer), amount = asBig(sellerNote.amount);
+  if (give <= 0n || give > amount) fail('the part sold must be positive and within the note');
+  const { blinding, amountCt } = buyerNoteEcdh({ kit, myKey: k, theirXonly: buyerXonly, sellerNoteOutpoint: note, amount: give });
+  const pl = sellerPayload({ prims, kit, assetId, chainBinding, sellerKey: k, rangeProve, toBuyer: give, buyerXonly, buyerBlinding: blinding, buyerAmountCt: amountCt,
+    changeScript: p2wpkhScriptOf(pub), sellerNote: { txid: note.txid, vout: note.vout, amount, blinding: sellerNote.blinding, cx: sellerNote.cx, cy: sellerNote.cy } });
+  const f = { txid: strip(fund.txid), vout: fund.vout >>> 0, value: fund.value, script: asBytes(fund.script) };
+  const swap = buyerTxs({ prims, payload: pl.payload, noteScripts: pl.noteScripts, buyerKey: null, buyerXonly, buyerPub: bpub, fundingUtxo: f, sellerNote: note,
+    sellerPayoutScript, priceSats, feeRate: Number(feeRate) });
+  const { witness } = sellerSign({ prims, reveal: swap.reveal, prevouts: swap.prevouts, sellerKey: k, kind, sighash: 0x01 });
+  return {
+    v: 2, kind, assetId: strip(hexOf(assetId)), chainBinding: strip(hexOf(chainBinding)), amount: give.toString(), priceSats,
+    sellerPub: bytesToHex(pub), sellerXonly: bytesToHex(pub.slice(1)), buyerXonly: bytesToHex(buyerXonly), buyerPub: bytesToHex(bpub),
+    note: { txid: note.txid, vout: note.vout, value: note.value, script: bytesToHex(note.script) },
+    payload: bytesToHex(pl.payload), noteScripts: pl.noteScripts.map(bytesToHex), payoutScript: strip(hexOf(sellerPayoutScript)),
+    witness: witness.map(bytesToHex),
+    fund: { txid: f.txid, vout: f.vout, value: f.value, script: bytesToHex(f.script) }, feeRate: Number(feeRate), commitTxid: swap.commitTxid, revealTxid: swap.revealTxid,
+    change: { amount: pl.change.amount.toString() },
+  };
+}
+
 // The buyer's (watchtower's) check of an offer before it spends anything: the payload is a 0x39 transfer of this asset naming
 // this deployment, its two notes are the buyer's (opening, with the ECDH blinding, to the offer's whole amount, at P2TR(buyer))
 // and a zero change at the seller's Taproot address, the kernel conserves against the seller note's on-chain commitment, the
@@ -492,7 +531,7 @@ export function buyerCheckOffer({ kit, offer, buyerKey, expected }) {
   if (!scripts[0] || !eqBytes(scripts[0], p2trScriptOf(bx))) reasons.push('buyer-note-script');
   const sellerPub = asBytes(offer.sellerPub || '');
   if (sellerPub.length !== 33 || strip(offer.sellerXonly) !== bytesToHex(sellerPub.slice(1))) reasons.push('seller-key');
-  if (!scripts[1] || !eqBytes(scripts[1], p2trScriptOf(sellerPub.slice(1)))) reasons.push('change-script');
+  if (!scripts[1] || !(eqBytes(scripts[1], p2trScriptOf(sellerPub.slice(1))) || (offer.v === 2 && sellerPub.length === 33 && eqBytes(scripts[1], p2wpkhScriptOf(sellerPub))))) reasons.push('change-script');
   const ns = asBytes(offer.note.script);
   if (!(isP2tr(ns) && eqBytes(ns, p2trScriptOf(sellerPub.slice(1)))) && !(isP2wpkh(ns) && eqBytes(ns, p2wpkhScriptOf(sellerPub)))) reasons.push('seller-note-script');
   let amount = 0n;
@@ -523,11 +562,18 @@ export function buyerCheckOffer({ kit, offer, buyerKey, expected }) {
 // The buyer's (watchtower's) take: check the offer, build the commit (funded from its coin) and the reveal, attach the seller's
 // witness, sign the envelope input, and check the pair as anyone would before broadcasting. Throws, with the reasons, if any
 // check fails; returns the hex to broadcast (commit first) and the buyer's note.
-export function buyerTakeOffer({ prims, kit, offer, buyerKey = prims.wallet.priv, fundingUtxo, feeRate, expected, changeScript = null }) {
+export function buyerTakeOffer({ prims, kit, offer, buyerKey = prims.wallet.priv, fundingUtxo, feeRate, expected, changeScript = null, maxFeeRate = null }) {
   const chk = buyerCheckOffer({ kit, offer, buyerKey, expected });
   if (!chk.ok) fail(`the offer does not check: ${chk.reasons.join(', ')}`);
+  if (offer.v === 2) {
+    // the pair is the seller's: its coin, its fee rate (within the buyer's ceiling), the commit's change back to the coin's script
+    if (!(Number(offer.feeRate) > 0) || (maxFeeRate != null && Number(offer.feeRate) > Number(maxFeeRate))) fail(`the offer does not check: fee rate ${offer.feeRate} is over ${maxFeeRate}`);
+    fundingUtxo = { txid: offer.fund.txid, vout: offer.fund.vout, value: offer.fund.value, script: offer.fund.script };
+    feeRate = Number(offer.feeRate); changeScript = null;
+  }
   const swap = buyerTxs({ prims, payload: offer.payload, noteScripts: offer.noteScripts, buyerKey, fundingUtxo, sellerNote: offer.note, sellerPayoutScript: offer.payoutScript,
     priceSats: offer.priceSats, feeRate, changeScript });
+  if (offer.v === 2 && (swap.commitTxid !== offer.commitTxid || swap.revealTxid !== offer.revealTxid)) fail('the offer does not check: the pair it was signed over is not the one its coin and fee rate build');
   const fin = buyerFinish({ prims, swap, sellerWitness: offer.witness, buyerKey });
   const v = verifyBoundSwap({ revealHex: fin.revealHex, commitHex: fin.commitHex, prims, expected: {
     assetId: expected.assetId, amountToBuyer: chk.amount, buyerXonly: xonlyOf(priv32(buyerKey)), buyerBlinding: chk.buyerBlinding, sellerPayoutScript: offer.payoutScript,
@@ -541,7 +587,8 @@ export function buyerTakeOffer({ prims, kit, offer, buyerKey = prims.wallet.priv
 // offer, the bid it answers, and how long it stands.
 export function boundOfferMsg(network, o, bidIdHex, expiry) {
   return sha256(new TextEncoder().encode(['tacit-bound-offer-v1', network, o.assetId, bidIdHex, `${o.note.txid}:${o.note.vout}`, o.note.value, o.note.script, o.amount, o.priceSats,
-    o.payoutScript, o.payload, (o.noteScripts || []).join(','), (o.witness || []).join(','), o.sellerPub, o.buyerXonly, o.chainBinding, expiry].join('|')));
+    o.payoutScript, o.payload, (o.noteScripts || []).join(','), (o.witness || []).join(','), o.sellerPub, o.buyerXonly, o.chainBinding, expiry,
+    ...(o.v === 2 ? ['v2', `${o.fund?.txid}:${o.fund?.vout}`, o.fund?.value, o.fund?.script, o.feeRate, o.commitTxid, o.revealTxid, o.buyerPub] : [])].join('|')));
 }
 export const boundOfferCancelMsg = (network, asset, id) => sha256(new TextEncoder().encode(`tacit-bound-offer-cancel-v1|${network}|${asset}|${id}`));
 export const boundOfferFilledMsg = (network, asset, id, revealTxid) => sha256(new TextEncoder().encode(`tacit-bound-offer-filled-v1|${network}|${asset}|${id}|${revealTxid}`));

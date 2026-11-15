@@ -286,5 +286,16 @@ await section('5. Bitcoin side: the real validator on the buyer-funded reveal, a
   ok(foldedSwap(rx, xf.revealTxid, ETCHED), 'yet the mirror folds it (it ignores non-live inputs and its kernel covers the live note only): the buyer must fund through the commit (vin[0]), never a reveal input');
 });
 
+await section('6. a PINNED offer (a part, the seller signing SIGHASH_ALL over the pair it built, change at its P2WPKH) folds', async () => {
+  const wpkh = buyer.p2wpkhScript(buyer.wallet.pub);
+  const offer = bs.sellerPinnedOffer({ prims: seller, kit, assetId: SPX, chainBinding: CHAIN_BINDING, toBuyer: BUY, buyerPub: buyer.wallet.pub, feeRate: FEE_RATE,
+    fund: { ...BUYER_FUNDING, script: wpkh }, sellerPayoutScript: SELLER_PAY_SPK, priceSats: PRICE,
+    sellerNote: { ...CROSSOUT, amount: V, blinding: R_S, cx: A_IN.x, cy: A_IN.y } });
+  const t = bs.buyerTakeOffer({ prims: buyer, kit, offer, fundingUtxo: null, feeRate: 1, maxFeeRate: 25, expected: { assetId: SPX, chainBinding: CHAIN_BINDING, sellerNoteCommitment: C_IN.toRawBytes(true) } });
+  ok(t.revealTxid === offer.revealTxid, 'the watchtower rebuilds the pair the seller signed');
+  const r = await reflect(rowsOf(t.commitHex, t.revealHex), { asset: SPX, note: CROSSOUT });
+  ok(foldedSwap(r, t.revealTxid, CROSSOUT), `folds: the buyer's ${BUY} (vout 0, P2TR) and the seller's ${V - BUY} change (vout 1, P2WPKH) live as BOUND notes, the seller's note nullified (live ${r.before.live}->${r.after.live})`);
+});
+
 console.log(`\n${passed} bound-swap-reflect checks passed${failed ? `, ${failed} FAILED` : ''}`);
 process.exit(failed ? 1 : 0);
