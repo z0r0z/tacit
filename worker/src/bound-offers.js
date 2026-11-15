@@ -5,7 +5,7 @@
 // so the seller posts once and can go offline. Off unless BOUND_OFFERS_ENABLED=true (reads stay open).
 //
 //   POST   /assets/:asset/bound-offers              { offer, bid_id, owner_pubkey, expiry, sig }   (the seller's x-only key signs)
-//   GET    /assets/:asset/bound-offers[?bid=<id>]   open offers, newest first
+//   GET    /assets/:asset/bound-offers[?bid=<id>][&status=open|filled|all]   offers, newest first (open by default)
 //   DELETE /assets/:asset/bound-offers/:id          { sig }   (the seller cancels)
 //   POST   /assets/:asset/bound-offers/:id/filled   { reveal_txid, commit_txid, sig }   (the bid key: the watchtower reports the fill)
 import { sha256 } from '@noble/hashes/sha256';
@@ -90,12 +90,15 @@ export function makeBoundOffers(deps) {
 
   async function list(asset, url, env, network, cors) {
     const bid = String(url.searchParams.get('bid') ?? '').toLowerCase(), t = now(), prefix = boundOfferPrefix(network, asset), out = [];
+    // ?status=filled lists a bid's fills (the owner finds the notes it bought); the default is the open book
+    const want = ['filled', 'all'].includes(String(url.searchParams.get('status') ?? '')) ? String(url.searchParams.get('status')) : 'open';
     let cursor;
     for (let i = 0; i < 20; i++) {
       const page = await env.REGISTRY_KV.list({ prefix, cursor });
       for (const k of page.keys || []) {
         const v = await env.REGISTRY_KV.get(k.name, 'json');
-        if (!v || v.status !== 'open' || Number(v.expiry || 0) <= t || (bid && v.bid_id !== bid)) continue;
+        if (!v || (bid && v.bid_id !== bid)) continue;
+        if (want === 'open' ? (v.status !== 'open' || Number(v.expiry || 0) <= t) : want === 'filled' ? v.status !== 'filled' : false) continue;
         out.push(v);
       }
       if (page.list_complete !== false || !page.cursor) break;

@@ -1,4 +1,4 @@
-import { makeBtcSession, short } from '/trade/btc-session.js?cb=fc26378d';
+import { makeBtcSession, short } from '/trade/btc-session.js?cb=f77898cb';
 import { overlay, esc } from '/trade/sheet.js?cb=d857446c';
 import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=1b0bfcfb';
 
@@ -215,6 +215,16 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
     mine.body.append(box); host = box;
     try {
       await Promise.all([session.load(), ensureCss()]);
+      // a bridged token other than TAC is sold into bound bids (trade/bound.js), never by the atomic sales of the book below
+      if (asset.bound) {
+        const { mountBoundMarket } = await import('/trade/bound.js?cb=31be3073');
+        if (main !== mine) return;
+        box.replaceChildren();
+        ctl = mountBoundMarket(box, { T: session.T, asset: { id: AID, ticker: asset.ticker || 'tokens', decimals: asset.decimals ?? 8 }, unlock, notify });
+        box.insertAdjacentHTML('beforeend', `<p class="note bm-after">${asset.after || ''}</p>`);
+        paintHead();
+        return;
+      }
       const market = await import(MARKET_URL);
       if (main !== mine) return;
       await refreshMe();

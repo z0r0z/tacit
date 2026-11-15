@@ -28660,6 +28660,59 @@ async function takeBoundOffer({ offer, bidPriv, fundingUtxo = null, feeRate = nu
   return t;
 }
 
+// The bid key of one of this key's watchtower registrations (keys are derived from this key by index).
+function _watchtowerBidKeyOf(bidPubHex, max = 512) {
+  const want = String(bidPubHex || '').toLowerCase();
+  for (let i = 0; i < max; i++) {
+    const k = deriveWatchtowerBidWalletKey(wallet.priv, i);
+    if (bytesToHex(secp.getPublicKey(k, true)) === want) return k;
+  }
+  return null;
+}
+// The notes this key's bound bids bought: each filled offer's buyer note (its reveal's vout 0, bound, at the bid key's Taproot address),
+// opened from the bid key (derived from this key) and the seller's x-only key. → [{ assetIdHex, txid, vout, value, amount, blinding, bid_id, bidPub }]
+async function boughtBoundNotes() {
+  await ensurePrivkey();
+  if (!WORKER_BASE) return [];
+  const bs = await _boundSwapLib(), kit = _boundKit(), out = [];
+  for (const b of (await listWatchtowerBids()).filter((x) => x && x.kind === 'bound')) {
+    const bidPriv = _watchtowerBidKeyOf(b.bid_pubkey);
+    if (!bidPriv) continue;
+    const r = await fetch(withNet(`${WORKER_BASE}/assets/${b.asset_id}/bound-offers`, `bid=${b.bid_id}&status=filled`)).catch(() => null);
+    const j = r && r.ok ? await r.json().catch(() => ({})) : {};
+    for (const o of Array.isArray(j.offers) ? j.offers : []) {
+      if (!/^[0-9a-f]{64}$/.test(String(o.reveal_txid || ''))) continue;
+      const { blinding } = bs.buyerNoteEcdh({ kit, myKey: bidPriv, theirXonly: o.sellerXonly, sellerNoteOutpoint: o.note, amount: BigInt(o.amount) });
+      out.push({ assetIdHex: o.assetId, txid: o.reveal_txid, vout: 0, value: DUST, amount: BigInt(o.amount), blinding, bid_id: b.bid_id, bidPub: b.bid_pubkey });
+    }
+  }
+  return out;
+}
+// One bought note home: into this key's private balance on Ethereum by the fast lane (the bound note spent straight into the pool,
+// authorized by the bid key that holds it, the relay settling it for its fee in the token). Ready once the reflection has passed its block.
+async function moveBoundNoteHome(note) {
+  await ensurePrivkey();
+  const authPriv = _watchtowerBidKeyOf(note.bidPub);
+  if (!authPriv) throw new Error('the bid key that holds this note is not one of this key\'s');
+  const ux = _poolUxSingleton();
+  const { fastLaneNote, makePoolRoots } = await import('./btc-bind.js');
+  const binding = ux.chainBindingHex();
+  const roots = makePoolRoots({ pool: ux.cfg.pool, getStorageAt: (to, slot) => ux.rpc('eth_getStorageAt', [to, slot, 'latest']), keccak256: keccak_256 });
+  const witnessFor = async (body) => {
+    const r = await fetch(withNet(`${WORKER_BASE}/reflection/note-witness`), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(`the relay could not say whether the note is ready (${r.status})`);
+    return r.json();
+  };
+  const aid = '0x' + String(note.assetIdHex).replace(/^0x/, '').toLowerCase();
+  const lane = await fastLaneNote({ pool: ux.pool, roots, witnessFor, chainBinding: binding, authKey: '0x' + bytesToHex(secp.getPublicKey(authPriv, true).slice(1)),
+    note: { txid: note.txid, vout: note.vout, value: note.value ?? DUST, amount: BigInt(note.amount), blinding: BigInt(note.blinding), asset: aid } });
+  if (!lane.ready) throw new Error(lane.why === 'reflecting' ? 'this note is not ready yet: Bitcoin\'s proof on Ethereum has not reached its block' : lane.why === 'spent' ? 'this note is already spent' : 'the relay and the pool differ for now: try again in a few minutes');
+  let fee = 0n;
+  try { const row = ux.assetById ? ux.assetById(aid) : null; fee = BigInt(await ux.quoteTransferFee(BigInt(note.amount), row?.ticker || aid)); } catch { fee = 0n; }
+  if (fee >= BigInt(note.amount)) throw new Error('this note is smaller than the fee of moving it');
+  return ux.fastlaneExit({ walletPriv: wallet.priv, notes: [lane.input], authPriv: '0x' + bytesToHex(authPriv), spendRoot: lane.spendRoot, bitcoinSpentRoot: lane.bitcoinSpentRoot, fee, selfRelay: false });
+}
+
 async function listWatchtowerBids() {
   await ensurePrivkey();
   if (!WORKER_BASE) return [];
@@ -62277,4 +62330,5 @@ export {
   getUtxos,
   getBtcUsdPrice,
   placeBoundBid, browseBoundBids, publishBoundOffer, listBoundOffers, takeBoundOffer,
+  boughtBoundNotes, moveBoundNoteHome,
 };

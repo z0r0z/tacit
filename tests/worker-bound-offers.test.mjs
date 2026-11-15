@@ -96,6 +96,8 @@ await refused('an atomic-intent (TAC) bid', offerOf(), { bid: 'aa'.repeat(16) },
   ok(good2.status === 200 && good2.json.offer.status === 'filled' && good2.json.offer.reveal_txid === rt, 'the bid key\'s fill report marks it filled with its transactions');
   const l2 = await call(env, 'GET', `/assets/${ASSET}/bound-offers?network=${NET}`);
   ok(!l2.json.offers.some((o) => o.id === id2), 'a filled offer leaves the open list');
+  const lf = await call(env, 'GET', `/assets/${ASSET}/bound-offers?network=${NET}&bid=${BID_ID}&status=filled`);
+  ok(lf.json.count === 1 && lf.json.offers[0].id === id2 && lf.json.offers[0].reveal_txid === rt, '?status=filled lists the bid\'s fills with their reveal (how the owner finds what it bought)');
   const cancel = await call(env, 'DELETE', `/assets/${ASSET}/bound-offers/${id}?network=${NET}`, { sig: await sign(wbo.boundOfferCancelMsg(NET, ASSET, id), SELLER) });
   ok(cancel.status === 200 && (await call(env, 'GET', `/assets/${ASSET}/bound-offers?network=${NET}`)).json.count === 0, 'the seller cancels its own offer, and the list is empty');
 }
