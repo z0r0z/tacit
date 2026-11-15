@@ -37,9 +37,18 @@ const slim = (t) => ({
   vout: (t.vout || []).map((o) => ({ scriptpubkey: o.scriptpubkey, scriptpubkey_type: o.scriptpubkey_type, value: o.value })),
 });
 
-export function makeBtcHistoryProvider({ fetchImpl, sha256, bases = ESPLORA_BASES, hrp = 'bc', timeoutMs = 8000, maxPages = 40, store = null } = {}) {
+// A headless host whose address the public explorers throttle (the hosted watchtower) sets __TACIT_CHAIN_VIA_WORKER__ with
+// __TACIT_WORKER_BASE__, and reads through the Tacit API's chain proxy first; a page reads the explorers directly.
+export function defaultEsploraBases(hrp = 'bc', g = globalThis) {
+  const w = g?.__TACIT_CHAIN_VIA_WORKER__ === true && typeof g.__TACIT_WORKER_BASE__ === 'string' ? g.__TACIT_WORKER_BASE__.replace(/\/+$/, '') : '';
+  return w && hrp === 'bc' ? [`${w}/chain?network=mainnet`, ...ESPLORA_BASES] : ESPLORA_BASES;
+}
+// a base may carry a query (the proxy's network), kept after the path
+const joinUrl = (base, path) => { const [b, q] = String(base).split('?'); return q ? `${b}${path}${path.includes('?') ? '&' : '?'}${q}` : b + path; };
+export function makeBtcHistoryProvider({ fetchImpl, sha256, bases: basesIn = null, hrp = 'bc', timeoutMs = 8000, maxPages = 40, store = null } = {}) {
   const f = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
   if (!f) throw new Error('btc history: no fetch implementation');
+  const bases = basesIn || defaultEsploraBases(hrp);
 
   async function getJson(path) {
     let last;
@@ -47,7 +56,7 @@ export function makeBtcHistoryProvider({ fetchImpl, sha256, bases = ESPLORA_BASE
       if (pass) await new Promise((res) => setTimeout(res, 750));
       for (const base of healthy(bases)) {
         let r;
-        try { r = await f(base + path, { signal: AbortSignal.timeout(timeoutMs) }); }
+        try { r = await f(joinUrl(base, path), { signal: AbortSignal.timeout(timeoutMs) }); }
         catch (e) { last = e; cool(base, 30_000); continue; }
         if (!r || !r.ok) {
           last = new Error(`esplora ${r && r.status}`);

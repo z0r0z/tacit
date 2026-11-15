@@ -13479,6 +13479,8 @@ async function _handleChainProxyUncached(req, env, network, cors) {
     /^\/address\/[a-zA-Z0-9]{14,90}\/txs\/mempool$/,  // /address/<addr>/txs/mempool
     /^\/address\/[a-zA-Z0-9]{14,90}\/txs\/chain$/,    // /address/<addr>/txs/chain
     /^\/address\/[a-zA-Z0-9]{14,90}\/txs\/chain\/[0-9a-f]{64}$/i,  // paginated
+    /^\/scripthash\/[0-9a-f]{64}\/txs$/i,            // a script's history (the cBTC lock reader walks lock scripts by hash)
+    /^\/scripthash\/[0-9a-f]{64}\/txs\/chain\/[0-9a-f]{64}$/i,  // paginated
     /^\/v1\/fees\/recommended$/,                      // mempool.space fee rec
     /^\/fee-estimates$/,                              // blockstream-style fees
     /^\/blocks\/tip\/height$/,                        // chain tip
