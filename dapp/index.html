@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-qr8kDrrhc92+UViG3eijffrv2WIZnFBTj8PFMf7F10g=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-StFdJ16SNkVMffiNlLMgFustSxLBHfLVQo73aXL95u4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -59,7 +59,7 @@
 <link rel="modulepreload" href="/portfolio.js?cb=4bd81bcc">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=efe1d81e">
 <link rel="modulepreload" href="/bridge-all.js?cb=d4d71d34">
-<link rel="modulepreload" href="/lp-zap.js?cb=d20f5b5a">
+<link rel="modulepreload" href="/lp-zap.js?cb=d32f4d54">
 <link rel="modulepreload" href="/farm-ops.js?cb=f872de9d">
 <link rel="modulepreload" href="/relay-outcome.js?cb=17e48a9a">
 <link rel="modulepreload" href="/btc-borrow.js?cb=739f4312">
@@ -2556,7 +2556,7 @@ import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { balanceRows } from '/wallet-balances.js?cb=1cd3e7a4';
 import { portfolio } from '/portfolio.js?cb=4bd81bcc';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=d4520508';
-import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth, foundingPlan } from '/lp-zap.js?cb=d20f5b5a';
+import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth, foundingPlan, zapEntry, farmPick } from '/lp-zap.js?cb=d32f4d54';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
 import * as GR from '/gas-relay.js?cb=e8d173a8';
 import { netPicker } from '/net-pick.js?cb=9229f173';
@@ -9415,10 +9415,9 @@ function hintFarm(pools) {
   for (const { p, apr } of pools || []) {
     const r = p.reserves || {};
     if (p.idle || apr == null || String(r.assetA).toLowerCase() !== CETH_ID || !Number(r.lpTotalShares)) continue;
-    rows.push({ p, apr, day: farmDay(p, amt), impact: zapImpact(p, amt, { split: true }) });
+    rows.push({ p, apr, day: farmDay(p, amt), ...zapEntryOf(p, amt, { split: true }) });
   }
-  const net = (r) => r.day * 7 - (tacEth ? (r.impact * amt) / 2 / tacEth : 0), calm = rows.filter((r) => r.impact < 0.05);
-  const top = calm.reduce((a, r) => (!a || net(r) > net(a) ? r : a), null) || rows.reduce((a, r) => (!a || r.impact < a.impact ? r : a), null);
+  const top = farmPick(rows, { amt, tacEth });
   return top ? { spec: `p${top.p.pid}`, poolId: top.p.poolId, apr: top.apr, name: pairName(top.p.pair), icons: ['tk-teth', LOGO[String(top.p.pair).split('/').find((t) => t !== 'cETH')] || 'tk-tac'] } : null;
 }
 function hintsWarm() {
@@ -9492,13 +9491,15 @@ function paintFarmChips(pools) {
   if (el.__h !== view.s) { el.__h = view.s; mount(el, view); }
   el.classList.toggle('on', chips.length > 0);
 }
-function zapImpact(p, eth, { split = true } = {}) {
+// What putting `eth` of ETH into a pool by a zap costs, as { impact, loss } (lp-zap.js zapEntry): the swap's price move on its half, and the pool's price against the market's
+function zapEntryOf(p, eth, { split = true } = {}) {
   const x = FARM.precision, half = eth / 2, side = Number(p.reserves?.reserveA || 0) / 1e8 + (split && zapTkB(p) === 'TAC' && x?.value ? Number(x.value) / 2e18 : 0);
-  if (!(half > 0)) return 0;
-  if (!(side > 0)) return 1;
-  const d = half / (side + half), pm = poolVsMarket(p);
-  return pm ? Math.max(d, 0.5 * (1 - (1 - d) / pm.ratio)) : d;
+  if (!(half > 0)) return { impact: 0, loss: 0 };
+  if (!(side > 0)) return { impact: 1, loss: 1 };
+  const pm = poolVsMarket(p);
+  return zapEntry(half / (side + half), pm ? pm.ratio : null);
 }
+const zapImpact = (p, eth, o) => zapEntryOf(p, eth, o).impact;
 function farmDay(p, eth) {
   const r = p.reserves || {}, staked = (poolWorth(p) ?? 0) * Number(p.totalShares) / Number(r.lpTotalShares);
   return eth > 0 && FARM.program?.epoch?.active && Number(r.lpTotalShares) ? Number(p.tacPerDayForPool) * eth / (staked + eth) : 0;
@@ -12009,9 +12010,9 @@ async function hxFarms(amt) {
     const r = p.reserves || {};
     if (p.idle || String(r.assetA).toLowerCase() !== CETH_ID || !Number(r.lpTotalShares)) continue;
     if (src === 'wtac' || (src === 'tac' && !String(p.pair).split('/').includes('TAC'))) continue;
-    const half = amt / 2, impact = tacSrc ? (half > 0 && Number(r.reserveB) > 0 ? half / (Number(r.reserveB) / 1e8 + half) : 0) : zapImpact(p, amt, { split: zapping });
+    const half = amt / 2, entry = tacSrc ? zapEntry(half > 0 && Number(r.reserveB) > 0 ? half / (Number(r.reserveB) / 1e8 + half) : 0) : zapEntryOf(p, amt, { split: zapping });
     out.push({ k: String(p.pid), name: pairName(p.pair), note: 'private', icons: ['tk-teth', LOGO[String(p.pair).split('/').find((t) => t !== 'cETH')] || 'tk-tac'],
-      ...(lpOnly ? { dry: false, apr: await feeAprOf(p).then((v) => (v == null ? null : v * 100)), day: 0 } : { dry: !live, apr: live ? shieldedApr(p) : null, day: live ? farmDay(p, eth) : 0 }), impact });
+      ...(lpOnly ? { dry: false, apr: await feeAprOf(p).then((v) => (v == null ? null : v * 100)), day: 0 } : { dry: !live, apr: live ? shieldedApr(p) : null, day: live ? farmDay(p, eth) : 0 }), ...entry });
   }
   if (lpOnly) out.push(...xtEarnRows());
   return out;
@@ -13112,9 +13113,7 @@ async function hxQuote() {
       const tacSrc = HX.from === 'wtac' || HX.from === 'tac', amtN = units ? Number(units) / 1e8 : 0, tacEth = FARM.precision?.tacEth || 0;
       const ref = !amtN && !tacSrc && !(HX.lp && HX.from === 'ether') ? Number(HINT_ETH) : 0, rank = ref ? await hxFarms(ref) : rows, n = ref || amtN;
       if (my !== HX.seq) return;
-      const net = (r) => (!n ? r.apr : r.day * 7 - (tacSrc ? r.impact * n / 2 : tacEth ? r.impact * n / 2 / tacEth : 0));
-      const priv = rank.filter((r) => r.k !== 'precision' && r.apr != null), calm = priv.filter((r) => r.impact < 0.05);
-      const topRank = calm.reduce((a, r) => (!a || net(r) > net(a) ? r : a), null) || priv.reduce((a, r) => (!a || r.impact < a.impact ? r : a), null);
+      const priv = rank.filter((r) => r.k !== 'precision' && r.apr != null), topRank = farmPick(priv, { amt: n, tacEth, tacSrc });
       const top = topRank && rows.find((r) => r.k === topRank.k);
       if (ref) for (const r of rows) if (priv.some((f) => f.k === r.k && f.impact >= 0.05)) r.small = true;
       if (top && priv.length > 1) top.best = true;

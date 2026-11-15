@@ -3,7 +3,7 @@
 // remove): with nothing in between, it mints exactly the shares its note commits to; with any trade, add or remove landing first, it mints at
 // most that many, so with minShares set to them the transaction mints exactly them or reverts, and no deposit is left a note cannot open.
 //   node tests/lp-zap.test.mjs
-import { zapPlan, zapPlanFor, zapSplitPlan, zapSplitSearch, zapWorth, zapCalldata, zapSettleCalldata, ammOut, addShares, foundingPlan } from '../dapp/lp-zap.js';
+import { zapPlan, zapPlanFor, zapSplitPlan, zapSplitSearch, zapWorth, zapCalldata, zapSettleCalldata, ammOut, addShares, foundingPlan, zapEntry, farmPick } from '../dapp/lp-zap.js';
 
 let n = 0; const ok = (c, m) => { if (c) { n++; } else { console.error('FAIL -', m); process.exitCode = 1; } };
 let seed = 7n; const rnd = () => { seed = (seed * 6364136223846793005n + 1442695040888963407n) & ((1n << 64n) - 1n); return seed >> 11n; };
@@ -271,6 +271,48 @@ ok(exact > 0 && reverted > 0, `with something landing first a zap is exact or re
   ok(foundingPlan({ swapIn: 2n * E10, amountOut: 100n, amountLimit: 99n, unitB: 1n }) === null, 'too small a pool (its shares not over the 1000 locked) is refused');
   ok(foundingPlan({ swapIn, amountOut: 2n ** 70n, amountLimit: 2n ** 70n, unitB: 1n }) === null, 'a leg beyond a u64 of pool units is refused');
   ok(foundingPlan({ swapIn, amountOut: 100n, amountLimit: 200n, unitB: 1n }) === null && foundingPlan({ swapIn: 0n, amountOut: 1n, amountLimit: 1n, unitB: 1n }) === null, 'a quote that makes no sense is refused');
+}
+
+// What entering a pool costs, and which pool a deposit goes in (the page's tile hint and the Earn card's pick)
+{
+  const near = (x, y, m) => ok(Math.abs(x - y) < 1e-9, `${m} (${x} vs ${y})`);
+  // a pool at the market's price: the deposit gives up half the swap's price move, since only half of it is swapped
+  let e = zapEntry(0.04, 1);
+  near(e.impact, 0.04, 'at the market the impact is the swap’s own price move'); near(e.loss, 0.02, 'and the deposit gives up half of it');
+  e = zapEntry(0.04); near(e.impact, 0.04, 'with no market price the impact is the price move'); near(e.loss, 0.02, 'and the loss half of it');
+  // a pool that prices the coin 80% over the market: the swap overpays, which is the whole shortfall over the deposit (the price move in it)
+  e = zapEntry(0.01, 1.8); near(e.impact, 0.5 * (1 - 0.99 / 1.8), 'a dear pool: the impact is what the swap gives up against the market, of the deposit'); near(e.loss, e.impact, 'and so is the loss');
+  e = zapEntry(0.01, 0.7); near(e.impact, 0.01, 'a pool that prices the coin under the market: the impact is the price move'); near(e.loss, 0, 'and the swap gives nothing up against the market');
+  e = zapEntry(0.5, 0.7); ok(e.loss > 0.1 && e.loss < e.impact + 1e-12, 'a big enough swap in a cheap pool still gives something up');
+  for (let i = 0; i < 2000; i++) { const d = Number(rnd() % 1000n) / 1000, r = Number(1n + rnd() % 400n) / 100; const x = zapEntry(d, r); ok(x.loss >= 0 && x.loss <= x.impact + 1e-12 && x.impact >= d - 1e-12, 'loss is never over the impact, which is never under the price move'); }
+
+  // the pick: at market prices it is what the page chose before (the week's TAC less half the price move on the deposit, of the calm pools)
+  const old = (rows, amt, tacEth, tacSrc) => {
+    const net = (r) => (!amt ? r.apr : r.day * 7 - (tacSrc ? r.impact * amt / 2 : tacEth ? r.impact * amt / 2 / tacEth : 0)), calm = rows.filter((r) => r.impact < 0.05);
+    return calm.reduce((a, r) => (!a || net(r) > net(a) ? r : a), null) || rows.reduce((a, r) => (!a || r.impact < a.impact ? r : a), null);
+  };
+  let same = 0;
+  for (let i = 0; i < 3000; i++) {
+    const amt = i % 5 ? Number(1n + rnd() % 300n) / 100 : 0, tacEth = i % 7 ? 0.0001 : 0, tacSrc = i % 11 === 0, k = 2 + Number(rnd() % 4n);
+    const rows = Array.from({ length: k }, () => { const x = zapEntry(Number(rnd() % 300n) / 1000, 1); return { apr: Number(rnd() % 900n), day: Number(rnd() % 500n) / 10, ...x }; });
+    if (farmPick(rows, { amt, tacEth, tacSrc }) === old(rows, amt, tacEth, tacSrc)) same++;
+  }
+  ok(same === 3000, `at the market's price the pick is the page's old one (${same}/3000)`);
+
+  // a dear pool's loss was counted at half. Here the dear pool (a small swap into a pool pricing the coin 9% dear: the deposit gives up 4.5%) leads
+  // on rewards by less than the other half of that loss, so the market-priced pool is the pick
+  const rowOf = (apr, day, d, ratio) => ({ apr, day, ...zapEntry(d, ratio) });
+  const amt = 1, tacEth = 0.0001;
+  const dear45 = rowOf(300, 1000 / 7, 0.01, 0.99 / 0.91), flat = rowOf(250, 800 / 7, 0.04, 1), rows2 = [dear45, flat];
+  ok(dear45.impact < 0.05 && Math.abs(dear45.loss - 0.045) < 1e-9 && flat.impact < 0.05 && Math.abs(flat.loss - 0.02) < 1e-9, `both are calm: the dear pool gives up ${dear45.loss.toFixed(3)} of the deposit, the flat one ${flat.loss.toFixed(3)}`);
+  ok(old(rows2, amt, tacEth, false) === dear45, 'counted at half its loss the dear pool looked the better one (the old pick)');
+  ok(farmPick(rows2, { amt, tacEth }) === flat, 'counted in full it is not: the market-priced pool is the pick');
+  ok(farmPick(rows2, { amt: 0 }) === dear45, 'with no amount it is the best APR of the calm ones');
+  // with no calm pool: the one that gives up least of the deposit, not the one with the lowest price move
+  const thin = rowOf(400, 100, 0.3, 1), dearer = rowOf(380, 100, 0.01, 0.99 / 0.58);
+  ok(thin.impact > 0.05 && dearer.impact > 0.05 && thin.loss < dearer.loss && dearer.impact < thin.impact && Math.abs(dearer.loss - 0.21) < 1e-9, `a thin market-priced pool (price move 30%, gives up ${thin.loss.toFixed(2)}) against a dear one (impact ${dearer.impact.toFixed(2)}, gives up ${dearer.loss.toFixed(2)})`);
+  ok(farmPick([dearer, thin], { amt, tacEth }) === thin && old([dearer, thin], amt, tacEth, false) === dearer, 'with no calm pool the pick gives up least of the deposit; the old one took the lowest price move, the dear pool');
+  ok(farmPick([], { amt, tacEth }) === null, 'no pool, no pick');
 }
 
 console.log(`${n} checks`);

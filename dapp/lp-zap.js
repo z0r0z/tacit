@@ -176,3 +176,24 @@ export async function zapSplitSearch({ eth, ra, rb, total, feeBps = 30n, x0, quo
   const scored = fit.map((p) => ({ plan: p, worth: zapWorth(st, p, unitA, unitB, Number(p.swapIn) / Number(uA) / (Number(p.paid) / Number(uB))) }));
   return scored.reduce((a, b) => (b.worth.perSent > a.worth.perSent ? b : a));
 }
+
+// What entering a pool by swapping half of a deposit costs. `d` is the swap's price move, a fraction on the half swapped; `ratio` is the pool's
+// price for the other coin over the market's (above 1 where the pool prices it dear), or null when no market price is known.
+//   impact  the larger of the swap's price move and what the deposit gives up against the market: the figure that says a pool is thin or
+//           badly priced (a pool under 5% is calm)
+//   loss    what the deposit gives up in all, as a share of the deposit: the swap moves the price on half of it, so d/2, or against the
+//           market the whole shortfall of the half swapped (the price move included) over the deposit
+export function zapEntry(d, ratio = null) {
+  if (!(ratio > 0)) return { impact: d, loss: d / 2 };
+  const shortfall = 0.5 * (1 - (1 - d) / ratio);
+  return { impact: Math.max(d, shortfall), loss: Math.max(0, shortfall) };
+}
+
+// The pool a deposit goes in best: of the calm ones (`impact` under 5%) the one that pays most TAC over a week once its way in is paid (`loss`
+// of the deposit `amt`, in ETH, or in TAC when the deposit is TAC), else the pool that gives up least of the deposit. Rows carry `apr`, `day`
+// (TAC a day for this deposit), `impact` and `loss`; `tacEth` prices a loss in TAC. With no amount it is the best APR of the calm ones.
+export function farmPick(rows, { amt = 0, tacEth = 0, tacSrc = false } = {}) {
+  const net = (r) => (!amt ? r.apr : r.day * 7 - (tacSrc ? r.loss * amt : tacEth ? r.loss * amt / tacEth : 0));
+  const best = (list, score) => list.reduce((a, r) => (!a || score(r) > score(a) ? r : a), null);
+  return best(rows.filter((r) => r.impact < 0.05), net) || best(rows, (r) => -r.loss);
+}
