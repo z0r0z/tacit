@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kHgWBWjZFmz2yX5Mn/3EnOl0+4kOL1GZQ8jn1gAY9ag=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KxVnTm/pjZcnJFVaBYqiwKIOyhPLYaaVvoBifbMxljk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1604,6 +1604,23 @@ html[data-page="tac"] #tcd-seg:empty { min-height: 32px; }
 #tpg-p:empty { min-height: 336px; }
 @media (max-width: 639px) { #tpg-mid:empty { min-height: 398px; } .cl-mid .cl-note, .cl-pool figcaption { min-height: 36px; } #tpg-chain:empty { min-height: 1283px; } }
 @media (max-width: 560px) { #tcd-tabs:empty { min-height: 59px; } #tpg-p:empty { min-height: 330px; } }
+/* until the card is drawn it shows its own shape in quiet blocks (nothing moves when it arrives: they sit inside the space kept for it) */
+html[data-page="tac"] #tcd-seg:empty { position: relative; }
+html[data-page="tac"] #tcd-seg:empty::before { content: ''; position: absolute; inset: 0; background: linear-gradient(var(--skel), var(--skel)) 0 11px / 76px 10px no-repeat, linear-gradient(var(--skel), var(--skel)) 104px 11px / 52px 10px no-repeat; animation: skpulse 1.8s ease-in-out infinite; }
+#tcd-tabs:empty { position: relative; border-bottom: 1px solid var(--hair); }
+#tcd-tabs:empty::before { content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 18px, var(--skel) 18px 62px, transparent 62px 25%) 0 24px / 100% 10px no-repeat; animation: skpulse 1.8s ease-in-out infinite; }
+#tpg-p:empty { position: relative; }
+#tpg-p:empty::before, #tpg-p:empty::after { content: ''; position: absolute; left: 0; right: 0; animation: skpulse 1.8s ease-in-out infinite; }
+#tpg-p:empty::before { top: 0; height: 250px; background:
+  linear-gradient(var(--skel), var(--skel)) 0 6px / 52px 10px no-repeat, linear-gradient(var(--skel), var(--skel)) 100% 6px / 40px 10px no-repeat,
+  linear-gradient(var(--skel), var(--skel)) 0 34px / 112px 30px no-repeat, linear-gradient(var(--skel), var(--skel)) 100% 36px / 68px 26px no-repeat,
+  linear-gradient(var(--hair), var(--hair)) 0 76px / 100% 1px no-repeat,
+  linear-gradient(var(--skel), var(--skel)) 0 104px / 64px 10px no-repeat, linear-gradient(var(--skel), var(--skel)) 100% 104px / 150px 10px no-repeat,
+  linear-gradient(var(--skel), var(--skel)) 0 136px / 56px 10px no-repeat, linear-gradient(var(--skel), var(--skel)) 100% 136px / 170px 10px no-repeat,
+  linear-gradient(var(--skel), var(--skel)) 0 168px / 40px 10px no-repeat, linear-gradient(var(--skel), var(--skel)) 100% 168px / 120px 10px no-repeat,
+  linear-gradient(var(--skel), var(--skel)) 0 200px / 52px 10px no-repeat, linear-gradient(var(--skel), var(--skel)) 100% 200px / 140px 10px no-repeat; }
+#tpg-p:empty::after { top: 246px; height: 52px; border-radius: 14px; background: var(--skel); }
+@keyframes skpulse { 50% { opacity: .45; } }
 .cl-mid .cl-stats { margin-top: 20px; }
 /* the pool's notes, a dot each */
 .cl-pool { margin: 20px 0 0; padding-top: 16px; border-top: 1px solid var(--hair); }
@@ -2121,7 +2138,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       </ul>
       <p class="tpg-yield" id="tpg-yield"><a href="#tpg-earn" data-tpg-to="tpg-earn">Holders earn a share of every fee<i aria-hidden="true">→</i></a></p>
     </div>
-    <div class="cl-top cl-hold" id="tpg-live" aria-label="The Tacit chain, live"></div>
+    <div class="cl-top cl-hold" id="tpg-live" aria-label="The Tacit chain, live"><div class="cl-h"><span class="cl-v" data-s=""><span class="dot"></span><span>Reading…</span></span></div><ol class="cl-chain" aria-hidden="true"><li class="sl"><span></span></li><li class="sl"><span></span></li><li class="sl"><span></span></li><li class="sl"><span></span></li><li class="sl"><span></span></li><li class="sl"><span></span></li></ol></div>
     <div class="tac-claim" id="tac-claim" role="region" aria-label="A claim link" hidden></div>
     <section class="tco" id="tpg-co" aria-labelledby="tco-h" hidden>
       <div id="tco-pay"><div id="tco-top"></div><div id="tco-in"></div><dl class="tco-rows" id="tco-rows"></dl>
@@ -4574,7 +4591,7 @@ function wireSignIn(root, id, after) {
       wait.querySelector('button').onclick = () => cancelSign?.();
       const say = wait.querySelector('span');
       let slow = null, slower = null;
-      signStep = (x, i) => { if (SIGN_SAY[x]) say.textContent = `${SIGN_SAY[x]}${i?.of === 2 ? ` Step ${x === 'confirm' ? 2 : 1} of 2.` : ''}`; clearTimeout(slow); clearTimeout(slower); slow = setTimeout(() => { say.textContent = 'Still waiting. Open your wallet to answer.'; slower = setTimeout(() => { say.textContent = 'Nothing in your wallet? Cancel, then press again. If it keeps happening, reload this page.'; }, 15000); }, 10000); };
+      signStep = (x, i) => { if (SIGN_SAY[x]) say.textContent = `${SIGN_SAY[x]}${i?.of === 2 ? `${x === 'sign' ? ' The first time asks twice, so the same key opens every time.' : ''} Step ${x === 'confirm' ? 2 : 1} of 2.` : ''}`; clearTimeout(slow); clearTimeout(slower); slow = setTimeout(() => { say.textContent = 'Still waiting. Open your wallet to answer.'; slower = setTimeout(() => { say.textContent = 'Nothing in your wallet? Cancel, then press again. If it keeps happening, reload this page.'; }, 15000); }, 10000); };
       const more = box.querySelector('.more');
       const shown = k === 'key' ? null : setTimeout(() => { if (more?.isConnected) { more.style.display = 'none'; more.after(wait); } else box.append(wait); }, 600);
       const dlg = root.closest?.('dialog'), onClose = () => cancelSign?.();
