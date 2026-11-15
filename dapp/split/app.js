@@ -2,7 +2,7 @@
 // Off unless the link carries ?fixed=1 (kept in this browser until ?fixed=0).
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, parseEther, formatEther, describeNote } from '/fixed-pool-flow.js?cb=ca16c33e';
+import { makeFlow, parseEther, formatEther, describeNote } from '/fixed-pool-flow.js?cb=0f50365d';
 import { PAYMASTERS } from '/fixed-pool-paymaster.js?cb=40893745';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 
@@ -184,7 +184,7 @@ async function withdraw(send) {
   if (sponsored()) return withdrawFromNote();
   if (!S.flow || S.busy) return;
   S.busy = true; setGo(); $('wout').hidden = true;
-  const prover = workerProver('/split/prove-worker.js?cb=af61bd34');
+  const prover = workerProver('/fixed-pool-worker.js?cb=2999c092');
   try {
     const out = await S.flow.withdraw({
       noteText: $('wnote').value.trim(), recipient: $('wto').value.trim(), prover, send,
@@ -214,7 +214,7 @@ function confirmFee({ fee, receive, denomination }) {
 async function withdrawFromNote() {
   if (!S.flow || S.busy) return;
   S.busy = true; setGo(); $('wout').hidden = true; $('wconfirm').hidden = true;
-  const prover = workerProver('/split/prove-worker.js?cb=af61bd34');
+  const prover = workerProver('/fixed-pool-worker.js?cb=2999c092');
   try {
     const out = await S.flow.withdrawSponsored({
       noteText: $('wnote').value.trim(), recipient: $('wto').value.trim(), prover, confirm: confirmFee,

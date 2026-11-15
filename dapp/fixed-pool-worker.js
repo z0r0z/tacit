@@ -1,5 +1,5 @@
-// Runs the withdrawal prover off the page's thread. See ../fixed-pool-prover.js for the other end.
-import init, { Tree } from '../vendor/fixed-pool-prover.js';
+// Runs the withdrawal prover off the page's thread. See fixed-pool-prover.js for the other end.
+import init, { Tree } from './vendor/fixed-pool-prover.js';
 
 let tree = null;
 const ready = init();

@@ -211,7 +211,7 @@ const REWARDS_CB_FILES = ['rewards/farms.js', 'rewards/app.js', 'rewards/index.h
 // positions panel, stamped above), then the page.
 const FARM_CB_FILES = ['farm/zap.js', 'farm/app.js', 'farm/index.html'];
 // dapp/split/ divides an amount between the fixed pools and Tacit and withdraws from them: the notes' module first, then the flow over it, then app.js, then the page.
-const SPLIT_CB_FILES = ['fixed-pool-notes.js', 'fixed-pool-flow.js', 'split/app.js', 'split/index.html'];
+const SPLIT_CB_FILES = ['fixed-pool-notes.js', 'fixed-pool-flow.js', 'fixed-pool-pay.js', 'split/app.js', 'split/index.html'];
 // dapp/bridge/ follows this browser's bridges and shows how each way is proven: its reading of the journals first, then app.js, then the page.
 const BRIDGE_CB_FILES = ['bridge/track.js', 'bridge/mover.js', 'bridge/app.js', 'bridge/index.html'];
 // dapp/swap/ is the swap card the front page's Swap tab draws (its own address only forwards there): its routes first (and the aggregated route

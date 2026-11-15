@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-PI34SyQGkGQJNINnNuFYjFQAmGo1sojCEM4wE0gi3hU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-PwAfDqJgpxrzX1X9XEudZSUMZyTT+TrJ6Br6pV0yctA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -1097,6 +1097,11 @@ const S = { key: null, keys: null, wallet: null, provider: null, chain: chainOf(
 const POOL_ON = (() => {
   try { const q = new URLSearchParams(location.search).get('pool'); if (q === '1') kv.set('tacit-assoc-pool', 'on'); else if (q === '0') kv.set('tacit-assoc-pool', 'off'); } catch {}
   return kv.get('tacit-assoc-pool') === 'on';
+})();
+// The large-pool cards of Deposit (Ethereum) are off until switched on: open the page once with ?fixed=1 (?fixed=0 turns them off again).
+const LARGE_ON = (() => {
+  try { const q = new URLSearchParams(location.search).get('fixed'); if (q === '1') kv.set('tacit-fixed-pools', '1'); else if (q === '0') kv.set('tacit-fixed-pools', '0'); } catch {}
+  return kv.get('tacit-fixed-pools') === '1';
 })();
 const CH = Object.fromEntries(CHAINS.map((c) => [c.chainId, { W: null, for: null, bal: null, notes: [], quote: null, waiting: null, err: null, syncing: null, at: 0, fails: 0, fill: null, hist: null, histing: null, histNext: null, histErr: null, histFails: 0, histTimer: null, histStart: 0, last: null }]));
 const evm = makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' });
@@ -2818,6 +2823,25 @@ function poolDeposit(f, seg) {
   poolPanel().then((p) => { const h = $('#pool-host'); if (h?.isConnected) p.attach(h); }).catch((e) => mount($('#pool-host'), html`<p class="note err">${errText(e)}</p>`));
 }
 
+// The large-pool cards: loaded when asked for, given what the page owns. A failure leaves the deposit form as it was.
+async function largeCards(c, amountInput) {
+  const host = $('#lg-split'), notesHost = $('#lg-notes');
+  if (!host || !notesHost) return;
+  try {
+    const m = await import('/fixed-pool-pay.js?cb=3f527cde');
+    if (!host.isConnected) return;
+    m.attach({
+      host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
+      account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c),
+      connect: () => connectWallet(), ensureChain: () => ensureChain(c.chainId),
+      act, toast, errText,
+      say: (t) => say($('#status'), html`<span class="ok">${t}</span>`),
+      done: (cc, h, t) => done(cc, h, t),
+      depositAddress: async () => cur().W?.receiveBox || (S.key ? (await walletOn(c)).receiveBox : null),
+      setAmount: (wei) => { DRAFT['f-damt'] = wei ? plain(wei) : ''; const i = $('#f-damt'); if (i) { i.value = DRAFT['f-damt']; i.dispatchEvent(new Event('input')); } },
+    });
+  } catch (e) { console.warn('large-pool cards:', e); }
+}
 function formDeposit(f) {
   const c = S.chain, st = cur(), W = st.W;
   FORM.needsW = !W && S.depMode === 'addr';
@@ -2871,7 +2895,7 @@ function formDeposit(f) {
       <div class="amt text"><input id="f-dto" placeholder="Yourself, or an address" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Deposit to"></div>
       <div class="rcpt" id="f-rcpt" role="status" hidden></div>
       <button class="btn" type="button" id="f-go" aria-describedby="f-rcpt" disabled>${S.wallet ? 'Deposit privately' : 'Connect wallet'}</button>
-      <p class="note">Proved on this device. You pay the network fee, with no relay fee. The deposit and your wallet show on chain; whose balance it lands in does not.</p>`);
+      <p class="note">Proved on this device. You pay the network fee, with no relay fee. The deposit and your wallet show on chain; whose balance it lands in does not.</p>${LARGE_ON && c.chainId === 1 ? html`<div id="lg-split"></div><div id="lg-notes"></div>` : ''}`);
     let wb = null, dto = null, lastDto = '';
     const amt = $('#f-damt'), go = $('#f-go'), rc = $('#f-rcpt'), toEl = $('#f-dto');
     $('#f-conn')?.addEventListener('click', () => connectWallet().catch((e) => toast(errText(e), true)));
@@ -2929,6 +2953,7 @@ function formDeposit(f) {
         await finish(c, h, 'self', `Deposited ${exact(a)} ETH.`);
       });
     };
+    if (LARGE_ON && c.chainId === 1) largeCards(c, amt);
   }
   $$('[data-dep]', f).forEach((b) => b.onclick = () => setDepMode(b.dataset.dep));
 }

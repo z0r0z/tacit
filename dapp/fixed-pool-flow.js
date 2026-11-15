@@ -289,7 +289,15 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     return { op: prepared.op, fee: prepared.fee, receive, sent: true, hash: done.txHash, userOpHash: done.hash, spent: await settled(pool, note), gasEstimation: prepared.gasEstimation };
   }
 
-  return { pools, signNonce, probe, scan, deposit, checkPool, atomicSupported, seen, spent, withdraw, withdrawSponsored, knownRoot };
+  // The note text for a deposit this wallet made: the secrets come from signing its nonce again, so only (nonce, pool) is kept.
+  async function noteText({ nonce, pool }) {
+    const p = pools.find((q) => q.address.toLowerCase() === String(pool).toLowerCase());
+    if (!p) throw new Error('No pool takes this note on this network.');
+    const secrets = deriveSecrets({ signature: await signNonce(nonce), pool: p.address });
+    return noteString({ denomination: p.denomination, chainId, preimage: secrets.preimage });
+  }
+
+  return { pools, signNonce, probe, scan, deposit, checkPool, atomicSupported, seen, spent, withdraw, withdrawSponsored, knownRoot, noteText };
 }
 
 // What a found or fresh note shows: its size, its place, and the line that spends it elsewhere.
