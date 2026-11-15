@@ -168,7 +168,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     if (mine) return 'Yours is in the next block. It lands within about a minute.';
     return 'Ready for the next payment. It lands within about a minute.';
   }
-  function stats({ fee, chain, state }, wk) {
+  function stats({ fee, chain, state }, wk) {   // (the third figure: what holders earn, once the blocks are read)
     const rd = (x, f, w) => { if (x === undefined) return sk(w); try { return x === null ? '—' : f(x); } catch { return '—'; } };
     const p = chain ? price(chain.pool, chain.shares) : null;
     const up = p != null && p > 1 ? `<span class="ok">+${((p - 1) * 100).toFixed(2)}%</span>` : 'since block 1';
@@ -179,7 +179,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
       c(rd(chain, (x) => `${cu('pool', Number(x.pool) / 1e8, 2, tac(x.pool))}<small>TAC</small>`, '6ch'), 'held privately'),
       spends ? c(rd(state, (x) => count('spends', x.spends), '4ch'), 'transactions', 'Shields, payments and withdrawals the chain has landed')
         : c(rd(state, (x) => count('notes', x.leaves), '4ch'), 'notes in the pool', 'Notes the pool has made. What each holds, and who, is not shown'),
-      wk && chain ? c(`<span class="ok">${pct(wk.ppm)}</span>`, `to holders · ${wk.young ? 'since block 1' : '7 days'}`, `What holders earned from fees ${span(wk)}. 1 share is worth ${p.toFixed(5)} TAC now`)
+      has(wk) && chain ? c(`<span class="ok">${headOf(wk)}</span>`, wk.young ? 'to holders · since block 1' : 'from fees · past 7 days', wk.young ? `What the fees added to every share since the first block. 1 share is worth ${p.toFixed(5)} TAC now` : 'The past 7 days’ fees paid to holders, as a share of today’s pool, compounded daily for a year')
         : c(rd(chain, () => `${cu('px', p, 5, p.toFixed(5))}<small>TAC</small>`, '6ch'), `1 share · ${up}`),
       c(rd(fee, (x) => (x.fee != null ? `${cu('fee', Number(BigInt(x.fee) + FLOOR) / 1e8, 4, tac(BigInt(x.fee) + FLOOR, 4))}<small>TAC</small>` : '—'), '5ch'), 'fee per payment'),
     ].join('');
@@ -214,45 +214,59 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
       <span class="yl num">${lo.toFixed(5)}</span><i class="xh" hidden></i><span class="tip num" hidden></span></div>
       <figcaption><span>block ${int(x0)} · ${pts[0][1].toFixed(5)}</span><span>block ${int(x1)} · ${pts.at(-1)[1].toFixed(5)} TAC</span></figcaption></figure>`;
   }
-  // What holders earned over the past 7 days, or since the first block while the chain is younger: the fees that went into the pool, and what a share
-  // from the start of the window is worth now against then (a share's worth moves only by fees, so that ratio is what a holder was paid). null until the
+  // The pool's yield from fees over the past `days` days: what the fees paid holders, against the pool as it stands (what a share bought now is
+  // entitled to), per year with the daily rate compounded. The window starts at the last block before it, so a quiet stretch counts for the time it
+  // lasted. A chain younger than the window has no start to measure from and gives a share's gain since the first block instead. null until the
   // blocks read reach back that far.
-  function weekly(hist, chain) {
+  function pace(hist, chain, days, ask = false) {
     if (!chain || !hist.length) return null;
-    const from = chain.n - WEEK * DAY_BLOCKS;
-    let sum = 0n, low = null, p0 = 0n, s0 = 0n, short = false;
+    const from = chain.n - days * DAY_BLOCKS;
+    let sum = 0n, low = null, before = null, p0 = 0n, s0 = 0n, short = false;
     for (let i = 0; i < hist.length; i++) {
       const b = hist[i], was = hist[i + 1];
-      if (b.ethBlock < from) break;
+      if (b.ethBlock < from) { before = b; break; }
       if ((!was && b.height > 1) || (was && was.height !== b.height - 1)) { short = true; break; }
       const bp = was ? BigInt(was.pool) : 0n, bs = was ? BigInt(was.shares) : 0n, fee = BigInt(b.pool) + UNIT - (BigInt(b.shares) + UNIT) * (bp + UNIT) / (bs + UNIT);
       if (fee > 0n) sum += fee;
       low = b; p0 = bp; s0 = bs;
     }
-    if (short) { if (filled && !olderBusy && mayHaveOlder() && weekAsked < WEEK_PAGES) { weekAsked++; older(); } return null; }
+    if (short) { if (ask && filled && !olderBusy && mayHaveOlder() && weekAsked < WEEK_PAGES) { weekAsked++; older(); } return null; }
+    if (before) {
+      const pool = BigInt(chain.pool), secs = (chain.n - before.ethBlock) * 12;
+      if (pool <= 0n || secs <= 0) return null;
+      const per = Number(sum) / Number(pool);
+      return { sum, per, young: false, apy: Math.pow(1 + per * 86400 / secs, 365) - 1 };
+    }
     if (!low || sum <= 0n) return null;
     const ppm = (BigInt(chain.pool) + UNIT) * (s0 + UNIT) * 1000000n / ((BigInt(chain.shares) + UNIT) * (p0 + UNIT)) - 1000000n;
-    return ppm > 0n ? { sum, ppm, young: low.height === 1 } : null;
+    return ppm > 0n ? { sum, ppm, young: true } : null;
   }
   const pct = (ppm) => (ppm < 100n ? '<0.01%' : `+${(Number(ppm) / 1e4).toFixed(2)}%`);
-  const span = (wk) => (wk.young ? 'since the first block' : 'in the past 7 days');
-  function yields({ chain }, wk) {
+  const apyText = (a) => { const v = a * 100; return a === 0 ? '0%' : v < 0.1 ? '<0.1%' : `${v < 10 ? v.toFixed(1) : Math.round(v).toLocaleString('en-US')}%`; };
+  const has = (wk) => !!wk && (wk.young || wk.apy > 0);
+  const headOf = (wk) => (wk.young ? pct(wk.ppm) : `${apyText(wk.apy)}<small>APY</small>`);
+  function yields({ chain }, wk, dy) {
     const c = (v, k, t = '') => `<div${t ? ` title="${esc(t)}"` : ''}><span class="v num">${v}</span><span class="k">${k}</span></div>`;
     // (placeholders keep the row's three places while the blocks are read; a week that could not be read says so with dashes)
     const wait = !R.at || olderBusy || (mayHaveOlder() && weekAsked < WEEK_PAGES);
-    const idle = (w) => (wait ? sk(w) : '—');
+    const idle = (w) => (wait ? sk(w) : '—'), day = dy && !dy.young;
     return [
-      c(wk ? `<span class="ok">${pct(wk.ppm)}</span>` : idle('5ch'), wk ? `to holders, ${wk.young ? 'since block 1' : 'past 7 days'}` : 'to holders', 'What the fees added to every share'),
-      c(wk ? `${tac(wk.sum)}<small>TAC</small>` : idle('6ch'), 'paid in fees', 'Shield, payment and withdrawal fees that went into the pool'),
-      c(chain ? `${price(chain.pool, chain.shares).toFixed(5)}<small>TAC</small>` : chain === undefined ? sk('6ch') : '—', '1 share, started at 1', 'What one share of the pool is worth now'),
+      c(has(wk) ? `<span class="ok">${headOf(wk)}</span>` : idle('5ch'), wk?.young ? 'to holders, since block 1' : 'from the past 7 days’ fees',
+        wk?.young ? 'What the fees added to every share since the first block' : 'The past 7 days’ fees paid to holders, as a share of today’s pool, compounded daily for a year'),
+      c(day ? `${apyText(dy.apy)}<small>APY</small>` : idle('5ch'), 'the last 24 hours', 'The same for the last 24 hours. Fees come in bursts, so a single day moves more than a week does'),
+      c(wk ? `${tac(wk.sum)}<small>TAC</small>` : idle('6ch'), wk?.young ? 'paid in fees' : 'paid in fees, 7 days', 'Shield, payment and withdrawal fees that went into the pool'),
     ].join('');
   }
   function earned(wk) {
-    if (!wk) return '';
-    const worth = (1000 * (1 + Number(wk.ppm) / 1e6)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return `<b class="num">1,000 TAC</b> staked ${wk.young ? 'at the first block' : 'a week ago'} is worth <b class="num">${worth} TAC</b> now.`;
+    if (!has(wk)) return '';
+    if (wk.young) {
+      const worth = (1000 * (1 + Number(wk.ppm) / 1e6)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return `<b class="num">1,000 TAC</b> staked at the first block is worth <b class="num">${worth} TAC</b> now.`;
+    }
+    const k = wk.per * 1000;
+    return `Past 7 days: <b class="num">${k < 0.005 ? '<0.01' : k.toFixed(2)} TAC</b> in fees for every 1,000 TAC staked.`;
   }
-  const heroLine = (wk) => `<a href="#tpg-earn" data-tpg-to="tpg-earn">${wk ? `<b class="num">${pct(wk.ppm)}</b> to holders ${span(wk)}` : 'Holders earn a share of every fee'}<i aria-hidden="true">→</i></a>`;
+  const heroLine = (wk) => `<a href="#tpg-earn" data-tpg-to="tpg-earn">${has(wk) ? (wk.young ? `<b class="num">${pct(wk.ppm)}</b> to holders since the first block` : `<b class="num">${apyText(wk.apy)} APY</b> from the past 7 days’ fees`) : 'Holders earn a share of every fee'}<i aria-hidden="true">→</i></a>`;
   let yk = null;
   function scrub(e) {
     const pl = plot.querySelector('.cl-plot');
@@ -402,16 +416,16 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     part(() => put('sub', R.chain?.height ? `${int(R.chain.height)} blocks<span>, each proven</span>` : ''));
     part(() => put('note', note(health(R, now))));
     const hist = history();
-    let wk = null;
-    part(() => { wk = weekly(hist, R.chain); });
+    let wk = null, dy = null;
+    part(() => { wk = pace(hist, R.chain, WEEK, true); dy = pace(hist, R.chain, 1); });
     part(() => { put('stats', stats(R, wk)); countUp(); });
     part(() => pool(R.state));
     part(() => put('chart', chart(R.blocks === undefined && !hist.length ? undefined : hist)));
-    part(() => { put('yield', yields(R, wk)); put('earned', earned(wk)); });
+    part(() => { put('yield', yields(R, wk, dy)); put('earned', earned(wk)); });
     part(() => { if (hero) { const h = heroLine(wk); if (hero.__h !== h) { hero.__h = h; hero.innerHTML = h; } } });
     part(() => {
-      const k = wk ? `${wk.ppm}|${wk.sum}|${wk.young}` : '';
-      if (k !== yk) { yk = k; onYield?.(wk ? { ppm: Number(wk.ppm), sum: wk.sum, young: wk.young } : null); }
+      const k = has(wk) ? `${wk.young}|${wk.young ? wk.ppm : wk.apy}` : '';
+      if (k !== yk) { yk = k; onYield?.(has(wk) ? { young: wk.young, apy: wk.apy ?? null, ppm: wk.young ? Number(wk.ppm) : null } : null); }
     });
     part(() => put('more', more(hist)));
     part(() => put('part', ways(R)));

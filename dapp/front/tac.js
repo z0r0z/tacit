@@ -1388,7 +1388,7 @@ async function tcardShieldSay(units) {
   const sf = way === 'permit' ? await chainSweepFee().catch(() => 0n) : 0n, cap = CHAIN_SWEEP.cap ?? ctx.CH.cap ?? null;
   tcdHave(held != null ? `${fmt(held, 18, 2)} in ${payer() === 'tacit' ? 'this key’s address' : 'your wallet'}` : '');
   if (held === 0n) return [html`No TAC in ${your()}. <button class="link" type="button" data-hx="swap:ether:tac">Buy with ETH</button> · <a class="link" href="/trade/tac/#btc=buy">Buy with sats</a> · <a class="link" href="/rewards/">Claim your airdrop</a>`, false];
-  const rows = (arrives) => tcdRows(tcdRow('Arrives', arrives), tcdRow('Earns', ctx.TACP.yld ? html`<span class="tcd-up num">${tpgPct(ctx.TACP.yld.ppm)}</span> <span class="mute">${ctx.TACP.yld.young ? 'so far' : 'in 7 days'}, no lock</span>` : html`<span class="mute">a share of every fee, no lock</span>`), key ? tcdGas(way, sf, units) : tcdRow('Gas', html`<span><span class="num">${t4(sf)}</span> TAC, or your own ETH</span>`), tcdRow('Takes', html`${key ? tcdTakes(way) : 'One signature'} · about a minute`));
+  const rows = (arrives) => tcdRows(tcdRow('Arrives', arrives), tcdRow('Earns', ctx.TACP.yld ? html`<span class="tcd-up num">${tpgYield(ctx.TACP.yld)}</span> <span class="mute">${ctx.TACP.yld.young ? 'so far' : 'from fees'}, no lock</span>` : html`<span class="mute">a share of every fee, no lock</span>`), key ? tcdGas(way, sf, units) : tcdRow('Gas', html`<span><span class="num">${t4(sf)}</span> TAC, or your own ETH</span>`), tcdRow('Takes', html`${key ? tcdTakes(way) : 'One signature'} · about a minute`));
   if (!units) return [html`${rows(html`<span class="mute">private, on the Tacit chain</span>`)}${cap != null && held != null && held > cap * E10 ? html`<p class="tcd-cap">Up to ${fmt(cap, 8, 0)} TAC a shield for now.</p>` : ''}`, true];
   if (cap != null && units > cap) return [tcdErr(chainCapLine(cap)), false];
   const total = units * E10 + sf;
@@ -1614,7 +1614,8 @@ async function tpgStatus(cfg) {
   return { height: Number(height), lastLanded: Number(last), pool, shares, leader: await terms };
 }
 const tpgActionsSoft = () => { if (ctx.TACP.on) tcardQuoteSoon(); };
-const tpgPct = (ppm) => (ppm < 100 ? '<0.01%' : `+${(ppm / 1e4).toFixed(2)}%`);
+const tpgApy = (a) => { const v = a * 100; return a === 0 ? '0%' : v < 0.1 ? '<0.1%' : `${v < 10 ? v.toFixed(1) : Math.round(v).toLocaleString('en-US')}%`; };
+const tpgYield = (y) => (y.young ? (y.ppm < 100 ? '<0.01%' : `+${(y.ppm / 1e4).toFixed(2)}%`) : `${tpgApy(y.apy)} APY`);
 const tpgPx = (pool, shares) => (TPGW.ui ? TPGW.ui.sharePrice(pool, shares, 5) : tpgPrice(pool, shares).toFixed(5));
 function tpgWhy(el) {
   el.hidden = !chainOn();
@@ -1626,7 +1627,7 @@ function tpgWhy(el) {
   const k = S.key?.pubHex, shares = k && ctx.TACP.sh?.pub === k ? ctx.TACP.sh.v : null, worth = k && ctx.CH.pub === k ? ctx.CH.bal : null;
   const lf = tpgLeader(), sweep = cs?.leader?.sweepFee ?? null, t4 = (v) => fmt(v, 8, 4), blocks = cs?.height ?? roll.length;
   tpgMount(top, html`${shares != null && shares > 0n && worth != null ? html`<p class="tpg-mine">Your ${fmt(shares, 8, 4)} shares are worth ${fmt(worth, 8, 4)} TAC.</p>` : ''}
-    <p class="tpg-feeline">Staking is shielding: your TAC is held as shares of one private pool. Every payment, shield and withdrawal leaves a fee in it, so each share is worth more, with no lock. Joining costs ${margin === 'a small margin' ? margin : `a ${margin} margin`} and leaving 0.1%, both paid to the holders who stay, plus a small network fee.</p>
+    <p class="tpg-feeline">Staking is shielding: your TAC is held as shares of one private pool. Every payment, shield and withdrawal leaves a fee in it, so each share is worth more, with no lock. APY is the past 7 days’ fees on today’s pool, compounded for a year, and it rises with every payment. Joining costs ${margin === 'a small margin' ? margin : `a ${margin} margin`} and leaving 0.1%, both paid to the holders who stay, plus a small network fee.</p>
     <p class="tpg-cta"><button class="btn" type="button" data-tpg="priv">Stake TAC</button><span>Private: who holds the shares stays hidden.</span></p>`);
   tpgMount(fees, html`<details class="tpg-more"><summary>Where the fees go</summary>
     <ul class="tpg-fees">
