@@ -23,6 +23,7 @@ import { join, extname } from 'node:path';
 const { privateFarms, aprText } = await import('../dapp/trade/farm-read.js');
 const { campaignRate, campaignApr } = await import('../dapp/trade/lp-campaign.js');
 const { zapMath, marketOf } = await import('../dapp/farm/zap.js');
+const { zapPlanFor } = await import('../dapp/lp-zap.js');
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname, SHOTS = process.env.SHOTS || null, WEB = 24000 + Math.floor(Math.random() * 1000);
 const ONLY = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null, runs = (k) => !ONLY || ONLY.has(k);
@@ -582,6 +583,27 @@ try {
       await page.click('#pz-go');
       ok(await sayIs(page, /In the farm/), 'the next press sends the same proof');
       ok(await page.evaluate(() => window.__ux.filter((x) => x.startsWith('prove')).length === 1), 'without proving again');
+      await r.browser.close();
+    }
+    {
+      // a small deposit, and the pool moves a few basis points while its share is proved: the exact legs for those shares no longer exist at the new
+      // reserves, but the proof is not wasted: the one transaction is sent with legs that mint exactly the shares it names
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { proveMs: 3000 } }), { page, st } = r;
+      await until(page, () => /Enter an amount/.test(document.querySelector('#pz-go').textContent));
+      await page.fill('#pz-amt', '0.001'); await quoted(page);
+      await until(page, () => !document.querySelector('#pz-go').disabled);
+      await page.click('#pz-go');
+      ok(await until(page, () => (window.__ux || []).some((x) => x.startsWith('prove')), null, 20000), 'the proof is being made');
+      const shares = BigInt((await page.evaluate(() => window.__ux)).find((x) => x.startsWith('build:')).slice(6)), pl = st.prog.pools[0];
+      const was = { ra: BigInt(pl.reserves.reserveA), rb: BigInt(pl.reserves.reserveB), t: BigInt(pl.reserves.lpTotalShares) };
+      pl.reserves.reserveA = String(was.ra * 9996n / 10000n); pl.reserves.reserveB = String(was.rb * 10004n / 10000n);          // a trade lands: 4 bp
+      const args = { shares, ra: BigInt(pl.reserves.reserveA), rb: BigInt(pl.reserves.reserveB), total: was.t, maxEth: 10n ** 15n + 10n ** 15n / 50n };
+      ok(zapPlanFor(args) === null && zapPlanFor({ ...args, settles: true }) !== null, 'at the new reserves there are no exact legs for the proved shares, and there are legs that mint exactly them');
+      ok(await sayIs(r.page, /In the farm/), `the deposit is sent and ends in the farm (${await text(page, '#pz-say')})`);
+      const tx = st.sent[0];
+      ok(st.sent.length === 1 && lc(tx.to) === ROUTER && tx.data.startsWith('0xc4294fac') && BigInt('0x' + tx.data.slice(10 + 4 * 64, 10 + 5 * 64)) === shares, `one transaction, the router’s zap for exactly the ${shares} shares proved`);
+      ok(BigInt(tx.value) <= 10n ** 15n + 10n ** 15n / 50n, `for no more than 2% over the ETH entered (${Number(BigInt(tx.value)) / 1e18} ETH)`);
+      clean(r, 'a small deposit, pool moved');
       await r.browser.close();
     }
     {

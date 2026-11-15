@@ -5,7 +5,7 @@
 // Whatever stops it after the transaction leaves a private share note in the key's balance, which `bondShare` farms later.
 // The front page's Earn card has more ways in (a proof kept ready, a swap split with the Precision pool, your own prover, LP only);
 // this is the one path a page with a wallet and a key needs. Everything it calls is the pool module's (confidential-pool-ux.js).
-import { zapPlan, zapPlanFor, zapSettleCalldata } from '/lp-zap.js?cb=d32f4d54';
+import { zapPlan, zapPlanFor, zapSettleCalldata } from '/lp-zap.js?cb=f9b25fa1';
 import { relayedOrOwn } from '/farm-ops.js?cb=82280a4d';
 
 export const PUBLIC_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
@@ -106,7 +106,7 @@ export async function zapSend({ t, rpc, wallet, from, pool, ready, say = () => {
   const router = routerOf(t), max = ready.wei + ready.wei / SLACK;
   say('check');
   const res = await t.poolReserves(pool.poolId);
-  const plan = res && zapPlanFor({ shares: ready.shares, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps: BigInt(res.feeBps ?? 30), maxEth: max });
+  const plan = res && zapPlanFor({ shares: ready.shares, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps: BigInt(res.feeBps ?? 30), maxEth: max, settles: true });      // sent with its proof in the same transaction: a mint of any other count reverts it (lp-zap.js)
   if (!plan) throw said('The pool moved while your share was proved: this many shares now costs more than you entered. Nothing was sent; press again for a new quote.', { moved: true, stale: true });
   const [gp, bal, time] = await Promise.all([rpc('eth_gasPrice', []).then(BigInt).catch(() => 0n), rpc('eth_getBalance', [from, 'latest']).then(BigInt).catch(() => null), chainTime(rpc)]);
   if (bal != null && plan.value + ZAP_GAS * gp > bal) throw said('This wallet holds too little ETH for the deposit and its network fee. Nothing was sent.', { ready });

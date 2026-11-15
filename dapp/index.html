@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-s1zEFtLbIstvXYp6o8OCig/es8+YoXuod4qHbKazzbM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yaejoDJPikK7KizBJMI/YAJTXJtSIZXfclEr1KZ379A=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -59,7 +59,7 @@
 <link rel="modulepreload" href="/portfolio.js?cb=4bd81bcc">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=fb6ec72f">
 <link rel="modulepreload" href="/bridge-all.js?cb=45f85325">
-<link rel="modulepreload" href="/lp-zap.js?cb=d32f4d54">
+<link rel="modulepreload" href="/lp-zap.js?cb=f9b25fa1">
 <link rel="modulepreload" href="/farm-ops.js?cb=82280a4d">
 <link rel="modulepreload" href="/relay-outcome.js?cb=17e48a9a">
 <link rel="modulepreload" href="/btc-borrow.js?cb=739f4312">
@@ -2592,7 +2592,7 @@ import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { balanceRows } from '/wallet-balances.js?cb=1cd3e7a4';
 import { portfolio } from '/portfolio.js?cb=4bd81bcc';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=d4520508';
-import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth, foundingPlan, zapEntry, farmPick } from '/lp-zap.js?cb=d32f4d54';
+import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth, foundingPlan, zapEntry, farmPick } from '/lp-zap.js?cb=f9b25fa1';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
 import * as GR from '/gas-relay.js?cb=e8d173a8';
 import { netPicker } from '/net-pick.js?cb=9229f173';
@@ -7189,7 +7189,7 @@ async function xtAddCore({ run, r, wei, st }) {
   { const bad = await xtAddCheck(r, { ra: ra0, rb: rb0, plan }); if (bad) throw xtSaid(bad); }
   const { built, proven } = await xtShareProof({ run, t, priv, pub, poolId: r.pool.poolId, shares: plan.shares, tell });
   const { res, ra, rb } = await xtAddPlan(t, r, wei);
-  const now = zapPlanFor({ shares: plan.shares, ra, rb, total: res.totalShares, feeBps: BigInt(res.feeBps), unitA: E10, unitB: r.scale, maxEth: wei + wei / 50n });
+  const now = zapPlanFor({ shares: plan.shares, ra, rb, total: res.totalShares, feeBps: BigInt(res.feeBps), unitA: E10, unitB: r.scale, maxEth: wei + wei / 50n, settles: true });
   if (!now) throw xtSaid('The pool moved too far while your share was proved, so nothing was sent. Press again for a fresh quote.');
   const hash = await xtZapSend({ run, t, r, plan: now, feeBps: Number(res.feeBps), built, proven, eth, from, tell, what: `adds your ETH to the tETH / ${r.sym} pool` });
   r.keep = true; xtSave();
@@ -9057,13 +9057,13 @@ function lpProve(poolId, { size = null, shares = null, relay = false, at = null,
   VOUCH.ahead = me;
   return me.p;
 }
-const lpCost = (x, res) => zapPlanFor({ shares: BigInt(x.amount), ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps: BigInt(res.feeBps ?? 30) })?.value ?? null;
+const lpCost = (x, res) => zapPlanFor({ shares: BigInt(x.amount), ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps: BigInt(res.feeBps ?? 30), settles: true })?.value ?? null;
 async function lpReady(poolId, wei, res) {
   if (!S.key || !res || !(res.totalShares > 0n)) return null;
   const v = await vouchers(), feeBps = BigInt(res.feeBps ?? 30), maxEth = wei + wei / 50n, gap = (x) => (x > wei ? x - wei : wei - x);
   let best = null;
   for (const x of v.list(S.key.pubHex, lpTicker(poolId), 'ready')) {
-    const plan = zapPlanFor({ shares: BigInt(x.amount), ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps, maxEth });
+    const plan = zapPlanFor({ shares: BigInt(x.amount), ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps, maxEth, settles: true });
     if (plan && plan.value * 100n >= wei * 97n && (!best || gap(plan.value) < gap(best.plan.value))) best = { x, plan };
   }
   return best;
@@ -10143,7 +10143,7 @@ async function zapShareFirst({ run, t, p, built, index, shares, maxEth, tokenB, 
   if (!t.wrapProofFits(built, proven)) throw Object.assign(new Error('The proof that came back is not for this share, so nothing was sent. Press again.'), { said: true });
   run.check();
   const res = await t.poolReserves(p.poolId);
-  const plan = res && zapPlanFor({ shares, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps: BigInt(res.feeBps ?? 30), maxEth });
+  const plan = res && zapPlanFor({ shares, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps: BigInt(res.feeBps ?? 30), maxEth, settles: true });       // sent with its proof in the same transaction: see lp-zap.js
   if (!plan) throw Object.assign(new Error('The pool moved too far while your share was proved: this many shares now costs more than you entered. Nothing was sent; press again for a fresh quote.'), { said: true });
   const deadline = chainNow() + 1200;
   const data = zapSettleCalldata({ plan, router: ADDR.confRouter, amm: ADDR.publicAmm, tokenB, assetA: res.assetA, assetB: res.assetB, feeBps: Number(res.feeBps ?? 30),

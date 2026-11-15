@@ -81,7 +81,51 @@ function legFit(S, t, r, up) {
   return null;
 }
 
-export function zapPlanFor({ shares, ra, rb, total, feeBps = 30n, unitA = 10n ** 10n, unitB = 10n ** 10n, maxEth = null }) {
+// The legs and the swap for exactly `shares` at these reserves. By default the legs are exact: each floors to `shares` and is the least that does,
+// so a trade, add or remove landing first can only make the add mint fewer (never more), and with minShares set the transaction mints exactly
+// `shares` or reverts. For a share count in the finer units of the pool (a deposit small beside it) such legs exist only at scattered swap sizes,
+// often none within what a deposit can spare: `settles` is for a transaction that also settles the proof that names `shares` (zapETHIntoFarm),
+// where a mint of any other count leaves no pending deposit for that proof to spend, so the settle and the whole transaction revert and
+// nothing is stranded. If there are no exact legs it then falls back to the least legs that mint `shares`: see zapPlanSettling.
+export function zapPlanFor({ shares, ra, rb, total, feeBps = 30n, unitA = 10n ** 10n, unitB = 10n ** 10n, maxEth = null, settles = false }) {
+  const exact = zapPlanExact({ shares, ra, rb, total, feeBps, unitA, unitB, maxEth });
+  return exact || !settles ? exact : zapPlanSettling({ shares, ra, rb, total, feeBps, unitA, unitB, maxEth });
+}
+
+// The least swap that brings the B leg (the least that mints `shares`, with a unit of the swap's output over it, which the router refunds and the
+// deposit's recovery is found by) and the A leg (the least ETH that mints them: the pool takes exactly it) at the reserves the swap leaves. The pool
+// mints the smaller of what the legs give, so the leg that floors to `shares` fixes the count; one always does on the side whose reserve is at least
+// the pool's shares, and the other leg's surplus is refunded. The count is checked before a plan is returned, not assumed. Unlike the exact legs these
+// carry no guarantee that a trade landing first mints no more than `shares` (a search over small pools and every trade size found none that did:
+// the least swap leaves the B leg tight and the swap's own floor stops the trades that could), which is why they are for a settling send only.
+function zapPlanSettling({ shares, ra, rb, total, feeBps = 30n, unitA = 10n ** 10n, unitB = 10n ** 10n, maxEth = null }) {
+  ra = BigInt(ra); rb = BigInt(rb);
+  const t = BigInt(total), S = BigInt(shares), f = BigInt(feeBps);
+  if (S < 1n || !(ra > 0n && rb > 0n && t > 0n)) return null;
+  const cap = maxEth == null ? null : BigInt(maxEth), uA = BigInt(unitA);
+  const at = (x) => {
+    const out = ammOut(ra, rb, x, f);
+    if (!out) return null;
+    const ra2 = ra + x, rb2 = rb - out, a = ceil(S * ra2, t), b = ceil(S * rb2, t);
+    return { x, out, ra2, rb2, a, b, fits: out >= b + 1n };
+  };
+  // out rises and the B leg falls as the swap grows: the least swap that leaves a unit over is found by doubling, then halving
+  let hi = 1n;
+  for (let i = 0; i < 80 && !at(hi)?.fits; i++) hi *= 2n;
+  if (!at(hi)?.fits) return null;
+  let lo = hi / 2n;
+  while (hi - lo > 1n) { const mid = (lo + hi) / 2n; if (at(mid)?.fits) hi = mid; else lo = mid; }
+  for (let x = at(lo)?.fits ? lo : hi, i = 0; i < 4096; i++, x++) {
+    const p = at(x);
+    if (!p?.fits) continue;
+    if (cap != null && (p.x + p.a) * uA > cap) return null;
+    const sA = (p.a * t) / p.ra2, sB = (p.b * t) / p.rb2;
+    if ((sA < sB ? sA : sB) === S) return planShape({ ra, rb, total: t, f, unitA, unitB }, { x: p.x, out: p.out, a: p.a, b: p.b, s: S }, maxEth);
+  }
+  return null;
+}
+
+function zapPlanExact({ shares, ra, rb, total, feeBps = 30n, unitA = 10n ** 10n, unitB = 10n ** 10n, maxEth = null }) {
   ra = BigInt(ra); rb = BigInt(rb);
   const t = BigInt(total), S = BigInt(shares), f = BigInt(feeBps), g = 10000n - f;
   if (S < 1n || !(ra > 0n && rb > 0n && t > 0n)) return null;

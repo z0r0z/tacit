@@ -315,4 +315,66 @@ ok(exact > 0 && reverted > 0, `with something landing first a zap is exact or re
   ok(farmPick([], { amt, tacEth }) === null, 'no pool, no pick');
 }
 
+// A send that settles the proof in the same transaction (zapETHIntoFarm): for a share count in the pool's finer units (a deposit small beside the pool)
+// the exact legs exist only at scattered swap sizes, often none within what a deposit can spare, so a proof made for a share count could not be sent
+// after the pool moved a few basis points either way. `settles` gives it the least legs that mint exactly that count; a mint of any other count fails the
+// settle, so the transaction reverts and nothing is stranded.
+{
+  const json = (v) => JSON.stringify(v, (k, x) => (typeof x === 'bigint' ? String(x) : x));
+  // the pool after other trades, as a move of `bp` basis points of its price (one reserve up, the other down, the shares unchanged)
+  const moved = (st, bp) => { const d = BigInt(bp); return { ra: st.ra + st.ra * d / 10000n, rb: st.rb - st.rb * d / 10000n, t: st.t }; };
+  const BIG = { 'TAC, 1000 ETH deep': { ra: 10n ** 11n, rb: 10n ** 15n, t: 10n ** 13n }, 'cBTC, 100 ETH deep': { ra: 10n ** 10n, rb: 280000000n, t: 1673320053n } };
+  let strictNull = 0, tried = 0;
+  for (const [name, st0] of Object.entries(BIG)) for (const eth of ['0.005', '0.01', '0.02']) {
+    const wei = BigInt(Math.round(Number(eth) * 1e8)) * U, p0 = zapPlan({ eth: wei, ra: st0.ra, rb: st0.rb, total: st0.t });
+    ok(!!p0, `${name}: ${eth} ETH has a plan`);
+    for (const bp of [-5, -3, -1, 1, 3, 5]) {
+      const st = moved(st0, bp), args = { shares: p0.shares, ra: st.ra, rb: st.rb, total: st.t, maxEth: wei + wei / 50n };
+      const exact = zapPlanFor(args), settle = zapPlanFor({ ...args, settles: true });
+      tried++; if (!exact) strictNull++;
+      const m = settle && run({ ...st }, settle);
+      ok(settle && m === p0.shares && settle.value <= wei + wei / 50n && settle.floor === settle.bLeg + U, `${name}, ${eth} ETH, pool moved ${bp} bp: the plan mints exactly the ${p0.shares} shares proved (${typeof m === 'bigint' ? m : json(m)})`);
+      if (exact) ok(json(exact) === json(settle), 'an exact plan is kept as it was');
+    }
+  }
+  ok(strictNull >= tried / 3, `without it a small deposit finds no legs after most moves (${strictNull} of ${tried} had none)`);
+
+  // random pools, deposits and trades: it plans whenever the shares cost no more than the cap, and what it plans mints exactly those shares
+  let planned = 0, strictOnly = 0, none = 0, rescued = 0;
+  for (let i = 0; i < 6000; i++) {
+    const st0 = pool(), mag = 10n ** between(1n, 7n), E = between(3n, (mag < st0.ra / 20n ? mag : st0.ra / 20n) + 3n), p0 = zapPlan({ eth: E * U, ra: st0.ra, rb: st0.rb, total: st0.t });     // deposits from tiny to a twentieth of the pool
+    if (!p0) continue;
+    const st = { ...st0 };
+    for (let k = 0, ops = Number(between(1n, 2n)); k < ops; k++) { if (rnd() % 2n) swap(st, between(1n, st.ra / 3000n + 1n), true); else swap(st, between(1n, st.rb / 3000n + 1n), false); }
+    const cap = E * U + (E * U) / 50n, args = { shares: p0.shares, ra: st.ra, rb: st.rb, total: st.t, maxEth: cap };
+    const exact = zapPlanFor(args), settle = zapPlanFor({ ...args, settles: true });
+    if (exact && json(exact) !== json(settle)) strictOnly++;
+    if (!settle) { none++; const free = zapPlanFor({ ...args, maxEth: null, settles: true }); ok(!free || free.value > cap, `random ${i}: no plan only when the shares cost over the cap (${free?.value} against ${cap})`); continue; }
+    planned++; if (!exact) rescued++;
+    const m = run({ ...st }, settle);
+    ok(m === p0.shares && settle.value <= cap && settle.spare >= U, `random ${i}: mints exactly ${p0.shares} (${typeof m === 'bigint' ? m : json(m)}; ${json({ ...st0, E })})`);
+  }
+  ok(strictOnly === 0, 'every exact plan is returned unchanged');
+  ok(planned > 5000 && rescued > 100, `most random cases plan, and the plans that were not there before are many (${planned} planned, ${rescued} not planned without it, ${none} over the cap)`);
+
+  // what stands in for a guarantee that a trade landing first mints no more than the shares proved (the exact legs have it): in a search over small
+  // pools and every size of trade, in both directions, none of these legs minted more. The page uses them only where a wrong mint reverts.
+  let searched = 0, over = 0;
+  for (let i = 0; i < 400; i++) {
+    const ra = between(2000n, 3000000n), rb = ra * between(1n, 3000n) / between(1n, 40n) + 500n, t = (BigInt(Math.floor(Math.sqrt(Number(ra) * Number(rb)))) * between(700n, 1000n)) / 1000n + 1001n;
+    const E = between(3n, ra / 8n + 3n), p0 = zapPlan({ eth: E * U, ra, rb, total: t });
+    const settle = p0 && zapPlanFor({ shares: p0.shares, ra, rb, total: t, maxEth: E * U * 2n, settles: true });
+    if (!settle) continue;
+    for (const aIn of [true, false]) for (let d = 1n; d <= (aIn ? ra : rb) / 3n + 2n && d < 300n; d++) {
+      const st = { ra, rb, t };
+      swap(st, d, aIn);
+      const out = swap(st, settle.swapIn / U, true);
+      if (!out || out < settle.floor / U) continue;
+      searched++;
+      if (addShares(settle.ethLeg / U, settle.bLeg / U, st.ra, st.rb, st.t).s > settle.shares) over++;
+    }
+  }
+  ok(searched > 50000 && over === 0, `no trade landing first made the settling legs mint more than the shares proved (${over} of ${searched} cases)`);
+}
+
 console.log(`${n} checks`);
