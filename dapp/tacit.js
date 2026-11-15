@@ -15950,9 +15950,8 @@ function _bridgedPoolAssets(poolUx) {
   if (t && t.assetId && !t.bitcoinLink && t.underlying && Number(t.tacitDecimals) === CROSSOUT_CUSDT_DEC) out.push({ assetId: t.assetId, ticker: 'cUSDT', capRaw: CROSSOUT_CUSDT_CAP_RAW, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC });
   return out;
 }
-// Any other token the pool escrows crosses the way cUSDT does (its own id, no Bitcoin link). The page names each one here with the limits its market
-// price gives (dapp/bridge/runtime.js): a limit of 0 until it has a price, so nothing new starts but a crossing already under way still advances. The
-// two engines hold their own copies of an asset, so a later call updates them in place; one made after this call takes it from the registry.
+// Any other token the pool escrows crosses the way cUSDT does (its own id, no Bitcoin link). The page names each one here with no limit of its own
+// (NO_LIMITS, dapp/bridge/runtime.js: what a note holds), since a crossing needs no market price. The two engines hold their own copies of an asset, so a later call updates them in place; one made after this call takes it from the registry.
 const _bridgedRuntime = new Map();
 const _runtimeBridged = () => [..._bridgedRuntime.values()].map((a) => ({ ...a }));
 function addBridgedAsset({ assetId, ticker, capRaw, minRaw = 0n, dec = 8 }) {

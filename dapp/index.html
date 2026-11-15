@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-TdbI/Ky1SWI/b1MEcC2XoewdiDJpQO8jfTPVTgxtKoM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-g9Qtmz0vYPIf62YHs7Z4BCR9mLNi7MY6On2syCMYszM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -64,13 +64,13 @@
 <link rel="modulepreload" href="/relay-outcome.js?cb=17e48a9a">
 <link rel="modulepreload" href="/btc-borrow.js?cb=739f4312">
 <link rel="modulepreload" href="/bridge-out.js?cb=9662a160">
-<link rel="modulepreload" href="/bridge/track.js?cb=c9fdfdf9">
-<link rel="modulepreload" href="/bridge/runtime.js?cb=3a0fe591">
+<link rel="modulepreload" href="/bridge/track.js?cb=d67060ee">
+<link rel="modulepreload" href="/bridge/runtime.js?cb=118723c2">
 <link rel="modulepreload" href="/bridge-in.js?cb=708f1d37">
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=a0384066">
-<link rel="modulepreload" href="/swap/card.js?cb=748f93cc">
+<link rel="modulepreload" href="/swap/card.js?cb=1b1eaad8">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -2528,8 +2528,8 @@ import { UNBOND_DUST, HARVEST_WORTH, unharvested, exitSaid, bFor, aFor, farmMana
 import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from '/relay-outcome.js?cb=17e48a9a';
 import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf, NEAR_FALL, fallToLiq, fallText, approaching, loanId, loanTag } from '/btc-borrow.js?cb=739f4312';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=9662a160';
-import { bridgeLimits, bridgeDp, bridgeRoute, bridgeLimitEntry, markColor, runtimeSymbol, saveRuntime } from '/bridge/runtime.js?cb=3a0fe591';
-import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, addBridgeAsset as brAddAsset, satsOut, satsBack, readBridges, nextOf as brNext, fmtAmount as brRowAmt } from '/bridge/track.js?cb=c9fdfdf9';
+import { bridgeDp, bridgeRoute, bridgeLimitEntry, markColor, runtimeSymbol, saveRuntime, NO_LIMITS, unlimited } from '/bridge/runtime.js?cb=118723c2';
+import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, addBridgeAsset as brAddAsset, satsOut, satsBack, readBridges, nextOf as brNext, fmtAmount as brRowAmt } from '/bridge/track.js?cb=d67060ee';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=16e0e196';
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll, proofWait as brProofWait, whyText as brWhy, splitTag as brSplitTag, waitFor as brWaitFor, splitFee as brSplitFeeOf } from '/bridge-in.js?cb=708f1d37';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=42d78071';
@@ -4409,7 +4409,7 @@ const chainSaid = (m) => Object.assign(new Error(m), { said: true });
 const CHAIN_PROVE_S = globalThis.crossOriginIsolated ? 8 : 30;
 const chainProveSay = () => (globalThis.crossOriginIsolated ? 'a few seconds' : 'about half a minute');
 
-const TACIT_URL = '/tacit.js?cb=8df2c9a5';
+const TACIT_URL = '/tacit.js?cb=fb2310ad';
 let T = null;
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; try { xtEngines(m); } catch { } } });
 const loadTacit = TS.load, tacitTurn = TS.turn, withKey = TS.withKey, dropTacitKey = TS.drop, tPriv = TS.tPriv;
@@ -6822,42 +6822,41 @@ function xtBridge(r) {
   for (const h of BTC.held || []) if (h.id === hex && !h.known) Object.assign(h, { ticker: name, decimals: r.tdec, known: true });
   XA[key] = { key, ticker: name, pool: r.ticker, k: `xp${r.addr}`, icon, flag: `tacit-${key}-btc`, seg: true, sheet: 'bridge', status: `#xq${n}-status`, pre: `xq${n}`, bpre: `xqb${n}`, dp, ...dec,
     held: `${name} on your Bitcoin address`, see: 'Bridge, On Bitcoin', none: `You have no private ${name} yet. The Shield tab turns the ${name} in your wallet into it.`,
-    after: 'There it can be brought back to Ethereum below once Bitcoin’s proof has recorded it.', id: '0x' + hex, dark: true, runtime: true };
+    after: 'There it can be brought back to Ethereum below once Bitcoin’s proof has recorded it.', id: '0x' + hex, dark: false, runtime: true };
   XSEG[key] = null;
-  r.bridge = { key, hex, name, xw: `xw${r.addr}`, xp: `xp${r.addr}`, xb: `xb${r.addr}`, lim: null, dp, triedAt: 0, pricedAt: 0, pricing: false, sprite: r.logo || '' };
+  r.bridge = { key, hex, name, xw: `xw${r.addr}`, xp: `xp${r.addr}`, xb: `xb${r.addr}`, dp, triedAt: 0, pricedAt: 0, pricing: false, sprite: r.logo || '' };
   xtTables(r);
   xtBridgeLimits(r);
   // the card's token list names it and has its logo: when it arrives the mark is the logo, not a letter
   SWC.card?.listReady?.()?.then?.(() => { xtName(r); if (r.logo && r.bridge.sprite !== r.logo) { xtSprite(r, true); xtKeepBridge(r); paintHx(); } });
   return r.bridge;
 }
-// What the tracker, both engines and the bridge tab hold of a token's limits: its price's, or none (0: nothing new starts).
+// What the tracker, both engines and the bridge tab hold of a token's limits: none (NO_LIMITS, dapp/bridge/runtime.js): a crossing needs no price.
 function xtBridgeLimits(r) {
-  const b = r.bridge, a = XA[b.key], c = CHAIN_ASSETS[b.key], lim = b.lim || { minRaw: 0n, capRaw: 0n };
-  a.dp = c.dp = b.dp; a.dark = !b.lim;
+  const b = r.bridge, a = XA[b.key], c = CHAIN_ASSETS[b.key], lim = NO_LIMITS;
+  a.dp = c.dp = b.dp; a.dark = false;
   brAddAsset({ key: b.key, id: b.hex, route: bridgeRoute({ ticker: a.ticker, icon: a.icon, dp: a.dp, dec: r.tdec }), limits: bridgeLimitEntry(lim) });
   T?.addBridgedAsset?.({ assetId: r.id, ticker: a.ticker, capRaw: lim.capRaw, minRaw: lim.minRaw, dec: r.tdec });
   xtKeepBridge(r);
 }
 // What the /bridge/ page and the next visit read of the token (dapp/bridge/runtime.js): a crossing of it shows by name, in its mark, not as TAC.
 function xtKeepBridge(r) {
-  const b = r.bridge, a = XA[b.key], lim = b.lim || { minRaw: 0n, capRaw: 0n };
+  const b = r.bridge, a = XA[b.key], lim = NO_LIMITS;
   try { saveRuntime(localStorage, { addr: r.addr, id: b.hex, ticker: a.ticker, sym: r.sym, logo: r.logo, dp: a.dp, dec: r.tdec, minRaw: lim.minRaw, capRaw: lim.capRaw }); } catch { }
 }
 function xtEngines(m) {
-  for (const r of XT.by.values()) if (r.bridge) { const lim = r.bridge.lim || { minRaw: 0n, capRaw: 0n }; m.addBridgedAsset?.({ assetId: r.id, ticker: XA[r.bridge.key].ticker, capRaw: lim.capRaw, minRaw: lim.minRaw, dec: r.tdec }); }
+  for (const r of XT.by.values()) if (r.bridge) { const lim = NO_LIMITS; m.addBridgedAsset?.({ assetId: r.id, ticker: XA[r.bridge.key].ticker, capRaw: lim.capRaw, minRaw: lim.minRaw, dec: r.tdec }); }
 }
-// The limits from the token's price (ETH's price over how many of it one ETH buys), read at most every 30 minutes and tried again a minute after a miss.
+// The token's price (ETH's price over how many of it one ETH buys), for the figures in dollars and how many decimals they show; it sets no limit.
+// Read at most every 30 minutes, and tried again after a miss.
 async function xtBridgePrice(r, again = false) {
   const b = r.bridge;
-  if (!b || b.pricing || (!again && Date.now() - b.triedAt < 60e3) || (b.lim && Date.now() - b.pricedAt < 30 * 60e3)) return;
+  if (!b || b.pricing || (!again && Date.now() - b.triedAt < 60e3) || (b.usd && Date.now() - b.pricedAt < 30 * 60e3)) return;
   b.pricing = true; b.triedAt = Date.now();
   try {
-    // the card gives the rates, and only a visit that opened Shield or Swap has mounted it: one on Bridge asks for it here
-    if (!SWC.card) { hxSwap(); await swcLoad().catch(() => {}); }
-    const eu = SWC.card?.ethUsd?.(), per = eu ? await xtMarket(r) : null, usd = per > 0 ? eu / per : null, lim = usd ? bridgeLimits({ usdPerToken: usd, tdec: r.tdec }) : null;
+    const eu = SWC.card?.ethUsd?.(), per = eu ? await xtMarket(r) : null, usd = per > 0 ? eu / per : null;
     if (!eu || !per) { xtBridgeAgain(r); return; }
-    b.tries = 0; b.pricedAt = Date.now(); b.lim = lim; b.usd = usd; b.dp = lim ? bridgeDp(usd, r.tdec) : Math.min(r.tdec, 4);
+    b.tries = 0; b.pricedAt = Date.now(); b.usd = usd; b.dp = bridgeDp(usd, r.tdec);
     xtBridgeLimits(r);
     xoTick(true);
     if (HX.tab === 'bridge' && !HX.zapping) { HX.q = null; hxQuote(); }
@@ -6865,7 +6864,7 @@ async function xtBridgePrice(r, again = false) {
   } catch { xtBridgeAgain(r); } finally { b.pricing = false; }
 }
 // after a miss: a few seconds later at first (the card and its rates arrive), then a minute apart, eight times at most (a scan asks too)
-function xtBridgeAgain(r) { const b = r.bridge; if (b && !b.lim && (b.tries = (b.tries || 0) + 1) <= 8) setTimeout(() => xtBridgePrice(r, true), b.tries <= 3 ? 6e3 : 61e3); }
+function xtBridgeAgain(r) { const b = r.bridge; if (b && !b.usd && (b.tries = (b.tries || 0) + 1) <= 8) setTimeout(() => xtBridgePrice(r, true), b.tries <= 3 ? 6e3 : 61e3); }
 async function xtRegister(run, t, r, src, status) {
   const fresh = await t.externalAsset(r.addr);
   if (fresh.registered) { r.registered = true; xtFrom(r, fresh.row); return; }
@@ -13018,7 +13017,7 @@ async function hxQuote() {
   { const h = hxHandoff(m, units); if (h) return done(h); }
   HX.q = { ...(HX.q || {}), busy: true }; paintHxQ();
   if (S.key && units && HX.tab === 'bridge' && (m === 'xo' || (m === 'btc' && HX.dir === 'out'))) xoUx().catch(() => {});
-  const bridge =(u, lim, min, dp, dec = 8) => { const [fee, time] = brxRows('out'); return [fee, ['Limits', lim ? `${fmt(min, dec, dp)} to ${fmt(lim.capRaw, dec, dp)} ${u} a bridge` : `a small amount a bridge`, '', 'While the bridge is new'], time]; };
+  const bridge =(u, lim, min, dp, dec = 8) => { const [fee, time] = brxRows('out'); if (lim && unlimited(lim.capRaw)) return [fee, time]; return [fee, ['Limits', lim ? `${fmt(min, dec, dp)} to ${fmt(lim.capRaw, dec, dp)} ${u} a bridge` : `a small amount a bridge`, '', 'While the bridge is new'], time]; };
   try {
     if (hxWrapMode()) {
       if (units) { hxWarmWrap(); hxWrapAhead(units); }
@@ -15156,7 +15155,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=748f93cc').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=1b1eaad8').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

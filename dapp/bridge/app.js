@@ -1,5 +1,5 @@
-import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol } from '/bridge/runtime.js?cb=3a0fe591';
-import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=c9fdfdf9';
+import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol } from '/bridge/runtime.js?cb=118723c2';
+import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=d67060ee';
 import { bodyType } from '/rpc-body.js';
 { const fq = document.getElementById('fq-lim'); if (fq) fq.textContent = limitsSaid(); }
 // The tile's picker is the assets this page explains. A token the front page met and kept (dapp/bridge/runtime.js) is not one of them, but a crossing
@@ -318,7 +318,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=1c5baff1').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=a2ed0293').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });
