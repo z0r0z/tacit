@@ -1,6 +1,7 @@
 
 import { makeBridgeMintRecovery } from './bridge-mint-recovery.js';
-import { valuePoints, walkNullifiers } from './confidential-bridge-walk.js';
+import { valuePoints, walkNullifiers, toAffineBatch, be32 } from './confidential-bridge-walk.js';
+import { makeMultiples } from './point-multiples.js';
 
 const lc = (h) => String(h == null ? '' : h).toLowerCase();
 const strip0x = (h) => String(h == null ? '' : h).replace(/^0x/, '');
@@ -8,6 +9,13 @@ const hexToBytes = (h) => Uint8Array.from((strip0x(h).match(/../g) || []).map((x
 const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 const w32 = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 const ZERO32 = '0x' + '00'.repeat(32);
+// A 32-byte big-endian word from a hex string (padded on the left), a bigint or bytes, as the pool reads one.
+const word32 = (v) => {
+  if (v instanceof Uint8Array) { if (v.length === 32) return v; const o = new Uint8Array(32); o.set(v, 32 - v.length); return o; }
+  return hexToBytes((typeof v === 'bigint' ? v.toString(16) : strip0x(v)).padStart(64, '0'));
+};
+// The first six bytes of a digest as a number, the same number idKey in walkWrapsSteps reads from the first twelve hex digits of an id.
+const dv32 = (b) => b[0] * 0x10000000000 + b[1] * 0x100000000 + b[2] * 0x1000000 + b[3] * 0x10000 + b[4] * 0x100 + b[5];
 
 // How many nullifiers of the bridge-mint walk go to a worker at a time, and the fewest it is worth starting workers for.
 const BRIDGE_CHUNK = 6, BRIDGE_MIN = 12;
@@ -69,9 +77,9 @@ export function roundAmounts(max = (1n << 64n) - 1n) {
 // `bridgeWorkers` (optional): runs the bridge-mint walk's per-nullifier work in workers (confidential-bridge-workers.js); see walkBridgeMints.
 export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sha256, curveOrder, lockScan, airdrop, cdp, bpp, bridgeWorkers = null }) {
   const { H, G } = bpp;
+  const hTimes = makeMultiples(H);
   const N = BigInt(curveOrder);
   const cat = (arrs) => { const t = arrs.reduce((s, a) => s + a.length, 0); const o = new Uint8Array(t); let p = 0; for (const a of arrs) { o.set(a, p); p += a.length; } return o; };
-  const affineHex = (P) => { const a = P.toAffine(); return { cx: w32(a.x), cy: w32(a.y) }; };
   // A message to oneself yields like a timer but is not slowed to a second a turn in a background tab.
   const handBack = () => new Promise((r) => { if (typeof MessageChannel === 'undefined') return setTimeout(r, 0); const c = new MessageChannel(); c.port1.onmessage = () => { c.port1.close(); r(); }; c.port2.postMessage(0); });
 
@@ -107,7 +115,15 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
       if (!d) continue;
       const scale = BigInt(a.unitScale || 1);
       const values = [...new Set([...d.amounts].filter((x) => x > 0n && x % scale === 0n).map((x) => x / scale))];
-      const Hv = new Map(values.map((v) => [v, H.multiply(v)]));
+      const Hv = values.map(hTimes);
+      // The deposit id of a note is keccak(asset, value, keccak(cx, cy, owner)) (pool.depositId), worked out here from bytes: the asset and each value's bytes are the same for every index, the owner for
+      // every value of an index, and the affine coordinates of all of an index's points come from one field inversion (toAffineBatch) rather than one apiece. A digest is looked up by its first six bytes
+      // among the ids the events hold and only a digest that is there is written out in full and checked against them, so what is found is exactly what the id-by-id walk finds.
+      const commitIn = new Uint8Array(96), idIn = new Uint8Array(96);
+      idIn.set(word32(a.assetId), 0);
+      const valueWords = values.map((v) => word32(v));
+      const idKey = (h) => parseInt(h.slice(0, 12), 16);
+      const wanted = new Set([...d.ids].map((id) => idKey(strip0x(id))));
       const floor = floorFor(a.assetId);
       let miss = 0, tried = 0, matched = 0, lastMatch = -1;
       for (let i = 0; i <= maxIndex && (miss < gap || i <= floor); i++) {
@@ -116,12 +132,20 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
         const owner = pool.nkToOwner(dn.secret);
         const Gr = G.multiply(BigInt(dn.blinding));
         let hit = false;
-        for (const v of values) {
-          const { cx, cy } = affineHex(Hv.get(v).add(Gr));
-          const depositId = pool.depositId(a.assetId, v, cx, cy, owner);
-          if (!d.ids.has(lc(depositId))) continue;
-          hit = true; matched++; lastMatch = i;
-          found.push({ index: i, value: v, blinding: w32(dn.blinding), secret: dn.secret, asset: a.assetId, owner, cx, cy, leaf: pool.leaf(a.assetId, cx, cy, owner), depositId });
+        if (values.length) {
+          commitIn.set(word32(owner), 64);
+          const at = toAffineBatch(Hv.map((P) => P.add(Gr)));
+          for (let k = 0; k < values.length; k++) {
+            be32(at[k].x, commitIn, 0); be32(at[k].y, commitIn, 32);
+            idIn.set(valueWords[k], 32); idIn.set(keccak256(commitIn), 64);
+            const dig = keccak256(idIn);
+            if (!wanted.has(dv32(dig))) continue;
+            const depositId = '0x' + bytesToHex(dig);
+            if (!d.ids.has(lc(depositId))) continue;
+            const cx = w32(at[k].x), cy = w32(at[k].y);
+            hit = true; matched++; lastMatch = i;
+            found.push({ index: i, value: values[k], blinding: w32(dn.blinding), secret: dn.secret, asset: a.assetId, owner, cx, cy, leaf: pool.leaf(a.assetId, cx, cy, owner), depositId });
+          }
         }
         miss = hit ? 0 : miss + 1;
         yield;
