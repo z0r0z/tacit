@@ -174,7 +174,7 @@ test('two feeds: the pool\'s and the board\'s tallies for a day are summed per a
     const kept = s.dayRecord(D0).record;
     assert.deepEqual(kept.tally, [{ miner: A, proofs: 6, points: 80 }, { miner: B, proofs: 1, points: 20 }]);
     assert.deepEqual(kept.feed, [POOL, BOARD]);
-    assert.ok(feed.asked.includes(`${BOARD}?day=${D0}`) && feed.asked.includes(`${POOL}?day=${D0}`));
+    assert.ok(feed.asked.includes(`${BOARD}?day=${D0}&pot=200`) && feed.asked.includes(`${POOL}?day=${D0}&pot=200`), 'each feed is told the day\'s own pot in points: its daily amount over the most a point earns (10 / 0.05)');
   } finally { done(); }
 });
 

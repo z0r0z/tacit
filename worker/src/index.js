@@ -4115,7 +4115,10 @@ async function handleSaltPool(req, env, url, cors) {
   const p = url.pathname;
   if (req.method === 'GET') {
     if (p === '/prover/salt') return send(await poolCached('salt', 10000, () => pool.summary()), { ...cors, 'Cache-Control': 'max-age=10' });
-    if (p === '/prover/salt/credits') { const day = Number(url.searchParams.get('day') ?? NaN); return send(await poolCached(`salt-credits:${day}`, 15000, () => pool.credits(day)), { ...cors, 'Cache-Control': 'max-age=15' }); }
+    // ?pot=<points>: the campaign's daily points as the paying service had them for that day (its daily amount over the most a point earns); the points
+    // service passes it when it settles a day, so a day's salts are shared out of that day's pot and not the one in force when the day is read. It changes
+    // only the answer to whoever asks, nothing kept.
+    if (p === '/prover/salt/credits') { const day = Number(url.searchParams.get('day') ?? NaN), q = url.searchParams.get('pot'), pot = /^\d{1,9}$/.test(q || '') ? Number(q) : null; return send(await poolCached(`salt-credits:${day}:${pot ?? ''}`, 15000, () => pool.credits(day, { pot })), { ...cors, 'Cache-Control': 'max-age=15' }); }
     if (p === '/prover/salt/bank') return send(await pool.bank(), { ...cors, 'Cache-Control': 'max-age=60' });
     return jsonResponse({ error: 'not found' }, 404, cors);
   }

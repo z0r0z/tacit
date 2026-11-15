@@ -88,8 +88,10 @@ function makeLock() {
 export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock = makeLock(), potPoints = async () => cfg.potPoints, proofPoints = async () => 0 }) {
   // What a day's salts share: what its proofs leave of the pot, up to pointsPerDay, and at least floorPoints (itself never past pointsPerDay)
   // however much the proofs took. The floor is points on top of the pot: the campaign shares its daily amount over every point of the day.
-  const saltPot = async (day) => {
-    const [pot, used] = await Promise.all([potPoints().catch(() => cfg.potPoints), proofPoints(day).catch(() => 0)]);
+  // `campaignPot`: the campaign's daily points as the day itself had them (the service that pays the day knows its own terms for it); without it the
+  // campaign's terms now, which are right for today and wrong for a day gone by once the daily amount has changed.
+  const saltPot = async (day, campaignPot = null) => {
+    const [pot, used] = await Promise.all([campaignPot != null ? campaignPot : potPoints().catch(() => cfg.potPoints), proofPoints(day).catch(() => 0)]);
     const left = Math.floor((Number(pot) || cfg.potPoints) - (Number(used) || 0));
     return Math.max(0, Math.min(cfg.pointsPerDay, cfg.floorPoints || 0), Math.min(cfg.pointsPerDay, left));
   };
@@ -160,12 +162,12 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
     return recs.filter((r) => r.weight > 0);
   }
   // The day's points by weight, for the points service: { day, over, pointsPerDay, miners: [{ miner, proofs (its shares), points }] }.
-  async function credits(day) {
+  async function credits(day, { pot: campaignPot = null } = {}) {
     const today = dayOf(now());
     if (!Number.isInteger(day) || day > today || day < today - 39) return reply(400, { ok: false, error: 'day must be a UTC day number, today or before' });
     const recs = await dayMiners(day);
     const total = recs.reduce((s, r) => s + r.weight, 0);
-    const pot = await saltPot(day);
+    const pot = await saltPot(day, Number.isSafeInteger(campaignPot) && campaignPot > 0 && campaignPot <= 100_000_000 ? campaignPot : null);
     const miners = recs.map((r) => ({ miner: r.miner, proofs: r.shares, points: total ? Math.floor((pot * r.weight) / total) : 0 }));
     return reply(200, { day, over: day < today, pointsPerDay: pot, miners });
   }

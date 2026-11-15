@@ -139,6 +139,20 @@ test('the salt floor: a day the proofs filled still pays the salts at least the 
   assert.equal((await pool.summary()).body.pointsPerDay, 3000, 'the page\'s live row says the same');
 });
 
+test('a day\'s pot is the one the paying service names for it: once the daily amount changes, a finished day is not shared out of the new pot', async () => {
+  const t = 500 * DAY + 1000, kv = kvStore(), used = new Map([[500, 52_000]]);
+  let campaign = 30_000;                                           // the campaign's daily points now
+  const pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, sendEveryMs: 0, pointsPerDay: 15_000, floorPoints: 3000 }, now: () => t + DAY, potPoints: async () => campaign, proofPoints: async (d) => used.get(d) || 0 });
+  await makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, sendEveryMs: 0 }, now: () => t, potPoints: async () => 5000 }).submit({ miner: A, salts: [grind(500, 8).salt], client: 'c1' });
+  const at = async (opts) => (await pool.credits(500, opts)).body.pointsPerDay;
+  assert.equal(await at(), 3000, 'the day was shared out of a 30,000 pot that the proofs had used up: the floor');
+  campaign = 60_000;                                               // the daily amount doubles for the days after
+  assert.equal(await at(), 8000, 'asked without the day\'s pot, a finished day takes the new terms (what the points service must not rely on)');
+  assert.equal(await at({ pot: 30_000 }), 3000, 'with the pot the day had, it is the same as it was');
+  assert.equal(await at({ pot: 60_000 }), 8000, 'and a pot that really was 60,000 shares what the proofs left of it');
+  for (const bad of [0, -5, 1.5, NaN, null, undefined, 200_000_000, '30000']) assert.equal(await at({ pot: bad }), 8000, `a pot of ${String(bad)} is not taken: the campaign's terms stand`);
+});
+
 test('the salt floor config: POINTS_SALT_FLOOR within its bounds, bad values keep the default', () => {
   assert.equal(saltPoolConfig({}).floorPoints, 3000);
   assert.equal(saltPoolConfig({ POINTS_SALT_FLOOR: '500' }).floorPoints, 500);

@@ -107,7 +107,10 @@ export function createMine({ store, cfg, fetchJson, fundingInputs, budgetFor, gr
       const terms = lpTermsForDay(cfg.schedule, day);
       let tally = [];
       if (terms) {
-        try { const all = []; for (const f of feeds) all.push(readTally(await fetchJson(`${f}?day=${day}`), day)); tally = mergeTallies(all); }
+        // The day's own pot in points (its daily amount over the most a point earns) goes to every feed: the salt pool shares what the day's proofs
+        // leave of the pot, and must take this day's, not the terms in force when the day is read (a change of the daily amount lands on the day after).
+        const pot = terms.capWeiPerUsdDay > 0n ? terms.dailyWei / terms.capWeiPerUsdDay : 0n, potQuery = pot > 0n && pot < 1_000_000_000n ? `&pot=${pot}` : '';
+        try { const all = []; for (const f of feeds) all.push(readTally(await fetchJson(`${f}?day=${day}${potQuery}`), day)); tally = mergeTallies(all); }
         catch (err) { said('feed', `day ${day}: ${short(err)}`); return; }
       }
       const credits = terms
