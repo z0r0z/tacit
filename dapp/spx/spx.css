@@ -1,0 +1,134 @@
+/* /spx/, the SPX6900 community page: the front page's tile and header with this page's look (spx/hero.html and spx/below.html are its parts).
+   The look is the community's own: a light terminal, black borders with hard shadows, lime, magenta and cyan, Orbitron and Space Mono.
+   Every rule starts at html[data-page="spx"], which npm run build puts on the page and nowhere else. */
+@font-face { font-family: 'Orbitron'; src: url('/fonts/orbitron-latin.woff2') format('woff2'); font-weight: 400 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Space Mono'; src: url('/fonts/space-mono-400-latin.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Space Mono'; src: url('/fonts/space-mono-700-latin.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
+
+html[data-page="spx"] {
+  --lime: #e5ff1a; --magenta: #ff1a66; --cyan: #00e5ff; --black: #0a0a0a; --shadow: 4px 4px 0 var(--black);
+  --paper: #f5f5f5; --card: #fff; --field: #fff; --soft: #f0f0f0;
+  --ink: #0a0a0a; --mute: #3d3d3d; --faint: #6b6b6b; --hair: rgba(10,10,10,.16); --hair-2: rgba(10,10,10,.4);
+  --orange: #ff1a66; --ok: #0a7234; --warn: #8a4300; --err: #c4143f;
+  --scrim: rgba(10,10,10,.5); --lift: 6px 6px 0 var(--black); --float: 6px 6px 0 var(--black);
+  --skel: rgba(10,10,10,.08); --skel-hi: rgba(10,10,10,.02); --bar: #8a8a8a;
+  --mono: 'Space Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --serif: 'Space Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --disp: 'Orbitron', 'Space Mono', ui-monospace, sans-serif;
+  color-scheme: light;
+}
+html[data-page="spx"] body { background: transparent; }
+html[data-page="spx"] body::before { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: url('/spx/bg.webp') center / cover no-repeat; }
+html[data-page="spx"] :is(#how, #tac, .pg, .sx.pi) { display: none; }
+html[data-page="spx"] .hero :is(.starts, .says, .tape) { display: none; }
+html[data-page="spx"] ::selection { background: var(--lime); color: var(--black); }
+/* Space Mono's descenders are deeper than the header chips' one-em line box, which their label (overflow: hidden) cuts: a taller line, the chip's height unchanged */
+html[data-page="spx"] header.top .chip { line-height: 1.5; }
+html[data-page="spx"] :focus-visible { outline: 3px solid var(--magenta); outline-offset: 2px; }
+
+/* the hero: the community on the left, the tile on the right */
+html[data-page="spx"] .hero {
+  display: grid; position: relative; gap: 22px 40px; padding: 0 0 8px; align-items: start;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 460px);
+  grid-template-areas: 'tick tick' 'copy tile' 'luma proof';
+}
+html[data-page="spx"] .spx-top { display: contents; }
+html[data-page="spx"] .spx-tick { grid-area: tick; display: flex; gap: 0 26px; margin: 0; padding: 9px 14px; overflow: hidden; white-space: nowrap; background: var(--black); color: var(--lime);
+  font: 700 11px/1 var(--mono); letter-spacing: .14em; -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
+html[data-page="spx"] .spx-tick span:nth-child(even) { color: #fff; }
+html[data-page="spx"] .spx-copy { grid-area: copy; min-width: 0; padding-top: 10px; }
+html[data-page="spx"] .spx-tag { margin: 0 0 10px; font: 700 11px/1.2 var(--mono); letter-spacing: .18em; color: var(--magenta); }
+html[data-page="spx"] .hero h1 { margin: 0; font: inherit; letter-spacing: 0; }
+html[data-page="spx"] .spx-wm { display: block; width: min(400px, 100%); height: auto; }
+html[data-page="spx"] .spx-flip { display: inline-flex; align-items: center; gap: 8px; margin: 22px 0 0; padding: 6px 12px; background: var(--lime); border: 2px solid var(--black); box-shadow: var(--shadow);
+  font: 900 clamp(15px, 2.6vw, 24px)/1.15 var(--disp); letter-spacing: .05em; transform: rotate(-1deg); }
+html[data-page="spx"] .spx-flip i { width: .5em; height: 1.05em; background: var(--black); }
+html[data-page="spx"] .hero .sub { max-width: 34em; margin: 20px 0 0; text-align: left; font: 400 14px/1.6 var(--mono); letter-spacing: 0; color: var(--ink); text-wrap: pretty; }
+html[data-page="spx"] .hero .sub b { font: 700 1em var(--mono); background: var(--lime); padding: 0 .25em; }
+
+/* the four moves: each opens the tile on $SPX */
+html[data-page="spx"] .spx-ops { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 24px 0 0; padding: 0; list-style: none; max-width: 520px; }
+html[data-page="spx"] .spx-ops button { display: grid; grid-template: 'n t' auto 'n s' auto / auto 1fr; gap: 0 12px; align-items: center; width: 100%; min-height: 60px; padding: 10px 14px; text-align: left; cursor: pointer;
+  background: var(--card); color: var(--ink); border: 2px solid var(--black); border-radius: 0; box-shadow: var(--shadow); transition: transform .12s, box-shadow .12s, background .12s; }
+html[data-page="spx"] .spx-ops b { grid-area: n; font: 900 24px/1 var(--disp); color: var(--magenta); letter-spacing: -.02em; }
+html[data-page="spx"] .spx-ops span { grid-area: t; font: 900 14px/1.2 var(--disp); letter-spacing: .08em; }
+html[data-page="spx"] .spx-ops small { grid-area: s; font: 400 11px/1.3 var(--mono); color: var(--mute); letter-spacing: 0; }
+@media (hover: hover) { html[data-page="spx"] .spx-ops button:hover { background: var(--lime); transform: translate(-2px, -2px); box-shadow: 6px 6px 0 var(--black); } }
+html[data-page="spx"] .spx-ops button:active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--black); }
+
+/* Lumina, in a frame like the terminal's */
+html[data-page="spx"] .spx-lumina { grid-area: luma; position: relative; margin: 6px 0 0; max-width: 520px; overflow: hidden; background: linear-gradient(155deg, #d9fbff, #fff 52%, #ffe3ee); border: 2px solid var(--black); box-shadow: 6px 6px 0 var(--black); }
+html[data-page="spx"] .spx-lumina::after { content: ''; position: absolute; inset: 0 0 38px; pointer-events: none; background: repeating-linear-gradient(0deg, rgba(10,10,10,.045) 0 1px, transparent 1px 3px); }
+html[data-page="spx"] .spx-lumina img { display: block; width: 100%; height: auto; }
+html[data-page="spx"] .spx-lumina figcaption { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 12px; padding: 9px 12px; background: var(--black); color: var(--lime); font: 700 11px/1.2 var(--mono); letter-spacing: .14em; }
+html[data-page="spx"] .spx-lumina figcaption small { color: #fff; font-weight: 400; letter-spacing: .04em; font-size: 11px; }
+
+/* the tile, in the same hand */
+/* what is not open yet: the Swap tab and the tETH / SPX pool, until a pool in the Confidential AMM trades them */
+html[data-page="spx"] .hx-h button[data-off] { opacity: .35; cursor: not-allowed; }
+html[data-page="spx"] .hx-h button[data-off]:hover { color: var(--mute); }
+html[data-page="spx"] .rows button:disabled { opacity: .42; cursor: not-allowed; filter: grayscale(1); }
+html[data-page="spx"] .hx { grid-area: tile; max-width: none; margin: 0; border: 2px solid var(--black); border-radius: 0; box-shadow: 8px 8px 0 var(--black); }
+html[data-page="spx"] .hero .proof-row { grid-area: proof; margin: 0; }
+html[data-page="spx"] .hx-h { border-bottom: 2px solid var(--black); }
+html[data-page="spx"] .hx-h::after { height: 4px; border-radius: 0; background: var(--magenta); bottom: -2px; }
+html[data-page="spx"] .hx-h button { font: 900 11px/1 var(--disp); font-style: normal; letter-spacing: .1em; text-transform: uppercase; }
+html[data-page="spx"] .hx-h button .w { font: inherit; }
+html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go) { color: var(--black); background: var(--lime); border: 2px solid var(--black); border-radius: 0; box-shadow: var(--shadow); font: 900 13px/1.2 var(--disp); letter-spacing: .08em; text-transform: uppercase; transition: transform .12s, box-shadow .12s; }
+@media (hover: hover) { html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go):not(:disabled):hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--black); } }
+html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go):disabled { background: #e4e4e4; color: var(--faint); box-shadow: none; }
+html[data-page="spx"] :is(.hx, .swc) :is(.f, .rows, .rcpt, input, select) { border-radius: 0; }
+html[data-page="spx"] :is(.hx, .swc) .f { border: 2px solid var(--black); background: var(--card); }
+html[data-page="spx"] .hx-mode, html[data-page="spx"] .hx-mode button { border-radius: 0; }
+html[data-page="spx"] .hx-mode button[aria-checked="true"], html[data-page="spx"] .hx-more button[aria-selected="true"] { background: var(--lime); color: var(--black); box-shadow: none; }
+
+/* below the tile: the roster, the commandments, the links */
+html[data-page="spx"] .spx-below { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 44px 40px; margin: 64px 0 24px; }
+html[data-page="spx"] .spx-sec { min-width: 0; }
+html[data-page="spx"] #spx-aeon { grid-column: 1 / -1; }
+html[data-page="spx"] .spx-sec header { margin: 0 0 18px; }
+html[data-page="spx"] .spx-sec h2 { margin: 0; font: 900 clamp(22px, 3.4vw, 32px)/1.1 var(--disp); letter-spacing: .03em; }
+html[data-page="spx"] .spx-note { margin: 8px 0 0; font: 400 13px/1.5 var(--mono); color: var(--mute); }
+html[data-page="spx"] .spx-roster { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; margin: 0; padding: 0; list-style: none; }
+html[data-page="spx"] .spx-roster a { display: block; text-decoration: none; background: var(--card); border: 2px solid var(--black); box-shadow: var(--shadow); transition: transform .12s, box-shadow .12s; }
+html[data-page="spx"] .spx-roster img { display: block; width: 100%; height: auto; aspect-ratio: 480 / 655; object-fit: cover; background: #dcdcdc; }
+html[data-page="spx"] .spx-roster span { display: block; padding: 7px 8px; border-top: 2px solid var(--black); font: 700 10.5px/1.2 var(--mono); letter-spacing: .1em; transition: background .12s; }
+@media (hover: hover) { html[data-page="spx"] .spx-roster a:hover { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 var(--black); } html[data-page="spx"] .spx-roster a:hover span { background: var(--lime); } }
+html[data-page="spx"] .spx-more { margin: 16px 0 0; font: 700 12px/1.2 var(--mono); letter-spacing: .12em; }
+html[data-page="spx"] .spx-more a { padding: 2px 4px; background: var(--lime); color: var(--black); text-decoration: none; border-bottom: 2px solid var(--black); }
+html[data-page="spx"] .spx-law { margin: 0; padding: 0; list-style: none; }
+html[data-page="spx"] .spx-law li { display: flex; align-items: center; gap: 14px; margin-top: -2px; padding: 11px 14px; background: var(--card); border: 2px solid var(--black); font: 900 12.5px/1.3 var(--disp); letter-spacing: .05em; }
+html[data-page="spx"] .spx-law b { flex: none; min-width: 2.3em; padding: 3px 0; text-align: center; background: var(--black); color: var(--lime); font: 700 12px/1 var(--mono); letter-spacing: .04em; }
+@media (hover: hover) { html[data-page="spx"] .spx-law li:hover { background: var(--lime); } }
+html[data-page="spx"] .spx-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+html[data-page="spx"] .spx-links a { display: block; padding: 11px 14px; text-decoration: none; background: var(--card); border: 2px solid var(--black); box-shadow: var(--shadow); transition: transform .12s, box-shadow .12s, background .12s; }
+html[data-page="spx"] .spx-links b { display: block; font: 900 13px/1.2 var(--disp); letter-spacing: .06em; }
+html[data-page="spx"] .spx-links small { display: block; margin-top: 3px; font: 400 11px/1.3 var(--mono); color: var(--mute); }
+@media (hover: hover) { html[data-page="spx"] .spx-links a:hover { background: var(--cyan); transform: translate(-2px, -2px); box-shadow: 6px 6px 0 var(--black); } }
+html[data-page="spx"] .spx-ca { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 20px 0 0; }
+html[data-page="spx"] .spx-ca span { font: 700 10.5px/1.2 var(--mono); letter-spacing: .14em; color: var(--magenta); }
+html[data-page="spx"] .spx-ca code { font: 400 12px/1.5 var(--mono); overflow-wrap: anywhere; }
+html[data-page="spx"] .spx-fine { grid-column: 1 / -1; max-width: 60ch; margin: 0; font: 400 11.5px/1.6 var(--mono); color: var(--faint); }
+
+@media (prefers-reduced-motion: no-preference) {
+  html[data-page="spx"] .spx-flip i { animation: spx-blink 1.1s steps(2, jump-none) infinite; }
+}
+@keyframes spx-blink { 50% { opacity: 0; } }
+
+@media (max-width: 1020px) {
+  html[data-page="spx"] .spx-roster { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 899px) {
+  html[data-page="spx"] .hero { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'tick' 'copy' 'tile' 'proof' 'luma'; gap: 20px; }
+  html[data-page="spx"] .hx { max-width: 520px; width: 100%; justify-self: start; }
+  html[data-page="spx"] .spx-lumina { justify-self: start; width: 100%; max-width: 520px; }
+  html[data-page="spx"] .spx-below { grid-template-columns: minmax(0, 1fr); margin-top: 48px; }
+  html[data-page="spx"] .spx-wm { width: min(320px, 74%); }
+}
+@media (max-width: 520px) {
+  html[data-page="spx"] .spx-roster { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  html[data-page="spx"] .spx-ops { gap: 10px; }
+  html[data-page="spx"] .spx-ops button { padding: 9px 10px; gap: 0 9px; }
+  html[data-page="spx"] .spx-ops b { font-size: 20px; }
+  html[data-page="spx"] .spx-links { grid-template-columns: minmax(0, 1fr); }
+}

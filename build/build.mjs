@@ -45,6 +45,7 @@ const CEREMONY_HTML = join(DAPP_DIR, 'ceremony', 'index.html');     // the EVM p
 const SECRET_SATS_HTML = join(DAPP_DIR, 'secret-sats', 'index.html'); // the lite paper's viewer, likewise
 const TACIT_V1_HTML = join(DAPP_DIR, 'tacit-v1', 'index.html');
 const TAC_HTML = join(DAPP_DIR, 'tac', 'index.html');            // /tac/, TAC's page: the front page made for that address (tacPage below)
+const SPX_HTML = join(DAPP_DIR, 'spx', 'index.html');            // /spx/, the SPX6900 community page: the front page with a part of its own (spxPage below)
 const OUT_DIR    = join(HERE, 'out');                        // build artifacts (gitignored)
 const BR_OUT     = join(OUT_DIR, 'tacit.js.br');             // brotli-q11 copy for the edge route
 
@@ -318,6 +319,40 @@ function tacPage(write) {
   if (got === want) return [];
   if (write) writeFileSync(TAC_HTML, want);
   return ['tac/index.html is not /index.html made for /tac/'];
+}
+// The SPX6900 community page, /spx/, is the front page too: the same document and module (so the tile, its Shield, Send, Withdraw and Bridge and a Tacit key
+// work as they do there), with the page's own parts (spx/hero.html in the place of the title, spx/below.html above the explainer) and its own styles and fonts (spx/spx.css) added. spx/index.html is
+// made from index.html here, differing only in the head's name for it, those additions and a mark on <html> that lets the styles lay it out as this page.
+// It is made after the tokens and pin of index.html are final, and `--verify-only` fails when it is not what this makes.
+const SPX_PAGE_DESC = 'SPX6900, privately: shield $SPX into the Tacit DeFi pool, send it, take it out or bridge it to Bitcoin.';
+const SPX_PAGE_SWAPS = [
+  ['<html lang="en">', '<html lang="en" data-page="spx">'],
+  ['<title>tacit defi</title>', '<title>tacit SPX</title>'],
+  ['<link rel="canonical" href="https://tacit.finance/">', '<link rel="canonical" href="https://tacit.finance/spx/">'],
+  ['<meta property="og:url" content="https://tacit.finance/">', '<meta property="og:url" content="https://tacit.finance/spx/">'],
+  ['<meta property="og:title" content="tacit defi">', '<meta property="og:title" content="tacit SPX">'],
+  ['<meta property="og:image" content="https://tacit.finance/tacit-card.png">', '<meta property="og:image" content="https://tacit.finance/spx/card.jpg">'],
+];
+function spxPageOf(text) {
+  for (const [a, b] of SPX_PAGE_SWAPS) {
+    if (text.split(a).length !== 2) throw new Error(`index.html has no single ${a}: update SPX_PAGE_SWAPS in build/build.mjs`);
+    text = text.replace(a, b);
+  }
+  const top = /    <div class="hero-t">\n      <h1 id="hero-h">[^\n]*<\/h1>\n      <p class="sub">[^\n]*<\/p>\n    <\/div>\n/, below = '  <section class="sx" id="how"', end = '<!-- chrome:head:end -->';
+  if (text.split(top).length !== 2 || text.split(below).length !== 2 || text.split(end).length !== 2) throw new Error('index.html should have one hero title block, one #how section and one chrome:head:end marker: update spxPageOf in build/build.mjs');
+  const part = (name) => readFileSync(join(DAPP_DIR, 'spx', name), 'utf8').trimEnd();
+  text = text.replace(top, () => `${part('hero.html')}\n`).replace(below, () => `${part('below.html')}\n\n${below}`)
+    .replace(end, () => `${end}\n<link rel="preload" href="/fonts/orbitron-latin.woff2" as="font" type="font/woff2" crossorigin>\n<link rel="preload" href="/fonts/space-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>\n<link rel="stylesheet" href="/spx/spx.css?cb=${fileToken('spx/spx.css')}">`);
+  const desc = /(<meta (?:name="description"|property="og:description") content=")[^"]*(">)/g;
+  if ((text.match(desc) || []).length !== 2) throw new Error('index.html should have one description and one og:description: update spxPageOf in build/build.mjs');
+  return text.replace(desc, (m, a, b) => `${a}${SPX_PAGE_DESC}${b}`)
+    .replace('<head>', '<head>\n<!-- Made from /index.html by `npm run build` (build/build.mjs): edit that file (and spx/hero.html, spx/below.html, spx/spx.css), not this one. -->');
+}
+function spxPage(write) {
+  const want = spxPageOf(readFileSync(WELD_HTML, 'utf8')), got = existsSync(SPX_HTML) ? readFileSync(SPX_HTML, 'utf8') : null;
+  if (got === want) return [];
+  if (write) writeFileSync(SPX_HTML, want);
+  return ['spx/index.html is not /index.html made for /spx/'];
 }
 function tradeAssetPages(write) {
   const drift = [];
@@ -650,7 +685,7 @@ async function main() {
     if (gotPreboot !== wantPreboot) drift.push(`classic.html preboot.js ?cb=${gotPreboot} but sha256(dapp/preboot.js)=${wantPreboot}`);
     if (gotSw !== wantSw) drift.push(`sw.js CACHE_VERSION suffix ${gotSw} but sha256(vendor‖prf-wallet)=${wantSw}`);
     drift.push(...siteChrome(false), ...frontSheets(false), ...pageCacheBust(SATS_CB_FILES, false), ...pageCacheBust(REWARDS_CB_FILES, false), ...pageCacheBust(FARM_CB_FILES, false), ...pageCacheBust(SPLIT_CB_FILES, false), ...pageCacheBust(BRIDGE_CB_FILES, false), ...pageCacheBust(WELD_CB_FILES, false), ...pageCacheBust(TAC_CB_FILES, false), ...btcMarketCss(false), ...tethPageStyle(false), ...pageCacheBust(TRADE_CB_FILES, false), ...tradeAssetPages(false), ...pageCacheBust(VAULT_CB_FILES, false), ...pageCacheBust(TASKS_CB_FILES, false), ...pageCacheBust(DISCORD_CB_FILES, false), ...pageCacheBust(FACE_CB_FILES, false), ...pageCacheBust(FAST_CB_FILES, false), ...pageCacheBust(CHAIN_CB_FILES, false), ...pageCacheBust(PROVE_CB_FILES, false), ...pageCacheBust(HELP_CB_FILES, false), ...pageCacheBust(BUILD_CB_FILES, false), ...pageCacheBust(SWAP_CB_FILES, false), ...pageCacheBust(ETCH_CB_FILES, false), ...pageCacheBust(ASSETS_CB_FILES, false), ...pageCacheBust(SPLITTER_CB_FILES, false), ...pageCacheBust(RELAY_CB_FILES, false), ...pageCacheBust(PAY_CB_FILES, false));
-    drift.push(...pageImportMaps(false), ...pagePreloads(false), ...pageCacheBust(HARNESS_CB_FILES, false), ...tacPage(false));
+    drift.push(...pageImportMaps(false), ...pagePreloads(false), ...pageCacheBust(HARNESS_CB_FILES, false), ...tacPage(false), ...spxPage(false));
     if (drift.length) {
       console.error('✗ cache-bust tokens or preload links are stale — run `npm run build` and commit the result:');
       for (const d of drift) console.error(`    ${d}`);
@@ -746,6 +781,7 @@ async function main() {
       if (v.digest) console.log(`• ${page.name} CSP hash: ${v.digest}${v.changed ? ' (updated)' : ' (unchanged)'}`);
     }
     console.log(`• TAC's page: ${tacPage(true).length ? 'made again from index.html' : 'unchanged'}`);
+    console.log(`• SPX page: ${spxPage(true).length ? 'made again from index.html' : 'unchanged'}`);
     const swVer = updateCacheVersion(readFileSync(SW_JS), bundle, prfWallet);
     console.log(`• SW cache version: ${swVer.token}${swVer.changed ? ' (updated — will bust STATIC_CACHE)' : ' (unchanged)'}`);
     // Brotli-q11 copy for the edge-delivery route (worker handleDappBundle).

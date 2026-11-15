@@ -22,6 +22,7 @@
 # live until 2026-10-17 and were added that way; this file and GET .../routes should list the same rules.
 
 /tac      /tac/      301
+/spx      /spx/      301
 /trade    /trade/tac/    301
 /trade/tac  /trade/tac/  301
 /teth  /teth/  301

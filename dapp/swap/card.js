@@ -212,6 +212,8 @@ function kindOf(pay, get, inP = S.inP, outP = S.outP) {
   if (arguments.length < 3 && (S.at.pay || S.at.get)) return null;
   if (inP && outP) return inPool(pay) && inPool(get) && pay !== get ? 'private' : null;
   if (outP) {
+    // the SPX page: ETH buys the token on the open market and shields it (the swap, then the deposit), whether or not a pool trades it privately
+    if (FLOW === 'shield' && isEth(pay) && get !== 'teth' && H.moves?.zapTo?.() === get) return 'zap';
     if (!inPool(get)) return null;
     if (isEth(pay)) return 'private';
     return isListed(pay) && !tacitKey(pay) && pay !== lc(R.WETH) && FLOW !== 'shield' ? 'pin' : null;
@@ -274,6 +276,7 @@ const placed = () => moving() && !!(S.at.pay || S.at.get || moveOf());
 const LADDER = { wallet: 0, btc: 0, pay: 1, defi: 1, chain: 2 };
 let FLOW = null;
 function flowGet(k, at) {
+  if (FLOW === 'shield' && at === 'wallet' && isEth(k)) { const z = H.moves?.zapTo?.(); if (z && tokenOf(z)) return [z, 'defi']; }
   if (FLOW === 'withdraw') {
     if (at === 'chain' && atOf('get') === 'defi' && pairOk(k, at, k, 'defi')) return [k, 'defi'];
     const w = coinAt(k, 'wallet'); return isPrivAt(at) && pairOk(k, at, w, 'wallet') ? [w, 'wallet'] : null;
@@ -611,6 +614,11 @@ async function quote(my, wei) {
     if (zerr) throw zerr;
     return done({ rows: [], why: 'No route trades this pair deeply enough right now.' });
   }
+  if (kind === 'zap') {
+    const who = account || PREVIEW, zq = await within(R.quoteEthToToken({ ethCall, to: who, tokenOut: S.get, amount: wei, slippageBps: S.slip, deadline: chainDeadline(1200) }), 20e3, 'zQuoter did not answer in time. Try again.');
+    if (!zq) return done({ rows: [], why: `No pool trades ETH for ${esc(get.sym)} deeply enough right now.` });
+    return done({ rows: [{ k: 'zap', name: `${zq.name} → private ${esc(get.sym)}`, note: '', out: zq.amountOut, min: zq.amountLimit, zap: zq, gas: GAS.split, best: true, at: now() }] });
+  }
   if (kind === 'pin') {
     const who = account || PREVIEW, r1 = await within(A.bestRoute({ ethCall, to: who, refundTo: who, tokenIn: S.pay, tokenOut: R.ZERO, amountIn: wei, slippageBps: S.slip, deadline: chainDeadline(1200) }), 20e3, 'zQuoter did not answer in time. Try again.');
     if (!r1) return done({ rows: [], why: `No pool trades ${esc(pay.sym)} for ETH deeply enough.` });
@@ -770,7 +778,7 @@ const shownAt = (k, at) => { const t = tokenOf(k, at === 'defi'); return at === 
 let PAYWARM = 0;
 function paintSides() {
   let pay = shownAt(S.pay, atOf('pay')), get = shownAt(S.get, atOf('get'));
-  if (FLOW === 'shield' && get && pay) get = { ...get, sym: S.get === 'teth' ? 'ETH' : pay.sym };
+  if (FLOW === 'shield' && get && pay) get = { ...get, sym: S.get === 'teth' ? 'ETH' : isEth(S.pay) ? get.sym : pay.sym };
   if (FLOW === 'withdraw' && get && pay) pay = { ...pay, sym: get.sym };
   setHtml($('#pay-coin'), `${coin(pay)}${esc(pay.sym)}<span class="car" aria-hidden="true">▾</span>`);
   $('#pay-coin').setAttribute('aria-label', `Pay with ${pay.sym}. Choose another`);
@@ -913,7 +921,7 @@ function quotePaint() {
     else if (!r.priv || (r.pout && !isEth(S.get))) lines.push(['At least', `${tidy(amtFmt(r.min ?? (r.out * BigInt(10000 - S.slip)) / 10000n, get.dec))} ${get.sym}`]);
     else if (r.priv && !r.pout) lines.push(['At least', `${tidy(amtFmt(poolFloor(r.out / scOf(S.get)) * scOf(S.get), get.dec))} ${get.sym}`]);
     if (r.sell?.rest > 0n) lines.push(['Plus', `about ${tidy(amtFmt(r.sell.rest, 18))} WETH`]);
-    const routed = r.agg || r.sv ? (q.rows || []).length < 2 : r.any?.hop || r.sell || r.buy || r.pin || r.via || r.hop;
+    const routed = r.agg || r.sv ? (q.rows || []).length < 2 : r.any?.hop || r.sell || r.buy || r.pin || r.zap || r.via || r.hop;
     const hopEth = laterOn(kind) && isEth(S.pay) && !r.hop && !r.via && rows.hidden;
     const named = hopEth || !routed ? routeLine({ r, pools: q.pools, hop: hopEth }, (k) => PSYM[k]) : null;
     const compared = r.agg?.quotes?.length ? `Compared with ${r.agg.quotes.length} pool${r.agg.quotes.length > 1 ? 's' : ''}` : r.sv ? 'An outside solver, settled through zRouter: it pays at least the least shown, or nothing is swapped' : '';
@@ -926,12 +934,13 @@ function quotePaint() {
     const tacSide = S.pay === lc(R.TAC) || S.get === lc(R.TAC);
     if (m != null && tacSide) lines.push(['Price impact', `${(Math.max(0, -m) * 100).toFixed(2)}%`, m <= GATE ? 'warn' : '']);
     else if (m != null && (!(r.agg || r.pin) || Math.abs(m) >= 0.01)) lines.push(['Against the market', m <= BAD ? `${(Math.abs(m) * 100).toFixed(1)}% below` : m >= 0.02 ? `${(m * 100).toFixed(1)}% above` : `${m >= 0 ? '+' : '−'}${(Math.abs(m) * 100).toFixed(2)}%`, m <= BAD ? 'warn' : m >= 0.02 ? 'ok' : '']);
-    if (m == null && (r.agg || r.sv) && !tacSide) lines.push(['Against the market', 'not checked', '', 'There is no reference price for this pair here, so a thin pool could give a poor rate. Compare the routes before sending, and use a small amount first.']);
+    if (m == null && (r.agg || r.sv || r.zap) && !tacSide) lines.push(['Against the market', 'not checked', '', 'There is no reference price for this pair here, so a thin pool could give a poor rate. Compare the routes before sending, and use a small amount first.']);
     if (r.priv) lines.push(...feeLines(q, r));
     { const a = r.priv && aheadArgs(q), ra = r.priv && !a && routeAheadArgs(q), st = a ? PV?.aheadOf?.(a) : ra ? PV?.routeAheadOf?.(ra) : null;
       if (st) lines.push(['Proof', st === 'ready' ? (a ? 'made: one transaction' : 'made: the relay only sends it') : 'being made, about a minute', st === 'ready' ? 'ok' : '']); }
     { const nudge = r.priv && privRow(q, r); if (nudge) lines.push(nudge); }
     if (r.pout) lines.push(['Chain sees', htmlVal(`${esc(get.sym)} to ${S.to ? whoH(S.to) : W.account ? 'your wallet' : 'the address'}, not from whom`)]);
+    else if (r.zap) lines.push(['Steps', `swap, then shield and prove it`, '', 'The swap is a public trade on the open market. Then the token goes into the pool from your wallet, and the proof that makes it private takes about a minute.'], ['Chain sees', `your ${tidy(amtFmt(q.wei, pay.dec))} ETH bought ${get.sym}, then a deposit`]);
     else if (r.pin) lines.push(['Chain sees', `your ${tidy(amtFmt(q.wei, pay.dec))} ${pay.sym} for ETH, then a deposit`]);
     else if (r.priv) lines.push(['Chain sees', isEth(S.pay) ? `your ${tidy(amtFmt(q.wei, 18))} ETH deposited` : 'a swap, not whose']);
     else if (laterOn(kind)) { const dep = isEth(S.pay) ? laterDeposit(q) : laterIn(q); lines.push(['Chain sees', `your ${dep != null ? `${tidy(amtFmt(dep, pay.dec))} ` : ''}${pay.sym} going in, not where it goes`]); }
@@ -987,6 +996,14 @@ function button(q, r, kind, gate) {
   if (!r) return [q?.err ? 'Try again' : q?.tiny ? 'Amount too small' : 'No route', !!q?.err];
   if (S.toBusy && !S.outP) return ['Finding the address…', false];
   const tTyped = S.outP && S.toOpen && $('#to-in').value.trim() !== '', tLabel = S.toTacit ? ` → ${esc(tacitName(S.toTacit))}` : '';
+  if (kind === 'zap') {
+    if (!W.account) return ['Connect wallet', true];
+    const eth = S.bal[lc(R.ZERO)];
+    if (eth != null && q.wei > eth) return ['Not enough ETH', false];
+    if (eth != null && q.wei + 2n * gasKeep() > eth) return ['Leave some ETH for the network fee', false];
+    if (gate && !S.ack) return gateButton();
+    return [`Buy and shield ${get.sym}`, true, 'priv'];
+  }
   if (kind === 'pin') {
     if (!W.account) return ['Connect wallet', true];
     if (tTyped && S.toTacitBad) return ['Check the address', false];
@@ -1106,6 +1123,7 @@ async function go() {
     await laterGo(); return;
   }
   if (!W.account) { await H.connect(); return; }
+  if (kind === 'zap' && !H.key?.session?.unlocked) { await H.connect({ key: true }); return; }
   if (PENDING) { S.busy = true; paintQuote(); const held = await pendingHolds().catch(() => true); S.busy = false; paintQuote(); if (held) return; }
   const from = W.account, P = { kind, r, q: S.q, wei: S.q.wei, slip: S.slip, floor: (r.out * BigInt(10000 - S.slip)) / 10000n, pay: S.pay, get: S.get, to: recipient() };
   if (S.toBad) return;
@@ -1126,6 +1144,7 @@ async function go() {
     if (rc.status !== '0x1') throw Object.assign(new Error(`The transaction failed (${txLink(h)}). Nothing was swapped.`), { html: true });
     reward(rowPts(P.r, P.q));
     const after = P.to ? null : await balanceNow(P.get, from).catch(() => null), got = before != null && after != null ? after - before : null;
+    if (P.kind === 'zap') { await zapOn(P, got, h); live('Swap done'); readBalances().then(() => paintSides()); return; }
     const g = tokenOf(P.get), where = P.to ? whoH(P.to) : 'your wallet';
     S.lastBuy = P.get === lc(R.TAC) && got > 0n ? got : null;
     if (P.to) { S.to = null; S.toOpen = false; S.toBad = ''; $('#to-in').value = ''; }
@@ -1139,6 +1158,16 @@ async function go() {
     S.busy = false; paintQuote();
     say(e instanceof UserStopped || e?.userStopped ? declinedWords(e, unsent()) : `<span class="err">${e?.html ? e.message : esc(e?.message || String(e)).slice(0, 300)}</span>`, '', true);
   } finally { S.busy = false; }
+}
+// The zap's second half. The swap has landed and the token it bought is in the wallet; the page makes that much of it private (its deposit, then its proof,
+// which it tells as it goes). If that stops, the token is in the wallet and Shield finishes it.
+async function zapOn(P, got, h) {
+  const g = tokenOf(P.get);
+  S.amt = ''; S.q = null; S.seq++; S.busy = false; changed(); paint();
+  if (!(got > 0n)) { say(`The swap landed (${txLink(h)}), but how much ${esc(g.sym)} it brought could not be read. It is in your wallet: pick ${esc(g.sym)} and press Shield to make it private.`, '', true); return; }
+  say(`Bought ${txLink(h)}: ${tidy(amtFmt(got, g.dec))} ${esc(g.sym)} in your wallet. Making it private…`);
+  try { await H.moves.shield(P.get, got); }
+  catch (e) { say(`<span class="err">${txLink(h)} bought ${tidy(amtFmt(got, g.dec))} ${esc(g.sym)}, which is in your wallet and not private yet. Pick ${esc(g.sym)} and press Shield to finish. ${esc(e?.message || '')}</span>`, '', true); }
 }
 let GR_LIVE = null;
 const RELAY_KINDS = ['tac', 'any', 'in', 'out', 'agg'];
@@ -1292,6 +1321,10 @@ async function prepare(P, from) {
     const q = P.reused ? shown : await within(A.bestRoute({ ethCall, to: dest, refundTo: from, tokenIn: P.pay, tokenOut: P.get, amountIn: P.wei, slippageBps: P.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
     if (!q || q.out < P.floor || q.min < (P.r.min ?? P.floor)) return moved();
     tx = await aggTx(q, from);
+  } else if (P.kind === 'zap') {
+    const q = await within(R.quoteEthToToken({ ethCall, to: from, tokenOut: P.get, amount: P.wei, slippageBps: P.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
+    if (!q || q.amountOut < P.floor) return moved();
+    tx = { to: R.ZROUTER, data: q.callData, value: q.msgValue };
   } else throw new Error('Nothing to do for this pair.');
   if (RELAY_MODE) return tx;
   say('Checking it first…');
@@ -2402,9 +2435,10 @@ function openPicker(side, again = false) {
   });
   const pk = $('#pk'), at = atOf(side), cur = side === 'pay' ? S.pay : S.get;
   const wl = held(listed().map((t) => t.addr)), top = wl.filter((k) => tacitPooled(k) || S.bal[k] > 0n), rest = wl.filter((k) => !top.includes(k));
+  const ONLY = H.moves?.only?.() ?? null;
   const groups = [['Wallet', top, 'wallet', 'wallet'], ['Private', [...POOL_COINS.map((k) => `@defi:${k}`), ...ownHeld().map((k) => `@defi:${k}`), ...(moving() ? placeCoins(side, 'pay').map((k) => `@pay:${k}`) : []), ...placeCoins(side, 'chain').map((k) => `@chain:${k}`)], 'private', 'defi'],
     ...(moving() ? [['Bitcoin', placeCoins(side, 'btc').map((k) => `@btc:${k}`), 'bitcoin', 'btc']] : []),
-    ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
+    ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).map((g) => (ONLY ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return ONLY.has(m ? m[2] : key); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
   const kinds = ['wallet', 'private', 'bitcoin'].filter((kd) => groups.some((g) => g[2] === kd));
   const first = KIND[PKAT || at];
   let kind = again && kinds.includes(PKKIND) ? PKKIND : kinds.includes(first) ? first : kinds[0];
@@ -2433,7 +2467,7 @@ function openPicker(side, again = false) {
     return `<p class="pk-g${id === 'more' ? '' : ' kh'}" data-g="${id}" data-kind="${kd}"${hide}>${esc(g)}</p>${noted.has(kd) ? '' : (noted.add(kd), `<p class="pk-d" data-kind="${kd}"${hide}>${esc(note)}</p>`)}${rows}`;
   }).join('');
   const kindBtn = (kd) => `<button type="button" role="radio" data-kind="${kd}" aria-checked="${kd === kind}" tabindex="${kd === kind ? 0 : -1}" title="${esc(KIND_TIP[kd])}">${kd === 'wallet' ? WALLET_MARK : kd === 'bitcoin' ? placeMark('btc') : '<span class="lock" aria-hidden="true"></span>'}${KIND_NAME[kd]}</button>`;
-  pk.innerHTML = `<div class="pk-s" role="dialog" aria-modal="true" aria-label="${title}"><div class="pk-h"><b>${title}</b><button type="button" class="pk-x" aria-label="Close">×</button></div>${FLOW !== 'withdraw' && keys.some((k) => !inPool(k) && !/^@/.test(k)) ? '<input class="pk-q" id="pk-q" placeholder="Search tokens, or paste an address" autocomplete="off" spellcheck="false" aria-label="Search tokens or paste an address">' : ''}${kinds.length > 1 ? `<div class="pk-kind" id="pk-kind" role="radiogroup" aria-label="Where it is held">${kinds.map(kindBtn).join('')}</div>` : ''}<div class="pk-l" id="pk-l">${list}<p class="pk-n" id="pk-n"></p></div></div>`;
+  pk.innerHTML = `<div class="pk-s" role="dialog" aria-modal="true" aria-label="${title}"><div class="pk-h"><b>${title}</b><button type="button" class="pk-x" aria-label="Close">×</button></div>${FLOW !== 'withdraw' && !ONLY && keys.some((k) => !inPool(k) && !/^@/.test(k)) ? '<input class="pk-q" id="pk-q" placeholder="Search tokens, or paste an address" autocomplete="off" spellcheck="false" aria-label="Search tokens or paste an address">' : ''}${kinds.length > 1 ? `<div class="pk-kind" id="pk-kind" role="radiogroup" aria-label="Where it is held">${kinds.map(kindBtn).join('')}</div>` : ''}<div class="pk-l" id="pk-l">${list}<p class="pk-n" id="pk-n"></p></div></div>`;
   pk.hidden = false;
   if ($('#pk-kind')) arrows($('#pk-kind'), 'data-kind');
   pkIO?.disconnect();
@@ -2590,7 +2624,8 @@ function applyParams(p) {
   if (f) S.pay = side(f, S.inP); else if (S.inP) S.pay = 'teth';
   if (t) S.get = side(t, S.outP); else if (S.outP) S.get = S.pay === 'teth' ? lc(R.TAC) : 'teth';
   if (S.outP && t && !inPool(S.get)) { const r = outRoute(S.get); if (r) { S.outP = false; if (r === 'later') LATER.on = true; } }
-  if (!kindOf(S.pay, S.get)) fit(t ? 'get' : 'pay');
+  // a listed token a link names for the Shield tab, paid from the wallet: its own private form in the DeFi pool (an unlisted one is read first and lands the same, below)
+  if (FLOW === 'shield' && f && !t && S.outP && !S.inP && ownForm(S.pay) && flowFit()) { /* its own form */ } else if (!kindOf(S.pay, S.get)) fit(t ? 'get' : 'pay');
   const a = p.get('amt');
   if (p.get('to') && !t) { S.note = { h: 'That token is not in the list, so the card opened on its default pair. Paste its address in the Get picker to add it.', cls: '' }; return; }
   if (a && (f ? S.pay === side(f, S.inP) : !p.get('from')) && parseUnits(a, tokenOf(S.pay).dec)) S.amt = fitAmt(a);
