@@ -10,7 +10,7 @@
 // the amount field. Notes are never kept: only where a note is (nonce, pool) and what it is called on chain, since its
 // secrets come from signing the nonce again.
 
-import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32 } from '/fixed-pool-notes.js?cb=ab06e6d2';
+import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32, parseNoteString } from '/fixed-pool-notes.js?cb=ab06e6d2';
 import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=0f50365d';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 import { PAYMASTERS } from '/fixed-pool-paymaster.js?cb=40893745';
@@ -116,19 +116,19 @@ export function attach(env) {
   }
   function paintNotes() {
     const account = env.account();
-    if (!account && !st.notes.length) { notesHost.innerHTML = ''; return; }
     const rows = st.notes.map((n, i) => {
       const pool = poolOf(n.pool), gone = st.spent.get(n.nh);
       return `<div class="kv"><span>${pool ? formatEther(pool.denomination) : '?'} ETH <span class="mute">· note ${n.nonce}${gone ? ' · spent' : ''}</span></span>
         <b>${gone ? '' : `<button class="link" type="button" data-move="${i}">Move into Tacit</button> <button class="link" type="button" data-out="${i}">Withdraw</button>`}</b></div>`;
     }).join('');
     notesHost.innerHTML = `<div class="blk" style="margin-top:22px;padding-top:14px;border-top:1px solid var(--hair)">
-      <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lg-find">${account ? 'Find' : 'Connect wallet'}</button></span></div>
-      ${rows || '<p class="note">None found in this browser. Find looks through this wallet\'s deposits and asks for a signature for each number it tries.</p>'}
+      <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lg-find">${account ? 'Find' : 'Connect wallet'}</button> · <button class="link" type="button" id="lg-paste">Paste a note</button></span></div>
+      ${rows || '<p class="note">None found in this browser. Find looks through this wallet\'s deposits and asks for a signature for each number it tries. A note from anywhere else can be pasted.</p>'}
       <div id="lg-ask" hidden></div>
       <p class="note">If paying the gas from a note is not available, these notes follow <a href="https://github.com/ethereum/kohaku" target="_blank" rel="noopener noreferrer">Kohaku</a>'s format, so it can withdraw them too.</p>
     </div>`;
     notesHost.querySelector('#lg-find').onclick = () => (account ? find(notesHost.querySelector('#lg-find')) : env.connect().then(loadNotes, (e) => env.toast(env.errText(e), true)));
+    notesHost.querySelector('#lg-paste').onclick = askPaste;
     notesHost.querySelectorAll('[data-move]').forEach((b) => { b.onclick = () => moveInto(b, st.notes[Number(b.dataset.move)]); });
     notesHost.querySelectorAll('[data-out]').forEach((b) => { b.onclick = () => askAddress(st.notes[Number(b.dataset.out)]); });
   }
@@ -160,19 +160,23 @@ export function attach(env) {
     });
   }
   // Runs inside the page's busy wrapper (`step` and `c` come from it), so it must not open another.
+  // `n` is a stored note (its number is signed for again to get the secrets) or { text }, the text of any note, which needs no
+  // signature. `recipient` null means the user's own deposit address.
   async function exitNote(step, c, n, recipient, doneText) {
     if (!PAYMASTERS[chainId]) throw new Error('Paying the gas from the note is not available on this network.');
-    await env.ensureChain(c);
     const flow = flowFor();
-    const text = await flow.noteText(n);
+    let text = n.text;
+    if (!text) { await env.ensureChain(c); text = await flow.noteText(n); }
+    const to = recipient || (await env.depositAddress());
+    if (!to) throw new Error('Open your private balance first.');
     const prover = workerProver(env.workerUrl);
     try {
       const out = await flow.withdrawSponsored({
-        noteText: text, recipient, prover, confirm: confirmFee,
+        noteText: text, recipient: to, prover, confirm: confirmFee,
         onStep: (s) => step(s.step === 'read' ? (s.of ? `reading the pool's deposits (${s.done} of ${s.of})` : 'reading the pool\'s deposits') : s.step === 'tree' ? `building the tree from ${s.count} deposits` : s.step === 'prove' ? 'proving' : s.step === 'estimate' ? 'asking the bundler about the gas' : s.step === 'price' ? 'gas is high right now, waiting for a calmer price' : s.step === 'quote' ? 'check the fee below' : s.step === 'wait' ? 'waiting for the withdrawal to be mined' : 'working'),
       });
-      st.spent.set(n.nh, !!out.spent);
-      if (out.spent) env.done(c, out.hash, doneText(out)); else env.say('Sent; the pool has not shown it yet.');
+      if (n.nh) st.spent.set(n.nh, !!out.spent);
+      if (out.spent) env.done(c, out.hash, doneText(out, to)); else env.say('Sent; the pool has not shown it yet.');
     } catch (e) {
       if (!e?.cancelled) throw e;
       env.say('Cancelled. Nothing was sent.');
@@ -182,10 +186,28 @@ export function attach(env) {
   function moveInto(btn, n) {
     return env.act(btn, async (step, c) => {
       // the private balance's own deposit address, which opens it if it is not open yet
-      const box = await env.depositAddress();
-      if (!box) throw new Error('Open your private balance first.');
-      return exitNote(step, c, n, box, (out) => `${formatEther(out.receive)} ETH is on its way to your deposit address; it joins your private balance within minutes.`);
+      return exitNote(step, c, n, null, (out) => `${formatEther(out.receive)} ETH is on its way to your deposit address; it joins your private balance within minutes.`);
     });
+  }
+  function askPaste() {
+    const ask = notesHost.querySelector('#lg-ask');
+    ask.hidden = false;
+    ask.innerHTML = `<div class="lbl"><span>Note</span><span></span></div>
+      <div class="amt text"><textarea id="lg-note" rows="3" placeholder="tornado-eth-…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Note" style="width:100%;font:inherit;resize:vertical"></textarea></div>
+      <div class="lbl"><span>Send to</span><span>empty: your private balance</span></div>
+      <div class="amt text"><input id="lg-pto" placeholder="Your deposit address, or an address" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Send to"></div>
+      <p class="note">The note stays in this page. Nothing here is signed by your wallet.</p>
+      <div style="display:flex;gap:8px"><button class="btn" type="button" id="lg-pgo" style="margin-top:6px">Withdraw</button><button class="btn ghost" type="button" id="lg-pno" style="margin-top:6px">Cancel</button></div>`;
+    ask.querySelector('#lg-pno').onclick = () => { ask.hidden = true; ask.innerHTML = ''; };
+    const go = ask.querySelector('#lg-pgo');
+    go.onclick = () => {
+      const text = ask.querySelector('#lg-note').value.trim(), to = ask.querySelector('#lg-pto').value.trim();
+      try { parseNoteString(text); } catch { return env.toast('That is not a note.', true); }
+      if (to && (!/^0x[0-9a-fA-F]{40}$/.test(to) || /^0x0{40}$/.test(to))) return env.toast('Enter the address that should receive it, or leave it empty.', true);
+      if (to && !checksumOk(to)) return env.toast('That address\'s capitalization does not match its checksum. Check it.', true);
+      ask.hidden = true; ask.innerHTML = '';
+      env.act(go, (step, c) => exitNote(step, c, { text }, to || null, (out, at) => (to ? `${formatEther(out.receive)} ETH is on its way to ${short(at)}.` : `${formatEther(out.receive)} ETH is on its way to your deposit address; it joins your private balance within minutes.`)));
+    };
   }
   function askAddress(n) {
     const ask = notesHost.querySelector('#lg-ask');

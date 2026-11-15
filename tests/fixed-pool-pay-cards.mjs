@@ -20,7 +20,7 @@ import { createRequire } from 'node:module';
 import { extname, join, normalize } from 'node:path';
 import assert from 'node:assert/strict';
 import { keccak_256, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
-const { FIXED_POOLS } = await import('../dapp/fixed-pool-notes.js');
+const { FIXED_POOLS, noteString, parseNoteString, commitmentBytes32 } = await import('../dapp/fixed-pool-notes.js');
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -252,6 +252,59 @@ await test('a valid address goes as far as the fee, and Cancel sends nothing', a
   await page.waitForFunction(() => /Cancelled\. Nothing was sent/.test(document.querySelector('#status').textContent));
   assert.equal(sent.length, 1, 'still just the first operation');
   assert.equal(await page.locator('#lg-ask').isVisible(), false);
+});
+const pasteNote = async (text, to = '') => {
+  await page.click('#lg-paste');
+  await page.fill('#lg-note', text);
+  await page.fill('#lg-pto', to);
+  await page.click('#lg-pgo');
+};
+await test('Paste a note: any note, with no wallet connected, goes to the fee and then to the user\'s own deposit address, with nothing signed by the wallet', async () => {
+  const text = noteString({ denomination: 10n ** 18n, chainId: 1, preimage: new Uint8Array(62).fill(7) });
+  await chunkCache(page, commitmentBytes32(parseNoteString(text).commitment));
+  await page.reload(); await page.waitForFunction(() => window.__ready === true);
+  const before = sent.length;
+  assert.equal(await page.locator('#lg-paste').isVisible(), true, 'the card is there with no wallet');
+  await pasteNote(text);
+  await page.waitForSelector('#lg-ask:not([hidden]) #lg-send', { timeout: 240000 });
+  assert.equal(sent.length, before, 'nothing is sent before the press');
+  assert.match(await page.locator('#lg-ask').innerText(), /up to 0\.\d+ ETH \(\d\.\d\d% of it\)/);
+  await shot(page, 'paste-confirm');
+  await page.click('#lg-send');
+  await page.waitForFunction(() => /on its way to your deposit address/.test(document.querySelector('#status').textContent), null, { timeout: 120000 });
+  assert.equal(sent.length, before + 1);
+  assert.ok(sent.at(-1).paymasterData.toLowerCase().includes(BOX.slice(2)), 'pays the deposit address');
+  const log = await page.evaluate(() => window.__log);
+  assert.equal(log.signs, 0, 'nothing signed'); assert.equal(log.accountRequests, 0, 'no account asked for'); assert.equal(log.sends, 0, 'nothing sent from the wallet');
+});
+await test('Paste a note to an address: it goes there, and a mistyped checksum is refused first', async () => {
+  const text = noteString({ denomination: 10n ** 18n, chainId: 1, preimage: new Uint8Array(62).fill(8) });
+  await chunkCache(page, commitmentBytes32(parseNoteString(text).commitment));
+  await page.evaluate(() => { window.__spentAll = false; });
+  const before = sent.length;
+  await pasteNote(text, '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAEd'); // one capital wrong
+  assert.match(await note(), /capitalization does not match its checksum/);
+  await pasteNote(text, '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed');
+  await page.waitForSelector('#lg-ask:not([hidden]) #lg-send', { timeout: 240000 });
+  await page.click('#lg-send');
+  await page.waitForFunction(() => /is on its way to 0x5aAe/.test(document.querySelector('#status').textContent), null, { timeout: 120000 });
+  assert.equal(sent.length, before + 1);
+  assert.ok(sent.at(-1).paymasterData.toLowerCase().includes('5aaeb6053f3e94c9b9a09f33669435e7ef1beaed'), 'to that address');
+});
+await test('Paste a note: something that is not a note, a note for another network and one of a size no pool takes are each refused, with nothing sent', async () => {
+  const before = sent.length;
+  await pasteNote('hello');
+  assert.match(await note(), /That is not a note/);
+  await pasteNote(noteString({ denomination: 10n ** 18n, chainId: 8453, preimage: new Uint8Array(62).fill(9) }));
+  await page.waitForFunction(() => /This note is for network 8453/.test(document.querySelector('#status').textContent));
+  await pasteNote(noteString({ denomination: 5n * 10n ** 17n, chainId: 1, preimage: new Uint8Array(62).fill(9) }));
+  await page.waitForFunction(() => /No pool takes this note on this network/.test(document.querySelector('#status').textContent));
+  await page.click('#lg-paste');
+  await page.fill('#lg-note', noteString({ denomination: 10n ** 18n, chainId: 1, preimage: new Uint8Array(62).fill(9) }));
+  await page.fill('#lg-pto', '0x1234');
+  await page.click('#lg-pgo');
+  assert.match(await note(), /Enter the address that should receive it/);
+  assert.equal(sent.length, before, 'nothing sent');
 });
 await test('no errors reached the console', async () => { assert.deepEqual(problems, []); });
 
