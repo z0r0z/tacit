@@ -1329,7 +1329,7 @@ export function makeBurnDepositUx(deps) {
   }
 
   return {
-    NOTE_MAX_RAW, assets: ASSETS, assetOf, eligibleNotes, isReserved, pickFunding, bridgeCost, noteForms, noteTracking, lineage, preflight, preflightHeld, recheckBurn, RETURN_FEE_CEILING, start, startReflected, advance, resumeAll, recoverFromTxid, discover, list, abandon,
+    NOTE_MAX_RAW, MAX_HOPS_SOURCE, assets: ASSETS, assetOf, eligibleNotes, isReserved, pickFunding, bridgeCost, noteForms, noteTracking, lineage, preflight, preflightHeld, recheckBurn, RETURN_FEE_CEILING, start, startReflected, advance, resumeAll, recoverFromTxid, discover, list, abandon,
     cancelSigned, buildCancel, reclaim, recover, verify, isLive, burnRecorded, destLeaf, relayFault, mintRetryDue, armMint,
     quoteRate: () => chain.getFeeRate('priority'),
     slipstreamStatus: broadcaster.slipstreamStatus,

@@ -1,7 +1,7 @@
 // TAC's page. index.html imports this when TAC's page opens (its address, /tac/, preloads it) or a link to it is pointed at, and calls
 // install() with what this code reads from its module: let and var bindings are read as ctx.X, so their changes there are seen here.
 export default function install(ctx) {
-const { $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brLongReason, brMarked, brOver, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your } = ctx;
+const { $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brLongReason, brMarked, brOver, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your } = ctx;
 const TCD_FILL = { at: 0 };   // (a Stake press made before the wallet's TAC was read: see tcardStakeFill)
 function idMark(a, size = 40) {
   const h = addressId(a).replace(/·/g, ''), hue = Math.round((parseInt(h.slice(0, 2), 16) / 256) * 360);
@@ -61,6 +61,8 @@ render.tac = () => {
   renderTacBal($('#tac-bal'));
   paintTacPrice();
   renderBridge($('#bridge-body'));
+  tnEntry();
+  if (TN.open && !TN.step) tnPaint();
   tpgNets($('#tpg-nets'));
   tacPoolPlace();
 };
@@ -115,8 +117,8 @@ const BR_HOLD = { gone: 'the note is not at this key’s Bitcoin address', check
 function brPrepRow(p) {
   const st = brPrepState(p), one = `${fmt(BigInt(p.amount), 8, 4)} TAC`, two = p.keep ? `${fmt(BigInt(p.keep), 8, 4)} TAC` : '', amt = two ? `${one} and ${two}` : one, at = { sent: 0, proof: 1, ready: 3 }[st], num = (n) => n.toLocaleString('en-US');
   const proof = Number(BR.refl), gap = st === 'proof' && Number.isInteger(proof) && proof > 0 ? ` The proof is at Bitcoin block ${num(proof)}, ${num(p.height - proof)} block${p.height - proof === 1 ? '' : 's'} to go.` : '';
-  const auto = !!p.plan?.auto && !p.autoHold, own = ' It is then bridged for you, while this page is open with your wallet.';
-  const text = st === 'sent' ? (two ? `Split from one note into ${amt}, both at your own address. Waiting for the Bitcoin confirmation, usually within the hour.` : `Sent to your own address. Waiting for its Bitcoin confirmation, usually within the hour.${p.plan?.auto ? own : ''}`)
+  const auto = !!p.plan?.auto && !p.autoHold, own = ' It is then bridged for you, while this page is open with your wallet.', verb = p.merged ? 'Merged' : two ? 'Split' : 'Sent';
+  const text = st === 'sent' ? (two ? `Split from one note into ${amt}, both at your own address. Waiting for the Bitcoin confirmation, usually within the hour.` : `${p.merged ? `${p.merged} notes merged into one, at` : 'Sent to'} your own address. Waiting for its Bitcoin confirmation, usually within the hour.${p.plan?.auto ? own : ''}`)
     : st === 'proof' ? (two ? `Confirmed in Bitcoin block ${num(p.height)}. Both notes can be bridged once Bitcoin’s proof on Ethereum reaches that block, usually within a few hours.${gap}`
       : `Confirmed in Bitcoin block ${num(p.height)}. It can be bridged once Bitcoin’s proof on Ethereum reaches that block, usually within a few hours.${gap}${p.plan?.auto ? own : ''}`)
     : auto ? 'Ready. It is being bridged for you now: it moves to On the way within a few minutes, while this page is open with your wallet.'
@@ -125,8 +127,8 @@ function brPrepRow(p) {
     : 'Ready. Bridge it picks it below; then check the fee and confirm.';
   const due = st === 'ready' && !auto;
   return html`<li class="actr brr">
-    <div class="actr-h"><b class="num">${amt}</b><span>${due ? html`<b class="brdue">Your turn</b> · ` : ''}${two ? 'Split' : 'Sent'} ${ago(p.at)}</span></div>
-    <ol class="stp">${[two ? 'Split' : 'Sent', 'Confirmed', 'Ready'].map((l, i) => stepLi(l, i < at ? 'done' : i === at ? 'now' : ''))}</ol>
+    <div class="actr-h"><b class="num">${amt}</b><span>${due ? html`<b class="brdue">Your turn</b> · ` : ''}${verb} ${ago(p.at)}</span></div>
+    <ol class="stp">${[verb, 'Confirmed', 'Ready'].map((l, i) => stepLi(l, i < at ? 'done' : i === at ? 'now' : ''))}</ol>
     <div class="actr-f">${text}</div>
     <div class="actr-f brl"><a href="${MEMPOOL}/tx/${p.txid}" target="_blank" rel="noopener">${chainMark('btc')}${short(p.txid, 6)} ↗</a></div>
     ${st === 'ready' ? html`<div class="brr-a"><button class="btn" type="button" data-brprep="${p.txid}">${two ? 'Bridge one' : 'Bridge it'}</button></div>` : ''}
@@ -697,12 +699,15 @@ function tpgTop(el) {
     <p class="tpg-usd num">${usd ? `≈ ${usd}` : ''}</p>
     ${seg.length ? html`<div class="tpg-bar" role="img" aria-label="${seg.map(([key, t]) => `${t} ${fmt(by[key].v, 18, 2)} TAC`).join(', ')}">${seg.map(([key, , c]) => html`<i style="flex:${Math.max(0.01, Number(by[key].v / 10n ** 14n) / 1e4)};background:${c}"></i>`)}</div>` : ''}
     <ul class="tpg-leg">${rows.map(([key, t, c]) => html`<li><i style="background:${c}"></i><span>${t}<small>${note[key]}</small></span><b>${by[key].v == null ? (by[key].bad ? '—' : html`<span class="sk" style="--w:4ch"></span>`) : fmt(by[key].v, 18, 2)}</b>
-      ${key === 'defi' && nudge ? html`<span class="nudge"><button class="link" type="button" data-hx="shield:tac:chain">Move to the Tacit chain to earn from payments</button></span>` : ''}</li>`)}</ul>
+      ${key === 'defi' && nudge ? html`<span class="nudge"><button class="link" type="button" data-hx="shield:tac:chain">Move to the Tacit chain to earn from payments</button></span>` : ''}
+      ${key === 'btc' && k && (by.btc.v || 0n) > 0n ? html`<span class="nudge"><button class="link" type="button" data-tn-top>Manage notes: bridge, merge, split</button></span>` : ''}</li>`)}</ul>
     ${k ? shLookingNote(k) : ''}
     ${k ? depositCallout('tac', 'tac-finish') : ''}
     ${kept.length ? html`<p class="note">${kept.length === 1 ? 'One of your Tacit chain moves has' : `${kept.length} of your Tacit chain moves have`} not landed yet. <button class="link" type="button" data-hx="${tpgKeptWay(kept[0])}">See ${kept.length === 1 ? 'it' : 'them'}</button></p>` : ''}
     <div class="status" role="status" id="tpg-top-st"></div>`);
   if (k) wireFinish(el, 'tac', 'tac-finish', 'tpg-top-st');
+  const tnTop = $('[data-tn-top]', el);
+  if (tnTop) tnTop.onclick = () => tacNotesOpen();
   ctx.TACP.tot = { k, total, known, pub };
   if (k && chainOn() && ctx.CH.bal != null) chainClient().then((c) => { const v = c.balance(); if (S.key?.pubHex === k && ctx.TACP.sh?.v !== v) { ctx.TACP.sh = { pub: k, v }; rerender('tac'); } }).catch(() => {});
 }
@@ -1577,8 +1582,8 @@ document.addEventListener('click', (e) => {
   ctx.TCARD.way = d.tcdWay; tcardQuote().then(() => { if (e.detail === 0) $(`#tcd-q [data-tcd-way="${d.tcdWay}"]`)?.focus(); }, () => {});
   if (busyNow) toast(d.tcdWay === 'own' ? 'Switched to gas in ETH. Press Shield again.' : 'Switched to gas in TAC. Press Shield again.');
 });
-const tpgStick = () => { for (const el of [$('#tpg-card'), $('#tpg-act')]) if (el && !el.hidden) el.style.setProperty('--stick', `${Math.min(20, innerHeight - el.offsetHeight - 20)}px`); };
-if (typeof ResizeObserver === 'function') { const ro = new ResizeObserver(tpgStick); for (const el of [$('#tpg-card'), $('#tpg-act')]) if (el) ro.observe(el); }
+const tpgStick = () => { for (const el of [$('#tpg-side'), $('#tpg-act')]) if (el && !el.hidden) el.style.setProperty('--stick', `${Math.min(20, innerHeight - el.offsetHeight - 20)}px`); };
+if (typeof ResizeObserver === 'function') { const ro = new ResizeObserver(tpgStick); for (const el of [$('#tpg-side'), $('#tpg-act')]) if (el) ro.observe(el); }
 window.addEventListener('resize', tpgStick);
 document.addEventListener('keydown', (e) => {
   const b = e.target.closest?.('#tcd-tabs [role="tab"], .tcd-dest [role="radio"]'), list = b ? $$(b.matches('[role="tab"]') ? '#tcd-tabs [role="tab"]' : '.tcd-dest [role="radio"]') : [], i = list.indexOf(b);
@@ -1758,5 +1763,206 @@ function tacSend(el, status) {
   ].filter((x) => x.held > 0n);
   assetSendForm(el, status, { prefix: 'ts', sheet: 'tac', statusId: 'tac-bal-status', sources, pick: TACSEND });
 }
-return { tpgPayLink, tpgTab, tacPoolOpen, tacPool, tcardQuote };
+
+// The TAC notes sheet (#tac-notes, opened from the card's "Manage notes", the Bitcoin address row of All your TAC, More → Bridge and
+// /tac/#notes): the key's TAC on Bitcoin note by note, ticked for one of three actions, each shown on a short card before anything is
+// signed. Bridge takes each ticked note across as Bridge all does (planAll), Merge sends the ticked notes to the key's own address in one
+// transfer (planPick: one note of them all), Split sends part of one note there and keeps the rest.
+// Notes Bitcoin's proof does not track merge only once each note's history is read: the merged note's history is at most theirs
+// together plus the merge, and the bridge proves up to MAX_HOPS_SOURCE transfers of it.
+const TN = { open: false, picks: [], step: null, seq: 0, empty: false };
+const tnCap = () => (ctx.T ? BigInt(ctx.T.bridgeUx().NOTE_MAX_RAW) : 0n);   // what one note holds: there is no per-bridge cap
+const tnList = () => { const pub = S.key?.pubHex; return pub && BR.pub === pub && BR.notes ? BR.notes.filter((n) => n.reason !== 'already bridging').map(brMarked) : null; };
+const tnSats = (v) => { const u = hxUsd('sats', Number(v)); return `${Number(v).toLocaleString('en-US')} sats${u ? ` (${u})` : ''}`; };
+function tnState(n) {
+  if (BigInt(n.amount) === 0n) return { text: 'holds no TAC', can: false, empty: true };
+  if (n.eligible) return { text: n.tracking === 'untracked' ? 'ready · bridges in two steps' : n.form === 'old' ? 'ready · older form' : 'ready', can: true };
+  if (n.reason === 'proof') { const gap = Number(n.height) - Number(BR.refl); return { text: gap > 0 ? `proof in ~${gap} block${gap === 1 ? '' : 's'}` : 'waiting for the proof', can: false }; }
+  if (n.reason === 'unconfirmed') return { text: 'waiting for its confirmation', can: false };
+  return { text: n.reason || 'not available now', can: false };
+}
+function tnActs(list, picked) {
+  const cap = tnCap(), k = picked.length, all = k ? planAll(picked, { capRaw: cap }) : null, merge = k > 1 ? planPick(list, picked.map(brId), { capRaw: cap }) : null;
+  const lost = all ? picked.length - countAll(all) : 0;
+  const bridge = !k ? { ok: false } : lost ? { ok: false, why: `${brNotes(lost)} of these can’t be bridged right now.` } : { ok: true, plan: all };
+  const priv = (n) => !!n.stealthTweakedSk || n.form === 'private', untracked = merge?.why === 'mixed' ? merge.notes.filter((n) => n.tracking === 'untracked') : [];
+  const mergeWhy = !merge || merge.ok ? '' : merge.why === 'inputs' ? `One merge takes up to ${merge.max} notes.`
+    : merge.why === 'over' ? `These come to ${brTac(merge.total)}, more than one note holds.`
+    : merge.why === 'mixed' ? `Bitcoin’s proof does not track ${brAnd(untracked.map((n) => brTac(n.amount)))} but tracks the others, and one merge takes one kind only. Tick only the notes that say “two steps”, or only the others.`
+    : merge.why === 'unmergeable' ? `${brTac(merge.bad.amount)} can’t go in a merge${priv(merge.bad) ? ': it was received privately' : ''}.` : '';
+  const split = k === 1 && BigInt(picked[0].amount) > 1n ? { ok: true } : { ok: false, why: k > 1 ? 'Split takes one note.' : '' };
+  return { bridge, merge: merge?.ok ? { ok: true, plan: merge } : { ok: false, why: mergeWhy }, split };
+}
+function tacNotesOpen() {
+  const d = $('#tac-notes');
+  if (!d) return;
+  TN.open = true; TN.step = null; TN.seq++;
+  tnPaint();
+  if (!d.open) d.showModal();
+  if (S.key && !BR.loading) loadBridge(true).then(() => { if (!TN.step) tnPaint(); tnEntry(); }, () => tnPaint());
+}
+function tnClose() {
+  TN.open = false; TN.step = null; TN.seq++;
+  const d = $('#tac-notes');
+  if (d?.open) d.close();
+}
+function tnEntry() {
+  const el = $('#tpg-notes');
+  if (!el) return;
+  const pub = S.key?.pubHex, list = tnList(), notes = (list || []).filter((n) => BigInt(n.amount) > 0n);
+  el.hidden = !notes.length;
+  if (el.hidden) return;
+  const sts = notes.map(tnState), ready = sts.filter((x) => x.can).length, wait = sts.length - ready, preps = brPreps(pub).length;
+  const say = [ready ? `${ready} ready to bridge` : '', wait ? `${wait} waiting` : '', preps ? `${preps} getting ready` : ''].filter(Boolean).join(' · ');
+  const h = html`<h2 class="tcd-k" id="tpgn-h"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Manage your TAC</b><span>on Bitcoin</span></h2>
+    <p class="tpgn-amt num">${fmt(notes.reduce((s, n) => s + BigInt(n.amount), 0n), 8, 2)}<small>TAC</small></p>
+    <p class="tpgn-say">${brNotes(notes.length)}${say ? ` · ${say}` : ''}</p>
+    <button class="btn ghost" type="button" data-tn-open>Bridge, merge or split</button>`;
+  if (el.__h !== h.s) { el.__h = h.s; mount(el, h); }
+}
+function tnPaint() {
+  const el = $('#tn-b');
+  if (!el || !TN.open) return;
+  const pub = S.key?.pubHex, list = tnList(), head = html`<h2 class="tn-h" id="tn-h">Your TAC notes</h2>`;
+  if (!pub) { mount(el, html`${head}<p class="tn-sum">Sign in to see your TAC on Bitcoin. <button class="link" type="button" data-signin>Sign in</button></p>`); return; }
+  if (!list) { mount(el, html`${head}<p class="tn-sum">${BR.pub === pub && BR.err ? errText(BR.err) : 'Reading your TAC on Bitcoin…'}</p>`); return; }
+  const rows = list.map((n) => ({ n, st: tnState(n) })), full = rows.filter((r) => !r.st.empty), empty = rows.filter((r) => r.st.empty);
+  TN.picks = TN.picks.filter((id) => full.some((r) => r.st.can && brId(r.n) === id));
+  if (!TN.picks.length) TN.step = null;
+  const picked = full.filter((r) => TN.picks.includes(brId(r.n))).map((r) => r.n), total = picked.reduce((s, n) => s + BigInt(n.amount), 0n);
+  const acts = tnActs(list, picked), lock = !!TN.step, why = picked.length ? [acts.merge.why, acts.bridge.why].find(Boolean) || '' : '';
+  const row = ({ n, st }) => html`<li><label class="tn-r${st.can ? '' : ' off'}"><input type="checkbox" data-tn="${brId(n)}" ${st.can && !lock ? '' : 'disabled'} ${TN.picks.includes(brId(n)) ? 'checked' : ''}><b class="num">${brTac(n.amount)}</b><small>${st.text}</small></label></li>`;
+  const preps = brPreps(pub).length, recs = brRecords(pub).length;
+  mount(el, html`${head}
+    <p class="tn-sum">${brTac(full.reduce((s, r) => s + BigInt(r.n.amount), 0n))} on Bitcoin · ${brNotes(full.length)}</p>
+    ${full.length ? html`<ul class="tn-l">${full.map(row)}</ul>` : html`<p class="note">No TAC on this key’s Bitcoin address.</p>`}
+    ${empty.length ? html`<button class="link tn-e" type="button" data-tn-empty>${TN.empty ? 'Hide the' : 'Show the'} ${brNotes(empty.length)} holding no TAC</button>${TN.empty ? html`<ul class="tn-l">${empty.map(row)}</ul>` : ''}` : ''}
+    ${lock ? html`<div class="tn-cf" id="tn-cf"></div>` : html`<div class="tn-bar">
+      <p class="tn-pk">${picked.length ? html`<b>${picked.length} picked</b> · ${brTac(total)}` : 'Tick the notes to act on.'}</p>
+      <div class="tn-acts"><button class="btn" type="button" data-tn-act="bridge" ${acts.bridge.ok ? '' : 'disabled'}>Bridge</button><button class="btn ghost" type="button" data-tn-act="merge" ${acts.merge.ok ? '' : 'disabled'}>Merge</button><button class="btn ghost" type="button" data-tn-act="split" ${acts.split.ok ? '' : 'disabled'}>Split</button></div>
+      ${why ? html`<p class="tn-why">${why}</p>` : ''}</div>`}
+    <div class="status" role="status" id="tn-st"></div>
+    ${preps || recs ? html`<p class="tn-follow">${[preps ? `${preps} getting ready` : '', recs ? `${recs} on the way` : ''].filter(Boolean).join(' · ')}. <button class="link" type="button" data-tn-follow>Follow them</button></p>` : ''}`);
+  if (lock) tnConfirm(list, picked);
+}
+async function tnConfirm(list, picked) {
+  const cf = $('#tn-cf'), my = ++TN.seq, pub = S.key.pubHex, kind = TN.step.kind, st = $('#tn-st');
+  const live = () => my === TN.seq && cf.isConnected, kv = (k, v, id = '') => html`<div class="kv"><span>${k}</span>${id ? html`<b id="${id}">${v}</b>` : html`<b>${v}</b>`}</div>`;
+  const buttons = (label) => html`<div class="tn-acts"><button class="btn ghost" type="button" data-tn-back>Back</button><button class="btn" type="button" id="tn-go" disabled>${label}</button></div><a class="tn-how" href="/bridge/">How this works ↗</a>`;
+  const done = (m) => { TN.picks = []; TN.step = null; say(st, m); dashSoon(); Promise.allSettled([loadBridge(true), loadBtc(true)]).then(() => { rerender('tac'); tnPaint(); }); };
+  let ready = { fee: false, more: true }, lack = false;
+  const gate = () => { const go = $('#tn-go', cf); if (go) go.disabled = lack || !ready.fee || !ready.more; };
+  const noSats = (q) => { lack = true; warn(cf, html`This key’s Bitcoin address has ${tnSats(q.free || 0)} free for fees, short of the about ${tnSats(q.need)} this needs. <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`); };
+  if (kind === 'merge') {
+    const plan = planPick(list, TN.picks, { capRaw: tnCap() }), tracked = plan.kind === 'tracked', count = plan.notes.length;
+    mount(cf, html`<h3>Merge ${count} notes → 1 note of ${brTac(plan.total)}</h3>
+      ${kv('Bitcoin fee', 'Checking…', 'tn-fee')}
+      ${tracked ? '' : kv('History', 'Reading each note’s history…', 'tn-hist')}
+      ${kv('Then', tracked ? 'It can be bridged once Bitcoin’s proof has seen it, usually a few hours' : 'Bridged in two steps, a move and a burn, usually within a day')}
+      ${tracked ? html`<label class="pick"><input type="checkbox" id="tn-auto" ${BR.opts.prepauto ? 'checked' : ''}><span>Bridge it for me once ready, while this page is open with my wallet</span></label>` : ''}
+      ${buttons(`Merge ${count} notes`)}`);
+    ready.more = tracked;
+    let quote = null;
+    brBulkFee(pub, { merge: { groups: [{ notes: plan.notes }] } }, 'merge').catch(() => null).then((q) => {
+      if (!live()) return;
+      quote = q; $('#tn-fee', cf).textContent = q ? `≈ ${tnSats(q.fee)}` : 'not quoted right now';
+      ready.fee = !!q; if (q?.short) noSats(q); gate();
+    });
+    if (!tracked) brUx().then(async (ux) => {
+      const pfs = await Promise.all(plan.notes.map((n) => ux.preflight({ note: n, walletPub: hexToBytes(pub) }).catch((e) => ({ ok: false, err: e }))));
+      if (!live()) return;
+      const h = $('#tn-hist', cf), max = Number(ux.MAX_HOPS_SOURCE) || 0, at = pfs.findIndex((pf) => !pf.ok || pf.path === 'reflected' || !Number.isInteger(pf.hops));
+      if (at >= 0) { const pf = pfs[at], step = pf.steps?.find((x) => !x.ok); h.classList.add('err'); mount(h, html`${brTac(plan.notes[at].amount)}: ${pf.err ? errText(pf.err) : step ? brCheckText(step) : 'Bitcoin’s proof tracks it now. Close this and open it again.'}`); return; }
+      const hops = pfs.reduce((s, pf) => s + pf.hops, 0) + 1;
+      if (!max || hops > max) { h.classList.add('err'); h.textContent = `Up to ${hops} transfers together, over the ${max || 'limit'} the bridge proves. Merge fewer.`; return; }
+      h.textContent = `${hops} transfers at most, of the ${max} the bridge proves`;
+      ready.more = true; gate();
+    }).catch((e) => { if (live()) { const h = $('#tn-hist', cf); h.classList.add('err'); h.textContent = errText(e); } });
+    $('#tn-go', cf).onclick = (e) => busy(e.currentTarget, async (run) => {
+      const auto = tracked && $('#tn-auto', cf)?.checked;
+      try {
+        run.say(st, `Merging ${count} notes…`);
+        const { txid } = await toSelf(pub, TAC_BTC_ID, plan.notes, null);
+        actBtc(txid, `Merged ${brNotes(count)} (${brTac(plan.total)})`);
+        brPrepAdd(pub, { txid, amount: String(plan.total), merged: count, at: Date.now(), ...(auto ? { plan: { at: Date.now(), auto: { maxFee: quote?.autoMaxFee || 6000 } } } : {}) });
+        toast(`${brNotes(count)} merged`);
+        done(html`<span class="ok">✓ Merged into one note of ${brTac(plan.total)}</span> <a href="${MEMPOOL}/tx/${txid}" target="_blank" rel="noopener">${short(txid, 6)} ↗</a>. ${auto ? 'Bridged for you once ready.' : 'Bridge it from here once ready.'}`);
+      } catch (err) { run.fail(st, brNoSats(err)); }
+    });
+  } else if (kind === 'split') {
+    const n = picked[0], amt = BigInt(n.amount);
+    mount(cf, html`<h3>Split ${brTac(amt)}</h3>
+      <div class="amt"><input id="tn-amt" inputmode="decimal" autocomplete="off" placeholder="TAC to split off" aria-label="TAC to split off"><span class="u">TAC</span></div>
+      ${kv('Keeps', '—', 'tn-keep')}
+      ${kv('Bitcoin fee', 'Checking…', 'tn-fee')}
+      ${kv('Then', 'Both notes can be bridged once Bitcoin’s proof has seen them, usually a few hours')}
+      ${buttons('Split')}`);
+    const inp = $('#tn-amt', cf), keep = $('#tn-keep', cf);
+    const read = () => { const v = parseUnits(inp.value, 8); const okv = !!v && v > 0n && v < amt; keep.textContent = okv ? brTac(amt - v) : inp.value.trim() ? 'enter more than 0 and less than the note holds' : '—'; ready.more = okv; gate(); return okv ? v : null; };
+    inp.oninput = read; read();
+    brSplitFee(pub, n).then((q) => {
+      if (!live()) return;
+      $('#tn-fee', cf).textContent = q ? `≈ ${tnSats(q.fee)}` : 'not quoted right now';
+      ready.fee = !!q; if (q?.short) noSats(q); gate();
+    });
+    $('#tn-go', cf).onclick = (e) => busy(e.currentTarget, async (run) => {
+      const v = read();
+      if (!v) return;
+      try {
+        run.say(st, `Splitting ${brTac(v)} off…`);
+        const { txid } = await toSelf(pub, TAC_BTC_ID, [n], v);
+        actBtc(txid, `Split off ${brTac(v)}`);
+        TN.picks = []; TN.step = null;
+        brSplitDone({ pub, txid, sent: v, rest: amt - v, said: (m) => say(st, m), after: () => { rerender('tac'); tnPaint(); } });
+        tnPaint(); dashSoon();
+      } catch (err) { run.fail(st, brNoSats(err)); }
+    });
+  } else {
+    const all = planAll(picked, { capRaw: tnCap() }), count = countAll(all), total = picked.reduce((s, n) => s + BigInt(n.amount), 0n), sends = all.sends.length + all.privates.length;
+    mount(cf, html`<h3>Bridge ${brNotes(count)} → ${fmt(total, 8, 4)} private TAC on Ethereum</h3>
+      ${kv('Bitcoin fee', 'Checking…', 'tn-fee')}
+      ${kv('How', [all.burns.length ? `${brNotes(all.burns.length)} burned now` : '', sends ? `${brNotes(all.sends.reduce((s, g) => s + g.notes.length, 0) + all.privates.length)} sent to yourself first` : '', all.checks.length ? `${brNotes(all.checks.length)} in two steps` : ''].filter(Boolean).join(' · '))}
+      ${kv('Arrives', sends || all.checks.length ? 'A few hours after each burn; notes that go to yourself first, or in two steps, take a few hours more' : 'Usually within a few hours')}
+      <label class="pick"><input type="checkbox" id="tn-ack"><span>I understand a bridge can’t be undone once its burn confirms on Bitcoin.</span></label>
+      ${buttons(`Bridge ${brNotes(count)}`)}`);
+    ready.more = false;
+    $('#tn-ack', cf).onchange = (e) => { ready.more = e.target.checked; gate(); };
+    let quote = null;
+    brBulkFee(pub, { all }, 'all').catch(() => null).then((q) => {
+      if (!live()) return;
+      quote = q; $('#tn-fee', cf).textContent = q ? `≈ ${tnSats(q.fee)}${q.later ? `, and about ${tnSats(q.later)} for the burns after` : ''}` : 'not quoted right now';
+      ready.fee = !!q; if (q?.short) noSats(q); gate();
+    });
+    $('#tn-go', cf).onclick = (e) => busy(e.currentTarget, async (run) => {
+      const plan = { at: Date.now(), auto: { maxFee: quote?.autoMaxFee || 6000 } };
+      BR.starting = true;
+      let did, left;
+      try { ({ did, left } = await bridgeRunAll({ all, merge: (ns) => brMergeSend(pub, ns, plan), start: (x) => brStartNote(pub, x, null), tryAgain: (fn, sent) => brTry(pub, sent, fn), say: (m) => run.say(st, m), errText, amountText: (x) => brTac(x.amount) })); }
+      finally { BR.starting = false; }
+      const parts = [did.burns ? `${brNotes(did.burns)} bridging` : '', did.sends ? `${brNotes(did.sent)} sent to yourself first, bridged for you once ready` : ''].filter(Boolean);
+      if (parts.length) toast(parts.join('; '));
+      done(html`${parts.length ? html`<span class="ok">✓ ${parts.join('; ')}.</span> Follow them below.` : ''}${left.length ? html` <span class="err">${left.length === 1 ? left[0] : `${left.length} not done: ${left.join(' · ')}`}</span>` : ''}`);
+    });
+  }
+}
+$('#tac-notes')?.addEventListener('close', () => { if (TN.open) tnClose(); });
+$('#tac-notes')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) return tnClose();
+  const t = e.target.closest?.('[data-tn-close], [data-tn-empty], [data-tn-act], [data-tn-back], [data-tn-follow]');
+  if (!t) return;
+  if (t.matches('[data-tn-close]')) return tnClose();
+  if (t.matches('[data-tn-empty]')) TN.empty = !TN.empty;
+  else if (t.matches('[data-tn-act]')) { if (t.disabled) return; TN.step = { kind: t.dataset.tnAct }; say($('#tn-st'), ''); }
+  else if (t.matches('[data-tn-back]')) { TN.step = null; TN.seq++; }
+  else if (t.matches('[data-tn-follow]')) { tnClose(); BRM.mode = 'in'; tacPageOpen('bridge'); return; }
+  tnPaint();
+});
+$('#tac-notes')?.addEventListener('change', (e) => {
+  const x = e.target.closest?.('[data-tn]');
+  if (!x) return;
+  TN.picks = x.checked ? [...new Set([...TN.picks, x.dataset.tn])] : TN.picks.filter((id) => id !== x.dataset.tn);
+  tnPaint();
+});
+$('#tpg-notes')?.addEventListener('click', (e) => { if (e.target.closest?.('[data-tn-open]')) tacNotesOpen(); });
+return { tpgPayLink, tpgTab, tacPoolOpen, tacPool, tcardQuote, tacNotesOpen };
 }

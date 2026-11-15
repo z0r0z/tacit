@@ -48,6 +48,22 @@ export function planAll(notes, { capRaw, maxInputs = MAX_MERGE_INPUTS }) {
   };
 }
 
+// The notes a holder ticks, merged into one note by one transfer to their own address. They must all be of one kind, so the merged
+// note is too: notes Bitcoin's proof tracks, or notes it does not (those bridge by a move and a burn, whose proof walks the merged note's
+// whole history back to the etch, so the page checks each note's history first). capRaw is the most one note holds.
+export function planPick(notes, ids, { capRaw, maxInputs = MAX_MERGE_INPUTS }) {
+  const want = new Set(ids), picked = notes.filter((n) => want.has(idOf(n)));
+  const out = (why, extra = {}) => ({ ok: !why, why, notes: picked, kind: null, total: 0n, max: maxInputs, ...extra });
+  if (picked.length < 2) return out('few');
+  if (picked.length > maxInputs) return out('inputs');
+  const bad = picked.find((n) => !n.eligible || rawOf(n) <= 0n || isPrivate(n) || (n.tracking !== 'tracked' && n.tracking !== 'untracked'));
+  if (bad) return out('unmergeable', { bad });
+  if (new Set(picked.map((n) => n.tracking)).size > 1) return out('mixed');
+  const total = picked.reduce((s, n) => s + rawOf(n), 0n), kind = picked[0].tracking;
+  if (total > BigInt(capRaw)) return out('over', { kind, total });
+  return out(null, { notes: [...picked].sort(bigger), kind, total });
+}
+
 export const countAll = (plan) => plan.burns.length + plan.sends.reduce((n, g) => n + g.notes.length, 0) + plan.privates.length + plan.checks.length;
 
 export function opsCompared(mergePlan, allPlan) {
