@@ -16,7 +16,7 @@ self.onmessage = async ({ data }) => {
       reply(id, { root: tree.root(), leaves: tree.leaves() });
     } else if (type === 'prove') {
       if (!tree) throw new Error('load the commitments first');
-      reply(id, { result: tree.prove(data.chainId, data.pool, data.preimageHex, data.recipient) });
+      reply(id, { result: data.relayer ? tree.prove_relayed(data.chainId, data.pool, data.preimageHex, data.recipient, data.relayer, String(data.fee)) : tree.prove(data.chainId, data.pool, data.preimageHex, data.recipient) });
     } else throw new Error(`unknown request ${type}`);
   } catch (e) { fail(id, e); }
 };

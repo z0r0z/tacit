@@ -13,9 +13,9 @@ export function directProver(Tree) {
       tree = new Tree(bytes);
       return { root: tree.root(), leaves: tree.leaves() };
     },
-    async prove({ chainId, pool, preimageHex, recipient }) {
+    async prove({ chainId, pool, preimageHex, recipient, relayer, fee }) {
       if (!tree) throw new Error('load the commitments first');
-      return JSON.parse(tree.prove(chainId, pool, preimageHex, recipient));
+      return JSON.parse(relayer ? tree.prove_relayed(chainId, pool, preimageHex, recipient, relayer, String(fee)) : tree.prove(chainId, pool, preimageHex, recipient));
     },
     close() { tree?.free(); tree = null; },
   };

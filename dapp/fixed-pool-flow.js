@@ -10,6 +10,7 @@ import {
   FIXED_POOLS, noteTypedData, canonicalRS, deriveSecrets, depositCall, commitmentBytes32, noteString, parseNoteString,
 } from '/fixed-pool-notes.js?cb=ab06e6d2';
 import { fixedPoolLeaves } from '/fixed-pool-sync.js?cb=cd4a3f3a';
+import { PAYMASTERS, paymasterFor, bundlerClient, readGasFeeReference, prepareSponsoredWithdrawal, sendSponsoredOperation } from '/fixed-pool-paymaster.js?cb=751cdeb9';
 
 const enc = new TextEncoder();
 const selector = (sig) => '0x' + bytesToHex(keccak_256(enc.encode(sig)).slice(0, 4));
@@ -39,7 +40,7 @@ export function formatEther(wei) {
 // What a proved withdrawal must say before anything signs it: the pool's own `withdraw` with this root, this
 // nullifier hash and this recipient, and no relayer, fee or refund. The proof came out of code the page did not
 // write; this reads the call itself.
-export function checkWithdrawCall(out, { pool, recipient, root, nullifierHash }) {
+export function checkWithdrawCall(out, { pool, recipient, root, nullifierHash, relayer = '0x' + '0'.repeat(40), fee = 0n }) {
   const fail = (why) => { throw new Error(`The proved withdrawal is not the one asked for (${why}).`); };
   if (String(out.target).toLowerCase() !== pool.address.toLowerCase()) fail('pool');
   const data = String(out.input);
@@ -51,14 +52,16 @@ export function checkWithdrawCall(out, { pool, recipient, root, nullifierHash })
   if (('0x' + w(1)).toLowerCase() !== String(root).toLowerCase()) fail('root');
   if (('0x' + w(2)).toLowerCase() !== commitmentBytes32(nullifierHash)) fail('note');
   if (addr(3).toLowerCase() !== recipient.toLowerCase()) fail('recipient');
-  if (BigInt('0x' + w(4)) !== 0n || BigInt('0x' + w(5)) !== 0n || BigInt('0x' + w(6)) !== 0n) fail('fee');
+  if (addr(4).toLowerCase() !== relayer.toLowerCase()) fail('relayer');
+  if (BigInt('0x' + w(5)) !== BigInt(fee) || BigInt('0x' + w(6)) !== 0n) fail('fee');
   if (BigInt('0x' + w(7)) !== 256n) fail('proof size');
   if (body.length !== 8 * 64 + 256 * 2) fail('length');
+  if (out.proof !== undefined && String(out.proof).toLowerCase() !== '0x' + body.slice(8 * 64).toLowerCase()) fail('proof');
   if (String(out.root).toLowerCase() !== String(root).toLowerCase()) fail('root');
   if (String(out.nullifierHash).toLowerCase() !== commitmentBytes32(nullifierHash)) fail('nullifier hash');
 }
 
-export function makeFlow({ provider, account, chainId, store = null, poll = 1500, timeout = 10 * 60 * 1000 }) {
+export function makeFlow({ provider, account, chainId, store = null, poll = 1500, timeout = 10 * 60 * 1000, fetchImpl = globalThis.fetch?.bind(globalThis) }) {
   const pools = FIXED_POOLS[chainId] || [];
   const sigs = new Map();
   let determinismChecked = false;
@@ -207,14 +210,16 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
 
   const knownRoot = async (pool, root) => (await call(pool.address, SEL.isKnownRoot + word(root).slice(2))) !== 0n;
 
-  // Reads the pool's deposits, builds its tree, proves the note's withdrawal to `recipient`, and (unless
-  // `send` is false) sends it from the connected account. `prover` has `load(bytes)` and `prove(args)`.
-  async function withdraw({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves }) {
+  // The steps both withdrawals share: the note is for this network and a pool, the recipient is an address, the
+  // pool is what it says, the note is unspent and among the pool's deposits, and the tree built from them lands on
+  // a root the pool knows. Everything here is checked before any proof is made.
+  async function readyToWithdraw({ noteText, recipient, prover, onStep, leaves, beforeRead = () => {} }) {
     const note = parseNoteString(noteText);
     if (note.chainId !== chainId) throw new Error(`This note is for network ${note.chainId}; the wallet is on ${chainId}.`);
     const pool = pools.find((p) => formatEther(p.denomination) === note.amount);
     if (!pool) throw new Error('No pool takes this note on this network.');
     if (!/^0x[0-9a-fA-F]{40}$/.test(recipient) || /^0x0{40}$/i.test(recipient)) throw new Error('Enter the address that should receive it.');
+    beforeRead(pool);
     await checkPool(pool);
     if (await spent(pool, note.nullifierHash)) throw new Error('This note is already spent.');
     onStep({ step: 'read' });
@@ -231,18 +236,55 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     onStep({ step: 'tree', count });
     const { root } = await prover.load(bytes);
     if (!(await knownRoot(pool, root))) throw new Error('The deposits read do not add up to a root the pool knows. Try again in a minute.');
+    return { note, pool, root, preimageHex: bytesToHex(note.preimage) };
+  }
+
+  const settled = async (pool, note) => {
+    for (let t = 0; t < 8; t++) { if (t) await sleep(poll); if (await spent(pool, note.nullifierHash)) return true; }
+    return false;
+  };
+
+  // Reads the pool's deposits, builds its tree, proves the note's withdrawal to `recipient`, and (unless
+  // `send` is false) sends it from the connected account. `prover` has `load(bytes)` and `prove(args)`.
+  async function withdraw({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves }) {
+    const { note, pool, root, preimageHex } = await readyToWithdraw({ noteText, recipient, prover, onStep, leaves });
     onStep({ step: 'prove' });
-    const out = await prover.prove({ chainId, pool: pool.address, preimageHex: bytesToHex(note.preimage), recipient });
+    const out = await prover.prove({ chainId, pool: pool.address, preimageHex, recipient });
     checkWithdrawCall(out, { pool, recipient, root, nullifierHash: note.nullifierHash });
     if (!send) return { call: out, sent: false };
     onStep({ step: 'send' });
     const { hash } = await sendOne({ to: out.target, value: 0n, data: out.input });
-    let gone = false;
-    for (let t = 0; t < 8 && !gone; t++) { if (t) await sleep(poll); gone = await spent(pool, note.nullifierHash); }
-    return { call: out, hash, sent: true, spent: gone };
+    return { call: out, hash, sent: true, spent: await settled(pool, note) };
   }
 
-  return { pools, signNonce, probe, scan, deposit, checkPool, atomicSupported, seen, spent, withdraw, knownRoot };
+  // The same withdrawal with its gas paid from the note by the pool paymaster, as one 4337 operation from a
+  // throwaway account. The wallet signs and sends nothing, so none is needed beyond a node to read from: the
+  // recipient is paid directly (it can be a Tacit receive address) and needs no ETH.
+  async function withdrawSponsored({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves, bundler = null }) {
+    const cfg = PAYMASTERS[chainId];
+    if (!cfg) throw new Error('Paying the gas from the note is not available on this network.');
+    const { note, pool, root, preimageHex } = await readyToWithdraw({
+      noteText, recipient, prover, onStep, leaves,
+      beforeRead: (p) => paymasterFor(chainId, p.address), // a pool the paymaster does not take stops here
+    });
+    const client = bundler || bundlerClient(cfg.bundler, fetchImpl);
+    const reference = await readGasFeeReference(provider);
+    const prepared = await prepareSponsoredWithdrawal({
+      chainId, pool: pool.address, denomination: pool.denomination, recipient, bundler: client, reference, onStep,
+      prove: async (fee) => {
+        const out = await prover.prove({ chainId, pool: pool.address, preimageHex, recipient, relayer: cfg.paymaster, fee: String(fee) });
+        checkWithdrawCall(out, { pool, recipient, root, nullifierHash: note.nullifierHash, relayer: cfg.paymaster, fee });
+        return out;
+      },
+    });
+    const receive = pool.denomination - prepared.fee;
+    onStep({ step: 'quote', fee: prepared.fee, receive });
+    if (!send) return { op: prepared.op, fee: prepared.fee, receive, sent: false, gasEstimation: prepared.gasEstimation };
+    const done = await sendSponsoredOperation({ op: prepared.op, chainId, bundler: client, onStep, poll });
+    return { op: prepared.op, fee: prepared.fee, receive, sent: true, hash: done.txHash, userOpHash: done.hash, spent: await settled(pool, note), gasEstimation: prepared.gasEstimation };
+  }
+
+  return { pools, signNonce, probe, scan, deposit, checkPool, atomicSupported, seen, spent, withdraw, withdrawSponsored, knownRoot };
 }
 
 // What a found or fresh note shows: its size, its place, and the line that spends it elsewhere.

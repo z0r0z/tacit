@@ -2,8 +2,9 @@
 // Off unless the link carries ?fixed=1 (kept in this browser until ?fixed=0).
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, parseEther, formatEther, describeNote } from '/fixed-pool-flow.js?cb=88506c2f';
-import { workerProver } from '/fixed-pool-prover.js?cb=c6d89703';
+import { makeFlow, parseEther, formatEther, describeNote } from '/fixed-pool-flow.js?cb=f52aa1ba';
+import { PAYMASTERS } from '/fixed-pool-paymaster.js?cb=751cdeb9';
+import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 
 const $ = (id) => document.getElementById(id);
 const kv = {
@@ -60,9 +61,16 @@ function renderPlan() {
 }
 
 const validTo = (v) => /^0x[0-9a-fA-F]{40}$/.test(v.trim()) && !/^0x0{40}$/i.test(v.trim());
+// Paying the gas from the note needs a paymaster on this network; it also needs no connected account, only a node to read from.
+const sponsored = () => $('wgas').checked && !!PAYMASTERS[S.chainId];
 function setWithdraw() {
   const g = $('wgo'), prep = $('wprep');
   const ready = /^[a-z]+-eth-[0-9.]+-\d+-0x[0-9a-fA-F]{124}$/.test($('wnote').value.trim()) && validTo($('wto').value);
+  const has = !!PAYMASTERS[S.chainId];
+  $('wgas').disabled = !has && S.chainId != null;
+  const spons = sponsored();
+  $('wnote-gas').hidden = !spons; $('wnote-wallet').hidden = spons; prep.hidden = spons;
+  if (spons) { g.dataset.mode = 'withdraw'; g.textContent = 'Withdraw'; g.disabled = S.busy || !ready || !S.flow; return; }
   if (!S.account) { g.disabled = S.busy; g.textContent = 'Connect a wallet'; g.dataset.mode = 'connect'; prep.disabled = true; return; }
   g.dataset.mode = 'withdraw'; g.textContent = 'Withdraw';
   g.disabled = S.busy || !ready || !FIXED_POOLS[S.chainId];
@@ -111,6 +119,15 @@ async function connect() {
   } catch (e) { say('status', e?.message || 'The wallet did not connect.', 'err'); }
 }
 
+// Without an account: enough to read the chain, which is all that paying the gas from the note takes.
+async function readOnly(eth) {
+  try { S.chainId = Number(await eth.request({ method: 'eth_chainId' })); } catch { return; }
+  S.flow = makeFlow({ provider: eth, account: null, chainId: S.chainId, store: kv });
+  $('who').textContent = NETWORKS[S.chainId] || `chain ${S.chainId}`;
+  fillMinOptions();
+  setGo();
+}
+
 function start(eth) {
   S.flow = makeFlow({ provider: eth, account: S.account, chainId: S.chainId, store: kv });
   $('who').textContent = `${short(S.account)} · ${NETWORKS[S.chainId] || `chain ${S.chainId}`}`;
@@ -156,13 +173,17 @@ const WSTEPS = {
   tree: (s) => `Building the tree from ${s.count} deposits…`,
   prove: () => 'Proving. This takes a little while.',
   send: () => 'Confirm the withdrawal in your wallet…',
+  estimate: () => 'Asking the bundler about the gas…',
+  quote: (s) => `Fee ${formatEther(s.fee)} ETH; ${formatEther(s.receive)} ETH goes to the address. Sending…`,
+  wait: () => 'Waiting for the withdrawal to be mined…',
 };
 
 async function withdraw(send) {
   if ($('wgo').dataset.mode === 'connect') return connect();
+  if (sponsored()) return withdrawFromNote();
   if (!S.flow || S.busy) return;
   S.busy = true; setGo(); $('wout').hidden = true;
-  const prover = workerProver('/split/prove-worker.js?cb=b8090e00');
+  const prover = workerProver('/split/prove-worker.js?cb=af61bd34');
   try {
     const out = await S.flow.withdraw({
       noteText: $('wnote').value.trim(), recipient: $('wto').value.trim(), prover, send,
@@ -171,6 +192,21 @@ async function withdraw(send) {
     if (out.sent) say('wstatus', out.spent ? `Withdrawn. Transaction ${out.hash}` : `Sent. Transaction ${out.hash}. The pool has not shown it yet.`, out.spent ? 'ok' : 'warn');
     else say('wstatus', 'Proved. Send this call from any account.', 'ok');
     if (!out.sent) { $('wdata').textContent = `to ${out.call.target}\ndata ${out.call.input}`; $('wout').hidden = false; }
+  } catch (e) { say('wstatus', e?.message || 'Something went wrong.', 'err'); }
+  finally { prover.close(); S.busy = false; setGo(); }
+}
+
+async function withdrawFromNote() {
+  if (!S.flow || S.busy) return;
+  S.busy = true; setGo(); $('wout').hidden = true;
+  const prover = workerProver('/split/prove-worker.js?cb=af61bd34');
+  try {
+    const out = await S.flow.withdrawSponsored({
+      noteText: $('wnote').value.trim(), recipient: $('wto').value.trim(), prover,
+      onStep: (s) => say('wstatus', (WSTEPS[s.step] || (() => ''))(s)),
+    });
+    const got = `${formatEther(out.receive)} ETH, plus what the fee left over after gas`;
+    say('wstatus', out.spent ? `Withdrawn: ${got}. Transaction ${out.hash}` : `Sent. Transaction ${out.hash}. The pool has not shown it yet.`, out.spent ? 'ok' : 'warn');
   } catch (e) { say('wstatus', e?.message || 'Something went wrong.', 'err'); }
   finally { prover.close(); S.busy = false; setGo(); }
 }
@@ -197,6 +233,7 @@ if (enabled) {
   $('wprep').addEventListener('click', () => withdraw(false));
   $('wnote').addEventListener('input', setWithdraw);
   $('wto').addEventListener('input', setWithdraw);
+  $('wgas').addEventListener('change', setGo);
   $('wcopy').addEventListener('click', async (e) => {
     try { await navigator.clipboard.writeText($('wdata').textContent); e.target.textContent = 'Copied'; } catch { e.target.textContent = 'Select and copy'; }
     setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
@@ -212,7 +249,8 @@ if (enabled) {
   const eth = window.ethereum;
   if (eth?.on) {
     eth.on('accountsChanged', (a) => { if (!a?.length) location.reload(); else { S.account = a[0]; start(eth); } });
-    eth.on('chainChanged', (c) => { S.chainId = Number(c); if (S.account) start(eth); });
+    eth.on('chainChanged', (c) => { S.chainId = Number(c); if (S.account) start(eth); else readOnly(eth); });
+    readOnly(eth);
   }
   renderPlan();
 }

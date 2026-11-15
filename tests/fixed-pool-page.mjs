@@ -19,7 +19,8 @@ import { createRequire } from 'node:module';
 import { extname, join, normalize } from 'node:path';
 import assert from 'node:assert/strict';
 import { keccak_256, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
-const { parseNoteString, commitmentBytes32, FIXED_POOLS } = await import('../dapp/fixed-pool-notes.js');
+const { parseNoteString, commitmentBytes32, FIXED_POOLS, noteString } = await import('../dapp/fixed-pool-notes.js');
+const noteStringOf = (preimage) => noteString({ denomination: 10n ** 17n, chainId: 11155111, preimage });
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -53,7 +54,8 @@ const walletSource = (SEL) => `
     on() {},
     async request({ method, params = [] }) {
       switch (method) {
-        case 'eth_requestAccounts': return ['0x2c7536E3605D9C16a7a3D7b1898e529396a65c23'];
+        case 'eth_requestAccounts': window.__log.accounts = (window.__log.accounts || 0) + 1; return ['0x2c7536E3605D9C16a7a3D7b1898e529396a65c23'];
+        case 'eth_feeHistory': return { baseFeePerGas: ['0x5f5e100', '0x5f5e100', '0x5f5e100'], reward: [['0x5f5e100'], ['0x5f5e100']] };
         case 'eth_chainId': return '0xaa36a7';
         case 'eth_getBalance': return '0x' + hex(10n ** 21n, 1);
         case 'eth_signTypedData_v4': {
@@ -214,6 +216,7 @@ await test('a note is withdrawn: its deposits read, the tree built and proved in
     await page.click('#noteList [data-use="0"]');
     assert.equal((await page.inputValue('#wnote')).trim(), text);
     assert.equal(await page.locator('#wgo').isDisabled(), true, 'needs a recipient');
+    await page.uncheck('#wgas'); // sent from the wallet
     await page.fill('#wto', '0x000000000000000000000000000000000000dEaD');
     assert.equal(await page.locator('#wgo').isDisabled(), false);
     const kohaku = page.locator('#kohaku');
@@ -233,6 +236,47 @@ await test('a note is withdrawn: its deposits read, the tree built and proved in
     assert.match(sent.data, /^0x21a0adb6/);
     assert.ok(sent.data.toLowerCase().includes('000000000000000000000000000000000000dead'), 'to the recipient');
     await shot(page, 'withdrawn');
+    assert.deepEqual(problems, []);
+  } catch (e) { e.message += ' | ' + await say(); throw e; }
+  await ctx.close();
+});
+await test('paid from the note: no account is asked for, the wallet signs and sends nothing, and the bundler gets one operation', async () => {
+  const { ctx, page, problems } = await open('/split/?fixed=1', { wallet: true });
+  const say = async () => `wstatus="${await page.locator('#wstatus').innerText()}" problems=${JSON.stringify(problems)}`;
+  try {
+    const text = noteStringOf(new Uint8Array(62).fill(9));
+    await chunkCache(page, commitmentBytes32(parseNoteString(text).commitment));
+    const sent = [];
+    await page.route('https://public.pimlico.io/**', async (route) => {
+      const { id, method, params } = route.request().postDataJSON();
+      const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
+      if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+      const answer = (result) => route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify({ jsonrpc: '2.0', id, result }) });
+      if (method === 'pimlico_getUserOperationGasPrice') return answer({ standard: { maxFeePerGas: '0x17d78400', maxPriorityFeePerGas: '0x5f5e100' } });
+      if (method === 'eth_estimateUserOperationGas') return answer({ callGasLimit: '0x0', verificationGasLimit: '0x9c40', preVerificationGas: '0xea60', paymasterVerificationGasLimit: '0x55730', paymasterPostOpGasLimit: '0x7530' });
+      if (method === 'eth_sendUserOperation') { sent.push(params[0]); await page.evaluate(() => { window.__log.withdrawn = true; }); return answer('0x1'); }
+      if (method === 'eth_getUserOperationReceipt') return answer({ success: true, receipt: { transactionHash: '0x' + 'ee'.repeat(32) } });
+      return route.fulfill({ status: 404, headers, body: 'no' });
+    });
+    await page.waitForFunction(() => document.querySelector('#who').textContent.includes('Sepolia')); // read from the node, no account
+    assert.equal(await page.isChecked('#wgas'), true, 'on by default');
+    assert.equal(await page.locator('#wprep').isVisible(), false);
+    await page.fill('#wnote', text);
+    await page.fill('#wto', '0x000000000000000000000000000000000000dEaD');
+    assert.equal(await page.locator('#wgo').isDisabled(), false);
+    await page.click('#wgo');
+    await page.waitForFunction(() => /Withdrawn/.test(document.querySelector('#wstatus').textContent), null, { timeout: 180000 });
+    assert.equal(sent.length, 1);
+    const op = sent[0];
+    assert.equal(op.paymaster.toLowerCase(), '0x835ce2da8ad0d1f5d5a8462a58594006514c39b0');
+    assert.equal(op.callData, '0x');
+    assert.match(op.paymasterData, /^0x0{62}20/);
+    assert.ok(op.eip7702Auth && op.eip7702Auth.chainId === '0xaa36a7');
+    assert.ok(op.paymasterData.toLowerCase().includes('000000000000000000000000000000000000dead'), 'to the recipient');
+    const log = await page.evaluate(() => ({ accounts: window.__log.accounts || 0, signs: window.__log.signs, sends: window.__log.sends }));
+    assert.deepEqual(log, { accounts: 0, signs: 0, sends: 0 }, 'the wallet was neither asked for an account, nor to sign, nor to send');
+    assert.match(await page.locator('#wstatus').innerText(), /Withdrawn: 0\.0\d+ ETH/);
+    await shot(page, 'withdrawn-from-note');
     assert.deepEqual(problems, []);
   } catch (e) { e.message += ' | ' + await say(); throw e; }
   await ctx.close();

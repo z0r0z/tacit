@@ -1,5 +1,3 @@
-/* @ts-self-types="./fixed-pool-prover.d.ts" */
-
 /**
  * A pool's tree, held in wasm memory until freed.
  */
@@ -48,7 +46,7 @@ export class Tree {
     /**
      * Proves the withdrawal of the note whose 62-byte preimage is `preimage_hex` from the pool at `pool` on
      * `chain_id`, to `recipient`, with no relayer and no fee. Returns JSON:
-     * `{"root","nullifierHash","target","input"}`, where `target` and `input` are the call to send.
+     * `{"root","nullifierHash","target","input","proof"}`, where `target` and `input` are the call to send.
      * @param {number} chain_id
      * @param {string} pool
      * @param {string} preimage_hex
@@ -83,6 +81,51 @@ export class Tree {
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
             wasm.__wbindgen_export4(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
+     * The same, with `relayer` named in the proof and `fee` (wei, decimal or 0x hex) taken from the note for it.
+     * The proof is good only with that relayer and that fee.
+     * @param {number} chain_id
+     * @param {string} pool
+     * @param {string} preimage_hex
+     * @param {string} recipient
+     * @param {string} relayer
+     * @param {string} fee
+     * @returns {string}
+     */
+    prove_relayed(chain_id, pool, preimage_hex, recipient, relayer, fee) {
+        let deferred7_0;
+        let deferred7_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(pool, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(preimage_hex, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(recipient, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(relayer, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len3 = WASM_VECTOR_LEN;
+            const ptr4 = passStringToWasm0(fee, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len4 = WASM_VECTOR_LEN;
+            wasm.tree_prove_relayed(retptr, this.__wbg_ptr, chain_id, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            var ptr6 = r0;
+            var len6 = r1;
+            if (r3) {
+                ptr6 = 0; len6 = 0;
+                throw takeObject(r2);
+            }
+            deferred7_0 = ptr6;
+            deferred7_1 = len6;
+            return getStringFromWasm0(ptr6, len6);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred7_0, deferred7_1, 1);
         }
     }
     /**

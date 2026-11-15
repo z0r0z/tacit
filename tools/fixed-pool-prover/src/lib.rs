@@ -5,10 +5,10 @@
 //! circuit and proving key that ship inside the pool crate, so nothing is downloaded and nothing is compiled
 //! at run time. What comes back is the pool call, ready to send.
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
 use kohaku_tornadocash::{
     merkle_tree::{MerkleTree, MerkleTreeExt},
-    Field, Note, Pool, Withdrawal,
+    Field, Note, Payer, Pool, Withdrawal,
 };
 use wasm_bindgen::prelude::*;
 
@@ -58,8 +58,40 @@ impl Tree {
 
     /// Proves the withdrawal of the note whose 62-byte preimage is `preimage_hex` from the pool at `pool` on
     /// `chain_id`, to `recipient`, with no relayer and no fee. Returns JSON:
-    /// `{"root","nullifierHash","target","input"}`, where `target` and `input` are the call to send.
+    /// `{"root","nullifierHash","target","input","proof"}`, where `target` and `input` are the call to send.
     pub fn prove(&self, chain_id: u32, pool: &str, preimage_hex: &str, recipient: &str) -> Result<String, JsError> {
+        self.prove_with(chain_id, pool, preimage_hex, recipient, Payer::default())
+    }
+
+    /// The same, with `relayer` named in the proof and `fee` (wei, decimal or 0x hex) taken from the note for it.
+    /// The proof is good only with that relayer and that fee.
+    pub fn prove_relayed(
+        &self,
+        chain_id: u32,
+        pool: &str,
+        preimage_hex: &str,
+        recipient: &str,
+        relayer: &str,
+        fee: &str,
+    ) -> Result<String, JsError> {
+        let payer = Payer {
+            address: relayer.parse().map_err(err)?,
+            fee: fee.parse::<U256>().map_err(err)?,
+            refund: U256::ZERO,
+        };
+        self.prove_with(chain_id, pool, preimage_hex, recipient, payer)
+    }
+}
+
+impl Tree {
+    fn prove_with(
+        &self,
+        chain_id: u32,
+        pool: &str,
+        preimage_hex: &str,
+        recipient: &str,
+        payer: Payer,
+    ) -> Result<String, JsError> {
         let pool_address: Address = pool.parse().map_err(err)?;
         let recipient: Address = recipient.parse().map_err(err)?;
         let pool = Pool::POOLS
@@ -79,6 +111,7 @@ impl Tree {
 
         let proof = self.inner.note_proof(&note).map_err(err)?;
         let withdrawal = Withdrawal::new(pool, note, recipient)
+            .with_payer(payer)
             .prove(&proof, &mut rand::rng())
             .map_err(err)?;
         let call = withdrawal.call();
@@ -87,6 +120,7 @@ impl Tree {
             "nullifierHash": word(withdrawal.note().nullifier_hash()),
             "target": format!("{:#x}", call.target),
             "input": format!("0x{}", hex::encode(&call.input)),
+            "proof": format!("0x{}", hex::encode(withdrawal.solidity_proof())),
         })
         .to_string())
     }

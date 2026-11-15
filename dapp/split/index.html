@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://saga.0000000000.org; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://saga.0000000000.org https://public.pimlico.io; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="robots" content="noindex">
 <title>tacit split</title>
@@ -13,13 +13,14 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /split/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/split/app.js?cb=5d606785">
+<link rel="modulepreload" href="/split/app.js?cb=e4055d04">
 <link rel="modulepreload" href="/fixed-pool-notes.js?cb=ab06e6d2">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/amm-bjj.js?cb=c614361e">
-<link rel="modulepreload" href="/fixed-pool-flow.js?cb=88506c2f">
+<link rel="modulepreload" href="/fixed-pool-flow.js?cb=f52aa1ba">
 <link rel="modulepreload" href="/fixed-pool-sync.js?cb=cd4a3f3a">
-<link rel="modulepreload" href="/fixed-pool-prover.js?cb=c6d89703">
+<link rel="modulepreload" href="/fixed-pool-paymaster.js?cb=751cdeb9">
+<link rel="modulepreload" href="/fixed-pool-prover.js?cb=307cfddc">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -62,6 +63,8 @@ textarea { display: block; font-size: 12.5px; line-height: 1.5; resize: vertical
 .btn:disabled { color: color-mix(in srgb, var(--ink) 70%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2); cursor: not-allowed; }
 .btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); min-height: 44px; }
 .btn.small { width: auto; min-height: 36px; margin: 0; padding: 4px 12px; font-size: 12.5px; }
+.check { display: flex; align-items: center; gap: 10px; margin: 14px 0 0; font-size: 13px; color: var(--ink); cursor: pointer; }
+.check input { width: 18px; height: 18px; margin: 0; accent-color: var(--ink); }
 .mute { color: var(--mute); } .err { color: var(--err); } .ok { color: var(--ok); } .warn { color: var(--warn); }
 .status { margin-top: 12px; font-size: 12.5px; overflow-wrap: anywhere; min-height: 1em; }
 .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -285,7 +288,11 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <textarea id="wnote" rows="3" spellcheck="false" autocomplete="off"></textarea>
       <label for="wto" style="margin-top:12px">Send to</label>
       <input id="wto" type="text" spellcheck="false" autocomplete="off" placeholder="0x…">
-      <div class="mute" style="font-size:12.5px;margin-top:10px">The connected account sends it and pays the gas, so use one no one ties to the deposit. To withdraw without holding any ETH, <a id="kohaku" href="https://github.com/ethereum/kohaku" target="_blank" rel="noopener noreferrer">exit with Kohaku</a>.</div>
+      <div class="mute" style="font-size:12.5px;margin-top:8px">To put it straight into Tacit, send it to your Tacit deposit address (<a href="/pay/eth/#ethereum/deposit">Pay, Deposit, From an exchange</a>).</div>
+      <label class="check" for="wgas"><input type="checkbox" id="wgas" checked>Pay the gas from the note</label>
+      <div class="mute" id="wnote-gas" style="font-size:12.5px;margin-top:10px">No ETH needed: a paymaster pays the gas and takes a small fee from the note, and the rest goes straight to the address above. Nothing is signed or sent from your wallet.</div>
+      <div class="mute" id="wnote-wallet" style="font-size:12.5px;margin-top:10px" hidden>The connected account sends it and pays the gas, so use one no one ties to the deposit.</div>
+      <div class="mute" style="font-size:12.5px;margin-top:6px">Or <a id="kohaku" href="https://github.com/ethereum/kohaku" target="_blank" rel="noopener noreferrer">exit with Kohaku</a>.</div>
       <button class="btn" id="wgo" type="button" disabled>Connect a wallet</button>
       <button class="btn ghost" id="wprep" type="button" style="margin-top:10px" disabled>Prepare only</button>
       <div class="status" id="wstatus" role="status" aria-live="polite"></div>
@@ -317,6 +324,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/split/app.js?cb=5d606785"></script>
+<script type="module" src="/split/app.js?cb=e4055d04"></script>
 </body>
 </html>

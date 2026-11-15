@@ -93,7 +93,7 @@ for (const [name, bad, why] of [
   ['another pool', { target: FIXED_POOLS[CHAIN][1].address, input: callData() }, /pool/],
   ['another function', { input: callData({ selector: 'deadbeef' }) }, /call/],
   ['another recipient', { input: callData({ to: '0x000000000000000000000000000000000000bEEF' }) }, /recipient/],
-  ['a relayer', { input: callData({ relayer: '11'.repeat(20) }) }, /fee/],
+  ['a relayer', { input: callData({ relayer: '11'.repeat(20) }) }, /relayer/],
   ['a fee', { input: callData({ fee: 1n }) }, /fee/],
   ['a refund', { input: callData({ refund: 1n }) }, /fee/],
   ['another root', { input: callData({ root: '0x' + '33'.repeat(32) }) }, /root/],
@@ -108,6 +108,21 @@ for (const [name, bad, why] of [
     if (!why.test(threw)) throw new Error(`wrong reason: ${threw}`);
   });
 }
+
+const PM = '0x835ce2da8ad0d1f5d5a8462a58594006514c39b0';
+await test('a call that names the paymaster and its fee passes when asked for, and not for another fee or relayer', () => {
+  const out = { ...good, input: callData({ relayer: PM.slice(2), fee: 777n }) };
+  checkWithdrawCall(out, { ...expectOf, relayer: PM, fee: 777n });
+  for (const [why, ask] of [['fee', { relayer: PM, fee: 778n }], ['relayer', { relayer: '0x' + '22'.repeat(20), fee: 777n }], ['relayer', {}]]) {
+    let threw = null; try { checkWithdrawCall(out, { ...expectOf, ...ask }); } catch (e) { threw = e.message; }
+    if (!threw || !threw.includes(why)) throw new Error(`accepted or wrong reason (${why}): ${threw}`);
+  }
+});
+await test('a proof that is not the one in the call is refused', () => {
+  let threw = null; try { checkWithdrawCall({ ...good, input: callData(), proof: '0x' + '11'.repeat(256) }, expectOf); } catch (e) { threw = e.message; }
+  if (!threw || !threw.includes('proof')) throw new Error('accepted: ' + threw);
+  checkWithdrawCall({ ...good, input: callData(), proof: '0x' + '00'.repeat(256) }, expectOf);
+});
 
 console.log('refusals before any proof');
 const prover = directProver(Tree);
@@ -155,6 +170,64 @@ await test('another recipient gives another call, to that recipient', async () =
   const b = await flowOf(w).withdraw({ noteText, recipient: other, prover, leaves, send: false });
   eq(a.call.input === b.call.input, false);
   eq('0x' + b.call.input.slice(10 + 3 * 64 + 24, 10 + 4 * 64), other.toLowerCase());
+});
+
+console.log('paid from the note');
+const { PAYMASTERS, encodePaymasterData } = await import('../dapp/fixed-pool-paymaster.js');
+const bundlerFor = (log, { receiptOk = true } = {}) => ({
+  async request(method, params) {
+    log.push(method);
+    if (method === 'pimlico_getUserOperationGasPrice') return { standard: { maxFeePerGas: '0x' + (400_000_000n).toString(16), maxPriorityFeePerGas: '0x' + (100_000_000n).toString(16) } };
+    if (method === 'eth_estimateUserOperationGas') return { callGasLimit: '0x0', verificationGasLimit: '0x9c40', preVerificationGas: '0xea60', paymasterVerificationGasLimit: '0x55730', paymasterPostOpGasLimit: '0x7530' };
+    if (method === 'eth_sendUserOperation') { log.sent = params[0]; return '0x1'; }
+    if (method === 'eth_getUserOperationReceipt') return receiptOk ? { success: true, receipt: { transactionHash: '0x' + 'ee'.repeat(32) } } : null;
+    throw new Error('unexpected ' + method);
+  },
+});
+const sponsoredWorld = (extra = {}) => {
+  const w = world({ knownRoots: known, ...extra });
+  const orig = w.provider.request;
+  w.provider.request = async (r) => {
+    if (r.method === 'eth_feeHistory') return { baseFeePerGas: ['0x5f5e100', '0x5f5e100', '0x5f5e100'], reward: [['0x5f5e100'], ['0x5f5e100']] };
+    if (r.method === 'eth_getLogs') return [];
+    if (r.method === 'eth_blockNumber') return '0x3e8';
+    return orig(r);
+  };
+  return w;
+};
+await test('prepare only: the operation carries a proof that names the paymaster and takes the fee, and nothing is sent', async () => {
+  const w = sponsoredWorld(); const log = [];
+  const steps = [];
+  const out = await flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerFor(log), send: false, onStep: (s) => steps.push(s.step) });
+  eq(out.sent, false); eq(w.log.sends.length, 0); eq(log.includes('eth_sendUserOperation'), false);
+  eq(out.receive, POOL.denomination - out.fee);
+  if (!(out.fee > 0n && out.fee * 10n < POOL.denomination)) throw new Error('fee out of range: ' + out.fee);
+  eq(out.op.paymaster.toLowerCase(), PAYMASTERS[CHAIN].paymaster.toLowerCase()); eq(out.op.callData, '0x');
+  // the data the paymaster will decode names the recipient and the fee
+  const data = out.op.paymasterData.slice(2);
+  const wd = (i) => data.slice(64 + i * 64, 64 + i * 64 + 64);
+  eq('0x' + wd(4).slice(24), RECIPIENT.toLowerCase(), 'recipient'); eq(BigInt('0x' + wd(5)), out.fee, 'fee');
+  eq(steps.includes('quote'), true);
+});
+await test('send: the operation goes to the bundler, the wallet is never asked, and the pool then shows the note spent', async () => {
+  const w = sponsoredWorld(); const log = [];
+  // the pool shows the note spent once the bundler has the operation
+  const base = w.provider.request;
+  w.provider.request = async (r) => { if (r.method === 'eth_call' && log.sent && r.params[0].data.startsWith('0x' + sel('isSpent(bytes32)'))) return '0x' + '1'.padStart(64, '0'); return base(r); };
+  const out = await flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerFor(log) });
+  eq(out.sent, true); eq(out.spent, true); eq(out.hash, '0x' + 'ee'.repeat(32));
+  eq(w.log.sends.length, 0, 'nothing from the wallet'); eq(log.filter((m) => m === 'eth_sendUserOperation').length, 1);
+  eq(log.sent.sender.toLowerCase() === ACCOUNT.toLowerCase(), false, 'sent by a throwaway account');
+});
+await test('a note on a chain without a paymaster is refused before anything is read', async () => {
+  const w = world({ chainIdOnWallet: 8453 });
+  await rejects(flowOf(w).withdrawSponsored({ noteText: noteString({ denomination: POOL.denomination, chainId: 8453, preimage: new Uint8Array(62) }), recipient: RECIPIENT, prover, leaves }), /not available on this network/);
+});
+await test('a bundler that refuses stops the withdrawal with the note unspent', async () => {
+  const w = sponsoredWorld();
+  const b = { async request(method) { if (method === 'pimlico_getUserOperationGasPrice') return { standard: { maxFeePerGas: '0x17d78400', maxPriorityFeePerGas: '0x5f5e100' } }; throw Object.assign(new Error('AA33 reverted'), { kind: 'rpc', code: -32500, details: 'AA33 reverted' }); } };
+  await rejects(flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: b }), /Nothing was sent/);
+  eq(w.log.sends.length, 0);
 });
 
 prover.close();
