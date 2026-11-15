@@ -313,6 +313,14 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
     for (const [k, a] of askers) if (t - a.at > cfg.turnMs) askers.delete(k);
     for (const [id, h] of holders) if (t - h.at > 60_000) holders.delete(id);
   }
+  function askerView(t) {
+    const by = new Map();
+    for (const a of askers.values()) if (t - a.at <= cfg.turnMs) by.set(a.m, (by.get(a.m) || 0) + 1);
+    let places = 0, counted = 0;
+    for (const n of by.values()) { places += n; counted += Math.min(n, cfg.ticketsPerAddress); }
+    const top = [...by.entries()].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1)).slice(0, 3).map(([miner, n]) => ({ miner: miner.slice(0, 10), places: n }));
+    return { places, addresses: by.size, tickets: counted, top };
+  }
   // the asker a young job is held for: the earliest turn among those who asked within `turnMs` and may take it; read again each second
   function holderOf(e, t) {
     const memo = holders.get(e.id);
@@ -663,6 +671,9 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       lapsedToday: Object.values(rec.lapses || {}).reduce((a, n) => a + n, 0), lapsedPlacesToday: Object.keys(rec.lapses || {}).length,
       // proofs Tacit's own prover made today (the backstop: nobody else took the job in time) and the leases it took over from a miner that sat on them
       houseToday: rec.house || 0, takeoversToday: rec.takeovers || 0,
+      // who is asking for work as this process sees it, for the last `turnMs` (the pool keeps it in memory, per process): places and addresses registered, how many
+      // tickets they count for once an address is held to `ticketsPerAddress`, and the addresses with the most places (an address is already public on the board)
+      askers: askerView(t),
       top: miners.map(([miner, m]) => ({ miner, proofs: m.proofs })).sort((a, b) => b.proofs - a.proofs || (a.miner < b.miner ? -1 : 1)).slice(0, cfg.top),
       // pointsPerProof is the most a proof earns; `pay` says how it falls with the time a proof took (payFor, payFactor)
       terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs,

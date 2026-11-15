@@ -331,7 +331,7 @@ test('lease: the oldest job first, one lease per address on a client and a few o
   const r2 = await h.pool.lease({ miner: '0x' + '55'.repeat(20), client: 'm5' });
   assert.equal(r2.body.id, b.id);
   assert.equal((await h.pool.results([a.id])).body.results[a.id].status, 'gone');
-  assert.deepEqual({ ...(await h.pool.stats()).body, top: undefined, terms: undefined }, { queued: 1, leased: 1, doneToday: 0, minersToday: 0, done24h: 0, miners24h: 0, oldestQueuedSecs: 120, oldestLeaseSecs: 0, lapsedToday: 4, lapsedPlacesToday: 4, houseToday: 0, takeoversToday: 0, top: undefined, terms: undefined });
+  assert.deepEqual({ ...(await h.pool.stats()).body, top: undefined, terms: undefined, askers: undefined }, { queued: 1, leased: 1, doneToday: 0, minersToday: 0, done24h: 0, miners24h: 0, oldestQueuedSecs: 120, oldestLeaseSecs: 0, lapsedToday: 4, lapsedPlacesToday: 4, houseToday: 0, takeoversToday: 0, top: undefined, terms: undefined, askers: undefined });
 });
 
 test('submit: public values that are not the job\'s are refused before the verifier is asked; ones the verifier refuses are refused after; either is a strike and the job goes back', async () => {
@@ -413,7 +413,7 @@ test('points: each passing proof earns its address the day\'s points up to the c
   assert.deepEqual(third.r.body, { ok: true, points: 0 }, 'past the cap: kept, not credited');
   assert.equal((await prove(MINER2, 'm2')).r.body.points, 20);
   const s = (await h.pool.stats()).body;
-  assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, oldestQueuedSecs: 0, oldestLeaseSecs: 0, lapsedToday: 0, lapsedPlacesToday: 0, houseToday: 0, takeoversToday: 0, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
+  assert.deepEqual({ ...s, terms: undefined, askers: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, oldestQueuedSecs: 0, oldestLeaseSecs: 0, lapsedToday: 0, lapsedPlacesToday: 0, houseToday: 0, takeoversToday: 0, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined, askers: undefined });
   assert.deepEqual(s.terms, { pointsPerProof: 20, proofsPerMinerDay: 2, leaseMs: PROOF_POOL.leaseMs, pay: { fullSecs: 60, floorSecs: 600, floorPct: 50 }, takeoverSecs: PROOF_POOL.houseTakeoverMs / 1000, ticketsPerAddress: PROOF_POOL.ticketsPerAddress });
   assert.equal(JSON.stringify(s).includes(jobs[0].stdin.slice(2, 40)), false, 'no inputs');
   let c = (await h.pool.credits(DAY0)).body;
@@ -773,6 +773,19 @@ test('turns: wallets add no turns, and one address holds at most three tickets h
   assert.ok(grid > many + 0.1, `spread over ten addresses the same IPs do count (${pct(grid)} against ${pct(many)}): the cap makes a swarm split across addresses; it cannot stop one that does`);
 });
 
+
+test('stats show who is asking: places and addresses registered, the tickets they count for under the per-address cap, and the addresses with the most places', async () => {
+  const h = harness({ cfg: { turnMs: 30_000 } });
+  const hex = (n) => '0x' + n.toString(16).padStart(40, '0');
+  for (let p = 0; p < 8; p++) await h.pool.lease({ miner: hex(1), client: `proxy${p}` });      // one address through eight places
+  for (let i = 2; i < 5; i++) await h.pool.lease({ miner: hex(i), client: `home${i}` });       // three addresses, one place each
+  let a = (await h.pool.stats()).body.askers;
+  assert.deepEqual([a.places, a.addresses, a.tickets], [11, 4, 6], 'eleven places, four addresses, six tickets: the proxy address counts three');
+  assert.deepEqual(a.top[0], { miner: hex(1).slice(0, 10), places: 8 });
+  h.t += 31_000;
+  a = (await h.pool.stats()).body.askers;
+  assert.deepEqual([a.places, a.addresses, a.tickets, a.top.length], [0, 0, 0, 0], 'askers that have stopped asking are not counted');
+});
 
 test('turns: a lease that runs out puts its job back for a fresh turn, not for whoever asks first; the place that sat on it is not the one it is held for', async () => {
   const { T, h, ask, order } = turnRig();
