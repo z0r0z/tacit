@@ -16,6 +16,7 @@ import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=82280a4d';
 import { relayWords } from '/relay-outcome.js?cb=17e48a9a';
 import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, ZAP_GAS } from '/farm/zap.js?cb=54c09a22';
 
+try { sessionStorage.removeItem('tacit-farm-back-v1'); } catch { /* the front page's way back to a farm: this page is where it goes, so it is spent */ }
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 const E10 = 10n ** 10n, HINT = 10n ** 17n;                                      // a tenth of an ETH: the deposit a tile's entry cost is said for
 const QUICK = ['0.05', '0.1', '0.5'];
@@ -301,7 +302,7 @@ function paintStation() {
 // ── the TAC/ETH farm: the Precision farm's form, with amounts a press away under its ETH field ──
 let pubP = null, pubUi = null;
 function mountPublic() {
-  return pubP ||= Promise.all([import('/trade/farm.js?cb=1265d7de'), import('/evm-trade-venues.js?cb=196b14fb')]).then(([{ mountFarm }, E]) => {
+  return pubP ||= Promise.all([import('/trade/farm.js?cb=017e9b13'), import('/evm-trade-venues.js?cb=196b14fb')]).then(([{ mountFarm }, E]) => {
     const ethCall = (to, data, block = 'latest', o = {}) => rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: `0x${BigInt(o.value).toString(16)}` } : {}) }, block]);
     const batch = async (calls) => E._internal.decAggregate3(await ethCall(E.MULTICALL3, E._internal.encAggregate3(calls)), calls.length);
     const host = $('#farm-host');
@@ -310,7 +311,7 @@ function mountPublic() {
       if (/^Farming\./.test($('#fm-status .ok', host)?.textContent || '')) cheer('In the farm'); else { react('up', 2600); said('Farm updated'); }
       readPrecision(call).then((x) => { if (x) { S.pub = x; paint(); readStakeNow(); } }, () => {});
     };
-    pubUi = mountFarm(host, { ethCall, batch, rpc, api, wallet, W, connect: () => connect.connect(), fmtUnits, parseUnits, esc, usd, ethUsd: () => S.px.ethUsd || 0, txLink, onDone: done, refarm: true });
+    pubUi = mountFarm(host, { ethCall, batch, rpc, api, wallet, W, connect: () => connect.connect(), fmtUnits, parseUnits, esc, usd, ethUsd: () => S.px.ethUsd || 0, txLink, onDone: done, refarm: true, buyTac: '/#card=swap:ether:tac&amp;back=tac-eth' });
     $('#fm-eth .amt', host)?.after(quickRow($('#fm-amt', host)));
     return pubUi;
   }).catch((e) => { pubP = null; $('#farm-host').innerHTML = '<p class="note err">The farm could not be loaded. <a href="/rewards/#farm">Open it on the rewards page</a>.</p>'; console.warn('farm:', e?.message || e); });
@@ -355,7 +356,9 @@ const GET = {
 const ALONE = { tETH: 'earn:eth', TAC: 'earn:tac' };
 const getRow = (tk, { pid = null, alone = null } = {}) => {
   const links = [...(GET[tk] || []), ...(alone && ALONE[alone] && pid != null ? [[`Farm ${alone} alone`, `${ALONE[alone]}:p${Number(pid)}`, `Put your private ${alone} in on its own: half of it is swapped inside the pool`]] : [])];
-  return links.length ? `<div class="getrow" role="group" aria-label="Get ${esc(tk)}">${links.map(([t, c, w]) => `<a href="/#card=${c}" title="${esc(w)}">${esc(t)}</a>`).join('')}</div>` : '';
+  // a coin got on the front page leaves the way back here: its cards and sheets link to this farm (`back`, kept in that tab), but farming it alone is the farm itself
+  const back = Z.f?.id ? `&amp;back=${esc(Z.f.id)}` : '';
+  return links.length ? `<div class="getrow" role="group" aria-label="Get ${esc(tk)}">${links.map(([t, c, w]) => `<a href="/#card=${c}${/^earn:/.test(c) ? '' : back}" title="${esc(w)}">${esc(t)}</a>`).join('')}</div>` : '';
 };
 function setMode(m) {
   if (Z.busy) return;

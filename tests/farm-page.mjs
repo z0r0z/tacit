@@ -377,6 +377,23 @@ try {
     clean(r, 'the public farm');
     await r.browser.close();
 
+    {
+      // with no TAC in the wallet, ETH + TAC offers to buy some on the front page, and that link says which farm to come back to
+      const b = await openPage({ hash: '#tac-eth', wallet: true }), q = b.page;
+      await until(q, () => !!document.querySelector('#fm-mode [data-fm="pair"]'));
+      await q.click('#fm-mode [data-fm="pair"]');
+      ok(await until(q, () => document.querySelector('#fm-how a')?.getAttribute('href') === '/#card=swap:ether:tac&back=tac-eth'), `buying TAC leads to the front page's swap and says the way back (${await q.evaluate(() => document.querySelector('#fm-how a')?.getAttribute('href'))})`);
+      await b.browser.close();
+    }
+    {
+      // the farm page is where a way back goes: opening it spends the one the front page kept
+      const b = await openPage({ hash: '#teth-cbtc' }), q = b.page;
+      await q.evaluate(() => sessionStorage.setItem('tacit-farm-back-v1', JSON.stringify({ id: 'teth-cbtc', at: Date.now() })));
+      await q.reload({ waitUntil: 'load' });
+      ok(await q.evaluate(() => sessionStorage.getItem('tacit-farm-back-v1')) === null, 'opening the farm page clears the way back the front page kept');
+      await b.browser.close();
+    }
+
     const mine = await openPage({ wallet: true, st: { staked: 100n * E18, earned: 3n * E18 } });
     ok(await until(mine.page, () => document.querySelector('#d-tac-eth .sel')?.textContent === 'Manage' && document.querySelector('#d-tac-eth .yours')?.textContent === 'Yours'), 'a wallet with a stake sees its tile marked, with Manage');
     await mine.page.mouse.move(0, 0);                                                  // no tile under the pointer (a hovered one lifts)
@@ -424,7 +441,7 @@ try {
       ok(m1.cost >= 15 && await page.evaluate(() => !!document.querySelector('#pz-ack') && document.querySelector('#pz-go').disabled && document.querySelector('#pz-go').textContent === 'Farm privately'), 'at 15% or more the button waits for the loss to be accepted');
       await page.check('#pz-ack');
       ok(await until(page, () => !document.querySelector('#pz-go').disabled), 'and is ready once it is');
-      ok(await page.evaluate(() => !!document.querySelector('#pz-rcpt [data-alt="both"]') && [...document.querySelectorAll('#pz-rcpt .getrow a')].map((a) => a.getAttribute('href')).join() === '/#card=borrow:cusd'), 'a costly pool offers the way in that swaps nothing, and where to borrow the cUSD for it');
+      ok(await page.evaluate(() => !!document.querySelector('#pz-rcpt [data-alt="both"]') && [...document.querySelectorAll('#pz-rcpt .getrow a')].map((a) => a.getAttribute('href')).join() === '/#card=borrow:cusd&back=teth-cusd'), 'a costly pool offers the way in that swaps nothing, and where to borrow the cUSD for it, with the way back to this farm');
       await shot(page, 'private-dear');
       await page.click('#pz-rcpt [data-alt="both"]');
       ok(await page.evaluate(() => !document.querySelector('#pz-join').hidden && document.querySelector('#pz-eth').hidden && document.querySelector('#pz-mode [data-pm="both"]').getAttribute('aria-pressed') === 'true'), 'and one press moves to tETH + cUSD');
@@ -694,7 +711,7 @@ try {
       await page.click('#pz-both');
       ok(await until(page, () => /No private cBTC right now/.test(document.querySelector('#pz-join')?.textContent || '')), `with no cBTC the card says so (${(await text(page, '#pz-join')).slice(0, 160)})`);
       const hrefs = () => page.evaluate(() => [...document.querySelectorAll('#pz-join .getrow a')].map((a) => a.getAttribute('href')));
-      ok((await hrefs()).join() === `/#card=borrow:cbtc,/#card=bridge:kb,/#card=earn:eth:p${prog.pools[2].pid}`, `and links the lock, the bridge, and farming the tETH alone (${(await hrefs()).join(' ')})`);
+      ok((await hrefs()).join() === `/#card=borrow:cbtc&back=teth-cbtc,/#card=bridge:kb&back=teth-cbtc,/#card=earn:eth:p${prog.pools[2].pid}`, `and links the lock and the bridge, each with the way back to this farm, and farming the tETH alone, which is the farm itself (${(await hrefs()).join(' ')})`);
       ok(await page.evaluate(() => !document.querySelector('#pz-join [data-pf="max"]')), 'with nothing to pair, there is no Max');
       await page.fill('#pz-join #pf-a', '0.05');
       ok(await until(page, () => /does not cover it/.test(document.querySelector('#pz-join #pf-info')?.textContent || '')) && (await hrefs()).length === 3 && await page.evaluate(() => document.querySelector('#pz-join [data-pf="join"]').disabled), 'an amount the notes cannot pair says so, keeps the links, and the press waits');

@@ -13,7 +13,7 @@ import { precisionPool, tacitPool, poolBook, perLevel, roundDown, CHART_STEPS } 
 import { readBook, planBuy as planBoardBuy, planSell as planBoardSell, refine as refineBoards, buildFill as buildBoardFill, BOARD_NAMES } from '/zboards.js?cb=e8d21aec';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=b758e60b';
 import { takeEarly, hedgedRpc, nodeHealth, shareReads } from '/trade/rpc.js';
-import { mountFarm } from '/trade/farm.js?cb=1265d7de';
+import { mountFarm } from '/trade/farm.js?cb=017e9b13';
 import { grp, sig, group, satsFmt, day as dayFmt, warm as warmFormatters } from '/trade/fmt.js?cb=172824e5';
 import { makePointsNote } from '/points-note.js?cb=40738db7';
 import { addrFlat } from '/address-view.js?cb=58dd4914';

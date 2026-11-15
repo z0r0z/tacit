@@ -23,7 +23,7 @@ const wordAt = (hex, i) => BigInt('0x' + (strip(hex).slice(i * 64, (i + 1) * 64)
 const now = () => Math.floor(Date.now() / 1000);
 
 export function mountFarm(host, ctx) {
-  const { ethCall, batch, api, wallet, W, connect, fmtUnits: fmt, parseUnits, esc, usd, ethUsd, txLink, onDone, refarm = false, gasPrice = () => null } = ctx;
+  const { ethCall, batch, api, wallet, W, connect, fmtUnits: fmt, parseUnits, esc, usd, ethUsd, txLink, onDone, refarm = false, gasPrice = () => null, buyTac = '/#card=swap:ether:tac' } = ctx;
   const F = { wdOpen: false, rseq: 0, ackKey: null, x: null, prog: null, mode: 'eth', outPct: '100', outAmt: '', outAs: 'both', q: null, seq: 0, w: null, wseq: 0, busy: false, tick: 0, err: false };
   const $ = (s) => host.querySelector(s);
   const plain = (v) => { const n = BigInt(v), b = 10n ** 18n, f = (n % b).toString().padStart(18, '0').replace(/0+$/, ''); return `${n / b}${f ? `.${f}` : ''}`; };
@@ -158,7 +158,7 @@ export function mountFarm(host, ctx) {
     $('#fm-mode').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.fm === m)));
     $('#fm-eth').hidden = m === 'tac'; $('#fm-tac').hidden = m === 'eth';
     const em = $('#fm-emax'), tm = $('#fm-tmax'), mine = x && W.account && x.who === W.account;
-    $('#fm-how').innerHTML = m === 'pair' ? (mine && x.tac === 0n ? 'You hold no TAC in this wallet, and ETH + TAC takes both. <button class="linkbtn" type="button" data-fm="eth">Farm with ETH alone</button>, or <a href="/#card=swap:ether:tac">buy TAC</a> first.' : 'Both go in at the pool’s ratio, then are staked.')
+    $('#fm-how').innerHTML = m === 'pair' ? (mine && x.tac === 0n ? 'You hold no TAC in this wallet, and ETH + TAC takes both. <button class="linkbtn" type="button" data-fm="eth">Farm with ETH alone</button>, or <a href="' + buyTac + '">buy TAC</a> first.' : 'Both go in at the pool’s ratio, then are staked.')
       : `Half is swapped to ${m === 'eth' ? 'TAC' : 'ETH'} inside the pool, then both are staked: one transaction.`;
     em.hidden = !(mine && x.bal != null); tm.hidden = !mine;
     if (mine && x.bal != null) em.textContent = `Balance ${fmt(x.bal, 18, 4)} · Max`;

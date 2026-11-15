@@ -217,8 +217,8 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 // Borrow reports under each step's own line (#bw-s1…#bw-s4) as well as the sheet's: read them all.
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
-const UI_STEPS = 'links,tacbuy,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,xtshield,xtout,xtspx,xtwst,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earnget,earngate,earnimpact,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile,chainways').split(','));
+const UI_STEPS = 'links,tacbuy,swapurl,swapfield,farmback,hints,hxbridge,hxfold,hxnudge,tradelinks';
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,farmback,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,xtshield,xtout,xtspx,xtwst,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earnget,earngate,earnimpact,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile,chainways').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -783,6 +783,46 @@ await step('swapfield', async () => {
   } finally { await r.browser.close(); }
 });
 
+// The way back from the farm page: a link from there into a card ends in &back=<the farm's id>. The card says how to return under itself on every tab but Earn (the farm's
+// own), the sheets a lock passes through say so under their heads, the link goes to that farm and spends the id, which the tab keeps for six hours; an id that is not one is
+// ignored and the card still opens.
+await step('farmback', async () => {
+  const r = await openPage({ account: A0, key: K0 }), p = r.page;
+  const KEY = 'tacit-farm-back-v1', line = () => p.evaluate(() => { const e = document.querySelector('#hx-fback'); return e && !e.hidden ? { text: e.textContent.trim(), href: e.querySelector('a')?.getAttribute('href') } : null; });
+  const sel = (tab) => until(p, (t) => document.querySelector(`[data-hxm="${t}"]`)?.getAttribute('aria-selected') === 'true', tab, 120000);
+  try {
+    await p.goto(r.url);
+    await p.waitForSelector('#hx-body [data-hxm]', { timeout: 120000 });
+    ok(!(await line()), 'farmback: with no way back kept, the card says nothing of one');
+    await p.evaluate(() => { location.hash = '#card=borrow:cbtc&back=teth-cbtc'; });
+    ok(await sel('borrow'), 'farmback: the link opens the card on Borrow');
+    ok(await until(p, () => { const e = document.querySelector('#hx-fback'); return !!e && !e.hidden && e.querySelector('a')?.getAttribute('href') === '/farm/#teth-cbtc'; }, null, 30000), `farmback: and it says how to go back to the farm (${JSON.stringify(await line())})`);
+    ok((await line()).text === '← Back to the tETH / cBTC farm' && !/back=/.test(await p.evaluate(() => location.hash)), 'farmback: in the farm’s own words, and the address is left clean');
+    await p.click('[data-hxm="earn"]');
+    ok(await until(p, () => document.querySelector('#hx-fback')?.hidden === true, null, 30000), 'farmback: on the Earn tab, which is the farm’s own, the line is gone');
+    await p.click('[data-hxm="swap"]');
+    ok(await until(p, () => document.querySelector('#hx-fback')?.hidden === false, null, 30000), 'farmback: on Swap, whose card is drawn another way, it is back');
+    await p.evaluate(() => { location.hash = '#borrow'; });
+    ok(await until(p, () => !!document.querySelector('#sheet-borrow[open] .farm-back a[href="/farm/#teth-cbtc"]'), null, 60000), 'farmback: the Borrow sheet, where a lock goes on, says so under its head');
+    await p.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+    // an id that is not one is ignored, and the card opens all the same
+    await p.evaluate((k) => { sessionStorage.removeItem(k); location.hash = '#card=swap:ether:tac:private&back=Bad_Id!'; }, KEY);
+    ok(await sel('swap') && !(await line()) && (await p.evaluate((k) => sessionStorage.getItem(k), KEY)) === null, 'farmback: an id that is not one is ignored and the card opens');
+    // six hours on it is gone
+    await p.evaluate((k) => sessionStorage.setItem(k, JSON.stringify({ id: 'teth-cbtc', at: Date.now() - 7 * 3600e3 })), KEY);
+    await p.reload({ waitUntil: 'load' });
+    await p.waitForSelector('#hx-body [data-hxm]', { timeout: 120000 });
+    ok(!(await line()), 'farmback: a way back kept seven hours ago is not offered');
+    await p.evaluate((k) => sessionStorage.setItem(k, JSON.stringify({ id: 'tac-eth', at: Date.now() - 3600e3 })), KEY);
+    await p.reload({ waitUntil: 'load' });
+    ok(await until(p, () => { const e = document.querySelector('#hx-fback'); return !!e && !e.hidden && e.textContent.trim() === '← Back to the TAC / ETH farm'; }, null, 60000), 'farmback: one kept an hour ago is, after a reload, for the farm it names');
+    // the link goes to the farm, and the id is spent
+    await p.click('#hx-fback a');
+    await p.waitForURL(/\/farm\/#tac-eth$/, { timeout: 60000 });
+    ok((await p.evaluate((k) => sessionStorage.getItem(k), KEY)) === null, 'farmback: the link goes to that farm and the way back is spent');
+    if (r.errors.length) { fails++; console.log('FAIL farmback page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
 // The quick starts above the tile: three chips at 0.01 ETH; the private swap one fills the card with ETH for USDC, Swap privately on and 0.01 in; the shield one opens the
 // Shield way with 0.01. Each only fills the card: nothing is sent.
 await step('hints', async () => {
