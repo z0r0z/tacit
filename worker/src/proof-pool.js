@@ -53,6 +53,7 @@ export const PROOF_POOL = Object.freeze({
   strikesPerDay: 3,
   lapsesPerDay: 4,                   // POOL_LAPSES_PER_DAY: leases a client may let run out or hand back in a UTC day before it is offered nothing more (honest lapses are rare: leases and proofs matched to within five over 38 hours)
   leasesPerClient: 4,                // open leases one client may hold, one per address (a household's few machines)
+  houseTakeoverMs: 25 * 60_000,      // POOL_HOUSE_TAKEOVER_MS: a miner's lease held this long without a proof can be taken over by Tacit's own prover when it is free (0: never); 99.6% of honest proofs come back inside it
   turnMs: 30_000,                    // POOL_TURN_MS: a miner counts as asking for this long after it last asked, and a new job is held this long for the one whose turn it is (0: first to ask)
   minerIdleMs: 5 * 60_000,           // POOL_MINER_IDLE_MS: a house prover's wait for the miners holds only while one has asked this recently
   holdMs: 45_000,                    // POOL_HOLD_MS: how long a page's hold keeps Tacit's own provers off the pool (a typed amount's proof is asked within seconds)
@@ -87,6 +88,7 @@ export function proofPoolConfig(env = {}) {
     payFloorPct: n(env.POOL_PAY_FLOOR_PCT, PROOF_POOL.payFloorPct, 10, 100),
     lapsesPerDay: n(env.POOL_LAPSES_PER_DAY, PROOF_POOL.lapsesPerDay, 1, 100_000),
     turnMs: n(env.POOL_TURN_MS, PROOF_POOL.turnMs, 0, 600_000),
+    houseTakeoverMs: n(env.POOL_HOUSE_TAKEOVER_MS, PROOF_POOL.houseTakeoverMs, 0, 86_400_000),
   });
 }
 
@@ -462,6 +464,23 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
         await save();
         return reply(200, { ok: true, id: e.id, type: job.type, stdin: job.stdin, lease: l.lease, leaseMs: cfg.leaseMs, points: house ? 0 : earns(rec, m) });
       }
+      // Nothing waiting: Tacit's own prover, free, takes over the lease that has been held the longest past `houseTakeoverMs` without a proof, so a page's wrap does
+      // not wait out the whole lease for a miner that is not proving it (a lease taken and sat on). The miner's lease is gone (its late proof is not taken) and the
+      // lapse counts against its place; the house's proof earns nothing, as ever. 99.6% of honest proofs come back well inside the time, and what is taken over is
+      // one the page has already waited that long for.
+      if (house && cfg.houseTakeoverMs > 0) {
+        const stale = Object.entries(L).filter(([, x]) => !x.house && x.until > t && t - (x.until - cfg.leaseMs) >= cfg.houseTakeoverMs).sort((a, b) => a[1].until - b[1].until)[0];
+        const job = stale ? await read(K.job(stale[0]), null) : null;
+        if (stale && job && job.status === 'open') {
+          const [id, old] = stale;
+          await lapsed(old, t);
+          const l = { lease: token(), until: t + cfg.leaseMs, miner: m, client, at: old.at, tries: (old.tries || 0) + 1, skip: [...new Set([...(old.skip || []), old.client])].slice(-16), ...(old.urgent ? { urgent: true } : {}), house: true };
+          L[id] = l;
+          changed = true;
+          await save();
+          return reply(200, { ok: true, id, type: job.type, stdin: job.stdin, lease: l.lease, leaseMs: cfg.leaseMs, points: 0 });
+        }
+      }
       await save();
       return reply(204, null);
     });
@@ -568,11 +587,14 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       const dep = String(job.expect?.depositId || '').toLowerCase();
       const again = dep ? (await read(K.paid(dep), null)) != null : false;
       if (dep && !again) await write(K.paid(dep), t, cfg.daySecs);
-      const mr = minerIn(rec, l.miner), points = !again && earns(rec, l.miner) > 0 ? payFor(secs, cfg) : 0;
+      // A job that came back (a lease ran out or was handed back, so its page has waited) is paid by its age from the page's request, not from the lease that
+      // proved it: whoever takes it up after the wait does not earn full speed pay for the page's wait. A job on its first lease is timed from the lease as ever.
+      const waited = (l.tries || 0) > 0 ? Math.max(0, Math.round((t - l.at) / 1000)) : 0, paySecs = Math.max(secs, waited);
+      const mr = minerIn(rec, l.miner), points = !again && earns(rec, l.miner) > 0 ? payFor(paySecs, cfg) : 0;
       mr.proofs++;
       if (points > 0) { mr.credited++; mr.points += points; rec.points += points; }
       await write(K.day(d), rec, cfg.daySecs);
-      if (!again) await made({ miner: l.miner, points });
+      if (!again) await made({ miner: l.miner, points, ...(waited > secs ? { waited } : {}) });
       return reply(200, { ok: true, points });
     });
   }
@@ -626,7 +648,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random 
       top: miners.map(([miner, m]) => ({ miner, proofs: m.proofs })).sort((a, b) => b.proofs - a.proofs || (a.miner < b.miner ? -1 : 1)).slice(0, cfg.top),
       // pointsPerProof is the most a proof earns; `pay` says how it falls with the time a proof took (payFor, payFactor)
       terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs,
-        pay: { fullSecs: cfg.payFullSecs, floorSecs: cfg.payFloorSecs, floorPct: cfg.payFloorPct } },
+        pay: { fullSecs: cfg.payFullSecs, floorSecs: cfg.payFloorSecs, floorPct: cfg.payFloorPct }, takeoverSecs: Math.round(cfg.houseTakeoverMs / 1000) },
     });
   }
 

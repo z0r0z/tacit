@@ -121,6 +121,9 @@ test('config: the environment sets each number within its bounds, and a bad valu
   assert.equal(proofPoolConfig({ POOL_TURN_MS: '0' }).turnMs, 0, 'POOL_TURN_MS=0 puts first-to-ask back');
   assert.equal(proofPoolConfig({ POOL_TURN_MS: '45000' }).turnMs, 45_000);
   assert.equal(proofPoolConfig({ POOL_TURN_MS: '-5' }).turnMs, PROOF_POOL.turnMs);
+  assert.equal(proofPoolConfig({ POOL_HOUSE_TAKEOVER_MS: '0' }).houseTakeoverMs, 0, 'POOL_HOUSE_TAKEOVER_MS=0 turns the takeover off');
+  assert.equal(proofPoolConfig({ POOL_HOUSE_TAKEOVER_MS: '900000' }).houseTakeoverMs, 900_000);
+  assert.equal(proofPoolConfig({ POOL_HOUSE_TAKEOVER_MS: 'soon' }).houseTakeoverMs, PROOF_POOL.houseTakeoverMs);
 });
 
 test('request: the input names the job, the same input is one job, expect must be what the input proves; a client\'s day and the pool\'s size are capped', async () => {
@@ -409,7 +412,7 @@ test('points: each passing proof earns its address the day\'s points up to the c
   assert.equal((await prove(MINER2, 'm2')).r.body.points, 20);
   const s = (await h.pool.stats()).body;
   assert.deepEqual({ ...s, terms: undefined }, { queued: 0, leased: 0, doneToday: 4, minersToday: 2, done24h: 4, miners24h: 2, oldestQueuedSecs: 0, oldestLeaseSecs: 0, lapsedToday: 0, lapsedPlacesToday: 0, top: [{ miner: MINER, proofs: 3 }, { miner: MINER2, proofs: 1 }], terms: undefined });
-  assert.deepEqual(s.terms, { pointsPerProof: 20, proofsPerMinerDay: 2, leaseMs: PROOF_POOL.leaseMs, pay: { fullSecs: 60, floorSecs: 600, floorPct: 50 } });
+  assert.deepEqual(s.terms, { pointsPerProof: 20, proofsPerMinerDay: 2, leaseMs: PROOF_POOL.leaseMs, pay: { fullSecs: 60, floorSecs: 600, floorPct: 50 }, takeoverSecs: PROOF_POOL.houseTakeoverMs / 1000 });
   assert.equal(JSON.stringify(s).includes(jobs[0].stdin.slice(2, 40)), false, 'no inputs');
   let c = (await h.pool.credits(DAY0)).body;
   assert.deepEqual(c, { day: DAY0, over: false, pointsPerProof: 20, miners: [{ miner: MINER, proofs: 3, points: 40 }, { miner: MINER2, proofs: 1, points: 20 }] });
@@ -766,6 +769,83 @@ test('pay: a proof earns in full within a minute and less the longer it took, do
   assert.equal(payFor(900, { ...c, payFloorSecs: 60 }), 20, 'a floor no later than the full time is no slope');
   assert.equal(payFor(900, { ...c, payFullSecs: 700, payFloorSecs: 600 }), 20);
   assert.equal(payFor(Number.NaN, c), 20, 'an unreadable time is not held against a proof');
+});
+
+test('pay: a job that came back is paid by its age from the page\'s request, not from the lease that proved it; one on its first lease is timed from the lease', async () => {
+  const h = harness({ cfg: { pointsPerProof: 20 } });
+  const [a, b, c] = [50, 51, 52].map((i) => wrapJob(i));
+  const post = (j, k) => h.pool.request({ type: 'wrap', stdin: j.stdin, expect: j.expect, client: `pg${k}` });
+  const proof = (l, j) => h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(j.expect), proof: PROOF });
+  // handed back after 400 s, then proved in 8 s by another: the page has waited 408 s
+  await post(a, 1);
+  let l = (await h.pool.lease({ miner: MINER, client: 'm1' })).body;
+  h.t += 400_000;
+  await h.pool.submit({ id: l.id, lease: l.lease, error: 'cannot' });
+  l = (await h.pool.lease({ miner: MINER2, client: 'm2' })).body;
+  h.t += 8_000;
+  const r1 = (await proof(l, a)).body;
+  assert.equal(r1.points, payFor(408, PROOF_POOL), `408 s of the page's wait, not 8 s of the proof (${r1.points})`);
+  assert.ok(r1.points < 20 && r1.points > 10);
+  // a lease that ran out: the retaker of a job that waited the whole lease is paid at the floor for a proof it made in 8 s
+  await post(b, 2);
+  l = (await h.pool.lease({ miner: MINER, client: 'm3' })).body;
+  h.t += PROOF_POOL.leaseMs + 1;
+  l = (await h.pool.lease({ miner: MINER3, client: 'm4' })).body;
+  assert.equal(l.id, b.id);
+  h.t += 8_000;
+  assert.equal((await proof(l, b)).body.points, Math.round(20 * PROOF_POOL.payFloorPct / 100), 'at the floor');
+  // a job on its first lease that merely waited for someone to ask is timed from the lease
+  await post(c, 3);
+  h.t += 1000_000;
+  l = (await h.pool.lease({ miner: MINER, client: 'm5' })).body;
+  h.t += 8_000;
+  assert.equal((await proof(l, c)).body.points, 20, 'nobody had come for it: no fault of the miner that did');
+  const feed = (await h.pool.recent()).body.proofs;
+  assert.deepEqual(feed.map((e) => [e.secs, e.points, e.waited]), [[8, 20, undefined], [8, 10, PROOF_POOL.leaseMs / 1000 + 8], [8, 14, 408]], 'the feed (newest first) keeps how long the proof took, and says how long the page had waited when that was more');
+});
+
+test('house: Tacit\'s own prover takes over a lease held past the takeover time and proves it; the miner\'s late proof is not taken, its place counts a lapse, and the house earns nothing', async () => {
+  const h = harness(), TAKE = PROOF_POOL.houseTakeoverMs;
+  const [a, b, c] = [60, 61, 62].map((i) => wrapJob(i));
+  const post = (j, k) => h.pool.request({ type: 'wrap', stdin: j.stdin, expect: j.expect, client: `pg${k}` });
+  const house = () => h.pool.lease({ house: 'gpu', client: 'house:gpu' });
+  const proof = (id, lease, j) => h.pool.submit({ id, lease, publicValues: pvFor(j.expect), proof: PROOF });
+  await post(a, 1);
+  const l = (await h.pool.lease({ miner: MINER, client: 'm1' })).body;
+  assert.equal(l.id, a.id);
+  h.t += TAKE - 1000;
+  assert.equal((await house()).status, 204, 'a lease that has not been held the takeover time is the miner\'s');
+  h.t += 1000;
+  const x = await house();
+  assert.deepEqual([x.status, x.body.id, x.body.points, x.body.stdin], [200, a.id, 0, a.stdin], 'the house takes it over');
+  assert.equal((await house()).status, 429, 'one lease at a time for the house too');
+  const late = await proof(a.id, l.lease, a);
+  assert.deepEqual([late.status, late.body.code], [409, 'no_lease'], 'the miner\'s late proof is not taken');
+  assert.equal((await h.pool.stats()).body.lapsedToday, 1, 'counted against the place that held it');
+  h.t += 60_000;
+  const done = await proof(a.id, x.body.lease, a);
+  assert.deepEqual([done.status, done.body.points], [200, 0]);
+  assert.equal((await h.pool.results([a.id])).body.results[a.id].status, 'done', 'the page has its proof');
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [], 'in no tally');
+  assert.equal((await h.pool.recent()).body.proofs.at(-1).house, true);
+  // a job that is waiting is taken before any takeover; the house never takes over its own lease or a miner's that is young
+  await post(b, 2);
+  await h.pool.lease({ miner: MINER2, client: 'm2' });
+  h.t += TAKE;
+  await post(c, 3);
+  const y = await house();
+  assert.equal(y.body.id, c.id, 'the queued job first');
+  assert.equal((await proof(c.id, y.body.lease, c)).status, 200);
+  const z = await house();
+  assert.equal(z.body.id, b.id, 'then the miner\'s old lease');
+  assert.equal((await h.pool.stats()).body.lapsedToday, 2);
+  assert.equal((await h.pool.stats()).body.terms.takeoverSecs, TAKE / 1000);
+  // off at 0: the lease runs its whole time
+  const off = harness({ cfg: { houseTakeoverMs: 0 } });
+  await off.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'pgx' });
+  await off.pool.lease({ miner: MINER, client: 'm1' });
+  off.t += TAKE + 60_000;
+  assert.equal((await off.pool.lease({ house: 'gpu', client: 'house:gpu' })).status, 204);
 });
 
 test('pay config: each term is read within its bounds, and a bad one keeps the default', () => {
