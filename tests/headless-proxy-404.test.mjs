@@ -14,6 +14,8 @@ const urls = [];
 globalThis.fetch = async (u) => {
   urls.push(String(u));
   if (String(u).startsWith('https://api.example/chain/tx/')) return new Response('{"error":"not found"}', { status: 404 });
+  if (String(u).startsWith('https://api.example/chain/v1/fees/recommended?network=mainnet')) return new Response('{"fastestFee":3,"halfHourFee":2,"hourFee":2,"economyFee":1,"minimumFee":1}', { status: 200 });
+  if (/mempool|blockstream/.test(String(u))) return new Response('rate limited', { status: 429 });
   return new Response('[]', { status: 200 });
 };
 const m = await import('../dapp/tacit.js');
@@ -25,5 +27,7 @@ const before = urls.length;
 try { await m.getTx(b); } catch {}
 ok(urls.slice(before).some((u) => u.startsWith(`https://api.example/chain/tx/${b}`)), "after a 404 the next read still goes to the proxy");
 ok(!urls.some((u) => /mempool\.space|blockstream/.test(u)), 'no public explorer was asked');
+const rate = await m.getFeeRate('standard');
+ok(rate === 2, `with every explorer throttled the fee rate comes from the proxy, not the 15 sat/vB fallback (${rate})`);
 console.log(`\n${n} headless-proxy-404 checks passed${failures ? `, ${failures} FAILED` : ''}`);
 process.exit(failures ? 1 : 0);
