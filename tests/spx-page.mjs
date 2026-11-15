@@ -22,6 +22,13 @@ const read = (p) => readFileSync(join(DAPP, p), 'utf8');
 // ── the file ──
 const page = read('spx/index.html'), front = read('index.html');
 ok(/<html lang="en" data-page="spx">/.test(page) && /<html lang="en">/.test(front), 'the page is marked data-page="spx" and the front page is not');
+{
+  // the zap's transaction finishes the proof job it spends (else its Activity item never closes and offers to send the spent proof again),
+  // and the hand-off says the page sends it
+  const zap = front.slice(front.indexOf('async function xtZapSend('), front.indexOf('async function xtStartCore('));
+  ok(/finishes: \[nest, proven\.jobId && 'job:' \+ proven\.jobId\]\.filter\(Boolean\)/.test(zap) && /nest, finishes/.test(zap), 'the zap transaction is nested in its op and finishes the proof job, so Activity closes when it lands');
+  ok((front.match(/clear: [^}]*, mine: true \}\);/g) || []).length === 2 && /run\.to\.mine \? `It is proved in about a minute, then sent from your account\./.test(front), 'both zap runs say the page sends it, not "you can close this"');
+}
 ok(/<title>tacit SPX<\/title>/.test(page) && /<link rel="canonical" href="https:\/\/tacit\.finance\/spx\/">/.test(page), 'it is called tacit SPX, at /spx/');
 ok(/<meta property="og:image" content="https:\/\/tacit\.finance\/spx\/card\.jpg">/.test(page) && existsSync(join(DAPP, 'spx/card.jpg')), 'its share card is its own, and the file is there');
 const cspOf = (t) => /<meta http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(t)?.[1];
