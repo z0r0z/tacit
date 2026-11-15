@@ -234,6 +234,8 @@ const hidden = () => LATER.on && !S.inP && !S.outP && !inPool(S.get) && outRoute
 const getPriv = () => S.outP || hidden();
 
 const moving = () => !!H.moves;
+// a coin the host lists on the Get side only (the SPX page's TAC: it can be bought there, not sold) cannot be paid with, so the flip does not turn it into the Pay side
+const payOk = (k) => { const o = H.moves?.only?.(FLOW, 'pay'); return !o || o.has(k); };
 const atOf = (side) => S.at[side] || ((side === 'pay' ? S.inP : S.outP) ? 'defi' : 'wallet');
 const isPrivAt = (at) => at === 'defi' || at === 'pay' || at === 'chain';
 const onChain = () => moving() && !!H.moves.onChain?.();
@@ -649,17 +651,30 @@ async function privQuote(units, from, sym) {
   const stops = from === 'eth' || to === 'eth' ? [to] : ['eth', to];
   const f0 = await opFee(t, POOL_TK[from], 'route'), fee = stops.length > 1 ? twoDigits((f0 * 14n) / 10n) : f0;
   if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, pdOf(from), 6)} ${esc(sym)}: the relay’s fee is ${fmtUnits(fee, pdOf(from), 6)}.`, tiny: true };
-  let cur = id(from), amt = units - fee, at = from;
-  const pools = [];
-  for (const k of stops) {
-    const next = id(k);
-    const best = await bestTier(t, cur, next, amt);
-    if (!best) return stops.length === 1 && at === 'eth' && ownPool(k) ? { rows: [], why: `No pool trades tETH for ${esc(PSYM[k] || 'it')} yet.`, start: k } : { rows: [], why: 'The Tacit pool has no price for this pair right now.' };
-    const h = best.hops[0], lo = BigInt(cur) <= BigInt(next);
-    pools.push({ a: at, b: k, feeBps: Number(h.feeBps), ra: BigInt(lo ? h.reserveAPre : h.reserveBPre), rb: BigInt(lo ? h.reserveBPre : h.reserveAPre) });
-    cur = next; amt = best.amountOut; at = k;
+  // through tETH, as every pair goes; and, for a token the pool holds by registration (SPX), the pool that holds both coins when it gives more (one hop, one fee)
+  const hub = await (async () => {
+    let cur = id(from), amt = units - fee, at = from;
+    const pools = [];
+    for (const k of stops) {
+      const next = id(k);
+      const best = await bestTier(t, cur, next, amt);
+      if (!best) return null;
+      const h = best.hops[0], lo = BigInt(cur) <= BigInt(next);
+      pools.push({ a: at, b: k, feeBps: Number(h.feeBps), ra: BigInt(lo ? h.reserveAPre : h.reserveBPre), rb: BigInt(lo ? h.reserveBPre : h.reserveAPre) });
+      cur = next; amt = best.amountOut; at = k;
+    }
+    return { pools, amt, fee };
+  })();
+  let use = hub;
+  if (stops.length > 1 && (ownPool(S.pay) || ownPool(S.get)) && units > f0 * 2n) {
+    const dbest = await bestTier(t, id(from), id(to), units - f0).catch(() => null);
+    if (dbest && (!hub || dbest.amountOut > hub.amt)) {
+      const h = dbest.hops[0], lo = BigInt(id(from)) <= BigInt(id(to));
+      use = { pools: [{ a: from, b: to, feeBps: Number(h.feeBps), ra: BigInt(lo ? h.reserveAPre : h.reserveBPre), rb: BigInt(lo ? h.reserveBPre : h.reserveAPre) }], amt: dbest.amountOut, fee: f0 };
+    }
   }
-  return { rows: [{ k: 'private', name: 'Tacit pool', note: '', out: amt * scOf(S.get), best: true, priv: true }], fee, feeTick: from, pools, tip: tipP ? await tipP : null };
+  if (!use) return stops.length === 1 && from === 'eth' && ownPool(to) ? { rows: [], why: `No pool trades tETH for ${esc(PSYM[to] || 'it')} yet.`, start: to } : { rows: [], why: 'The Tacit pool has no price for this pair right now.' };
+  return { rows: [{ k: 'private', name: 'Tacit pool', note: '', out: use.amt * scOf(S.get), best: true, priv: true }], fee: use.fee, feeTick: from, pools: use.pools, tip: tipP ? await tipP : null };
 }
 const ACT_GAS = 450000n;
 async function quoteOut(units, pay, get) {
@@ -812,7 +827,7 @@ function paintSides() {
   const ph = fixed ? (S.mq?.all ? 'All' : '—') : '0';
   if (a.readOnly !== fixed || a.placeholder !== ph) { a.readOnly = fixed; a.placeholder = ph; }
   fitSize(a);
-  $('#flip').disabled = placed() ? !pairOk(S.get, atOf('get'), S.pay, atOf('pay')) : !kindOf(S.get, S.pay);
+  $('#flip').disabled = (placed() ? !pairOk(S.get, atOf('get'), S.pay, atOf('pay')) : !kindOf(S.get, S.pay)) || !payOk(S.get);
   const bal = moveOf() || S.at.pay ? H.moves?.held?.(S.pay, atOf('pay'), moveOf()) ?? null : payPriv ? privBal(S.pay) : W.account ? S.bal[S.pay] : null, wei = parseUnits(S.amt, pay.dec);
   for (const k of [S.pay, S.get]) if (W.account && listedAt(k)?.uni && S.bal[k] === undefined && !BALQ.has(`${W.account}:${k}`)) { BALQ.add(`${W.account}:${k}`); readBalances().then(paintSides, () => {}); }
   const homes = $('#homes'), chain = $('#chain');
@@ -2435,10 +2450,10 @@ function openPicker(side, again = false) {
   });
   const pk = $('#pk'), at = atOf(side), cur = side === 'pay' ? S.pay : S.get;
   const wl = held(listed().map((t) => t.addr)), top = wl.filter((k) => tacitPooled(k) || S.bal[k] > 0n), rest = wl.filter((k) => !top.includes(k));
-  const ONLY = H.moves?.only?.() ?? null;
+  const ONLY = H.moves?.only?.(FLOW, side) ?? null;
   const groups = [['Wallet', top, 'wallet', 'wallet'], ['Private', [...POOL_COINS.map((k) => `@defi:${k}`), ...ownHeld().map((k) => `@defi:${k}`), ...(moving() ? placeCoins(side, 'pay').map((k) => `@pay:${k}`) : []), ...placeCoins(side, 'chain').map((k) => `@chain:${k}`)], 'private', 'defi'],
     ...(moving() ? [['Bitcoin', placeCoins(side, 'btc').map((k) => `@btc:${k}`), 'bitcoin', 'btc']] : []),
-    ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).map((g) => (ONLY ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return ONLY.has(m ? m[2] : key); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
+    ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).map((g) => (ONLY ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return (!m || m[1] === 'defi') && ONLY.has(m ? m[2] : key); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
   const kinds = ['wallet', 'private', 'bitcoin'].filter((kd) => groups.some((g) => g[2] === kd));
   const first = KIND[PKAT || at];
   let kind = again && kinds.includes(PKKIND) ? PKKIND : kinds.includes(first) ? first : kinds[0];
@@ -2774,7 +2789,7 @@ function wire() {
     $(`#${s}-at`).addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
   }
   $('#flip').addEventListener('click', () => {
-    if (S.busy) return;
+    if (S.busy || !payOk(S.get)) return;
     if (placed()) {
       const pa = atOf('pay'), ga = atOf('get'), [p, g] = [S.pay, S.get];
       if (!pairOk(g, ga, p, pa)) return;

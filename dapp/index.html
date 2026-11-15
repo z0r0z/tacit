@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0Pu49BU0n4aKTGvTMzQIztgp6jbwJl0JzgezBcptAds=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-H9krqbXeBw5cFCsr5ol2Sne/mwvhGyFX5n93v3GOlZQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -70,7 +70,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=a0384066">
-<link rel="modulepreload" href="/swap/card.js?cb=aa015193">
+<link rel="modulepreload" href="/swap/card.js?cb=9f5fc03c">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -7193,7 +7193,20 @@ async function xtAddCore({ run, r, wei, st }) {
   if (!now) throw xtSaid('The pool moved too far while your share was proved, so nothing was sent. Press again for a fresh quote.');
   const hash = await xtZapSend({ run, t, r, plan: now, feeBps: Number(res.feeBps), built, proven, eth, from, tell, what: `adds your ETH to the tETH / ${r.sym} pool` });
   r.keep = true; xtSave();
-  return hash;
+  return { hash, built };
+}
+// The standalone farm that takes a token pool's share (the SPX page's Earn zaps into it), and the step that puts a share there.
+const farmEpoch = (p) => p?.epoch || FARM.program?.epoch;
+const spxFarmOf = (r) => (FARM.program?.pools || []).find((x) => x.standalone && r?.pool?.lp && String(x.lpAsset).toLowerCase() === String(r.pool.lp).toLowerCase()) || null;
+async function xtBondShare(run, farm, built, st) {
+  const leaf = String(built.leaf).toLowerCase(), tell = (m) => run.say(st, m);
+  let note = null;
+  for (let i = 0; i < 8 && !note; i++) { await scanPrivate(true).catch(() => {}); note = (P.scan?.notes || []).find((n) => String(n.leaf).toLowerCase() === leaf); if (!note && i < 7) await sleep(4000); }
+  if (!note || !freeNotes([note]).length) { tell(html`<span class="ok">Your share is a private note.</span> It is not in the farm yet: farm it from Your Tacit.`); return; }
+  await stepBond(run, farm, [note], tell, st);
+  tell(html`<span class="ok">${farmEpoch(farm)?.active ? 'In the farm: TAC is streaming to your private position.' : 'In the farm. It earns once its TAC stream starts.'}</span>`);
+  toast('In the farm');
+  await Promise.allSettled([scanPrivate(true), loadPositions(), loadFarms(true, { private: true })]);
 }
 // The swap card's Start button
 async function xtPoolStart(k, wei) {
@@ -7222,18 +7235,18 @@ const xtEarnable = () => [...XT.by.values()].filter((r) => r.registered === true
 const xtEarnRows = () => (xtPooled(), xtEarnable()).filter((r) => !SPXP || r.addr === SPX_A).map((r) => ({ k: `${r.pool ? 'xa' : 'xs'}:${r.addr}`, name: `tETH / ${r.sym}`, note: r.pool ? 'private · LP only' : SPXP ? 'opens once the pool is set up' : 'no pool yet · start it', icons: ['tk-teth', xtIco(r)], apr: null, day: 0, impact: 0, dry: false, off: SPXP && !r.pool }));
 async function xtEarnQuote(pick, units) {
   const r = xtOf(pick.k.slice(3)), start = pick.k.startsWith('xs:'), wei = units ? units * E10 : 0n;
-  if (!r) return { out: null, go: 'Add as private LP', warn: true, line: 'This pool could not be read.' };
-  const name = `tETH / ${r.sym}`, held = hxWalletEth(1), over = held != null && wei > held;
+  if (!r) return { out: null, go: goL, warn: true, line: 'This pool could not be read.' };
+  const name = `tETH / ${r.sym}`, held = hxWalletEth(1), over = held != null && wei > held, farm = !start && SPXP && !HX.lp ? spxFarmOf(r) : null, goL = farm ? 'Zap into the farm' : 'Add as private LP';
   const rc = [...(start ? [['Starts', `the ${name} pool, at the market’s price`], ['How', `half the ETH buys ${r.sym}, then both go in`]] : [['How', 'half the ETH swapped in the pool, then both go in']]),
-    ['You hold', `private ${name} liquidity`], ['Take it out', 'from Your Tacit, both coins back privately'], ['Sent', 'in one transaction, once your share is proved']];
+    ['You hold', farm ? `private ${name} liquidity, in the farm` : `private ${name} liquidity`], ...(farm ? [['Farm', farmEpoch(farm)?.active ? `TAC streams to it, ${Math.round(Number(farm.tacPerDayForPool)).toLocaleString('en-US')} a day in all` : 'its TAC stream starts soon: your share waits in it']] : []), ['Take it out', 'from Your Tacit, both coins back privately'], ['Sent', 'in one transaction, once your share is proved']];
   if (!start && wei && !over) {
     const x = await getUx().then((t) => xtAddPlan(t, r, wei)).catch(() => null);
-    if (x && !x.plan) return { out: null, go: 'Add as private LP', warn: true, line: 'Enter a larger amount: this one is too small to make a share of the pool.' };
+    if (x && !x.plan) return { out: null, go: goL, warn: true, line: 'Enter a larger amount: this one is too small to make a share of the pool.' };
     const bad = x?.plan ? await xtAddCheck(r, x) : null;
-    if (bad) return { out: null, go: 'Add as private LP', warn: true, line: bad, rc };
+    if (bad) return { out: null, go: goL, warn: true, line: bad, rc };
     if (x?.plan) rc.unshift(['Puts in', `${fmt(x.plan.ethLeg, 18, 6)} ETH and ${fmt(x.plan.bLeg, r.dec, 6)} ${r.sym}`]);
   }
-  return { out: null, go: start ? `Start the ${name} pool` : 'Add as private LP', warn: over, line: over ? `More ETH than ${your()} holds.` : '', rc };
+  return { out: null, go: start ? `Start the ${name} pool` : goL, warn: over, line: over ? `More ETH than ${your()} holds.` : '', rc };
 }
 async function xtEarnGo(run, key, units) {
   const st = HX.zs, r = xtOf(key.slice(3)), wei = units * E10, start = key.startsWith('xs:');
@@ -7242,9 +7255,12 @@ async function xtEarnGo(run, key, units) {
   PROVE_AT.el = st;
   try {
     run.go({ label: start ? `Start the tETH / ${r.sym} pool with ${fmt(wei, 18, 6)} ETH` : `Add ${fmt(wei, 18, 6)} ETH to tETH / ${r.sym}`, status: () => st, clear: hxEarnClear });
-    const hash = start ? await xtStartCore({ run, r, wei, st }) : await xtAddCore({ run, r, wei, st });
-    run.say(st, html`<span class="ok">${start ? `The tETH / ${r.sym} pool is open, and your share in it is a private note.` : `Added: your tETH / ${r.sym} share is a private note.`}</span> ${txLink(hash)}`);
+    const farm = !start && SPXP && !HX.lp ? spxFarmOf(r) : null;
+    let hash, built = null;
+    if (start) hash = await xtStartCore({ run, r, wei, st }); else ({ hash, built } = await xtAddCore({ run, r, wei, st }));
+    run.say(st, html`<span class="ok">${start ? `The tETH / ${r.sym} pool is open, and your share in it is a private note.` : `Added: your tETH / ${r.sym} share is a private note.${farm ? ' Putting it in the farm…' : ''}`}</span> ${txLink(hash)}`);
     toast(start ? `tETH / ${r.sym} pool started` : 'Liquidity added');
+    if (farm && built) await xtBondShare(run, farm, built, st);
     run.release?.();
     await scanPrivate(true).catch(() => {});
     hxEarnClear(); hxEarnAfter();
@@ -9660,8 +9676,22 @@ async function readProgram() {
   const r = await fetch(`${API}/farm/program?network=mainnet`, { signal: within(20e3) });
   if (!r.ok) throw new Error(`farm program ${r.status}`);
   FARM.program = await r.json();
+  if (SPXP) await spxFarmsMerge(FARM.program);
   store.set(PROGRAM_KEY, FARM.program);
   return FARM.program;
+}
+// The standalone SPX farms, read from the chain (the pool module's own farm reader) when the API's answer does not list them yet (it does once it is redeployed):
+// each with its pool's reserves in the API's shape, so the rest of the page reads them as it reads any pool.
+async function spxFarmsMerge(prog) {
+  if (!prog?.pools || prog.pools.some((p) => p.standalone)) return;
+  try {
+    const t = await getUx(), local = await t.farmProgram().program();
+    for (const p of local.pools.filter((x) => x.standalone)) {
+      const res = await t.poolReserves(p.poolId);
+      prog.pools.push({ ...p, feeBps: res ? Number(res.feeBps ?? 30) : null,
+        reserves: res ? { assetA: res.assetA, assetB: res.assetB, reserveA: String(res.reserveA), reserveB: String(res.reserveB), lpTotalShares: String(res.totalShares) } : null });
+    }
+  } catch { }
 }
 async function loadPositions() {
   if (!S.key) { FARM.positions = null; return; }
@@ -9927,7 +9957,7 @@ async function pubSend(x, z, mode, status) {
 }
 
 const JOIN_K = ['eth', 'tac', 'cusd', 'cbtc'], JOIN_GAS = 800000n;
-const kOfAsset = (id) => JOIN_K.find((k) => P.scan?.[k]?.id && P.scan[k].id === String(id).toLowerCase());
+const kOfAsset = (id) => [...JOIN_K, ...(SPXP ? [`xp${SPX_A}`] : [])].find((k) => P.scan?.[k]?.id && P.scan[k].id === String(id).toLowerCase());
 const JOIN = {};
 const ZAP_TOKEN = { TAC: ADDR.tac, cUSD: ADDR.tacusd, cBTC: ADDR.tacbtc };
 const ZAP_GAS = 320000n;
@@ -10254,7 +10284,16 @@ function cutSwap(x, fr, rIn, rOut, feeBps) {
   const mid = (rOut * y * G) / (rIn * 10000n);
   return { x, y, out, pair: out * rIn2 / rOut2, rIn2, rOut2, impact: mid > 0n ? Math.max(0, (1 - Number(out) / Number(mid)) * 100) : 0 };
 }
-function joinSides(p, side = 'a') {
+// A standalone farm's pool: each side by its own key and symbol, the source named by the key it is paid from (the launch pools keep joinSidesOld below)
+function joinSidesSolo(p, side, src) {
+  const r = p.reserves || {}, kA = kOfAsset(r.assetA), kB = kOfAsset(r.assetB);
+  const kS = src && (src === kA || src === kB) ? src : side === 'b' ? kB : kA, kO = kS === kA ? kB : kA;
+  const sym = (k) => (k === 'eth' ? 'tETH' : k === 'tac' ? 'TAC' : xtOf(k)?.sym || shownAs(k)), dpOf = (k) => (k === 'eth' ? 6 : k === 'tac' ? 2 : Math.min(6, xtOf(k)?.tdec ?? 2));
+  const ico = (k) => (k === 'eth' ? 'tk-teth' : k === 'tac' ? 'tk-tac' : xtOf(k) ? xtIco(xtOf(k)) : 'tk-tac');
+  return { kA, kB, kS, kO, tkB: sym(kB), other: sym(kO), dpB: dpOf(kB), inA: kS === kA, unit: { [kA]: sym(kA), [kB]: sym(kB) }, dp: { [kA]: dpOf(kA), [kB]: dpOf(kB) }, icon: { [kA]: ico(kA), [kB]: ico(kB) } };
+}
+function joinSides(p, side = 'a', src = null) { return p?.standalone ? joinSidesSolo(p, side, src) : joinSidesOld(p, side); }
+function joinSidesOld(p, side = 'a') {
   const r = p.reserves || {}, kA = kOfAsset(r.assetA), kB = kOfAsset(r.assetB), tkB = String(p.pair).split('/').find((x) => x !== 'cETH'), other = shownAs(tkB), dpB = /BTC/.test(tkB) ? 6 : 2;
   const kS = side === 'b' ? kB : kA, kO = side === 'b' ? kA : kB;
   return { kA, kB, kS, kO, tkB, other, dpB, inA: kS === kA, unit: { [kA]: 'tETH', [kB]: other }, dp: { [kA]: 6, [kB]: dpB }, icon: { [kA]: 'tk-teth', [kB]: LOGO[tkB] || 'tk-tac' } };
@@ -10417,7 +10456,7 @@ async function joinNow({ run, p, z, sd, btn, line, sheet = 'farm', moved = () =>
       nB = await noteFor(run, t, priv, b, (n) => BigInt(n.value) === b, line(), kB);
       tell('The relay is proving your farm entry…');
     }
-    const sendBond = settleFrom(t, { label: `Add ${fmt(a, 8, 6)} tETH + ${fmt(b, 8, dpB)} ${other} to the farm`, say: tell });
+    const sendBond = settleFrom(t, { label: `Add ${fmt(a, 8, dp[kA])} ${unit[kA]} + ${fmt(b, 8, dp[kB])} ${unit[kB]} to the farm`, say: tell });
     const selfSettle = async (x) => { run.check(); return sendBond(x); };
     const res = await proveWith(['lpbond'], (via) => t.lpBond({ walletPriv: priv, controller: farmControllerOf(t, p, FARM.program.manager), aNote: nA, bNote: nB, feeBps: Number(JOIN[pid]?.res?.feeBps ?? p.feeBps ?? 30), selfSettle,
       waitOpts: spTell({ ...run.wait(`Add ${pairName(p.pair)} liquidity and farm it`, 20 * 60e3), ...via }, tell) }));
@@ -11920,10 +11959,11 @@ function hxSendWay(k = HX.send) {
 }
 const HX_ETHER = ['ether', 'ETH', 'eth', 6];
 const HX_TETH = ['eth', 'tETH', 'teth'], HX_TACOUT = ['tac', 'TAC', 'tac'];
+const hxSpxSrc = () => { const r = SPXP ? xtOf(`xp${SPX_A}`) : null; return r?.registered === true ? [[`xp${SPX_A}`, r.sym, xtIco(r), 6]] : []; };
 const hxOut = () => [...(xoOn(XA.teth) ? [HX_ETHER, HX_TETH] : []), ...(xoOn(XA.tac) ? [HX_TACOUT] : [])];
 const HX_COLOR = { ether: '#627eea', eth: '#627eea', tac: '#f7931a', wtac: '#f7931a', cusd: '#16a34a', cbtc: '#f7931a', btc: '#f7931a', sats: '#f7931a' };
 const HX_WTAC = ['wtac', 'TAC', 'tac', 2];
-const hxAsset = (k) => (k === 'ether' ? HX_ETHER : k === 'wtac' ? HX_WTAC : swapAsset(k));
+const hxAsset = (k) => (k === 'ether' ? HX_ETHER : k === 'wtac' ? HX_WTAC : /^xp0x/.test(k) && xtOf(k) ? [k, xtOf(k).sym, xtIco(xtOf(k)), 6] : swapAsset(k));
 const hxUnits = () => parseUnits(HX.amt, hxDec());
 const hxHeld = () => (S.key && P.scan ? spendable('eth') : null), hxHeldTac = () => (S.key && P.scan ? spendable('tac') : null);
 const hxTwo = (units) => HX.from === 'ether' && !(units && hxHeld() >= units);
@@ -12021,8 +12061,9 @@ async function feeAprOf(p) {
   return FEEAPR[p.pid].v;
 }
 const hxJoinMode = () => (HX.pair && HX.from !== 'tac' ? 'pair' : 'one');
+const hxJoinModeOf = (p) => (p?.standalone ? 'one' : hxJoinMode());
 async function hxJoinQuote(p, units) {
-  const sd = joinSides(p, HX.from === 'tac' ? 'b' : 'a'), mode = hxJoinMode(), t = await getUx(), j = await joinTerms(t, p), eth = await ethBalance(), gasShort = eth != null && eth < j.gas;
+  const sd = joinSides(p, HX.from === 'tac' ? 'b' : 'a', HX.from), mode = hxJoinModeOf(p), t = await getUx(), j = await joinTerms(t, p), eth = await ethBalance(), gasShort = eth != null && eth < j.gas;
   const plan = mode === 'pair' ? joinPairPlan(t, p, j, sd, units, gasShort) : joinOnePlan(t, p, j, sd, units, gasShort);
   joinAhead(p, plan.q);
   return { pid: p.pid, units, mode, sd, j, at: Date.now(), ...plan };
@@ -12030,11 +12071,11 @@ async function hxJoinQuote(p, units) {
 function hxJoinSay(p, jq) {
   const none = { rc: [], warn: true };
   if (jq.err) return { ...none, line: errText(jq.err) };
-  const { sd, j } = jq, { kS, kO, unit, dp, dpB, other } = sd;
+  const { sd, j } = jq, { kA, kB, kS, kO, unit, dp, dpB, other } = sd;
   if (jq.over) return { ...none, line: `${overBalance()} Try Max.` };
   if (jq.small) return { ...none, line: `Add more than ${fmt(jq.small, 8, dp[kS])} ${unit[kS]}: the relay’s fees for the swap and the note cuts come out of it.` };
   const { q, a, b, shares } = jq, res = j.res, bonded = BigInt(p.totalShares || 0), day = FARM.program?.epoch?.active ? Number(p.tacPerDayForPool) * Number(shares) / Number(bonded + shares) : 0;
-  const gas = ['Network fee', `about ${fmt(j.gas, 18, 5)} ETH`, '', `Sent from ${your()}, which makes the bond`], adds = ['Adds', `${fmt(a, 8, 6)} tETH + ${fmt(b, 8, dpB)} ${other}`];
+  const gas = ['Network fee', `about ${fmt(j.gas, 18, 5)} ETH`, '', `Sent from ${your()}, which makes the bond`], adds = ['Adds', `${fmt(a, 8, dp[kA])} ${unit[kA]} + ${fmt(b, 8, dp[kB])} ${unit[kB]}`];
   const low = `${payer() === 'tacit' ? 'This key’s address' : 'Your wallet'} holds too little ETH for the network fee.`;
   if (q.kind === 'pair') {
     const cut = jq.fA + (jq.fB ? jq.fB * res.reserveA / res.reserveB : 0n), fee = [jq.fA ? `${fmt(jq.fA, 8, 6)} tETH` : '', jq.fB ? `${fmt(jq.fB, 8, dpB)} ${other}` : ''].filter(Boolean).join(' + ');
@@ -12055,7 +12096,7 @@ function hxJoinSay(p, jq) {
     rc: [adds, ['Chain sees', 'a deposit, not whose'], ['Relay fee', `${fmt(fr + s1 + s2, 8, dp[kS])} ${unit[kS]}`, '', s1 + s2 ? 'The swap, and cutting your notes to size' : 'The swap'], gas,
       z.impact >= 0.5 ? ['Price impact', pctFmt(z.impact), z.impact >= 5 ? 'err' : ''] : null, mkt >= 1 ? ['Against the market', `${pctFmt(mkt)} of this deposit`, mkt >= 5 ? 'err' : ''] : null,
       reuse ? ['Notes', 'made already: nothing is split again'] : null, ['Time', z.split ? 'about a minute: the swap, then the entry' : 'a few minutes a step, up to four']],
-    alt: other2 ? { label: `Add your ${unit[kO]} too: no swap`, go: () => hxPair(true) } : gets.length ? gets : null };
+    alt: other2 && !p.standalone ? { label: `Add your ${unit[kO]} too: no swap`, go: () => hxPair(true) } : gets.length ? gets : null };
 }
 const hxPair = (on) => { HX.pair = on; if (on && HX.from === 'tac') { HX.ern = 'eth'; HX.amt = ''; } HX.q = null; HX.jq = null; paintHx(); };
 // Where the coin a pool pairs with comes from, as the card's side links, for a holder with none of it: adding both coins swaps nothing.
@@ -12087,9 +12128,19 @@ async function hxFarms(amt) {
     const staked = x.value / 1e18 * Number(x.totalStaked) / Number(x.supply);
     out.push({ k: 'precision', name: 'Precision pool', note: 'public', icons: ['tk-tac', 'tk-eth'], apr: precisionApr(x), day: eth ? Number(x.perDay) / 1e18 * eth / (staked + eth) : 0 });
   }
+  // the SPX farms lead on the SPX page: a source can farm the pools that hold its coin (ETH and tETH the tETH / SPX farm, TAC the TAC / SPX farm, SPX both)
+  if (SPXP && !lpOnly) for (const p of FARM.program?.pools || []) {
+    if (!p.standalone || !p.reserves) continue;
+    const ts = String(p.pair).split('/'), want = { ether: 'cETH', eth: 'cETH', tac: 'TAC', [`xp${SPX_A}`]: 'SPX' }[src], sx = xtOf(`xp${SPX_A}`);
+    if (!want || !ts.includes(want) || (src === 'ether' && !sx?.pool)) continue;
+    const act = !!p.epoch?.active, names = ts.map((x) => (x === 'cETH' ? 'tETH' : x)).sort((a, b) => (b === 'tETH') - (a === 'tETH'));
+    out.push({ k: src === 'ether' ? `xa:${SPX_A}` : String(p.pid), name: names.join(' / '), note: `private${act ? '' : ' · its TAC stream starts soon'}`, icons: farmIcons(p), solo: true,
+      apr: act ? (() => { try { return shieldedApr(p); } catch { return null; } })() : null, day: 0, dry: !act, impact: 0,
+      small: (() => { const rs = p.reserves, tvl = ts.includes('cETH') ? 2 * Number(String(rs.assetA).toLowerCase() === String(CETH_ID).toLowerCase() ? rs.reserveA : rs.reserveB) / 1e8 : 2 * Number(rs.reserveB) / 1e8 * (x?.tacEth || 0); return tvl < 1; })() });
+  }
   for (const p of FARM.program?.pools || []) {
     const r = p.reserves || {};
-    if (p.idle || String(r.assetA).toLowerCase() !== CETH_ID || !Number(r.lpTotalShares)) continue;
+    if (p.standalone || (SPXP && src === `xp${SPX_A}`) || p.idle || String(r.assetA).toLowerCase() !== CETH_ID || !Number(r.lpTotalShares)) continue;
     if (src === 'wtac' || (src === 'tac' && !String(p.pair).split('/').includes('TAC'))) continue;
     const half = amt / 2, entry = tacSrc ? zapEntry(half > 0 && Number(r.reserveB) > 0 ? half / (Number(r.reserveB) / 1e8 + half) : 0) : zapEntryOf(p, amt, { split: zapping });
     out.push({ k: String(p.pid), name: pairName(p.pair), note: 'private', icons: farmIcons(p),
@@ -13051,7 +13102,7 @@ const hxMoves = {
   poolCoins: () => { xtPooled(); return [...XT.by.values()].filter((r) => r.registered === true && (r.keep || ((r.pooled || r.listed) && !!SWC.card?.tokenInfo?.(r.addr)))).map((r) => r.addr); },
   startPool: (k, wei) => xtPoolStart(k, wei),
   // the SPX page: the only coins the card lists, the token ETH buys and shields in one go, and that shield (the swap's output is in the wallet)
-  only: () => (SPXP ? new Set(['0x0000000000000000000000000000000000000000', SPX_A, 'teth']) : null),
+  only: (flow, side) => (SPXP ? new Set(['0x0000000000000000000000000000000000000000', SPX_A, 'teth', ...(!flow && side === 'get' ? [String(ADDR.tac).toLowerCase()] : [])]) : null),
   zapTo: () => (SPXP ? SPX_A : null),
   shield: (addr, raw) => xtShieldRaw(addr, raw),
   poolCoin: (k) => { const r = xtOf(k); return r && r.registered === true ? { ticker: r.ticker, id: r.id, tdec: r.tdec, scale: String(r.scale), sym: r.sym } : null; },
@@ -13234,8 +13285,8 @@ async function hxQuote() {
       const jp = !pub && !two && units && S.key && P.scan ? FARM.program?.pools?.find((x) => String(x.pid) === pick.k) : null, pa = pub && !!units && !!S.address;
       const jq = jp ? await hxJoinQuote(jp, units).catch((e) => ({ err: e })) : null, pq = pa ? await hxPubQuote(units).catch((e) => ({ err: e })) : null;
       if (my !== HX.seq) return;
-      Object.assign(HX, { jq, jqFor: jp ? `${jp.pid}:${units}:${hxJoinMode()}` : null, pq, pqFor: pa ? `${HX.from === 'wtac' ? 'tac' : 'eth'}:${units}:${S.address}` : null });
-      for (const r of rows) { r.show = r.apr == null ? '—' : r.apr >= 10 ? Math.round(r.apr).toLocaleString('en-US') + '%' : pctFmt(r.apr); if (r.k !== 'precision' && !/^x[as]:/.test(r.k)) r.note = `private${r.dry ? ' · between reward periods' : ''}${hxEarnHow(units) === 'wrap' ? ' · 2 steps' : ''}${r.impact >= 0.01 ? ` · ${pctFmt(r.impact * 100)} impact` : r.small ? ' · small pool' : ''}`; }
+      Object.assign(HX, { jq, jqFor: jp ? `${jp.pid}:${units}:${hxJoinModeOf(jp)}` : null, pq, pqFor: pa ? `${HX.from === 'wtac' ? 'tac' : 'eth'}:${units}:${S.address}` : null });
+      for (const r of rows) { r.show = r.apr == null ? '—' : r.apr >= 10 ? Math.round(r.apr).toLocaleString('en-US') + '%' : pctFmt(r.apr); if (r.k !== 'precision' && !r.solo && !/^x[as]:/.test(r.k)) r.note = `private${r.dry ? ' · between reward periods' : ''}${hxEarnHow(units) === 'wrap' ? ' · 2 steps' : ''}${r.impact >= 0.01 ? ` · ${pctFmt(r.impact * 100)} impact` : r.small ? ' · small pool' : ''}`; }
       if (/^x[as]:/.test(pick.k)) return done({ ...(await xtEarnQuote(pick, units).catch(() => ({ out: null, warn: true, line: 'This pool could not be read. Try again in a moment.' }))), rows, pick: pick.k });
       const js = jq ? hxJoinSay(jp, jq) : null, ps = pq ? hxPubSay(pq) : null, ex = js || ps;
       const zapGets = zap && pp && !(HX.lp && HX.from === 'ether') && (HX.zq?.loss >= 5 || HX.zq?.mkt >= 5) ? hxGetAlts(zapTkB(pp)) : [];
@@ -13543,7 +13594,7 @@ function hxBalPaint() {
     const jp = HX.tab === 'earn' && S.key && P.scan && (HX.from === 'eth' || HX.from === 'tac') && FARM.program?.pools?.find((x) => String(x.pid) === String(HX.pool));
     if (jp) {
       try {
-        const t = await getUx(), j = await joinTerms(t, jp), m = joinMax(jp, j, joinSides(jp, HX.from === 'tac' ? 'b' : 'a'), hxJoinMode());
+        const t = await getUx(), j = await joinTerms(t, jp), m = joinMax(jp, j, joinSides(jp, HX.from === 'tac' ? 'b' : 'a', HX.from), hxJoinModeOf(jp));
         if (stale()) return;
         HX.amt = m > 0n ? plain(m, 8) : ''; const a = $('#hx-amt'); if (a) { a.value = HX.amt; a.focus(); }
         hxTyped(true);
@@ -13570,7 +13621,7 @@ function hxSubOf(id, k) {
 const HX_PLACE = { wallet: 'Wallet', private: 'Private', bitcoin: 'Bitcoin' };
 const hxPlaceOf = (tab, k) => (tab === 'borrow' ? (k === 'wtac' ? 'wallet' : k === 'cbtc' ? 'private' : 'bitcoin') : ['btc', 'tb', 'tacb', 'kb', 'ub', 'ut'].includes(k) || /^xb0x/.test(k) ? 'bitcoin' : ['ether', 'wtac', 'wusdc', 'wusdt'].includes(k) || /^xw0x/.test(k) ? 'wallet' : 'private');
 function hxGroups(tab) {
-  const list = tab === 'bridge' ? hxBrSources().map((k) => { const s = HX_SH[k]; return [k, s.u, s.ic, 6, s.name]; }) : tab === 'send' ? hxSendList() : tab === 'borrow' ? [['btc', 'BTC', 'btc', 8], ['cbtc', 'cBTC', 'cbtc', 8], HX_WTAC] : [HX_ETHER, HX_WTAC, HX_TETH, HX_TACOUT];
+  const list = tab === 'bridge' ? hxBrSources().map((k) => { const s = HX_SH[k]; return [k, s.u, s.ic, 6, s.name]; }) : tab === 'send' ? hxSendList() : tab === 'borrow' ? [['btc', 'BTC', 'btc', 8], ['cbtc', 'cBTC', 'cbtc', 8], HX_WTAC] : [HX_ETHER, HX_WTAC, HX_TETH, HX_TACOUT, ...hxSpxSrc()];
   return Object.entries(HX_PLACE).map(([p, name]) => [name, list.filter(([k]) => hxPlaceOf(tab, k) === p), p]).filter(([, l]) => l.length);
 }
 function hxPlaceAuto() {
@@ -13981,7 +14032,7 @@ async function hxJoinGo(p, units) {
   if (!S.key) return openSheet('wallet');
   if (!P.scan) { const at = hxPressKey(); scanPrivate().then(() => { if (P.scan && hxPressKey() === at) hxGo(); }, hxPressErr); return; }
   if (!units) return hxJoinFill(p);
-  const jq = HX.jq, mode = hxJoinMode(), mine = !!jq?.sd && jq.pid === p.pid && jq.units === units && jq.mode === mode;
+  const jq = HX.jq, mode = hxJoinModeOf(p), mine = !!jq?.sd && jq.pid === p.pid && jq.units === units && jq.mode === mode;
   if (!mine) return hxQuoteThen(HX.jqFor === `${p.pid}:${units}:${mode}`, !!jq?.err);
   if (!jq.q || jq.q.over || jq.q.gasShort) return;
   if (!hxGateOk()) return hxGateSay();
@@ -13991,7 +14042,7 @@ async function hxJoinGo(p, units) {
 }
 async function hxJoinFill(p) {
   try {
-    const t = await getUx(), j = await joinTerms(t, p), v = joinMax(p, j, joinSides(p, HX.from === 'tac' ? 'b' : 'a'), hxJoinMode());
+    const t = await getUx(), j = await joinTerms(t, p), v = joinMax(p, j, joinSides(p, HX.from === 'tac' ? 'b' : 'a', HX.from), hxJoinModeOf(p));
     if (!(v > 0n) || HX.amt.trim()) return;
     HX.amt = plain(v, 8); const a = $('#hx-amt'); if (a) a.value = HX.amt;
     hxTyped(true);
@@ -15383,7 +15434,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=aa015193').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=9f5fc03c').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {
@@ -15451,7 +15502,7 @@ function hxLeadPaint() {
   else if (hk === 'withdraw') t = br ? 'Out of the pool to Bitcoin.' : 'Out of the pool to any address.';
   else if (hk === 'swap') t = SWC.card?.params?.()?.get('private') ? 'Private: nothing links the two sides.' : 'Best onchain price. Pick Private to hide it.';
   else if (hk === 'send') t = HX.ask ? 'A link anyone can pay you with.' : hxBtcX(HX.send) ? `${hxSendOf()[1]} on Bitcoin, to any tacit1 address or name.` : hxSendBtc() ? 'Sats to any Bitcoin or tacit1 address.' : hxIsLp() ? 'A share of a farm, sent privately.' : hxSendWallet() ? 'tacit1 is paid privately, 0x in the open.' : 'tacit1 stays private. An 0x address leaves the pool.';
-  else if (hk === 'earn') t = SPXP ? 'ETH into the TAC farm, privately. This supports the Tacit privacy protocol.' : HX.from === 'ether' ? 'ETH into a farm, privately. TAC every day.' : 'Private tETH into a farm. TAC every day.';
+  else if (hk === 'earn') t = SPXP ? 'Farm with SPX, ETH or TAC, privately. This supports the Tacit privacy protocol.' : HX.from === 'ether' ? 'ETH into a farm, privately. TAC every day.' : 'Private tETH into a farm. TAC every day.';
   else t = HX.tab === 'borrow' ? 'Lock BTC or deposit TAC, then borrow.' : 'Between Bitcoin and Ethereum, both ways.';
   if (el.textContent !== t) el.textContent = t;
 }

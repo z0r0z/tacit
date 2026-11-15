@@ -131,17 +131,41 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   await p.fill('#hx-rcpt', 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq');
   ok(/goes to a tacit1 address or a name/.test(await waitFor(p, /goes to a tacit1 address or a name/, 8000)), 'a Bitcoin address is refused with the reason');
   await p.click('#spx-ops li:nth-child(1) button'); await waitFor(p, /Shield SPX/i);
-  // Earn: TAC and tETH first, the SPX pool shut
-  await p.click('#hx-tab-earn');
+  // Swap (a pool trades SPX): private, between tETH, SPX and TAC, and TAC is only ever the coin received
+  if (live) {
+    await p.click('#hx-tab-swap'); await waitFor(p, /From\s*DeFi pool\s*tETH/, 20000);
+    const pick = async (sel) => { await p.click(sel); await p.waitForSelector('#pk .pk-r', { state: 'attached', timeout: 10000 }); const r = await p.evaluate(() => [...document.querySelectorAll('#pk .pk-r')].filter((x) => !x.hidden).map((x) => x.innerText.replace(/\s+/g, ' ').trim().split(' ')[0])); await p.keyboard.press('Escape'); await p.waitForTimeout(400); return r; };
+    const payList = await pick('#pay-coin'), getList = await pick('#get-coin');
+    ok(JSON.stringify(payList.sort()) === JSON.stringify(['SPX', 'tETH']) && JSON.stringify(getList.sort()) === JSON.stringify(['SPX', 'TAC', 'tETH']), `Swap pays with tETH or SPX and can receive TAC too, never pay with it (pay ${payList.join(', ')}; get ${getList.join(', ')})`);
+    await p.click('#spx-ops li:nth-child(1) button'); await waitFor(p, /Shield SPX/i);
+  }
+  // Farm: the hero's fifth move opens Earn, where the two SPX farms lead, each source farms the pools that hold its coin, ETH zaps into tETH / SPX and its share goes into the farm
+  ok(/data-hx="earn:ether"><b>05<\/b><span>FARM<\/span>/.test(page), 'the hero has a fifth move, Farm, that opens Earn');
+  await p.click('#spx-ops li:nth-child(5) button');
   const e = await waitFor(p, /Tacit privacy protocol/, 20000);
-  ok(/Tacit privacy protocol/.test(e) && /tETH \/ TAC/.test(e), 'Earn says it supports the Tacit privacy protocol, and farms tETH / TAC');
+  ok(/Tacit privacy protocol/.test(e), 'Earn says it supports the Tacit privacy protocol');
+  const srcs = await p.evaluate(() => [...(document.querySelector('#hx-from')?.options || [])].map((o) => o.value.replace(/0x[0-9a-f]{40}/, '<spx>')));
+  ok(JSON.stringify(srcs) === JSON.stringify(['ether', 'wtac', 'eth', 'tac', 'xp<spx>']), `it farms from ETH, TAC, tETH and SPX (${srcs.join(', ')})`);
+  const rowsOf = async (has) => { await p.waitForFunction((k) => [...document.querySelectorAll('#hx [data-hxr]')].some((b) => b.dataset.hxr.startsWith(k)), has, { timeout: 40000 }).catch(() => {}); return p.evaluate(() => [...document.querySelectorAll('#hx [data-hxr]')].map((b) => [b.dataset.hxr, b.disabled, b.innerText.replace(/\s+/g, ' ').trim()])); };
+  const source = async (v) => { await p.evaluate((val) => { const el = document.querySelector('#hx-from'); el.value = val; el.dispatchEvent(new Event('change', { bubbles: true })); }, v); await p.waitForTimeout(2500); };
+  let rows = await rowsOf('xa:');
+  const keys = (rs) => rs.map((x) => x[0].replace(/0x[0-9a-f]{40}/, '<spx>'));
+  ok(keys(rows).indexOf('xa:<spx>') >= 0 && keys(rows).indexOf('xa:<spx>') < keys(rows).indexOf('0') && /tETH \/ SPX/.test(rows.find((x) => x[0].startsWith('xa:'))[2]), `ETH farms tETH / SPX first, then the launch pools (${keys(rows).join(', ')})`);
+  const zt = await waitFor(p, /Zap into the farm/i, 20000);
+  ok(/Zap into the farm/i.test(zt) && /in the farm/.test(zt), 'its button is Zap into the farm, and the receipt says the share goes into the farm');
+  await source('tac'); rows = await rowsOf('1000');
+  ok(JSON.stringify(keys(rows)) === JSON.stringify(['1000', '0']) && /SPX \/ TAC/.test(rows[0][2]), `private TAC farms SPX / TAC and tETH / TAC (${keys(rows).join(', ')})`);
+  await source(`xp${SPX}`); rows = await rowsOf('1001');
+  ok(JSON.stringify(keys(rows)) === JSON.stringify(['1000', '1001']), `private SPX farms the two SPX farms and no other (${keys(rows).join(', ')})`);
+  await source('eth'); rows = await rowsOf('1001');
+  ok(keys(rows)[0] === '1001' && keys(rows).includes('0'), `private tETH farms tETH / SPX first, then the launch pools (${keys(rows).join(', ')})`);
+  await source('ether');
   await p.click('text=LP only');
-  await p.waitForFunction(() => [...document.querySelectorAll('#hx [data-hxr]')].some((b) => /^xs:|^xa:/.test(b.dataset.hxr)), null, { timeout: 40000 }).catch(() => {});
-  const lp = await p.evaluate(() => [...document.querySelectorAll('#hx [data-hxr]')].map((b) => [b.dataset.hxr, b.disabled, b.innerText.replace(/\s+/g, ' ').trim()]));
-  const spx = lp.find((x) => /^x[sa]:/.test(x[0]));
+  rows = await rowsOf('xa:');
+  const lpRows = rows.filter((x) => /^x[sa]:/.test(x[0]));
   const swapOff = await p.evaluate(() => document.querySelector('[data-hxm="swap"]')?.hasAttribute('data-off'));
-  ok(!!spx && /tETH \/ SPX/.test(spx[2]) && lp.filter((x) => /^x[sa]:/.test(x[0])).length === 1 && /tETH \/ TAC/.test(lp[0][2]), `tETH / TAC leads and the only other token's pool listed is tETH / SPX (${spx ? spx[2].slice(0, 60) : 'not listed'})`);
-  ok(!!spx && spx[1] === (/^xs:/.test(spx[0])) && swapOff === /^xs:/.test(spx[0]), `the SPX pool row and the Swap tab are shut together, while no pool exists, and open together once one does (${spx ? spx[0].slice(0, 3) : '?'}: row ${spx?.[1] ? 'shut' : 'open'}, Swap ${swapOff ? 'shut' : 'open'})`);
+  ok(lpRows.length === 1 && /tETH \/ SPX/.test(lpRows[0][2]), `LP only lists tETH / SPX as the one other token's pool (${lpRows.map((x) => x[2].slice(0, 50)).join(' | ')})`);
+  ok(lpRows[0][1] === (/^xs:/.test(lpRows[0][0])) && swapOff === /^xs:/.test(lpRows[0][0]), `the SPX LP row and the Swap tab are shut together while no pool exists, and open together once one does (row ${lpRows[0][1] ? 'shut' : 'open'}, Swap ${swapOff ? 'shut' : 'open'})`);
   await p.click('#spx-ops li:nth-child(1) button'); await waitFor(p, /Shield SPX/i);
   const fonts = await p.evaluate(async () => { await document.fonts.ready; return [...document.fonts].filter((f) => f.status === 'loaded').map((f) => f.family); });
   ok(fonts.includes('Orbitron') && fonts.includes('Space Mono'), `its fonts are the page’s own, from /fonts/ (${[...new Set(fonts)].join(', ')})`);

@@ -56,6 +56,12 @@ html[data-page="spx"] .spx-ops small { grid-area: s; font: 400 11px/1.3 var(--mo
 @media (hover: hover) { html[data-page="spx"] .spx-ops button:hover { background: var(--lime); transform: translate(-2px, -2px); box-shadow: 6px 6px 0 var(--black); } }
 html[data-page="spx"] .spx-ops button:active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--black); }
 
+html[data-page="spx"] .spx-ops .spx-farm { grid-column: 1 / -1; }
+html[data-page="spx"] .spx-ops .spx-farm button { background: var(--black); color: #fff; }
+html[data-page="spx"] .spx-ops .spx-farm b { color: var(--lime); }
+html[data-page="spx"] .spx-ops .spx-farm small { color: #d0d0d0; }
+@media (hover: hover) { html[data-page="spx"] .spx-ops .spx-farm button:hover { background: var(--magenta); color: var(--black); } html[data-page="spx"] .spx-ops .spx-farm button:hover :is(b, small) { color: var(--black); } }
+
 /* Lumina, in a frame like the terminal's */
 html[data-page="spx"] .spx-lumina { grid-area: luma; position: relative; margin: 6px 0 0; max-width: 520px; overflow: hidden; background: linear-gradient(155deg, #d9fbff, #fff 52%, #ffe3ee); border: 2px solid var(--black); box-shadow: 6px 6px 0 var(--black); }
 html[data-page="spx"] .spx-lumina::after { content: ''; position: absolute; inset: 0 0 38px; pointer-events: none; background: repeating-linear-gradient(0deg, rgba(10,10,10,.045) 0 1px, transparent 1px 3px); }
