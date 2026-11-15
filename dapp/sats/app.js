@@ -1,7 +1,7 @@
 import { declinedWords } from '../wallet-prompts.js';
 
 const TACIT_URL = '/tacit.js?cb=13cad8c8';
-const SECRET_URL = '/sats/secret.js?cb=5eb8a697';
+const SECRET_URL = '/sats/secret.js?cb=f6c8ff00';
 const MIX_URL = '/sats/mix.js?cb=65890c7a';
 const ETH_URL = '/sats/eth.js?cb=90dc23f8';
 const POOL_STATUS = 'https://tacit-btc-pool-mainnet.onrender.com/btc-pool/status';

@@ -40,6 +40,25 @@ export function poolWalletFor(priv, network = 'signet') {
   return pool.walletFromSeed(hmac(sha256, priv, te.encode('tacit-btc-pool-seed-v1')), network);
 }
 
+// The pool wallet of the key that is open (its view, nullifier and spend keys), made once for as long as that key stays open. Making it is about fifteen milliseconds (two secp256k1 and two
+// BabyJub multiplications), the panels asked for it on every render (the pending view reads the address) and every action, and the note scan keeps what it read for each wallet object
+// (btc-pool-client.js scanMine), so a wallet made again each time was scanned again each time. It is held against the identity of the key's own array (`ctx.wallet.priv`) and public key
+// (`ctx.wallet.pub`), which the wallet replaces on every unlock and key switch and drops on lock, so a different key is a different wallet; and it is let go when there is no key, when the
+// array has been zeroed under it, and at once on any change of the open key (`.drop()`, which the panels call from onWallet), so the keys it holds do not outlive the key's being open.
+export function poolWalletHolder(ctx, networkOf) {
+  let held = null;
+  const get = () => {
+    const w = ctx.wallet, priv = w && w.priv;
+    if (!priv || !priv.length || priv.every((b) => b === 0)) { held = null; return null; }
+    const net = networkOf();
+    if (held && held.priv === priv && held.pub === w.pub && held.net === net) return held.pw;
+    held = { priv, pub: w.pub, net, pw: poolWalletFor(priv, net) };
+    return held.pw;
+  };
+  get.drop = () => { held = null; };
+  return get;
+}
+
 const outpointBytes = (txid, vout) => {
   const b = new Uint8Array(36);
   b.set(hexToBytes(txid).reverse(), 0);
@@ -1098,7 +1117,7 @@ export function mount(root, ctx) {
   const log = ctx.log || (() => {});
   const explorer = tacit.NET?.explorer || 'https://mempool.space/signet';
   const txLink = (txid, label) => el('a', { href: `${explorer}/tx/${txid}`, target: '_blank', rel: 'noopener noreferrer' }, label || `${txid.slice(0, 10)}…`);
-  const poolWallet = () => (ctx.wallet?.priv ? poolWalletFor(ctx.wallet.priv, network) : null);
+  const poolWallet = poolWalletHolder(ctx, () => network);
   const n = (x) => Number(x).toLocaleString('en-US');
 
   let who = null;
@@ -1494,6 +1513,7 @@ export function mount(root, ctx) {
   ctx.onWallet?.((d) => {
     const changed = d.pubHex !== who?.pubHex;
     who = d;
+    if (changed || !d.unlocked) poolWallet.drop();
     if (changed) { state = load(); for (const k of Object.keys(errs)) errs[k] = null; }
     if (!running) render();
   });
@@ -1519,7 +1539,7 @@ export function mountMainnet(root, ctx) {
   const log = ctx.log || (() => {});
   const explorer = tacit.NET?.explorer || 'https://mempool.space';
   const txLink = (txid, label) => el('a', { href: `${explorer}/tx/${txid}`, target: '_blank', rel: 'noopener noreferrer' }, label || `${txid.slice(0, 10)}…`);
-  const poolWallet = () => (ctx.wallet?.priv ? poolWalletFor(ctx.wallet.priv, 'mainnet') : null);
+  const poolWallet = poolWalletHolder(ctx, () => 'mainnet');
   let sel = livePoolAssets()[0] || MAINNET_POOL_ASSETS[0];
   const asset = () => sel.id;
 
@@ -1743,6 +1763,7 @@ export function mountMainnet(root, ctx) {
   ctx.onWallet?.((d) => {
     const changed = d.pubHex !== who?.pubHex;
     who = d;
+    if (changed || !d.unlocked) poolWallet.drop();
     if (changed) { pub = { loading: false, utxos: [], decimals: pub.decimals }; shielded = { loading: false, notes: null }; lastShield = lastPay = lastExit = null; }
     if (who?.connected && who?.unlocked) { loadPublic(); loadShielded(); }
     render();
