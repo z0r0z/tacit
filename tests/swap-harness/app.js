@@ -3,8 +3,8 @@
 // with the card (from, to, amt, private; #earn and #bitcoin).
 import { makeConnect } from '/trade/connect.js?cb=b758e60b';
 import { rpc, api, esc, fmtUnits, parseUnits, plain, usd, $ } from '/trade/util.js?cb=1d2cd8d3';
-import { aprText } from '/trade/farm-read.js?cb=efe1d81e';
-import { mountSwapCard, ethCall, batch } from '/swap/card.js?cb=677dd596';
+import { aprText } from '/trade/farm-read.js?cb=fb6ec72f';
+import { mountSwapCard, ethCall, batch } from '/swap/card.js?cb=7ddd73ae';
 
 const txLink = (h) => `<a href="https://etherscan.io/tx/${esc(h)}" target="_blank" rel="noopener noreferrer">${esc(h.slice(0, 10))}…↗</a>`;
 const P = { tab: location.hash === '#earn' ? 'earn' : 'swap', farm: 'precision', farms: null, px: {} };
@@ -41,7 +41,7 @@ function paintEarn() {
   $('#farm').hidden = f.k !== 'precision';
   $('#privfarm').hidden = f.k === 'precision';
   if (f.k === 'precision' && !farmUi) {
-    farmUi = import('/trade/farm.js?cb=64237e49').then(({ mountFarm }) => mountFarm($('#farm'), { ethCall, batch, rpc, api, wallet, W, connect: () => connect.connect(), fmtUnits, parseUnits, esc, usd, ethUsd: () => P.px.ethUsd, txLink, onDone: () => card.readBalances() }));
+    farmUi = import('/trade/farm.js?cb=1265d7de').then(({ mountFarm }) => mountFarm($('#farm'), { ethCall, batch, rpc, api, wallet, W, connect: () => connect.connect(), fmtUnits, parseUnits, esc, usd, ethUsd: () => P.px.ethUsd, txLink, onDone: () => card.readBalances() }));
   }
   if (f.k !== 'precision') $('#privfarm').innerHTML = `<a class="go priv" href="/#farm/private-${f.pid}">Farm ${esc(f.name)} privately →</a>`;
 }

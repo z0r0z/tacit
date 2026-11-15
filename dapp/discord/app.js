@@ -4,7 +4,7 @@ import { addrView } from '/address-view.js?cb=58dd4914';
 import { esc } from '/trade/sheet.js?cb=d857446c';
 import { API, $, short, fmtUnits, rpc } from '/trade/util.js?cb=1d2cd8d3';
 import { discordGateMessage, DISCORD_MIN_TAC_BASE_UNITS, DISCORD_MIN_TAC_ERC20 } from '/discord/message.js?cb=0232a98d';
-import { TAC as TAC_ERC20, FARM, POOL } from '/trade/farm-read.js?cb=efe1d81e';
+import { TAC as TAC_ERC20, FARM, POOL } from '/trade/farm-read.js?cb=fb6ec72f';
 import { readPrecisionTacStake } from '/discord/holdings.js?cb=48f774e8';
 
 // The Discord verification panel sends a holder here: the link carries a one-time nonce (#gate=<32 hex>, made for one Discord account, good for ten minutes).

@@ -2,7 +2,7 @@ import { MULTICALL3, TAC_POOL_ASSET_ID, CETH_POOL_ASSET_ID, _internal } from '/e
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { ETH_LOG_NODES } from '/eth-nodes.js';
 import { ethCall, rpc, wordAt, word, strip } from '/trade/util.js?cb=1d2cd8d3';
-import { POOL, heldHistory } from '/teth/read.js?cb=44f2673f';
+import { POOL, heldHistory } from '/teth/read.js?cb=c02d8bf6';
 import { ENGINE, SPAN, filterFor, withTimes, eventsOf } from '/cbtc/events.js?cb=c1f0389c';
 import { BASE } from '/cbtc/history-base.js?cb=e10ff809';
 

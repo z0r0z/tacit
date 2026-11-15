@@ -34,7 +34,7 @@ export const LAUNCH_POOL_IDS = {
 // Standalone farms: a FarmController per pool with its own wTAC treasury and rate, never sharing the manager's stream
 // (dapp/confidential-deployments.js MAINNET_FARM.standalone). Listed after the manager's pools, under pids from 1000.
 export const STANDALONE_FARMS_MAINNET = [
-  { pair: 'SPX/cTAC', controller: '0x000000000000917d198a89a23de930db25a47066', lpAsset: '0x6aeed821ff89a3e1416a4e1ae85965dfc1a30478f98a9bd7fadd45ed527d2725', poolId: '0x5d7a58efb396f266f8bd36364e86448ceab4f3d69c8aa54133a1a0cf38b5a842' },
+  { pair: 'SPX/TAC', controller: '0x000000000000917d198a89a23de930db25a47066', lpAsset: '0x6aeed821ff89a3e1416a4e1ae85965dfc1a30478f98a9bd7fadd45ed527d2725', poolId: '0x5d7a58efb396f266f8bd36364e86448ceab4f3d69c8aa54133a1a0cf38b5a842' },
   { pair: 'SPX/cETH', controller: '0x000000000000bc710a42716bf0e4a9186d833b9b', lpAsset: '0x302984ec4f357aed29e6e2be3533ccd72c1e4766e42484f332b3855926af9ad7', poolId: '0xe2686416a328f6bb44fdea23c821916de148d3d73ab00d38cc25e55ff5047d4a' },
 ];
 export const STANDALONE_PID = 1000;

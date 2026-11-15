@@ -124,4 +124,12 @@ export function farmManager(t, named) {
   if (named && String(named).toLowerCase() !== String(mine).toLowerCase()) throw new Error('This farm names a manager other than the configured one, so nothing was added.');
   return mine;
 }
+// The controller a pool's farm entry bonds into: a standalone farm's own, else the manager. What the farm program (an API answer) names must match
+// this page's configuration, so the answer can never point an entry at another contract.
+export function farmControllerOf(t, p, manager) {
+  if (!p?.standalone) return farmManager(t, manager);
+  const f = (t.cfg?.farm?.standalone || []).find((x) => String(x.lpAsset).toLowerCase() === String(p.lpAsset).toLowerCase());
+  if (!f || String(f.controller).toLowerCase() !== String(p.controller).toLowerCase()) throw new Error('This farm names a controller other than the configured one, so nothing was added.');
+  return f.controller;
+}
 export const bond = (t, priv, { manager, aNote, bNote, feeBps, waitOpts, own = null, onOwn }) => relayedOrOwn((s) => t.lpBond({ walletPriv: priv, controller: farmManager(t, manager), aNote, bNote, feeBps: Number(feeBps ?? 30), waitOpts, ...via(s) }), own, onOwn);

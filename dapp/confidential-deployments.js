@@ -124,7 +124,7 @@ const MAINNET_FARM = {
   // Standalone farms: a FarmController per pool with its own wTAC treasury and rate (confidential-farm-program.js), deployed
   // from the ops deployer at salt-pool vanity addresses; their stream never touches the launch farm's.
   standalone: [
-    { pair: 'SPX/cTAC', poolId: '0x5d7a58efb396f266f8bd36364e86448ceab4f3d69c8aa54133a1a0cf38b5a842', lpAsset: '0x6aeed821ff89a3e1416a4e1ae85965dfc1a30478f98a9bd7fadd45ed527d2725', feeBps: 30, controller: '0x000000000000917d198a89a23de930db25a47066' },
+    { pair: 'SPX/TAC', poolId: '0x5d7a58efb396f266f8bd36364e86448ceab4f3d69c8aa54133a1a0cf38b5a842', lpAsset: '0x6aeed821ff89a3e1416a4e1ae85965dfc1a30478f98a9bd7fadd45ed527d2725', feeBps: 30, controller: '0x000000000000917d198a89a23de930db25a47066' },
     { pair: 'SPX/cETH', poolId: '0xe2686416a328f6bb44fdea23c821916de148d3d73ab00d38cc25e55ff5047d4a', lpAsset: '0x302984ec4f357aed29e6e2be3533ccd72c1e4766e42484f332b3855926af9ad7', feeBps: 30, controller: '0x000000000000bc710a42716bf0e4a9186d833b9b' },
   ],
 };

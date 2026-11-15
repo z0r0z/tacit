@@ -6,7 +6,7 @@ import { makeConnect, UserStopped } from '/trade/connect.js?cb=b758e60b';
 import { rpc as readRpc } from '/trade/util.js?cb=1d2cd8d3';
 import { nodeHealth } from '/trade/rpc.js';
 import { batchReads } from '/trade/batch.js';
-import { TAC, POOL, FARM, aprText, readPrecision, readSpot, readStake, privateFarms } from '/trade/farm-read.js?cb=efe1d81e';
+import { TAC, POOL, FARM, aprText, readPrecision, readSpot, readStake, privateFarms } from '/trade/farm-read.js?cb=fb6ec72f';
 import { rememberOwed } from '/trade/rewards-dot.js?cb=6f000e84';
 import { readTasks } from '/rewards/earn.js?cb=74689244';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
@@ -442,7 +442,7 @@ function paintPrivate(list) {
 // with no wallet connected here, the visitor chooses among the browser's wallets (the sign-in sheet's own picker)
 const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : import('/trade/key.js?cb=67d4d4de').then((m) => m.pickWalletSheet(list)); };
 let farmsP = null;
-const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=91c214a1').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
+const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=e4a41fea').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
   .catch((err) => { farmsP = null; console.warn('your positions:', err?.message || err); }));
 $('#pf-mine').addEventListener('click', (e) => {
   if (farmsP || !e.target.closest('[data-pf="open"]')) return;
@@ -503,7 +503,7 @@ let farmUi = null, farmFor = null, farmSeq = 0, ethUsd = 0, hasStake = false;
 const eth4 = (wei) => (Number(wei) / 1e18).toLocaleString('en-US', { maximumSignificantDigits: 3 });
 const wordOf = (a) => a.slice(2).toLowerCase().padStart(64, '0');
 function mountedFarm() {
-  return farmUi ||= Promise.all([import('/trade/farm.js?cb=64237e49'), import('/trade/util.js?cb=1d2cd8d3'), import('/evm-trade-venues.js?cb=196b14fb'),
+  return farmUi ||= Promise.all([import('/trade/farm.js?cb=1265d7de'), import('/trade/util.js?cb=1d2cd8d3'), import('/evm-trade-venues.js?cb=196b14fb'),
     call({ to: ETH_USD, data: '0xfeaf968c' }).then((r) => { ethUsd = Number(BigInt(`0x${r.slice(66, 130)}`)) / 1e8; }, () => {})])
     .then(([{ mountFarm }, U, E]) => {
       const ethCall = (to, data, block = 'latest', o = {}) => U.rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: `0x${BigInt(o.value).toString(16)}` } : {}) }, block]);

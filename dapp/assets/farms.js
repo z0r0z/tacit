@@ -3,7 +3,7 @@
 // pays for (trade/lp-campaign.js). A tile, and an asset's farm link, go where that farm is joined: the front page's Earn card, on that pool, for the TAC/ETH farm and the
 // private ones; the vault's markets for TACD and TACE.
 import { ethCall, api, $ } from '/trade/util.js?cb=1d2cd8d3';
-import { aprText, readPrecision, privateFarms } from '/trade/farm-read.js?cb=efe1d81e';
+import { aprText, readPrecision, privateFarms } from '/trade/farm-read.js?cb=fb6ec72f';
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 

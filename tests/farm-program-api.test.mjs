@@ -131,7 +131,7 @@ console.log('\nnormal state:');
   await get('/farm/program?network=mainnet'); await get('/farm/health?network=mainnet');
   ok('repeat calls inside the window reuse one read', calls === before);
   const h = await (await get('/farm/health?network=mainnet')).json();
-  ok('health ok with every check present', h.status === 'ok' && h.checks.map((c) => c.name).join() === 'manager,solvency,runway,emission,idle-pools,farm SPX/cTAC,farm SPX/cETH,governor', JSON.stringify(h));
+  ok('health ok with every check present', h.status === 'ok' && h.checks.map((c) => c.name).join() === 'manager,solvency,runway,emission,idle-pools,farm SPX/TAC,farm SPX/cETH,governor', JSON.stringify(h));
   const s = await get('/farm/program?network=signet');
   ok('signet is a clean 404', s.status === 404);
 }

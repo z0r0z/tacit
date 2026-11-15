@@ -5,9 +5,16 @@ const wordOf = (a) => a.slice(2).toLowerCase().padStart(64, '0');
 
 export const aprFrom = (tacPerDay, stakedEth, tacEth) => (stakedEth > 0 && tacEth ? tacPerDay * 365 * tacEth / stakedEth * 100 : null);
 
+const TAC_ID = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 export function poolWorthEth(pool, tacEth, px = {}) {
   const r = pool?.reserves || {};
-  if (String(r.assetA).toLowerCase() !== CETH) return null;
+  if (String(r.assetA).toLowerCase() !== CETH) {
+    // a pool with no tETH side (a standalone farm's SPX/TAC): twice its TAC side, at TAC's price in ETH (or tETH as asset B: twice that side)
+    const ida = String(r.assetA).toLowerCase(), idb = String(r.assetB).toLowerCase(), a = Number(r.reserveA) / 1e8, b = Number(r.reserveB) / 1e8;
+    if (idb === CETH) return 2 * b;
+    if (tacEth > 0 && (ida === TAC_ID || idb === TAC_ID)) return 2 * (ida === TAC_ID ? a : b) * tacEth;
+    return null;
+  }
   const a = Number(r.reserveA) / 1e8, b = Number(r.reserveB) / 1e8, other = String(pool.pair || '').split('/').find((k) => k !== 'cETH');
   const unit = other === 'TAC' ? tacEth : other === 'cUSD' ? (px.ethUsd > 0 ? 1 / px.ethUsd : 0) : other === 'cBTC' ? (px.ethUsd > 0 && px.btcUsd > 0 ? px.btcUsd / px.ethUsd : 0) : 0;
   return unit > 0 ? a + b * unit : 2 * a;

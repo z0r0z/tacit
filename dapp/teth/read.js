@@ -3,7 +3,7 @@
 // Precision pool), and the relay's quote for a wrap. The arithmetic is plain functions of what was read, so tests can pin it.
 import { MULTICALL3, PRECISION_POOL, _internal } from '/evm-trade-venues.js?cb=196b14fb';
 import { api, ethCall, wordAt, now, E10 } from '/trade/util.js?cb=1d2cd8d3';
-import { poolWorthEth, shieldedApr } from '/trade/farm-read.js?cb=efe1d81e';
+import { poolWorthEth, shieldedApr } from '/trade/farm-read.js?cb=fb6ec72f';
 
 export const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';              // the Tacit pool (one contract): it holds the ETH behind every tETH
 export const WRAP_TIP = '0x000000D218B03db5837943b0b05DeA2965AE956e';           // wraps and pays the relay's tip in one transaction
