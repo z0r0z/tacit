@@ -589,7 +589,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return promise;
   }
   let _forgets = 0;
-  const forget = () => { _forgets++; _ownKeys.clear(); _btcHistoryCache.clear(); _bridgeFound.clear(); _wrapWalks.clear(); _walking.clear(); };
+  const forget = () => { _forgets++; _ownKeys.clear(); _btcHistoryCache.clear(); _bridgeFound.clear(); _wrapWalks.clear(); _wrapMemos.clear(); _walking.clear(); };
   _keyForgetters.add(forget);
   const _lockVBtcCache = new Map();
   async function _cbtcLockVBtcMany(outputs) {
@@ -760,6 +760,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return p;
   }
   const _wrapWalks = new Map();
+  // What the walks of a key have worked out, kept for the next walk of it (the walk runs again for every new wrap in the pool): derived from the key, so dropped with it, by forget above.
+  const _wrapMemos = new Map();
   const _walking = new Map();
   async function _walkWrapsOf(id, events) {
     const assets = [...new Map(_poolAssets.map((a) => [lc(a.assetId), a])).values()];
@@ -775,7 +777,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const wk = lc(id.pubHex), kept = _wrapWalks.get(wk);
     let w = kept && kept.key === key ? kept.w : null;
     if (!w) {
-      const run = _walking.get(wk + key) || (() => { const r = recovery().walkWrapsSliced({ priv: id.priv, events, assets, minIndex: (assetId) => _wrapIndexHint(id.pubHex, assetId) }); _walking.set(wk + key, r); r.then(() => _walking.delete(wk + key), () => _walking.delete(wk + key)); return r; })();
+      const run = _walking.get(wk + key) || (() => { const R = recovery(), memo = _wrapMemos.get(wk) || _wrapMemos.set(wk, R.newWrapMemo()).get(wk), r = R.walkWrapsSliced({ priv: id.priv, events, assets, memo, minIndex: (assetId) => _wrapIndexHint(id.pubHex, assetId) }); _walking.set(wk + key, r); r.then(() => _walking.delete(wk + key), () => _walking.delete(wk + key)); return r; })();
       const forgets = _forgets;
       w = await run;
       const byAsset = new Map(w.scanned.map((sc) => [lc(sc.assetId), { ids: ids.get(lc(sc.assetId)) || new Set(), through: sc.scannedThrough, used: new Set(w.found.filter((n) => lc(n.asset) === lc(sc.assetId)).map((n) => n.index)) }]));

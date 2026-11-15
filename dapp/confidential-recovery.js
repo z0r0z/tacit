@@ -97,7 +97,15 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
   }
 
   // The walk is written as steps (one per index tried) so it can run to the end at once, `walkWraps`, or in slices that hand the thread back, `walkWrapsSliced`.
-  function* walkWrapsSteps({ priv, events, assets, gap = 24, maxIndex = 4096, minIndex = 0 }) {
+  // `memo` (optional, from newWrapMemo): what walks of this key have worked out, kept by the caller for the next walk of it (see below). The walk is the same with or without one.
+  function* walkWrapsSteps({ priv, events, assets, gap = 24, maxIndex = 4096, minIndex = 0, memo: given = null }) {
+    let memo = given;
+    if (memo) {
+      const tag = bytesToHex(sha256(new Uint8Array([...new TextEncoder().encode('tacit-wrap-memo-v1'), ...privBytes(priv)]))).slice(0, 16);
+      if (memo.tag == null) memo.tag = tag;
+      else if (memo.tag !== tag) memo = null;       // another key's: not used, not written
+    }
+    if (!memo) memo = newWrapMemo();
     const floorFor = (assetId) => {
       const n = Number(typeof minIndex === 'function' ? minIndex(assetId) : minIndex);
       return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), maxIndex) : 0;
@@ -119,30 +127,53 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
       // The deposit id of a note is keccak(asset, value, keccak(cx, cy, owner)) (pool.depositId), worked out here from bytes: the asset and each value's bytes are the same for every index, the owner for
       // every value of an index, and the affine coordinates of all of an index's points come from one field inversion (toAffineBatch) rather than one apiece. A digest is looked up by its first six bytes
       // among the ids the events hold and only a digest that is there is written out in full and checked against them, so what is found is exactly what the id-by-id walk finds.
+      //
+      // And what a walk works out is kept in `memo` for the next walk of the key, which happens whenever the pool has a new wrap (the walk is asked again for any change to the events): per asset and
+      // index, the owner and G·blinding, and per amount the six bytes of its digest that are looked up. A later walk looks those up among the ids it has now, so a deposit made since to an index tried
+      // before is found without hashing anything, a deposit gone from the events is not found, and only what is new is worked out: the amounts not seen before at the indexes tried, and the indexes
+      // past where the last walk stopped. What the memo holds is derived from the key, so the caller that keeps it drops it when it forgets the key.
       const commitIn = new Uint8Array(96), idIn = new Uint8Array(96);
       idIn.set(word32(a.assetId), 0);
       const valueWords = values.map((v) => word32(v));
       const idKey = (h) => parseInt(h.slice(0, 12), 16);
-      const wanted = new Set([...d.ids].map((id) => idKey(strip0x(id))));
+      const wanted = new Set([...d.ids].map((id) => idKey(strip0x(id))).filter((x) => !Number.isNaN(x)));
+      let am = memo.assets.get(lc(a.assetId));
+      if (!am) memo.assets.set(lc(a.assetId), (am = { vals: [], vpos: new Map(), idx: new Map() }));
+      for (const v of values) if (!am.vpos.has(v)) { am.vpos.set(v, am.vals.length); am.vals.push(v); }
+      const pos = values.map((v) => am.vpos.get(v));
       const floor = floorFor(a.assetId);
       let miss = 0, tried = 0, matched = 0, lastMatch = -1;
       for (let i = 0; i <= maxIndex && (miss < gap || i <= floor); i++) {
         tried++;
-        const dn = pool.deriveNote(priv, a.assetId, i);
-        const owner = pool.nkToOwner(dn.secret);
-        const Gr = G.multiply(BigInt(dn.blinding));
+        let e = am.idx.get(i);
+        if (!e) {
+          const dn = pool.deriveNote(priv, a.assetId, i);
+          am.idx.set(i, (e = { ownerWord: word32(pool.nkToOwner(dn.secret)), Gr: G.multiply(BigInt(dn.blinding)), ks: new Float64Array(am.vals.length).fill(NaN) }));
+        } else if (e.ks.length < am.vals.length) {
+          const ks = new Float64Array(am.vals.length).fill(NaN);
+          ks.set(e.ks);
+          e.ks = ks;
+        }
         let hit = false;
         if (values.length) {
-          commitIn.set(word32(owner), 64);
-          const at = toAffineBatch(Hv.map((P) => P.add(Gr)));
+          const need = [];
+          for (let k = 0; k < values.length; k++) if (Number.isNaN(e.ks[pos[k]])) need.push(k);
+          if (need.length) {
+            commitIn.set(e.ownerWord, 64);
+            const at = toAffineBatch(need.map((k) => Hv[k].add(e.Gr)));
+            need.forEach((k, j) => {
+              be32(at[j].x, commitIn, 0); be32(at[j].y, commitIn, 32);
+              idIn.set(valueWords[k], 32); idIn.set(keccak256(commitIn), 64);
+              e.ks[pos[k]] = dv32(keccak256(idIn));
+            });
+          }
           for (let k = 0; k < values.length; k++) {
-            be32(at[k].x, commitIn, 0); be32(at[k].y, commitIn, 32);
-            idIn.set(valueWords[k], 32); idIn.set(keccak256(commitIn), 64);
-            const dig = keccak256(idIn);
-            if (!wanted.has(dv32(dig))) continue;
-            const depositId = '0x' + bytesToHex(dig);
+            if (!wanted.has(e.ks[pos[k]])) continue;
+            // a digest that begins as an id the events hold does: written out in full, from the note's own keys by the pool's own definition, and checked against them
+            const dn = pool.deriveNote(priv, a.assetId, i), owner = pool.nkToOwner(dn.secret);
+            const p = Hv[k].add(e.Gr).toAffine(), cx = w32(p.x), cy = w32(p.y);
+            const depositId = pool.depositId(a.assetId, values[k], cx, cy, owner);
             if (!d.ids.has(lc(depositId))) continue;
-            const cx = w32(at[k].x), cy = w32(at[k].y);
             hit = true; matched++; lastMatch = i;
             found.push({ index: i, value: values[k], blinding: w32(dn.blinding), secret: dn.secret, asset: a.assetId, owner, cx, cy, leaf: pool.leaf(a.assetId, cx, cy, owner), depositId });
           }
@@ -159,6 +190,8 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
     }
     return { found, scanned };
   }
+  // An empty memo for walks of one key; the first walk to use it claims it for that key, and a walk of another key leaves it alone.
+  const newWrapMemo = () => ({ tag: null, assets: new Map() });
   function walkWraps(args) {
     const g = walkWrapsSteps(args);
     for (let r = g.next(); ; r = g.next()) if (r.done) return r.value;
@@ -668,5 +701,5 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
     return out;
   }
 
-  return { txIndex, walkWraps, walkWrapsSliced, decodeExitFields, decodeOutputFields, walkChange, walkBridgeMints, deriveBridgeMintBlinding, scanCbtcNotes, deriveFarmPositions, decodeCdpFields, walkCdpPositions, openSentLocks, tryDerived, netCandidates, walkDerivedOutputs, walkDirectOutputs, locateDepositTx };
+  return { txIndex, walkWraps, walkWrapsSliced, newWrapMemo, decodeExitFields, decodeOutputFields, walkChange, walkBridgeMints, deriveBridgeMintBlinding, scanCbtcNotes, deriveFarmPositions, decodeCdpFields, walkCdpPositions, openSentLocks, tryDerived, netCandidates, walkDerivedOutputs, walkDirectOutputs, locateDepositTx };
 }
