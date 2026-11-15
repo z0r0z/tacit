@@ -12887,6 +12887,14 @@ function hxMoveAuto() {
   SWC.autoDone = true;
   HX.flow = 'withdraw'; SWC.flow = 'withdraw'; SWC.card.setFlow('withdraw'); hxHeadSync();
 }
+// A token named by its address in a link (#card=shield:0x…, the etch page's "Shield it"): the Shield tab on that token. The card reads the address like
+// a pasted one and keeps it among the visitor's own tokens, so it needs no list to name it.
+const xtLinked = (a) => (/^0x[0-9a-f]{40}$/.test(String(a)) && !HX_SH[a] ? xtAddr(a) : null);
+function xtShieldAsk(a, amt) {
+  const p = new URLSearchParams({ from: a, private: 'to' });
+  if (amt) p.set('amt', amt);
+  return p;
+}
 function hxMoveAsk(sf, sd, amt) {
   const sym = { eth: 'ETH', teth: 'tETH', tac: 'TAC', usdc: 'USDC', usdt: 'USDT' }, src = Object.keys(HX_MV_SRC).find((k) => HX_MV_SRC[k] === sf), dst = HX_MV[sf] && Object.keys(HX_MV[sf]).find((k) => HX_MV[sf][k] === sd);
   const way = HX_WAY[`${sf}>${sd}`], [fc, fa] = (src || 'eth@wallet').split('@'), [tc, ta] = (dst || (way?.same ? 'teth@defi' : 'teth@defi')).split('@');
@@ -12923,14 +12931,14 @@ function hxPreset(spec, amt, inCard = false, route = null, lp = false) {
   route ||= r === 'private' || r === 'public' ? r : null;
   if (tab === 'swap' && (a === 'sats' || b === 'sats')) { location.href = a === 'sats' ? '/trade/tac/#btc=buy' : TAC_BOOK; return; }
   const bare = !a && [...HX_TABS, ...HX_HEAD, ['withdraw']].some(([k]) => k === tab), cross = tab === 'bridge' || (tab === 'shield' && HX_BR[a] === b);
-  if (!bare && !(cross ? Object.hasOwn(HX_BR, a) : tab === 'shield' ? !!HX_SH[a] : tab === 'pay' ? !!HX_PAYC[a] && (!b || !!HX_PAYC[b]) : tab === 'swap' ? !!HX_SWAP[a] && !!HX_SWAP[b] && a !== b && !(a === 'eth' && b === 'ether') : tab === 'send' ? hxSendList().some(([k]) => k === a) : tab === 'earn' || tab === 'borrow')) return;
+  if (!bare && !(cross ? Object.hasOwn(HX_BR, a) : tab === 'shield' ? !!HX_SH[a] || !!xtLinked(a) : tab === 'pay' ? !!HX_PAYC[a] && (!b || !!HX_PAYC[b]) : tab === 'swap' ? !!HX_SWAP[a] && !!HX_SWAP[b] && a !== b && !(a === 'eth' && b === 'ether') : tab === 'send' ? hxSendList().some(([k]) => k === a) : tab === 'earn' || tab === 'borrow')) return;
   if (!inCard) for (const o of $$('dialog.sheet[open]')) o.close();
   if (TACP.on && !inCard) { tpgAct('tile', TACP.title); TACP.title = ''; }
   hxKeepAmt(() => {
     HX.q = null;
     if (bare) hxSetTab(tab);
     else if (cross) { HX.tab = 'bridge'; HX.more = 'bridge'; HX.br = a; HX.placePick = true; HX.placeAuto = null; }
-    else if (tab === 'shield') { HX.tab = 'swap'; SWC.ask = hxMoveAsk(a, b, amt); HX.flow = hxFlowOf(SWC.ask); }
+    else if (tab === 'shield') { HX.tab = 'swap'; SWC.ask = xtLinked(a) ? xtShieldAsk(a, amt) : hxMoveAsk(a, b, amt); HX.flow = hxFlowOf(SWC.ask); }
     else if (tab === 'pay') { HX.tab = 'swap'; HX.flow = a === b ? 'withdraw' : null; SWC.ask = hxPayAsk(a, b, amt); }
     else if (tab === 'swap') { HX.tab = 'swap'; HX.flow = null; SWC.ask = hxSwapAsk(a, b, route, amt); }
     else if (tab === 'send') { HX.tab = 'send'; HX.flow = null; HX.send = a; HX.sendPick = true; HX.ask = false; }
@@ -15140,7 +15148,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=8c9f592e').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=495e15a4').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {
@@ -15928,12 +15936,12 @@ const route = () => {
     if (!snd[1]) { HX.sendPick = false; if (hxSendAuto()) paintHx(); }
     return;
   }
-  const card = h.match(/^card=([a-z]+:[a-z]+:[a-z]+\d{0,3}|borrow:[a-z]+|bridge(?::[a-z]+)?|swap|earn|borrow|shield|withdraw|more)(?::(public|private))?(?:&amt=([^&]*))?(?:&lp=(1))?$/);
+  const card = h.match(/^card=(shield:0x[0-9a-fA-F]{40}|[a-z]+:[a-z]+:[a-z]+\d{0,3}|borrow:[a-z]+|bridge(?::[a-z]+)?|swap|earn|borrow|shield|withdraw|more)(?::(public|private))?(?:&amt=([^&]*))?(?:&lp=(1))?$/);
   if (card) {
     history.replaceState(null, '', location.pathname + location.search);
     const amt = /^\d{0,12}(?:\.\d{1,18})?$/.test(card[3] || '') ? card[3] || '' : '';
     const later = chainWantLater(card[1], amt);
-    hxPreset(card[1], amt, false, card[2] || null, card[4] === '1');
+    hxPreset(card[1].startsWith('shield:0x') ? `${card[1].toLowerCase()}:defi` : card[1], amt, false, card[2] || null, card[4] === '1');
     if (later) openSheet('wallet');
     return;
   }

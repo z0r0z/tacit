@@ -2610,7 +2610,9 @@ function load(p, { fresh = true } = {}) {
     if (!t || ASKED?.p !== p) return;
     S.custom = [{ addr: lc(f), sym: t.sym, name: t.name, dec: t.dec, permit: t.permit, icon: null, custom: true }, ...S.custom].slice(0, 20);
     if (`${S.pay}>${S.get}` !== pair0 || S.amt !== amt0) { paint(); return; }
-    S.inP = false; S.pay = lc(f); if (!kindOf(S.pay, S.get)) S.get = lc(R.TAC);
+    S.inP = false; S.pay = lc(f);
+    // a token a link names for the Shield tab (the etch page's "Shield it") is paid from the wallet and lands as its own private form
+    if (FLOW === 'shield' && flowFit()) { /* its own form, in the DeFi pool */ } else if (!kindOf(S.pay, S.get)) S.get = lc(R.TAC);
     const a = p.get('amt'); if (a && parseUnits(a, t.dec)) S.amt = fitAmt(a);
     paint(); readBalances().then(paintSides); if (S.amt) requote(true);
   }).catch(() => {});

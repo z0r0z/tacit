@@ -11,6 +11,9 @@ const BTC_MODULE = '/trade/btc.js?cb=8ccdddc2', ETH_MODULE = '/etch/eth.js?cb=96
 const DECIMALS_OF = { btc: [0, 2, 6, 8], eth: [0, 6, 8, 18] };
 // What the pool can hold of an asset, in its base units (2^64 − 1 in-system units); on Bitcoin, the etch's own limit.
 const maxFor = (dec) => (S.chain === 'eth' ? ((1n << 64n) - 1n) * 10n ** BigInt(dec - Math.min(dec, 8)) : MAX_BASE);
+// The front page's Shield tab on an Ethereum token, as its own private form in the DeFi pool: the card reads the address, and the first shield registers the token
+// with the pool in the same confirmation, so an etch needs no registration of its own.
+const shieldLink = (token) => (/^0x[0-9a-fA-F]{40}$/.test(token) ? `/#card=shield:${token.toLowerCase()}` : '/#');
 const API = 'https://api.tacit.finance', MEMPOOL = 'https://mempool.space', SCAN = 'https://www.tacitscan.io';
 const MAX_BASE = (1n << 64n) - 1n;
 const LOGO_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']), LOGO_MAX = 2 * 1024 * 1024;
@@ -432,6 +435,7 @@ function showDoneEth() {
       ${d.registered ? '<div class="kv"><span>Tacit pool</span><b>registered</b></div>' : ''}
     </div>
     <button class="btn" type="button" id="watch">Add it to your wallet</button>
+    <a class="btn ghost" id="shield" href="${shieldLink(t)}">Shield it</a>
     <div class="pair"><a class="btn ghost" href="${scan}/token/${esc(t)}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a><button class="btn ghost" type="button" id="again">Etch another</button></div>
     <p class="q${bad || d.note ? ' err' : ''}">${esc(bad || d.note || 'It is yours: nothing can mint more of it.')}</p>`;
   paintMark($('#d-mark'), d.ticker, t, d.logo);
@@ -473,7 +477,7 @@ function row(a) {
 function details(a) {
   if (a.chain === 'eth') return `<div class="kv"><span>Token</span><b><code>${a.id}</code> <button class="link" type="button" data-copy="${a.id}">Copy</button></b></div>
     ${a.at ? `<div class="kv"><span>Etched</span><b>${esc(day(a.at))}</b></div>` : ''}
-    <div class="links"><a href="https://etherscan.io/token/${a.id}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a>${a.etchTxid ? `<a href="https://etherscan.io/tx/${a.etchTxid}" target="_blank" rel="noopener noreferrer">Etch transaction ↗</a>` : ''}</div>`;
+    <div class="links"><a href="${shieldLink(a.id)}">Shield</a><a href="https://etherscan.io/token/${a.id}" target="_blank" rel="noopener noreferrer">Etherscan ↗</a>${a.etchTxid ? `<a href="https://etherscan.io/tx/${a.etchTxid}" target="_blank" rel="noopener noreferrer">Etch transaction ↗</a>` : ''}</div>`;
   return `<div class="kv"><span>Asset ID</span><b><code>${a.id}</code> <button class="link" type="button" data-copy="${a.id}">Copy</button></b></div>
     ${a.at ? `<div class="kv"><span>Etched</span><b>${esc(day(a.at))}</b></div>` : ''}
     <div class="links"><a href="${market(a.id)}">Trade</a><a href="${SCAN}/assets/${a.id}" target="_blank" rel="noopener noreferrer">tacitscan ↗</a>${a.etchTxid ? `<a href="${MEMPOOL}/tx/${a.etchTxid}" target="_blank" rel="noopener noreferrer">Etch transaction ↗</a>` : ''}</div>`;

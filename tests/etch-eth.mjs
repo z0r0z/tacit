@@ -17,13 +17,15 @@ import { join, extname } from 'node:path';
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const FORK = process.env.FORK || 'https://mainnet.gateway.tenderly.co';       // the free node that serves the factory's logs over its whole life, as the page reads them
-const PORT = 21000 + Math.floor(Math.random() * 2000), ANVIL = `http://127.0.0.1:${PORT}`;
+const PORT = 21000 + Math.floor(Math.random() * 2000), ANVIL = process.env.ANVIL || `http://127.0.0.1:${PORT}`;      // ANVIL=<url>: a fork already running, not a new one
 const ACCOUNT = '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266';
 const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const anvil = spawn('anvil', ['--port', String(PORT), '--fork-url', FORK, '--chain-id', '1', '--silent', '--no-rate-limit'], { stdio: 'ignore' });
-process.on('exit', () => anvil.kill('SIGKILL'));
+if (!process.env.ANVIL) {
+  const anvil = spawn('anvil', ['--port', String(PORT), '--fork-url', FORK, '--chain-id', '1', '--silent', '--no-rate-limit'], { stdio: 'ignore' });
+  process.on('exit', () => anvil.kill('SIGKILL'));
+}
 const rpc = async (method, params = []) => {
   const r = await (await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json();
   if (r.error) throw Object.assign(new Error(r.error.message), { data: r.error.data });
@@ -105,7 +107,7 @@ async function fresh(path, ways = {}) {
         if (ways.refuseBatch) throw declined();
         batches.push(params[0]);
         const receipts = [];
-        for (const c of params[0].calls) { const h = await rpc('eth_sendTransaction', [{ from: params[0].from, to: c.to, data: c.data, value: c.value }]); receipts.push(await rpc('eth_getTransactionReceipt', [h])); }
+        for (const c of params[0].calls) { const h = await rpc('eth_sendTransaction', [{ from: params[0].from, to: c.to, data: c.data, value: c.value }]); let r = null; for (let i = 0; i < 60 && !r; i++) { r = await rpc('eth_getTransactionReceipt', [h]); if (!r) await sleep(250); } receipts.push(r); }
         st.batch = { id: '0x' + 'ab'.repeat(8), receipts };
         return { id: st.batch.id };
       }
@@ -211,6 +213,7 @@ let token1, minter1;
   ok(gases[0] < 950_000n && gases[1] < 120_000n, 'the gas the page assumes is more than the etch used');
   ok(/Tacit pool\s*registered/.test((await text(page, '#done .kvs')).replace(/\s+/g, ' ')), 'and the page says so');
   ok(!(await text(page, '#done .q')).includes('does not show'), 'the page’s own check of the chain found nothing wrong');
+  ok((await page.$eval('#shield', (a) => a.getAttribute('href'))) === `/#card=shield:${token1.toLowerCase()}`, 'the done card links to the front page’s Shield tab on the token, whether or not it was registered');
   await page.click('#watch');
   await page.waitForFunction(() => document.querySelector('#watch').textContent === 'Added');
   ok(true, 'it can be offered to the wallet’s token list');
@@ -234,7 +237,8 @@ console.log('\nFinding it again:');
   ok((await text(page, '#cnt')) === '1 found', 'it is found by the start of its address');
   await page.click('#list .as-b');
   ok((await page.$$eval('#list .as-d a', (a) => a.map((x) => x.href))).some((h) => h === `https://etherscan.io/token/${token1.toLowerCase()}`), 'and opens to its Etherscan page');
-  ok((await page.evaluate(() => location.hash)).startsWith('#discover='), 'the address keeps the search');
+  ok((await page.$$eval('#list .as-d a', (a) => a.map((x) => x.getAttribute('href')))).includes(`/#card=shield:${token1.toLowerCase()}`), 'and to the Shield tab on it');
+  ok((await page.evaluate(() => location.hash)).startsWith('#discover:eth='), 'the search keeps the Ethereum side');
   await page.close();
 }
 {
@@ -294,7 +298,7 @@ console.log('\nA wallet that says no:');
   await connect(page);
   const before = await rpc('eth_blockNumber');
   await page.click('#go');
-  await page.waitForFunction(() => document.querySelector('#q').textContent === 'Nothing was sent.', null, { timeout: 60000 });
+  await page.waitForFunction(() => document.querySelector('#q').textContent === 'Nothing was sent.', null, { timeout: 60000 }).catch(async (e) => { console.log(`DEBUG q = ${await text(page, '#q')} | sends = ${st.sends}`); throw e; });
   ok(st.sends === 1 && (await rpc('eth_blockNumber')) === before, 'turning down the first call leaves nothing made');
   ok(/^Etch NOPE on Ethereum$/.test(await goLabel(page)), 'and the button is back');
   await page.close();
