@@ -499,10 +499,23 @@ async function verifySettle({ publicValues, proof, memos, community = false, wan
   }
 }
 // The board lane for `stdin`, or null when it missed; the time it took comes off `timeoutMs` for the lane after it.
-// Ops whose program input holds nothing secret of anyone's (checked byte for byte in tests/staged-press-fork.mjs: a wrap, a staged deposit's
-// wrap-and-send and wrap-swap carry commitments, owners and signatures, never a key or a blinding): their board jobs are 'public', which
-// community machines may race (worker/src/prover-board.js). Every other op stays 'private'.
-export const PUBLIC_BOARD_TYPES = Object.freeze(['wrap', 'wraptransfer', 'wrapswap']);
+// Ops a community machine may race, as 'public' board work (worker/src/prover-board.js). Every other op stays 'private', for a worker whose
+// token names that class.
+//
+// A public input holds no secret of anyone's: never a key, a blinding or a nullifier key, so no prover can spend or value a note
+// (checked byte for byte in tests/staged-press-fork.mjs). But "no secret" is not "nothing": an input carries the preimage of what the pool
+// publishes only as a hash. A note's leaf is keccak(asset ‖ cx ‖ cy ‖ owner) and its nullifier follows from the leaf, while ConfidentialPool's
+// Wrap event deliberately publishes neither the commitment nor the owner. So whoever proves an op can attribute the leaves that op inserts.
+//
+// For a plain wrap that costs nothing: its settle consumes one deposit and inserts that depositor's own self-note in the same transaction, for
+// an amount the underlying transfer already shows, so the chain links deposit to leaf by itself and the input tells a prover nothing it could
+// not read. A wrap-and-send and a wrap-swap are different: they spend the deposit into notes for SOMEONE ELSE, and the chain shows only leaf
+// hashes, so the prover alone learns which leaf is the recipient's and which the change, and can follow that recipient's note to the moment it
+// is spent — the one thing those ops exist to hide (contracts/sp1/confidential/src/main.rs, OP_WRAPTRANSFER: "WHO receives it and the split
+// stay hidden"). They stay private: proved on a machine whose operator is trusted with a witness, or on the payer's own (the device prover),
+// which is where an op carrying someone's payment belongs. It costs the community set nothing measurable — over the 26 hours before this was
+// written, every community board proof was a plain wrap, and the proof pool, which the distributed set actually lives on, is wraps only.
+export const PUBLIC_BOARD_TYPES = Object.freeze(['wrap']);
 async function viaBoard({ stdin, cycleLimit, gasLimit, label, memos, timeoutMs, check = null, cls = 'private' }) {
   const lane = boardLane();
   if (!lane) return { proof: null, spentMs: 0 };

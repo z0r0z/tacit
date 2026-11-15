@@ -121,3 +121,23 @@ test('prover.js hands a community proof to the same judgment, with the job\'s de
   assert.ok(/verifySettle\(\{ \.\.\.c, want, expect \}\)/.test(src) && /const expect = pub \? wrapExpectation\(type, stdin\) : null/.test(src), 'the check carries the job\'s deposits and expectation');
   assert.ok(/c\.community && !consumesJobDeposits\(c\.publicValues, want\) \? false/.test(src), 'and a community proof is still refused outright when it is not the job\'s deposits');
 });
+
+// An op a community machine may race hands its whole program input to a stranger. A public input never holds a key, a blinding or a nullifier key
+// (tests/staged-press-fork.mjs checks that byte for byte), so no prover can spend or value a note. But it does hold the preimage of what the pool
+// publishes only as a hash: a leaf is keccak(asset ‖ cx ‖ cy ‖ owner) and the Wrap event publishes neither the commitment nor the owner. For a plain
+// wrap that reveals nothing new (one deposit, the depositor's own note, one transaction, a public amount). For an op that pays SOMEONE ELSE out of a
+// deposit it would reveal which inserted leaf is the recipient's and which is the change, and so let the prover follow that note to its spend, which
+// is exactly what those ops hide. So only the plain wrap is public work.
+test('only a plain wrap is public board work: an op that pays someone else out of a deposit keeps its witness off community machines', () => {
+  // prover.js is read as text: importing it pulls in the relay's config, which wants a live environment.
+  const src = readFileSync(new URL('../src/lib/prover.js', import.meta.url), 'utf8');
+  const listed = /export const PUBLIC_BOARD_TYPES = Object\.freeze\(\[([^\]]*)\]\)/.exec(src);
+  assert.ok(listed, 'the list of raceable ops is there to read');
+  const types = listed[1].split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
+  assert.deepEqual(types, ['wrap']);
+  for (const t of ['wraptransfer', 'wrapswap', 'transfer', 'withdraw', 'swap', 'lp', 'unwrap', 'send']) {
+    assert.ok(!types.includes(t), `${t} must not be raceable: its input attributes the notes it writes to their owners`);
+  }
+  assert.ok(/const pub = PUBLIC_BOARD_TYPES\.includes\(type\)/.test(src), 'the class comes from that list');
+  assert.ok(/cls: pub \? 'public' : 'private'/.test(src), "and anything not on it is proved as 'private'");
+});
