@@ -124,6 +124,7 @@ import { opExpiry } from '../../dapp/confidential-relay.js';
 import { sanitizeLedger, sanitizeBooks, readChain, readTips, buildEconomics } from './relay-economics.js';
 import { CONFIDENTIAL_DEPLOYMENTS as _CONFIDENTIAL_DEPLOYMENTS } from '../../dapp/confidential-deployments.js';
 import { decodeCrossoutMint, CONFIDENTIAL_POOL_DEPLOYMENTS as _CROSSOUT_POOL_DEPLOYMENTS } from '../../dapp/confidential-crossout-consumer.js';
+import { parseRelayRequest, verifyClaim as verifyRelayClaim, relayKey as crossoutRelayKey, relayInfoKey as crossoutRelayInfoKey, publicStatus as crossoutRelayStatus } from './crossout-relay.js';
 import { classifyConfidentialTx, extractInputs, makeBurnDepositKit } from '../../dapp/burn-deposit-bitcoin.js';
 import { makeScanReflectionIndexer } from '../../dapp/confidential-reflection-scan-indexer.js';
 import { makeBurndepAdmission, HEADER_CHUNK as BURNDEP_HEADER_CHUNK } from './burndep-admission.js';
@@ -16994,6 +16995,49 @@ async function recordCrossoutMint(env, network, cc, { cm, txidHex, tx, height, t
   return { status, leaf };
 }
 
+// ── Tacit's relay for the Bitcoin step of a bridge to Bitcoin (worker/src/crossout-relay.js) ──
+// The page asks once per claim; the hosted watchtower sends the step from the relay's own key. On when CROSSOUT_RELAY_ENABLED is
+// "true" and the relay has looked in within 15 minutes (its info record, which it writes every tick).
+const crossoutRelayOn = (env) => String(env?.CROSSOUT_RELAY_ENABLED ?? '') === 'true';
+const CROSSOUT_RELAY_FRESH_MS = 15 * 60e3;
+// GET /crossout/relay/info?network= : whether the relay will send a bridge's Bitcoin step now, and what it has.
+async function handleCrossoutRelayInfo(url, env, cors) {
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const info = env.REGISTRY_KV && crossoutRelayOn(env) ? await env.REGISTRY_KV.get(crossoutRelayInfoKey(network), 'json') : null;
+  const fresh = !!info && Date.now() - Number(info.at || 0) < CROSSOUT_RELAY_FRESH_MS;
+  return jsonResponse({
+    network, enabled: crossoutRelayOn(env), ready: fresh && !!info.ready,
+    ...(info ? { address: info.address, feeRate: info.feeRate, maxFeeRate: info.maxFeeRate, needSats: info.needSats, lookedAt: info.at } : {}),
+  }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+// POST /crossout/relay?network= {claimId, assetId, cx, cy, destXonly, ethBlock}: ask the relay to send a bridge's Bitcoin step.
+// Only a burn the pool recorded, landing where the ask says, in the block it says, is taken (one ask per claim).
+async function handleCrossoutRelayAsk(req, url, env, cors) {
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  if (!crossoutRelayOn(env)) return jsonResponse({ error: 'the relay is not sending Bitcoin steps now' }, 410, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const pool = _CROSSOUT_POOL_DEPLOYMENTS[network]?.pool;
+  if (!pool) return jsonResponse({ error: 'no pool on this network' }, 410, cors);
+  let ask;
+  try { ask = parseRelayRequest(await req.json()); } catch (e) { return jsonResponse({ error: String(e?.message || 'invalid body') }, 400, cors); }
+  const key = crossoutRelayKey(network, ask.claimId), had = await env.REGISTRY_KV.get(key, 'json');
+  if (had && had.status !== 'rejected') return jsonResponse(crossoutRelayStatus(had), 200, cors);
+  const v = await verifyRelayClaim({ keccak256: keccak_256, ethRpc: async (m, p) => _ethRpc(network, m, p), pool, req: ask });
+  if (!v.ok) return jsonResponse({ error: v.reason, retry: !!v.retry }, v.reason === 'chain-unreadable' ? 503 : v.retry ? 409 : 400, cors);
+  const rec = { ...ask, network, status: 'queued', askedAt: Date.now() };
+  await env.REGISTRY_KV.put(key, JSON.stringify(rec), { expirationTtl: 14 * 86400 });
+  return jsonResponse(crossoutRelayStatus(rec), 200, cors);
+}
+// GET /crossout/relay?network=&claim=0x.. : what became of an ask.
+async function handleCrossoutRelayGet(url, env, cors) {
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, cors);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  const claim = String(url.searchParams.get('claim') || '').replace(/^0x/, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(claim)) return jsonResponse({ error: 'claim must be 32-byte hex' }, 400, cors);
+  const rec = await env.REGISTRY_KV.get(crossoutRelayKey(network, claim), 'json');
+  return rec ? jsonResponse(crossoutRelayStatus(rec), 200, { ...cors, 'Cache-Control': 'no-store' }) : jsonResponse({ error: 'not asked' }, 404, cors);
+}
+
 // GET /crossout/minted?network=&asset=0x..&claim=0x..&txid=<hex>
 // Mint status of one T_CROSSOUT_MINT outpoint (txid:0). `minted` is true only for the tx recorded for the
 // claim. `decided` is true once the block scan has passed the recorded mint (and this tx) by the credit depth,
@@ -28566,6 +28610,9 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/burndep/sweep' && req.method === 'POST') return handleBurnDepositSweep(req, env, url, cors);
     if (url.pathname === '/reflection/burndep/cache-status' && req.method === 'GET') return handleBurndepCacheStatus(req, env, url, cors);
     if (url.pathname === '/crossout/minted' && req.method === 'GET') return handleCrossoutMinted(url, env, cors);
+    if (url.pathname === '/crossout/relay/info' && req.method === 'GET') return handleCrossoutRelayInfo(url, env, cors);
+    if (url.pathname === '/crossout/relay' && req.method === 'POST') return handleCrossoutRelayAsk(req, url, env, cors);
+    if (url.pathname === '/crossout/relay' && req.method === 'GET') return handleCrossoutRelayGet(url, env, cors);
     // Mode-B eth-side state: the eth-state sidecar POSTs eth_prove's output here.
     if (url.pathname === '/reflection/eth-state' && req.method === 'GET') return handleReflectionEthStateGet(req, env, url, cors);
     if (url.pathname === '/reflection/eth-state' && req.method === 'POST') return handleReflectionEthStatePost(req, env, url, cors);

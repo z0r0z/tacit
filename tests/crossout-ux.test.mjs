@@ -1376,5 +1376,91 @@ const UNOTE = { nullifier: withHex('6e'.repeat(32)), value: 5_000_000n, blinding
   ok(signed.stage === 'mint-signed', 'with the worker down the copy still signs its pair');
 }
 
+// ---- Tacit's relay sends the Bitcoin step: the page asks, waits on it, and sends it itself when the relay declines or never starts ----
+{
+  const relayWorld = ({ ready = true, status = 'queued', reason = null } = {}) => {
+    const world = makeWorld(), base = world.fetchImpl, asks = [];
+    const st = { ready, status, reason };
+    world.fetchImpl = async (url, init) => {
+      const u = new URL(url, 'http://x');
+      if (u.pathname.endsWith('/crossout/relay/info')) return { ok: true, json: async () => ({ enabled: true, ready: st.ready }) };
+      if (u.pathname.endsWith('/crossout/relay') && init && init.method === 'POST') { asks.push(JSON.parse(init.body)); return { ok: true, json: async () => ({ status: 'queued' }) }; }
+      if (u.pathname.endsWith('/crossout/relay')) return { ok: true, json: async () => ({ status: st.status, reason: st.reason, revealTxid: st.status === 'sent' ? 'ab'.repeat(32) : null }) };
+      return base(url, init);
+    };
+    return { world, asks, st };
+  };
+  const walk = async (ux, world) => {
+    await ux.start({ note: NOTE, walletPriv: WALLET_PRIV });
+    await ux.advance(WALLET_PUB, NOTE.nullifier);           // settled: asks the relay
+    world.setEthCovered(true);
+    return ux.advance(WALLET_PUB, NOTE.nullifier);          // covered
+  };
+
+  // ready: the page asks once, with the claim's own fields, and does not send the step itself while the relay has it
+  {
+    const { world, asks, st } = relayWorld();
+    let t = 1_000_000;
+    const ux = makeUx(world, { clock: () => t });
+    const covered = await walk(ux, world);
+    ok(asks.length === 1 && asks[0].claimId === covered.settle.claimId && stripHex(asks[0].destXonly) === stripHex(covered.destXonly) && asks[0].cx === covered.settle.cx && asks[0].ethBlock === covered.settle.ethBlock,
+      'relay: once the burn is settled the page asks the relay, with the claim, its commitment, its key and its block');
+    ok(covered.relay && covered.relay.status === 'queued', 'relay: the ask is kept on the record');
+    const held = await ux.advance(WALLET_PUB, NOTE.nullifier);
+    ok(held.stage === 'covered' && world.broadcasts.length === 0 && asks.length === 1, 'relay: while the relay has it, the page sends nothing, needs no key, and does not ask again');
+    st.status = 'sent';
+    t += 6 * 3600e3;
+    const inFlight = await ux.advance(WALLET_PUB, NOTE.nullifier);
+    ok(inFlight.stage === 'covered' && world.broadcasts.length === 0 && inFlight.relay.status === 'sent' && inFlight.relay.revealTxid === 'ab'.repeat(32), 'relay: a step the relay has sent is waited on past the grace, never sent twice');
+    world.setCredit({ decided: true, minted: false, status: 'minted', mintedTxid: 'ab'.repeat(32) });
+    const minted = await ux.advance(WALLET_PUB, NOTE.nullifier);
+    ok(minted.stage === 'minted' && minted.creditedTxid === 'ab'.repeat(32), 'relay: once credited, the bridge is minted with the relay\'s reveal');
+  }
+  // declined: the page sends it from the holder's own sats
+  {
+    const { world, st } = relayWorld();
+    const ux = makeUx(world);
+    await walk(ux, world);
+    st.status = 'declined'; st.reason = 'budget';
+    const own = await ux.advance(WALLET_PUB, NOTE.nullifier, { walletPriv: WALLET_PRIV });
+    ok(own.stage === 'mint-signed' && own.relay.status === 'declined' && own.relay.reason === 'budget', 'relay: a step the relay declines is signed by the page from the holder\'s own coin');
+  }
+  // asked but never started: after the grace the page sends it
+  {
+    const { world } = relayWorld();
+    let t = 5_000_000;
+    const ux = makeUx(world, { clock: () => t });
+    await walk(ux, world);
+    t += 2 * 3600e3;
+    let threw = false;
+    try { await ux.advance(WALLET_PUB, NOTE.nullifier); } catch { threw = true; }
+    ok(!threw && world.broadcasts.length === 0, 'relay: within three hours of the proof an unstarted ask is still waited on');
+    t += 2 * 3600e3;
+    const own = await ux.advance(WALLET_PUB, NOTE.nullifier, { walletPriv: WALLET_PRIV });
+    ok(own.stage === 'mint-signed', 'relay: past the grace, an ask the relay never started is the page\'s to send');
+  }
+  // not ready: no ask, and the page's path is today's
+  {
+    const { world, asks } = relayWorld({ ready: false });
+    const ux = makeUx(world);
+    const covered = await walk(ux, world);
+    ok(asks.length === 0 && !covered.relay, 'relay: a relay that is not ready is not asked');
+    const own = await ux.advance(WALLET_PUB, NOTE.nullifier, { walletPriv: WALLET_PRIV });
+    ok(own.stage === 'mint-signed', 'relay: and the page signs the step as before');
+  }
+  // preflight: with the relay ready, no coin is asked for
+  {
+    const { world } = relayWorld();
+    world.setUtxos([]);
+    const ux = makeUx(world);
+    const pf = await ux.preflight({ walletPriv: WALLET_PRIV });
+    ok(pf.relay.ready === true && !pf.warnings.some((w) => w.name === 'funding'), 'relay: preflight asks for no coin when the relay pays the step');
+    const off = relayWorld({ ready: false });
+    off.world.setUtxos([]);
+    const pf2 = await makeUx(off.world).preflight({ walletPriv: WALLET_PRIV });
+    ok(pf2.relay.ready === false && pf2.warnings.some((w) => w.name === 'funding'), 'relay: without it, the coin is asked for as before');
+  }
+}
+
 console.log(`\n${n} crossout-ux checks passed${failures ? `, ${failures} FAILED` : ''}`);
 process.exit(failures ? 1 : 0);

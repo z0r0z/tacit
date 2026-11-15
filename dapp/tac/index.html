@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ihVWOeU2Mah1ThEKokLG+21HCuNmtkgnGCqQ7dYUwlA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-rhyRznFvseSLC2ECBjEP5de1azcT8GJwVC59Wyc8aSM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -65,7 +65,7 @@
 <link rel="modulepreload" href="/relay-outcome.js?cb=17e48a9a">
 <link rel="modulepreload" href="/btc-borrow.js?cb=739f4312">
 <link rel="modulepreload" href="/bridge-out.js?cb=9be561ae">
-<link rel="modulepreload" href="/bridge/track.js?cb=64ed74e5">
+<link rel="modulepreload" href="/bridge/track.js?cb=20103ab7">
 <link rel="modulepreload" href="/bridge/runtime.js?cb=a00e3cff">
 <link rel="modulepreload" href="/bridge-in.js?cb=708f1d37">
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
@@ -2521,7 +2521,7 @@ import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from 
 import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf, NEAR_FALL, fallToLiq, fallText, approaching, loanId, loanTag } from '/btc-borrow.js?cb=739f4312';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=9be561ae';
 import { bridgeDp, bridgeRoute, bridgeLimitEntry, markColor, runtimeSymbol, saveRuntime, NO_LIMITS } from '/bridge/runtime.js?cb=a00e3cff';
-import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, addBridgeAsset as brAddAsset, satsOut, satsBack, readBridges, nextOf as brNext, fmtAmount as brRowAmt } from '/bridge/track.js?cb=64ed74e5';
+import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, addBridgeAsset as brAddAsset, satsOut, satsBack, readBridges, nextOf as brNext, fmtAmount as brRowAmt } from '/bridge/track.js?cb=20103ab7';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=16e0e196';
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll, proofWait as brProofWait, whyText as brWhy, splitTag as brSplitTag, waitFor as brWaitFor, splitFee as brSplitFeeOf } from '/bridge-in.js?cb=708f1d37';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=42d78071';
@@ -5897,7 +5897,7 @@ const xoJournal = (pub, a) => {
   try { const l = JSON.parse(localStorage.getItem(`tacit-crossout-bridge-v1:mainnet:${pub}`) || '[]'); return Array.isArray(l) ? l.filter((r) => r?.stage && r.stage !== 'minted' && xoIs(r, a)) : []; }
   catch { return []; }
 };
-const xoWhere = (r) => ({ settling: 'being burned on Ethereum', settled: 'waiting for Bitcoin’s proof on Ethereum to see the burn', covered: 'being sent to Bitcoin', 'mint-signed': 'being sent to Bitcoin',
+const xoWhere = (r) => ({ settling: 'being burned on Ethereum', settled: 'waiting for Bitcoin’s proof on Ethereum to see the burn', covered: r.relay && !['declined', 'rejected', 'expired', 'failed'].includes(r.relay.status) ? 'being sent to Bitcoin by Tacit’s relay' : 'being sent to Bitcoin', 'mint-signed': 'being sent to Bitcoin',
   'mint-submitted': 'waiting for its Bitcoin confirmation', 'mint-confirmed': 'waiting to be credited to your Bitcoin address' })[r.stage] || 'on its way';
 const xoDue = (r) => (r.stage === 'mint-rejected' ? (xoCanRetry(r) ? 'Send it again' : 'See it') : r.settle?.claimIdVerified === false ? 'Check it again'
   : r.lastError?.fundWait ? 'Add bitcoin'
@@ -5923,6 +5923,8 @@ function keyRow(label, v, what, note, { fold = 0, id = false, qr = false } = {})
 }
 const xoFundNote = (pf, a = XA.teth) => html`${xoFundingText(pf)} Send bitcoin to it from any wallet or exchange: ${addrLine(pf.address)} <button class="link" type="button" id="${a.pre}-recheck">Check again</button>`;
 const xoProblemText = () => 'Bitcoin’s proof on Ethereum could not be read, so nothing was started. Try again in a minute.';
+// Tacit's relay sends the Bitcoin step and pays its fee (worker/src/crossout-relay.js); if it cannot when the step is due, the bridge asks for the sats then
+const XO_RELAY_NOTE = (pf) => `Tacit’s relay sends the Bitcoin step hours from now and pays its fee, so no sats are needed. If it cannot when the step is due, this page asks for about ${pf.needSats.toLocaleString('en-US')} sats from your Bitcoin address then.`;
 const xoPreflight = (ux, pub, exclude = []) => withKey(() => ux.preflight({ walletPriv: walletPriv(), exclude }), pub);
 const xbIs = (r, a) => xoIs(r, a) && (!a.mixed || r?.source?.p2tr === true);
 const xoArrivedLately = (pub, a) => {
@@ -6489,7 +6491,7 @@ function xoOut(el, status, a) {
         ${back.map(([k, v]) => html`<div class="kv"><span>${k}</span><b>${v}</b></div>`)}
         <div class="kv"><span>Relay fee</span><b>${fmt(fee, xdec(a), xdec(a))} ${a.ticker}${a.key === 'teth' ? xoUsd({ teth: fee }) : ''}</b></div>
         ${size && units + size <= held ? html`<div class="kv"><span>Relay fee to ${freeNotes(P.scan?.[a.k].notes).some((n) => BigInt(n.value) >= units + size) ? 'split a note' : 'combine notes'}</span><b>${fmt(size, xdec(a), xdec(a))} ${a.ticker}</b></div>` : ''}
-        <div class="kv"><span>Bitcoin fee, when it is sent</span><b>≈ ${pf.estSats.toLocaleString('en-US')} sats${xoUsd({ sats: pf.estSats })} from ${viewAddr(pf.address, 6)}</b></div>
+        <div class="kv"><span>Bitcoin fee, when it is sent</span><b>${pf.relay?.ready ? 'none: Tacit’s relay pays it' : html`≈ ${pf.estSats.toLocaleString('en-US')} sats${xoUsd({ sats: pf.estSats })} from ${viewAddr(pf.address, 6)}`}</b></div>
         <div class="kv"><span>Arrives</span><b>usually a few hours, sometimes up to a day</b></div>
         ${a.floor && xoLadder(fee * 2n) * 2n < units ? html`<p class="note">If the relay’s floor has moved by the time it takes the burn, its fee is ${fmt(xoLadder(fee * 2n), xdec(a), xdec(a))} ${a.ticker} and ${fmt(xoLadder(fee * 2n) - fee, xdec(a), xdec(a))} ${a.ticker} less arrives.</p>` : ''}`);
       const problem = pf.problems[0], noCoin = pf.warnings.some((w) => w.name === 'funding');
@@ -6503,7 +6505,7 @@ function xoOut(el, status, a) {
         warn(rc, xoProblemText());
       }
       for (const w of pf.warnings) { const text = xoWarn(w, pf.reflection?.lagBlocks || 0); if (text) rc.insertAdjacentHTML('beforeend', html`<p class="note">${text}</p>`.s); }
-      if (ok) rc.insertAdjacentHTML('beforeend', noCoin ? html`<p class="note">${xoFundNote(pf, a)}</p>`.s
+      if (ok) rc.insertAdjacentHTML('beforeend', pf.relay?.ready ? html`<p class="note">${XO_RELAY_NOTE(pf)}</p>`.s : noCoin ? html`<p class="note">${xoFundNote(pf, a)}</p>`.s
         : html`<p class="note">The Bitcoin step is paid from that address when it is sent, hours from now. Keep about ${pf.needSats.toLocaleString('en-US')} sats on it until then.</p>`.s);
       const rk = $(`#${p('recheck')}`, rc);
       if (rk) rk.onclick = () => { XO.pf = null; check(); };
@@ -11670,13 +11672,15 @@ const HX_BR_ASSET = { tb: 'teth', eth: 'teth', ether: 'teth', cbtc: 'cbtc', kb: 
 const HX_BR_ONBTC = { btc: CHAIN_ASSETS.tac, tb: CHAIN_ASSETS.teth, kb: CHAIN_ASSETS.cbtc, ub: CHAIN_ASSETS.cusd, ut: CHAIN_ASSETS.cusdt };
 const hxBrSteps = (sf) => BR_WAYS[HX_BR_ASSET[sf] || 'tac'][HX_BR[sf] === 'btc' ? 'out' : 'in'].steps;
 const xoLim = (a) => { const l = BR_LIMITS[a.key]?.out; return l ? { minRaw: l.min || 0n, capRaw: l.max } : null; };
-const BRX = { rate: null, confs: 24, lag: null, at: 0, p: null };
+const BRX = { rate: null, confs: 24, lag: null, at: 0, p: null, relay: false };
 const brxFresh = () => Date.now() - BRX.at < 60e3;
 function brxRead() {
   if (BRX.p || brxFresh()) return BRX.p || Promise.resolve();
   const status = fetch(`${API}/reflection/status?network=mainnet`, { signal: within(20e3) }).then((r) => (r.ok ? r.json() : null));
   return (BRX.p = Promise.all([
     esplora('/v1/fees/recommended').then((f) => { if (Number(f?.fastestFee) > 0) BRX.rate = Number(f.fastestFee); }),
+    // Tacit's relay pays a bridge's Bitcoin step while it is ready (worker/src/crossout-relay.js)
+    fetch(`${API}/crossout/relay/info?network=mainnet`, { signal: within(20e3) }).then((r) => (r.ok ? r.json() : null)).then((j) => { BRX.relay = !!j?.ready; }),
     Promise.all([status, esplora('/blocks/tip/height').catch(() => null)]).then(([s, tip]) => {
       if (Number.isInteger(s?.confirmations)) BRX.confs = s.confirmations;
       const h = Math.max(Number(tip) || 0, Number(s?.tipHeight) || 0);
@@ -11687,9 +11691,11 @@ function brxRead() {
 function brxRows(dir) {
   const sats = BRX.rate ? (dir === 'out' ? satsOut(BRX.rate) : satsBack(BRX.rate)) : null, usd = sats ? hxUsd('sats', sats) : '';
   const late = BRX.lag != null && BRX.lag > BRX.confs + 12, hrs = Math.round((late ? BRX.lag : BRX.confs) / 6);
-  return [['Bitcoin fee', sats ? `about ${sats.toLocaleString('en-US')} sats${usd ? ` (${usd})` : ''}` : dir === 'out' ? 'in sats, from your Bitcoin address' : 'in sats', '', 'Paid from your Bitcoin address'],
-    ['Time', BRX.lag == null ? 'a few hours, at most a day' : dir === 'in' ? `about ${hrs} hours${late ? ', longer than usual' : ''}` : late ? `longer than usual: the proof is about ${Math.round((BRX.lag - BRX.confs) / 6)} hours behind` : 'a few hours, at most a day', '',
-      dir === 'in' ? `${BRX.confs} Bitcoin confirmations, then the next proof` : 'Ethereum finalizes, the next proof covers it, then the Bitcoin step is sent']];
+  const fee = ['Bitcoin fee', sats ? `about ${sats.toLocaleString('en-US')} sats${usd ? ` (${usd})` : ''}` : dir === 'out' ? 'in sats, from your Bitcoin address' : 'in sats', '', 'Paid from your Bitcoin address'];
+  const time = ['Time', BRX.lag == null ? 'a few hours, at most a day' : dir === 'in' ? `about ${hrs} hours${late ? ', longer than usual' : ''}` : late ? `longer than usual: the proof is about ${Math.round((BRX.lag - BRX.confs) / 6)} hours behind` : 'a few hours, at most a day', '',
+      dir === 'in' ? `${BRX.confs} Bitcoin confirmations, then the next proof` : 'Ethereum finalizes, the next proof covers it, then the Bitcoin step is sent'];
+  // Tacit's relay pays the Bitcoin step of a bridge to Bitcoin while it is ready; if it cannot when the step is due, the page asks for the sats then
+  return [dir === 'out' && BRX.relay ? ['Bitcoin fee', 'none: Tacit’s relay pays it', '', 'Tacit’s relay sends the Bitcoin step and pays its fee, free while it lasts. If it cannot when the step is due, this page asks for sats from your Bitcoin address then.'] : fee, time];
 }
 const hxChain = () => DEVICE_CHAINS.find((c) => c.chainId === HX.chain) || DEVICE_CHAINS[0];
 const hxChainPick = () => ['pay', 'ppout'].includes(HX.mode) || (HX.tab === 'send' && HX.send === 'pp');
@@ -14753,7 +14759,7 @@ async function hxBridgeOutGo(a, units) {
       if (!sure) {
         HX.xoSure = { key, at: Date.now() };
         const warns = pf.warnings.filter((w) => w.name !== 'funding').map((w) => xoWarn(w, pf.reflection?.lagBlocks || 0)).filter(Boolean);
-        say(st, html`The Bitcoin step is sent hours from now and costs about ${pf.estSats.toLocaleString('en-US')} sats from ${viewAddr(pf.address, 6)}.${pf.warnings.some((w) => w.name === 'funding') ? html` ${xoFundingText(pf)} Send bitcoin to it from any wallet or exchange: ${addrLine(pf.address)}` : html` Keep about ${pf.needSats.toLocaleString('en-US')} sats on it until then.`}${warns.map((w) => html` ${w}`)} A bridge can’t be undone once it is burned on Ethereum. Press again to bridge ${amtText}.`);
+        say(st, pf.relay?.ready ? html`${XO_RELAY_NOTE(pf)}${warns.map((w) => html` ${w}`)} A bridge can’t be undone once it is burned on Ethereum. Press again to bridge ${amtText}.` : html`The Bitcoin step is sent hours from now and costs about ${pf.estSats.toLocaleString('en-US')} sats from ${viewAddr(pf.address, 6)}.${pf.warnings.some((w) => w.name === 'funding') ? html` ${xoFundingText(pf)} Send bitcoin to it from any wallet or exchange: ${addrLine(pf.address)}` : html` Keep about ${pf.needSats.toLocaleString('en-US')} sats on it until then.`}${warns.map((w) => html` ${w}`)} A bridge can’t be undone once it is burned on Ethereum. Press again to bridge ${amtText}.`);
         return;
       }
       HX.xoSure = null;

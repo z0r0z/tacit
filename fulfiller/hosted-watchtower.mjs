@@ -18,6 +18,11 @@
 // WATCHTOWER_CLAIM_TIMEOUT_SEC, WATCHTOWER_MAX_BID_PRICE_SATS (pilot cap, 0=off),
 // WATCHTOWER_RETURN_TO_OWNER (0 turns off the return of a finished bid's wallet to its owner),
 // DATABASE_URL (Postgres; in-memory if unset), PORT (health endpoint).
+//
+// It also runs Tacit's relay for the Bitcoin step of a bridge to Bitcoin (fulfiller/crossout-relay.mjs) when CROSSOUT_RELAY_SK is set:
+// the relay's own Bitcoin key (hex64; its P2WPKH address is funded with the sats the steps spend), with CROSSOUT_RELAY_DAILY_SATS
+// (the day's budget), CROSSOUT_RELAY_MAX_FEE_RATE (sat/vB it waits above), CROSSOUT_RELAY_PER_KEY_DAILY (steps for one key a day),
+// CROSSOUT_RELAY_ESPLORA and CROSSOUT_RELAY_ETH_RPCS (comma-separated).
 
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
@@ -58,6 +63,44 @@ const driver = process.env.DATABASE_URL
   ? await (await import('../server/driver-pg.mjs')).createPgDriver(process.env.DATABASE_URL)
   : createMemDriver();
 const kv = createKVNamespace(driver, 'REGISTRY_KV');
+
+// ---- Tacit's relay for the Bitcoin step of a bridge to Bitcoin: on when its key is set ----
+const RELAY_SK_HEX = (process.env.CROSSOUT_RELAY_SK || '').toLowerCase().trim();
+delete process.env.CROSSOUT_RELAY_SK;
+let crossoutRelay = null, relayLast = null;
+if (RELAY_SK_HEX) {
+  if (!/^[0-9a-f]{64}$/.test(RELAY_SK_HEX)) { console.error('CROSSOUT_RELAY_SK must be 64 hex chars'); process.exit(1); }
+  const { makeCrossoutRelay, makeEsplora } = await import('./crossout-relay.mjs');
+  const { makeBtcWallet } = await import('../dapp/bitcoin-taproot-wallet.js');
+  const { makeCrossoutMintReveal } = await import('../dapp/crossout-mint-reveal.js');
+  const { CONFIDENTIAL_POOL_DEPLOYMENTS } = await import('../dapp/confidential-crossout-consumer.js');
+  const deps = await import('../dapp/vendor/tacit-deps.min.js');
+  const esplora = makeEsplora((process.env.CROSSOUT_RELAY_ESPLORA || (NETWORK === 'mainnet' ? 'https://mempool.space/api' : 'https://mempool.space/signet/api')).replace(/\/+$/, ''));
+  const prims = makeBtcWallet({ priv: hexToBytes(RELAY_SK_HEX), hrp: NETWORK === 'mainnet' ? 'bc' : 'tb', fetchUtxos: async () => [], broadcastTx: esplora.broadcast, fetchFeeRate: esplora.feeRate }).prims;
+  const rpcs = (process.env.CROSSOUT_RELAY_ETH_RPCS || 'https://ethereum-rpc.publicnode.com,https://eth.merkle.io,https://rpc.mevblocker.io').split(',').map((u) => u.trim()).filter(Boolean);
+  const ethRpc = async (method, params) => {
+    for (const u of rpcs) {
+      try {
+        const r = await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(10e3) });
+        const j = r.ok ? await r.json() : null;
+        if (j && 'result' in j) return j.result;
+      } catch {}
+    }
+    throw new Error('no Ethereum RPC answered');
+  };
+  const api = async (path) => {
+    const r = await fetch(`${API_BASE}${path}${path.includes('?') ? '&' : '?'}network=${NETWORK}`, { signal: AbortSignal.timeout(15e3) });
+    return r.ok ? r.json() : null;
+  };
+  const pool = CONFIDENTIAL_POOL_DEPLOYMENTS[NETWORK]?.pool;
+  if (!pool) { console.error(`no confidential pool on ${NETWORK}: the crossout relay cannot run`); process.exit(1); }
+  crossoutRelay = makeCrossoutRelay({
+    kv, network: NETWORK, pool, prims, mintReveal: makeCrossoutMintReveal({ secp: deps.secp }), keccak256: deps.keccak_256, api, ethRpc, esplora,
+    dailySats: Number(process.env.CROSSOUT_RELAY_DAILY_SATS || 50000), maxFeeRate: Number(process.env.CROSSOUT_RELAY_MAX_FEE_RATE || 25),
+    perDestDaily: Number(process.env.CROSSOUT_RELAY_PER_KEY_DAILY || 5), log,
+  });
+  log('info', 'crossout relay on', { address: crossoutRelay.address });
+}
 const KEY_PREFIX = `wtbid:${NETWORK}:`;
 
 // ---- jsdom + dapp (network set before load so NET initializes) ----
@@ -140,6 +183,7 @@ createServer((req, res) => {
     res.end(JSON.stringify({
       ok: true, network: NETWORK, service_pub: servicePubFromSk(SERVICE_SK),
       last_cycle_at: lastCycleAt, active_bids: lastActive, last_error: lastError,
+      crossout_relay: crossoutRelay ? { address: crossoutRelay.address, last: relayLast } : null,
     }));
     return;
   }
@@ -201,6 +245,10 @@ log('info', 'orchestrator active', { interval_sec: TICK_SEC });
 while (!shutdown) {
   try { const n = await cycle(); log('info', 'cycle complete', { active_bids: n }); lastError = null; }
   catch (e) { log('error', 'cycle threw', { err: e.message }); lastError = e.message; }
+  if (crossoutRelay) {
+    try { relayLast = { at: new Date().toISOString(), ...(await crossoutRelay.tick()) }; if (relayLast.open || relayLast.sent) log('info', 'crossout relay tick', relayLast); }
+    catch (e) { relayLast = { at: new Date().toISOString(), error: e.message }; log('error', 'crossout relay tick threw', { err: e.message }); }
+  }
   for (let s = 0; s < TICK_SEC && !shutdown; s++) await new Promise((r) => setTimeout(r, 1000));
 }
 log('info', 'shutdown clean');

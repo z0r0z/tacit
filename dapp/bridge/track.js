@@ -170,8 +170,10 @@ export function rowNote(row) {
 
 const OUT_AT = { settling: 0, settled: 1, covered: 2, 'mint-signed': 2, 'mint-submitted': 3, 'mint-confirmed': 3, 'mint-rejected': 3 };
 
+// A covered bridge whose Bitcoin step Tacit's relay has (asked, sending or sent) is not the holder's to send: nothing is due.
+export const relaySends = (r) => !!r.relay && !['declined', 'rejected', 'expired', 'failed'].includes(r.relay.status) && !r.lastError;
 export function outDue(r) {
-  if (r.stage === 'covered') return r.lastError?.fundWait ? 'Add bitcoin' : 'Send to Bitcoin';
+  if (r.stage === 'covered') return relaySends(r) ? '' : r.lastError?.fundWait ? 'Add bitcoin' : 'Send to Bitcoin';
   if (r.stage === 'mint-rejected') return r.settle?.claimIdVerified !== false && (r.attempts || []).length + 1 < 3 ? 'Send it again' : 'Look at it';
   if (r.stage === 'settled' && r.settle && r.settle.claimIdVerified === false) return 'Look at it';
   if ((r.stage === 'mint-signed' || r.stage === 'mint-submitted') && r.lastError && (r.errorCount || 0) >= 6 && !r.feeWait) return 'Try again';

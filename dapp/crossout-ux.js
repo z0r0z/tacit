@@ -53,7 +53,9 @@ export function makeCrossoutUx(deps) {
     secp, hmac, sha256, crossOut, pool, rpc, evmLog, tacAssetId, assets: assetsIn = null, chain, postHint = null, feeCeiling = CROSSOUT_MINT_FEE_CEILING, poolAddress = null, deployBlock = 0, nullifierSpent = null,
     // a bridge that arrives ready for Ethereum: Tacit's transfer codec (adaptor-btc-tx.js tacitKit) and the pool's chain binding
     bindKit = null, bindTarget = null,
+    clock = null,                                  // a test's clock; the page's is Date.now
   } = deps || {};
+  const now = clock || (() => Date.now());
   for (const [k, v] of Object.entries({ workerBase, secp, hmac, sha256, crossOut, pool, rpc, evmLog, chain })) {
     if (v == null) throw new Error(`crossout-ux: deps.${k} required`);
   }
@@ -308,8 +310,9 @@ export function makeCrossoutUx(deps) {
       if (coin) { haveSats = Number(coin.value) || 0; confirmed = !coin.status || coin.status.confirmed !== false; }
     } catch (e) { warnings.push({ name: 'funding-unreadable', detail: String((e && e.message) || e) }); read = false; }
     // The coin pays the Bitcoin step, hours after the burn, so a bridge may start without it: these are warnings, not problems, and
-    // the burn's row asks for the sats again when the step is due.
-    if (read) {
+    // the burn's row asks for the sats again when the step is due. With the relay ready, the relay pays it, and no coin is asked for.
+    const relay = await relayInfo();
+    if (read && !relay?.ready) {
       if (haveSats < needSats) warnings.push({ name: 'funding', detail: haveSats ? `${haveSats} sats in the ${pending ? 'next' : 'largest'} free coin` : 'no free coin' });
       else if (!confirmed) warnings.push({ name: 'funding-unconfirmed', detail: `${haveSats} sats, not yet confirmed` });
     }
@@ -326,7 +329,44 @@ export function makeCrossoutUx(deps) {
       if (reflection.lagBlocks > 144) warnings.push({ name: 'reflection-behind', detail: `${reflection.lagBlocks} Bitcoin blocks` });
       if (coverage.behindBlocks == null || coverage.behindBlocks > 1800) warnings.push({ name: 'coverage-behind', detail: coverage.behindBlocks == null ? 'no view yet' : `${coverage.behindBlocks} Ethereum blocks` });
     } catch (e) { problems.push({ name: 'proof-unreadable', detail: String((e && e.message) || e) }); }
-    return { ok: problems.length === 0, problems, warnings, feeRate: rate, needSats, estSats, haveSats, pending, address, reflection, coverage };
+    return { ok: problems.length === 0, problems, warnings, feeRate: rate, needSats, estSats, haveSats, pending, address, reflection, coverage, relay: { ready: !!relay?.ready } };
+  }
+
+  // Tacit's relay sends the Bitcoin step from its own sats while it can (worker/src/crossout-relay.js: any coin may pay for it; the
+  // owner is read from the reveal's output only). The page asks once the burn is settled and the relay says it is ready, and waits on
+  // it; a step the relay declines (its budget, its coins, a limit), or one it has not started RELAY_GRACE_MS after the proof covers the
+  // burn, is the page's to send from the holder's own sats, as it always was.
+  const RELAY_GRACE_MS = 3 * 3600e3, RELAY_PAGE_SENDS = new Set(['declined', 'rejected', 'expired', 'failed']);
+  const RELAY_BUSY = new Set(['signing', 'sent', 'minted', 'elsewhere']);
+  let relayInfoAt = 0, relayInfoV = null;
+  async function relayInfo() {
+    if (now() - relayInfoAt < 60e3) return relayInfoV;
+    relayInfoAt = now();
+    try { const r = await callWorker('GET', '/crossout/relay/info'); relayInfoV = r && !r.error ? r : null; } catch { relayInfoV = null; }
+    return relayInfoV;
+  }
+  async function relayAsk(rec) {
+    if (rec.relay || !rec.destXonly || !rec.settle || !rec.settle.claimIdVerified || !rec.settle.cx) return rec;
+    if (!(await relayInfo())?.ready) return rec;
+    let r = null;
+    try {
+      r = await callWorker('POST', '/crossout/relay', { claimId: rec.settle.claimId, assetId: rec.source.assetId, cx: rec.settle.cx, cy: rec.settle.cy, destXonly: rec.destXonly, ethBlock: rec.settle.ethBlock });
+    } catch { return rec; }
+    if (!r || r.error || !r.status) return rec;      // not taken yet (the claim not read yet, or the relay off): asked again on the next step
+    return putRecord({ ...rec, relay: { status: r.status, askedAt: now() } });
+  }
+  // [true, rec] while the step is the relay's (asked and within the grace, or in flight); [false, rec] when it is the page's.
+  async function relayHolds(rec) {
+    if (!rec.relay || RELAY_PAGE_SENDS.has(rec.relay.status)) return [false, rec];
+    let r = null;
+    try { r = await callWorker('GET', `/crossout/relay?claim=${stripHex(rec.settle.claimId)}`); } catch {}
+    const st = r && !r.error && r.status ? r.status : rec.relay.status;
+    if (st !== rec.relay.status || (r && r.revealTxid && r.revealTxid !== rec.relay.revealTxid)) {
+      rec = putRecord({ ...rec, relay: { ...rec.relay, status: st, ...(r && r.revealTxid ? { revealTxid: r.revealTxid } : {}), ...(r && r.reason ? { reason: r.reason } : {}) } });
+    }
+    if (RELAY_PAGE_SENDS.has(st)) return [false, rec];
+    if (RELAY_BUSY.has(st)) return [true, rec];
+    return [now() - Number(rec.coveredAt || now()) < RELAY_GRACE_MS, rec];
   }
 
   // A claim already minted on Bitcoin by another pair (another browser's copy of the same bridge, or one signed again) is not minted
@@ -346,12 +386,15 @@ export function makeCrossoutUx(deps) {
       if (!rec.settle.claimIdVerified) {
         throw new Error(`crossout-ux: claimId not corroborated against the CrossOutRecorded event (${rec.settle.claimIdNote || 'unknown reason'}) — this bridge cannot proceed safely; contact support with this record's id`);
       }
+      rec = await relayAsk(rec);
       const covers = await callWorker('GET', `/reflection/eth-state/covers?block=${rec.settle.ethBlock}`);
       if (!covers || covers.covered !== true) return rec;
       return putRecord({ ...rec, stage: 'covered', coveredAt: now() });
     },
     covered: async (rec, { walletPriv, allowHighFee }) => {
       { const done = await mintedElsewhere(rec); if (done) return done; }
+      rec = await relayAsk(rec);
+      { const [relays, r] = await relayHolds(rec); if (relays) return r; rec = r; }
       if (!walletPriv) throw new Error('crossout-ux: this stage needs the wallet key');
       const P = freshPrims(walletPriv);
       const feeRate = await chain.getFeeRate('priority');
@@ -646,5 +689,5 @@ export function makeCrossoutUx(deps) {
     return out;
   }
 
-  return { NOTE_MAX_RAW, network, assets: ASSETS, assetOf, eligibleNotes, isReserved, isFundingReserved, preflight, start, advance, bindDue, bindNow, resign, retryRejected, cancelIntent, recoverFromEthTx, recoverFromKey, resumeAll, list, abandon };
+  return { NOTE_MAX_RAW, relayInfo, network, assets: ASSETS, assetOf, eligibleNotes, isReserved, isFundingReserved, preflight, start, advance, bindDue, bindNow, resign, retryRejected, cancelIntent, recoverFromEthTx, recoverFromKey, resumeAll, list, abandon };
 }
