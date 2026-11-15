@@ -26,10 +26,15 @@ export function makeCrossoutRelay({
   const num = async (k) => Number((await kv.get(k)) || 0);
   const bump = async (k, by) => kv.put(k, String((await num(k)) + by), { expiration: Math.floor(now() / 1e3) + 3 * DAY_S });
 
-  // The relay's own coins: confirmed, not already promised to a pair it signed and has not seen land.
-  async function freeCoins(held) {
-    const utxos = (await esplora.utxos(address)) || [];
-    return utxos.filter((u) => u.status?.confirmed && !held.has(`${u.txid}:${u.vout}`)).sort((a, b) => b.value - a.value);
+  // The relay's own coins: confirmed, not already promised to a pair it signed or sent and has not seen land. A read that gives no list is an
+  // error, never "no coins" (it would decline a step the relay could pay).
+  async function ownCoins() {
+    const utxos = await esplora.utxos(address);
+    if (!Array.isArray(utxos)) throw new Error('crossout-relay: the relay\'s coins could not be read');
+    return utxos;
+  }
+  async function freeCoins(held, all = null) {
+    return (all || await ownCoins()).filter((u) => u.status?.confirmed && !held.has(`${u.txid}:${u.vout}`)).sort((a, b) => b.value - a.value);
   }
 
   async function opens() {
@@ -37,7 +42,8 @@ export function makeCrossoutRelay({
     do {
       const page = await kv.list({ prefix: relayPrefix(network), cursor });
       cursor = page.list_complete ? null : page.cursor;
-      for (const k of page.keys) { const r = await kv.get(k.name, 'json'); if (r && OPEN_STATES.has(r.status)) out.push(r); }
+      // and a pair given up as refused, whose coin may since have been taken: looked at again, so its claim can be sent with another coin
+      for (const k of page.keys) { const r = await kv.get(k.name, 'json'); if (r && (OPEN_STATES.has(r.status) || (r.status === 'failed' && r.reason === 'refused' && r.commitTxid))) out.push(r); }
     } while (cursor);
     return out.sort((a, b) => (a.askedAt || 0) - (b.askedAt || 0));
   }
@@ -68,12 +74,27 @@ export function makeCrossoutRelay({
     if (seen === undefined) return rec;                                // Bitcoin could not be read: next tick
     if (seen && seen.confirmed) return rec.status === 'sent' ? rec : put({ ...rec, status: 'sent', sentAt: rec.sentAt || now() });
     if (seen) return rec.status === 'sent' ? rec : put({ ...rec, status: 'sent', sentAt: now() });
-    // not on Bitcoin (never sent, or dropped): send it again, the same pair
+    // not on Bitcoin (never sent, or dropped): if its coin has gone to another transaction this pair can never land, so the claim goes back to
+    // be signed with another coin (no second mint is possible: this pair's commit cannot exist); else the same pair is sent again
+    if (await coinTaken(rec)) return requeue(rec);
+    if (rec.status === 'failed') return rec;
     const refused = await send(rec);
     if (!refused.length) return put({ ...rec, status: 'sent', sentAt: rec.sentAt || now(), tries: (rec.tries || 0) + 1 });
     const tries = (rec.tries || 0) + 1;
     log('warn', 'crossout relay: Bitcoin refused the pair', { claim: rec.claimId, err: refused[0].slice(0, 160), tries });
+    if (await coinTaken(rec)) return requeue(rec);
     return put({ ...rec, tries, lastError: refused[0].slice(0, 200), ...(tries >= SEND_TRIES ? { status: 'failed', reason: 'refused' } : {}) });
+  }
+  // the pair's funding coin is spent, and not by its own commit
+  async function coinTaken(rec) {
+    if (!rec.fundingUtxo || !esplora.outspend) return false;
+    const o = await esplora.outspend(rec.fundingUtxo.txid, rec.fundingUtxo.vout).catch(() => null);
+    return !!(o && o.spent && o.txid && String(o.txid).toLowerCase() !== String(rec.commitTxid || '').toLowerCase());
+  }
+  function requeue(rec) {
+    log('warn', 'crossout relay: the pair\'s coin went elsewhere; the claim is signed again with another coin', { claim: rec.claimId, dead: rec.commitTxid });
+    return put({ ...rec, status: 'queued', reason: null, note: 'coin-taken', commitHex: null, revealHex: null, commitTxid: null, revealTxid: null, fundingUtxo: null,
+      tries: 0, lastError: null, retakes: (rec.retakes || 0) + 1, deadCommits: [...(rec.deadCommits || []), rec.commitTxid].filter(Boolean) });
   }
 
   async function consider(rec, held, spent, rate) {
@@ -89,8 +110,13 @@ export function makeCrossoutRelay({
     if (spent.today + need > dailySats) return put({ ...rec, status: 'declined', reason: 'budget' });
     const day = dayOf(now());
     if ((await num(relayDestKey(network, day, rec.destXonly))) >= perDestDaily) return put({ ...rec, status: 'declined', reason: 'limit' });
-    const coin = (await freeCoins(held)).find((u) => u.value >= need + CHANGE_FLOOR) || (await freeCoins(held)).find((u) => u.value >= need);
-    if (!coin) return put({ ...rec, status: 'declined', reason: 'funds' });
+    const all = await ownCoins(), free = await freeCoins(held, all);
+    const coin = free.find((u) => u.value >= need + CHANGE_FLOOR) || free.find((u) => u.value >= need);
+    if (!coin) {
+      // a coin big enough that is only waiting for its confirmation (the last step's change): wait for it, the page's grace covers the block
+      if (all.some((u) => !u.status?.confirmed && u.value >= need)) return rec.note === 'coin' && rec.status === 'waiting' ? rec : put({ ...rec, status: 'waiting', note: 'coin' });
+      return put({ ...rec, status: 'declined', reason: 'funds' });
+    }
     const built = mintReveal.buildCrossoutMintTxs({
       prims, assetId: '0x' + rec.assetId, claimId: '0x' + rec.claimId, cx: '0x' + rec.cx, cy: '0x' + rec.cy, destXonly: rec.destXonly,
       fundingUtxo: { txid: coin.txid, vout: coin.vout, value: coin.value }, feeRate: rate,
@@ -111,7 +137,7 @@ export function makeCrossoutRelay({
   async function tick() {
     const day = dayOf(now()), spent = { today: await num(relaySpentKey(network, day)) };
     const list = await opens();
-    const held = new Set(list.filter((r) => r.status === 'signing' && r.fundingUtxo).map((r) => `${r.fundingUtxo.txid}:${r.fundingUtxo.vout}`));
+    const held = new Set(list.filter((r) => (r.status === 'signing' || r.status === 'sent') && r.fundingUtxo).map((r) => `${r.fundingUtxo.txid}:${r.fundingUtxo.vout}`));
     let rate = 0;
     try { rate = Math.max(1, Math.ceil(Number(await esplora.feeRate()) || 0)); } catch {}
     let coins = [], balance = null;
@@ -122,7 +148,7 @@ export function makeCrossoutRelay({
     let sent = 0;
     for (const rec of list) {
       try {
-        if (rec.status === 'signing' || rec.status === 'sent') { await follow(rec); continue; }
+        if (rec.status === 'signing' || rec.status === 'sent' || rec.status === 'failed') { await follow(rec); continue; }
         if (sent >= maxPerTick) continue;
         const r = await consider(rec, held, spent, rate);
         if (r && (r.status === 'signing' || r.status === 'sent') && rec.status !== r.status) sent++;
@@ -148,6 +174,8 @@ export function makeEsplora({ read = 'https://mempool.space/api', query = '', ba
   const get = async (p) => { let last; for (const s of sources) { try { return await get1(s, p); } catch (e) { last = e; } } throw last; };
   return {
     utxos: (addr) => get(`/address/${addr}/utxo`),
+    // { spent, txid } of an output: which transaction spent it, if any
+    outspend: (txid, vout) => get(`/tx/${txid}/outspend/${vout}`),
     // mempool.space's recommended rates, or an Esplora's estimates (Blockstream has only those): the rate for about three blocks
     feeRate: async () => {
       try { const f = await get('/v1/fees/recommended'); if (f && (f.halfHourFee || f.fastestFee)) return f.halfHourFee || f.fastestFee; } catch {}

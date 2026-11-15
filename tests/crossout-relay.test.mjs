@@ -77,13 +77,14 @@ const relayPriv = new Uint8Array(32).fill(3);
 const prims = makeBtcWallet({ priv: relayPriv, hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => '', fetchFeeRate: async () => 2 }).prims;
 const mintReveal = makeCrossoutMintReveal({ secp });
 function rig({ coins = [{ txid: 'f1'.repeat(32), vout: 0, value: 20_000, status: { confirmed: true } }], rate = 2, covered = true, minted = null, claims = [ASK], ...opts } = {}) {
-  const kv = memKv(), sent = [], onChain = new Map();
+  const kv = memKv(), sent = [], onChain = new Map(), spends = new Map(), refuse = new Set();
   let t = 1_700_000_000_000;
   const esplora = {
-    utxos: async () => coins,
+    utxos: async () => (typeof coins === 'function' ? coins() : coins),
+    outspend: async (txid, vout) => spends.get(`${txid}:${vout}`) || { spent: false },
     feeRate: async () => rate,
     txStatus: async (txid) => (onChain.has(txid) ? onChain.get(txid) : null),
-    broadcast: async (h) => { sent.push(h); return 'ok'; },
+    broadcast: async (h) => { sent.push(h); if (refuse.has(h)) throw new Error('bad-txns-inputs-missingorspent'); return 'ok'; },
   };
   const state = { covered, minted };
   const api = async (p) => {
@@ -94,7 +95,7 @@ function rig({ coins = [{ txid: 'f1'.repeat(32), vout: 0, value: 20_000, status:
   const relay = makeCrossoutRelay({ kv, network: 'mainnet', pool: POOL, prims, mintReveal, keccak256: keccak_256, api, ethRpc: chainFor({ claims }), esplora, now: () => t, ...opts });
   const ask = async (a = ASK) => kv.put(relayKey('mainnet', a.claimId), JSON.stringify({ ...a, status: 'queued', askedAt: t }));
   const rec = async (c = ASK.claimId) => kv.get(relayKey('mainnet', c), 'json');
-  return { kv, relay, sent, onChain, state, ask, rec, adv: (ms) => { t += ms; } };
+  return { kv, relay, sent, onChain, state, ask, rec, spends, refuse, adv: (ms) => { t += ms; } };
 }
 {
   const r = rig();
@@ -178,6 +179,66 @@ function rig({ coins = [{ txid: 'f1'.repeat(32), vout: 0, value: 20_000, status:
   r.state.covered = false;
   await r.relay.tick();
   ok((await r.rec()).status === 'expired', 'an ask that never became sendable is let go after three days');
+}
+
+// ---- keeping up: a pair whose coin was taken is signed again with another coin; a failed one too; nobody declined for a read or a wait ----
+{
+  // two coins; the first pair is signed on the bigger one, then that coin goes to another transaction (11-15: a pair marked sent before it was
+  // ever broadcast left its coin unheld, and a later claim was signed on it)
+  const A = { txid: 'a1'.repeat(32), vout: 0, value: 30_000, status: { confirmed: true } }, B = { txid: 'b1'.repeat(32), vout: 0, value: 20_000, status: { confirmed: true } };
+  let coins = [A, B];
+  const r = rig({ coins: () => coins });
+  await r.ask();
+  await r.relay.tick();
+  const first = await r.rec();
+  ok(first.status === 'sent' && first.fundingUtxo.txid === A.txid, 'the pair is signed on the bigger coin and sent');
+  // Bitcoin never took it (it was dropped), and the coin is now spent by another transaction
+  r.spends.set(`${A.txid}:0`, { spent: true, txid: 'cc'.repeat(32) });
+  coins = [B];
+  r.refuse.add(first.commitHex);
+  await r.relay.tick();
+  const back = await r.rec();
+  ok(back.status === 'queued' && back.note === 'coin-taken' && !back.commitHex && back.deadCommits[0] === first.commitTxid, 'a pair whose coin went elsewhere is dropped, and its claim goes back to be signed');
+  await r.relay.tick();
+  const again = await r.rec();
+  ok(again.status === 'sent' && again.fundingUtxo.txid === B.txid && again.revealTxid !== first.revealTxid, 'and the next tick signs and sends it with the other coin');
+  ok(again.revealHex.includes('225120' + destXonly), 'still paying the holder\'s key');
+}
+{
+  // a record given up as refused (the old relay's end state) recovers once its coin is seen taken
+  const C = { txid: 'c2'.repeat(32), vout: 0, value: 20_000, status: { confirmed: true } };
+  const r = rig({ coins: [C] });
+  await r.kv.put(relayKey('mainnet', ASK.claimId), JSON.stringify({ ...ASK, status: 'failed', reason: 'refused', askedAt: 1_700_000_000_000, commitTxid: 'dd'.repeat(32),
+    revealTxid: 'ee'.repeat(32), commitHex: '00', revealHex: '00', fundingUtxo: { txid: 'ff'.repeat(32), vout: 1, value: 39_740 } }));
+  await r.relay.tick();
+  ok((await r.rec()).status === 'failed', 'a failed pair whose coin is still unspent is left as it is (it is not sent again forever)');
+  r.spends.set(`${'ff'.repeat(32)}:1`, { spent: true, txid: '99'.repeat(32) });
+  await r.relay.tick();
+  ok((await r.rec()).status === 'queued', 'once its coin is seen spent elsewhere, the claim is queued again');
+  await r.relay.tick();
+  ok((await r.rec()).status === 'sent' && (await r.rec()).fundingUtxo.txid === C.txid, 'and sent with a coin the relay has');
+  r.state.minted = 'ab'.repeat(32);
+  const r2 = rig({ coins: [C], minted: 'ab'.repeat(32) });
+  await r2.kv.put(relayKey('mainnet', ASK.claimId), JSON.stringify({ ...ASK, status: 'failed', reason: 'refused', askedAt: 1_700_000_000_000, commitTxid: 'dd'.repeat(32), revealTxid: 'ee'.repeat(32), commitHex: '00', revealHex: '00', fundingUtxo: { txid: 'ff'.repeat(32), vout: 1, value: 39_740 } }));
+  await r2.relay.tick();
+  ok((await r2.rec()).status === 'elsewhere' && r2.sent.length === 0, 'a failed claim the holder minted meanwhile is left: no second pair');
+}
+{
+  // the only coin big enough is the last step's change, waiting for its block: the ask waits, it is not declined
+  const r = rig({ coins: [{ txid: '1c'.repeat(32), vout: 1, value: 37_980, status: { confirmed: false } }] });
+  await r.ask();
+  await r.relay.tick();
+  ok((await r.rec()).status === 'waiting' && (await r.rec()).note === 'coin' && r.sent.length === 0, 'a coin waiting for its confirmation: the ask waits for it');
+  // a read that gives no list: nobody is declined for it
+  const r2 = rig({ coins: () => null });
+  await r2.ask();
+  await r2.relay.tick();
+  ok((await r2.rec()).status === 'queued', 'an unreadable coin list declines nobody');
+  // truly none: declined, and the page sends it
+  const r3 = rig({ coins: [] });
+  await r3.ask();
+  await r3.relay.tick();
+  ok((await r3.rec()).status === 'declined' && (await r3.rec()).reason === 'funds', 'no coin at all: declined (the holder\'s page sends it)');
 }
 
 // ---- the chain: reads through the API's proxy, broadcasts to explorers in turn ----
