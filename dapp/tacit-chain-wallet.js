@@ -88,7 +88,9 @@ export const migrateOp = (to, note) => {
 };
 export const migrationItem = (to, note, value) => sha256(concatBytes(te.encode('tacit-block-migrate-v1'), bytes(to, 20, 'successor'), bytes(note, 32, 'note'), be(value, 8)));
 
-export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mainnet' }) {
+// `openMany` (optional): opens a page of memos off the page's thread (confidential-chain-memo-workers.js): (memos, secret) -> one entry per memo, null where it is not
+// the key's, { value, s } where it is, undefined where it could not say (that one is opened here). Without it, or when it fails, every memo is opened here, as it always was.
+export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mainnet', openMany = null }) {
   const Z = makeBtcPoolZk({ poseidon });
   const assetF = BigInt(asset);
   const chainB = bytes(chain, 32, 'chain');
@@ -252,8 +254,11 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
     for (;;) {
       const page = await leader.notes(next, 200);
       if (record && treeLeaves.length === next) { for (const leaf of page.leaves) treeLeaves.push(BigInt(leaf)); built = null; }
+      const memos = page.leaves.map((_, i) => bytes(page.memos[i], MEMO_LEN, 'memo'));
+      let said = null;
+      if (openMany && memos.length) { try { said = await openMany(memos, k.memo.secret); } catch { said = null; } }
       page.leaves.forEach((leaf, i) => {
-        const opened = openMemo(bytes(page.memos[i], MEMO_LEN, 'memo'), k.memo.secret);
+        const opened = said && said[i] !== undefined ? said[i] : openMemo(memos[i], k.memo.secret);
         if (!opened) return;
         const own = Z.ownedKeys(k.zk, opened.s);
         const mineLeaf = Z.leafOf(assetF, opened.value, own.npk, own.rho);

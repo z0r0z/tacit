@@ -1,6 +1,7 @@
 import { sha256, keccak_256, hmac, concatBytes, secp } from './vendor/tacit-deps.min.js';
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from './vendor/tacit-poseidon.min.js';
 import { makeChainWallet, hopOp, poolOp, worthOf, sharesFor, sharesToPay, poolShare } from './tacit-chain-wallet.js';
+import { makeChainMemoWorkers } from './confidential-chain-memo-workers.js';
 
 export const UNIT = 10n ** 10n;
 const te = new TextEncoder();
@@ -78,7 +79,10 @@ export async function chainStatus({ cfg, rpcCall, fetchImpl = (...a) => globalTh
   return { height: Number(height), lastLanded: Number(lastLanded), pool, shares, leader };
 }
 
-export function makeChainClient({ cfg, rpcCall, priv, system, route = null, routeMs = 4000, storage = globalThis.localStorage, fetchImpl = (...a) => globalThis.fetch(...a) }) {
+// opens the chain's memos in workers when the page has them (the wallet opens them itself otherwise); one set of workers for the page
+const sharedMemoWorkers = makeChainMemoWorkers();
+
+export function makeChainClient({ cfg, rpcCall, priv, system, route = null, routeMs = 4000, storage = globalThis.localStorage, fetchImpl = (...a) => globalThis.fetch(...a), memoWorkers = sharedMemoWorkers }) {
   if (!cfg) throw new Error('tacit chain: not deployed');
   const call = async (sig, args = '') => strip(await rpcCall('eth_call', [{ to: cfg.blocks, data: '0x' + sel(sig) + args }, 'latest']));
   const api = async (method, path, body, base = cfg.leader) => {
@@ -139,7 +143,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
   async function ready() {
     if (w) return;
     const [chain, asset] = await Promise.all([call('CHAIN()'), call('TAC_ASSET()')]);
-    w = makeChainWallet({ poseidon, prover: { prove: async (i, o) => (await proverP()).prove(i, o) }, chain: '0x' + chain, asset: BigInt('0x' + asset) });
+    w = makeChainWallet({ poseidon, prover: { prove: async (i, o) => (await proverP()).prove(i, o) }, chain: '0x' + chain, asset: BigInt('0x' + asset), openMany: memoWorkers });
     me = w.keys(chainSeed(priv));
     assetHex = asset.padStart(64, '0');
     load();
