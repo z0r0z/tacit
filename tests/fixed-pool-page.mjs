@@ -216,6 +216,9 @@ await test('a note is withdrawn: its deposits read, the tree built and proved in
     assert.equal(await page.locator('#wgo').isDisabled(), true, 'needs a recipient');
     await page.fill('#wto', '0x000000000000000000000000000000000000dEaD');
     assert.equal(await page.locator('#wgo').isDisabled(), false);
+    const kohaku = page.locator('#kohaku');
+    assert.equal(await kohaku.getAttribute('href'), 'https://github.com/ethereum/kohaku');
+    assert.match(await kohaku.getAttribute('rel'), /noopener/);
     await shot(page, 'withdraw-ready');
     await page.click('#wprep'); // prove only
     await page.waitForSelector('#wout:not([hidden])', { timeout: 120000 });
