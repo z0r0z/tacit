@@ -34,6 +34,7 @@ import { findCarrier, isRevert } from './lib/landed-elsewhere.js';
 import { cbtcMintBlocker } from './lib/cbtc-mint-precheck.js';
 import { cdpBlocker } from './lib/cdp-precheck.js';
 import { bridgeMintBlocker } from './lib/bridge-mint-precheck.js';
+import { bondBlocker } from './lib/farm-bond-precheck.js';
 import { renewStaleMint } from './lib/bridge-mint-renew.js';
 import { settleWallet, settleWallets, relayWallet, publicClient, ethUsdPrice, POOL, POOL_ABI, ROUTER } from './lib/chain.js';
 import { ledger } from './lib/income-ledger.js';
@@ -556,10 +557,11 @@ async function skipUnlanded(job) {
 }
 
 // A cBTC mint the pool's lock gate would refuse, or a cUSD loan or top-up the engine would, or a bridge mint built on a burn root
-// the pool has moved past, can only revert, so it is acked failed without paying for a proof, with the reason.
+// the pool has moved past, or a farm entry bonded into a farm that does not hold the pool's shares, can only revert, so it is acked failed without paying for a proof, with the reason.
 const GATED = {
   cbtcmint: ['cBTC mint', cbtcMintBlocker], cdpmint: ['cUSD loan', cdpBlocker], cdptopup: ['collateral top-up', cdpBlocker],
   bridgemint: ['bridge mint', bridgeMintBlocker], bridgestealthmint: ['bridge mint', bridgeMintBlocker],
+  lpbond: ['farm entry', bondBlocker],
 };
 async function skipBlockedMint(job) {
   // A bridge mint on a burn root the pool has moved past is made current by the API first (the holder's half is kept), so it is proved on

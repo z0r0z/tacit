@@ -37,9 +37,9 @@ const WALLET = '0x2c7536E3605D9C16a7a3D7b1898e529396a65c23';
 // the stand-in page: the cards, and the few things the Pay page would give them
 const HARNESS = `<!doctype html><meta charset="utf-8"><title>cards</title>
 <style>body{font:14px monospace;max-width:520px;margin:20px auto} .btn{display:block;width:100%;padding:10px;margin-top:8px} .kv{display:flex;justify-content:space-between} .note{color:#555} .link{background:none;border:0;text-decoration:underline;cursor:pointer}</style>
-<input id="amt" value="" placeholder="amount"><div id="host"></div><div id="main"></div><div id="notes"></div><div id="wd"></div><button id="wd-go" class="btn">exit</button><div id="status" role="status"></div>
+<input id="amt" value="" placeholder="amount"><div id="host"></div><div id="main"></div><div id="notes"></div><div id="wd"></div><div id="in"></div><button id="wd-go" class="btn">exit</button><div id="status" role="status"></div>
 <script type="module">
-import { attach, attachWithdraw } from '/fixed-pool-pay.js?cb=00000000';
+import { attach, attachWithdraw, attachIntake } from '/fixed-pool-pay.js?cb=00000000';
 const SEL = ${JSON.stringify({ den: sel('denomination()'), com: sel('commitments(bytes32)'), spent: sel('isSpent(bytes32)'), root: sel('isKnownRoot(bytes32)') })};
 const pools = new Map(${JSON.stringify(POOLS.map((p) => [p.address.toLowerCase(), { d: p.denomination.toString() }]))}.map(([a, v]) => [a, { d: BigInt(v.d), seen: new Set() }]));
 window.__log = { signs: 0, sends: 0, accountRequests: 0, busy: 0 };
@@ -70,6 +70,11 @@ const read = async () => async (method, params = []) => {
 };
 const wallet = { async request({ method, params = [] }) {
   if (method === 'eth_signTypedData_v4') { window.__log.signs++; const n = Number(JSON.parse(params[1]).message.nonce); return '0x' + hex(0x1111 + n, 64) + hex(1 + n, 64) + '1b'; }
+  if (method === 'eth_sendTransaction' && BigInt(params[0].value || 0) === 0n) {
+    const tx = params[0]; window.__wsent = (window.__wsent || 0) + 1; window.__wtx = { to: tx.to, from: tx.from, value: tx.value || '0x0', data: tx.data };
+    window.__spentAll = true; window.__spentN++;
+    return '0x' + hex(900 + window.__wsent, 64);
+  }
   if (method === 'eth_sendTransaction') { const tx = params[0], p = pools.get(tx.to.toLowerCase()); if (BigInt(tx.value) !== p.d) throw new Error('value'); p.seen.add(tx.data.slice(10)); window.__log.sends++; return '0x' + hex(window.__log.sends, 64); }
   if (method === 'eth_requestAccounts') { window.__log.accountRequests++; return ['${WALLET}']; }
   throw new Error('unsupported ' + method);
@@ -81,7 +86,7 @@ const env = {
   host: document.getElementById('host'), notesHost: document.getElementById('notes'), amountInput: document.getElementById('amt'),
   chain: { chainId: 1, full: 'Ethereum' }, store: { get: (k) => localStorage.getItem(k), set: (k, v) => localStorage.setItem(k, v) }, workerUrl: '/fixed-pool-worker.js?cb=00000000',
   account: () => account, walletProvider: () => (account ? wallet : null), read,
-  connect: async () => { window.__log.accountRequests++; account = '${WALLET}'; handle.repaint(); window.__wd?.repaint(); return account; },
+  connect: async () => { window.__log.accountRequests++; account = '${WALLET}'; handle.repaint(); window.__wd?.repaint(); window.__in?.repaint(); return account; },
   // the page's own button: it shows the plan the card hands over, connects first, and runs it in its busy wrapper, which finishes with the text
   onPlan: (p) => {
     const m = document.getElementById('main');
@@ -117,6 +122,23 @@ document.getElementById('wd-go').onclick = (e) => env2.act(e.currentTarget, asyn
   try { window.__wdOut = (await wdCtl.exit(step, c, q.picks.map((i) => wdCtl.list[i]), q.to)).map((o) => o.receive.toString()); }
   catch (err) { window.__wdErr = err.message; window.__wdDone = (err.done || []).length; throw err; }
 });
+window.__intents = []; window.__relayErr = null; window.__sendFailAt = null; window.__bal = null;
+const REFUND = '0x00000000000000000000000000000000000b0b02';
+const env3 = {
+  ...env, host: document.getElementById('in'),
+  balance: () => (window.__bal == null ? null : BigInt(window.__bal)),
+  relayFee: async (gas) => { if (window.__relayErr) throw new Error(window.__relayErr); window.__quotedGas = gas; return 100000000000000n; },
+  refundBox: async () => REFUND,
+  clock: async () => 1800000000,
+  send: async (a) => {
+    window.__intents.push({ calls: a.intent.calls.map((c) => ({ target: c.target, value: c.value.toString(), data: c.data })), refund: a.intent.refund, deadline: a.intent.deadline.toString(), amount: a.amount.toString(), gas: a.gas, maxFee: a.maxFee == null ? null : a.maxFee.toString(), via: a.via });
+    if (window.__sendFailAt === window.__intents.length) throw new Error('the relay refused');
+    for (const c of a.intent.calls) pools.get(c.target.toLowerCase()).seen.add(c.data.slice(10));
+    return '0x' + hex(700 + window.__intents.length, 64);
+  },
+};
+const inCtl = attachIntake(env3);
+window.__in = inCtl;
 window.__repaint = () => { handle.repaint(); wdCtl.repaint(); };
 window.__ready = true;
 </script>`;
@@ -459,6 +481,124 @@ await test('the notes still held go out together the next time, and what comes b
   assert.equal(sent.length, before + 2);
   await page.waitForFunction(() => window.__wdList?.length === 0);
   assert.match(await page.locator('#wd').innerText(), /None known in this browser/);
+});
+const dead2 = '0x00000000000000000000000000000000000dead2';
+await test('Gas from my wallet: the note is sent by the wallet as the proved call, after a confirm that says so, with no paymaster and no bundler', async () => {
+  const text = noteString({ denomination: 10n ** 18n, chainId: 1, preimage: new Uint8Array(62).fill(31) });
+  await chunkCache(page, commitmentBytes32(parseNoteString(text).commitment));
+  await page.evaluate(() => { window.__spentAll = false; window.__order = null; window.__wsent = 0; });
+  await page.selectOption('#lg-gas', 'wallet');
+  assert.match(await page.locator('#notes').innerText(), /Your wallet sends the withdrawal and pays its gas/);
+  assert.equal(await page.evaluate(() => localStorage.getItem('tacit-fixed-gas:1')), 'wallet', 'the choice is kept');
+  const before = sent.length;
+  await pasteNote(text, dead2);
+  await page.waitForSelector('#lg-ask:not([hidden]) #lg-send', { timeout: 240000 });
+  const ask = await page.locator('#lg-ask').innerText();
+  assert.match(ask, /Your wallet sends this and pays the gas, so it shows as the sender/); assert.match(ask, /whole 1 ETH/);
+  assert.equal(await page.evaluate(() => window.__wsent), 0, 'the wallet is not asked before the press');
+  await page.click('#lg-send');
+  await page.waitForFunction(() => /1 ETH is on its way to 0x0000…ead2/.test(document.querySelector('#status').textContent), null, { timeout: 120000 });
+  const tx = await page.evaluate(() => window.__wtx);
+  assert.equal(await page.evaluate(() => window.__wsent), 1);
+  assert.equal(tx.to.toLowerCase(), ONE.address.toLowerCase(), 'to the pool'); assert.equal(tx.value, '0x0'); assert.equal(tx.from.toLowerCase(), WALLET.toLowerCase(), 'from the wallet');
+  assert.ok(tx.data.toLowerCase().includes(dead2.slice(2)), 'the proved call names the address');
+  assert.equal(sent.length, before, 'no operation went to the bundler');
+  await page.selectOption('#lg-gas', 'note');
+  assert.equal(await page.evaluate(() => localStorage.getItem('tacit-fixed-gas:1')), 'note');
+});
+await test('the same choice in the Withdraw block: a stored note goes out from the wallet, the whole note, with no bundler operation', async () => {
+  await page.evaluate(() => { window.__spentAll = false; window.__order = null; });   // the wallet-sent exit before this one left every note reading as spent
+  await page.fill('#amt', '1');
+  await page.waitForFunction(() => /^Deposit 1 ETH: 1 whole note$/.test(document.querySelector('#lg-go')?.textContent || ''));
+  await page.click('#lg-go');
+  await page.waitForFunction(() => /The note is in the large pool \(1 ETH\)\./.test(document.querySelector('#status').textContent), null, { timeout: 60000 });
+  await page.evaluate(() => window.__wd.repaint());
+  await page.waitForFunction(() => window.__wdList?.length === 1);
+  const kept = await keptNotes();
+  await chunkCache(page, kept.at(-1).c);
+  await page.evaluate((order) => { window.__order = order; window.__spentN = order.length - 1; window.__wsent = 0; }, kept.map((n) => n.nh.toLowerCase()));
+  await page.selectOption('#lw-gas', 'wallet');
+  assert.equal(await page.evaluate(() => window.__wd.fromWallet), true);
+  assert.match(await page.locator('#wd').innerText(), /Your wallet sends each note and pays its gas/);
+  const before = sent.length;
+  await exitNotes([0], dead2);
+  await page.waitForFunction(() => window.__wdOut != null, null, { timeout: 480000 });
+  assert.deepEqual(await page.evaluate(() => window.__wdOut), [String(10n ** 18n)], 'the whole note: nothing was taken for gas');
+  assert.equal(await page.evaluate(() => window.__wsent), 1); assert.equal(sent.length, before);
+  await page.selectOption('#lw-gas', 'note').catch(() => {});
+});
+
+// ---- the way in: whole notes from the private balance ----
+const inText = () => page.locator('#in').innerText();
+const intents = () => page.evaluate(() => window.__intents);
+const typeIn = async (v) => { await page.fill('#li-amt', v); };
+await test('Into whole notes: the plan and the relay\'s fee show for an amount, priced for one note\'s gas, and the relay is the default', async () => {
+  await page.reload(); await page.waitForFunction(() => window.__ready === true);
+  await page.evaluate((k) => { localStorage.removeItem(k); }, NOTES_KEY);
+  await page.fill('#amt', '1'); await page.click('#lg-go'); // connect (the card's button asks first)
+  await page.evaluate(() => { window.__repaint(); window.__bal = null; });
+  await typeIn('2.5');
+  const t = await inText();
+  assert.match(t, /2 × 1 ETH\s+whole notes, large pool/); assert.match(t, /0\.5 ETH\s+stays in your private balance/);
+  assert.match(t, /Relay fee\s+up to 0\.000125 ETH from your balance for each note/);
+  assert.equal(await page.evaluate(() => window.__quotedGas), 450000 + 1040000, 'priced for the withdrawal and one deposit');
+  assert.match(await page.locator('#li-go').innerText(), /Move 2 ETH into 2 notes/);
+  await typeIn('0.4');
+  assert.match(await inText(), /less than the smallest note, 1 ETH/);
+  await shot(page, 'intake');
+});
+await test('by the relay the notes go one to a transaction: each spend is one deposit call into its pool, to a refund box, for exactly the note, and only landed notes are kept', async () => {
+  await typeIn('2.5');
+  const before = (await keptNotes()).length;
+  await page.click('#li-go');
+  await page.waitForFunction(() => /are in the large pools \(2 ETH\), made from your private balance/.test(document.querySelector('#status').textContent), null, { timeout: 90000 });
+  const list = await intents(), kept = (await keptNotes()).slice(before);
+  assert.equal(list.length, 2, 'one spend for each note');
+  list.forEach((it, i) => {
+    assert.equal(it.calls.length, 1);
+    assert.equal(it.calls[0].target.toLowerCase(), ONE.address.toLowerCase()); assert.equal(it.calls[0].value, String(10n ** 18n));
+    assert.equal(it.calls[0].data, '0xb214faa5' + kept[i].c.slice(2), 'the call deposits this note\'s commitment');
+    assert.equal(it.refund, '0x00000000000000000000000000000000000b0b02'); assert.equal(it.deadline, String(1800003600));
+    assert.equal(it.amount, String(10n ** 18n)); assert.equal(it.via, 'relay'); assert.equal(it.gas, 450000 + 1040000); assert.equal(it.maxFee, '125000000000000');
+  });
+  assert.equal(kept.length, 2, 'both are kept, and they are the notes the calls deposited');
+  assert.equal(await page.evaluate(() => window.__log.sends), 0, 'the wallet sent no transaction: it only signed');
+});
+await test('from the wallet all the notes go in one transaction, with the escrow paying each deposit, and the wallet is named as the sender', async () => {
+  await page.evaluate(() => { window.__intents.length = 0; });
+  await page.selectOption('#li-via', 'wallet');
+  await typeIn('2.5');
+  assert.match(await inText(), /Sent by\s+your wallet: it pays the gas and shows as the sender/);
+  await page.click('#li-go');
+  await page.waitForFunction(() => window.__intents.length === 1, null, { timeout: 90000 });
+  const [it] = await intents();
+  assert.equal(it.calls.length, 2); assert.equal(it.amount, String(2n * 10n ** 18n)); assert.equal(it.via, 'self'); assert.equal(it.maxFee, null);
+  assert.equal(it.gas, 450000 + 1040000 + 850000);
+  assert.notEqual(it.calls[0].data, it.calls[1].data, 'two different notes');
+});
+await test('a refused second spend leaves the first note in the pool and kept, and the message says how far it got', async () => {
+  await page.selectOption('#li-via', 'relay');
+  await page.evaluate(() => { window.__intents.length = 0; window.__sendFailAt = 2; });
+  const before = (await keptNotes()).length;
+  await typeIn('2.5');
+  await page.click('#li-go');
+  await page.waitForFunction(() => /1 of 2 notes is in the large pool\. The next did not go: the relay refused/.test(document.querySelector('#status').textContent), null, { timeout: 90000 });
+  assert.equal((await keptNotes()).length, before + 1, 'the one that landed is kept');
+  await page.evaluate(() => { window.__sendFailAt = null; });
+});
+await test('a private balance that is short is said so before anything is signed', async () => {
+  await page.evaluate(() => { window.__bal = String(10n ** 18n); });
+  await page.evaluate(() => window.__in.repaint());
+  await typeIn('2.5');
+  assert.match(await inText(), /Your private balance holds 1 ETH, less than the 2 ETH of notes/);
+  assert.equal(await page.locator('#li-go').isDisabled(), true);
+  await page.evaluate(() => { window.__bal = null; });
+});
+await test('a relay that will not take the gas falls back to the wallet and says why', async () => {
+  await page.evaluate(() => { window.__relayErr = 'gas above the 1500000 cap'; window.__in.requote(); });
+  await page.waitForFunction(() => /The relay cannot send this one \(gas above the 1500000 cap\), so your wallet does/.test(document.querySelector('#in').textContent));
+  assert.equal(await page.locator('#li-via').inputValue(), 'wallet');
+  await page.evaluate(() => { window.__relayErr = null; });
 });
 await test('no errors reached the console', async () => { assert.deepEqual(problems, []); });
 

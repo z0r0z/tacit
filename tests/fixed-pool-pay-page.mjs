@@ -58,6 +58,7 @@ const WALLET_SCRIPT = (addr) => {
       case 'eth_chainId': return '0x1';
       case 'personal_sign': return window.__sign(params[0]);
       case 'eth_sendTransaction': return window.__send(params[0]);
+      case 'eth_signTypedData_v4': return window.__signTyped(params[1]);
       case 'wallet_switchEthereumChain': return null;
       case 'wallet_requestPermissions': case 'wallet_revokePermissions': return [];
       default: throw Object.assign(new Error('unsupported ' + method), { code: 4200 });
@@ -78,14 +79,24 @@ async function unlock(page) {
 }
 
 // what the page asks of nodes and services, answered with the least that keeps it going
-const rpcAnswer = (method, params = []) => {
+const POOL_DEN = new Map(FIXED_POOLS[1].map((p) => [p.address.toLowerCase(), p.denomination]));
+const SELS = { den: bytesToHex(keccak_256(new TextEncoder().encode('denomination()')).slice(0, 4)), com: bytesToHex(keccak_256(new TextEncoder().encode('commitments(bytes32)')).slice(0, 4)) };
+const rpcAnswer = (method, params = [], landed = new Set()) => {
   switch (method) {
+    case 'eth_call': {
+      const { to, data } = params[0] || {};
+      const den = POOL_DEN.get(String(to).toLowerCase());
+      if (den == null) return '0x';
+      if (data.slice(2, 10) === SELS.den) return '0x' + den.toString(16).padStart(64, '0');
+      if (data.slice(2, 10) === SELS.com) return '0x' + (landed.has(data.slice(10)) ? '1' : '0').padStart(64, '0');
+      return '0x';
+    }
+    case 'eth_getCode': return POOL_DEN.has(String(params[0]).toLowerCase()) ? '0x6080' : '0x';
     case 'eth_chainId': return '0x1';
     case 'eth_blockNumber': return '0x1c9c380';
     case 'eth_getBalance': return String(params[0]).toLowerCase() === ADDR.toLowerCase() ? '0x' + (100n * 10n ** 18n).toString(16) : '0x0';   // the test wallet holds 100 ETH
     case 'eth_gasPrice': return '0x0';
     case 'eth_getLogs': return [];
-    case 'eth_getCode': return '0x';
     case 'eth_getTransactionReceipt': return { status: '0x1', blockNumber: '0x1c9c380', logs: [] };
     case 'eth_getBlockByNumber': return { number: '0x1c9c380', timestamp: '0x6a000000', baseFeePerGas: '0x5f5e100', transactions: [] };
     default: return '0x';
@@ -124,6 +135,13 @@ export function attach(env) {
   const o = env.onPlan;
   return __realAttach({ ...env, onPlan: (p) => o(p && globalThis.__fakeRun ? { ...p, run: async (step) => { globalThis.__ran = (globalThis.__ran || 0) + 1; step('fake'); return { text: 'Fake: the notes are placed.', h: globalThis.__fakeH ?? null }; } } : p) });
 }
+export function attachIntake(env) {
+  return __realAttachIntake(!globalThis.__fakeIntake ? env : { ...env, send: async (a) => {
+    (globalThis.__intakes ||= []).push({ n: a.intent.calls.length, amount: a.amount.toString(), via: a.via, gas: a.gas, maxFee: a.maxFee == null ? null : a.maxFee.toString() });
+    for (const c of a.intent.calls) await globalThis.__land(c.data.slice(10));
+    return '0x' + 'ab'.repeat(32);
+  } });
+}
 export function attachWithdraw(env) {
   const ctl = __realAttachWithdraw(env);
   if (!globalThis.__fakeExit) return ctl;
@@ -134,14 +152,16 @@ export function attachWithdraw(env) {
   } };
 }`;
 const POOL1 = FIXED_POOLS[1][1].address;
-async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, notes = null, payWrap = false, fixedNotes = null } = {}) {
+async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, keeperCap = null, notes = null, payWrap = false, fixedNotes = null } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 560, height: 1100 } });
   const page = await ctx.newPage();
-  const problems = [], sent = [], told = [];
+  const problems = [], sent = [], told = [], landed = new Set();
   await page.exposeFunction('__send', async (tx) => { sent.push(tx); return '0x' + 'ab'.repeat(32); });
+  await page.exposeFunction('__land', (c) => { landed.add(c); });
+  await page.exposeFunction('__signTyped', (json) => { const n = BigInt(JSON.parse(json).message.nonce), h = (x) => BigInt(x).toString(16).padStart(64, '0'); return '0x' + h(0x1111n + n) + h(1n + n) + '1b'; });
   if (payWrap) {
-    const real = readFileSync(join(DAPP, 'fixed-pool-pay.js'), 'utf8').replace('export function attach(', 'function __realAttach(').replace('export function attachWithdraw(', 'function __realAttachWithdraw(');
-    assert.ok(real.includes('function __realAttach(') && real.includes('function __realAttachWithdraw('), 'the card module is wrapped');
+    const real = readFileSync(join(DAPP, 'fixed-pool-pay.js'), 'utf8').replace('export function attach(', 'function __realAttach(').replace('export function attachWithdraw(', 'function __realAttachWithdraw(').replace('export function attachIntake(', 'function __realAttachIntake(');
+    assert.ok(real.includes('function __realAttach(') && real.includes('function __realAttachWithdraw(') && real.includes('function __realAttachIntake('), 'the card module is wrapped');
     await page.route(/\/fixed-pool-pay\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: real + PAY_WRAP }));
   }
   if (fixedNotes) {
@@ -170,17 +190,18 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
     const req = route.request();
     const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+    if (keeper && keeperCap && /\/evm-pool\/keeper\/quote/.test(req.url()) && Number(new URL(req.url()).searchParams.get('gas')) > keeperCap) return route.fulfill({ status: 400, headers, contentType: 'application/json', body: JSON.stringify({ error: `gas above the ${keeperCap} cap` }) });
     if (keeper && /\/evm-pool\/keeper\/quote/.test(req.url())) return route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify(keeper) });
     if (keeper && req.method() === 'POST' && /\/evm-pool\/keeper\/receive/.test(req.url())) { told.push(req.postDataJSON()); return route.fulfill({ status: 200, headers, contentType: 'application/json', body: '{"ok":true}' }); }
     if (req.method() === 'POST') {
       let body = null; try { body = req.postDataJSON(); } catch { /* not JSON */ }
-      const one = (b) => ({ jsonrpc: '2.0', id: b?.id ?? 1, result: rpcAnswer(b?.method, b?.params) });
+      const one = (b) => ({ jsonrpc: '2.0', id: b?.id ?? 1, result: rpcAnswer(b?.method, b?.params, landed) });
       if (body) return route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify(Array.isArray(body) ? body.map(one) : one(body)) });
     }
     return route.fulfill({ status: 404, headers, body: '{}' });
   });
   await page.goto(base + '/pay/eth/' + search);
-  return { ctx, page, problems, sent, told };
+  return { ctx, page, problems, sent, told, landed };
 }
 
 console.log('Pay page');
@@ -515,6 +536,66 @@ await test('Withdraw: without the flag the form has no notes block and counts no
   assert.equal(await page.locator('#lg-wd').count(), 0);
   const text = await receiptText(page, /Arrives|More than your private balance/);
   assert.doesNotMatch(text, /From whole notes/);
+  await ctx.close();
+});
+
+// ── Withdraw: the way in from the private balance, and the wallet as the sender of a note ──
+await test('Withdraw: whole notes from the private balance: the plan and the relay\'s fee, then the wallet as sender, and the notes are in the pools and kept', async () => {
+  const { ctx, page, problems } = await open({ search: '?fixed=1', payWrap: true, keeper: QUOTE, notes: [10n * ETH] });
+  await unlock(page);
+  await page.evaluate(() => { window.__fakeIntake = true; });
+  await page.click('#tab-withdraw');
+  await page.waitForSelector('#li-amt', { timeout: 30000 });
+  await page.fill('#li-amt', '2.5');
+  await page.waitForFunction(() => /Relay fee\s*up to 0\.000125 ETH/.test(document.querySelector('#lg-in')?.textContent || ''), null, { timeout: 30000 });
+  const t = await page.locator('#lg-in').innerText();
+  assert.match(t, /2 × 1 ETH\s+whole notes, large pool/); assert.match(t, /0\.5 ETH\s+stays in your private balance/);
+  assert.match(await page.locator('#li-go').innerText(), /Move 2 ETH into 2 notes/);
+  if (SHOTS) await page.screenshot({ path: join(SHOTS, 'withdraw-intake.png'), fullPage: true });
+  await page.selectOption('#li-via', 'wallet');
+  assert.match(await page.locator('#lg-in').innerText(), /your wallet: it pays the gas and shows as the sender/);
+  await page.click('#li-go');
+  await page.waitForFunction(() => /are in the large pools \(2 ETH\), made from your private balance/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 60000 });
+  assert.deepEqual(await page.evaluate(() => window.__intakes), [{ n: 2, amount: String(2n * 10n ** 18n), via: 'self', gas: 2340000, maxFee: null }]);
+  const kept = JSON.parse(await page.evaluate((k) => localStorage.getItem(k), `tacit-fixed-notes:1:${ADDR.toLowerCase()}`));
+  assert.equal(kept.length, 2); for (const n of kept) assert.equal(n.pool.toLowerCase(), POOL1.toLowerCase());
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('Withdraw: the relay path sends one note a transaction, priced for it', async () => {
+  const { ctx, page } = await open({ search: '?fixed=1', payWrap: true, keeper: QUOTE, notes: [10n * ETH] });
+  await unlock(page);
+  await page.evaluate(() => { window.__fakeIntake = true; });
+  await page.click('#tab-withdraw');
+  await page.waitForSelector('#li-amt', { timeout: 30000 });
+  await page.fill('#li-amt', '2');
+  await page.waitForFunction(() => /Relay fee/.test(document.querySelector('#lg-in')?.textContent || '') && !document.querySelector('#li-go')?.disabled, null, { timeout: 30000 });
+  await page.click('#li-go');
+  await page.waitForFunction(() => /are in the large pools \(2 ETH\)/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 60000 });
+  assert.deepEqual(await page.evaluate(() => window.__intakes), [1, 2].map(() => ({ n: 1, amount: String(10n ** 18n), via: 'relay', gas: 1490000, maxFee: '125000000000000' })));
+  await ctx.close();
+});
+await test('Withdraw: a relay that will not quote the gas of a note sends the notes from the wallet instead, and says why', async () => {
+  const { ctx, page } = await open({ search: '?fixed=1', payWrap: true, keeper: QUOTE, keeperCap: 1000000, notes: [10n * ETH] });
+  await unlock(page);
+  await page.click('#tab-withdraw');
+  await page.waitForSelector('#li-amt', { timeout: 30000 });
+  await page.fill('#li-amt', '2');
+  await page.waitForFunction(() => /The relay cannot send this one \(gas above the 1000000 cap\), so your wallet does/.test(document.querySelector('#lg-in')?.textContent || ''), null, { timeout: 30000 });
+  assert.equal(await page.locator('#li-via').inputValue(), 'wallet');
+  await ctx.close();
+});
+await test('Withdraw: with the wallet as the notes\' sender the receipt says so, shows the whole amount, and the choice is kept', async () => {
+  const { ctx, page } = await open(WD);
+  await toWithdraw(page, '2.3');
+  await receiptText(page, /From whole notes/);
+  await page.selectOption('#lw-gas', 'wallet');
+  const text = await receiptText(page, /one transaction for each note/);
+  assert.match(text, /from your wallet, one transaction for each note: it shows as the sender/);
+  assert.match(text, /Arrives\s+2\.3 ETH on/); assert.doesNotMatch(text, /at least 2\.24/);
+  assert.equal(await page.evaluate(() => localStorage.getItem('tacit-fixed-gas:1')), 'wallet');
+  await page.selectOption('#lw-gas', 'note');
+  assert.match(await receiptText(page, /paid from the notes, at most 3% of each/), /at least 2\.24 ETH/);
   await ctx.close();
 });
 

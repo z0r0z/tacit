@@ -111,6 +111,35 @@ function world({ chainId = 11155111, atomic = false, flaky = false, wrongDenomin
 const flow = (w, chainId = 11155111, extra = {}) => makeFlow({ provider: w.provider, account: ACCOUNT, chainId, poll: 1, timeout: 2000, ...extra });
 const planFor = (eth, chainId = 11155111, o = { minDenominationWei: E / 10n }) => planSplit(parseEther(eth), chainId, o);
 
+console.log('notes made without sending');
+await test('prepareNotes signs for each number and returns the calls, and sends nothing', async () => {
+  const w = world(); const f = flow(w);
+  const notes = await f.prepareNotes(planFor('0.3'));
+  eq(notes.length, 3); eq(w.log.sends.length, 0, 'nothing sent'); eq(w.log.batches.length, 0);
+  eq(notes.map((n) => n.nonce).join(), '0,1,2');
+  for (const n of notes) {
+    eq(n.call.to, n.pool.address); eq(n.call.value, n.pool.denomination);
+    eq(n.call.data, '0xb214faa5' + commitmentBytes32(n.secrets.commitment).slice(2), 'the deposit call carries this note\'s commitment');
+    eq(w.pools.get(n.pool.address.toLowerCase()).seen.size, 0, 'no pool has it yet');
+  }
+});
+await test('landedNotes keeps the notes whose commitment is in the pool, and the next deposit starts after them', async () => {
+  const w = world(); const store = new Map(); const st = { get: (k) => store.get(k) ?? null, set: (k, v) => store.set(k, v) };
+  const f = flow(w, 11155111, { store: st });
+  const notes = await f.prepareNotes(planFor('0.3'));
+  // only the first two reach their pool
+  for (const n of notes.slice(0, 2)) w.pools.get(n.pool.address.toLowerCase()).seen.add(commitmentBytes32(n.secrets.commitment).slice(2));
+  const ok = await f.landedNotes(notes, { wait: false });
+  eq(ok.length, 2); eq(ok.map((n) => n.nonce).join(), '0,1');
+  const out = await flow(w, 11155111, { store: st }).deposit(planFor('0.1'));
+  eq(out.notes[0].nonce, 2, 'numbering continues after the notes that landed');
+});
+await test('a note that never lands is not counted, and does not move the hint', async () => {
+  const w = world(); const f = flow(w);
+  const notes = await f.prepareNotes(planFor('0.1'));
+  eq((await f.landedNotes(notes, { wait: false })).length, 0);
+});
+
 console.log('amounts');
 await test('parseEther and formatEther', () => {
   eq(parseEther('100.001234'), 100n * E + 1234n * 10n ** 12n);

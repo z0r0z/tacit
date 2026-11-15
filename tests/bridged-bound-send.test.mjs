@@ -162,7 +162,7 @@ await section('4. the move off the Taproot address (a note the bridge minted) is
   ok(s.env.opcode === 0x39 && s.reveal.inputs[1].witness.length === 1 && s.reveal.inputs[1].witness[0].length === 64, 'a 0x39 reveal, the note spent by a 64-byte key-path signature (SIGHASH_DEFAULT binds every output)');
   const m = await reflect(s, { input, auth: '0x' + bytesToHex(XONLY), bound: 0 });
   const t0 = m.triple(s.reveal.txid, 0);
-  ok(m.folded[1] === 2 && t0 && Number(t0[4]) === 1 && strip(t0[3] || '0').replace(/^0+/, '') === '' && !m.inputLive, 'the unbound mint note is nullified and the moved note is live, bound, with the zero auth key');
+  ok(m.folded[1] === 1 && t0 && Number(t0[4]) === 1 && strip(t0[3] || '0').replace(/^0+/, '') === '' && !m.inputLive, 'the unbound mint note is nullified and the moved note (the whole of it: one output, no change note of 0) is live, bound, with the zero auth key');
 });
 
 await section('5. TAC is unchanged; a stealth recipient for a bridged token is refused', async () => {

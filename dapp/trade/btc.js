@@ -1,4 +1,4 @@
-import { makeBtcSession, short } from '/trade/btc-session.js?cb=eca2b92b';
+import { makeBtcSession, short } from '/trade/btc-session.js?cb=f79ac121';
 import { overlay, esc } from '/trade/sheet.js?cb=71cade73';
 import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=7a2c5e8d';
 

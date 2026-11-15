@@ -197,9 +197,16 @@ console.log('\nA moved note is opened again from the key alone:');
   ok('another key cannot open it', dapp.openTransferOutput({ priv: other, pub: secp.getPublicKey(other, true), senderPubHex: null, anchorBytes: anchor, vout: 0, ct: dec.outputs[0].encryptedAmount, commitment: dec.outputs[0].commitment }) === null);
   const viaWitness = open({ senderPubHex: PUB_HEX });
   ok('a sender key that the witness does show is read as before', !!viaWitness && viaWitness.amount === AMOUNT && viaWitness.path === 'ecdh' && viaWitness.senderPubHex === null);
-  const change = dapp.openTransferOutput({ priv: SK, pub: dapp.wallet.pub, senderPubHex: null, anchorBytes: anchor, vout: 1, ct: dec.outputs[1].encryptedAmount, commitment: dec.outputs[1].commitment });
-  ok('the change output still comes by the self channel', !!change && change.path === 'self' && change.amount === 0n, `${change && change.path} ${change && change.amount}`);
-  ok('a commitment that is not the output\'s is never accepted', open({ commitment: dec.outputs[1].commitment }) === null);
+  ok('a move of the whole note is one output: no change note of 0 TAC is left behind', dec.outputs.length === 1);
+  // A move of part of the note leaves change, and the change comes back by the self channel.
+  broadcasts = [];
+  await dapp.buildAndBroadcastCXferMulti({ assetIdHex: ASSET, recipients: [{ pubHex: PUB_HEX, amount: AMOUNT - 100n }], forceUtxos: [noteInput()], useBpp: true });
+  const reveal2 = parseTx(broadcasts[1]);
+  const dec2 = dapp.decodeCXferBppPayload(dapp.decodeEnvelopeScript(reveal2.inputs[0].witness[1]).payload);
+  const anchor2 = concatBytes(hexToBytes(reveal2.inputs[1].txid).reverse(), u32(reveal2.inputs[1].vout));
+  const change = dapp.openTransferOutput({ priv: SK, pub: dapp.wallet.pub, senderPubHex: null, anchorBytes: anchor2, vout: 1, ct: dec2.outputs[1].encryptedAmount, commitment: dec2.outputs[1].commitment });
+  ok('the change of a part moved still comes by the self channel', dec2.outputs.length === 2 && !!change && change.path === 'self' && change.amount === 100n, `${change && change.path} ${change && change.amount}`);
+  ok('a commitment that is not the output\'s is never accepted', open({ commitment: dec2.outputs[1].commitment }) === null);
 }
 
 console.log('\nAn ordinary P2WPKH note:');

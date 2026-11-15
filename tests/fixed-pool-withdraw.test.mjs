@@ -163,6 +163,17 @@ await test('send: the wallet is asked once, with the proved call, and the pool t
   const tx = w.log.sends[0];
   eq(tx.to.toLowerCase(), POOL.address.toLowerCase()); eq(tx.value, '0x0'); eq(tx.from, ACCOUNT); eq(tx.data, out.call.input);
 });
+await test('wallet-sent confirm: asked once proved, with no fee and the whole note; no is a cancel and the wallet is never asked', async () => {
+  const w = world({ knownRoots: known }); let asked = null;
+  const e = await rejects(flowOf(w).withdraw({ noteText, recipient: RECIPIENT, prover, leaves, confirm: async (q) => { asked = q; return false; } }), /Cancelled. Nothing was sent/);
+  eq(e.cancelled, true); eq(w.log.sends.length, 0, 'nothing sent');
+  eq(asked.fee, 0n); eq(asked.receive, POOL.denomination); eq(asked.denomination, POOL.denomination);
+});
+await test('wallet-sent confirm yes sends it, and the result says the whole note was received', async () => {
+  const w = world({ knownRoots: known });
+  const out = await flowOf(w).withdraw({ noteText, recipient: RECIPIENT, prover, leaves, confirm: async () => true });
+  eq(out.sent, true); eq(w.log.sends.length, 1); eq(out.receive, POOL.denomination); eq(out.spent, true);
+});
 await test('another recipient gives another call, to that recipient', async () => {
   const w = world({ knownRoots: known });
   const other = '0x000000000000000000000000000000000000bEEF';

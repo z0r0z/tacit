@@ -171,10 +171,11 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     return { hash };
   }
 
-  // Signs for every note first (each signature is a prompt), then sends. `plan` is planSplit's result.
-  async function deposit(plan, { onStep = () => {} } = {}) {
+  // The notes of `plan` (planSplit's result), made but not sent: the next free numbers are found, and each is signed for (a prompt
+  // each), which gives its secrets, its commitment and the call that deposits it. Whoever sends the call, the note is the wallet's.
+  async function prepareNotes(plan, { onStep = () => {} } = {}) {
     const wanted = plan.notes.flatMap((n) => Array.from({ length: n.count }, () => ({ denomination: n.denomination, address: n.address })));
-    if (!wanted.length) return { notes: [], sent: 'none' };
+    if (!wanted.length) return [];
     for (const p of new Map(wanted.map((w) => [w.address, w])).values()) await checkPool(p);
     onStep({ step: 'find' });
     const { next } = await scan({ from: hint() });
@@ -186,6 +187,28 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
       const secrets = deriveSecrets({ signature: sig, pool: wanted[i].address });
       notes.push({ nonce, pool: wanted[i], secrets, call: depositCall(wanted[i], secrets.commitment) });
     }
+    return notes;
+  }
+
+  // Whether each note's commitment is in its pool (a node a block behind needs a moment to say so). → the notes that are
+  // there; `remember` moves the next-number hint past them.
+  async function landedNotes(notes, { wait = true } = {}) {
+    const ok = [];
+    for (const n of notes) {
+      const pool = pools.find((p) => p.address === n.pool.address);
+      let landed = false;
+      for (let t = 0; t < (wait ? 8 : 1) && !landed; t++) { if (t) await sleep(poll); landed = await seen(pool, n.secrets.commitment); }
+      if (landed) ok.push(n);
+    }
+    if (ok.length) remember(Math.max(...ok.map((n) => n.nonce)) + 1);
+    return ok;
+  }
+
+  // Signs for every note first (each signature is a prompt), then sends. `plan` is planSplit's result.
+  async function deposit(plan, { onStep = () => {} } = {}) {
+    const notes = await prepareNotes(plan, { onStep });
+    if (!notes.length) return { notes: [], sent: 'none' };
+    const next = notes[0].nonce;
     const calls = notes.map((n) => n.call);
     onStep({ step: 'send', count: calls.length });
     let sent = 'sequential';
@@ -246,15 +269,20 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
 
   // Reads the pool's deposits, builds its tree, proves the note's withdrawal to `recipient`, and (unless
   // `send` is false) sends it from the connected account. `prover` has `load(bytes)` and `prove(args)`.
-  async function withdraw({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves }) {
+  // `confirm({ fee, receive, denomination })`, when given, is asked once the proof is made, before anything is sent (fee is 0: the wallet
+  // pays the gas, and the recipient gets the whole note); a false answer ends it with nothing sent.
+  async function withdraw({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves, confirm = null }) {
     const { note, pool, root, preimageHex } = await readyToWithdraw({ noteText, recipient, prover, onStep, leaves });
     onStep({ step: 'prove' });
     const out = await prover.prove({ chainId, pool: pool.address, preimageHex, recipient });
     checkWithdrawCall(out, { pool, recipient, root, nullifierHash: note.nullifierHash });
     if (!send) return { call: out, sent: false };
+    if (confirm && !(await confirm({ fee: 0n, receive: pool.denomination, denomination: pool.denomination }))) {
+      throw Object.assign(new Error('Cancelled. Nothing was sent.'), { cancelled: true });
+    }
     onStep({ step: 'send' });
     const { hash } = await sendOne({ to: out.target, value: 0n, data: out.input });
-    return { call: out, hash, sent: true, spent: await settled(pool, note) };
+    return { call: out, hash, sent: true, receive: pool.denomination, spent: await settled(pool, note) };
   }
 
   // The same withdrawal with its gas paid from the note by the pool paymaster, as one 4337 operation from a
@@ -297,7 +325,7 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     return noteString({ denomination: p.denomination, chainId, preimage: secrets.preimage });
   }
 
-  return { pools, signNonce, probe, scan, deposit, checkPool, atomicSupported, seen, spent, withdraw, withdrawSponsored, knownRoot, noteText };
+  return { pools, signNonce, probe, scan, deposit, prepareNotes, landedNotes, checkPool, atomicSupported, seen, spent, withdraw, withdrawSponsored, knownRoot, noteText };
 }
 
 // What a found or fresh note shows: its size, its place, and the line that spends it elsewhere.

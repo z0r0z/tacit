@@ -63,6 +63,18 @@ await bond(jx, 'PRIV', { manager: '0xm', aNote: 'a', bNote: 'b', waitOpts: 'W' }
 const nb = jc.length;
 assert.throws(() => farmManager(jx, '0xOther'), /other than the configured one/); await assert.rejects(async () => bond(jx, 'PRIV', { manager: '0xOther', aNote: 'a', bNote: 'b' }), /other than the configured one/); assert.equal(jc.length, nb, 'a manager the API names that is not the configured one gets nothing bonded');
 assert.throws(() => farmManager({ cfg: {} }, '0xM'), /no farm program/); assert.equal(farmManager(jx, null), '0xM', 'no manager named: the configured one');
+// a standalone farm's pool is joined through that farm's own controller; a pool of the launch farm, through the manager
+{
+  const spx = { standalone: true, lpAsset: '0x6AEED821', controller: '0xSPX1' };
+  jx.cfg = { farm: { manager: '0xM', standalone: [{ lpAsset: '0x6aeed821', controller: '0xspx1' }] } };
+  await bond(jx, 'PRIV', { manager: '0xm', pool: spx, aNote: 'a', bNote: 'b', feeBps: 30, waitOpts: 'W' });
+  assert.equal(jc.at(-1).controller, '0xspx1', 'an SPX pool bonds into its own farm, not the manager');
+  await bond(jx, 'PRIV', { manager: '0xm', pool: { standalone: false, lpAsset: '0xaa', controller: '0xM' }, aNote: 'a', bNote: 'b', waitOpts: 'W' });
+  assert.equal(jc.at(-1).controller, '0xM', 'a launch pool bonds into the manager');
+  const n2 = jc.length;
+  await assert.rejects(async () => bond(jx, 'PRIV', { manager: '0xm', pool: { ...spx, controller: '0xOTHER' }, aNote: 'a', bNote: 'b' }), /controller other than the configured one/);
+  assert.equal(jc.length, n2, 'a controller the API names that the page does not know gets nothing bonded');
+}
 // ── the fee ladder, and a cut that is sent again at the next rung ──
 assert.equal(ladder(5n), 5n); assert.equal(ladder(99n), 99n); assert.equal(ladder(123n), 130n); assert.equal(ladder(130n), 130n); assert.equal(ladder(1234567n), 1300000n, 'rounded up to two digits');
 assert.equal(feeShort(new Error('relay: fee below the current floor')), true); assert.equal(feeShort('feeGate'), true); assert.equal(feeShort(new Error('relay 429')), false);

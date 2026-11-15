@@ -132,4 +132,5 @@ export function farmControllerOf(t, p, manager) {
   if (!f || String(f.controller).toLowerCase() !== String(p.controller).toLowerCase()) throw new Error('This farm names a controller other than the configured one, so nothing was added.');
   return f.controller;
 }
-export const bond = (t, priv, { manager, aNote, bNote, feeBps, waitOpts, own = null, onOwn }) => relayedOrOwn((s) => t.lpBond({ walletPriv: priv, controller: farmManager(t, manager), aNote, bNote, feeBps: Number(feeBps ?? 30), waitOpts, ...via(s) }), own, onOwn);
+// `pool` is the farm program's row for the pool being joined (its `standalone`, `lpAsset` and `controller`); with none the entry is the launch manager's.
+export const bond = (t, priv, { manager, pool, aNote, bNote, feeBps, waitOpts, own = null, onOwn }) => relayedOrOwn((s) => t.lpBond({ walletPriv: priv, controller: farmControllerOf(t, pool, manager), aNote, bNote, feeBps: Number(feeBps ?? 30), waitOpts, ...via(s) }), own, onOwn);
