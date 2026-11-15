@@ -2128,7 +2128,7 @@ async function main() {
 
   // One loop runs every scanner, the daily settlement and every campaign's payout in turn, so a call that never answers would hold all of them back
   // (it went quiet for an hour on 2026-11-14 and a day's payout waited). Each stage says it has begun; one that runs past POINTS_STALL_SECS restarts the service.
-  const wd = makeLoopWatchdog({ limitMs: CFG.pointsStallSecs * 1000, onStall: ({ stage, idleMs }) => { log(`watchdog: the loop has been in "${stage}" for ${Math.round(idleMs / 60000)} min: restarting the service`); process.exit(1); } });
+  const wd = makeLoopWatchdog({ limitMs: CFG.pointsStallSecs * 1000, warnMs: 5 * 60_000, onSlow: ({ stage, idleMs }) => log(`watchdog: the loop has been in "${stage}" for ${Math.round(idleMs / 60000)} min`), onStall: ({ stage, idleMs }) => { log(`watchdog: the loop has been in "${stage}" for ${Math.round(idleMs / 60000)} min: restarting the service`); process.exit(1); } });
   wd.start();
   for (;;) {
     // First, so every scan below can score up to the block each replay reached.

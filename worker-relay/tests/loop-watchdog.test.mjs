@@ -39,3 +39,16 @@ test('current() names the stage and how long it has run', () => {
   const r = rig(60_000); r.wd.start(); r.wd.stage('snapshots'); r.advance(5000);
   assert.deepEqual(r.wd.current(), { stage: 'snapshots', idleMs: 5000 });
 });
+
+test('a stage that runs long is reported once, by name, well before the limit', () => {
+  let t = 0, tick = null; const slow = [], stalls = [];
+  const wd = makeLoopWatchdog({ limitMs: 30 * 60_000, warnMs: 5 * 60_000, onSlow: (s) => slow.push(s), onStall: (s) => stalls.push(s), now: () => t, everyMs: 60_000, setIntervalFn: (f) => { tick = f; return { unref() {} }; }, clearIntervalFn: () => {} });
+  wd.start(); wd.stage('zrouter');
+  for (let i = 0; i < 8; i++) { t += 60_000; tick(); }
+  assert.equal(slow.length, 1, 'once, not every minute');
+  assert.equal(slow[0].stage, 'zrouter');
+  assert.deepEqual(stalls, [], 'eight minutes is not yet a stall');
+  wd.stage('scan');
+  for (let i = 0; i < 7; i++) { t += 60_000; tick(); }
+  assert.equal(slow.length, 2, 'the next stage that runs long is reported too');
+});
