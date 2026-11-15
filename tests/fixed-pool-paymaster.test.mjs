@@ -155,10 +155,39 @@ await test('a gas price far over the node\'s view is refused before any proof', 
   const b = fakeBundler({ pimlico_getUserOperationGasPrice: { standard: { maxFeePerGas: '0x' + (90_000_000_000n).toString(16), maxPriorityFeePerGas: '0x1' } } });
   const r = await rejects(prep(b), /over what the wallet/);
 });
-await test('a fee over a tenth of the note, or the whole of it, is refused', async () => {
-  const dear = { standard: { maxFeePerGas: '0x' + (200_000_000_000n).toString(16), maxPriorityFeePerGas: '0x1' } };
-  const bigRef = { baseFeePerGas: 100_000_000_000n, maxPriorityFeePerGas: 0n };
-  await rejects(prep(fakeBundler({ pimlico_getUserOperationGasPrice: dear, eth_estimateUserOperationGas: est() }), { reference: bigRef }), /over a tenth|whole note/);
+const priceOf = (gwei) => ({ standard: { maxFeePerGas: '0x' + BigInt(Math.round(gwei * 1e9)).toString(16), maxPriorityFeePerGas: '0x' + (100_000_000n).toString(16) } });
+const generousRef = { baseFeePerGas: 1_000_000_000n, maxPriorityFeePerGas: 10_000_000_000n }; // bounds wide enough for the prices below
+await test('the ceiling is 3% of the note: at it passes, a wei over does not', () => {
+  const d = 10n ** 17n;
+  eq(P.MAX_FEE_PERCENT, 3n);
+  eq(P.withinCeiling(3n * 10n ** 15n, d), true); eq(P.withinCeiling(3n * 10n ** 15n + 1n, d), false); eq(P.withinCeiling(0n, d), true);
+});
+await test('a price at which even the fallback limits stay under the ceiling goes straight to proving', async () => {
+  const b = fakeBundler({ pimlico_getUserOperationGasPrice: priceOf(1.0), eth_estimateUserOperationGas: est() });
+  const steps = [];
+  await prep(b, { reference: generousRef, onStep: (x) => steps.push(x.step) });
+  eq(b.calls.filter((m) => m === 'pimlico_getUserOperationGasPrice').length, 1); eq(steps.includes('price'), false);
+});
+await test('a high price is waited out before any proof, and the fee is made at the calmer one', async () => {
+  const prices = [priceOf(2.6), priceOf(2.4), priceOf(0.8)]; let i = 0; const steps = [];
+  const b = fakeBundler({ pimlico_getUserOperationGasPrice: () => prices[Math.min(i++, 2)], eth_estimateUserOperationGas: est() });
+  const r = await prep(b, { reference: generousRef, onStep: (x) => steps.push(x.step) });
+  eq(steps.filter((x) => x === 'price').length, 2, 'waited twice'); eq(r.proved.length, 1);
+  eq(r.proved[0], P.minimumViableFee(GAS, 800_000_000n), 'the fee uses the calm price');
+});
+await test('a price that stays high is an error after the tries, with no proof made and nothing sent', async () => {
+  const b = fakeBundler({ pimlico_getUserOperationGasPrice: priceOf(2.6), eth_estimateUserOperationGas: est() });
+  const r = await rejects(prep(b, { reference: generousRef, priceTries: 3 }), /Gas is high right now: the fee could come to over 3% of the note/);
+  eq(b.calls.filter((m) => m === 'pimlico_getUserOperationGasPrice').length, 4); eq(b.calls.includes('eth_estimateUserOperationGas'), false); eq(b.calls.includes('eth_sendUserOperation'), false);
+});
+await test('estimates that push the fee over the ceiling stop it, with the fee that was proved not sent', async () => {
+  const b = fakeBundler({ pimlico_getUserOperationGasPrice: priceOf(2.1), eth_estimateUserOperationGas: est({ preVerificationGas: '0x' + (580_000n).toString(16) }) });
+  await rejects(prep(b, { reference: generousRef }), /over 3% of the note at the limits the bundler asks for/);
+  eq(b.calls.includes('eth_sendUserOperation'), false);
+});
+await test('a fee that would use up the whole note is refused too', async () => {
+  const b = fakeBundler({ pimlico_getUserOperationGasPrice: priceOf(2.0), eth_estimateUserOperationGas: est() });
+  await rejects(prep(b, { reference: generousRef, denomination: 1_000_000_000_000_000n, maxFeePercent: 100n, priceTries: 0 }), /whole note|over 100%/);
 });
 await test('a pool the paymaster does not take, or a chain without one, is refused', async () => {
   const b = fakeBundler({ pimlico_getUserOperationGasPrice: PRICE });

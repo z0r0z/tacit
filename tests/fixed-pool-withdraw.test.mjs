@@ -219,6 +219,21 @@ await test('send: the operation goes to the bundler, the wallet is never asked, 
   eq(w.log.sends.length, 0, 'nothing from the wallet'); eq(log.filter((m) => m === 'eth_sendUserOperation').length, 1);
   eq(log.sent.sender.toLowerCase() === ACCOUNT.toLowerCase(), false, 'sent by a throwaway account');
 });
+await test('confirm is asked with the fee and what the address gets, before anything is sent; no is a cancel with nothing sent', async () => {
+  const w = sponsoredWorld(); const log = []; let asked = null;
+  const e = await rejects(flowOf(w).withdrawSponsored({
+    noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerFor(log),
+    confirm: async (q) => { asked = q; return false; },
+  }), /Cancelled. Nothing was sent/);
+  eq(e.cancelled, true); eq(log.includes('eth_sendUserOperation'), false); eq(w.log.sends.length, 0);
+  eq(asked.denomination, POOL.denomination); eq(asked.receive, POOL.denomination - asked.fee);
+  if (!(asked.fee > 0n && asked.fee * 100n <= POOL.denomination * 3n)) throw new Error('fee over the ceiling: ' + asked.fee);
+});
+await test('confirm yes sends it', async () => {
+  const w = sponsoredWorld(); const log = [];
+  const out = await flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerFor(log), confirm: async () => true });
+  eq(out.sent, true); eq(log.filter((m) => m === 'eth_sendUserOperation').length, 1);
+});
 await test('a note on a chain without a paymaster is refused before anything is read', async () => {
   const w = world({ chainIdOnWallet: 8453 });
   await rejects(flowOf(w).withdrawSponsored({ noteText: noteString({ denomination: POOL.denomination, chainId: 8453, preimage: new Uint8Array(62) }), recipient: RECIPIENT, prover, leaves }), /not available on this network/);

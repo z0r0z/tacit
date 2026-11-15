@@ -13,13 +13,13 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /split/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/split/app.js?cb=e4055d04">
+<link rel="modulepreload" href="/split/app.js?cb=fb7b03c3">
 <link rel="modulepreload" href="/fixed-pool-notes.js?cb=ab06e6d2">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/amm-bjj.js?cb=c614361e">
-<link rel="modulepreload" href="/fixed-pool-flow.js?cb=f52aa1ba">
+<link rel="modulepreload" href="/fixed-pool-flow.js?cb=ca16c33e">
 <link rel="modulepreload" href="/fixed-pool-sync.js?cb=cd4a3f3a">
-<link rel="modulepreload" href="/fixed-pool-paymaster.js?cb=751cdeb9">
+<link rel="modulepreload" href="/fixed-pool-paymaster.js?cb=40893745">
 <link rel="modulepreload" href="/fixed-pool-prover.js?cb=307cfddc">
 <!-- preload:end -->
 <style>
@@ -296,6 +296,10 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <button class="btn" id="wgo" type="button" disabled>Connect a wallet</button>
       <button class="btn ghost" id="wprep" type="button" style="margin-top:10px" disabled>Prepare only</button>
       <div class="status" id="wstatus" role="status" aria-live="polite"></div>
+      <div class="note" id="wconfirm" hidden>
+        <div id="wconfirm-text"></div>
+        <div style="display:flex;gap:8px;margin-top:10px"><button class="btn small" id="wsend" type="button">Send</button><button class="btn ghost small" id="wcancel" type="button">Cancel</button></div>
+      </div>
       <div class="note" id="wout" hidden><div class="head"><span>Transaction</span><button class="btn ghost small" type="button" id="wcopy">Copy</button></div><code id="wdata"></code></div>
     </section>
     <section class="panel">
@@ -324,6 +328,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/split/app.js?cb=e4055d04"></script>
+<script type="module" src="/split/app.js?cb=fb7b03c3"></script>
 </body>
 </html>

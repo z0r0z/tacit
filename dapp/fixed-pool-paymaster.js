@@ -61,6 +61,14 @@ export function minimumViableFee(gas, maxFeePerGas) {
   return (requiredGas * BigInt(maxFeePerGas) * 12n) / 10n;
 }
 
+// The most the proof may name as the fee, as a share of the note: the fee is a ceiling the paymaster may take (what it
+// does not use comes back to the recipient), and the bundler's price swings several times over within minutes.
+export const MAX_FEE_PERCENT = 3n;
+// The limits the fallback ends up on when the bundler cannot estimate: the dearest the fee gets before the estimates' own rise.
+export const WORST_GAS = Object.freeze({ ...BASELINE, verificationGasLimit: 150_000n, paymasterVerificationGasLimit: 650_000n, preVerificationGas: 300_000n });
+export const worstCaseFee = (maxFeePerGas) => minimumViableFee(WORST_GAS, maxFeePerGas);
+export const withinCeiling = (fee, denomination, percent = MAX_FEE_PERCENT) => BigInt(fee) * 100n <= BigInt(denomination) * BigInt(percent);
+
 const MIN_TIP_CAP = 2_000_000_000n, MAX_TIP_CAP = 20_000_000_000n;
 const hostQuantity = (v) => {
   if (typeof v !== 'string' || !/^0x[0-9a-f]+$/i.test(v)) throw new Error('Invalid host gas price reference');
@@ -258,18 +266,30 @@ const parseGas = (r) => ({
 // Gas limits and the fee in the proof depend on each other, so a change in the limits makes a new proof.
 export async function prepareSponsoredWithdrawal({
   chainId, pool, denomination, recipient, prove, bundler, reference, key = secp.utils.randomPrivateKey(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), onStep = () => {},
+  maxFeePercent = MAX_FEE_PERCENT, priceTries = 12, priceEvery = 10_000,
 }) {
   const cfg = paymasterFor(chainId, pool);
-  const prices = await bundler.request('pimlico_getUserOperationGasPrice', []);
-  const standard = prices?.standard;
-  if (!standard) throw new Error('The bundler gave no gas price.');
-  const price = { maxFeePerGas: BigInt(standard.maxFeePerGas), maxPriorityFeePerGas: BigInt(standard.maxPriorityFeePerGas) };
-  assertGasPriceWithinBounds(price, reference);
+  const readPrice = async () => {
+    const standard = (await bundler.request('pimlico_getUserOperationGasPrice', []))?.standard;
+    if (!standard) throw new Error('The bundler gave no gas price.');
+    const p = { maxFeePerGas: BigInt(standard.maxFeePerGas), maxPriorityFeePerGas: BigInt(standard.maxPriorityFeePerGas) };
+    assertGasPriceWithinBounds(p, reference);
+    return p;
+  };
+  // Before any proof: wait out a price at which even the fallback limits would put the fee over the ceiling. The bundler's
+  // quote swings between about 0.4 and 2 gwei within minutes, and the proof is bound to the fee it is made with.
+  let price = await readPrice();
+  for (let t = 0; !withinCeiling(worstCaseFee(price.maxFeePerGas), denomination, maxFeePercent); t++) {
+    if (t >= priceTries) throw new Error(`Gas is high right now: the fee could come to over ${maxFeePercent}% of the note. Nothing was sent; try again in a few minutes.`);
+    onStep({ step: 'price', waiting: true, price: price.maxFeePerGas });
+    await sleep(priceEvery);
+    price = await readPrice();
+  }
 
   const build = async (gas) => {
     const fee = minimumViableFee(gas, price.maxFeePerGas);
     if (fee >= denomination) throw new Error('The paymaster fee would use up the whole note. Wait for lower gas prices.');
-    if (fee * 10n > denomination) throw new Error('Gas is unusually high for a note this size: the fee would be over a tenth of it. Try later.');
+    if (!withinCeiling(fee, denomination, maxFeePercent)) throw new Error(`The fee would come to over ${maxFeePercent}% of the note at the limits the bundler asks for. Nothing was sent; try again in a few minutes.`);
     onStep({ step: 'prove', fee });
     const out = await prove(fee);
     const paymasterData = encodePaymasterData({ instance: pool, proof: out.proof, root: out.root, nullifierHash: out.nullifierHash, recipient, fee });

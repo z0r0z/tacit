@@ -10,7 +10,7 @@ import {
   FIXED_POOLS, noteTypedData, canonicalRS, deriveSecrets, depositCall, commitmentBytes32, noteString, parseNoteString,
 } from '/fixed-pool-notes.js?cb=ab06e6d2';
 import { fixedPoolLeaves } from '/fixed-pool-sync.js?cb=cd4a3f3a';
-import { PAYMASTERS, paymasterFor, bundlerClient, readGasFeeReference, prepareSponsoredWithdrawal, sendSponsoredOperation } from '/fixed-pool-paymaster.js?cb=751cdeb9';
+import { PAYMASTERS, paymasterFor, bundlerClient, readGasFeeReference, prepareSponsoredWithdrawal, sendSponsoredOperation } from '/fixed-pool-paymaster.js?cb=40893745';
 
 const enc = new TextEncoder();
 const selector = (sig) => '0x' + bytesToHex(keccak_256(enc.encode(sig)).slice(0, 4));
@@ -260,7 +260,9 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
   // The same withdrawal with its gas paid from the note by the pool paymaster, as one 4337 operation from a
   // throwaway account. The wallet signs and sends nothing, so none is needed beyond a node to read from: the
   // recipient is paid directly (it can be a Tacit receive address) and needs no ETH.
-  async function withdrawSponsored({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves, bundler = null }) {
+  // `confirm({ fee, receive, denomination })` is asked once the proof is made and the fee is fixed, before anything is
+  // sent; a false answer ends it with nothing sent.
+  async function withdrawSponsored({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves, bundler = null, confirm = null, maxFeePercent }) {
     const cfg = PAYMASTERS[chainId];
     if (!cfg) throw new Error('Paying the gas from the note is not available on this network.');
     const { note, pool, root, preimageHex } = await readyToWithdraw({
@@ -270,7 +272,7 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     const client = bundler || bundlerClient(cfg.bundler, fetchImpl);
     const reference = await readGasFeeReference(provider);
     const prepared = await prepareSponsoredWithdrawal({
-      chainId, pool: pool.address, denomination: pool.denomination, recipient, bundler: client, reference, onStep,
+      chainId, pool: pool.address, denomination: pool.denomination, recipient, bundler: client, reference, onStep, maxFeePercent,
       prove: async (fee) => {
         const out = await prover.prove({ chainId, pool: pool.address, preimageHex, recipient, relayer: cfg.paymaster, fee: String(fee) });
         checkWithdrawCall(out, { pool, recipient, root, nullifierHash: note.nullifierHash, relayer: cfg.paymaster, fee });
@@ -280,6 +282,9 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     const receive = pool.denomination - prepared.fee;
     onStep({ step: 'quote', fee: prepared.fee, receive });
     if (!send) return { op: prepared.op, fee: prepared.fee, receive, sent: false, gasEstimation: prepared.gasEstimation };
+    if (confirm && !(await confirm({ fee: prepared.fee, receive, denomination: pool.denomination }))) {
+      throw Object.assign(new Error('Cancelled. Nothing was sent.'), { cancelled: true });
+    }
     const done = await sendSponsoredOperation({ op: prepared.op, chainId, bundler: client, onStep, poll });
     return { op: prepared.op, fee: prepared.fee, receive, sent: true, hash: done.txHash, userOpHash: done.hash, spent: await settled(pool, note), gasEstimation: prepared.gasEstimation };
   }

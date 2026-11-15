@@ -2,8 +2,8 @@
 // Off unless the link carries ?fixed=1 (kept in this browser until ?fixed=0).
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, parseEther, formatEther, describeNote } from '/fixed-pool-flow.js?cb=f52aa1ba';
-import { PAYMASTERS } from '/fixed-pool-paymaster.js?cb=751cdeb9';
+import { makeFlow, parseEther, formatEther, describeNote } from '/fixed-pool-flow.js?cb=ca16c33e';
+import { PAYMASTERS } from '/fixed-pool-paymaster.js?cb=40893745';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 
 const $ = (id) => document.getElementById(id);
@@ -174,7 +174,8 @@ const WSTEPS = {
   prove: () => 'Proving. This takes a little while.',
   send: () => 'Confirm the withdrawal in your wallet…',
   estimate: () => 'Asking the bundler about the gas…',
-  quote: (s) => `Fee ${formatEther(s.fee)} ETH; ${formatEther(s.receive)} ETH goes to the address. Sending…`,
+  quote: () => 'Check the fee below, then send.',
+  price: () => 'Gas is high right now. Waiting for a calmer price…',
   wait: () => 'Waiting for the withdrawal to be mined…',
 };
 
@@ -196,19 +197,33 @@ async function withdraw(send) {
   finally { prover.close(); S.busy = false; setGo(); }
 }
 
+// Asks before the withdrawal is sent: the fee is fixed by then (the proof carries it) and is the most the paymaster may take.
+// Nothing is sent without a press, or if none comes in three minutes.
+function confirmFee({ fee, receive, denomination }) {
+  return new Promise((resolve) => {
+    const pct = Number((fee * 10000n) / denomination) / 100;
+    $('wconfirm-text').textContent = `Gas is paid from the note: up to ${formatEther(fee)} ETH (${pct.toFixed(2)}% of it), and what is not used comes back to the address. The address gets at least ${formatEther(receive)} ETH.`;
+    $('wconfirm').hidden = false;
+    const done = (ok) => { clearTimeout(timer); $('wconfirm').hidden = true; $('wsend').onclick = null; $('wcancel').onclick = null; resolve(ok); };
+    const timer = setTimeout(() => done(false), 3 * 60 * 1000);
+    $('wsend').onclick = () => done(true);
+    $('wcancel').onclick = () => done(false);
+  });
+}
+
 async function withdrawFromNote() {
   if (!S.flow || S.busy) return;
-  S.busy = true; setGo(); $('wout').hidden = true;
+  S.busy = true; setGo(); $('wout').hidden = true; $('wconfirm').hidden = true;
   const prover = workerProver('/split/prove-worker.js?cb=af61bd34');
   try {
     const out = await S.flow.withdrawSponsored({
-      noteText: $('wnote').value.trim(), recipient: $('wto').value.trim(), prover,
+      noteText: $('wnote').value.trim(), recipient: $('wto').value.trim(), prover, confirm: confirmFee,
       onStep: (s) => say('wstatus', (WSTEPS[s.step] || (() => ''))(s)),
     });
     const got = `${formatEther(out.receive)} ETH, plus what the fee left over after gas`;
     say('wstatus', out.spent ? `Withdrawn: ${got}. Transaction ${out.hash}` : `Sent. Transaction ${out.hash}. The pool has not shown it yet.`, out.spent ? 'ok' : 'warn');
-  } catch (e) { say('wstatus', e?.message || 'Something went wrong.', 'err'); }
-  finally { prover.close(); S.busy = false; setGo(); }
+  } catch (e) { say('wstatus', e?.message || 'Something went wrong.', e?.cancelled ? '' : 'err'); }
+  finally { prover.close(); S.busy = false; $('wconfirm').hidden = true; setGo(); }
 }
 
 function download() {

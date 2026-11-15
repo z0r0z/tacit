@@ -240,6 +240,20 @@ await test('a note is withdrawn: its deposits read, the tree built and proved in
   } catch (e) { e.message += ' | ' + await say(); throw e; }
   await ctx.close();
 });
+// a public bundler that answers like the real one, and keeps what it is sent
+function stubBundler(page, sent) {
+  return page.route('https://public.pimlico.io/**', async (route) => {
+    const { id, method, params } = route.request().postDataJSON();
+    const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
+    if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+    const answer = (result) => route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify({ jsonrpc: '2.0', id, result }) });
+    if (method === 'pimlico_getUserOperationGasPrice') return answer({ standard: { maxFeePerGas: '0x17d78400', maxPriorityFeePerGas: '0x5f5e100' } });
+    if (method === 'eth_estimateUserOperationGas') return answer({ callGasLimit: '0x0', verificationGasLimit: '0x9c40', preVerificationGas: '0xea60', paymasterVerificationGasLimit: '0x55730', paymasterPostOpGasLimit: '0x7530' });
+    if (method === 'eth_sendUserOperation') { sent.push(params[0]); await page.evaluate(() => { window.__log.withdrawn = true; }); return answer('0x1'); }
+    if (method === 'eth_getUserOperationReceipt') return answer({ success: true, receipt: { transactionHash: '0x' + 'ee'.repeat(32) } });
+    return route.fulfill({ status: 404, headers, body: 'no' });
+  });
+}
 await test('paid from the note: no account is asked for, the wallet signs and sends nothing, and the bundler gets one operation', async () => {
   const { ctx, page, problems } = await open('/split/?fixed=1', { wallet: true });
   const say = async () => `wstatus="${await page.locator('#wstatus').innerText()}" problems=${JSON.stringify(problems)}`;
@@ -247,17 +261,7 @@ await test('paid from the note: no account is asked for, the wallet signs and se
     const text = noteStringOf(new Uint8Array(62).fill(9));
     await chunkCache(page, commitmentBytes32(parseNoteString(text).commitment));
     const sent = [];
-    await page.route('https://public.pimlico.io/**', async (route) => {
-      const { id, method, params } = route.request().postDataJSON();
-      const headers = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
-      if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
-      const answer = (result) => route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify({ jsonrpc: '2.0', id, result }) });
-      if (method === 'pimlico_getUserOperationGasPrice') return answer({ standard: { maxFeePerGas: '0x17d78400', maxPriorityFeePerGas: '0x5f5e100' } });
-      if (method === 'eth_estimateUserOperationGas') return answer({ callGasLimit: '0x0', verificationGasLimit: '0x9c40', preVerificationGas: '0xea60', paymasterVerificationGasLimit: '0x55730', paymasterPostOpGasLimit: '0x7530' });
-      if (method === 'eth_sendUserOperation') { sent.push(params[0]); await page.evaluate(() => { window.__log.withdrawn = true; }); return answer('0x1'); }
-      if (method === 'eth_getUserOperationReceipt') return answer({ success: true, receipt: { transactionHash: '0x' + 'ee'.repeat(32) } });
-      return route.fulfill({ status: 404, headers, body: 'no' });
-    });
+    await stubBundler(page, sent);
     await page.waitForFunction(() => document.querySelector('#who').textContent.includes('Sepolia')); // read from the node, no account
     assert.equal(await page.isChecked('#wgas'), true, 'on by default');
     assert.equal(await page.locator('#wprep').isVisible(), false);
@@ -265,6 +269,13 @@ await test('paid from the note: no account is asked for, the wallet signs and se
     await page.fill('#wto', '0x000000000000000000000000000000000000dEaD');
     assert.equal(await page.locator('#wgo').isDisabled(), false);
     await page.click('#wgo');
+    await page.waitForSelector('#wconfirm:not([hidden])', { timeout: 180000 });
+    assert.equal(sent.length, 0, 'nothing is sent before the press');
+    const ask = await page.locator('#wconfirm-text').innerText();
+    assert.match(ask, /up to 0\.\d+ ETH \(\d\.\d\d% of it\)/);
+    assert.match(ask, /at least 0\.\d+ ETH/);
+    await shot(page, 'withdraw-confirm');
+    await page.click('#wsend');
     await page.waitForFunction(() => /Withdrawn/.test(document.querySelector('#wstatus').textContent), null, { timeout: 180000 });
     assert.equal(sent.length, 1);
     const op = sent[0];
@@ -277,6 +288,28 @@ await test('paid from the note: no account is asked for, the wallet signs and se
     assert.deepEqual(log, { accounts: 0, signs: 0, sends: 0 }, 'the wallet was neither asked for an account, nor to sign, nor to send');
     assert.match(await page.locator('#wstatus').innerText(), /Withdrawn: 0\.0\d+ ETH/);
     await shot(page, 'withdrawn-from-note');
+    assert.deepEqual(problems, []);
+  } catch (e) { e.message += ' | ' + await say(); throw e; }
+  await ctx.close();
+});
+await test('paid from the note, cancelled at the fee: nothing is sent', async () => {
+  const { ctx, page, problems } = await open('/split/?fixed=1', { wallet: true });
+  const say = async () => `wstatus="${await page.locator('#wstatus').innerText()}" problems=${JSON.stringify(problems)}`;
+  try {
+    const text = noteStringOf(new Uint8Array(62).fill(9));
+    await chunkCache(page, commitmentBytes32(parseNoteString(text).commitment));
+    const sent = [];
+    await stubBundler(page, sent);
+    await page.waitForFunction(() => document.querySelector('#who').textContent.includes('Sepolia'));
+    await page.fill('#wnote', text);
+    await page.fill('#wto', '0x000000000000000000000000000000000000dEaD');
+    await page.click('#wgo');
+    await page.waitForSelector('#wconfirm:not([hidden])', { timeout: 180000 });
+    await page.click('#wcancel');
+    await page.waitForFunction(() => /Cancelled/.test(document.querySelector('#wstatus').textContent));
+    assert.equal(await page.locator('#wconfirm').isVisible(), false);
+    assert.equal(sent.length, 0);
+    assert.equal(await page.locator('#wgo').isDisabled(), false, 'can start again');
     assert.deepEqual(problems, []);
   } catch (e) { e.message += ' | ' + await say(); throw e; }
   await ctx.close();
