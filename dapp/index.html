@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=51f5d28b"></script>
 <script type="module" src="/px-strip.js?cb=d4520508" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=2ee3c6c7" as="style">
+<link rel="preload" href="/swap/card.css?cb=fe2e2ff3" as="style">
 <link rel="preload" href="/fonts/newsreader-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/newsreader-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -420,11 +420,9 @@ main:focus { outline: none; }
 .hx { position: relative; width: 100%; max-width: 480px; min-width: 0; margin: 0 auto; background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 22px; box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent); }
 /* The card is filled by script, so until it is, it holds the height its Swap tab settles at (measured at each width, with the way the card opens: ETH to private tETH, which
    has the "Private in" block): what is below it does not move when it appears. tests/front-tile-height.mjs measures it again. */
-.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 571px; }
-@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 562px; } }
-@media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
-@media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
-@media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
+.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 580px; }
+@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
+@media (max-width: 338px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 602px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -1953,9 +1951,43 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .sk { background: var(--skel); }
 }
+/* ───────────────────────────── the look: the hero and the card's frame ─────────────────────────────
+   Graphite, built around privacy. One light thing on a screen: the button. What is chosen is a raised grey plate, not a
+   highlight. Words are in the grotesk, figures in the mono, the headline in the serif with its second word in quiet italics.
+   The rules here restyle the ones above (the tab strip's sliding line is put away, not removed: the strip is a plate now). */
+.hero h1 { font: 400 clamp(44px, 12vw, 68px)/1.02 var(--serif); letter-spacing: -.025em; }
+.hero h1 em { color: var(--mute); }
+.hero .sub { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
+.hero .sub b { font: 400 .88em var(--mono); color: var(--ink); }
+.hero-t { margin-bottom: 26px; }
+.hx { border-radius: 20px; border-color: var(--hair); background: linear-gradient(180deg, color-mix(in srgb, var(--card) 93%, #fff) 0, var(--card) 140px); }
+/* the tabs: one plate, the chosen tab raised on it */
+.hx-h { margin: 12px 12px 4px; padding: 3px; border: 0; border-radius: 12px; background: var(--field); }
+.hx-h::after { display: none; }
+.hx-h button { padding: 10px 0; border-radius: 9px; font: 500 14px/1 var(--sans); letter-spacing: 0; transition: background-color .2s, color .2s; }
+.hx-h button[aria-selected="true"] { background: var(--raise); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.hx-sk .t { height: 40px; margin: 0 -4px 6px; }
+.hx-path { font-family: var(--sans); font-size: 12.5px; }
+/* Bridge and Borrow: two words with a rule under the chosen one, not a second row of plates */
+.hx-more { display: flex; gap: 18px; margin: 6px 4px 12px; padding: 0; background: none; border-bottom: 1px solid var(--hair); border-radius: 0; }
+.hx-more button { flex: none; margin-bottom: -1px; padding: 8px 2px 10px; border-bottom: 2px solid transparent; border-radius: 0; font: 500 14px var(--sans); }
+.hx-more button[aria-selected="true"] { background: none; box-shadow: none; border-bottom-color: var(--ink); }
+/* a bridge's steps: a rail that runs from one chain's colour to the other's, a ring at each step between its ends */
+.hx-brs { margin: 18px 4px 4px; font: 400 12px/1.35 var(--sans); }
+.hx-brs li { padding-top: 22px; }
+.hx-brs li::before, .hx-brs li::after { left: 14px; top: 6px; height: 2px; border-radius: 2px; }
+.hx-brs li::before { background: linear-gradient(90deg, color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)), color-mix(in srgb, var(--from) calc(67% - var(--i, 0) * 33%), var(--to))); opacity: .55; }
+.hx-brs .dot { box-sizing: border-box; width: 14px; height: 14px; background: var(--card); border: 2px solid color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)); }
+.hx-brs li:first-child .dot { background: var(--from); }
+.hx-brs li:last-child .dot { background: var(--to); border-color: var(--to); }
+/* the two ways on from a bridge, as chips */
+#hx-brl { gap: 8px; margin-top: 14px; }
+.hx #hx-brl a { padding: 7px 13px; border: 1px solid var(--hair); border-radius: 999px; font: 400 12.5px var(--sans); text-decoration: none; }
+@media (hover: hover) { .hx #hx-brl a:hover { border-color: var(--hair-2); } }
+.hx .lede-s, .hx .hx-hv, .hx-lead { font-family: var(--sans); }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=2ee3c6c7" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=fe2e2ff3" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -2234,7 +2266,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <dialog class="treq" id="tac-req" aria-labelledby="treq-h"><div class="treq-in"><button class="treq-x" type="button" data-treq-close aria-label="Close">×</button><div id="treq-b"></div></div></dialog>
   <section class="hero" aria-labelledby="hero-h">
     <div class="hero-t">
-      <h1 id="hero-h">Private DeFi<span class="sr"> on BTC and ETH</span><span class="hero-pair" aria-hidden="true"><svg class="tk"><use href="#tk-btc"/></svg><svg class="tk"><use href="#tk-eth"/></svg></span></h1>
+      <h1 id="hero-h">Private <em>DeFi</em><span class="sr"> on BTC and ETH</span><span class="hero-pair" aria-hidden="true"><svg class="tk"><use href="#tk-btc"/></svg><svg class="tk"><use href="#tk-eth"/></svg></span></h1>
       <p class="sub">One <b>tacit1</b>&nbsp;ID for both chains. Private inside the pool.</p>
     </div>
     <section class="hx" id="hx" aria-label="Shield, swap, send, earn, withdraw, bridge or borrow"><div id="hx-body"><div class="hx-sk" aria-hidden="true"><i class="t"></i><i class="f"></i><i class="f"></i><i class="p"></i><i class="g"></i></div></div></section>
