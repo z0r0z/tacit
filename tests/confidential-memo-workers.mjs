@@ -15,7 +15,7 @@ import assert from 'node:assert';
 import { randomScalar, G } from '../dapp/bulletproofs-plus.js';
 import { makeConfidentialMemo } from '../dapp/confidential-memo.js';
 import { makeMemoProbe } from '../dapp/confidential-memo-probe.js';
-import { makeMemoWorkers } from '../dapp/confidential-memo-workers.js';
+import { makeMemoWorkers, startWorker } from '../dapp/confidential-memo-workers.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 
 const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -162,6 +162,35 @@ const withFilter = async (filter, key = rPriv, evs = events) => {
   const after = await b(rPriv, memos);
   assert.ok(after && after !== x && made.length === 12, 'and once a request has finished, the next one is read afresh');
   ok('a second reader of the same pool waits for the running probe instead of starting its own');
+}
+
+// ── how a worker is started ──
+{
+  const made = [], revoked = [];
+  class FakeWorker { constructor(u, o) { this.u = u; this.o = o; this.ended = false; made.push(this); } terminate() { this.ended = true; } }
+  const env = (isolated) => {
+    const o = { crossOriginIsolated: isolated, Worker: FakeWorker, Blob: class { constructor(parts, opts) { this.parts = parts; this.opts = opts; } },
+      URL: { createObjectURL: (b) => { o.last = b; return 'blob:test/1'; }, revokeObjectURL: (u) => revoked.push(u) } };
+    return o;
+  };
+  const direct = startWorker('https://x.test/confidential-memo-worker.js', env(false));
+  assert.strictEqual(direct.u, 'https://x.test/confidential-memo-worker.js', 'a page that is not isolated starts the script itself');
+  assert.deepStrictEqual(direct.o, { type: 'module' });
+  const e = env(true);
+  const viaBlob = startWorker('https://x.test/confidential-memo-worker.js', e);
+  assert.strictEqual(viaBlob.u, 'blob:test/1', 'an isolated page starts a blob');
+  assert.deepStrictEqual(viaBlob.o, { type: 'module' }, 'as a module');
+  assert.strictEqual(e.last.parts[0], 'import "https://x.test/confidential-memo-worker.js";', 'whose only line imports the real worker by its full address');
+  assert.deepStrictEqual(revoked, [], 'the blob is kept while the worker lives');
+  viaBlob.terminate();
+  assert.ok(viaBlob.ended && revoked.join() === 'blob:test/1', 'and let go when it is ended');
+  const noBlob = startWorker('https://x.test/w.js', { crossOriginIsolated: true, Worker: FakeWorker });
+  assert.strictEqual(noBlob.u, 'https://x.test/w.js', 'with no way to make a blob the script is started directly');
+  class Refuses extends FakeWorker { constructor(u, o) { super(u, o); if (String(u).startsWith('blob:')) throw new Error('blocked'); } }
+  const gone = []; const e2 = { ...env(true), Worker: Refuses, URL: { createObjectURL: () => 'blob:test/2', revokeObjectURL: (u) => gone.push(u) } };
+  assert.throws(() => startWorker('https://x.test/w.js', e2), /blocked/, 'a page that refuses the blob throws, which the manager treats as no worker');
+  assert.deepStrictEqual(gone, ['blob:test/2'], 'without leaving the blob behind');
+  ok('an isolated page starts the worker through a blob that imports it, any other page starts the script itself');
 }
 
 // ── the real worker file, in a thread ──
