@@ -701,7 +701,7 @@ await step('links', async () => {
   await page.goto(url + '#buy');
   ok(await cardIs(page, 'ETH>TAC'), 'links: and #buy ETH for TAC');
   await page.goto(url + '#bridge');
-  await page.waitForSelector('html[data-page="tac"] #tpg-where[open] #bridge-body', { timeout: 60000 });
+  await page.waitForSelector('html[data-page="tac"] #tpg-br[open] #bridge-body', { timeout: 60000 });
   // TAC's page is one card now (Private TAC, with its tabs), signed out until a key opens. The old Get TAC block and its Buy with ETH button are gone from it:
   // "No TAC in your wallet. Buy with ETH · Buy with sats · Claim your airdrop" shows in the card's Shield tab once a wallet is connected, which this check does not do.
   ok(new URL(page.url()).pathname === '/tac/' && !!(await page.$('#tpg-card')) && (await page.$$eval('#tcd-tabs button, #tcd-seg button', (b) => b.map((x) => x.textContent.trim()))).includes('Shield'),

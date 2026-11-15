@@ -2,7 +2,7 @@
 //   node --test tests/bridge-all.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { packNotes, planMerge, planAll, countAll, opsCompared, MAX_MERGE_INPUTS } from '../dapp/bridge-all.js';
+import { packNotes, planMerge, planAll, planPick, countAll, opsCompared, MAX_MERGE_INPUTS } from '../dapp/bridge-all.js';
 
 const CAP = 100_000_000_000n;                       // 1,000 TAC in raw units (8 decimals)
 const tac = (v) => BigInt(Math.round(v * 1e8));
@@ -107,4 +107,36 @@ test('opsCompared: merging first takes fewer Bitcoin transactions for the report
   const mixed = [note(10), note(20), note(5, { tracking: 'untracked', form: null }), note(7, { form: 'private', stealthTweakedSk: 'cc'.repeat(32) })];
   const c4 = opsCompared(planMerge(mixed, { capRaw: CAP }), planAll(mixed, { capRaw: CAP }));
   assert.deepEqual(c4, { all: 2, merge: 2 }, 'untracked and private notes are left out of the comparison');
+});
+
+test('planPick: ticked notes merge into one note up to the cap, or into the cap and the rest', () => {
+  const id = (n) => `${n.txid}:${n.vout}`;
+  const a = note(331.3021), b = note(285.1284), c = note(214.8716), d = note(89.2732), e = note(500);
+  const one = planPick([a, b, c, d, e], [a, b, c].map(id), { capRaw: CAP });
+  assert.equal(one.ok, true);
+  assert.equal(one.kind, 'tracked');
+  assert.deepEqual([one.total, one.send, one.keep], [tac(831.3021), tac(831.3021), 0n], 'under the cap: one note of the whole');
+  assert.deepEqual(one.notes.map((n) => n.txid), [a, b, c].map((n) => n.txid), 'biggest first, only the ticked ones');
+  const two = planPick([a, b, c, d, e], [a, b, c, d, e].map(id), { capRaw: CAP });
+  assert.equal(two.ok, true);
+  assert.deepEqual([two.total, two.send, two.keep], [tac(1420.5753), CAP, tac(420.5753)], 'over the cap: the cap, and the rest kept in a second note');
+  assert.equal(planPick([a, b], [], { capRaw: CAP }).why, 'few', 'nothing ticked');
+  assert.equal(planPick([a, b], [id(a), 'f'.repeat(64) + ':0'], { capRaw: CAP }).why, 'few', 'a ticked note no longer listed does not count');
+});
+
+test('planPick: notes of the other kind, a private, empty, recent or unavailable note, too many or too much are refused', () => {
+  const id = (n) => `${n.txid}:${n.vout}`, pick = (ns, opts = {}) => planPick(ns, ns.map(id), { capRaw: CAP, ...opts });
+  assert.equal(pick([note(10)]).why, 'few');
+  assert.equal(pick([note(10), note(20, { tracking: 'untracked', form: null })]).why, 'mixed');
+  const unt = pick([note(10, { tracking: 'untracked', form: null }), note(20, { tracking: 'untracked', form: null })]);
+  assert.deepEqual([unt.ok, unt.kind, unt.send], [true, 'untracked', tac(30)]);
+  for (const bad of [note(5, { form: 'private', stealthTweakedSk: 'aa'.repeat(32) }), note(0), note(5, { tracking: 'new' }), note(5, { tracking: 'bound' }), note(5, { eligible: false, reason: 'proof' })]) {
+    const r = pick([note(10), bad]);
+    assert.deepEqual([r.ok, r.why, r.bad?.txid], [false, 'unmergeable', bad.txid]);
+  }
+  assert.equal(pick(Array.from({ length: MAX_MERGE_INPUTS + 1 }, () => note(1))).why, 'inputs');
+  assert.equal(pick(Array.from({ length: MAX_MERGE_INPUTS }, () => note(1))).ok, true);
+  const over = pick([note(900), note(900), note(300)]);
+  assert.deepEqual([over.ok, over.why, over.total], [false, 'over', tac(2100)], 'more than two notes would come out');
+  assert.equal(pick([note(1000), note(1000)]).keep, CAP, 'exactly twice the cap: two notes of the cap');
 });

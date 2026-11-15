@@ -114,7 +114,7 @@ const until = (re, sel = '#hx', ms = 40000) => page.waitForFunction(({ re, sel }
 async function sheet(want = 'label.brn, .brsp') {
   await page.goto(BASE + '/tac/#bridge', { waitUntil: 'commit' });
   await page.waitForSelector('#bridge-body', { timeout: 60000, state: 'attached' }).catch(() => {});
-  await page.evaluate(() => { const d = document.querySelector('#tpg-where'); if (d) d.open = true; }).catch(() => {});
+  await page.evaluate(() => { const d = document.querySelector('#tpg-br'); if (d) d.open = true; }).catch(() => {});
   await page.waitForSelector(`#bridge-body ${want}`, { timeout: 90000 }).catch(() => {});
   await page.waitForTimeout(1500);
 }
