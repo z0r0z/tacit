@@ -1,0 +1,172 @@
+// The split page: an amount, the plan for it, a wallet to deposit the whole notes, and a way back to them.
+// Off unless the link carries ?fixed=1 (kept in this browser until ?fixed=0).
+
+import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES } from '../fixed-pool-notes.js';
+import { makeFlow, parseEther, formatEther, describeNote } from '../fixed-pool-flow.js';
+
+const $ = (id) => document.getElementById(id);
+const kv = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* a convenience only */ } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* a convenience only */ } },
+};
+
+const FLAG = 'tacit-fixed-pools';
+const asked = new URLSearchParams(location.search).get('fixed');
+if (asked === '1') kv.set(FLAG, '1'); else if (asked === '0') kv.del(FLAG);
+const enabled = kv.get(FLAG) === '1';
+$(enabled ? 'app' : 'off').hidden = false;
+
+const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+const NETWORKS = { 1: 'Ethereum', 11155111: 'Sepolia' };
+const TACIT_LINK = { 1: '/pay/eth/#ethereum/deposit' };
+
+const S = { account: null, chainId: null, flow: null, busy: false, notes: [] };
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const say = (id, text, cls = '') => { const el = $(id); el.textContent = text; el.className = `status ${cls}`.trim(); };
+
+function settings() {
+  const min = BigInt($('min').value || DEFAULT_MIN_DENOMINATION);
+  const max = Math.max(0, Math.min(20, Number($('max').value)));
+  return { minDenominationWei: min, maxNotes: Number.isFinite(max) ? max : DEFAULT_MAX_NOTES };
+}
+
+function fillMinOptions() {
+  const sel = $('min'), keep = sel.value;
+  const pools = FIXED_POOLS[S.chainId] || FIXED_POOLS[1];
+  sel.innerHTML = pools.map((p) => `<option value="${p.denomination}">${formatEther(p.denomination)} ETH</option>`).join('');
+  sel.value = [...sel.options].some((o) => o.value === keep) ? keep : String(DEFAULT_MIN_DENOMINATION);
+  if (!sel.value) sel.selectedIndex = 0;
+}
+
+function plan() {
+  const wei = parseEther($('amt').value);
+  if (wei === null || wei === 0n) return null;
+  return { wei, ...planSplit(wei, S.chainId ?? 1, settings()) };
+}
+
+function renderPlan() {
+  const p = plan();
+  const box = $('plan');
+  $('next').hidden = true;
+  if (!p) { box.innerHTML = '<span class="mute">Enter an amount.</span>'; setGo(); return; }
+  const rows = p.notes.map((n) => `<div class="row"><span>${n.count} × ${formatEther(n.denomination)} ETH</span><b><small>whole notes</small></b></div>`);
+  rows.push(`<div class="row"><span>${p.remainder === 0n ? 'Nothing' : esc(formatEther(p.remainder)) + ' ETH'}</span><b><small>${p.remainder === 0n ? 'for Tacit' : 'to Tacit'}</small></b></div>`);
+  if (!p.notes.length) rows.unshift(`<div class="row"><span class="mute">No whole notes at this size: all of it goes to Tacit.</span><b></b></div>`);
+  box.innerHTML = rows.join('');
+  setGo();
+}
+
+function setGo() {
+  const p = plan(), b = $('go');
+  if (!S.account) { b.disabled = S.busy; b.textContent = 'Connect a wallet'; b.dataset.mode = 'connect'; return; }
+  const net = NETWORKS[S.chainId];
+  if (!net) { b.disabled = true; b.textContent = 'Switch to Ethereum'; b.dataset.mode = 'none'; return; }
+  if (!p) { b.disabled = true; b.textContent = 'Enter an amount'; b.dataset.mode = 'none'; return; }
+  if (!p.notes.length) { b.disabled = false; b.textContent = 'Continue in Tacit'; b.dataset.mode = 'tacit'; return; }
+  b.disabled = S.busy; b.dataset.mode = 'deposit';
+  b.textContent = `Deposit ${p.noteCount} ${p.noteCount === 1 ? 'note' : 'notes'}`;
+}
+
+function renderNotes(list) {
+  $('notes').hidden = !list.length;
+  $('dl').hidden = !list.length;
+  $('noteList').innerHTML = list.map((n, i) => `
+    <div class="note"><div class="head"><span>${esc(n.denomination)} ETH <small class="mute">· nonce ${n.nonce}${n.spent ? ' · spent' : ''}</small></span>
+      <button class="btn ghost small" type="button" data-copy="${i}">Copy</button></div><code>${esc(n.text)}</code></div>`).join('');
+  S.notes = list;
+}
+
+function renderNext(p) {
+  $('next').hidden = false;
+  const link = TACIT_LINK[S.chainId];
+  $('nextBody').innerHTML = p.remainder === 0n
+    ? '<span class="mute">Nothing is left for Tacit.</span>'
+    : `<div class="row"><span>${esc(formatEther(p.remainder))} ETH</span><b><small>into Tacit</small></b></div>${link
+      ? `<a class="btn" href="${link}">Continue in Tacit</a>`
+      : '<div class="mute" style="font-size:12.5px">Tacit is not on this network on this page.</div>'}`;
+}
+
+async function connect() {
+  const eth = window.ethereum;
+  if (!eth) return say('status', 'No wallet found in this browser.', 'err');
+  try {
+    const [a] = await eth.request({ method: 'eth_requestAccounts' });
+    S.account = a;
+    S.chainId = Number(await eth.request({ method: 'eth_chainId' }));
+    start(eth);
+  } catch (e) { say('status', e?.message || 'The wallet did not connect.', 'err'); }
+}
+
+function start(eth) {
+  S.flow = makeFlow({ provider: eth, account: S.account, chainId: S.chainId, store: kv });
+  $('who').textContent = `${short(S.account)} · ${NETWORKS[S.chainId] || `chain ${S.chainId}`}`;
+  fillMinOptions();
+  $('find').disabled = !FIXED_POOLS[S.chainId];
+  renderPlan();
+}
+
+async function go() {
+  const mode = $('go').dataset.mode, p = plan();
+  if (mode === 'connect') return connect();
+  if (mode === 'tacit') { const l = TACIT_LINK[S.chainId]; if (l) location.href = l; else say('status', 'Tacit is not on this network on this page.', 'warn'); return; }
+  if (mode !== 'deposit' || !p || S.busy) return;
+  S.busy = true; setGo(); $('find').disabled = true;
+  try {
+    const bal = BigInt(await window.ethereum.request({ method: 'eth_getBalance', params: [S.account, 'latest'] }));
+    if (bal < p.wei) throw new Error(`The wallet holds ${formatEther(bal)} ETH, less than ${formatEther(p.wei)}.`);
+    const out = await S.flow.deposit(p, {
+      onStep: (s) => say('status', s.step === 'find' ? 'Looking for the next free note number…' : s.step === 'sign' ? `Sign for note ${s.i + 1} of ${s.of}…` : s.step === 'send' ? 'Confirm the deposits in your wallet…' : `Deposit ${s.i} of ${s.of} confirmed.`),
+    });
+    renderNotes(out.notes.map((n) => describeNote(n, S.chainId)));
+    say('status', `${out.notes.length === 1 ? 'Deposited.' : 'Deposited all.'} Keep the notes: they open the deposit anywhere.`, 'ok');
+    renderNext(p);
+  } catch (e) {
+    const partial = e?.done?.length ? ` ${e.done.length} of ${e.notes.length} deposits went through; Find shows them.` : '';
+    say('status', `${e?.message || 'Something went wrong.'}${partial}`, 'err');
+  } finally { S.busy = false; $('find').disabled = !FIXED_POOLS[S.chainId]; setGo(); }
+}
+
+async function find() {
+  if (!S.flow || S.busy) return;
+  S.busy = true; setGo(); $('find').disabled = true;
+  try {
+    const { found } = await S.flow.scan({ from: 0, onProbe: (n) => say('findStatus', `Sign for number ${n}…`) });
+    say('findStatus', found.length ? `${found.length} found.` : 'No deposits found.', found.length ? 'ok' : '');
+    renderNotes(found.map((n) => describeNote(n, S.chainId)));
+  } catch (e) { say('findStatus', e?.message || 'Something went wrong.', 'err'); }
+  finally { S.busy = false; $('find').disabled = !FIXED_POOLS[S.chainId]; setGo(); }
+}
+
+function download() {
+  const text = S.notes.map((n) => n.text).join('\n') + '\n';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  a.download = 'tacit-notes.txt';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+if (enabled) {
+  $('max').value = String(DEFAULT_MAX_NOTES);
+  fillMinOptions();
+  $('amt').addEventListener('input', renderPlan);
+  $('min').addEventListener('change', renderPlan);
+  $('max').addEventListener('input', renderPlan);
+  $('go').addEventListener('click', go);
+  $('find').addEventListener('click', find);
+  $('dl').addEventListener('click', download);
+  $('noteList').addEventListener('click', async (e) => {
+    const i = e.target?.dataset?.copy;
+    if (i == null) return;
+    try { await navigator.clipboard.writeText(S.notes[Number(i)].text); e.target.textContent = 'Copied'; } catch { e.target.textContent = 'Select and copy'; }
+    setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
+  });
+  const eth = window.ethereum;
+  if (eth?.on) {
+    eth.on('accountsChanged', (a) => { if (!a?.length) location.reload(); else { S.account = a[0]; start(eth); } });
+    eth.on('chainChanged', (c) => { S.chainId = Number(c); if (S.account) start(eth); });
+  }
+  renderPlan();
+}

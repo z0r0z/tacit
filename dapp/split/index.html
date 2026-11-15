@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>tacit split</title>
+<meta name="description" content="Large amounts in whole notes, the odd part in Tacit.">
+<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+@font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Instrument Serif'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/instrument-serif-400i-latin.woff2') format('woff2'); }
+:root {
+  --paper: #E8E0CC; --card: #F2EBD4; --field: #FAF6EA; --ink: #1A1A1A; --mute: #625C4F;
+  --hair: rgba(26,26,26,.12); --hair-2: rgba(26,26,26,.28);
+  --ok: #0a7234; --warn: #9a4a00; --err: #b8341d;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --serif: 'Instrument Serif', Georgia, serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --paper: #15130E; --card: #1F1C15; --field: #191711; --ink: #EDE5CF; --mute: #A39B85;
+    --hair: rgba(237,229,207,.12); --hair-2: rgba(237,229,207,.28); --ok: #8fcf9a; --warn: #f7931a; --err: #f08a6c; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); }
+body { font: 14px/1.6 var(--mono); letter-spacing: -.01em; padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left)); }
+a { color: inherit; text-underline-offset: 3px; }
+button, input, select { font: inherit; color: inherit; letter-spacing: inherit; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+[hidden] { display: none !important; }
+.shell { max-width: 640px; margin: 0 auto; padding: 22px 0 56px; }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.brand { font: italic 400 30px/1 var(--serif); text-decoration: none; }
+.who { font-size: 12px; color: var(--mute); overflow-wrap: anywhere; text-align: right; }
+h1 { font: 400 clamp(34px, 7vw, 52px)/1 var(--serif); letter-spacing: -.02em; margin: 26px 0 8px; }
+.sub { margin: 0 0 18px; color: var(--mute); font-size: 13px; }
+.panel { background: var(--card); border: 1px solid var(--hair); border-radius: 18px; padding: 20px; margin-top: 14px; }
+.eyebrow { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 10px; }
+label { display: block; font-size: 12.5px; color: var(--mute); margin-bottom: 6px; }
+input[type=text], input[type=number], select { width: 100%; min-height: 48px; padding: 8px 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; }
+.row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 5px 0; font-size: 13px; }
+.row b { font-weight: 400; text-align: right; overflow-wrap: anywhere; }
+.row small { color: var(--mute); }
+.btn { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 52px; margin-top: 14px; padding: 10px 16px; font-weight: 500; text-decoration: none; color: var(--card); background: var(--ink); border: 1px solid var(--ink); border-radius: 14px; cursor: pointer; }
+.btn:disabled { color: color-mix(in srgb, var(--ink) 70%, var(--card)); background: color-mix(in srgb, var(--ink) 6%, transparent); border-color: var(--hair-2); cursor: not-allowed; }
+.btn.ghost { color: var(--ink); background: transparent; border-color: var(--hair-2); min-height: 44px; }
+.btn.small { width: auto; min-height: 36px; margin: 0; padding: 4px 12px; font-size: 12.5px; }
+.mute { color: var(--mute); } .err { color: var(--err); } .ok { color: var(--ok); } .warn { color: var(--warn); }
+.status { margin-top: 12px; font-size: 12.5px; overflow-wrap: anywhere; min-height: 1em; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+details { margin-top: 12px; font-size: 12.5px; }
+summary { cursor: pointer; color: var(--mute); }
+.note { margin: 10px 0 0; padding: 10px 12px; background: var(--field); border: 1px solid var(--hair); border-radius: 12px; }
+.note code { display: block; font: 12px/1.5 var(--mono); overflow-wrap: anywhere; user-select: all; margin-top: 6px; }
+.note .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="top"><a class="brand" href="/">tacit</a><span class="who" id="who"></span></header>
+  <main id="off" hidden>
+    <h1>Split</h1>
+    <p class="sub">Not enabled.</p>
+  </main>
+  <main id="app" hidden>
+    <h1>Split</h1>
+    <p class="sub">Large amounts in whole notes, the odd part in Tacit.</p>
+    <section class="panel">
+      <p class="eyebrow">Amount</p>
+      <label for="amt">ETH</label>
+      <input id="amt" type="text" inputmode="decimal" autocomplete="off" placeholder="100.001234">
+      <details>
+        <summary>Settings</summary>
+        <div class="cols" style="margin-top:10px">
+          <div><label for="min">Smallest note</label><select id="min"></select></div>
+          <div><label for="max">Most notes</label><input id="max" type="number" min="0" max="20" step="1"></div>
+        </div>
+      </details>
+    </section>
+    <section class="panel">
+      <p class="eyebrow">Plan</p>
+      <div id="plan"><span class="mute">Enter an amount.</span></div>
+      <button class="btn" id="go" type="button" disabled>Connect a wallet</button>
+      <div class="status" id="status" role="status" aria-live="polite"></div>
+    </section>
+    <section class="panel" id="next" hidden>
+      <p class="eyebrow">Then</p>
+      <div id="nextBody"></div>
+    </section>
+    <section class="panel" id="notes" hidden>
+      <p class="eyebrow">Notes</p>
+      <div id="noteList"></div>
+      <button class="btn ghost" id="dl" type="button" hidden>Download notes</button>
+    </section>
+    <section class="panel">
+      <p class="eyebrow">Find my notes</p>
+      <div class="mute" style="font-size:12.5px">Looks through this wallet's earlier deposits. Each one asks for a signature.</div>
+      <button class="btn ghost" id="find" type="button" disabled>Find</button>
+      <div class="status" id="findStatus" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
