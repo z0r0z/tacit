@@ -104,11 +104,28 @@ export function makeConfidentialNames() {
   // any other call answers null; "then" must stay undefined or awaiting the object waits on it forever
   return new Proxy(base, { get: (t, k) => (k in t || k === 'then' || typeof k === 'symbol' ? t[k] : async () => null) });
 }`;
-async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null } = {}) {
+// notes: values (wei) the private balance holds, standing in for what the wallet would read from the pool: the real wallet module is
+// served with its sync and notes answering these, so the form sees a funded balance
+const WALLET_WRAP = `
+export function makeEvmPoolWallet(o) {
+  const w = __realMakeEvmPoolWallet(o), fake = globalThis.__fakeNotes;
+  if (!fake) return w;
+  const sync = w.sync;
+  w.sync = async (...a) => { const s = await sync.apply(w, a); return { ...s, balance: fake.reduce((x, v) => x + BigInt(v), 0n), behind: false }; };
+  w.notes = () => fake.map((v) => ({ v: BigInt(v) }));
+  return w;
+}`;
+async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, notes = null } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 560, height: 1100 } });
   const page = await ctx.newPage();
   const problems = [], sent = [], told = [];
   await page.exposeFunction('__send', async (tx) => { sent.push(tx); return '0x' + 'ab'.repeat(32); });
+  if (notes) {
+    await page.addInitScript((n) => { window.__fakeNotes = n; }, notes.map(String));
+    const real = readFileSync(join(DAPP, 'evm-pool-wallet.js'), 'utf8').replace('export function makeEvmPoolWallet(', 'function __realMakeEvmPoolWallet(');
+    assert.ok(real.includes('function __realMakeEvmPoolWallet('), 'the wallet module is wrapped');
+    await page.route(/\/evm-pool-wallet\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: real + WALLET_WRAP }));
+  }
   if (names) {
     await page.addInitScript((n) => { window.__names = n; }, names);
     await page.route(/\/confidential-names\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: NAMES_STUB }));
@@ -288,6 +305,84 @@ await test('without the flag the Send form never looks for a deposit address', a
   assert.match(await receiptText(page, /More than your private balance covers/), /^((?!from my wallet)[\s\S])*$/);
   assert.equal(await page.locator('#f-go').isDisabled(), true);
   assert.equal(sent.length, 0);
+  await ctx.close();
+});
+
+// ── Send: with a private balance that covers the payment, the wallet is one visible link away ──
+const ETH = 10n ** 18n;
+const sendToName = async (page, amount) => { await toSend(page, 'ross.wei', amount); };
+await test('a private balance that covers it pays privately, with one link to pay from the wallet instead, and one back', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
+  const { ctx, page, sent, problems } = await open({ search: '?fixed=1', names, keeper: QUOTE, notes: [ETH] });
+  await sendToName(page, '0.5');
+  const text = await receiptText(page, /Pay ross\.wei from my wallet instead/);
+  assert.match(text, /They receive/); assert.doesNotMatch(text, /You send/);
+  assert.match(await page.locator('#f-go').innerText(), /Send privately/, 'private stays the default');
+  assert.match(await page.locator('#f-note').innerText(), /Nothing on chain links/);
+  if (SHOTS) await page.screenshot({ path: join(SHOTS, 'send-link.png'), fullPage: true });
+  await page.click('#f-viawallet');
+  const chosen = await receiptText(page, /You chose your wallet over your private balance/);
+  assert.match(chosen, /You send/); assert.match(chosen, /Pay privately instead/);
+  assert.match(await page.locator('#f-go').innerText(), /Pay ross\.wei from my wallet/);
+  assert.match(await page.locator('#f-note').innerText(), /deposit address show on chain/);
+  await page.click('#f-private');
+  assert.match(await receiptText(page, /Pay ross\.wei from my wallet instead/), /They receive/);
+  assert.match(await page.locator('#f-go').innerText(), /Send privately/);
+  assert.equal(sent.length, 0, 'nothing is sent by moving between the two');
+  await page.click('#f-viawallet');
+  await receiptText(page, /You chose your wallet/);
+  await page.click('#f-go');
+  await page.waitForFunction(() => /Paid ross\.wei 0\.5 ETH/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 60000 });
+  assert.equal(sent.length, 1); assert.equal(sent[0].to.toLowerCase(), BOX1.toLowerCase());
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('changing the recipient puts the form back on the private payment', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) }, 'kim.wei': { ...ENTRY, box: null } };
+  const { ctx, page } = await open({ search: '?fixed=1', names, keeper: QUOTE, notes: [ETH] });
+  await sendToName(page, '0.5');
+  await receiptText(page, /from my wallet instead/);
+  await page.click('#f-viawallet');
+  await receiptText(page, /You chose your wallet/);
+  await page.fill('#f-to', 'kim.wei');
+  await receiptText(page, /They receive/);
+  assert.equal(await page.locator('#f-viawallet').count(), 0, 'a name with no deposit address has no such link');
+  assert.match(await page.locator('#f-go').innerText(), /Send privately/);
+  await page.fill('#f-to', 'ross.wei');
+  assert.match(await receiptText(page, /from my wallet instead/), /They receive/);
+  assert.match(await page.locator('#f-go').innerText(), /Send privately/, 'not still on the wallet');
+  await ctx.close();
+});
+await test('a balance spread over too many notes keeps the private message, and the wallet stays a link, not the answer', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
+  const { ctx, page, sent } = await open({ search: '?fixed=1', names, keeper: QUOTE, notes: Array(12).fill(ETH / 10n) });
+  await sendToName(page, '1.15');
+  const text = await receiptText(page, /spread over 12 notes/);
+  assert.match(text, /Send up to/); assert.match(text, /Pay ross\.wei from my wallet instead/);
+  assert.doesNotMatch(text, /You send/); assert.doesNotMatch(text, /can’t cover this/);
+  assert.equal(await page.locator('#f-go').isDisabled(), true);
+  await page.click('#f-viawallet');
+  await receiptText(page, /You chose your wallet/);
+  assert.equal(await page.locator('#f-go').isDisabled(), false);
+  assert.equal(sent.length, 0);
+  await ctx.close();
+});
+await test('with too little in the private balance the wallet is the way, and there is no link back', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
+  const { ctx, page } = await open({ search: '?fixed=1', names, keeper: QUOTE, notes: [ETH / 10n] });
+  await sendToName(page, '0.5');
+  const text = await receiptText(page, /You send/);
+  assert.match(text, /can’t cover this/); assert.doesNotMatch(text, /Pay privately instead/);
+  assert.equal(await page.locator('#f-private').count(), 0);
+  await ctx.close();
+});
+await test('without the flag a funded Send form has no wallet link', async () => {
+  const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
+  const { ctx, page } = await open({ names, keeper: QUOTE, notes: [ETH] });
+  await sendToName(page, '0.5');
+  assert.match(await receiptText(page, /They receive/), /0\.5 ETH/);
+  await page.waitForTimeout(1500);
+  assert.equal(await page.locator('#f-viawallet').count(), 0);
   await ctx.close();
 });
 

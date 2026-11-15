@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-hBhFr94bacVtQ6cb6Eut+4IZeMpHvJVcpgJR1YLo/aw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ZgRZWzdcjdF9NzqM7hy+32lZ+jdVNP3yohaxg8ULFnM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -3109,8 +3109,8 @@ function formSend(f) {
     <p class="note" id="f-note"></p>`);
   wireRoute(f, tab);
   const to = $('#f-to'), amt = $('#f-amt'), go = $('#f-go'), rc = $('#f-rcpt'), later = $('#f-later'), save = $('#f-save'), pname = $('#f-pname');
-  let okTo = null, lastTo = '', dep = null, shownFee = null, boxPay = null;
-  const boxSeen = new Map();
+  let okTo = null, lastTo = '', dep = null, shownFee = null, boxPay = null, viaWallet = false;
+  const boxSeen = new Map(), boxAsked = new Set();
   $('#f-bylink').onclick = () => { S.sendMode = 'link'; renderForm(); writeHash(); };
   $$('[data-person]', f).forEach((b) => b.onclick = () => { to.value = b.dataset.person; to.dispatchEvent(new Event('input')); amt.focus(); });
   $$('[data-unperson]', f).forEach((b) => b.onclick = () => { dropPerson(b.dataset.unperson); renderForm(); });
@@ -3120,12 +3120,17 @@ function formSend(f) {
   $('#f-paste').onclick = async () => { try { to.value = (await navigator.clipboard.readText()).trim(); to.dispatchEvent(new Event('input')); } catch { to.focus(); } };
   $('#f-max').onclick = () => { const fee = relayFee(tab); if (fee == null || cur().bal == null) return; const cap = atCap(fee), v = maxSpend(cap); amt.value = v ? plain(v) : ''; markMax(amt, v && spendPlan(v, cap)?.merges === 0); amt.dispatchEvent(new Event('input')); };
   const R = receipt(rc);
-  rc.addEventListener('click', (e) => { const b = e.target.closest('#pv-round'); if (b) { amt.value = plain(BigInt(b.dataset.v)); amt.dispatchEvent(new Event('input')); } });
+  rc.addEventListener('click', (e) => {
+    const b = e.target.closest('#pv-round');
+    if (b) { amt.value = plain(BigInt(b.dataset.v)); amt.dispatchEvent(new Event('input')); }
+    else if (e.target.closest('#f-viawallet')) { viaWallet = true; FORM.check?.(); }
+    else if (e.target.closest('#f-private')) { viaWallet = false; FORM.check?.(); }
+  });
   FORM.check = () => { check(); R.done(); };
   const check = () => {
     const raw = to.value.trim(), a = parseUnits(amt.value), fee = relayFee(tab), bal = cur().bal, addr = isAddr(raw);
     maxOff($('#f-max'), maxWhy(fee, bal));
-    if (raw !== lastTo) { lastTo = raw; okTo = null; if (raw && !addr) resolveRecipient(raw).then((r) => { if (to.value.trim() === raw) { okTo = r; FORM.check?.(); } }, (e) => { if (to.value.trim() === raw) { okTo = { error: errText(e) }; FORM.check?.(); } }); }
+    if (raw !== lastTo) { lastTo = raw; okTo = null; viaWallet = false; if (raw && !addr) resolveRecipient(raw).then((r) => { if (to.value.trim() === raw) { okTo = r; FORM.check?.(); } }, (e) => { if (to.value.trim() === raw) { okTo = { error: errText(e) }; FORM.check?.(); } }); }
     if (addr) okTo = badSum(raw) ? { error: SUM_MSG } : payable(raw) ? { addr: raw } : { error: 'That address cannot receive a payment.' };
     go.disabled = true; later.hidden = true; dep = null; shownFee = null; boxPay = null; go.textContent = 'Send privately';
     const known = nameFor(raw), valid = !!(okTo?.bp || okTo?.addr) && lc(okTo?.bp) !== lc(S.key.bp);
@@ -3143,26 +3148,32 @@ function formSend(f) {
     if (fee == null) return R.set(html`<p class="note">${relayUp() ? 'Reading the relay’s fee…' : 'The relay can’t take this one right now. Send it from your wallet instead, or try again in a moment.'}</p>`);
     const cap = atCap(fee), plan = spendPlan(a, cap), who = known || okTo.label, self = routeOf(tab) === 'wallet';
     const change = bal != null && plan ? bal - plan.total : null;
-    // A name that publishes a deposit address can be paid from the wallet when the private balance cannot cover it (not when it does, spread over too many notes: that stays private)
-    const nm = LARGE_ON && okTo.bp && bal != null && !plan && !tooSpread(a, cap) && chainKeeper(c) ? nameOf(raw) : null, seen = nm && boxSeen.get(nm);
-    if (nm && !seen) {
+    // A name that publishes a deposit address can be paid from the wallet: that is the way when the private balance cannot cover the payment
+    // (not when it does, spread over too many notes: that stays private), and a visible choice, one link, when a private payment is possible
+    const nm = LARGE_ON && okTo.bp && chainKeeper(c) ? nameOf(raw) : null, seen = nm && boxSeen.get(nm);
+    const noPrivate = bal != null && !plan && !tooSpread(a, cap);
+    if (nm && !seen && !boxAsked.has(nm)) {
+      boxAsked.add(nm);
       boxOfName(nm).then((r) => { boxSeen.set(nm, r); if (to.value.trim().toLowerCase() === nm) FORM.check?.(); });
-      return R.set(html`<p class="note">Checking whether ${nm} takes ETH from a wallet…</p>`);
     }
-    if (seen?.box && lc(seen.pool) === lc(okTo.bp)) {
+    if (nm && !seen && noPrivate) return R.set(html`<p class="note">Checking whether ${nm} takes ETH from a wallet…</p>`);
+    const walletOk = !!(seen?.box && lc(seen.pool) === lc(okTo.bp));
+    const viaLink = walletOk ? html`<p class="more"><button class="link" type="button" id="f-viawallet">Pay ${nm} from my wallet instead</button></p>` : '';
+    if (walletOk && (noPrivate || viaWallet)) {
+      const backLink = noPrivate ? '' : html`<p class="more"><button class="link" type="button" id="f-private">Pay privately instead</button></p>`;
       const min = minOf(CH[c.chainId].quote);
-      if (min && a < min) return bad(`On ${c.full}, a payment from a wallet needs at least ${fmt(min, 18, 6)} ETH for the relay to move it in. Send more.`);
+      if (min && a < min) return R.set(html`<p class="note err" role="alert">On ${c.full}, a payment from a wallet needs at least ${fmt(min, 18, 6)} ETH for the relay to move it in. Send more.</p>${backLink}`);
       boxPay = { name: nm, box: seen.box, pool: seen.pool };
       R.set(html`${kvRow('To', html`${nm} → ${viewAddr(seen.box, 8)}`)}
         ${kvRow('You send', html`${fmt(a, 18, 6)} ETH from your wallet`)}
         ${kvRow('They receive', html`at least ${fmt(a - (a * 25n) / 10000n, 18, 6)} ETH, in their private balance`)}
-        <p class="note">Your private balance can’t cover this, so it comes from your wallet. ${nm} publishes this deposit address, and the relay moves what arrives into their private balance, usually within minutes, for at most 0.25%.</p>`);
+        <p class="note">${noPrivate ? 'Your private balance can’t cover this, so it comes from your wallet.' : 'You chose your wallet over your private balance.'} ${nm} publishes this deposit address, and the relay moves what arrives into their private balance, usually within minutes, for at most 0.25%.</p>${backLink}`);
       say($('#f-note'), `Your wallet, the amount and ${nm}’s deposit address show on chain.`);
       go.textContent = S.wallet ? `Pay ${nm} from my wallet` : 'Connect wallet to pay';
       go.disabled = false;
       return;
     }
-    if (bal != null && !plan && tooSpread(a, cap)) return bad(spreadText(c, cur(), maxSpend(cap), 'Send up to'));
+    if (bal != null && !plan && tooSpread(a, cap)) return R.set(html`<p class="note err" role="alert">${spreadText(c, cur(), maxSpend(cap), 'Send up to')}</p>${viaLink}`);
     if (okTo.addr && bal != null && !plan) {
       const have = maxSpend(cap);
       dep = depositFor(a, cap);
@@ -3181,7 +3192,7 @@ function formSend(f) {
       ${feeRow(fee, self)}
       ${mergeRow(fee, plan?.merges, self)}
       ${change != null ? keptRow(change, fee) : ''}
-      ${okTo.addr ? privacyView(c, a, raw, routeOf(tab) === 'wallet' ? 'self' : null) : ''}`);
+      ${okTo.addr ? privacyView(c, a, raw, routeOf(tab) === 'wallet' ? 'self' : null) : ''}${viaLink}`);
     if (okTo.addr) { later.hidden = !privacyCheck(c, a, raw, null)?.wait; go.textContent = `Pay ${who || short(raw)} now`; }
     go.disabled = false;
   };
