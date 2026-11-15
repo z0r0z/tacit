@@ -7,6 +7,7 @@
 
 import { makeHalo2System } from './btc-pool-halo2-prover.js';
 import { defaultAnchor } from './btc-shielded-pool.js';
+import { makeBtcScanWorkers } from './btc-pool-scan-workers.js';
 import { poseidon2 } from './vendor/tacit-poseidon.min.js';
 
 export const POOL_API = String(globalThis.__TACIT_BTC_POOL_API__ || 'https://tacit-btc-pool-mainnet.onrender.com').replace(/\/$/, '');
@@ -48,6 +49,8 @@ function browserStore() {
   } catch { return null; }
 }
 const SCAN_CK = 'tacit-btc-scan-ck-v1', SCAN_CK_KEEP = 6;
+// The workers that read the leaves of a feed for a wallet (scanMine): one set for the page, kept a few seconds after a read.
+const sharedScanWorkers = makeBtcScanWorkers();
 const textBytes = (t) => new TextEncoder().encode(t);
 
 // Reads a response body with progress(loaded, total).
@@ -74,7 +77,7 @@ async function readWithProgress(resp, total, progress) {
 }
 
 // base: where pin.json and the artifacts are served. readFile(name) → bytes replaces fetch (Node).
-export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-pool/', fetchImpl = (...a) => globalThis.fetch(...a), readFile = null, store = browserStore() } = {}) {
+export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-pool/', fetchImpl = (...a) => globalThis.fetch(...a), readFile = null, store = browserStore(), scanWorkers = sharedScanWorkers } = {}) {
   const baseUrl = base.endsWith('/') ? base : base + '/';
   let pinP = null;
   const cache = new Map();
@@ -215,22 +218,34 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
   const feedDigest = (feed, n) => sha256Hex(textBytes(feed.slice(0, n).map((f) => `${strip(f.leaf)}:${strip(f.asset)}:${strip(f.pkEph)}:${strip(f.ctNote)}`).join(',')));
   const contiguous = (feed, n) => { for (let i = 0; i < n; i++) if (!feed[i] || feed[i].leafIndex !== i) return false; return true; };
   const keptRead = () => { try { const j = JSON.parse(store.get(SCAN_CK) || 'null'); return j && j.v === 1 && Array.isArray(j.e) ? j.e : []; } catch { return []; } };
+  // A message to oneself yields like a timer but is not clamped to four milliseconds a turn once turns nest, nor slowed in a background tab.
+  const handBack = () => new Promise((r) => { if (typeof MessageChannel === 'undefined') return setTimeout(r, 0); const c = new MessageChannel(); c.port1.onmessage = () => { c.port1.close(); r(); }; c.port2.postMessage(0); });
+  // What the pool's receive makes of each of `leaves` under the wallet, a note or null each: from the workers where they answer (a leaf is a point multiplication or two, and a note that
+  // opens about forty milliseconds more, its keys, its leaf and its nullifier), here for every leaf they did not answer, the thread handed back between leaves.
+  async function readLeaves(pool, wallet, leaves, opts) {
+    const out = new Array(leaves.length).fill(null);
+    let told = null;
+    if (scanWorkers && leaves.length) {
+      try { const t = await scanWorkers(wallet, leaves, opts); if (Array.isArray(t) && t.length === leaves.length) told = t; } catch { told = null; }
+    }
+    let at = Date.now();
+    for (let i = 0; i < leaves.length; i++) {
+      if (told && told[i] !== undefined) { out[i] = told[i] || null; continue; }
+      out[i] = pool.scan(wallet, [leaves[i]])[0] || null;
+      if (Date.now() - at > 12) { await handBack(); at = Date.now(); }
+    }
+    return out;
+  }
   async function restoreScan(pool, wallet, feed, memo) {
     if (!store || !feed.length) return;
     try {
       const k = await walletTag(wallet), rec = k && keptRead().find((e) => e && e.k === k);
       if (!rec || !Number.isInteger(rec.n) || rec.n < 1 || rec.n > feed.length || !Array.isArray(rec.mine) || typeof rec.d !== 'string') return;
       if (!rec.mine.every((i) => Number.isInteger(i) && i >= 0 && i < rec.n) || !contiguous(feed, rec.n) || await feedDigest(feed, rec.n) !== rec.d) return;
-      // opening a note is most of what it costs to hold one (about 40 ms: its keys, its leaf and its nullifier), so the thread is handed back between them
-      const opened = new Map();
-      let at = Date.now();
-      for (const i of rec.mine) {
-        const x = pool.scan(wallet, [feed[i]])[0];
-        if (!x) return;
-        opened.set(i, x);
-        if (Date.now() - at > 12) { await new Promise((r) => setTimeout(r, 0)); at = Date.now(); }
-      }
-      for (let i = 0; i < rec.n; i++) memo.set(i, { leaf: feed[i].leaf, x: opened.get(i) || null });
+      const opened = await readLeaves(pool, wallet, rec.mine.map((i) => feed[i]), { minLeaves: 8 });
+      if (opened.some((x) => !x)) return;
+      const byIndex = new Map(rec.mine.map((i, j) => [i, opened[j]]));
+      for (let i = 0; i < rec.n; i++) memo.set(i, { leaf: feed[i].leaf, x: byIndex.get(i) || null });
     } catch { memo.clear(); }
   }
   async function keepScan(wallet, feed, memo) {
@@ -250,11 +265,8 @@ export function makePoolClient({ api = POOL_API, relayApi = null, base = '/btc-p
     await entry.ready;
     const memo = entry.memo;
     const todo = feed.filter((f) => memo.get(f.leafIndex)?.leaf !== f.leaf);
-    for (let i = 0; i < todo.length; i += 16) {
-      if (i) await new Promise((r) => setTimeout(r, 0));
-      const batch = todo.slice(i, i + 16), found = new Map(pool.scan(wallet, batch).map((x) => [x.leafIndex, x]));
-      for (const f of batch) memo.set(f.leafIndex, { leaf: f.leaf, x: found.get(f.leafIndex) || null });
-    }
+    const read = await readLeaves(pool, wallet, todo);
+    todo.forEach((f, i) => memo.set(f.leafIndex, { leaf: f.leaf, x: read[i] }));
     if (todo.length) await keepScan(wallet, feed, memo);
     return feed.map((f) => memo.get(f.leafIndex).x).filter(Boolean);
   }
