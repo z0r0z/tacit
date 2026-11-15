@@ -5,8 +5,16 @@
 //
 // Run: node tests/fixed-pool-flow.test.mjs
 
-import { makeFlow, parseEther, formatEther } from '../dapp/fixed-pool-flow.js';
-import { planSplit, FIXED_POOLS, parseNoteString, deriveSecrets, commitmentBytes32 } from '../dapp/fixed-pool-notes.js';
+import { register } from 'node:module';
+// the page's modules import each other by site path ("/x.js?cb="); this maps those to dapp/
+register('data:text/javascript,' + encodeURIComponent(`const D = ${JSON.stringify(new URL('../dapp', import.meta.url).href)};
+export async function resolve(spec, ctx, next) {
+  if (spec.startsWith('/') && !spec.startsWith('//')) return next(D + spec.split('?')[0], ctx);
+  return next(spec, ctx);
+}`));
+
+const { makeFlow, parseEther, formatEther } = await import('../dapp/fixed-pool-flow.js');
+const { planSplit, FIXED_POOLS, parseNoteString, deriveSecrets, commitmentBytes32 } = await import('../dapp/fixed-pool-notes.js');
 import { keccak_256, secp, hexToBytes, bytesToHex, concatBytes } from '../dapp/vendor/tacit-deps.min.js';
 
 let pass = 0, fail = 0;

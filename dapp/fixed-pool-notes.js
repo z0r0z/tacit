@@ -14,7 +14,7 @@
 // Nothing here signs, sends or reads the chain. The page does that and passes the results in.
 
 import { keccak_256, concatBytes, hexToBytes, bytesToHex } from './vendor/tacit-deps.min.js';
-import { addPoint, mulScalar, modSqrt, modInv, mod, P_FR, A_BJJ, D_BJJ, packPoint } from './amm-bjj.js';
+import { addPoint, mulScalar, modSqrt, modInv, mod, P_FR, A_BJJ, D_BJJ, packPoint } from '/amm-bjj.js?cb=c614361e';
 
 const ETHER = 10n ** 18n;
 const enc = new TextEncoder();
@@ -25,15 +25,15 @@ const enc = new TextEncoder();
 // a note in an empty pool is no cover.
 export const FIXED_POOLS = Object.freeze({
   1: Object.freeze([
-    { denomination: ETHER / 10n, address: '0x12D66f87A04A9E220743712cE6d9bB1B5616B8Fc' },
-    { denomination: ETHER, address: '0x47CE0C6eD5B0Ce3d3A51fdb1C52DC66a7c3c2936' },
-    { denomination: 10n * ETHER, address: '0x910Cbd523D972eb0a6f4cAe4618aD62622b39DbF' },
-    { denomination: 100n * ETHER, address: '0xA160cdAB225685dA1d56aa342Ad8841c3b53f291' },
+    { denomination: ETHER / 10n, address: '0x12D66f87A04A9E220743712cE6d9bB1B5616B8Fc', deployBlock: 9116966 },
+    { denomination: ETHER, address: '0x47CE0C6eD5B0Ce3d3A51fdb1C52DC66a7c3c2936', deployBlock: 9117609 },
+    { denomination: 10n * ETHER, address: '0x910Cbd523D972eb0a6f4cAe4618aD62622b39DbF', deployBlock: 9117720 },
+    { denomination: 100n * ETHER, address: '0xA160cdAB225685dA1d56aa342Ad8841c3b53f291', deployBlock: 9161895 },
   ]),
   11155111: Object.freeze([
-    { denomination: ETHER / 10n, address: '0x8C4A04d872a6C1BE37964A21ba3a138525dFF50b' },
-    { denomination: ETHER, address: '0x8cc930096B4Df705A007c4A039BDFA1320Ed2508' },
-    { denomination: 10n * ETHER, address: '0x8D10d506D29Fc62ABb8A290B99F66dB27Fc43585' },
+    { denomination: ETHER / 10n, address: '0x8C4A04d872a6C1BE37964A21ba3a138525dFF50b', deployBlock: 5594400 },
+    { denomination: ETHER, address: '0x8cc930096B4Df705A007c4A039BDFA1320Ed2508', deployBlock: 5594401 },
+    { denomination: 10n * ETHER, address: '0x8D10d506D29Fc62ABb8A290B99F66dB27Fc43585', deployBlock: 5594402 },
   ]),
 });
 

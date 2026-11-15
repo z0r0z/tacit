@@ -1,8 +1,9 @@
 // The split page: an amount, the plan for it, a wallet to deposit the whole notes, and a way back to them.
 // Off unless the link carries ?fixed=1 (kept in this browser until ?fixed=0).
 
-import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES } from '../fixed-pool-notes.js';
-import { makeFlow, parseEther, formatEther, describeNote } from '../fixed-pool-flow.js';
+import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES } from '/fixed-pool-notes.js?cb=ab06e6d2';
+import { makeFlow, parseEther, formatEther, describeNote } from '/fixed-pool-flow.js?cb=88506c2f';
+import { workerProver } from '/fixed-pool-prover.js?cb=c6d89703';
 
 const $ = (id) => document.getElementById(id);
 const kv = {
@@ -58,7 +59,18 @@ function renderPlan() {
   setGo();
 }
 
+const validTo = (v) => /^0x[0-9a-fA-F]{40}$/.test(v.trim()) && !/^0x0{40}$/i.test(v.trim());
+function setWithdraw() {
+  const g = $('wgo'), prep = $('wprep');
+  const ready = /^[a-z]+-eth-[0-9.]+-\d+-0x[0-9a-fA-F]{124}$/.test($('wnote').value.trim()) && validTo($('wto').value);
+  if (!S.account) { g.disabled = S.busy; g.textContent = 'Connect a wallet'; g.dataset.mode = 'connect'; prep.disabled = true; return; }
+  g.dataset.mode = 'withdraw'; g.textContent = 'Withdraw';
+  g.disabled = S.busy || !ready || !FIXED_POOLS[S.chainId];
+  prep.disabled = g.disabled;
+}
+
 function setGo() {
+  setWithdraw();
   const p = plan(), b = $('go');
   if (!S.account) { b.disabled = S.busy; b.textContent = 'Connect a wallet'; b.dataset.mode = 'connect'; return; }
   const net = NETWORKS[S.chainId];
@@ -74,7 +86,7 @@ function renderNotes(list) {
   $('dl').hidden = !list.length;
   $('noteList').innerHTML = list.map((n, i) => `
     <div class="note"><div class="head"><span>${esc(n.denomination)} ETH <small class="mute">· nonce ${n.nonce}${n.spent ? ' · spent' : ''}</small></span>
-      <button class="btn ghost small" type="button" data-copy="${i}">Copy</button></div><code>${esc(n.text)}</code></div>`).join('');
+      <span><button class="btn ghost small" type="button" data-copy="${i}">Copy</button>${n.spent ? '' : ` <button class="btn ghost small" type="button" data-use="${i}">Withdraw</button>`}</span></div><code>${esc(n.text)}</code></div>`).join('');
   S.notes = list;
 }
 
@@ -139,6 +151,30 @@ async function find() {
   finally { S.busy = false; $('find').disabled = !FIXED_POOLS[S.chainId]; setGo(); }
 }
 
+const WSTEPS = {
+  read: (s) => (s.of ? `Reading the pool's deposits (${s.done} of ${s.of})…` : s.note ? s.note : 'Reading the pool\'s deposits…'),
+  tree: (s) => `Building the tree from ${s.count} deposits…`,
+  prove: () => 'Proving. This takes a little while.',
+  send: () => 'Confirm the withdrawal in your wallet…',
+};
+
+async function withdraw(send) {
+  if ($('wgo').dataset.mode === 'connect') return connect();
+  if (!S.flow || S.busy) return;
+  S.busy = true; setGo(); $('wout').hidden = true;
+  const prover = workerProver('/split/prove-worker.js?cb=b8090e00');
+  try {
+    const out = await S.flow.withdraw({
+      noteText: $('wnote').value.trim(), recipient: $('wto').value.trim(), prover, send,
+      onStep: (s) => say('wstatus', (WSTEPS[s.step] || (() => ''))(s)),
+    });
+    if (out.sent) say('wstatus', out.spent ? `Withdrawn. Transaction ${out.hash}` : `Sent. Transaction ${out.hash}. The pool has not shown it yet.`, out.spent ? 'ok' : 'warn');
+    else say('wstatus', 'Proved. Send this call from any account.', 'ok');
+    if (!out.sent) { $('wdata').textContent = `to ${out.call.target}\ndata ${out.call.input}`; $('wout').hidden = false; }
+  } catch (e) { say('wstatus', e?.message || 'Something went wrong.', 'err'); }
+  finally { prover.close(); S.busy = false; setGo(); }
+}
+
 function download() {
   const text = S.notes.map((n) => n.text).join('\n') + '\n';
   const a = document.createElement('a');
@@ -157,7 +193,17 @@ if (enabled) {
   $('go').addEventListener('click', go);
   $('find').addEventListener('click', find);
   $('dl').addEventListener('click', download);
+  $('wgo').addEventListener('click', () => withdraw(true));
+  $('wprep').addEventListener('click', () => withdraw(false));
+  $('wnote').addEventListener('input', setWithdraw);
+  $('wto').addEventListener('input', setWithdraw);
+  $('wcopy').addEventListener('click', async (e) => {
+    try { await navigator.clipboard.writeText($('wdata').textContent); e.target.textContent = 'Copied'; } catch { e.target.textContent = 'Select and copy'; }
+    setTimeout(() => { e.target.textContent = 'Copy'; }, 1500);
+  });
   $('noteList').addEventListener('click', async (e) => {
+    const use = e.target?.dataset?.use;
+    if (use != null) { $('wnote').value = S.notes[Number(use)].text; setWithdraw(); $('wto').focus(); return; }
     const i = e.target?.dataset?.copy;
     if (i == null) return;
     try { await navigator.clipboard.writeText(S.notes[Number(i)].text); e.target.textContent = 'Copied'; } catch { e.target.textContent = 'Select and copy'; }

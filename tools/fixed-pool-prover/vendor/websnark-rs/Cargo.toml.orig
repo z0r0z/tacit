@@ -1,0 +1,78 @@
+[package]
+name = "websnark-rs"
+version = "0.8.0"
+edition = "2024"
+description = "Circom v1 transpiler and proof generation library in Rust"
+license = "MIT"
+repository = "https://github.com/Robert-MacWha/websnark-rs"
+keywords = ["snarkjs", "circom", "zk-snark", "websnark"]
+categories = ["cryptography", "cryptography::cryptocurrencies"]
+exclude = ["*/testdata/**/*", ".gitignore"]
+
+[package.metadata.docs.rs]
+targets = ["wasm32-unknown-unknown"]
+features = []
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+asm = ["ark-ff/asm"]
+parallel = [
+    "wasm-bindgen-rayon",
+    "ark-ec/parallel",
+    "ark-ff/parallel",
+    "ark-poly/parallel",
+]
+
+[dependencies]
+ark-bn254 = { workspace = true }
+ark-ec = { workspace = true }
+ark-ff = { workspace = true }
+ark-poly = { workspace = true }
+ark-std = { workspace = true }
+lalrpop-util = { workspace = true }
+num-bigint = { workspace = true }
+num-traits = { workspace = true }
+rand = { workspace = true }
+rustc-hash = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_with = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+wasm-bindgen-rayon = { workspace = true, optional = true }
+getrandom = { workspace = true, features = ["wasm_js"] }
+
+[build-dependencies]
+lalrpop = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+postcard = { workspace = true, features = ["use-std"] }
+serde_json = { workspace = true }
+tracing-test = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = { workspace = true }
+
+[[bench]]
+name = "proof"
+harness = false
+
+[[bench]]
+name = "witness"
+harness = false
+
+[package.metadata.wasm-pack.profile.profiling]
+wasm-opt = ['-O', '-g']
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+similar_names = { level = "allow" }

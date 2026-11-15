@@ -9,10 +9,18 @@
 //
 // Run: node tests/fixed-pool-notes.test.mjs
 
-import {
+import { register } from 'node:module';
+// the page's modules import each other by site path ("/x.js?cb="); this maps those to dapp/
+register('data:text/javascript,' + encodeURIComponent(`const D = ${JSON.stringify(new URL('../dapp', import.meta.url).href)};
+export async function resolve(spec, ctx, next) {
+  if (spec.startsWith('/') && !spec.startsWith('//')) return next(D + spec.split('?')[0], ctx);
+  return next(spec, ctx);
+}`));
+
+const {
   planSplit, FIXED_POOLS, blake256, pedersenPoint, pedersenHash, noteTypedData, canonicalRS, deriveSecrets,
   depositCall, noteString, parseNoteString, commitmentBytes32, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES,
-} from '../dapp/fixed-pool-notes.js';
+} = await import('../dapp/fixed-pool-notes.js');
 import { keccak_256, secp, hexToBytes, bytesToHex, concatBytes } from '../dapp/vendor/tacit-deps.min.js';
 
 let pass = 0, fail = 0;

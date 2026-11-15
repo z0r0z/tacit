@@ -1,0 +1,207 @@
+use num_bigint::BigInt;
+use std::str::FromStr;
+use crate::circom::ast::{Expr, Stmt, Function, BinOpKind};
+use crate::circuit::value::bigint_to_fr;
+
+grammar;
+
+// ---------------------------------------------------------------------------
+// Lexer
+// ---------------------------------------------------------------------------
+
+match {
+    r"[ \t\r\n]+"                       => { },
+    r"//[^\n\r]*"                       => { },
+
+    // Keywords
+    "function", "ctx", "bigInt", "__P__", "__MASK__",
+
+
+    // Literals
+    r"[0-9]+"                           => INT,
+    r#""[^"]*""#                        => STR,
+
+    // Punctuation
+    ".", ",", ";", "?", ":", "||",
+    "(", ")", "[", "]", "{", "}",
+
+    // Control flow
+    "if", "else", "while", "for", "return",
+
+    // Method names
+    "setSignal", "getSignal", "setPin", "getPin", "setVar", "getVar", "assert", "callFunction",
+    "add", "sub", "mul", "mod", "div",
+    "inverse", "modPow",
+    "eq", "neq", "lt", "gt", "greater", "shl", "shr", "and"
+} else {
+    r"[a-zA-Z_][a-zA-Z0-9_]*"          => IDENT,
+    _
+}
+
+// ---------------------------------------------------------------------------
+// Terminals
+// ---------------------------------------------------------------------------
+
+StringVal: String = <s:STR> => s[1..s.len()-1].to_string();
+IntVal: BigInt    = <s:INT> => BigInt::from_str(s).unwrap();
+IndexList: Vec<Expr> = {
+    "[" "]"                            => vec![],
+    "[" <h:Expr> <t:("," <Expr>)*> "]" => {
+        let mut v = vec![h];
+        v.extend(t);
+        v
+    },
+};
+
+// ---------------------------------------------------------------------------
+// Top-level
+// ---------------------------------------------------------------------------
+
+pub Function: Function =
+    "function" "(" "ctx" ")" "{" <body:Stmt*> "}" =>
+        Function { body };
+
+// ---------------------------------------------------------------------------
+// Statements
+// ---------------------------------------------------------------------------
+
+Stmt: Stmt = {
+    MatchedStmt,
+    OpenStmt,
+};
+
+// Every if has a matching else
+MatchedStmt: Stmt = {
+    "if" "(" <c:Expr> ")" <t:MatchedStmt> "else" <e:MatchedStmt> =>
+        Stmt::If { cond: c, then: Box::new(t), else_: Some(Box::new(e)) },
+    "while" "(" <c:Expr> ")" <b:MatchedStmt> =>
+        Stmt::While { cond: c, body: Box::new(b) },
+    "for" "(" <i:Expr> ";" <c:Expr> ";" <u:Expr> ")" <b:MatchedStmt> =>
+        Stmt::For { init: i, cond: c, update: u, body: Box::new(b) },
+    "{" <s:Stmt*> "}"  => Stmt::Block(s),
+    SimpleStmt,
+};
+
+// if without else — body must be MatchedStmt to avoid ambiguity
+OpenStmt: Stmt = {
+    "if" "(" <c:Expr> ")" <t:Stmt> =>
+        Stmt::If { cond: c, then: Box::new(t), else_: None },
+    "if" "(" <c:Expr> ")" <t:MatchedStmt> "else" <e:OpenStmt> =>
+        Stmt::If { cond: c, then: Box::new(t), else_: Some(Box::new(e)) },
+    "while" "(" <c:Expr> ")" <b:OpenStmt> =>
+        Stmt::While { cond: c, body: Box::new(b) },
+    "for" "(" <i:Expr> ";" <c:Expr> ";" <u:Expr> ")" <b:OpenStmt> =>
+        Stmt::For { init: i, cond: c, update: u, body: Box::new(b) },
+};
+
+SimpleStmt: Stmt = {
+    "ctx" "." "assert" "(" <a:Expr> "," <b:Expr> "," <loc:StringVal> ")" ";" =>
+        Stmt::Assert { lhs: a, rhs: b, loc },
+
+    "return" <e:Expr> ";" => Stmt::Return(e),
+
+    // `;` is optional: snarkjs omits it in single-statement for-bodies
+    // (e.g. AliasCheck, Num2Bits_strict).
+    <e:Expr> ";"? => Stmt::Expr(e),
+};
+
+// ---------------------------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------------------------
+
+// Precedence (low → high): ternary, ||, method chain, primary.
+Expr: Expr = {
+    <c:OrExpr> "?" <t:Expr> ":" <e:Expr> =>
+        Expr::Ternary {
+            cond:  Box::new(c),
+            then:  Box::new(t),
+            else_: Box::new(e),
+        },
+    OrExpr,
+};
+
+// Logical Or
+OrExpr: Expr = {
+    <l:OrExpr> "||" <r:Chain> =>
+        Expr::LogicalOr(Box::new(l), Box::new(r)),
+    Chain,
+};
+
+BinOpName: BinOpKind = {
+    "add"     => BinOpKind::Add,
+    "sub"     => BinOpKind::Sub,
+    "mul"     => BinOpKind::Mul,
+    "mod"     => BinOpKind::Mod,
+    "div"     => BinOpKind::Div,
+    "eq"      => BinOpKind::Eq,
+    "neq"     => BinOpKind::Neq,
+    "lt"      => BinOpKind::Lt,
+    "gt"      => BinOpKind::Gt,
+    "greater" => BinOpKind::Gt,
+    "shl"     => BinOpKind::Shl,
+    "shr"     => BinOpKind::Shr,
+    "and"     => BinOpKind::And,
+};
+
+// Method chains - left-associative, each rule enforces arity
+Chain: Expr = {
+    <l:Chain> "." <op:BinOpName> "(" <r:Expr> ")" =>
+        Expr::BinOp { op, lhs: Box::new(l), rhs: Box::new(r) },
+    <l:Chain> "." "inverse" "(" <m:Expr> ")" =>
+        Expr::Inverse(Box::new(l), Box::new(m)),
+    <l:Chain> "." "modPow" "(" <e:Expr> "," <m:Expr> ")" =>
+        Expr::ModPow(Box::new(l), Box::new(e), Box::new(m)),
+    Primary,
+};
+
+// Atoms
+Primary: Expr = {
+    // Bare string literal in expr position. snarkjs emits decimal-digit strings
+    // as the canonical BigInt literal form (e.g. `setVar("a", [], "1")`, array
+    // elements in Pedersen/MiMCFeistel).
+    <s:StringVal> => {
+        let n = BigInt::from_str(&s)
+            .unwrap_or_else(|_| panic!("expected digit string in expr position, got {:?}", s));
+        let fr = bigint_to_fr(&n);
+        Expr::NumberLit(fr)
+    },
+
+    // Bare integer literal
+    <n:IntVal> => {
+        let fr = bigint_to_fr(&n);
+        Expr::NumberLit(fr)
+    },
+
+    // bigInt(expr) — no-op unwrap (snarkjs wraps defensively)
+    "bigInt" "(" <e:Expr> ")" => e,
+
+    // __P__ field prime constant
+    "__P__" => Expr::PrimeConst,
+
+    // __MASK__ constant
+    "__MASK__" => Expr::MaskConst,
+
+    // Array literal
+    "[" "]" => Expr::ArrayLit(vec![]),
+    "[" <h:Expr> <t:("," <Expr>)*> "]" => {
+        let mut v = vec![h];
+        v.extend(t);
+        Expr::ArrayLit(v)
+    },
+
+    // Signal/var/pin access
+    "ctx" "." "getSignal" "(" <n:StringVal> "," <i:IndexList> ")" => Expr::GetSignal(n, i),
+    "ctx" "." "getVar"    "(" <n:StringVal> "," <i:IndexList> ")" => Expr::GetVar(n, i),
+    "ctx" "." "getPin"    "(" <cn:StringVal> "," <ci:IndexList> "," <sn:StringVal> "," <si:IndexList> ")" => Expr::GetPin(cn, ci, sn, si),
+    "ctx" "." "setSignal" "(" <n:StringVal> "," <i:IndexList> "," <v:Expr> ")" => Expr::SetSignal(n, i, Box::new(v)),
+    "ctx" "." "setVar"    "(" <n:StringVal> "," <i:IndexList> "," <v:Expr> ")" => Expr::SetVar(n, i, Box::new(v)),
+    "ctx" "." "setPin" "("  <cn:StringVal> "," <ci:IndexList> "," <sn:StringVal> "," <si:IndexList> "," <v:Expr> ")" =>
+        Expr::SetPin(cn, ci, sn, si, Box::new(v)),
+
+    // User-function dispatch
+    "ctx" "." "callFunction" "(" <n:StringVal> "," <args:IndexList> ")" =>
+        Expr::CallFunction(n, args),
+
+    // Grouping
+    "(" <e:Expr> ")" => e,
+};

@@ -7,8 +7,9 @@
 
 import { keccak_256, bytesToHex } from './vendor/tacit-deps.min.js';
 import {
-  FIXED_POOLS, noteTypedData, canonicalRS, deriveSecrets, depositCall, commitmentBytes32, noteString,
-} from './fixed-pool-notes.js';
+  FIXED_POOLS, noteTypedData, canonicalRS, deriveSecrets, depositCall, commitmentBytes32, noteString, parseNoteString,
+} from '/fixed-pool-notes.js?cb=ab06e6d2';
+import { fixedPoolLeaves } from '/fixed-pool-sync.js?cb=cd4a3f3a';
 
 const enc = new TextEncoder();
 const selector = (sig) => '0x' + bytesToHex(keccak_256(enc.encode(sig)).slice(0, 4));
@@ -16,7 +17,9 @@ const SEL = {
   commitments: selector('commitments(bytes32)'),
   isSpent: selector('isSpent(bytes32)'),
   denomination: selector('denomination()'),
+  isKnownRoot: selector('isKnownRoot(bytes32)'),
 };
+const WITHDRAW = selector('withdraw(bytes,bytes32,bytes32,address,address,uint256,uint256)');
 const hexOf = (n) => '0x' + BigInt(n).toString(16);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const word = (hex) => '0x' + String(hex).replace(/^0x/, '').padStart(64, '0');
@@ -31,6 +34,28 @@ export function formatEther(wei) {
   const w = BigInt(wei);
   const whole = w / 10n ** 18n, frac = (w % 10n ** 18n).toString().padStart(18, '0').replace(/0+$/, '');
   return frac ? `${whole}.${frac}` : String(whole);
+}
+
+// What a proved withdrawal must say before anything signs it: the pool's own `withdraw` with this root, this
+// nullifier hash and this recipient, and no relayer, fee or refund. The proof came out of code the page did not
+// write; this reads the call itself.
+export function checkWithdrawCall(out, { pool, recipient, root, nullifierHash }) {
+  const fail = (why) => { throw new Error(`The proved withdrawal is not the one asked for (${why}).`); };
+  if (String(out.target).toLowerCase() !== pool.address.toLowerCase()) fail('pool');
+  const data = String(out.input);
+  if (data.slice(0, 10) !== WITHDRAW) fail('call');
+  const body = data.slice(10);
+  const w = (i) => body.slice(i * 64, i * 64 + 64);
+  const addr = (i) => '0x' + w(i).slice(24);
+  if (BigInt('0x' + w(0)) !== 224n) fail('layout');
+  if (('0x' + w(1)).toLowerCase() !== String(root).toLowerCase()) fail('root');
+  if (('0x' + w(2)).toLowerCase() !== commitmentBytes32(nullifierHash)) fail('note');
+  if (addr(3).toLowerCase() !== recipient.toLowerCase()) fail('recipient');
+  if (BigInt('0x' + w(4)) !== 0n || BigInt('0x' + w(5)) !== 0n || BigInt('0x' + w(6)) !== 0n) fail('fee');
+  if (BigInt('0x' + w(7)) !== 256n) fail('proof size');
+  if (body.length !== 8 * 64 + 256 * 2) fail('length');
+  if (String(out.root).toLowerCase() !== String(root).toLowerCase()) fail('root');
+  if (String(out.nullifierHash).toLowerCase() !== commitmentBytes32(nullifierHash)) fail('nullifier hash');
 }
 
 export function makeFlow({ provider, account, chainId, store = null, poll = 1500, timeout = 10 * 60 * 1000 }) {
@@ -180,7 +205,44 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     return { notes: notes.map((n) => ({ ...n, text: noteString({ denomination: n.pool.denomination, chainId, preimage: n.secrets.preimage }) })), sent };
   }
 
-  return { pools, signNonce, probe, scan, deposit, checkPool, atomicSupported, seen, spent };
+  const knownRoot = async (pool, root) => (await call(pool.address, SEL.isKnownRoot + word(root).slice(2))) !== 0n;
+
+  // Reads the pool's deposits, builds its tree, proves the note's withdrawal to `recipient`, and (unless
+  // `send` is false) sends it from the connected account. `prover` has `load(bytes)` and `prove(args)`.
+  async function withdraw({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves }) {
+    const note = parseNoteString(noteText);
+    if (note.chainId !== chainId) throw new Error(`This note is for network ${note.chainId}; the wallet is on ${chainId}.`);
+    const pool = pools.find((p) => formatEther(p.denomination) === note.amount);
+    if (!pool) throw new Error('No pool takes this note on this network.');
+    if (!/^0x[0-9a-fA-F]{40}$/.test(recipient) || /^0x0{40}$/i.test(recipient)) throw new Error('Enter the address that should receive it.');
+    await checkPool(pool);
+    if (await spent(pool, note.nullifierHash)) throw new Error('This note is already spent.');
+    onStep({ step: 'read' });
+    const { bytes, count } = await leaves({
+      chainId, pool,
+      getLogs: (f) => provider.request({ method: 'eth_getLogs', params: [f] }),
+      blockNumber: async () => Number(await provider.request({ method: 'eth_blockNumber' })),
+      onProgress: (p) => onStep({ step: 'read', ...p }),
+    });
+    const mine = commitmentBytes32(note.commitment).slice(2);
+    let found = false;
+    for (let i = 0; i < count && !found; i++) found = bytesToHex(bytes.subarray(i * 32, i * 32 + 32)) === mine;
+    if (!found) throw new Error('This note\'s deposit is not among the pool\'s deposits. Check the note, or try again in a minute if it was just made.');
+    onStep({ step: 'tree', count });
+    const { root } = await prover.load(bytes);
+    if (!(await knownRoot(pool, root))) throw new Error('The deposits read do not add up to a root the pool knows. Try again in a minute.');
+    onStep({ step: 'prove' });
+    const out = await prover.prove({ chainId, pool: pool.address, preimageHex: bytesToHex(note.preimage), recipient });
+    checkWithdrawCall(out, { pool, recipient, root, nullifierHash: note.nullifierHash });
+    if (!send) return { call: out, sent: false };
+    onStep({ step: 'send' });
+    const { hash } = await sendOne({ to: out.target, value: 0n, data: out.input });
+    let gone = false;
+    for (let t = 0; t < 8 && !gone; t++) { if (t) await sleep(poll); gone = await spent(pool, note.nullifierHash); }
+    return { call: out, hash, sent: true, spent: gone };
+  }
+
+  return { pools, signNonce, probe, scan, deposit, checkPool, atomicSupported, seen, spent, withdraw, knownRoot };
 }
 
 // What a found or fresh note shows: its size, its place, and the line that spends it elsewhere.
