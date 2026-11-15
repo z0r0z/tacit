@@ -110,6 +110,17 @@ const MIN_ETH_SWEEP = BigInt(process.env.MIN_ETH_SWEEP_WEI || '5000000000000000'
 // Shared with the header and reflection services, which sign from the same key — see lib/nonce-retry.js.
 const withNonceRetry = (label, fn, tries = 3) => _withNonceRetry(label, fn, { tries, log });
 
+// The fee a housekeeping send carries. viem prices a send at the node's own tip estimate and 1.2 times the base fee, a tip the settle path found
+// too low to wait on (SETTLE_TIP_FLOOR_WEI) and a cap a rising base fee passes before the next block: the splitter's distribute went out ten
+// times in a row and none was mined. Only base plus tip is paid; the rest of the cap is not.
+async function sendFees() {
+  try {
+    const base = (await publicClient.getBlock({ blockTag: 'latest' })).baseFeePerGas;
+    if (base == null) return {};
+    return { maxFeePerGas: base * 3n + CFG.settleTipFloorWei, maxPriorityFeePerGas: CFG.settleTipFloorWei };
+  } catch { return {}; }
+}
+
 async function ensureApproval(token, spender, amount, wallet = relayWallet) {
   const owner = wallet.account.address;
   const cur = await publicClient.readContract({ address: token, abi: ERC20_ABI, functionName: 'allowance', args: [owner, spender] });
@@ -405,7 +416,7 @@ export async function sweepTacToReserve(wallets = fundedWallets) {
       try {
         const bal = await erc20Balance(token, owner);
         if (bal === 0n || bal < minWei) continue;
-        const h = await withNonceRetry(`${name} reserve`, () => wallet.writeContract({ address: token, abi: ERC20_ABI, functionName: 'transfer', args: [reserve, bal] }));
+        const h = await withNonceRetry(`${name} reserve`, async () => wallet.writeContract({ address: token, abi: ERC20_ABI, functionName: 'transfer', args: [reserve, bal], ...(await sendFees()) }));
         const r = await publicClient.waitForTransactionReceipt({ hash: h });
         if (r.status !== 'success') throw new Error(`transfer reverted ${h}`);
         log(`  moved ${bal} ${name} from ${owner} to the reserve ${reserve}`);
@@ -474,7 +485,7 @@ async function distributeSplitter(wallet) {
   try {
     const bal = await publicClient.getBalance({ address: to });
     if (!splitterDue(bal, CFG.splitterMinWei)) return;
-    const h = await withNonceRetry('splitter distribute', () => wallet.writeContract({ address: to, abi: SPLITTER_ABI, functionName: 'distribute', args: [] }));
+    const h = await withNonceRetry('splitter distribute', async () => wallet.writeContract({ address: to, abi: SPLITTER_ABI, functionName: 'distribute', args: [], ...(await sendFees()) }));
     const r = await publicClient.waitForTransactionReceipt({ hash: h });
     if (r.status !== 'success') throw new Error(`distribute reverted ${h}`);
     ledger.splitterSent();

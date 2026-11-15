@@ -55,6 +55,9 @@ export function checkGasOrder(x, { relay = GAS_RELAY_ADDR, chainId = 1, now = Ma
     if (!HEX.test(data || '') || data.length > 2 + 2 * cfg.maxData) return 'the call is malformed or too large';
     for (const p of [ip, fp]) if (!p || !NUM.test(String(p.value)) || !NUM.test(String(p.deadline)) || (BigInt(p.deadline) !== 0n && (!/^\d+$/.test(String(p.v)) || !H.test(p.r) || !H.test(p.s)))) return 'a permit is malformed';
     if (p2 && p2.use && (!HEX.test(p2.sig || '') || !p2.batch || !Array.isArray(p2.batch.details) || p2.batch.details.length > 2)) return 'the Permit2 batch is malformed';
+    // Every field a relay reads into the call must read: an entry it cannot read would sit on the board and fail for each relay in turn.
+    if (p2 && p2.use && (!A.test(p2.batch.spender) || !NUM.test(String(p2.batch.sigDeadline))
+      || p2.batch.details.some((d) => !d || !A.test(d.token) || !NUM.test(String(d.amount)) || !NUM.test(String(d.expiration)) || !NUM.test(String(d.nonce))))) return 'the Permit2 batch is malformed';
     if (BigInt(o.amountIn) === 0n || lc(o.tokenIn) === lc(o.tokenOut)) return 'the swap is empty';
     if (lc(o.feeToken) !== lc(o.tokenIn) && lc(o.feeToken) !== TAC) return 'the fee must be paid in TAC or the token spent';
     if (!GAS_TARGETS.includes(lc(o.target))) return 'the call does not go to an allowed contract';

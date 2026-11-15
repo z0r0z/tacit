@@ -6,14 +6,20 @@
 // revert), feeWei(order) -> what the fee is worth in wei (null when it cannot be valued), gasPrice() -> wei, send(order, gas) -> tx, clear(order).
 export function makeGasSolver({ listOrders, used, simulate, feeWei, gasPrice, send, clear, marginBps = 12000, retryMs = 60_000, now = () => Date.now(), log = () => {} }) {
   const tried = new Map(); // order id -> when it last failed here, so one bad order is not tried every pass
+  // Orders whose own fields cannot be read into a call (a number that is not one, a value that is not hex). Trying again changes nothing,
+  // so each is said once and left alone until it leaves the board.
+  const unreadable = new Set();
+  const unreadableError = (e) => /cannot be converted to a BigInt|cannot convert .* to a BigInt|invalid (address|hex|bytes)|is not a valid (address|hex)/i.test(String((e && e.message) || e));
   return {
     // One order at most per pass (one key). → true when an order was worked on.
     async pass() {
       const t = Math.floor(now() / 1000);
       let orders;
       try { orders = await listOrders(); } catch (e) { log(`gas relay: could not read the board: ${e.message}`); return false; }
+      for (const k of unreadable) if (!orders.some((o) => o.id === k)) unreadable.delete(k);
       for (const x of orders) {
         const id = x.id;
+        if (unreadable.has(id)) continue;
         if (now() - (tried.get(id) || 0) < retryMs) continue;
         if (Number(x.order.deadline) <= t + 20) continue;
         try {
@@ -28,6 +34,11 @@ export function makeGasSolver({ listOrders, used, simulate, feeWei, gasPrice, se
           await clear(x).catch(() => {});
           return true;
         } catch (e) {
+          if (unreadableError(e)) {
+            unreadable.add(id);
+            log(`gas relay: order ${id.slice(0, 10)} cannot be read into a call (${String(e.message || e).slice(0, 140)}); leaving it for good`);
+            return true;
+          }
           log(`gas relay: order ${id.slice(0, 10)} failed: ${String(e.message || e).slice(0, 200)}`);
           tried.set(id, now());
           return true;

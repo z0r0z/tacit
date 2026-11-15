@@ -74,6 +74,20 @@ test('the page encodes execute(...) exactly as the relay does (a permit order an
   assert.equal(gr.encodeExecute(y), encodeViem(y));
 });
 
+test('a Permit2 batch the relay could not read is refused when it is posted, not listed for every relay to fail on', async () => {
+  const x = await signed({ feeToken: USDC, tokenIn: USDC, tokenOut: '0x0000000000000000000000000000000000000000' });
+  const good = { use: true, batch: { details: [{ token: USDC, amount: '500', expiration: String(NOW + 600), nonce: '3' }], spender: gr.GAS_RELAY[1], sigDeadline: String(NOW + 600) }, sig: '0x' + 'ab'.repeat(65) };
+  const withBatch = (patch) => ({ ...x, p2: { ...good, batch: { ...good.batch, ...patch } } });
+  const withDetail = (patch) => withBatch({ details: [{ ...good.batch.details[0], ...patch }] });
+  const check = (m) => checkGasOrder(m, { now: NOW });
+  const noKey = (k) => { const d = { ...good.batch.details[0] }; delete d[k]; return withBatch({ details: [d] }); };
+  assert.equal(check({ ...x, p2: good }), null, 'a whole batch is listed');
+  for (const [what, o] of [['no expiration', noKey('expiration')], ['no nonce', noKey('nonce')], ['an amount that is not a number', withDetail({ amount: 'lots' })],
+    ['a token that is not an address', withDetail({ token: 'USDC' })], ['no spender', withBatch({ spender: undefined })], ['no sigDeadline', withBatch({ sigDeadline: undefined })]]) {
+    assert.equal(check(o), 'the Permit2 batch is malformed', what);
+  }
+});
+
 test('the board keeps an order\'s own fields, and refuses one too large to be an order', async () => {
   const x = await signed();
   const kv = kvOf(), board = makeGasBoard({ kv, now: () => NOW });

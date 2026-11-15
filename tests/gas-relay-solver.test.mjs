@@ -45,3 +45,28 @@ test('an order about to expire is skipped', async () => {
   assert.equal(await s.pass(), false);
   assert.equal(calls.send, 0);
 });
+test('an order whose fields cannot be read into a call is said once and left alone for good', async () => {
+  const lines = [];
+  let clock = 1_900_000_000_000, sims = 0;
+  const { s } = rig({ simulate: async () => { sims++; throw new RangeError('The number NaN cannot be converted to a BigInt because it is not an integer'); }, extra: { now: () => clock, log: (m) => lines.push(m) } });
+  assert.equal(await s.pass(), true);
+  clock += 10 * 60_000;                                   // well past the retry window
+  assert.equal(await s.pass(), false);
+  assert.equal(sims, 1, 'it is not simulated again');
+  assert.equal(lines.filter((m) => /leaving it for good/.test(m)).length, 1);
+});
+test('a failure that is not about the order itself is tried again after the retry window', async () => {
+  let clock = 1_900_000_000_000, sims = 0;
+  const { s } = rig({ simulate: async () => { sims++; throw new TypeError('fetch failed'); }, extra: { now: () => clock } });
+  await s.pass();
+  clock += 2 * 60_000;
+  await s.pass();
+  assert.equal(sims, 2);
+});
+test('an unreadable order does not hold up the orders behind it', async () => {
+  const bad = order('0xcc' + '00'.repeat(31)), good = order('0xdd' + '00'.repeat(31));
+  const { s, calls } = rig({ orders: [bad, good], simulate: async (x) => { if (x.id === bad.id) throw new RangeError('The number NaN cannot be converted to a BigInt because it is not an integer'); return 400_000n; } });
+  assert.equal(await s.pass(), true);   // the bad one is looked at and set aside
+  assert.equal(await s.pass(), true);   // the next pass sends the good one
+  assert.equal(calls.send, 1);
+});

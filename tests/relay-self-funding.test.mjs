@@ -904,7 +904,7 @@ async function gateVerdicts(extraEnv, cases) {
     const s = await import('${join(ROOT, 'worker-relay/src/settle-relay.js')}');
     const out = [];
     for (const c of ${JSON.stringify(cases)}) out.push(await s.feeGate(c.job, c.gwei, 0.25, 2570));
-    console.log(JSON.stringify(out.map(o => ({ ok: o.ok, reason: o.reason, publicReason: o.publicReason }))));`;
+    console.log(JSON.stringify(out.map(o => ({ ok: o.ok, reason: o.reason, publicReason: o.publicReason, carried: o.carried }))));`;
   return new Promise((resolve, reject) => {
     const child = spawnAsync(process.execPath, ['--input-type=module', '-e', script], {
       cwd: join(ROOT, 'worker-relay'),
@@ -931,6 +931,26 @@ test('gate: a fee a little under the cost is relayed, the relay carrying the res
   ok(near.ok === true && /carries the rest/.test(near.reason), `0.257 at 0.15 gwei is a little under its cost and must be relayed: ${near.reason}`);
   ok(far.ok === false && /marginal cost/.test(far.reason), `0.257 at 0.3 gwei is far under its cost and must be refused: ${far.reason}`);
   ok(exact.ok === true && !/carries the rest/.test(exact.reason), `a fee that covers its cost is taken without a subsidy: ${exact.reason}`);
+  ok(near.carried > 0 && far.carried === undefined && exact.carried === undefined, `only a job taken under its cost reports what the relay carries: ${near.carried} / ${far.carried} / ${exact.carried}`);
+});
+test('submit: a settle some endpoint accepted is waited for once more before the job is called failed, and the failure never borrows another endpoint\'s refusal', () => {
+  const fn = settle.slice(settle.indexOf('async function submitCall('), settle.indexOf('async function activateRelayedExit('));
+  const verdict = fn.slice(fn.indexOf('const late = await ownReceipt()'));
+  ok(/if \(seen\.length && LATE_WAIT_MS > 0\)/.test(verdict) && /awaitInclusion\(\{\s*hashes: seen, nonce, waitMs: LATE_WAIT_MS/.test(verdict),
+    'after the rounds, an accepted settle must get one more bounded wait');
+  ok(verdict.indexOf('awaitInclusion') < verdict.indexOf('const e = '), 'the extra wait comes before the failure is built');
+  ok(/const e = \(seen\.length \? null : lastErr\) \|\| new Error\(/.test(verdict), 'with a broadcast accepted, the error is "accepted but never included", not another endpoint\'s last error');
+  ok(/const LATE_WAIT_MS = Math\.max\(0, parseInt\(process\.env\.SETTLE_LATE_WAIT_MS \|\| '120000', 10\)\)/.test(settle), 'the extra wait is bounded and switchable');
+});
+test('replenish: the splitter distribute and the reserve sweep carry their own fee (a tip the settle path waits on, a cap of three base fees), repriced on each retry', () => {
+  ok(/async function sendFees\(\)[\s\S]*maxFeePerGas: base \* 3n \+ CFG\.settleTipFloorWei, maxPriorityFeePerGas: CFG\.settleTipFloorWei/.test(replenish), 'the helper must price a cap of three base fees plus the tip floor');
+  ok(/withNonceRetry\('splitter distribute', async \(\) => wallet\.writeContract\(\{[^}]*functionName: 'distribute'[^}]*\.\.\.\(await sendFees\(\)\) \}\)\)/.test(replenish), 'the splitter distribute must carry sendFees(), read inside the retry');
+  ok(/withNonceRetry\(`\$\{name\} reserve`, async \(\) => wallet\.writeContract\(\{[^}]*\.\.\.\(await sendFees\(\)\) \}\)\)/.test(replenish), 'the reserve sweep must carry sendFees(), read inside the retry');
+  ok(!/withNonceRetry\('drain eth', async/.test(replenish), 'a send of an exact balance keeps the node\'s own fee, so a higher cap cannot trip an insufficient-funds check');
+});
+test('gate: a job taken under its cost is logged with what the relay carries, and the log keeps a running total', () => {
+  ok(/CARRIED: job \$\{job\.jobId \?\? '\?'\} type=\$\{job\.type\}[^`]*the relay carries \$\$\{\(need - feeUsd\)\.toFixed\(4\)\} \(\$\{carriedJobs\} so far this process, \$\$\{carriedUsd\.toFixed\(4\)\}\)/.test(settle),
+    'the under-cost log line must name the job, its type, the amount carried and the process totals');
 });
 test('gate: RELAY_GATE_SUBSIDY_BPS=0 holds every fee to the full marginal cost', async () => {
   const [d] = await gateVerdicts({ RELAY_GATE_SUBSIDY_BPS: '0' }, [{ job: job(0.257), gwei: 0.15 }]);

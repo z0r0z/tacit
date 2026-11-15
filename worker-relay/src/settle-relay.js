@@ -93,6 +93,9 @@ const tipFloor = makeTipFloor({ startWei: TIP_MIN_TOTAL_WEI, minWei: BigInt(proc
 const TIP_CAP_WEI = SETTLE_TIP_CAP_WEI;               // 2 gwei
 const SUBMIT_ROUNDS = Math.max(1, parseInt(process.env.SETTLE_SUBMIT_ROUNDS || '3', 10));
 const RECEIPT_WAIT_MS = Math.max(30_000, parseInt(process.env.SETTLE_RECEIPT_WAIT_MS || '90000', 10));
+// One more wait, after the rounds, for a settle some endpoint accepted that has not been included yet: three settles were acked failed and
+// landed 1, 51 and 89 seconds later. 0 skips it.
+const LATE_WAIT_MS = Math.max(0, parseInt(process.env.SETTLE_LATE_WAIT_MS || '120000', 10));
 const INCLUSION_POLL_MS = 4_000;
 // How far before a settle's first broadcast to look for another landing of the same proof: covers a second relay
 // that claimed the same job and proved it in parallel.
@@ -107,6 +110,8 @@ const NONCE_REFRESHES = 3;
 // Count of jobs relayed for free this process — surfaced in the log so an unpaid relay is observable
 // rather than something you infer later from an empty wallet.
 let unpricedJobs = 0;
+// Jobs taken with a fee under their cost (the share the relay carries, config gateSubsidyBps) and what that came to.
+let carriedJobs = 0, carriedUsd = 0;
 
 // Reject a job whose proof-bound fee doesn't cover its all-in cost + margin.
 // The fee is carved from the op input and enforced by the guest, so the worker
@@ -149,7 +154,11 @@ export async function feeGate(job, liveGasGwei, provePriceUsd, ethPriceUsd) {
     // price, which stays private. Our own cost is not sensitive.
     return { ok: false, reason: `bound fee $${feeUsd.toFixed(4)} < ${label} $${need.toFixed(4)}`, publicReason: `bound fee is below the ${label} of $${need.toFixed(4)} at current gas and PROVE prices` };
   }
-  if (feeUsd + 1e-9 < need) return { ok: true, reason: `fee $${feeUsd.toFixed(4)} is under the ${label} $${need.toFixed(4)}: relayed, the relay carries the rest`, quote: q };
+  if (feeUsd + 1e-9 < need) {
+    carriedJobs++; carriedUsd += need - feeUsd;
+    log(`CARRIED: job ${job.jobId ?? '?'} type=${job.type} fee $${feeUsd.toFixed(4)} under the ${label} $${need.toFixed(4)}, relayed — the relay carries $${(need - feeUsd).toFixed(4)} (${carriedJobs} so far this process, $${carriedUsd.toFixed(4)})`);
+    return { ok: true, reason: `fee $${feeUsd.toFixed(4)} is under the ${label} $${need.toFixed(4)}: relayed, the relay carries the rest`, quote: q, carried: need - feeUsd };
+  }
   return { ok: true, reason: `fee $${feeUsd.toFixed(4)} ≥ ${label} $${need.toFixed(4)}`, quote: q };
 }
 
@@ -421,9 +430,23 @@ async function submitCall(base, label, { gasLimit = null, landed = null } = {}) 
   // their op failed while it is settling, with no way to reach the tx hash.
   const late = await ownReceipt();
   if (late) { log(`${label} landed as ${late} after the wait window closed`); return late; }
+  // Something was accepted and may still be on its way: wait it out once more before the verdict, the same way the rounds did
+  // (a landing, a revert, or the nonce taken ends the wait early).
+  if (seen.length && LATE_WAIT_MS > 0) {
+    log(`${label} accepted but not yet included — waiting up to ${LATE_WAIT_MS}ms more before calling it failed`);
+    const more = await awaitInclusion({
+      hashes: seen, nonce, waitMs: LATE_WAIT_MS,
+      getReceipt: (h) => publicClient.getTransactionReceipt({ hash: h }),
+      getConfirmedNonce: () => publicClient.getTransactionCount({ address: settleWallet.account.address, blockTag: 'latest' }),
+    });
+    if (more.state === 'landed') { log(`${label} landed as ${more.hash} in the extra wait`); return more.hash; }
+    if (more.state === 'reverted') return finishReverted(more.hash);
+  }
   const other = await elsewhere();
   if (other) return other;
-  const e = lastErr || new Error(`${base.functionName} accepted but never included after ${SUBMIT_ROUNDS} rounds (last tip ${tip} wei)`);
+  // An endpoint's refusal is only the answer when none took the transaction: with one that did, the settle was accepted and never
+  // included, whatever another endpoint said on the way.
+  const e = (seen.length ? null : lastErr) || new Error(`${base.functionName} accepted but never included after ${SUBMIT_ROUNDS} rounds (last tip ${tip} wei)`);
   // Carry the broadcast hashes so the caller can name them rather than reporting a bare failure: a
   // still-pending bundle may yet land, and these are the only handles on it.
   e.broadcastHashes = seen.slice();
