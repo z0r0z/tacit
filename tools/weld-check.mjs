@@ -218,7 +218,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,tacbuy,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,xtshield,xtout,xtspx,xtwst,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile,chainways').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,xtshield,xtout,xtspx,xtwst,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earnget,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile,chainways').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -9105,6 +9105,42 @@ await step('earnhere', async () => {
     ok((await p.evaluate(() => window.__sheetSeen)) === '', `earnhere: and no sheet opened at any point (${await p.evaluate(() => window.__sheetSeen)})`);
     if (r.errors.length) { fails++; console.log('FAIL earnhere page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
+});
+// A holder of tETH and none of the coin a costly pool pairs with: the card says bringing it swaps nothing and links where it comes from
+// (cBTC: lock bitcoin, or bridge it in), and a link opens that flow in the same card. A holder of a little of it, adding both sides, is
+// short on the second: the card links where to get more.
+await step('earnget', async () => {
+  const report = (p) => async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#hx-go')} | q: ${await text(p, '#hx-q')} | alt: ${await text(p, '#hx-alt')} | rc: ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')}`); };
+  const r = await openFarmKey('7a9b'.padEnd(64, '9'), { notes: [[FARM_CETH, 2000000n]], positions: [], swap: true }, { width: 1280, height: 1500 });
+  const p = r.page;
+  try {
+    await earnCard(p, 'eth', '2');
+    await until(p, () => /^Balance 0\.02 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 420000);
+    await p.click('#hx-max');
+    await until(p, () => /Lock BTC for cBTC/.test(document.querySelector('#hx-alt')?.textContent || ''), null, 420000).catch(report(p));
+    ok(/Bridge cBTC from Bitcoin/.test(await text(p, '#hx-alt')) && (await p.$$('#hx-alt button')).length === 2 && /Bringing cBTC too needs no swap: get it below/.test(await text(p, '#hx-q')), `earnget: with no cBTC, the card links the lock and the bridge and says bringing it swaps nothing (${await text(p, '#hx-alt')} | ${await text(p, '#hx-q')})`);
+    await shot(p, 'earnget');
+    await p.click('#hx-alt-go');
+    await until(p, () => document.querySelector('[data-hxm="borrow"]')?.getAttribute('aria-selected') === 'true' && /Mint cBTC/.test(document.querySelector('#hx')?.textContent || ''), null, 120000).catch(report(p));
+    ok(true, 'earnget: Lock BTC for cBTC opens the Borrow tab in the same card');
+    await p.click('[data-hxm="earn"]');
+    await until(p, () => document.querySelector('[data-hxm="earn"]')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#hx-routes [data-hxr="2"]'), null, 120000);
+    if (r.errors.length) { fails++; console.log('FAIL earnget page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+  const r2 = await openFarmKey('7a9b'.padEnd(64, 'a'), { notes: [[FARM_CETH, 2000000n], [FARM_CTAC, 1000000n]], positions: [], swap: true }, { width: 1280, height: 1500 });
+  const q = r2.page;
+  try {
+    await earnCard(q, 'eth', '0');
+    await until(q, () => /^Balance 0\.02 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 420000);
+    await q.click('#hx-max');
+    await until(q, () => /Add your TAC too: no swap/.test(document.querySelector('#hx-alt')?.textContent || ''), null, 420000).catch(report(q));
+    await q.click('#hx-alt button');
+    await until(q, () => document.querySelector('#hx-go')?.textContent === 'Farm with both', null, 120000);
+    await q.fill('#hx-amt', '0.02');
+    await until(q, () => /Buy TAC/.test(document.querySelector('#hx-alt')?.textContent || '') && /Swap half instead/.test(document.querySelector('#hx-alt')?.textContent || ''), null, 420000).catch(report(q));
+    ok(/More than your private balance covers/.test(await text(q, '#hx-q')), `earnget: adding both sides with too little TAC says so and links Buy TAC (${await text(q, '#hx-alt')} | ${await text(q, '#hx-q')})`);
+    if (r2.errors.length) { fails++; console.log('FAIL earnget page errors (pair): ' + r2.errors.slice(0, 3).join(' | ')); }
+  } finally { await r2.browser.close(); }
 });
 await step('earnboth', async () => {
   const r = await openFarmKey('7a9b'.padEnd(64, '8'), { notes: [[FARM_CETH, 2000000n], [FARM_CTAC, 50000000000n]], positions: [], swap: true }, { width: 1280, height: 1500 });

@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-KxVnTm/pjZcnJFVaBYqiwKIOyhPLYaaVvoBifbMxljk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-P2I57FRvsTwuiGDJT9Jxz4mX7BMGE+32j0XcXcwhRG4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -679,8 +679,9 @@ a.hx-pr:hover .rt b { text-decoration: underline; text-decoration-color: var(--h
 
 /* Points: one column like the card above it. */
 /* the card's side links (earn points too, join with both) are secondary, so they stay quiet */
-.hx #hx-alt-go, .hx .q a[data-link="farm"], .hx #hx-brl a { font-size: 12px; color: var(--mute); text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); transition: color .15s, text-decoration-color .15s; }
-@media (hover: hover) { .hx #hx-alt-go:hover, .hx .q a[data-link="farm"]:hover, .hx #hx-brl a:hover { color: var(--ink); text-decoration-color: currentColor; } }
+.hx #hx-alt .link, .hx .q a[data-link="farm"], .hx #hx-brl a { font-size: 12px; color: var(--mute); text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); transition: color .15s, text-decoration-color .15s; }
+.hx #hx-alt .link + .link { margin-left: 14px; }
+@media (hover: hover) { .hx #hx-alt .link:hover, .hx .q a[data-link="farm"]:hover, .hx #hx-brl a:hover { color: var(--ink); text-decoration-color: currentColor; } }
 .hx-mode { display: inline-flex; gap: 2px; margin: 8px 0 10px; padding: 3px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .hx-mode button { min-height: 26px; padding: 2px 14px; color: var(--mute); font: 12px var(--mono); white-space: nowrap; background: none; border: 0; border-radius: 999px; cursor: pointer; transition: background .15s, color .15s; }
 @media (hover: hover) { .hx-mode button:hover { color: var(--ink); } }
@@ -11947,20 +11948,26 @@ function hxJoinSay(p, jq) {
       : cut * 20n >= 2n * a ? `The relay’s fees to split your notes are ${pctFmt(Number((cut * 1000n) / (2n * a)) / 10)} of this deposit: a larger one, or notes that are already this size, spreads them.` : '';
     return { go: 'Farm with both', how: 'both at the pool’s ratio, nothing swapped', day, line, warn: !!line, gate: 0,
       rc: [adds, ['Chain sees', 'a deposit, not whose'], fee ? ['Relay fee', fee, '', 'Cutting your notes to size'] : null, gas, ['Time', 'a few minutes']],
-      alt: { label: 'Swap half instead', go: () => hxPair(false) } };
+      alt: [{ label: 'Swap half instead', go: () => hxPair(false) },
+        ...(q.over ? [...(jq.a + jq.fA > spendable(sd.kA) ? hxGetAlts(sd.kA) : []), ...(jq.b + jq.fB > spendable(sd.kB) ? hxGetAlts(sd.kB) : [])] : [])] };
   }
-  const { z, s1, s2, mkt, pm, fr, reuse } = jq, worst = q.impact, other2 = spendable(kO) > 0n;
-  const line = q.gasShort ? low
+  const { z, s1, s2, mkt, pm, fr, reuse } = jq, worst = q.impact, other2 = spendable(kO) > 0n, costly = mkt >= 5 || z.impact >= 5, gets = !other2 && costly ? hxGetAlts(kO) : [];
+  const base = q.gasShort ? low
     : fr * 20n >= z.x ? `The relay fee is ${pctFmt(Number((fr * 1000n) / z.x) / 10)} of the swap: a larger deposit spreads it.`
     : mkt >= 5 ? `This pool’s price for ${pm.unit} is ${pctFmt(Math.abs(pm.ratio - 1) * 100)} ${pm.ratio > 1 ? 'above' : 'below'} the market’s, and the swap is made at it${other2 ? `. Adding your ${unit[kO]} too needs no swap` : ''}.`
     : z.impact >= 5 ? `The swap inside the pool costs a lot at this size. A smaller deposit costs less${other2 ? `, and so does adding your ${unit[kO]} too` : ''}.` : '';
+  const line = gets.length && !q.gasShort ? `${base}${base ? ' ' : ''}Bringing ${unit[kO]} too needs no swap: get it below.` : base;      // with none of the other coin, the way to get it is said whichever line leads
   return { go: `Farm with ${unit[kS]}`, day, line, warn: !!line, gate: worst,
     rc: [adds, ['Chain sees', 'a deposit, not whose'], ['Relay fee', `${fmt(fr + s1 + s2, 8, dp[kS])} ${unit[kS]}`, '', s1 + s2 ? 'The swap, and cutting your notes to size' : 'The swap'], gas,
       z.impact >= 0.5 ? ['Price impact', pctFmt(z.impact), z.impact >= 5 ? 'err' : ''] : null, mkt >= 1 ? ['Against the market', `${pctFmt(mkt)} of this deposit`, mkt >= 5 ? 'err' : ''] : null,
       reuse ? ['Notes', 'made already: nothing is split again'] : null, ['Time', z.split ? 'about a minute: the swap, then the entry' : 'a few minutes a step, up to four']],
-    alt: other2 ? { label: `Add your ${unit[kO]} too: no swap`, go: () => hxPair(true) } : null };
+    alt: other2 ? { label: `Add your ${unit[kO]} too: no swap`, go: () => hxPair(true) } : gets.length ? gets : null };
 }
 const hxPair = (on) => { HX.pair = on; if (on && HX.from === 'tac') { HX.ern = 'eth'; HX.amt = ''; } HX.q = null; HX.jq = null; paintHx(); };
+// Where the coin a pool pairs with comes from, as the card's side links, for a holder with none of it: adding both coins swaps nothing.
+// cBTC is minted one for one against bitcoin locked at the key's own address (or bridged in from Bitcoin); cUSD is borrowed against it.
+const HX_GETS = { cbtc: [['Lock BTC for cBTC', 'borrow:cbtc'], ['Bridge cBTC from Bitcoin', 'bridge:kb']], cusd: [['Borrow cUSD', 'borrow:cusd']], tac: [['Buy TAC', 'swap:ether:tac:private']], eth: [['Shield ETH', 'shield:ether:defi']] };
+const hxGetAlts = (k) => (HX_GETS[String(k).toLowerCase()] || []).map(([label, spec]) => ({ label, go: () => hxPreset(spec, undefined, true) }));
 async function hxPubQuote(units) {
   const mode = HX.from === 'wtac' ? 'tac' : 'eth', who = S.address, amt = units * E10;
   let x = FARM.precision;
@@ -13115,8 +13122,10 @@ async function hxQuote() {
       for (const r of rows) { r.show = r.apr == null ? '—' : r.apr >= 10 ? Math.round(r.apr).toLocaleString('en-US') + '%' : pctFmt(r.apr); if (r.k !== 'precision' && !/^x[as]:/.test(r.k)) r.note = `private${r.dry ? ' · between reward periods' : ''}${hxEarnHow(units) === 'wrap' ? ' · 2 steps' : ''}${r.impact >= 0.01 ? ` · ${pctFmt(r.impact * 100)} impact` : r.small ? ' · small pool' : ''}`; }
       if (/^x[as]:/.test(pick.k)) return done({ ...(await xtEarnQuote(pick, units).catch(() => ({ out: null, warn: true, line: 'This pool could not be read. Try again in a moment.' }))), rows, pick: pick.k });
       const js = jq ? hxJoinSay(jp, jq) : null, ps = pq ? hxPubSay(pq) : null, ex = js || ps;
+      const zapGets = zap && pp && !(HX.lp && HX.from === 'ether') && HX.zq?.impact >= 5 ? hxGetAlts(zapTkB(pp)) : [];
       const zline = pp && !zq ? 'The zap could not be priced. Try again in a moment.' : zq && !zq.plan ? 'Enter a larger amount: this one is too small to make a share of the pool.'
-        : HX.zq?.over ? `More ETH than ${your()} holds, with the network fee. Try Max.` : '';
+        : HX.zq?.over ? `More ETH than ${your()} holds, with the network fee. Try Max.`
+        : zapGets.length ? `Half of this is swapped inside a pool this thin. Holding ${shownAs(zapTkB(pp))} too needs no swap: get it below.` : '';
       zapsRead();
       const waiting = S.key ? zapsKept().filter((z) => z.pub === S.key.pubHex) : [], wp = waiting.length && FARM.program?.pools?.find((x) => x.pid === waiting[0].pid);
       const way = (w) => () => { HX.earnWay = w; HX.goNext = false; HX.q = null; hxQuote(); };
@@ -13134,7 +13143,7 @@ async function hxQuote() {
           HX.zq ? ['Network fee', `about ${fmt(HX.zq.ready ? ZAP_SETTLE_GAS * HX.zq.gp * 3n / 2n : HX.zq.gas, 18, 5)} ETH`] : null,
           !pub && !js && (HX.zq ? HX.zq.impact >= 5 : pick.impact >= 0.05) ? ['Price impact', pctFmt(HX.zq ? HX.zq.impact : pick.impact * 100), 'err'] : null,
           ...(ex?.rc || [])],
-        alt: wp ? { label: `Finish your zap into ${pairName(wp.pair)}`, go: () => hxFinishZap(wp) } : js?.alt || (!two || lpOnly ? null : zap ? { label: 'Earn points too: shield ETH first', go: way('wrap') } : { label: 'Zap in one transaction instead', go: way(null) }),
+        alt: wp ? { label: `Finish your zap into ${pairName(wp.pair)}`, go: () => hxFinishZap(wp) } : js?.alt || (!two || lpOnly ? null : [zap ? { label: 'Earn points too: shield ETH first', go: way('wrap') } : { label: 'Zap in one transaction instead', go: way(null) }, ...zapGets]),
         gate: ex ? ex.gate : HX.zq?.impact >= 15 ? HX.zq.impact : 0,
         warn: !!pick.dry || !!wp || !!ex?.warn || !!zline, line: wp ? 'A zap of yours is waiting to be farmed.' : ex?.line || zline || (pick.dry ? 'Between reward periods: nothing streams until the next one starts.' : '') });
     }
@@ -13683,8 +13692,12 @@ function paintHxQ() {
   }
   const alt = $('#hx-alt');
   if (alt && !q.busy) {
-    alt.hidden = !q.alt;
-    if (q.alt) { mount(alt, html`<button class="link" type="button" id="hx-alt-go">${q.alt.label} →</button>`); $('#hx-alt-go').onclick = () => (q.alt.go ? q.alt.go() : openLink(q.alt.link)); }
+    const alts = [].concat(q.alt || []);
+    alt.hidden = !alts.length;
+    if (alts.length) {
+      mount(alt, html`${alts.map((a, i) => html`<button class="link" type="button" ${i ? new Raw(`data-hx-alt="${i}"`) : new Raw('id="hx-alt-go"')}>${a.label} →</button>`)}`);
+      alts.forEach((a, i) => { ($('#hx-alt-go') && !i ? $('#hx-alt-go') : $(`[data-hx-alt="${i}"]`)).onclick = () => (a.go ? a.go() : openLink(a.link)); });
+    }
   }
 }
 function hxGateSync() {
