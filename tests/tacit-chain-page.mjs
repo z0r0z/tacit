@@ -44,7 +44,8 @@ const asset = assetField(Uint8Array.from([...new Array(12).fill(0), ...Buffer.fr
 const assetHex = asset.toString(16).padStart(64, '0');
 const NOW_S = Math.floor(Date.now() / 1000);
 const RATE = { pool: 12_345n * UNIT + 6_700_000n, shares: 12_300n * UNIT };
-const HEAD_N = 20_300_000;                                                  // (the Ethereum block the stand-in reports; the chain's blocks reach back about 12 days from it)
+let TAC_HELD = 10n ** 21n;                                                  // (the TAC every account holds in its wallet, 1,000 for a visit unless a part sets it)
+const HEAD_N = 20_300_000;                                                 // (the Ethereum block the stand-in reports; the chain's blocks reach back about 12 days from it)
 const KEY = 'a11c'.padEnd(64, '4');
 const POSEIDON = { 2: poseidon2, 3: poseidon3, 4: poseidon4, 5: poseidon5 }, poseidon = (xs) => POSEIDON[xs.length](xs);
 
@@ -70,7 +71,7 @@ const views = {
   [sel('queueDone()')]: () => '0x' + word(0),
   [sel('TAC()')]: () => '0x' + word(TAC),
   [sel('hops(bytes32)')]: () => '0x' + word(1),
-  [sel('balanceOf(address)')]: () => '0x' + word(10n ** 21n),
+  [sel('balanceOf(address)')]: () => '0x' + word(TAC_HELD),
   [sel('nonces(address)')]: () => '0x' + word(0),
   [sel('inbox(uint256,uint256,bytes32,bytes32,bytes32,bytes32)')]: () => '0x' + word(INBOX),
   // (a deposit the pressed shield's own transaction made is held for its inbox, as a sweep leaves it)
@@ -238,8 +239,8 @@ const text = (page, sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g,
 const rowsOf = (page, sel) => page.$$eval(`${sel} .kv`, (rs) => Object.fromEntries(rs.map((r) => [r.firstElementChild.textContent.trim(), r.lastElementChild.textContent.replace(/\s+/g, ' ').trim()])));
 const NODE_HOSTS = new Set(ETH_NODES.map((u) => new URL(u).host));
 
-async function visit({ viewport = { width: 1280, height: 900 }, colorScheme = 'light' } = {}) {
-  const ctx = await browser.newContext({ viewport, colorScheme });
+async function visit({ viewport = { width: 1280, height: 900 }, colorScheme = 'light', touch = false } = {}) {
+  const ctx = await browser.newContext({ viewport, colorScheme, ...(touch ? { hasTouch: true, isMobile: true } : {}) });
   const asked = [], bad = [];
   await ctx.addInitScript(({ dev, pk, kept, hk, hops }) => {
     localStorage.setItem('tacit-chain-dev', JSON.stringify(dev));
@@ -369,6 +370,10 @@ try {
     ok((await page.$$('#tpg-earn .cl-plot .pt')).length === 1 && await page.$eval('#tpg-earn .cl-plot .pt', (e, last) => e.classList.contains('last') && e.dataset.i === last, String(SPAN - 1)), 'past forty blocks the chart marks only the newest');
     ok(/about 0\.017 TAC/.test(await text(page, '.tpg-fees')) && /0\.015 TAC/.test(await text(page, '.tpg-fees')), `the fee cards take the leader's terms (${(await text(page, '.tpg-fees')).slice(0, 120)})`);
     await shot('status');
+    // Stake TAC with no key: the card is brought to the amount, ready to type, and nothing is filled
+    await page.click('#tpg-why [data-tpg="priv"]');
+    await page.waitForFunction(() => document.activeElement?.id === 'tcd-amt', null, { timeout: 10000 }).catch(() => {});
+    ok(await page.evaluate(() => document.activeElement?.id === 'tcd-amt' && document.querySelector('#tcd-amt').value === ''), 'signed out, Stake TAC leaves the cursor in an empty amount');
     await signIn(page);
     await page.waitForFunction((want) => [...document.querySelectorAll('.tpg-leg li')].some((li) => /Tacit chain/.test(li.textContent) && li.querySelector('b')?.textContent.trim() === want), WANT_ROW, { timeout: 30000 })
       .then(() => ok(true, `the key's TAC on the Tacit chain, found from the note sealed to it (${WANT_BAL})`), async () => ok(false, `chain row: ${await text(page, '.tpg-leg')}`));
@@ -401,11 +406,12 @@ try {
   // a phone and a desk, light and dark: nothing sideways. On the phone the card comes under the chain's newest blocks and over its path, its amount
   // on the first screen. These accounts hold no ETH: the leader sends a shield in for its fee, with nothing else to choose
   ETH_HELD = 0n;
+  TAC_HELD = 300n * 10n ** 18n;
   for (const viewport of PRESS === 'only' ? [] : [{ width: 390, height: 844 }, { width: 1280, height: 900 }]) {
     for (const colorScheme of ['light', 'dark']) {
       directory.clear();
-      const { page, ctx, bad, shot } = await visit({ viewport, colorScheme });
-      await page.waitForFunction(() => /^\d\.\d{5}$/.test(document.querySelector('#tpg-mid [data-k="px"]')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
+      const { page, ctx, bad, shot } = await visit({ viewport, colorScheme, touch: viewport.width < 600 });
+      await page.waitForFunction(() => /\d/.test(document.querySelector('#tpg-mid .cl-stats .ok')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
       const before = await noSideways(page);
       if (viewport.width < 600 && colorScheme === 'light') {
         const at = await laid(page);
@@ -413,6 +419,24 @@ try {
       }
       await signIn(page);
       if (colorScheme === 'light') {
+        // Stake TAC, pressed as soon as the key is open (its TAC may not be read yet), fills the most a shield can take: the 300 the account holds less the
+        // leader's fee (0.04) and a tenth of it for room. At a desk the cursor waits in the amount with it selected; on a touch screen there is no cursor
+        // (the keyboard would cover the button). What is typed is left alone.
+        await page.click('#tpg-why [data-tpg="priv"]');
+        await page.waitForFunction(() => !!document.querySelector('#tcd-amt')?.value, null, { timeout: 20000 }).catch(() => {});
+        await page.waitForTimeout(300);
+        const stake = await page.evaluate(() => { const a = document.querySelector('#tcd-amt'); return { v: a.value, focus: document.activeElement === a, selected: a.selectionStart === 0 && a.selectionEnd === a.value.length && a.value.length > 0 }; });
+        ok(stake.v === '299.956', `${viewport.width} px: Stake TAC fills the most a shield can take (${stake.v})`);
+        ok(viewport.width < 600 ? !stake.focus : stake.focus && stake.selected, `${viewport.width} px: ${viewport.width < 600 ? 'on a touch screen the amount is not focused, so the keyboard stays down' : 'at a desk the amount is focused with its value selected'} (${JSON.stringify(stake)})`);
+        await page.fill('#tcd-amt', '12');
+        await page.click('#tpg-why [data-tpg="priv"]');
+        await page.waitForTimeout(900);
+        ok((await page.$eval('#tcd-amt', (e) => e.value)) === '12', `${viewport.width} px: pressed again with an amount typed, Stake TAC leaves it`);
+        await page.fill('#tcd-amt', '');
+        await page.click('#tcd-max');
+        await page.waitForFunction(() => !!document.querySelector('#tcd-amt')?.value, null, { timeout: 10000 }).catch(() => {});
+        ok((await page.$eval('#tcd-amt', (e) => e.value)) === stake.v, `${viewport.width} px: the Max button gives the same amount Stake TAC filled`);
+        await page.fill('#tcd-amt', '');
         await page.waitForFunction(() => /\d in /.test(document.querySelector('#tcd-have')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
         const q = await shieldQuote(page, '250');
         ok(q.Gas === '0.04 TAC, no ETH needed' && !(await page.$('#tcd-q [data-tcd-way]')), `${viewport.width} px: with no ETH the leader sends a shield in for its fee (${JSON.stringify(q)})`);
@@ -424,6 +448,7 @@ try {
       await ctx.close();
     }
   }
+  TAC_HELD = 10n ** 21n;
   // a shield pressed, proved in the page. An account with ETH: one signature and one transaction of its own, TacitBlocks.sweepWithPermit with no
   // fee, the leader handed the spend with only its way back. An account with none: no transaction, the leader handed the permit with its fee.
   // Either way the permit is the account's, for the shield's inbox and no more than the deposit (and the fee); the card counts the steps and

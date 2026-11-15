@@ -2,6 +2,7 @@
 // install() with what this code reads from its module: let and var bindings are read as ctx.X, so their changes there are seen here.
 export default function install(ctx) {
 const { $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brLongReason, brMarked, brOver, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your } = ctx;
+const TCD_FILL = { at: 0 };   // (a Stake press made before the wallet's TAC was read: see tcardStakeFill)
 function idMark(a, size = 40) {
   const h = addressId(a).replace(/·/g, ''), hue = Math.round((parseInt(h.slice(0, 2), 16) / 256) * 360);
   let bits = parseInt(h.slice(2, 10), 16), d = '';
@@ -1204,7 +1205,7 @@ function tcardGo(side, tab = null) {
   if (ctx.TACP.act) tpgAct(null);
   if (side === 'btc') { tacPoolOpen(tab || ctx.TPOOL.api?.view()[0] || 'shield'); return true; }
   ctx.TCARD.side = 'chain'; ctx.TPOOL.open = false;
-  if (tab) ctx.TCARD.tab = tab;
+  if (tab) { ctx.TCARD.tab = tab; if (tab !== 'shield') TCD_FILL.at = 0; }
   tcard(); syncLink();
   return true;
 }
@@ -1300,7 +1301,7 @@ function tcardForm() {
 }
 function tcardWire(el) {
   const amt = $('#tcd-amt', el), to = $('#tcd-to', el);
-  if (amt) amt.oninput = () => { ctx.TCARD.side ||= 'chain'; if (ctx.TCARD.flow && ctx.TCARD.flow.done >= TCD_FLOW[ctx.TCARD.flow.way].length) { ctx.TCARD.flow = null; tcdFlowPaint(); } tcardQuoteSoon(); };
+  if (amt) amt.oninput = () => { ctx.TCARD.side ||= 'chain'; TCD_FILL.at = 0; if (ctx.TCARD.flow && ctx.TCARD.flow.done >= TCD_FLOW[ctx.TCARD.flow.way].length) { ctx.TCARD.flow = null; tcdFlowPaint(); } tcardQuoteSoon(); };
   if (to) to.oninput = () => { ctx.TCARD.side ||= 'chain'; tcardQuoteSoon(); };
   const max = $('#tcd-max', el);
   if (max) max.onclick = () => tcardMax().catch(() => {});
@@ -1387,6 +1388,7 @@ async function tcardShieldSay(units) {
   const key = !!S.key, held = key ? hxWalletBal('wtac') ?? (TACB.who === tacWho() ? TACB.erc : null) : null, way = key ? tcardWay() : 'permit', t4 = (v) => fmt(v, 18, 4);
   const sf = way === 'permit' ? await chainSweepFee().catch(() => 0n) : 0n, cap = CHAIN_SWEEP.cap ?? ctx.CH.cap ?? null;
   tcdHave(held != null ? `${fmt(held, 18, 2)} in ${payer() === 'tacit' ? 'this key’s address' : 'your wallet'}` : '');
+  if (TCD_FILL.at && held != null) { const fresh = Date.now() - TCD_FILL.at < 20e3; TCD_FILL.at = 0; if (fresh) tcardStakeFill().then(tcardStakeFocus, () => {}); }
   if (held === 0n) return [html`No TAC in ${your()}. <button class="link" type="button" data-hx="swap:ether:tac">Buy with ETH</button> · <a class="link" href="/trade/tac/#btc=buy">Buy with sats</a> · <a class="link" href="/rewards/">Claim your airdrop</a>`, false];
   const rows = (arrives) => tcdRows(tcdRow('Arrives', arrives), tcdRow('Earns', ctx.TACP.yld ? html`<span class="tcd-up num">${tpgYield(ctx.TACP.yld)}</span> <span class="mute">${ctx.TACP.yld.young ? 'so far' : 'from fees'}, no lock</span>` : html`<span class="mute">a share of every fee, no lock</span>`), key ? tcdGas(way, sf, units) : tcdRow('Gas', html`<span><span class="num">${t4(sf)}</span> TAC, or your own ETH</span>`), tcdRow('Takes', html`${key ? tcdTakes(way) : 'One signature'} · about a minute`));
   if (!units) return [html`${rows(html`<span class="mute">private, on the Tacit chain</span>`)}${cap != null && held != null && held > cap * E10 ? html`<p class="tcd-cap">Up to ${fmt(cap, 8, 0)} TAC a shield for now.</p>` : ''}`, true];
@@ -1466,23 +1468,48 @@ async function tcardOutSay(units) {
   return [html`<p class="tcd-say">${where}</p>${tcdRows(tcdRow('Arrives', html`<span><b class="num">${t4(units)} TAC</b>${dest === 'wallet' ? ` in ${your()}` : ', private'}</span>`),
     tcdRow('Fee', q ? html`<span><span class="num">${t4(q.holders + q.fee)}</span> TAC on top</span>` : 'a small fee, on top'), tcdRow('Takes', dest === 'btc' ? 'Two steps, about 10 minutes' : 'About a minute'))}`, true];
 }
-async function tcardMax() {
-  const a = $('#tcd-amt');
-  if (!a) return;
-  let v = null;
+// The most the open tab can take, in the chain's units (null while what the account holds is not read): what a shield can bring in with the leader's fee
+// and room for it moving, up to the cap; what the chain holds, less its fees, for the other tabs.
+async function tcardMaxOf() {
   if (ctx.TCARD.tab === 'shield') {
     const held = hxWalletBal('wtac') ?? (TACB.who === tacWho() ? TACB.erc : null);
-    if (held == null) return;
+    if (held == null) return null;
     const fee = tcardWay() === 'permit' ? await chainSweepFee(true).catch(() => 0n) : 0n, room = fee + fee / 10n, cap = CHAIN_SWEEP.cap ?? ctx.CH.cap ?? null;
-    v = held > room ? (held - room) / E10 : 0n;
-    if (cap != null && v > cap) v = cap;
-  } else {
-    const held = await chainScan().catch(() => null) ?? chainHeld();
-    if (held == null) return;
-    const kind = ctx.TCARD.tab === 'withdraw' ? (ctx.TCARD.dest === 'wallet' ? 'withdraw' : 'hop') : ctx.TCARD.eth ? 'withdraw' : 'pay';
-    v = (await chainQuote(kind, held).catch(() => null))?.most ?? held;
+    const v = held > room ? (held - room) / E10 : 0n;
+    return cap != null && v > cap ? cap : v;
   }
-  if (v > 0n) { a.value = plain(v, 8); tcardQuote(); }
+  const held = await chainScan().catch(() => null) ?? chainHeld();
+  if (held == null) return null;
+  const kind = ctx.TCARD.tab === 'withdraw' ? (ctx.TCARD.dest === 'wallet' ? 'withdraw' : 'hop') : ctx.TCARD.eth ? 'withdraw' : 'pay';
+  return (await chainQuote(kind, held).catch(() => null))?.most ?? held;
+}
+async function tcardMax() {
+  if (!$('#tcd-amt')) return;
+  const v = await tcardMaxOf();
+  const a = $('#tcd-amt');
+  if (a && v != null && v > 0n) { a.value = plain(v, 8); tcardQuote(); }
+}
+// Stake TAC: the amount filled with that most, for someone signed in whose wallet holds TAC and whose field is empty (what is typed stays). A press made
+// before the wallet's TAC is read fills it when it is, unless the person types or leaves the Shield tab first. Resolves true when it filled.
+async function tcardStakeFill() {
+  const a = $('#tcd-amt');
+  if (!S.key || !a || a.value.trim() || ctx.TCARD.tab !== 'shield') return false;
+  const held = hxWalletBal('wtac') ?? (TACB.who === tacWho() ? TACB.erc : null);
+  if (held == null) { TCD_FILL.at = Date.now(); return false; }
+  if (!(held > 0n)) return false;
+  const v = await tcardMaxOf(), now = $('#tcd-amt');
+  if (!now || now.value.trim() || ctx.TCARD.tab !== 'shield' || !(v > 0n)) return false;
+  now.value = plain(v, 8); tcardQuote();
+  return true;
+}
+// Where a Stake press leaves the cursor: in the amount to type it (the filled one selected, so typing replaces it); on a touch screen, a filled card has
+// no cursor, so the keyboard stays down and its button stays in view
+function tcardStakeFocus(filled) {
+  const a = $('#tcd-amt');
+  if (!a) return;
+  if (filled && matchMedia('(pointer: coarse)').matches) { a.blur(); return; }
+  a.focus({ preventScroll: true });
+  if (filled) a.select();
 }
 const tcardClear = () => { const a = $('#tcd-amt'); if (a) clearField(a); };
 const tcardAfter = () => {
@@ -1535,7 +1562,10 @@ document.addEventListener('click', (e) => {
   if (d.tcdStep === 'shield') { const gap = ctx.TCARD.linkGap; tcardGo('chain', 'shield'); requestAnimationFrame(() => { const a = $('#tcd-amt'); if (a && gap) { a.value = gap; tcardQuote(); } }); return; }
   if (d.tpg) {
     tpgTab(d.tpg);
-    requestAnimationFrame(() => { $('#tpg-card')?.scrollIntoView({ block: 'nearest', behavior: calmMotion() ? 'auto' : 'smooth' }); $(d.tpg === 'pay' ? '#tcd-to' : '#tcd-amt')?.focus({ preventScroll: true }); });
+    // Stake: the amount is filled with the most a shield can take when it can be (the cursor then waits for it, see tcardStakeFocus), else it is typed
+    const filling = d.tpg === 'priv' ? tcardStakeFill().catch(() => false) : null;
+    requestAnimationFrame(() => { $('#tpg-card')?.scrollIntoView({ block: 'nearest', behavior: calmMotion() ? 'auto' : 'smooth' }); if (!filling) $(d.tpg === 'pay' ? '#tcd-to' : '#tcd-amt')?.focus({ preventScroll: true }); });
+    if (filling) filling.then(tcardStakeFocus);
     return;
   }
   if (d.tcdSide) { tcardGo(d.tcdSide); if (e.detail === 0) $(`[data-tcd-side="${d.tcdSide}"]`)?.focus(); return; }
