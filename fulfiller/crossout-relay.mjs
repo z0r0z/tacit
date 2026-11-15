@@ -12,6 +12,7 @@ const DAY_S = 86400;
 const ASK_TTL_S = 14 * DAY_S;            // an ask is kept two weeks, whatever became of it
 const EXPIRE_AFTER_MS = 3 * DAY_S * 1e3; // an ask that never became sendable in three days is let go
 const SEND_TRIES = 6;                    // a pair Bitcoin keeps refusing is given up (its coin is free again: the commit never landed)
+const RETRY_FAILED_MS = 30 * 60e3;       // a given-up pair whose coin is still unspent is offered again this often (a refusal may have passed)
 const CHANGE_FLOOR = 1000;               // a coin must leave at least this much over the step, so change is worth keeping
 
 export function makeCrossoutRelay({
@@ -58,12 +59,18 @@ export function makeCrossoutRelay({
     return st && st.status === 'minted' && st.mintedTxid ? String(st.mintedTxid).toLowerCase() : null;
   }
 
+  // { refused: [node rejections], busy: [explorers that would not take a request (rate limits, outages)] }: only a rejection counts toward
+  // giving a pair up; an explorer that is busy is no answer about the pair.
   async function send(rec) {
-    const refused = [];
+    const refused = [], busy = [];
     for (const hex of [rec.commitHex, rec.revealHex]) {
-      try { await esplora.broadcast(hex); } catch (e) { const m = String(e?.message || e); if (!/already|known|in block|in mempool|txn-mempool-conflict.*same/i.test(m)) refused.push(m); }
+      try { await esplora.broadcast(hex); } catch (e) {
+        const m = String(e?.message || e);
+        if (/already|known|in block|in mempool|txn-mempool-conflict.*same/i.test(m)) continue;
+        (e?.transient ? busy : refused).push(m);
+      }
     }
-    return refused;
+    return { refused, busy };
   }
 
   // A pair it signed: sent, then followed until credited.
@@ -77,13 +84,18 @@ export function makeCrossoutRelay({
     // not on Bitcoin (never sent, or dropped): if its coin has gone to another transaction this pair can never land, so the claim goes back to
     // be signed with another coin (no second mint is possible: this pair's commit cannot exist); else the same pair is sent again
     if (await coinTaken(rec)) return requeue(rec);
-    if (rec.status === 'failed') return rec;
-    const refused = await send(rec);
-    if (!refused.length) return put({ ...rec, status: 'sent', sentAt: rec.sentAt || now(), tries: (rec.tries || 0) + 1 });
+    if (rec.status === 'failed' && now() - Number(rec.failedAt || 0) < RETRY_FAILED_MS) return rec;
+    const { refused, busy } = await send(rec);
+    if (!refused.length && !busy.length) return put({ ...rec, status: 'sent', sentAt: rec.sentAt || now(), tries: (rec.tries || 0) + 1, lastError: null });
+    if (!refused.length) {
+      // every explorer was busy: no answer about the pair, so it is neither a try nor a refusal; the next tick sends it again
+      log('warn', 'crossout relay: no explorer would take the pair just now', { claim: rec.claimId, err: busy[0].slice(0, 160) });
+      return put({ ...rec, ...(rec.status === 'failed' ? { status: 'signing', failedAt: null } : {}), lastError: busy[0].slice(0, 200) });
+    }
     const tries = (rec.tries || 0) + 1;
     log('warn', 'crossout relay: Bitcoin refused the pair', { claim: rec.claimId, err: refused[0].slice(0, 160), tries });
     if (await coinTaken(rec)) return requeue(rec);
-    return put({ ...rec, tries, lastError: refused[0].slice(0, 200), ...(tries >= SEND_TRIES ? { status: 'failed', reason: 'refused' } : {}) });
+    return put({ ...rec, tries, lastError: refused[0].slice(0, 200), ...(tries >= SEND_TRIES ? { status: 'failed', reason: 'refused', failedAt: now() } : {}) });
   }
   // the pair's funding coin is spent, and not by its own commit
   async function coinTaken(rec) {
@@ -185,18 +197,25 @@ export function makeEsplora({ read = 'https://mempool.space/api', query = '', ba
     // null: not on Bitcoin; { confirmed }: in the mempool or a block. Asked of the transaction itself: /tx/:id/status answers
     // {"confirmed":false} (HTTP 200) for a transaction nobody has seen, which reads as "in the mempool" and is never sent.
     txStatus: async (txid) => { const t = await get(`/tx/${txid}`); return t ? { confirmed: !!t.status?.confirmed } : null; },
+    // to each of `send` in turn until one takes it, then (best effort, not awaited) to the rest, so one mempool dropping it is not the end of
+    // it. A node's rejection of the transaction is thrown at once; explorers that are all busy (rate limits, outages, timeouts) throw an
+    // error marked `transient`, which is no answer about the transaction.
     broadcast: async (hex) => {
+      const bases = send || [read];
       let last = null;
-      for (const base of send || [read]) {
+      for (let i = 0; i < bases.length; i++) {
         try {
-          const r = await fetchImpl(base + '/tx', { method: 'POST', body: hex, signal: AbortSignal.timeout(15e3) });
+          const r = await fetchImpl(bases[i] + '/tx', { method: 'POST', body: hex, signal: AbortSignal.timeout(15e3) });
           const t = await r.text();
-          if (r.ok) return t.trim();
+          if (r.ok) {
+            for (const b of bases.slice(i + 1)) fetchImpl(b + '/tx', { method: 'POST', body: hex, signal: AbortSignal.timeout(15e3) }).catch(() => {});
+            return t.trim();
+          }
           last = new Error(t || `broadcast ${r.status}`);
-          if (r.status === 400) throw last;            // the transaction itself is refused: another explorer will say the same
-        } catch (e) { last = e; if (/^(sendrawtransaction|RPC error|bad-|txn-|non-mandatory|mandatory|missing-inputs|insufficient)/i.test(String(e?.message || ''))) throw e; }
+          if (r.status === 400 && !/rate|limit|too many/i.test(t)) throw Object.assign(last, { rejected: true });   // the transaction itself is refused
+        } catch (e) { last = e; if (e?.rejected || /^(sendrawtransaction|RPC error|bad-|txn-|non-mandatory|mandatory|missing-inputs|insufficient)/i.test(String(e?.message || ''))) throw e; }
       }
-      throw last || new Error('no explorer took the transaction');
+      throw Object.assign(last || new Error('no explorer took the transaction'), { transient: true });
     },
   };
 }

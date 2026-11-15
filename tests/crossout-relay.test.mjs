@@ -77,14 +77,14 @@ const relayPriv = new Uint8Array(32).fill(3);
 const prims = makeBtcWallet({ priv: relayPriv, hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => '', fetchFeeRate: async () => 2 }).prims;
 const mintReveal = makeCrossoutMintReveal({ secp });
 function rig({ coins = [{ txid: 'f1'.repeat(32), vout: 0, value: 20_000, status: { confirmed: true } }], rate = 2, covered = true, minted = null, claims = [ASK], ...opts } = {}) {
-  const kv = memKv(), sent = [], onChain = new Map(), spends = new Map(), refuse = new Set();
+  const kv = memKv(), sent = [], onChain = new Map(), spends = new Map(), refuse = new Set(), busy = { on: false };
   let t = 1_700_000_000_000;
   const esplora = {
     utxos: async () => (typeof coins === 'function' ? coins() : coins),
     outspend: async (txid, vout) => spends.get(`${txid}:${vout}`) || { spent: false },
     feeRate: async () => rate,
     txStatus: async (txid) => (onChain.has(txid) ? onChain.get(txid) : null),
-    broadcast: async (h) => { sent.push(h); if (refuse.has(h)) throw new Error('bad-txns-inputs-missingorspent'); return 'ok'; },
+    broadcast: async (h) => { if (busy.on) throw Object.assign(new Error('Too Many Requests: rate limit'), { transient: true }); sent.push(h); if (refuse.has(h)) throw new Error('bad-txns-inputs-missingorspent'); return 'ok'; },
   };
   const state = { covered, minted };
   const api = async (p) => {
@@ -95,7 +95,7 @@ function rig({ coins = [{ txid: 'f1'.repeat(32), vout: 0, value: 20_000, status:
   const relay = makeCrossoutRelay({ kv, network: 'mainnet', pool: POOL, prims, mintReveal, keccak256: keccak_256, api, ethRpc: chainFor({ claims }), esplora, now: () => t, ...opts });
   const ask = async (a = ASK) => kv.put(relayKey('mainnet', a.claimId), JSON.stringify({ ...a, status: 'queued', askedAt: t }));
   const rec = async (c = ASK.claimId) => kv.get(relayKey('mainnet', c), 'json');
-  return { kv, relay, sent, onChain, state, ask, rec, spends, refuse, adv: (ms) => { t += ms; } };
+  return { kv, relay, sent, onChain, state, ask, rec, spends, refuse, busy, adv: (ms) => { t += ms; } };
 }
 {
   const r = rig();
@@ -208,10 +208,10 @@ function rig({ coins = [{ txid: 'f1'.repeat(32), vout: 0, value: 20_000, status:
   // a record given up as refused (the old relay's end state) recovers once its coin is seen taken
   const C = { txid: 'c2'.repeat(32), vout: 0, value: 20_000, status: { confirmed: true } };
   const r = rig({ coins: [C] });
-  await r.kv.put(relayKey('mainnet', ASK.claimId), JSON.stringify({ ...ASK, status: 'failed', reason: 'refused', askedAt: 1_700_000_000_000, commitTxid: 'dd'.repeat(32),
+  await r.kv.put(relayKey('mainnet', ASK.claimId), JSON.stringify({ ...ASK, status: 'failed', reason: 'refused', askedAt: 1_700_000_000_000, failedAt: 1_700_000_000_000, commitTxid: 'dd'.repeat(32),
     revealTxid: 'ee'.repeat(32), commitHex: '00', revealHex: '00', fundingUtxo: { txid: 'ff'.repeat(32), vout: 1, value: 39_740 } }));
   await r.relay.tick();
-  ok((await r.rec()).status === 'failed', 'a failed pair whose coin is still unspent is left as it is (it is not sent again forever)');
+  ok((await r.rec()).status === 'failed', 'a failed pair whose coin is still unspent rests (for its half hour; it is not sent again every tick)');
   r.spends.set(`${'ff'.repeat(32)}:1`, { spent: true, txid: '99'.repeat(32) });
   await r.relay.tick();
   ok((await r.rec()).status === 'queued', 'once its coin is seen spent elsewhere, the claim is queued again');
@@ -239,6 +239,47 @@ function rig({ coins = [{ txid: 'f1'.repeat(32), vout: 0, value: 20_000, status:
   await r3.ask();
   await r3.relay.tick();
   ok((await r3.rec()).status === 'declined' && (await r3.rec()).reason === 'funds', 'no coin at all: declined (the holder\'s page sends it)');
+}
+
+// ---- rate limits are no answer: a pair is never given up because the explorers were busy (11-15: every 'refusal' was Render being throttled) ----
+{
+  const r = rig();
+  r.busy.on = true;
+  await r.ask();
+  for (let i = 0; i < 10; i++) { await r.relay.tick(); r.adv(60e3); }
+  const st = await r.rec();
+  ok(st.status === 'signing' && !st.tries && /rate limit/.test(st.lastError || ''), 'ten ticks of busy explorers: still being sent, no try counted, never given up');
+  r.busy.on = false;
+  await r.relay.tick();
+  ok((await r.rec()).status === 'sent' && r.sent.length === 2, 'once an explorer takes it, it is sent, the same pair');
+}
+{
+  // a pair given up before this fix (its 'refusals' were rate limits), its coin still unspent: offered again after a pause, and sent
+  const r = rig();
+  await r.ask();
+  await r.relay.tick();
+  const signed = await r.rec();
+  r.onChain.clear();
+  await r.kv.put(relayKey('mainnet', ASK.claimId), JSON.stringify({ ...signed, status: 'failed', reason: 'refused', tries: 6, failedAt: 1_700_000_000_000 }));
+  const before = r.sent.length;
+  await r.relay.tick();
+  ok((await r.rec()).status === 'failed' && r.sent.length === before, 'within half an hour of giving up, a failed pair rests');
+  r.adv(31 * 60e3);
+  await r.relay.tick();
+  ok((await r.rec()).status === 'sent' && r.sent.length === before + 2, 'after it, the same pair is offered again, and sent');
+}
+{
+  // the broadcast itself: a busy explorer is passed over, a rate-limit 400 is busy too, a real rejection stops at once, all busy is transient
+  const hits = [];
+  const f = (resp) => async (url) => { hits.push(url); const x = resp[url.split('/')[2]]; return { ok: x[0] === 200, status: x[0], text: async () => x[1] }; };
+  const busyEsp = makeEsplora({ read: 'https://a.x', send: ['https://a.x', 'https://b.x', 'https://c.x'] }, f({ 'a.x': [429, 'Too Many Requests'], 'b.x': [400, 'Your request rate exceeds the limit'], 'c.x': [200, 'txid'] }));
+  ok((await busyEsp.broadcast('00')) === 'txid', 'a 429 and a rate-limit 400 are passed over for the next explorer');
+  const rej = makeEsplora({ read: 'https://a.x', send: ['https://a.x', 'https://c.x'] }, f({ 'a.x': [400, 'sendrawtransaction RPC error: bad-txns-in-belowout'], 'c.x': [200, 'txid'] }));
+  let e1 = null; try { await rej.broadcast('00'); } catch (e) { e1 = e; }
+  ok(e1 && !e1.transient && /bad-txns/.test(e1.message), 'a node rejecting the transaction is thrown at once, not as busy');
+  const allBusy = makeEsplora({ read: 'https://a.x', send: ['https://a.x', 'https://b.x'] }, f({ 'a.x': [429, 'slow down'], 'b.x': [503, 'down'] }));
+  let e2 = null; try { await allBusy.broadcast('00'); } catch (e) { e2 = e; }
+  ok(e2 && e2.transient === true, 'every explorer busy: thrown as transient (no answer about the transaction)');
 }
 
 // ---- the chain: reads through the API's proxy, broadcasts to explorers in turn ----

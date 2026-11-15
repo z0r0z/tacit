@@ -79,7 +79,8 @@ if (RELAY_SK_HEX) {
   const esplora = makeEsplora({
     read: (process.env.CROSSOUT_RELAY_ESPLORA || `${API_BASE}/chain`).replace(/\/+$/, ''), query: process.env.CROSSOUT_RELAY_ESPLORA ? '' : `network=${NETWORK}`,
     backup: NETWORK === 'mainnet' ? ['https://mempool.space/api', 'https://blockstream.info/api'] : ['https://mempool.space/signet/api'],
-    send: NETWORK === 'mainnet' ? ['https://mempool.space/api', 'https://blockstream.info/api'] : ['https://mempool.space/signet/api'],
+    // the same keyless mirrors the API broadcasts through (worker networkApis): Render's address is rate limited by the big two
+    send: NETWORK === 'mainnet' ? ['https://mempool.space/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api', 'https://blockstream.info/api'] : ['https://mempool.space/signet/api'],
   });
   const prims = makeBtcWallet({ priv: hexToBytes(RELAY_SK_HEX), hrp: NETWORK === 'mainnet' ? 'bc' : 'tb', fetchUtxos: async () => [], broadcastTx: esplora.broadcast, fetchFeeRate: esplora.feeRate }).prims;
   const rpcs = (process.env.CROSSOUT_RELAY_ETH_RPCS || 'https://ethereum-rpc.publicnode.com,https://eth.merkle.io,https://rpc.mevblocker.io').split(',').map((u) => u.trim()).filter(Boolean);
