@@ -377,4 +377,70 @@ const lockedI = I.calls.length;
 await two.deriveIdentity({ pick: async () => { asked2++; return null; }, expect: idI.address });
 ok('a locked wallet that opened this account before is the one asked to connect, with no question', asked2 === 1 && I.calls.slice(lockedI).join() === 'eth_accounts,eth_accounts,eth_requestAccounts,personal_sign');
 
+// WalletConnect is asked which account it holds only when it is the wallet used last: asking loads its whole library and opens its relay connection.
+{
+  const before = wc2.calls.length;
+  H.allowed = true; I.allowed = false;                                           // the Solo wallet shows the site the account it opened before
+  store.set('tacit-trade-wallet', 'test.solo');
+  solo.deselectProvider();
+  await solo.deriveIdentity({ pick: never, expect: idH.address });
+  ok('a sign-in for a known account does not ask a WalletConnect that was never used which account it holds', wc2.calls.length === before);
+  const had = store.get('tacit-trade-wallet');
+  store.set('tacit-trade-wallet', 'com.walletconnect');
+  solo.deselectProvider();
+  await solo.deriveIdentity({ pick: never, expect: idH.address });
+  ok('and does ask it when it is the wallet used last', wc2.calls.slice(before).includes('eth_accounts'));
+  if (had == null) store.delete('tacit-trade-wallet'); else store.set('tacit-trade-wallet', had);
+  solo.deselectProvider();
+}
+
+// Cancel: the wallet's own request cannot be taken back, but a cancelled sign-in asks for nothing more and opens nothing.
+{
+  const heldWallet = (name, privHex, holdAt) => {
+    const w = wallet(name, privHex);
+    let n = 0, release;
+    w.gate = new Promise((r) => { release = r; }); w.release = release;
+    const orig = w.provider.request;
+    w.provider.request = async (a) => { if (a.method === 'personal_sign' && ++n === holdAt) { w.held = true; await w.gate; } return orig.call(w.provider, a); };
+    return w;
+  };
+  const pickOf = (name) => async (list) => list.find((x) => x.name === name)?.uuid;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const rig = () => makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' });
+
+  // cancelled while the first signature is pending: the confirming signature is never asked for, and nothing is opened or remembered
+  const C1 = heldWallet('Cancel1', 'a1'.repeat(32), 1);
+  const ev1 = rig(), ac1 = new AbortController();
+  const run1 = ev1.deriveIdentity({ pick: pickOf('Cancel1'), signal: ac1.signal });
+  const out1 = assert.rejects(run1, (e) => e.code === 4001 && /Cancelled/.test(e.message));
+  await sleep(40);
+  ok('the first signature is asked for', C1.held === true);
+  ac1.abort(); C1.release();
+  await out1;
+  ok('cancelled while the first signature is pending, it is not asked a second time', C1.calls.filter((c) => c === 'personal_sign').length === 1);
+  ok('and opens and remembers nothing', !store.has('tacit-eth-identity-anchor:' + C1.addr) && store.get('tacit-trade-wallet') !== 'test.cancel1');
+
+  // cancelled while the confirming signature is pending: what the first one gave is wiped and nothing is opened
+  const C2 = heldWallet('Cancel2', 'a2'.repeat(32), 2);
+  const ev2 = rig(), ac2 = new AbortController(), steps2 = [];
+  const run2 = ev2.deriveIdentity({ pick: pickOf('Cancel2'), signal: ac2.signal, onStep: (x) => steps2.push(x) });
+  const out2 = assert.rejects(run2, (e) => e.code === 4001);
+  for (let i = 0; i < 40 && !C2.held; i++) await sleep(25);
+  ok('the second signature is asked for after the first', C2.held === true && steps2.includes('confirm'));
+  ac2.abort(); C2.release();
+  await out2;
+  ok('cancelled while it is pending, nothing is opened or remembered', !store.has('tacit-eth-identity-anchor:' + C2.addr));
+
+  // aborted before anything is asked: the wallet is not touched
+  const C3 = wallet('Cancel3', 'a3'.repeat(32));
+  const ac3 = new AbortController(); ac3.abort();
+  await assert.rejects(rig().deriveIdentity({ pick: pickOf('Cancel3'), signal: ac3.signal }), (e) => e.code === 4001);
+  ok('a sign-in cancelled before it began asks the wallet nothing', C3.calls.length === 0);
+
+  // and a sign-in that is not cancelled is as it was
+  const C4 = wallet('Cancel4', 'a4'.repeat(32));
+  const id4 = await rig().deriveIdentity({ pick: pickOf('Cancel4'), signal: new AbortController().signal });
+  ok('one that is not cancelled still opens', id4.address === C4.addr.slice(2) && store.has('tacit-eth-identity-anchor:' + C4.addr.slice(2)));
+}
+
 console.log(`\n${pass} passed, 0 failed`);

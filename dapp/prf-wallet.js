@@ -37,7 +37,7 @@ export function savePrfMap(m) {
 }
 export function clearPrfMap() { localStorage.removeItem(PRF_MAP_KEY); }
 
-export async function prfRegister(label) {
+export async function prfRegister(label, { signal } = {}) {
   const name = (label || '').trim();
   if (!name) throw new Error('label required');
   const rpId = window.location.hostname;
@@ -52,11 +52,11 @@ export async function prfRegister(label) {
     attestation: 'none',
     extensions: { prf: { eval: { first: PRF_SALT } } },
   };
-  const cred = await navigator.credentials.create({ publicKey });
+  const cred = await navigator.credentials.create({ publicKey, ...(signal ? { signal } : {}) });
   if (!cred) throw new Error('creation cancelled');
   const credentialId = toB64(cred.rawId);
   const prfOut = cred.getClientExtensionResults()?.prf;
-  const raw = prfOut?.results?.first || (prfOut?.enabled === false ? null : (await prfEval(credentialId)).raw);
+  const raw = prfOut?.results?.first || (prfOut?.enabled === false ? null : (await prfEval(credentialId, { signal })).raw);
   if (!raw) throw new Error('PRF not supported by this authenticator');
   return keyOf(credentialId, raw);
 }
@@ -81,13 +81,13 @@ export function prfTryRestore() {
   return { label: lbl, credentialId: entry.credentialId, pubkey: entry.pubkey };
 }
 
-export async function prfLogin({ credentialId }) {
-  const { gotId, raw } = await prfEval(credentialId);
+export async function prfLogin({ credentialId, signal }) {
+  const { gotId, raw } = await prfEval(credentialId, { signal });
   if (!raw) throw new Error('PRF result not returned');
   return keyOf(gotId, raw);
 }
 
-async function prfEval(credentialId) {
+async function prfEval(credentialId, { signal } = {}) {
   const rpId = window.location.hostname;
   const rawId = credentialId ? fromB64(credentialId) : undefined;
   const prfExtension = { prf: { eval: { first: PRF_SALT } } };
@@ -108,7 +108,7 @@ async function prfEval(credentialId) {
         allowCredentials: [],
         extensions: prfExtension,
       };
-  const cred = await navigator.credentials.get({ publicKey, mediation: 'optional' });
+  const cred = await navigator.credentials.get({ publicKey, mediation: 'optional', ...(signal ? { signal } : {}) });
   if (!cred) throw new Error('no passkey selected');
   const gotId = toB64(cred.rawId);
   const prfExt = cred.getClientExtensionResults()?.prf || {};

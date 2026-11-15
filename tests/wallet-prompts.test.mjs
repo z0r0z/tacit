@@ -18,7 +18,7 @@ if (!globalThis.crypto) globalThis.crypto = dom.window.crypto;
 
 import { secp, sha256, keccak_256, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { prfBytesToScalar } from '../dapp/prf-wallet.js';
-import { guardProvider, declinedWords, stillWaiting, QUIET_MS, RETRY_QUIET_MS, QUICK_MS, SLOW_MS } from '../dapp/wallet-prompts.js';
+import { guardProvider, declinedWords, stillWaiting, promptOpen, QUIET_MS, RETRY_QUIET_MS, QUICK_MS, SLOW_MS } from '../dapp/wallet-prompts.js';
 import { makeEvmWallet } from '../dapp/evm-wallet.js';
 import { UserStopped } from '../dapp/trade/wallet.js';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -280,6 +280,30 @@ console.log('\n— the page\'s wallet module (dapp/evm-wallet.js), real time: a 
   ok(`the deposit made at once is sent, not refused (${typeof hash === 'string' ? 'sent' : hash?.message})`, typeof hash === 'string' && hash.length === 66);
   ok('and it waited for the permit\'s window to go', Date.now() - t0 >= 900);
   delete window.ethereum;
+}
+
+// A prompt put to a wallet and not yet answered is open: the page keeps its own reads off that wallet meanwhile (eth-nodes.js walletNode).
+{
+  let release;
+  const held = { request: async ({ method }) => { if (method !== 'personal_sign') return '0x1'; await new Promise((r) => { release = r; }); return '0xsig'; } };
+  const g = guardProvider(held, { quiet: 0 });
+  ok('no prompt is open before one is asked', promptOpen() === false);
+  const p = g.request({ method: 'personal_sign' });
+  await new Promise((r) => setTimeout(r, 20));
+  ok('one put to the wallet is open until it is answered', promptOpen() === true);
+  await g.request({ method: 'eth_chainId' });
+  ok('a read is not a prompt', promptOpen() === true);
+  release(); await p;
+  ok('and none is open once it is answered', promptOpen() === false);
+  // a refusal closes it too (no retry here: the retry of an instant refusal is the guard's own, tested above)
+  let free;
+  const g2 = guardProvider({ request: async () => { await new Promise((r) => { free = r; }); throw Object.assign(new Error('User rejected the request.'), { code: 4001 }); } }, { quiet: 0, retryQuiet: 0, quick: 0 });
+  const q = g2.request({ method: 'personal_sign' }).catch((e) => e);
+  await new Promise((r) => setTimeout(r, 20));
+  ok('a second one is open the same way', promptOpen() === true);
+  free();
+  const e = await q;
+  ok('and is closed when the person refuses it', e?.code === 4001 && promptOpen() === false);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

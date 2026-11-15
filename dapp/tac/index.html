@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-g9Qtmz0vYPIf62YHs7Z4BCR9mLNi7MY6On2syCMYszM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-LOhNQvSv6JpKzoZ5+ROtTlQWrNvOUGv84+wohRPdFn4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -40,10 +40,10 @@
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prf-wallet.js">
 <link rel="modulepreload" href="/tacit-wallet-known.js?cb=ec5b5193">
-<link rel="modulepreload" href="/tab-key.js?cb=ec8829ac">
+<link rel="modulepreload" href="/tab-key.js?cb=ad0c42e2">
 <link rel="modulepreload" href="/tacit-address.js">
 <link rel="modulepreload" href="/bip352.js">
-<link rel="modulepreload" href="/evm-wallet.js?cb=c0ce7f8f">
+<link rel="modulepreload" href="/evm-wallet.js?cb=ed67f38d">
 <link rel="modulepreload" href="/identity-message.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
@@ -2495,10 +2495,10 @@ import { ETH_NODES, ETH_LOG_NODES, BASE_NODES, ROBINHOOD_NODES, walletNode } fro
 import { hedgedRpc, nodeHealth } from '/trade/rpc.js';
 import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable } from '/prf-wallet.js';
 import { knownWallets } from '/tacit-wallet-known.js?cb=ec5b5193';
-import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ec8829ac';
+import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ad0c42e2';
 import { makeTacitAddress, poolKeysOf } from '/tacit-address.js';
 import { bip352TaggedHash } from '/bip352.js';
-import { makeEvmWallet, declinedWords, stillWaiting } from '/evm-wallet.js?cb=c0ce7f8f';
+import { makeEvmWallet, declinedWords, stillWaiting } from '/evm-wallet.js?cb=ed67f38d';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=843803d6';
 import { makeEvmAccount } from '/evm-account.js';
 import { makeEvmTx } from '/evm-tx.js';
@@ -4407,17 +4407,22 @@ const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex
 const loadTacit = TS.load, tacitTurn = TS.turn, withKey = TS.withKey, dropTacitKey = TS.drop, tPriv = TS.tPriv;
 const mainnetBtc = (a) => { if (!/^(bc1|[13])/i.test(String(a || ''))) throw new Error('Your Bitcoin wallet is on a test network. Switch it to mainnet.'); };
 
+// `signal` is the sheet's Cancel: a wallet's own prompt cannot be taken back, but a sign-in that was cancelled never opens the wallet afterwards
+// (a signature that arrives late, a passkey or Bitcoin wallet that answers after Cancel).
+const stopped = (signal) => { if (signal?.aborted) throw Object.assign(new Error('Cancelled in your wallet.'), { code: 4001, unlockCancelled: true }); };
 const open = {
-  async eth(k, { wc = false } = {}) {
-    const id = await evm.deriveIdentity({ pick: pickWallet, expect: k?.address, wc, onStep: (x, i) => signStep?.(x, i) });
+  async eth(k, { wc = false, signal } = {}) {
+    const id = await evm.deriveIdentity({ pick: pickWallet, expect: k?.address, wc, signal, onStep: (x, i) => signStep?.(x, i) });
+    stopped(signal);
     const was = S.wallet;
     S.provider = id.provider; S.wallet = '0x' + id.address;
     try { setKey({ mode: 'eth', priv: id.priv, pubHex: k?.pubHex || id.pubHex, address: S.wallet }); }
     catch (e) { if (S.wallet !== was) walletMoved(); throw e; }
   },
-  async passkey(k) {
+  async passkey(k, { signal } = {}) {
     if (!isPasskeyAvailable()) throw new Error('Passkeys need a browser that supports them.');
-    const r = await prfLogin({ credentialId: k?.credentialId });
+    const r = await prfLogin({ credentialId: k?.credentialId, signal });
+    if (signal?.aborted) { r.priv.fill(0); stopped(signal); }
     const pubHex = bytesToHex(r.pub), m = loadPrfMap();
     const label = k?.label || Object.keys(m).find((l) => m[l]?.credentialId === r.credentialId) || `passkey-${pubHex.slice(0, 6)}`;
     m[label] = { credentialId: r.credentialId, pubkey: pubHex, createdAt: m[label]?.createdAt || Date.now(), lastUsed: Date.now() };
@@ -4425,19 +4430,20 @@ const open = {
     const priv = bytesToHex(r.priv); r.priv.fill(0);
     setKey({ mode: 'passkey', priv, pubHex, label, credentialId: r.credentialId });
   },
-  async newPasskey() {
+  async newPasskey({ signal } = {}) {
     if (!isPasskeyAvailable()) throw new Error('Passkeys need a browser that supports them.');
     const m = loadPrfMap();
     let label = 'Tacit', n = 1;
     while (m[label]) label = `Tacit ${++n}`;
-    const r = await prfRegister(label);
+    const r = await prfRegister(label, { signal });
+    if (signal?.aborted) { r.priv.fill(0); stopped(signal); }
     m[label] = { credentialId: r.credentialId, pubkey: r.pubHex, createdAt: Date.now(), lastUsed: Date.now() };
     savePrfMap(m);
     const priv = bytesToHex(r.priv); r.priv.fill(0);
     setKey({ mode: 'passkey', priv, pubHex: r.pubHex, label, credentialId: r.credentialId });
   },
-  async btc(k) {
-    setKey(await tacitTurn(async () => {
+  async btc(k, { signal } = {}) {
+    const opened = await tacitTurn(async () => {
       T.wallet.priv = null; T.wallet.pub = null; T.wallet.mode = null;
       const av = T.extWallet.available();
       if (!av.satsConnect && !av.unisat) throw new Error('No Bitcoin wallet found in this browser. Install Xverse, Leather or UniSat.');
@@ -4456,14 +4462,18 @@ const open = {
         await T.wallet.load(st.address);
         return { mode: 'ext', priv: tPriv(), address: st.address, ext };
       }
-    }));
+    });
+    stopped(signal);
+    setKey(opened);
   },
-  async ext(k) {
+  async ext(k, { signal } = {}) {
     const priv = await tacitTurn(async () => { T.wallet.priv = null; T.wallet.pub = null; T.wallet.mode = null; T.extWallet.state = k.ext; await T.wallet.load(k.address); return tPriv(); });
+    stopped(signal);
     setKey({ mode: 'ext', priv, pubHex: k.pubHex, address: k.address, ext: k.ext });
   },
-  async local(k) {
+  async local(k, { signal } = {}) {
     const priv = await tacitTurn(async () => { T.wallet.priv = null; T.wallet.pub = null; T.wallet.mode = null; T.extWallet.state = null; await T.wallet.load(); return tPriv(); });
+    stopped(signal);
     setKey({ mode: 'local', priv, pubHex: k?.pubHex });
   },
   key(hex) {
@@ -4537,33 +4547,34 @@ function wireSignIn(root, id, after) {
       signing = true;
       const rest = $$('[data-in]').filter((x) => x !== b && !x.disabled);
       rest.forEach((x) => { x.disabled = true; });
-      const stop = new Promise((_, no) => { cancelSign = () => no(Object.assign(new Error('Cancelled in your wallet.'), { code: 4001 })); });
+      const ac = new AbortController(), signal = ac.signal;
+      const stop = new Promise((_, no) => { cancelSign = () => { ac.abort(); no(Object.assign(new Error('Cancelled in your wallet.'), { code: 4001 })); }; });
       const wait = document.createElement('p');
       wait.className = 'status wait';
       const how = k === 'known' ? known.mode : k === 'other' ? other.mode : k === 'wc' ? 'eth' : k === 'new' ? 'passkey' : k;
       mount(wait, html`<span>${SIGN_FIRST[how] || 'Waiting for your wallet…'}</span> <button class="link" type="button">Cancel</button>`);
       wait.querySelector('button').onclick = () => cancelSign?.();
       const say = wait.querySelector('span');
-      let slow = null;
-      signStep = (x, i) => { if (SIGN_SAY[x]) say.textContent = `${SIGN_SAY[x]}${i?.of === 2 ? ` Step ${x === 'confirm' ? 2 : 1} of 2.` : ''}`; clearTimeout(slow); slow = setTimeout(() => { say.textContent = 'Still waiting. Open your wallet to answer.'; }, 10000); };
+      let slow = null, slower = null;
+      signStep = (x, i) => { if (SIGN_SAY[x]) say.textContent = `${SIGN_SAY[x]}${i?.of === 2 ? ` Step ${x === 'confirm' ? 2 : 1} of 2.` : ''}`; clearTimeout(slow); clearTimeout(slower); slow = setTimeout(() => { say.textContent = 'Still waiting. Open your wallet to answer.'; slower = setTimeout(() => { say.textContent = 'Nothing in your wallet? Cancel, then press again. If it keeps happening, reload this page.'; }, 15000); }, 10000); };
       const more = box.querySelector('.more');
       const shown = k === 'key' ? null : setTimeout(() => { if (more?.isConnected) { more.style.display = 'none'; more.after(wait); } else box.append(wait); }, 600);
       const dlg = root.closest?.('dialog'), onClose = () => cancelSign?.();
       dlg?.addEventListener('close', onClose, { once: true });
       try {
         await Promise.race([(async () => {
-          if (k === 'known') await open[known.mode](known);
-          else if (k === 'other') await open[other.mode](other);
+          if (k === 'known') await open[known.mode](known, { signal });
+          else if (k === 'other') await open[other.mode](other, { signal });
           else if (k === 'key') open.key(box.querySelector(`#${id}-hex`).value);
-          else if (k === 'new') await open.newPasskey();
-          else if (k === 'local') await open.local({ pubHex: readJson('tacit-wallet-v1:mainnet')?.pub });
-          else if (k === 'wc') await open.eth(undefined, { wc: true });
-          else await open[k]();
+          else if (k === 'new') await open.newPasskey({ signal });
+          else if (k === 'local') await open.local({ pubHex: readJson('tacit-wallet-v1:mainnet')?.pub }, { signal });
+          else if (k === 'wc') await open.eth(undefined, { wc: true, signal });
+          else await open[k](undefined, { signal });
         })(), stop]);
         openAtOnce = true;
         after?.();
       } catch (e) { openAtOnce = false; if (!/cancel/i.test(e?.message || '') && e?.name !== 'NotAllowedError' && e?.code !== 4001 && !e?.unlockCancelled && errText(e) !== 'Cancelled in your wallet.') toast(errText(e), true); }
-      finally { signing = false; cancelSign = null; signStep = null; clearTimeout(shown); clearTimeout(slow); wait.remove(); if (more) more.style.display = ''; dlg?.removeEventListener('close', onClose); rest.forEach((x) => { x.disabled = false; }); }
+      finally { signing = false; cancelSign = null; signStep = null; clearTimeout(shown); clearTimeout(slow); clearTimeout(slower); wait.remove(); if (more) more.style.display = ''; dlg?.removeEventListener('close', onClose); rest.forEach((x) => { x.disabled = false; }); }
     });
   };
   box.querySelector(`#${id}-hex`)?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); box.querySelector('[data-in="key"]')?.click(); } });
@@ -4579,6 +4590,13 @@ function pickWallet(list) {
     $$('[data-uuid]', d).forEach((b) => b.onclick = () => { d.removeEventListener('close', onClose); d.close(); resolve(b.dataset.uuid); });
     d.showModal();
   });
+}
+// The tab's Tacit wallet after IDLE with no use of the page (tab-key.js): locked in memory as the sign-in sheets say it is, not only let go of at the next load.
+function lockIdle(why) {
+  if (!S.key) return;
+  S.key = null; resetPrivate(); toast(why);
+  syncAccount(); paintWallet(); refreshAll();
+  SWC.card?.walletChanged();
 }
 function walletMoved(why = 'switched accounts') {
   if (S.key?.mode === 'eth' && S.key.address !== S.wallet) { S.key = null; resetPrivate(); toast(`Your wallet ${why}, so the Tacit wallet opened with it was locked. Open it again to continue.`); }
@@ -15147,7 +15165,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=1b1eaad8').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=8c5edbc5').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {
@@ -15888,7 +15906,7 @@ function tabKeyOpen(walletRead) {
   }
   try { setKey(k, { quiet: true }); } catch { tabKeyClear(); }
 }
-tabKeyWatch();
+tabKeyWatch({ onIdle: lockIdle, busy: () => signing || busySheet() != null });
 tabKeyOpen(false);
 const restoring = restoreWallet();
 restoring.then(() => tabKeyOpen(true), () => tabKeyOpen(true));

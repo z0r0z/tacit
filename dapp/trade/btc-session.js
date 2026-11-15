@@ -5,9 +5,9 @@
 // These are the ways in /tac has (dapp/tac/app.js) that need nothing but the wallet or the passkey itself. A key pasted in, one saved in
 // the browser and one an extension funds each ask for a passphrase in tacit.js's own dialogs, which belong to the classic app.
 
-import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ec8829ac';
+import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ad0c42e2';
 
-const TACIT_URL = '/tacit.js?cb=fb2310ad', KNOWN_URL = '/tacit-wallet-known.js?cb=ec5b5193', EVM_URL = '/evm-wallet.js?cb=c0ce7f8f';
+const TACIT_URL = '/tacit.js?cb=fb2310ad', KNOWN_URL = '/tacit-wallet-known.js?cb=ec5b5193', EVM_URL = '/evm-wallet.js?cb=ed67f38d';
 const DEPS_URL = '/vendor/tacit-deps.min.js', PRF_URL = '/prf-wallet.js';
 const RECORD = 'tacit-trade-id-v1';                                           // how this page last opened a key: public data only
 const KNOWN_IDS = [RECORD, 'tacit-tac-id-v1', 'tacit-pay-hub-id-v1', 'tacit-lite-id-v1', 'tacit-pay-id-v1'];
@@ -66,7 +66,8 @@ export async function openBtcWallet(T, { k = null, tPriv, passkey = false }) {
   }
 }
 
-export function makeBtcSession({ moved = null } = {}) {
+// `busy()`: true while the page is in the middle of an action; a key is not locked for lack of use while it is.
+export function makeBtcSession({ moved = null, busy = null } = {}) {
   let T = null, D = null, prf = null, K = null, evm = null, loading = null, key = null, walletQ = Promise.resolve();
   const listeners = new Set(), emit = () => listeners.forEach((f) => { try { f(); } catch { /* a listener must not break the session */ } });
 
@@ -95,6 +96,8 @@ export function makeBtcSession({ moved = null } = {}) {
   const turn = (fn) => { const r = walletQ.then(async () => { await load(); return keepShared(fn); }); walletQ = r.catch(() => {}); return r; };
 
   const pubOf = (privHex) => D.bytesToHex(D.secp.getPublicKey(D.hexToBytes(privHex), true));
+  // `signal` (from the sign-in sheet's Cancel): the wallet's own prompt cannot be taken back, but a key whose sign-in was cancelled is never opened by it
+  const live = (signal) => { if (signal?.aborted) throw Object.assign(new Error('Cancelled in your wallet.'), { code: 4001, unlockCancelled: true }); };
   const tPriv = () => { const h = D.bytesToHex(T.wallet.priv); T.wallet.priv.fill(0); T.wallet.priv = null; return h; };
 
   // Every way in ends here: the key goes into tacit.js for this visit, and only the key the wallet said it would open.
@@ -120,15 +123,17 @@ export function makeBtcSession({ moved = null } = {}) {
 
   // The ways in, each ending in setKey. `pick(list)` chooses among several Ethereum wallets (the page's own picker).
   const open = {
-    async eth(k, pick, { wc = false, onStep } = {}) {
+    async eth(k, pick, { wc = false, onStep, signal } = {}) {
       await load();
-      const id = await evm.deriveIdentity({ pick, expect: k?.address, wc, onStep });
+      const id = await evm.deriveIdentity({ pick, expect: k?.address, wc, onStep, signal });
+      live(signal);
       await setKey({ mode: 'eth', priv: id.priv, pubHex: k?.pubHex || id.pubHex, address: '0x' + lc(id.address).replace(/^0x/, '') });
     },
-    async passkey(k) {
+    async passkey(k, _pick, { signal } = {}) {
       await load();
       if (!prf.isPasskeyAvailable()) throw new Error('Passkeys need a browser that supports them.');
-      const r = await prf.prfLogin({ credentialId: k?.credentialId });
+      const r = await prf.prfLogin({ credentialId: k?.credentialId, signal });
+      if (signal?.aborted) { r.priv.fill(0); live(signal); }
       const pubHex = D.bytesToHex(r.pub), m = prf.loadPrfMap();
       const label = k?.label || Object.keys(m).find((l) => m[l]?.credentialId === r.credentialId) || `passkey-${pubHex.slice(0, 6)}`;
       m[label] = { credentialId: r.credentialId, pubkey: pubHex, createdAt: m[label]?.createdAt || Date.now(), lastUsed: m[label]?.lastUsed ?? Date.now() };
@@ -136,21 +141,24 @@ export function makeBtcSession({ moved = null } = {}) {
       const priv = D.bytesToHex(r.priv); r.priv.fill(0);
       await setKey({ mode: 'passkey', priv, pubHex, label, credentialId: r.credentialId });
     },
-    async newPasskey() {
+    async newPasskey({ signal } = {}) {
       await load();
       if (!prf.isPasskeyAvailable()) throw new Error('Passkeys need a browser that supports them.');
       const m = prf.loadPrfMap();
       let label = 'Tacit', n = 1;
       while (m[label]) label = `Tacit ${++n}`;
-      const r = await prf.prfRegister(label);
+      const r = await prf.prfRegister(label, { signal });
+      if (signal?.aborted) { r.priv.fill(0); live(signal); }
       m[label] = { credentialId: r.credentialId, pubkey: r.pubHex, createdAt: Date.now(), lastUsed: Date.now() };
       prf.savePrfMap(m);
       const priv = D.bytesToHex(r.priv); r.priv.fill(0);
       await setKey({ mode: 'passkey', priv, pubHex: r.pubHex, label, credentialId: r.credentialId });
     },
-    async btc(k) {
+    async btc(k, _pick, { signal } = {}) {
       await load();
-      await setKey(await turn(() => openBtcWallet(T, { k, tPriv, passkey: prf.isPasskeyAvailable() })));
+      const opened = await turn(() => openBtcWallet(T, { k, tPriv, passkey: prf.isPasskeyAvailable() }));
+      if (signal?.aborted) { try { forget(); } catch { } live(signal); }
+      await setKey(opened);
     },
   };
 
@@ -169,7 +177,8 @@ export function makeBtcSession({ moved = null } = {}) {
   });
   // The key this tab opened on another page of the site (tab-key.js), opened again with no sign-in: one that needs no wallet at once, an
   // Ethereum wallet's once that wallet answers, without a prompt, as the account that opened it (any other answer, or none, locks it).
-  tabKeyWatch();
+  // and an open key is locked after IDLE with no use of the page (tab-key.js), the way the sign-in sheet says it is
+  tabKeyWatch({ busy, onIdle: (why) => { if (!key) return; if (moved) moved(why); else { forget(); emit(); } } });
   const kept = tabKeyRead();
   if (kept && kept.mode !== 'eth') load().then(() => key || setKey(kept)).catch(() => tabKeyClear());
   else if (kept?.mode === 'eth') {

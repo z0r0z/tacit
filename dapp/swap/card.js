@@ -1,7 +1,7 @@
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmTradeVenues, _internal as V, MULTICALL3, SPLIT_EXTRA_GAS } from '/evm-trade-venues.js?cb=196b14fb';
 import { UserStopped } from '/trade/wallet.js?cb=5d19a733';
-import { declinedWords } from '/wallet-prompts.js';
+import { declinedWords, promptOpen } from '/wallet-prompts.js';
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=1d2cd8d3';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js';
 import * as R from '/swap/route.js?cb=44449874';
@@ -36,7 +36,7 @@ const health = nodeHealth({ store: memory }), scanHealth = nodeHealth({ store: m
 const WALLET_READS = new Set(['eth_call', 'eth_getBalance', 'eth_gasPrice', 'eth_blockNumber', 'eth_getCode', 'eth_getTransactionReceipt']);
 const walletNode = {
   id: 'wallet',
-  usable: (m, p) => WALLET_READS.has(m) && typeof W?.prov?.request === 'function' && !W.prov.isWalletConnect && W.prov.chainId === '0x1' && !(m === 'eth_call' && (p[0]?.gas || p[2])),
+  usable: (m, p) => !promptOpen() && WALLET_READS.has(m) && typeof W?.prov?.request === 'function' && !W.prov.isWalletConnect && W.prov.chainId === '0x1' && !(m === 'eth_call' && (p[0]?.gas || p[2])),
   send: (m, p) => W.prov.request({ method: m, params: p }),
 };
 const light = (method, params) => rpc(method, params, [...NODES, walletNode], { health, hedgeMs: hedgeDelay(1000) });
@@ -2105,7 +2105,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=98e01226').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=30f79140').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -2652,7 +2652,7 @@ let lane = null, laneP = null;
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 async function openLane() {
   try {
-    laneP ||= import('/swap/bitcoin.js?cb=c974e38d').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
+    laneP ||= import('/swap/bitcoin.js?cb=12605713').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
     await laneP;
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = laneP = null; }

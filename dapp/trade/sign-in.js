@@ -4,6 +4,7 @@
 // What the sheet looks like is trade/sheet.js's; this file is what it says and does.
 import { overlay, esc, mark } from '/trade/sheet.js?cb=d857446c';
 import { short } from '/trade/util.js?cb=1d2cd8d3';
+import { waitLine, cancellable } from '/sign-wait.js?cb=ab42ced1';
 
 export class Cancelled extends Error { constructor(m = 'Cancelled.') { super(m); this.unlockCancelled = true; } }
 
@@ -18,7 +19,9 @@ const nw = (s) => `<span class="nw">${esc(s)}</span>`;
 const via = (k) => ({ eth: `Ethereum ${nw(short(k.address || ''))}`, btc: `Bitcoin ${nw(short(k.address || '', 6))}`, passkey: `passkey “${esc(k.label || 'Tacit')}”` })[k?.mode] || 'your wallet';
 const viaMark = (k) => mark(k?.mode === 'eth' ? 'eth' : k?.mode === 'btc' ? 'btc' : 'key');
 
-const SAY = { account: 'Reading your wallet…', connect: 'Connect in your wallet.', sign: 'Sign the message in your wallet.', confirm: 'Sign once more to confirm.' };
+// what a wallet's refusal to take a second request says, in words a person can act on
+const plain = (e) => (e?.code === -32002 || /already (pending|processing)|request of type .* pending/i.test(e?.message || '') ? 'Your wallet already has a request open. Answer it there, then try again.' : e?.message || 'Could not open your Tacit wallet. Try again.');
+const FIRST = { eth: 'Reading your wallet…', known: 'Reading your wallet…', other: 'Reading your wallet…', wc: 'Reading your wallet…', btc: 'Sign in your Bitcoin wallet. The first time, twice.', passkey: 'Use your passkey when your browser asks.', new: 'Use your passkey when your browser asks.' };
 const WHY = 'Open your Tacit wallet to make ETH private. It stays open in this tab only, until you close it, lock it, or leave the site idle for 30 minutes.';
 
 // Which of several Ethereum wallets signs, chosen in a sheet over the sign-in sheet: resolves to its uuid, or null when closed.
@@ -44,8 +47,10 @@ export function signInSheet(session, { pick = pickWalletSheet, why = WHY, first 
     const connected = (k) => !!(here && k?.mode === 'eth' && lc(k.address) === lc(here.address));
     const sole = here ? null : session.soleWallet?.() || null;
     const pickFor = (k) => (here?.uuid && (!k?.address || connected(k)) ? async () => here.uuid : pick);
-    // closed with a key open (the one the tab already held, opened again under the sheet) is a key opened
-    const o = overlay({ title: 'Wallet', top: true, onClose: () => { if (session.unlocked) resolve(); else reject(new Cancelled()); } });
+    // closed with a key open (the one the tab already held, opened again under the sheet) is a key opened; closed while a wallet is
+    // being asked, the sign-in is cancelled, so a signature that arrives later opens nothing
+    let current = null;
+    const o = overlay({ title: 'Wallet', top: true, onClose: () => { current?.cancel(); if (session.unlocked) resolve(); else reject(new Cancelled()); } });
     const opt = (k, t, m, cls = '') => `<button class="opt${cls ? ` ${cls}` : ''}" type="button" data-in="${k}"><span class="opt-t">${t}</span><span class="opt-m">${m}</span></button>`;
     const way = (k, id, name, title) => `<button class="way" type="button" data-in="${k}" title="${esc(title)}">${mark(id)}<span>${name}</span></button>`;
     // a Tacit wallet this browser has opened: its address when it is known, and what opens it
@@ -81,7 +86,8 @@ export function signInSheet(session, { pick = pickWalletSheet, why = WHY, first 
       ${canPaste ? '<form class="amt" hidden><input type="password" placeholder="64-character Tacit key" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Tacit key"><button class="link" type="submit" data-in="key">Open</button></form>' : ''}
     </div>`;
     const paste = o.body.querySelector('form.amt'), err = o.body.querySelector('.note.err'), wait = o.body.querySelector('.note.wait'), more = o.body.querySelector('.more');
-    const onStep = (x, i) => { if (SAY[x]) { wait.textContent = `${SAY[x]}${i?.of === 2 ? ` Step ${x === 'confirm' ? 2 : 1} of 2.` : ''}`; wait.hidden = false; if (more) more.style.display = 'none'; } };
+    let line = null;
+    const onStep = (x, i) => { line?.step(x, i); };
     o.body.querySelector('[data-in="paste"]')?.addEventListener('click', () => { paste.hidden = !paste.hidden; if (!paste.hidden) paste.querySelector('input').focus(); });
     paste?.addEventListener('submit', (e) => e.preventDefault());
     const ins = [...o.body.querySelectorAll('[data-in]')].filter((b) => b.dataset.in !== 'paste');
@@ -91,17 +97,21 @@ export function signInSheet(session, { pick = pickWalletSheet, why = WHY, first 
       busy = true; err.hidden = true; b.setAttribute('aria-busy', 'true'); ins.forEach((x) => { x.disabled = true; });
       try {
         const k = b.dataset.in;
-        if (k === 'known') await session.open[known.mode](known, pickFor(known), { onStep });
-        else if (k === 'other') await session.open[other.mode](other, pickFor(other), { onStep });
-        else if (k === 'new') await session.open.newPasskey();
-        else if (k === 'key') { const input = paste.querySelector('input'); await session.open.key(input.value); input.value = ''; }
-        else if (k === 'eth') await session.open.eth(here ? { address: here.address } : undefined, pickFor(null), { onStep });
-        else if (k === 'wc') await session.open.eth(undefined, pick, { wc: true, onStep });
-        else await session.open[k](undefined, pick);
+        const run = current = cancellable((signal) => {
+          if (k === 'known') return session.open[known.mode](known, pickFor(known), { onStep, signal });
+          if (k === 'other') return session.open[other.mode](other, pickFor(other), { onStep, signal });
+          if (k === 'new') return session.open.newPasskey({ signal });
+          if (k === 'key') { const input = paste.querySelector('input'); return session.open.key(input.value).then(() => { input.value = ''; }); }
+          if (k === 'eth') return session.open.eth(here ? { address: here.address } : undefined, pickFor(null), { onStep, signal });
+          if (k === 'wc') return session.open.eth(undefined, pick, { wc: true, onStep, signal });
+          return session.open[k](undefined, pick, { signal });
+        });
+        if (k !== 'key') { line = waitLine(wait, { first: FIRST[k] || 'Waiting for your wallet…', cancel: run.cancel }); wait.hidden = false; if (more) more.style.display = 'none'; }
+        await run.done;
         o.close(); resolve();
       } catch (e) {
-        if (!/cancel/i.test(e?.message || '') && e?.name !== 'NotAllowedError' && !e?.unlockCancelled && e?.code !== 4001) { err.textContent = e?.message || 'Could not open your Tacit wallet. Try again.'; err.hidden = false; }
-      } finally { busy = false; wait.hidden = true; if (more) more.style.display = ''; b.removeAttribute('aria-busy'); ins.forEach((x) => { x.disabled = false; }); }
+        if (!/cancel/i.test(e?.message || '') && e?.name !== 'NotAllowedError' && !e?.unlockCancelled && e?.code !== 4001) { err.textContent = plain(e); err.hidden = false; }
+      } finally { current = null; line?.stop(); line = null; busy = false; wait.hidden = true; if (more) more.style.display = ''; b.removeAttribute('aria-busy'); ins.forEach((x) => { x.disabled = false; }); }
     };
   });
 }

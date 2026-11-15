@@ -5,9 +5,9 @@
 import { secp, sha256, keccak_256, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable } from '/prf-wallet.js';
 import { knownWallets } from '/tacit-wallet-known.js?cb=ec5b5193';
-import { makeEvmWallet } from '/evm-wallet.js?cb=c0ce7f8f';
-import { signInSheet, pickWalletSheet, Cancelled } from '/trade/sign-in.js?cb=1b0bfcfb';
-import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ec8829ac';
+import { makeEvmWallet } from '/evm-wallet.js?cb=ed67f38d';
+import { signInSheet, pickWalletSheet, Cancelled } from '/trade/sign-in.js?cb=d31a80e0';
+import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ad0c42e2';
 
 const RECORD = 'tacit-trade-id-v1';                                           // how /trade last opened a key: public data only (the Bitcoin market writes it too)
 const KNOWN_IDS = [RECORD, 'tacit-tac-id-v1', 'tacit-pay-hub-id-v1', 'tacit-lite-id-v1', 'tacit-pay-id-v1'];
@@ -20,11 +20,14 @@ const writeJson = (k, v) => { try { v == null ? localStorage.removeItem(k) : loc
 // holds besides the session goes with it) and says it; a page that gives no `moved` has the session lock.
 // `ways` adds the ways in that need tacit.js, from a page that loads it: `btc(record)` opens a Bitcoin wallet (btc-session.js openBtcWallet) and
 // resolves to { mode: 'btc', priv, pubHex, address, btc }; `btcSeen()` says whether this browser has one, for the sign-in sheet.
-export function makeKeySession({ moved = null, ways = {} } = {}) {
+// `busy()`: true while the page is in the middle of an action; a key is not locked for lack of use while it is.
+export function makeKeySession({ moved = null, ways = {}, busy = null } = {}) {
   const evm = makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' });
   let priv = null, key = null;
   const listeners = new Set(), emit = () => listeners.forEach((f) => { try { f(); } catch { /* a listener must not break the session */ } });
   const pubOf = (hex) => bytesToHex(secp.getPublicKey(hexToBytes(hex), true));
+  // `signal` (from the sign-in sheet's Cancel): the wallet's own prompt cannot be taken back, but a key whose sign-in was cancelled is never opened by it
+  const live = (signal) => { if (signal?.aborted) throw Object.assign(new Error('Cancelled in your wallet.'), { code: 4001, unlockCancelled: true }); };
 
   function set(k) {
     const pubHex = lc(String(k.pubHex || pubOf(k.priv)).replace(/^0x/, ''));
@@ -37,13 +40,15 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
   }
   const open = {
     // `pick(list)` names which of several announced wallets signs: the page passes the one already connected.
-    async eth(k, pick, { wc = false, onStep } = {}) {
-      const id = await evm.deriveIdentity({ pick, expect: k?.address, wc, onStep });
+    async eth(k, pick, { wc = false, onStep, signal } = {}) {
+      const id = await evm.deriveIdentity({ pick, expect: k?.address, wc, onStep, signal });
+      live(signal);
       set({ mode: 'eth', priv: id.priv, pubHex: k?.pubHex || id.pubHex, address: '0x' + lc(id.address).replace(/^0x/, '') });
     },
-    async passkey(k) {
+    async passkey(k, _pick, { signal } = {}) {
       if (!isPasskeyAvailable()) throw new Error('Passkeys need a browser that supports them.');
-      const r = await prfLogin({ credentialId: k?.credentialId });
+      const r = await prfLogin({ credentialId: k?.credentialId, signal });
+      if (signal?.aborted) { r.priv.fill(0); live(signal); }
       const pubHex = bytesToHex(r.pub), m = loadPrfMap();
       const label = k?.label || Object.keys(m).find((l) => m[l]?.credentialId === r.credentialId) || `passkey-${pubHex.slice(0, 6)}`;
       m[label] = { credentialId: r.credentialId, pubkey: pubHex, createdAt: m[label]?.createdAt || Date.now(), lastUsed: m[label]?.lastUsed ?? Date.now() };
@@ -58,19 +63,20 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
       if (!BigInt('0x' + h) || BigInt('0x' + h) >= secp.CURVE.n) throw new Error('That is not a valid Tacit key.');
       set({ mode: 'key', priv: h });
     },
-    async newPasskey() {
+    async newPasskey({ signal } = {}) {
       if (!isPasskeyAvailable()) throw new Error('Passkeys need a browser that supports them.');
       const m = loadPrfMap();
       let label = 'Tacit', n = 1;
       while (m[label]) label = `Tacit ${++n}`;
-      const r = await prfRegister(label);
+      const r = await prfRegister(label, { signal });
+      if (signal?.aborted) { r.priv.fill(0); live(signal); }
       m[label] = { credentialId: r.credentialId, pubkey: r.pubHex, createdAt: Date.now(), lastUsed: Date.now() };
       savePrfMap(m);
       const p = bytesToHex(r.priv); r.priv.fill(0);
       set({ mode: 'passkey', priv: p, pubHex: r.pubHex, label, credentialId: r.credentialId });
     },
   };
-  if (ways.btc) open.btc = async (k) => set(await ways.btc(k));
+  if (ways.btc) open.btc = async (k, _pick, { signal } = {}) => { const opened = await ways.btc(k); live(signal); set(opened); };
   const opens = new Set([...DERIVED, ...(ways.btc ? ['btc'] : [])]);
   const ids = () => knownWallets(KNOWN_IDS);
   const usable = (w) => (w && opens.has(w.mode) ? w : null);
@@ -86,7 +92,8 @@ export function makeKeySession({ moved = null, ways = {} } = {}) {
   });
   // The key this tab opened on another page of the site (tab-key.js), opened again with no sign-in: one that needs no wallet at once, an
   // Ethereum wallet's once that wallet answers, without a prompt, as the account that opened it (any other answer, or none, locks it).
-  tabKeyWatch();
+  // and an open key is locked after IDLE with no use of the page (tab-key.js), the way the sign-in sheet says it is
+  tabKeyWatch({ busy, onIdle: (why) => { if (!key) return; if (moved) moved(why); else { priv = null; key = null; emit(); } } });
   const kept = tabKeyRead();
   let restored = Promise.resolve();
   if (kept && kept.mode !== 'eth') { try { set(kept); } catch { tabKeyClear(); } }

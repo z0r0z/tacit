@@ -71,8 +71,12 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
   });
 
   const sameAccount = (a, address) => Array.isArray(a) && String(a[0] || '').toLowerCase().replace(/^0x/, '') === address;
+  // Which wallet already shows the site this account. WalletConnect is asked only when it is the wallet used last: asking it loads its whole
+  // library and opens its relay connection, for a visitor who has never paired a phone.
   function holderOf(address) {
-    const list = ordered();
+    let last = null;
+    try { last = localStorage.getItem(REMEMBERED); } catch { }
+    const list = ordered().filter((p) => !p.provider.isWalletConnect || idOf(p.info) === last);
     if (list.length < 2) return Promise.resolve(null);
     return new Promise((done) => {
       let left = list.length;
@@ -233,22 +237,29 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     try { localStorage.setItem(ANCHOR_KEY + String(address).toLowerCase(), pubHex); } catch { }
   }
 
-  async function deriveIdentity({ pick, expect, onStep, wc = false } = {}) {
+  // `signal`: aborted when the person cancels. A wallet's request cannot be taken back, so a prompt already open stays open there, but nothing
+  // is asked after it, and a signature that arrives late opens nothing.
+  async function deriveIdentity({ pick, expect, onStep, wc = false, signal = null } = {}) {
     const step = (s, info) => { try { onStep?.(s, info); } catch { } };
+    const live = () => { if (signal?.aborted) throw Object.assign(new Error('Cancelled in your wallet.'), { code: 4001, cancelled: true }); };
+    live();
     step('account');
     const want = expect ? String(expect).toLowerCase().replace(/^0x/, '') : null;
     const onConnect = () => step('connect');
     let c = await reach({ pick, silent: true, expect: want, wc, onConnect });
-    if (want && c.address !== want && c.guessed && providers.length >= 2 && typeof pick === 'function') c = await reach({ pick, silent: true, ask: true, onConnect });
+    live();
+    if (want && c.address !== want && c.guessed && providers.length >= 2 && typeof pick === 'function') { c = await reach({ pick, silent: true, ask: true, onConnect }); live(); }
     const { provider, address } = c;
     if (want && address !== want) throw new Error(`Switch your wallet to 0x${want.slice(0, 4)}…${want.slice(-4)}, the account this Tacit wallet was opened with.`);
     const anchored = !!readAnchor(address);
     const reading = anchored ? null : codeOf(provider, address);
     const early = reading ? await capped(reading, CODE_WAIT_MS, STILL_READING) : '0x';
     if (isContractCode(early)) throw new Error(CONTRACT_WALLET);
+    live();
     const msg = derivationMsg();
     step('sign', { of: anchored ? 1 : 2 });
     const sig = await provider.request({ method: 'personal_sign', params: ['0x' + bytesToHex(enc(msg)), '0x' + address] });
+    live();
     if (early === STILL_READING && isContractCode(await reading)) throw new Error(CONTRACT_WALLET);
     if (typeof sig !== 'string' || !sig.startsWith('0x')) throw new Error('wallet returned invalid signature');
     const sigBytes = hexToBytes(sig.slice(2));
@@ -271,6 +282,7 @@ export function makeEvmWallet({ secp, sha256, keccak256, bytesToHex, hexToBytes,
     if (!anchored) {
       step('confirm', { of: 2 });
       const again = await provider.request({ method: 'personal_sign', params: ['0x' + bytesToHex(enc(msg)), '0x' + address] });
+      if (signal?.aborted) { sigBytes.fill(0); live(); }
       const b = typeof again === 'string' && again.startsWith('0x') ? hexToBytes(again.slice(2)) : null;
       if (b && b.length === 65 && (b[64] === 0 || b[64] === 1)) b[64] += 27;
       const same = !!b && b.length === 65 && b.every((x, i) => x === sigBytes[i]);

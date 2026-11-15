@@ -10,6 +10,12 @@ export const SLOW_MS = 45e3;
 const SHOWN_MS = 300;
 
 const MARK = Symbol.for('tacit.promptGuard');
+
+// How many prompts this page has put to a wallet that have not been answered. A wallet that is showing a signature request should not also be
+// the page's read node (eth-nodes.js walletNode): its extension has the request to serve, and a hung read queued in front of it is how a prompt
+// fails to appear.
+let openPrompts = 0;
+export const promptOpen = () => openPrompts > 0;
 const refused = (e) => e?.code === 4001 || /user (rejected|denied)|rejected the request|request rejected|denied (transaction|message)/i.test(String(e?.shortMessage || e?.message || e || ''));
 
 const instantly = (e) => Object.assign(new Error(e?.message || 'User rejected the request.'), { code: e?.code ?? 4001, quick: true, cause: e });
@@ -23,6 +29,10 @@ export function guardProvider(provider, { quiet = QUIET_MS, retryQuiet = RETRY_Q
   const ask = provider.request;
   let answered = 0;
   const prompted = async (args) => {
+    openPrompts++;
+    try { return await promptedNow(args); } finally { openPrompts--; }
+  };
+  const promptedNow = async (args) => {
     for (let tries = 0; ; tries++) {
       const wait = answered + (tries ? retryQuiet : quiet) - now();
       if (wait > 0) await sleep(wait);

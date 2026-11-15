@@ -1,3 +1,4 @@
+import { promptOpen } from './wallet-prompts.js';
 
 export const ETH_NODES = [
   'https://ethereum-rpc.publicnode.com',
@@ -84,7 +85,7 @@ export function walletNode(get) {
     id: 'wallet',
     usable: (m, p) => {
       const w = get();
-      return WALLET_READS.has(m) && typeof w?.request === 'function' && !w.isWalletConnect && !(m === 'eth_call' && (p[0]?.gas || p[2]));
+      return !promptOpen() && WALLET_READS.has(m) && typeof w?.request === 'function' && !w.isWalletConnect && !(m === 'eth_call' && (p[0]?.gas || p[2]));
     },
     send: (m, p) => get().request({ method: m, params: p }),
   };

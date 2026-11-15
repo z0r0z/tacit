@@ -4,6 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { onMainnet, walletNode } from '../dapp/eth-nodes.js';
+import { guardProvider } from '../dapp/wallet-prompts.js';
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
 function wallet(chain) {
@@ -51,6 +52,19 @@ await test('a chain read that was asked before a change and answers after it doe
   assert.equal(get(), null, 'the late answer about the chain it left is dropped');
   fns.forEach((f) => f()); replies[2]('0x1'); await tick();
   assert.equal(get(), w, 'back on mainnet, it is a node again');
+});
+
+await test('the wallet is not a read node while it has a prompt open, and is again once the prompt is answered', async () => {
+  let release;
+  const w = guardProvider({ request: async ({ method }) => { if (method === 'personal_sign') { await new Promise((r) => { release = r; }); return '0xsig'; } return '0x1'; } }, { quiet: 0 });
+  const node = walletNode(() => w);
+  assert.equal(node.usable('eth_call', [{ to: '0x1' }]), true, 'a wallet with nothing open serves reads');
+  const asked = w.request({ method: 'personal_sign' });
+  await tick();
+  assert.equal(node.usable('eth_call', [{ to: '0x1' }]), false, 'not for a call while it is showing a signature request');
+  assert.equal(node.usable('eth_getLogs', [{}]), false, 'nor for logs');
+  release(); await asked;
+  assert.equal(node.usable('eth_call', [{ to: '0x1' }]), true, 'it serves reads again after the answer');
 });
 
 console.log(failed ? `\n${failed} failed` : '\nall eth-nodes onMainnet checks passed');

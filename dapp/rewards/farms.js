@@ -7,7 +7,7 @@
 // then calls `forget(why)` when the wallet behind the key has moved. `onRead(list)` is told the positions each time they are read.
 // `joinAt` is an element the join with both sides is drawn in instead (the farm page's own card, on the farm `choose` names), with what
 // it says as it runs; `onAct(name, ok)` is told when an action ends.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=09f263cb';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=67d4d4de';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { makeRunner } from '/activity.js';
 import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=f872de9d';

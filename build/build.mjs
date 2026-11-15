@@ -174,13 +174,13 @@ const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', '
 // (TAC's Bitcoin pool, tac/pool.js and what it loads, the sheets, front/sheets.js, and TAC's page, front/tac.js, are hashed before the front page that loads them)
 const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'front/sheets.js', 'front/tac.js', 'front-route.js', 'index.html', 'weld/stats/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
-const PAY_CB_FILES = ['private-route.js', 'pay/index.html', 'pay/eth/index.html'];
+const PAY_CB_FILES = ['private-route.js', 'sign-wait.js', 'pay/index.html', 'pay/eth/index.html'];
 // dapp/tac/ holds TAC's Bitcoin pool, which TAC's page draws: pool.js lazy-imports sats.js and claim.js, so those are hashed first, then pool.js
 // (and the front page, in the weld walk above). /tac/ itself is the front page made for its address (tacPage below).
 const TAC_CB_FILES = ['tac/sats.js', 'tac/claim.js', 'tac/pool.js'];
 // dapp/trade/ is the TAC trade page: its modules are hashed first (the venues module and the order book it imports are the shared ones the
 // front page uses, so their tokens come out the same), then app.js, then the page that loads it.
-const TRADE_CB_FILES = ['trade/tape.js', 'trade/chart.js', 'trade/book.js', 'trade/depth.js', 'trade/wallet.js', 'trade/sheet.js', 'trade/util.js', 'trade/sign-in.js', 'trade/btc-session.js', 'trade/btc-way.js', 'trade/btc.js', 'trade/farm.js', 'trade/app.js', 'trade/index.html',
+const TRADE_CB_FILES = ['sign-wait.js', 'trade/tape.js', 'trade/chart.js', 'trade/book.js', 'trade/depth.js', 'trade/wallet.js', 'trade/sheet.js', 'trade/util.js', 'trade/sign-in.js', 'trade/btc-session.js', 'trade/btc-way.js', 'trade/btc.js', 'trade/farm.js', 'trade/app.js', 'trade/index.html',
   'trade/poolux.js', 'trade/key.js', 'trade/connect.js', 'trade/rewards-dot.js', 'teth/read.js', 'teth/wrap.js', 'teth/prover.js', 'teth/market.js', 'teth/app.js', 'teth/index.html',
   'cbtc/events.js', 'cbtc/history-base.js', 'cbtc/read.js', 'cbtc/app.js', 'cbtc/index.html'];
 // dapp/vault/ is the borrow page: the same walk, leaves first (its arithmetic, its chain reads and its addresses), then app.js, then the page.

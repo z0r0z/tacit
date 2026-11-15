@@ -33,7 +33,26 @@ function touch() {
   j.at = now;
   try { sessionStorage.setItem(K, JSON.stringify(j)); } catch { }
 }
-export function tabKeyWatch() {
-  for (const ev of ['pointerdown', 'keydown']) addEventListener(ev, touch, { passive: true, capture: true });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) touch(); });
+
+// The last time anyone did anything on this page. `IDLE` is enforced against it: the tab's saved key is not only let go of at the next page load, the
+// page is told (`onIdle`) so it locks the key it holds in memory, as its sign-in sheets say it does. `busy()` is true while an action runs (a proof,
+// a send): a running action counts as use, so a key is never locked out from under it.
+let seen = Date.now();
+export const IDLE_WHY = 'Your Tacit wallet was locked after 30 minutes without use. Open it again to continue.';
+export function tabKeyWatch({ onIdle = null, busy = null } = {}) {
+  const bump = () => { seen = Date.now(); touch(); };
+  for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart']) addEventListener(ev, bump, { passive: true, capture: true });
+  const check = () => {
+    const now = Date.now();
+    if (now - seen < IDLE) return;
+    let working = false;
+    try { working = !!busy?.(); } catch { }
+    if (working) { seen = now; return; }
+    seen = now;
+    tabKeyClear();
+    try { onIdle?.(IDLE_WHY); } catch { }
+  };
+  setInterval(check, 30e3);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) return; check(); touch(); });
+  return check;
 }
