@@ -230,7 +230,8 @@ function makeWorld() {
     setRecordBurns: (v) => { recordBurns = v; },
     setReflectedNote: ({ txid, vout, value, blinding, asset = ASSET, authKey = '0x' + '00'.repeat(32), bound = false }) => {
       const { cx, cy } = pool.commitXY(value, blinding);
-      reflectedNote = { leaf: pool.btcNoteLeaf(asset, cx, cy, authKey), triple: [String(pool.outpointKey(withHex(revHex(txid)), vout)).toLowerCase(), pool.commitmentHash(cx, cy), asset, authKey, bound ? 1 : 0] };
+      // a bound note's leaf is its bound form, under the pool's chain binding, as the reflection folds a bound transfer's output
+      reflectedNote = { leaf: bound ? pool.btcNoteLeafBound(asset, cx, cy, authKey, '0x' + '7c'.repeat(32)) : pool.btcNoteLeaf(asset, cx, cy, authKey), triple: [String(pool.outpointKey(withHex(revHex(txid)), vout)).toLowerCase(), pool.commitmentHash(cx, cy), asset, authKey, bound ? 1 : 0] };
     },
     // The attested state records a reflected burn: its destination, read from the reveal the way the reflection reads it.
     foldReflected: (revealHex) => { const d = classifyConfidentialTx(withHex(revealHex)); if (d && d.dest) reflectedDests.push(String(d.dest).toLowerCase()); },
@@ -1757,11 +1758,12 @@ function storageContainsPrivkey(storage, priv) {
     ok(r.stage === 'rfolded', 'and is recorded and ready to mint once the state holds its burn');
   }
   {
-    // A bound note is refused by the check, not at planning; a high fee waits; another key is refused; one page does not advance twice at once.
+    // A bound note (a bound transfer's output) passes the check by its bound leaf (class 2); a high fee waits; another key is refused; one page does
+    // not advance twice at once.
     const { world, ux } = setup();
     world.setReflectedNote({ txid: NOTE_TXID, vout: NOTE_VOUT, value: AMT, blinding: NOTE_BLINDING, asset: TETH, authKey: XONLY, bound: true });
     const pf = await ux.preflightHeld({ note: held, walletPub: WALLET_PUB });
-    ok(!pf.ok && pf.steps.some((y) => y.name === 'bound' && !y.ok), 'a note bound to a deployment is refused by the check, naming the step');
+    ok(pf.ok && pf.sourceClass === 2 && !pf.steps.some((y) => y.name === 'bound'), 'a note bound to this pool passes the check by its bound leaf (class 2)');
     const { world: w2, ux: u2 } = setup();
     let msg = null; try { await u2.startReflected({ note: held, walletPriv: WALLET_PRIV, feeRate: 400 }); } catch (e) { msg = e.message; }
     ok(/fees are high right now \(400 sat\/vB\)/.test(msg || '') && w2.broadcasts.length === 0 && u2.list(Buffer.from(WALLET_PUB).toString('hex')).length === 0, 'a return waits when Bitcoin\'s fee is above the ceiling, with nothing signed or journalled');

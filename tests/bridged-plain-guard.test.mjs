@@ -1,7 +1,8 @@
-// A token bridged from the pool to Bitcoin, other than TAC, is never sent, split, moved, listed or sold on Bitcoin by the wallet (dapp/tacit.js
-// _refuseBridgedPlain): the reflection folds the outputs of a plain transfer or an atomic sale for TAC alone (cxfer-core LEGACY_BRIDGE_ASSETS), so
-// such a transfer would leave the new note unable to return to Ethereum. TAC and tokens native to Bitcoin are untouched. Every case is refused (or
-// not) before anything is read from the network.
+// A token bridged from the pool to Bitcoin, other than TAC, is never listed or sold by an atomic sale on Bitcoin by the wallet (dapp/tacit.js
+// _refuseBridgedPlain): the reflection folds the outputs of an atomic sale for TAC alone (cxfer-core LEGACY_BRIDGE_ASSETS), so the buyer's note could
+// not return to Ethereum. It IS sent, split, combined and moved: the transfer builder makes those bound transfers (0x39), which the reflection folds for
+// any asset (tests/bridged-bound-send.test.mjs shows the bytes). TAC and tokens native to Bitcoin are untouched. Every refusal comes before anything is
+// read from the network.
 //
 //   node tests/bridged-plain-guard.test.mjs
 import { JSDOM } from './_jsdom.mjs';
@@ -43,21 +44,23 @@ const SPX = '45addc633189749428e8fc36ea4ca067fcb4b0c7abc186a095360db10dbe0b48';
 const NATIVE = 'ab'.repeat(32);   // an asset etched on Bitcoin, never bridged
 const PUB = '02' + '11'.repeat(32), TXID = 'cd'.repeat(32);
 
-const refused = (e, tk) => !!e && e.bridgedOnly === true && e.message.startsWith(`${tk} bridged to Bitcoin goes back to Ethereum through the bridge`);
+const refused = (e, tk) => !!e && e.bridgedOnly === true && e.message.startsWith(`${tk} bridged to Bitcoin is sold into a buyer's bid`);
+const past = (e) => !e?.bridgedOnly;
 
-// ---- every way a note leaves its owner on Bitcoin, for each built-in bridged token ----
+// ---- every way a note leaves its owner on Bitcoin, for each built-in bridged token: transfers go on, sales by listing are refused ----
 for (const [tk, id] of Object.entries(BRIDGED)) {
-  ok(refused(await errOf(() => dapp.buildAndBroadcastCXfer({ assetIdHex: id, recipientPubHex: PUB, amount: 1n })), tk), `${tk}: a plain send is refused`);
-  ok(refused(await errOf(() => dapp.buildAndBroadcastCXferMulti({ assetIdHex: '0x' + id, recipients: [{ pubHex: PUB, amount: 1n }] })), tk), `${tk}: a split or combine (to several, or to self) is refused, 0x-prefixed or not`);
+  ok(past(await errOf(() => dapp.buildAndBroadcastCXfer({ assetIdHex: id, recipientPubHex: PUB, amount: 1n }))), `${tk}: a send goes past the guard (the builder binds it)`);
+  ok(past(await errOf(() => dapp.buildAndBroadcastCXferMulti({ assetIdHex: '0x' + id, recipients: [{ pubHex: PUB, amount: 1n }] }))), `${tk}: a split or combine goes past the guard, 0x-prefixed or not`);
   ok(refused(await errOf(() => dapp.publishAxferIntent({ utxoTxid: TXID, utxoVout: 0, priceSats: 10000, expiry: LATER, preResolvedTarget: { amount: 1n, blinding: '1' }, preResolvedAssetIdHex: id })), tk), `${tk}: an atomic ask is refused`);
   ok(refused(await errOf(() => dapp.takePreauthSale({ assetIdHex: id, saleIdHex: TXID })), tk), `${tk}: buying a listed sale is refused (the buyer's note would not return)`);
   ok(refused(await errOf(() => dapp.publishBidIntent({ assetIdHex: id, amount: 1n, priceSats: 10000, expiry: LATER })), tk), `${tk}: a bid-intent (filled only by an atomic sale) is refused`);
 }
-ok(refused(await errOf(() => dapp.moveBridgedNote({ txid: TXID, vout: 0, assetIdHex: BRIDGED.tETH })), 'tETH'), 'tETH: the move from the Taproot address to the trading address is refused (it was allowed before)');
+for (const [tk, id] of Object.entries(BRIDGED)) { const e = await errOf(() => dapp.moveBridgedNote({ txid: TXID, vout: 0, assetIdHex: id })); ok(past(e) && !/can be moved here/.test(e?.message || ''), `${tk}: the move from the Taproot address to the key's own address goes past the guard`); }
 
-// ---- a token bridged at run time (any ERC-20 the pool escrows) is refused the same way, by its own name ----
+// ---- a token bridged at run time (any ERC-20 the pool escrows) is treated the same way, by its own name ----
 ok(dapp.addBridgedAsset({ assetId: SPX, ticker: 'SPX', capRaw: 10n ** 11n, minRaw: 0n, dec: 8 }) === true, 'SPX is added as a bridged token');
-ok(refused(await errOf(() => dapp.buildAndBroadcastCXfer({ assetIdHex: SPX, recipientPubHex: PUB, amount: 1n })), 'SPX'), 'SPX: a plain send is refused, named as SPX');
+ok(past(await errOf(() => dapp.buildAndBroadcastCXfer({ assetIdHex: SPX, recipientPubHex: PUB, amount: 1n }))), 'SPX: a send goes past the guard');
+ok(refused(await errOf(() => dapp.publishAxferIntent({ utxoTxid: TXID, utxoVout: 0, priceSats: 10000, expiry: LATER, preResolvedTarget: { amount: 1n, blinding: '1' }, preResolvedAssetIdHex: SPX })), 'SPX'), 'SPX: an atomic ask is refused, named as SPX');
 ok(refused(await errOf(() => dapp.publishBidIntent({ assetIdHex: SPX, amount: 1n, priceSats: 10000, expiry: LATER })), 'SPX'), 'SPX: a bid-intent is refused');
 
 // ---- TAC (the legacy asset, whose transfers fold) and a native Bitcoin token are never refused by the guard ----

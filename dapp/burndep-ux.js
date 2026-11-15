@@ -379,8 +379,12 @@ export function makeBurnDepositUx(deps) {
     catch (e) { step('source-lookup', false, String(e.message || e)); return out; }
     const vout = srcTx && srcTx.vout && srcTx.vout[note.vout];
     if (!step('source-confirmed', !!(srcTx && srcTx.status && srcTx.status.confirmed), 'the note\'s output is confirmed on Bitcoin')) return out;
-    const owner = '0x' + bytesToHexLocal(typeof walletPub === 'string' ? hexToBytesLocal(stripHex(walletPub)).slice(1) : walletPub.slice(1));
-    if (!step('source-ownership', !!vout && lc(vout.scriptpubkey) === '5120' + stripHex(owner), 'the note\'s output is this key\'s own Taproot output')) return out;
+    // a note the bridge minted sits at the key's own Taproot address; one sent or moved by a bound transfer, at its P2WPKH address (zero auth key)
+    const pubBytes = typeof walletPub === 'string' ? hexToBytesLocal(stripHex(walletPub)) : walletPub;
+    const p2tr = note.p2tr !== false;
+    const owner = p2tr ? '0x' + bytesToHexLocal(pubBytes.slice(1)) : '0x' + '00'.repeat(32);
+    const ownScript = p2tr ? '5120' + stripHex(owner) : lc(bytesToHexLocal(p2wpkhScriptOf(pubBytes)));
+    if (!step('source-ownership', !!vout && lc(vout.scriptpubkey) === ownScript, p2tr ? 'the note\'s output is this key\'s own Taproot output' : 'the note\'s output is this key\'s own address')) return out;
     let live;
     try { live = await isLive(note.txid, note.vout, { fresh: true }); }
     catch (e) { step('reflection', false, String(e.message || e)); return out; }
@@ -389,10 +393,11 @@ export function makeBurnDepositUx(deps) {
     const refl = await reflected();
     if (refl.leaves) {
       const { cx, cy } = pool.commitXY(BigInt(note.amount), BigInt(note.blinding));
-      const bound = refl.liveBound.get(outpointOf(note.txid, note.vout));
-      if (!step('bound', !bound, 'this note is bound to a deployment, which this path does not send back')) return out;
-      const leaf = bridgeMint.sourceLeaf({ sourceClass: 1, asset: a.assetId, cx, cy, owner, chainBinding: withHex(chainBindingHex()) });
+      // a bound note (a bound transfer's output) burns by its bound leaf (class 2), which the mint on Ethereum reconstructs for this pool
+      const sourceClass = refl.liveBound.get(outpointOf(note.txid, note.vout)) ? 2 : 1;
+      const leaf = bridgeMint.sourceLeaf({ sourceClass, asset: a.assetId, cx, cy, owner, chainBinding: withHex(chainBindingHex()) });
       if (!step('old-leaf', refl.leaves.has(lc(leaf)), 'this note is not in the reflected note tree in the form the burn names it by')) return out;
+      out.sourceClass = sourceClass;
     }
     out.path = 'reflected';
     try { out.burnFeeRate = await chain.getFeeRate('priority'); step('fee-estimate', true, `${out.burnFeeRate} sat/vB`); }
@@ -578,7 +583,8 @@ export function makeBurnDepositUx(deps) {
     const built = await burner().buildBridgeBurnTxs({
       prims: P, snapshot, feeRate, fundingUtxos: Array.isArray(safe) ? safe : [safe].filter(Boolean),
       note: { txid: stripHex(note.txid), vout: Number(note.vout), sats: Number(note.sats), asset: asset.assetId, value: BigInt(note.amount), blinding: BigInt(note.blinding), script: p2tr ? '5120' + bytesToHexLocal(walletPub.slice(1)) : bytesToHexLocal(p2wpkhScriptOf(walletPub)) },
-      notePriv: walletPriv, chainBinding: withHex(chainBindingHex()), sourceClass: 1, fee: 0n,
+      // the class (unbound 1, bound 2) is the reflected note's own, read from the snapshot by the planner
+      notePriv: walletPriv, chainBinding: withHex(chainBindingHex()), sourceClass: null, fee: 0n,
       ...(recipient
         ? { stealthDest: (nu, v) => bridgeMint.stealthDestFor({ asset: asset.assetId, lockerScanPriv, nullifier: nu, recipientSpendPub: recipientPub, value: v, deadline: lockDeadline }) }
         : {
@@ -1056,10 +1062,17 @@ export function makeBurnDepositUx(deps) {
       const held = await openHeldNote(note.txid, note.vout, walletPriv);
       if (held && lc(stripHex(held.assetId)) === lc(stripHex(asset.assetId))) { opened = held; burnedOwner = held.owner; }
     }
+    // another bridged token's note held at this key's P2WPKH address (a bound transfer's output, zero auth key): opened from its own transfer
+    if (!opened && openNote && lc(stripHex(asset.assetId)) !== lc(stripHex(tacAssetId))) opened = await openNote(note.txid, note.vout);
     if (!opened) throw new Error('burndep-ux: the note that burn spent does not open with this key, so it was not rebuilt here');
     const walletPub = secp.getPublicKey(walletPriv, true);
     const { cx, cy } = pool.commitXY(BigInt(opened.amount), BigInt(opened.blinding));
-    const srcLeaf = pool.btcNoteLeaf(asset.assetId, cx, cy, burnedOwner);
+    // the burned note's leaf: unbound (class 1), else bound to the pool the burn names (class 2, a bound transfer's output)
+    let srcLeaf = pool.btcNoteLeaf(asset.assetId, cx, cy, burnedOwner), sourceClass = 1;
+    if (lc(env.nullifier) !== lc(pool.nullifier(srcLeaf)) && pool.btcNoteLeafBound) {
+      const boundLeaf = pool.btcNoteLeafBound(asset.assetId, cx, cy, burnedOwner, env.target);
+      if (lc(env.nullifier) === lc(pool.nullifier(boundLeaf))) { srcLeaf = boundLeaf; sourceClass = 2; }
+    }
     const nu = pool.nullifier(srcLeaf);
     if (lc(env.nullifier) !== lc(nu)) throw new Error('burndep-ux: the burn does not match that note’s opening (a note not held at this wallet’s own address cannot be rebuilt this way)');
     const owner = pickDestOwner(walletPriv, asset.assetId).owner;
@@ -1093,7 +1106,7 @@ export function makeBurnDepositUx(deps) {
       envelope: { destLeaf: env.dest, nullifier: env.nullifier, burnId: pool.bridgeBurnId(1, spentTxid, Number(note.vout), srcLeaf, env.target) },
       ...(stealth ? { stealth: stealthRecord(stealth, recipient) } : {}),
       mint: {
-        sourceClass: 1, spentTxid, spentVout: Number(note.vout), chainBinding: env.target,
+        sourceClass, spentTxid, spentVout: Number(note.vout), chainBinding: env.target,
         burned: { value: BigInt(opened.amount), blinding: BigInt(opened.blinding), owner: burnedOwner },
         dest: stealth ? { value: BigInt(opened.amount), blinding: BigInt(stealth.lBlinding), owner: stealth.ownerPub } : { value: BigInt(opened.amount), blinding: destBlinding, owner },
       },

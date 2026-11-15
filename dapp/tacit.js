@@ -12112,7 +12112,7 @@ function getAssetMeta(assetIdHex) {
   const r = loadRegistry();
   const explicit = r[assetIdHex] || null;
   if (explicit) return explicit;
-  return _lpSyntheticMeta(assetIdHex);
+  return _lpSyntheticMeta(assetIdHex) || _bridgedAssetMeta(assetIdHex);
 }
 let _lpAssetIdLookup = new Map();
 function _lpAssetIdLookupRefresh(pools) {
@@ -13522,21 +13522,23 @@ async function _evmNullifierSpentCached(pool, nu) {
 }
 // A bound output is a note only while the pool it names has not spent it. Bound to a pool this wallet cannot read (an earlier generation, or one it
 // does not know), its standing cannot be known, so it waits. The shielded pool's replay decides without Ethereum: a bound note anywhere in a shield's
-// history is refused there, at every height, rather than waiting on reflection.
+// history is refused there, at every height, rather than waiting on reflection. Only a bound output at a Taproot address can be spent by the fast lane
+// (its signature is by the output's key); one at any other address has the zero key, which no signature verifies under, so it is held like any note:
+// its spends do not wait on reflection, and it is a lot like any other.
 async function _boundOutputFailure(tx, dec, j, outKey) {
   const binding = _confidentialChainBinding();
   const pool = (CROSSLANE_DEPLOYMENTS[currentNetworkName()] || {}).pool;
   if (!binding || !pool) return null;
-  _boundOutpointKeys.add(outKey);
+  const kit = _leafKitOf();
+  const auth = kit.p2trXonly(tx.vout?.[j]?.scriptpubkey || '') || '0x' + '00'.repeat(32);
+  if (!/^0x0{64}$/.test(auth)) _boundOutpointKeys.add(outKey);
   if (_strictValidation) return _REASON_INVALID;
   if ('0x' + bytesToHex(dec.targetChainBinding) !== binding.toLowerCase()) {
     _strictUnavailable(`T_CXFER_BOUND ${outKey}: bound to another pool deployment`);
     return _REASON_FETCH_FAILED;
   }
-  const kit = _leafKitOf();
   const C = bytesToPoint(dec.outputs[j].commitment).toAffine();
   const hex32 = (x) => '0x' + x.toString(16).padStart(64, '0');
-  const auth = kit.p2trXonly(tx.vout?.[j]?.scriptpubkey || '') || '0x' + '00'.repeat(32);
   const nu = kit.nullifier(kit.btcNoteLeafBound('0x' + bytesToHex(dec.assetId), hex32(C.x), hex32(C.y), auth, binding));
   try { return (await _evmNullifierSpentCached(pool, nu)) ? _REASON_INVALID : null; }
   catch { _strictUnavailable(`T_CXFER_BOUND ${outKey}: Ethereum nullifier unreadable`); return _REASON_FETCH_FAILED; }
@@ -13596,12 +13598,15 @@ function _trackedNotesLoad() {
 // The checked set, waiting at most `ms` for it; null when there is none in time (the wallet then walks histories as before).
 function _trackedNotesReady(ms) { return Promise.race([_trackedNotesLoad(), new Promise((r) => setTimeout(() => r(null), ms))]); }
 const _trackedNow = () => (_tracked.net === currentNetworkName() ? _tracked.set : null);
-// Credits `txid:vout` when the checked set holds it, unbound, at the commitment and asset its own transaction carries.
+// Credits `txid:vout` when the checked set holds it at the commitment and asset its own transaction carries: unbound, or bound by a bound transfer to an
+// address with no Taproot key (a bridged token's note held at P2WPKH, which the fast lane cannot spend).
 async function _trackedCredit(tracked, txid, vout, tx, validatedSet) {
   const t = tracked.get(txid, vout);
-  if (!t || t.bound) return false;
+  if (!t) return false;
   const outEnv = _txOutputEnvelope(tx);
-  if (!outEnv || outEnv.opcode === T_CXFER_BOUND) return false;
+  if (!outEnv) return false;
+  const heldBound = t.bound && outEnv.opcode === T_CXFER_BOUND && /^0{64}$/.test(t.authKey || '') && !_leafKitOf().p2trXonly(tx.vout?.[vout]?.scriptpubkey || '');
+  if ((t.bound || outEnv.opcode === T_CXFER_BOUND) && !heldBound) return false;
   let pd = null;
   try { pd = await getParentEnvelopeData(outEnv, vout, txid); } catch { pd = null; }
   if (!pd || String(pd.assetIdHex).toLowerCase() !== t.asset) return false;
@@ -16017,16 +16022,29 @@ function bridgedAtTaproot({ force = false } = {}) {
   _bridgedHeld.p = p;
   return p;
 }
-// The assets a page can move off the Taproot address: the ones the bridge to Bitcoin carries (TAC, and tETH under its Bitcoin id).
+// The assets a page can move off the Taproot address: the ones the bridge to Bitcoin carries (TAC, and every token bridged from the pool, which moves by
+// the bound transfer).
 function _bridgedMoveAsset(assetIdHex) {
   const id = String(assetIdHex || '').toLowerCase().replace(/^0x/, '');
-  if (id !== CANONICAL_TAC_ASSET_ID_HEX) { _refuseBridgedPlain(id); throw new Error('only TAC bridged to Bitcoin can be moved here'); }
+  if (id !== CANONICAL_TAC_ASSET_ID_HEX && !_bridgedNonLegacy(id)) throw new Error('only a token bridged to Bitcoin can be moved here');
   return id;
 }
-// A note of a token bridged from the pool, other than TAC, returns to Ethereum only as the note the bridge minted: the reflection folds the outputs of a
-// plain transfer or an atomic sale for TAC alone (cxfer-core LEGACY_BRIDGE_ASSETS), so a send, split, move, listing or sale of it on Bitcoin would leave
-// the new note unable to go back. Such a note leaves Bitcoin by the bridge. Tokens native to Bitcoin are not bridged and are not refused here.
+// A token bridged from the pool, other than TAC. The reflection folds a plain transfer (0x22/0x23) or an atomic sale (0x26 family) for TAC alone
+// (cxfer-core LEGACY_BRIDGE_ASSETS), and a bound transfer (0x39) for any asset: so the wallet sends, splits and moves these by the bound transfer, and
+// sells them into bound bids (bound swaps), never by a listing or an atomic sale. Tokens native to Bitcoin are not bridged and are not refused here.
 let _bridgedFixed = null;
+// The name and decimals of a bridged token, for a wallet that has no etch to read them from (the bridge carries the token, nothing on Bitcoin etched it).
+function _bridgedAssetMeta(assetIdHex) {
+  try {
+    const tk = _bridgedNonLegacy(assetIdHex);
+    if (!tk) return null;
+    const id = '0x' + String(assetIdHex).toLowerCase().replace(/^0x/, '');
+    let dec = _bridgedRuntime.get(id)?.dec;
+    for (const ux of [_crossoutUx, _burndepUx]) { if (dec == null) { try { dec = ux?.assetOf?.(id)?.dec; } catch { } } }
+    if (dec == null) dec = id === '0xc50e8dd9666f64a23e5457d686382901f08aaea3554328fc4ac25d2f9fac6c00' ? 6 : 8;
+    return { assetIdHex: id.slice(2), ticker: tk, decimals: Number(dec), kind: 'bridge' };
+  } catch { return null; }   // before the bridge's tables exist (the module still loading)
+}
 function _bridgedNonLegacy(assetIdHex) {
   const id = String(assetIdHex || '').toLowerCase().replace(/^0x/, '');
   if (!/^[0-9a-f]{64}$/.test(id) || id === CANONICAL_TAC_ASSET_ID_HEX) return null;
@@ -16040,7 +16058,7 @@ function _bridgedNonLegacy(assetIdHex) {
 }
 function _refuseBridgedPlain(assetIdHex) {
   const tk = _bridgedNonLegacy(assetIdHex);
-  if (tk) throw Object.assign(new Error(`${tk} bridged to Bitcoin goes back to Ethereum through the bridge. It is not sent, split, moved or sold on Bitcoin, which would leave it unable to return.`), { bridgedOnly: true });
+  if (tk) throw Object.assign(new Error(`${tk} bridged to Bitcoin is sold into a buyer's bid, not by a listing: a listed sale of it would leave the buyer's ${tk} unable to return to Ethereum.`), { bridgedOnly: true });
 }
 async function _bridgedOpen(assetIdHex) {
   const pubHex = bytesToHex(wallet.pub);
@@ -16058,6 +16076,17 @@ async function bridgedNotes(assetIdHex = CANONICAL_TAC_ASSET_ID_HEX) {
   return { notes, unread: found.unread || 0 };
 }
 const bridgedTacNotes = () => bridgedNotes(CANONICAL_TAC_ASSET_ID_HEX);
+// A bridged token's notes (other than TAC) at the key's own P2WPKH address: sent or moved there by the bound transfer, or change from one. The Bridge tab
+// lists them beside the notes the bridge minted and burns them home the same way (a bound note's burn names its bound leaf), and a seller offers them.
+async function bridgedHeldNotes(assetIdHex) {
+  const id = String(assetIdHex || '').toLowerCase().replace(/^0x/, '');
+  if (!_bridgedNonLegacy(id)) return [];
+  await ensurePrivkey();
+  const h = (await scanHoldings()).get(id);
+  if (!h || !Array.isArray(h.utxos)) return [];
+  return h.utxos.filter((x) => x && x.utxo && !x.stealthTweakedSk && !_assetNoteJustSpent(x.utxo.txid, x.utxo.vout))
+    .map((x) => ({ txid: x.utxo.txid, vout: Number(x.utxo.vout), sats: Number(x.utxo.value), amount: BigInt(x.amount), blinding: BigInt(x.blinding), confirmed: !!x.utxo.status?.confirmed, p2tr: false }));
+}
 // A swap spends from the key's trading address, not from where a bridged note lands. When it finds nothing to spend and the Taproot address holds
 // bridged notes, say where the move is.
 async function _bridgedSwapHint(assetIdHex, ticker) {
@@ -23769,7 +23798,10 @@ async function tacPickCandidates(assetIdHex, sorted, amount) {
   return sorted;
 }
 
-async function buildAndBroadcastCXferMulti(args) { _refuseBridgedPlain(args?.assetIdHex); return _buildAndBroadcastCXferMulti(args); }
+// A token bridged from the pool, other than TAC, moves on Bitcoin by the bound transfer (0x39): the same transfer, carrying the pool's chain binding.
+// The reflection folds it for any asset, its notes go back to Ethereum by the bridge, and a note at a P2WPKH address (every output here) has no
+// Taproot key, so the fast lane can never spend it and its receiver holds it once Bitcoin confirms, as with TAC.
+async function buildAndBroadcastCXferMulti(args) { return _buildAndBroadcastCXferMulti(args); }
 async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = bppEnabled(), assetSigner = null }) {
   await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
@@ -23778,6 +23810,10 @@ async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos
   }
   const K = recipients.length;
   if (K > 7) throw new Error('max 7 recipients per CXFER (m=8 with 1 change output)');
+  const boundTicker = _bridgedNonLegacy(assetIdHex);
+  const boundTarget = boundTicker ? _confidentialChainBinding(currentNetworkName()) : null;
+  if (boundTicker && !/^0x[0-9a-fA-F]{64}$/.test(String(boundTarget || ''))) throw new Error(`${boundTicker} on Bitcoin moves by a transfer bound to the pool, and this network has no pool to bind it to`);
+  if (boundTicker && recipients.some((r) => r && typeof r.stealthAddress === 'string' && r.stealthAddress.length > 0)) throw new Error(`${boundTicker} on Bitcoin is sent to a private-payment address, not a stealth one`);
 
   const parsed = recipients.map((r, i) => {
     if (!r) throw new Error(`recipients[${i}] missing`);
@@ -23922,12 +23958,14 @@ async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos
 
   const cts = amounts.map((a, i) => encryptAmount(a, keystreams[i]));
 
-  const payload = encoderFn({
+  const plainPayload = encoderFn({
     assetId: assetIdBytes,
     kernelSig,
     outputs: amounts.map((_, i) => ({ commitment: commitmentBytesList[i], encryptedAmount: cts[i] })),
     rangeproof: aggProof,
   });
+  // bound: 0x39 ‖ the pool's chain binding ‖ the rest of the same transfer (cxfer-core parse_cxfer_bound_envelope; either range proof verifies)
+  const payload = boundTarget ? concatBytes(Uint8Array.of(T_CXFER_BOUND), hexToBytes(boundTarget.slice(2)), plainPayload.subarray(1)) : plainPayload;
   const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
   const leaf = tapLeafHash(envelopeScript);
   const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
@@ -23936,7 +23974,7 @@ async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos
 
   const feeRate = await getFeeRate();
   const numAssetIn = pickedAssetUtxos.length;
-  const revealVb = estCXferRevealVb({ m, numAssetIn, hasSatsChange: true });
+  const revealVb = estCXferRevealVb({ m, numAssetIn, hasSatsChange: true }) + (boundTarget ? 8 : 0);
   const revealFee = feeFor(revealVb, feeRate);
 
   const hasStealth = parsed.some(r => r.isStealth);
@@ -24163,7 +24201,7 @@ async function _buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos
   };
 }
 
-async function buildAndBroadcastCXfer(args) { _refuseBridgedPlain(args?.assetIdHex); return _buildAndBroadcastCXfer(args); }
+async function buildAndBroadcastCXfer(args) { return _buildAndBroadcastCXfer(args); }
 async function _buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, stealthAddress = null, amount, forceUtxos = null, onProgress = null, useBpp = bppEnabled() }) {
   const recipient = stealthAddress
     ? { stealthAddress, amount }
@@ -28556,16 +28594,17 @@ async function _boundPrims(priv) {
   const { makeBtcWallet } = await import('./bitcoin-taproot-wallet.js');
   return makeBtcWallet({ priv, hrp: NET.hrp, fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('bound swaps broadcast through tacit.js'); }, fetchFeeRate: async () => getFeeRate() }).prims;
 }
-// A note offered in a bound swap: in the reflection's live set (checked against Ethereum), UNBOUND (a bound note could be pulled to
-// Ethereum by the fast lane while the swap waits, leaving the buyer's note unreflected), of this asset, at the commitment its own
-// transaction carries. → { cx, cy, commitment }.
+// A note offered in a bound swap: in the reflection's live set (checked against Ethereum), not spendable by the fast lane (unbound, or
+// bound with the zero key: a note at a P2WPKH address, which no signature spends on Ethereum; a bound note with a Taproot key could be
+// pulled to Ethereum while the swap waits, leaving the buyer's note unreflected), of this asset, at the commitment its own transaction
+// carries. → { cx, cy, commitment }.
 async function _boundSwapNote(txid, vout, assetIdHex) {
   const aid = String(assetIdHex).replace(/^0x/, '').toLowerCase();
   const tracked = await _trackedNotesReady(30e3);
   if (!tracked) throw new Error('the reflection\'s live set could not be checked against Ethereum right now, so this note is not swapped');
   const t = tracked.get(txid, vout);
   if (!t) throw new Error('this note is not in the reflection\'s live set yet: wait for Bitcoin\'s proof on Ethereum to reach its block');
-  if (t.bound) throw new Error('a bound note can be pulled to Ethereum by the fast lane while a swap waits, so it is not swapped this way');
+  if (t.bound && !/^0{64}$/.test(t.authKey || '')) throw new Error('a bound note can be pulled to Ethereum by the fast lane while a swap waits, so it is not swapped this way');
   if (t.asset !== aid) throw new Error('this note is another asset');
   const tx = await getTx(txid);
   const env = tx && _txOutputEnvelope(tx);
@@ -28599,16 +28638,18 @@ async function publishBoundOffer({ assetIdHex, bid, note = null, expirySec = 864
   if (!bid || !bid.bound || !/^[0-9a-f]{64}$/.test(String(bid.buyer_xonly || '')) || !/^[0-9a-f]{32}$/.test(String(bid.bid_id || ''))) throw new Error('that bid is not a bound (bridged token) bid');
   const bidAmt = BigInt(bid.remaining_amount ?? bid.amount), bidPrice = BigInt(bid.price_sats), bidTotal = BigInt(bid.amount);
   const xonly = bytesToHex(wallet.pub.slice(1));
-  const pool = note ? [note] : (await _bridgedOpen(aid)).filter((n) => n.confirmed && n.amount != null && n.blinding != null && n.credited !== false);
+  // the notes the bridge minted at the Taproot address, then the ones held at the P2WPKH address (sent or moved there by the bound transfer)
+  const pool = note ? [note] : [...(await _bridgedOpen(aid)), ...(await bridgedHeldNotes(aid).catch(() => []))]
+    .filter((n) => n.confirmed && n.amount != null && n.blinding != null && n.credited !== false);
   const fits = pool.filter((n) => BigInt(n.amount) > 0n && BigInt(n.amount) <= bidAmt).sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : -1));
-  if (!fits.length) throw new Error(pool.length ? 'no note of this token here fits the bid whole (a note is sold whole)' : 'no note of this token at this key\'s Taproot address');
+  if (!fits.length) throw new Error(pool.length ? 'no note of this token here fits the bid whole (a note is sold whole)' : 'no note of this token at this key\'s Bitcoin addresses');
   const n = fits[0], amount = BigInt(n.amount);
   const c = await _boundSwapNote(n.txid, n.vout, aid);
   const priceSats = Number((bidPrice * amount) / bidTotal);
   if (priceSats < DUST) throw new Error('the bid pays less than dust for this note');
   const bs = await _boundSwapLib(), prims = await _boundPrims(wallet.priv);
   const offer = bs.sellerOffer({ prims, kit: _boundKit(), assetId: '0x' + aid, buyerXonly: bid.buyer_xonly, chainBinding: _confidentialChainBinding(), sellerPayoutScript: p2wpkhScript(wallet.pub), priceSats,
-    sellerNote: { txid: n.txid, vout: n.vout, value: Number(n.sats), script: '5120' + xonly, amount, blinding: BigInt(n.blinding), cx: c.cx, cy: c.cy } });
+    sellerNote: { txid: n.txid, vout: n.vout, value: Number(n.sats), script: n.p2tr === false ? bytesToHex(p2wpkhScript(wallet.pub)) : '5120' + xonly, amount, blinding: BigInt(n.blinding), cx: c.cx, cy: c.cy } });
   const expiry = Math.floor(Date.now() / 1000) + Math.max(600, Math.min(7 * 86400 - 60, expirySec | 0));
   const sig = signSchnorr(bs.boundOfferMsg(NET.name, offer, bid.bid_id, expiry), wallet.priv);
   const resp = await fetch(withNet(`${WORKER_BASE}/assets/${aid}/bound-offers`), { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -56398,7 +56439,7 @@ function _btcMarketCtx(aid) {
     } : null,
     initialLane: isTac ? _marketTacLane : 'btc',
     onLane: (lane) => { if (!isTac) return; _marketTacLane = lane; _saveMarketTacLane(lane); _writeMarketHash(aid); },
-    bridged: isTac || aid === BRIDGED_TETH_ASSET_ID_HEX ? { list: () => bridgedNotes(aid), move: (n, onProgress) => moveBridgedNote({ txid: n.txid, assetIdHex: aid, onProgress }) } : null,
+    bridged: isTac || _bridgedNonLegacy(aid) ? { list: () => bridgedNotes(aid), move: (n, onProgress) => moveBridgedNote({ txid: n.txid, assetIdHex: aid, onProgress }) } : null,
     onLotCheck: (fn) => { _lotCheckListener = fn; return () => { if (_lotCheckListener === fn) _lotCheckListener = null; }; },
     prepare: (raws) => _btcMarketPrewarmLots(raws),
     exec: {
@@ -62174,7 +62215,7 @@ export {
   getFeeRate, getFeeTierPref, setFeeTierPref, FEE_TIERS,
   broadcast, broadcastWithRetry, getTx,
   validateOutpoint, requireValidatedLot, _explorerTx, _crossCheckedFetcher, _lotProvedSession, verifyDiscoverAsset, enrichDiscoverMints, getCachedDiscoverMint,
-  bridgedAtTaproot, bridgedAtTaprootCount, bridgedNotes, bridgedTacNotes, swapReceiptNotes, moveBridgedNote, _bridgedSwapHint,
+  bridgedAtTaproot, bridgedAtTaprootCount, bridgedNotes, bridgedTacNotes, bridgedHeldNotes, swapReceiptNotes, moveBridgedNote, _bridgedSwapHint,
   getParentEnvelopeData, clearBtcPoolExitCache, _txOutputEnvelope as txOutputEnvelope,
   setStrictValidation, clearValidatorCaches, ValidationUnavailableError, rememberValidated,
   _txMarkNotFound as txMarkNotFound, _txIsRecentlyNotFound as txIsRecentlyNotFound,
