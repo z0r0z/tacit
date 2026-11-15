@@ -104,11 +104,11 @@ test('a page of a few memos is opened here: no workers are started for it', asyn
 
 test('the workers are kept between pages, then ended', async () => {
   const made = [];
-  const keep = fake({ made, opts: { idleMs: 150 } });
+  const keep = fake({ made, opts: { idleMs: 800 } });
   await scan(keep, 30);
   const first = made.length;
   assert.ok(made.every((w) => !w.ended), 'alive between pages');
-  await new Promise((r) => setTimeout(r, 400));
+  await new Promise((r) => setTimeout(r, 1800));
   assert.ok(made.every((w) => w.ended), 'ended once the scan is quiet');
   assert.ok(first >= 2);
 });

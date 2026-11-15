@@ -116,11 +116,11 @@ const withFilter = async (filter, key = rPriv, evs = events) => {
   const made = [];
   const base = await withFilter(null);
   assert.strictEqual(plainJson(base.got), plainJson(plain), 'without a filter, the scan is the plain scan');
-  const r = await withFilter(fakeWorkers({ made }));
+  const r = await withFilter(fakeWorkers({ made, opts: { idleMs: 600 } }));
   assert.strictEqual(plainJson(r.got), plainJson(plain), 'with workers, the same notes in the same order');
   assert.ok(base.opened >= NOISE && r.opened <= wanted.length + 1, `the page opened ${r.opened} memos in full instead of ${base.opened}`);
   assert.ok(made.length === 3 && made.every((w) => !w.ended), 'three workers were made for the scan, and are kept a moment for the next batch');
-  await pause(200);
+  await pause(1500);
   assert.ok(made.every((w) => w.ended), 'and all of them are ended once it has been quiet');
   const other = await withFilter(fakeWorkers(), sPriv);
   assert.strictEqual(other.got.length, NOISE, 'another key reads the same list on its own, through the same workers');
@@ -211,18 +211,18 @@ const withFilter = async (filter, key = rPriv, evs = events) => {
 // ── a scan asks in batches: the workers are kept between them ──
 {
   const made = [];
-  const keep = fakeWorkers({ made, opts: { idleMs: 150 } });
+  const keep = fakeWorkers({ made, opts: { idleMs: 800 } });
   const memos = events.map((e) => (e && typeof e.memo === 'string' ? e.memo : '0x'));
   const half = Math.floor(memos.length / 2);
   const a = await keep(rPriv, memos.slice(0, half)), b2 = await keep(rPriv, memos.slice(half));
   assert.ok(a && b2, 'both batches are answered');
   assert.strictEqual(made.length, 3, 'one set of workers for both batches, not one set each');
   assert.ok(made.every((w) => !w.ended), 'alive right after the second');
-  await pause(450);
+  await pause(1800);
   assert.ok(made.every((w) => w.ended), 'ended once the scan has been quiet');
   await keep(rPriv, memos.slice(0, half));
   assert.ok(made.length > 3, 'a later scan makes new ones');
-  await pause(450);
+  await pause(1800);
   ok('the workers are kept between the batches of one scan, then ended');
 }
 

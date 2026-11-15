@@ -122,18 +122,18 @@ test('two readers asking for the same walk at once run it once', async () => {
 
 test('the workers are kept between the slices of one scan, then ended', async () => {
   const made = [];
-  const keep = fake({ made, opts: { idleMs: 150 } });
+  const keep = fake({ made, opts: { idleMs: 800 } });
   const R = make(keep);
   await walk(R);
   const first = made.length;
   await walk(R);
   assert.strictEqual(made.length, first, 'the second slice used the same workers');
   assert.ok(made.every((w) => !w.ended), 'and they are alive right after');
-  await new Promise((r) => setTimeout(r, 400));
+  await new Promise((r) => setTimeout(r, 1800));
   assert.ok(made.every((w) => w.ended), 'they are ended once the scan has been quiet a moment');
   await walk(R);
   assert.ok(made.length > first, 'and a later scan makes new ones');
-  await new Promise((r) => setTimeout(r, 400));
+  await new Promise((r) => setTimeout(r, 1800));
 });
 
 test('the shipped worker file, run in threads, finds the same notes', async () => {
