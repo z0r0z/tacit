@@ -1,6 +1,6 @@
 // A token the pool escrows, bridged to Bitcoin like cUSDT (dapp/bridge/runtime.js, the tracker's registry in dapp/bridge/track.js): no limit of its own,
 // the route a row shows, and that a record of such a token is never read as TAC or as a built-in whose name it borrows.
-import { NO_LIMITS, unlimited, bridgeDp, bridgeRoute, bridgeLimitEntry, RUNTIME_STORE, saveRuntime, readRuntime, runtimeSymbol, runtimeIcon, markColor } from '../dapp/bridge/runtime.js';
+import { NO_LIMITS, bridgeDp, bridgeRoute, bridgeLimitEntry, RUNTIME_STORE, saveRuntime, readRuntime, runtimeSymbol, runtimeIcon, markColor } from '../dapp/bridge/runtime.js';
 import { ROUTES, LIMITS, addBridgeAsset, limitLine, outRow, inRow, CUSDT_ID } from '../dapp/bridge/track.js';
 
 let n = 0, failures = 0;
@@ -9,7 +9,6 @@ const ok = (c, m) => { if (c) { console.log('  ok -', m); n++; } else { console.
 // ---- no limit of its own: a crossing needs no market price ----
 {
   ok(NO_LIMITS.minRaw === 1n && NO_LIMITS.capRaw === 10n ** 18n && Object.isFrozen(NO_LIMITS), 'a runtime token crosses from one unit up to what a note holds');
-  ok(unlimited(NO_LIMITS.capRaw) && unlimited(10n ** 19n) && !unlimited(200_000_000_000n) && !unlimited(0n) && !unlimited(undefined), 'a cap at a note\'s bound reads as no limit; a built-in\'s cap does not');
   ok(bridgeDp(0.5, 8) === 2 && bridgeDp(5, 8) === 4 && bridgeDp(100_000, 8) === 6 && bridgeDp(5000, 3) === 3, 'a cheap token shows fewer decimals, a dear one more, never more than it has');
 }
 
@@ -23,7 +22,7 @@ const ok = (c, m) => { if (c) { console.log('  ok -', m); n++; } else { console.
   ok(bridgeRoute({ ticker: 'XYZ', icon: 'i', dp: 2, dec: 6 }).dec === 6, 'a six-decimal token says so');
   ok(addBridgeAsset({ key: 'x0xe0f6', id, route, limits: bridgeLimitEntry(lim) }) === true, 'a token is added with its route and limits');
   ok(ROUTES.x0xe0f6 === route && LIMITS.x0xe0f6.out.max === lim.capRaw && LIMITS.x0xe0f6.in.max === lim.capRaw && LIMITS.x0xe0f6.out.min === lim.minRaw, 'both tables carry it');
-  ok(limitLine('x0xe0f6', 'out') === '4 to 2,000 SPX a bridge while it is new', `a limit it was given reads as one (${limitLine('x0xe0f6', 'out')})`);
+  ok(limitLine('x0xe0f6', 'out') === '4 to 2,000 SPX a bridge', `a limit it was given reads as one (${limitLine('x0xe0f6', 'out')})`);
   // a record of it is its own: the row names its key, its steps and its link, not TAC's (the tracker's fallback)
   const out = outRow({ id: 'o1', stage: 'settled', path: 'reflected', source: { assetId: '0x' + id, ticker: 'SPX', amount: '100000000' } });
   ok(out.asset === 'x0xe0f6' && out.href === route.out.href && out.steps === route.out.steps && out.amount === 100_000_000n, 'a crossing out of it is its own row: key, link and steps');
@@ -104,7 +103,7 @@ const ok = (c, m) => { if (c) { console.log('  ok -', m); n++; } else { console.
   for (const e of readRuntime(st)) addBridgeAsset({ key: e.key, id: e.id, route: bridgeRoute({ ticker: e.ticker, icon: runtimeIcon(e.addr), dp: e.dp, dec: e.dec }), limits: bridgeLimitEntry(e) });
   const row = outRow({ id: 'k1', stage: 'settled', source: { assetId: '0x' + id, ticker: 'KEPT', amount: '5000000' } });
   ok(row.asset === `x${addr}` && ROUTES[row.asset].icon === `tk-x${addr}` && ROUTES[row.asset].dec === 6 && row.amount === 5_000_000n, 'a crossing of a kept token reads as that token, in its mark and its decimals');
-  ok(limitLine(`x${addr}`, 'out') === '2 to 1,000 KEPT a bridge while it is new', `with the limit it started under (${limitLine(`x${addr}`, 'out')})`);
+  ok(limitLine(`x${addr}`, 'out') === '2 to 1,000 KEPT a bridge', `with the limit it started under (${limitLine(`x${addr}`, 'out')})`);
   const dark = '0x' + '6b'.repeat(20);
   saveRuntime(st, { addr: dark, id: '6b'.repeat(32), ticker: 'DARK', sym: 'DARK', logo: '', dp: 2, dec: 8, minRaw: 0n, capRaw: 0n });
   for (const e of readRuntime(st).filter((x) => x.ticker === 'DARK')) addBridgeAsset({ key: e.key, id: e.id, route: bridgeRoute({ ticker: e.ticker, icon: runtimeIcon(e.addr), dp: e.dp, dec: e.dec }), limits: bridgeLimitEntry(e) });

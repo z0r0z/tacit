@@ -31,7 +31,9 @@ const { makeBtcWallet } = await import('../dapp/bitcoin-taproot-wallet.js');
 // computed once here so the recovery tests can assert against it without re-deriving it inline each time.
 const destXonlyOf = (priv) => bytesToHex(makeBtcWallet({ priv, hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => {}, fetchFeeRate: async () => 1 }).wallet.xonly());
 
-const { makeCrossoutUx, CROSSOUT_BETA_CAP_RAW, CROSSOUT_TETH_CAP_RAW, CROSSOUT_TETH_MIN_RAW, CROSSOUT_CUSDT_DEC, CROSSOUT_CUSDT_CAP_RAW, CROSSOUT_CUSDT_MIN_RAW } = await import('../dapp/crossout-ux.js');
+const { makeCrossoutUx, NOTE_MAX_RAW, CROSSOUT_TETH_MIN_RAW, CROSSOUT_CUSDT_DEC, CROSSOUT_CUSDT_MIN_RAW } = await import('../dapp/crossout-ux.js');
+// No bridge has a cap below what one note holds; the engine still honours a cap an asset is given, which these hand it to test that it does.
+const TETH_CAP = 50_000_000n, CUSDT_CAP = 100_000_000n;
 globalThis.fetch = realFetch;
 
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256: nobleSha256 });
@@ -189,11 +191,14 @@ function makeUx(world, extra = {}) {
   const [wrongAsset] = ux.eligibleNotes([{ ...NOTE, asset: withHex('ff'.repeat(32)) }]);
   ok(wrongAsset.eligible === false && wrongAsset.reason === 'not TAC', 'a non-TAC note is ineligible');
 
-  const [overCap] = ux.eligibleNotes([{ ...NOTE, value: CROSSOUT_BETA_CAP_RAW + 1n }]);
-  ok(overCap.eligible === false && /1,000 TAC beta limit/.test(overCap.reason), 'a note over the 1,000 TAC cap is ineligible, with the cap named in the reason');
+  ok(NOTE_MAX_RAW === 10n ** 18n, 'the bound is what one note holds');
+  const [big] = ux.eligibleNotes([{ ...NOTE, value: 100_000_000_001n }]);
+  ok(big.eligible === true, 'a note over the old 1,000 TAC cap is eligible: TAC has no cap');
+  const [overCap] = ux.eligibleNotes([{ ...NOTE, value: NOTE_MAX_RAW + 1n }]);
+  ok(overCap.eligible === false && /more than one bridge carries/.test(overCap.reason), 'past what a note holds it is refused, and says so');
 
-  const [atCap] = ux.eligibleNotes([{ ...NOTE, value: CROSSOUT_BETA_CAP_RAW }]);
-  ok(atCap.eligible === true, 'a note exactly at the cap is eligible (cap is inclusive)');
+  const [atCap] = ux.eligibleNotes([{ ...NOTE, value: NOTE_MAX_RAW }]);
+  ok(atCap.eligible === true, 'a note exactly at the bound is eligible (inclusive)');
 
   const [unconfirmed] = ux.eligibleNotes([{ ...NOTE, confirmed: false }]);
   ok(unconfirmed.eligible === false && unconfirmed.reason === 'unconfirmed', 'an unconfirmed note is ineligible');
@@ -204,9 +209,9 @@ function makeUx(world, extra = {}) {
   const world = makeWorld();
   const ux = makeUx(world);
   let threw = false;
-  try { await ux.start({ note: { ...NOTE, value: CROSSOUT_BETA_CAP_RAW + 1n }, walletPriv: WALLET_PRIV }); }
-  catch (e) { threw = /beta cap/.test(e.message); }
-  ok(threw, 'start() refuses a note over the beta cap without settling anything');
+  try { await ux.start({ note: { ...NOTE, value: NOTE_MAX_RAW + 1n }, walletPriv: WALLET_PRIV }); }
+  catch (e) { threw = /more than one bridge carries/.test(e.message); }
+  ok(threw, 'start() refuses a note past what one bridge carries without settling anything');
 }
 
 // ---- full happy path: settled -> covered -> mint-signed -> mint-submitted -> minted ----
@@ -385,21 +390,21 @@ function makeUx(world, extra = {}) {
 
 // ---- more than one asset: tETH beside TAC, each with its own cap and minimum ----
 const TETH = withHex('3c'.repeat(32));
-const MULTI = { assets: [{ assetId: ASSET, ticker: 'TAC', capRaw: CROSSOUT_BETA_CAP_RAW }, { assetId: TETH, ticker: 'tETH', capRaw: CROSSOUT_TETH_CAP_RAW, minRaw: CROSSOUT_TETH_MIN_RAW }] };
+const MULTI = { assets: [{ assetId: ASSET, ticker: 'TAC' }, { assetId: TETH, ticker: 'tETH', capRaw: TETH_CAP, minRaw: CROSSOUT_TETH_MIN_RAW }] };
 const TNOTE = { nullifier: withHex('7f'.repeat(32)), value: 4_000_000n, blinding: 0x4321n, asset: TETH, confirmed: true };
 {
   const world = makeWorld();
   const ux = makeUx(world, MULTI);
   const [t, tac, other, over, under, atCap, atMin] = ux.eligibleNotes([TNOTE, NOTE, { ...TNOTE, asset: withHex('ff'.repeat(32)) },
-    { ...TNOTE, value: CROSSOUT_TETH_CAP_RAW + 1n }, { ...TNOTE, value: CROSSOUT_TETH_MIN_RAW - 1n }, { ...TNOTE, value: CROSSOUT_TETH_CAP_RAW }, { ...TNOTE, value: CROSSOUT_TETH_MIN_RAW }]);
+    { ...TNOTE, value: TETH_CAP + 1n }, { ...TNOTE, value: CROSSOUT_TETH_MIN_RAW - 1n }, { ...TNOTE, value: TETH_CAP }, { ...TNOTE, value: CROSSOUT_TETH_MIN_RAW }]);
   ok(t.eligible && tac.eligible, 'a tETH note and a TAC note are both eligible when both are configured');
   ok(!other.eligible && other.reason === 'not an asset this bridge takes', 'an asset that is neither is refused, without naming one asset when two are configured');
-  ok(!over.eligible && /over the 0\.5 tETH beta limit/.test(over.reason), 'a tETH note over its own cap is refused, the cap named in tETH');
+  ok(!over.eligible && /carries \(0\.5 tETH\)/.test(over.reason), 'a tETH note over its own cap is refused, the cap named in tETH');
   ok(!under.eligible && /under the 0\.001 tETH minimum/.test(under.reason), 'a tETH note under its minimum is refused');
   ok(atCap.eligible && atMin.eligible, 'both limits are inclusive');
   ok(ux.assets.length === 2 && ux.assetOf(TETH).ticker === 'tETH', 'the configured assets are readable');
   // TAC's cap does not bleed into tETH and the reverse: a TAC note far over tETH's cap is fine.
-  ok(ux.eligibleNotes([{ ...NOTE, value: CROSSOUT_TETH_CAP_RAW * 100n }])[0].eligible, 'a TAC note far over tETH\'s cap is still eligible as TAC');
+  ok(ux.eligibleNotes([{ ...NOTE, value: TETH_CAP * 100n }])[0].eligible, 'a TAC note far over tETH\'s cap is still eligible as TAC');
 }
 
 // ---- start() with a relay fee: the Bitcoin note is the note less the fee, and the record says both ----
@@ -425,20 +430,20 @@ const TNOTE = { nullifier: withHex('7f'.repeat(32)), value: 4_000_000n, blinding
 
 // ---- cUSDT: USDT at its own six decimals, the pool id of its escrow registration (no Bitcoin link), a $2 minimum ----
 const CUSDT = withHex('c5'.repeat(32));
-const USDT_ASSET = { assetId: CUSDT, ticker: 'cUSDT', capRaw: CROSSOUT_CUSDT_CAP_RAW, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC };
+const USDT_ASSET = { assetId: CUSDT, ticker: 'cUSDT', capRaw: CUSDT_CAP, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC };
 const UNOTE = { nullifier: withHex('6e'.repeat(32)), value: 5_000_000n, blinding: 0x777n, asset: CUSDT, confirmed: true };
 {
-  ok(CROSSOUT_CUSDT_DEC === 6 && CROSSOUT_CUSDT_MIN_RAW === 2_000_000n && CROSSOUT_CUSDT_CAP_RAW === 100_000_000n, 'the limits are 2 and 100 USDT, in six-decimal units');
+  ok(CROSSOUT_CUSDT_DEC === 6 && CROSSOUT_CUSDT_MIN_RAW === 2_000_000n && CUSDT_CAP === 100_000_000n, 'the minimum is 2 USDT, and a cap it is given reads in six-decimal units');
   const world = makeWorld();
   const ux = makeUx(world, { assets: [...MULTI.assets, USDT_ASSET] });
-  const [good, over, under, atCap, atMin] = ux.eligibleNotes([UNOTE, { ...UNOTE, value: CROSSOUT_CUSDT_CAP_RAW + 1n }, { ...UNOTE, value: CROSSOUT_CUSDT_MIN_RAW - 1n },
-    { ...UNOTE, value: CROSSOUT_CUSDT_CAP_RAW }, { ...UNOTE, value: CROSSOUT_CUSDT_MIN_RAW }]);
+  const [good, over, under, atCap, atMin] = ux.eligibleNotes([UNOTE, { ...UNOTE, value: CUSDT_CAP + 1n }, { ...UNOTE, value: CROSSOUT_CUSDT_MIN_RAW - 1n },
+    { ...UNOTE, value: CUSDT_CAP }, { ...UNOTE, value: CROSSOUT_CUSDT_MIN_RAW }]);
   ok(good.eligible, 'a cUSDT note is eligible beside TAC and tETH');
-  ok(!over.eligible && /over the 100 cUSDT beta limit/.test(over.reason), 'over the cap, the cap is named in USDT (100, not 1)');
+  ok(!over.eligible && /carries \(100 cUSDT\)/.test(over.reason), 'over the cap, the cap is named in USDT (100, not 1)');
   ok(!under.eligible && /under the 2 cUSDT minimum/.test(under.reason), 'under the minimum, the minimum is named in USDT (2, not 0.02)');
   ok(atCap.eligible && atMin.eligible, 'both limits are inclusive');
   ok(ux.assetOf(CUSDT).dec === 6 && ux.assetOf(TETH).dec === undefined, 'the six-decimal asset carries its decimals; the eight-decimal ones need not');
-  ok(/over the 0\.5 tETH beta limit/.test(ux.eligibleNotes([{ ...TNOTE, value: CROSSOUT_TETH_CAP_RAW + 1n }])[0].reason), 'tETH\'s limits still read at eight places');
+  ok(/carries \(0\.5 tETH\)/.test(ux.eligibleNotes([{ ...TNOTE, value: TETH_CAP + 1n }])[0].reason), 'tETH\'s limits still read at eight places');
 
   // 5 USDT with the relay's fee of 0.5 USDT: 4.5 arrives, the burn carries both, and the signed Bitcoin step names the cUSDT id
   const rec = await ux.start({ note: UNOTE, walletPriv: WALLET_PRIV, fee: 500_000n });
@@ -459,7 +464,7 @@ const UNOTE = { nullifier: withHex('6e'.repeat(32)), value: 5_000_000n, blinding
   const world = makeWorld();
   const ux = makeUx(world, MULTI);
   const refuses = async (args, re, what) => { let m = null; try { await ux.start({ walletPriv: WALLET_PRIV, ...args }); } catch (e) { m = e.message; } ok(m && re.test(m) && world.crossOutCalls.length === 0, what); };
-  await refuses({ note: { ...TNOTE, value: CROSSOUT_TETH_CAP_RAW + 1n } }, /beta cap/, 'start() refuses a tETH note over its cap without calling crossOut');
+  await refuses({ note: { ...TNOTE, value: TETH_CAP + 1n } }, /more than one bridge carries/, 'start() refuses a tETH note over its cap without calling crossOut');
   await refuses({ note: { ...TNOTE, value: CROSSOUT_TETH_MIN_RAW - 1n } }, /minimum/, 'start() refuses one under its minimum');
   await refuses({ note: { ...TNOTE, asset: withHex('ff'.repeat(32)) } }, /cannot be bridged/, 'start() refuses an unknown asset');
   await refuses({ note: TNOTE, fee: TNOTE.value }, /relay fee must be under/, 'start() refuses a fee that takes the whole note');
@@ -1266,22 +1271,22 @@ const UNOTE = { nullifier: withHex('6e'.repeat(32)), value: 5_000_000n, blinding
   ok(ux.assetOf(SPX) === null, 'an asset nobody named is not one the bridge takes');
   const [before] = ux.eligibleNotes([{ ...NOTE, asset: SPX, value: 5_000_000n }]);
   ok(before.eligible === false && /not an asset this bridge takes|not TAC/.test(before.reason), 'its note is refused before it is named');
-  // named, with no price yet: a limit of 0, so nothing new starts
+  // named with a cap of 0 (the engine still honours one it is given): nothing new starts
   const row = { assetId: SPX, ticker: 'SPX', capRaw: 0n, minRaw: 0n, dec: 8 };
   ux.assets.push({ ...row });
   const [unpriced] = ux.eligibleNotes([{ ...NOTE, asset: SPX, value: 5_000_000n }]);
-  ok(unpriced.eligible === false && /over the 0 SPX beta limit/.test(unpriced.reason), 'named with no price it has no limit, so no note is eligible');
+  ok(unpriced.eligible === false && /carries \(0 SPX\)/.test(unpriced.reason), 'named with a cap of 0, no note is eligible');
   // priced: the engine's copy is updated in place, as addBridgedAsset does
   Object.assign(ux.assetOf(SPX), { capRaw: 20_000_000_000n, minRaw: 200_000n });
   const [inRange, tooBig, tooSmall] = ux.eligibleNotes([{ ...NOTE, asset: SPX, value: 5_000_000n }, { ...NOTE, asset: SPX, value: 20_000_000_001n }, { ...NOTE, asset: SPX, value: 199_999n }]);
   ok(inRange.eligible === true, 'within its limits a note of it is eligible');
-  ok(tooBig.eligible === false && /over the 200 SPX beta limit/.test(tooBig.reason), 'over the cap it is refused, the cap shown at the token\'s own 8 decimals');
+  ok(tooBig.eligible === false && /carries \(200 SPX\)/.test(tooBig.reason), 'over the cap it is refused, the cap shown at the token\'s own 8 decimals');
   ok(tooSmall.eligible === false && /under the 0\.002 SPX minimum/.test(tooSmall.reason), 'under the minimum it is refused, the minimum shown the same way');
   // a six-decimal token shows its limits at six decimals
   const T6 = withHex('11'.repeat(32));
   ux.assets.push({ assetId: T6, ticker: 'XYZ', capRaw: 100_000_000n, minRaw: 2_000_000n, dec: 6 });
   const [six] = ux.eligibleNotes([{ ...NOTE, asset: T6, value: 100_000_001n }]);
-  ok(six.eligible === false && /over the 100 XYZ beta limit/.test(six.reason), 'a six-decimal token\'s cap reads at six decimals');
+  ok(six.eligible === false && /carries \(100 XYZ\)/.test(six.reason), 'a six-decimal token\'s cap reads at six decimals');
   const [tac] = ux.eligibleNotes([NOTE]);
   ok(tac.eligible === true, 'TAC is unchanged by the others');
 }

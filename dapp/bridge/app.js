@@ -1,5 +1,5 @@
-import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol } from '/bridge/runtime.js?cb=118723c2';
-import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=d67060ee';
+import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol, NO_LIMITS } from '/bridge/runtime.js?cb=a00e3cff';
+import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=64ed74e5';
 import { bodyType } from '/rpc-body.js';
 { const fq = document.getElementById('fq-lim'); if (fq) fq.textContent = limitsSaid(); }
 // The tile's picker is the assets this page explains. A token the front page met and kept (dapp/bridge/runtime.js) is not one of them, but a crossing
@@ -8,7 +8,7 @@ const TABS = Object.keys(ROUTES);
 try {
   const host = document.getElementById('tk-usdt')?.parentNode;
   for (const e of readRuntime(localStorage)) {
-    if (!addBridgeAsset({ key: e.key, id: e.id, route: bridgeRoute({ ticker: e.ticker, icon: runtimeIcon(e.addr), dp: e.dp, dec: e.dec }), limits: bridgeLimitEntry(e) })) continue;
+    if (!addBridgeAsset({ key: e.key, id: e.id, route: bridgeRoute({ ticker: e.ticker, icon: runtimeIcon(e.addr), dp: e.dp, dec: e.dec }), limits: bridgeLimitEntry(NO_LIMITS) })) continue;   // a limit an older visit saved is not one any more
     if (host && !document.getElementById(runtimeIcon(e.addr))) host.append(runtimeSymbol(document, e));
   }
 } catch { }
@@ -318,7 +318,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=f9e68dff').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=764e7f3d').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });

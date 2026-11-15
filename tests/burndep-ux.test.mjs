@@ -12,7 +12,7 @@ import { hmac } from '../node_modules/@noble/hashes/hmac.js';
 import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import { makeBurnDepositUx, BURNDEP_BETA_CAP_RAW } from '../dapp/burndep-ux.js';
+import { makeBurnDepositUx, NOTE_MAX_RAW } from '../dapp/burndep-ux.js';
 import { makeBurnDepositKit, classifyConfidentialTx } from '../dapp/burn-deposit-bitcoin.js';
 import { ripemd160 } from '../dapp/vendor/tacit-deps.min.js';
 import { verifySchnorr, signSchnorr as bpSignSchnorr, SECP_N } from '../dapp/bulletproofs.js';
@@ -270,7 +270,7 @@ function makeUx(world, storage, extra = {}) {
   const ux = makeUx(world, makeMemStorage());
   const holdings = [
     { txid: NOTE_TXID, vout: 0, assetId: ASSET, amount: NOTE_AMOUNT, confirmed: true },
-    { txid: 'aa'.repeat(32), vout: 0, assetId: ASSET, amount: BURNDEP_BETA_CAP_RAW + 1n, confirmed: true },
+    { txid: 'aa'.repeat(32), vout: 0, assetId: ASSET, amount: NOTE_MAX_RAW + 1n, confirmed: true },
     { txid: 'bb'.repeat(32), vout: 0, assetId: withHex('ff'.repeat(32)), amount: 1n, confirmed: true },
     { txid: 'cc'.repeat(32), vout: 0, assetId: ASSET, amount: 1n, confirmed: false },
     { txid: 'dd'.repeat(32), vout: 0, assetId: ASSET, amount: 1n, confirmed: true, stealth: true },
@@ -282,7 +282,8 @@ function makeUx(world, storage, extra = {}) {
   ];
   const list = ux.eligibleNotes(holdings);
   ok(list[0].eligible === true, 'an ordinary confirmed TAC note under the cap is eligible');
-  ok(list[1].eligible === false && /1,000 TAC/.test(list[1].reason), 'a note over the cap is ineligible with a clear reason');
+  ok(list[1].eligible === false && /more than one bridge carries/.test(list[1].reason), 'a note past what one note holds is ineligible with a clear reason');
+  ok(ux.eligibleNotes([{ txid: 'a1'.repeat(32), vout: 0, assetId: ASSET, amount: 100_000_000_001n, confirmed: true }])[0].eligible === true, 'a note over the old 1,000 TAC cap is eligible: TAC has no cap');
   ok(list[2].eligible === false && list[2].reason === 'not TAC', 'a non-TAC note is ineligible');
   ok(list[3].eligible === false && list[3].reason === 'unconfirmed', 'an unconfirmed note is ineligible');
   ok(list[4].eligible === false && /stealth/.test(list[4].reason), 'a stealth-received note with no recovered spend key is ineligible (defensive fallback — scanHoldings should never actually produce this)');
@@ -828,13 +829,13 @@ let rec;
   const ux = makeUx(world, makeMemStorage());
   await assert.rejects(
     () => ux.start({
-      note: { txid: NOTE_TXID, vout: 0, sats: NOTE_SATS, amount: BURNDEP_BETA_CAP_RAW + 1n, blinding: NOTE_BLINDING },
+      note: { txid: NOTE_TXID, vout: 0, sats: NOTE_SATS, amount: NOTE_MAX_RAW + 1n, blinding: NOTE_BLINDING },
       walletPriv: WALLET_PRIV, fundingUtxo: { txid: FUND_TXID_1, vout: 0, value: 30_000 },
     }),
-    /over the beta cap/,
-    'refuses over-cap',
+    /more than one bridge carries/,
+    'refuses past the bound',
   );
-  ok(true, 'start() refuses a note over the beta cap before signing anything');
+  ok(true, 'start() refuses a note past what one bridge carries before signing anything');
 }
 
 // ==== MARA refusal is surfaced, not silently swallowed ====
@@ -1621,7 +1622,7 @@ function storageContainsPrivkey(storage, priv) {
 {
   const TETH = withHex('3c'.repeat(32)), XONLY = bytesToHex(WALLET_PUB.slice(1));
   const CAP = 500_000n, AMT = 400_000n, SATS = 330;
-  const assets = [{ assetId: ASSET, ticker: 'TAC', capRaw: BURNDEP_BETA_CAP_RAW }, { assetId: TETH, ticker: 'tETH', capRaw: CAP }];
+  const assets = [{ assetId: ASSET, ticker: 'TAC' }, { assetId: TETH, ticker: 'tETH', capRaw: CAP }];
   const held = { txid: NOTE_TXID, vout: NOTE_VOUT, sats: SATS, amount: AMT, blinding: NOTE_BLINDING, assetId: TETH, p2tr: true };
   const setup = () => {
     const world = makeWorld();

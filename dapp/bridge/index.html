@@ -29,9 +29,9 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /bridge/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/bridge/app.js?cb=f867974b">
-<link rel="modulepreload" href="/bridge/runtime.js?cb=118723c2">
-<link rel="modulepreload" href="/bridge/track.js?cb=d67060ee">
+<link rel="modulepreload" href="/bridge/app.js?cb=091165e0">
+<link rel="modulepreload" href="/bridge/runtime.js?cb=a00e3cff">
+<link rel="modulepreload" href="/bridge/track.js?cb=64ed74e5">
 <link rel="modulepreload" href="/rpc-body.js">
 <!-- preload:end -->
 <style>
@@ -627,7 +627,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         </div>
         <ol id="bt-steps" aria-label="Steps" data-key="tac/in"><li style="--i:0"><span class="dot" aria-hidden="true"></span>Burned <span class="sr">on Bitcoin</span><svg class="tk xs" aria-hidden="true"><use href="#c-btc"/></svg></li><li style="--i:1"><span class="dot" aria-hidden="true"></span>Confirmed</li><li style="--i:2"><span class="dot" aria-hidden="true"></span>Proven <span class="sr">on Ethereum</span><svg class="tk xs" aria-hidden="true"><use href="#c-eth"/></svg></li><li style="--i:3"><span class="dot" aria-hidden="true"></span>Minted privately</li></ol>
         <p class="bt-w" id="bt-wait">About 4 hours: 24 Bitcoin confirmations, then the next proof (about every 30 min)</p>
-        <p class="bt-w bt-l" id="bt-limit">Up to 1,000 TAC a bridge while it is new</p>
+        <p class="bt-w bt-l" id="bt-limit">At least 20 TAC a bridge</p>
         <p class="bt-w bt-l" id="bt-cost" hidden></p>
         <a class="go" id="bt-go" href="/#bridge"><span>Bridge TAC</span><span class="cc" id="bt-way" role="img" aria-label="Bitcoin to Ethereum"><svg class="tk sm" aria-hidden="true"><use href="#c-btc"/></svg><span aria-hidden="true">→</span><svg class="tk sm" aria-hidden="true"><use href="#c-eth"/></svg></span></a>
         <div class="bt-fast" id="bt-fast"><a class="fastrow" href="/fast/"><span>Fast bridge<small>About 15 minutes, paid out by a provider</small></span><span aria-hidden="true">→</span></a></div>
@@ -1037,7 +1037,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <div class="wt-h"><span class="kk">Good to know</span><h2 id="fq-h" style="font-size:clamp(28px,4vw,40px)">Before you <em>cross</em></h2></div>
       <div class="fq">
         <details><summary>Can anyone see how much I bridge?</summary><p>The burn and the mint are public, but neither chain publishes the amount. Only whoever proves the mint sees it, which today is Tacit’s prover. A cBTC lock’s size is visible.</p></details>
-        <details><summary>Is there a limit?</summary><p>While the bridge is new, per bridge: <span id="fq-lim">TAC 20 to 1,000 to Bitcoin and up to 1,000 back; tETH 0.001 to 0.5 to Bitcoin and up to 0.5 back; cBTC 0.00001 to 0.5 to Bitcoin and up to 0.5 back; cUSD 10 to 1,000 to Bitcoin and up to 1,000 back; cUSDT 2 to 100 to Bitcoin and up to 100 back</span>. A note goes back whole, so split a larger one first. TAC that Bitcoin’s proof has not reached moves in two steps, a move and then a burn, each waiting for a proof, usually within a day. Up to 255 transfers of a note’s history are proven.</p></details>
+        <details><summary>Is there a limit?</summary><p>No cap: one bridge carries as much as a single note holds. A bridge to Bitcoin has a small minimum, so it is more than its fees: <span id="fq-lim">TAC 20, tETH 0.001, cBTC 0.00001, cUSD 10, cUSDT 2</span>. A token you shielded yourself has none beyond its relay fee. A note goes back whole. TAC that Bitcoin’s proof has not reached moves in two steps, a move and then a burn, each waiting for a proof, usually within a day. Up to 255 transfers of a note’s history are proven.</p></details>
         <details><summary>What does it cost?</summary><p>From Bitcoin you pay the Bitcoin network fee, and Tacit covers the Ethereum mint for now. To Bitcoin, a small relay fee comes out of the note and the Bitcoin fee, in sats, is paid from your Bitcoin address. Each cost shows before you sign.</p></details>
         <details><summary>Is there a faster way?</summary><p>For TAC from Bitcoin, yes: the <a href="/fast/">fast bridge</a> pays you private TAC from a provider’s own in about 15 minutes, for the provider’s fee. Your TAC is locked on Bitcoin until the provider pays, and comes back to you after about a day if it does not. Anyone with private TAC can <a href="/fast/#provide">be a provider</a> there and earn the fee.</p></details>
         <details><summary>Can I close the page?</summary><p>Yes, nothing is lost. A step that needs your key, such as the burn of a note that was moved to its burn address, waits until you open the page with your wallet. A note that was moved but not burned can also be moved back.</p></details>
@@ -1078,6 +1078,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/bridge/app.js?cb=f867974b"></script>
+<script type="module" src="/bridge/app.js?cb=091165e0"></script>
 </body>
 </html>

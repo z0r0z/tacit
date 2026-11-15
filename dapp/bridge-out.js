@@ -21,7 +21,7 @@ export function makeOutFee({ api, fetchImpl = (...a) => fetch(...a) }) {
 
 export function limitText({ units, fee, min, cap, ticker, fmt }) {
   if (units < min) return `Bridge at least ${fmt(min)} ${ticker}: below that the fees take too much of it.`;
-  if (units > cap) return `One bridge takes at most ${fmt(cap)} ${ticker} while this is new. Bridge less, then again.`;
+  if (cap && units > cap) return `One bridge carries at most ${fmt(cap)} ${ticker}, what one note holds. Bridge less, then again.`;
   if (units <= fee) return `Bridge more than ${fmt(fee, 6)} ${ticker}: the relay fee comes out of it.`;
   return null;
 }

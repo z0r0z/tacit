@@ -154,7 +154,7 @@ function renderBridgeIn(el) {
   if (bswHas(pub) && BSW.pub !== pub) bswTick(true).catch(() => {});
   if (BR.pick && !open.some((n) => brId(n) === BR.pick)) BR.pick = null;
   if (!BR.pick && open.length === 1) BR.pick = brId(open[0]);
-  const capRaw = ctx.T ? BigInt(ctx.T.bridgeUx().BURNDEP_BETA_CAP_RAW) : 0n;
+  const capRaw = ctx.T ? BigInt(ctx.T.bridgeUx().NOTE_MAX_RAW) : 0n;
   const plans = capRaw && open.length > 1 ? { merge: planMerge(notes, { capRaw }), all: planAll(notes, { capRaw }) } : null;
   const bulk = plans && countAll(plans.all) > 1 ? plans : null;
   if (BR.act && (!bulk || (BR.act === 'merge' && !bulk.merge.groups.length))) BR.act = null;
@@ -301,7 +301,7 @@ function renderBridgeIn(el) {
   $$('[data-brsplit]', el).forEach((x) => x.onclick = () => busy(x, async (run) => {
     const st = $('#br-splitst'), n = notes.find((y) => brId(y) === x.dataset.brsplit), v = parseUnits($(`#${x.dataset.brsplitIn}`).value, 8);
     if (!n) return;
-    if (!v || v > BigInt(ctx.T.bridgeUx().BURNDEP_BETA_CAP_RAW)) return say(st, html`<span class="err">Enter an amount up to 1,000 TAC.</span>`);
+    if (!v) return say(st, html`<span class="err">Enter an amount to split off.</span>`);
     if (v >= BigInt(n.amount)) return say(st, html`<span class="err">Enter less than this note holds.</span>`);
     if (n.confirmed === false) return say(st, html`<span class="err">This note is waiting for its Bitcoin confirmation. Split it once it has one.</span>`);
     const key = `split|${pub}|${brId(n)}|${v}`, rest = BigInt(n.amount) - v, sats = (s) => `${Number(s).toLocaleString('en-US')} sats`;

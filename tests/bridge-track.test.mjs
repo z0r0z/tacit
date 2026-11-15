@@ -5,8 +5,8 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { checkNote, readBridges, inRow, outRow, inActs, outActs, rowNote, inDue, outDue, liveLine, nextOf, readyNow, fmtAmount, limitLine, limitsSaid, CUSDT_ID, ROUTES, ethSpan, btcSpan, satsOut, satsBack, costLine, LIMITS, IN_PREFIX, OUT_PREFIX, PLAN_KEY, TAC_ID, TETH_ID, KEEP_DONE_MS } from '../dapp/bridge/track.js';
-import { CROSSOUT_BETA_CAP_RAW, CROSSOUT_TETH_CAP_RAW, CROSSOUT_TETH_MIN_RAW, CROSSOUT_CBTC_CAP_RAW, CROSSOUT_CBTC_MIN_RAW, CROSSOUT_CUSD_CAP_RAW, CROSSOUT_CUSD_MIN_RAW, CROSSOUT_CUSDT_DEC, CROSSOUT_CUSDT_CAP_RAW, CROSSOUT_CUSDT_MIN_RAW } from '../dapp/crossout-ux.js';
-import { BURNDEP_BETA_CAP_RAW } from '../dapp/burndep-ux.js';
+import { NOTE_MAX_RAW, CROSSOUT_TETH_MIN_RAW, CROSSOUT_CBTC_MIN_RAW, CROSSOUT_CUSD_MIN_RAW, CROSSOUT_CUSDT_DEC, CROSSOUT_CUSDT_MIN_RAW } from '../dapp/crossout-ux.js';
+import { NOTE_MAX_RAW as BURNDEP_NOTE_MAX } from '../dapp/burndep-ux.js';
 import { makeCrossoutMintReveal } from '../dapp/crossout-mint-reveal.js';
 
 const NOW = 1_760_000_000_000;
@@ -166,38 +166,32 @@ test('a tETH record that names only its ticker is still tETH', () => {
 });
 
 test('the limits the page shows are the ones the bridge enforces', () => {
-  // to Bitcoin: dapp/crossout-ux.js; back from it: dapp/burndep-ux.js; the TAC minimum is the front page's own asset table
-  assert.equal(LIMITS.tac.out.max, CROSSOUT_BETA_CAP_RAW);
-  assert.equal(LIMITS.tac.in.max, BURNDEP_BETA_CAP_RAW);
-  assert.equal(LIMITS.teth.out.max, CROSSOUT_TETH_CAP_RAW);
-  assert.equal(LIMITS.teth.out.min, CROSSOUT_TETH_MIN_RAW);
-  assert.equal(LIMITS.teth.in.max, CROSSOUT_TETH_CAP_RAW);   // tacit.js hands the burn-deposit module the same tETH cap
+  // no bridge is capped below what one note holds, either way (dapp/crossout-ux.js, dapp/burndep-ux.js); a bridge to Bitcoin keeps its minimum
+  assert.equal(NOTE_MAX_RAW, 10n ** 18n); assert.equal(BURNDEP_NOTE_MAX, NOTE_MAX_RAW);
+  for (const k of ['tac', 'teth', 'cbtc', 'cusd', 'cusdt']) { assert.equal(LIMITS[k].out.max, NOTE_MAX_RAW, `${k} out`); assert.equal(LIMITS[k].in.max, NOTE_MAX_RAW, `${k} in`); }
+  assert.equal(LIMITS.teth.out.min, CROSSOUT_TETH_MIN_RAW); assert.equal(LIMITS.cbtc.out.min, CROSSOUT_CBTC_MIN_RAW); assert.equal(LIMITS.cusd.out.min, CROSSOUT_CUSD_MIN_RAW); assert.equal(LIMITS.cusdt.out.min, CROSSOUT_CUSDT_MIN_RAW);
   const front = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8');
   const tacMin = /tac: \{ key: 'tac'[^\n]*?\bmin: ([0-9_]+)n/.exec(front);
   assert.ok(tacMin, 'the front page keeps a TAC minimum');
   assert.equal(LIMITS.tac.out.min, BigInt(tacMin[1].replaceAll('_', '')));
   const tacit = readFileSync(new URL('../dapp/tacit.js', import.meta.url), 'utf8');
-  assert.match(tacit, /ticker: 'tETH', capRaw: CROSSOUT_TETH_CAP_RAW \}\] : \[\]\),/, 'the way back for tETH takes the same cap');
-  // cBTC and cUSD: the same caps both ways (tacit.js hands each module _bridgedPoolAssets), the crossing's minimum the way out
-  for (const [k, cap, min] of [['cbtc', CROSSOUT_CBTC_CAP_RAW, CROSSOUT_CBTC_MIN_RAW], ['cusd', CROSSOUT_CUSD_CAP_RAW, CROSSOUT_CUSD_MIN_RAW]]) {
-    assert.equal(LIMITS[k].out.max, cap); assert.equal(LIMITS[k].out.min, min); assert.equal(LIMITS[k].in.max, cap);
-  }
-  assert.match(tacit, /\['cBTC', CROSSOUT_CBTC_CAP_RAW, CROSSOUT_CBTC_MIN_RAW\], \['cUSD', CROSSOUT_CUSD_CAP_RAW, CROSSOUT_CUSD_MIN_RAW\]/, 'cBTC and cUSD cross with those caps');
-  // cUSDT: USDT's own six decimals, 2 to 100 USDT a bridge, and the id the front page and this page both name it by
-  assert.equal(LIMITS.cusdt.out.max, CROSSOUT_CUSDT_CAP_RAW); assert.equal(LIMITS.cusdt.out.min, CROSSOUT_CUSDT_MIN_RAW); assert.equal(LIMITS.cusdt.in.max, CROSSOUT_CUSDT_CAP_RAW);
+  assert.doesNotMatch(tacit, /CAP_RAW/, 'tacit.js hands the engines no cap of its own');
+  assert.match(tacit, /ticker: 'tETH', capRaw: NOTE_MAX_RAW \}\] : \[\]\),/, 'the way back for tETH is capped only by a note');
+  assert.match(tacit, /\['cBTC', CROSSOUT_CBTC_MIN_RAW\], \['cUSD', CROSSOUT_CUSD_MIN_RAW\]/, 'cBTC and cUSD cross with their minimums');
   assert.equal(ROUTES.cusdt.dec, CROSSOUT_CUSDT_DEC); assert.equal(CROSSOUT_CUSDT_DEC, 6);
-  assert.match(tacit, /capRaw: CROSSOUT_CUSDT_CAP_RAW, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC/, 'cUSDT crosses with those limits and decimals');
+  assert.match(tacit, /capRaw: NOTE_MAX_RAW, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC/, 'cUSDT crosses with its minimum and decimals');
   assert.match(front, new RegExp(`cusdt: \\{ id: '${CUSDT_ID}', ticker: 'cUSDT', dp: 2, dec: 6 \\}`), 'the front page names cUSDT by the same id');
 });
 
 test('cUSDT reads in six decimals and is told from the eight-decimal assets', () => {
-  assert.equal(limitLine('cusdt', 'out'), '2 to 100 cUSDT a bridge while it is new');
-  assert.equal(limitLine('cusdt', 'in'), 'Up to 100 cUSDT a bridge while it is new');
+  assert.equal(limitLine('cusdt', 'out'), 'At least 2 cUSDT a bridge');
+  assert.equal(limitLine('cusdt', 'in'), '');
   assert.equal(fmtAmount(2_500_000n, 2, 6), '2.5'); assert.equal(fmtAmount(1_234_567n, 6, 6), '1.234567'); assert.equal(fmtAmount(1_000_000_000n, 2, 6), '1,000');
   assert.equal(fmtAmount(250_000_000n, 2), '2.5', 'the default is still eight decimals');
-  assert.match(limitsSaid(), /cUSDT 2 to 100 to Bitcoin and up to 100 back/);
+  assert.match(limitsSaid(), /cUSDT 2$/);
   const page = readFileSync(new URL('../dapp/bridge/index.html', import.meta.url), 'utf8');
-  assert.ok(page.includes(limitsSaid()), 'the page\'s own sentence of the limits is the one built here');
+  assert.ok(page.includes(limitsSaid()), 'the page\'s own list of the minimums is the one built here');
+  assert.match(page, /No cap: one bridge carries as much as a single note holds/, 'the page says there is no cap');
   assert.match(page, /data-asset="cusdt"/, 'the page has a USDT tab');
   const rows = readBridges(store({ [OUT_PREFIX + PUB]: JSON.stringify([outRec({ source: { nullifier: '0x' + 'dd'.repeat(32), value: '5000000', amount: '4500000', assetId: '0x' + CUSDT_ID, ticker: 'cUSDT' } })]) }), NOW);
   assert.equal(rows[0].asset, 'cusdt'); assert.equal(rows[0].amount, 4_500_000n);
@@ -205,12 +199,12 @@ test('cUSDT reads in six decimals and is told from the eight-decimal assets', ()
 });
 
 test('the line under the steps says what one bridge takes', () => {
-  assert.equal(limitLine('tac', 'in'), 'Up to 1,000 TAC a bridge while it is new');
-  assert.equal(limitLine('tac', 'out'), '20 to 1,000 TAC a bridge while it is new');
-  assert.equal(limitLine('teth', 'out'), '0.001 to 0.5 tETH a bridge while it is new');
-  assert.equal(limitLine('teth', 'in'), 'Up to 0.5 tETH a bridge while it is new');
-  assert.equal(limitLine('cbtc', 'out'), '0.00001 to 0.5 cBTC a bridge while it is new');
-  assert.equal(limitLine('cusd', 'out'), '10 to 1,000 cUSD a bridge while it is new');
+  assert.equal(limitLine('tac', 'in'), '', 'back from Bitcoin: no cap and no minimum, so no line');
+  assert.equal(limitLine('tac', 'out'), 'At least 20 TAC a bridge');
+  assert.equal(limitLine('teth', 'out'), 'At least 0.001 tETH a bridge');
+  assert.equal(limitLine('teth', 'in'), '');
+  assert.equal(limitLine('cbtc', 'out'), 'At least 0.00001 cBTC a bridge');
+  assert.equal(limitLine('cusd', 'out'), 'At least 10 cUSD a bridge');
 });
 
 test('a two-step bridge at its burn asks for no press when the page sends it, as the front page decides (brDue)', () => {

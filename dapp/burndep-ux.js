@@ -6,7 +6,8 @@ import { makeBridgeMintRecovery } from './bridge-mint-recovery.js';
 import { buildRecoverClaim } from './bridge-recover.js';
 import { makeBridgeBurnBroadcaster } from './bridge-burn-broadcast.js';
 
-export const BURNDEP_BETA_CAP_RAW = 100_000_000_000n;
+// What one note holds (a u64 of units): no bridge back is capped below it.
+export const NOTE_MAX_RAW = 10n ** 18n;
 export const RETURN_FEE_CEILING = 100;
 const MAX_HOPS_BURN_HOME = 256;
 const MAX_HOPS_SOURCE = MAX_HOPS_BURN_HOME - 1;
@@ -73,7 +74,7 @@ export function makeBurnDepositUx(deps) {
   for (const [k, v] of Object.entries({ workerBase, secp, sha256, keccak256, hmac, pool, bridgeMint, chainBindingHex, tacAssetId, chain })) {
     if (v == null) throw new Error(`burndep-ux: deps.${k} required`);
   }
-  const ASSETS = (assetsIn || [{ assetId: tacAssetId, ticker: 'TAC', capRaw: BURNDEP_BETA_CAP_RAW }]).map((a) => ({ ...a, assetId: withHex(a.assetId), capRaw: BigInt(a.capRaw) }));
+  const ASSETS = (assetsIn || [{ assetId: tacAssetId, ticker: 'TAC' }]).map((a) => ({ ...a, assetId: withHex(a.assetId), capRaw: BigInt(a.capRaw ?? NOTE_MAX_RAW) }));
   const assetOf = (id) => ASSETS.find((a) => lc(stripHex(a.assetId)) === lc(stripHex(id || ''))) || null;
   const storage = storageIn || defaultStorage();
   const cryptoDeps = { secp, keccak256, sha256 };
@@ -202,7 +203,7 @@ export function makeBurnDepositUx(deps) {
       const amount = BigInt(h.amount);
       let reason = null;
       if (lc(stripHex(h.assetId)) !== lc(stripHex(tacAssetId))) reason = 'not TAC';
-      else if (amount > BURNDEP_BETA_CAP_RAW) reason = 'over the 1,000 TAC beta limit — send part of it to yourself first to split off a smaller note';
+      else if (amount > NOTE_MAX_RAW) reason = 'more than one bridge carries — send part of it to yourself first to split off a smaller note';
       else if (h.confirmed === false) reason = 'unconfirmed';
       else if (h.stealth && !h.stealthTweakedSk) reason = 'received privately (stealth) — rescan holdings to recover its spend key, then retry';
       else if (isReserved(h.txid, h.vout)) reason = 'already bridging';
@@ -246,7 +247,7 @@ export function makeBurnDepositUx(deps) {
   async function preflight({ note, walletPub, onProgress = null }) {
     const out = { steps: [], ok: false };
     const step = (name, ok, detail, more) => { out.steps.push({ name, ok, detail, ...more }); return ok; };
-    if (!step('cap', BigInt(note.amount) <= BURNDEP_BETA_CAP_RAW, `${note.amount} raw units`)) return out;
+    if (!step('cap', BigInt(note.amount) <= NOTE_MAX_RAW, `${note.amount} raw units`)) return out;
 
     let srcTx;
     try { srcTx = await fetchChainJson(`/tx/${stripHex(note.txid)}`); }
@@ -516,7 +517,7 @@ export function makeBurnDepositUx(deps) {
     const id = recordId(note.txid, note.vout);
     if (getRecord(walletPub, id)) throw new Error('burndep-ux: a bridge already exists for this note');
     if (isReserved(note.txid, note.vout)) throw new Error('burndep-ux: this note is already reserved by another bridge in progress');
-    if (BigInt(note.amount) > BURNDEP_BETA_CAP_RAW) throw new Error('burndep-ux: over the beta cap');
+    if (BigInt(note.amount) > NOTE_MAX_RAW) throw new Error('burndep-ux: more than one bridge carries');
 
     const sourcePriv = note.stealthTweakedSk ? hexToBytesLocal(stripHex(note.stealthTweakedSk)) : null;
     const P = freshPrims(walletPriv);
@@ -554,7 +555,7 @@ export function makeBurnDepositUx(deps) {
     if (isReserved(note.txid, note.vout)) throw new Error('burndep-ux: this note is already reserved by another bridge in progress');
     const asset = assetOf(note.assetId || tacAssetId);
     if (!asset) throw new Error('burndep-ux: this asset cannot be sent back to Ethereum here');
-    if (BigInt(note.amount) > asset.capRaw) throw new Error('burndep-ux: over the beta cap');
+    if (BigInt(note.amount) > asset.capRaw) throw new Error('burndep-ux: more than one bridge carries');
     if (note.stealthTweakedSk) throw new Error(`burndep-ux: ${PRIVATE_NOTE}`);
     const recipientPub = recipient ? lc(withHex(String(recipient.pubHex))) : null;
     if (recipient) {
@@ -1315,7 +1316,7 @@ export function makeBurnDepositUx(deps) {
   }
 
   return {
-    BURNDEP_BETA_CAP_RAW, assets: ASSETS, assetOf, eligibleNotes, isReserved, pickFunding, bridgeCost, noteForms, noteTracking, lineage, preflight, preflightHeld, recheckBurn, RETURN_FEE_CEILING, start, startReflected, advance, resumeAll, recoverFromTxid, discover, list, abandon,
+    NOTE_MAX_RAW, assets: ASSETS, assetOf, eligibleNotes, isReserved, pickFunding, bridgeCost, noteForms, noteTracking, lineage, preflight, preflightHeld, recheckBurn, RETURN_FEE_CEILING, start, startReflected, advance, resumeAll, recoverFromTxid, discover, list, abandon,
     cancelSigned, buildCancel, reclaim, recover, verify, isLive, burnRecorded, destLeaf, relayFault, mintRetryDue, armMint,
     quoteRate: () => chain.getFeeRate('priority'),
     slipstreamStatus: broadcaster.slipstreamStatus,

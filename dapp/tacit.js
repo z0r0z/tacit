@@ -43,9 +43,9 @@ import { bppRangeProve, bppRangeVerify } from './bulletproofs-plus.js';
 import { makeConfidentialPool } from './confidential-pool.js';
 import { loadTrackedNotes } from './tracked-notes.js';
 import { makeConfidentialPoolUx, setExternalTacHolders, forgetKeys as forgetPoolKeys } from './confidential-pool-ux.js';
-import { makeBurnDepositUx, BURNDEP_BETA_CAP_RAW as BURNDEP_BETA_CAP_RAW_TAC } from './burndep-ux.js';
+import { makeBurnDepositUx } from './burndep-ux.js';
 import { makeTxArchive } from './tx-archive.js';
-import { makeCrossoutUx, CROSSOUT_BETA_CAP_RAW as CROSSOUT_TAC_CAP_RAW, CROSSOUT_TETH_CAP_RAW, CROSSOUT_TETH_MIN_RAW, CROSSOUT_CBTC_CAP_RAW, CROSSOUT_CBTC_MIN_RAW, CROSSOUT_CUSD_CAP_RAW, CROSSOUT_CUSD_MIN_RAW, CROSSOUT_CUSDT_DEC, CROSSOUT_CUSDT_CAP_RAW, CROSSOUT_CUSDT_MIN_RAW } from './crossout-ux.js';
+import { makeCrossoutUx, NOTE_MAX_RAW, CROSSOUT_TETH_MIN_RAW, CROSSOUT_CBTC_MIN_RAW, CROSSOUT_CUSD_MIN_RAW, CROSSOUT_CUSDT_DEC, CROSSOUT_CUSDT_MIN_RAW } from './crossout-ux.js';
 import { makeCrossoutNotes, p2trAddress as _crossoutP2trAddress } from './crossout-notes.js';
 import { renderConfidentialPoolTab } from './confidential-pool-tab.js';
 import { renderLanePanel } from './cross-chain-lane.js';
@@ -15914,8 +15914,8 @@ function _burndepUxSingleton() {
     network: net, hrp: NET.hrp, workerBase: WORKER_BASE, secp, sha256, keccak256: keccak_256, hmac,
     pool: poolUx.pool, bridgeMint: poolUx.bridgeMint, chainBindingHex: poolUx.chainBindingHex,
     tacAssetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX,
-    assets: [{ assetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX, ticker: 'TAC', capRaw: BURNDEP_BETA_CAP_RAW_TAC },
-      ...(tethAsset ? [{ assetId: tethAsset, ticker: 'tETH', capRaw: CROSSOUT_TETH_CAP_RAW }] : []),
+    assets: [{ assetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX, ticker: 'TAC', capRaw: NOTE_MAX_RAW },
+      ...(tethAsset ? [{ assetId: tethAsset, ticker: 'tETH', capRaw: NOTE_MAX_RAW }] : []),
       ..._bridgedPoolAssets(poolUx).map((a) => ({ assetId: a.assetId, ticker: a.ticker, capRaw: a.capRaw })), ..._runtimeBridged().map((a) => ({ assetId: a.assetId, ticker: a.ticker, capRaw: a.capRaw }))],
     chain: { getUtxos: (a, cb) => getUtxos(a, cb, { forSpend: true }), pickSafeCommitSats, broadcastWithRetry, getFeeRate },
     encodeCXferBppPayload, computeKernelMsg, deriveChangeBlinding, deriveAmountKeystreamSelf, encryptAmount, signSchnorr, modN,
@@ -15942,12 +15942,12 @@ let _crossoutUx = null, _crossoutUxNet = null;
 // (a hash of the chain and the token, which no etch can produce) is already the shared one, so a note that comes back resolves to the escrow directly.
 function _bridgedPoolAssets(poolUx) {
   const by = poolUx.assetByTicker || {}, out = [];
-  for (const [ticker, capRaw, minRaw] of [['cBTC', CROSSOUT_CBTC_CAP_RAW, CROSSOUT_CBTC_MIN_RAW], ['cUSD', CROSSOUT_CUSD_CAP_RAW, CROSSOUT_CUSD_MIN_RAW]]) {
+  for (const [ticker, minRaw] of [['cBTC', CROSSOUT_CBTC_MIN_RAW], ['cUSD', CROSSOUT_CUSD_MIN_RAW]]) {
     const r = by[ticker];
-    if (r && r.assetId && r.bitcoinLink && String(r.assetId).toLowerCase() === String(r.bitcoinLink).toLowerCase()) out.push({ assetId: r.assetId, ticker, capRaw, minRaw });
+    if (r && r.assetId && r.bitcoinLink && String(r.assetId).toLowerCase() === String(r.bitcoinLink).toLowerCase()) out.push({ assetId: r.assetId, ticker, capRaw: NOTE_MAX_RAW, minRaw });
   }
   const t = by.cUSDT;
-  if (t && t.assetId && !t.bitcoinLink && t.underlying && Number(t.tacitDecimals) === CROSSOUT_CUSDT_DEC) out.push({ assetId: t.assetId, ticker: 'cUSDT', capRaw: CROSSOUT_CUSDT_CAP_RAW, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC });
+  if (t && t.assetId && !t.bitcoinLink && t.underlying && Number(t.tacitDecimals) === CROSSOUT_CUSDT_DEC) out.push({ assetId: t.assetId, ticker: 'cUSDT', capRaw: NOTE_MAX_RAW, minRaw: CROSSOUT_CUSDT_MIN_RAW, dec: CROSSOUT_CUSDT_DEC });
   return out;
 }
 // Any other token the pool escrows crosses the way cUSDT does (its own id, no Bitcoin link). The page names each one here with no limit of its own
@@ -15980,8 +15980,8 @@ function _crossoutUxSingleton() {
     crossOut: poolUx.crossOut, pool: poolUx.pool, rpc: poolUx.rpc, evmLog: poolUx.evmLog, poolAddress: poolUx.cfg && poolUx.cfg.pool,
     deployBlock: Number((poolUx.cfg && poolUx.cfg.deployBlock) || 0),
     tacAssetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX,
-    assets: [{ assetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX, ticker: 'TAC', capRaw: CROSSOUT_TAC_CAP_RAW },
-      ...(tethId ? [{ assetId: tethId, ticker: 'tETH', capRaw: CROSSOUT_TETH_CAP_RAW, minRaw: CROSSOUT_TETH_MIN_RAW }] : []),
+    assets: [{ assetId: '0x' + CANONICAL_TAC_ASSET_ID_HEX, ticker: 'TAC', capRaw: NOTE_MAX_RAW },
+      ...(tethId ? [{ assetId: tethId, ticker: 'tETH', capRaw: NOTE_MAX_RAW, minRaw: CROSSOUT_TETH_MIN_RAW }] : []),
       ..._bridgedPoolAssets(poolUx), ..._runtimeBridged()],
     chain: { getUtxos: (a, cb) => getUtxos(a, cb, { forSpend: true }), pickSafeCommitSats, broadcastWithRetry, getFeeRate },
     postHint,
@@ -49762,7 +49762,7 @@ async function renderHoldings() {
           openInlineForm(b, {
             submitLabel: 'Continue',
             content: `
-              <label>Choose a note to bridge (beta, capped at 1,000 TAC)</label>
+              <label>Choose a note to bridge</label>
               <div style="display:flex;flex-direction:column;gap:6px;margin:6px 0 4px;max-height:240px;overflow-y:auto;">
                 ${eligible.map((n, i) => {
                   const overCap = !n.eligible && /beta limit/.test(n.reason || '');
@@ -49885,7 +49885,7 @@ async function renderHoldings() {
               const note = eligible[i];
               if (!note) return;
               openInlineForm(b, {});
-              await _prefillSelfSend({ aid, amount: fmtAssetAmountPlain(ux.BURNDEP_BETA_CAP_RAW, target.decimals) });
+              await _prefillSelfSend({ aid, amount: fmtAssetAmountPlain(ux.NOTE_MAX_RAW, target.decimals) });
             });
           });
         } else if (b.dataset.act === 'mint') {

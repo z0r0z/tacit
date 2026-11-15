@@ -5,7 +5,6 @@
 // decimals its figures show.
 const MAX_RAW = 10n ** 18n;   // a note's value is a u64
 export const NO_LIMITS = Object.freeze({ minRaw: 1n, capRaw: MAX_RAW });
-export const unlimited = (capRaw) => BigInt(capRaw ?? 0) >= MAX_RAW;
 
 // How many decimals a figure of this token shows: fewer for a cheap token, more for a dear one.
 export const bridgeDp = (usdPerToken, tdec) => Math.min(tdec, usdPerToken >= 100 ? 6 : usdPerToken >= 1 ? 4 : 2);

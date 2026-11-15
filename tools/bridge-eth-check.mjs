@@ -37,7 +37,7 @@ const WALLET_PRIV = 'b71d9e'.padEnd(64, '4');
 const WALLET_PUB = secp.getPublicKey(WALLET_PRIV, true);
 const OWN_SPK = wpkhSpkHex(WALLET_PUB);
 const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
-const NOTE_TXID = '5e'.repeat(31) + '01';           // eligible, under the 1,000 TAC cap
+const NOTE_TXID = '5e'.repeat(31) + '01';           // eligible
 const OVERCAP_TXID = '5e'.repeat(31) + '02';        // never fetched: preflight's cap check returns before any lookup
 const FUND_TXID = '61'.repeat(32);
 const BURN_HOME_LEAF_TXID = 'bb'.repeat(32);        // the one-hop cxfer the trace stub returns
@@ -182,7 +182,7 @@ async function main() {
         assetIdHex: tacAsset, ticker: 'TAC', decimals: 8, balance: 90_000_000_000n + 200_000_000_000n,
         utxos: [
           { ...mkUtxo(noteTxid, 1000), amount: 90_000_000_000n, blinding: 0x1234n },   // 900 TAC — eligible
-          { ...mkUtxo(overTxid, 1000), amount: 200_000_000_000n, blinding: 0x5678n },  // 2,000 TAC — over the 1,000 TAC cap
+          { ...mkUtxo(overTxid, 1000), amount: 200_000_000_000n, blinding: 0x5678n },  // 2,000 TAC: over the old 1,000 TAC cap, eligible now
         ],
         ghosts: [], inflated: [], pending: [], unverified: [], unknownAsset: false,
       }]]);
@@ -218,23 +218,9 @@ async function main() {
   await page.waitForSelector('input[name="bridge-note"]', { timeout: 10000 });
   const notes = await page.$$eval('input[name="bridge-note"]', (els) => els.map((e) => ({ disabled: e.disabled, label: e.closest('label')?.textContent.replace(/\s+/g, ' ').trim() })));
   ok(notes.length === 2 && notes.some((n) => !n.disabled && /900/.test(n.label)), `picker: the eligible 900 TAC note is selectable (${JSON.stringify(notes[0])})`);
-  ok(notes.some((n) => n.disabled && /beta limit/.test(n.label)), `picker: the 2,000 TAC note is disabled with the over-cap reason (${JSON.stringify(notes[1])})`);
+  ok(notes.every((n) => !n.disabled), `picker: the 2,000 TAC note is selectable too: no bridge is capped (${JSON.stringify(notes[1])})`);
   await shot('picker');
 
-  // "split off 1,000 now →" on the over-cap note: closes the picker and pre-fills Send Privately as a
-  // self-send of exactly the beta cap, to your own pubkey.
-  await page.click('[data-split-shortcut="1"]');
-  // Not '.tab.active[data-tab="transfer"]': the primary "Send" nav tab and its "Bitcoin" subtab share that
-  // exact data-tab value, so the selector matches two elements — wait on the actual field instead.
-  await page.waitForSelector('#x-recipient-pub', { state: 'visible', timeout: 10000 });
-  const splitFromPicker = await page.evaluate(() => ({
-    asset: document.getElementById('x-asset')?.value,
-    recipient: (document.getElementById('x-recipient-pub')?.value || '').replace(/^0x/i, '').toLowerCase(),
-    amount: document.getElementById('x-amount')?.value,
-  }));
-  ok(splitFromPicker.amount === '1000' && splitFromPicker.recipient === hex(WALLET_PUB).toLowerCase() && splitFromPicker.asset === TAC_ASSET,
-    `split shortcut: pre-fills Send Privately with the cap amount to your own pubkey (${JSON.stringify(splitFromPicker)})`);
-  await shot('split-shortcut');
 
   // The general "Split into a smaller note" action on the asset card itself (any asset, any amount). Some
   // background refresh re-renders the Holdings list on a short cycle, which detaches an already-open inline

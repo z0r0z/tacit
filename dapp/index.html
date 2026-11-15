@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-L25EYX0dnpOksK/mDL6txNZpN0TN97Ldiw2c+FgZuY4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-mGypVkv5DFXXM2Pg2cdklLlZ7EFxd78WxSC+6ybOVmk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -19,7 +19,7 @@
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-<script defer src="/front-route.js?cb=e2a52f41"></script>
+<script defer src="/front-route.js?cb=504f8e60"></script>
 <title>tacit defi</title>
 <link rel="canonical" href="https://tacit.finance/">
 <meta name="description" content="Private DeFi across Bitcoin and Ethereum: shield, swap, send, earn and borrow from one tacit1 ID.">
@@ -63,14 +63,14 @@
 <link rel="modulepreload" href="/farm-ops.js?cb=f872de9d">
 <link rel="modulepreload" href="/relay-outcome.js?cb=17e48a9a">
 <link rel="modulepreload" href="/btc-borrow.js?cb=739f4312">
-<link rel="modulepreload" href="/bridge-out.js?cb=9662a160">
-<link rel="modulepreload" href="/bridge/track.js?cb=d67060ee">
-<link rel="modulepreload" href="/bridge/runtime.js?cb=118723c2">
+<link rel="modulepreload" href="/bridge-out.js?cb=9be561ae">
+<link rel="modulepreload" href="/bridge/track.js?cb=64ed74e5">
+<link rel="modulepreload" href="/bridge/runtime.js?cb=a00e3cff">
 <link rel="modulepreload" href="/bridge-in.js?cb=708f1d37">
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=a0384066">
-<link rel="modulepreload" href="/swap/card.js?cb=016f9fff">
+<link rel="modulepreload" href="/swap/card.js?cb=3b20506f">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -2527,9 +2527,9 @@ import { netPicker } from '/net-pick.js?cb=9229f173';
 import { UNBOND_DUST, HARVEST_WORTH, unharvested, exitSaid, bFor, aFor, farmManager, ladder as xoLadder, feeShort as xoFeeShort } from '/farm-ops.js?cb=f872de9d';
 import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from '/relay-outcome.js?cb=17e48a9a';
 import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf, NEAR_FALL, fallToLiq, fallText, approaching, loanId, loanTag } from '/btc-borrow.js?cb=739f4312';
-import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=9662a160';
-import { bridgeDp, bridgeRoute, bridgeLimitEntry, markColor, runtimeSymbol, saveRuntime, NO_LIMITS, unlimited } from '/bridge/runtime.js?cb=118723c2';
-import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, addBridgeAsset as brAddAsset, satsOut, satsBack, readBridges, nextOf as brNext, fmtAmount as brRowAmt } from '/bridge/track.js?cb=d67060ee';
+import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=9be561ae';
+import { bridgeDp, bridgeRoute, bridgeLimitEntry, markColor, runtimeSymbol, saveRuntime, NO_LIMITS } from '/bridge/runtime.js?cb=a00e3cff';
+import { ROUTES as BR_WAYS, LIMITS as BR_LIMITS, addBridgeAsset as brAddAsset, satsOut, satsBack, readBridges, nextOf as brNext, fmtAmount as brRowAmt } from '/bridge/track.js?cb=64ed74e5';
 import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEEPERS, RELAYER as POOL_RELAYER } from '/evm-pool-tokens.js?cb=16e0e196';
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, overCap as brOver, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll, proofWait as brProofWait, whyText as brWhy, splitTag as brSplitTag, waitFor as brWaitFor, splitFee as brSplitFeeOf } from '/bridge-in.js?cb=708f1d37';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=42d78071';
@@ -4140,7 +4140,7 @@ const render = {}, load = {};
 const tacCtx = () => ({ $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brLongReason, brMarked, brOver, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your, get CH() { return CH; }, get T() { return T; }, get TACP() { return TACP; }, get TCARD() { return TCARD; }, get TCO() { return TCO; }, get TPOOL() { return TPOOL; }, get TREQ() { return TREQ; }, get brLooking() { return brLooking; } });
 // front-tac:end
 let TAC_CODE = null;
-const tacReady = lazy(() => import('/front/tac.js?cb=e7e5de41').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
+const tacReady = lazy(() => import('/front/tac.js?cb=7a6f2184').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
 const withTac = (f) => (TAC_CODE ? f() : tacReady().then(f, () => {}));
 for (const k of ["tac"]) render[k] = () => { if (!TAC_CODE) withTac(() => rerender(k)); };
 for (const k of ["tac"]) load[k] = () => tacReady().then(() => load[k]());
@@ -4409,7 +4409,7 @@ const chainSaid = (m) => Object.assign(new Error(m), { said: true });
 const CHAIN_PROVE_S = globalThis.crossOriginIsolated ? 8 : 30;
 const chainProveSay = () => (globalThis.crossOriginIsolated ? 'a few seconds' : 'about half a minute');
 
-const TACIT_URL = '/tacit.js?cb=fb2310ad';
+const TACIT_URL = '/tacit.js?cb=6c11edd7';
 let T = null;
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; try { xtEngines(m); } catch { } } });
 const loadTacit = TS.load, tacitTurn = TS.turn, withKey = TS.withKey, dropTacitKey = TS.drop, tPriv = TS.tPriv;
@@ -6133,7 +6133,7 @@ const xbRows = (pub, a = XA.teth) => (T && pub ? T.bridgeUx().list(pub).filter((
 const xbReady = (n) => n.amount != null && n.live === true && n.confirmed;
 const xbCheckText = (s) => ({
   asset: 'This asset cannot be sent back from here.',
-  cap: 'This is more than one return takes while this is new.',
+  cap: 'This is more than one note holds.',
   'source-lookup': 'Bitcoin could not be read. Try again in a minute.',
   'source-confirmed': 'This note is waiting for its Bitcoin confirmation.',
   'source-ownership': 'This note is not at this key’s own Taproot address.',
@@ -13035,7 +13035,6 @@ async function hxQuote() {
   { const h = hxHandoff(m, units); if (h) return done(h); }
   HX.q = { ...(HX.q || {}), busy: true }; paintHxQ();
   if (S.key && units && HX.tab === 'bridge' && (m === 'xo' || (m === 'btc' && HX.dir === 'out'))) xoUx().catch(() => {});
-  const bridge =(u, lim, min, dp, dec = 8) => { const [fee, time] = brxRows('out'); if (lim && unlimited(lim.capRaw)) return [fee, time]; return [fee, ['Limits', lim ? `${fmt(min, dec, dp)} to ${fmt(lim.capRaw, dec, dp)} ${u} a bridge` : `a small amount a bridge`, '', 'While the bridge is new'], time]; };
   try {
     if (hxWrapMode()) {
       if (units) { hxWarmWrap(); hxWrapAhead(units); }
@@ -13100,13 +13099,13 @@ async function hxQuote() {
       const held = S.key && P.scan ? spendable(a.k) : null, needPrivate = held != null && (units ? units > held : held === 0n);
       const inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw));
       const cut = units && held != null && !needPrivate && !freeNotes(P.scan[a.k].notes).some((n) => BigInt(n.value) === units) ? BigInt(await t.quoteOpFee(a.pool, 'transfer')) : 0n;
-      const over = cut > 0n && units + cut > held, range = lim ? `${fmt(min, 8, 4)} to ${fmt(lim.capRaw, 8, 4)} TAC` : 'a small amount', fine = !!units && inRange && !over && !needPrivate;
+      const over = cut > 0n && units + cut > held, range = `${fmt(min, 8, 4)} TAC`, fine = !!units && inRange && !over && !needPrivate;
       return done({ out: units ? (inRange && !over ? fmt(units - fee, 8, 4) : '—') : null, go: hxBrGo('tac'), needPrivate, bad: !!units && !inRange,
         rc: units && !inRange ? [] : [fine ? ['Arrives', `${fmt(units - fee, 8, 4)} TAC on Bitcoin`] : null, ['Relay fee', `${fmt(fee, 8, 4)} TAC`, '', `${fmt(xoLadder(fee * 2n), 8, 4)} TAC if its floor has moved`],
-          cut ? ['Cuts a note', `${fmt(cut, 8, 4)} TAC first`] : null, ...bridge('TAC', lim, min, 4), needPrivate ? ['Steps', 'make the TAC private, then bridge it'] : null],
+          cut ? ['Cuts a note', `${fmt(cut, 8, 4)} TAC first`] : null, ...brxRows('out'), needPrivate ? ['Steps', 'make the TAC private, then bridge it'] : null],
         warn: needPrivate || (!!units && !inRange) || over,
         line: [needPrivate ? `You hold ${fmt(held, 8, 4)} private TAC${units ? ', less than this' : ''}: the first press makes TAC private, the next bridges it.` : '',
-          units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, 8, 4)} TAC.` : `A bridge takes ${range} while this is new.`) : over ? `The most you can use is ${fmt((held - cut) / 10000n * 10000n, 8, 4)} TAC: the relay fee to cut a note of this size comes out of it.` : ''].filter(Boolean).join(' ') });
+          units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, 8, 4)} TAC.` : `Bridge at least ${range}: below that the fees take too much of it.`) : over ? `The most you can use is ${fmt((held - cut) / 10000n * 10000n, 8, 4)} TAC: the relay fee to cut a note of this size comes out of it.` : ''].filter(Boolean).join(' ') });
     }
     if (m === 'xo') {
       const a = XA[HX.xa], dec = xdec(a), t = await getUx();
@@ -13115,26 +13114,26 @@ async function hxQuote() {
       const wb = wallet ? hxWalletBal(HX.sf) : null, wal = wb != null && xr ? wb / xr.scale : wb;
       const needPrivate = wallet && !(units && held != null && held >= units);
       const over = wallet ? needPrivate && wal != null && units > wal : held != null && !!units && units > held;
-      const inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw)), range = lim ? `${fmt(min, dec, a.dp)} to ${fmt(lim.capRaw, dec, a.dp)} ${a.ticker}` : 'a small amount';
+      const inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw)), range = `${fmt(min, dec, a.dp)} ${a.ticker}`;
       const cut = !needPrivate && units && held != null && !over && !freeNotes(P.scan[a.k].notes).some((n) => BigInt(n.value) === units) ? BigInt(await t.quoteOpFee(a.pool, 'transfer')) : 0n;
       const tight = cut > 0n && units + cut > held;
       return done({ out: units ? (inRange && !over && !tight ? fmt(units - fee, dec, a.dp) : '—') : null, go: hxBrGo(), needPrivate, bad: !!units && (!inRange || over),
         rc: units && (!inRange || over) ? [] : [units && !tight ? ['Arrives', `${fmt(units - fee, dec, a.dp)} ${a.ticker} on Bitcoin`] : null, ['Relay fee', `${fmt(fee, dec, Math.max(a.dp, 4))} ${a.ticker}`],
-          cut ? ['Cuts a note', `${fmt(cut, dec, Math.max(a.dp, 4))} ${a.ticker} first`] : null, ...bridge(a.ticker, lim, min, a.dp, dec), needPrivate ? ['Steps', `make the ${wsym} private, then bridge it`] : null,
+          cut ? ['Cuts a note', `${fmt(cut, dec, Math.max(a.dp, 4))} ${a.ticker} first`] : null, ...brxRows('out'), needPrivate ? ['Steps', `make the ${wsym} private, then bridge it`] : null,
           ...(a.key === 'cusdt' && units && inRange && !over ? await usdtBackRows(t, units - fee) : [])],
-        warn: !!units && (!inRange || over || tight), line: over ? (wallet ? `You hold ${fmt(wal, dec, 4)} ${wsym} in ${your()}.` : `You hold ${fmt(held, dec, a.dp)} ${a.ticker} privately.`) : units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, dec, Math.max(a.dp, 4))} ${a.ticker}.` : `A bridge takes ${range} while this is new.`)
+        warn: !!units && (!inRange || over || tight), line: over ? (wallet ? `You hold ${fmt(wal, dec, 4)} ${wsym} in ${your()}.` : `You hold ${fmt(held, dec, a.dp)} ${a.ticker} privately.`) : units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, dec, Math.max(a.dp, 4))} ${a.ticker}.` : `Bridge at least ${range}: below that the fees take too much of it.`)
           : tight ? `The most you can use is ${fmt(held - cut, dec, Math.max(a.dp, 4))} ${a.ticker}: the relay fee to cut a note of this size comes out of it.` : '' });
     }
     if (m === 'btc') {
       const two = hxTwo(units), t = await getUx();
       const lim = xoLim(XA.teth), fee = BigInt(await t.quoteOpFee('cETH', 'bridgeburn'));
-      const min = lim?.minRaw || 0n, range = lim ? `${fmt(min, 8, 6)} to ${fmt(lim.capRaw, 8, 6)} tETH` : 'a small amount', inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw));
+      const min = lim?.minRaw || 0n, range = `${fmt(min, 8, 6)} tETH`, inRange = units > fee && (!lim || (units >= min && units <= lim.capRaw));
       // private tETH: more than is held is said here, as it is for the other assets, with the wallet's ETH as the way on
       const held = HX.from === 'eth' && S.key && P.scan ? spendable('eth') : null, over = held != null && !!units && units > held;
       return done({ out: units ? (inRange && !over ? fmt(units - fee, 8, 6) : '—') : null, go: hxBrGo(two ? 'ether' : 'eth'), pk: two ? 'wrap' : null, bad: !!units && !inRange,
-        rc: units && !inRange ? [] : [units && !over ? ['Arrives', `${fmt(units - fee, 8, 6)} tETH on Bitcoin`] : null, ['Relay fee', `${fmt(fee, 8, 6)} tETH`], ...bridge('tETH', lim, min, 6), two ? ['Steps', 'make the ETH private, then bridge it'] : null],
+        rc: units && !inRange ? [] : [units && !over ? ['Arrives', `${fmt(units - fee, 8, 6)} tETH on Bitcoin`] : null, ['Relay fee', `${fmt(fee, 8, 6)} tETH`], ...brxRows('out'), two ? ['Steps', 'make the ETH private, then bridge it'] : null],
         alt: over && hxBrSources().includes('ether') ? { label: 'Bridge ETH from your wallet instead', go: () => { hxKeepAmt(() => { HX.br = 'ether'; HX.placePick = true; HX.placeAuto = null; HX.q = null; }); paintHx(); } } : null,
-        warn: !!units && (!inRange || over), line: over ? `You hold ${fmt(held, 8, 6)} tETH privately.` : units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, 8, 6)} tETH.` : `A bridge takes ${range} while this is new.`) : '' });
+        warn: !!units && (!inRange || over), line: over ? `You hold ${fmt(held, 8, 6)} tETH privately.` : units && !inRange ? (units <= fee ? `Send more than the relay fee, ${fmt(fee, 8, 6)} tETH.` : `Bridge at least ${range}: below that the fees take too much of it.`) : '' });
     }
   } catch { done({ out: '—', go: HX.q?.go || 'Continue', warn: true, line: 'The pool could not be read.', failed: true }); }
 }
@@ -14773,8 +14772,8 @@ async function hxBridgeOutGo(a, units) {
 }
 const hxBackA = () => (HX.mode === 'tbback' ? XA.teth : XA[HX.xa]);
 async function hxBackQuote(my, done) {
-  const a = hxBackA(), name = `Your ${a.ticker} on Bitcoin`, cap = BR_LIMITS[a.key]?.in.max, [btcFee, time] = brxRows('in');
-  const base = { out: 'All', go: hxBrGo(), rc: [['Arrives', `private ${a.ticker} on Ethereum`], cap ? ['Limit', `${fmt(cap, xdec(a), a.dp)} ${a.ticker} a bridge`, '', 'While the bridge is new'] : null, btcFee, time] };
+  const a = hxBackA(), name = `Your ${a.ticker} on Bitcoin`, [btcFee, time] = brxRows('in');
+  const base = { out: 'All', go: hxBrGo(), rc: [['Arrives', `private ${a.ticker} on Ethereum`], btcFee, time] };
   if (!S.key) return done(base);
   const XB = xbOf(a), pub = S.key.pubHex;
   if (!(XB.pub === pub && XB.notes)) done({ ...base, line: `Reading your ${a.ticker} on Bitcoin…` });
@@ -14844,7 +14843,7 @@ async function brReview(pub, n, onProgress) {
 async function hxBridgeInQuote(my, done) {
   const [btcFee, time] = brxRows('in');
   const gas = ['Ethereum gas', 'none: the relay sends it', '', 'The relay sends the Ethereum side of a bridge from Bitcoin and pays its gas. If its free settles for the day are used up, it waits and asks again every hour.'];
-  const base = { out: 'Private', go: 'Bridge TAC from Bitcoin', rc: [['Arrives', 'private TAC on Ethereum'], ['Limit', `${fmt(BR_LIMITS.tac.in.max, 8, 4)} TAC a bridge`, '', 'While the bridge is new'], btcFee, gas, time] };
+  const base = { out: 'Private', go: 'Bridge TAC from Bitcoin', rc: [['Arrives', 'private TAC on Ethereum'], btcFee, gas, time] };
   if (!S.key) return done({ ...base, go: 'Open your Tacit wallet to bridge' });
   const pub = S.key.pubHex;
   if (!(BR.pub === pub && BR.notes)) done({ ...base, line: 'Reading your TAC on Bitcoin…' });
@@ -15173,7 +15172,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=016f9fff').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=3b20506f').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

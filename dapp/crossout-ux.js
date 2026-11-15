@@ -2,16 +2,13 @@ import { makeCrossoutMintReveal } from './crossout-mint-reveal.js';
 import { makeBtcWallet } from './bitcoin-taproot-wallet.js';
 import { makeBtcBind } from './btc-bind.js';
 
-export const CROSSOUT_BETA_CAP_RAW = 100_000_000_000n;
-export const CROSSOUT_TETH_CAP_RAW = 50_000_000n;
-export const CROSSOUT_TETH_MIN_RAW = 100_000n;           // 0.001 tETH while the bridge is new: small enough to try, and a bridge must still exceed its relay fee
-export const CROSSOUT_CBTC_CAP_RAW = 50_000_000n;
+// What one note holds (a u64 of units): no bridge is capped below it. Each asset keeps a minimum, so a bridge is more than its fees.
+export const NOTE_MAX_RAW = 10n ** 18n;
+export const CROSSOUT_TETH_MIN_RAW = 100_000n;           // 0.001 tETH: small enough to try, and a bridge must still exceed its relay fee
 export const CROSSOUT_CBTC_MIN_RAW = 1_000n;
-export const CROSSOUT_CUSD_CAP_RAW = 100_000_000_000n;    // 1,000 cUSD while the bridge is new
 export const CROSSOUT_CUSD_MIN_RAW = 1_000_000_000n;      // 10 cUSD: a bridge must still exceed its relay fee
 // cUSDT is in the pool at USDT's own six decimals (scale 1), not eight like the rest
 export const CROSSOUT_CUSDT_DEC = 6;
-export const CROSSOUT_CUSDT_CAP_RAW = 100_000_000n;       // 100 USDT while the bridge is new: a start, raised once round trips have been through
 export const CROSSOUT_CUSDT_MIN_RAW = 2_000_000n;         // 2 USDT: small enough to try with, and a bridge must still exceed its relay fee
 export const CROSSOUT_MINT_FEE_CEILING = 100;
 // How many times a burn's Bitcoin step is sent before the record stops offering it again: the first, and two more.
@@ -60,7 +57,7 @@ export function makeCrossoutUx(deps) {
   for (const [k, v] of Object.entries({ workerBase, secp, hmac, sha256, crossOut, pool, rpc, evmLog, chain })) {
     if (v == null) throw new Error(`crossout-ux: deps.${k} required`);
   }
-  const ASSETS = (assetsIn || (tacAssetId ? [{ assetId: tacAssetId, ticker: 'TAC', capRaw: CROSSOUT_BETA_CAP_RAW }] : [])).map((a) => ({ ...a, assetId: withHex(a.assetId), capRaw: BigInt(a.capRaw), minRaw: BigInt(a.minRaw || 0) }));
+  const ASSETS = (assetsIn || (tacAssetId ? [{ assetId: tacAssetId, ticker: 'TAC' }] : [])).map((a) => ({ ...a, assetId: withHex(a.assetId), capRaw: BigInt(a.capRaw ?? NOTE_MAX_RAW), minRaw: BigInt(a.minRaw || 0) }));
   if (!ASSETS.length) throw new Error('crossout-ux: deps.tacAssetId or deps.assets required');
   const assetOf = (id) => ASSETS.find((a) => lc(stripHex(a.assetId)) === lc(stripHex(id || ''))) || null;
   const storage = storageIn || defaultStorage();
@@ -109,7 +106,7 @@ export function makeCrossoutUx(deps) {
       const value = BigInt(n.value), a = assetOf(n.asset);
       let reason = null;
       if (!a) reason = ASSETS.length === 1 ? `not ${ASSETS[0].ticker}` : 'not an asset this bridge takes';
-      else if (value > a.capRaw) reason = `over the ${unitsDp(a.capRaw, a.dec)} ${a.ticker} beta limit — send part of it to yourself first to split off a smaller note`;
+      else if (value > a.capRaw) reason = `more than one bridge carries (${unitsDp(a.capRaw, a.dec)} ${a.ticker}) — send part of it to yourself first to split off a smaller note`;
       else if (value < a.minRaw) reason = `under the ${unitsDp(a.minRaw, a.dec)} ${a.ticker} minimum`;
       else if (n.confirmed === false) reason = 'unconfirmed';
       else if (isReserved(n.nullifier)) reason = 'already bridging';
@@ -215,7 +212,7 @@ export function makeCrossoutUx(deps) {
     if (earlier && earlier.stage !== 'settling') throw new Error('crossout-ux: a bridge already exists for this note');
     if (!earlier && isReserved(id)) throw new Error('crossout-ux: this note is already reserved by another bridge in progress');
     const value = BigInt(note.value); fee = BigInt(fee);
-    if (value > a.capRaw) throw new Error('crossout-ux: over the beta cap');
+    if (value > a.capRaw) throw new Error('crossout-ux: more than one bridge carries');
     if (value < a.minRaw) throw new Error('crossout-ux: under the minimum');
     if (fee < 0n || fee >= value) throw new Error('crossout-ux: the relay fee must be under the note');
     // ready: the note it mints on Bitcoin is bound to the pool right after, so it can come back by the fast lane (TAC only)
@@ -649,5 +646,5 @@ export function makeCrossoutUx(deps) {
     return out;
   }
 
-  return { CROSSOUT_BETA_CAP_RAW, network, assets: ASSETS, assetOf, eligibleNotes, isReserved, isFundingReserved, preflight, start, advance, bindDue, bindNow, resign, retryRejected, cancelIntent, recoverFromEthTx, recoverFromKey, resumeAll, list, abandon };
+  return { NOTE_MAX_RAW, network, assets: ASSETS, assetOf, eligibleNotes, isReserved, isFundingReserved, preflight, start, advance, bindDue, bindNow, resign, retryRejected, cancelIntent, recoverFromEthTx, recoverFromKey, resumeAll, list, abandon };
 }

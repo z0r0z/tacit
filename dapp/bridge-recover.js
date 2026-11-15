@@ -14,7 +14,7 @@
 // Deps: { secp, sha256, ripemd160, pool, classifyConfidentialTx, signSchnorr?, verifySchnorr, tacAssetId, maxUnits?, fromHeight? }.
 
 export const RECOVER_DOMAIN = 'tacit-bridge-recover-v1';
-export const RECOVER_MAX_UNITS = 100000000000n; // 1,000 TAC (8 decimals), the bridge's own per-note cap
+export const RECOVER_MAX_UNITS = 10n ** 18n;    // what one note holds: a bridge has no cap below it
 export const RECOVER_FROM_HEIGHT = 968700; // the first block the in-app bridge could have made a burn
 
 const strip = (h) => String(h || '').replace(/^0x/, '');

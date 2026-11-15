@@ -23,7 +23,7 @@ const fmt = (v, max = 8) => `${Number(v) / 1e8}`;
 const L = (o) => limitText({ units: 500n, fee: 10n, min: 100n, cap: 1000n, ticker: 'TAC', fmt, ...o });
 assert.equal(L({}), null);
 assert.match(L({ units: 50n }), /^Bridge at least .* TAC: below that the fees take too much of it\.$/);
-assert.match(L({ units: 1001n }), /^One bridge takes at most .* TAC while this is new\. Bridge less, then again\.$/);
+assert.match(L({ units: 1001n }), /^One bridge carries at most .* TAC, what one note holds\. Bridge less, then again\.$/);
 assert.match(L({ units: 10n, min: 0n }), /^Bridge more than .* TAC: the relay fee comes out of it\.$/);
 assert.match(L({ units: 10n, min: 100n }), /at least/, 'the least is named before the fee');
 // the proof

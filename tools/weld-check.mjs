@@ -3584,19 +3584,19 @@ await step('bridge', async () => {
   await until(r.page, () => document.querySelector('#hx-go')?.textContent === 'Bridge TAC from Bitcoin', null, 120000);
   const hxBtc = (await text(r.page, '#hx-body')).replace(/\s+/g, ' '), btcSaid = await r.page.evaluate(() => window.__said());
   await shot(r.page, 'hx-bitcoin');
-  ok(/Bridge TAC from Bitcoin/.test(hxBtc) && /Limit: 1,000 TAC a bridge/.test(btcSaid) && !/relay fee/i.test(hxBtc) && /Bitcoin fee: (in sats|about [\d,]+ sats)/.test(btcSaid) && /Time: (a few hours, at most a day|about \d+ hours)/.test(btcSaid), `bridge: the landing card's TAC-from-Bitcoin way says what the one-step bridge costs, the most one bridge takes and how long it takes, as the Bridge tab does (${hxBtc.slice(0, 200)})`);
-  // A signed-in key also sees what the Bridge tab lists, read when the tab opens: the stubbed notes (250, 1,500, 30 and 40 TAC), the
-  // three that can be picked (the Bridge tab checks each one's proof when it is picked), the one over the limit, and the bridges under way (four, two of them waiting for a press from the holder).
+  ok(/Bridge TAC from Bitcoin/.test(hxBtc) && !/Limit:/.test(btcSaid) && !/relay fee/i.test(hxBtc) && /Bitcoin fee: (in sats|about [\d,]+ sats)/.test(btcSaid) && /Time: (a few hours, at most a day|about \d+ hours)/.test(btcSaid), `bridge: the landing card's TAC-from-Bitcoin way says what the one-step bridge costs, the most one bridge takes and how long it takes, as the Bridge tab does (${hxBtc.slice(0, 200)})`);
+  // A signed-in key also sees what the Bridge tab lists, read when the tab opens: the stubbed notes (250, 1,500, 30 and 40 TAC), all four
+  // pickable (no bridge is capped; the Bridge tab checks each one's proof when it is picked), and the bridges under way (four, two of them waiting for a press from the holder).
   await until(r.page, () => /1,820 TAC on Bitcoin, in 4 notes/.test(document.querySelector('#hx-have')?.textContent || ''), null, 240000);
   const have = (await text(r.page, '#hx-have')).replace(/\s+/g, ' ');
-  ok(/3 notes to pick from \(320 TAC\)\. Each bridges whole, and is checked first/.test(have) && /1 note over the 1,000 TAC a bridge takes: pick it to split 1,000 TAC off it/.test(have) && !/not ready yet/.test(have) && /4 bridges on their way: 2 need you/.test(have),
+  ok(/4 notes to pick from \(1,820 TAC\)\. Each bridges whole, and is checked first/.test(have) && !/over the/.test(have) && !/not ready yet/.test(have) && /4 bridges on their way: 2 need you/.test(have),
     `bridge: the tile's Bridge tab says what the key holds on Bitcoin and what is under way (${have.slice(0, 260)})`);
   await shot(r.page, 'hx-bitcoin-have');
-  // its list: the notes the key holds, the one over the limit and the ones already bridging not offered
+  // its list: the notes the key holds, the 1,500 TAC one as pickable as the rest, the ones already bridging not offered
   await until(r.page, () => document.querySelectorAll('#hx-routes [data-hxr]').length >= 3, null, 240000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | routes: ${(await text(r.page, '#hx-routes')).replace(/\s+/g, ' ').slice(0, 200)} | q: ${await text(r.page, '#hx-q')}`); });
   const tileRows = await r.page.$$eval('#hx-routes [data-hxr]', (b) => b.map((x) => ({ k: x.dataset.hxr, off: x.disabled, t: x.textContent.replace(/\s+/g, ' ').trim() })));
-  ok(tileRows.filter((x) => !x.off).length === 3 && tileRows.some((x) => x.off && /1,500 TAC/.test(x.t)), `bridge: the tile lists the key's TAC on Bitcoin: three notes to pick, the one over the limit greyed out with its reason (${tileRows.map((x) => x.t).join(' | ').slice(0, 220)})`);
+  ok(tileRows.filter((x) => !x.off).length === 4 && tileRows.some((x) => !x.off && /1,500 TAC/.test(x.t)), `bridge: the tile lists the key's TAC on Bitcoin: four notes to pick, 1,500 TAC as well (no cap) (${tileRows.map((x) => x.t).join(' | ').slice(0, 220)})`);
   // pressed with none picked it asks for one, from the tile
   await sheetsSeen(r.page);
   await r.page.click(BRG.go);
@@ -3619,8 +3619,8 @@ await step('bridge', async () => {
   ok(true, 'bridge: the Bitcoin sheet’s TAC line opens TAC’s page on its bridge, at /tac/');
   await until(r.page, () => document.querySelectorAll('#bridge-body .brn').length === 4, null, 120000);
   const notes = (await text(r.page, '#bridge-body .brns')).replace(/\s+/g, ' ').trim();
-  ok(/^250(\.0+)? TAC.*40(\.0+)? TAC.*30(\.0+)? TAC.*1,500(\.0+)? TAC\s*Over 1,000 TAC/.test(notes) && !(await r.page.$(`#bridge-body input[value="${N2}:0"]`)) && (await r.page.inputValue('#bridge-body .brsp input')) === '1000' && !!(await r.page.$('#bridge-body [data-brsplit]')),
-    `bridge: the notes are listed, the one over 1,000 TAC with its reason and a split control, not a dead choice (${notes})`);
+  ok(/250(\.0+)? TAC/.test(notes) && /1,500(\.0+)? TAC/.test(notes) && !/Over 1,000 TAC/.test(notes) && !!(await r.page.$(`#bridge-body input[value="${N2}:0"]`)) && !(await r.page.$('#bridge-body [data-brsplit]')),
+    `bridge: the notes are listed, the 1,500 TAC one a plain choice like the rest: no cap, nothing to split first (${notes})`);
   await r.page.check(`#bridge-body input[value="${N1}:0"]`);
   await until(r.page, () => /One Bitcoin transaction|err/.test(document.querySelector('#br-rcpt')?.innerHTML || ''), null, 120000);
   const rc = (await text(r.page, '#br-rcpt')).replace(/\s+/g, ' ');
@@ -4965,17 +4965,14 @@ await step('xtbridge', async () => {
   ok(await r.page.isDisabled('#xt-go'), 'xtbridge: with sats free, the button still waits for the box to be ticked');
   await r.page.check('#xt-ack');
   ok(!(await r.page.isDisabled('#xt-go')), 'xtbridge: ticked, it can start');
-  // The limits: over the cap, under the minimum, and the fee taking all of it.
-  await r.page.fill('#xt-amt', '1001');
-  await until(r.page, () => /at most 1,000 TAC/.test(document.querySelector('#xt-rcpt')?.textContent || ''), null, 120000);
-  ok(await r.page.isDisabled('#xt-go') && await r.page.isHidden('#xt-ackrow'), 'xtbridge: more than the limit is refused with the limit named, and the box goes away');
+  // The limits: no cap, the minimum, and the fee taking all of it.
   await r.page.fill('#xt-amt', '5');
   await until(r.page, () => /at least 20 TAC/.test(document.querySelector('#xt-rcpt')?.textContent || ''), null, 120000);
   ok(await r.page.isDisabled('#xt-go'), 'xtbridge: under the minimum is refused with the minimum named');
-  // More than is held (1,290 TAC in all, 1,200 of it one note over the limit).
-  await r.page.fill('#xt-amt', '1290');
-  await until(r.page, () => /at most 1,000 TAC|private balance/.test(document.querySelector('#xt-rcpt')?.textContent || ''), null, 120000);
-  ok(await r.page.isDisabled('#xt-go'), 'xtbridge: a figure over the limit or the balance is refused');
+  // More than is held (1,290 TAC in all): refused for the balance, never for a cap.
+  await r.page.fill('#xt-amt', '2000');
+  await until(r.page, () => /private balance/.test(document.querySelector('#xt-rcpt')?.textContent || ''), null, 120000);
+  ok(await r.page.isDisabled('#xt-go') && !/at most/.test(await text(r.page, '#xt-rcpt')), 'xtbridge: a figure over the balance is refused for the balance, not a cap');
 
   // The card says what the sheet will: what arrives, the cut of a note of that size when no note is, and nothing promised for a size the sheet refuses.
   const lander = () => r.page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
@@ -4995,9 +4992,9 @@ await step('xtbridge', async () => {
   ok(!/Cuts a note/.test(l50), `xtbridge: the card shows 50 TAC as 46 with no cut, a note being exactly 50 (${l50.slice(0, 100)})`);
   const l40 = await cardAt('40', '36', 'Cuts a note');
   ok(/^Arrives: 36 TAC on Bitcoin \| Relay fee: 4 TAC \| Cuts a note: 2 TAC first \|/.test(l40) && (await r.page.$$eval('#hx-receipt div', (d) => d.map((x) => x.title).join('|'))).includes('8 TAC if its floor has moved'), `xtbridge: and 40 TAC as 36 with the cut named, no note being exactly 40 (${l40.slice(0, 120)})`);
-  const l5 = await cardAt('5', '—', '^A bridge takes 20 to 1,000 TAC while this is new\\.$');
-  const l5000 = await cardAt('1200', '—', '^A bridge takes 20 to 1,000 TAC while this is new\\.$');
-  ok(l5.length > 0 && l5000.length > 0, `xtbridge: and a size the sheet refuses is not quoted, on either side of its limits (1,200 is over the limit but held) (${l5} | ${l5000})`);
+  const l5 = await cardAt('5', '—', '^Bridge at least 20 TAC: below that the fees take too much of it\\.$');
+  const l1200 = await cardAt('1200', '1,196', 'Relay fee: 4 TAC');
+  ok(l5.length > 0 && !/Limits/.test(l1200), `xtbridge: under the minimum is not quoted, and 1,200 TAC (once over the old cap) is, with no limits row (${l5} | ${l1200.slice(0, 120)})`);
   await r.page.fill(BRG.amt, '40');
   await until(r.page, () => document.querySelector('#hx-out')?.textContent === '36', null, 120000);
   // the press is the card's own: it reads Bitcoin and says what the Bitcoin step costs and that a burn cannot be undone, and the same press again burns it
@@ -10034,21 +10031,21 @@ await step('hxout', async () => {
     await until(p, () => document.querySelector('#hx-out')?.textContent === '21' && /Cuts a note/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | said: ${await said(p).catch(() => '?')} | out: ${await text(p, BRG.out).catch(() => '?')} | dash: ${(await text(p, '#dash-g').catch(() => '?')).replace(/\s+/g, ' ').slice(0, 200)}`); });
     const line = await said(p);
-    ok(/^Arrives: 21 TAC on Bitcoin \| Relay fee: 4 TAC \| Cuts a note: 2 TAC first \| Bitcoin fee: (in sats, from your Bitcoin address|about [\d,]+ sats( \(\$[\d.]+\))?) \| Limits: 20 to 1,000 TAC a bridge \| Time: (a few hours, at most a day|longer than usual: the proof is about \d+ hours behind)$/.test(line), `hxout: 25 TAC arrives as 21 (the relay's 4 TAC floor, 8 TAC if it has moved), the cut of a note this size said, the limits said (${line})`);
+    ok(/^Arrives: 21 TAC on Bitcoin \| Relay fee: 4 TAC \| Cuts a note: 2 TAC first \| Bitcoin fee: (in sats, from your Bitcoin address|about [\d,]+ sats( \(\$[\d.]+\))?) \| Time: (a few hours, at most a day|longer than usual: the proof is about \d+ hours behind)$/.test(line), `hxout: 25 TAC arrives as 21 (the relay's 4 TAC floor, 8 TAC if it has moved), the cut of a note this size said, the limits said (${line})`);
     await sheetsSeen(p);
     await p.click(BRG.go);
     await until(p, () => (document.querySelector('#hx-ss')?.textContent || '').trim() !== '', null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | hash: ${await p.evaluate(() => location.hash)} | errors: ${r.errors.slice(0, 2).join(' | ')}`); });
     ok((await p.evaluate(() => window.__sheetSeen)) === '' && !(await p.$('#xt-amt')), `hxout: the button bridges from the tile, said under the button, with no sheet opened (${(await text(p, '#hx-ss')).slice(0, 100)})`);
-    // Outside what a bridge takes: no figure is promised, and the limits are said.
+    // Under the minimum: no figure is promised, and the minimum is said. Over what is held (no cap): quoted, with the step that makes TAC private.
     await lander();
-    const limits = 'A bridge takes 20 to 1,000 TAC while this is new.';
-    for (const [v, says] of [['5', limits], ['5000', `You hold 62 private TAC, less than this: the first press makes TAC private, the next bridges it. ${limits}`]]) {
+    const limits = 'Bridge at least 20 TAC: below that the fees take too much of it.';
+    for (const [v, out, says] of [['5', '—', limits], ['5000', '4,996', 'You hold 62 private TAC, less than this: the first press makes TAC private, the next bridges it.']]) {
       await p.fill(BRG.amt, v);
-      await until(p, (x) => document.querySelector('#hx-out')?.textContent === '—' && (document.querySelector('#hx-q')?.textContent || '').trim() === x, says, 240000)
+      await until(p, ([o, x]) => document.querySelector('#hx-out')?.textContent === o && (document.querySelector('#hx-q')?.textContent || '').trim() === x, [out, says], 240000)
         .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | at ${v}: ${await body()}`); });
     }
-    ok(true, 'hxout: 5 TAC and 5,000 TAC are not quoted, and the limits are said (5,000 TAC also says what is held)');
+    ok(true, 'hxout: 5 TAC is not quoted and the minimum is said; 5,000 TAC (no cap) is quoted, with what is held and the step to make it private');
     await p.fill(BRG.amt, '61');
     await until(p, () => document.querySelector('#hx-out')?.textContent === '—' && /^The most you can use is 60 TAC: the relay fee to cut a note of this size comes out of it\.$/.test((document.querySelector('#hx-q')?.textContent || '').trim()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | at 61: ${await body()}`); });
@@ -10071,9 +10068,9 @@ await step('hxout', async () => {
     await until(p, () => /tETH a bridge/.test(window.__said()) && document.querySelector('#hx-go')?.textContent === 'Bridge tETH to Bitcoin', null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | card: ${await body()}`); });
     const tethLine = await said(p);
-    ok(/Relay fee: [\d.]+ tETH \| Bitcoin fee: (in sats, from your Bitcoin address|about [\d,]+ sats( \(\$[\d.]+\))?) \| Limits: [\d.]+ to [\d.]+ tETH a bridge \| Time: (a few hours, at most a day|longer than usual: the proof is about \d+ hours behind)/.test(tethLine) && !/TAC/.test(tethLine), `hxout: tETH is quoted as tETH, in its own words, with the time the sheet gives (${tethLine.slice(0, 160)})`);
+    ok(/Relay fee: [\d.]+ tETH \| Bitcoin fee: (in sats, from your Bitcoin address|about [\d,]+ sats( \(\$[\d.]+\))?) \| Time: (a few hours, at most a day|longer than usual: the proof is about \d+ hours behind)/.test(tethLine) && !/TAC/.test(tethLine), `hxout: tETH is quoted as tETH, in its own words, with the time the sheet gives (${tethLine.slice(0, 160)})`);
     await bridgeTo(p, 'tac', '25');
-    await until(p, () => /Limits: 20 to 1,000 TAC a bridge/.test(window.__said()), null, 120000);
+    await until(p, () => /Relay fee: [\d.]+ TAC/.test(window.__said()) && !/Limits:/.test(window.__said()), null, 120000);
     const tacLine = await said(p);
     ok(/Relay fee: 4 TAC/.test(tacLine) && !/tETH/.test(tacLine), `hxout: and TAC as TAC (${tacLine.slice(0, 120)})`);
     // Turned around, TAC to Bitcoin is TAC from Bitcoin.
@@ -10131,7 +10128,7 @@ await step('hxbridgec', async () => {
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
     ok(true, 'hxbridgec: more cUSD than the key holds is said');
     await p.fill(BRG.amt, '20');
-    await until(p, () => /^(19|20)(\.\d\d?)?$/.test(document.querySelector('#hx-out')?.textContent || '') && /Relay fee: [\d.]+ cUSD/.test(window.__said()) && /Limits: 10 to 1,000 cUSD a bridge/.test(window.__said()), null, 240000)
+    await until(p, () => /^(19|20)(\.\d\d?)?$/.test(document.querySelector('#hx-out')?.textContent || '') && /Relay fee: [\d.]+ cUSD/.test(window.__said()) && !/Limits:/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
     ok((await text(p, BRG.go)).trim() === 'Bridge cUSD to Bitcoin' && (await heldAt(p)) === 'private', `hxbridgec: 20 cUSD to Bitcoin is quoted with its relay fee and limits (${await said(p)})`);
     await sheetsSeen(p);
@@ -10164,15 +10161,15 @@ await step('hxbridgeu', async () => {
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
     ok(true, 'hxbridgeu: more USDT than the key holds is said, in USDT');
     await p.fill(BRG.amt, '20');
-    await until(p, () => /^19\.5$/.test(document.querySelector('#hx-out')?.textContent || '') && /Relay fee: 0\.5 cUSDT/.test(window.__said()) && /Limits: 2 to 100 cUSDT a bridge/.test(window.__said()), null, 240000)
+    await until(p, () => /^19\.5$/.test(document.querySelector('#hx-out')?.textContent || '') && /Relay fee: 0\.5 cUSDT/.test(window.__said()) && !/Limits:/.test(window.__said()), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
     ok((await text(p, BRG.go)).trim() === 'Bridge USDT to Bitcoin' && (await heldAt(p)) === 'private', `hxbridgeu: 20 USDT to Bitcoin is quoted with its relay fee and its limits in six decimals (${await said(p)})`);
     await until(p, () => /Back on Ethereum: 19\.5 private USDT, no fee to bring it back/.test(window.__said()) && /Then to take it out: 2\.3 to the relay, 17\.2 out/.test(window.__said()), null, 120000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)}`); });
     ok(true, 'hxbridgeu: and says what coming back leads to: 19.5 private USDT, free to bring back, 2.3 to take out, 17.2 out');
     await p.fill(BRG.amt, '1');
-    await until(p, () => /A bridge takes 2 to 100 cUSDT while this is new\./.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
+    await until(p, () => /Bridge at least 2 cUSDT: below that the fees take too much of it\./.test(document.querySelector('#hx-q')?.textContent || ''), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)}`); });
-    ok(true, 'hxbridgeu: 1 USDT is under the 2 USDT minimum, and the line names the limits in USDT');
+    ok(true, 'hxbridgeu: 1 USDT is under the 2 USDT minimum, and the line names it in USDT');
     await p.fill(BRG.amt, '2.5');
     await until(p, () => /^2$/.test(document.querySelector('#hx-out')?.textContent || ''), null, 240000).catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await said(p)} | out ${await text(p, BRG.out)}`); });
     ok(true, 'hxbridgeu: 2.5 USDT less the 0.5 fee arrives as 2 (a bridge just over the minimum is quoted)');

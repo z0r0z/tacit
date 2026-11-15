@@ -38,20 +38,24 @@ export const ROUTES = {
 };
 
 const E8 = 100_000_000n;
+// No bridge is capped below what one note holds (NOTE_MAX); a bridge to Bitcoin has a minimum, so it is more than its fees.
+const NOTE_MAX = 10n ** 18n;
 export const LIMITS = {
-  tac: { in: { max: 1000n * E8 }, out: { min: 20n * E8, max: 1000n * E8 } },
-  teth: { in: { max: 50_000_000n }, out: { min: 100_000n, max: 50_000_000n } },
-  cbtc: { in: { max: 50_000_000n }, out: { min: 1_000n, max: 50_000_000n } },
-  cusd: { in: { max: 1000n * E8 }, out: { min: 10n * E8, max: 1000n * E8 } },
-  cusdt: { in: { max: 100_000_000n }, out: { min: 2_000_000n, max: 100_000_000n } },
+  tac: { in: { max: NOTE_MAX }, out: { min: 20n * E8, max: NOTE_MAX } },
+  teth: { in: { max: NOTE_MAX }, out: { min: 100_000n, max: NOTE_MAX } },
+  cbtc: { in: { max: NOTE_MAX }, out: { min: 1_000n, max: NOTE_MAX } },
+  cusd: { in: { max: NOTE_MAX }, out: { min: 10n * E8, max: NOTE_MAX } },
+  cusdt: { in: { max: NOTE_MAX }, out: { min: 2_000_000n, max: NOTE_MAX } },
 };
 export function limitsSaid() {
-  return ['tac', 'teth', 'cbtc', 'cusd', 'cusdt'].map((k) => { const l = LIMITS[k], r = ROUTES[k]; return `${r.ticker} ${fmtAmount(l.out.min, r.dp, r.dec)} to ${fmtAmount(l.out.max, r.dp, r.dec)} to Bitcoin and up to ${fmtAmount(l.in.max, r.dp, r.dec)} back`; }).join('; ');
+  return ['tac', 'teth', 'cbtc', 'cusd', 'cusdt'].map((k) => `${ROUTES[k].ticker} ${fmtAmount(LIMITS[k].out.min, ROUTES[k].dp, ROUTES[k].dec)}`).join(', ');
 }
+// The line under a bridge's amount: its minimum when it has one worth saying, and a cap only when one is below what a note holds.
 export function limitLine(asset, dir) {
   const l = LIMITS[asset]?.[dir], r = ROUTES[asset];
-  if (!l || !r || !l.max || l.max >= 10n ** 18n) return '';   // none, or no limit (a token the pool escrows)
-  return `${l.min ? `${fmtAmount(l.min, r.dp, r.dec)} to ` : 'Up to '}${fmtAmount(l.max, r.dp, r.dec)} ${r.ticker} a bridge while it is new`;
+  if (!l || !r) return '';
+  if (l.max && l.max < NOTE_MAX) return `${l.min ? `${fmtAmount(l.min, r.dp, r.dec)} to ` : 'Up to '}${fmtAmount(l.max, r.dp, r.dec)} ${r.ticker} a bridge`;
+  return l.min > 1n ? `At least ${fmtAmount(l.min, r.dp, r.dec)} ${r.ticker} a bridge` : '';
 }
 
 const lc = (s) => String(s || '').replace(/^0x/i, '').toLowerCase();
