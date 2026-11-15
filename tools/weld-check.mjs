@@ -218,7 +218,7 @@ const DAPP = new URL('../dapp/', import.meta.url).pathname;
 const bwText = (page) => page.evaluate((s) => [...document.querySelectorAll(s)].map((e) => e.textContent).join(' '), '#bw-status, #bw-s1, #bw-s2, #bw-s3, #bw-s4');
 // `ui`: the front page's tile and landing, the steps a look-and-copy pass needs (tools/weld-ui.sh runs them on a pinned, cached fork)
 const UI_STEPS = 'links,tacbuy,swapurl,swapfield,hints,hxbridge,hxfold,hxnudge,tradelinks';
-const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,xtshield,xtout,xtspx,xtwst,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earnget,earngate,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile,chainways').split(','));
+const ONLY = new Set((process.argv[2] === 'ui' ? UI_STEPS : process.argv[2] || 'airdrop,links,tacbuy,swapurl,swapfield,hints,hxbridge,hxbridgec,hxbridgeu,usdtwrap,usdtwrapw,xtshield,xtout,xtspx,xtwst,usdtout,flowpanel,ux,apr,farmgate,pair,farm,reinvest,buy,tacfarm,sell,v1,v1refuse,wrapform,devsend,device,devtac,devtacdraft,devtacacct,borrow,bonds,bondadd,mainbond,locks,redeem,redeemgo,repay,csend,tacsend,selfexit,selfmore,selflocks,selfsplit,makepub,farmjoin,lpsend,rsend,swapahead,zapfirst,swapown,swaphere,routeahead,connectkey,copylink,zapway,zapcredit,zapresume,zapresume2,lponly,hxsendname,sendhere,sendtok,sendkey,sendbtc,pace,farmpos,hxpos,farmsteps,farmzap,earnhere,earnboth,earnget,earngate,earnimpact,payhere,tachere,tacpubhere,payout,earnrows,lprows,farmzapeth,lpvoucher,fastzap,farmzapdrop,farmzapsplit,farmbondnote,farmqueue,farmheld,farmreuse,hxtip,shieldsrc,shieldwc,provebar,farmexit,farmclaim,farmself,farmworth,swap,shield,keys,tacopen,saved,bitcoin,passkey,acct,devmove,btc,bridge,clearedfind,bridgedeep,fastwant,bridgemerge,bridgeall,bridgeto,bridgepub,xobridge,xbring,xtbridge,xtring,xtfind,hxout,hxlink,hxpanel,hxweek,hxsell,hxlater,hxsats,devtokpool,hxsendpool,hxexit,hxsendpp,hxdry,hxnudge,hxfold,hxteth,hxsend,hxsendcheck,hxplace,hxsendtac,hxsendwallet,hxsendways,hxborrow,hxvault,hxvaultkey,hxborrowback,tradelinks,fmchips,pts,ptsview,retention,activity,receipts,stats,dash,tacdeposit,openact,openfarm,heldoff,provecap,heldborrow,vaultborrow,rewardspriv,rewardsout,rewardsjoin,bridgemove,bridgepresses,bridgefindhere,holdborrow,hxheld,holdpublic,usdback,selffund,selfeth,selfprove,exitahead,selfdevice,nohost,stageready,stagewhole,wrapfirst,poolkeep,poolmax,sendahead,lockahead,tileahead,poolwait,poolstale,poolfunds,tacvoucher,relaystate,anyone,relayfail,selfwallet,slowline,fastroute,chainoff,chaintile,chainways').split(','));
 const FORK = process.argv[3] || 'https://mainnet.gateway.tenderly.co';
 const SHOTS = process.env.SHOTS || null;
 const PORT = 20000 + Math.floor(Math.random() * 2000), WEB = PORT + 1;
@@ -9193,6 +9193,35 @@ await step('earngate', async () => {
     ok(true, 'earngate: accepted, the button goes ahead');
     await shot(p, 'earngate');
     if (r.errors.length) { fails++; console.log('FAIL earngate page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+// A pool at the market's price that is small for the deposit: half of the deposit swapped moves the price about a fifth, which is a tenth of the
+// deposit given up, not a fifth. The card says both (the swap's impact, and what the price costs against the market, of the deposit) and holds the
+// deposit to the second: under the 15% that wants an acknowledgement.
+await step('earnimpact', async () => {
+  const CUSD_POOL = '0x5925c0c2954c5b11bedd20e444f0cb22f3827f6197814f97d193e7a44e909da7';
+  const ethUsd = Number(BigInt('0x' + (await rpc('eth_call', [{ to: '0x5f4ec3df9cbd43714fe2740f5e3616155c5b8419', data: '0xfeaf968c' }, 'latest'])).slice(2).slice(64, 128))) / 1e8;
+  const A = '4000000', B = String(Math.round(0.04 * ethUsd * 1e8));                     // 0.04 tETH against as many cUSD as it is worth
+  const r = await openFarmKey('b4d1'.padEnd(64, '5'), { notes: [[FARM_CETH, 2000000n]], positions: [], swap: true, fees: { transfer: 10000, route: 10000 }, reserves: { [CUSD_POOL]: { reserveA: A, reserveB: B } } }, { width: 1280, height: 1500 }, async (pg) => {
+    await pg.route(/api\.tacit\.finance\/farm\/program/, async (route) => {
+      const res = await route.fetch(), j = await res.json(), p1 = j.pools.find((x) => Number(x.pid) === 1);
+      if (p1) { p1.reserves.reserveA = A; p1.reserves.reserveB = B; }
+      await route.fulfill({ response: res, json: j });
+    });
+  });
+  const p = r.page;
+  try {
+    await earnCard(p, 'eth', '1');
+    await until(p, () => /^Balance 0\.02 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 420000);
+    await p.click('#hx-max');
+    await until(p, () => /Price impact/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 420000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#hx-go')} | q: ${await text(p, '#hx-q')} | rc: ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ')}`); });
+    const rc = (await text(p, '#hx-receipt')).replace(/\s+/g, ' '), swap = Number((rc.match(/Price impact\s*(\d+(?:\.\d+)?)%/) || [])[1]), mkt = Number((rc.match(/Against the market\s*(\d+(?:\.\d+)?)% of this deposit/) || [])[1]);
+    ok(swap >= 15 && swap < 30 && mkt >= 5 && mkt < 15 && mkt < swap * 0.75, `earnimpact: the swap's own impact (${swap}%) and what it costs the deposit against the market (${mkt}%) are said apart (${rc.slice(0, 260)})`);
+    await until(p, () => !document.querySelector('#hx-go').disabled, null, 60000);
+    ok(!(await p.$('#hx-ackv')) && !(await p.isDisabled('#hx-go')), `earnimpact: a deposit that gives up ${mkt}% of itself is not held to the 15% acknowledgement the swap's ${swap}% used to trigger`);
+    await shot(p, 'earnimpact');
+    if (r.errors.length) { fails++; console.log('FAIL earnimpact page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 // The Pay pools are deposited into from the Swap card, no sheet over it: ETH into the Ethereum pool (proved in the page's worker, the proving key fetched once and said under the button) and then TAC
