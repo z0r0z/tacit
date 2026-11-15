@@ -76,6 +76,7 @@ assert.strictEqual(wanted.length, 3);
   ok('the probe lets through every memo openMemo opens and rules out the memos sealed to others');
 }
 
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 const plain = m.scan(rPriv, events, [], nullifierOf);
 assert.deepStrictEqual(plain.map((x) => x.leafIndex), wanted, 'the plain scan finds the three notes');
 
@@ -83,7 +84,7 @@ assert.deepStrictEqual(plain.map((x) => x.leafIndex), wanted, 'the plain scan fi
 function fakeWorkers({ failAt = null, hangAt = null, shortAt = null, made = [], opts = {} } = {}) {
   let asked = 0;
   return makeMemoWorkers({
-    available: () => true, count: () => 3, chunk: 16, minMemos: 8, chunkMs: 20e3, ...opts,
+    available: () => true, count: () => 3, chunk: 16, minMemos: 8, chunkMs: 20e3, idleMs: 40, ...opts,
     make: () => {
       if (opts.makeThrows) throw new Error('no workers here');
       const w = { ended: false, terminate() { this.ended = true; }, onmessage: null, onerror: null,
@@ -118,7 +119,9 @@ const withFilter = async (filter, key = rPriv, evs = events) => {
   const r = await withFilter(fakeWorkers({ made }));
   assert.strictEqual(plainJson(r.got), plainJson(plain), 'with workers, the same notes in the same order');
   assert.ok(base.opened >= NOISE && r.opened <= wanted.length + 1, `the page opened ${r.opened} memos in full instead of ${base.opened}`);
-  assert.ok(made.length === 3 && made.every((w) => w.ended), 'three workers were made for the scan, and all of them were ended after it');
+  assert.ok(made.length === 3 && made.every((w) => !w.ended), 'three workers were made for the scan, and are kept a moment for the next batch');
+  await pause(200);
+  assert.ok(made.every((w) => w.ended), 'and all of them are ended once it has been quiet');
   const other = await withFilter(fakeWorkers(), sPriv);
   assert.strictEqual(other.got.length, NOISE, 'another key reads the same list on its own, through the same workers');
   ok('with workers the scan finds the same notes, and the page opens only the memos the probe let through');
@@ -136,9 +139,12 @@ const withFilter = async (filter, key = rPriv, evs = events) => {
   const a = [], b = [], c = [], d = [];
   const failed = await same('a worker that fails on one chunk', fakeWorkers({ failAt: 2, made: a }));
   assert.ok(failed.opened > wanted.length + 1 && failed.opened < NOISE, `only the failed chunk (and its mine) is opened by the page (${failed.opened})`);
-  assert.ok(a.every((w) => w.ended), 'and every worker is ended');
+  assert.ok(a.some((w) => w.ended), 'the worker that failed is ended at once');
+  await pause(200);
+  assert.ok(a.every((w) => w.ended), 'and the rest when it has been quiet');
   const hung = await same('a worker that never answers', fakeWorkers({ hangAt: 1, made: b, opts: { chunkMs: 1500 } }));
-  assert.ok(hung.opened < NOISE && b.every((w) => w.ended), 'the rest is ruled out and the stuck worker is ended');
+  assert.ok(hung.opened < NOISE && b.some((w) => w.ended), 'the rest is ruled out and the stuck worker is ended');
+  await pause(200);
   await same('a worker whose answer is too short', fakeWorkers({ shortAt: 0, made: c }));
   const small = await withFilter(makeMemoWorkers({ available: () => true, minMemos: 100000, make: () => { throw new Error('should not be made for a small scan'); } }));
   assert.strictEqual(plainJson(small.got), plainJson(plain), 'a scan too small to be worth a worker');
@@ -150,17 +156,17 @@ const withFilter = async (filter, key = rPriv, evs = events) => {
 // ── two readers of one pool, one set of workers ──
 {
   const made = [];
-  const a = fakeWorkers({ made }), b = fakeWorkers({ made });
+  const a = fakeWorkers({ made, opts: { idleMs: 2000 } }), b = fakeWorkers({ made, opts: { idleMs: 2000 } });
   const memos = events.map((e) => (e && typeof e.memo === 'string' ? e.memo : '0x'));
   const [x, y] = await Promise.all([a(rPriv, memos), b(rPriv, memos)]);
   assert.ok(x && y && x === y, 'a second request for the same key over the same memos is given the first one\'s answer');
   assert.strictEqual(made.length, 3, 'and starts no workers of its own');
   const z = await a(sPriv, memos);
-  assert.ok(z && z !== x && made.length === 6, 'another key over the same memos is its own request');
+  assert.ok(z && z !== x && made.length === 3, 'another key over the same memos is its own request, which uses the workers already there');
   const w = await a(rPriv, memos.slice(0, -1));
-  assert.ok(w && w !== x && w.length === memos.length - 1, 'so is the same key over other memos');
+  assert.ok(w && w !== x && w.length === memos.length - 1 && made.length === 3, 'so is the same key over other memos');
   const after = await b(rPriv, memos);
-  assert.ok(after && after !== x && made.length === 12, 'and once a request has finished, the next one is read afresh');
+  assert.ok(after && after !== x && made.length === 6, 'and once a request has finished, the next one is read afresh (by the other reader\'s own workers)');
   ok('a second reader of the same pool waits for the running probe instead of starting its own');
 }
 
@@ -183,14 +189,41 @@ const withFilter = async (filter, key = rPriv, evs = events) => {
   assert.strictEqual(e.last.parts[0], 'import "https://x.test/confidential-memo-worker.js";', 'whose only line imports the real worker by its full address');
   assert.deepStrictEqual(revoked, [], 'the blob is kept while the worker lives');
   viaBlob.terminate();
-  assert.ok(viaBlob.ended && revoked.join() === 'blob:test/1', 'and let go when it is ended');
+  assert.deepStrictEqual(revoked, [], 'and after it: it is one line of text, and the next worker of the script is started from it');
+  const again = startWorker('https://x.test/confidential-memo-worker.js', e);
+  assert.strictEqual(again.u, 'blob:test/1', 'the next worker of the same script uses the same blob');
+  assert.strictEqual(e.made, undefined);
+  let blobsMade = 0;
+  const e3 = env(true); const orig = e3.URL.createObjectURL; e3.URL.createObjectURL = (b) => { blobsMade++; return orig(b); };
+  for (let i = 0; i < 20; i++) startWorker('https://x.test/a.js', e3);
+  for (let i = 0; i < 20; i++) startWorker('https://x.test/b.js', e3);
+  assert.strictEqual(blobsMade, 2, 'twenty workers of each of two scripts take two blobs, not forty');
   const noBlob = startWorker('https://x.test/w.js', { crossOriginIsolated: true, Worker: FakeWorker });
   assert.strictEqual(noBlob.u, 'https://x.test/w.js', 'with no way to make a blob the script is started directly');
   class Refuses extends FakeWorker { constructor(u, o) { super(u, o); if (String(u).startsWith('blob:')) throw new Error('blocked'); } }
   const gone = []; const e2 = { ...env(true), Worker: Refuses, URL: { createObjectURL: () => 'blob:test/2', revokeObjectURL: (u) => gone.push(u) } };
   assert.throws(() => startWorker('https://x.test/w.js', e2), /blocked/, 'a page that refuses the blob throws, which the manager treats as no worker');
   assert.deepStrictEqual(gone, ['blob:test/2'], 'without leaving the blob behind');
+  assert.throws(() => startWorker('https://x.test/w.js', e2), /blocked/, 'and the next try makes a new blob, not the refused one');
   ok('an isolated page starts the worker through a blob that imports it, any other page starts the script itself');
+}
+
+// ── a scan asks in batches: the workers are kept between them ──
+{
+  const made = [];
+  const keep = fakeWorkers({ made, opts: { idleMs: 150 } });
+  const memos = events.map((e) => (e && typeof e.memo === 'string' ? e.memo : '0x'));
+  const half = Math.floor(memos.length / 2);
+  const a = await keep(rPriv, memos.slice(0, half)), b2 = await keep(rPriv, memos.slice(half));
+  assert.ok(a && b2, 'both batches are answered');
+  assert.strictEqual(made.length, 3, 'one set of workers for both batches, not one set each');
+  assert.ok(made.every((w) => !w.ended), 'alive right after the second');
+  await pause(450);
+  assert.ok(made.every((w) => w.ended), 'ended once the scan has been quiet');
+  await keep(rPriv, memos.slice(0, half));
+  assert.ok(made.length > 3, 'a later scan makes new ones');
+  await pause(450);
+  ok('the workers are kept between the batches of one scan, then ended');
 }
 
 // ── the real worker file, in a thread ──
