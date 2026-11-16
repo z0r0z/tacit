@@ -45,7 +45,12 @@ on:
 # superseded before it was ever judged — the gate's own second run was cancelled 90 seconds in, by the next push.
 # A commit that reaches main gets its own verdict, so a failure can be traced to the change that caused it.
 concurrency:
-  group: js-suites-${{ github.ref }}
+  # On a pull request, one run per branch and a later push cancels the earlier: only the newest state matters.
+  # On main the group is the COMMIT, so runs neither cancel nor queue behind each other — every commit gets its own
+  # verdict, at the same time as the others. Sharing a group on main is wrong in both settings: cancelling loses the
+  # verdict (two of this gate's first three runs were cancelled by the next push, 90 s in), and queueing delays it
+  # behind every push that followed, which on a branch this busy is just as useless.
+  group: js-suites-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
