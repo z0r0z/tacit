@@ -49,13 +49,13 @@ test('an op the pool refuses as it stands (its note already spent, a farm over-c
   assert.equal(readSettleCheck({ shortMessage: 'gas required exceeds allowance (47755)' }, STALE).verdict, 'unchecked');
 });
 
-test('the rest of the permanent refusals are op too: a wrong farm asset, reserves the pool no longer has, a burn, lock, position or harvest already used', () => {
-  for (const [sel, name] of [['0xfd074bc1', 'WrongStakeAsset'], ['0x29b3c833', 'PoolReserveMismatch'], ['0xc760049c', 'BurnAlreadyMinted'], ['0xf7ee2683', 'LockAlreadySpent'], ['0x73f11ff4', 'CdpPositionAlreadySpent'], ['0xd590960c', 'HarvestReplayed']]) {
+test('the rest of the permanent refusals are op too: a wrong farm asset, reserves the pool no longer has, a burn, lock, position or harvest already used, a value that must bridge', () => {
+  for (const [sel, name] of [['0xfd074bc1', 'WrongStakeAsset'], ['0x29b3c833', 'PoolReserveMismatch'], ['0xc760049c', 'BurnAlreadyMinted'], ['0xf7ee2683', 'LockAlreadySpent'], ['0x73f11ff4', 'CdpPositionAlreadySpent'], ['0xd590960c', 'HarvestReplayed'], ['0x4868d53b', 'BtcHomedValueExitMustBridge']]) {
     const bySel = readSettleCheck({ shortMessage: 'reverted with the following signature:', cause: { data: sel } }, STALE);
     assert.equal(bySel.verdict, 'op', name); assert.equal(bySel.effect.name, name);
     assert.equal(readSettleCheck({ shortMessage: `reverted with custom error ${name}()` }, []).verdict, 'op', `${name} by name`);
   }
-  assert.ok(EFFECT_REVERTS.length === 8 && EFFECT_REVERTS.every((x) => /^0x[0-9a-f]{8}$/.test(x.selector)), 'a list of 4-byte selectors');
+  assert.ok(EFFECT_REVERTS.length === 9 && EFFECT_REVERTS.every((x) => /^0x[0-9a-f]{8}$/.test(x.selector)), 'a list of 4-byte selectors');
   assert.equal(new Set(EFFECT_REVERTS.map((x) => x.selector)).size, EFFECT_REVERTS.length, 'no selector twice');
 });
 

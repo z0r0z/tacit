@@ -14,7 +14,7 @@ import { keccak256, encodeFunctionData, parseAbi } from 'viem';
 import { CFG } from './config.js';
 import { POOL, POOL_ABI, publicClient, settleWallet } from './chain.js';
 import { reflectionEthProofPatient } from './worker-client.js';
-import { privateProvePlan, retryPublic, privateRefused, rememberRefusal, privateOff } from './private-prove.js';
+import { privateProvePlan, retryPublic, privateRefused, rememberRefusal, privateOff, unexecutable } from './private-prove.js';
 import { CREDIT_SHORT } from './prove-pause.js';
 import { makeStdinProver, batchInput } from './stdin-prover.js';
 import { makeBoardProver } from './board-prover.js';
@@ -669,6 +669,15 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
       const proof = await readHex(path.join(cwd, 'proof_bytes.hex'));
       return { publicValues, proof };
     } catch (e) {
+      // The network will not run the request (the guest panics on this input, or it is over the request's limits): no prover can make a proof of it, here or
+      // in public. Said so, in words the job's holder can read, where the generic message carried the harness's file error and the key (2026-11-16: 45 junk
+      // unbond jobs each failed as "ENOENT … public_values.hex"). The network gives the request's reserve back, so nothing is spent.
+      if (/\bis unexecutable\b/i.test(String(err || ''))) {
+        const gone = new Error(`exec:${type} — the network could not run this op as given (unexecutable), so no proof of it can be made; nothing was spent`);
+        gone.stderr = String(err || '').slice(-4000);
+        gone.unexecutable = true;
+        throw gone;
+      }
       const fail = new Error(`exec:${type} produced no proof (code=${code}): ${e.message}\n${out.slice(-2000)}`);
       // The binary's own last words (a panic names the network's answer), for the retry rules: never copied into the message.
       fail.stderr = String(err || '').slice(-4000);

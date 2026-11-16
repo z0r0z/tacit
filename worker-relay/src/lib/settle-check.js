@@ -21,7 +21,7 @@ export const DEPOSIT_NOT_PENDING = '0x070d817c';
 // Refusals that say the OP cannot land, not that the proof is wrong: the op's note was spent by another transaction first (NullifierAlreadySpent), a farm's
 // accounting is no longer what the op claims (OverClaim, as when a harvest was proved and then another changed the pool), a deposit, burn, lock, position
 // or harvest the op consumes is already used (BurnAlreadyMinted, LockAlreadySpent, CdpPositionAlreadySpent, HarvestReplayed), the op names a farm whose
-// controller takes another asset (WrongStakeAsset), or it binds reserves the pool no longer has (PoolReserveMismatch: the proof is for the pool as it stood
+// controller takes another asset (WrongStakeAsset), a Bitcoin-homed value is exited the plain way when it must bridge (BtcHomedValueExitMustBridge), or it binds reserves the pool no longer has (PoolReserveMismatch: the proof is for the pool as it stood
 // when the op was built, and no proof of the same op can pass again). Asking another prover for the same op ends in the same revert, so the verdict is 'op':
 // the board proof is not used, no mark goes against the worker (a sound proof of such an op cannot land whoever made it), and the caller must not go on to
 // the prover network, which would cost PROVE and minutes to prove the doomed op again (lib/board-prover.js, lib/prover.js). They read as 'stale' before,
@@ -39,6 +39,7 @@ export const EFFECT_REVERTS = Object.freeze([
   { selector: '0xf7ee2683', name: 'LockAlreadySpent' },
   { selector: '0x73f11ff4', name: 'CdpPositionAlreadySpent' },
   { selector: '0xd590960c', name: 'HarvestReplayed' },
+  { selector: '0x4868d53b', name: 'BtcHomedValueExitMustBridge' },
 ].map((x) => Object.freeze(x)));
 
 // A node's refusal to run a call the account cannot pay for.
