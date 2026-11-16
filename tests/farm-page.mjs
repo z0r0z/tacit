@@ -64,6 +64,21 @@ const R0 = 3n * E18, RATE_PER_SEC = 1157407407407407n, PER_DAY = Number(RATE_PER
 const CETH = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', A_TAC = '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const A_CUSD = '0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d', A_CBTC = '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8';
 const PID = ['0x' + '01'.repeat(32), '0x' + '02'.repeat(32), '0x' + '03'.repeat(32)], LPA = ['0x' + 'a1'.repeat(32), '0x' + 'a2'.repeat(32), '0x' + 'a3'.repeat(32)];
+// SPX, as the program lists its two standalone pools (real reserves): SPX / TAC, with no ETH side, and tETH / SPX, which prices a coin of SPX a sixth over its
+// public market. The pool holds SPX in 8 decimals with a unit of 1 (TAC and tETH: 18 decimals, a unit of 1e10), and its token is in no deployment list.
+const A_SPX = '0x45addc633189749428e8fc36ea4ca067fcb4b0c7abc186a095360db10dbe0b48', SPX = '0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c', ZQUOTER = '0x000000bd2db80567c23e353ca95a251c573cbf9b';
+const SPX_ETH = 0.000168;                                                              // the public market's price: ETH a coin
+const SPX_POOLS = [
+  { pid: 1000, standalone: true, pair: 'SPX/TAC', poolId: '0x' + '04'.repeat(32), lpAsset: '0x' + 'a4'.repeat(32), feeBps: 30, lockSeconds: 0, tacPerDayForPool: '66', totalShares: '111444012189', reserves: { assetA: A_SPX, assetB: A_TAC, reserveA: '94049805307', reserveB: '132059268180', lpTotalShares: '111444013189' } },
+  { pid: 1001, standalone: true, pair: 'SPX/cETH', poolId: '0x' + '05'.repeat(32), lpAsset: '0x' + 'a5'.repeat(32), feeBps: 30, lockSeconds: 0, tacPerDayForPool: '33', totalShares: '858622147', reserves: { assetA: CETH, assetB: A_SPX, reserveA: '12108999', reserveB: '61218265385', lpTotalShares: '860869819' } },
+];
+const ROWS = {                                                                         // assets(bytes32): how the pool holds each coin
+  [CETH]: { token: ZERO, unit: 10n ** 10n, minted: false, dec: 18 }, [A_TAC]: { token: TAC, unit: 10n ** 10n, minted: true, dec: 18 },
+  [A_CUSD]: { token: '0x23cacffac2674514a6d4f6cd420b4cc2ac921564', unit: 10n ** 10n, minted: true, dec: 18 }, [A_CBTC]: { token: '0xdf1d99148beb7a9aff1d95c49b3d22b7ed90d696', unit: 10n ** 10n, minted: true, dec: 18 },
+  [A_SPX]: { token: SPX, unit: 1n, minted: false, dec: 8 },
+};
+const spxOut = (wei) => BigInt(Math.floor(Number(wei) / SPX_ETH / 1e10));              // SPX (8 decimals) the public market gives for `wei`
+const spxRate = (probe = 10n ** 16n) => Number(probe) / 1e18 / (Number(spxOut(probe)) / 1e8);       // the price the page reads from that answer: ETH a coin
 const FINISH = Math.floor(Date.now() / 1000) + 30 * 86400;
 const program = ({ active = true, extra = [] } = {}) => ({
   network: 'mainnet', manager: '0x000031C47Cb61faB1CE2790a69625FABB71EDE24', rewardAsset: '0x' + '10'.repeat(32), epoch: { active, periodFinish: FINISH, ratePerDayTac: '1000' },
@@ -120,6 +135,16 @@ function chain(st) {
       return '0x' + W(1) + p.reserves.assetA.slice(2) + p.reserves.assetB.slice(2) + W(p.reserves.reserveA) + W(p.reserves.reserveB) + W(p.feeBps) + W(p.reserves.lpTotalShares);
     }
     if (to === POOL && sel === '0x7da9874f') return '0x' + W(0);                       // depositStatus: none made
+    if (to === POOL && sel === '0x9fda5b66') {                                         // assets(bytes32): how the pool holds a coin
+      const row = ROWS['0x' + data.slice(10, 74)];
+      return row ? '0x' + W(1) + W(BigInt(row.token)) + W(row.unit) + W(1) + W(row.minted ? 1 : 0) + W(row.dec) : '0x' + W(0).repeat(6);
+    }
+    if (to === ZQUOTER && sel === '0xe7798987') {                                      // buildBestSwap: the best public route for ETH into SPX (a hundredth of an ETH is read for its price)
+      if (st.noSpxMarket) throw Object.assign(new Error('execution reverted'), { code: 3 });
+      st.spxReads = (st.spxReads || 0) + 1;
+      const out = spxOut(arg(4));
+      return '0x' + W(3) + W(30) + W(arg(4)) + W(out) + W(7 * 32) + W(out * 99n / 100n) + W(arg(4)) + W(0);
+    }
     if (to === ROUTER && sel === '0xc4294fac') return '0x' + W(arg(4));                // the zap run as a call: it mints the share count it names
     if (to === LENS && sel === '0xe7cddab0') return '0x' + W(1) + W(0) + W(arg(2) * 1000n * E18 / (6n * E18) * 99n / 100n);       // previewZap: the shares of a deposit, 1% under the pool's price
     if (to === PRECISION_FARM && sel === '0x8703a0d8') return '0x' + W(1);             // zapETH run as a call
@@ -814,6 +839,61 @@ try {
       await r.page.fill('#pf-mine #pf-a', '0.1');
       ok(await until(r.page, () => /1,000/.test(document.querySelector('#pf-mine #pf-info')?.textContent || '') && !document.querySelector('#pf-mine [data-pf="join"]').disabled), 'and quotes the second side there');
       ok(!r.errors.length, `no page errors on the rewards page (${r.errors.slice(0, 2).join(' | ')})`);
+      await r.browser.close();
+    }
+  }
+
+  // 6. SPX's pools. SPX / TAC has no ETH side, so its card offers the two-coin deposit only (no ETH form, no ETH quote it cannot make). tETH / SPX is
+  // priced against SPX's public market (read from the public pools through zQuoter) and sized in SPX's own units, with its token from the pool's own row.
+  if (runs('spx')) {
+    const sp = program({ extra: SPX_POOLS }), res = { reserveA: 12108999n, reserveB: 61218265385n, totalShares: 860869819n, feeBps: 30 }, rate = spxRate();
+    {
+      const r = await openPage({ hash: '#spx-tac', prog: sp, fake: true }), { page } = r;
+      ok(await until(page, () => !document.querySelector('#k-priv')?.hidden && /no ETH side/.test(document.querySelector('#pz-how')?.textContent || '')), 'the SPX / TAC card says it has no ETH side');
+      const v = await page.evaluate(() => ({ tabs: document.querySelector('#pz-mode').hidden, eth: document.querySelector('#pz-eth').hidden, join: document.querySelector('#pz-join').hidden, text: document.querySelector('#pz').textContent }));
+      ok(v.tabs && v.eth && !v.join, 'with no ETH tab and no ETH form: the two-coin deposit is what it offers');
+      ok(!/reads differently|Try again in a minute/.test(v.text), 'and none of the error an ETH deposit into it gave');
+      const t = await tile(page, 'spx-tac');
+      ok(t && t.cost === '' && t.tag === '', `its tile says no entry cost for ETH and is not the chef’s pick (${t?.cost || 'no cost'}, ${t?.tag || 'no tag'})`);
+      clean(r, 'the SPX / TAC card');
+      await r.browser.close();
+    }
+    {
+      const r = await openPage({ hash: '#teth-spx', prog: sp, fake: true }), { page, st } = r;
+      await until(page, () => document.querySelector('#pz-go').textContent === 'Connect wallet');
+      ok(await page.evaluate(() => !document.querySelector('#pz-mode').hidden && !document.querySelector('#pz-eth').hidden), 'the tETH / SPX card keeps its ETH tab');
+      await page.fill('#pz-amt', '0.002');
+      ok(await quoted(page), 'a deposit is priced');
+      const m = zapMath({ res, wei: 2n * 10n ** 15n, market: rate, unitB: 1n, decimals: 8 }), rc = await text(page, '#pz-rcpt');
+      ok(m.checked && m.against > 5 && new RegExp(`Against the market${pctTxt(m.against)} of this deposit`).test(rc) && /price for SPX is \d+% above the market’s/.test(rc), `checked against SPX’s public market: the pool’s price is over it, and that is said (${m.against.toFixed(2)}%): ${rc.slice(0, 200)}`);
+      ok(!/could not be read/.test(rc) && await page.evaluate(() => !document.querySelector('#pz-ack')), 'with the market read there is no “could not be read” tick');
+      ok(st.spxReads >= 1, `the price came from the public pools (${st.spxReads} read)`);
+      const mm = zapMath({ res, wei: 10n ** 17n, market: rate, unitB: 1n, decimals: 8 });
+      ok(mm && await until(page, (s) => document.querySelector('#d-teth-spx .cost')?.textContent === s, `0.1 ETH entry −${pctTxt(mm.cost)}`), `its tile says what a tenth of an ETH gives up, against the market (${mm?.cost.toFixed(1)}%: ${(await tile(page, 'teth-spx'))?.cost})`);
+      clean(r, 'a tETH / SPX quote');
+      await r.browser.close();
+    }
+    {
+      // no price from the public pools: the pool’s price is not checked, and the deposit asks for a tick, as before
+      const r = await openPage({ hash: '#teth-spx', prog: sp, fake: true, st: { noSpxMarket: true } }), { page } = r;
+      await until(page, () => document.querySelector('#pz-go').textContent === 'Connect wallet');
+      await page.fill('#pz-amt', '0.002'); await quoted(page);
+      ok(/market’s price for SPX could not be read/.test(await text(page, '#pz-rcpt')) && await page.evaluate(() => document.querySelector('#pz-ack')?.type === 'checkbox'), 'with the public price unreadable it says so and asks for a tick');
+      await r.browser.close();
+    }
+    {
+      // the deposit: SPX's token from the pool's own row, and its leg in SPX's own units
+      const r = await openPage({ hash: '#teth-spx', prog: sp, fake: true, wallet: true }), { page, st } = r;
+      await until(page, () => /Enter an amount/.test(document.querySelector('#pz-go').textContent));
+      await page.fill('#pz-amt', '0.002'); await quoted(page);
+      ok(await until(page, () => !document.querySelector('#pz-go').disabled && document.querySelector('#pz-go').textContent === 'Farm privately'), 'priced against the market, it needs no tick: the button is ready');
+      await page.click('#pz-go');
+      ok(await sayIs(page, /In the farm/), `the deposit ends in the farm (${await text(page, '#pz-say')})`);
+      const tx = st.sent[0], word = (i) => BigInt('0x' + tx.data.slice(10 + i * 64, 74 + i * 64)), m = zapMath({ res, wei: 2n * 10n ** 15n, market: rate, unitB: 1n, decimals: 8 });
+      const plan = zapPlanFor({ shares: m.plan.shares, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps: 30n, unitB: 1n, maxEth: 2n * 10n ** 15n + 2n * 10n ** 15n / 50n, settles: true });
+      ok(st.sent.length === 1 && lc(tx.to) === ROUTER && tx.data.startsWith('0xc4294fac') && BigInt(tx.value) === plan.value, 'one transaction to the router, for the legs sized at the pool as it stands');
+      ok(word(0) === BigInt(SPX) && word(3) === plan.bLeg && plan.bLeg < 10n ** 12n && word(4) === m.plan.shares, `it names SPX from the pool’s own row, with SPX’s leg in its own units (${plan.bLeg} of 1e-8 SPX) and exactly the shares proved`);
+      clean(r, 'a tETH / SPX deposit');
       await r.browser.close();
     }
   }

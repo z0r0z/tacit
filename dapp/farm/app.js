@@ -14,7 +14,7 @@ import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=11a5416b';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, ZAP_GAS } from '/farm/zap.js?cb=f71211d5';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=e1f0b3c2';
 
 try { sessionStorage.removeItem('tacit-farm-back-v1'); } catch { /* the front page's way back to a farm: this page is where it goes, so it is spent */ }
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
@@ -96,7 +96,7 @@ function confetti() {
 const cheer = (words) => { react('up', 4200); confetti(); said(words); import('/reward-pop.js').then((m) => m.chime(), () => {}); };
 
 // ── what is read: the Precision farm, the private farms' program, the prices, the borrow markets' campaign, the wallet's stake ──
-const S = { pub: null, prog: null, priv: [], px: {}, camp: null, stake: null, mine: new Map(), read: false, failed: false };
+const S = { pub: null, prog: null, priv: [], px: {}, camp: null, stake: null, mine: new Map(), read: false, failed: false, mk: new Map() };
 // the farms a deposit of ETH goes into from here, in the menu's order: known before anything is read, filled in as it is
 const BASE = [
   { id: 'tac-eth', kind: 'public', name: 'TAC / ETH', icons: ['tac', 'eth'] },
@@ -105,14 +105,42 @@ const BASE = [
   { id: 'teth-cbtc', kind: 'private', name: 'tETH / cBTC', icons: ['teth', 'cbtc'] },
 ];
 const tacEth = () => S.pub?.tacEth || 0;
-const marketFor = (pool) => marketOf(pool.pair, { tacEth: tacEth(), ethUsd: S.px.ethUsd || 0, btcUsd: S.px.btcUsd || 0 });
+// A coin the page has no price of its own for (SPX) is priced from the public pools (readMarket), with the pool's unit for it: kept in S.mk by the coin's id in the pool.
+const lc = (s) => String(s || '').toLowerCase();
+const otherId = (pool) => { const r = pool?.reserves; return !r ? null : lc(r.assetA) === CETH ? lc(r.assetB) : lc(r.assetB) === CETH ? lc(r.assetA) : null; };
+const mkOf = (pool) => S.mk.get(otherId(pool)) || null;
+const builtIn = (pool) => marketOf(pool.pair, { tacEth: 1, ethUsd: 1, btcUsd: 1 }) != null;           // TAC, cUSD and cBTC are priced here already
+const marketFor = (pool) => marketOf(pool.pair, { tacEth: tacEth(), ethUsd: S.px.ethUsd || 0, btcUsd: S.px.btcUsd || 0 }) ?? mkOf(pool)?.rate ?? null;
+const unitsFor = (pool) => { const m = mkOf(pool); return m ? { unitB: m.unitB, decimals: m.decimals } : {}; };
+// ETH goes into a pool with tETH on one side, in one transaction. A pool without (SPX / TAC) takes its two coins from the private balance.
+const hasEth = (f) => /\btETH\b/.test(String(f?.name || ''));
 // What a tenth of an ETH gives up on its way into a farm, in percent: the swap of half of it, and for a pool priced away from the market, that.
 function entryCost(f) {
   if (f.kind === 'public') { const r0 = Number(S.pub?.r0 || 0) / 1e18, half = Number(HINT) / 2e18; return r0 > 0 ? half / (r0 + half) * 50 : null; }          // the swap moves the price by half/(r0+half), on the half of the deposit that is swapped
   const r = f.pool?.reserves;
-  if (!r || !Number(r.lpTotalShares)) return null;
-  try { return zapMath({ res: { reserveA: BigInt(r.reserveA), reserveB: BigInt(r.reserveB), totalShares: BigInt(r.lpTotalShares), feeBps: f.pool.feeBps ?? 30 }, wei: HINT, market: marketFor(f.pool) })?.cost ?? null; } catch { return null; }
+  if (!r || !Number(r.lpTotalShares) || !hasEth(f)) return null;
+  try { return zapMath({ res: { reserveA: BigInt(r.reserveA), reserveB: BigInt(r.reserveB), totalShares: BigInt(r.lpTotalShares), feeBps: f.pool.feeBps ?? 30 }, wei: HINT, market: marketFor(f.pool), ...unitsFor(f.pool) })?.cost ?? null; } catch { return null; }
 }
+// The public price of a coin the page prices from the market: zQuoter's best route over the public pools for a hundredth of an ETH, kept a minute (a
+// failed read too, so a typing hand does not ask again at every key). The deposit's quote waits for it, a few seconds at most.
+const MK_TTL = 60e3, mkReads = new Map();
+function readMarket(pool) {
+  const id = otherId(pool);
+  if (!id || builtIn(pool)) return Promise.resolve();
+  const had = S.mk.get(id);
+  if (had && Date.now() - had.at < MK_TTL) return Promise.resolve();
+  if (mkReads.has(id)) return mkReads.get(id);
+  const p = (async () => {
+    const row = await assetRow(call, POOL, id).catch(() => null);
+    if (!row || row.poolMinted) return;
+    const rate = await publicRate({ rpc, token: row.underlying, decimals: row.decimals }).catch(() => null);
+    S.mk.set(id, { rate: rate ?? had?.rate ?? null, unitB: row.unitScale, decimals: row.decimals, at: Date.now() });
+    if (rate != null && !had) paint();                                                // the tiles' entry costs are said against the market now
+  })().finally(() => mkReads.delete(id));
+  mkReads.set(id, p);
+  return p;
+}
+const readMarkets = () => { for (const x of S.prog?.pools || []) if (x.reserves && !builtIn(x)) readMarket(x); };
 function farms() {
   const list = BASE.map((b) => ({ ...b, live: false, apr: null, perDay: 0, pool: null, finish: 0 }));
   const pub = list[0];
@@ -159,6 +187,7 @@ async function readAll() {
     if (p?.pools) { S.prog = p; S.priv = privateFarms(p, f?.tacEth || 0, S.px); }
     S.read = true; S.failed = !f && !p;
     paint();
+    readMarkets();                                                              // the public price of a coin with no price of its own here (SPX)
     if (keyPub && looseFor !== keyPub) readLoose();                              // a key opened before the program was read
     if (!VIEW && location.hash.length > 1) route();                             // a link to a farm only the program names
   });
@@ -332,7 +361,7 @@ function quickRow(input) {
 }
 
 // ── a private farm: ETH in with one transaction, the position private after ──
-const Z = { f: null, q: null, seq: 0, busy: false, ready: null, ack: null, timer: 0, share: null, mode: 'eth' };
+const Z = { f: null, q: null, seq: 0, busy: false, ready: null, ack: null, timer: 0, share: null, mode: 'eth', pref: 'eth' };
 const amtIn = $('#pz-amt'), goBtn = $('#pz-go'), rcpt = $('#pz-rcpt'), statusEl = $('#pz-status'), cook = $('#pz-cook'), sayEl = $('#pz-say'), bar = $('#pz-bar'), acts = $('#pz-acts');
 $('#pz-quick').replaceWith(quickRow(amtIn));
 function openPrivate(f) {
@@ -360,17 +389,25 @@ const getRow = (tk, { pid = null, alone = null } = {}) => {
   const back = Z.f?.id ? `&amp;back=${esc(Z.f.id)}` : '';
   return links.length ? `<div class="getrow" role="group" aria-label="Get ${esc(tk)}">${links.map(([t, c, w]) => `<a href="/#card=${c}${/^earn:/.test(c) ? '' : back}" title="${esc(w)}">${esc(t)}</a>`).join('')}</div>` : '';
 };
-function setMode(m) {
+// `user` is a choice made on the card (kept for the next farm opened); the card itself offers what the farm can take: a pool with no ETH side
+// (SPX / TAC) has only the two-coin deposit, so the ETH form is not shown for it, and the card says so instead of quoting an ETH deposit it cannot make.
+function setMode(m, user = false) {
   if (Z.busy) return;
-  Z.mode = m === 'both' && bothOk(Z.f) ? 'both' : 'eth';
+  const f = Z.f, eth = hasEth(f), both = bothOk(f);
+  if (user) Z.pref = m;
+  Z.mode = !eth ? 'both' : m === 'both' && both ? 'both' : 'eth';
   for (const b of $$('#pz-mode button')) b.setAttribute('aria-pressed', String(b.dataset.pm === Z.mode));
-  $('#pz-eth').hidden = Z.mode !== 'eth'; $('#pz-join').hidden = Z.mode !== 'both';
-  const other = Z.f?.name?.split(' / ')[1] || 'TAC', first = Z.f?.name?.split(' / ')[0] || 'tETH';
-  $('#pz-how').textContent = Z.mode === 'both' ? `From your private ${first} and ${other}, at the pool’s ratio: nothing is swapped. Holding only ETH? Use the ETH tab.` : 'Half is swapped inside the pool, then both go in privately: one transaction.';
-  if (Z.mode === 'both' && Z.joinFor !== Z.f.pid) { Z.joinFor = Z.f.pid; session().then(() => mountMine()).then((ui) => ui?.choose(Z.f.pid), () => { Z.joinFor = null; }); }
+  const form = $('#pz-eth');
+  form.classList.toggle('noeth', !eth);
+  form.hidden = Z.mode !== 'eth' && (eth || $('#pz-cook').hidden);                 // without an ETH side the form stays hidden, but not the steps of a share being farmed: they are said in its card
+  $('#pz-join').hidden = !(Z.mode === 'both' && both);
+  const other = f?.name?.split(' / ')[1] || 'TAC', first = f?.name?.split(' / ')[0] || 'tETH';
+  $('#pz-how').textContent = !eth ? (both ? `This pool has no ETH side: bring your private ${first} and ${other}, at the pool’s ratio. Nothing is swapped.` : 'This pool has no ETH side, and its farm is not taking joins until the next reward period.')
+    : Z.mode === 'both' ? `From your private ${first} and ${other}, at the pool’s ratio: nothing is swapped. Holding only ETH? Use the ETH tab.` : 'Half is swapped inside the pool, then both go in privately: one transaction.';
+  if (Z.mode === 'both' && both && Z.joinFor !== f.pid) { Z.joinFor = f.pid; session().then(() => mountMine()).then((ui) => ui?.choose(f.pid), () => { Z.joinFor = null; }); }
 }
-$('#pz-mode').addEventListener('click', (e) => { const b = e.target.closest('[data-pm]'); if (b && !b.disabled) setMode(b.dataset.pm); });
-rcpt.addEventListener('click', (e) => { if (e.target.closest('[data-alt="both"]')) { setMode('both'); $('#pz-mode').scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'nearest' }); } });
+$('#pz-mode').addEventListener('click', (e) => { const b = e.target.closest('[data-pm]'); if (b && !b.disabled) setMode(b.dataset.pm, true); });
+rcpt.addEventListener('click', (e) => { if (e.target.closest('[data-alt="both"]')) { setMode('both', true); $('#pz-mode').scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'nearest' }); } });
 // The join's way in and the positions' Show mine open the key as a deposit does: the wallet connected here signs, with no sheet on a first
 // visit. Show mine works before the panel has mounted too (it mounts, then reads).
 for (const host of ['#pz-join', '#pf-mine']) $(host).addEventListener('click', (e) => {
@@ -392,8 +429,8 @@ function paintPrivate() {
       + cell('Stream ends', f.live && f.finish ? dayFmt(f.finish) : '—');
   if ($('#pz-stats').__h !== stats) { $('#pz-stats').__h = stats; $('#pz-stats').innerHTML = stats; }
   $('#pz-both').textContent = `${f.name.split(' / ')[0] || 'tETH'} + ${f.name.split(' / ')[1] || 'TAC'}`;
-  $('#pz-mode').hidden = !bothOk(f);
-  setMode(Z.mode);
+  $('#pz-mode').hidden = !(hasEth(f) && bothOk(f));                              // two ways in only where there are two
+  setMode(Z.pref);
   maxLine();
   gate();
   if (f.pool && !Z.busy && amtIn.value.trim() && Z.quotedPool !== f.pool.poolId) requote();     // an amount typed before this farm's pool was read
@@ -428,15 +465,23 @@ function gate() {
   goBtn.textContent = 'Farm privately';
   goBtn.disabled = !q || !acked();
 }
-const quoteOf = (f, wei) => zapQuote({ pool: f.pool, wei, reserves: () => readReserves(call, POOL, f.pool.poolId), gasPrice: () => rpc('eth_gasPrice', []).then(BigInt),
-  balance: async () => (W.account ? BigInt(await rpc('eth_getBalance', [W.account, 'latest'])) : null), market: marketFor(f.pool), tacEth: tacEth(), live: f.live });
+// TAC, cUSD and cBTC are 18-decimal coins with a pool unit of 1e10, registered with the pool at its deployment: a read of their row that fails does not hold a quote up.
+// Any other coin (SPX) is sized from its row, and a deposit into it waits for the row rather than guess its units.
+const BUILTIN_ROW = { underlying: null, unitScale: 10n ** 10n, poolMinted: true, decimals: 18 };
+const rowFor = (f, res) => assetRow(call, POOL, res.assetB).catch(() => null).then((row) => row || (builtIn(f.pool) ? BUILTIN_ROW : null));
+const quoteOf = async (f, wei) => {
+  await Promise.race([readMarket(f.pool), new Promise((r) => setTimeout(r, 7000))]).catch(() => {});        // the market check is part of the quote: a coin priced from the public pools is read first
+  return zapQuote({ pool: f.pool, wei, reserves: () => readReserves(call, POOL, f.pool.poolId), gasPrice: () => rpc('eth_gasPrice', []).then(BigInt),
+    balance: async () => (W.account ? BigInt(await rpc('eth_getBalance', [W.account, 'latest'])) : null), market: marketFor(f.pool), tacEth: tacEth(), live: f.live,
+    asset: (res) => rowFor(f, res) });
+};
 async function requote() {
   const my = ++Z.seq, f = Z.f, text = amtIn.value.trim(), wei = parseUnits(text);
   Z.q = null; gate();
   const bad = (m) => { rcpt.hidden = false; rcpt.innerHTML = `<p class="note err">${m}</p>`; };
   amtIn.toggleAttribute('aria-invalid', !!text && wei == null);
   if (text && wei == null) return bad('Could not read that amount. Write 0.05 or 1.');
-  if (!wei || !f?.pool) { rcpt.hidden = true; rcpt.innerHTML = ''; return; }
+  if (!wei || !f?.pool || !hasEth(f)) { rcpt.hidden = true; rcpt.innerHTML = ''; return; }                // a pool with no ETH side has no ETH deposit to price
   Z.quotedPool = f.pool.poolId;
   if (wei % E10 !== 0n) return bad('Up to 8 decimals.');
   try {
@@ -451,7 +496,8 @@ function paintQuote() {
   if (!q.plan) { rcpt.innerHTML = '<p class="note err">This is too small to make a share of the pool. Enter a larger amount.</p>'; return; }
   const row = (k, v, cls = '', title = '') => `<div class="kv"><span>${k}</span><b${cls ? ` class="${cls}"` : ''}${title ? ` title="${esc(title)}"` : ''}>${v}</b></div>`;
   const dayUsd = eu && tacEth() ? usd(q.day * tacEth() * eu) : '', feeEth = Number(ZAP_GAS * q.gp) / 1e18, fee = eu ? (feeEth * eu < 0.01 ? 'under $0.01' : `≈ $${(feeEth * eu).toFixed(2)}`) : `≈ ${feeEth.toPrecision(2)} ETH`;
-  const other = otherOf(f.pool.pair), m = marketFor(f.pool), ratio = m ? Number(q.res.reserveA) / Number(q.res.reserveB) / m : 1, n = Math.round(q.cost), key = `${f.id}|${q.wei}|${n}`;
+  // the pool's price for the coin, in ETH a coin, from the reserves in the coins' own units (tETH's unit is 1e-8 ETH; the other coin's is `unitB` of its smallest)
+  const other = otherOf(f.pool.pair), m = marketFor(f.pool), poolRate = Number(q.res.reserveA) / 1e8 / (Number(q.res.reserveB) * Number(q.unitB) / 10 ** q.decimals), ratio = m ? poolRate / m : 1, n = Math.round(q.cost), key = `${f.id}|${q.wei}|${n}`;
   const line = q.over ? 'More ETH than this wallet holds, with the network fee.'
     : q.against >= 5 ? `This pool’s price for ${esc(other)} is ${pctTxt(Math.abs(ratio - 1) * 100)} ${ratio > 1 ? 'above' : 'below'} the market’s, and half of the deposit is swapped at it.`
     : q.impact >= 5 ? 'The swap inside the pool costs a lot at this size. A smaller deposit costs less.'
@@ -672,11 +718,12 @@ async function readLoose() {
 let LOOSE = [], looseFor = null;
 async function farmIt(pool, note0, btn = null) {
   if (busyNow()) return;
-  if (Z.mode === 'both') setMode('eth');                                          // its steps are said in the ETH form's card, which is the one on screen
+  if (Z.mode === 'both' && hasEth(Z.f)) setMode('eth');                           // its steps are said in the ETH form's card, which is the one on screen
   const f = FARMS.find((x) => x.pool && x.pool.poolId === pool.poolId) || { name: pairName(pool.pair), pid: Number(pool.pid) };
   Z.busy = true; lock(true); if (btn) btn.disabled = true;
   steps('farm'); acts.innerHTML = ''; react('cook');
   cookSay('Checking your share…');
+  if (Z.f && !hasEth(Z.f)) { const form = $('#pz-eth'); form.classList.add('noeth'); form.hidden = false; }     // a pool with no ETH side keeps its form hidden: the steps are shown without it
   try {
     const [t, r] = await Promise.all([getUx(), run()]), priv = () => key.priv();
     // read afresh: a share the relay has put in the farm since is not held any more, and is not farmed twice

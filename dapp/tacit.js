@@ -3429,8 +3429,8 @@ async function getFeeRate(tier = null, opts = {}) {
     if (!Number.isFinite(rate) || rate <= 0) throw new Error('bad shape');
     return rate;
   };
-  const _blockstreamStyle = async (apiBase) => {
-    const r = await _withTimeout(`${apiBase}/fee-estimates`);
+  const _blockstreamStyle = async (apiBase, query = '') => {
+    const r = await _withTimeout(`${apiBase}/fee-estimates${query}`);
     if (!r.ok) throw new Error('http ' + r.status);
     const j = await r.json();
     let raw;
@@ -3443,7 +3443,10 @@ async function getFeeRate(tier = null, opts = {}) {
   };
   const attempts = [_mempoolStyle(NET.api)];
   // a host the explorers throttle asks the API's chain proxy too (else every source fails and the 15 sat/vB fallback overpays)
-  if (_CHAIN_VIA_WORKER && WORKER_BASE) attempts.push(_mempoolStyle(`${WORKER_BASE}/chain`, `?network=${encodeURIComponent(net)}`));
+  if (_CHAIN_VIA_WORKER && WORKER_BASE) {
+    const q = `?network=${encodeURIComponent(net)}`;
+    attempts.push(_mempoolStyle(`${WORKER_BASE}/chain`, q), _blockstreamStyle(`${WORKER_BASE}/chain`, q));
+  }
   if (NET.api2) attempts.push(_blockstreamStyle(NET.api2));
   if (net === 'mainnet') {
     attempts.push(_mempoolStyle('https://mempool.fra.mempool.space/api'));
