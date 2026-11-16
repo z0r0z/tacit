@@ -11,7 +11,7 @@ export const JOB_LABEL = {
   bridgeburn: 'Bridge out', fastlane: 'Cross-chain move', adaptorlock: 'Atomic swap', adaptorclaim: 'Atomic swap claim', adaptorrefund: 'Atomic swap refund',
 };
 
-export const ENDS = { job: ['settled', 'proven', 'failed', 'unknown'], tx: ['confirmed', 'failed', 'stale'], btc: ['confirmed', 'stale'], op: ['settled', 'failed', 'unknown'], chain: ['settled', 'failed', 'unknown'] };
+export const ENDS = { job: ['settled', 'proven', 'failed', 'unknown'], tx: ['confirmed', 'failed', 'stale'], btc: ['confirmed', 'stale'], op: ['settled', 'failed', 'unknown'], chain: ['settled', 'failed', 'unknown'], fast: ['settled', 'failed', 'unknown'] };
 export const ended = (it) => ENDS[it.kind]?.includes(it.status) ?? true;
 
 export function readActivity() {
@@ -20,6 +20,20 @@ export function readActivity() {
   return { items: [].concat(Array.isArray(v?.items) ? v.items : []).filter((x) => x && typeof x === 'object' && x.id && ENDS[x.kind]).map((x) => (x.kind === 'op' && !Array.isArray(x.steps) ? { ...x, steps: [] } : x)), cleared: Number(v?.cleared) || 0 };
 }
 export const listed = (items) => items.filter((x) => !x.in);
+
+// The Activity item for a fast bridge record (fastbridge-client.js describe(): the fast route keeps the records in this browser and says where each stands). One for
+// each that is under way, or that ended in the last day; a bridge that came back to Bitcoin is a failed one (returned, not done). null for an old ended one.
+export function fastItem(r, { fmt = (v) => String(v), now = Date.now() / 1000, pub = null } = {}) {
+  if (!r || !r.id || (r.ended && now - r.created > 86400)) return null;
+  const status = !r.ended ? 'pending' : r.returned ? 'failed' : 'settled';
+  return {
+    id: `fast:${r.id}`,
+    patch: {
+      kind: 'fast', label: `Fast bridge: ${fmt(BigInt(r.amount))} TAC`, status, pub, at: r.created * 1000, fa: r.at, title: r.title, note: r.detail, receive: r.receive,
+      lockTxid: r.lockTxid || undefined, err: r.ended && r.returned ? 'The lock came back to your Bitcoin address.' : undefined,
+    },
+  };
+}
 
 const BR = new Map();
 export function actBridge(it) {

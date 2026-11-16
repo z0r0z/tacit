@@ -137,11 +137,18 @@ test('a 404 from one explorer is not the answer while another has it, and a 404 
   assert.ok(seen.slice(first).includes('lags.test'), 'the explorer that answered 404 is still among those asked first');
 });
 
-test('every explorer says 404: the answer is a 404 (a transaction nobody has), and with one down and one 404 it is still the 404', async () => {
+test('every explorer says 404: the answer is a 404 (a transaction nobody has), and two that agree beside one that failed are still the 404', async () => {
   const none = chainOf(['a.test', 'b.test'], () => gone());
   assert.equal(await none.btc.fetchTx(tid(5)), null);
-  const mixed = chainOf(['down.test', 'lags.test'], (u) => (u.hostname === 'down.test' ? json('bad gateway', 502) : gone()));
-  assert.equal(await mixed.btc.fetchTx(tid(6)), null);
+  const agree = chainOf(['down.test', 'a.test', 'b.test'], (u) => (u.hostname === 'down.test' ? json('bad gateway', 502) : gone()));
+  assert.equal(await agree.btc.fetchTx(tid(6)), null);
+  const one = chainOf(['only.test'], () => gone());
+  assert.equal(await one.btc.fetchTx(tid(7)), null, 'a single explorer that says 404 is the answer');
+});
+
+test('one explorer\'s 404 beside others that failed is not "not found": it is an error, to ask again (the one that said 404 may be the one that lags)', async () => {
+  const { btc } = chainOf(['down.test', 'lags.test'], (u) => (u.hostname === 'down.test' ? json('slow down', 429) : gone()));
+  await assert.rejects(btc.fetchTx(tid(8)), (e) => e.status === 429 || /429/.test(String(e.message)), 'a read that could not be made is thrown, not taken for a transaction that is not there');
 });
 
 test('a 400 (a request of ours that is wrong) does not cool an explorer', async () => {

@@ -2286,6 +2286,7 @@ async function _apiFetchUncached(path, opts = {}) {
 
     let lastErr = null;
     let lastRes = null;
+    let notFound404 = null, saw404 = 0;
     for (const base of order) {
       let r;
       let _slotReleased = false;
@@ -2335,6 +2336,12 @@ async function _apiFetchUncached(path, opts = {}) {
             lastRes = r;
             continue;
           }
+          // A 404 for a transaction from one explorer is not an answer while the others have not been asked: a mirror that lags the chain, or has not indexed
+          // a transaction yet, says 404 for what another has. Up to three are asked before it stands (a transaction nobody has costs three reads, not one).
+          if (r.status === 404 && !_isPost && /^\/tx\/[0-9a-f]{64}(\/|$)/.test(path) && ++saw404 < 3) {
+            notFound404 ||= new Error(`API 404: ${t.slice(0, 240)}`);
+            continue;
+          }
           throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
         }
         return r;
@@ -2342,6 +2349,7 @@ async function _apiFetchUncached(path, opts = {}) {
         _releaseOnce();
       }
     }
+    if (notFound404) throw notFound404;
     if (lastRes && lastRes.status === 429) {
       throw new Error(_API_RATE_LIMITED_MSG);
     }
@@ -13423,7 +13431,9 @@ async function _dropFundingFailure(dropTx, drop, validatedSet, fetchTx, metadata
     const parent = await fetchTx(inp.txid);
     if (!parent) return _REASON_FETCH_FAILED;
     const parentEnv = _txOutputEnvelope(parent);
-    const pd = parentEnv ? await getParentEnvelopeData(parentEnv, inp.vout, inp.txid) : null;
+    const why = {};
+    const pd = parentEnv ? await getParentEnvelopeData(parentEnv, inp.vout, inp.txid, why) : null;
+    if (!pd && why.unavailable) return _REASON_FETCH_FAILED;
     if (!pd || pd.assetIdHex !== assetHex) return _REASON_INVALID;
     try { excess = excess.add(bytesToPoint(pd.commitment)); } catch { return _REASON_INVALID; }
   }
@@ -14069,8 +14079,9 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       if (!parent) { markAll(Math.max(N, 1), false, _REASON_FETCH_FAILED); return false; }
       const parentEnv = _txOutputEnvelope(parent);
       if (!parentEnv) { markAll(Math.max(N, 1), false); return false; }
-      const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
-      if (!pd) { markAll(Math.max(N, 1), false); return false; }
+      const why = {};
+      const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid, why);
+      if (!pd) { markAll(Math.max(N, 1), false, why.unavailable ? _REASON_FETCH_FAILED : _REASON_INVALID); return false; }
       if (pd.assetIdHex !== ourAssetIdHex) { markAll(Math.max(N, 1), false); return false; }
       inputCommitments.push(pd.commitment);
     }
@@ -14131,8 +14142,9 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       if (!parent) { markAll(Math.max(N, 1), false, _REASON_FETCH_FAILED); return false; }
       const parentEnv = _txOutputEnvelope(parent);
       if (!parentEnv) { markAll(Math.max(N, 1), false); return false; }
-      const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
-      if (!pd) { markAll(Math.max(N, 1), false); return false; }
+      const why = {};
+      const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid, why);
+      if (!pd) { markAll(Math.max(N, 1), false, why.unavailable ? _REASON_FETCH_FAILED : _REASON_INVALID); return false; }
       if (pd.assetIdHex !== ourAssetIdHex) { markAll(Math.max(N, 1), false); return false; }
       inputCommitments.push(pd.commitment);
     }
@@ -14192,8 +14204,9 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       if (!parent) { markAll(N, false, _REASON_FETCH_FAILED); return false; }
       const parentEnv = _txOutputEnvelope(parent);
       if (!parentEnv) { markAll(N, false); return false; }
-      const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
-      if (!pd) { markAll(N, false); return false; }
+      const why = {};
+      const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid, why);
+      if (!pd) { markAll(N, false, why.unavailable ? _REASON_FETCH_FAILED : _REASON_INVALID); return false; }
       if (pd.assetIdHex !== ourAssetIdHex) { markAll(N, false); return false; }
       inputCommitments.push(pd.commitment);
     }
@@ -14252,8 +14265,9 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     if (!parent) { markBothTacitVouts(false, _REASON_FETCH_FAILED); return false; }
     const parentEnv = _txOutputEnvelope(parent);
     if (!parentEnv) { markBothTacitVouts(false); return false; }
-    const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
-    if (!pd) { markBothTacitVouts(false); return false; }
+    const why = {};
+    const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid, why);
+    if (!pd) { markBothTacitVouts(false, why.unavailable ? _REASON_FETCH_FAILED : null); return false; }
     if (pd.assetIdHex !== ourAssetIdHex) { markBothTacitVouts(false); return false; }
     let EPrime;
     try {
@@ -14870,8 +14884,9 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       if (!parent) { markTacitVouts(false, _REASON_FETCH_FAILED); return false; }
       const parentEnv = _txOutputEnvelope(parent);
       if (!parentEnv) { markTacitVouts(false); return false; }
-      const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
-      if (!pd) { markTacitVouts(false); return false; }
+      const why = {};
+      const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid, why);
+      if (!pd) { markTacitVouts(false, why.unavailable ? _REASON_FETCH_FAILED : _REASON_INVALID); return false; }
       if (pd.assetIdHex !== ourAssetIdHex) { markTacitVouts(false); return false; }
       inputCommitments.push(pd.commitment);
     }
@@ -14921,7 +14936,9 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       if (!parent) { markAll(N, false, _REASON_FETCH_FAILED); return false; }
       const parentEnv = _txOutputEnvelope(parent);
       if (!parentEnv) { markAll(N, false); return false; }
-      const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
+      const why = {};
+      const pd = await getParentEnvelopeData(parentEnv, inp.vout, inp.txid, why);
+      if (!pd && why.unavailable) { markAll(N, false, _REASON_FETCH_FAILED); return false; }
       if (!pd || pd.assetIdHex !== ourAssetIdHex) { markAll(N, false); return false; }
       inputCommitments.push(pd.commitment);
     }
@@ -15129,20 +15146,25 @@ async function _requireValidatedLot(txidHex, vout, label, onRead = null) {
     : `${label} does not validate as this asset on Bitcoin, so it was not bought and nothing was sent`);
 }
 
-async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
+// `why` (optional) is told `{ unavailable: true }` when the answer is null because a read could not be made (the pool service, the worker's receipt or
+// mint records): a null with that told is a note to ask about again, and without it a note that is not one.
+async function getParentEnvelopeData(parentEnv, vout, parentTxid, why = null) {
   if (parentEnv.opcode === T_BTC_SPEND) {
     if (!parentTxid) return null;
-    const { note } = await _btcPoolExitNote(parentTxid, vout, { env: parentEnv });
+    const { note, available } = await _btcPoolExitNote(parentTxid, vout, { env: parentEnv });
+    if (!note && available === false && why) why.unavailable = true;
     return note ? { assetIdHex: note.assetIdHex, commitment: note.commitment } : null;
   }
   if (parentEnv.opcode === T_CROSSOUT_MINT) {
     if (!parentTxid) return null;
-    const { note } = await _crossoutMintNote(parentEnv, parentTxid, vout);
+    const { note, available } = await _crossoutMintNote(parentEnv, parentTxid, vout);
+    if (!note && available === false && why) why.unavailable = true;
     return note ? { assetIdHex: note.assetIdHex, commitment: note.commitment } : null;
   }
   if (_FARM_KIND_BY_OPCODE.has(parentEnv.opcode)) {
     if (!parentTxid) return null;
-    const { note } = await _farmMintNote(parentEnv, parentTxid, vout, null);
+    const { note, reason } = await _farmMintNote(parentEnv, parentTxid, vout, null);
+    if (!note && reason === _REASON_FETCH_FAILED && why) why.unavailable = true;
     return note ? { assetIdHex: note.assetIdHex, commitment: note.commitment } : null;
   }
   if (parentEnv.opcode === T_CETCH) {
@@ -15216,6 +15238,7 @@ async function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     const d = decodeTSwapVarPayload(parentEnv.payload);
     if (!d) return null;
     const rec = parentTxid ? await _fetchSwapAccepted(parentTxid) : null;
+    if (why && parentTxid && rec && rec.workerAvailable === false) why.unavailable = true;
     if (rec && rec.accepted && rec.outcome && rec.receipt) {
       if (vout === 1) {
         return {
@@ -16518,7 +16541,9 @@ async function _scanHoldingsImpl() {
     } else if (_FARM_KIND_BY_OPCODE.has(env.opcode)) {
       const fm = await _farmMintNote(env, u.txid, u.vout, tx);
       const fc = fm.note || (fm.endpoint === false ? _farmOpeningCache.get(`${u.txid}:${u.vout}`) : null);
-      if (!fc) continue;
+      // A receipt that could not be read (or is not decided yet) is a note not yet told, not one that is not there: it is listed as unclassified, so the
+      // scan is not kept as final and is made again, instead of the harvested or unbonded reward being left out of every list until the next change.
+      if (!fc) { if (fm.reason === _REASON_FETCH_FAILED) holdings.unclassified.add(`${u.txid}:${u.vout}`); continue; }
       if (fm.note) { try { recordOpening(u.txid, u.vout, fc.assetIdHex, fc.amount, fc.blinding); } catch {} }
       assetIdHex = fc.assetIdHex;
       const _fm = getAssetMeta(assetIdHex);

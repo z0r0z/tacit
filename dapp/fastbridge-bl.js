@@ -100,7 +100,7 @@ export function makeBitcoinLocker(ctx) {
     }
     try { await btc.broadcast(rec.refund, null); } catch (e) {
       // as the take: a pair whose funding coin was spent elsewhere is built again once it has had time to spread
-      if (rec.refund.at != null && ctx.now() - rec.refund.at > 600 && (rec.refundRebuilds || 0) < 5 && btc.fetchTx && !(await btc.fetchTx(rec.refund.commitTxid).catch(() => null))) await save(rec, { refund: null, refundRebuilds: (rec.refundRebuilds || 0) + 1 });
+      if (rec.refund.at != null && ctx.now() - rec.refund.at > 600 && (rec.refundRebuilds || 0) < 5 && btc.fetchTx && !(await btc.fetchTx(rec.refund.commitTxid).catch(() => true))) await save(rec, { refund: null, refundRebuilds: (rec.refundRebuilds || 0) + 1 });
       throw e;
     }
     return null;

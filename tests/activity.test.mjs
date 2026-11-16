@@ -124,4 +124,25 @@ e9 = A.readActivity().items.find((x) => x.id === 'job:j9');
 assert.equal(e9.status, 'settled'); assert.equal(e9.hash, '0xab', 'and is followed to its end');
 globalThis.fetch = realFetch;
 
+// a fast bridge under way, done, or returned is an Activity item of its own kind, followed from the fast route's records
+{
+  const fr = { id: 'sw1', phase: 'offered', ended: false, returned: false, amount: '100000000000', receive: '99690000000', created: 1_700_000_000, at: 1, title: 'Waiting for the pool lock', detail: 'The provider is locking TAC in the pool for you.', lockTxid: 'ab'.repeat(32) };
+  const opts = { now: fr.created + 600, fmt: (v) => String(v / 100000000n), pub: 'PK' };
+  const open = A.fastItem(fr, opts);
+  assert.equal(open.id, 'fast:sw1'); assert.equal(open.patch.kind, 'fast'); assert.equal(open.patch.status, 'pending');
+  assert.equal(open.patch.label, 'Fast bridge: 1000 TAC'); assert.equal(open.patch.at, fr.created * 1000, 'it is dated when the bridge was started'); assert.equal(open.patch.fa, 1);
+  assert.equal(open.patch.lockTxid, 'ab'.repeat(32)); assert.equal(open.patch.err, undefined);
+  assert.equal(A.fastItem({ ...fr, ended: true, phase: 'done', at: 3 }, opts).patch.status, 'settled', 'one that is done is settled');
+  const back = A.fastItem({ ...fr, ended: true, returned: true, phase: 'refunded', at: 3, receive: '0' }, opts).patch;
+  assert.equal(back.status, 'failed', 'one that came back to Bitcoin is not shown as done'); assert.match(back.err, /came back/);
+  assert.equal(A.fastItem({ ...fr, ended: true, phase: 'done' }, { ...opts, now: fr.created + 90000 }), null, 'one that ended more than a day ago is not listed');
+  assert.ok(A.fastItem({ ...fr }, { ...opts, now: fr.created + 90000 }), 'one still under way is, however old');
+  assert.equal(A.fastItem(null), null);
+  put([{ id: open.id, ...open.patch, at: open.patch.at }, { id: 'fast:sw2', kind: 'fast', status: 'settled', at: 1 }]);
+  const got = A.readActivity().items;
+  assert.equal(got.length, 2, 'the journal keeps entries of the fast kind');
+  assert.equal(A.ended(got[0]), false); assert.equal(A.ended(got[1]), true, 'a pending one is under way and a settled one has ended');
+  assert.deepEqual(A.activityCount(), { total: 2, live: 1 }, 'a bridge under way counts as live');
+}
+
 console.log('activity: all checks passed');

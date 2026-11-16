@@ -11,6 +11,10 @@ import assert from 'node:assert/strict';
 import { loadTacit } from '../worker-relay/src/lib/btc-pool-transparent.js';
 import { makeBtcWallet } from '../dapp/bitcoin-taproot-wallet.js';
 import { makeEsploraBtcChain } from '../dapp/fastbridge-btc.js';
+import { bpRangeAggProve, pointToBytes, randomScalar } from './bulletproofs.mjs';
+
+// a real range proof: a transfer is checked for one before its history is read, so a made-up one never reaches the parent
+const REAL = bpRangeAggProve([5n], [randomScalar()]);
 
 const T = await loadTacit('mainnet', { livePool: true });
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
@@ -20,7 +24,7 @@ const confirmed = { confirmed: true, block_height: 900000, block_time: 170000000
 // a transfer envelope of the asset: it decodes (what the walk needs to find its parents); its proofs are never reached, because its parent is judged first
 const payload = () => T.encodeCXferPayload({
   assetId: new Uint8Array(32).fill(9), kernelSig: new Uint8Array(64).fill(1),
-  outputs: [{ commitment: Uint8Array.of(2, ...new Uint8Array(32).fill(3)), encryptedAmount: new Uint8Array(8) }], rangeproof: new Uint8Array(10),
+  outputs: [{ commitment: pointToBytes(REAL.commitments[0]), encryptedAmount: new Uint8Array(8) }], rangeproof: REAL.proof,
 });
 const transfer = (txid, parent) => ({
   txid, status: confirmed,
@@ -96,6 +100,33 @@ test('a verdict that a note is not valid is logged with the outpoint the walk re
   assert.ok(said, 'the verdict is logged');
   assert.equal(said.note, `${ROOT}:0`);
   assert.equal(said.rejected[0], `${PLAIN}:0`, 'the first outpoint rejected is the deepest one: the plain coin');
+});
+
+test('an Ethereum read that fails while the spent notes are checked is a read to try again (transient), not "already consumed on Ethereum"', async () => {
+  // the guard is closed when it cannot tell: it said "blocked (evm-unverifiable)", the provider declined the lock for good (and aborted an accepted swap)
+  const { secp, keccak_256 } = await import('../dapp/vendor/tacit-deps.min.js');
+  const { prims } = makeBtcWallet({ priv: new Uint8Array(32).fill(7), hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
+  const SPENDER = id(0x70), PARENT = id(0x72);
+  const txs = new Map([
+    [SPENDER, { txid: SPENDER, status: confirmed, vin: [{ txid: id(0x71), vout: 0 }, { txid: PARENT, vout: 0 }], vout: [{ scriptpubkey: '0014' + '11'.repeat(20), value: 546 }] }],
+    [PARENT, { txid: PARENT, status: confirmed, vin: [{ txid: id(0x73), vout: 0 }], vout: [{ scriptpubkey: '0014' + '22'.repeat(20), value: 546 }] }],
+  ]);
+  const fetchImpl = async (u) => { const t = String(u).split('/tx/')[1]; return txs.has(t) ? new Response(JSON.stringify(txs.get(t)), { status: 200 }) : new Response('not found', { status: 404 }); };
+  const G = Uint8Array.of(2, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87, 0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x98);
+  const fake = {
+    validateOutpoint: async (a, b, c) => { c.set(`${a}:${b}`, true); return true; },
+    txOutputEnvelope: () => ({ opcode: 0x22 }),
+    getParentEnvelopeData: async () => ({ assetIdHex: '09'.repeat(32), commitment: G }),
+  };
+  const pool = { btcNoteLeaf: () => '0x' + '22'.repeat(32), nullifier: () => '0x' + '11'.repeat(32) };
+  let eth = () => { throw new Error('Ethereum\'s public nodes did not answer (fetch failed)'); };
+  const btc = makeEsploraBtcChain({ bases: ['http://esplora.test'], prims, builder: null, fetchImpl, tacit: fake, pool, ethGetStorageAt: async () => eth(), poolAddress: '0x' + 'ab'.repeat(20), keccak256: keccak_256, secp });
+  const spender = await btc.fetchTx(SPENDER);
+  await assert.rejects(btc.crossLaneBlocked(spender), (e) => e.transient === true, 'the pool could not be read: ask again');
+  eth = () => '0x' + '00'.repeat(32);
+  assert.equal(await btc.crossLaneBlocked(spender), null, 'read and unspent: nothing blocks');
+  eth = () => '0x' + '00'.repeat(31) + '01';
+  assert.match(await btc.crossLaneBlocked(spender), /evm-spent/, 'read and spent: a note already consumed is still refused');
 });
 
 test('the provider daemon gives its log to the chain view', async () => {

@@ -49,19 +49,21 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   const underWay = new Map();
 
   // The first explorer that has the answer. A 404 from one is not the end of the search (another may know a newer
-  // transaction); when none has it the 404 is the answer, and when none could answer it is an error.
+  // transaction); when none has it the 404 is the answer when every explorer that was asked said so or two agree, and when none could answer it is an
+  // error. One explorer's 404 beside others that failed is not an answer (the one that said 404 may be the one that lags), so it is an error to ask again.
   async function ask(path, init) {
-    let last = null, notFound = null;
+    let last = null, notFound = null, notFounds = 0;
     for (const b of askOrder()) {
       try {
         const r = await fetchImpl(b + path, { ...init, signal: AbortSignal.timeout(timeoutMs) });
         const text = (await r.text()).trim();
         if (r.ok) { healed(b); return text; }
         const err = Object.assign(new Error(`${path} -> ${r.status} ${text.slice(0, 160)}`), { status: r.status });
-        if (r.status === 404) { healed(b); notFound ||= err; } else { last = err; if (r.status === 429 || r.status >= 500) coolDown(b, retryAfter(r), `HTTP ${r.status}`); }
+        if (r.status === 404) { healed(b); notFound ||= err; notFounds++; } else { last = err; if (r.status === 429 || r.status >= 500) coolDown(b, retryAfter(r), `HTTP ${r.status}`); }
       } catch (e) { last = e; coolDown(b, 0, e && e.name === 'TimeoutError' ? 'timed out' : (e && e.cause && e.cause.code) || (e && e.message) || e); }
     }
-    throw notFound || last;
+    if (notFound && (!last || notFounds >= 2)) throw notFound;
+    throw last || notFound;
   }
   async function req(path, init) {
     if (init) { await takeSlot(); try { return await ask(path, init); } finally { giveSlot(); } }
@@ -218,6 +220,9 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
         if (binding && pool.btcNoteLeafBound) nus.push(pool.nullifier(pool.btcNoteLeafBound(asset, cx, cy, a, binding)));
       }
       const v = await guard.bitcoinSpendBlockedAny(ethGetStorageAt, poolAddress, nus);
+      // (a pool that could not be read is not a note that is consumed: the guard is closed when it cannot tell, so nothing is accepted on it, but the answer is
+      // asked for again, not given as a refusal that ends the swap)
+      if (v.blocked && v.reason === 'evm-unverifiable') throw Object.assign(new Error('Ethereum could not be read just now'), { transient: true });
       if (v.blocked) return `${i.txid}:${i.vout} (${v.reason})`;
     }
     return null;
