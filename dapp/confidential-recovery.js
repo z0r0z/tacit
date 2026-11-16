@@ -362,6 +362,31 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
     return { found: [...matched.values()], unresolved };
   }
 
+  // A stand-alone farm emits no Bonded event, so a position in one is found in the settle that opened it: that settle's public values carry the bond's
+  // shares and receipt leaf (a cdpMints entry with the receipt sentinel and no debt, read by decodeCdpFields). An entry is this wallet's when one of its
+  // own spent notes, taken as the bond's anchor, re-derives the entry's receipt leaf (and its published owner, when it has one): the leaf is the proof, so a
+  // settle that holds other people's entries yields none of theirs.
+  function deriveStandalonePositions({ mints, standalone, anchors, lpBondPosition }) {
+    const RECEIPT = '0x' + '00'.repeat(31) + '01';
+    const soloOf = new Map((standalone || []).map((f) => [lc(f.controller), f]));
+    const found = [];
+    for (const m of mints || []) {
+      const f = soloOf.get(lc(m.controller));
+      if (!f || lc(m.positionLeaf) !== RECEIPT || BigInt(m.debtValue) !== 0n || !m.legs || m.legs.length !== 1) continue;
+      const lpAsset = lc(f.lpAsset);
+      if (lc(m.legs[0].asset) !== lpAsset) continue;
+      const shares = BigInt(m.legs[0].value), want = lc(m.rateSnapshot), c32 = '0x' + '00'.repeat(12) + strip0x(f.controller).toLowerCase();
+      for (const a of anchors || []) {
+        const keys = lpBondPosition({ controller: f.controller, lpAsset, anchorLeaf: a.leaf });
+        if (BigInt(m.owner || 0) !== 0n && lc(keys.owner) !== lc(m.owner)) continue;
+        if (lc(pool.farmReceiptLeaf(c32, lpAsset, shares, keys.owner, keys.nonce)) !== want) continue;
+        found.push({ receiptLeaf: want, lpAsset, controller: f.controller, shares, anchorLeaf: a.leaf, owner: keys.owner, nonce: keys.nonce, ownerPriv: keys.ownerPriv });
+        break;
+      }
+    }
+    return found;
+  }
+
   function decodeCdpFields(publicValuesHex) {
     const outer = strip0x(publicValuesHex);
     const data = outer.slice(Number(u256At(outer, 0)) * 2);
@@ -701,5 +726,5 @@ export function makeConfidentialRecovery({ pool, memo, keccak256, secp, hmac, sh
     return out;
   }
 
-  return { txIndex, walkWraps, walkWrapsSliced, newWrapMemo, decodeExitFields, decodeOutputFields, walkChange, walkBridgeMints, deriveBridgeMintBlinding, scanCbtcNotes, deriveFarmPositions, decodeCdpFields, walkCdpPositions, openSentLocks, tryDerived, netCandidates, walkDerivedOutputs, walkDirectOutputs, locateDepositTx };
+  return { txIndex, walkWraps, walkWrapsSliced, newWrapMemo, decodeExitFields, decodeOutputFields, walkChange, walkBridgeMints, deriveBridgeMintBlinding, scanCbtcNotes, deriveFarmPositions, deriveStandalonePositions, decodeCdpFields, walkCdpPositions, openSentLocks, tryDerived, netCandidates, walkDerivedOutputs, walkDirectOutputs, locateDepositTx };
 }
