@@ -6,8 +6,9 @@
 // good answer is served (marked stale) until it is two minutes old and then a plain 503: a dashboard that keeps showing a two-hour-old treasury is
 // worse than one that says it cannot tell.
 import { makeRpc, readFarmRaw, buildProgram, publicProgram, farmHealth, FARM_MANAGER_MAINNET, FARM_RPCS_MAINNET } from '../../worker-relay/src/lib/farm-health.js';
+import { sampleOf, foldSample, summaries } from '../../worker-relay/src/lib/pool-activity.js';
 
-export const FARM_TTL_MS = 15000;      // an answer this young is served as it is
+export const FARM_TTL_MS = 15000;     // an answer this young is served as it is
 export const FARM_STALE_MS = 120000;   // one this old is the last good answer: served at once while the next is read behind it, and marked stale if that read fails
 export const FARM_WARM_MS = 45000;     // while callers are asking, the next answer is read this often, so none of them waits for the chain (a slow node cost one 26 s)
 export const FARM_IDLE_MS = 600000;    // and the reading stops when nobody has asked for this long
@@ -88,5 +89,42 @@ export async function handleFarm(kind, url, env, cors, json) {
   const headers = { ...cors, 'Cache-Control': 'public, max-age=15', ...(r.stale ? { 'X-Farm-Stale': '1' } : {}) };
   if (health) return json({ ...h, stale: r.stale, updatedAt }, 200, headers);
   if (program.codeMissing) return json({ error: 'farm program unavailable', detail: `no contract code at ${program.manager}` }, 503, noStore);
-  return json({ ...publicProgram(program), stale: r.stale, updatedAt }, 200, headers);
+  const body = publicProgram(program), by = await activitySummaries(env).catch(() => null);
+  // each pool carries how often its state has changed, when the tick has a record of it (a pool with none is as it was before)
+  if (by) body.pools = (body.pools || []).map((p) => { const a = by[String(p.poolId).toLowerCase()]; return a ? { ...p, activity: a } : p; });
+  return json({ ...body, stale: r.stale, updatedAt }, 200, headers);
+}
+
+// How often each pool's state changes (worker-relay/src/lib/pool-activity.js). The 5-minute tick reads the program afresh and folds what it says of each pool into a log in the
+// shared store, so the record is the same across restarts and across the services that run this; the program's answer then carries each pool's summary. A deposit is proved against a
+// pool's exact state and any change while it is proved ends that proof, so a page can say how likely that is from this, which it cannot read from the chain itself without old blocks.
+const ACT_KEY = 'farm:activity:v1', ACT_LEASE = 'farm:activity:lease', ACT_READ_MS = 60000;
+let act = { at: 0, by: null, reading: null };
+const actStore = (env) => env?.CONFIDENTIAL_KV || env?.REGISTRY_KV || null;
+export function _resetFarmActivity() { act = { at: 0, by: null, reading: null }; }
+
+// The summaries, read from the store at most once a minute by a process, and the last read kept if the store cannot be reached.
+async function activitySummaries(env) {
+  const kv = actStore(env);
+  if (!kv || env.FARM_ACTIVITY === '0') return null;
+  if (act.by && Date.now() - act.at < ACT_READ_MS) return act.by;
+  act.reading ||= Promise.resolve(kv.get(ACT_KEY))
+    .then((raw) => { act.by = raw ? summaries(raw) : {}; act.at = Date.now(); return act.by; }, () => act.by)
+    .finally(() => { act.reading = null; });
+  return act.reading;
+}
+
+// One tick: the program read afresh (it serves whoever is asking too), one reading folded into the log. One service does it per tick (a lease in the shared store, a little under
+// the tick), so two services running this do not write over each other. Returns the log it wrote, or null when it did nothing.
+export async function farmActivityTick(env, now = () => Date.now()) {
+  const kv = actStore(env);
+  if (!kv || env.FARM_ACTIVITY === '0') return null;
+  if (await kv.get(ACT_LEASE)) return null;
+  await kv.put(ACT_LEASE, String(now()), { expirationTtl: 240 });
+  const { program } = await refresh('mainnet', env);
+  if (!program || program.codeMissing) return null;
+  const pub = publicProgram(program), log = foldSample(await kv.get(ACT_KEY), sampleOf(pub), { t: now(), block: Number(pub.block) || 0 });
+  await kv.put(ACT_KEY, JSON.stringify(log), { expirationTtl: 7 * 86400 });
+  act = { at: now(), by: summaries(log), reading: null };
+  return log;
 }
