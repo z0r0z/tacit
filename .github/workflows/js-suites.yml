@@ -84,9 +84,13 @@ jobs:
       # steps is a dependency problem, not a test one.
       - name: Install (root)
         run: npm ci --no-audit --no-fund
-      - name: Install (tests)
-        run: npm ci --no-audit --no-fund
-        working-directory: tests
+      # tests/ is deliberately NOT installed. It has a package.json of its own, but its lockfile pins @noble/hashes 1.3.3
+      # while the root pins 1.8.0, and 1.3.3 does not export './sha3.js' — so installing it put an older copy in front of
+      # the root one and broke `import { keccak_256 } from '@noble/hashes/sha3.js'` in tests/community-ops.test.mjs with
+      # ERR_PACKAGE_PATH_NOT_EXPORTED. No developer's tree has tests/node_modules (the suites resolve up to the root), so
+      # installing it made CI differ from every machine these suites are written and run on. The root package provides
+      # everything tests/package.json lists. The stale tests/ lockfile is a real inconsistency, but fixing it is a
+      # dependency bump for the bulletproofs/snarkjs suites that own that package, not something this gate should force.
       - name: Install (worker)
         run: npm ci --no-audit --no-fund
         working-directory: worker
