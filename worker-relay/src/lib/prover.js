@@ -18,6 +18,7 @@ import { privateProvePlan, retryPublic, privateRefused, rememberRefusal, private
 import { CREDIT_SHORT } from './prove-pause.js';
 import { makeStdinProver, batchInput } from './stdin-prover.js';
 import { makeBoardProver } from './board-prover.js';
+import { makeBoardBreaker, typeOf } from './board-breaker.js';
 import { makeEthBoard, boardProves, finishVerdict } from './eth-board.js';
 import { makeBtcBoard } from './btc-board.js';
 import { depositsOf, depositIdOf } from './spent-precheck.js';
@@ -472,8 +473,10 @@ export async function boardAlive() {
   aliveWas = !s || s.workers.some((w) => !w.community && Number(w.lastSeenSeconds) <= 30);
   return aliveWas;
 }
-// → true (the pool takes it), 'stale' (the proof is sound but its roots have moved on: the op's fault, not the worker's), 'unchecked' (the
-// call could not be run for want of gas money in the settle wallet, which says nothing of the proof: no mark against the worker) or false.
+// → true (the pool takes it), 'stale' (the proof is sound but its roots have moved on: the op's fault, not the worker's), 'op:<name> <selector>'
+// (the pool refuses the op itself, a spent note or a pool that moved under the reserves it binds: settle-check.js EFFECT_REVERTS; no prover
+// could pass it, so the board lane fails the job at once instead of paying the network to prove it again), 'unchecked' (the call could not be
+// run for want of gas money in the settle wallet, which says nothing of the proof: no mark against the worker) or false.
 // An eth_call, not a gas estimate: the question is only whether the pool would take the proof, and an estimate is refused outright for a wallet
 // that cannot pay for the gas it finds ('gas required exceeds allowance (47755)', which marked two good farm-harvest proofs bad on 2026-10-29/30
 // and sent their jobs to the network); the send that follows estimates for itself.
@@ -487,15 +490,16 @@ async function verifySettle({ publicValues, proof, memos, community = false, wan
     await publicClient.simulateContract({ address: POOL, abi: POOL_ABI, functionName: 'settle', args: [publicValues, proof, memos], account: settleWallet.account });
     return true;
   } catch (e) {
-    const { verdict, said } = readSettleCheck(e, STALE_PROOF_SELECTORS);
+    const { verdict, said, effect } = readSettleCheck(e, STALE_PROOF_SELECTORS);
     if (verdict === 'nodeposit') {
       const v = await judgeNodeposit({ community, publicValues, proof, want, expect, verify: proofOnly(null) });
       boardLog(`a ${community ? 'community ' : ''}board proof whose deposit is not in the pool yet (proved first): ${v === true ? 'the verifier takes it' : v === 'unchecked' ? 'the verifier could not be asked' : 'it is not this job\'s or the verifier refuses it'}`);
       return v;
     }
-    const note = verdict === 'stale' ? ' (stale roots: the op is behind the pool, the proof itself is fine)' : verdict === 'unchecked' ? ' (the settle wallet cannot pay for the call: the proof is not judged)' : '';
+    const note = verdict === 'stale' ? ' (stale roots: the op is behind the pool, the proof itself is fine)'
+      : verdict === 'op' ? ` (the pool refuses the op as it stands, ${effect.name}: the proof itself is fine, and nothing will prove this op again)` : verdict === 'unchecked' ? ' (the settle wallet cannot pay for the call: the proof is not judged)' : '';
     boardLog(`a board proof did not pass the settle check${note}: ${said.slice(0, 200)}`);
-    return verdict === 'bad' ? false : verdict;
+    return verdict === 'bad' ? false : verdict === 'op' ? `op:${effect.name} ${effect.selector}` : verdict;
   }
 }
 // The board lane for `stdin`, or null when it missed; the time it took comes off `timeoutMs` for the lane after it.
@@ -516,17 +520,30 @@ async function verifySettle({ publicValues, proof, memos, community = false, wan
 // which is where an op carrying someone's payment belongs. It costs the community set nothing measurable — over the 26 hours before this was
 // written, every community board proof was a plain wrap, and the proof pool, which the distributed set actually lives on, is wraps only.
 export const PUBLIC_BOARD_TYPES = Object.freeze(['wrap']);
+// A worker that claims a proof and sends nothing holds each job of that type for the whole claim-stall wait before the network gets it; after
+// PROVER_BOARD_BREAKER_STALLS of those in a row the board is skipped for that type for PROVER_BOARD_BREAKER_SECS (lib/board-breaker.js).
+const boardBreaker = makeBoardBreaker({ stalls: CFG.proverBoardBreakerStalls, restMs: CFG.proverBoardBreakerSecs * 1000 });
+// → { proof, spentMs }. A proof the pool refuses as the op stands (lib/board-prover.js: code 'op_refused') is not a miss: it throws, so the job fails
+// here and the network is never asked to prove the same op into the same revert.
 async function viaBoard({ stdin, cycleLimit, gasLimit, label, memos, timeoutMs, check = null, cls = 'private' }) {
   const lane = boardLane();
   if (!lane) return { proof: null, spentMs: 0 };
+  const resting = boardBreaker.resting(label);
+  if (resting) {
+    boardLog(`${label}: the board's last ${CFG.proverBoardBreakerStalls} claimed ${typeOf(label)} proofs sent nothing, so the board is skipped for ${resting} s more; going to the network`);
+    return { proof: null, spentMs: 0 };
+  }
   const t0 = Date.now();
   try {
     const r = await lane.prove({ stdin, cycleLimit, gasLimit, cls, label, memos, timeoutMs, ...(check ? { check } : {}) });
+    boardBreaker.proved(label);
     boardLog(`${label}: proved on the board by ${r.worker} in ${Math.round((Date.now() - t0) / 1000)} s`);
     return { proof: { publicValues: r.publicValues, proof: r.proof, lane: 'board', worker: r.worker }, spentMs: Date.now() - t0 };
   } catch (e) {
+    if (e.code === 'op_refused') boardLog(`${label}: ${e.message}`);
     if (e.code !== 'board_miss') throw e;
     boardLog(`${label}: ${e.message}; going to the network`);
+    if (e.stalled && boardBreaker.stalled(label)) boardLog(`${label}: ${CFG.proverBoardBreakerStalls} claimed ${typeOf(label)} proofs in a row sent nothing; the board is skipped for this op type for ${Math.round(CFG.proverBoardBreakerSecs / 60)} minutes`);
     return { proof: null, spentMs: Date.now() - t0 };
   }
 }

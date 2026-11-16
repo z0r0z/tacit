@@ -227,6 +227,10 @@ export const CFG = {
   proverBoardWaitSecs: num('PROVER_BOARD_WAIT_SECS', 240),
   // A claimed settle proof that has said nothing for this long is handed on (lib/board-prover.js claimStallMs); 0 = wait the whole wait.
   proverBoardClaimStallSecs: num('PROVER_BOARD_CLAIM_STALL_SECS', 100),
+  // After this many claimed proofs of one op type in a row that sent nothing, the board is skipped for that type for PROVER_BOARD_BREAKER_SECS, so a
+  // silent worker costs the next jobs no 100 s wait (lib/board-breaker.js); 0 in either turns it off.
+  proverBoardBreakerStalls: num('PROVER_BOARD_BREAKER_STALLS', 3),
+  proverBoardBreakerSecs: num('PROVER_BOARD_BREAKER_SECS', 600),
   // The monitor warns when no board worker has polled for this long (Tacit runs one; a pod that stopped, out of credit or
   // otherwise, sends every settle proof to the prover network with a public input until it is back).
   proverBoardExpectWorkers: opt('PROVER_BOARD_EXPECT_WORKERS', '0') === '1',

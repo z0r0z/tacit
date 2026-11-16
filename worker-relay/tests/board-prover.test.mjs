@@ -220,3 +220,41 @@ test('a claim that answers within claimStallMs is taken; the stall clock is only
   const r3 = await makeBoardProver({ ...c.api, waitMs: 240_000, claimStallMs: 0 }).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, memos: [] });
   assert.equal(r3.proof, PROOF, 'claimStallMs 0 turns it off');
 });
+
+test('a proof of an op the pool refuses as it stands fails the job at once: cancelled as stale (no mark), not a board miss, so the network is never asked', async () => {
+  const f = fakeBoard({ script: [{ status: 'claimed', worker: 'tacit-a5000' }, { status: 'proved', worker: 'tacit-a5000', publicValues: PV, proof: PROOF }], verifyOk: 'op:PoolReserveMismatch 0x29b3c833' });
+  await assert.rejects(makeBoardProver(f.api).prove({ stdin, cycleLimit: 1, gasLimit: 1, memos: [] }), (e) => {
+    assert.equal(e.code, 'op_refused', 'not board_miss: lib/prover.js viaBoard rethrows it');
+    assert.equal(e.effect, 'PoolReserveMismatch 0x29b3c833'); assert.equal(e.worker, 'tacit-a5000');
+    assert.match(e.message, /refused/, 'the relay keeps a reason carrying "refused" in the op\'s own words (proveFailureForJob)');
+    assert.match(e.message, /nothing was spent/, 'and the API gives the free settle back for it');
+    assert.match(e.message, /0x29b3c833/, 'the selector is in the text the pages read for a pool that moved');
+    return true;
+  });
+  assert.deepEqual(f.calls.cancel, [{ jobId: '0xjob1234567890', reason: 'stale' }]);
+});
+
+test('an op refusal is not a stale proof or a bad one: those still miss, so the network gets them', async () => {
+  for (const [verifyOk, why] of [['stale', 'stale'], ['unchecked', 'unchecked'], [false, 'bad']]) {
+    const f = fakeBoard({ script: [{ status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF }], verifyOk });
+    await assert.rejects(makeBoardProver(f.api).prove({ stdin, cycleLimit: 1, gasLimit: 1, memos: [] }), (e) => e.code === 'board_miss', String(verifyOk));
+    assert.equal(f.calls.cancel[0].reason, why);
+  }
+});
+
+test('a community candidate for an op the pool refuses: reported with no verdict against the machine, the job fails at once', async () => {
+  const { api, calls } = fakeBoard({ script: [{ status: 'claimed', worker: 'tacit-a5000', race: [{ worker: 'c-0xabc', proof: PROOF, publicValues: PV }] }] });
+  const raced = [];
+  api.race = async (jobId, worker, ok) => { raced.push({ jobId, worker, ok }); };
+  api.verify = async () => 'op:NullifierAlreadySpent 0xb115d857';
+  await assert.rejects(makeBoardProver(api).prove({ stdin, cycleLimit: 1n, gasLimit: 1n, cls: 'public', memos: [] }), (e) => e.code === 'op_refused' && /NullifierAlreadySpent/.test(e.message));
+  assert.deepEqual(raced, [{ jobId: '0xjob1234567890', worker: 'c-0xabc', ok: null }], 'null: neither taken nor marked bad');
+  assert.deepEqual(calls.cancel, [{ jobId: '0xjob1234567890', reason: 'stale' }]);
+});
+
+test('a check that answers true is still taken as before, and a program\'s own check may answer op too', async () => {
+  const a = fakeBoard({ script: [{ status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF }], verifyOk: true });
+  assert.equal((await makeBoardProver(a.api).prove({ stdin, cycleLimit: 1, gasLimit: 1, memos: [] })).worker, 'gpu1');
+  const b = fakeBoard({ script: [{ status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF }] });
+  await assert.rejects(makeBoardProver(b.api).prove({ stdin, cycleLimit: 1, gasLimit: 1, memos: [], check: async () => 'op:OverClaim 0x508ece93' }), (e) => e.code === 'op_refused');
+});
