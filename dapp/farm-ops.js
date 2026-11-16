@@ -124,6 +124,13 @@ export function farmManager(t, named) {
   if (named && String(named).toLowerCase() !== String(mine).toLowerCase()) throw new Error('This farm names a manager other than the configured one, so nothing was added.');
   return mine;
 }
+// The two coin names of a pool, for a page: the pool's own tickers where it has them and, for a coin it has no ticker for (SPX), the one the farm's pair
+// names that the other side is not (a page printed "null" for it).
+export function coinNames(a, b, pair) {
+  const bare = (x) => String(x || '').replace(/^c/, '').replace(/^tETH$/, 'ETH');
+  const left = String(pair || '').split('/').map((x) => x.trim()).filter(Boolean).filter((x) => bare(x) !== bare(a) && bare(x) !== bare(b));
+  return [a || left.shift() || 'a coin', b || left.shift() || 'a coin'];
+}
 // The controller a pool's farm entry bonds into: a standalone farm's own, else the manager. What the farm program (an API answer) names must match
 // this page's configuration, so the answer can never point an entry at another contract.
 export function farmControllerOf(t, p, manager) {
