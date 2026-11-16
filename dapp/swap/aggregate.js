@@ -1,5 +1,5 @@
 import { decodeZRouterCall, ZROUTER } from '/zrouter-guard.js';
-import { ZQUOTER, ZERO, SOURCES, checkRoute } from '/swap/route.js?cb=858622ed';
+import { ZQUOTER, ZERO, SOURCES, checkRoute } from '/swap/route.js?cb=4a3ba95a';
 
 const SEL = { viaEth: 'e453166e', split: '892af013', hybrid: '85f86a90', quotes: 'e1fd10bc' };
 const HEAVY = '0x11E1A300';

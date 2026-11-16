@@ -166,7 +166,7 @@ export function zapShieldPlan({ quote, tokenOut, wei, scale = 1n, deadline = quo
   const paid = BigInt(quote.amountOut);
   return { wrapAmount, value: BigInt(wei), zrSwapData: quote.callData, to: CONF_ROUTER, rest: paid > wrapAmount ? paid - wrapAmount : 0n };
 }
-const bestToWeth =({ ethCall, tokenIn, amount, exactOut, slippageBps, deadline, reuse }) => zqSwap({ ethCall, to: PRECISION_ROUTE, tokenIn, tokenOut: WETH, amount, exactOut, slippageBps, deadline, reuse });
+const bestToWeth = ({ ethCall, tokenIn, amount, exactOut, slippageBps, deadline, reuse }) => zqSwap({ ethCall, to: PRECISION_ROUTE, tokenIn, tokenOut: WETH, amount, exactOut, slippageBps, deadline, reuse });
 
 export async function quoteAnyToTac({ ethCall, venues, token, amountIn, account, slippageBps = 50, deadline, reuse = false }) {
   const slip = BigInt(slippageBps), dl0 = deadline ?? BigInt(Math.floor(Date.now() / 1000) + 1800), dl = reuse ? coarse(dl0) : dl0;
