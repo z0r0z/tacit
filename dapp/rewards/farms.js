@@ -11,7 +11,7 @@
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=67d4d4de';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { makeRunner } from '/activity.js';
-import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond, coinNames } from '/farm-ops.js?cb=11a5416b';
+import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond, coinNames, poolMoved, openProofMoved } from '/farm-ops.js?cb=e70f2612';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
 import { esc, wordAt, parseUnits, rpc } from '/trade/util.js?cb=1d2cd8d3';
 
@@ -269,15 +269,27 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     const now = await terms(pool, true);
     if (bFor(a, now.res) !== b) { updateInfo(); throw Object.assign(new Error(`The pool’s price moved while your notes were cut to size: the second side is now ${units8(bFor(a, now.res))} ${tm.tkB}. Press again: the notes are ready and nothing was added.`), { said: true }); }
     say(`Step ${n} of ${n} · the relay is proving your farm entry…`);
-    // proved and sent a little later by the relay ("open"), or still in its queue when the wait runs out: followed until it lands
-    const w = run().wait(`Add ${name(pool)} liquidity and farm it`, 20 * 60e3);
-    let jid = null;
-    try { settled(await bond(t, priv(), { manager: prog.manager, pool, aNote: nA, bNote: nB, feeBps: now.res.feeBps ?? pool.feeBps, own: own(t), onOwn, waitOpts: { ...w, onJob: (id, ty) => { jid = id; w.onJob?.(id, ty); } } })); }
-    catch (e) {
-      const id = e?.open?.jobId || jid;
-      if (!id || !(e?.code === 'open' || e?.open || /settle timed out|status polling for job/i.test(String(e?.message || '')))) throw e;
-      say('Proved. The relay sends it in turn: waiting for it to land…');
-      settled(await t.relay.waitForSettle(id, { openGraceMs: Infinity, timeoutMs: 30 * 60e3, intervalMs: 5000 }));
+    // proved and sent a little later by the relay ("open"), or still in its queue when the wait runs out: followed until it lands. An add is proved against the
+    // pool's exact reserves, so a trade landing while it is proved ends that proof, which nothing can then send: it is proved again at the pool's new reserves
+    // (the notes are untouched), twice at most, and a pool that has moved off the notes' ratio says so (the check above, in the pool's own words).
+    const dead = (id) => { if (id && run().journal.get('job:' + id)) run().journal.put('job:' + id, { status: 'failed', err: 'The pool moved while it was being proved. Nothing was spent: it is still in your private balance. Try again for a fresh quote.' }); };
+    for (let left = 2; ;) {
+      const w = run().wait(`Add ${name(pool)} liquidity and farm it`, 20 * 60e3);
+      let jid = null;
+      try { settled(await bond(t, priv(), { manager: prog.manager, pool, aNote: nA, bNote: nB, feeBps: now.res.feeBps ?? pool.feeBps, own: own(t), onOwn, waitOpts: { ...w, onJob: (id, ty) => { jid = id; w.onJob?.(id, ty); } } })); break; }
+      catch (e) {
+        const id = e?.open?.jobId || jid, held = e?.code === 'open' || !!e?.open;
+        if (poolMoved(e) || (held && await openProofMoved(t, e.open))) {
+          dead(id);
+          if (!left--) throw Object.assign(new Error('The pool moved while this was being proved, three times running. Nothing was sent: press again.'), { said: true });
+          say('The pool traded while this was being proved, so it is proved again at the new price. Nothing has been sent…');
+          continue;
+        }
+        if (!id || !(held || /settle timed out|status polling for job/i.test(String(e?.message || '')))) throw e;
+        say('Proved. The relay sends it in turn: waiting for it to land…');
+        try { settled(await t.relay.waitForSettle(id, { openGraceMs: Infinity, timeoutMs: 30 * 60e3, intervalMs: 5000 })); break; }
+        catch (e2) { if (!poolMoved(e2)) throw e2; dead(id); if (!left--) throw e2; say('The pool traded while this was being proved, so it is proved again at the new price. Nothing has been sent…'); }
+      }
     }
     if (D) D.form = joinAt ? { pool: D.form.pool, open: true } : {};
     return prog?.epoch?.active ? 'In the farm: TAC is streaming to your private position.' : 'In the farm. It earns once the next reward period starts.';

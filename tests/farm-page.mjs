@@ -197,7 +197,10 @@ const t = {
     const made = window.__zapSent && !T().bonded ? [{ leaf: LEAF, asset: T().lpAsset || '${LPA[0]}', value: '1', owner: '0x02' }] : [];
     return { notes: [...loose.filter(() => !T().bonded), ...made, ...(T().joined ? [] : T().privNotes || [])], spentNotes: [] };
   },
-  async lpBond({ aNote, bNote, controller }) { note('lpbond', aNote.value + '+' + bNote.value + '@' + controller.slice(0, 8)); await sleep(150); if (T().joinFail) throw Object.assign(new Error('relay 503: temporarily unavailable'), { code: 'relay_held' }); T().joined = true; T().bonded = true; return { jobId: 'job-lpbond', txHash: '0x' + '33'.repeat(32) }; },
+  async lpBond({ aNote, bNote, controller, waitOpts }) { note('lpbond', aNote.value + '+' + bNote.value + '@' + controller.slice(0, 8)); await sleep(150);
+    // a trade lands while it is proved: the relay holds the proof open and the pool refuses it as moved (rpc below), for the first bondMoved presses
+    if (T().bondMoved > 0) { T().bondMoved--; T().deadProof = true; waitOpts?.onJob?.('job-dead', 'lpbond'); throw Object.assign(new Error('settle held: proved and waiting for a sender (job job-dead); it can be sent from any account now'), { code: 'open', open: { jobId: 'job-dead', publicValues: '0x01', proof: '0x02', memos: [] } }); }
+    T().deadProof = false; if (T().joinFail) throw Object.assign(new Error('relay 503: temporarily unavailable'), { code: 'relay_held' }); T().joined = true; T().bonded = true; return { jobId: 'job-lpbond', txHash: '0x' + '33'.repeat(32) }; },
   async transfer() { note('transfer'); throw new Error('this stand-in does not cut notes'); },
   async farmBond({ lpNote, waitOpts, selfSettle }) { note(selfSettle ? 'bond-own' : 'bond', lpNote.leaf.slice(0, 6)); waitOpts?.onJob?.('job-bond', 'farmbond'); await sleep(T().bondMs ?? 200);
     // proved for the wallet to send (the relay's free sends for the day used up): the page's sender sends it
@@ -206,7 +209,7 @@ const t = {
     if (T().bondOpen) throw Object.assign(new Error('settle held: proved and waiting for a sender (job job-bond); it can be sent from any account now'), { code: 'open', open: { jobId: 'job-bond', publicValues: '0x01', proof: '0x02', memos: [] } });
     if (T().bondFail) throw Object.assign(new Error('relay 503: temporarily unavailable'), { code: 'relay_paused' }); T().bonded = true; return { jobId: 'job-bond', txHash: '0x' + '22'.repeat(32) }; },
   settleCalldata: ({ publicValues, proof }) => '0x8b8c6b4b' + String(publicValues).slice(2) + String(proof).slice(2),
-  rpc: async (m) => { note('rpc', m); if (m === 'eth_estimateGas') return '0x7a120'; throw new Error('the stand-in has no ' + m); },
+  rpc: async (m) => { note('rpc', m); if (m === 'eth_estimateGas') return '0x7a120'; if (m === 'eth_call' && T().deadProof) throw Object.assign(new Error('execution reverted'), { revert: true, data: '0x29b3c833' }); throw new Error('the stand-in has no ' + m); },
   farmPositions: async () => (T().bonded ? [{ pid: 0, receiptLeaf: '0x' + '77'.repeat(32), pendingUnits: '0', pendingTac: '0', shares: '1' }] : (T().positions || [])),
   ethCall: async () => '0x' + '0'.repeat(64), identity: () => ({ pubHex: '02' + 'ab'.repeat(32) }), poolTickerOf: (id) => ({ '${A_TAC}': 'TAC', '${A_CUSD}': 'cUSD', '${A_CBTC}': 'cBTC' })[String(id).toLowerCase()] || 'cETH', quoteOpFee: async () => { if (T().opFeeFail) throw new Error('relay fee unavailable'); return BigInt(T().opFee || 0); }, quoteUnwrapFee: () => ({ net: 1n, fee: 0n }),
 };
@@ -715,6 +718,23 @@ try {
       await page.click('[data-pm="eth"]');
       ok(await page.evaluate(() => !document.querySelector('#pz-eth').hidden && document.querySelector('#pz-join').hidden), 'ETH brings the one-transaction form back');
       clean(r, 'both coins');
+      await r.browser.close();
+    }
+    for (const moves of [1, 3]) {
+      // a trade lands while the entry is proved: the relay holds the proof open and the pool refuses it as moved. It is proved again (twice at most) and ends in the
+      // farm; a pool that keeps moving says so after the third, and the proof that cannot be sent is never waited for
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, t: { keyOpen: true, privNotes, bondMoved: moves } }), { page } = r;
+      await until(page, () => document.querySelector('#pz-both')?.textContent === 'tETH + TAC');
+      await page.click('#pz-both');
+      await until(page, () => !!document.querySelector('#pz-join #pf-a'));
+      await page.click('#pz-join [data-pf="max"]');
+      await until(page, () => !document.querySelector('#pz-join [data-pf="join"]').disabled);
+      await page.click('#pz-join [data-pf="join"]');
+      ok(await until(page, (want) => new RegExp(want).test(document.querySelector('#pj-said')?.textContent || ''), moves === 1 ? 'In the farm' : 'three times running', 30000), `a pool that moved ${moves}x while it was proved: ${await text(page, '#pz-join')}`);
+      const ux = await page.evaluate(() => window.__ux);
+      ok(ux.filter((x) => x.startsWith('lpbond')).length === (moves === 1 ? 2 : 3) && !ux.some((x) => x.startsWith('follow')), `proved ${moves === 1 ? 'again once' : 'three times in all'}, and the dead proof was not waited for (${ux.filter((x) => /^(lpbond|follow)/.test(x)).length} calls)`);
+      ok(moves === 1 ? await page.evaluate(() => window.__t.bonded === true) : await page.evaluate(() => !window.__t.bonded), moves === 1 ? 'and the share is in the farm' : 'and nothing was added');
+      clean(r, `a pool that moved ${moves}x`);
       await r.browser.close();
     }
     {

@@ -24,6 +24,16 @@ export const ownWhy = (e) => (e?.code === 'open'
   : e?.code === 'relay_held'
     ? 'The relay is catching up on its sends, so your wallet sends this one: the relay proves it, then you confirm it (a network fee, paid in ETH).'
     : 'Today’s free relay sends for this are used up, so your wallet sends this one: the relay proves it, then you confirm it (a network fee, paid in ETH).');
+// An add is proved against the pool's exact reserves (PoolReserveMismatch, 0x29b3c833): a trade landing while it is proved ends that proof for good, from a
+// relay or from a wallet alike. `moved` is what the front page's own send tags such a refusal with.
+export const poolMoved = (e) => !!e?.moved || /29b3c833|PoolReserveMismatch|the pool moved while/i.test(`${e?.data?.data || e?.data || ''} ${e?.message || ''}`);
+// A proof the relay holds open for any sender: whether the pool, as it stands now, refuses it as moved (so it is proved again and not waited for). False when it
+// cannot be told (no memos to send it with, or it is refused for another reason): the caller then waits for it as before.
+export async function openProofMoved(t, open) {
+  if (!open?.publicValues || !open?.proof || !Array.isArray(open.memos)) return false;
+  try { await t.rpc('eth_call', [{ to: t.cfg.pool, data: t.settleCalldata({ publicValues: open.publicValues, proof: open.proof, memos: open.memos }) }, 'latest']); return false; }
+  catch (e) { return !!(e?.revert || /revert/i.test(String(e?.message || e))) && poolMoved(e); }
+}
 // → selfSettle for the pool module's steps: the proof sent to the pool from `from` (an address, or a function giving it), after the node
 // has estimated it (a step that would not go through is not sent). null without a wallet that sends.
 export function walletSettle(t, wallet, from, { confirm = () => {} } = {}) {
@@ -35,7 +45,7 @@ export function walletSettle(t, wallet, from, { confirm = () => {} } = {}) {
     let gas = null;
     try { gas = (BigInt(await t.rpc('eth_estimateGas', [{ from: who, to, data }])) * 13n) / 10n; }
     catch (e) {
-      if (e?.revert || /revert/i.test(String(e?.message || e))) throw new Error('This step would not go through as the pool stands now, so nothing was sent. Press again.');
+      if (e?.revert || /revert/i.test(String(e?.message || e))) throw Object.assign(new Error('This step would not go through as the pool stands now, so nothing was sent. Press again.'), poolMoved(e) ? { moved: true } : {});
     }
     confirm();
     const hash = await wallet.sendTx({ to, data, from: who, ...(gas ? { gas } : {}) });
