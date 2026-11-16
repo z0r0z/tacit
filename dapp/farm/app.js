@@ -365,8 +365,8 @@ function setMode(m) {
   Z.mode = m === 'both' && bothOk(Z.f) ? 'both' : 'eth';
   for (const b of $$('#pz-mode button')) b.setAttribute('aria-pressed', String(b.dataset.pm === Z.mode));
   $('#pz-eth').hidden = Z.mode !== 'eth'; $('#pz-join').hidden = Z.mode !== 'both';
-  const other = Z.f?.name?.split(' / ')[1] || 'TAC';
-  $('#pz-how').textContent = Z.mode === 'both' ? `From your private tETH and ${other}, at the pool’s ratio: nothing is swapped. Holding only ETH? Use the ETH tab.` : 'Half is swapped inside the pool, then both go in privately: one transaction.';
+  const other = Z.f?.name?.split(' / ')[1] || 'TAC', first = Z.f?.name?.split(' / ')[0] || 'tETH';
+  $('#pz-how').textContent = Z.mode === 'both' ? `From your private ${first} and ${other}, at the pool’s ratio: nothing is swapped. Holding only ETH? Use the ETH tab.` : 'Half is swapped inside the pool, then both go in privately: one transaction.';
   if (Z.mode === 'both' && Z.joinFor !== Z.f.pid) { Z.joinFor = Z.f.pid; session().then(() => mountMine()).then((ui) => ui?.choose(Z.f.pid), () => { Z.joinFor = null; }); }
 }
 $('#pz-mode').addEventListener('click', (e) => { const b = e.target.closest('[data-pm]'); if (b && !b.disabled) setMode(b.dataset.pm); });
@@ -391,7 +391,7 @@ function paintPrivate() {
       + cell('In the pool', worth == null ? '—' : eu ? usd(worth * eu) : `${worth.toFixed(2)} ETH`, f.name.replace(' / ', ' and '))
       + cell('Stream ends', f.live && f.finish ? dayFmt(f.finish) : '—');
   if ($('#pz-stats').__h !== stats) { $('#pz-stats').__h = stats; $('#pz-stats').innerHTML = stats; }
-  $('#pz-both').textContent = `tETH + ${f.name.split(' / ')[1] || 'TAC'}`;
+  $('#pz-both').textContent = `${f.name.split(' / ')[0] || 'tETH'} + ${f.name.split(' / ')[1] || 'TAC'}`;
   $('#pz-mode').hidden = !bothOk(f);
   setMode(Z.mode);
   maxLine();
@@ -457,7 +457,7 @@ function paintQuote() {
     : q.impact >= 5 ? 'The swap inside the pool costs a lot at this size. A smaller deposit costs less.'
     : !f.live ? 'Between reward periods: nothing streams until the next one starts.' : '';
   // a pool this thin takes a real swap at this size: the other way in swaps nothing, and the links say where the other coin comes from
-  const skip = q.cost >= 5 && bothOk(f) ? `<p class="note">Skip the swap: <button class="linkbtn" type="button" data-alt="both">add the tETH and ${esc(other)} you already hold</button>${GET[other] ? `, or get ${esc(other)} first.</p>${getRow(other)}` : '.</p>'}` : '';
+  const skip = q.cost >= 5 && bothOk(f) ? `<p class="note">Skip the swap: <button class="linkbtn" type="button" data-alt="both">add the ${esc(f.name.split(' / ')[0] || 'tETH')} and ${esc(other)} you already hold</button>${GET[other] ? `, or get ${esc(other)} first.</p>${getRow(other)}` : '.</p>'}` : '';
   // with no market price to check against (its read failed), the pool's own price is all there is: said, and held to a tick
   const ack = q.cost >= 30 ? `<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this deposit to the pool’s price.</span><input id="pz-ack" inputmode="numeric" autocomplete="off" aria-label="Type ${n} to accept" value="${Z.ack === key ? n : ''}"></label>`
     : q.cost >= 15 ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>I accept losing about ${n}% of this deposit to the pool’s price.</span></label>`
