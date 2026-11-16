@@ -18,26 +18,57 @@ const DUST = 546;
 const ZERO_AUTH = '0x' + '00'.repeat(32);
 const KNOWN = /already (in|known)|txn-already|already in block|already exists|duplicate/i;
 
-export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp, fetchImpl = fetch, timeoutMs = 20000, feeTarget = '3', minFeeRate = 1, retryMs = 1500, feeFreshMs = 60000, feeStaleMs = 2 * 3600000, feeRetryMs = 15000, nowMs = Date.now, log = () => {} }) {
+export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp, fetchImpl = fetch, timeoutMs = 20000, feeTarget = '3', minFeeRate = 1, retryMs = 1500, feeFreshMs = 60000, feeStaleMs = 2 * 3600000, feeRetryMs = 15000, nowMs = Date.now, log = () => {}, maxReads = 8, coolMs = 20000, coolMaxMs = 5 * 60000 }) {
   const list = bases.map((b) => b.replace(/\/$/, ''));
   const wallet = { pub: prims.wallet.pub, priv: prims.wallet.priv, xonly: prims.wallet.pub.slice(1) };
   const address = prims.wallet.address();
   const guard = keccak256 ? makeCrossLaneGuard({ keccak256 }) : null;
 
+  // Explorers are shared, rate limited and sometimes down, so a read is not made the same way every time: the ones that answered are asked first and
+  // the load is spread over them in turn, one that is failing (rate limited, down, slow) is left alone for a while, longer each time it fails again (or as
+  // long as it asks, with a Retry-After), and still asked last when the others have failed too, so that none is ever given up for good. Reads for the same
+  // path that are under way together are one read, and no more than `maxReads` are out at once however many locks are being judged.
+  const health = new Map(list.map((b) => [b, { until: 0, fails: 0 }]));
+  const retryAfter = (r) => { const v = Number(r && r.headers && typeof r.headers.get === 'function' ? r.headers.get('retry-after') : 0); return v > 0 ? Math.min(v * 1000, 10 * 60000) : 0; };
+  const hostOf = (b) => { try { return new URL(b).host; } catch { return b; } };
+  const coolDown = (b, askedMs = 0, why = '') => {
+    const h = health.get(b); const was = h.until > nowMs(); h.fails++; h.until = nowMs() + Math.max(askedMs, Math.min(coolMaxMs, coolMs * 2 ** (h.fails - 1)));
+    if (!was) { try { log({ level: 'warn', msg: 'an explorer is left alone for a while', explorer: hostOf(b), why: String(why).slice(0, 120), forSecs: Math.round((h.until - nowMs()) / 1000) }); } catch { /* a log that fails changes nothing */ } }
+  };
+  const healed = (b) => { const h = health.get(b); h.fails = 0; h.until = 0; };
+  let turnOf = 0;
+  const askOrder = () => {
+    const t = nowMs(), up = list.filter((b) => health.get(b).until <= t);
+    const down = list.filter((b) => health.get(b).until > t).sort((a, b) => health.get(a).until - health.get(b).until);
+    const k = up.length ? turnOf++ % up.length : 0;
+    return [...up.slice(k), ...up.slice(0, k), ...down];
+  };
+  let reading = 0; const queued = [];
+  const takeSlot = () => (reading < maxReads ? (reading++, Promise.resolve()) : new Promise((r) => queued.push(r)));
+  const giveSlot = () => { const next = queued.shift(); if (next) next(); else reading--; };   // a waiting read takes the slot over as it is given back
+  const underWay = new Map();
+
   // The first explorer that has the answer. A 404 from one is not the end of the search (another may know a newer
   // transaction); when none has it the 404 is the answer, and when none could answer it is an error.
-  async function req(path, init) {
+  async function ask(path, init) {
     let last = null, notFound = null;
-    for (const b of list) {
+    for (const b of askOrder()) {
       try {
         const r = await fetchImpl(b + path, { ...init, signal: AbortSignal.timeout(timeoutMs) });
         const text = (await r.text()).trim();
-        if (r.ok) return text;
+        if (r.ok) { healed(b); return text; }
         const err = Object.assign(new Error(`${path} -> ${r.status} ${text.slice(0, 160)}`), { status: r.status });
-        if (r.status === 404) notFound ||= err; else last = err;
-      } catch (e) { last = e; }
+        if (r.status === 404) { healed(b); notFound ||= err; } else { last = err; if (r.status === 429 || r.status >= 500) coolDown(b, retryAfter(r), `HTTP ${r.status}`); }
+      } catch (e) { last = e; coolDown(b, 0, e && e.name === 'TimeoutError' ? 'timed out' : (e && e.cause && e.cause.code) || (e && e.message) || e); }
     }
     throw notFound || last;
+  }
+  async function req(path, init) {
+    if (init) { await takeSlot(); try { return await ask(path, init); } finally { giveSlot(); } }
+    if (underWay.has(path)) return underWay.get(path);
+    const p = (async () => { await takeSlot(); try { return await ask(path, init); } finally { giveSlot(); } })().finally(() => underWay.delete(path));
+    underWay.set(path, p);
+    return p;
   }
   const getJson = async (path) => JSON.parse(await req(path));
   const orNull = async (fn) => { try { return await fn(); } catch (e) { if (e && e.status === 404) return null; throw e; } };
