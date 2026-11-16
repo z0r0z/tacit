@@ -373,7 +373,8 @@ export function makeBtcWallet({ priv, hrp = 'bc', fetchUtxos, broadcastTx, fetch
   const p2wpkhOutVbytes = 31;
   const p2trOutVbytes = 43;
   function estCommitVb(numInputs) { return 11 + numInputs * inputVbytes + p2trOutVbytes + p2wpkhOutVbytes; }
-  const feeFor = (vb, rate) => Math.max(500, Math.ceil(vb * rate));
+  // At least 500 sats, as always, except when the rate itself is under 1 sat/vB (the network takes such rates: tacit.js getFeeRate says so only then): there 150 sats, about 1 sat/vB on the smallest transaction.
+  const feeFor = (vb, rate) => Math.max(rate < 1 ? 150 : 500, Math.ceil(vb * rate));
 
   // ============== SIGNERS ==============
   // Build a P2WPKH BIP-143 sighash and signed witness for input idx of tx

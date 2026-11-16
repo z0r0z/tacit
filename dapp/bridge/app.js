@@ -1,6 +1,7 @@
 import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol, NO_LIMITS } from '/bridge/runtime.js?cb=a00e3cff';
-import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=20103ab7';
+import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=d2e81a08';
 import { bodyType } from '/rpc-body.js';
+import { floorFromBlocks, priorityRate } from '/fee-floor.js?cb=5d6104ed';
 { const fq = document.getElementById('fq-lim'); if (fq) fq.textContent = limitsSaid(); }
 // The tile's picker is the assets this page explains. A token the front page met and kept (dapp/bridge/runtime.js) is not one of them, but a crossing
 // of it reads by its name, in its mark, with its steps and the limit it started under, not as TAC (the tracker's fallback).
@@ -111,7 +112,15 @@ async function readCosts() {
   const feed = (k) => rpc('eth_call', [{ to: FEEDS[k], data: '0xfeaf968c' }, 'latest']).then((h) => { const v = Number(BigInt('0x' + h.slice(66, 130))) / 1e8; if (v > 0) COST[k] = v; }).catch(() => {});
   const floor = (asset, k) => getJson(`${API}/confidential/quote?asset=${asset}`).then((q) => { const u = BigInt(q.gasAwareFloorUnits ?? q.staticFloorUnits ?? 0); if (u > 0n) COST.relay[k] = u; }).catch(() => {});
   await Promise.all([
-    getJson(`${ESPLORA}/v1/fees/recommended`).then((f) => { if (Number(f.fastestFee) > 0) COST.satvb = Number(f.fastestFee); }).catch(() => {}),
+    getJson(`${ESPLORA}/v1/fees/recommended`).then(async (f) => {
+      if (Number(f.fastestFee) > 0) COST.satvb = Number(f.fastestFee);
+      // the recommended fee stops at 1 sat/vB: when it is at that floor, the blocks and Core's fractional estimate say what the network is really taking (fee-floor.js)
+      if (COST.satvb > 0 && COST.satvb <= 1) {
+        const [est, blocks] = await Promise.all([getJson(`${ESPLORA}/fee-estimates`).catch(() => null), getJson(`${ESPLORA}/v1/blocks`).catch(() => null)]);
+        const r = priorityRate({ recommended: f, estimates: est, floor: floorFromBlocks(blocks) });
+        if (r != null && r < 1) COST.satvb = r;
+      }
+    }).catch(() => {}),
     floor('cETH', 'teth'), floor('cTAC', 'tac'), floor('cBTC', 'cbtc'), floor('cUSD', 'cusd'), floor('cUSDT', 'cusdt'), feed('ethUsd'), feed('btcUsd'),
   ]);
   paintTile();
@@ -318,7 +327,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=80c4c301').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=d76a5f0b').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });

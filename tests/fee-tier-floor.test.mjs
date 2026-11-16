@@ -56,9 +56,13 @@ if (SCENARIO === 'backlog') {
   ok(`the withdraw quote (the carrier at 1.2 times) is about what the relay paid, ${carrier} sats (it was 1,480)`, carrier > 300 && carrier < 450, String(carrier));
   ok('a safety multiple keeps the floor and multiplies from it', (await dapp.getFeeRate('standard', { safetyMult: 2 })) === 0.48);
   ok('at 1 sat/vB and above the 500-sat floor is as it was', dapp.feeFor(152, 1.2) === 500 && dapp.feeFor(526, 1.4) === 737);
+  const ff = await import('../dapp/fee-floor.js');
+  ok('the pages that do not load tacit.js (fee-floor.js) read the same priority rate from the same data', ff.priorityRate({ recommended: RECOMMENDED, estimates: ESTIMATES, floor: ff.floorFromBlocks(BLOCKS) }) === pri);
 } else if (SCENARIO === 'one-block-above-one') {
   ok(`one recent block with nothing under 1 sat/vB keeps the floor at 1: standard ${std}`, std === 1, String(std));
   ok(`and so for priority (${pri}) and economy (${eco})`, pri === 1 && eco === 1, `${pri} ${eco}`);
+  const ff = await import('../dapp/fee-floor.js');
+  ok('fee-floor.js agrees: its floor is 1 and its priority rate 1', ff.floorFromBlocks(BLOCKS) === 1 && ff.priorityRate({ recommended: RECOMMENDED, estimates: ESTIMATES, floor: ff.floorFromBlocks(BLOCKS) }) === 1);
   ok('feeFor keeps its 500-sat floor at that rate', dapp.feeFor(152, std) === 500);
 } else if (SCENARIO === 'blocks-unreadable') {
   ok(`with the blocks unreadable the floor is 1 as it always was: standard ${std}`, std === 1, String(std));

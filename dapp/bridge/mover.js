@@ -5,7 +5,7 @@
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=cd7be661';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery } from '/bridge-tick.js?cb=42d78071';
-import { ROUTES } from '/bridge/track.js?cb=20103ab7';
+import { ROUTES } from '/bridge/track.js?cb=d2e81a08';
 import { parseUnits } from '/trade/util.js?cb=1d2cd8d3';
 import { forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';

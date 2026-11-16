@@ -59,9 +59,13 @@ export function bondGap(needWst, have) { const want = (BigInt(needWst) * 11n) / 
 // What a lock costs on top of its amount: the reveal's dust output and fee, and the commit's fee for `coins` inputs (every coin the
 // address holds may be one), with a tenth to spare. `lockRate` is the fee rate it is sized with, which the lock is then sent at
 // (makeLoans().lock's `rate`), so the lock the page sized is the lock that is built.
-export const lockRate = (recommended, estimates) => Math.max(1, Math.ceil(recommended?.fastestFee || estimates?.['1'] || estimates?.['2'] || 5));
-export function lockPad(recommended, estimates, coins = 2) {
-  const rate = lockRate(recommended, estimates), fee = (vb) => Math.max(500, vb * rate), n = Math.max(1, Math.min(Number(coins) || 2, 20));
+// `rate`, when the page has the network's own reading (tacit.js getFeeRate('priority'): it follows the blocks and may be under 1 sat/vB, where mempool.space's recommended fee stops at 1),
+// is the rate; without it, the recommended fee rounded up as before. A transaction pays at least 500 sats, 150 when the rate itself is under 1 sat/vB (tacit.js feeFor).
+export const lockRate = (recommended, estimates, rate = null) => (Number(rate) > 0
+  ? Math.round(Number(rate) * 1000) / 1000
+  : Math.max(1, Math.ceil(recommended?.fastestFee || estimates?.['1'] || estimates?.['2'] || 5)));
+export function lockPad(recommended, estimates, coins = 2, rateIn = null) {
+  const rate = lockRate(recommended, estimates, rateIn), floor = rate < 1 ? 150 : 500, fee = (vb) => Math.max(floor, vb * rate), n = Math.max(1, Math.min(Number(coins) || 2, 20));
   return BigInt(Math.ceil((546 + fee(LOCK_REVEAL_VB) + fee(11 + n * 68 + 43 + 31)) * 1.1));
 }
 const LOCK_REVEAL_VB = 212;

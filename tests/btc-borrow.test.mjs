@@ -109,6 +109,11 @@ for (const [f, j] of [[null, null], [{ fastestFee: 3 }, null], [{ fastestFee: 40
 }
 assert.equal(lockPad(null, null), 2983n, 'at the 5 sat/vB fallback: (546 dust + 1,060 + 1,105 in fees) and a tenth more');
 assert.deepEqual([lockRate(null, null), lockRate({ fastestFee: 3 }, null), lockRate(null, { 1: 12.4 }), lockRate(null, { 2: 7 })], [5, 3, 13, 7], 'the rate the pad is sized at, which the lock is sent at');
+// The network's own reading (tacit.js getFeeRate, which may be under 1 sat/vB where the recommended fee stops at 1) is the rate when the page has one; with none, nothing is different.
+assert.equal(lockRate({ fastestFee: 1 }, null, 0.257), 0.257, 'the reading wins over the recommended fee'); assert.equal(lockRate({ fastestFee: 3 }, null, null), 3); assert.equal(lockRate({ fastestFee: 3 }, null, 0), 3, 'a reading of nothing is no reading');
+assert.equal(lockPad({ fastestFee: 1 }, null, 2, 0.257), 931n, 'at 0.257 sat/vB: (546 dust + two 150-sat floors) and a tenth more, not the 1,701 the 1 sat/vB rate and its 500-sat floors gave');
+assert.equal(lockPad({ fastestFee: 1 }, null, 2), 1701n, 'with no reading, the recommended 1 sat/vB: (546 + 500 + 500) and a tenth more');
+assert.equal(lockPad({ fastestFee: 2 }, null, 2), lockPad(null, null, 2, 2), 'an explicit rate of 2 is the same pad as a recommended 2');
 const order = [];
 const lockTL = { pool: { CBTC_ZK_ASSET_ID: '0xcbtc' }, syncCbtcLockReservations: async (priv) => { order.push(['sync', priv]); } };
 const lockRes = { lockTxid: 'aa'.repeat(32), lockVout: 1, vBtc: 50000n, anchor: { txid: 'bb'.repeat(32), vout: 0 }, extra: 1 };

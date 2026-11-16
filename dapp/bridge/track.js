@@ -249,7 +249,8 @@ export function readBridges(storage, now = Date.now()) {
 
 const DUST = 546, REVEAL_VB = 180, COMMIT_VB = 154;
 export const satsOut = (rate) => Math.ceil(REVEAL_VB * rate) + DUST + Math.ceil(COMMIT_VB * rate);
-export const satsBack = (rate) => Math.max(500, Math.ceil(218 * rate)) + Math.max(500, Math.ceil((85 + 68) * rate));
+const FLOOR = (rate) => (rate < 1 ? 150 : 500);   // a transaction pays at least 500 sats, 150 when the rate itself is under 1 sat/vB (tacit.js feeFor)
+export const satsBack = (rate) => Math.max(FLOOR(rate), Math.ceil(218 * rate)) + Math.max(FLOOR(rate), Math.ceil((85 + 68) * rate));
 
 export function costLine(asset, dir, c = {}) {
   const r = ROUTES[asset];
