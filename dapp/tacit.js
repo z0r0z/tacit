@@ -13763,6 +13763,7 @@ async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _dept
   const topoList = [];
   const enqueued = new Set();
   const parentsOf = new Map();
+  const unread = new Set();
   let expanding = null;
 
   const enqueue = (txid, vout) => {
@@ -13790,8 +13791,14 @@ async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _dept
     for (let i = 0; i < uniqTxids.length; i += FETCH_CONCURRENCY) {
       const chunk = uniqTxids.slice(i, i + FETCH_CONCURRENCY);
       await Promise.all(chunk.map(async t => {
+        // A read that fails here is asked again before the walk goes on without it: what the transaction spends is only laid out from this
+        // read, so a note whose history was never walked must not be judged later as one whose history is bad.
         let tx = null;
-        try { tx = await fetchTx(t); } catch { }
+        for (let a = 0; a < 3 && !tx; a++) {
+          try { tx = await fetchTx(t); } catch { tx = null; }
+          if (!tx && a < 2) await new Promise(r => setTimeout(r, 250 * (a + 1)));
+        }
+        if (!tx) unread.add(t);
         let env = null;
         if (tx?.vin?.[0]?.witness && tx.vin[0].witness.length >= 3) {
           try { env = decodeEnvelopeScript(hexToBytes(tx.vin[0].witness[1])); } catch { env = null; }
@@ -13875,6 +13882,9 @@ async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _dept
   }
   for (const { txid, vout, key } of order) {
     if (validatedSet.has(key)) continue;
+    // Not read when the walk was laid out, so its history was not walked: a read that comes back now cannot be judged without it. It is a read to try
+    // again (a verdict of 'invalid' here read as a note whose parents were bad, and a provider declined a user's lock for good on it).
+    if (unread.has(txid)) { _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED); continue; }
     await _validateOutpointSingle(txid, vout, validatedSet, fetchTx, metadataOut, rpBatch, pmintStatusOut, validatedReasons);
   }
 

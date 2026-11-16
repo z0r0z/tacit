@@ -18,7 +18,7 @@ const DUST = 546;
 const ZERO_AUTH = '0x' + '00'.repeat(32);
 const KNOWN = /already (in|known)|txn-already|already in block|already exists|duplicate/i;
 
-export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp, fetchImpl = fetch, timeoutMs = 20000, feeTarget = '3', minFeeRate = 1, retryMs = 1500, feeFreshMs = 60000, feeStaleMs = 2 * 3600000, feeRetryMs = 15000, nowMs = Date.now }) {
+export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp, fetchImpl = fetch, timeoutMs = 20000, feeTarget = '3', minFeeRate = 1, retryMs = 1500, feeFreshMs = 60000, feeStaleMs = 2 * 3600000, feeRetryMs = 15000, nowMs = Date.now, log = () => {} }) {
   const list = bases.map((b) => b.replace(/\/$/, ''));
   const wallet = { pub: prims.wallet.pub, priv: prims.wallet.priv, xonly: prims.wallet.pub.slice(1) };
   const address = prims.wallet.address();
@@ -163,6 +163,8 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     for (const [k, v] of c) if (v === true) proved.set(k, true);
     while (proved.size > 4000) proved.delete(proved.keys().next().value);
     if (ok !== true && reasons.get(`${a}:${b}`) === 'fetch-failed') throw Object.assign(new Error(`the note ${String(a).slice(0, 8)}…:${b} could not be read just now`), { transient: true });
+    // a verdict that a note is not valid says where in its history: the first outpoint the walk rejected (its parents were judged before it), and what the reads gave
+    if (ok !== true) { try { log({ level: 'warn', msg: 'a note is not valid', note: `${a}:${b}`, rejected: [...reasons].filter(([, v]) => v === 'invalid').slice(0, 3).map(([k]) => k), unread: [...reasons].filter(([, v]) => v === 'fetch-failed').length }); } catch { /* a log that fails is not a reason to answer otherwise */ } }
     return ok;
   };
   const resolveNote = tacit ? makeNoteResolver({ validateOutpoint: validate, txOutputEnvelope: tacit.txOutputEnvelope, getParentEnvelopeData: tacit.getParentEnvelopeData, fetchTx }) : null;
