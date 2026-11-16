@@ -54,6 +54,18 @@ box.querySelector('#bb-amt').value = 'x';
 box.querySelector('[data-bid-place]').click();
 await tick(); await tick();
 ok(calls.bids.length === 1 && notes.some(([k, m]) => k === 'error' && /Enter an amount/.test(m)), 'an amount that does not read is said, and nothing is placed');
+ok(!('feeBudgetSats' in calls.bids[0]), 'a bid with no fee budget entered leaves it to the engine (10,000 sats)');
+for (let i = 0; i < 6; i++) await tick();
+box.querySelector('#bb-amt').value = '0.1'; box.querySelector('#bb-sats').value = '600'; box.querySelector('#bb-fee').value = '500';
+box.querySelector('[data-bid-place]').click();
+await tick(); await tick();
+ok(calls.bids.length === 1 && notes.some(([k, m]) => k === 'error' && /fee budget/.test(m)), 'a fee budget under 2,000 sats is said, and nothing is placed');
+for (let i = 0; i < 6; i++) await tick();
+box.querySelector('#bb-amt').value = '0.1'; box.querySelector('#bb-sats').value = '600'; box.querySelector('#bb-fee').value = '3000';
+box.querySelector('[data-bid-place]').click();
+await tick(); await tick();
+ok(calls.bids.length === 2 && calls.bids[1].feeBudgetSats === 3000 && calls.bids[1].amount === 10000000n && calls.bids[1].priceSats === 600, 'a fee budget entered is the one the bid is placed with');
+ok(/10,000 sats unless you enter another/.test(box.textContent.replace(/\s+/g, ' ')), 'the form says what a bid sets aside: its price and a fee budget, and that the rest comes back');
 
 for (let i = 0; i < 6; i++) await tick();
 box.querySelector('[data-home]').click();

@@ -65,12 +65,14 @@ export function mountBoundMarket(box, { T, asset, unlock = async () => {}, notif
     root.innerHTML = `
       <section><h3>Bids for ${esc(ticker)}</h3>
         ${st.err ? `<p class="err">${esc(st.err)}</p>` : bidRows ? `<ul class="rows">${bidRows}</ul>` : `<p class="note">No bids for ${esc(ticker)} on Bitcoin yet.</p>`}
-        <p class="note">Selling sends a ${esc(ticker)} note on Bitcoin to the buyer, for its sats, in one transaction the buyer's watchtower completes. Enter an amount to sell part of a note: the rest comes back to your Bitcoin address. You can close the page after offering.</p></section>
+        <p class="note">Selling sends one of your ${esc(ticker)} notes on Bitcoin to the buyer, for its sats, in one transaction the buyer's watchtower completes. Enter an amount to sell part of a note: the rest comes back to your Bitcoin address. You can close the page after offering.</p></section>
       <section><h3>Place a bid</h3>
         <div class="form"><input id="bb-amt" inputmode="decimal" placeholder="Amount of ${esc(ticker)}" aria-label="Amount of ${esc(ticker)} to buy">
           <input id="bb-sats" inputmode="numeric" placeholder="Total sats" aria-label="Total sats you pay">
+          <input id="bb-fee" inputmode="numeric" placeholder="Fee budget (optional)" aria-label="Sats set aside for Bitcoin fees, 10,000 unless you enter another amount">
           <button class="btn" type="button" data-bid-place ${st.busy ? 'disabled' : ''}>${st.busy === 'bid' ? 'Placing…' : 'Place a bid'}</button></div>
         <label class="note"><input type="checkbox" id="bb-self"> Take offers myself: the bid's key stays on this device and you take each offer here, after it is checked. Otherwise the watchtower holds that key and takes offers while you are away.</label>
+        <p class="note">A bid sets aside its price plus a fee budget (10,000 sats unless you enter another, at least 2,000) in a wallet the watchtower holds. What is not spent comes back when the bid closes.</p>
         <p class="note">What a bid buys arrives on Bitcoin and moves to Ethereum from here.</p></section>
       ${mineRows ? `<section><h3>Your bids you take yourself</h3><ul class="rows">${mineRows}</ul>
         <p class="note">Each offer is checked before it shows as checked: the seller's note is real and unspent, and the note you get holds exactly the amount offered. Take settles it in one Bitcoin transaction.</p></section>` : ''}
@@ -85,11 +87,12 @@ export function mountBoundMarket(box, { T, asset, unlock = async () => {}, notif
     })(); }; });
     const place = root.querySelector('[data-bid-place]');
     // the inputs are read before the press repaints the view (its button says it is placing)
-    if (place) place.onclick = () => { const amtIn = root.querySelector('#bb-amt').value, satsIn = root.querySelector('#bb-sats').value, selfTake = !!root.querySelector('#bb-self')?.checked; return act('bid', async () => {
-      const amount = parseUnits(amtIn, decimals), sats = Number(satsIn);
+    if (place) place.onclick = () => { const amtIn = root.querySelector('#bb-amt').value, satsIn = root.querySelector('#bb-sats').value, feeIn = (root.querySelector('#bb-fee')?.value || '').trim(), selfTake = !!root.querySelector('#bb-self')?.checked; return act('bid', async () => {
+      const amount = parseUnits(amtIn, decimals), sats = Number(satsIn), fee = feeIn ? Number(feeIn) : null;
       if (!amount || amount <= 0n) throw new Error(`Enter an amount of ${ticker}.`);
       if (!Number.isInteger(sats) || sats < 546) throw new Error('Enter the total sats (at least 546).');
-      await T.placeBoundBid({ assetIdHex: id, amount, priceSats: sats, decimals, expiry: Math.floor(Date.now() / 1000) + 7 * 86400, ...(selfTake ? { selfTake: true } : {}) });
+      if (fee != null && (!Number.isInteger(fee) || fee < 2000 || fee > 100000)) throw new Error('Enter the fee budget in sats (2,000 to 100,000), or leave it empty for 10,000.');
+      await T.placeBoundBid({ assetIdHex: id, amount, priceSats: sats, decimals, expiry: Math.floor(Date.now() / 1000) + 7 * 86400, ...(fee != null ? { feeBudgetSats: fee } : {}), ...(selfTake ? { selfTake: true } : {}) });
       notify(`Bid placed for ${fmtUnits(amount, decimals)} ${ticker}.${selfTake ? ' Offers into it show here to take.' : ''}`, 'ok', 6000);
     })(); };
     root.querySelectorAll('[data-take]').forEach((b) => { b.onclick = act('take:' + b.dataset.take, async () => {

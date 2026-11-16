@@ -217,7 +217,7 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
       await Promise.all([session.load(), ensureCss()]);
       // a bridged token other than TAC is sold into bound bids (trade/bound.js), never by the atomic sales of the book below
       if (asset.bound) {
-        const { mountBoundMarket } = await import('/trade/bound.js?cb=e6d96ffa');
+        const { mountBoundMarket } = await import('/trade/bound.js?cb=2f5d5730');
         if (main !== mine) return;
         box.replaceChildren();
         ctl = mountBoundMarket(box, { T: session.T, asset: { id: AID, ticker: asset.ticker || 'tokens', decimals: asset.decimals ?? 8 }, unlock, notify });
