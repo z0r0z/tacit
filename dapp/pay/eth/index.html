@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-DrPvuYmTaiZOHKmZiMvaTIKwSa3iCdk2bFqW639QZck=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-60gTQuyRPlRYhDojuT4qduKVfTE+ZUatlHz8hmlUlIY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -2866,7 +2866,7 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=b9e8bf95');
+    const m = await import('/fixed-pool-pay.js?cb=8d66696d');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2883,7 +2883,7 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=b9e8bf95');
+    const m = await import('/fixed-pool-pay.js?cb=8d66696d');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
@@ -2906,7 +2906,7 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=b9e8bf95');
+    const m = await import('/fixed-pool-pay.js?cb=8d66696d');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2926,7 +2926,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=b9e8bf95');
+    const m = await import('/fixed-pool-pay.js?cb=8d66696d');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -3027,7 +3027,7 @@ function formDeposit(f) {
       if (raw && dto.error) { go.disabled = true; return say_(html`<p class="note err" role="alert">${dto.error}</p>`); }
       if (a && wb != null && a > wb) { say_(html`<p class="note err" role="alert">More than your wallet holds on ${c.full}.</p>`); go.disabled = true; }
       else if (a && dto?.bp) say_(html`${kvRow('To', html`${dto.label ? `${dto.label} → ` : ''}${viewAddr(dto.bp, 8)}`)}${dto.id ? kvRow('ID', dto.id) : ''}${kvRow('Into their private balance', html`${fmt(a, 18, 6)} ETH on ${cname(c)}`)}${kvRow('Relay fee', 'none · your wallet pays the network fee')}${pointsRow(a)}${split ? html`<p class="note">Whole notes are for your own balance. Clear “To” to deposit this amount as notes and the rest.</p>` : ''}`);
-      else if (a && split && !raw) say_(html`${kvRow('Into the large pools', `${split.noteCount} whole ${split.noteCount === 1 ? 'note' : 'notes'} · ${fmt(split.noteTotal, 18, 6)} ETH`)}${split.remainder ? kvRow('Into your private balance', `${fmt(split.remainder, 18, 6)} ETH`) : ''}${kvRow('Relay fee', 'none · your wallet pays the network fees')}`);
+      else if (a && split && !raw) say_(html`${kvRow('Into the large pools', `${split.noteCount} whole ${split.noteCount === 1 ? 'note' : 'notes'} · ${fmt(split.noteTotal, 18, 6)} ETH`)}${split.remainder ? kvRow('Into your private balance', `${fmt(split.remainder, 18, 6)} ETH`) : ''}${kvRow('Relay fee', 'none · your wallet pays the network fees')}${split.remainder ? pointsRow(split.remainder) : ''}`);
       else if (a) say_(html`${kvRow('Into your private balance', `${fmt(a, 18, 6)} ETH`)}${kvRow('Relay fee', 'none · your wallet pays the network fee')}${pointsRow(a)}`);
       go.textContent = !S.wallet ? 'Connect wallet' : dto?.bp ? 'Deposit to them privately' : split && !raw ? split.label : 'Deposit privately';
     };
