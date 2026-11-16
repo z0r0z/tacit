@@ -628,10 +628,10 @@ await test('the cards are on with no flag in the address and nothing stored, the
   await unlock(page);
   await page.waitForSelector('#lg-notes', { state: 'attached', timeout: 30000 });
   await page.waitForFunction(() => /Notes in the large pools/.test(document.querySelector('#lg-notes')?.textContent || ''), null, { timeout: 30000 });
-  assert.match(await page.locator('#lg-notes summary').innerText(), /How large amounts work/);
+  assert.match(await page.locator('#lg-notes summary').innerText(), /How it works/);
   await page.click('#lg-notes summary');
   const how = await page.locator('#lg-notes details').innerText();
-  assert.match(how, /whole notes \(1, 10 or 100 ETH/); assert.match(how, /at most 3%/); assert.match(how, /Find/); assert.match(how, /Withdraw/);
+  assert.match(how, /Tornado Cash/); assert.match(how, /1, 10 or 100 ETH/); assert.match(how, /Find/); assert.match(how, /blends in/);
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'explainer.png'), fullPage: true });
   await page.fill('#f-damt', '2.5');
   await page.waitForFunction(() => /Deposit 2\.5 ETH: 2 whole notes \+ 0\.5/.test(document.querySelector('#f-go')?.textContent || ''), null, { timeout: 30000 });

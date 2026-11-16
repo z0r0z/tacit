@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-GfWONv9EI+RBloWnU2yWHzWBzMKHXHs4g+oftJiGIds=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-wH8HjjFOO3yXyx1Zuk54zQLIhXsfhfJugykUd+NHGJI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -676,9 +676,9 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <main>
     <section class="card app" aria-label="Private ETH">
       <nav class="modes" id="modes" aria-label="What to pay in">
-        <a href="/pay/#btc" data-mode="btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>BTC</b><small>silent</small></span></a>
+        <a href="/pay/eth/" data-mode="eth" aria-current="page"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small>shielded</small></span></a>
         <a href="/pay/#tac" data-mode="tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>TAC</b><small>shielded</small></span></a>
-        <a href="/pay/eth/" data-mode="eth" aria-current="page"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small><span class="cs" role="img" aria-label="Ethereum" title="Ethereum"><svg class="tk" aria-hidden="true"><use href="#c-eth"/></svg></span></small></span></a>
+        <a href="/pay/#btc" data-mode="btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>BTC</b><small>silent</small></span></a>
       </nav>
       <div class="req" id="proof" hidden><div id="proof-body"></div><div class="status" role="status" id="pf-status"></div></div>
       <div class="req" id="gift" hidden><div id="gift-body"></div><div class="status" role="status" id="gift-status"></div></div>
@@ -712,8 +712,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <nav class="sf-x" aria-label="Pool and backup">
     <span>Pool</span>
     <a class="cx" href="https://etherscan.io/address/0x000000c2A20657CE25f2Ba99737933D031AFBEE9" aria-label="Ethereum" title="Ethereum" target="_blank" rel="noopener noreferrer"><svg class="tk xs" aria-hidden="true"><use href="#c-eth"/></svg></a>
-    <a class="cx" href="https://basescan.org/address/0x000000c2A20657CE25f2Ba99737933D031AFBEE9" aria-label="Base" title="Base" target="_blank" rel="noopener noreferrer"><svg class="tk xs" aria-hidden="true"><use href="#c-base"/></svg></a>
-    <a class="cx" href="https://robinhoodchain.blockscout.com/address/0x000000c2A20657CE25f2Ba99737933D031AFBEE9" aria-label="Robinhood Chain" title="Robinhood Chain" target="_blank" rel="noopener noreferrer"><svg class="tk xs" aria-hidden="true"><use href="#c-rh"/></svg></a>
     <a href="https://github.com/src-company/tacit/blob/main/docs/EVM-POOL.md" target="_blank" rel="noopener noreferrer">How it works</a>
     <a href="/ceremony/">Ceremony</a>
     <a href="https://anon.wei.limo/" title="An immutable copy of this page for Ethereum, Base and Robinhood Chain, served from contract code on Ethereum" target="_blank" rel="noopener noreferrer">Backup · anon.wei.limo</a>
@@ -845,7 +843,7 @@ const CHAIN_MARK = { 1: 'c-eth', 8453: 'c-base', 4663: 'c-rh' };
 const cmark = (c, size = 'xs') => html`<svg class="tk ${size}" role="img" aria-label="${c.full}"><title>${c.full}</title><use href="#${CHAIN_MARK[c.chainId]}"/></svg>`;
 const cicon = (c) => html`<svg class="tk xs" aria-hidden="true"><use href="#${CHAIN_MARK[c.chainId]}"/></svg>`;
 const cname = (c, tight = false) => html`<span class="cm">${cicon(c)}${tight ? c.name : c.full}</span>`;
-const crow = (list = CHAINS, after = '') => html`<span class="nw"><span class="cs">${list.map((c) => cmark(c))}</span>${after}</span>`;
+const crow = (list = CHAINS, after = '') => html`<span class="nw"><span class="cs">${list.filter(chainShown).map((c) => cmark(c))}</span>${after}</span>`;
 
 function fmt(v, dec = 18, max = 6, down = false) {
   v = BigInt(v);
@@ -2849,7 +2847,7 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=c492ca4f');
+    const m = await import('/fixed-pool-pay.js?cb=75f72500');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2866,7 +2864,7 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=c492ca4f');
+    const m = await import('/fixed-pool-pay.js?cb=75f72500');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
@@ -2889,7 +2887,7 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=c492ca4f');
+    const m = await import('/fixed-pool-pay.js?cb=75f72500');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2909,7 +2907,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=c492ca4f');
+    const m = await import('/fixed-pool-pay.js?cb=75f72500');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
