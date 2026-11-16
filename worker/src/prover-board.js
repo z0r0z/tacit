@@ -744,7 +744,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     if (rec) lines.push(`Tacit chain blocks: ${w.blocks} taken, usually ${Math.round(w.blockSecs * 10) / 10} s each.`);
     else lines.push('Tacit chain blocks: none taken yet.');
     if (w.draws) lines.push(`Drawn for ${w.draws} block${w.draws === 1 ? '' : 's'}${w.drawMissed ? `, ${w.drawMissed} not taken in time` : ', all taken'}.`);
-    if (odds != null) lines.push(`In the block draw now: about ${odds >= 0.995 ? 'every' : odds < 0.01 ? 'less than 1 in 100 of the' : Math.round(odds * 100) + ' in 100 of the'} blocks drawn this minute would be this machine's${rec ? '' : ' (a machine with no record yet shares a set-aside slice, so its odds start low and rise as its record forms)'}.`);
+    if (odds != null) lines.push(`In the block draw now: ${odds >= 0.995 ? 'about every block' : odds < 0.01 ? 'less than 1 in 100 of the blocks' : 'about ' + Math.round(odds * 100) + ' in 100 of the blocks'} drawn this minute would be this machine's${rec ? '' : ' (a machine with no record yet shares a set-aside slice, so its odds start low and rise as its record forms)'}.`);
     else lines.push(`Not in the block draw: ${why}`);
     return { ok: true, found: true, name, proved: w.proved || 0, blocks: w.blocks || 0, blockSecs: rec ? Math.round(w.blockSecs * 10) / 10 : null, draws: w.draws || 0, drawMissed: w.drawMissed || 0,
       lastSeenSeconds: seen, inDraw: odds != null, oddsPct: odds != null ? Math.round(odds * 1000) / 10 : null, why, text: lines.join('\n') };

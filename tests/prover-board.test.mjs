@@ -1135,5 +1135,6 @@ test('standing: odds under one in a hundred are said as less than one, not round
   const s = await b.standing(addrOf(fresh[0]));
   assert.ok(s.inDraw && s.oddsPct < 1, `a newcomer among thirty holds under one in a hundred (${s.oddsPct}%)`);
   assert.match(s.text, /less than 1 in 100 of the blocks/);
-  assert.doesNotMatch(s.text, /about 1 in 100/);
+  assert.doesNotMatch(s.text, /about 1 in 100|about less/);
+  assert.match((await b.standing(addrOf(fast))).text, /about \d+ in 100 of the blocks drawn this minute/, 'a whole number of hundredths keeps its "about"');
 });
