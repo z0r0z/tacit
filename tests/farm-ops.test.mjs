@@ -2,7 +2,7 @@
 // reward sent again giving it up only when that reward is dust.
 //   node tests/farm-ops.test.mjs
 import assert from 'node:assert/strict';
-import { exitSaid, canHarvest, canUnbond, unharvested, locked, harvest, unbond, UNBOND_DUST, HARVEST_WORTH, WTAC, wtacWithdrawCall, wtacBalanceCall, rewardNotes, relayable, worthHarvesting, redeem, lpNotes, takeOut, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cut, cutSized, ladder, feeShort, farmManager, bond, ownSend, ownWhy, walletSettle, relayedOrOwn, coinNames } from '../dapp/farm-ops.js';
+import { poolMoved, openProofMoved, exitSaid, canHarvest, canUnbond, unharvested, locked, harvest, unbond, UNBOND_DUST, HARVEST_WORTH, WTAC, wtacWithdrawCall, wtacBalanceCall, rewardNotes, relayable, worthHarvesting, redeem, lpNotes, takeOut, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cut, cutSized, ladder, feeShort, farmManager, bond, ownSend, ownWhy, walletSettle, relayedOrOwn, coinNames } from '../dapp/farm-ops.js';
 
 const now = 1_800_000_000;
 assert.equal(canHarvest({ pendingUnits: '1' }), true); assert.equal(canHarvest({ pendingUnits: '0' }), false, 'nothing pending: nothing to harvest');
@@ -178,3 +178,17 @@ assert.deepEqual(coinNames('tETH', 'cTAC', 'TAC/cETH'), ['tETH', 'cTAC'], 'a poo
 assert.deepEqual(coinNames(null, null, 'SPX/cETH'), ['SPX', 'cETH'], 'neither named: the pair gives both');
 assert.deepEqual(coinNames('tETH', null, undefined), ['tETH', 'a coin'], 'no pair either: never null');
 console.log('farm-ops: coin names ok');
+
+// ── a proof the pool refuses as moved ──
+const rev = (data) => Object.assign(new Error('execution reverted'), { revert: true, data });
+assert.equal(poolMoved(rev('0x29b3c833')), true, 'the pool\'s reserve mismatch is a moved pool'); assert.equal(poolMoved({ data: { data: '0x29b3c8330000' }, message: 'x' }), true, 'wherever a node puts its data');
+assert.equal(poolMoved(Object.assign(new Error('x'), { moved: true })), true, 'and so is what the front page tags'); assert.equal(poolMoved(rev('0xb115d857')), false, 'a spent note is not'); assert.equal(poolMoved(null), false);
+const open = { jobId: 'j1', publicValues: '0x01', proof: '0x02', memos: [] };
+const world = (err) => ({ cfg: { pool: '0xpool' }, settleCalldata: () => '0xdata', rpc: async (m) => { if (m !== 'eth_call') throw new Error('unexpected ' + m); if (err) throw err; return '0x'; } });
+assert.equal(await openProofMoved(world(rev('0x29b3c833')), open), true, 'a held proof the pool refuses as moved is dead');
+assert.equal(await openProofMoved(world(null), open), false, 'one the pool would take is waited for'); assert.equal(await openProofMoved(world(rev('0xb115d857')), open), false, 'one refused for another reason is left as before');
+assert.equal(await openProofMoved(world(new Error('timeout')), open), false, 'a node that does not answer decides nothing'); assert.equal(await openProofMoved(world(rev('0x29b3c833')), { ...open, memos: null }), false, 'without its memos it cannot be tried');
+const t2 = { ...world(null), rpc: async () => { throw rev('0x29b3c833'); } };
+await assert.rejects(walletSettle(t2, { sendTx: async () => '0x1', receipt: async () => ({ status: '0x1' }) }, '0xme')(open), (e) => e.moved === true && /would not go through/.test(e.message), 'the wallet\'s own check tags a moved pool');
+await assert.rejects(walletSettle({ ...t2, rpc: async () => { throw rev('0xb115d857'); } }, { sendTx: async () => '0x1', receipt: async () => ({ status: '0x1' }) }, '0xme')(open), (e) => !e.moved && /would not go through/.test(e.message), 'and says nothing more of another refusal');
+console.log('farm-ops: a moved pool ok');

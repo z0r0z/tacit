@@ -6,7 +6,7 @@
 // The front page's Earn card has more ways in (a proof kept ready, a swap split with the Precision pool, your own prover, LP only);
 // this is the one path a page with a wallet and a key needs. Everything it calls is the pool module's (confidential-pool-ux.js).
 import { zapPlan, zapPlanFor, zapSettleCalldata } from '/lp-zap.js?cb=f9b25fa1';
-import { relayedOrOwn } from '/farm-ops.js?cb=11a5416b';
+import { relayedOrOwn } from '/farm-ops.js?cb=e70f2612';
 
 export const PUBLIC_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
 export const CETH = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';

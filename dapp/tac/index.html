@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-eJBuzmgUhFDDi1UHT5EIcqc/d3UgtAhReA2qBLfwDsA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-grAhKeBhWqWpshFrLLpHvC2aU0olNTkARvw+VU19WTI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -61,7 +61,7 @@
 <link rel="modulepreload" href="/trade/farm-read.js?cb=fb6ec72f">
 <link rel="modulepreload" href="/bridge-all.js?cb=45f85325">
 <link rel="modulepreload" href="/lp-zap.js?cb=f9b25fa1">
-<link rel="modulepreload" href="/farm-ops.js?cb=11a5416b">
+<link rel="modulepreload" href="/farm-ops.js?cb=e70f2612">
 <link rel="modulepreload" href="/relay-outcome.js?cb=ad7c898d">
 <link rel="modulepreload" href="/btc-borrow.js?cb=739f4312">
 <link rel="modulepreload" href="/bridge-out.js?cb=9be561ae">
@@ -1805,6 +1805,8 @@ a.opt { color: inherit; text-decoration: none; }
 @keyframes wait-in { from { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .opt[aria-busy="true"] .opt-t::after { animation-duration: 1.8s; } .way[aria-busy="true"] .tk { animation: none; } .status.wait { animation: none; } }
 .more { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; margin: 6px 0 0; }
+.more-in { margin-top: 10px; }
+.more-in > summary { cursor: pointer; text-align: center; font-size: 13px; color: var(--mute); margin: 6px 0 10px; }
 .lockmore { margin-top: 8px; }
 .lockmore > summary { cursor: pointer; font-size: 13px; color: var(--mute); text-decoration: underline; text-underline-offset: 3px; }
 .lockmore[open] > summary { margin-bottom: 8px; }
@@ -2705,7 +2707,7 @@ import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, za
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
 import * as GR from '/gas-relay.js?cb=e8d173a8';
 import { netPicker } from '/net-pick.js?cb=9229f173';
-import { UNBOND_DUST, HARVEST_WORTH, unharvested, exitSaid, bFor, aFor, farmManager, farmControllerOf, ladder as xoLadder, feeShort as xoFeeShort } from '/farm-ops.js?cb=11a5416b';
+import { UNBOND_DUST, HARVEST_WORTH, unharvested, exitSaid, bFor, aFor, farmManager, farmControllerOf, ladder as xoLadder, feeShort as xoFeeShort } from '/farm-ops.js?cb=e70f2612';
 import { relayCode, proveCapped, proved, relayRefused, jobSaid, calmText } from '/relay-outcome.js?cb=ad7c898d';
 import { makeLoans, bondGap, lockPad as lockPadOf, lockRate as lockRateOf, NEAR_FALL, fallToLiq, fallText, approaching, loanId, loanTag } from '/btc-borrow.js?cb=739f4312';
 import { makeOutFee, limitText, proofWarn, fundingText, onTheWay } from '/bridge-out.js?cb=9be561ae';
@@ -4701,27 +4703,34 @@ function signIn(id, first = 'eth') {
       return opt(k, html`<svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>${t ? html`<span class="num">${tacitShort(t)}</span>` : html`<b>Tacit wallet</b>`}`,
         html`${viaMark(w)}<span>Opens with ${viaText(w)}</span>${openerOn(w) ? html`<span class="wl-on">connected</span>` : ''}`, `mine${main ? ' main' : ''}`);
     };
+    // the wallet opened with the Ethereum wallet connected now goes first, one signature away; the other stays in view, by its address
+    const both = known && other, flip = both && !openerOn(known) && openerOn(other);
+    const ordered = (flip ? [['other', other], ['known', known]] : [['known', known], ['other', other]]).filter(([, w]) => w);
     const way = (k, icon, name, title) => html`<button class="way" type="button" data-in="${k}" title="${title}"><svg class="tk" aria-hidden="true"><use href="#${icon}"/></svg><span>${name}</span></button>`;
     const eth = way('eth', 'tk-eth', 'Ethereum', 'MetaMask, Rabby, Rainbow, any browser wallet, or WalletConnect'), btc = way('btc', 'tk-btc', 'Bitcoin', 'Xverse, Leather or UniSat');
     const ways = (first === 'btc' ? [btc, eth] : [eth, btc]).filter((x) => !(x === eth && mineOn));
     return html`<div class="opts" id="${id}-in">
-      <div class="lbl"><span>${known && other ? 'Open a wallet' : 'Open your wallet'}</span></div>
-      ${known && other ? html`<p class="note">Two separate wallets, each with its own address and balances.</p>` : ''}
-      ${known ? mine('known', known, true) : ''}${other ? mine('other', other, !known) : ''}
-      <div class="lbl"><span>Other ways in</span></div>
-      <div class="ways">${ways}${pk ? way('passkey', 'i-key', 'Passkey', 'Touch ID, Windows Hello or a security key') : ''}</div>
-      ${links}
+      <div class="lbl"><span>${known && other ? 'Pick a wallet' : 'Open your wallet'}</span></div>
+      ${known && other ? html`<p class="note">You opened Tacit two ways in this browser, so there are two wallets. They are separate keys with separate balances: pick the one that holds your funds.</p>` : ''}
+      ${ordered.map(([k, w], i) => mine(k, w, i === 0))}
+      <details class="more-in"><summary>Other ways to sign in</summary>
+        <div class="ways">${ways}${pk ? way('passkey', 'i-key', 'Passkey', 'Touch ID, Windows Hello or a security key') : ''}</div>
+        ${links}
+      </details>
     </div>`;
   }
   const sole = evm.soleWallet(), on = !!(S.wallet && S.provider);
   const ethSub = on ? html`<span class="nw">${short(S.wallet)}</span> is connected. Sign to open its Tacit wallet.` : sole ? `Continue with ${sole.named ? sole.name : 'your browser wallet'}.` : 'MetaMask, Rabby, Rainbow, or WalletConnect.';
-  const walletEth = opt('eth', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>Ethereum wallet`, ethSub, (on || sole) && first !== 'btc' ? 'main' : '');
+  const walletEth = opt('eth', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>Connect wallet`, ethSub, (on || sole) && first !== 'btc' ? 'main' : '');
   const walletBtc = opt('btc', html`<svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>Bitcoin wallet`, 'Xverse, Leather or UniSat.');
   return html`<div class="opts" id="${id}-in">
-    ${(first === 'btc' ? [walletBtc, walletEth] : [walletEth, walletBtc])}
-    ${pk ? opt('passkey', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>Passkey`, 'Already made one? Touch ID, Windows Hello or a security key.') : ''}
-    ${pk ? opt('new', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>No wallet yet? Create one`, 'Touch ID, Face ID or Windows Hello. Nothing to install.') : ''}
-    ${links}
+    ${first === 'btc' ? walletBtc : walletEth}
+    <details class="more-in"><summary>Other ways to sign in</summary>
+      ${first === 'btc' ? walletEth : walletBtc}
+      ${pk ? opt('passkey', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>Passkey`, 'Already made one? Touch ID, Windows Hello or a security key.') : ''}
+      ${pk ? opt('new', html`<svg class="tk sm" aria-hidden="true"><use href="#i-key"/></svg>No wallet yet? Create one`, 'Touch ID, Face ID or Windows Hello. Nothing to install.') : ''}
+      ${links}
+    </details>
   </div>`;
 }
 let signing = false, cancelSign = null, signStep = null, openAtOnce = true;
@@ -4757,7 +4766,7 @@ function wireSignIn(root, id, after) {
       const say = wait.querySelector('span');
       let slow = null, slower = null;
       signStep = (x, i) => { if (SIGN_SAY[x]) say.textContent = `${SIGN_SAY[x]}${i?.of === 2 ? `${x === 'sign' ? ' The first time asks twice, so the same key opens every time.' : ''} Step ${x === 'confirm' ? 2 : 1} of 2.` : ''}`; clearTimeout(slow); clearTimeout(slower); slow = setTimeout(() => { say.textContent = 'Still waiting. Open your wallet to answer.'; slower = setTimeout(() => { say.textContent = 'Nothing in your wallet? Cancel, then press again. If it keeps happening, reload this page.'; }, 15000); }, 10000); };
-      const more = box.querySelector('.more');
+      const more = box.querySelector('details.more-in') || box.querySelector('.more');
       const shown = k === 'key' ? null : setTimeout(() => { if (more?.isConnected) { more.style.display = 'none'; more.after(wait); } else box.append(wait); }, 600);
       const dlg = root.closest?.('dialog'), onClose = () => cancelSign?.();
       dlg?.addEventListener('close', onClose, { once: true });

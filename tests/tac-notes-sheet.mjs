@@ -72,6 +72,7 @@ try {
   await page.waitForSelector('#wallet', { timeout: 30000 });
   await page.click('#wallet');
   await page.waitForSelector('#ws-in', { timeout: 15000 });
+  await page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
   await page.click('#ws-in [data-in="paste"]');
   await page.fill('#ws-hex', KEY);
   await page.click('#ws-in [data-in="key"]');
