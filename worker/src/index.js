@@ -4237,12 +4237,32 @@ async function handleGasRelay(req, env, url, cors) {
   const removed = await board.remove(id, { payer: b.payer, nonce: b.nonce });
   return jsonResponse(removed, removed.ok ? 200 : 409, nostore);
 }
+// The queue as a picture anyone may read: counts and ages, never a job's contents (the box-token /confidential/queue has the same numbers for the monitor). It is what
+// tells a stuck queue (an oldest job that keeps getting older, or the loop on one job for minutes) from a busy one. Read at most every five seconds, since each read
+// walks the pending jobs.
+const _relayQueue = { at: 0, v: null };
+async function publicQueue(env) {
+  if (Date.now() - _relayQueue.at < 5000) return _relayQueue.v;
+  let v = null;
+  try {
+    const q = confSettler(env);
+    if (q) {
+      const s = await q.queueStats();
+      v = { pending: s.pending, pendingSettle: s.pendingSettle, pendingProveOnly: s.pendingProveOnly, proving: s.proving,
+        oldestPendingSec: s.oldestPendingSec, oldestPendingSettleSec: s.oldestPendingSettleSec, oldestProvingSec: s.oldestProvingSec, provingType: s.provingType };
+    }
+  } catch { v = null; }
+  _relayQueue.at = Date.now(); _relayQueue.v = v;
+  return v;
+}
 async function handleConfidentialRelay(env, cors) {
   const st = await relayState(env);
   if (!st) return jsonResponse({ ok: false, error: 'the relay’s state cannot be read just now' }, 503, { ...cors, 'Cache-Control': 'no-store' });
+  const queue = await publicQueue(env);
   return jsonResponse({
     state: st.state, proving: RELAY_PROVING.has(st.state), settling: RELAY_SETTLING.has(st.state),
     board: st.state === 'held' && st.board, failing: st.failing || 0, ageSeconds: st.ageSeconds,
+    ...(queue ? { queue } : {}),
   }, 200, { ...cors, 'Cache-Control': 'max-age=10' });
 }
 // The burn root the pool holds (knownBitcoinBurnRoot, storage slot 80), which every bridge mint must be built on. Read from Ethereum at

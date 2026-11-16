@@ -610,7 +610,15 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
   // The board first, for every op whose input is built here (the page modules build it byte for byte as the binary would).
   if (CFG.proverBoard && SELF_PROVE_TYPES.includes(type)) {
     let stdin = null;
-    try { stdin = stdinFor(type, { ...op, memoHashes }); } catch (e) { console.log(`[prover] ${type}: no board input (${e.message}); the binary proves it`); }
+    try { stdin = stdinFor(type, { ...op, memoHashes }); } catch (e) {
+      // An op the builder cannot read (a field missing or malformed) is one the binary's harness cannot read either, and the binary takes minutes to start its
+      // executor and say so (a burst of such farmunbond jobs held the whole relay for 35 minutes on 2026-11-16). The builder names the field; the job fails now.
+      // Anything else the builder throws (not a complaint about the op) still leaves the binary to try.
+      if (CFG.proverFailFastBadOp && String(e?.message || '').startsWith(`sp1-stdin ${type}:`)) {
+        throw new Error(`exec:${type} — not an op the prover can read (${String(e.message).slice(`sp1-stdin ${type}:`.length).trim()})`);
+      }
+      console.log(`[prover] ${type}: no board input (${e.message}); the binary proves it`);
+    }
     if (stdin) {
       const pub = PUBLIC_BOARD_TYPES.includes(type);
       const want = pub ? (() => { try { return depositsOf(type, op).map((d) => String(depositIdOf(d)).toLowerCase()); } catch { return []; } })() : [];

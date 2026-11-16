@@ -23,6 +23,7 @@
 import { CFG, ADDR, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
 import { confidentialJob, confidentialWake, confidentialBatch, confidentialAck, confidentialRefresh, confidentialActivateAck, confidentialOpenList, confidentialOpenJob, gasOrders, gasClear, confidentialQueue, heartbeat, heartbeatIdle, setHeartbeatLedger, relayBooks, quoteAsset } from './lib/worker-client.js';
 import { makeBatchWindow } from './lib/batch-window.js';
+import { makeJobPicker } from './lib/job-picker.js';
 import { proveSettle, proveMixed, proveSealed, proveStdin, boardAlive } from './lib/prover.js';
 import { quoteTacForEth, deepest } from './lib/tac-quote.js';
 import { makeGasSolver } from './lib/gas-solver.js';
@@ -1028,6 +1029,10 @@ async function freeProveAllowed(type) {
   return !c || c.wei == null || BigInt(c.wei) >= proveFloorWei(type, { reserveWei: CFG.freeProveMinCreditWei, exitWei: CFG.freeProveExitMinCreditWei });
 }
 
+// Relayed settles are claimed before prove-only jobs (which can cost minutes of this one loop before they fail), and a prove-only job still has its turn
+// after every PROVE_TURN_EVERY settles or batches, and once PROVE_TURN_SECS have passed since the last one had it (lib/job-picker.js).
+const pickJob = makeJobPicker({ confidentialJob, proveTurnEvery: CFG.proveTurnEvery, proveTurnSecs: CFG.proveTurnSecs });
+
 async function cycle() {
   const short = await fundsShort();
   const paused = await pause.check();
@@ -1039,8 +1044,12 @@ async function cycle() {
   if (paused) return false;
   // Gathering: the queued settle jobs are left a moment for company; only prove-only jobs are taken meanwhile.
   const gather = short ? 0 : await gatherWait();
-  if (!short && !gather && await batchCycle()) return true;
-  let job = await confidentialJob(short || gather ? { mode: 'prove' } : {});
+  // A prove-only job whose turn has come goes before a batch too: batches alone would hold it for as long as settles keep arriving.
+  let job = !short && !gather && pickJob.proveDue() ? await pickJob.proveTurn() : null;
+  if (!job?.jobId) {
+    if (!short && !gather && await batchCycle()) { pickJob.settled(); return true; }
+    job = await pickJob({ short, gather });
+  }
   if (gather && !job?.jobId) { await sleep(Math.min(gather / 1000, CFG.settlePollSecs)); return true; }
   // While the wallet cannot pay for a settle, a relayed job any account could send is still proved and put on the open
   // board: its holder's page offers to send it at once, any relayer may send it for its fee, and this relay sends it

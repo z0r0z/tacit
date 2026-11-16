@@ -19,7 +19,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const read = (p) => readFileSync(join(ROOT, p), 'utf8');
 // Real-shaped ops for the types the door checks (worker/src/op-admit.js): the fixtures the prover's harnesses were built against.
-const SHAPED_OP = Object.fromEntries([['cbtcmint', 'cbtc_mint_op'], ['cdpmint', 'cdp_mint_op'], ['cdptopup', 'cdp_topup_op']].map(([t, f]) => [t, JSON.parse(read(`contracts/sp1/confidential/fixtures/${f}.json`))]));
+const SHAPED_OP = Object.fromEntries([['cbtcmint', 'cbtc_mint_op'], ['cdpmint', 'cdp_mint_op'], ['cdptopup', 'cdp_topup_op'], ['farmunbond', 'farm_unbond_op']].map(([t, f]) => [t, JSON.parse(read(`contracts/sp1/confidential/fixtures/${f}.json`))]));
 const chain = read('worker-relay/src/lib/chain.js');
 const config = read('worker-relay/src/lib/config.js');
 const monitor = read('worker-relay/src/balance-monitor.js');
@@ -721,7 +721,7 @@ const sponsored = (extra) => { let n = 0; return loadSubmit({ freeCap: '100', fe
 test('each class has its own daily allowance, and one used up does not touch the others', async () => {
   const { call } = sponsored({ env: { FREE_RELAY_CAP_FARM: '2', FREE_RELAY_CAP_ONBOARD: '3', FREE_RELAY_CAP_WRAP: '1', FREE_RELAY_CAP_OTHER: '1' } });
   for (let i = 0; i < 2; i++) ok((await call({ type: 'farmharvest', op: {}, mode: 'settle' })).status === 200, `farm ${i + 1} of 2 is accepted`);
-  const farm = await call({ type: 'farmunbond', op: {}, mode: 'settle' });
+  const farm = await call({ type: 'farmunbond', op: SHAPED_OP.farmunbond, mode: 'settle' });   // a real unbond: an empty one is now turned back at the door (op-admit.js)
   ok(farm.status === 429 && farm.body.code === 'free_budget' && farm.body.class === 'farm', `the third farm op (an unbond shares the farm class) is refused, got ${farm.status}`);
   ok(/free relayed settles for today are used up \(2\/2\)/.test(farm.body.error) && /prove-mode and settle it yourself/.test(farm.body.error), 'in the words every page already answers by offering to send it from the holder\'s own account');
   for (const t of ['cbtcmint', 'cbtcmint', 'cbtcmint']) ok((await call({ type: t, op: SHAPED_OP[t], mode: 'settle' })).status === 200, `${t} still has onboarding room after farm is full`);

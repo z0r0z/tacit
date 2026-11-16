@@ -269,9 +269,14 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
     return verifyEmittedMemos(st, opSpec.leaves, sealedMemos);
   }
 
-  async function waitForProof(jobId, { intervalMs = 1500, timeoutMs = 15 * 60 * 1000, onUpdate, sleep } = {}) {
+  // `queuedTimeoutMs` (opt-in): a job still waiting its turn in the relay's queue ('pending') may wait this long, and the `timeoutMs` clock starts
+  // only once the relay takes it. For a caller with nothing that goes stale (a note's way home): giving up on a queued job and asking again only
+  // queues a second job behind the first. Without it, `timeoutMs` counts from the start, as it always did.
+  async function waitForProof(jobId, { intervalMs = 1500, timeoutMs = 15 * 60 * 1000, queuedTimeoutMs = null, onUpdate, sleep } = {}) {
     const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
-    const deadline = Date.now() + timeoutMs;
+    const queued = queuedTimeoutMs != null;
+    let deadline = Date.now() + (queued ? queuedTimeoutMs : timeoutMs);
+    let taken = !queued;
     let last = null;
     const pollState = {};
     for (;;) {
@@ -281,7 +286,8 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
       if (st.status === 'settled') return st;
       if (st.status === 'failed') throw failedError('prove', st);
       if (st.status === 'unknown') throw new Error('relay lost the job (worker restart / KV miss)');
-      if (Date.now() > deadline) throw new Error('prove timed out (box offline or backlogged)');
+      if (!taken && st.status !== 'pending') { taken = true; deadline = Date.now() + timeoutMs; }
+      if (Date.now() > deadline) throw new Error(taken ? 'prove timed out (box offline or backlogged)' : `prove timed out: still waiting its turn in the relay's queue (job ${jobId})`);
       await wait(intervalMs);
     }
   }

@@ -161,6 +161,8 @@ The same swap in the log: `swap` lines show each phase change (`accepted`, `lock
   from the Bridge tab, signed in with the same key. Not all of it can go: the bridge's proof cannot follow a note whose history passes
   through the Bitcoin shielded pool. `tools/fastbridge-lp-inventory.mjs` (read only; the key in `FB_LP_KEY`, never printed) opens the key's notes
   from the chain and asks the bridge's trace about each, so you can see how much of the Bitcoin TAC could come home and how much cannot.
+  `tools/fastbridge-lp-bridge-home.mjs` then brings the notes the bridge can carry home over the regular bridge, note by note (`plan` checks and prices
+  them and sends nothing; `start --send` begins them; `tick` moves them on until each is minted into the pool).
 - **The claimer's prover** is the one remaining trust assumption (see the design doc): the process never proves the user's
   claim, and the user chooses who does.
 
