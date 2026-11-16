@@ -5,8 +5,8 @@ import { declinedWords } from '/wallet-prompts.js';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=1d2cd8d3';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js';
-import * as R from '/swap/route.js?cb=44449874';
-import * as A from '/swap/aggregate.js?cb=67d0c300';
+import * as R from '/swap/route.js?cb=858622ed';
+import * as A from '/swap/aggregate.js?cb=b28244ac';
 import * as SV from '/swap/solvers.js?cb=669b2617';
 import { linkName, linkSides } from '/swap/link.js?cb=00bf0557';
 import { routeLine } from '/swap/route-name.js?cb=2a0317f3';
@@ -941,10 +941,12 @@ function quotePaint() {
     const inAmt = Number(spentOf(q, r)) / 10 ** pay.dec, outAmt = Number(r.val ?? r.out) / 10 ** get.dec;
     const depth = r.priv && q.pools?.length ? `Pool depth: ${q.pools.map((p) => `${tidy(amtFmt(p.ra, 8))} ${PSYM[p.a]} · ${tidy(amtFmt(p.rb, 8))} ${PSYM[p.b]}`).join(' and ')}` : '';
     if (inAmt > 0 && outAmt > 0) lines.push(['Price', (outAmt >= inAmt) !== !!S.pxFlip ? `1 ${pay.sym} = ${sig(outAmt / inAmt)} ${get.sym}` : `1 ${get.sym} = ${sig(inAmt / outAmt)} ${pay.sym}`, '', depth, null, 'px-flip']);
+    const one = r.zap ? zapOneOf(r) : null;
     if (laterOn(kind)) { }
-    else if (!r.priv || (r.pout && !isEth(S.get))) lines.push(['At least', `${tidy(amtFmt(r.min ?? (r.out * BigInt(10000 - S.slip)) / 10000n, get.dec))} ${get.sym}`]);
+    else if (!r.priv || (r.pout && !isEth(S.get))) lines.push(['At least', `${tidy(amtFmt(one ? one.wrap : r.min ?? (r.out * BigInt(10000 - S.slip)) / 10000n, get.dec))} ${get.sym}`]);
     else if (r.priv && !r.pout) lines.push(['At least', `${tidy(amtFmt(poolFloor(r.out / scOf(S.get)) * scOf(S.get), get.dec))} ${get.sym}`]);
     if (r.sell?.rest > 0n) lines.push(['Plus', `about ${tidy(amtFmt(r.sell.rest, 18))} WETH`]);
+    if (one?.back > 0n) lines.push(['Back to wallet', `about ${tidy(amtFmt(one.back, get.dec))} ${get.sym}, public`, '', `Exactly the “At least” amount goes into the pool as your private note. What the swap pays above it comes back to your wallet in the same transaction, not private, and so does any ETH it does not spend.`]);
     const routed = r.agg || r.sv ? (q.rows || []).length < 2 : r.any?.hop || r.sell || r.buy || r.pin || r.zap || r.via || r.hop;
     const hopEth = laterOn(kind) && isEth(S.pay) && !r.hop && !r.via && rows.hidden;
     const named = hopEth || !routed ? routeLine({ r, pools: q.pools, hop: hopEth }, (k) => PSYM[k]) : null;
@@ -964,7 +966,7 @@ function quotePaint() {
       if (st) lines.push(['Proof', st === 'ready' ? (a ? 'made: one transaction' : 'made: the relay only sends it') : 'being made, about a minute', st === 'ready' ? 'ok' : '']); }
     { const nudge = r.priv && privRow(q, r); if (nudge) lines.push(nudge); }
     if (r.pout) lines.push(['Chain sees', htmlVal(`${esc(get.sym)} to ${S.to ? whoH(S.to) : W.account ? 'your wallet' : 'the address'}, not from whom`)]);
-    else if (r.zap) lines.push(['Steps', `swap, then shield and prove it`, '', 'The swap is a public trade on the open market. Then the token goes into the pool from your wallet, and the proof that makes it private takes about a minute.'], ['Chain sees', `your ${tidy(amtFmt(q.wei, pay.dec))} ETH bought ${get.sym}, then a deposit`]);
+    else if (r.zap) lines.push(['Steps', `swap, then shield and prove it`, '', one ? 'One transaction from your wallet: the swap is a public trade on the open market, and what it buys goes into the pool in the same transaction, so it never rests in your wallet. The proof that makes it private takes about a minute.' : 'The swap is a public trade on the open market. Then the token goes into the pool from your wallet, and the proof that makes it private takes about a minute.'], ['Chain sees', `your ${tidy(amtFmt(q.wei, pay.dec))} ETH bought ${get.sym}, then a deposit`]);
     else if (r.pin) lines.push(['Chain sees', `your ${tidy(amtFmt(q.wei, pay.dec))} ${pay.sym} for ETH, then a deposit`]);
     else if (r.priv) lines.push(['Chain sees', isEth(S.pay) ? `your ${tidy(amtFmt(q.wei, 18))} ETH deposited` : 'a swap, not whose']);
     else if (laterOn(kind)) { const dep = isEth(S.pay) ? laterDeposit(q) : laterIn(q); lines.push(['Chain sees', `your ${dep != null ? `${tidy(amtFmt(dep, pay.dec))} ` : ''}${pay.sym} going in, not where it goes`]); }
@@ -1153,6 +1155,7 @@ async function go() {
   if (S.toBad) return;
   if (['tac', 'any', 'in', 'out', 'agg'].includes(P.kind) && !isEth(P.pay)) { S.busy = true; const plan = await relayPlan(from).catch(() => null); S.busy = false; if (plan) { await relayGo(P, from, plan); return; } }
   S.busy = true; approved = ''; zeroed = ''; paintQuote();
+  if (P.kind === 'zap' && H.moves?.zapShield && await zapOne(P)) { S.busy = false; paintQuote(); return; }
   const beforeP = P.to ? null : balanceNow(P.get, from).catch(() => null);
   let before = null;
   try {
@@ -1182,6 +1185,34 @@ async function go() {
     S.busy = false; paintQuote();
     say(e instanceof UserStopped || e?.userStopped ? declinedWords(e, unsent()) : `<span class="err">${e?.html ? e.message : esc(e?.message || String(e)).slice(0, 300)}</span>`, '', true);
   } finally { S.busy = false; }
+}
+// What the one-transaction buy puts in the pool and what comes back to the wallet, as the quote shows it (null when the page would do the buy in two steps).
+const zapOneOf = (r) => {
+  const coin = r?.zap && H.moves?.zapShield ? H.moves.poolCoin?.(S.get) : null, wrap = coin ? R.zapWrapAmount(r.zap.amountLimit, coin.scale) : 0n;
+  return wrap > 0n ? { wrap, back: r.zap.amountOut > wrap ? r.zap.amountOut - wrap : 0n } : null;
+};
+// The buy as ONE transaction, when the page can make the note: the swap is read again with the ROUTER as its recipient, and the page builds the note, runs the exact call as a call,
+// sends it and settles it (xtZapShield). The router swaps with that calldata, puts exactly the swap's least into the pool as the key's deposit, and sends what the swap paid above
+// that, and any ETH it left, back to the wallet. true: the press is taken (sent, declined, or stopped with its reason said). false: nothing was sent or asked of the wallet and the
+// two steps go on from here (no swap to the router, a call the router would refuse, a key or a token the page cannot use for it).
+async function zapOne(P) {
+  const coin = H.moves.poolCoin?.(P.get);
+  if (!coin) return false;
+  let plan;
+  try {
+    await chainTime();
+    if (!S.chainT) return false;
+    const dl = chainDeadline(1200);
+    say('Reading the price again…');
+    const q = await within(R.quoteEthToToken({ ethCall, to: R.CONF_ROUTER, tokenOut: P.get, amount: P.wei, slippageBps: P.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time.');
+    if (!q) return false;
+    if (q.amountOut < P.floor) { say('The price moved below the least you accept. Nothing was sent; the quote above is the new one.', '', true); S.busy = false; requote(true); return true; }
+    plan = R.zapShieldPlan({ quote: q, tokenOut: P.get, wei: P.wei, scale: coin.scale, deadline: dl });
+    if (plan.why) return false;
+  } catch { return false; }
+  say('');
+  try { return (await H.moves.zapShield(P.get, plan)) !== false; }
+  catch (e) { say(`<span class="err">${esc(e?.message || String(e)).slice(0, 300)}</span>`, '', true); return true; }
 }
 // The zap's second half. The swap has landed and the token it bought is in the wallet; the page makes that much of it private (its deposit, then its proof,
 // which it tells as it goes). If that stops, the token is in the wallet and Shield finishes it.
@@ -1497,7 +1528,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=f32d77bc').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=0dc2ce65').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
 const laterPair = (kind, pay = S.pay, get = S.get) => laterPay(pay)
   && (isEth(pay) ? kind === 'agg' || (kind === 'tac' && get === lc(R.TAC)) : (kind === 'agg' && get !== lc(R.WETH)) || kind === 'any' || kind === 'out' || kind === 'tac');
