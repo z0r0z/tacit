@@ -16,12 +16,12 @@ import { join } from 'node:path';
 
 // page → which link is the page it is ('' for none); a page not listed here does not wear the chrome
 export const CHROME_PAGES = {
-  'index.html': '', 'assets/index.html': 'assets', 'rewards/index.html': 'rewards', 'trade/index.html': 'assets', 'teth/index.html': 'assets', 'cbtc/index.html': 'assets',
+  'index.html': '', 'assets/index.html': 'assets', 'rewards/index.html': 'rewards', 'trade/index.html': 'trade', 'teth/index.html': 'assets', 'cbtc/index.html': 'assets',
   'vault/index.html': 'borrow', 'pay/index.html': 'pay', 'pay/eth/index.html': 'pay', 'tasks/index.html': 'tasks',
-  'build/index.html': '', 'etch/index.html': 'etch', 'weld/stats/index.html': '', 'relay/index.html': '',
+  'build/index.html': 'build', 'etch/index.html': 'etch', 'weld/stats/index.html': 'stats', 'relay/index.html': '',
   'splitter/index.html': '', 'sats/index.html': '', 'bridge/index.html': 'bridge',
-  'discord/index.html': '', 'face/index.html': 'face', 'fast/index.html': 'bridge', 'prove/index.html': 'prove', 'help/index.html': '', 'docs/chain/index.html': '',
-  'farm/index.html': 'farm',
+  'discord/index.html': '', 'face/index.html': 'face', 'fast/index.html': 'chains', 'prove/index.html': 'prove', 'help/index.html': '', 'docs/chain/index.html': '',
+  'farm/index.html': 'defi',
 };
 
 // 24×24 line drawings, the lander's tabs' hand; drawn by chrome.css (stroke, round caps) unless a glyph is .fill. The assets glyph is the TAC logo's t in its ring, at the logo's proportions (slanted stem, wide high bar, foot sweeping right). The llama is DefiLlama's mark in one colour
@@ -38,6 +38,12 @@ const G = {
   etch: '<path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/>',
   face: '<path d="M6 20V10a6 6 0 0 1 12 0v10l-2-2-2 2-2-2-2 2-2-2z"/><path d="M9.5 11.5h1M13.5 11.5h1"/>',
   portfolio: '<path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/>',
+  payments: '<path d="M4 12h14"/><path d="M13 6l6 6-6 6"/>',
+  defi: '<path d="M7 7h10l-3-3"/><path d="M17 17H7l3 3"/>',
+  chains: '<path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/>',
+  menu: '<path d="M5 7h14M5 12h14M5 17h14"/>',
+  trade: '<path d="M4 4v16h16"/><path d="M7.5 15l3.500-4.500 3 2.500L19 7"/>',
+  classic: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   tasks: '<path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/>',
   build: '<path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/>',
   stats: '<path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/>',
@@ -54,21 +60,23 @@ const G = {
 const FILLED = new Set(['github', 'x', 'llama', 'discord', 'ethbeat']);
 const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : ''} aria-hidden="true">${G[k]}</svg>`;
 
-// the places most people come for, always in the header (icons below ~900px, a menu entry on a phone): the assets, the farms (the glyph is the
-// farm page's chef's hat), what else pays and what there is to claim (rewards: points, the airdrop) and proving. Shielding, swapping, sending, earning, bridging and borrowing are the front page's tile, which the logo opens.
-// The menu holds the rest: the pages of their own for a holder (pay, borrow, the bridge page that follows bridges under way). The footer has the
-// network's own (build, stats)
-const MAIN = [['assets', '/assets/', 'Assets'], ['farm', '/farm/', 'Farm'], ['rewards', '/rewards/', 'Rewards'], ['prove', '/prove/', 'Prove']];
-const MORE = [['portfolio', '/#portfolio', 'Portfolio'], ['pay', '/pay/', 'Pay'], ['borrow', '/vault/', 'Borrow'], ['bridge', '/bridge/', 'Bridges'], ['tac', '/tac/', 'TAC'], ['etch', '/etch/', 'Etch'], ['tasks', '/tasks/', 'Tasks'], ['face', '/face/', 'FACE']];
+// The sections of the app, always in the header: what you hold, paying, DeFi, moving between chains, borrowing, and what there is to claim. A wide
+// header names them, a narrower one shows their glyphs, and on a phone they are the bar at the foot of the window (its fifth entry is the More page).
+// Payments, DeFi and Chains are views of the front page (its card, TAC's page and its sheets, each cut to the one thing); Borrow and Rewards are pages
+// of their own. The menu holds every other page.
+const MAIN = [['portfolio', '/#portfolio', 'Portfolio'], ['payments', '/#/payments', 'Payments'], ['defi', '/#/defi', 'DeFi'], ['chains', '/#/chains', 'Chains'], ['borrow', '/vault/', 'Borrow'], ['rewards', '/rewards/', 'Rewards']];
+const MORE = [['trade', '/trade/tac/', 'Trade'], ['assets', '/assets/', 'Assets'], ['etch', '/etch/', 'Etch'], ['prove', '/prove/', 'Prove'], ['tasks', '/tasks/', 'Tasks'], ['stats', '/weld/stats/', 'Stats'], ['classic', '/classic.html', 'Classic app'], ['build', '/build/', 'Docs'],
+  ['pay', '/pay/', 'Pay pool'], ['bridge', '/bridge/', 'Bridges'], ['tac', '/tac/', 'TAC'], ['face', '/face/', 'FACE']];
+const BAR = 4;   // how many of the sections the phone's bar holds before More; the rest are first in the menu there
 
 const here = (key, k) => (key === k ? ' aria-current="page"' : '');
 
 export function navHtml(key) {
   const main = MAIN.map(([k, href, name]) => `<a href="${href}" title="${name}"${here(key, k)}>${svg(k)}<span>${name}</span></a>`).join('\n    ');
-  const phone = MAIN.map(([k, href, name]) => `<a class="pr" href="${href}"${here(key, k)}>${svg(k)}${name}</a>`).join('\n      ');
+  const phone = MAIN.slice(BAR).map(([k, href, name]) => `<a class="pr" href="${href}"${here(key, k)}>${svg(k)}${name}</a>`).join('\n      ');
   const more = MORE.map(([k, href, name]) => `<a href="${href}"${here(key, k)}>${svg(k)}${name}</a>`).join('\n      ');
   const inMenu = MORE.some(([k]) => k === key);
-  return `<nav class="sn" aria-label="Pages">
+  return `<nav class="sn" aria-label="Sections">
     ${main}
     <details class="sm">
       <summary aria-label="More pages" title="More"${inMenu ? ' class="here"' : ''}>${svg('more')}</summary>
@@ -95,6 +103,14 @@ const OUT = [
   ['x', '@tacitfi on X', 'https://x.com/tacitfi'],
   ['discord', 'Tacit Discord community', 'https://discord.gg/VxYx9XSBrM'],
 ];
+export function barHtml(key) {
+  const tabs = MAIN.slice(0, BAR).map(([k, href, name]) => `<a href="${href}"${here(key, k)}>${svg(k)}<span>${name}</span></a>`).join('\n  ');
+  const rest = MAIN.slice(BAR).some(([k]) => k === key) || MORE.some(([k]) => k === key);
+  return `<nav class="bn" aria-label="Sections">
+  ${tabs}
+  <a href="/#/menu"${rest ? ' aria-current="page"' : ''}>${svg('menu')}<span>More</span></a>
+</nav>`;
+}
 export function footHtml(label = 'tacit.finance · mainnet', id = '') {
   const links = OUT.map(([k, name, href, word]) => `<a${word ? ' class="fw"' : ''} href="${href}" title="${name}" aria-label="${name}"${href.startsWith('/') ? '' : ' target="_blank" rel="noopener noreferrer"'}>${svg(k)}${word ? `<span>${word}</span>` : ''}</a>`).join('\n    ');
   return `<footer class="sf">
@@ -121,7 +137,7 @@ export function chromePage(text, rel, dapp) {
   let out = text;
   for (const name of ['nav', 'foot', 'head']) if (!BLOCK(name).test(out)) throw new Error(`${rel} has no chrome:${name} markers`);
   out = out.replace(BLOCK('nav'), (m, ind, begin) => block('nav', ind, begin, navHtml(key)));
-  out = out.replace(BLOCK('foot'), (m, ind, begin, params) => block('foot', ind, begin, footHtml(attr(params, 'label'), attr(params, 'id'))));
+  out = out.replace(BLOCK('foot'), (m, ind, begin, params) => block('foot', ind, begin, `${footHtml(attr(params, 'label'), attr(params, 'id'))}\n${barHtml(key)}`));
   out = out.replace(BLOCK('head'), (m, ind, begin, params) => block('head', ind, begin, headHtml(dapp, /\binline\b/.test(params))));
   return out;
 }

@@ -28,11 +28,12 @@ const server = createServer((req, res) => {
 let failed = 0;
 const ok = (c, m, extra = '') => { console.log(`${c ? 'ok  ' : 'FAIL'} ${m}${extra ? ` (${extra})` : ''}`); if (!c) failed++; };
 
-const HEADER = 'Assets:/assets/ Farm:/farm/ Rewards:/rewards/ Prove:/prove/';
-const MENU = 'Portfolio:/#portfolio Pay:/pay/ Borrow:/vault/ Bridges:/bridge/ TAC:/tac/ Etch:/etch/ Tasks:/tasks/ FACE:/face/';
+const HEADER = 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains Borrow:/vault/ Rewards:/rewards/';
+const BAR = 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains More:/#/menu', PHONE = 'Borrow:/vault/ Rewards:/rewards/';
+const MENU = 'Trade:/trade/tac/ Assets:/assets/ Etch:/etch/ Prove:/prove/ Tasks:/tasks/ Stats:/weld/stats/ Classic app:/classic.html Docs:/build/ Pay pool:/pay/ Bridges:/bridge/ TAC:/tac/ FACE:/face/';
 const FOOTER = 'Whitepaper | Build | Security | Source | Pool contract | Stats | DefiLlama | Listed on ETHBeat | @tacitfi on X | Tacit Discord community';
-// page → the menu entry marked as the page you are on (none for a page the menu does not list)
-const PAGES = { '/': null, '/tac/': 'TAC', '/chain/': 'TAC', '/vault/': 'Borrow', '/bridge/': 'Bridges', '/pay/': 'Pay', '/build/': null, '/docs/chain/': null, '/weld/stats/': null };
+// page → the section or menu entry marked as the page you are on (none for a page neither lists)
+const PAGES = { '/': null, '/tac/': 'TAC', '/chain/': 'TAC', '/vault/': 'Borrow', '/bridge/': 'Bridges', '/pay/': 'Pay pool', '/build/': 'Docs', '/docs/chain/': null, '/weld/stats/': 'Stats' };
 const VIEWS = { desktop: { width: 1280, height: 800 }, 'phone 390': { width: 390, height: 800 }, 'phone 360': { width: 360, height: 800 }, 'phone 320': { width: 320, height: 700 } };
 
 const browser = await chromium.launch();
@@ -63,7 +64,8 @@ for (const [vname, viewport] of Object.entries(VIEWS)) {
       return {
         at: location.pathname, header: [...document.querySelectorAll('.sn > a')].filter(visible).map((a) => `${a.textContent.trim()}:${a.getAttribute('href')}`).join(' '),
         menu: list('.sm-p a:not(.pr)'), phone: list('.sm-p a.pr'), dividers: document.querySelectorAll('.sm-p hr:not(.pr)').length,
-        marked: [...document.querySelectorAll('.sm-p a[aria-current="page"]')].map((a) => a.textContent.trim()).join(','),
+        marked: [...new Set([...document.querySelectorAll('.sn > a[aria-current="page"], .sm-p a[aria-current="page"]')].map((a) => a.textContent.trim()))].join(','),
+        bar: [...document.querySelectorAll('nav.bn a')].filter(visible).map((a) => `${a.textContent.trim()}:${a.getAttribute('href')}`).join(' '),
         chain: document.querySelectorAll('.sn a[href="/chain/"], .sm-p a[href="/chain/"]').length,
         foot: foot.map((a) => a.getAttribute('aria-label')).join(' | '), footHref: Object.fromEntries(foot.map((a) => [a.getAttribute('aria-label'), a.getAttribute('href')])),
         footIn: !!fr && fr.left >= -12 && fr.right <= window.innerWidth + 1, scroll: document.documentElement.scrollWidth > window.innerWidth + 1,
@@ -71,9 +73,9 @@ for (const [vname, viewport] of Object.entries(VIEWS)) {
     });
     const tag = `${vname} ${path}`;
     if (path === '/chain/') ok(seen.at === '/tac/', `${tag}: the old address goes on to TAC's page`, seen.at);
-    ok(seen.menu === MENU && seen.dividers === 0, `${tag}: the menu is the pages a holder goes to, with no divider`, seen.menu);
-    if (vname === 'desktop') ok(seen.header === HEADER, `${tag}: and Assets, Farm, Rewards and Prove sit beside it`, seen.header);
-    else ok(seen.phone === HEADER, `${tag}: and on a phone it holds them first`, seen.phone);
+    ok(seen.menu === MENU && seen.dividers === 0, `${tag}: the menu is every page that is not a section, with no divider`, seen.menu);
+    if (vname === 'desktop') ok(seen.header === HEADER && seen.bar === '', `${tag}: and the six sections sit beside the mark, with no bar at the foot`, `${seen.header} | ${seen.bar}`);
+    else ok(seen.bar === BAR && seen.phone === PHONE && seen.header === '', `${tag}: and on a phone four sections and More are the bar at the foot, the other two first in the menu`, `${seen.bar} | ${seen.phone} | ${seen.header}`);
     ok(seen.chain === 0, `${tag}: the Tacit chain has no entry of its own`);
     ok(seen.marked === (here || ''), `${tag}: the page you are on is marked${here ? ` (${here})` : ' (none)'}`, seen.marked);
     ok(seen.foot === FOOTER && seen.footHref.Build === '/build/' && seen.footHref.Stats === '/weld/stats/', `${tag}: the footer has Build and Stats among its icons`, seen.foot);

@@ -5,8 +5,11 @@
 header.top { position: relative; z-index: 30; container: top / inline-size; }
 header.top .top-r { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
 
-/* page links: six in the header (icons, then icons and names as the header gets wide), the rest in the menu; on a phone all of them are there */
-.sn { display: flex; align-items: center; gap: 2px; }
+/* the sections: six in the header, beside the mark (glyphs, then names as the header gets wide), every other page in the menu at the far end; on a phone
+   the sections are the bar at the foot of the window */
+header.top .top-r { flex: 1 1 auto; margin-left: 14px; }
+.sn { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; }
+header.top .sn > .sm { margin-left: auto; }
 .sn > a, .sn summary {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: none;
   height: 40px; min-width: 40px; padding: 0 9px; border-radius: 12px; color: var(--mute);
@@ -39,8 +42,9 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 .sn > a.sa:not([hidden]) { display: inline-flex; }
 .sn > a.sa .n { position: absolute; top: 3px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 8px; background: var(--orange); color: #fff; font: 600 10px/16px var(--mono); text-align: center; }
 @container top (min-width: 900px) {
-  .sn > a { padding: 0 13px 0 11px; }
+  .sn > a { padding: 0 13px; }
   .sn > a span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+  .sn > a > svg { display: none; }      /* named, the sections need no glyph */
 }
 
 /* a very narrow header keeps the mark and the name; the page's label, and the Activity and total chips' room, go first */
@@ -73,6 +77,19 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
   /* the mark and name at the header's left are 26-30px tall: the target reaches to the chips' 44 */
   header.top a.brand { position: relative; }
   header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
+}
+
+/* the phone's bar: the first four sections and More, fixed to the foot of the window; the footer keeps clear of it */
+.bn { display: none; }
+@media (max-width: 539px) {
+  .bn { position: fixed; z-index: 29; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(5, 1fr); padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+    background: color-mix(in srgb, var(--paper, var(--bg, #fff)) 92%, transparent); border-top: 1px solid var(--hair); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+  .bn a { display: grid; justify-items: center; gap: 3px; min-height: 44px; padding: 5px 2px 3px; border-radius: 12px; color: var(--mute); font: 500 10.5px/1.1 var(--mono); text-decoration: none; -webkit-tap-highlight-color: transparent; }
+  .bn a svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .bn a[aria-current="page"] { color: var(--ink); background: var(--hair); }
+  .bn a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+  footer.sf { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
 }
 
 /* the menu: under the header's right edge, whatever the width */
