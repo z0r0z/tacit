@@ -272,7 +272,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     // proved and sent a little later by the relay ("open"), or still in its queue when the wait runs out: followed until it lands. An add is proved against the
     // pool's exact reserves, so a trade landing while it is proved ends that proof, which nothing can then send: it is proved again at the pool's new reserves
     // (the notes are untouched), twice at most, and a pool that has moved off the notes' ratio says so (the check above, in the pool's own words).
-    const dead = (id) => { if (id && run().journal.get('job:' + id)) run().journal.put('job:' + id, { status: 'failed', err: 'The pool moved while it was being proved. Nothing was spent: it is still in your private balance. Try again for a fresh quote.' }); };
+    const dead = (id, again) => { if (id && run().journal.get('job:' + id)) run().journal.put('job:' + id, { status: 'failed', err: 'The pool moved while it was being proved. Nothing was spent: it is still in your private balance. Try again for a fresh quote.', ...(again ? { retried: true } : {}) }); };
     for (let left = 2; ;) {
       const w = run().wait(`Add ${name(pool)} liquidity and farm it`, 20 * 60e3);
       let jid = null;
@@ -280,7 +280,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
       catch (e) {
         const id = e?.open?.jobId || jid, held = e?.code === 'open' || !!e?.open;
         if (poolMoved(e) || (held && await openProofMoved(t, e.open))) {
-          dead(id);
+          dead(id, left > 0);
           if (!left--) throw Object.assign(new Error('The pool moved while this was being proved, three times running. Nothing was sent: press again.'), { said: true });
           say('The pool traded while this was being proved, so it is proved again at the new price. Nothing has been sent…');
           continue;
@@ -288,7 +288,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
         if (!id || !(held || /settle timed out|status polling for job/i.test(String(e?.message || '')))) throw e;
         say('Proved. The relay sends it in turn: waiting for it to land…');
         try { settled(await t.relay.waitForSettle(id, { openGraceMs: Infinity, timeoutMs: 30 * 60e3, intervalMs: 5000 })); break; }
-        catch (e2) { if (!poolMoved(e2)) throw e2; dead(id); if (!left--) throw e2; say('The pool traded while this was being proved, so it is proved again at the new price. Nothing has been sent…'); }
+        catch (e2) { if (!poolMoved(e2)) throw e2; dead(id, left > 0); if (!left--) throw e2; say('The pool traded while this was being proved, so it is proved again at the new price. Nothing has been sent…'); }
       }
     }
     if (D) D.form = joinAt ? { pool: D.form.pool, open: true } : {};
