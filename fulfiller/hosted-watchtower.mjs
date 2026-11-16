@@ -208,6 +208,8 @@ async function cycle() {
     cursor = page.list_complete ? null : page.cursor;
     for (const k of page.keys) {
       const rec = await kv.get(k.name, 'json');
+      // a self-take bid's offers are taken by the buyer's own wallet: the watchtower holds no key for it and leaves it alone
+      if (rec?.self_take) continue;
       if (RETURN_TO_OWNER && returnDue(rec, m, now)) {
         if (returns < MAX_RETURNS_PER_CYCLE) {
           returns++;

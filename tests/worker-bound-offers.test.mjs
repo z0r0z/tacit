@@ -102,5 +102,38 @@ await refused('an atomic-intent (TAC) bid', offerOf(), { bid: 'aa'.repeat(16) },
   ok(cancel.status === 200 && (await call(env, 'GET', `/assets/${ASSET}/bound-offers?network=${NET}`)).json.count === 0, 'the seller cancels its own offer, and the list is empty');
 }
 
+// a self-take bid: registered with no encrypted key (the signed record names 32 zero bytes in its place), offers go into it as into any
+// bound bid, and the buyer's own fill report counts toward it, closing it once filled in full
+{
+  const u64 = (n) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b; };
+  const u32 = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+  const hx = (h) => Uint8Array.from(Buffer.from(h, 'hex'));
+  const cat = (...a) => { const o = new Uint8Array(a.reduce((s, x) => s + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
+  const SID = '5e'.repeat(16), fundTxid = '12'.repeat(32), exp = NOW + 3600;
+  const regMsg = (enc) => sha256(cat(new TextEncoder().encode('tacit-watchtower-register-v1'), new TextEncoder().encode(NET), hx(ASSET), hx(SID), hx(BID_PUB), hx(OWNER_PUB), hx(enc),
+    u64(1200), u64('800'), u32(8), u64(exp), hx(fundTxid).reverse(), u32(0)));
+  const reg = (body) => call(env, 'POST', `/watchtower/bids?network=${NET}`, { asset_id: ASSET, bid_id: SID, owner_pubkey: OWNER_PUB, bid_pubkey: BID_PUB, bid_price_sats: 1200, bid_amount_base: '800',
+    decimals: 8, expiry: exp, funding_outpoint: { txid: fundTxid, vout: 0 }, kind: 'bound', ...body });
+  const r = await reg({ self_take: true, auth_sig: await sign(regMsg('00'.repeat(32)), OWNER) });
+  ok(r.status === 200 && r.json.bid.self_take === true && !('enc_bid_privkey' in r.json.bid), `a self-take bound bid registers with no key for the watchtower (${r.status} ${r.json.error || ''})`);
+  const stored = await env.REGISTRY_KV.get(`wtbid:${NET}:${h160(OWNER_PUB)}:${SID}`, 'json');
+  ok(stored && stored.self_take === true && stored.enc_bid_privkey === undefined, 'and the stored record holds no ciphertext');
+  const r2 = await reg({ self_take: true, kind: 'axfer', auth_sig: await sign(regMsg('00'.repeat(32)), OWNER) });
+  ok(r2.status === 400, 'an atomic-intent (axfer) bid cannot be self-take: it still needs its key for the watchtower');
+  const o1 = offerOf({ amount: '400', priceSats: 600, note: { ...offerOf().note, txid: '61'.repeat(32) } }), o2 = offerOf({ amount: '400', priceSats: 600, note: { ...offerOf().note, txid: '62'.repeat(32) } });
+  const p1 = await posted(o1, { bid: SID }), p2 = await posted(o2, { bid: SID });
+  ok(p1.status === 200 && p2.status === 200, `offers go into a self-take bid as into a watchtower one (${p1.status} ${p1.json.error || ''} | ${p2.status} ${p2.json.error || ''})`);
+  const fill = async (id, rt) => call(env, 'POST', `/assets/${ASSET}/bound-offers/${id}/filled?network=${NET}`, { reveal_txid: rt, commit_txid: 'ab'.repeat(32), sig: await sign(wbo.boundOfferFilledMsg(NET, ASSET, id, rt), BIDK) });
+  await fill(p1.json.id, '63'.repeat(32));
+  let b = await env.REGISTRY_KV.get(`wtbid:${NET}:${h160(OWNER_PUB)}:${SID}`, 'json');
+  ok(b.filled_base === '400' && b.status === 'active', 'the buyer\'s fill report counts toward the bid');
+  ok((await posted(offerOf({ amount: '600', priceSats: 900, note: { ...offerOf().note, txid: '64'.repeat(32) } }), { bid: SID })).status === 409, 'so a later offer for more than is left is refused');
+  await fill(p2.json.id, '65'.repeat(32));
+  b = await env.REGISTRY_KV.get(`wtbid:${NET}:${h160(OWNER_PUB)}:${SID}`, 'json');
+  ok(b.filled_base === '800' && b.status === 'filled', 'and a bid filled in full is closed');
+  const wb = await env.REGISTRY_KV.get(`wtbid:${NET}:${h160(OWNER_PUB)}:${BID_ID}`, 'json');
+  ok(wb.filled_base === '0', 'a watchtower bid\'s count is left to the watchtower');
+}
+
 console.log(`\n${pass} worker-bound-offers checks passed${fail ? `, ${fail} FAILED` : ''}`);
 process.exit(fail ? 1 : 0);

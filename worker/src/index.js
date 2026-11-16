@@ -22250,7 +22250,10 @@ async function handleWatchtowerBidPost(req, env, network, cors) {
   const bidIdHex = String(body.bid_id ?? '').toLowerCase();
   const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
   const bidPubHex = String(body.bid_pubkey ?? '').toLowerCase();
-  const encBidPrivkeyHex = String(body.enc_bid_privkey ?? '').toLowerCase();
+  // A self-take bound bid: the buyer's own wallet takes the offers, so the watchtower never gets the bid key. It carries no ciphertext,
+  // and the signed record names 32 zero bytes in its place (a real ciphertext is never all zeros).
+  const selfTake = body.self_take === true && String(body.kind ?? '') === 'bound';
+  const encBidPrivkeyHex = selfTake ? '00'.repeat(32) : String(body.enc_bid_privkey ?? '').toLowerCase();
   const bidPriceSats = Number(body.bid_price_sats);
   const bidAmountBaseStr = String(body.bid_amount_base ?? '');
   const decimals = Number(body.decimals);
@@ -22294,7 +22297,7 @@ async function handleWatchtowerBidPost(req, env, network, cors) {
     asset_id: assetIdHex,
     owner_pubkey: ownerPubHex,
     bid_pubkey: bidPubHex,
-    enc_bid_privkey: encBidPrivkeyHex,
+    ...(selfTake ? { self_take: true } : { enc_bid_privkey: encBidPrivkeyHex }),
     bid_price_sats: bidPriceSats,
     bid_amount_base: bidAmountBaseStr,
     decimals,
