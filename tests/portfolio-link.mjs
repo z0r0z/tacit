@@ -3,7 +3,8 @@
 // page's own CSP with a pasted key; every host but the page's own is refused (the Bitcoin address answers as empty):
 //   · signed out, /#portfolio opens the Wallet sheet to sign in, clears the address's hash, and once a key is open the Portfolio sheet opens;
 //   · signed in, the menu's Portfolio opens the Portfolio sheet and shuts the menu, and does so again once it has been closed;
-//   · the sheet groups what is held, a row opens its own sheet, and the front page's "Your Tacit" keeps the totals and one press to the sheet;
+//   · the sheet groups what is held by place, sorts the same rows by asset and back, a row opens its own sheet, and the front page's "Your Tacit"
+//     keeps the totals and one press to the sheet;
 //   · from another page of the site, the menu's Portfolio goes to the front page and asks for a wallet.
 //
 //   PLAYWRIGHT=/Users/z/tacit/node_modules/playwright-core node tests/portfolio-link.mjs
@@ -58,6 +59,7 @@ try {
     ok(sheet, 'signed out, /#portfolio opens the Wallet sheet to sign in');
     ok(await noHash(page), `and #portfolio is cleared from the address (it reads ${JSON.stringify(await hashIs(page))})`);
     if (sheet) {
+      await page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));   // the other ways to sign in are folded under one line
       await page.click('#ws-in [data-in="paste"]');
       await page.fill('#ws-hex', KEY);
       await page.click('#ws-in [data-in="key"]');
@@ -67,6 +69,17 @@ try {
       const rows = await page.$$eval('#dash-g .wb-go', (es) => es.map((e) => e.dataset.dashOpen || e.dataset.asset || e.getAttribute('href')));
       ok(groups[0] === 'Private' && groups.includes('Rewards') && ['private', 'tac', 'pts'].every((r) => rows.includes(r)), `it groups what the key holds: private tETH and TAC, and its points (${groups.join(', ')} | ${rows.join(', ')})`);
       ok((await hashIs(page)) === '#portfolio', `the open sheet is the address's link (${await hashIs(page)})`);
+
+      // the same rows by asset, and back
+      await page.click('#portfolio-body [data-pf-by="asset"]');
+      const byAsset = await page.evaluate(() => ({ on: document.querySelector('#portfolio-body [data-pf-by="asset"]').getAttribute('aria-checked'), heads: [...document.querySelectorAll('#dash-g .pf-h span')].map((e) => e.textContent.trim()),
+        rows: [...document.querySelectorAll('#dash-g .wb-go')].map((e) => e.dataset.dashOpen || e.dataset.asset || e.getAttribute('href')), tac: [...document.querySelectorAll('#pf-a-tac + ul .wb-m')].map((e) => e.textContent.trim()) }));
+      ok(byAsset.on === 'true' && ['ETH', 'TAC', 'Rewards'].every((h) => byAsset.heads.includes(h)) && !byAsset.heads.includes('Private'), `By asset sorts the same rows under each asset, rewards still apart (${byAsset.heads.join(', ')})`);
+      ok(byAsset.rows.length === rows.length && rows.every((r) => byAsset.rows.includes(r)), `with every row it had, each still one press from its own sheet (${byAsset.rows.join(', ')})`);
+      ok(byAsset.tac.length >= 1 && byAsset.tac.every((t) => /Private|Public/.test(t)), `and each row says which place it is in (${byAsset.tac.join(' | ')})`);
+      await page.click('#portfolio-body [data-pf-by="place"]');
+      const back = await page.$$eval('#sheet-portfolio .pf-h span', (es) => es.map((e) => e.textContent.trim()));
+      ok(back.join() === groups.join(), `By place puts them back as they were (${back.join(', ')})`);
 
       // a row is one press from its own sheet
       await page.click('#dash-g [data-dash-open="private"]');
