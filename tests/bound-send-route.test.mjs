@@ -39,5 +39,15 @@ ok(/SPX on Bitcoin goes to a Tacit address/.test(msg), `SPX to a shielded tcs1 a
 const r5 = await btcRoute('tcs1abcdef', tac);
 ok(r5.kind === 'stealth', 'TAC to a tcs1 address still goes');
 
+// the Send picker offers a bridged token held at the wallet's Bitcoin address, on the front page as on /spx/
+const sl = html.slice(html.indexOf('const xtSends = '), html.indexOf('const xtDec = '));
+ok(sl.length > 50, 'xtSends found in the page');
+const ADDR_SPX = '0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c', ADDR_X = '0x1111111111111111111111111111111111111111';
+const XT = { by: new Map([[ADDR_SPX, { addr: ADDR_SPX, sym: 'SPX', tdec: 8, bridge: { hex: SPX } }], [ADDR_X, { addr: ADDR_X, sym: 'XX', tdec: 18, bridge: { hex: 'ab'.repeat(32) } }]]) };
+const sends = (SPXP, held) => new Function('XT', 'SPXP', 'SPX_A', 'BTC', 'xtIco', `${sl}; return xtSends();`)(XT, SPXP, ADDR_SPX, { held }, () => '').map(([k]) => k);
+ok(sends(false, [{ id: SPX }]).join() === `xb${ADDR_SPX}`, 'front page: SPX held on Bitcoin is in the Send picker, a token not held is not');
+ok(sends(false, []).length === 0, 'front page: nothing held on Bitcoin, no Bitcoin entries');
+ok(sends(true, []).join() === `xb${ADDR_SPX}`, '/spx/: SPX on Bitcoin is always offered');
+
 console.log(`\n${n} bound-send-route checks passed${failures ? `, ${failures} FAILED` : ''}`);
 process.exit(failures ? 1 : 0);
