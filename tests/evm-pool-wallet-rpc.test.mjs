@@ -737,9 +737,9 @@ function spender(seed, { sealed = false, extra = [] } = {}) {
   const fetchImpl = async (url, init) => {
     const path = url.slice('https://k.test'.length).split('?')[0];
     s.asked.push(path);
-    const [status, body] = path === '/quote' ? s.quote(s.count(path)) : path === '/reserve' ? s.reserve(s.count(path), JSON.parse(init.body))
+    const [status, body] = await (path === '/quote' ? s.quote(s.count(path)) : path === '/reserve' ? s.reserve(s.count(path), JSON.parse(init.body))
       : path === '/relay' ? s.relay(s.count(path), JSON.parse(init.body)) : path === '/cancel' ? [200, { ok: true }]
-        : path === '/events' && s.feed ? [s.feedStatus ?? 200, s.feed(Number(new URL(url).searchParams.get('from')))] : [404, { error: 'not found' }];
+        : path === '/events' && s.feed ? [s.feedStatus ?? 200, s.feed(Number(new URL(url).searchParams.get('from')))] : [404, { error: 'not found' }]);
     return { ok: status === 200, status, headers: { get: (h) => s.keeperHeaders(h) }, json: async () => body };
   };
   fetchImpl.sealed = sealed;
@@ -796,6 +796,81 @@ await check('a withdrawal gives the leaves of the notes it spends before it is p
   assert.equal(order[1], 'relay');
   assert.deepEqual(order[2], ['sent', h], 'the hash the relay gave');
   assert.equal(order.length, 3);
+});
+
+const dropped = () => new TypeError('Failed to fetch');
+const blipThenLand = (s, then) => (n) => { if (n === 1) throw dropped(); return then(n); };
+
+await check('a relay request that gets no answer at once (the network changed under it) is sent again with the same proof, and the spend goes through', async () => {
+  const s = spender(31), bodies = [], steps = [];
+  s.reserve = () => slotOf(s.pool);
+  s.relay = blipThenLand(s, (n, b) => [200, { txHash: s.spend().tx }]);
+  const relay = s.relay;
+  s.relay = (n, b) => { bodies.push(JSON.stringify(b)); return relay(n, b); };
+  s.make();
+  await s.ready();
+  let h;
+  await quickly(async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', onStep: (x) => steps.push(x) }); });
+  assert.match(h, /^0x[0-9a-f]{64}$/);
+  assert.equal(s.count('/relay'), 2, 'asked twice');
+  assert.equal(s.proofs, 1, 'proved once');
+  assert.equal(bodies[0], bodies[1], 'the same proof both times');
+  assert.ok(steps.includes('the relay did not answer; trying again'), steps.join(' | '));
+});
+
+await check('a quick gateway error with no word of the relay (502) is sent again too', async () => {
+  const s = spender(32);
+  s.reserve = () => slotOf(s.pool);
+  s.relay = (n) => (n === 1 ? [502, {}] : [200, { txHash: s.spend().tx }]);
+  s.make();
+  await s.ready();
+  let h;
+  await quickly(async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); });
+  assert.match(h, /^0x[0-9a-f]{64}$/);
+  assert.equal(s.count('/relay'), 2);
+});
+
+await check('a relay that never answers is asked three times, then the wallet says it may still have sent it, with one proof made', async () => {
+  const s = spender(33);
+  s.reserve = () => slotOf(s.pool);
+  s.relay = () => { throw dropped(); };
+  s.make();
+  await s.ready();
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), (e) => e.said === true && /did not answer, and it may still have sent your payment/.test(e.message)));
+  assert.equal(s.count('/relay'), 3);
+  assert.equal(s.proofs, 1);
+});
+
+await check('a request that waited a long time for no answer is not sent again', async () => {
+  const s = spender(34);
+  s.reserve = () => slotOf(s.pool);
+  s.relay = async () => { await new Promise((r) => setTimeout(r, 60_000)); throw dropped(); };
+  s.make();
+  await s.ready();
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), (e) => e.said === true && /did not answer/.test(e.message)));
+  assert.equal(s.count('/relay'), 1, 'asked once');
+});
+
+await check('a repeat that finds the first request did land (its answer was lost) says the funds were spent, and sends nothing twice', async () => {
+  const s = spender(35);
+  s.reserve = () => slotOf(s.pool);
+  s.relay = (n) => { if (n === 1) { s.spend(); throw dropped(); } return [400, { error: 'the transaction reverts: AlreadyNullified' }]; };
+  s.make();
+  await s.ready();
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), isSpent));
+  assert.equal(s.count('/relay'), 2);
+  assert.equal(s.proofs, 1);
+});
+
+await check('a repeat that finds the first request still on its way waits for it', async () => {
+  const s = spender(36);
+  s.reserve = () => slotOf(s.pool);
+  s.relay = (n) => { if (n === 1) { s.spendAfter(3); throw dropped(); } return [409, { error: 'this spend is already being relayed', stale: true }]; };
+  s.make();
+  await s.ready();
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), isSpent));
+  assert.equal(s.count('/relay'), 2);
+  assert.equal(s.proofs, 1);
 });
 
 await check('a withdrawal the relay refuses gave its notes and no hash; one whose notes are spent already gave neither; a callback that throws changes nothing', async () => {

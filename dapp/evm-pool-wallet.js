@@ -1051,10 +1051,22 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
           sync().catch(() => {});
           return Object.assign(new Error('The relay did not answer, and it may still have sent your payment. Check Activity before sending again.'), { said: true });
         };
-        const r = await keeperPost('/relay', { tx, ...extra, ...(slot ? { reservation: slot } : {}) }).catch(() => { throw unanswered(); });
         // A gateway's own timeout or error (502-504, 520-524) says nothing of whether the relay sent it: the same as no answer.
         // The relay's own refusals come with its JSON error (a 503 when it cannot front the gas or is full) and send nothing.
-        if (((r.status >= 502 && r.status <= 504) || (r.status >= 520 && r.status <= 524) || r.status === 200) && !r.body?.error && !r.body?.txHash) throw unanswered();
+        const noAnswer = (x) => !x || (((x.status >= 502 && x.status <= 504) || (x.status >= 520 && x.status <= 524)) && !x.body?.error && !x.body?.txHash);
+        // A request with no answer within a few seconds (the connection dropped, the network changed) is sent again, up to twice, with the same
+        // proof: if the first reached the relay, it answers that this spend is on its way or is spent, both handled below, so a spend is never sent
+        // twice. A request that waited longer is not sent again.
+        let r;
+        for (let tries = 0; ; tries++) {
+          const t0 = Date.now();
+          r = await keeperPost('/relay', { tx, ...extra, ...(slot ? { reservation: slot } : {}) }).catch(() => null);
+          if (!noAnswer(r)) break;
+          if (tries >= 2 || Date.now() - t0 > 20_000) throw unanswered();
+          onStep('the relay did not answer; trying again');
+          await sleep(1500 * (tries + 1));
+        }
+        if (r.status === 200 && !r.body?.error && !r.body?.txHash) throw unanswered();
         if (r.status !== 200 || !r.body.txHash) {
           if (slot) await releaseSlot(slot);
           const why = String(r.body?.error || '');

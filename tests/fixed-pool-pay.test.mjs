@@ -11,7 +11,7 @@ export async function resolve(spec, ctx, next) {
   return next(spec, ctx);
 }`));
 
-const { checksumOk, composeProvider, readNotes, writeNotes, metaOf, planExit } = await import('../dapp/fixed-pool-pay.js');
+const { checksumOk, composeProvider, readNotes, writeNotes, metaOf, planExit, poolSize, sizeWords } = await import('../dapp/fixed-pool-pay.js');
 const { FIXED_POOLS } = await import('../dapp/fixed-pool-notes.js');
 
 let pass = 0, fail = 0;
@@ -103,6 +103,37 @@ await test('nothing to pay, nothing held, a zero-size note: no picks', () => {
 await test('the same sizes give the same picks, whatever order the notes are listed in', () => {
   const a = planExit(2n * E + T, [E, T, E, T, E]), b = planExit(2n * E + T, [T, E, E, E, T]);
   eq(a.total, b.total); eq(a.picks.length, b.picks.length);
+});
+
+console.log('pool size (the crowd a note blends in with)');
+const fakeRead = (idx, bal, calls = []) => async () => async (method, params) => { calls.push([method, params[0]?.data ?? params[0]]); return method === 'eth_call' ? idx : bal; };
+const pool1 = { address: '0x00000000000000000000000000000000000000a1', denomination: E };
+await test('deposits so far come from nextIndex(), notes in the pool now from its balance over its size', async () => {
+  const calls = [];
+  const s = await poolSize(fakeRead('0x' + (97860).toString(16), '0x' + (4221n * E).toString(16), calls), pool1, 1000);
+  eq(s.deposits, 97860, 'deposits'); eq(s.held, 4221, 'held');
+  eq(calls.find((c) => c[0] === 'eth_call')[1], '0xfc7e9c6f', 'nextIndex()');
+});
+await test('the answer is kept for five minutes, then read again', async () => {
+  const p = { address: '0x00000000000000000000000000000000000000a2', denomination: E };
+  const calls = [];
+  await poolSize(fakeRead('0x10', '0x' + (3n * E).toString(16), calls), p, 0);
+  await poolSize(fakeRead('0x10', '0x' + (3n * E).toString(16), calls), p, 299_000);
+  eq(calls.length, 2, 'one read of two calls, the second answered from what was kept');
+  await poolSize(fakeRead('0x11', '0x' + (3n * E).toString(16), calls), p, 301_000);
+  eq(calls.length, 4, 'read again after five minutes');
+});
+await test('an unreadable answer, or notes held beyond the deposits made, is an error, and is not kept', async () => {
+  const p = { address: '0x00000000000000000000000000000000000000a3', denomination: E };
+  for (const [idx, bal] of [['0x', '0x0'], ['0x5', 'nope'], [undefined, '0x0'], ['0x5', '0x' + (9n * E).toString(16)]]) {
+    let err = null; try { await poolSize(fakeRead(idx, bal), p, 0); } catch (e) { err = e; }
+    if (!err) throw new Error(`no error for ${idx} ${bal}`);
+  }
+  eq((await poolSize(fakeRead('0x5', '0x' + (2n * E).toString(16)), p, 0)).held, 2, 'the failures left nothing behind');
+});
+await test('the line says it in plain words, with thousands separators', () => {
+  eq(sizeWords(E, { deposits: 97860, held: 4221 }), '1 ETH pool: 97,860 deposits so far, 4,221 notes in it now.');
+  eq(sizeWords(E / 10n, { deposits: 3, held: 1 }), '0.1 ETH pool: 3 deposits so far, 1 note in it now.');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

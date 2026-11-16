@@ -80,13 +80,16 @@ async function unlock(page) {
 
 // what the page asks of nodes and services, answered with the least that keeps it going
 const POOL_DEN = new Map(FIXED_POOLS[1].map((p) => [p.address.toLowerCase(), p.denomination]));
-const SELS = { den: bytesToHex(keccak_256(new TextEncoder().encode('denomination()')).slice(0, 4)), com: bytesToHex(keccak_256(new TextEncoder().encode('commitments(bytes32)')).slice(0, 4)) };
+const SELS = { den: bytesToHex(keccak_256(new TextEncoder().encode('denomination()')).slice(0, 4)), com: bytesToHex(keccak_256(new TextEncoder().encode('commitments(bytes32)')).slice(0, 4)), next: bytesToHex(keccak_256(new TextEncoder().encode('nextIndex()')).slice(0, 4)) };
+// how many deposits each pool has had and how many notes are in it now (the line under a row of notes in the split)
+const POOL_SIZE = new Map([[10n ** 17n, [76863n, 6502n]], [10n ** 18n, [97860n, 4221n]], [10n * 10n ** 18n, [79970n, 2409n]], [100n * 10n ** 18n, [50287n, 2810n]]]);
 const rpcAnswer = (method, params = [], landed = new Set()) => {
   switch (method) {
     case 'eth_call': {
       const { to, data } = params[0] || {};
       const den = POOL_DEN.get(String(to).toLowerCase());
       if (den == null) return '0x';
+      if (data.slice(2, 10) === SELS.next) return '0x' + POOL_SIZE.get(den)[0].toString(16).padStart(64, '0');
       if (data.slice(2, 10) === SELS.den) return '0x' + den.toString(16).padStart(64, '0');
       if (data.slice(2, 10) === SELS.com) return '0x' + (landed.has(data.slice(10)) ? '1' : '0').padStart(64, '0');
       return '0x';
@@ -94,7 +97,11 @@ const rpcAnswer = (method, params = [], landed = new Set()) => {
     case 'eth_getCode': return POOL_DEN.has(String(params[0]).toLowerCase()) ? '0x6080' : '0x';
     case 'eth_chainId': return '0x1';
     case 'eth_blockNumber': return '0x1c9c380';
-    case 'eth_getBalance': return String(params[0]).toLowerCase() === ADDR.toLowerCase() ? '0x' + (100n * 10n ** 18n).toString(16) : '0x0';   // the test wallet holds 100 ETH
+    case 'eth_getBalance': {
+      const den = POOL_DEN.get(String(params[0]).toLowerCase());
+      if (den != null) return '0x' + (den * POOL_SIZE.get(den)[1]).toString(16);
+      return String(params[0]).toLowerCase() === ADDR.toLowerCase() ? '0x' + (100n * 10n ** 18n).toString(16) : '0x0';   // the test wallet holds 100 ETH
+    }
     case 'eth_gasPrice': return '0x0';
     case 'eth_getLogs': return [];
     case 'eth_getTransactionReceipt': return { status: '0x1', blockNumber: '0x1c9c380', logs: [] };
@@ -233,6 +240,12 @@ await test('?fixed=1 on Ethereum: the cards load under the page\'s policy and th
   assert.match(await page.locator('#f-go').innerText(), /Deposit 2\.5 ETH: 2 whole notes \+ 0\.5/, 'the wallet that opened the page is the one that deposits');
   assert.match(await page.locator('#f-rcpt').innerText(), /Into the large pools\s+2 whole notes · 2 ETH/);
   assert.match(await page.locator('#f-rcpt').innerText(), /Into your private balance\s+0\.5 ETH/);
+  // the crowd the notes blend in with, read from the pool, and the points the part that goes to Tacit earns
+  await page.waitForFunction(() => /1 ETH pool: 97,860 deposits so far, 4,221 notes in it now\./.test(document.querySelector('#lg-split')?.textContent || ''), null, { timeout: 30000 });
+  assert.match(await page.locator('#lg-split').innerText(), /Only the part in your private balance earns TAC points/);
+  assert.equal(await page.locator('#f-rcpt svg.tk use[href="#tk-tac"]').count(), 1, 'the points row has the TAC icon');
+  const pts = (await page.locator('#f-rcpt').innerText()).match(/TAC points\s+how\?\s+(?:≈|at least)\s*([\d,.]+)/);
+  assert.ok(pts && Number(pts[1].replace(/,/g, '')) >= 500, 'the points are an amount, at least 1,000 a ETH on the 0.5 ETH that goes to Tacit: ' + (pts && pts[0]));
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'paypage-cards.png'), fullPage: true });
   await page.fill('#f-damt', '0.9');
   await page.waitForFunction(() => /^Deposit privately$/.test(document.querySelector('#f-go')?.textContent || ''));
@@ -447,6 +460,7 @@ await test('Deposit: the form\'s one button deposits the whole notes and the res
   await page.fill('#f-damt', '3');
   await page.waitForFunction(() => /^Deposit 3 ETH: 3 whole notes$/.test(document.querySelector('#f-go')?.textContent || ''), null, { timeout: 30000 });
   assert.doesNotMatch(await page.locator('#f-rcpt').innerText(), /Into your private balance/, 'nothing left over');
+  assert.doesNotMatch(await page.locator('#f-rcpt').innerText(), /TAC points/, 'whole notes alone earn no points, so none are promised');
   await page.fill('#f-damt', '2.5');
   await page.waitForFunction(() => /Deposit 2\.5 ETH: 2 whole notes \+ 0\.5/.test(document.querySelector('#f-go')?.textContent || ''));
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'deposit-one-press.png'), fullPage: true });

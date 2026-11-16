@@ -36,6 +36,25 @@ const HOW_IT_WORKS = `<details class="lg-how" style="margin:0 0 12px"><summary s
   <p class="note">Your notes come from your wallet's signature, so there is nothing to save. <b>Find</b> brings them back on any device.</p>
   <p class="note">Take a note out to any address, or into your Tacit balance. Wait a while first: the more deposits after yours, the better it blends in.</p>
 </details>`;
+// How many deposits a pool has had and how many notes are in it now: the crowd a note of that size blends in with. nextIndex() is the pool's count of
+// deposits; its balance over its size is the notes still in it. Read once in a few minutes; a read that is unreadable or does not add up is an error,
+// and the line it feeds stays out.
+const NEXT_INDEX = '0xfc7e9c6f';   // nextIndex()
+const SIZE_TTL_MS = 5 * 60_000;
+const SIZES = new Map();
+const hexWord = (x) => typeof x === 'string' && /^0x[0-9a-fA-F]{1,64}$/.test(x);
+export async function poolSize(read, pool, now = Date.now()) {
+  const key = String(pool.address).toLowerCase(), hit = SIZES.get(key);
+  if (hit && now - hit.at < SIZE_TTL_MS) return hit.v;
+  const r = await read();
+  const [idx, bal] = await Promise.all([r('eth_call', [{ to: pool.address, data: NEXT_INDEX }, 'latest']), r('eth_getBalance', [pool.address, 'latest'])]);
+  if (!hexWord(idx) || !hexWord(bal)) throw new Error('The pool\'s size could not be read.');
+  const v = { deposits: Number(BigInt(idx)), held: Number(BigInt(bal) / pool.denomination) };
+  if (v.held > v.deposits) throw new Error('The pool\'s size does not add up.');
+  SIZES.set(key, { at: now, v });
+  return v;
+}
+export const sizeWords = (denomination, s) => `${formatEther(denomination)} ETH pool: ${s.deposits.toLocaleString('en-US')} deposits so far, ${s.held.toLocaleString('en-US')} ${s.held === 1 ? 'note' : 'notes'} in it now.`;
 const MIN_KEY = (chainId) => `tacit-fixed-min:${chainId}`;
 const GAS_KEY = (chainId) => `tacit-fixed-gas:${chainId}`;
 const readGas = (store, chainId) => { try { return store.get(GAS_KEY(chainId)) === 'wallet' ? 'wallet' : 'note'; } catch { return 'note'; } };
@@ -142,6 +161,16 @@ export function attach(env) {
     return { wei, off, ...planSplit(wei, chainId, { minDenominationWei: off ? DEFAULT_MIN_DENOMINATION : st.smallest, maxNotes: DEFAULT_MAX_NOTES }) };
   };
   const noteTotalOf = (p) => p.notes.reduce((t, n) => t + n.denomination * BigInt(n.count), 0n);
+  // Under each row of notes, once read: how many deposits that pool has had and how many notes are in it now. A pool that cannot be read has no line.
+  async function fillSizes(p) {
+    await Promise.all(p.notes.map(async (n) => {
+      try {
+        const s = await poolSize(env.read, n);
+        const el = [...host.querySelectorAll('[data-size]')].find((x) => x.getAttribute('data-size') === n.address);
+        if (el) { el.textContent = sizeWords(n.denomination, s); el.hidden = false; }
+      } catch { /* the line stays out */ }
+    }));
+  }
   const selectHtml = () => `<label>Smallest note <select id="lg-min" aria-label="Smallest note">${SMALLEST.map((s) => `<option value="${s.wei}"${s.wei === st.smallest ? ' selected' : ''}>${s.label}</option>`).join('')}</select></label>`;
   function paintSplit() {
     const p = plan();
@@ -153,12 +182,14 @@ export function attach(env) {
       env.onPlan?.(null);
       return;
     }
-    const rows = p.notes.map((n) => `<div class="kv"><span>${n.count} × ${formatEther(n.denomination)} ETH</span><b>whole notes, large pool</b></div>`).join('');
+    const rows = p.notes.map((n) => `<div class="kv"><span>${n.count} × ${formatEther(n.denomination)} ETH</span><b>whole notes, large pool</b></div>
+      <p class="note mute" data-size="${esc(n.address)}" hidden></p>`).join('');
     host.innerHTML = frame(`<div class="lbl"><span>Large amount</span><span>${selectHtml()}</span></div>
       ${rows}
       <div class="kv"><span>${p.remainder === 0n ? 'Nothing' : esc(formatEther(p.remainder)) + ' ETH'}</span><b>${p.remainder === 0n ? 'left for your private balance' : 'into your private balance'}</b></div>
-      <p class="note">One press deposits both: the notes go from your wallet into Tornado Cash pools, and the rest joins your private balance.</p>`);
+      <p class="note">One press deposits both: the notes go from your wallet into Tornado Cash pools, and the rest joins your private balance. Only the part in your private balance earns TAC points.</p>`);
     host.querySelector('#lg-min').onchange = (e) => { setSmallest(BigInt(e.target.value)); paintSplit(); };
+    fillSizes(p);
     const noteTotal = noteTotalOf(p);
     env.onPlan?.({
       label: `Deposit ${formatEther(p.wei)} ETH: ${p.noteCount} whole ${p.noteCount === 1 ? 'note' : 'notes'}${p.remainder > 0n ? ` + ${formatEther(p.remainder)}` : ''}`,
