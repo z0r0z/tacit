@@ -18,6 +18,15 @@ const T = {
   async placeBoundBid(a) { calls.bids.push(a); return { bid_id: 'ab'.repeat(16) }; },
   async boughtBoundNotes() { return [{ assetIdHex: ID, txid: 'ee'.repeat(32), vout: 0, amount: 500000000n, blinding: 7n, bidPub: '02' + '33'.repeat(32) }, { assetIdHex: 'aa'.repeat(32), txid: 'dd'.repeat(32), vout: 0, amount: 1n }]; },
   async moveBoundNoteHome(n) { calls.homes.push(n); return { txHash: '0x1' }; },
+  // the bids the watchtower holds for this wallet: one of this token (listed), one kept on this device, one cancelled, one of another token (none listed)
+  async listWatchtowerBids() {
+    const all = [{ bid_id: 'ef'.repeat(16), kind: 'bound', status: 'active', self_take: false, asset_id: ID, bid_amount_base: '10000000', filled_base: '0', bid_price_sats: 600 },
+      { bid_id: '12'.repeat(16), kind: 'bound', status: 'active', self_take: true, asset_id: ID, bid_amount_base: '100000000', filled_base: '0', bid_price_sats: 800 },
+      { bid_id: '34'.repeat(16), kind: 'bound', status: 'cancelled', self_take: false, asset_id: ID, bid_amount_base: '100000000', filled_base: '0', bid_price_sats: 800 },
+      { bid_id: '56'.repeat(16), kind: 'bound', status: 'active', self_take: false, asset_id: 'aa'.repeat(32), bid_amount_base: '100000000', filled_base: '0', bid_price_sats: 800 }];
+    return all.filter((b) => !(calls.cancels || []).includes(b.bid_id));
+  },
+  async cancelWatchtowerBid(id) { calls.cancels = [...(calls.cancels || []), id]; return { ok: true }; },
 };
 ok(fmtUnits(2000000000n, 8) === '20' && fmtUnits(123456789n, 8) === '1.23456789' && parseUnits('20', 8) === 2000000000n && parseUnits('0.5', 6) === 500000n && parseUnits('1.234567891', 8) === null, 'amounts read and write in the token\'s own decimals');
 
@@ -27,6 +36,8 @@ await tick(); await tick();
 const text = box.textContent.replace(/\s+/g, ' ');
 ok(/Bids for SPX/.test(text) && /20 SPX/.test(text) && /450 sats each/.test(text), `the bound bid shows its amount and price per token (${text.slice(0, 90)})`);
 ok(box.querySelectorAll('[data-home]').length === 1 && /5 SPX/.test(text), 'only this token\'s bought notes are listed, each with Move to Ethereum');
+ok(/Your bids/.test(text) && /0\.1 SPX wanted/.test(text) && /for 600 sats/.test(text) && /waiting for a seller/.test(text), 'a bid placed through the watchtower is listed under Your bids, with what it wants, its price and that it waits for a seller');
+ok(box.querySelectorAll('[data-wclose]').length === 1, 'only an active bound bid of this token that is not kept on this device is listed there (a self-take, a cancelled or another token\'s bid is not)');
 
 box.querySelector('[data-sell]').click();
 await tick(); await tick();
@@ -68,6 +79,11 @@ ok(calls.bids.length === 2 && calls.bids[1].feeBudgetSats === 3000 && calls.bids
 ok(/10,000 sats unless you enter another/.test(box.textContent.replace(/\s+/g, ' ')), 'the form says what a bid sets aside: its price and a fee budget, and that the rest comes back');
 
 for (let i = 0; i < 6; i++) await tick();
+box.querySelector('[data-wclose]').click();
+await tick(); await tick();
+ok(calls.cancels?.[0] === 'ef'.repeat(16) && notes.some(([k, m]) => k === 'ok' && /Bid closed\. What it set aside is returned/.test(m)), 'Close bid cancels that bid at the watchtower and says its sats come back');
+for (let i = 0; i < 6; i++) await tick();
+ok(box.querySelectorAll('[data-wclose]').length === 0, 'and it is gone from the list');
 box.querySelector('[data-home]').click();
 await tick(); await tick();
 ok(calls.homes.length === 1 && calls.homes[0].txid === 'ee'.repeat(32), 'Move to Ethereum moves that bought note home by the fast lane');

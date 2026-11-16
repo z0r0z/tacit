@@ -24,7 +24,7 @@ const perUnit = (amount, sats, dec) => (BigInt(amount) > 0n ? Number(BigInt(sats
 
 export function mountBoundMarket(box, { T, asset, unlock = async () => {}, notify = () => {} }) {
   const { id, ticker, decimals = 8 } = asset;
-  const st = { bids: [], mine: [], bought: [], busy: null, err: null };
+  const st = { bids: [], mine: [], wt: [], bought: [], busy: null, err: null };
   const root = document.createElement('div');
   root.className = 'bound-mkt';
   box.append(root);
@@ -32,6 +32,8 @@ export function mountBoundMarket(box, { T, asset, unlock = async () => {}, notif
   async function load() {
     try { st.bids = await T.browseBoundBids(id); st.err = null; } catch (e) { st.err = e?.message || String(e); }
     try { st.mine = T.myBoundBids ? await T.myBoundBids(id) : []; } catch { st.mine = []; }
+    // the bids the watchtower holds for this wallet (a bid kept on this device is listed below with its offers): a buyer sees what is placed and can close it
+    try { st.wt = T.listWatchtowerBids ? (await T.listWatchtowerBids()).filter((b) => b && b.kind === 'bound' && !b.self_take && b.status === 'active' && String(b.asset_id || '').replace(/^0x/, '') === id) : []; } catch { st.wt = []; }
     try { st.bought = (await T.boughtBoundNotes()).filter((n) => String(n.assetIdHex).replace(/^0x/, '') === id); } catch { st.bought = []; }
     paint();
   }
@@ -60,6 +62,9 @@ export function mountBoundMarket(box, { T, asset, unlock = async () => {}, notif
         <button class="btn ghost" type="button" data-close="${esc(b.bid_id)}" ${st.busy ? 'disabled' : ''}>${st.busy === 'close:' + b.bid_id ? 'Closing…' : b.status === 'active' ? 'Close bid' : 'Return its sats'}</button></li>
         ${offers ? `<ul class="rows">${offers}</ul>` : b.status === 'active' ? '<p class="note">No offers yet.</p>' : ''}`;
     }).join('');
+    const wtRows = st.wt.map((b) => `<li class="row"><span class="num">${esc(fmtUnits(BigInt(b.bid_amount_base) - BigInt(b.filled_base || 0), decimals))} ${esc(ticker)} wanted</span>
+        <span class="num mute">for ${Number(b.bid_price_sats).toLocaleString('en-US')} sats</span><span class="mute">waiting for a seller</span>
+        <button class="btn ghost" type="button" data-wclose="${esc(b.bid_id)}" ${st.busy ? 'disabled' : ''}>${st.busy === 'wclose:' + b.bid_id ? 'Closing…' : 'Close bid'}</button></li>`).join('');
     const boughtRows = st.bought.map((n, i) => `<li class="row"><span class="num">${esc(fmtUnits(n.amount, decimals))} ${esc(ticker)}</span><span class="mute">bought on Bitcoin</span>
       <button class="btn ghost" type="button" data-home="${i}" ${st.busy ? 'disabled' : ''}>${st.busy === 'home:' + i ? 'Moving…' : 'Move to Ethereum'}</button></li>`).join('');
     root.innerHTML = `
@@ -74,6 +79,8 @@ export function mountBoundMarket(box, { T, asset, unlock = async () => {}, notif
         <label class="note"><input type="checkbox" id="bb-self"> Take offers myself: the bid's key stays on this device and you take each offer here, after it is checked. Otherwise the watchtower holds that key and takes offers while you are away.</label>
         <p class="note">A bid sets aside its price plus a fee budget (10,000 sats unless you enter another, at least 2,000) in a wallet the watchtower holds. What is not spent comes back when the bid closes.</p>
         <p class="note">What a bid buys arrives on Bitcoin and moves to Ethereum from here.</p></section>
+      ${wtRows ? `<section><h3>Your bids</h3><ul class="rows">${wtRows}</ul>
+        <p class="note">The watchtower takes offers into these while you are away. Closing a bid takes it off the book and returns what it set aside to your Bitcoin address.</p></section>` : ''}
       ${mineRows ? `<section><h3>Your bids you take yourself</h3><ul class="rows">${mineRows}</ul>
         <p class="note">Each offer is checked before it shows as checked: the seller's note is real and unspent, and the note you get holds exactly the amount offered. Take settles it in one Bitcoin transaction.</p></section>` : ''}
       ${boughtRows ? `<section><h3>Bought</h3><ul class="rows">${boughtRows}</ul></section>` : ''}`;
@@ -100,6 +107,10 @@ export function mountBoundMarket(box, { T, asset, unlock = async () => {}, notif
       if (!o || !o.checked) throw new Error('That offer is no longer there to take.');
       const t = await T.takeMyBoundOffer(o.offer);
       notify(`Took ${fmtUnits(o.amount, decimals)} ${ticker} for ${Number(o.priceSats).toLocaleString('en-US')} sats (${String(t.revealTxid).slice(0, 10)}…).`, 'ok', 9000);
+    }); });
+    root.querySelectorAll('[data-wclose]').forEach((b) => { b.onclick = act('wclose:' + b.dataset.wclose, async () => {
+      await T.cancelWatchtowerBid(b.dataset.wclose);
+      notify('Bid closed. What it set aside is returned to your Bitcoin address.', 'ok', 6000);
     }); });
     root.querySelectorAll('[data-close]').forEach((b) => { b.onclick = act('close:' + b.dataset.close, async () => {
       const r = await T.closeMyBoundBid(b.dataset.close);
