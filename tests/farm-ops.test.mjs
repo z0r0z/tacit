@@ -2,7 +2,7 @@
 // reward sent again giving it up only when that reward is dust.
 //   node tests/farm-ops.test.mjs
 import assert from 'node:assert/strict';
-import { exitSaid, canHarvest, canUnbond, unharvested, locked, harvest, unbond, UNBOND_DUST, HARVEST_WORTH, WTAC, wtacWithdrawCall, wtacBalanceCall, rewardNotes, relayable, worthHarvesting, redeem, lpNotes, takeOut, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cut, cutSized, ladder, feeShort, farmManager, bond, ownSend, ownWhy, walletSettle, relayedOrOwn } from '../dapp/farm-ops.js';
+import { exitSaid, canHarvest, canUnbond, unharvested, locked, harvest, unbond, UNBOND_DUST, HARVEST_WORTH, WTAC, wtacWithdrawCall, wtacBalanceCall, rewardNotes, relayable, worthHarvesting, redeem, lpNotes, takeOut, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cut, cutSized, ladder, feeShort, farmManager, bond, ownSend, ownWhy, walletSettle, relayedOrOwn, coinNames } from '../dapp/farm-ops.js';
 
 const now = 1_800_000_000;
 assert.equal(canHarvest({ pendingUnits: '1' }), true); assert.equal(canHarvest({ pendingUnits: '0' }), false, 'nothing pending: nothing to harvest');
@@ -169,3 +169,12 @@ assert.equal(exitSaid(0, 'TAC'), 'any time, as private TAC', 'a name that is not
   assert.equal(walletSettle(tt, null, '0xme'), null, 'no wallet that sends: no sender, so the relay’s refusal stands');
 }
 console.log('farm-ops: all checks passed');
+// ── the coin names of a pool: the one a pool has no ticker for is named by the farm's pair, never printed as "null" ──
+assert.deepEqual(coinNames('tETH', null, 'SPX/cETH'), ['tETH', 'SPX'], 'the SPX / tETH pool (first side tETH): the screenshot case');
+assert.deepEqual(coinNames(null, 'tETH', 'SPX/cETH'), ['SPX', 'tETH']);
+assert.deepEqual(coinNames('cTAC', null, 'SPX/TAC'), ['cTAC', 'SPX'], 'TAC and cTAC are the same coin');
+assert.deepEqual(coinNames(null, 'cTAC', 'TAC/SPX'), ['SPX', 'cTAC'], 'whatever order the pair is written in');
+assert.deepEqual(coinNames('tETH', 'cTAC', 'TAC/cETH'), ['tETH', 'cTAC'], 'a pool whose coins both have tickers is left as it is');
+assert.deepEqual(coinNames(null, null, 'SPX/cETH'), ['SPX', 'cETH'], 'neither named: the pair gives both');
+assert.deepEqual(coinNames('tETH', null, undefined), ['tETH', 'a coin'], 'no pair either: never null');
+console.log('farm-ops: coin names ok');

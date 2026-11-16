@@ -11,7 +11,7 @@
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=cd7be661';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { makeRunner } from '/activity.js';
-import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond } from '/farm-ops.js?cb=0b9322e9';
+import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond, coinNames } from '/farm-ops.js?cb=11a5416b';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
 import { esc, wordAt, parseUnits, rpc } from '/trade/util.js?cb=1d2cd8d3';
 
@@ -186,7 +186,9 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
   async function terms(pool, fresh = false) {
     const t = await getUx(), k = String(pool.pid), j = D?.terms?.[k];
     if (!fresh && j && Date.now() - j.at < QUOTE_FRESH) return j;
-    const v = { ...(await joinTerms(t, pool)), at: Date.now(), tkA: tkName(t.poolTickerOf(String(pool.reserves.assetA).toLowerCase())), tkB: tkName(t.poolTickerOf(String(pool.reserves.assetB).toLowerCase())) };
+    const nameOf = (id) => { const tk = t.poolTickerOf(String(id).toLowerCase()); return tk ? tkName(tk) : null; };
+    const [tkA, tkB] = coinNames(nameOf(pool.reserves.assetA), nameOf(pool.reserves.assetB), pool.pair);
+    const v = { ...(await joinTerms(t, pool)), at: Date.now(), tkA, tkB };
     if (D) (D.terms ||= {})[k] = v;
     return v;
   }
