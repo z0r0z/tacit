@@ -210,8 +210,10 @@ async function releaseWorld({ mem, cc = '8.6', cards = null, serverBytes = null 
   shim('nvidia-smi', smiShim(cards || [{ mem, cc }]));
   shim('sha256sum', 'exec shasum -a 256 "$@"');
   shim('setsid', 'exec "$@"');
-  // the worker as served: it writes down what it was started with and ends the loop around it
-  const worker = Buffer.from(`#!/bin/sh\nenv > "${join(dir, 'worker-env.txt')}"\nkill -9 $PPID 2>/dev/null\nexit 0\n`);
+  // the worker as served: it writes down what it was started with and ends the loop around it. The file is written beside and moved into place, so
+  // it never exists half-written: `env > file` creates it empty at once and fills it a moment later, and a test that read it in between (a
+  // loaded machine makes that moment long) saw an empty environment and failed the card's checks for it.
+  const worker = Buffer.from(`#!/bin/sh\nenv > "${join(dir, 'worker-env.txt')}.part" && mv "${join(dir, 'worker-env.txt')}.part" "${join(dir, 'worker-env.txt')}"\nkill -9 $PPID 2>/dev/null\nexit 0\n`);
   const server = serverBytes || Buffer.from('#!/bin/sh\necho 6.3.1\n');
   const files = { '/prover-bins-v18/tacit-prover-worker': worker, '/prover-bins-v18/sp1-gpu-server-lowmem': server };
   const hits = [];
@@ -240,7 +242,9 @@ function install(w) {
 // the worker's environment once run.sh has started it
 async function startedWith(w) {
   const f = join(w.dir, 'worker-env.txt');
-  for (let i = 0; i < 50 && !existsSync(f); i++) await new Promise((r) => setTimeout(r, 100));
+  // Up to 30 s, and it returns the moment the file is there. It was 5 s, and a machine busy with other suites (CI runs two at once, and a
+  // laptop at load 30 more) took longer than that to start run.sh, so the environment read back empty and the card's checks failed with it.
+  for (let i = 0; i < 300 && !existsSync(f); i++) await new Promise((r) => setTimeout(r, 100));
   return existsSync(f) ? readFileSync(f, 'utf8') : '';
 }
 
@@ -315,4 +319,45 @@ test('a single card proves as card 0', async () => {
   w.http.close();
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(env, /^GPU_DEVICE=0$/m);
+});
+
+// --status: where the machine stands in the block draw, asked of the board for the address this install was started for.
+function statusRun(w, { board = 'ok' } = {}) {
+  const home = join(w.dir, '.tacit-gpu');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, 'run.sh'), `#!/bin/sh\nCOMMUNITY_MINER=${ADDR} WORKER_NAME=gpu-123456 POLL_MS=4000 /x/tacit-prover-worker\n`);
+  writeFileSync(join(home, 'worker.log'), 'line one\nline two\n');
+  writeFileSync(join(w.bin, 'curl'), `#!/bin/sh\n${board === 'ok'
+    ? `case "$*" in *"prover/board?address=${ADDR}&format=text"*) echo "STANDING FOR THIS MACHINE" ;; *) echo "unexpected: $*" >&2; exit 22 ;; esac`
+    : 'exit 7'}\n`, { mode: 0o755 });
+  return spawnSync('sh', ['-s', '--', '--status'], {
+    input: SCRIPT, encoding: 'utf8',
+    env: { PATH: `${w.bin}:/usr/bin:/bin`, HOME: w.dir, TACIT_GPU_HOME: home, TACIT_PROC_VERSION: '/dev/null' },
+  });
+}
+
+test('--status asks the board for this install\'s address and shows the answer above the log', () => {
+  const w = world({ mem: 24000 });
+  const r = statusRun(w);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /not running/);
+  assert.match(r.stdout, /STANDING FOR THIS MACHINE/, 'what the board said about this address');
+  assert.match(r.stdout, /line one\nline two/, 'and the last lines of the log');
+  assert.ok(r.stdout.indexOf('STANDING FOR THIS MACHINE') < r.stdout.indexOf('line one'), 'the standing comes before the log');
+});
+
+test('--status still shows the log when the board cannot be reached', () => {
+  const w = world({ mem: 24000 });
+  const r = statusRun(w, { board: 'down' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /could not reach the prover board just now/);
+  assert.match(r.stdout, /line one\nline two/, 'the log is not hidden by it');
+});
+
+test('--status on a machine never installed shows only what it can', () => {
+  const w = world({ mem: 24000 });
+  const r = spawnSync('sh', ['-s', '--', '--status'], { input: SCRIPT, encoding: 'utf8', env: { PATH: `${w.bin}:/usr/bin:/bin`, HOME: w.dir, TACIT_GPU_HOME: join(w.dir, '.nothing-here'), TACIT_PROC_VERSION: '/dev/null' } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /not running/);
+  assert.doesNotMatch(r.stdout, /could not reach/, 'no address, so nothing was asked');
 });
