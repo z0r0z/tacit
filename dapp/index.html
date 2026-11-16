@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-80/RXA91pJZYcMzYwtQ9mYSwa+lerBt099XoGk5p8iA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-prEJqF/YcgKbs28N6fUgNZaahBAwa1Z2PaH/gcObNHo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -6853,12 +6853,13 @@ function xtPooled() {
     await Promise.all([...XT.by.values()].filter((r) => r.listed).map((r) => r.p || r));
     await SWC.card?.listReady?.()?.catch?.(() => {});
     for (const r of XT.by.values()) xtName(r);
+    XT.pooledDone = true;
     n++;
     if (n) xtFold();
     if (SPXP && spxPooled() !== wasPooled) paintHx();
     if (n) try { SWC.card?.refresh?.(); } catch { }
     if (n && HX.tab === 'earn' && !HX.zapping) { HX.q = null; hxQuote(); }
-  }, () => { XT.pooledAt = Date.now() - 25 * 60e3; });
+  }, () => { XT.pooledDone = true; XT.pooledAt = Date.now() - 25 * 60e3; });
 }
 // Tokens this browser has held privately are known again before the scan, so their unfinished deposits are found too.
 function xtBoot() {
@@ -7278,10 +7279,11 @@ async function xtEarnQuote(pick, units) {
     const x = await getUx().then((t) => xtAddPlan(t, r, wei)).catch(() => null);
     if (x && !x.plan) return { out: null, go: goL, warn: true, line: 'Enter a larger amount: this one is too small to make a share of the pool.' };
     const bad = x?.plan ? await xtAddCheck(r, x) : null;
-    if (bad) return { out: null, go: goL, warn: true, line: bad, rc };
+    // (a caution about the pool's price still shows what the deposit earns: the zap is allowed, the estimate is the row's TAC a day at this deposit)
+    if (bad) return { out: units && pick.day > 0 ? sig(pick.day) : null, go: goL, warn: true, line: bad, rc };
     if (x?.plan) rc.unshift(['Puts in', `${fmt(x.plan.ethLeg, 18, 6)} ETH and ${fmt(x.plan.bLeg, r.dec, 6)} ${r.sym}`]);
   }
-  return { out: null, go: start ? `Start the ${name} pool` : goL, warn: over, line: over ? `More ETH than ${your()} holds.` : '', rc };
+  return { out: units && pick.day > 0 ? sig(pick.day) : null, go: start ? `Start the ${name} pool` : goL, warn: over, line: over ? `More ETH than ${your()} holds.` : '', rc };
 }
 async function xtEarnGo(run, key, units) {
   const st = HX.zs, r = xtOf(key.slice(3)), wei = units * E10, start = key.startsWith('xs:');
@@ -12183,8 +12185,12 @@ async function hxFarms(amt) {
     const ts = String(p.pair).split('/'), want = { ether: 'cETH', eth: 'cETH', tac: 'TAC', [`xp${SPX_A}`]: 'SPX' }[src], sx = xtOf(`xp${SPX_A}`);
     if (!want || !ts.includes(want) || (src === 'ether' && !sx?.pool)) continue;
     const act = !!p.epoch?.active, names = ts.map((x) => (x === 'cETH' ? 'tETH' : x)).sort((a, b) => (b === 'tETH') - (a === 'tETH'));
+    // what a deposit earns a day: the farm's TAC a day, at the deposit's share of what is staked (the deposit worth in ETH: ETH and tETH as they are, TAC at its price, SPX at the price its pool gives)
+    const spxEth = (() => { const q = (FARM.program?.pools || []).find((y) => y.standalone && String(y.pair).includes('cETH') && String(y.pair).includes('SPX')), rs = q?.reserves; return rs && Number(rs.reserveA) > 0 && Number(rs.reserveB) > 0 ? (String(rs.assetA).toLowerCase() === String(CETH_ID).toLowerCase() ? Number(rs.reserveA) / Number(rs.reserveB) : Number(rs.reserveB) / Number(rs.reserveA)) : 0; })();
+    const dep = src === `xp${SPX_A}` ? amt * spxEth : eth, worth = poolWorth(p), staked = worth > 0 && Number(p.reserves.lpTotalShares) ? worth * Number(p.totalShares) / Number(p.reserves.lpTotalShares) : 0;
+    const soloDay = act && dep > 0 && worth > 0 ? Number(p.tacPerDayForPool) * dep / (staked + dep) : 0;
     out.push({ k: src === 'ether' ? `xa:${SPX_A}` : String(p.pid), name: names.join(' / '), note: `private${act ? '' : ' · its TAC stream starts soon'}`, icons: farmIcons(p), solo: true,
-      apr: act ? (() => { try { return shieldedApr(p); } catch { return null; } })() : null, day: 0, dry: !act, impact: 0,
+      apr: act ? (() => { try { return shieldedApr(p); } catch { return null; } })() : null, day: soloDay, dry: !act, impact: 0,
       small: (() => { const rs = p.reserves, tvl = ts.includes('cETH') ? 2 * Number(String(rs.assetA).toLowerCase() === String(CETH_ID).toLowerCase() ? rs.reserveA : rs.reserveB) / 1e8 : 2 * Number(rs.reserveB) / 1e8 * (x?.tacEth || 0); return tvl < 1; })() });
   }
   for (const p of FARM.program?.pools || []) {
@@ -13237,7 +13243,7 @@ function hxPreset(spec, amt, inCard = false, route = null, lp = false) {
     else if (tab === 'pay') { HX.tab = 'swap'; HX.flow = a === b ? 'withdraw' : null; SWC.ask = hxPayAsk(a, b, amt); }
     else if (tab === 'swap') { HX.tab = 'swap'; HX.flow = null; SWC.ask = hxSwapAsk(a, b, route, amt); }
     else if (tab === 'send') { HX.tab = 'send'; HX.flow = null; HX.send = a; HX.sendPick = true; HX.ask = false; }
-    else if (tab === 'earn') { HX.tab = 'earn'; HX.lp = !!lp && b !== 'public' && (a === 'ether' || !a); HX.ern = ['eth', 'tac', 'wtac'].includes(a) ? a : 'ether'; HX.placePick = true; if (b === 'public') HX.pool = HX.earnPick = 'precision'; else if (/^p\d{1,3}$/.test(b)) HX.pool = HX.earnPick = b.slice(1); else HX.earnPick = null; }
+    else if (tab === 'earn') { HX.tab = 'earn'; HX.lp = !!lp && b !== 'public' && (a === 'ether' || !a); HX.ern = ['eth', 'tac', 'wtac'].includes(a) ? a : 'ether'; HX.placePick = true; if (b === 'public') HX.pool = HX.earnPick = 'precision'; else if (/^p\d{1,3}$/.test(b)) HX.pool = HX.earnPick = b.slice(1); else if (b === 'spx' && SPXP) HX.pool = HX.earnPick = `xa:${SPX_A}`; else HX.earnPick = null; }
     else { HX.tab = 'borrow'; HX.more = 'borrow'; HX.bm = ['cbtc', 'tacd', 'tace'].includes(a) ? a : 'cusd'; HX.bsrc = ['tacd', 'tace'].includes(a) ? 'tac' : a === 'held' ? 'cbtc' : 'btc'; }
   });
   if (amt != null && !bare && HX.tab !== 'swap') { HX.amt = amt; HX.max = false; }
@@ -13312,6 +13318,9 @@ async function hxQuote() {
       return done(hxWrapSay(units, units ? await hxWrapTip(units).catch(() => undefined) : null));
     }
     if (m === 'earn') {
+      // On the SPX page the ETH zap into tETH / SPX is offered once the SPX pool has been read (a second or two). A link that names it (#card=earn:ether:spx) waits for that, so the
+      // tile never shows a launch pool the link did not ask for; the wait is short and ends on any answer, a failed read included.
+      if (SPXP && (HX.from === 'ether' || HX.from === 'eth') && String(HX.earnPick || '').startsWith('xa:') && !XT.pooledDone && XT.pooledAt && Date.now() - XT.pooledAt < 12e3) return done({ out: '—', go: 'Reading the farm…', warn: true, line: 'Reading the SPX pool…' });
       const rows = await hxFarms(units ? Number(units) / 1e8 : 0);
       if (my !== HX.seq) return;
       if (!rows.length) return done({ out: '—', go: 'Farm', warn: true, line: 'The farms could not be read.' });
@@ -13798,7 +13807,10 @@ function hxShareLink() {
   const u = hxUnits();
   if (u && HX.tab === 'send' && HX.send) return HX_SEND.some(([k]) => k === HX.send) ? `${location.origin}/#card=send:${HX.send}&amt=${plain(u, hxDec())}` : null;
   if (!u || HX.tab !== 'earn' || HX.from !== 'ether' || !HX.pool) return null;
-  return `${location.origin}/#card=earn:ether:${HX.pool === 'precision' ? 'public' : `p${Number(HX.pool)}`}&amt=${plain(u, 8)}${HX.lp && HX.pool !== 'precision' ? '&lp=1' : ''}`;
+  // the SPX page's ETH zap into the tETH / SPX farm (its row is xa:<SPX>) is #card=earn:ether:spx on that page
+  if (SPXP && String(HX.pool) === `xa:${SPX_A}`) return `${location.origin}/spx/#card=earn:ether:spx&amt=${plain(u, 8)}`;
+  if (!/^(precision|\d+)$/.test(String(HX.pool))) return null;
+  return `${location.origin}${SPXP ? '/spx/' : '/'}#card=earn:ether:${HX.pool === 'precision' ? 'public' : `p${Number(HX.pool)}`}&amt=${plain(u, 8)}${HX.lp && HX.pool !== 'precision' ? '&lp=1' : ''}`;
 }
 const hxShareSync = () => {
   const b = $('#hx-copy'), u = hxShareLink();
@@ -16275,7 +16287,7 @@ if (document.documentElement.dataset.page === 'spx') {
   const SPX = '0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c';
   SWC.ask = xtShieldAsk(SPX); HX.flowAsked = true;
   HX.tab = 'swap'; HX.flow = hxFlowOf(SWC.ask);
-  setTimeout(() => { xtEnsure(SPX).keep = true; xtPooled(); }, 1500);
+  xtEnsure(SPX).keep = true; xtPooled();
 }
 route();
 TACP.boot = false;
