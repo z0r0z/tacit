@@ -515,6 +515,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
             }
           } else if (clock() - (j.postedAt || 0) >= PROVER_BOARD.drawOfferMs) {
             j.drawOpen = true;                                           // the drawn machine never came for it
+            if (j.drawPick) await mark(j.drawPick, 'drawMissed');        // counted on its record: drawn, and not there
           } else {
             // The draw is made ONCE, by the first machine to ask after the block is posted, and kept on the job. Drawn afresh at each
             // ask, the winner moved as machines came and went (the odds of new places depend on how many there are), so a machine drawn at
@@ -525,7 +526,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
               trouble = trouble || (storage.getTrouble && await storage.getTrouble()) || {};
               const pick = drawPick(ws, open, j, trouble);
               if (pick == null) j.drawOpen = true;                       // no one to draw: raced as before
-              else { j.drawPick = pick; await storage.putJob(j.id, j); }
+              else { j.drawPick = pick; await storage.putJob(j.id, j); await mark(pick, 'draws'); }   // how often each machine is drawn, on its record
             }
             if (j.drawOpen) { /* raced below */ }
             else if (j.drawPick !== worker.name) continue;
@@ -690,7 +691,9 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       // a community machine: the program it is proving now (it asks for nothing meanwhile), the turns it has had, and its batch record
       ...(w.community ? { community: true, racing: racing.get(name) || null, turns: w.turns || 0, lapsed: w.lapsed || 0,
         ...(w.batches ? { batches: w.batches, batchSecs: Math.round(w.batchSecs) } : {}),
-        ...(w.blocks ? { blocks: w.blocks, blockSecs: Math.round(w.blockSecs * 10) / 10 } : {}) } : {}) }))
+        ...(w.blocks ? { blocks: w.blocks, blockSecs: Math.round(w.blockSecs * 10) / 10 } : {}),
+        // how many blocks it was drawn for, and of those how many it never came to take (taken ones show in `blocks`)
+        ...(w.draws ? { draws: w.draws, drawMissed: w.drawMissed || 0 } : {}) } : {}) }))
       .sort((a, b) => b.proved - a.proved || a.name.localeCompare(b.name));
     // How the jobs finished in the last hour fared (a job stays readable that long), in seconds: the wait for a claim, which is a worker busy with other
     // work (the proof pool's stock, an Ethereum-state proof), and the time to prove. On 2026-10-30 the wait was 1 s at the median and 24 s at the 90th

@@ -894,6 +894,8 @@ test('draw: the block is held for the drawn machine, which proves it and earns a
   assert.deepEqual(await answer(b, won, j.jobId), { ok: true, status: 'proved' });
   const row = (await b.summary()).workers.find((w) => w.name === won.name);
   assert.deepEqual([row.blocks, row.blockSecs], [1, 4], 'its record: one block in 4 s');
+  assert.deepEqual([row.draws, row.drawMissed], [1, 0], 'drawn once, and it came');
+  assert.equal((await b.summary()).workers.find((w) => w.name === other.name).draws, undefined, 'the other was not drawn');
   const day = Math.floor(now() / 86400000);
   assert.deepEqual((await b.credits(day)).body.miners.map((m) => m.points), [PROVER_BOARD.pointsByProgram['tacit-block']], 'paid as a block always was');
 });
@@ -936,6 +938,8 @@ test('draw: a drawn machine that never comes for the block leaves it to the race
   assert.equal(await askBlock(b, y), null, 'held for x');
   t += PROVER_BOARD.drawOfferMs;
   assert.equal((await askBlock(b, y)).jobId, j.jobId, 'x never came: the race\'s');
+  const xr = (await b.summary()).workers.find((w) => w.name === x.name);
+  assert.ok(xr.draws >= 1 && xr.drawMissed === 1, `x is shown drawn and missed once (${JSON.stringify(xr)})`);
 });
 
 test('draw: odds follow speed, places without a record share their slice, and one place is one ticket whatever it calls itself', async () => {
