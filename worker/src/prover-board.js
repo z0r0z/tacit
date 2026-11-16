@@ -61,6 +61,23 @@ export const PROVER_BOARD = Object.freeze({
   // input (a batch with more Bitcoin blocks has more input and takes longer), so it is earned only by proving. A machine with a record has
   // turnLeaseFactor times its usual time for a batch of that size (at least turnLeaseMinMs) to answer a turn before the batch goes on to the
   // next; one without keeps the batch's lease.
+  // A Tacit chain block is wanted fast (a user is waiting on it) but should not belong to whichever machine answers first every time: in an
+  // open race the fastest wins all of them (on 2026-11-16 one machine took 22 of 22 in about five seconds each, with 37 others waiting), so the
+  // chain has one prover in practice, and losing it means slow blocks until another warms up. So drawPct of blocks (by the block's id) go by
+  // DRAW first, as Bitcoin blocks do: a lottery among the places waiting for one, each place's odds its speed (1 / its usual seconds per block,
+  // like a share of hashpower), drawNew hundredths of the odds kept for places with no record yet so new machines can earn one. The fastest
+  // still wins most; the others win their share and stay warm. One ticket per place (its fastest machine), as in the proof pool, so more
+  // addresses on one connection buy no more odds. The block waits drawOfferMs for the drawn machine to take it and then drawFactor times its
+  // usual time (at least drawMinMs; drawNewMs for one with no record); one that lets it lapse, gives it back or answers wrongly opens it to the
+  // race at once, and its place goes after the others for turnTroubleMs. A machine whose usual block takes over drawMaxSecs is left to the race.
+  drawPrograms: Object.freeze(['tacit-block']),
+  drawPct: 0,                                          // PROVER_BOARD_BLOCK_DRAW_PCT: blocks that go by draw first, in hundredths (0: all raced)
+  drawNew: 15,                                         // PROVER_BOARD_BLOCK_DRAW_NEW: hundredths of the odds for places with no block record
+  drawOfferMs: 15_000,
+  drawFactor: 3,
+  drawMinMs: 20_000,
+  drawNewMs: 45_000,
+  drawMaxSecs: 60,
   communityRacers: 8,                                  // community machines racing one job at most
   communityPrograms: Object.freeze(['confidential', 'btc-state', 'tacit-block']), // what a community machine may race, when it says it proves it
   communityOpen: 1,                                    // jobs one community machine races at a time
@@ -101,6 +118,8 @@ export function proverBoardConfig(env = {}) {
     communityFirstMs: Object.freeze({ confidential: n(env.PROVER_BOARD_FIRST_MS, PROVER_BOARD.communityFirstMs.confidential), 'tacit-block': n(env.PROVER_BOARD_BLOCK_FIRST_MS, PROVER_BOARD.communityFirstMs['tacit-block']) }),
     bestPct: pct <= 100 ? pct : PROVER_BOARD.bestPct,
     bestOf: n(env.PROVER_BOARD_BEST_OF, PROVER_BOARD.bestOf, 1),
+    drawPct: Math.min(100, n(env.PROVER_BOARD_BLOCK_DRAW_PCT, PROVER_BOARD.drawPct)),
+    drawNew: Math.min(90, n(env.PROVER_BOARD_BLOCK_DRAW_NEW, PROVER_BOARD.drawNew)),
   });
 }
 const DAY_MS = 86_400_000;
@@ -112,6 +131,30 @@ export function goesByRecord(id, pct) {
   let h = 2166136261;
   for (const ch of `best|${id}`) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }
   return h % 100 < pct;
+}
+// A 32-bit hash of a string (FNV-1a, then a finalizer so near-identical inputs land far apart).
+function hash32(s) {
+  let h = 2166136261;
+  for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }
+  h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b) >>> 0; h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35) >>> 0; h ^= h >>> 16;
+  return h >>> 0;
+}
+// Whether a block goes by draw: a fixed hundredth from its id, under `pct`.
+export function goesByDraw(id, pct) {
+  return pct > 0 && hash32(`draw|${id}`) % 100 < pct;
+}
+// The draw for one job: each ticket [key, weight] gets -ln(u)/weight with u from (job, key), and the least wins, so a ticket wins with odds
+// in proportion to its weight. Fixed by the job's id: every machine asking about the job reads the same winner, and it cannot be known before
+// the job exists. Returns the winning key, or null.
+export function drawWinner(jobId, tickets) {
+  let best = null, bestV = Infinity;
+  for (const [key, weight] of tickets) {
+    if (!(weight > 0)) continue;
+    const u = (hash32(`draw|${jobId}|${key}`) + 0.5) / 4294967296;
+    const v = -Math.log(u) / weight;
+    if (v < bestV || (v === bestV && key < best)) { bestV = v; best = key; }
+  }
+  return best;
 }
 
 // PROVER_WORKER_TOKENS: "name:token[:class+class],name:token" — each worker's name, its bearer token and the classes it may
@@ -165,6 +208,9 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   const firstMs = cfg.communityFirstMs ?? PROVER_BOARD.communityFirstMs;
   const best = { pct: cfg.bestPct ?? PROVER_BOARD.bestPct, of: cfg.bestOf ?? PROVER_BOARD.bestOf };
   const byRecord = (j) => goesByRecord(j.id, best.pct);
+  const draw = { pct: cfg.drawPct ?? PROVER_BOARD.drawPct, fresh: cfg.drawNew ?? PROVER_BOARD.drawNew };
+  // a block still held for its draw: one that goes by draw and has not been opened to the race
+  const drawHeld = (j) => PROVER_BOARD.drawPrograms.includes(j.program) && !j.drawOpen && goesByDraw(j.id, draw.pct);
   const hasRecord = (w) => !!w && (w.batches || 0) >= PROVER_BOARD.bestRecordMin && w.batchRate > 0;
   // a batch's size in MB of input, which its proving time follows (more Bitcoin blocks, more input)
   const sizeOf = (j) => Math.max(0.001, (j.inputBytes || 1e6) / 1e6);
@@ -273,9 +319,12 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
         await storage.putJob(j.id, j);
         await bump(c.worker, 'proved', null, null, true);
         if (PROVER_BOARD.turnPrograms.includes(j.program)) await noteBatch(c.worker, c.secs, sizeOf(j));
+        if (PROVER_BOARD.drawPrograms.includes(j.program)) await noteBlock(c.worker, c.secs);
         await credit(c.worker, j.program || 'confidential');
         return { ok: true, status: 'proved' };
       }
+      // the drawn machine's answer did not pass: the block is the race's now
+      if (ok === false && j.drawn === c.worker && !j.drawOpen) j.drawOpen = true;
       await storage.putJob(j.id, j);
       if (ok === false) { await bump(c.worker, 'bad', null, null, true); await troubled(c.client); }
       return { ok: true, status: j.status };
@@ -342,6 +391,15 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     w.batchSecs = avg(w.batchSecs, secs);
     w.batchRate = avg(w.batchRate, secs / mb);
     w.batches = (w.batches || 0) + 1;
+    await storage.putWorkers(ws);
+  }
+  // A block the relay took: the machine's block record (how many, and as a running average its usual time from claim to proof), which sets
+  // its odds in the draw and how long it has when drawn.
+  async function noteBlock(name, secs) {
+    const ws = await workers(), w = ws[name];
+    if (!w || !(secs > 0)) return;
+    w.blockSecs = w.blocks && w.blockSecs > 0 ? 0.7 * w.blockSecs + 0.3 * secs : secs;
+    w.blocks = (w.blocks || 0) + 1;
     await storage.putWorkers(ws);
   }
   // The place a racer claimed a job from (a race claimed before places were kept holds none, and is anyone's under its name).
@@ -432,6 +490,30 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
         // racing now, or raced it before (answered or dropped out): offered once
         if ((j.raced || []).includes(worker.name) || racers.length >= PROVER_BOARD.communityRacers) continue;
         let turnMs = null;
+        if (drawHeld(j)) {
+          if (j.drawn) {
+            // its machine is proving it, or its answer waits on the relay's check: no one else's yet
+            if (racers.includes(j.drawn) || (j.race || []).some((c) => c.worker === j.drawn)) continue;
+            // its time ran out unanswered: the race's, and the place goes after the others
+            j.drawOpen = true;
+            await mark(j.drawn, 'lapsed');
+            await troubled(placeOf(j, j.drawn));
+          } else if (clock() - (j.postedAt || 0) >= PROVER_BOARD.drawOfferMs) {
+            j.drawOpen = true;                                           // the drawn machine never came for it
+          } else {
+            ws = ws || await workers();
+            trouble = trouble || (storage.getTrouble && await storage.getTrouble()) || {};
+            const pick = drawPick(ws, open, j, trouble);
+            if (pick == null) j.drawOpen = true;                         // no one to draw: raced as before
+            else if (pick !== worker.name) continue;
+            else {
+              const w = ws[worker.name];
+              turnMs = w && w.blocks && w.blockSecs > 0
+                ? Math.min(PROVER_BOARD.drawNewMs, Math.max(PROVER_BOARD.drawMinMs, PROVER_BOARD.drawFactor * w.blockSecs * 1000)) : PROVER_BOARD.drawNewMs;
+              j.drawn = worker.name;
+            }
+          }
+        }
         if (PROVER_BOARD.turnPrograms.includes(j.program)) {
           if (racers.length) continue;                                   // another machine's turn
           ws = ws || await workers();
@@ -465,6 +547,32 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     const t = clock(), busy = new Set(open.flatMap(liveRacers)), prog = j.program || 'confidential';
     return Object.entries(ws).some(([n, w]) => w.community && (w.programs || ['confidential']).includes(prog) && t - (w.lastSeen || 0) < PROVER_BOARD.turnSeenMs
       && !busy.has(n) && !(j.raced || []).includes(n));
+  }
+
+  // Who a block is drawn for: of the machines that prove its program, asked for work in the last turnSeenMs, are proving nothing, have not had
+  // this block and ask from a place in no trouble, one ticket per place (its fastest machine). A place with a record (usual time at most
+  // drawMaxSecs) weighs 1 / its usual seconds; places with none share drawNew hundredths of the odds between them (all of them, if no place
+  // has a record). drawWinner picks by the job's id. The machine's name, or null when no one waits.
+  function drawPick(ws, open, j, troubles = {}) {
+    const t = clock(), busy = new Set(open.flatMap(liveRacers));
+    const ok = ([n, w]) => w.community && (w.programs || []).includes(j.program) && t - (w.lastSeen || 0) < PROVER_BOARD.turnSeenMs
+      && !busy.has(n) && !(j.raced || []).includes(n) && !(w.client && troubles[w.client] != null && t - troubles[w.client] < PROVER_BOARD.turnTroubleMs);
+    const usual = (w) => (w.blocks && w.blockSecs > 0 ? w.blockSecs : Infinity);
+    const byPlace = new Map();
+    for (const [n, w] of Object.entries(ws).filter(ok)) {
+      const p = w.client || n, had = byPlace.get(p);
+      if (!had || usual(w) < usual(had[1]) || (usual(w) === usual(had[1]) && n < had[0])) byPlace.set(p, [n, w]);
+    }
+    const rec = [], fresh = [];
+    for (const [p, [n, w]] of byPlace) {
+      if (usual(w) === Infinity) fresh.push([p, n]);
+      else if (usual(w) <= PROVER_BOARD.drawMaxSecs) rec.push([p, n, 1 / usual(w)]);
+    }
+    const sum = rec.reduce((s, r) => s + r[2], 0);
+    const each = !rec.length ? 1 : draw.fresh > 0 && fresh.length ? (draw.fresh / (100 - draw.fresh)) * sum / fresh.length : 0;
+    const tickets = [...rec.map(([p, , w]) => [p, w]), ...fresh.map(([p]) => [p, each])];
+    const won = drawWinner(j.id, tickets);
+    return won == null ? null : byPlace.get(won)[0];
   }
 
   // Whose turn a batch is: of the machines that prove its program, asked for work in the last turnSeenMs, are proving nothing and have not
@@ -503,6 +611,8 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
         j.racers = j.racers.filter((x) => x !== worker.name);
         // a turn given back: the next machine's, and this place waits behind the others for a while
         if (error != null && PROVER_BOARD.turnPrograms.includes(j.program)) { await mark(worker.name, 'lapsed'); await troubled(worker.client); }
+        // a drawn block given back: the race's at once, and this place waits behind the others for a while
+        if (error != null && j.drawn === worker.name && !j.drawOpen) { j.drawOpen = true; await mark(worker.name, 'lapsed'); await troubled(worker.client); }
         if (error == null) {
           if (!isHex(publicValues) || publicValues.length < 2 + 64 * 2 || publicValues.length > 2 + 2 * PROVER_BOARD.maxCandidatePvBytes) return { ok: false, error: 'publicValues must be the hex of the proof\'s public values' };
           if (!isHex(proof) || proof.length < 2 + 2 * 4 || proof.length > 2 + 2 * 4096) return { ok: false, error: 'proof must be the hex of the groth16 proof bytes' };
@@ -552,7 +662,8 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     const list = Object.entries(ws).map(([name, w]) => ({ name, proved: w.proved || 0, failed: w.failed || 0, bad: w.bad || 0, lastBadSeconds: w.lastBadAt ? Math.max(0, Math.floor((clock() - w.lastBadAt) / 1000)) : null, lastSeenSeconds: w.lastSeen ? Math.max(0, Math.floor((clock() - w.lastSeen) / 1000)) : null, pubkey: w.pubkey || null, programs: w.programs || ['confidential'],
       // a community machine: the program it is proving now (it asks for nothing meanwhile), the turns it has had, and its batch record
       ...(w.community ? { community: true, racing: racing.get(name) || null, turns: w.turns || 0, lapsed: w.lapsed || 0,
-        ...(w.batches ? { batches: w.batches, batchSecs: Math.round(w.batchSecs) } : {}) } : {}) }))
+        ...(w.batches ? { batches: w.batches, batchSecs: Math.round(w.batchSecs) } : {}),
+        ...(w.blocks ? { blocks: w.blocks, blockSecs: Math.round(w.blockSecs * 10) / 10 } : {}) } : {}) }))
       .sort((a, b) => b.proved - a.proved || a.name.localeCompare(b.name));
     // How the jobs finished in the last hour fared (a job stays readable that long), in seconds: the wait for a claim, which is a worker busy with other
     // work (the proof pool's stock, an Ethereum-state proof), and the time to prove. On 2026-10-30 the wait was 1 s at the median and 24 s at the 90th
