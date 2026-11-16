@@ -71,8 +71,7 @@ const WALLET_SCRIPT = (addr) => {
 };
 // the gate: the Tacit wallet is opened with the Ethereum wallet, which signs once (twice, to be sure it signs the same)
 async function unlock(page) {
-  // Reloads offer the remembered Tacit wallet instead of the first-visit Ethereum button.
-  const gate = page.locator('#g-in [data-in="known"], #g-in [data-in="eth"]').first(), form = page.locator('#f-damt');
+  const gate = page.locator('button', { hasText: /Connect wallet|Ethereum wallet|Tacit wallet/ }).first(), form = page.locator('#f-damt');
   // a page that was opened before keeps the Tacit wallet open, and shows the form at once
   await Promise.race([gate.waitFor({ state: 'visible', timeout: 60000 }), form.waitFor({ state: 'attached', timeout: 60000 })]);
   if (!(await form.count())) await gate.click();

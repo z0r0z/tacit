@@ -1,5 +1,5 @@
 // /pay's TAC Send when the relay quoted on load and then cannot take the payment: the page asks on the status line before
-// posting it from the key's Bitcoin address, and /tac's Send likewise. "Not now" sends nothing; leaving the question unanswered (its ten minutes
+// posting it from the key's Bitcoin address. "Not now" sends nothing; leaving the question unanswered (its ten minutes
 // shortened here) is a no; a second writer to the status line does not remove it; "Post it from my Bitcoin address" goes
 // on to prove the payment (stopped here at the prover's download). The pool, the relay and the explorers are stubbed,
 // and nothing is broadcast.
@@ -96,6 +96,8 @@ async function stubbed(answer) {
 async function run(answer) {
   const { A, to, seen, b, page, errors, down } = await stubbed(answer);
   await page.goto(ORIGIN + '/pay/#tac');
+  await page.waitForSelector('#g-in [data-in="paste"]', { state: 'attached' });
+  await page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
   await page.click('#g-in [data-in="paste"]');
   await page.fill('#g-hex', A);
   await page.click('#g-in [data-in="key"]');
@@ -143,40 +145,11 @@ async function run(answer) {
   await b.close();
 }
 
-// /tac's Send: the same question on its status line, and "Not now" sends nothing.
-async function runTac() {
-  const { A, to, seen, b, page, errors, down } = await stubbed('tac');
-  await page.goto(ORIGIN + '/tac/');
-  await page.click('#wallet-chip');
-  await page.click('#ws-in [data-in="paste"]');
-  await page.fill('#ws-hex', A);
-  await page.click('#ws-in [data-in="key"]');
-  await page.waitForFunction(() => /^1(\.0+)?$/.test((document.querySelector('#bal-shielded')?.textContent || '').trim()), null, { timeout: 90e3 });
-  ok(true, 'tac: the stubbed shielded balance reads 1 TAC');
-  await page.click('#tab-send');
-  await page.fill('#send-to', to);
-  await page.fill('#send-amt', '0.1');
-  down();
-  await page.click('#btn-send');
-  await page.waitForFunction(() => [...document.querySelectorAll('#st-send button')].some((x) => x.textContent === 'Not now'), null, { timeout: 60e3 });
-  if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, 'tac-ask.png'), fullPage: true });
-  const ask = (await page.textContent('#st-send')).replace(/\s+/g, ' ').trim();
-  ok(/^The relay didn’t take this payment\. Post it from your Bitcoin address instead\? Your Bitcoin address shows as the sender\.Post it from my Bitcoin addressNot now$/.test(ask), `tac: the question: ${ask}`);
-  await page.click('#st-send button:text-is("Not now")');
-  await page.waitForFunction(() => /Nothing was sent/.test(document.querySelector('#st-send').textContent), null, { timeout: 30e3 });
-  const said = (await page.textContent('#st-send')).trim();
-  ok(said === 'The relay can’t take this one right now. Nothing was sent.' && !(await page.$('#st-send .err')), `tac: says so plainly: ${said}`);
-  await page.waitForTimeout(1500);
-  ok(!seen.posts.length && !seen.relay.some((x) => /submit/.test(x)) && !local.length, `tac: nothing was posted, handed to the relay or proved (${[...seen.posts, ...local].join(' ') || 'none'})`);
-  ok(!(await page.$eval('#btn-send', (x) => x.disabled)), 'tac: Send works again afterwards');
-  ok(!errors.length, `tac: no page errors ${errors.join(' | ')}`);
-  await b.close();
-}
+// /tac now hosts the Tacit-chain dashboard; its former Bitcoin Send form is no longer served.
+// The live Bitcoin relay-fallback flow is exercised above through /pay/#tac for no, timeout and yes.
 
 try {
   for (const a of ['no', 'none', 'yes']) await run(a);
-  local.length = 0;
-  await runTac();
 } finally { server.close(); }
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
