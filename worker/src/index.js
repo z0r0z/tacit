@@ -22240,6 +22240,25 @@ function watchtowerCancelMsg(network, ownerH160, bidIdHex) {
   ));
 }
 
+// The registration's funding outpoint must be a real output paying the bid wallet (P2WPKH of bid_pubkey) at least the bid's price, in
+// the mempool or a block: a registration then costs real sats, so the watchtower is not handed records with nothing behind them. A
+// funding transaction not seen yet answers 409 `funding_not_seen` (the page broadcast it a moment ago: it asks again); an upstream it
+// cannot read answers 503. WATCHTOWER_FUNDING_CHECK=false turns the check off (offline tests).
+async function watchtowerFundingCheck(env, network, txid, vout, bidPubHex, minSats) {
+  if (String(env?.WATCHTOWER_FUNDING_CHECK ?? '') === 'false') return null;
+  let r;
+  try { r = await esploraFailoverFetch(proxyBases(env, network), `/tx/${txid}`, () => _buildUpstreamInit({ timeoutMs: 10_000 })); }
+  catch { return { status: 503, body: { error: 'the funding transaction could not be checked right now: try again in a moment', code: 'funding_unchecked' } }; }
+  if (r.status === 404) return { status: 409, body: { error: 'the funding transaction is not seen yet: try again in a moment', code: 'funding_not_seen' } };
+  if (!r.ok) return { status: 503, body: { error: 'the funding transaction could not be checked right now: try again in a moment', code: 'funding_unchecked' } };
+  const tx = await r.json().catch(() => null);
+  const out = tx?.vout?.[vout];
+  const want = '0014' + bytesToHex(hash160(hexToBytes(bidPubHex)));
+  if (!out || String(out.scriptpubkey || '').toLowerCase() !== want) return { status: 400, body: { error: 'funding_outpoint does not pay the bid wallet (P2WPKH of bid_pubkey)', code: 'funding_wrong' } };
+  if (!(Number(out.value) >= minSats)) return { status: 400, body: { error: `funding_outpoint holds ${Number(out.value)} sats, under the bid's ${minSats}`, code: 'funding_short' } };
+  return null;
+}
+
 async function handleWatchtowerBidPost(req, env, network, cors) {
   if (!watchtowerRegisterEnabled(env)) {
     return jsonResponse({ error: 'watchtower registration is not currently open' }, 410, cors);
@@ -22287,6 +22306,12 @@ async function handleWatchtowerBidPost(req, env, network, cors) {
     return jsonResponse({ error: 'invalid auth signature' }, 403, cors);
   }
 
+  // the limits are checked before the funding is read, and a registration is counted only once its funding checks (the page asks again
+  // while its just-broadcast funding is not seen, and those asks are not counted)
+  const _peekRl = await _orderbookWriteRateLimit(req, env, ownerPubHex, 'watchtower-register', { peek: true });
+  if (!_peekRl.ok) return jsonResponse({ error: `register rate limited: ${_peekRl.reason}` }, 429, cors);
+  const _funding = await watchtowerFundingCheck(env, network, fundingTxidHex, fundingVout, bidPubHex, bidPriceSats);
+  if (_funding) return jsonResponse(_funding.body, _funding.status, cors);
   const _orderRl = await _orderbookWriteRateLimit(req, env, ownerPubHex, 'watchtower-register');
   if (!_orderRl.ok) return jsonResponse({ error: `register rate limited: ${_orderRl.reason}` }, 429, cors);
 
@@ -22755,7 +22780,8 @@ async function _orderbookWriteRateLimit(req, env, pubHex, kind, opts = {}) {
     pkPrior = safeInt(await env.REGISTRY_KV.get(pkKey), 0, { min: 0 });
     if (pkPrior >= pkLimit) return { ok: false, reason: `${kind} pubkey daily limit (${pkLimit}/day)` };
   }
-  // Commit counters only after every gate has passed.
+  // Commit counters only after every gate has passed (opts.peek: check the limits, count nothing).
+  if (opts.peek) return { ok: true };
   await env.REGISTRY_KV.put(ipKey, String(ipPrior + 1), { expirationTtl: 90000 });
   if (pkKey) await env.REGISTRY_KV.put(pkKey, String(pkPrior + 1), { expirationTtl: 90000 });
   return { ok: true };

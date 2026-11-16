@@ -35,7 +35,7 @@ const h160 = (hex) => bytesToHex(ripemd160(sha256(Buffer.from(hex, 'hex'))));
 const OWNER = key(7), BIDK = key(9), SELLER = key(11), OTHERK = key(13);
 const OWNER_PUB = pubOf(OWNER), BID_PUB = pubOf(BIDK), SELLER_PUB = pubOf(SELLER);
 const ASSET = 'ab'.repeat(32), BID_ID = 'cd'.repeat(16), NOW = Math.floor(Date.now() / 1000);
-const env = buildEnv(createMemDriver(), { extra: { BOUND_OFFERS_ENABLED: 'true', WATCHTOWER_REGISTER_ENABLED: 'true' } });
+const env = buildEnv(createMemDriver(), { extra: { BOUND_OFFERS_ENABLED: 'true', WATCHTOWER_REGISTER_ENABLED: 'true', WATCHTOWER_FUNDING_CHECK: 'false' } });
 const offEnv = buildEnv(createMemDriver(), { extra: {} });
 const seedBid = async (e, over = {}) => e.REGISTRY_KV.put(`wtbid:${NET}:${h160(OWNER_PUB)}:${over.bid_id || BID_ID}`, JSON.stringify({
   network: NET, bid_id: BID_ID, asset_id: ASSET, owner_pubkey: OWNER_PUB, bid_pubkey: BID_PUB, enc_bid_privkey: 'ef'.repeat(32), bid_price_sats: 50000, bid_amount_base: '1000',

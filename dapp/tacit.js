@@ -28588,7 +28588,8 @@ async function registerWatchtowerBid({ assetIdHex, bidIdHex, amountBase, priceSa
       decimals: decimals | 0, expiry, fundingTxidHex, fundingVout,
     });
     const sig = signSchnorr(msg, mainPriv);
-    const resp = await fetch(withNet(`${WORKER_BASE}/watchtower/bids`), {
+    // the API checks the funding pays the bid wallet; it was broadcast a moment ago, so a "not seen yet" is asked again for up to two minutes
+    const post = () => fetch(withNet(`${WORKER_BASE}/watchtower/bids`), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         asset_id: assetIdHex, bid_id: bidIdHex, owner_pubkey: bytesToHex(ownerPub), bid_pubkey: bytesToHex(bidPub),
@@ -28596,7 +28597,12 @@ async function registerWatchtowerBid({ assetIdHex, bidIdHex, amountBase, priceSa
         decimals: decimals | 0, expiry, funding_outpoint: { txid: fundingTxidHex, vout: fundingVout }, auth_sig: bytesToHex(sig), kind: _kind,
       }),
     });
-    const j = await resp.json().catch(() => ({}));
+    let resp, j;
+    for (let i = 0; ; i++) {
+      resp = await post(); j = await resp.json().catch(() => ({}));
+      if (resp.ok || !['funding_not_seen', 'funding_unchecked'].includes(j.code) || i >= 11) break;
+      await new Promise((r) => setTimeout(r, 10_000));
+    }
     if (!resp.ok) throw new Error(j.error || `register failed (${resp.status})`);
   } catch (e) { e.bidWalletPub = bytesToHex(bidPub); throw e; }
   return { bid_id: bidIdHex, bid_address: bidAddr, bid_pubkey: bytesToHex(bidPub), funding_txid: fundingTxidHex };
