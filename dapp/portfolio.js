@@ -66,3 +66,32 @@ export function portfolio(items, { usd = () => null, amount = (v) => String(v), 
   }
   return groups;
 }
+
+// The same groups turned the other way, for the Portfolio page: one asset for each thing held, and under it a row for each place it is
+// held in. `kind(row)` is what the page prices a row as ('tac', 'eth', 'btc', 'usd'), or nothing. TAC, ether and bitcoin are each one
+// asset however they are wrapped (tETH is ether, cBTC is bitcoin). A dollar token stays its own asset, as does anything the page does
+// not price, so two different dollars are never added together. Liquidity, rewards and loans are not assets: they come back beside
+// them. An asset's amount is its rows' added up at 18 places, and is null while any of them is still being read.
+const ONE = { tac: ['TAC', 'tk-tac'], eth: ['ETH', 'tk-eth'], btc: ['BTC', 'tk-btc'] };
+export function byAsset(groups, { kind = () => null } = {}) {
+  const seen = new Map(), out = { assets: [], positions: [], earned: [], owed: [] };
+  for (const g of groups || []) {
+    if (g.id === 'lp') { out.positions = g.rows; continue; }
+    if (g.id === 'earned' || g.id === 'owed') { out[g.id] = g.rows; continue; }
+    for (const r of g.rows) {
+      const k = kind(r) || '', one = ONE[k], id = one ? k : `${k}:${r.label}`;
+      let a = seen.get(id);
+      if (!a) {
+        a = { id, name: one ? one[0] : r.label, icon: one ? one[1] : r.icon, icons: one ? undefined : r.icons, mark: one ? undefined : r.mark, markId: one ? undefined : r.markId, rows: [], v: 0n, dec: 18, max: 0, usd: null };
+        seen.set(id, a); out.assets.push(a);
+      }
+      a.rows.push({ ...r, placeName: g.name });
+      a.max = Math.max(a.max, r.max ?? 0);
+      if (r.usd != null) a.usd = (a.usd ?? 0) + r.usd;
+      if (r.v == null || r.num || a.v == null) a.v = null; else a.v += r.v * 10n ** BigInt(18 - (r.dec ?? 18));
+    }
+  }
+  // the most valuable first; what has no worth after what has, in the order the page lists it
+  out.assets = out.assets.map((a, i) => [a, i]).sort((x, y) => (y[0].usd ?? -1) - (x[0].usd ?? -1) || x[1] - y[1]).map(([a]) => a);
+  return out;
+}
