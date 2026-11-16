@@ -18,6 +18,7 @@ import { publicClient, relayWallet, HEADER_RELAY, RELAY_ABI, baseFeeHistory } fr
 import { planHeaderAdvance } from './lib/header-plan.js';
 import { cbtcLockDemand } from './lib/reflection-demand.js';
 import { noteLockDemand } from './lib/attest-demand.js';
+import { makeNoteWaitsReader, noteWaitNeed } from './lib/note-waits.js';
 import { tipFor, TIP_HISTORY_BLOCKS, TIP_PERCENTILE } from './lib/gas-tip.js';
 import { tipLadder, sendPatient, raised } from './lib/patient-send.js';
 import { baseFeeWait } from './lib/base-fee-wait.js';
@@ -33,6 +34,8 @@ import { keccak256 as viemKeccak } from 'viem';
 const log = (...a) => console.log(`[header ${new Date().toISOString()}]`, ...a);
 // The waits below are on purpose and last hours: each is said once, then every ten minutes while it stays the same (lib/quiet-log.js).
 const say = makeQuietLog(log);
+const sayNotes = makeQuietLog(log);
+const readNoteWaits = makeNoteWaitsReader({ workerBase: () => CFG.workerBase, network: () => CFG.network, boxToken: () => CFG.boxToken });
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 const ESPLORAS = CFG.btcEsplora.split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -325,7 +328,13 @@ async function cycleOnce() {
   const gwei = dear || null;
   const ripe = !!demand?.waiting && demand.oldestAgeBlocks >= CFG.demandGraceBlocks;
   if (demand) noteLockDemand({ waiting: demand.waiting, ripe });
-  const urgent = ripe && !(gwei && gwei > CFG.demandMaxGasGwei);
+  // A note whose page waits on its block (lib/note-waits.js) is the same sign, and needs no grace: it is asked for once its transaction
+  // is in a block, so the headers that take it to its confirmations are wanted from then on.
+  const need = noteWaitNeed({ waits: await readNoteWaits(), attested: refl, relayTip: rtip, confirmations: CFG.reflectionConfirmations });
+  const overCeiling = !!(gwei && gwei > CFG.demandMaxGasGwei);
+  const notesUrgent = need.headers && !overCeiling;
+  if (need.headers) sayNotes(`notes:${need.waiting}:${notesUrgent}`, `${need.waiting} note(s) wait on the reflection (the lowest at Bitcoin block ${need.lowest}) — ${notesUrgent ? 'advancing now' : `gas ${gwei.toFixed(2)} gwei is above the ${CFG.demandMaxGasGwei} gwei ceiling, waiting`}`);
+  const urgent = (ripe && !overCeiling) || notesUrgent;
   if (demand?.waiting) {
     const why = !ripe ? `bonded ${Math.round((demand.oldestAgeBlocks * 12) / 60)} min ago, before it can have its confirmations — keeping to cheap gas for now`
       : urgent ? 'advancing now' : `gas ${gwei.toFixed(2)} gwei is above the ${CFG.demandMaxGasGwei} gwei ceiling, waiting`;

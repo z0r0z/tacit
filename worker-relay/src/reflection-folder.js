@@ -40,6 +40,7 @@ import { safeErr } from './lib/safe-err.js';
 import { withNonceRetry } from './lib/nonce-retry.js';
 import { attestGate } from './lib/gas-pace.js';
 import { attestDemand } from './lib/attest-demand.js';
+import { makeNoteWaitsReader, noteWaitNeed } from './lib/note-waits.js';
 import { makeQuietLog } from './lib/quiet-log.js';
 import { attestFundsNeed } from './lib/attest-fees.js';
 
@@ -69,6 +70,7 @@ let creditPause = null;
 const ATTEST_PACE = { minBlocks: CFG.attestMinBlocks, waitMin: CFG.attestMaxWaitMin };
 const PROBE_EVERY_MS = 10 * 60_000;     // with nothing matured, the job is still asked for this often: the drift and lost-ack checks live behind it
 const gateState = { since: null, probedAt: 0 };
+const readNoteWaits = makeNoteWaitsReader({ workerBase: () => CFG.workerBase, network: () => CFG.network, boxToken: () => CFG.boxToken });
 async function attestGateNow() {
   try {
     const [relayTip, attested, live] = await Promise.all([
@@ -76,7 +78,10 @@ async function attestGateNow() {
       reflectionAttestedHeight(),
       readPoolCounts(),
     ]);
-    const g = attestGate({ relayTip, attested, confirmations: CFG.reflectionConfirmations, now: Date.now(), since: gateState.since, probedAt: gateState.probedAt, probeEveryMs: PROBE_EVERY_MS, urgent: attestDemand({ live }), params: ATTEST_PACE });
+    // A note whose page waits on a matured block (lib/note-waits.js) is someone waiting too: its block goes now, not with company.
+    const need = noteWaitNeed({ waits: await readNoteWaits(), attested, relayTip, confirmations: CFG.reflectionConfirmations });
+    const urgent = attestDemand({ live }) || (need.attest ? `${need.waiting} note(s) wait on these blocks (the lowest at Bitcoin block ${need.lowest})` : null);
+    const g = attestGate({ relayTip, attested, confirmations: CFG.reflectionConfirmations, now: Date.now(), since: gateState.since, probedAt: gateState.probedAt, probeEveryMs: PROBE_EVERY_MS, urgent, params: ATTEST_PACE });
     if (g) { gateState.since = g.since; gateState.probedAt = g.probedAt; }
     return g;
   } catch (e) { log(`pace check unavailable (${String(e.message).slice(0, 80)}) — proceeding`); return null; }
