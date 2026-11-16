@@ -78,6 +78,7 @@ export const PROVER_BOARD = Object.freeze({
   drawMinMs: 20_000,
   drawNewMs: 45_000,
   drawMaxSecs: 60,
+  offerHoldMs: 60_000,                                  // a program a machine named in a claim this recently is still one it offers (its latest claim may name fewer)
   // Past drawHedgeFactor times its usual time (at least drawHedgeMinMs; drawNewHedgeMs for a machine with no record) the drawn machine is
   // joined by the race but keeps its claim, so a slow draw costs a user little and the drawn machine still wins if it is first.
   drawHedgeFactor: 1.5,
@@ -214,6 +215,8 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   const best = { pct: cfg.bestPct ?? PROVER_BOARD.bestPct, of: cfg.bestOf ?? PROVER_BOARD.bestOf };
   const byRecord = (j) => goesByRecord(j.id, best.pct);
   const draw = { pct: cfg.drawPct ?? PROVER_BOARD.drawPct, fresh: cfg.drawNew ?? PROVER_BOARD.drawNew };
+  // Whether a machine offers a program: it named it in a claim within offerHoldMs, or (a record from before offers were kept) its latest claim does.
+  const offers = (w, program) => (w.offered && w.offered[program] != null ? clock() - w.offered[program] < PROVER_BOARD.offerHoldMs : (w.programs || []).includes(program));
   // a block still held for its draw: one that goes by draw and has not been opened to the race
   const drawHeld = (j) => PROVER_BOARD.drawPrograms.includes(j.program) && !j.drawOpen && goesByDraw(j.id, draw.pct);
   const hasRecord = (w) => !!w && (w.batches || 0) >= PROVER_BOARD.bestRecordMin && w.batchRate > 0;
@@ -423,7 +426,13 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     if (field) w[field] = (w[field] || 0) + 1;
     if (field === 'bad') w.lastBadAt = clock();   // the count is lifetime; the monitor warns on a recent one
     if (pubkey && /^0x0[23][0-9a-fA-F]{64}$/.test(pubkey)) w.pubkey = pubkey.toLowerCase();
-    if (programs) w.programs = programs;
+    if (programs) {
+      w.programs = programs;
+      // when each program was last named: the latest claim may name fewer (a second worker under the same address that offers less, or a
+      // moment between starts), and a machine that offered blocks a few seconds ago still holds its ticket for them
+      w.offered = w.offered || {};
+      for (const pr of programs) w.offered[pr] = clock();
+    }
     if (client) w.client = client;
     w.lastSeen = clock();
     if (community) {
@@ -583,7 +592,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     const usual = (w) => (w.blocks && w.blockSecs > 0 ? w.blockSecs : Infinity);
     // A machine with no block record draws only once the board has taken a proof from it: a ticket costs a waiting user time when it is not
     // answered, and an address that has proved nothing (one of a swarm of connections, say) has shown no machine behind it.
-    const ok = ([n, w]) => w.community && (w.programs || []).includes(j.program) && t - (w.lastSeen || 0) < PROVER_BOARD.turnSeenMs
+    const ok = ([n, w]) => w.community && offers(w, j.program) && t - (w.lastSeen || 0) < PROVER_BOARD.turnSeenMs
       && !busy.has(n) && !(j.raced || []).includes(n) && !(w.client && troubles[w.client] != null && t - troubles[w.client] < PROVER_BOARD.turnTroubleMs)
       && (usual(w) < Infinity || (w.proved || 0) >= 1);
     const byPlace = new Map();
@@ -723,7 +732,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     // why not: in the order a machine can fix them
     let why = null;
     if (seen == null || seen * 1000 >= PROVER_BOARD.turnSeenMs) why = 'It is not asking for work right now. Start it and it joins within seconds.';
-    else if (!(w.programs || []).includes('tacit-block')) why = 'It is not offering Tacit chain blocks (TACIT_BLOCK=0 on the worker, or its block key check failed).';
+    else if (!offers(w, 'tacit-block')) why = 'It has not offered Tacit chain blocks in the last minute (TACIT_BLOCK=0 on the worker, its block key check failed, or a second worker under the same address that does not offer them is the one asking).';
     else if (!rec && !((w.proved || 0) >= 1)) why = 'It needs one accepted proof of any kind first (a wrap for the pool counts). Then it joins the draw.';
     else if (w.client && trouble[w.client] != null && t - trouble[w.client] < PROVER_BOARD.turnTroubleMs) why = 'Its connection missed a turn recently, so it waits behind the others for a while.';
     else if (rec && w.blockSecs > PROVER_BOARD.drawMaxSecs) why = `Its usual block time (${Math.round(w.blockSecs)} s) is over ${PROVER_BOARD.drawMaxSecs} s, so blocks stay with faster machines; its batches and wraps are unaffected.`;
@@ -735,7 +744,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     if (rec) lines.push(`Tacit chain blocks: ${w.blocks} taken, usually ${Math.round(w.blockSecs * 10) / 10} s each.`);
     else lines.push('Tacit chain blocks: none taken yet.');
     if (w.draws) lines.push(`Drawn for ${w.draws} block${w.draws === 1 ? '' : 's'}${w.drawMissed ? `, ${w.drawMissed} not taken in time` : ', all taken'}.`);
-    if (odds != null) lines.push(`In the block draw now: about ${odds >= 0.995 ? 'every' : Math.max(1, Math.round(odds * 100)) + ' in 100 of the'} blocks drawn this minute would be this machine's${rec ? '' : ' (a machine with no record yet shares a set-aside slice, so its odds start low and rise as its record forms)'}.`);
+    if (odds != null) lines.push(`In the block draw now: about ${odds >= 0.995 ? 'every' : odds < 0.01 ? 'less than 1 in 100 of the' : Math.round(odds * 100) + ' in 100 of the'} blocks drawn this minute would be this machine's${rec ? '' : ' (a machine with no record yet shares a set-aside slice, so its odds start low and rise as its record forms)'}.`);
     else lines.push(`Not in the block draw: ${why}`);
     return { ok: true, found: true, name, proved: w.proved || 0, blocks: w.blocks || 0, blockSecs: rec ? Math.round(w.blockSecs * 10) / 10 : null, draws: w.draws || 0, drawMissed: w.drawMissed || 0,
       lastSeenSeconds: seen, inDraw: odds != null, oddsPct: odds != null ? Math.round(odds * 1000) / 10 : null, why, text: lines.join('\n') };

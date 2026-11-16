@@ -1065,10 +1065,11 @@ test('standing: each reason a machine is not in the block draw is said, in the o
   await askBlock(b, x);
   const w3 = await st.getWorkers(); w3[x.name].blockSecs = PROVER_BOARD.drawMaxSecs + 5; await st.putWorkers(w3);
   s = await say(x); assert.match(s.why, /over 60 s, so blocks stay with faster machines/);
-  // not offering blocks at all
-  const w4 = await st.getWorkers(); w4[y.name].programs = ['confidential']; await st.putWorkers(w4);
+  // not offering blocks: it keeps asking, but its claims name no blocks for over a minute (one that offered them a few seconds ago still holds its ticket)
   await b.claim({ worker: y, classes: ['public'], programs: ['confidential'] });
-  s = await say(y); assert.match(s.why, /not offering Tacit chain blocks/);
+  s = await say(y); assert.doesNotMatch(s.why || '', /has not offered Tacit chain blocks/, 'a claim that names fewer programs does not take the ticket away');
+  for (let i = 0; i < 4; i++) { t += 20_000; await b.claim({ worker: y, classes: ['public'], programs: ['confidential'] }); }
+  s = await say(y); assert.match(s.why, /has not offered Tacit chain blocks in the last minute/);
 });
 
 test('standing: the odds it quotes are the odds the draw uses, and a drawn machine shows its draws', async () => {
@@ -1103,4 +1104,36 @@ test('standing: the odds it quotes are the odds the draw uses, and a drawn machi
   assert.equal(rows.reduce((s, r) => s + r.draws, 0), 1, 'one draw is on one machine\'s record');
   assert.match(rows.find((r) => r.draws).text, /Drawn for 1 block, all taken/);
   void drawn; void j;
+});
+
+
+test('draw: a machine whose latest claim names fewer programs still holds its ticket for a minute, and loses it after', async () => {
+  t = 31_000_000;
+  const { st, b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1');
+  await ready(st, b, [x]);
+  assert.equal((await b.standing(addrOf(x))).inDraw, true, 'offering blocks');
+  // its latest claim names only Bitcoin batches (a second worker under the address, say): the blocks it offered a moment ago still stand
+  await b.claim({ worker: x, classes: ['public'], programs: ['btc-state'] });
+  t += 5000;
+  assert.equal((await b.standing(addrOf(x))).inDraw, true, 'still in the draw');
+  const j = await block();
+  assert.equal((await askBlock(b, x)).jobId, j.jobId, 'and it can take the block it is drawn for');
+  // a minute with no claim naming blocks, though it keeps asking
+  for (let i = 0; i < 4; i++) { t += 20_000; await b.claim({ worker: x, classes: ['public'], programs: ['btc-state'] }); }
+  const s = await b.standing(addrOf(x));
+  assert.equal(s.inDraw, false); assert.match(s.why, /has not offered Tacit chain blocks in the last minute/);
+});
+
+test('standing: odds under one in a hundred are said as less than one, not rounded up to one', async () => {
+  t = 32_000_000;
+  const { st, b } = drawBoard();
+  const fast = gpu('a1');
+  const fresh = Array.from({ length: 30 }, (_, i) => gpu(i.toString(16).padStart(2, '0'), `place-n${i}`));   // thirty distinct machines at thirty places
+  await ready(st, b, [fast, ...fresh]);
+  const ws = await st.getWorkers(); Object.assign(ws[fast.name], { blocks: 5, blockSecs: 4 }); await st.putWorkers(ws);
+  const s = await b.standing(addrOf(fresh[0]));
+  assert.ok(s.inDraw && s.oddsPct < 1, `a newcomer among thirty holds under one in a hundred (${s.oddsPct}%)`);
+  assert.match(s.text, /less than 1 in 100 of the blocks/);
+  assert.doesNotMatch(s.text, /about 1 in 100/);
 });
