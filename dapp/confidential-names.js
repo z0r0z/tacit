@@ -120,7 +120,13 @@ export function makeMainnetCall({ fetchImpl, rpcs = MAINNET_RPCS, timeoutMs = 10
             if (j && j.error) {
               const d = j.error.data;
               if (j.error.code === 3 || (typeof d === 'string' && /^0x/i.test(d))) {
-                if (!done) { done = true; reject(new CallRevert(j.error.message, typeof d === 'string' ? d : null)); }
+                // A revert is an answer like any other: it counts only when `need` endpoints give the same one, so a single endpoint cannot make a
+                // registered name look unpublished (what a name resolves to decides where a private send goes, so one endpoint's word is never enough).
+                replies++;
+                const rkey = `revert:${typeof d === 'string' ? d.toLowerCase() : ''}`;
+                const rseen = (answers.get(rkey) || 0) + 1;
+                answers.set(rkey, rseen);
+                if (rseen >= need && !done) { done = true; reject(new CallRevert(j.error.message, typeof d === 'string' ? d : null)); }
                 return;
               }
               lastErr = new Error(j.error.message || 'rpc error');

@@ -67,7 +67,7 @@ function world({ spent = false, knownRoots = new Set(), chainIdOnWallet = CHAIN 
         case 'eth_getCode': return '0x6080';
         case 'eth_call': {
           const { data } = params[0], s = data.slice(2, 10), arg = data.slice(10);
-          if (s === sel('denomination()')) return '0x' + POOL.denomination.toString(16).padStart(64, '0');
+          if (s === sel('denomination()')) return '0x' + (FIXED_POOLS[CHAIN].find((q) => q.address.toLowerCase() === String(params[0].to).toLowerCase()) || POOL).denomination.toString(16).padStart(64, '0');
           if (s === sel('isSpent(bytes32)')) return '0x' + (spent || log.sends.length ? '1' : '0').padStart(64, '0');
           if (s === sel('isKnownRoot(bytes32)')) return '0x' + (knownRoots.has('0x' + arg) ? '1' : '0').padStart(64, '0');
           throw new Error('call ' + s);
@@ -268,5 +268,70 @@ await test('a bundler that refuses stops the withdrawal with the note unspent', 
 });
 
 prover.close();
+console.log('a run of withdrawals shares what it reads');
+const sigOf = (n) => '0x' + (0x1111n + BigInt(n)).toString(16).padStart(64, '0') + (1n + BigInt(n)).toString(16).padStart(64, '0') + '1b';
+const mkNote = (pool, n) => { const sx = deriveSecrets({ signature: sigOf(n), pool: pool.address }); return { sx, text: noteString({ denomination: pool.denomination, chainId: CHAIN, preimage: sx.preimage }) }; };
+// a pool's deposits: filler leaves, then the commitments of the notes
+const bytesFor = (comms, tag) => {
+  const filler = 30, out = new Uint8Array((filler + comms.length) * 32);
+  for (let i = 0; i < filler; i++) { out.set(keccak_256(enc.encode(`leaf ${tag} ${i}`)), i * 32); out[i * 32] &= 0x0f; }
+  comms.forEach((c, j) => out.set(hexToBytes(commitmentBytes32(c).slice(2)), (filler + j) * 32));
+  return out;
+};
+const countingProver = () => { const real = directProver(Tree); const log = { loads: 0, proves: 0 }; return { log, load: (b) => { log.loads++; return real.load(b); }, prove: (a) => { log.proves++; return real.prove(a); }, close: () => real.close() }; };
+const newCache = () => ({ pools: new Map(), loaded: null });
+const P0 = FIXED_POOLS[CHAIN][0], P1 = FIXED_POOLS[CHAIN][1];
+await test('two notes of one pool in a run: the deposits are read once and the tree built once, and both proofs are checked', async () => {
+  const n1 = mkNote(P0, 1), n2 = mkNote(P0, 2), bytes = bytesFor([n1.sx.commitment, n2.sx.commitment], 'a');
+  const w = world({ knownRoots: new Set([rootOf(bytes)]) }); let reads = 0;
+  const cp = countingProver(), cache = newCache(), f = flowOf(w);
+  for (const n of [n1, n2]) eq((await f.withdraw({ noteText: n.text, recipient: RECIPIENT, prover: cp, leaves: async () => { reads++; return { bytes: bytes.slice(), count: bytes.length / 32 }; }, send: false, cache })).sent, false);
+  eq(reads, 1, 'read once'); eq(cp.log.loads, 1, 'built once'); eq(cp.log.proves, 2); cp.close();
+});
+await test('without a cache each note reads the pool and builds the tree (as a single withdrawal always did)', async () => {
+  const n1 = mkNote(P0, 1), n2 = mkNote(P0, 2), bytes = bytesFor([n1.sx.commitment, n2.sx.commitment], 'a');
+  const w = world({ knownRoots: new Set([rootOf(bytes)]) }); let reads = 0; const cp = countingProver(), f = flowOf(w);
+  for (const n of [n1, n2]) await f.withdraw({ noteText: n.text, recipient: RECIPIENT, prover: cp, leaves: async () => { reads++; return { bytes: bytes.slice(), count: bytes.length / 32 }; }, send: false });
+  eq(reads, 2); eq(cp.log.loads, 2); cp.close();
+});
+await test('a note made after the tree was built is not in the cached deposits: the pool is read again, not refused', async () => {
+  const n1 = mkNote(P0, 1), n2 = mkNote(P0, 2), b1 = bytesFor([n1.sx.commitment], 'b'), b2 = bytesFor([n1.sx.commitment, n2.sx.commitment], 'b');
+  const w = world({ knownRoots: new Set([rootOf(b1), rootOf(b2)]) }); let reads = 0; const cp = countingProver(), cache = newCache(), f = flowOf(w);
+  const leavesFn = async () => { reads++; const b = reads === 1 ? b1 : b2; return { bytes: b.slice(), count: b.length / 32 }; };
+  await f.withdraw({ noteText: n1.text, recipient: RECIPIENT, prover: cp, leaves: leavesFn, send: false, cache });
+  await f.withdraw({ noteText: n2.text, recipient: RECIPIENT, prover: cp, leaves: leavesFn, send: false, cache });
+  eq(reads, 2); eq(cp.log.loads, 2); cp.close();
+});
+await test('a root the pool no longer knows is not reused: the pool is read again', async () => {
+  const n1 = mkNote(P0, 1), n2 = mkNote(P0, 2), b1 = bytesFor([n1.sx.commitment, n2.sx.commitment], 'c'), b2 = bytesFor([n1.sx.commitment, n2.sx.commitment], 'c2');
+  const known = new Set([rootOf(b1)]), w = world({ knownRoots: known }); let reads = 0; const cp = countingProver(), cache = newCache(), f = flowOf(w);
+  const leavesFn = async () => { reads++; const b = reads === 1 ? b1 : b2; return { bytes: b.slice(), count: b.length / 32 }; };
+  await f.withdraw({ noteText: n1.text, recipient: RECIPIENT, prover: cp, leaves: leavesFn, send: false, cache });
+  known.clear(); known.add(rootOf(b2));   // the pool moved on: the old root has dropped out of its history
+  await f.withdraw({ noteText: n2.text, recipient: RECIPIENT, prover: cp, leaves: leavesFn, send: false, cache });
+  eq(reads, 2); eq(cp.log.loads, 2); cp.close();
+});
+await test('notes of two pools alternating: each pool is read once, the first pool\'s tree is handed back to the prover from the cache, and the proof is for that tree', async () => {
+  const a1 = mkNote(P0, 1), b1 = mkNote(P1, 2), a2 = mkNote(P0, 3);
+  const bytesA = bytesFor([a1.sx.commitment, a2.sx.commitment], 'A'), bytesB = bytesFor([b1.sx.commitment], 'B');
+  const w = world({ knownRoots: new Set([rootOf(bytesA), rootOf(bytesB)]) }); const reads = { [P0.address]: 0, [P1.address]: 0 };
+  const leavesFn = async ({ pool }) => { reads[pool.address]++; const b = pool.address === P0.address ? bytesA : bytesB; return { bytes: b.slice(), count: b.length / 32 }; };
+  const cp = countingProver(), cache = newCache(), f = flowOf(w);
+  for (const n of [a1, b1, a2]) eq((await f.withdraw({ noteText: n.text, recipient: RECIPIENT, prover: cp, leaves: leavesFn, send: false, cache })).sent, false);
+  eq(reads[P0.address], 1); eq(reads[P1.address], 1); eq(cp.log.loads, 3, 'A, B, and A given back'); eq(cp.log.proves, 3); cp.close();
+});
+await test('a tree left in the prover for another pool cannot spend: a proof against the wrong tree is refused before anything is sent', async () => {
+  const a1 = mkNote(P0, 1), b1 = mkNote(P1, 2), bytesA = bytesFor([a1.sx.commitment], 'A'), bytesB = bytesFor([b1.sx.commitment], 'B');
+  const w = world({ knownRoots: new Set([rootOf(bytesA), rootOf(bytesB)]) });
+  const cp = countingProver(), cache = newCache(), f = flowOf(w);
+  const leavesFn = async ({ pool }) => { const b = pool.address === P0.address ? bytesA : bytesB; return { bytes: b.slice(), count: b.length / 32 }; };
+  await f.withdraw({ noteText: a1.text, recipient: RECIPIENT, prover: cp, leaves: leavesFn, send: false, cache });
+  await f.withdraw({ noteText: b1.text, recipient: RECIPIENT, prover: cp, leaves: leavesFn, send: false, cache });
+  cache.loaded = P0.address;   // the bookkeeping now claims pool A's tree is loaded while pool B's is
+  // the prover itself says the note's leaf is not in the tree it holds; a tree that did hold it but gave another root would be refused by the call check
+  await rejects(f.withdraw({ noteText: a1.text, recipient: RECIPIENT, prover: cp, leaves: leavesFn, send: true, cache }), /root|note|pool|leaf/);
+  eq(w.log.sends.length, 0, 'nothing was sent'); cp.close();
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

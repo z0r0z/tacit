@@ -18,6 +18,14 @@ const SPX = '0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c';
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 const read = (p) => readFileSync(join(DAPP, p), 'utf8');
+const pickerCoins = async (p) => {
+  // content-visibility:auto can attach a row before its rendered text is ready.
+  await p.waitForFunction(() => {
+    const rows = [...document.querySelectorAll('#pk .pk-r')].filter((r) => !r.hidden);
+    return rows.length > 0 && rows.every((r) => r.innerText.trim().length > 0);
+  }, null, { timeout: 10000 });
+  return p.evaluate(() => [...document.querySelectorAll('#pk .pk-r')].filter((r) => !r.hidden).map((r) => r.innerText.replace(/\s+/g, ' ').trim().split(' ')[0]));
+};
 
 // ── the file ──
 const page = read('spx/index.html'), front = read('index.html');
@@ -106,6 +114,7 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   await p.waitForTimeout(5000);
   const seen = await p.evaluate(() => window.__seen), logos = await p.evaluate(() => document.querySelectorAll('#hx img.tk').length);
   ok(seen.length > 0 && seen.every((k) => k === 'true|false|0') && logos >= 2, `the tile never shows the default pair or a letter mark for SPX: its first paint is SPX with its logo (${seen.join(' > ')}, ${logos} logos)`);
+  ok(await p.evaluate(() => { const a = document.querySelector('#spx-news'); return !!a && !a.offsetParent; }), 'the landing strip’s link to this page is not shown on this page itself');
   await ctx.close();
 }
 // the deep link to the ETH zap into the tETH / SPX farm: /spx/#card=earn:ether:spx&amt=0.05 opens Earn on ETH, on that farm, with the amount in (and the card's share link is that link)
@@ -201,7 +210,7 @@ for (const [bond, want, not, said] of [['settled', /In the farm\./, /Putting it 
   }
   // the picker lists ETH and SPX and nothing else, and has no search
   await p.click('#pay-coin'); await p.waitForSelector('#pk .pk-r', { timeout: 10000 });
-  const picks = await p.evaluate(() => [...document.querySelectorAll('#pk .pk-r')].filter((r) => !r.hidden).map((r) => r.innerText.replace(/\s+/g, ' ').trim().split(' ')[0]));
+  const picks = await pickerCoins(p);
   ok(JSON.stringify(picks) === JSON.stringify(['ETH', 'SPX']) && !(await p.evaluate(() => !!document.querySelector('#pk-q'))), `the token picker lists ETH and SPX, with no search (${picks.join(', ')})`);
   // ETH: bought on the open market and shielded, one flow, priced through zQuoter
   await p.locator('#pk .pk-r', { hasText: /^ETH/ }).first().click();
@@ -229,7 +238,7 @@ for (const [bond, want, not, said] of [['settled', /In the farm\./, /Putting it 
   // Swap (a pool trades SPX): private, between tETH, SPX and TAC, and TAC is only ever the coin received
   if (live) {
     await p.click('#hx-tab-swap'); await waitFor(p, /From\s*DeFi pool\s*tETH/, 20000);
-    const pick = async (sel) => { await p.click(sel); await p.waitForSelector('#pk .pk-r', { state: 'attached', timeout: 10000 }); const r = await p.evaluate(() => [...document.querySelectorAll('#pk .pk-r')].filter((x) => !x.hidden).map((x) => x.innerText.replace(/\s+/g, ' ').trim().split(' ')[0])); await p.keyboard.press('Escape'); await p.waitForTimeout(400); return r; };
+    const pick = async (sel) => { await p.click(sel); await p.waitForSelector('#pk .pk-r', { state: 'attached', timeout: 10000 }); const r = await pickerCoins(p); await p.keyboard.press('Escape'); await p.waitForTimeout(400); return r; };
     const payList = await pick('#pay-coin'), getList = await pick('#get-coin');
     ok(JSON.stringify(payList.sort()) === JSON.stringify(['SPX', 'tETH']) && JSON.stringify(getList.sort()) === JSON.stringify(['SPX', 'TAC', 'tETH']), `Swap pays with tETH or SPX and can receive TAC too, never pay with it (pay ${payList.join(', ')}; get ${getList.join(', ')})`);
     await p.click('#spx-ops li:nth-child(1) button'); await waitFor(p, /Shield SPX/i);
@@ -310,6 +319,7 @@ for (const w of [820, 390]) {
   ok(/Shield ETH/i.test(t) && !/SPX/.test(t), 'the front page still opens on Shield ETH');
   ok(JSON.stringify(await p.evaluate(() => [...document.querySelectorAll('#hx .hx-where .w')].map((e) => e.textContent.trim()))) === JSON.stringify(['From wallet', 'From Bitcoin']), 'and its Shield ways in still read From wallet and From Bitcoin');
   ok(await p.evaluate(() => !document.querySelector('.spx-top, #spx-below') && !document.documentElement.dataset.page), 'and has none of this page’s parts');
+  ok(await p.evaluate(() => { const a = document.querySelector('#spx-news'), i = a?.querySelector('img.tk'); return !!a && a.getAttribute('href') === '/spx/' && !!a.offsetParent && !!i && i.complete && i.naturalWidth > 0 && /SPX6900/.test(a.textContent); }), 'but its landing strip has a pill with the SPX logo that links to /spx/');
   await p.click('#hx-tab-send'); await p.waitForTimeout(1500);
   ok(await p.evaluate(() => ![...(document.querySelector('#hx-sa')?.options || [])].some((o) => /^x[bp]0x/.test(o.value))), 'and its Send list has no SPX rows (they are this page’s)');
   ok(bad.length === 0, `no script error and no CSP violation on the front page${bad.length ? ': ' + bad.join(' | ') : ''}`);

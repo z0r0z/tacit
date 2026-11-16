@@ -1,4 +1,4 @@
-import { openBtcWallet } from '/trade/btc-session.js?cb=18f04bed';
+import { openBtcWallet } from '/trade/btc-session.js?cb=4f6bb25f';
 import { isPasskeyAvailable } from '/prf-wallet.js';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=cd7be661';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
@@ -15,11 +15,11 @@ import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 // (docs/FAST-BRIDGE.md). The providers are the ones /fast/lp.json names, each with the key it signs for, and the ones that post
 // their ads on the boards it names. A provider run on this machine can be named in the address
 // (?lp=<url>&claimPub=<hex>&board=<url>) when the page is open from localhost.
-const TACIT_URL = '/tacit.js?cb=bc7b4f36';
+const TACIT_URL = '/tacit.js?cb=1f0848cc';
 // the bridge itself (the lock, the settle, the key's own provider) loads when a key opens; a touch on the page fetches its modules ahead
 let warmed = false;
 const warm = () => { if (warmed) return; warmed = true; const t = document.getElementById('warm'); if (t) document.head.append(t.content.cloneNode(true)); };
-const wire = () => { warm(); return import('/fast/wire.js?cb=9fc73785'); };
+const wire = () => { warm(); return import('/fast/wire.js?cb=4ac7aab0'); };
 for (const ev of ['pointerdown', 'focusin']) document.querySelector('main')?.addEventListener(ev, warm, { once: true });
 
 async function lists() {

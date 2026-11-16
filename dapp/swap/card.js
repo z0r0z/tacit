@@ -198,7 +198,7 @@ const htmlVal = (html) => ({ html });
 const cell = (v) => (v && v.html != null ? v.html : esc(v));
 const isName = (t) => /^[^\s/@]+\.(eth|wei|gwei)$/i.test(t);
 let namesP = null;
-const names = () => (namesP ||= Promise.all([import('/confidential-names.js?cb=26ecda09'), import('/vendor/tacit-deps.min.js')])
+const names = () => (namesP ||= Promise.all([import('/confidential-names.js?cb=c7e1989f'), import('/vendor/tacit-deps.min.js')])
   .then(([n, d]) => n.makeConfidentialNames({ call: n.makeMainnetCall(), secp: d.secp, keccak256: d.keccak_256 })).catch((e) => { namesP = null; throw e; }));
 const tacitName = (t) => t.name || `tacit1…${String(t.pubHex).slice(-6)}`;
 const recipient = () => (S.to && !S.inP && !S.outP && lc(S.to) !== lc(W.account || '') ? S.to : null);
@@ -2158,7 +2158,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=d5adabdf').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=f0490585').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -2707,7 +2707,7 @@ let lane = null, laneP = null;
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 async function openLane() {
   try {
-    laneP ||= import('/swap/bitcoin.js?cb=af58cc9c').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
+    laneP ||= import('/swap/bitcoin.js?cb=5de29be8').then((mod) => (lane = mod.makeBitcoinLane({ host: $('#btc'), notify: (m) => live(m), wallet: pageWallet, onBridged: paintNudge, from: moving() && S.pay === lc(R.TAC) ? 'tac' : 'teth' })));
     await laneP;
     if (S.btc) await lane.show();
   } catch (e) { $('#btc').innerHTML = `<p class="q err">Could not load the Bitcoin lane: ${esc(e?.message || e)}</p>`; lane = laneP = null; }

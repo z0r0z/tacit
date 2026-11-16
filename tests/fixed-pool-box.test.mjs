@@ -66,6 +66,27 @@ await test('the record is "<64 hex>:<128 hex>"; anything else is refused', async
   }
 });
 
+console.log('the signature, as the Pay page produced it before it was shared');
+// Values computed from the page's own helpers as they were (dapp/pay/eth/index.html): the shared module and the page's use of it must give these exact bytes,
+// or a payment link or a record signed by one would not verify at the other.
+const GOLD = { v: 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdefn, n: 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefn,
+  digest: 'dae1c5bacb34b7a31b301839c0fc669579916a5105a9d100d4c59590673adaf6', ns: 'd903f11388bcf977bd8d7affe0f6f2c673d728db3523ba133bdca51cb1fc2b2719e3cb01f40b6b21666e1896cab7879ec4255436a8d37c7cc63b686ef969151c', pub: '02bb50e2d89a4ed70663d080659fe0ad4b9bc3e06c17a227433966cb59ceee020d' };
+await test('digest, signature and check are the bytes the page produced, in the async, the sync and the page-style forms', async () => {
+  const R = await import('../dapp/box-record.js');
+  const { secp, hmac, sha256, concatBytes: cb, bytesToHex: bh, hexToBytes: hb } = await import('../dapp/vendor/tacit-deps.min.js');
+  eq(bh(R.boxDigest(GOLD.n)), GOLD.digest, 'digest');
+  eq(await R.signBox(GOLD.v, GOLD.n), GOLD.ns, 'async signature');
+  if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, cb(...m));
+  eq(R.signBoxSync(GOLD.v, GOLD.n), GOLD.ns, 'sync signature (what the page signs a payment link with)');
+  const pub = hb(GOLD.pub);
+  eq(R.boxSigOk(pub, GOLD.n, GOLD.ns), true, 'a bigint key');
+  eq(R.boxSigOk(pub, GOLD.n.toString(16).padStart(64, '0'), GOLD.ns), true, 'the hex the page carries in a link');
+  eq(R.boxSigOk(pub, '0x' + GOLD.n.toString(16).padStart(64, '0'), '0x' + GOLD.ns), true, '0x prefixes');
+  eq(R.boxSigOk(pub, GOLD.n + 1n, GOLD.ns), false, 'another key'); eq(R.boxSigOk(pub, GOLD.n, '00'.repeat(64)), false, 'another signature');
+  eq(R.boxSigOk(hb('02' + '11'.repeat(32)), GOLD.n, GOLD.ns), false, 'another view key');
+  eq(B.boxDigest, R.boxDigest, 'the names module re-exports the same function'); eq(B.boxSigOk, R.boxSigOk); eq(B.signBox, R.signBox);
+});
+
 console.log('a name\'s deposit address');
 const stub = (over = {}) => ({ resolveName: async (n) => ({ name: n, pool: POOL }), readBox: async () => null, ...over });
 await test('a name with a published, signed record gives the router\'s box for that key', async () => {
