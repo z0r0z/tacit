@@ -14,6 +14,13 @@
 // so what a day costs never grows with them. The best bankKeep salts found (at least bankBits good) are kept (GET /prover/salt/bank): the addresses Tacit deploys
 // its next contracts to. Tacit's own machines (SALT_HOUSE, the deployer by default) are counted as grinding and banked, and never share the points.
 //
+// A second kind of salt is for the vanity-address market (contracts/src/VanityShop.sol, `market` below): the same layout with the shop contract's address in
+// place of the deployer's, so the shop is the only account that can turn it into a token (the market's mint is the owner's: the id's top 160 bits). The id fixes
+// its address through the market, not CreateX: a proxy at CREATE2(market, id, the market's deploy proxy init hash), which creates the contract at its nonce
+// `nonce + 1`, the nonce being the token's (0 to 254; the miner may try several for one id, and one share names the id and the nonce, `0x<id>:<nonce>`, 0 when
+// left out). An id counts once whatever its nonce, for the first send that names it. Which kinds the pool takes is SALT_SCHEMES (createx, market: createx alone
+// until the shop is deployed and named in SALT_SHOP); each kind has its own bank (/prover/salt/bank: `bank` for CreateX, `marketBank`).
+//
 // Who is grinding now (every address that sent shares in the last liveMs, Tacit's own named so) and how fast the network grinds (the shares
 // of the last hour or so, each the 2^minBits salts a share takes on average) are in GET /prover/salt, for the page's live row.
 //
@@ -25,6 +32,10 @@ import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
 export const SALT_POOL = Object.freeze({
   deployer: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7',
   createx: '0xba5ed099633d3b313e4d5f7bdc1305d3c28ba5ed',
+  market: '0x000000000000b361194cfe6312ee3210d53c15aa',   // SALT_MARKET: the vanity-address market (the same address on every chain it is on)
+  shop: null,               // SALT_SHOP: the VanityShop whose address leads the market salts; without it there are no market salts
+  schemes: Object.freeze(['createx']),   // SALT_SCHEMES: the kinds of salt the pool takes, the first the one new miners should grind
+  nonceMax: 254,            // the highest nonce a market address can have
   minBits: 26,              // SALT_MIN_BITS: a share's address starts with this many zero bits (about a minute of four laptop cores)
   maxWeightBits: 20,        // SALT_MAX_WEIGHT_BITS: a share weighs at most 2^this. The lower it is, the less one connection can earn in a day (it sends 64 shares in 20 s), and the more evenly a day's points go round; at 0 every share weighs the same
   pointsPerDay: 5000,       // POINTS_SALT_DAILY: the most a day's salts may share, whatever the pot (proofs take the rest)
@@ -43,13 +54,24 @@ export const SALT_POOL = Object.freeze({
 const DAY_MS = 86_400_000, HOUR_MS = 3_600_000;
 const PROXY_INIT_HASH = keccak_256(Uint8Array.from([0x67, 0x36, 0x3d, 0x3d, 0x37, 0x36, 0x3d, 0x34, 0xf0, 0x3d, 0x52, 0x60, 0x08, 0x60, 0x18, 0xf3]));
 const ADDR = /^0x[0-9a-f]{40}$/;
-const SALT = /^0x[0-9a-f]{64}$/;
+// A share: the salt, and for a market salt its nonce after a colon (`0x<64 hex>:<0 to 254>`).
+const SHARE = /^(0x[0-9a-f]{64})(?::(\d{1,3}))?$/;
 
 // What a miner calls its software, from the share it sends (`client`) or else its HTTP User-Agent: a short label of letters, digits and . _ / + - and spaces, nothing
 // else. It is only what the sender says it is: it tells which programs are mining, it proves nothing.
 export function softwareLabel(x) {
   if (typeof x !== 'string') return '';
   return x.replace(/[^A-Za-z0-9._\/+ -]/g, '').trim().slice(0, 40).trim();
+}
+
+// SALT_SCHEMES (a comma list of createx and market), SALT_SHOP and SALT_MARKET: the kinds of salt taken. Market salts need a shop address; without a valid one the
+// market is left out, so a half-set environment cannot open a kind of salt nobody can use.
+function marketTerms(env) {
+  const addr = (v, d) => (ADDR.test(String(v || '').trim().toLowerCase()) ? String(v).trim().toLowerCase() : d);
+  const want = String(env.SALT_SCHEMES || '').split(',').map((x) => x.trim().toLowerCase()).filter((x) => x === 'createx' || x === 'market');
+  const shop = addr(env.SALT_SHOP, null);
+  const schemes = (want.length ? [...new Set(want)] : ['createx']).filter((x) => x !== 'market' || shop);
+  return { schemes: Object.freeze(schemes.length ? schemes : ['createx']), shop, market: addr(env.SALT_MARKET, SALT_POOL.market) };
 }
 
 export function saltPoolConfig(env = {}) {
@@ -62,6 +84,7 @@ export function saltPoolConfig(env = {}) {
     floorPoints: n(env.POINTS_SALT_FLOOR, SALT_POOL.floorPoints, 0, 1_000_000),
     bankBits: n(env.SALT_BANK_BITS, SALT_POOL.bankBits, 24, 96),
     goodBits: n(env.SALT_GOOD_BITS, SALT_POOL.goodBits, 24, 96),
+    ...marketTerms(env),
     house: String(env.SALT_HOUSE || SALT_POOL.deployer).split(',').map((a) => a.trim().toLowerCase()).filter((a) => ADDR.test(a)),
   });
 }
@@ -72,9 +95,24 @@ export function saltAddress(saltHex, { deployer = SALT_POOL.deployer, createx = 
   const guarded = keccak_256(concatBytes(new Uint8Array(12), dep, salt));
   const proxy = keccak_256(concatBytes(Uint8Array.of(0xff), hexToBytes(createx.slice(2)), guarded, PROXY_INIT_HASH)).slice(12);
   const a = keccak_256(concatBytes(Uint8Array.of(0xd6, 0x94), proxy, Uint8Array.of(0x01))).slice(12);
+  return { address: '0x' + bytesToHex(a), bits: zeroBits(a) };
+}
+
+// The market's deploy proxy: the init code VanityMarket hashes as DEPLOY_PROXY_INITHASH (checked against the market's own value in the tests).
+const MARKET_PROXY_INIT_HASH = keccak_256(hexToBytes('60288060093d393df36001600581360334348434363434376d01e4a82b33373de1334e7d8f48795af49247f034521b34f3'));
+const zeroBits = (a) => {
   let bits = 0;
   for (const b of a) { if (b === 0) { bits += 8; continue; } bits += Math.clz32(b) - 24; break; }
-  return { address: '0x' + bytesToHex(a), bits };
+  return bits;
+};
+// The address of the vanity market's id at `nonce`, and its leading zero bits: the contract the market's deploy proxy (CREATE2 of the id from the market) creates as
+// its transaction number nonce + 1 (VanityMarket.computeAddress; the tests hold the market's own answers).
+export function marketAddress(idHex, nonce = 0, { market = SALT_POOL.market } = {}) {
+  const proxy = keccak_256(concatBytes(Uint8Array.of(0xff), hexToBytes(market.slice(2)), hexToBytes(idHex.slice(2)), MARKET_PROXY_INIT_HASH)).slice(12);
+  const n = nonce + 1;   // 1 to 255: RLP is the byte itself up to 0x7f and 0x81 then the byte above that
+  const enc = n <= 0x7f ? Uint8Array.of(n) : Uint8Array.of(0x81, n);
+  const a = keccak_256(concatBytes(Uint8Array.of(0xc0 + 22 + enc.length - 1, 0x94), proxy, enc)).slice(12);
+  return { address: '0x' + bytesToHex(a), bits: zeroBits(a) };
 }
 
 function makeLock() {
@@ -85,6 +123,7 @@ function makeLock() {
 // kv: { get, put(key, value, { expirationTtl }?) }. potPoints() → the campaign's daily points (its terms: daily amount over the most a
 // point earns); proofPoints(day) → the points the day's proofs earned (the proof pool's and the board's tallies). Every call answers
 // { status, body }.
+const marketOn = (cfg) => (cfg.schemes || []).includes('market') && ADDR.test(String(cfg.shop || ''));
 export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock = makeLock(), potPoints = async () => cfg.potPoints, proofPoints = async () => 0 }) {
   // What a day's salts share: what its proofs leave of the pot, up to pointsPerDay, and at least floorPoints (itself never past pointsPerDay)
   // however much the proofs took. The floor is points on top of the pot: the campaign shares its daily amount over every point of the day.
@@ -110,24 +149,32 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
       const last = Number(await kv.get(`sl:rate:${client}`)) || 0;
       if (t - last < cfg.sendEveryMs) return reply(429, { ok: false, error: `one send every ${cfg.sendEveryMs / 1000} s`, retryMs: cfg.sendEveryMs - (t - last) });
       await write(`sl:rate:${client}`, t, 120);
-      const head = cfg.deployer.slice(2) + '00', days = [day % 65536, (day - 1 + 65536) % 65536];
+      const schemes = cfg.schemes || ['createx'];
+      const heads = { createx: schemes.includes('createx') ? cfg.deployer.slice(2) + '00' : null, market: schemes.includes('market') && cfg.shop ? cfg.shop.slice(2) + '00' : null };
+      const days = [day % 65536, (day - 1 + 65536) % 65536];
       const rec = await read(`sl:m:${day}:${miner}`, { shares: 0, weight: 0, best: null });
       const wasNew = rec.shares === 0;
       // Tacit's own machines (cfg.house, the deployer by default) bank what they find and earn nothing: they never share the day's points.
       const house = (cfg.house || [SALT_POOL.deployer]).includes(miner);
-      const rejected = [], banked = [], good = [];
+      const rejected = [], good = [], banked = { createx: [], market: [] };
       let accepted = 0, weight = 0;
       for (const raw of [...new Set(salts.map((s) => String(s).toLowerCase()))]) {
-        if (!SALT.test(raw) || raw.slice(2, 44) !== head) { rejected.push({ salt: raw.slice(0, 66), why: 'not a salt of Tacit\'s deployer' }); continue; }
-        if (!days.includes(parseInt(raw.slice(44, 48), 16))) { rejected.push({ salt: raw, why: 'not ground today' }); continue; }
-        const { address, bits } = saltAddress(raw, cfg);
+        const shape = SHARE.exec(raw);
+        const salt = shape ? shape[1] : raw;
+        const scheme = !shape ? null : heads.createx && salt.slice(2, 44) === heads.createx ? 'createx' : heads.market && salt.slice(2, 44) === heads.market ? 'market' : null;
+        if (!scheme) { rejected.push({ salt: raw.slice(0, 66), why: heads.market ? 'not a salt of Tacit\'s deployer or shop' : 'not a salt of Tacit\'s deployer' }); continue; }
+        const nonce = shape[2] == null ? 0 : Number(shape[2]);
+        if (scheme === 'createx' && shape[2] != null) { rejected.push({ salt: raw, why: 'a nonce is for market salts only' }); continue; }
+        if (nonce > cfg.nonceMax) { rejected.push({ salt: raw, why: `nonce over ${cfg.nonceMax}` }); continue; }
+        if (!days.includes(parseInt(salt.slice(44, 48), 16))) { rejected.push({ salt: raw, why: 'not ground today' }); continue; }
+        const { address, bits } = scheme === 'market' ? marketAddress(salt, nonce, cfg) : saltAddress(salt, cfg);
         if (bits < cfg.minBits) { rejected.push({ salt: raw, why: `${bits} zero bits, under ${cfg.minBits}` }); continue; }
-        if (await kv.get(`sl:seen:${raw}`) != null) { rejected.push({ salt: raw, why: 'already counted' }); continue; }
-        await write(`sl:seen:${raw}`, { miner, at: t }, cfg.seenSecs);
+        if (await kv.get(`sl:seen:${salt}`) != null) { rejected.push({ salt: raw, why: 'already counted' }); continue; }
+        await write(`sl:seen:${salt}`, { miner, at: t }, cfg.seenSecs);
         const w = 2 ** Math.min(bits - cfg.minBits, cfg.maxWeightBits);
         accepted++; weight += w;
-        if (!rec.best || bits > rec.best.bits) rec.best = { address, bits, salt: raw };
-        if (bits >= cfg.bankBits) banked.push({ salt: raw, address, bits, miner, at: t, ...(house ? { house: true } : {}) });
+        if (!rec.best || bits > rec.best.bits) rec.best = { address, bits, salt };
+        if (bits >= cfg.bankBits) banked[scheme].push({ salt, address, bits, miner, at: t, ...(scheme === 'market' ? { nonce } : {}), ...(house ? { house: true } : {}) });
         if (bits >= cfg.goodBits) good.push({ address, bits, miner, at: t, ...(house ? { house: true } : {}) });
       }
       if (accepted) {
@@ -138,10 +185,11 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
         }
         // The bank is the best bankKeep salts found so far: it is written only when one of these enters it, so once it is full it
         // changes only on a better find.
-        if (banked.length) {
-          const old = await read('sl:bank', []);
-          const bank = [...old, ...banked].sort((a, b) => b.bits - a.bits || a.at - b.at).slice(0, cfg.bankKeep);
-          if (bank.some((b) => banked.includes(b))) await write('sl:bank', bank);
+        for (const [scheme, found] of Object.entries(banked)) {
+          if (!found.length) continue;
+          const key = scheme === 'market' ? 'sl:bank:market' : 'sl:bank';
+          const bank = [...await read(key, []), ...found].sort((a, b) => b.bits - a.bits || a.at - b.at).slice(0, cfg.bankKeep);
+          if (bank.some((b) => found.includes(b))) await write(key, bank);
         }
         // The newest good finds, newest first, for the page's activity feed: written only when a send brings one.
         if (good.length) await write('sl:recent', [...good.sort((a, b) => b.bits - a.bits), ...await read('sl:recent', [])].slice(0, cfg.recentKeep));
@@ -174,6 +222,8 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
   async function summary() {
     const t = now(), day = dayOf(t), recs = await dayMiners(day);
     const bank = await read('sl:bank', []);
+    const market = marketOn(cfg);
+    const marketBank = market ? await read('sl:bank:market', []) : [];
     // The rate: the last hour's shares and this one's so far, over the time they span, each 2^minBits salts on average.
     const h = Math.floor(t / HOUR_MS), [prev, cur] = await Promise.all([kv.get(`sl:hour:${h - 1}`), kv.get(`sl:hour:${h}`)]);
     const span = HOUR_MS + (t - h * HOUR_MS);
@@ -185,15 +235,16 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
     for (const m of live) if (!m.house) software[m.sw || 'unknown'] = (software[m.sw || 'unknown'] || 0) + 1;
     return reply(200, {
       // today's pot so far: it shrinks as the day's proofs come in
-      deployer: cfg.deployer, createx: cfg.createx, minBits: cfg.minBits, maxWeightBits: cfg.maxWeightBits, bankBits: cfg.bankBits, pointsPerDay: await saltPot(day), day, rate, live, software: Object.fromEntries(Object.entries(software).sort((a, b) => b[1] - a[1])),
+      deployer: cfg.deployer, createx: cfg.createx, schemes: cfg.schemes || ['createx'], ...(market ? { shop: cfg.shop, market: cfg.market, nonceMax: cfg.nonceMax } : {}), minBits: cfg.minBits, maxWeightBits: cfg.maxWeightBits, bankBits: cfg.bankBits, pointsPerDay: await saltPot(day), day, rate, live, software: Object.fromEntries(Object.entries(software).sort((a, b) => b[1] - a[1])),
       today: { miners: recs.length, shares: recs.reduce((s, r) => s + r.shares, 0), weight: recs.reduce((s, r) => s + r.weight, 0) },
       top: recs.sort((a, b) => b.weight - a.weight).slice(0, 20).map((r) => ({ miner: r.miner, shares: r.shares, weight: r.weight, best: r.best })),
       bank: bank.slice(0, 10).map(({ address, bits, miner, at, house }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}) })),
       banked: bank.length,
+      ...(market ? { marketBank: marketBank.slice(0, 10).map(({ address, bits, miner, at, nonce, house }) => ({ address, bits, nonce, miner, at, ...(house ? { house: true } : {}) })), marketBanked: marketBank.length } : {}),
       recent: (await read('sl:recent', [])).slice(0, 12).map(({ address, bits, miner, at, house }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}) })),
     });
   }
-  async function bankList() { return reply(200, { bank: await read('sl:bank', []) }); }
+  async function bankList() { return reply(200, { bank: await read('sl:bank', []), ...(marketOn(cfg) ? { marketBank: await read('sl:bank:market', []) } : {}) }); }
   return { submit, credits, summary, bank: bankList };
 }
 

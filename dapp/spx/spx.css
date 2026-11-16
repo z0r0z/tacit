@@ -6,7 +6,7 @@
 @font-face { font-family: 'Space Mono'; src: url('/fonts/space-mono-700-latin.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
 
 html[data-page="spx"] {
-  --lime: #e5ff1a; --magenta: #ff1a66; --cyan: #00e5ff; --black: #0a0a0a; --shadow: 4px 4px 0 var(--black);
+  --lime: #e5ff1a; --magenta: #ff1a66; --magenta-ink: #d4004f; --cyan: #00e5ff; --black: #0a0a0a; --shadow: 4px 4px 0 var(--black);
   --paper: #f5f5f5; --card: #fff; --field: #fff; --soft: #f0f0f0;
   --ink: #0a0a0a; --mute: #3d3d3d; --faint: #6b6b6b; --hair: rgba(10,10,10,.16); --hair-2: rgba(10,10,10,.4);
   --orange: #ff1a66; --ok: #0a7234; --warn: #8a4300; --err: #c4143f;
@@ -37,12 +37,12 @@ html[data-page="spx"] .spx-tick { grid-area: tick; display: flex; gap: 0 26px; m
   font: 700 11px/1 var(--mono); letter-spacing: .14em; -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
 html[data-page="spx"] .spx-tick span:nth-child(even) { color: #fff; }
 html[data-page="spx"] .spx-copy { grid-area: copy; min-width: 0; padding-top: 10px; }
-html[data-page="spx"] .spx-tag { margin: 0 0 10px; font: 700 11px/1.2 var(--mono); letter-spacing: .18em; color: var(--magenta); }
+html[data-page="spx"] .spx-tag { margin: 0 0 10px; font: 700 11px/1.2 var(--mono); letter-spacing: .18em; color: var(--magenta-ink); }
 html[data-page="spx"] .hero h1 { margin: 0; font: inherit; letter-spacing: 0; }
 html[data-page="spx"] .spx-wm { display: block; width: min(400px, 100%); height: auto; }
 html[data-page="spx"] .spx-flip { display: inline-flex; align-items: center; gap: 8px; margin: 22px 0 0; padding: 6px 12px; background: var(--lime); border: 2px solid var(--black); box-shadow: var(--shadow);
   font: 900 clamp(15px, 2.6vw, 24px)/1.15 var(--disp); letter-spacing: .05em; transform: rotate(-1deg); }
-html[data-page="spx"] .spx-flip i { width: .5em; height: 1.05em; background: var(--black); }
+html[data-page="spx"] .spx-flip i { flex: none; width: .5em; height: 1.05em; background: var(--black); }
 html[data-page="spx"] .hero .sub { max-width: 34em; margin: 20px 0 0; text-align: left; font: 400 14px/1.6 var(--mono); letter-spacing: 0; color: var(--ink); text-wrap: pretty; }
 html[data-page="spx"] .hero .sub b { font: 700 1em var(--mono); background: var(--lime); padding: 0 .25em; }
 
@@ -82,11 +82,111 @@ html[data-page="spx"] .hx-h button { font: 900 11px/1 var(--disp); font-style: n
 html[data-page="spx"] .hx-h button .w { font: inherit; }
 html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go) { color: var(--black); background: var(--lime); border: 2px solid var(--black); border-radius: 0; box-shadow: var(--shadow); font: 900 13px/1.2 var(--disp); letter-spacing: .08em; text-transform: uppercase; transition: transform .12s, box-shadow .12s; }
 @media (hover: hover) { html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go):not(:disabled):hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--black); } }
-html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go):disabled { background: #e4e4e4; color: var(--faint); box-shadow: none; }
+html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go):disabled { background: #e4e4e4; color: #545454; box-shadow: none; }
 html[data-page="spx"] :is(.hx, .swc) :is(.f, .rows, .rcpt, input, select) { border-radius: 0; }
 html[data-page="spx"] :is(.hx, .swc) .f { border: 2px solid var(--black); background: var(--card); }
 html[data-page="spx"] .hx-mode, html[data-page="spx"] .hx-mode button { border-radius: 0; }
 html[data-page="spx"] .hx-mode button[aria-checked="true"], html[data-page="spx"] .hx-more button[aria-selected="true"] { background: var(--lime); color: var(--black); box-shadow: none; }
+
+/* the header: the account chip is a square, black-edged button like the tile's; on a phone the header is shorter, so the tile starts higher */
+html[data-page="spx"] header.top .chip:not(.act) { border: 2px solid var(--black); border-radius: 0; background: var(--card); box-shadow: 2px 2px 0 var(--black); font-weight: 700; }
+@media (hover: hover) { html[data-page="spx"] header.top .chip:not(.act):hover { background: var(--lime); border-color: var(--black); } }
+html[data-page="spx"] header.top .chip:not(.act):active { transform: translate(2px, 2px); box-shadow: none; }
+html[data-page="spx"] header.top .chip:focus-visible { outline: 3px solid var(--magenta); outline-offset: 2px; }
+@media (max-width: 640px) { html[data-page="spx"] header.top { padding: 12px 0; } }
+
+/* the controls inside the tile, in the same hand as its frame: a coin you can change is a button (square, black, a hard shadow), one that is fixed is only a label */
+html[data-page="spx"] .hx-h button { min-height: 46px; padding: 0; align-content: center; }
+html[data-page="spx"] .swc .coin { border: 2px solid var(--black); border-radius: 0; background: var(--card); box-shadow: 2px 2px 0 var(--black); font-weight: 700; transition: transform .12s, box-shadow .12s, background .12s; }
+@media (hover: hover) { html[data-page="spx"] .swc .coin:not(.one):hover { background: var(--lime); transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--black); } }
+html[data-page="spx"] .swc .coin:not(.one):active { transform: translate(2px, 2px); box-shadow: none; }
+html[data-page="spx"] .swc .coin.one { background: transparent; border-color: var(--hair-2); box-shadow: none; }
+html[data-page="spx"] .swc .coin:focus-visible { outline: 3px solid var(--magenta); outline-offset: 2px; }
+html[data-page="spx"] .swc .flip { border: 2px solid var(--black); border-radius: 0; background: var(--lime); color: var(--black); }
+html[data-page="spx"] .swc .mid .arr { border: 2px solid var(--black); border-radius: 0; color: var(--black); }
+html[data-page="spx"] .swc .flip:disabled { background: var(--soft); opacity: 1; color: var(--faint); border-color: var(--hair-2); }
+html[data-page="spx"] .swc .ff #max .mx { border: 2px solid var(--black); border-radius: 0; background: var(--card); font-weight: 700; line-height: 16px; }
+html[data-page="spx"] .swc .slip button { border: 2px solid transparent; border-radius: 0; color: var(--ink); font-weight: 700; }
+html[data-page="spx"] .swc .slip button[aria-pressed="true"] { background: var(--lime); border-color: var(--black); }
+/* a note that is not ready yet (a bridge back takes hours) keeps its reason readable: only its amount is dimmed */
+html[data-page="spx"] .brn.off { opacity: 1; }
+html[data-page="spx"] .brn.off b { color: var(--faint); }
+html[data-page="spx"] .brn.off small { color: var(--mute); }
+html[data-page="spx"] .swc .quick button { border: 2px solid var(--black); border-radius: 0; color: var(--ink); font-weight: 700; background: var(--card); }
+@media (hover: hover) { html[data-page="spx"] .swc .quick button:hover { background: var(--lime); color: var(--black); border-color: var(--black); } }
+html[data-page="spx"] .hx-mode button { font-weight: 700; }
+html[data-page="spx"] .swc .f:focus-within { border-color: var(--black); outline: 3px solid var(--magenta); outline-offset: 2px; }
+/* a value that needs two lines reads as a block that starts at one edge, not as ragged lines hugging the right */
+html[data-page="spx"] .swc .rcpt dd { margin-left: auto; text-align: left; }
+@media (pointer: coarse), (max-width: 640px) {
+  html[data-page="spx"] .hx-mode button { min-height: 40px; }
+  html[data-page="spx"] .swc .flip { width: 44px; height: 44px; margin: -22px 0 0 -22px; }
+  html[data-page="spx"] .swc .quick button { min-height: 36px; }
+  html[data-page="spx"] .swc .fh .where.go-pick { min-height: 36px; margin: -6px 0; }
+}
+
+/* the sheets that rise over the page (the wallet, Activity, Bitcoin), the coin picker inside the tile, the help launcher: square and bordered like the tile, a bottom sheet on a phone */
+html[data-page="spx"] dialog.sheet { border: 2px solid var(--black); border-radius: 0; box-shadow: var(--lift); }
+html[data-page="spx"] :is(.sheet-head, .bsheet-head) h2 { font: 900 20px/1.15 var(--disp); letter-spacing: .05em; text-transform: uppercase; overflow-wrap: anywhere; }
+html[data-page="spx"] :is(.sheet-head .x, .bsheet .x, .swc .pk-x) { border: 2px solid var(--black); border-radius: 0; background: var(--card); color: var(--ink); box-shadow: 2px 2px 0 var(--black); }
+@media (hover: hover) { html[data-page="spx"] :is(.sheet-head .x, .bsheet .x, .swc .pk-x):hover { background: var(--lime); color: var(--black); } }
+html[data-page="spx"] :is(.sheet-head .x, .bsheet .x):active { transform: translate(2px, 2px); box-shadow: none; }
+html[data-page="spx"] .swc .pk { border-radius: 0; background: rgba(10,10,10,.42); -webkit-backdrop-filter: none; backdrop-filter: none; }
+html[data-page="spx"] .swc .pk-s { border-radius: 0; border-top: 2px solid var(--black); box-shadow: none; }
+html[data-page="spx"] .swc .pk-s:has(.pk-kind) { height: min(94%, 400px); }
+html[data-page="spx"] .swc .pk-h b { font: 900 15px/1.1 var(--disp); font-style: normal; letter-spacing: .08em; text-transform: uppercase; }
+html[data-page="spx"] .swc .pk-x { width: 40px; height: 40px; font-size: 22px; line-height: 1; }
+html[data-page="spx"] .swc .pk-kind { border-radius: 0; background: var(--soft); }
+html[data-page="spx"] .swc .pk-kind button { border-radius: 0; font-weight: 700; }
+html[data-page="spx"] .swc .pk-kind button[aria-checked="true"] { background: var(--lime); color: var(--black); box-shadow: none; }
+html[data-page="spx"] .swc .pk-r { border-radius: 0; border: 2px solid transparent; }
+html[data-page="spx"] .swc .pk-r[aria-current="true"] { background: var(--card); border-color: var(--black); box-shadow: none; }
+@media (hover: hover) { html[data-page="spx"] .swc .pk-r:hover { background: var(--lime); } }
+/* buttons, options, switches and fields inside the sheets: the same square, black-edged controls as the tile's */
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn { color: var(--black); background: var(--lime); border: 2px solid var(--black); border-radius: 0; box-shadow: var(--shadow); font: 900 13px/1.2 var(--disp); letter-spacing: .06em; text-transform: uppercase; transition: transform .12s, box-shadow .12s, background .12s; }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn.ghost { background: var(--card); }
+@media (hover: hover) { html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn:not(:disabled):hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--black); } }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn:not(:disabled):active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--black); }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn:disabled { background: #e4e4e4; color: #545454; border-color: var(--hair-2); box-shadow: none; }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .opt { border: 2px solid var(--black); border-radius: 0; background: var(--card); box-shadow: var(--shadow); }
+@media (hover: hover) { html[data-page="spx"] :is(dialog.sheet, .bsheet) .opt:not(:disabled):hover { background: var(--lime); border-color: var(--black); } }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) :is(input, select, textarea):not([type="checkbox"], [type="radio"], [type="range"], [type="file"]) { border: 2px solid var(--black); border-radius: 0; background: var(--card); }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .seg { border-radius: 0; background: var(--soft); }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .seg button { border-radius: 0; font-weight: 700; }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .seg button:is([aria-selected="true"], [aria-checked="true"]) { background: var(--lime); color: var(--black); box-shadow: none; }
+html[data-page="spx"] .bound-mkt section + section { margin-top: 22px; padding-top: 20px; border-top: 2px solid var(--black); }
+html[data-page="spx"] .bound-mkt h3 { margin: 0 0 12px; font: 900 13px/1.2 var(--disp); letter-spacing: .08em; text-transform: uppercase; }
+html[data-page="spx"] .bound-mkt .rows { display: grid; gap: 10px; margin: 0 0 14px; padding: 0; list-style: none; }
+html[data-page="spx"] .bound-mkt .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; padding: 12px; background: var(--card); border: 2px solid var(--black); }
+html[data-page="spx"] .bound-mkt .row .num { font: 700 14px/1.3 var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+html[data-page="spx"] .bound-mkt .row .num.mute, html[data-page="spx"] .bound-mkt .row .mute { color: var(--mute); font-weight: 400; }
+html[data-page="spx"] .bound-mkt .row :is(.part, .btn, .rows, .ok, .err) { grid-column: 1 / -1; }
+html[data-page="spx"] .bound-mkt .row .btn { margin-top: 2px; }
+html[data-page="spx"] .bound-mkt .row .ok { color: var(--ok); font-weight: 700; }
+html[data-page="spx"] .bound-mkt .rows .rows { margin: 4px 0 0; }
+html[data-page="spx"] .bound-mkt .form { display: grid; gap: 10px; }
+html[data-page="spx"] .bound-mkt .form .btn { margin-top: 4px; }
+html[data-page="spx"] .bsheet :is(input, select, textarea):not([type="checkbox"], [type="radio"]) { font: 16px/1.3 var(--mono); min-height: 48px; padding: 8px 12px; }
+/* the sheet's wallet chip (the front page's own .who card reaches it by name): a small label beside the title, not a card */
+html[data-page="spx"] .bsheet-head .who { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; margin: 0; padding: 5px 9px; background: var(--card); border: 2px solid var(--black); border-radius: 0; font: 11.5px/1.35 var(--mono); }
+html[data-page="spx"] .bsheet input[type="checkbox"] { width: 20px; height: 20px; margin-right: 8px; accent-color: var(--black); vertical-align: -4px; }
+html[data-page="spx"] .bsheet .note.err, html[data-page="spx"] .bound-mkt .err { color: var(--err); font-weight: 700; }
+html[data-page="spx"] .hw-b { border: 2px solid var(--black); border-radius: 0; box-shadow: 3px 3px 0 var(--black); }
+@media (hover: hover) { html[data-page="spx"] .hw-b:hover { transform: translate(-1px, -1px); color: var(--black); background: var(--lime); box-shadow: 4px 4px 0 var(--black); } }
+html[data-page="spx"] .hw-p { border: 2px solid var(--black); border-radius: 0; box-shadow: var(--lift); }
+@media (max-width: 640px) {
+  @supports (animation-timeline: scroll()) {
+    html[data-page="spx"] .hw { animation: spx-fab linear both; animation-timeline: scroll(root block); animation-range: 0 140px; }
+    @keyframes spx-fab { from { translate: 0 calc(100% + 24px); } to { translate: 0 0; } }
+  }
+}
+html[data-page="spx"] .bsheet-in { border: 2px solid var(--black); border-radius: 0; box-shadow: var(--lift); }
+html[data-page="spx"] .bsheet-head { border-radius: 0; }
+@media (max-width: 640px) {
+  html[data-page="spx"] dialog.sheet { border-width: 3px 0 0; box-shadow: none; }
+  html[data-page="spx"] .bsheet-in { border-width: 3px 0 0; box-shadow: none; }
+  html[data-page="spx"] .hw-p { border-width: 3px 0 0; box-shadow: none; }
+}
 
 /* below the tile: the roster, the commandments, the links */
 html[data-page="spx"] .spx-below { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 44px 40px; margin: 64px 0 24px; }
@@ -112,7 +212,7 @@ html[data-page="spx"] .spx-links b { display: block; font: 900 13px/1.2 var(--di
 html[data-page="spx"] .spx-links small { display: block; margin-top: 3px; font: 400 11px/1.3 var(--mono); color: var(--mute); }
 @media (hover: hover) { html[data-page="spx"] .spx-links a:hover { background: var(--cyan); transform: translate(-2px, -2px); box-shadow: 6px 6px 0 var(--black); } }
 html[data-page="spx"] .spx-ca { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 20px 0 0; }
-html[data-page="spx"] .spx-ca span { font: 700 10.5px/1.2 var(--mono); letter-spacing: .14em; color: var(--magenta); }
+html[data-page="spx"] .spx-ca span { font: 700 10.5px/1.2 var(--mono); letter-spacing: .14em; color: var(--magenta-ink); }
 html[data-page="spx"] .spx-ca code { font: 400 12px/1.5 var(--mono); overflow-wrap: anywhere; }
 html[data-page="spx"] .spx-fine { grid-column: 1 / -1; max-width: 60ch; margin: 0; font: 400 11.5px/1.6 var(--mono); color: var(--faint); }
 
@@ -124,12 +224,28 @@ html[data-page="spx"] .spx-fine { grid-column: 1 / -1; max-width: 60ch; margin: 
 @media (max-width: 1020px) {
   html[data-page="spx"] .spx-roster { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+/* a tablet keeps the two columns, the copy narrower and its moves one list */
 @media (max-width: 899px) {
-  html[data-page="spx"] .hero { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'tick' 'copy' 'tile' 'proof' 'luma'; gap: 20px; }
-  html[data-page="spx"] .hx { max-width: 520px; width: 100%; justify-self: start; }
-  html[data-page="spx"] .spx-lumina { justify-self: start; width: 100%; max-width: 520px; }
+  html[data-page="spx"] .hero { grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: 22px 28px; }
+  html[data-page="spx"] .spx-ops { grid-template-columns: minmax(0, 1fr); max-width: none; }
+  html[data-page="spx"] .spx-wm { width: min(320px, 100%); }
+  html[data-page="spx"] .spx-flip { font-size: clamp(14px, 2.2vw, 19px); }
+}
+/* a phone: the masthead is one short band (the wordmark, and the file line over the flip strip), the tile comes next so its button is on the first screen, then what the page does */
+@media (max-width: 719px) {
+  html[data-page="spx"] .hero { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'tick' 'mast' 'tile' 'do' 'proof' 'luma'; gap: 16px; }
+  html[data-page="spx"] .spx-copy { display: contents; }
+  html[data-page="spx"] .spx-mast { grid-area: mast; display: grid; grid-template-columns: minmax(0, 46fr) minmax(0, 54fr); grid-template-rows: 1fr auto; grid-template-areas: 'mark tag' 'mark flip'; gap: 6px 14px; padding-top: 2px; }
+  html[data-page="spx"] .spx-mast h1 { grid-area: mark; }
+  html[data-page="spx"] .spx-mast .spx-tag { grid-area: tag; margin: 0; align-self: start; font-size: 10.5px; letter-spacing: .12em; text-wrap: balance; }
+  html[data-page="spx"] .spx-mast .spx-flip { grid-area: flip; justify-self: start; align-self: end; margin: 0; padding: 6px 10px; font-size: clamp(11px, 3.6vw, 19px); }
+  html[data-page="spx"] .spx-wm { width: 100%; }
+  html[data-page="spx"] .spx-do { grid-area: do; margin-top: 14px; }
+  html[data-page="spx"] .spx-do .sub { margin-top: 4px; }
+  html[data-page="spx"] .spx-do .spx-ops { margin-top: 16px; max-width: 520px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  html[data-page="spx"] .hx { max-width: 560px; width: 100%; justify-self: center; }
+  html[data-page="spx"] .spx-lumina { justify-self: center; width: 100%; max-width: 520px; }
   html[data-page="spx"] .spx-below { grid-template-columns: minmax(0, 1fr); margin-top: 48px; }
-  html[data-page="spx"] .spx-wm { width: min(320px, 74%); }
 }
 @media (max-width: 520px) {
   html[data-page="spx"] .spx-roster { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }

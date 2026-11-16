@@ -373,7 +373,8 @@ for (const w of [820, 390]) {
   await waitFor(p, /Shield SPX/i);
   ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `at ${w} nothing scrolls sideways`);
   ok(await p.evaluate(() => { const l = [...document.querySelectorAll('#hx .hx-where .w')]; return l.length === 2 && l.every((e) => e.scrollWidth <= e.clientWidth + 1); }), `at ${w} the Shield way-in labels are not cut off`);
-  ok(await p.evaluate(() => { const r = (s) => document.querySelector(s).getBoundingClientRect(); return r('#hx').top > r('.spx-ops').bottom - 1 && r('#hx').left >= 0 && r('#hx').right <= innerWidth + 1; }), `at ${w} the tile follows the four moves and fits the screen`);
+  // a tablet keeps the two columns (the tile beside the copy); a phone has the masthead, then the tile with its button on the first screen, then the moves under it
+  ok(await p.evaluate((w) => { const r = (s) => document.querySelector(s)?.getBoundingClientRect(), t = r('#hx'), c = r('.spx-copy'), g = r('#hx .go'), o = r('.spx-ops'); if (!t || !o) return false; const fits = t.left >= 0 && t.right <= innerWidth + 1; return w >= 720 ? fits && !!c && t.left >= c.right - 1 && t.top < innerHeight / 2 : fits && t.top < 340 && !!g && g.top < 720 && o.top >= t.bottom - 1; }, w), `at ${w} ${w >= 720 ? 'the tile is beside the copy, in the first screen,' : 'the tile follows the masthead with its button on the first screen and the four moves follow it,'} and fits the screen`);
   ok(bad.length === 0, `at ${w}: no script error and no CSP violation${bad.length ? ': ' + bad.join(' | ') : ''}`);
   await ctx.close();
 }
