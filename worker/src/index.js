@@ -90,7 +90,7 @@ import { bech32, bech32m } from '@scure/base';
 import { buildScanReflectionAttester } from './reflection-attest.js';
 import { buildTreeLevels } from './merkle-levels.js';
 import { burnsAwaitingBundle } from './pending-burns.js';
-import { handleFarm } from './farm-program.js';
+import { handleFarm, farmActivityTick } from './farm-program.js';
 import { buildConfidentialSettler, FREE_POSTED_TYPES } from './confidential-settle.js';
 import { pvDeadline, pvFees, settleCalldata as openSettleCalldata, carriesPublicValues, checkPostedShape } from './confidential-open.js';
 import { passesFloor, feeAssetOf, floorInFeeUnits, totalFee, decodePoolState, ammUsdPerUnitBest, AMM_PRICE_DEFAULTS, FEELESS_TYPES } from './relay-quote.js';
@@ -31960,6 +31960,8 @@ export default {
       for (const net of cronNetworks(env)) await autoSweepStrandedBurns(env, net, { tickIdx: idx }).catch((e) => _logCronError(env, 'burnAutoSweep', net, e));
     })());
     ctx.waitUntil(poolSnapshotTick(env).catch((e) => _logCronError(env, 'poolSnapshot', 'mainnet', e)));
+    // How often each confidential pool's state changes is logged from the farm program's read (farm-program.js): a deposit's proof is ended by any change, and a page says how likely that is.
+    ctx.waitUntil(farmActivityTick(env).catch((e) => _logCronError(env, 'farmActivity', 'mainnet', e)));
     // The Tacit transaction archive catches itself up (tacArchiveCatchUp), on a waitUntil of its own so it never delays a stage below and never throws into the tick.
     ctx.waitUntil((async () => { for (const net of cronNetworks(env)) await tacArchiveCatchUp(env, net).catch((e) => _logCronError(env, 'tacArchiveCatchUp', net, e)); })());
     ctx.waitUntil((async () => {

@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-P5Tf6pvVolGMhd3ozfBjolxGRyRQshJ7NwlCyGIUiRY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-qFA3GPDwO3oBI9RRK4Z/V4RQhbrbtnJWOpgHem09Og0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -2698,6 +2698,7 @@ import { encErc20Approve, CETH_POOL_ASSET_ID, TAC_POOL_ASSET_ID, makeEvmTradeVen
 import { parseRecipient } from '/confidential-payout.js?cb=6360255f';
 import { planMerge, planAll, planPick, countAll, opsCompared } from '/bridge-all.js?cb=45f85325';
 import { aprFrom, shieldedApr as shieldedAprOf, poolWorthEth } from '/trade/farm-read.js?cb=fb6ec72f';
+import { poolNote } from '/pool-hint.js?cb=a5413c70';
 import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { balanceRows } from '/wallet-balances.js?cb=1cd3e7a4';
@@ -4615,7 +4616,7 @@ const chainSaid = (m) => Object.assign(new Error(m), { said: true });
 const CHAIN_PROVE_S = globalThis.crossOriginIsolated ? 8 : 30;
 const chainProveSay = () => (globalThis.crossOriginIsolated ? 'a few seconds' : 'about half a minute');
 
-const TACIT_URL = '/tacit.js?cb=db2d2bf9';
+const TACIT_URL = '/tacit.js?cb=dca4e09b';
 let T = null;
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; try { xtEngines(m); } catch { } } });
 const loadTacit = TS.load, tacitTurn = TS.turn, withKey = TS.withKey, dropTacitKey = TS.drop, tPriv = TS.tPriv;
@@ -5558,6 +5559,7 @@ async function scanPrivate(force = false) {
     P.err = null;
     runsPrune();
     dashSoon();
+    autoFinishSoon();
     if (r.reading) P.full = new Promise((ok) => setTimeout(ok, 0)).then(() => scanPrivate(true)).catch(() => null).finally(() => { P.full = null; });
     return P.scan;
   }).catch((e) => { if (S.key?.pubHex === pub) P.err = e; dashSoon(); throw e; }).finally(() => { if (P.scanning === p) P.scanning = null; });
@@ -5621,6 +5623,22 @@ const wireFinish = (root, sheet, id, statusId) => {
     if (b) b.onclick = () => busy(b, (run) => finishDeposits(run, sheet, $('#' + statusId), { self }));
   }
 };
+// A TAC deposit waiting to become private (the page was closed in the middle of a move to the private pool, or the relay was away) is finished when the page is
+// open with the wallet: the TAC page's own Finish, pressed for the owner, once for each deposit on this page. It goes through the relay, so it is left alone when the
+// owner proves on their own device (that way can ask the wallet for gas); a failure shows where Finish is and the button stays for the owner.
+var AUTO_FIN = new Set();
+function autoFinish() {
+  try {
+    if (!S.key || document.hidden || midAction() || ownOn()) return;
+    const ps = pendingFor('tac').filter((p) => p.ticker && !AUTO_FIN.has(kDep(p)));
+    const b = ps.length ? [...document.querySelectorAll('#tac-finish')].find((x) => x.offsetParent && !x.disabled && x.getAttribute('aria-busy') !== 'true') : null;
+    if (!b) return;
+    for (const p of ps) AUTO_FIN.add(kDep(p));
+    b.click();
+  } catch { }
+}
+function autoFinishSoon() { clearTimeout(autoFinishSoon.t); autoFinishSoon.t = setTimeout(autoFinish, 2500); }
+addEventListener('visibilitychange', () => { if (!document.hidden) autoFinishSoon(); });
 async function finishDeposits(run, sheet, status, { self = false } = {}) {
   const ps = pendingFor(sheet).filter((x) => x.ticker), sid = status.id;
   if (!ps.length) return;
@@ -12302,12 +12320,13 @@ function hxJoinSay(p, jq) {
   const { q, a, b, shares } = jq, res = j.res, bonded = BigInt(p.totalShares || 0), day = FARM.program?.epoch?.active ? Number(p.tacPerDayForPool) * Number(shares) / Number(bonded + shares) : 0;
   const gas = ['Network fee', `about ${fmt(j.gas, 18, 5)} ETH`, '', `Sent from ${your()}, which makes the bond`], adds = ['Adds', `${fmt(a, 8, dp[kA])} ${unit[kA]} + ${fmt(b, 8, dp[kB])} ${unit[kB]}`];
   const low = `${payer() === 'tacit' ? 'This key’s address' : 'Your wallet'} holds too little ETH for the network fee.`;
+  const sm = poolNote(poolWorth(p), p.activity);      // a pool a small trade moves, or that has been changing: a trade can land while the deposit is proved, and it is then proved again (dapp/pool-hint.js)
   if (q.kind === 'pair') {
     const cut = jq.fA + (jq.fB ? jq.fB * res.reserveA / res.reserveB : 0n), fee = [jq.fA ? `${fmt(jq.fA, 8, 6)} tETH` : '', jq.fB ? `${fmt(jq.fB, 8, dpB)} ${other}` : ''].filter(Boolean).join(' + ');
     const line = q.over ? `More than your private balance covers${fee ? ' with the relay fee' : ''}. Try Max.` : q.gasShort ? low
       : cut * 20n >= 2n * a ? `The relay’s fees to split your notes are ${pctFmt(Number((cut * 1000n) / (2n * a)) / 10)} of this deposit: a larger one, or notes that are already this size, spreads them.` : '';
     return { go: 'Farm with both', how: 'both at the pool’s ratio, nothing swapped', day, line, warn: !!line, gate: 0,
-      rc: [adds, ['Chain sees', 'a deposit, not whose'], fee ? ['Relay fee', fee, '', 'Cutting your notes to size'] : null, gas, ['Time', 'a few minutes']],
+      rc: [adds, ['Chain sees', 'a deposit, not whose'], fee ? ['Relay fee', fee, '', 'Cutting your notes to size'] : null, gas, ...(sm?.rows || []), ['Time', `a few minutes${sm?.time || ''}`]],
       alt: [{ label: 'Swap half instead', go: () => hxPair(false) },
         ...(q.over ? [...(jq.a + jq.fA > spendable(sd.kA) ? hxGetAlts(sd.kA) : []), ...(jq.b + jq.fB > spendable(sd.kB) ? hxGetAlts(sd.kB) : [])] : [])] };
   }
@@ -12320,7 +12339,7 @@ function hxJoinSay(p, jq) {
   return { go: `Farm with ${unit[kS]}`, day, line, warn: !!line, gate: worst,
     rc: [adds, ['Chain sees', 'a deposit, not whose'], ['Relay fee', `${fmt(fr + s1 + s2, 8, dp[kS])} ${unit[kS]}`, '', s1 + s2 ? 'The swap, and cutting your notes to size' : 'The swap'], gas,
       z.impact >= 0.5 ? ['Price impact', pctFmt(z.impact), z.impact >= 5 ? 'err' : ''] : null, mkt >= 1 ? ['Against the market', `${pctFmt(mkt)} of this deposit`, mkt >= 5 ? 'err' : ''] : null,
-      reuse ? ['Notes', 'made already: nothing is split again'] : null, ['Time', z.split ? 'about a minute: the swap, then the entry' : 'a few minutes a step, up to four']],
+      reuse ? ['Notes', 'made already: nothing is split again'] : null, ...(sm?.rows || []), ['Time', `${z.split ? 'about a minute: the swap, then the entry' : 'a few minutes a step, up to four'}${sm?.time || ''}`]],
     alt: other2 && !p.standalone ? { label: `Add your ${unit[kO]} too: no swap`, go: () => hxPair(true) } : gets.length ? gets : null };
 }
 const hxPair = (on) => { HX.pair = on; if (on && HX.from === 'tac') { HX.ern = 'eth'; HX.amt = ''; } HX.q = null; HX.jq = null; paintHx(); };
@@ -15644,7 +15663,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=c1c2f845').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=9d7c9d08').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

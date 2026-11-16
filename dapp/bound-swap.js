@@ -615,7 +615,8 @@ export async function homeFeePlan({ quote, amount }) {
   const total = asBig(amount);
   let fee = null;
   try { const q = await quote(); fee = q == null ? null : asBig(q); } catch { fee = null; }
-  if (fee == null || fee < 0n) return { fee: 0n, selfRelay: true };
+  // the relay refuses a fast-lane job with no fee, so a zero quote is no quote too
+  if (fee == null || fee <= 0n) return { fee: 0n, selfRelay: true };
   if (fee >= total) fail('this note is smaller than the fee of moving it');
   return { fee, selfRelay: false };
 }
