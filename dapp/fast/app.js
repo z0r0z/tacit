@@ -4,7 +4,7 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=67d4d4de';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=0d2021d8';
+import { mountFast } from '/fast/ui.js?cb=6a3631c7';
 import { mountProvide } from '/fast/provide.js?cb=afe91e95';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
 import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=d17ea9e5';
