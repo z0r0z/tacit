@@ -116,7 +116,7 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 .hero h1 em { font-style: italic; }
 .lede { margin: 12px 0 0; color: var(--mute); }
 .chef { position: relative; width: 96px; height: 124px; margin: 0 auto 6px; padding: 0; display: block; background: none; border: 0; cursor: pointer; -webkit-tap-highlight-color: transparent; }
-.chef .fig { position: absolute; inset: 0; background: url('/farm/chef.png') center bottom / contain no-repeat; image-rendering: pixelated; transform-origin: 50% 100%; animation: bob 3.4s ease-in-out infinite; }
+.chef .fig { position: absolute; inset: 0; background: url('/farm/chef.png') center bottom / contain no-repeat; transform-origin: 50% 100%; animation: bob 3.4s ease-in-out infinite; }
 .chef.wink .fig { background-image: url('/farm/chef-wink.png'); }
 .chef[data-mood="pick"] .fig { animation: nod .9s ease-in-out 1; }
 .chef[data-mood="cook"] .fig { animation: stir 1s ease-in-out infinite; }
@@ -181,6 +181,16 @@ html[data-view="farm"] .menu { display: none; }
 .dish:active { transform: scale(.985); }
 .dish:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 .dish.pick { border-color: color-mix(in srgb, var(--orange) 55%, var(--hair-2)); }
+/* the chef's pick wears his toque: a puff of white smoke, and it is on the plate. It is put on again whenever the pick moves to another farm. */
+.dish.pick .plate { position: relative; }
+.dish.pick .plate::before, .dish.pick .plate::after { content: ''; position: absolute; pointer-events: none; }
+.dish.pick .plate::after { left: 50%; top: -18px; width: 54px; height: 34px; margin-left: -4px; background: url('/farm/toque.svg') center / contain no-repeat; transform: rotate(16deg); transform-origin: 30% 100%;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .28)); animation: toque .62s cubic-bezier(.3, 1.7, .5, 1) .34s both; }
+.dish.pick .plate::before { z-index: 1; left: 50%; top: -9px; width: 16px; height: 16px; margin-left: 15px; border-radius: 50%; background: #fff; opacity: 0;
+  box-shadow: -18px 6px 0 2px #fff, 17px 7px 0 1px #fff, -7px -12px 0 4px #fff, 11px -11px 0 0 #fff, 0 11px 0 4px #fff; animation: poof 1.15s ease-out both; }
+@keyframes toque { from { opacity: 0; transform: translateY(-9px) rotate(16deg) scale(.3); } }
+@keyframes poof { 0% { opacity: 0; transform: scale(.2); } 20% { opacity: .95; transform: scale(1); } 45% { opacity: .9; transform: scale(1.25); } 100% { opacity: 0; transform: scale(2.1) translateY(-4px); filter: blur(3px); } }
+@media (prefers-reduced-motion: reduce) { .dish.pick .plate::before, .dish.pick .plate::after { animation: none; } }
 .menu-more { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 6px; margin: 26px 0 0; font-size: 13px; color: var(--mute); }
 .menu-more a { padding: 9px 9px; color: inherit; text-decoration: none; }
 .menu-more a:hover { color: var(--ink); text-decoration: underline; }
@@ -282,7 +292,7 @@ html[data-view="farm"] .menu { display: none; }
 
 /* a private deposit under way: three steps, the one being done said under them, the chef at the pot */
 .cook { display: flex; gap: 14px; align-items: flex-start; margin: 14px 0 0; padding: 14px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; animation: rcpt .22s ease-out; }
-.cook-fig { flex: none; width: 36px; height: 47px; background: url('/farm/chef.png') center bottom / contain no-repeat; image-rendering: pixelated; transform-origin: 50% 100%; }
+.cook-fig { flex: none; width: 36px; height: 47px; background: url('/farm/chef.png') center bottom / contain no-repeat; transform-origin: 50% 100%; }
 .cook[data-live] .cook-fig { animation: stir 1s ease-in-out infinite; }
 .cook-b { flex: 1; min-width: 0; }
 .steps { list-style: none; display: flex; align-items: center; gap: 8px; margin: 0; padding: 0; font: 500 12px/1.3 var(--mono); color: var(--mute); }
