@@ -2606,7 +2606,7 @@ import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEE
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll, proofWait as brProofWait, whyText as brWhy, splitTag as brSplitTag, waitFor as brWaitFor, splitFee as brSplitFeeOf } from '/bridge-in.js?cb=5cad2b59';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=42d78071';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
-import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead } from '/activity.js?cb=4ec9d7c8';
+import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead, fastItem } from '/activity.js?cb=4ec9d7c8';
 if (window.__tacitAway) await new Promise(() => {});
 document.querySelector('link[rel="stylesheet"][href^="/swap/card.css"]')?.setAttribute('media', 'all');
 
@@ -3405,6 +3405,7 @@ const txSite = (it) => (it.kind === 'btc' ? 'mempool.space' : { 8453: 'Basescan'
 const linked = (text) => html`${String(text).split(/(0x[0-9a-fA-F]{64})/).map((p, i) => (i % 2 ? html`<a href="${SCAN}/tx/${p}" target="_blank" rel="noopener">${short(p, 6)} ↗</a>` : p))}`;
 
 function actSaid(it, prev) {
+  if (it.kind === 'fast') return;                      // its arrival is said by fastArrived
   if (it.kind === 'chain') { if (it.status === 'settled' || it.status === 'failed') notifyOS(it, it.status === 'settled'); return; }
   const run = it.kind === 'job' ? JOBS.get(it.id.slice(4))?.run : it.kind === 'op' ? RUN_OF.get(it.id) : null;
   const own = run ? run.sheet : OWN.get(it.id);
@@ -8505,8 +8506,16 @@ function hxFastTend() {
   FASTR.stop = () => {};
   fastRoute().then((fr) => {
     if (!fr || S.key?.pubHex !== pub) { FASTR.stop = null; return; }
-    FASTR.stop = fr.run((list) => { if (S.key?.pubHex === pub) { FASTR.recs = list; hxFastPaint(); fastArrived(list); } }, () => { if (FASTR.pub === pub) FASTR.stop = null; });
+    FASTR.stop = fr.run((list) => { if (S.key?.pubHex === pub) { FASTR.recs = list; hxFastPaint(); fastArrived(list); fastLog(list, pub); } }, () => { if (FASTR.pub === pub) FASTR.stop = null; });
   }).catch(() => { FASTR.stop = null; });
+}
+// Fast bridges beside the other work in Activity: one item for each that is under way here, or ended in the last day. The records are the fast route's (it keeps
+// them in this browser and says where each stands); the item only follows them, and a bridge that came back to Bitcoin shows as returned, not as done.
+function fastLog(list, pub) {
+  for (const r of list) {
+    const x = fastItem(r, { fmt: (v) => fmt(v, 8, 4), pub });
+    if (x) actPut(x.id, x.patch);
+  }
 }
 function fastTend() {
   const pub = S.key?.pubHex;

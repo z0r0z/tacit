@@ -365,6 +365,23 @@ test('a take whose commit never spreads (its funding coin was spent elsewhere) i
   void rec;
 });
 
+test('a take whose commit cannot be read (every explorer limits the LP) is not built again: a read that failed is not a transaction that is not there', async () => {
+  const w = world();
+  let failing = true, attempts = 0;
+  const real = w.lBtc.broadcast, realFetch = w.lBtc.fetchTx;
+  w.lBtc.broadcast = async (...a) => { if (failing) { attempts++; throw new Error('broadcast refused: every explorer is rate limited'); } return real(...a); };
+  w.lBtc.fetchTx = async (id) => { if (failing && attempts >= 1) throw new Error('/tx -> 429 slow down'); return realFetch(id); };   // (from the first refused broadcast on)
+  await w.start();
+  await w.run(async () => attempts >= 2);
+  w.clock.advance(1200);                                   // well past the ten minutes a pair has to spread
+  const before = attempts;
+  await w.run(async () => attempts >= before + 3);
+  assert.equal(((await w.lp()).takeRebuilds || 0), 0, 'not built again on a read that failed');
+  failing = false;
+  await w.run(async () => (await w.user())?.phase === 'done' && (await w.lp())?.phase === 'done');
+  assert.equal((await w.lp()).phase, 'done');
+});
+
 let passed = 0, ran = 0;
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 for (const [name, fn] of tests) {

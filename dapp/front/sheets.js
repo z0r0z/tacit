@@ -32,6 +32,11 @@ function actSteps(it) {
     return [...pre, st('Queued', parts.every((x) => okStatus(x.it?.status)) ? 'now' : ''), st('Proving'), st('Done')];
   }
   if (it.kind === 'chain') return [st('Sent', 'done'), st('Landed', s === 'settled' ? 'done' : s === 'failed' ? 'bad' : s === 'unknown' ? '' : 'now')];
+  if (it.kind === 'fast') {
+    const names = ['Lock on Bitcoin', 'Lock in the pool', 'Claim', 'Done'], at = Math.min(3, Math.max(0, it.fa | 0));
+    if (s === 'failed') return [st(names[0], 'done'), st('Returned to Bitcoin', 'bad')];
+    return names.map((l, i) => st(l, s === 'settled' || i < at ? 'done' : i === at ? 'now' : ''));
+  }
   const first = it.kind === 'btc' ? 'Broadcast' : it.via === 'keeper' ? 'Relayed' : 'Sent';
   if (s === 'failed') return [st(first, 'done'), st('Reverted', 'bad')];
   if (s === 'stale') return [st(first, 'done'), st('Not confirmed yet')];
@@ -73,6 +78,13 @@ function actFoot(it) {
     return it.status === 'settled' ? html`<div class="actr-f">Landed on Ethereum${it.end ? html` in ${clock(it.end - it.at)}` : ''}${it.height ? html`, block <span class="num">${it.height}</span>` : ''}</div>`
       : it.status === 'pending' ? html`<div class="actr-f">The leader has it. It lands in the next block, usually within a minute.</div>`
       : html`<div class="actr-f${it.status === 'failed' && !actStale(it) ? ' err' : ''}">${it.err || 'This page was closed before it landed. If it did not, it is kept and goes on by itself.'}</div>`;
+  }
+  if (it.kind === 'fast') {
+    // a fast bridge is followed by the fast route (the records it keeps in this browser), which says where it stands; this shows it beside the other work
+    const lock = it.lockTxid ? html` · <a href="${MEMPOOL}/tx/${it.lockTxid}" target="_blank" rel="noopener">Bitcoin lock ↗</a>` : '';
+    return it.status === 'settled' ? html`<div class="actr-f">Done. ${it.receive && it.receive !== '0' ? `${fmt(BigInt(it.receive), 8, 4)} TAC` : 'The TAC'} is in your private balance.${lock}</div>`
+      : it.status === 'pending' ? html`<div class="actr-f">${it.title ? html`<b>${it.title}.</b> ` : ''}${it.note || ''}${lock} · <a href="/fast/">Open the fast bridge</a></div>`
+      : html`<div class="actr-f">${it.err || 'The lock came back to your Bitcoin address.'}${lock}</div>`;
   }
   const link = it.hash ? html`<a href="${txUrl(it)}" target="_blank" rel="noopener">${txMark(it)}${txSite(it)} ↗</a>` : '';
   if (it.status === 'failed' || it.status === 'unknown') return html`<div class="actr-f${actStale(it) ? '' : ' err'}">${linked(failText(it))}</div>${selfDoLine(it)}${proofHelp(it)}${SELF.has(it.id) || actStale(it) ? '' : againLine(it)}`;

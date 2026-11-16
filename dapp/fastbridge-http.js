@@ -11,7 +11,11 @@ export function makeCounter(call) {
   const answered = (r, what) => {
     if (r.status === 200 && r.body && typeof r.body.ok === 'boolean') return r.body;
     if (r.status === 429) return { ok: false, retry: true, why: 'the liquidity provider is busy' };
-    if (r.status >= 400 && r.status < 500) return { ok: false, retry: false, why: (r.body && r.body.error) || `refused (${r.status})` };
+    // A 404 (a route that is not there for the moment: a deploy, a proxy), a timeout or a 425 is the edge in front of the provider, not the provider saying no.
+    if (r.status === 404 || r.status === 408 || r.status === 425) return { ok: false, retry: true, why: `the liquidity provider did not answer (${r.status})` };
+    // A refusal is the provider's own word: a 4xx with its error in the body. One without (a proxy's or a firewall's page) is not an answer: it is thrown, and
+    // the machine asks again until its own wait runs out.
+    if (r.status >= 400 && r.status < 500 && r.body && r.body.error) return { ok: false, retry: false, why: r.body.error };
     throw fail(r, what);
   };
 

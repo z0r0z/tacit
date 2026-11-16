@@ -88,5 +88,21 @@ T.recordOpening(forged.txid, 1, REWARD_ASSET, 5_000_000n, forged.r);
   console.log('ok 2 - against a worker with no receipt route, no farm note is counted without the farm pre-scan');
   W.route = true;
 }
+{
+  // the worker is down for a moment: a recorded reward is not "not there", it is not told yet, and the scan is not kept as final
+  receipts.set(real.txid, { kind: 'harvest', farm_id: '07'.repeat(32), note: real.note });
+  W.route = true;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => (String(input?.url ?? input).includes('/amm/farm-receipt') ? json({ error: 'bad gateway' }, 502) : realFetch(input, init));
+  T.invalidateHoldingsCache(); T.clearValidatorCaches();
+  const h = await T.scanHoldings(true);
+  assert.equal(bal(h), 0n, 'nothing is counted on a receipt that could not be read');
+  assert.ok(h.unclassified.has(`${real.txid}:1`), 'but the reward is listed as not yet told, not left out of every list');
+  globalThis.fetch = realFetch;
+  T.clearValidatorCaches();
+  const again = await T.scanHoldings(true);   // no invalidation of the kept scan: one with something unresolved is not reused, it is made again
+  assert.equal(bal(again), 70n, 'and once the worker answers, the next scan counts it without anything else changing');
+  console.log('ok 3 - a harvested reward whose receipt cannot be read is listed as not yet told, and counted by the next scan');
+}
 console.log('done');
 process.exit(0);   // the dapp's timers (cache flushes, retries) would otherwise keep the process alive

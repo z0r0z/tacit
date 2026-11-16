@@ -203,7 +203,7 @@ export function makeEthereumLocker(ctx) {
           await save(rec, { take: { txid: pair.revealTxid, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, at: ctx.now() } });
         }
         try { await btc.broadcast(rec.take, null); } catch (e) {
-          if (rec.take.at != null && ctx.now() - rec.take.at > 600 && (rec.takeRebuilds || 0) < 5 && !(await btc.fetchTx(rec.take.commitTxid).catch(() => null))) await save(rec, { take: null, takeRebuilds: (rec.takeRebuilds || 0) + 1 });
+          if (rec.take.at != null && ctx.now() - rec.take.at > 600 && (rec.takeRebuilds || 0) < 5 && !(await btc.fetchTx(rec.take.commitTxid).catch(() => true))) await save(rec, { take: null, takeRebuilds: (rec.takeRebuilds || 0) + 1 });
           throw e;
         }
         if ((await btc.status(rec.take.txid)).confirmations) return save(rec, { phase: 'done' });

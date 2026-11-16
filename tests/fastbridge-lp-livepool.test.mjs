@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { loadTacit } from '../worker-relay/src/lib/btc-pool-transparent.js';
 import { makeBtcWallet } from '../dapp/bitcoin-taproot-wallet.js';
 import { makeEsploraBtcChain } from '../dapp/fastbridge-btc.js';
+import { bpRangeAggProve, pointToBytes, randomScalar } from './bulletproofs.mjs';
 
 const here = (p) => new URL(p, import.meta.url);
 const TXID = 'fbcd761a8b3e8e38af9a682179fee6df2f9a0a0f04cdbaf988359cbb9d51db66';
@@ -90,6 +91,41 @@ test('a long note history gives the event loop a real turn between its reads, an
     assert.ok(await chain.resolveNote('22'.repeat(32), 1));
     assert.ok(seen[1].includes('ee'.repeat(32) + ':0') && seen[1].includes('11'.repeat(32) + ':0'), 'what the first walk proved valid is there at the start of the next');
   } finally { marker.stop(); globalThis.fetch = prev; }
+});
+
+test('a note that spends a pool-exit note: the pool service that cannot be asked is a read to try again, and only its "not an exit" is a verdict', async () => {
+  // the exit note is already proved (an earlier lock's walk), so only the child's own read of the exit touches the pool service: a 503 there used to leave
+  // the child "not valid", and the provider declined the lock for good
+  const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  const CHILD = 'c1'.repeat(32);
+  const REAL = bpRangeAggProve([5n], [randomScalar()]);   // a real range proof: a transfer is checked for one before its history is read
+  const payload = T.encodeCXferPayload({ assetId: new Uint8Array(32).fill(9), kernelSig: new Uint8Array(64).fill(1), outputs: [{ commitment: pointToBytes(REAL.commitments[0]), encryptedAmount: new Uint8Array(8) }], rangeproof: REAL.proof });
+  const child = {
+    txid: CHILD, status: { confirmed: true, block_height: 976000, block_time: 1700000000 },
+    vin: [
+      { txid: 'c2'.repeat(32), vout: 0, witness: [hex(new Uint8Array(64)), hex(T.encodeEnvelopeScript(new Uint8Array(32).fill(4), payload)), hex(new Uint8Array(33))], prevout: { scriptpubkey_type: 'v1_p2tr' } },
+      { txid: TXID, vout: 0, witness: [hex(new Uint8Array(71)), hex(new Uint8Array(33))], prevout: { scriptpubkey_type: 'v0_p2wpkh' } },
+    ],
+    vout: [{ scriptpubkey: '0014' + '11'.repeat(20), value: 546 }],
+  };
+  const pool = { says: () => json(REC) };
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (input, ...r) => {
+    const u = String(input?.url ?? input);
+    if (u === `http://esplora.test/tx/${CHILD}`) return json(child);
+    if (u === `${LIVE}/btc-pool/exit/${TXID}/0`) return pool.says();
+    return prev(input, ...r);
+  };
+  try {
+    T.clearBtcPoolExitCache && T.clearBtcPoolExitCache();
+    assert.ok(await btc.resolveNote(TXID, 0), 'the exit note itself is valid, and kept as proved');
+    pool.says = () => json({ error: 'down' }, 503);
+    T.clearBtcPoolExitCache && T.clearBtcPoolExitCache();
+    await assert.rejects(btc.resolveNote(CHILD, 0), (e) => e.transient === true, 'the pool service is down: ask again, the child is not "not valid"');
+    pool.says = () => json({ exists: false, height: 975075 });
+    T.clearBtcPoolExitCache && T.clearBtcPoolExitCache();
+    assert.equal(await btc.resolveNote(CHILD, 0), null, 'the pool says it is not an exit: a verdict');
+  } finally { globalThis.fetch = prev; }
 });
 
 let passed = 0;
