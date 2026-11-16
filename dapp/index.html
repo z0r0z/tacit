@@ -383,6 +383,7 @@ main:focus { outline: none; }
 /* A dot says one thing: grey is nothing for you (and is not drawn), orange is something to claim, green is something you hold. Only the Live tape pulses. */
 .news .dot { width: 6px; height: 6px; }
 .news .dot:not(.on):not(.live) { display: none; }
+.news .tk { display: inline-block; width: 16px; height: 16px; vertical-align: -.2em; }       /* a token's own logo in a pill (SPX's) */
 .news .go { font-weight: 500; color: var(--ink); transition: transform .3s var(--spring); }
 @media (hover: hover) { .news:hover .go { color: var(--ink); transform: translateX(4px); } }
 .hero h1 { font: 400 clamp(40px, 12.4vw, 54px)/1.02 var(--serif); letter-spacing: -.03em; margin: 0 auto 18px; text-wrap: balance; }
@@ -2234,6 +2235,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       </div>
     </div>
     <div class="says">
+      <div class="newsl"><a class="news" id="spx-news" href="/spx/" title="SPX6900 on Tacit"><img class="tk" src="/swap/logos/0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c.webp" alt="" width="16" height="16" decoding="async"><b>SPX6900</b><span>shield, send<span class="w"> and farm it privately</span></span><span class="go"><span class="w">SPX page </span>→</span></a></div>
       <div class="chl" id="chl">
         <a class="chb" id="chl-a" href="/tac/" title="The Tacit chain, live"><svg class="tk w" aria-hidden="true"><use href="#tk-tac"/></svg><b>Tacit chain</b><span class="dot" id="chl-dot" aria-hidden="true"></span><span>stake TAC, earn<span class="w"> from every payment</span>, pay<span class="w"> privately</span></span><i aria-hidden="true">→</i></a>
       </div>
