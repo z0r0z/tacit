@@ -134,6 +134,20 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   ok(!link || /\/spx\/#card=earn:ether:spx&amt=0\.05$/.test(link), `its share link, when the card shows one, is the same link (${link || 'none shown'})`);
   await ctx.close();
 }
+// a payment-request link made on this page (the Send tab's Request view) opens that payment on this page for a first-time visitor: the token's own key has digits (xp0x…), which the
+// link pattern once refused, so the link was dropped and the visitor landed on Shield with nothing filled in
+ok(/\$\{location\.origin\}\$\{SPXP \? '\/spx\/' : '\/'\}#card=send:\$\{HX\.send\}&to=/.test(front), 'a request link made on this page is this page’s own link (/spx/#card=send:…), not the main page’s');
+{
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage(), bad = [];
+  p.on('pageerror', (e) => bad.push(e.message));
+  const TO = 'tacit1qzxs9k0y8cv9r7xxnvwhvg2dayjd75228edl6fj9gu8qxn4strhs0hesqvcjwcn6nqe6mtkvul';
+  await p.goto(BASE + `/spx/#card=send:xp${SPX}&to=${TO}&amt=0.25`, { waitUntil: 'load' });
+  await p.waitForFunction(() => document.querySelector('[data-hxm="send"]')?.getAttribute('aria-selected') === 'true', null, { timeout: 40000 }).catch(() => {});
+  await p.waitForTimeout(2500);
+  const st = await p.evaluate(() => ({ tab: document.querySelector('[data-hxm][aria-selected=true]')?.dataset.hxm, rcpt: document.querySelector('#hx-rcpt')?.value, amt: document.querySelector('#hx-amt')?.value, from: document.querySelector('#hx-sa')?.value, hash: location.hash }));
+  ok(st.tab === 'send' && st.rcpt === TO && st.amt === '0.25' && st.from === `xp${SPX}` && st.hash === '' && bad.length === 0, `/spx/#card=send:xp0x…&to=…&amt=0.25 opens Send on private SPX with the payee and the amount filled in, for a visitor who has never been here (${JSON.stringify(st).slice(0, 220)})`);
+  await ctx.close();
+}
 // a browser that last left the tile on another tab (the tile remembers it) still gets the page: it opens on Shield SPX, with no script error, and the wallet sheet works.
 // On the Send tab the page's Send list is tETH alone until its token is read: it has no picker then, and its start stopped on that (the wallet sheet stayed empty).
 for (const tab of ['send', 'earn', 'swap']) {
@@ -143,7 +157,7 @@ for (const tab of ['send', 'earn', 'swap']) {
   await p.goto(BASE + '/spx/', { waitUntil: 'load' });
   const t = await waitFor(p, /Shield SPX/i, 20000);
   await p.evaluate(() => { location.hash = '#wallet'; });
-  const paste = await p.waitForSelector('#wallet-body [data-in="paste"]', { timeout: 8000 }).then(() => true, () => false);
+  const paste = await p.waitForSelector('#wallet-body [data-in="paste"]', { state: 'attached', timeout: 8000 }).then(() => true, () => false);      // under 'Other ways to sign in' when a wallet is offered first
   ok(bad.length === 0 && /Shield SPX/i.test(t) && paste, `a browser that last left the tile on ${tab} gets the page on Shield SPX, with no script error and a working wallet sheet${bad.length ? ` (${bad.join(' | ')})` : ''}`);
   await ctx.close();
 }
