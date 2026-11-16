@@ -16041,9 +16041,12 @@ async function bridgedNotes(assetIdHex = CANONICAL_TAC_ASSET_ID_HEX) {
 const bridgedTacNotes = () => bridgedNotes(CANONICAL_TAC_ASSET_ID_HEX);
 // A bridged token's notes (other than TAC) at the key's own P2WPKH address: sent or moved there by the bound transfer, or change from one. The Bridge tab
 // lists them beside the notes the bridge minted and burns them home the same way (a bound note's burn names its bound leaf), and a seller offers them.
-async function bridgedHeldNotes(assetIdHex) {
+// anyBridged: read any non-TAC asset's notes, registered on this page or not (a bound offer names its asset by the bid, and a page such as
+// /trade/ never registers runtime tokens, so the registry alone would hide a note held here)
+async function bridgedHeldNotes(assetIdHex, { anyBridged = false } = {}) {
   const id = String(assetIdHex || '').toLowerCase().replace(/^0x/, '');
-  if (!_bridgedNonLegacy(id)) return [];
+  if (!/^[0-9a-f]{64}$/.test(id) || id === CANONICAL_TAC_ASSET_ID_HEX) return [];
+  if (!anyBridged && !_bridgedNonLegacy(id)) return [];
   await ensurePrivkey();
   const h = (await scanHoldings()).get(id);
   if (!h || !Array.isArray(h.utxos)) return [];
@@ -28698,7 +28701,7 @@ async function publishBoundOffer({ assetIdHex, bid, note = null, part = null, ex
   const bidAmt = BigInt(bid.remaining_amount ?? bid.amount), bidPrice = BigInt(bid.price_sats), bidTotal = BigInt(bid.amount);
   const xonly = bytesToHex(wallet.pub.slice(1));
   // the notes the bridge minted at the Taproot address, then the ones held at the P2WPKH address (sent or moved there by the bound transfer)
-  const pool = note ? [note] : [...(await _bridgedOpen(aid)), ...(await bridgedHeldNotes(aid).catch(() => []))]
+  const pool = note ? [note] : [...(await _bridgedOpen(aid)), ...(await bridgedHeldNotes(aid, { anyBridged: true }).catch(() => []))]
     .filter((n) => n.confirmed && n.amount != null && n.blinding != null && n.credited !== false);
   if (!pool.length) throw new Error('no note of this token at this key\'s Bitcoin addresses');
   const want = part == null ? null : BigInt(part);
