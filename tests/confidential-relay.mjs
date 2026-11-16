@@ -666,4 +666,34 @@ const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100
   ok('a pause that throws ends a proof\'s or a settle\'s wait at once, and the relay is not asked again');
 }
 
+// ───────────────── a prove-only job may wait out the queue (queuedTimeoutMs), and the same op asked again is the same job ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash });
+  const relay = makeConfidentialRelay({ base: '', fetchImpl: mockFetch(q) });
+  const op = { depositsConsumed: ['0xhome'], leaves: ['0xleafhome'] };
+  const { jobId } = await relay.submitOp({ type: 'wrap', op, mode: 'prove' });
+
+  // without the opt-in, a queued job's wait runs out on the one clock, as it always did
+  await assert.rejects(() => relay.waitForProof(jobId, { intervalMs: 0, timeoutMs: -1, sleep: noSleep }), /prove timed out \(box offline/);
+  // with it, a job still in the queue is waited for past timeoutMs, and the proof is taken when it comes
+  let polls = 0;
+  const sleep = async () => { if (++polls === 3) await q.nextJob(); if (polls === 5) await q.ackJob(jobId, { publicValues: '0xpv', proof: '0xpf' }); };
+  const st = await relay.waitForProof(jobId, { intervalMs: 0, timeoutMs: 60_000, queuedTimeoutMs: 60_000, sleep });
+  assert.strictEqual(st.status, 'proven');
+  ok('a queued prove-only job is waited for under queuedTimeoutMs, and resolves once proved');
+
+  // the queued clock running out says the job is still waiting its turn, naming it
+  const j2 = (await relay.submitOp({ type: 'wrap', op: { ...op, leaves: ['0xother'] }, mode: 'prove' })).jobId;
+  await assert.rejects(() => relay.waitForProof(j2, { intervalMs: 0, queuedTimeoutMs: -1, sleep: noSleep }), (e) => /still waiting its turn/.test(e.message) && e.message.includes(j2));
+  // once the relay takes it, timeoutMs counts from then
+  await q.nextJob();
+  await assert.rejects(() => relay.waitForProof(j2, { intervalMs: 0, timeoutMs: -1, queuedTimeoutMs: 60_000, sleep: noSleep }), /prove timed out \(box offline/);
+  ok('the queued wait runs out naming the job; once taken, the proving clock applies');
+
+  // the same op asked again (a try whose wait ran out) is answered with the job already held, not a second job
+  const again = await relay.submitOp({ type: 'wrap', op: { ...op, leaves: ['0xother'] }, mode: 'prove' });
+  assert.strictEqual(again.jobId, j2);
+  ok('the same prove-only op submitted again is the same job');
+}
+
 console.log(`\n${n} confidential-relay checks passed.`);

@@ -6,25 +6,39 @@
 // held every settle behind it (a 5.5 TAC Finish waited 20 minutes on 2026-11-16 instead of 30 seconds).
 //
 // So settles are taken first. Prove-only jobs are not starved: after `proveTurnEvery` settles in a row, one prove-only job gets a turn (when there is
-// one), and whenever no settle is waiting, prove-only jobs are taken as before.
+// one), and whenever no settle is waiting, prove-only jobs are taken as before. Settles sent in a batch go out before the picker is asked at all, so
+// the loop counts them with `settled(n)`; and a prove-only job is also due once `proveTurnSecs` have passed since the last one had its turn. With
+// settles arriving steadily in batches the count alone never came round, and prove-only jobs waited over an hour (2026-11-16: 30 of them, a bought
+// Bitcoin note's way home among them). The loop asks `proveDue()` before a batch and gives the turn with `proveTurn()`.
 //
-//   const pick = makeJobPicker({ confidentialJob, proveTurnEvery: 4 });
-//   const job = await pick({ short, gather });   // → the API's job ({ jobId, ... }) or {} / null when there is none
+//   const pick = makeJobPicker({ confidentialJob, proveTurnEvery: 4, proveTurnSecs: 120 });
+//   let job = pick.proveDue() ? await pick.proveTurn() : null;   // a prove-only job, or {} when none waits
+//   if (!job?.jobId && await batchCycle()) pick.settled();
+//   job = await pick({ short, gather });   // → the API's job ({ jobId, ... }) or {} / null when there is none
 //
 // `short` (the settle wallet cannot pay) and `gather` (settles are being left a moment for company) both take only prove-only jobs, as the relay always did.
-export function makeJobPicker({ confidentialJob, proveTurnEvery = 4 } = {}) {
+export function makeJobPicker({ confidentialJob, proveTurnEvery = 4, proveTurnSecs = 0, now = Date.now } = {}) {
   if (typeof confidentialJob !== 'function') throw new Error('makeJobPicker: confidentialJob is required');
-  let settles = 0;   // settles taken since a prove-only job last had a turn
-  return async function pick({ short = false, gather = false } = {}) {
-    if (short || gather) return confidentialJob({ mode: 'prove' });
-    if (proveTurnEvery > 0 && settles >= proveTurnEvery) {
-      settles = 0;
-      const turn = await confidentialJob({ mode: 'prove' });
+  let settles = 0;      // settles sent since a prove-only job last had a turn
+  let turnAt = now();   // when a prove-only job last had a turn, or one was looked for and none waited
+  const turned = () => { settles = 0; turnAt = now(); };
+  const proveDue = () => (proveTurnEvery > 0 && settles >= proveTurnEvery) || (proveTurnSecs > 0 && settles > 0 && now() - turnAt >= proveTurnSecs * 1000);
+  // Taken or not, the turn is spent: an empty prove-only queue is not asked again every cycle.
+  async function proveTurn() { const j = await confidentialJob({ mode: 'prove' }); turned(); return j; }
+  async function takeProve() { const j = await confidentialJob({ mode: 'prove' }); if (j?.jobId) turned(); return j; }
+  async function pick({ short = false, gather = false } = {}) {
+    if (short || gather) return takeProve();
+    if (proveDue()) {
+      const turn = await proveTurn();
       if (turn?.jobId) return turn;
     }
     const settle = await confidentialJob({ mode: 'settle' });
     if (settle?.jobId) { settles++; return settle; }
     settles = 0;
-    return confidentialJob({ mode: 'prove' });
-  };
+    return takeProve();
+  }
+  pick.proveDue = proveDue;
+  pick.proveTurn = proveTurn;
+  pick.settled = (n = 1) => { settles += Math.max(0, Math.floor(Number(n)) || 0); };
+  return pick;
 }

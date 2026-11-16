@@ -26,8 +26,10 @@ ok(await rejects(homeFeePlan({ amount: 1000n, quote: async () => 1000n }), /smal
 // tacit.js hands the plan to the fast lane as it is (the relay or the wallet, and the fee)
 const src = readFileSync(new URL('../dapp/tacit.js', import.meta.url), 'utf8');
 const body = src.slice(src.indexOf('async function moveBoundNoteHome('), src.indexOf('\n}\n', src.indexOf('async function moveBoundNoteHome(')));
-ok(/homeFeePlan\(\{ amount: note\.amount, quote:/.test(body) && /fee: plan\.fee, selfRelay: plan\.selfRelay \}\)/.test(body) && !/selfRelay: false/.test(body),
-  'moveBoundNoteHome asks homeFeePlan and passes its fee and relay choice to fastlaneExit (no fixed relay)');
+ok(/homeFeePlan\(\{ amount: note\.amount, quote:/.test(body) && /buildFastlaneExitOp\(\{[^}]*fee: plan\.fee \}\)/.test(body) && /selfRelay: tried\.plan\.selfRelay/.test(body) && !/selfRelay: false/.test(body),
+  'moveBoundNoteHome asks homeFeePlan and passes its fee (to the op) and relay choice (to fastlaneExit), with no fixed relay');
+ok(/fastlaneExit\(\{[^}]*built: tried\.built/.test(body) && /queuedTimeoutMs: HOME_EXIT_QUEUED_MS/.test(body) && /if \(!_waitRanOut\(e\)\) _homeExits\.delete\(key\)/.test(body),
+  'a try whose wait ran out keeps its op, so the next try sends the same op (the API answers with the job it holds) and waits out the queue');
 
 ok(/ux\.poolTickerOf\(aid\)/.test(body) && /ux\.relayFeeEligible\(t\)/.test(body) && !/assetById/.test(body) && /readAsset\(aid\)\)\?\.poolMinted/.test(body),
   'the quote names the token by its pool ticker (cUSDT, not the asset id), and a token the relay does not price, or one the pool does not mint (its fee would revert BtcHomedValueExitMustBridge), gets no quote');

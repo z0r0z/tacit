@@ -57,6 +57,43 @@ test('proveTurnEvery 0 turns the turn-taking off (settles first, always)', async
   assert.deepStrictEqual(await drain(pick, 7), ['s1', 's2', 's3', 's4', 's5', 's6', 'p1']);
 });
 
+test('batched settles count toward the turn: a prove-only job is due after `proveTurnEvery` batches', async () => {
+  const q = queue({ settle: 0, prove: 2 });
+  const pick = makeJobPicker({ confidentialJob: q.confidentialJob, proveTurnEvery: 3 });
+  for (let i = 0; i < 2; i++) { pick.settled(); assert.strictEqual(pick.proveDue(), false); }
+  pick.settled();
+  assert.strictEqual(pick.proveDue(), true);
+  assert.strictEqual((await pick.proveTurn()).jobId, 'p1');
+  assert.strictEqual(pick.proveDue(), false, 'the turn resets the count');
+});
+
+test('a prove-only job is due once `proveTurnSecs` pass while settles keep coming, whatever the count', async () => {
+  let t = 0;
+  const q = queue({ settle: 50, prove: 3 });
+  const pick = makeJobPicker({ confidentialJob: q.confidentialJob, proveTurnEvery: 0, proveTurnSecs: 120, now: () => t });
+  assert.strictEqual(pick.proveDue(), false, 'nothing is due at the start');
+  pick.settled(); t += 119_000;
+  assert.strictEqual(pick.proveDue(), false);
+  t += 1_000;
+  assert.strictEqual(pick.proveDue(), true, 'two minutes of settles: a prove-only turn');
+  assert.strictEqual((await pick()).jobId, 'p1', 'and the picker gives it');
+  assert.strictEqual(pick.proveDue(), false);
+  t += 500_000;
+  assert.strictEqual(pick.proveDue(), false, 'no settle since: nothing is waiting behind settles, so no turn is forced');
+});
+
+test('a due turn with no prove-only job waiting is spent, not asked for again every cycle', async () => {
+  let t = 0;
+  const q = queue({ settle: 0, prove: 0 });
+  const pick = makeJobPicker({ confidentialJob: q.confidentialJob, proveTurnEvery: 0, proveTurnSecs: 60, now: () => t });
+  pick.settled(); t = 61_000;
+  assert.strictEqual(pick.proveDue(), true);
+  assert.deepStrictEqual(await pick.proveTurn(), {});
+  pick.settled();
+  assert.strictEqual(pick.proveDue(), false);
+  assert.deepStrictEqual(q.calls, ['prove']);
+});
+
 test('a missing client is refused', () => {
   assert.throws(() => makeJobPicker({}), /confidentialJob is required/);
 });

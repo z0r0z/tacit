@@ -28849,10 +28849,32 @@ async function moveBoundNoteHome(note) {
   if (!lane.ready) throw new Error(lane.why === 'reflecting' ? 'this note is not ready yet: Bitcoin\'s proof on Ethereum has not reached its block' : lane.why === 'spent' ? 'this note is already spent' : 'the relay and the pool differ for now: try again in a few minutes');
   // the relay settles it for its quoted fee in the token; with no quote (a runtime token it does not price) the wallet settles it itself.
   // The pool takes a Bitcoin-homed note's fee only in a token it mints (BtcHomedValueExitMustBridge), so an escrow-backed token (cUSDT) goes home from the wallet too.
-  const { homeFeePlan } = await _boundSwapLib();
-  const plan = await homeFeePlan({ amount: note.amount, quote: async () => { const t = ux.poolTickerOf(aid); if (!t || !ux.relayFeeEligible(t) || !(await ux.readAsset(aid))?.poolMinted) return null; return ux.quoteTransferFee(BigInt(note.amount), t); } });
-  return ux.fastlaneExit({ walletPriv: wallet.priv, notes: [lane.input], authPriv: '0x' + bytesToHex(authPriv), spendRoot: lane.spendRoot, bitcoinSpentRoot: lane.bitcoinSpentRoot, fee: plan.fee, selfRelay: plan.selfRelay });
+  // A try whose wait ran out left its job in the relay's queue: the next try sends that same op, which the API answers with the job it holds,
+  // instead of a new op (fresh blinding, so a new job) queued behind the first. Kept in memory only: the op carries the new note's opening.
+  const key = `${bytesToHex(wallet.pub)}:${note.txid}:${note.vout}`;
+  let tried = _homeExits.get(key);
+  if (tried && Date.now() - tried.at > HOME_EXIT_KEEP_MS) { _homeExits.delete(key); tried = null; }
+  if (!tried) {
+    const { homeFeePlan } = await _boundSwapLib();
+    const plan = await homeFeePlan({ amount: note.amount, quote: async () => { const t = ux.poolTickerOf(aid); if (!t || !ux.relayFeeEligible(t) || !(await ux.readAsset(aid))?.poolMinted) return null; return ux.quoteTransferFee(BigInt(note.amount), t); } });
+    const built = ux.buildFastlaneExitOp({ walletPriv: wallet.priv, notes: [lane.input], authPriv: '0x' + bytesToHex(authPriv), spendRoot: lane.spendRoot, bitcoinSpentRoot: lane.bitcoinSpentRoot, fee: plan.fee });
+    tried = { at: Date.now(), plan, built };
+    _homeExits.set(key, tried);
+  }
+  try {
+    // Nothing in this op goes stale while it waits its turn, so it waits for the relay's queue as long as that takes (within reason).
+    const r = await ux.fastlaneExit({ walletPriv: wallet.priv, built: tried.built, selfRelay: tried.plan.selfRelay, waitOpts: { queuedTimeoutMs: HOME_EXIT_QUEUED_MS } });
+    _homeExits.delete(key);
+    return r;
+  } catch (e) {
+    if (!_waitRanOut(e)) _homeExits.delete(key);
+    throw e;
+  }
 }
+const _homeExits = new Map();
+const HOME_EXIT_KEEP_MS = 3 * 3600 * 1000, HOME_EXIT_QUEUED_MS = 2 * 3600 * 1000;
+// A wait that ran out or an answer that never came: the job may still go through, so the op is kept for the next try. Anything else drops it.
+const _waitRanOut = (e) => !!(e && (e.unanswered || e.unreachable || /timed out|status polling|failed to fetch|networkerror|load failed/i.test(String(e.message || ''))));
 
 async function listWatchtowerBids() {
   await ensurePrivkey();

@@ -2645,8 +2645,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { op, leaves: outLeaves, outputs, memos, fee, amount: total - fee, asset };
   }
 
-  async function fastlaneExit({ selfRelay = true, selfSettle = null, waitOpts, ...args } = {}) {
-    const b = buildFastlaneExitOp(args);
+  // `built`: an op buildFastlaneExitOp made for an earlier try. The same op is the same job to the API (it dedupes a submit by the op), so a
+  // try that ran out of patience picks up the job it left in the queue instead of queuing a second.
+  async function fastlaneExit({ selfRelay = true, selfSettle = null, waitOpts, built = null, ...args } = {}) {
+    const b = built || buildFastlaneExitOp(args);
     return _dispatch({ type: 'fastlane', spec: { op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: freshEph }, sealedMemos: b.memos, selfRelay, selfSettle, walletPriv: args.walletPriv, waitOpts });
   }
 

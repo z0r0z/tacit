@@ -413,6 +413,8 @@ export const CFG = {
   settlePollSecs: num('SETTLE_POLL_SECS', 15),
   // Relayed settles are claimed before prove-only jobs; after this many settles in a row one prove-only job gets a turn (0: never, settles always first).
   proveTurnEvery: num('PROVE_TURN_EVERY', 4),
+  // ...and once this many seconds have passed since the last prove-only turn while settles (batched ones too) keep coming (0: off).
+  proveTurnSecs: num('PROVE_TURN_SECS', 120),
   // An op the board's input builder cannot read fails at once instead of after the binary has spent minutes starting up on it (PROVER_FAIL_FAST_BAD_OP=0: the old way).
   proverFailFastBadOp: opt('PROVER_FAIL_FAST_BAD_OP', '1') !== '0',
   // the longest an idle relay waits on the API's wake before looking again (0: the plain SETTLE_POLL_SECS pause)
