@@ -263,6 +263,13 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
 @media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
+/* the glyph layer (glyphs.js). The field lies behind a page's first screen and scrolls away with it, fading out at its foot. It is behind everything, so a
+   page's ground has to be on <html> for it to be seen: <body> keeps its own pattern and gives up only its colour. The menu's panel has Tacit's mark struck
+   across its foot. Neither is there on a page the script leaves alone, or when the script does not load. */
+canvas.gx-field { position: absolute; top: 0; left: 0; z-index: -1; max-width: 100%; pointer-events: none; -webkit-mask-image: linear-gradient(#000 58%, transparent 94%); mask-image: linear-gradient(#000 58%, transparent 94%); }
+:root:has(> body > canvas.gx-field) { background-color: var(--paper, var(--bg)); }
+:root:has(> body > canvas.gx-field) > body { background-color: transparent; }
+.sm-p canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .24; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .sm-p { animation: none; } .sn > a, .sn summary, header.top .chip { transition: none; } }
 
 /* a page with little on it still reaches the bottom of the window, so its footer is not left floating under a few lines (a page that sets a height for its own <main> keeps it) */
@@ -327,7 +334,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=3cafe52f" defer></script>
+<script src="/chrome.js?cb=f5a9e53a" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>

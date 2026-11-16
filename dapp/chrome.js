@@ -137,3 +137,7 @@
   document.addEventListener('visibilitychange', check);
   setInterval(check, 60e3);
 })();
+
+// the look's glyph layer (glyphs.js: the field behind the page, the mark in the menu, and on the front page the card's stamp and
+// cipher and the wallet sheet's key): drawn once the page is idle, never needed by it
+(window.requestIdleCallback || setTimeout)(() => import('/glyphs.js').catch(() => {}));
