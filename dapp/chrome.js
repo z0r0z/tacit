@@ -137,3 +137,61 @@
   document.addEventListener('visibilitychange', check);
   setInterval(check, 60e3);
 })();
+
+// The sections' heads. A page that is a view of a section (the front page's card held to one thing, a part of TAC's page, the farm, the fast bridge,
+// borrowing, rewards) gets the section's name and line over it, and the section's views as tabs, so the six sections of the header each read as
+// one place however many pages they are made of. Which view a page is, is read from its address alone: the front page's #/section/view, TAC's page's
+// ?v=, and a page's own path. <html data-sec="section/view"> says it to the stylesheets, which put each page's own heading out of the way, and the
+// header's and the bar's entry for the section is marked. /#/menu is the More page: the sections a phone's bar has no room for, and the menu's pages.
+(() => {
+  const SEC = {
+    payments: ['Payments', 'Send to anyone, ask to be paid, or leave TAC for someone with no wallet yet.', [['send', 'Send', '/#/payments/send'], ['request', 'Request', '/tac/?v=request#receive'], ['links', 'Claim links', '/tac/?v=links#pool/send']]],
+    defi: ['DeFi', 'Swap, farm and stake, privately when you want.', [['swap', 'Swap', '/#/defi/swap'], ['farm', 'Farm', '/farm/'], ['stake', 'Stake', '/tac/?v=stake#private']]],
+    chains: ['Chains', 'Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.', [['move', 'Move', '/#/chains/move'], ['bridge', 'Bridge', '/#/chains/bridge'], ['fast', 'Fast bridge', '/fast/'], ['notes', 'Notes', '/tac/?v=notes#bridge']]],
+    borrow: ['Borrow', 'Borrow dollars against your BTC or your TAC.', [['btc', 'Against BTC', '/vault/#btc'], ['tac', 'Against TAC', '/vault/']]],
+    rewards: ['Rewards', 'Your airdrop, your points and the leaderboard.', []],
+  };
+  const TAC_VIEW = { request: 'payments', links: 'payments', stake: 'defi', notes: 'chains' };
+  const HREF = { portfolio: '/#portfolio', payments: '/#/payments', defi: '/#/defi', chains: '/#/chains', borrow: '/vault/', rewards: '/rewards/', menu: '/#/menu' };
+  const main = document.querySelector('main');
+  if (!main || !document.querySelector('.sn')) return;
+  const at = () => {
+    const p = location.pathname, h = location.hash;
+    if (p === '/' || p === '/index.html') { const m = /^#\/(payments|defi|chains)(?:\/([a-z]+))?$/.exec(h); return m ? [m[1], SEC[m[1]][2].some((v) => v[0] === m[2]) ? m[2] : SEC[m[1]][2][0][0]] : h === '#/menu' ? ['menu', ''] : null; }
+    if (/^\/tac\/?$/.test(p)) { const v = new URLSearchParams(location.search).get('v'); return TAC_VIEW[v] ? [TAC_VIEW[v], v] : null; }
+    if (p.startsWith('/farm/')) return ['defi', 'farm'];
+    if (p.startsWith('/fast/')) return ['chains', 'fast'];
+    if (p.startsWith('/vault/')) return ['borrow', h === '#btc' ? 'btc' : 'tac'];
+    if (p.startsWith('/rewards/')) return ['rewards', ''];
+    return null;
+  };
+  const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  let head = null, shown = '';
+  const sync = () => {
+    const a = at(), key = a ? a.join('/') : '';
+    if (key === shown) return;
+    shown = key;
+    const root = document.documentElement;
+    if (a) root.dataset.sec = key; else delete root.dataset.sec;
+    // the section's entry, in the header and in the bar; a page that is not a view of one keeps what the build marked
+    if (a || document.querySelector('.sn > a[data-sec-on], .bn a[data-sec-on]')) for (const l of document.querySelectorAll('.sn > a, .bn a')) {
+      const on = !!a && l.getAttribute('href') === HREF[a[0] === 'menu' ? 'menu' : a[0]];
+      if (on) { l.setAttribute('aria-current', 'page'); l.dataset.secOn = '1'; } else if (l.dataset.secOn) { l.removeAttribute('aria-current'); delete l.dataset.secOn; }
+    }
+    if (!a) { head?.remove(); head = null; return; }
+    if (!head) { head = document.createElement('div'); head.className = 'sh'; head.id = 'sec-head'; }
+    if (a[0] === 'menu') {
+      const row = (href, name, line) => `<li><a href="${esc(href)}"><b>${esc(name)}</b>${line ? `<small>${esc(line)}</small>` : ''}<i aria-hidden="true">→</i></a></li>`;
+      const rest = [...document.querySelectorAll('.sm-p a:not(.pr)')].map((l) => row(l.getAttribute('href'), l.textContent.trim(), ''));
+      head.innerHTML = `<h1 tabindex="-1">More</h1><ul class="sh-more">${row('/vault/', 'Borrow', 'against BTC or TAC')}${row('/rewards/', 'Rewards', 'airdrop, points, leaderboard')}${rest.join('')}</ul>`;
+    } else {
+      const [name, line, views] = SEC[a[0]];
+      head.innerHTML = `<h1 tabindex="-1">${esc(name)}</h1><p>${esc(line)}</p>${views.length > 1 ? `<nav class="sh-t" aria-label="${esc(name)}">${views.map(([k, label, href]) => `<a href="${esc(href)}"${k === a[1] ? ' aria-current="page"' : ''}>${esc(label)}</a>`).join('')}</nav>` : ''}`;
+    }
+    if (head.parentNode !== main || main.firstElementChild !== head) main.prepend(head);
+  };
+  sync();
+  addEventListener('hashchange', sync); addEventListener('popstate', sync);
+  // the front page and TAC's page change the address without leaving the document
+  for (const k of ['pushState', 'replaceState']) { const was = history[k]; history[k] = function (...args) { const r = was.apply(this, args); queueMicrotask(sync); return r; }; }
+})();

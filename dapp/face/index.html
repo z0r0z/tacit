@@ -311,6 +311,26 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
   #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
 }
 
+/* a section's head (chrome.js): its name and line, centred, and its views as a row of tabs with the one shown raised */
+.sh { margin: 28px auto 18px; text-align: center; }
+.sh h1 { margin: 0; font: 400 clamp(40px, 6vw, 56px)/1 var(--serif, Georgia, serif); letter-spacing: -.02em; color: var(--ink); }
+.sh h1:focus { outline: none; }
+.sh p { margin: 8px auto 0; max-width: 46em; color: var(--mute); font: 400 13.5px/1.5 var(--mono); }
+.sh-t { display: inline-grid; grid-auto-flow: column; grid-auto-columns: minmax(96px, 1fr); gap: 2px; margin: 18px auto 0; padding: 3px; max-width: 100%; border-radius: 15px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.sh-t a { display: flex; align-items: center; justify-content: center; min-height: 38px; padding: 6px 16px; border-radius: 12px; color: var(--mute); font: 500 13px/1.2 var(--mono); text-decoration: none; white-space: nowrap; transition: background-color .15s, color .15s; }
+.sh-t a[aria-current="page"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
+.sh-t a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+@media (hover: hover) { .sh-t a:hover { color: var(--ink); } }
+@media (max-width: 520px) { .sh { margin-top: 18px; } .sh-t { display: grid; grid-auto-columns: 1fr; } .sh-t a { padding: 6px 6px; font-size: 12px; } }
+.sh-more { list-style: none; margin: 22px auto 0; padding: 4px 18px; max-width: 560px; text-align: left; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
+.sh-more li + li { border-top: 1px solid var(--hair); }
+.sh-more a { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; padding: 14px 2px; color: var(--ink); font: 400 14px/1.3 var(--mono); text-decoration: none; }
+.sh-more a b { font-weight: 500; } .sh-more a small { grid-column: 1; font-size: 12px; color: var(--mute); } .sh-more a i { grid-column: 2; grid-row: 1 / span 2; font-style: normal; color: var(--mute); }
+/* each page of its own, as the view of its section: its own heading gives way to the section's, and what belongs to the other view is out of the way */
+html[data-sec="borrow/btc"] :is(.hero, #app, #soon, #how), html[data-sec="borrow/tac"] :is(.hero, .btc-side, #pools, #soon) { display: none !important; }
+html[data-sec="chains/fast"] .hero { display: none !important; }
+html[data-sec="rewards/"] :is(#find-h, #farms-h, #farms, #pf-row, nav.uses) { display: none !important; }
+
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
   position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
@@ -367,7 +387,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=3cafe52f" defer></script>
+<script src="/chrome.js?cb=8f64ec7e" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
