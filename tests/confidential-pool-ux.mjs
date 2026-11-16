@@ -1537,3 +1537,50 @@ test('buildLpBondOp: an SPX pair bonds into its own farm, never the launch manag
   assert.equal(String(ux.buildLpBondOp({ ...launch, controller: farm.manager }).op.controller).toLowerCase(), farm.manager.toLowerCase(), 'a launch pool bonds into the manager');
   assert.throws(() => ux.buildLpBondOp({ ...launch, controller: farm.standalone[0].controller }), /takes a different pool/, 'an SPX farm named for another pool is refused before any proof');
 });
+
+// A position opened with lpBond into a stand-alone farm leaves no event and no LP note, so the page keeps a record of it (lpBond does, for every page).
+test('lpBondRecord: the record kept for a stand-alone position reproduces its receipt leaf and its owner key', async () => {
+  const { sha256: nsha } = await import('../node_modules/@noble/hashes/sha2.js');
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '{}' }) });
+  const farm = getConfidentialDeployment('mainnet').farm, f = farm.standalone[0], pool = ux.pool;
+  const b32 = new Uint8Array(46); b32.set(new TextEncoder().encode('tacit-evm-token-v1')); new DataView(b32.buffer).setBigUint64(18, 1n); b32.set(Uint8Array.from(Buffer.from('e0f63a424a4439cbe457d80e4f4b51ad25b2c56c', 'hex')), 26);
+  const SPX = '0x' + Buffer.from(nsha(b32)).toString('hex'), TAC = ux.assetByTicker.cTAC.assetId;
+  const [lo, hi] = BigInt(SPX) < BigInt(TAC) ? [SPX, TAC] : [TAC, SPX];
+  const walletPriv = '0x' + 'c6'.repeat(32), id = ux.identity(walletPriv), tree = new pool.Tree();
+  const mk = (asset, idx) => {
+    const dn = pool.deriveNote(id.priv, asset, idx), blinding = '0x' + BigInt(dn.blinding).toString(16).padStart(64, '0'), owner = pool.nkToOwner(dn.secret), c = pool.commitXY(1000n, blinding);
+    return { asset, value: '1000', ...c, owner, secret: dn.secret, blinding, leafIndex: tree.insert(pool.leaf(asset, c.cx, c.cy, owner)) };
+  };
+  const a = mk(lo, 0), b = mk(hi, 1);
+  for (const n of [a, b]) { n.path = tree.rootAndPath(n.leafIndex).path; n.root = tree.root(); }
+  const built = ux.buildLpBondOp({ walletPriv, controller: farm.manager, aNote: a, bNote: b, feeBps: f.feeBps, reserveAPre: 10000n, reserveBPre: 10000n, sharesPre: 10000n });
+  assert.equal(built.controller.toLowerCase(), f.controller.toLowerCase());
+  const rec = ux.lpBondRecord({ walletPriv, controller: built.controller, lpAsset: built.lpAsset, anchorLeaf: built.anchorLeaf, shares: built.dShares, receiptLeaf: built.receiptLeaf });
+  assert.equal(rec.receiptLeaf, built.receiptLeaf);
+  assert.equal(rec.shares, String(built.dShares));
+  assert.equal(pool.farmReceiptLeaf('0x' + '00'.repeat(12) + f.controller.slice(2).toLowerCase(), rec.lpAsset, BigInt(rec.shares), rec.owner, rec.nonce).toLowerCase(), rec.receiptLeaf.toLowerCase(), 'owner, nonce and shares give the receipt leaf the pool holds');
+  const xOnly = '0x' + Buffer.from(secp.getPublicKey(Uint8Array.from(Buffer.from(rec.ownerPriv.slice(2), 'hex')), true).subarray(1)).toString('hex');
+  assert.equal(xOnly, rec.owner, 'ownerPriv is the key of the receipt owner');
+});
+
+test('keepFarmPosition: tried again while the position cannot be seen yet, stopped by a record that cannot be right, and never throws', async () => {
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '{}' }) });
+  const rec = { receiptLeaf: '0x' + '11'.repeat(32) }, nap = async () => {}, flush = () => new Promise((r) => setTimeout(r, 25));
+  let calls = 0, opts;
+  const settling = async (_r, o) => { calls++; opts = o; if (calls < 3) throw new Error('farm-import: the receipt leaf is not in the pool tree'); };
+  assert.equal(await ux.keepFarmPosition(rec, { walletPriv: 'w', importer: settling, sleep: nap }), true);
+  assert.equal(calls, 3, 'tried again until the settle was visible');
+  assert.equal(opts.own, true, 'a record the page made itself is marked as its own (it is not an imported one)');
+  let wrong = 0;
+  assert.equal(await ux.keepFarmPosition(rec, { walletPriv: 'w', importer: async () => { wrong++; throw new Error('farm-import: the record is for a different farm'); }, sleep: nap }), false);
+  assert.equal(wrong, 1, 'a record that cannot be right is not tried again');
+  let never = 0;
+  assert.equal(await ux.keepFarmPosition(rec, { walletPriv: 'w', importer: async () => { never++; throw new Error('farm-import: the farm does not hold this position live (already unbonded?)'); }, sleep: nap, quick: 3, later: 2 }), false);
+  await flush();
+  assert.equal(never, 3 + 2, 'the quick tries, then the quiet ones');
+  let only = 0;
+  assert.equal(await ux.keepFarmPosition(rec, { walletPriv: 'w', importer: async () => { only++; throw new Error('network'); }, sleep: nap, quick: 0, later: 2 }), false);
+  await flush();
+  assert.equal(only, 2, 'quick: 0 waits for nothing and tries only in the background');
+  await assert.doesNotReject(ux.keepFarmPosition(rec, { walletPriv: 'w', importer: async () => { throw 'a string'; }, sleep: nap, quick: 1, background: false }));
+});
