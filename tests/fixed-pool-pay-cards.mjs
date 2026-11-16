@@ -134,6 +134,9 @@ const env3 = {
     window.__intents.push({ calls: a.intent.calls.map((c) => ({ target: c.target, value: c.value.toString(), data: c.data })), refund: a.intent.refund, deadline: a.intent.deadline.toString(), amount: a.amount.toString(), gas: a.gas, maxFee: a.maxFee == null ? null : a.maxFee.toString(), via: a.via });
     if (window.__sendFailAt === window.__intents.length) throw new Error('the relay refused');
     for (const c of a.intent.calls) pools.get(c.target.toLowerCase()).seen.add(c.data.slice(10));
+    // the notes are in their pools; what the send then does is up to the test: answer, lose the answer, or never answer
+    if (window.__sendMode === 'lose') throw new Error('the relay timed out');
+    if (window.__sendMode === 'hang') { a.onStep?.('sending through the relay'); await new Promise(() => {}); }
     return '0x' + hex(700 + window.__intents.length, 64);
   },
 };
@@ -575,6 +578,35 @@ await test('from the wallet all the notes go in one transaction, with the escrow
   assert.equal(it.calls.length, 2); assert.equal(it.amount, String(2n * 10n ** 18n)); assert.equal(it.via, 'self'); assert.equal(it.maxFee, null);
   assert.equal(it.gas, 450000 + 1040000 + 850000);
   assert.notEqual(it.calls[0].data, it.calls[1].data, 'two different notes');
+});
+await test('a send whose answer is lost after the notes landed (a mainnet canary saw this) still counts as made: the pool says so, and the note is kept', async () => {
+  await page.evaluate(() => { window.__intents.length = 0; window.__sendMode = 'lose'; });
+  const before = (await keptNotes()).length;
+  await typeIn('1');
+  await page.click('#li-go');
+  await page.waitForFunction(() => /The note is in the large pool \(1 ETH\), made from your private balance/.test(document.querySelector('#status').textContent), null, { timeout: 90000 });
+  assert.equal((await keptNotes()).length, before + 1);
+  assert.doesNotMatch(await status(), /timed out/);
+});
+await test('a send that never answers ends as soon as the notes are in the pool, and what it says afterwards is not shown', async () => {
+  await page.evaluate(() => { window.__intents.length = 0; window.__sendMode = 'hang'; });
+  const before = (await keptNotes()).length;
+  await typeIn('1');
+  await page.click('#li-go');
+  await page.waitForFunction(() => /The note is in the large pool \(1 ETH\), made from your private balance/.test(document.querySelector('#status').textContent), null, { timeout: 90000 });
+  assert.equal((await keptNotes()).length, before + 1);
+  await page.waitForTimeout(1500);
+  assert.match(await status(), /The note is in the large pool/, 'the pending send does not overwrite the result');
+  await page.evaluate(() => { window.__sendMode = null; });
+});
+await test('a send that fails with nothing landed keeps its error and says where to look if it was sent after all', async () => {
+  await page.evaluate(() => { window.__intents.length = 0; window.__sendFailAt = 1; });
+  const before = (await keptNotes()).length;
+  await typeIn('1');
+  await page.click('#li-go');
+  await page.waitForFunction(() => /the relay refused If it was sent after all, Look for notes will show the note once it lands/.test(document.querySelector('#status').textContent.replace(/\s+/g, ' ')), null, { timeout: 90000 });
+  assert.equal((await keptNotes()).length, before, 'nothing kept');
+  await page.evaluate(() => { window.__sendFailAt = null; });
 });
 await test('a refused second spend leaves the first note in the pool and kept, and the message says how far it got', async () => {
   await page.selectOption('#li-via', 'relay');

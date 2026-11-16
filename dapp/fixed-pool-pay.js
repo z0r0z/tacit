@@ -407,6 +407,7 @@ export function attachWithdraw(env) {
 // gas figure, the refund box and the clock, and `send`, which makes the spend.
 // Gas of the whole transaction: the pool's own withdrawal (450 thousand) and the deposits (measured on the live pools: about 1.00 million
 // for the first, 0.81 million for each more).
+const WATCH_MS = 5000;   // how often the pool is asked whether a pending spend's notes have landed
 export const intakeGas = (notes) => 450_000 + 1_040_000 + 850_000 * Math.max(0, notes - 1);
 export function attachIntake(env) {
   const { host } = env;
@@ -479,10 +480,28 @@ export function attachIntake(env) {
         });
         const amount = g.reduce((t, n) => t + n.pool.denomination, 0n), gas = intakeGas(g.length);
         const maxFee = st.via === 'wallet' ? null : ((await env.relayFee(gas)) * 5n) / 4n;
-        await env.send({ intent, amount, gas, maxFee, via: st.via === 'wallet' ? 'self' : 'relay', onStep: tag });
+        // The pool, not the send's answer, says whether the notes are made: a relay's answer can be slow (a mainnet canary waited twelve minutes for one) or
+        // lost though its transaction landed in a minute. So the pool is watched while the send is pending: the notes landing ends the wait, a send that
+        // fails is believed only if they did not land, and what a send says after that is not shown.
+        let live = true, sendErr = null, stop = false;
+        const sending = env.send({ intent, amount, gas, maxFee, via: st.via === 'wallet' ? 'self' : 'relay', onStep: (m) => { if (live) tag(m); } }).then(() => 'sent', (e) => { sendErr = e; return 'failed'; });
+        const watching = (async () => {
+          while (!stop) {
+            if ((await flow.landedNotes(g, { wait: false })).length === g.length) return 'landed';
+            await new Promise((r) => setTimeout(r, WATCH_MS));
+          }
+          return 'stopped';
+        })();
+        const first = await Promise.race([sending, watching]);
+        stop = true;
+        if (first === 'landed') live = false;
         const landed = await flow.landedNotes(g);
+        live = false;
         placed.push(...landed);
-        if (landed.length !== g.length) throw new Error('The spend went through but the deposit is not in the pool yet. Look for notes will show it in a minute.');
+        if (landed.length !== g.length) {
+          if (sendErr) throw new Error(`${env.errText(sendErr)} If it was sent after all, Look for notes will show the note once it lands.`);
+          throw new Error('The spend went through but the deposit is not in the pool yet. Look for notes will show it in a minute.');
+        }
       } catch (e) {
         if (placed.length) writeNotes(env.store, chainId, env.account(), [...readNotes(env.store, chainId, env.account()), ...placed.map(metaOf)]);
         throw new Error(placed.length ? `${placed.length} of ${notes.length} notes ${placed.length === 1 ? 'is' : 'are'} in the large ${placed.length === 1 ? 'pool' : 'pools'}. The next did not go: ${env.errText(e)}` : env.errText(e));
