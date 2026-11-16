@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-zB4znrDNw2Ay/6w2nXNv1lvE7Ju69NilBeLlFrev29w=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kT1wO5o/Q9PDrUoLIIgV2rilxZauHz9pMqJSVqUdf6s=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -274,6 +274,11 @@ main:focus { outline: none; }
 .pf-key { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--mute); }
 .pf-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 20px 0 0; padding-bottom: 7px; border-bottom: 1px solid var(--hair); font-size: 12px; color: var(--mute); scroll-margin-top: 72px; }
 .pf-h b { font: 500 13px var(--mono); color: var(--ink); }
+.pf-by { margin: 16px 0 0; }
+.pf-by + #dash-g > .pf-h:first-child { margin-top: 16px; }
+.pf-a > span { display: inline-flex; align-items: center; gap: 8px; color: var(--ink); font-size: 14px; }
+.pf-a > span .tk { width: 20px; height: 20px; flex: none; }
+.pf-a b small { margin-left: 8px; font-weight: 400; color: var(--mute); }
 #dash-g .wbal .wb-go { padding-top: 10px; padding-bottom: 10px; }
 .wbal .wb-k .pair { display: inline-flex; flex: none; }
 .wbal .wb-k .pair .tk + .tk { margin-left: -7px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--card); }
@@ -2655,7 +2660,7 @@ import { poolNote } from '/pool-hint.js?cb=a5413c70';
 import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { balanceRows } from '/wallet-balances.js?cb=1cd3e7a4';
-import { portfolio } from '/portfolio.js?cb=6875d068';
+import { portfolio, byAsset } from '/portfolio.js?cb=6875d068';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=d4520508';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapWorth, foundingPlan, zapEntry, farmPick } from '/lp-zap.js?cb=f9b25fa1';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
@@ -5000,7 +5005,7 @@ const wbRow = (r) => {
   const v = r.v != null ? show(r.v) : prev != null ? html`<span class="stale">${show(prev)}</span>` : r.err || r.lazy ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
   const nn = r.noteVals?.length || 0, said = 'note' in r ? r.note : r.meta;
   const parts = [r.delta ? html`<span class="${r.delta.up ? 'up' : ''}">${r.delta.up ? '+' : '−'}${r.delta.txt}</span>` : '', said || '', r.pending ? `${fmt(r.pending, r.dec, r.max)} arriving` : '', nn > 0 ? `${nn} note${nn === 1 ? '' : 's'}` : ''].filter(Boolean);
-  const meta = r.err ? 'could not read right now' : html`${parts.map((x, i) => html`${i ? ' · ' : ''}${x}`)}`;
+  const meta = r.err ? (r.errAt ? `${r.errAt} · could not read right now` : 'could not read right now') : html`${parts.map((x, i) => html`${i ? ' · ' : ''}${x}`)}`;   // errAt: the place, where the heading does not say it
   const usd = r.v != null ? dashRowUsd(r) : null;
   const body = html`<span class="wb-k">${mark}${r.label}${r.live ? html`<span class="dot live"></span>` : ''}</span><span class="wb-v num">${v}</span><span class="wb-m">${meta}</span><span class="wb-u num">${usd != null ? usdSmall(usd) : ''}</span>`;
   const go = r.href ? html`<a class="wb-go" href="${r.href}">${body}</a>`
@@ -5032,13 +5037,25 @@ function refreshWalletBal() {
   Promise.allSettled([loadBtc(true), scanPrivate(true)]).finally(() => { wbReading = false; paintWalletBal(); paintPortfolio(); dashSoon(); });
 }
 // The Portfolio sheet: everything "Your Tacit" counts, grouped by where it is held (portfolio.js), each row one press from its own sheet.
+// It sorts the same rows two ways (PFV.by): by the place each is held in, or by asset, with a row under each asset for every place it is in
+// (portfolio.js byAsset). Liquidity, rewards and loans are not assets, so they keep their own groups either way.
+const PFV = { by: 'place' };
 function portfolioView() {
   const groups = DASH.groups || [], w = DASH.worth, isTac = (r) => r.key === 'tac' || r.key === 'tacpub', tacRows = groups.reduce((n, g) => n + g.rows.filter(isTac).length, 0);
   const row = (r) => wbRow({ ...r, delta: isTac(r) ? (tacRows === 1 ? DASH.delta?.tac : null) : DASH.delta?.[r.key] });
+  const group = (g) => html`<div class="pf-h" id="pf-${g.id}"><span>${g.name}</span>${g.usd != null && g.usd >= 0.005 ? html`<b class="num">${usdFmt(g.usd)}</b>` : ''}</div><ul class="wbal">${g.rows.map(row)}</ul>`;
+  const assets = () => {
+    const pf = byAsset(groups, { kind: dashKind }), rest = groups.filter((g) => g.id === 'lp' || g.id === 'earned' || g.id === 'owed');
+    const mark = (a) => a.icons ? html`<span class="pair">${a.icons.map((i) => icoHtml(i))}</span>` : a.mark ? html`<span class="tk letter" style="--c:${markColor(a.markId)}" aria-hidden="true">${a.mark.slice(0, 2).toUpperCase()}</span>` : icoHtml(a.icon);
+    const where = (r) => (!r.note ? r.placeName : typeof r.note === 'string' ? `${r.placeName} · ${r.note}` : html`${r.placeName} · ${r.note}`);
+    return html`${pf.assets.map((a) => html`<div class="pf-h pf-a" id="pf-a-${a.id.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}"><span>${mark(a)}${a.name}</span><b class="num">${a.v != null ? fmt(a.v, a.dec, a.max) : ''}${a.usd != null && a.usd >= 0.005 ? html` <small>${usdFmt(a.usd)}</small>` : ''}</b></div><ul class="wbal">${a.rows.map((r) => row({ ...r, note: where(r), errAt: r.placeName }))}</ul>`)}${rest.map(group)}`;
+  };
+  const by = (id, name) => html`<button type="button" role="radio" data-pf-by="${id}" aria-checked="${PFV.by === id ? 'true' : 'false'}">${name}</button>`;
   return html`<div class="wb-top"><div>${w?.all > 0 ? html`<div class="wb-tot"><small>≈</small><b class="num">${usdFmt(w.all)}</b></div>` : html`<div class="wb-tl">${S.key ? 'What your Tacit wallet and its addresses hold' : 'What your wallet holds'}</div>`}</div>${S.key ? html`<button type="button" id="port-re"${wbReading ? ' disabled' : ''}>${wbReading ? 'Reading…' : 'Refresh'}</button>` : ''}</div>
     ${w?.all > 0 ? html`<div class="pf-split" aria-hidden="true"><i style="width:${Math.min(100, Math.max(0, w.priv / w.all * 100)).toFixed(1)}%"></i></div><div class="pf-key">${w.priv >= w.all * 0.999 ? html`<span>All private</span>` : html`<span>${usdFmt(w.priv)} private</span><span>${usdFmt(Math.max(0, w.all - w.priv))} public</span>`}</div>` : ''}
     <p class="note" id="dash-since"${DASH.since ? '' : ' hidden'}>${DASH.since || ''}</p>
-    <div id="dash-g">${groups.map((g) => html`<div class="pf-h" id="pf-${g.id}"><span>${g.name}</span>${g.usd != null && g.usd >= 0.005 ? html`<b class="num">${usdFmt(g.usd)}</b>` : ''}</div><ul class="wbal">${g.rows.map(row)}</ul>`)}</div>
+    ${groups.length ? html`<div class="seg pf-by" role="radiogroup" aria-label="Sort what you hold">${by('place', 'By place')}${by('asset', 'By asset')}</div>` : ''}
+    <div id="dash-g">${PFV.by === 'asset' ? assets() : groups.map(group)}</div>
     ${S.key ? '' : html`<p class="note">Open your Tacit wallet to see what you hold privately. <button class="link" type="button" data-signin>Open wallet</button></p>`}`;
 }
 function paintPortfolio() {
@@ -5054,6 +5071,8 @@ function paintPortfolio() {
 render.portfolio = paintPortfolio;
 $('#portfolio-body').onclick = (e) => {
   if (e.target.closest('#port-re')) return refreshWalletBal();
+  const sort = e.target.closest('[data-pf-by]');
+  if (sort) { PFV.by = sort.dataset.pfBy; paintPortfolio(); $(`#portfolio-body [data-pf-by="${PFV.by}"]`)?.focus(); return; }
   const b = e.target.closest('[data-dash-open]');
   if (!b) return;
   e.preventDefault(); e.stopPropagation();
@@ -5307,6 +5326,7 @@ function openPortfolio(at = null) {
   if (dashId()) {
     if (!DASH.groups) paintDash();
     openSheet('portfolio');
+    if (at && !$(`#pf-${at}`) && PFV.by !== 'place') { PFV.by = 'place'; paintPortfolio(); }
     if (at) $(`#pf-${at}`)?.scrollIntoView({ block: 'start' });
     return;
   }
