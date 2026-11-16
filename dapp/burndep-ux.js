@@ -455,7 +455,7 @@ export function makeBurnDepositUx(deps) {
   }
 
   function bridgeCost({ path, feeRate, coins = [], noteSats = 546, p2tr = false, burnRate = null } = {}) {
-    const r = Number(feeRate), DUST = 546, feeFor = (vb, at = r) => Math.max(500, Math.ceil(vb * at)), commitVb = (n) => 85 + 68 * n;
+    const r = Number(feeRate), DUST = 546, feeFor = (vb, at = r) => Math.max(at < 1 ? 150 : 500, Math.ceil(vb * at)), commitVb = (n) => 85 + 68 * n;
     const vals = (coins || []).map((c) => Number(c && c.value)).filter((v) => v > 0).sort((a, b) => b - a);
     if (path === 'reflected') {
       const revealFee = feeFor(p2tr ? 218 : 228), commitValue = Math.max(DUST, revealFee + DUST - Number(noteSats));

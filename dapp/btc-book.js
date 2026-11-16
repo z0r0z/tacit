@@ -5,7 +5,7 @@ export async function moveSatsNeeded(feeRate) {
   let rate = 0;
   try { rate = Number(await feeRate()); } catch {}
   if (!(rate > 0)) return MOVE_SATS_FLAT;
-  const fee = (vb) => Math.max(500, Math.ceil(vb * rate * 1.5));
+  const fee = (vb) => Math.max(rate * 1.5 < 1 ? 150 : 500, Math.ceil(vb * rate * 1.5));   // the 500-sat floor is for rates of 1 sat/vB and up (tacit.js feeFor)
   return Math.ceil((DUST + fee(153) + fee(435)) / 500) * 500;
 }
 export const STALE_INTENT_SEC = 12 * 3600;

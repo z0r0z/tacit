@@ -239,9 +239,12 @@ test('what a way costs is the app\'s own figure, at the live fee rate', () => {
   for (const rate of [1, 2, 3, 7.5, 40]) assert.equal(satsOut(rate), mr.estimateSats({ feeRate: rate, dust: 546 }), `at ${rate} sat/vB`);
   // The way back is bridgeCost's 'reflected' path for a P2TR note; its constants are pinned to the source it is built from.
   const src = readFileSync(new URL('../dapp/burndep-ux.js', import.meta.url), 'utf8');
-  assert.ok(/feeFor\(p2tr \? 218 : 228\)/.test(src) && /commitVb = \(n\) => 85 \+ 68 \* n/.test(src) && /Math\.max\(500, Math\.ceil\(vb \* at\)\)/.test(src), 'bridgeCost no longer reads as satsBack expects');
+  assert.ok(/feeFor\(p2tr \? 218 : 228\)/.test(src) && /commitVb = \(n\) => 85 \+ 68 \* n/.test(src) && /Math\.max\(at < 1 \? 150 : 500, Math\.ceil\(vb \* at\)\)/.test(src), 'bridgeCost no longer reads as satsBack expects');
   assert.equal(satsBack(1), 1000); assert.equal(satsBack(2), 1000);
   assert.equal(satsBack(5), Math.ceil(218 * 5) + Math.ceil(153 * 5));
+  // Under 1 sat/vB (the network is taking such rates) each transaction's floor is 150 sats, not 500; at 1 and up nothing is different.
+  assert.equal(satsBack(0.26), 300, 'two 150-sat floors'); assert.equal(satsBack(0.5), 300);
+  assert.equal(satsBack(0.9), Math.ceil(218 * 0.9) + 150, 'the reveal is over its floor, the commit is not');
 });
 
 test('the tile\'s cost line says what a way costs now, and nothing when it cannot say', () => {
