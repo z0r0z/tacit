@@ -32,7 +32,7 @@
 <link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /farm/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/farm/app.js?cb=f9b30a61">
+<link rel="modulepreload" href="/farm/app.js?cb=d0168eb2">
 <link rel="modulepreload" href="/trade/connect.js?cb=b758e60b">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
@@ -50,7 +50,7 @@
 <link rel="modulepreload" href="/vault/deployments.js?cb=4af96594">
 <link rel="modulepreload" href="/farm-ops.js?cb=11a5416b">
 <link rel="modulepreload" href="/relay-outcome.js?cb=ad7c898d">
-<link rel="modulepreload" href="/farm/zap.js?cb=f71211d5">
+<link rel="modulepreload" href="/farm/zap.js?cb=e1f0b3c2">
 <link rel="modulepreload" href="/lp-zap.js?cb=f9b25fa1">
 <!-- preload:end -->
 <style>
@@ -254,6 +254,7 @@ html[data-view="farm"] .menu { display: none; }
 .farm-host#farm-host .fm-stats > div:first-child { display: none; }     /* the module's APR is the card's own, above */
 .farm-host .fm-pos, .farm-host .fm-add { border-top: 1px solid var(--hair); margin-top: 14px; padding-top: 14px; }
 .farm-host .fm-how { margin: 0 0 4px; }
+#pz-eth.noeth > :not(#pz-cook):not(#pz-status) { display: none; }      /* a pool with no ETH side: only the steps of a share being farmed show */
 .farm-host .fm-rcpt { margin: 12px 0 0; padding: 10px 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 10px; animation: rcpt .22s ease-out; }
 @keyframes rcpt { from { opacity: 0; transform: translateY(-4px); } }
 .farm-host .fm-rcpt .note { margin: 6px 0 0; }
@@ -603,6 +604,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/farm/app.js?cb=f9b30a61"></script>
+<script type="module" src="/farm/app.js?cb=d0168eb2"></script>
 </body>
 </html>

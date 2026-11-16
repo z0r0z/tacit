@@ -12,7 +12,7 @@ export async function resolve(spec, ctx, next) {
 }`));
 import assert from 'node:assert/strict';
 
-const { readReserves, marketOf, otherOf, zapMath, zapQuote, zapProve, zapSend, zapRun, shareNote, bondShare, looseOf, declined, ZAP_GAS, PUBLIC_AMM } = await import('../dapp/farm/zap.js');
+const { readReserves, marketOf, otherOf, zapMath, zapQuote, zapProve, zapSend, zapRun, shareNote, bondShare, looseOf, declined, assetRow, publicRate, ZQUOTER, ZAP_GAS, PUBLIC_AMM } = await import('../dapp/farm/zap.js');
 const { zapPlan, zapPlanFor } = await import('../dapp/lp-zap.js');
 
 const W = (v) => BigInt(v).toString(16).padStart(64, '0'), E18 = 10n ** 18n;
@@ -271,5 +271,54 @@ const readyOf = async (w) => zapProve({ t: w.t, priv: w.priv, pool, q: await quo
   const notes = [{ asset: pool.lpAsset.toUpperCase().replace('0X', '0x'), leaf: 1 }, { asset: '0x' + 'a2'.repeat(32), leaf: 2 }, { asset: CETH, leaf: 3 }];
   eq(looseOf(notes, pools).map((x) => [x.pool.pid, x.note.leaf]), [[0, 1], [1, 2]], 'the share notes of the program’s pools, whatever the case of their ids');
   eq(looseOf(null, pools), []); eq(looseOf(notes, null), []);
+}
+// ── a token with a market of its own and a pool unit of 1 (SPX), as the farm program lists it ──
+// The pool holds SPX in 8 decimals with a unit of 1, TAC in 18 with a unit of 1e10: the legs of a deposit are in the token's own units, its
+// token is the one the pool's own row names (the deployment's list does not carry a token registered since), and the market it is checked
+// against is read from the public pools.
+{
+  const A_SPX = '0x45addc633189749428e8fc36ea4ca067fcb4b0c7abc186a095360db10dbe0b48', SPX = '0xE0f63A424a4439cBE457D80E4f4b51aD25b2c56C';
+  const asked = [], rowWord = '0x' + W(1) + W(BigInt(SPX)) + W(1) + W(1) + W(0) + W(8);                                // registered, the token, a unit of 1, live, not pool-minted, 8 decimals
+  const row = await assetRow(async (c) => { asked.push(c); return rowWord; }, POOL, A_SPX);
+  eq([row.underlying, row.unitScale, row.poolMinted, row.decimals], [SPX.toLowerCase(), 1n, false, 8], 'the pool’s row for a coin: its token, its unit, whether the pool minted it, its decimals');
+  eq(asked, [{ to: POOL, data: '0x9fda5b66' + A_SPX.slice(2) }], 'read with one call, assets(bytes32)');
+  eq(await assetRow(async () => { throw new Error('asked twice'); }, POOL, A_SPX), row, 'a registered row does not change, so it is read once');
+  eq(await assetRow(async () => '0x' + W(0).repeat(6), POOL, '0x' + '99'.repeat(32)), null, 'a coin the pool has not registered has no row');
+  const tac = await assetRow(async () => '0x' + W(1) + W(BigInt(TAC)) + W(10n ** 10n) + W(1) + W(1) + W(18), POOL, A_TAC);
+  eq([tac.unitScale, tac.poolMinted, tac.decimals], [10n ** 10n, true, 18], 'TAC is an 18-decimal coin with a unit of 1e10, minted by the pool');
+
+  // the market, from zQuoter's best route for a hundredth of an ETH
+  const probe = 10n ** 16n, zq = (o = {}) => '0x' + W(3) + W(30) + W(o.amountIn ?? probe) + W(o.amountOut ?? 5953080886n) + W(7 * 32) + W(5893550077n) + W(o.msgValue ?? probe) + W(2) + 'ab'.repeat(2) + '00'.repeat(30);
+  const seen = [], rate = await publicRate({ rpc: async (m, p) => { seen.push([m, p[0].to, p[0].data, p[0].gas, p[1]]); return zq(); }, token: SPX, decimals: 8, now: 1_800_000_000_000 });
+  ok(Math.abs(rate - 0.01 / 59.53080886) < 1e-12, `0.01 ETH buys 59.53 SPX: ${rate.toFixed(8)} ETH a coin`);
+  eq(seen, [['eth_call', ZQUOTER, '0xe7798987' + W(1) + W(0) + W(0) + W(BigInt(SPX)) + W(probe) + W(100) + W(1_800_003_600), '0x5F5E100', 'latest']], 'asked as one call: buildBestSwap, ETH in, the token out, with the gas a route search takes');
+  for (const [why, o] of [['an answer for another amount in', { amountIn: probe + 1n }], ['a route that is not paid in ETH', { msgValue: 0n }], ['an answer with nothing out', { amountOut: 0n }]]) eq(await publicRate({ rpc: async () => zq(o), token: SPX, decimals: 8 }), null, `no price from ${why}`);
+  eq(await publicRate({ rpc: async () => '0x', token: SPX, decimals: 8 }), null, 'no price from a short answer');
+  eq(await publicRate({ rpc: async () => { throw new Error('execution reverted'); }, token: SPX, decimals: 8 }), null, 'no price where no route answers');
+
+  // the pool as the program lists it: 0.121 tETH against 612 SPX, which prices a coin a sixth over the market
+  const RES_SPX = { assetA: CETH, assetB: A_SPX, reserveA: 12108999n, reserveB: 61218265385n, feeBps: 30, totalShares: 860869819n }, wei = 2n * 10n ** 14n;
+  const spx = { pid: 1001, pair: 'SPX/cETH', poolId: '0x' + '02'.repeat(32), lpAsset: '0x' + 'b1'.repeat(32), totalShares: '858622147', tacPerDayForPool: '33.33312', lockSeconds: 0, feeBps: 30 };
+  const m = zapMath({ res: RES_SPX, wei, market: rate, unitB: 1n, decimals: 8 }), legacy = zapMath({ res: RES_SPX, wei, market: rate });
+  eq(m.plan.shares, legacy.plan.shares, 'the shares do not depend on the coin’s unit');
+  eq(legacy.plan.bLeg, m.plan.bLeg * 10n ** 10n, 'the legs are in the token’s own units: a coin with a unit of 1 is not sized as one with 1e10');
+  ok(m.checked && Math.abs(m.against - legacy.against) < 1e-9 && m.against > 6 && m.against < 9, `the pool prices SPX over the market, and half of the deposit is swapped at it: ${m.against.toFixed(2)}% of the deposit`);
+  const quoteSpx = (o = {}) => zapQuote({ pool: spx, wei, reserves: async () => RES_SPX, gasPrice: async () => 10n ** 9n, balance: async () => 5n * E18, market: rate, tacEth: 0.0001, asset: async () => row, ...o });
+  const q = await quoteSpx();
+  eq([q.unitB, q.decimals, q.token, q.checked], [1n, 8, SPX.toLowerCase(), true], 'a quote carries the coin’s unit, decimals and token, and is checked against the market');
+  eq((await quoteSpx({ market: null })).checked, false, 'with no public price read it says the pool’s price is not checked');
+  await fails(quoteSpx({ asset: async () => null }), (e) => ok(e.said && /other coin could not be read/.test(e.message)), 'a coin the pool does not describe is said, not guessed at');
+  eq((await zapQuote({ pool, wei: WEI, reserves: async () => RES, asset: async () => tac })).unitB, 10n ** 10n, 'TAC keeps its 1e10');
+
+  // the steps: the token is the pool's own row's (the deployment's list has no SPX), the legs are SPX's
+  const w = world({ res: RES_SPX }), ready = await zapProve({ t: w.t, priv: w.priv, pool: spx, q }); w.log.length = 0;
+  eq([ready.unitB, ready.token], [1n, SPX.toLowerCase()], 'the proof carries the coin’s unit and token');
+  await zapSend({ t: w.t, rpc: w.rpc, wallet: w.wallet, from: FROM, pool: spx, ready, say: w.say });
+  const data = w.log.find((x) => x[0] === 'send')[4], arg = (i) => data.slice(10 + i * 64, 74 + i * 64);
+  const plan = zapPlanFor({ shares: ready.shares, ra: RES_SPX.reserveA, rb: RES_SPX.reserveB, total: RES_SPX.totalShares, feeBps: 30n, unitB: 1n, maxEth: ready.wei + ready.wei / 50n, settles: true });
+  ok(arg(0).endsWith(SPX.slice(2).toLowerCase()) && BigInt('0x' + arg(3)) === plan.bLeg && plan.bLeg < 10n ** 12n && BigInt('0x' + arg(4)) === ready.shares, `the transaction names SPX from the pool’s row, with its leg in SPX’s own units (${plan.bLeg} of 1e-8 SPX) and exactly the shares proved`);
+  const blind = world({ res: RES_SPX }), r2 = await zapProve({ t: blind.t, priv: blind.priv, pool: spx, q });
+  await fails(zapSend({ t: blind.t, rpc: blind.rpc, wallet: blind.wallet, from: FROM, pool: spx, ready: { ...r2, token: null }, say: blind.say }), (e) => ok(/no token on Ethereum/.test(e.message)), 'a coin the list does not have and the row did not name is not sent');
+  ok(!blind.names().includes('send'), 'and nothing is sent');
 }
 console.log(`farm-zap: ${n} checks passed`);
