@@ -266,7 +266,7 @@ let VIEW = null, menuY = 0, shown = false;
 const farmOf = (id) => FARMS.find((f) => f.id === id) || null;
 function route({ first = false } = {}) {
   const id = decodeURIComponent(location.hash.slice(1)), f = id ? farmOf(id) : null;
-  if (id && !f && !S.read && /^teth-[a-z0-9]+$/.test(id)) return;                // a farm the page does not know yet: decided once the program is read
+  if (id && !f && !S.read && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(id)) return;         // a farm the page does not know yet (tETH / SPX, SPX / TAC): decided once the program is read
   if (id && !f) { history.replaceState(null, '', location.pathname + location.search); }
   show(f, { first });
 }
