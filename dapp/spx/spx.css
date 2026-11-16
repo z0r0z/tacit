@@ -10,6 +10,7 @@ html[data-page="spx"] {
   --paper: #f5f5f5; --card: #fff; --field: #fff; --soft: #f0f0f0;
   --ink: #0a0a0a; --mute: #3d3d3d; --faint: #6b6b6b; --hair: rgba(10,10,10,.16); --hair-2: rgba(10,10,10,.4);
   --orange: #ff1a66; --ok: #0a7234; --warn: #8a4300; --err: #c4143f;
+  --off: #e4e4e4; --off-ink: #545454; --veil: rgba(10,10,10,.42);
   --scrim: rgba(10,10,10,.5); --lift: 6px 6px 0 var(--black); --float: 6px 6px 0 var(--black);
   --skel: rgba(10,10,10,.08); --skel-hi: rgba(10,10,10,.02); --bar: #8a8a8a;
   --mono: 'Space Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -69,124 +70,9 @@ html[data-page="spx"] .spx-lumina img { display: block; width: 100%; height: aut
 html[data-page="spx"] .spx-lumina figcaption { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 12px; padding: 9px 12px; background: var(--black); color: var(--lime); font: 700 11px/1.2 var(--mono); letter-spacing: .14em; }
 html[data-page="spx"] .spx-lumina figcaption small { color: #fff; font-weight: 400; letter-spacing: .04em; font-size: 11px; }
 
-/* the tile, in the same hand */
-/* what is not open yet: the Swap tab and the tETH / SPX pool, until a pool in the Confidential AMM trades them */
-html[data-page="spx"] .hx-h button[data-off] { opacity: .35; cursor: not-allowed; }
-html[data-page="spx"] .hx-h button[data-off]:hover { color: var(--mute); }
-html[data-page="spx"] .rows button:disabled { opacity: .42; cursor: not-allowed; filter: grayscale(1); }
-html[data-page="spx"] .hx { grid-area: tile; max-width: none; margin: 0; border: 2px solid var(--black); border-radius: 0; box-shadow: 8px 8px 0 var(--black); }
+/* the tile and the figures under it, in their cells of the hero's grid */
+html[data-page="spx"] .hx { grid-area: tile; max-width: none; margin: 0; }
 html[data-page="spx"] .hero .proof-row { grid-area: proof; margin: 0; }
-html[data-page="spx"] .hx-h { border-bottom: 2px solid var(--black); }
-html[data-page="spx"] .hx-h::after { height: 4px; border-radius: 0; background: var(--magenta); bottom: -2px; }
-html[data-page="spx"] .hx-h button { font: 900 11px/1 var(--disp); font-style: normal; letter-spacing: .1em; text-transform: uppercase; }
-html[data-page="spx"] .hx-h button .w { font: inherit; }
-html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go) { color: var(--black); background: var(--lime); border: 2px solid var(--black); border-radius: 0; box-shadow: var(--shadow); font: 900 13px/1.2 var(--disp); letter-spacing: .08em; text-transform: uppercase; transition: transform .12s, box-shadow .12s; }
-@media (hover: hover) { html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go):not(:disabled):hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--black); } }
-html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go):disabled { background: #e4e4e4; color: #545454; box-shadow: none; }
-html[data-page="spx"] :is(.hx, .swc) :is(.f, .rows, .rcpt, input, select) { border-radius: 0; }
-html[data-page="spx"] :is(.hx, .swc) .f { border: 2px solid var(--black); background: var(--card); }
-html[data-page="spx"] .hx-mode, html[data-page="spx"] .hx-mode button { border-radius: 0; }
-html[data-page="spx"] .hx-mode button[aria-checked="true"], html[data-page="spx"] .hx-more button[aria-selected="true"] { background: var(--lime); color: var(--black); box-shadow: none; }
-
-/* the header: the account chip is a square, black-edged button like the tile's; on a phone the header is shorter, so the tile starts higher */
-html[data-page="spx"] header.top .chip:not(.act) { border: 2px solid var(--black); border-radius: 0; background: var(--card); box-shadow: 2px 2px 0 var(--black); font-weight: 700; }
-@media (hover: hover) { html[data-page="spx"] header.top .chip:not(.act):hover { background: var(--lime); border-color: var(--black); } }
-html[data-page="spx"] header.top .chip:not(.act):active { transform: translate(2px, 2px); box-shadow: none; }
-html[data-page="spx"] header.top .chip:focus-visible { outline: 3px solid var(--magenta); outline-offset: 2px; }
-@media (max-width: 640px) { html[data-page="spx"] header.top { padding: 12px 0; } }
-
-/* the controls inside the tile, in the same hand as its frame: a coin you can change is a button (square, black, a hard shadow), one that is fixed is only a label */
-html[data-page="spx"] .hx-h button { min-height: 46px; padding: 0; align-content: center; }
-html[data-page="spx"] .swc .coin { border: 2px solid var(--black); border-radius: 0; background: var(--card); box-shadow: 2px 2px 0 var(--black); font-weight: 700; transition: transform .12s, box-shadow .12s, background .12s; }
-@media (hover: hover) { html[data-page="spx"] .swc .coin:not(.one):hover { background: var(--lime); transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--black); } }
-html[data-page="spx"] .swc .coin:not(.one):active { transform: translate(2px, 2px); box-shadow: none; }
-html[data-page="spx"] .swc .coin.one { background: transparent; border-color: var(--hair-2); box-shadow: none; }
-html[data-page="spx"] .swc .coin:focus-visible { outline: 3px solid var(--magenta); outline-offset: 2px; }
-html[data-page="spx"] .swc .flip { border: 2px solid var(--black); border-radius: 0; background: var(--lime); color: var(--black); }
-html[data-page="spx"] .swc .mid .arr { border: 2px solid var(--black); border-radius: 0; color: var(--black); }
-html[data-page="spx"] .swc .flip:disabled { background: var(--soft); opacity: 1; color: var(--faint); border-color: var(--hair-2); }
-html[data-page="spx"] .swc .ff #max .mx { border: 2px solid var(--black); border-radius: 0; background: var(--card); font-weight: 700; line-height: 16px; }
-html[data-page="spx"] .swc .slip button { border: 2px solid transparent; border-radius: 0; color: var(--ink); font-weight: 700; }
-html[data-page="spx"] .swc .slip button[aria-pressed="true"] { background: var(--lime); border-color: var(--black); }
-/* a note that is not ready yet (a bridge back takes hours) keeps its reason readable: only its amount is dimmed */
-html[data-page="spx"] .brn.off { opacity: 1; }
-html[data-page="spx"] .brn.off b { color: var(--faint); }
-html[data-page="spx"] .brn.off small { color: var(--mute); }
-html[data-page="spx"] .swc .quick button { border: 2px solid var(--black); border-radius: 0; color: var(--ink); font-weight: 700; background: var(--card); }
-@media (hover: hover) { html[data-page="spx"] .swc .quick button:hover { background: var(--lime); color: var(--black); border-color: var(--black); } }
-html[data-page="spx"] .hx-mode button { font-weight: 700; }
-html[data-page="spx"] .swc .f:focus-within { border-color: var(--black); outline: 3px solid var(--magenta); outline-offset: 2px; }
-/* a value that needs two lines reads as a block that starts at one edge, not as ragged lines hugging the right */
-html[data-page="spx"] .swc .rcpt dd { margin-left: auto; text-align: left; }
-@media (pointer: coarse), (max-width: 640px) {
-  html[data-page="spx"] .hx-mode button { min-height: 40px; }
-  html[data-page="spx"] .swc .flip { width: 44px; height: 44px; margin: -22px 0 0 -22px; }
-  html[data-page="spx"] .swc .quick button { min-height: 36px; }
-  html[data-page="spx"] .swc .fh .where.go-pick { min-height: 36px; margin: -6px 0; }
-}
-
-/* the sheets that rise over the page (the wallet, Activity, Bitcoin), the coin picker inside the tile, the help launcher: square and bordered like the tile, a bottom sheet on a phone */
-html[data-page="spx"] dialog.sheet { border: 2px solid var(--black); border-radius: 0; box-shadow: var(--lift); }
-html[data-page="spx"] :is(.sheet-head, .bsheet-head) h2 { font: 900 20px/1.15 var(--disp); letter-spacing: .05em; text-transform: uppercase; overflow-wrap: anywhere; }
-html[data-page="spx"] :is(.sheet-head .x, .bsheet .x, .swc .pk-x) { border: 2px solid var(--black); border-radius: 0; background: var(--card); color: var(--ink); box-shadow: 2px 2px 0 var(--black); }
-@media (hover: hover) { html[data-page="spx"] :is(.sheet-head .x, .bsheet .x, .swc .pk-x):hover { background: var(--lime); color: var(--black); } }
-html[data-page="spx"] :is(.sheet-head .x, .bsheet .x):active { transform: translate(2px, 2px); box-shadow: none; }
-html[data-page="spx"] .swc .pk { border-radius: 0; background: rgba(10,10,10,.42); -webkit-backdrop-filter: none; backdrop-filter: none; }
-html[data-page="spx"] .swc .pk-s { border-radius: 0; border-top: 2px solid var(--black); box-shadow: none; }
-html[data-page="spx"] .swc .pk-s:has(.pk-kind) { height: min(94%, 400px); }
-html[data-page="spx"] .swc .pk-h b { font: 900 15px/1.1 var(--disp); font-style: normal; letter-spacing: .08em; text-transform: uppercase; }
-html[data-page="spx"] .swc .pk-x { width: 40px; height: 40px; font-size: 22px; line-height: 1; }
-html[data-page="spx"] .swc .pk-kind { border-radius: 0; background: var(--soft); }
-html[data-page="spx"] .swc .pk-kind button { border-radius: 0; font-weight: 700; }
-html[data-page="spx"] .swc .pk-kind button[aria-checked="true"] { background: var(--lime); color: var(--black); box-shadow: none; }
-html[data-page="spx"] .swc .pk-r { border-radius: 0; border: 2px solid transparent; }
-html[data-page="spx"] .swc .pk-r[aria-current="true"] { background: var(--card); border-color: var(--black); box-shadow: none; }
-@media (hover: hover) { html[data-page="spx"] .swc .pk-r:hover { background: var(--lime); } }
-/* buttons, options, switches and fields inside the sheets: the same square, black-edged controls as the tile's */
-html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn { color: var(--black); background: var(--lime); border: 2px solid var(--black); border-radius: 0; box-shadow: var(--shadow); font: 900 13px/1.2 var(--disp); letter-spacing: .06em; text-transform: uppercase; transition: transform .12s, box-shadow .12s, background .12s; }
-html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn.ghost { background: var(--card); }
-@media (hover: hover) { html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn:not(:disabled):hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--black); } }
-html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn:not(:disabled):active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--black); }
-html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn:disabled { background: #e4e4e4; color: #545454; border-color: var(--hair-2); box-shadow: none; }
-html[data-page="spx"] :is(dialog.sheet, .bsheet) .opt { border: 2px solid var(--black); border-radius: 0; background: var(--card); box-shadow: var(--shadow); }
-@media (hover: hover) { html[data-page="spx"] :is(dialog.sheet, .bsheet) .opt:not(:disabled):hover { background: var(--lime); border-color: var(--black); } }
-html[data-page="spx"] :is(dialog.sheet, .bsheet) :is(input, select, textarea):not([type="checkbox"], [type="radio"], [type="range"], [type="file"]) { border: 2px solid var(--black); border-radius: 0; background: var(--card); }
-html[data-page="spx"] :is(dialog.sheet, .bsheet) .seg { border-radius: 0; background: var(--soft); }
-html[data-page="spx"] :is(dialog.sheet, .bsheet) .seg button { border-radius: 0; font-weight: 700; }
-html[data-page="spx"] :is(dialog.sheet, .bsheet) .seg button:is([aria-selected="true"], [aria-checked="true"]) { background: var(--lime); color: var(--black); box-shadow: none; }
-html[data-page="spx"] .bound-mkt section + section { margin-top: 22px; padding-top: 20px; border-top: 2px solid var(--black); }
-html[data-page="spx"] .bound-mkt h3 { margin: 0 0 12px; font: 900 13px/1.2 var(--disp); letter-spacing: .08em; text-transform: uppercase; }
-html[data-page="spx"] .bound-mkt .rows { display: grid; gap: 10px; margin: 0 0 14px; padding: 0; list-style: none; }
-html[data-page="spx"] .bound-mkt .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; padding: 12px; background: var(--card); border: 2px solid var(--black); }
-html[data-page="spx"] .bound-mkt .row .num { font: 700 14px/1.3 var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-html[data-page="spx"] .bound-mkt .row .num.mute, html[data-page="spx"] .bound-mkt .row .mute { color: var(--mute); font-weight: 400; }
-html[data-page="spx"] .bound-mkt .row :is(.part, .btn, .rows, .ok, .err) { grid-column: 1 / -1; }
-html[data-page="spx"] .bound-mkt .row .btn { margin-top: 2px; }
-html[data-page="spx"] .bound-mkt .row .ok { color: var(--ok); font-weight: 700; }
-html[data-page="spx"] .bound-mkt .rows .rows { margin: 4px 0 0; }
-html[data-page="spx"] .bound-mkt .form { display: grid; gap: 10px; }
-html[data-page="spx"] .bound-mkt .form .btn { margin-top: 4px; }
-html[data-page="spx"] .bsheet :is(input, select, textarea):not([type="checkbox"], [type="radio"]) { font: 16px/1.3 var(--mono); min-height: 48px; padding: 8px 12px; }
-/* the sheet's wallet chip (the front page's own .who card reaches it by name): a small label beside the title, not a card */
-html[data-page="spx"] .bsheet-head .who { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; margin: 0; padding: 5px 9px; background: var(--card); border: 2px solid var(--black); border-radius: 0; font: 11.5px/1.35 var(--mono); }
-html[data-page="spx"] .bsheet input[type="checkbox"] { width: 20px; height: 20px; margin-right: 8px; accent-color: var(--black); vertical-align: -4px; }
-html[data-page="spx"] .bsheet .note.err, html[data-page="spx"] .bound-mkt .err { color: var(--err); font-weight: 700; }
-html[data-page="spx"] .hw-b { border: 2px solid var(--black); border-radius: 0; box-shadow: 3px 3px 0 var(--black); }
-@media (hover: hover) { html[data-page="spx"] .hw-b:hover { transform: translate(-1px, -1px); color: var(--black); background: var(--lime); box-shadow: 4px 4px 0 var(--black); } }
-html[data-page="spx"] .hw-p { border: 2px solid var(--black); border-radius: 0; box-shadow: var(--lift); }
-@media (max-width: 640px) {
-  @supports (animation-timeline: scroll()) {
-    html[data-page="spx"] .hw { animation: spx-fab linear both; animation-timeline: scroll(root block); animation-range: 0 140px; }
-    @keyframes spx-fab { from { translate: 0 calc(100% + 24px); } to { translate: 0 0; } }
-  }
-}
-html[data-page="spx"] .bsheet-in { border: 2px solid var(--black); border-radius: 0; box-shadow: var(--lift); }
-html[data-page="spx"] .bsheet-head { border-radius: 0; }
-@media (max-width: 640px) {
-  html[data-page="spx"] dialog.sheet { border-width: 3px 0 0; box-shadow: none; }
-  html[data-page="spx"] .bsheet-in { border-width: 3px 0 0; box-shadow: none; }
-  html[data-page="spx"] .hw-p { border-width: 3px 0 0; box-shadow: none; }
-}
 
 /* below the tile: the roster, the commandments, the links */
 html[data-page="spx"] .spx-below { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 44px 40px; margin: 64px 0 24px; }
@@ -254,3 +140,175 @@ html[data-page="spx"] .spx-fine { grid-column: 1 / -1; max-width: 60ch; margin: 
   html[data-page="spx"] .spx-ops b { font-size: 20px; }
   html[data-page="spx"] .spx-links { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   COMMUNITY PAGE KIT: the pieces every community token page on Tacit shares, in one block, so another page can copy it.
+     the frame (the tile, its tabs, main button, fields, switches) · the controls (coin chip, swap arrow, small chips, tap sizes) · what is under way (the
+     strip over the tile, the header's Activity chip, the Activity sheet) · the sheets (the wallet, Activity and Bitcoin sheets, the coin picker, the help
+     launcher, a bottom sheet on a phone) · the Bitcoin market.
+   TO MAKE A PAGE FOR ANOTHER TOKEN: copy this block to that page's stylesheet and replace data-page="spx" with its name in every selector (a find and
+   replace: the page's build puts that name on <html>, and the page's stylesheet test wants every selector to start with it). What a new page sets is
+   its own token rule, the first rule of its stylesheet: the accent colours --lime (what fills a button, a chip, a bar), --magenta (the focus ring, the tab
+   bar, the pip), --magenta-ink (the accent as text on the light ground: keep it 4.5:1 or darker against --paper), --cyan (a link tile's hover), the greys
+   and --black (every border and hard shadow); and its wordmark and art in its hero part. Nothing in this block names a colour or a font of its own: the
+   tokens are the whole skin. Rules: square corners; a 2px --black edge and a hard shadow on what can be pressed; a flat label with no shadow for what
+   cannot; the accent fills what is chosen or running; a finger gets 44px (40px on a switch) wherever the pointer is coarse.
+   ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/* the frame */
+html[data-page="spx"] .hx-h button[data-off] { opacity: .35; cursor: not-allowed; }
+html[data-page="spx"] .hx-h button[data-off]:hover { color: var(--mute); }
+html[data-page="spx"] .rows button:disabled { opacity: .42; cursor: not-allowed; filter: grayscale(1); }
+html[data-page="spx"] .hx { border: 2px solid var(--black); border-radius: 0; box-shadow: 8px 8px 0 var(--black); }
+html[data-page="spx"] .hx-h { border-bottom: 2px solid var(--black); }
+html[data-page="spx"] .hx-h::after { height: 4px; border-radius: 0; background: var(--magenta); bottom: -2px; }
+html[data-page="spx"] .hx-h button { min-height: 46px; padding: 0; align-content: center; font: 900 11px/1 var(--disp); font-style: normal; letter-spacing: .1em; text-transform: uppercase; }
+html[data-page="spx"] .hx-h button .w { font: inherit; }
+html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go) { color: var(--black); background: var(--lime); border: 2px solid var(--black); border-radius: 0; box-shadow: var(--shadow); font: 900 13px/1.2 var(--disp); letter-spacing: .08em; text-transform: uppercase; transition: transform .12s, box-shadow .12s; }
+@media (hover: hover) { html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go):not(:disabled):hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--black); } }
+html[data-page="spx"] :is(.hx, .swc) :is(.go, #hx-go):disabled { background: var(--off); color: var(--off-ink); box-shadow: none; }
+html[data-page="spx"] :is(.hx, .swc) :is(.f, .rows, .rcpt, input, select) { border-radius: 0; }
+html[data-page="spx"] :is(.hx, .swc) .f { border: 2px solid var(--black); background: var(--card); }
+html[data-page="spx"] .swc .f:focus-within { border-color: var(--black); outline: 3px solid var(--magenta); outline-offset: 2px; }
+html[data-page="spx"] .hx-mode, html[data-page="spx"] .hx-mode button { border-radius: 0; }
+html[data-page="spx"] .hx-mode button { font-weight: 700; }
+html[data-page="spx"] .hx-mode button[aria-checked="true"], html[data-page="spx"] .hx-more button[aria-selected="true"] { background: var(--lime); color: var(--black); box-shadow: none; }
+/* a value that needs two lines reads as a block that starts at one edge, not as ragged lines hugging the right */
+html[data-page="spx"] .swc .rcpt dd { margin-left: auto; text-align: left; }
+/* a note that is not ready yet (a bridge back takes hours) keeps its reason readable: only its amount is dimmed */
+html[data-page="spx"] .brn.off { opacity: 1; }
+html[data-page="spx"] .brn.off b { color: var(--faint); }
+html[data-page="spx"] .brn.off small { color: var(--mute); }
+
+/* the controls: a coin you can change is a button (square, black, a hard shadow), one that is fixed is only a label */
+html[data-page="spx"] .swc .coin { border: 2px solid var(--black); border-radius: 0; background: var(--card); box-shadow: 2px 2px 0 var(--black); font-weight: 700; transition: transform .12s, box-shadow .12s, background .12s; }
+@media (hover: hover) { html[data-page="spx"] .swc .coin:not(.one):hover { background: var(--lime); transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--black); } }
+html[data-page="spx"] .swc .coin:not(.one):active { transform: translate(2px, 2px); box-shadow: none; }
+html[data-page="spx"] .swc .coin.one { background: transparent; border-color: var(--hair-2); box-shadow: none; }
+html[data-page="spx"] .swc .coin:focus-visible { outline: 3px solid var(--magenta); outline-offset: 2px; }
+html[data-page="spx"] .swc .flip { border: 2px solid var(--black); border-radius: 0; background: var(--lime); color: var(--black); }
+html[data-page="spx"] .swc .flip:disabled { background: var(--soft); opacity: 1; color: var(--faint); border-color: var(--hair-2); }
+html[data-page="spx"] .swc .mid .arr { border: 2px solid var(--black); border-radius: 0; color: var(--black); }
+html[data-page="spx"] .swc .ff #max .mx { border: 2px solid var(--black); border-radius: 0; background: var(--card); font-weight: 700; line-height: 16px; }
+html[data-page="spx"] .swc .slip button { border: 2px solid transparent; border-radius: 0; color: var(--ink); font-weight: 700; }
+html[data-page="spx"] .swc .slip button[aria-pressed="true"] { background: var(--lime); border-color: var(--black); }
+html[data-page="spx"] .swc .quick button { border: 2px solid var(--black); border-radius: 0; color: var(--ink); font-weight: 700; background: var(--card); }
+@media (hover: hover) { html[data-page="spx"] .swc .quick button:hover { background: var(--lime); color: var(--black); border-color: var(--black); } }
+/* a finger: the switches, the swap arrow and the small chips are sized for it, and the place label over a field ("Wallet ▾", "DeFi pool ▾") is a 44px target that
+   takes no more room than its line (it reaches 11px above and below it, 8px to each side) */
+@media (pointer: coarse), (max-width: 640px) {
+  html[data-page="spx"] .hx-mode button { min-height: 40px; }
+  html[data-page="spx"] .swc .flip { width: 44px; height: 44px; margin: -22px 0 0 -22px; }
+  html[data-page="spx"] .swc .quick button { min-height: 36px; }
+  html[data-page="spx"] .swc .fh :is(button.where, .where.go-pick) { position: relative; z-index: 1; min-height: 44px; margin: -11px -8px; padding: 0 8px; }
+}
+
+/* the line that says what is held where, and the link that goes with it ("... is waiting for its confirmation", "Move it first"): on a phone the words get the width and the link its own line */
+@media (max-width: 640px) {
+  html[data-page="spx"] .hx-pl { flex-wrap: wrap; align-items: flex-start; gap: 2px 8px; }
+  html[data-page="spx"] .hx-pl > span { flex: 1 1 0; min-width: 0; font-size: 13px; line-height: 1.5; }
+  html[data-page="spx"] .hx-pl .link { flex: 1 0 100%; margin: 0 0 0 26px; padding: 6px 0 8px; text-align: left; font-size: 13px; font-weight: 700; }
+}
+
+/* what is under way: the strip over the tile (it opens Activity), the header's chips, and the Activity sheet. A running item has the accent bar, a failed one the red, a
+   finished one is quiet with its mark */
+html[data-page="spx"] .hx-live { width: 100%; min-height: 44px; margin: 0; padding: 10px 14px; color: #fff; background: var(--black); border: 0; border-bottom: 2px solid var(--black); border-radius: 0; font: 700 12px/1.3 var(--mono); }
+html[data-page="spx"] .hx-live .s, html[data-page="spx"] .hx-live .go { color: var(--lime); }
+html[data-page="spx"] .hx-live .dot.live { width: 8px; height: 8px; border-radius: 0; background: var(--lime); }
+@media (hover: hover) { html[data-page="spx"] .hx-live:hover .t { text-decoration: underline; text-underline-offset: 3px; } }
+html[data-page="spx"] .hx-live:focus-visible { outline: 3px solid var(--magenta); outline-offset: -3px; }
+html[data-page="spx"] header.top .chip { border: 2px solid var(--black); border-radius: 0; background: var(--card); box-shadow: 2px 2px 0 var(--black); font-weight: 700; }
+@media (hover: hover) { html[data-page="spx"] header.top .chip:hover { background: var(--lime); border-color: var(--black); } }
+html[data-page="spx"] header.top .chip:active { transform: translate(2px, 2px); box-shadow: none; }
+html[data-page="spx"] header.top .chip:focus-visible { outline: 3px solid var(--magenta); outline-offset: 2px; }
+html[data-page="spx"] header.top .chip.act { color: var(--ink); }
+html[data-page="spx"] header.top .chip.act.busy { background: var(--lime); }
+html[data-page="spx"] header.top .chip.act #act-n { border-radius: 0; background: var(--black); color: var(--lime); }
+@media (max-width: 640px) { html[data-page="spx"] header.top { padding: 12px 0; } }
+html[data-page="spx"] .acts { border-top: 2px solid var(--black); }
+html[data-page="spx"] .actr { gap: 8px; padding: 14px 0 14px 14px; border-bottom: 2px solid var(--black); border-left: 6px solid var(--lime); }
+html[data-page="spx"] .actr.fin { gap: 4px; padding: 11px 0 11px 14px; border-bottom: 1px solid var(--hair-2); border-left-color: transparent; }
+html[data-page="spx"] .actr.fin:has(.actr-m.ok) { border-left-color: var(--ok); }
+html[data-page="spx"] .actr.fin:has(.actr-m.err) { border-left-color: var(--err); }
+html[data-page="spx"] .actr-h b { font-weight: 700; }
+html[data-page="spx"] .actr.fin .actr-h b { font-weight: 400; }
+html[data-page="spx"] .actr-h .dot.live { width: 8px; height: 8px; border-radius: 0; background: var(--magenta); }
+html[data-page="spx"] .actr-m { font-weight: 900; }
+html[data-page="spx"] .actr-m.ok { color: var(--ok); }
+html[data-page="spx"] .actr-m.err { color: var(--err); }
+html[data-page="spx"] .actr-f.err { font-weight: 700; }
+html[data-page="spx"] .acts-h { font: 900 11px/1 var(--disp); letter-spacing: .1em; color: var(--ink); }
+html[data-page="spx"] .acts-h .num { border-radius: 0; background: var(--black); color: var(--lime); }
+html[data-page="spx"] .stp { font-weight: 700; }
+html[data-page="spx"] .stp i { width: 9px; height: 9px; border: 2px solid var(--black); border-radius: 0; }
+html[data-page="spx"] .stp li + li::before { height: 2px; background: var(--black); }
+html[data-page="spx"] .stp .done i { background: var(--black); }
+html[data-page="spx"] .stp .now i { background: var(--lime); border-color: var(--black); }
+html[data-page="spx"] .stp .bad i { background: var(--err); border-color: var(--err); }
+html[data-page="spx"] .actr-bar { height: 10px; border: 2px solid var(--black); border-radius: 0; background: var(--card); }
+html[data-page="spx"] .actr-bar i { border-radius: 0; background: var(--lime); box-shadow: inset -2px 0 0 var(--black); }
+html[data-page="spx"] #sheet-act input[type="checkbox"] { accent-color: var(--black); }
+
+/* the sheets that rise over the page (the wallet, Activity, Bitcoin), the coin picker inside the tile, the help launcher: square and bordered like the tile, a bottom
+   sheet on a phone (a 3px rule on top, no shadow, as wide as the screen) */
+html[data-page="spx"] dialog.sheet { border: 2px solid var(--black); border-radius: 0; box-shadow: var(--lift); }
+html[data-page="spx"] :is(.sheet-head, .bsheet-head) h2 { font: 900 20px/1.15 var(--disp); letter-spacing: .05em; text-transform: uppercase; overflow-wrap: anywhere; }
+html[data-page="spx"] :is(.sheet-head .x, .bsheet .x, .swc .pk-x) { border: 2px solid var(--black); border-radius: 0; background: var(--card); color: var(--ink); box-shadow: 2px 2px 0 var(--black); }
+@media (hover: hover) { html[data-page="spx"] :is(.sheet-head .x, .bsheet .x, .swc .pk-x):hover { background: var(--lime); color: var(--black); } }
+html[data-page="spx"] :is(.sheet-head .x, .bsheet .x):active { transform: translate(2px, 2px); box-shadow: none; }
+html[data-page="spx"] .swc .pk { border-radius: 0; background: var(--veil); -webkit-backdrop-filter: none; backdrop-filter: none; }
+html[data-page="spx"] .swc .pk-s { border-radius: 0; border-top: 2px solid var(--black); box-shadow: none; }
+html[data-page="spx"] .swc .pk-s:has(.pk-kind) { height: min(94%, 400px); }
+html[data-page="spx"] .swc .pk-h b { font: 900 15px/1.1 var(--disp); font-style: normal; letter-spacing: .08em; text-transform: uppercase; }
+html[data-page="spx"] .swc .pk-x { width: 40px; height: 40px; font-size: 22px; line-height: 1; }
+html[data-page="spx"] .swc .pk-kind { border-radius: 0; background: var(--soft); }
+html[data-page="spx"] .swc .pk-kind button { border-radius: 0; font-weight: 700; }
+html[data-page="spx"] .swc .pk-kind button[aria-checked="true"] { background: var(--lime); color: var(--black); box-shadow: none; }
+html[data-page="spx"] .swc .pk-r { border-radius: 0; border: 2px solid transparent; }
+html[data-page="spx"] .swc .pk-r[aria-current="true"] { background: var(--card); border-color: var(--black); box-shadow: none; }
+@media (hover: hover) { html[data-page="spx"] .swc .pk-r:hover { background: var(--lime); } }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn { color: var(--black); background: var(--lime); border: 2px solid var(--black); border-radius: 0; box-shadow: var(--shadow); font: 900 13px/1.2 var(--disp); letter-spacing: .06em; text-transform: uppercase; transition: transform .12s, box-shadow .12s, background .12s; }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn.ghost { background: var(--card); }
+@media (hover: hover) { html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn:not(:disabled):hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--black); } }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn:not(:disabled):active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--black); }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .btn:disabled { background: var(--off); color: var(--off-ink); border-color: var(--hair-2); box-shadow: none; }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .opt { border: 2px solid var(--black); border-radius: 0; background: var(--card); box-shadow: var(--shadow); }
+@media (hover: hover) { html[data-page="spx"] :is(dialog.sheet, .bsheet) .opt:not(:disabled):hover { background: var(--lime); border-color: var(--black); } }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) :is(input, select, textarea):not([type="checkbox"], [type="radio"], [type="range"], [type="file"]) { border: 2px solid var(--black); border-radius: 0; background: var(--card); }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .seg { border-radius: 0; background: var(--soft); }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .seg button { border-radius: 0; font-weight: 700; }
+html[data-page="spx"] :is(dialog.sheet, .bsheet) .seg button:is([aria-selected="true"], [aria-checked="true"]) { background: var(--lime); color: var(--black); box-shadow: none; }
+html[data-page="spx"] .bsheet-in { border: 2px solid var(--black); border-radius: 0; box-shadow: var(--lift); }
+html[data-page="spx"] .bsheet-head { border-radius: 0; }
+html[data-page="spx"] .bsheet-head .who { display: flex; flex-wrap: nowrap; white-space: nowrap; align-items: center; gap: 0 8px; margin: 0; padding: 5px 9px; background: var(--card); border: 2px solid var(--black); border-radius: 0; font: 11.5px/1.35 var(--mono); }
+html[data-page="spx"] .hw-b { border: 2px solid var(--black); border-radius: 0; box-shadow: 3px 3px 0 var(--black); }
+@media (hover: hover) { html[data-page="spx"] .hw-b:hover { transform: translate(-1px, -1px); color: var(--black); background: var(--lime); box-shadow: 4px 4px 0 var(--black); } }
+html[data-page="spx"] .hw-p { border: 2px solid var(--black); border-radius: 0; box-shadow: var(--lift); }
+@media (max-width: 640px) {
+  html[data-page="spx"] :is(dialog.sheet, .bsheet-in, .hw-p) { border-width: 3px 0 0; box-shadow: none; }
+  /* the help launcher steps in after the first scroll, so it is never over the tile's first screen */
+  @supports (animation-timeline: scroll()) {
+    html[data-page="spx"] .hw { animation: spx-fab linear both; animation-timeline: scroll(root block); animation-range: 0 140px; }
+    @keyframes spx-fab { from { translate: 0 calc(100% + 24px); } to { translate: 0 0; } }
+  }
+}
+
+/* the Bitcoin market (trade/bound.js draws plain lists and inputs): a bid is a framed row, its words on one line and its state a tag on the next, its fields and buttons full width */
+html[data-page="spx"] .bound-mkt section + section { margin-top: 22px; padding-top: 20px; border-top: 2px solid var(--black); }
+html[data-page="spx"] .bound-mkt h3 { margin: 0 0 12px; font: 900 13px/1.2 var(--disp); letter-spacing: .08em; text-transform: uppercase; }
+html[data-page="spx"] .bound-mkt .rows { display: grid; gap: 10px; margin: 0 0 14px; padding: 0; list-style: none; }
+html[data-page="spx"] .bound-mkt .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 14px; padding: 12px; background: var(--card); border: 2px solid var(--black); }
+html[data-page="spx"] .bound-mkt .row .num { font: 700 14px/1.3 var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+html[data-page="spx"] .bound-mkt .row .num.mute { justify-self: end; text-align: right; color: var(--mute); font-weight: 400; }
+html[data-page="spx"] .bound-mkt .row > .mute:not(.num) { grid-column: 1 / -1; justify-self: start; padding: 2px 8px; color: var(--ink); background: var(--soft); border: 2px solid var(--black); font: 700 11.5px/1.4 var(--mono); }
+html[data-page="spx"] .bound-mkt .row :is(.part, .btn, .rows, .ok, .err) { grid-column: 1 / -1; }
+html[data-page="spx"] .bound-mkt .row .btn { margin-top: 2px; }
+html[data-page="spx"] .bound-mkt .row .ok { color: var(--ok); font-weight: 700; }
+html[data-page="spx"] .bound-mkt .rows .rows { margin: 4px 0 0; }
+html[data-page="spx"] .bound-mkt .form { display: grid; gap: 10px; margin-bottom: 16px; }
+html[data-page="spx"] .bound-mkt .form .btn { margin-top: 4px; }
+html[data-page="spx"] .bsheet :is(input, select, textarea):not([type="checkbox"], [type="radio"]) { font: 16px/1.3 var(--mono); min-height: 48px; padding: 8px 12px; }
+html[data-page="spx"] .bsheet label.note { display: flex; align-items: flex-start; gap: 10px; }
+@media (max-width: 640px) { html[data-page="spx"] .bsheet-head .who { flex-direction: column; align-items: flex-start; gap: 0; padding: 4px 8px; font-size: 11px; } }
+html[data-page="spx"] .bsheet input[type="checkbox"] { flex: none; width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--black); }
+html[data-page="spx"] .bsheet .note.err, html[data-page="spx"] .bound-mkt .err { color: var(--err); font-weight: 700; }
