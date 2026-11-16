@@ -1816,7 +1816,7 @@ function btcNotes(f, status, b) {
         <div class="lbl"><span>${a.ticker}</span><span>${fmt(a.balance, a.decimals, 8)} in ${a.notes.length} note${a.notes.length === 1 ? '' : 's'}</span></div>
         ${a.notes.map((n) => noteLi(a, n))}
         <div class="amt"><input id="bn-amt-${a.id}" data-bnamt="${a.id}" inputmode="decimal" placeholder="Amount to split off" autocomplete="off" aria-label="Amount to split off from the picked ${a.ticker} note"><span class="u">${a.ticker}</span></div>
-        <div class="brr-a"><button class="btn ghost" type="button" data-bnsplit="${a.id}" ${pick ? '' : 'disabled'}>Split</button>${ready.length > 1 ? html`<button class="btn ghost" type="button" data-bncombine="${a.id}">Combine ${Math.min(ready.length, NOTES_MAX)} notes</button>` : ''}</div>
+        <div class="brr-a"><button class="btn ghost" type="button" data-bnsplit="${a.id}" ${pick ? '' : 'disabled'}>Split</button>${ready.length > 1 ? html`<button class="btn ghost" type="button" data-bncombine="${a.id}">Combine ${Math.min(ready.length, NOTES_MAX)} notes</button>` : ''}${BTC_NOTE_ASSETS.some((x) => x.id === a.id && x.runtime) ? html`<button class="btn ghost" type="button" data-btcmarket-id="${a.id}">Buy or sell for sats</button>` : ''}</div>
       </div>`;
     }) : html`<p class="note">${b?.got >= 2 ? 'No TAC or tETH notes at this key’s Bitcoin address yet.' : 'Reading your notes…'}</p>`}
     ${bridged.length ? html`<div class="blk"><div class="lbl sep"><span>Bridged to Bitcoin</span></div>

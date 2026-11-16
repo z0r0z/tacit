@@ -166,6 +166,31 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   ok(!link || /\/spx\/#card=earn:ether:spx&amt=0\.05$/.test(link), `its share link, when the card shows one, is the same link (${link || 'none shown'})`);
   await ctx.close();
 }
+// the Bridge tab names SPX's market on Bitcoin, where a holder sells into a bid or a buyer places one (a bridged token has no atomic sale): the link is there, and opens the market's own sheet
+{
+  ok(/data-btcmarket="\$\{mk\.addr\}">Buy or sell \$\{mk\.sym\} for sats →<\/a>/.test(front) && /makeBitcoin\(\{[^}]*asset: \{ id: b\.hex, title: `\$\{b\.name\} on Bitcoin`, ticker: b\.name, decimals: r\.tdec, bound: true/.test(front), 'the Bridge tab’s footer has a Buy or sell link for a community token, which opens the Bitcoin market with the token’s own bound-bid market (bound: true)');
+  const sheets = read('front/sheets.js');
+  ok(/BTC_NOTE_ASSETS\.some\(\(x\) => x\.id === a\.id && x\.runtime\) \? html`<button class="btn ghost" type="button" data-btcmarket-id="\$\{a\.id\}">Buy or sell for sats<\/button>`/.test(sheets) && /\[data-btcmarket\], \[data-btcmarket-id\]/.test(front) && /XT\.ids\.get\(`0x\$\{a\.dataset\.btcmarketId\}`\)/.test(front) && /const d = a\.closest\('dialog'\); if \(d\?\.open\) d\.close\(\);/.test(front), 'the Bitcoin sheet’s Notes offer the same market for a community token held at the Bitcoin address (by its asset id), and the sheet is shut as the market opens');
+  ok(/if \(HX\.tab === 'bridge' && \$\('#hx-brl'\)\) hxBrLine\(\);/.test(front), 'the Bridge footer is drawn again when the token’s bridge first exists, so a visit that opened the tab early still gets the link');
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage(), bad = [];
+  p.on('pageerror', (e) => bad.push(e.message));
+  p.on('console', (m) => { if (/Content Security Policy/.test(m.text())) bad.push('CSP: ' + m.text().slice(0, 140)); });
+  await p.goto(BASE + `/spx/#card=send:xp${SPX}`, { waitUntil: 'load' });
+  await p.waitForSelector('span.coin[data-pk="hx-sa"]', { timeout: 40000 }).catch(() => {});      // the deep link has settled on Send: a press on Bridge before then is undone by it
+  await p.waitForTimeout(1500);
+  await p.click('[data-hxm="more"]').catch(() => {});
+  await p.waitForSelector('#hx-brl a[data-btcmarket]', { timeout: 40000 }).catch(() => {});
+  const link = await p.evaluate(() => { const a = document.querySelector('#hx-brl a[data-btcmarket]'); return a ? { text: a.textContent.trim(), addr: a.dataset.btcmarket, shown: !!a.offsetParent } : null; });
+  ok(!!link && link.shown && link.addr === SPX && /^Buy or sell SPX for sats →$/.test(link.text), `on the Bridge tab, the footer offers SPX’s market (${JSON.stringify(link)})`);
+  await p.click('#hx-brl a[data-btcmarket]').catch(() => {});
+  await p.waitForFunction(() => /SPX on Bitcoin/.test(document.querySelector('.bsheet-head')?.textContent || ''), null, { timeout: 40000 }).catch(() => {});
+  const sheet = await p.evaluate(() => ({ head: (document.querySelector('.bsheet-head')?.textContent || '').replace(/\s+/g, ' ').trim(), body: (document.querySelector('.bsheet')?.innerText || '').replace(/\s+/g, ' ').slice(0, 200) }));
+  ok(/SPX on Bitcoin/.test(sheet.head), `pressing it opens the market’s sheet, titled SPX on Bitcoin (${JSON.stringify(sheet.head)})`);
+  await p.waitForFunction(() => /bid/i.test(document.querySelector('.bsheet')?.innerText || ''), null, { timeout: 40000 }).catch(() => {});
+  const text = await p.evaluate(() => (document.querySelector('.bsheet')?.innerText || '').replace(/\s+/g, ' '));
+  ok(/bid/i.test(text) && !/Could not load the Bitcoin market/.test(text) && bad.length === 0, `and the sheet loads the bid market, with no script error and no CSP violation (${JSON.stringify(text.slice(0, 160))}${bad.length ? ' ' + bad[0] : ''})`);
+  await ctx.close();
+}
 // a payment-request link made on this page (the Send tab's Request view) opens that payment on this page for a first-time visitor: the token's own key has digits (xp0x…), which the
 // link pattern once refused, so the link was dropped and the visitor landed on Shield with nothing filled in
 ok(/\$\{location\.origin\}\$\{SPXP \? '\/spx\/' : '\/'\}#card=send:\$\{HX\.send\}&to=/.test(front), 'a request link made on this page is this page’s own link (/spx/#card=send:…), not the main page’s');
