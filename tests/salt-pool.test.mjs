@@ -5,7 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { makeSaltPool, saltAddress, SALT_POOL, saltPoolConfig, softwareLabel } from '../worker/src/salt-pool.js';
+import { readFileSync } from 'node:fs';
+import { makeSaltPool, saltAddress, marketAddress, SALT_POOL, saltPoolConfig, softwareLabel } from '../worker/src/salt-pool.js';
 
 const DAY = 86_400_000;
 function kvStore() {
@@ -256,4 +257,110 @@ test('a miner can say what software it is: the label is cleaned, shown next to i
   // a miner that changes software is shown with the newest label
   await pool.submit({ miner: C, salts: [grind(400, 8).salt], client: 'c3', software: 'tacit-metal-salt/1' });
   assert.equal(Object.fromEntries((await pool.summary()).body.live.map((l) => [l.miner, l.sw]))[C], 'tacit-metal-salt/1');
+});
+
+// ---- the vanity-address market's salts (contracts/src/VanityShop.sol) ----
+const SHOP = '0x' + 'aa'.repeat(20);
+const MARKET_CFG = { ...SALT_POOL, minBits: 8, bankBits: 10, sendEveryMs: 0, schemes: ['createx', 'market'], shop: SHOP };
+// A salt of the shop for `day` whose address at `nonce` has at least `bits` zero bits.
+function grindMarket(day, bits, nonce = 0) {
+  for (;;) {
+    const s = '0x' + SHOP.slice(2) + '00' + (day % 65536).toString(16).padStart(4, '0') + randomBytes(9).toString('hex');
+    const a = marketAddress(s, nonce);
+    if (a.bits >= bits) return { salt: s, nonce, ...a };
+  }
+}
+
+test('a market salt\'s address is the one VanityMarket.computeAddress answers, for every way a nonce is written in RLP', () => {
+  // tests/fixtures/vanity-market-vectors.txt: `cast call 0x000000000000b361194cfe6312EE3210d53C15AA computeAddress(bytes32,uint8)` on mainnet, "id nonce address"
+  const rows = readFileSync(new URL('./fixtures/vanity-market-vectors.txt', import.meta.url), 'utf8').trim().split('\n').map((l) => l.split(' '));
+  assert.equal(rows.length, 21);
+  for (const [id, n, want] of rows) assert.equal(marketAddress(id, Number(n)).address, want.toLowerCase(), `${id.slice(0, 12)}… nonce ${n}`);
+  assert.deepEqual(rows.map((r) => Number(r[1])).filter((n, i) => i < 7), [0, 1, 126, 127, 128, 253, 254], 'nonce + 1 on both sides of 0x7f and at the top');
+  assert.equal(marketAddress('0x' + '00'.repeat(32), 0).bits, 0);
+  assert.equal(marketAddress('0x' + '00'.repeat(31) + 'ff').address, '0x7bb5fe004ab6521f5d2a4ab08fd5f29383a50a95', 'a nonce left out is 0');
+});
+
+test('config: SALT_SCHEMES names the kinds of salt taken; market needs a shop address, anything else keeps CreateX alone', () => {
+  const shop = '0x' + 'ab'.repeat(20);
+  assert.deepEqual(saltPoolConfig({}).schemes, ['createx']);
+  assert.equal(saltPoolConfig({}).shop, null);
+  assert.deepEqual(saltPoolConfig({ SALT_SCHEMES: 'createx,market', SALT_SHOP: shop }).schemes, ['createx', 'market']);
+  assert.deepEqual(saltPoolConfig({ SALT_SCHEMES: 'market,createx', SALT_SHOP: shop }).schemes, ['market', 'createx'], 'the first is the one new miners grind');
+  assert.deepEqual(saltPoolConfig({ SALT_SCHEMES: 'market', SALT_SHOP: shop }).schemes, ['market']);
+  assert.deepEqual(saltPoolConfig({ SALT_SCHEMES: 'createx,market' }).schemes, ['createx'], 'no shop, no market salts');
+  assert.deepEqual(saltPoolConfig({ SALT_SCHEMES: 'market', SALT_SHOP: 'nope' }).schemes, ['createx'], 'a shop that is not an address is no shop');
+  assert.deepEqual(saltPoolConfig({ SALT_SCHEMES: 'nonsense' }).schemes, ['createx']);
+  assert.equal(saltPoolConfig({ SALT_SHOP: shop.toUpperCase().replace('0X', '0x') }).shop, shop, 'case does not matter');
+  assert.equal(saltPoolConfig({}).market, '0x000000000000b361194cfe6312ee3210d53c15aa');
+  assert.equal(saltPoolConfig({ SALT_MARKET: '0x' + '12'.repeat(20) }).market, '0x' + '12'.repeat(20));
+});
+
+test('market salts: counted once per id whatever the nonce, which rides on the share; every other share is refused with its reason', async () => {
+  const t = 300 * DAY + 5000;
+  const kv = kvStore(), pool = makeSaltPool({ kv, cfg: MARKET_CFG, now: () => t });
+  const a = grindMarket(300, 8), b = grindMarket(300, 8, 5);
+  const r = await pool.submit({ miner: A, salts: [a.salt, `${b.salt}:5`], client: 'c1' });
+  assert.equal(r.body.accepted, 2, JSON.stringify(r.body.rejected));
+  assert.equal(r.body.today.best.address, (a.bits >= b.bits ? a : b).address, 'the best is judged at the nonce named');
+  // one id good at two nonces is still one token: the second send names it again and is refused
+  const lax = makeSaltPool({ kv: kvStore(), cfg: { ...MARKET_CFG, minBits: 4 }, now: () => t });
+  const two = (() => { for (;;) { const g = grindMarket(300, 4, 0); if (marketAddress(g.salt, 7).bits >= 4) return g; } })();
+  assert.equal((await lax.submit({ miner: A, salts: [two.salt], client: 'c1' })).body.accepted, 1);
+  assert.equal((await lax.submit({ miner: B, salts: [`${two.salt}:7`], client: 'c2' })).body.rejected[0].why, 'already counted', 'the same id at another nonce is the same token');
+  const dep = grind(300, 8), weak = (() => { for (;;) { const g = grindMarket(300, 0); if (g.bits < 8) return g; } })();
+  const out = await pool.submit({ miner: A, salts: [`${dep.salt}:1`, `${grindMarket(300, 8).salt}:255`, `${grindMarket(300, 8).salt}:300`, grindMarket(295, 8).salt, weak.salt,
+    '0x' + '33'.repeat(20) + '00' + '012c' + 'aa'.repeat(9), `${a.salt}:x`], client: 'c1' });
+  assert.deepEqual(out.body.rejected.map((x) => x.why.split(',')[0].replace(/\d+ zero bits/, 'bits')), [
+    'a nonce is for market salts only', 'nonce over 254', 'nonce over 254', 'not ground today', 'bits',
+    'not a salt of Tacit\'s deployer or shop', 'not a salt of Tacit\'s deployer or shop',
+  ]);
+  assert.equal(out.body.accepted, 0);
+  assert.equal((await pool.submit({ miner: A, salts: [dep.salt], client: 'c1' })).body.accepted, 1, 'the deployer\'s own salts are still taken while CreateX is on');
+});
+
+test('market salts have their own bank, nonce included; CreateX\'s bank is not touched; the page summary says which kinds are taken', async () => {
+  const t = 301 * DAY + 5000;
+  const kv = kvStore(), pool = makeSaltPool({ kv, cfg: MARKET_CFG, now: () => t });
+  const m = grindMarket(301, 10, 3), c = grind(301, 10);
+  await pool.submit({ miner: A, salts: [`${m.salt}:3`, c.salt], client: 'c1' });
+  const bank = (await pool.bank()).body;
+  assert.deepEqual(bank.bank.map((x) => x.salt), [c.salt], 'CreateX\'s bank holds only its own');
+  assert.equal(bank.marketBank.length, 1);
+  assert.deepEqual({ salt: bank.marketBank[0].salt, nonce: bank.marketBank[0].nonce, address: bank.marketBank[0].address, bits: bank.marketBank[0].bits }, { salt: m.salt, nonce: 3, address: m.address, bits: m.bits });
+  const sum = (await pool.summary()).body;
+  assert.deepEqual(sum.schemes, ['createx', 'market']);
+  assert.equal(sum.shop, SHOP); assert.equal(sum.market, SALT_POOL.market); assert.equal(sum.nonceMax, 254);
+  assert.equal(sum.marketBanked, 1); assert.equal(sum.marketBank[0].address, m.address); assert.equal(sum.marketBank[0].nonce, 3);
+  assert.equal(sum.marketBank[0].salt, undefined, 'the page list names addresses, not ids (as the CreateX list)');
+});
+
+test('with CreateX alone nothing changes: a market salt is not taken, and neither bank list nor summary mentions the market', async () => {
+  const t = 302 * DAY + 5000;
+  const pool = makeSaltPool({ kv: kvStore(), cfg: { ...MARKET_CFG, schemes: ['createx'] }, now: () => t });
+  const out = await pool.submit({ miner: A, salts: [grindMarket(302, 8).salt], client: 'c1' });
+  assert.equal(out.body.rejected[0].why, 'not a salt of Tacit\'s deployer');
+  assert.equal('marketBank' in (await pool.bank()).body, false);
+  const sum = (await pool.summary()).body;
+  assert.deepEqual(sum.schemes, ['createx']);
+  assert.equal('shop' in sum, false); assert.equal('marketBank' in sum, false);
+});
+
+test('only the market: the deployer\'s salts are refused, the market\'s are taken', async () => {
+  const t = 303 * DAY + 5000;
+  const pool = makeSaltPool({ kv: kvStore(), cfg: { ...MARKET_CFG, schemes: ['market'] }, now: () => t });
+  const out = await pool.submit({ miner: A, salts: [grind(303, 8).salt, grindMarket(303, 8).salt], client: 'c1' });
+  assert.equal(out.body.accepted, 1);
+  assert.equal(out.body.rejected[0].why, 'not a salt of Tacit\'s deployer or shop');
+});
+
+test('market named but no shop: nothing of the market is taken, not even a salt that leads with the zero address', async () => {
+  const t = 304 * DAY + 5000;
+  const pool = makeSaltPool({ kv: kvStore(), cfg: { ...MARKET_CFG, shop: null }, now: () => t });
+  const zero = '0x' + '00'.repeat(20) + '00' + (304 % 65536).toString(16).padStart(4, '0') + 'aa'.repeat(9);
+  const out = await pool.submit({ miner: A, salts: [zero], client: 'c1' });
+  assert.equal(out.body.accepted, 0);
+  assert.equal(out.body.rejected[0].why, 'not a salt of Tacit\'s deployer');
+  assert.equal('marketBank' in (await pool.bank()).body, false);
+  assert.equal('shop' in (await pool.summary()).body, false);
 });
