@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-aoJVV/8FE20gZfFJZFdq/tnLlmByvRybkx4lCtzL7Gw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-dZ5P0+s1B/1V87DUZ33EHbTnwFsymV8w0kZqDDZXACs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -2838,7 +2838,7 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=72a564c0');
+    const m = await import('/fixed-pool-pay.js?cb=9767d011');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2846,7 +2846,7 @@ async function largeWithdraw(c, onNotes) {
       connect: () => connectWallet(), ensureChain: () => ensureChain(c.chainId),
       act, toast, errText, say: (t) => say($('#status'), html`<span class="ok">${t}</span>`), onNotes,
     });
-    return { ctl, planExit: m.planExit };
+    return { ctl, planExit: m.planExit, feePercent: Number(m.MAX_FEE_PERCENT) };
   } catch (e) { console.warn('large-pool withdraw:', e); return null; }
 }
 // The way in under the Withdraw form: whole notes made from the private balance. The page lends the private balance, the relay's fee for a gas
@@ -2855,14 +2855,14 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=72a564c0');
+    const m = await import('/fixed-pool-pay.js?cb=9767d011');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
       account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c),
       connect: () => connectWallet(), ensureChain: () => ensureChain(c.chainId),
       act, toast, errText, say: (t) => say($('#status'), html`<span class="ok">${t}</span>`),
-      balance: () => cur().bal,
+      balance: () => cur().bal, parseAmount: (x) => parseUnits(x),
       relayFee: async (gas) => BigInt((await keeperJson(c, `/quote?gas=${gas}`)).fee),
       refundBox: async () => (await walletOn(c)).refundBox(),
       clock: async () => (await chainClock(c))(),
@@ -2878,13 +2878,13 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=72a564c0');
+    const m = await import('/fixed-pool-pay.js?cb=9767d011');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
       account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c), names: () => getNames(),
       connect: () => connectWallet(), ensureChain: () => ensureChain(c.chainId),
-      onPlan: hooks.onPlan, depositRest: (a, step, cc) => depositRest(cc, a, step),
+      onPlan: hooks.onPlan, depositRest: (a, step, cc) => depositRest(cc, a, step), parseAmount: (x) => parseUnits(x),
       act, toast, errText,
       say: (t) => say($('#status'), html`<span class="ok">${t}</span>`),
       done: (cc, h, t) => done(cc, h, t),
@@ -2898,7 +2898,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=72a564c0');
+    const m = await import('/fixed-pool-pay.js?cb=9767d011');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -3581,7 +3581,7 @@ function formWithdraw(f) {
   $$('[data-dest]', f).forEach((b) => b.onclick = () => { S.dest = b.dataset.dest; renderForm(); if (S.dest !== 'addr') bridgeQuote(S.dest); });
   const to = $('#f-wto'), amt = $('#f-wamt'), go = $('#f-go'), rc = $('#f-rcpt');
   // whole notes in the large pools (?fixed=1): an amount of a whole note or more takes these first, the rest comes from the private balance
-  let wd = null, wdPlan = null, wdList = [];
+  let wd = null, wdPlan = null, wdList = [], wdFeePct = MAX_NOTE_FEE_PERCENT;
   const notesFor = (a) => (!l2 && wdPlan && wdList.length && a ? wdPlan(a, wdList.map((x) => x.den)) : null);
   $('#f-me')?.addEventListener('click', () => { to.value = S.wallet; to.dispatchEvent(new Event('input')); });
   const feeNow = () => (l2 ? (BRIDGE_Q.fee[S.dest] ?? null) : relayFee(tab));
@@ -3621,9 +3621,9 @@ function formWithdraw(f) {
       for (const i of px.picks) groups.set(wdList[i].den, (groups.get(wdList[i].den) || 0) + 1);
       const words = [...groups].sort((x, y) => (x[0] < y[0] ? 1 : -1)).map(([d, n]) => `${n} × ${fmt(d, 18, 6)} ETH`).join(', ');
       const changeN = planN && bal != null ? bal - planN.total : null;
-      const byWallet = !!wd?.fromWallet, noteFee = byWallet ? 0n : (fromNotes * BigInt(MAX_NOTE_FEE_PERCENT)) / 100n;
+      const byWallet = !!wd?.fromWallet, noteFee = byWallet ? 0n : (fromNotes * BigInt(wdFeePct)) / 100n;
       R.set(html`${kvRow('From whole notes', words)}
-        ${kvRow('Their gas', byWallet ? 'from your wallet, one transaction for each note: it shows as the sender' : `paid from the notes, at most ${MAX_NOTE_FEE_PERCENT}% of each`)}
+        ${kvRow('Their gas', byWallet ? 'from your wallet, one transaction for each note: it shows as the sender' : `paid from the notes, at most ${wdFeePct}% of each`)}
         ${rest > 0n ? kvRow('From your private balance', `${fmt(rest, 18, 6)} ETH`) : ''}
         ${kvRow('Arrives', html`${byWallet ? '' : 'at least '}${fmt(a - noteFee, 18, 6)} ETH on ${cname(c)}`)}
         ${rest > 0n ? feeRow(fee, selfN) : ''}
@@ -3699,7 +3699,7 @@ function formWithdraw(f) {
   }, { bridge: l2 ? S.dest : null }); };
   if (l2 && BRIDGE_Q.fee?.[S.dest] == null) bridgeQuote(S.dest);
   if (wdOn) {
-    largeWithdraw(c, (list) => { wdList = list; FORM.check?.(); }).then((x) => { if (x) { wd = x.ctl; wdPlan = x.planExit; FORM.check?.(); } });
+    largeWithdraw(c, (list) => { wdList = list; FORM.check?.(); }).then((x) => { if (x) { wd = x.ctl; wdPlan = x.planExit; wdFeePct = x.feePercent || wdFeePct; FORM.check?.(); } });
     largeIntake(c);
   }
 }

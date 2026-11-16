@@ -599,6 +599,29 @@ await test('Withdraw: with the wallet as the notes\' sender the receipt says so,
   await ctx.close();
 });
 
+// ── amounts with commas: the cards read what the page reads ──
+await test('"1,5" is 1.5 ETH in the deposit plan and the way in as it is on the form (it was 15 ETH there), and "1,500", which is no amount on the form, plans nothing', async () => {
+  const { ctx, page, problems } = await open({ search: '?fixed=1', payWrap: true, keeper: QUOTE, notes: [10n * ETH] });
+  await unlock(page);
+  await page.fill('#f-damt', '1,5');
+  await page.waitForFunction(() => /Deposit 1\.5 ETH: 1 whole note \+ 0\.5/.test(document.querySelector('#f-go')?.textContent || ''), null, { timeout: 30000 });
+  assert.doesNotMatch(await page.locator('#lg-split').innerText(), /15 ETH|6 whole/);
+  await page.fill('#f-damt', '1,500');
+  await page.waitForTimeout(1500);
+  assert.equal((await page.locator('#lg-split').innerText()).trim(), '', 'nothing is planned for an amount the form does not take');
+  assert.match(await page.locator('#f-go').innerText(), /^Deposit privately$/);
+  await page.click('#tab-withdraw');
+  await page.waitForSelector('#li-amt', { timeout: 30000 });
+  await page.fill('#li-amt', '1,5');
+  await page.waitForFunction(() => /1 × 1 ETH/.test(document.querySelector('#lg-in')?.textContent || ''), null, { timeout: 30000 });
+  const t = await page.locator('#lg-in').innerText();
+  assert.match(t, /0\.5 ETH\s+stays in your private balance/); assert.doesNotMatch(t, /15 ETH|5 × 1 ETH/);
+  await page.fill('#li-amt', '1,500');
+  await page.waitForFunction(() => !/whole notes, large pool/.test(document.querySelector('#lg-in')?.textContent || ''), null, { timeout: 30000 });
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+
 await browser.close();
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);

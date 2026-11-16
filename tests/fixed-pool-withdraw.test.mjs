@@ -174,6 +174,17 @@ await test('wallet-sent confirm yes sends it, and the result says the whole note
   const out = await flowOf(w).withdraw({ noteText, recipient: RECIPIENT, prover, leaves, confirm: async () => true });
   eq(out.sent, true); eq(w.log.sends.length, 1); eq(out.receive, POOL.denomination); eq(out.spent, true);
 });
+await test('wallet-sent: a read of the pool that fails after the withdrawal was sent leaves it a sent withdrawal, not an error', async () => {
+  const w = world({ knownRoots: known });
+  const base = w.provider.request.bind(w.provider);
+  let failed = 0;
+  w.provider.request = async (r) => {
+    if (r.method === 'eth_call' && w.log.sends.length && r.params[0].data.startsWith('0x' + sel('isSpent(bytes32)'))) { failed++; throw new Error('rpc busy'); }
+    return base(r);
+  };
+  const out = await flowOf(w).withdraw({ noteText, recipient: RECIPIENT, prover, leaves });
+  eq(out.sent, true); eq(w.log.sends.length, 1); eq(out.spent, false, 'not shown yet'); eq(failed > 0, true, 'the read did fail');
+});
 await test('another recipient gives another call, to that recipient', async () => {
   const w = world({ knownRoots: known });
   const other = '0x000000000000000000000000000000000000bEEF';

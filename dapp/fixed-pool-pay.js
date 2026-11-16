@@ -17,9 +17,10 @@
 // secrets come from signing the nonce again.
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32, parseNoteString } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=8d9a873b';
+import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=5ea5dba6';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=40893745';
+export { MAX_FEE_PERCENT };
 import { depositAddressOfName, signBox } from '/fixed-pool-box.js?cb=24625493';
 import { callIntent, call as intentCall } from '/evm-pool-gateway.js';
 import { keccak_256 } from './vendor/tacit-deps.min.js';
@@ -125,8 +126,9 @@ export function attach(env) {
   };
 
   // ---- card one: the split ----
+  const parse = (t) => (env.parseAmount ? env.parseAmount(t) : parseEther(t));
   const plan = () => {
-    const wei = parseEther(env.amountInput.value);
+    const wei = parse(env.amountInput.value);
     if (!wei) return null;
     const off = st.smallest === 0n;
     return { wei, off, ...planSplit(wei, chainId, { minDenominationWei: off ? DEFAULT_MIN_DENOMINATION : st.smallest, maxNotes: DEFAULT_MAX_NOTES }) };
@@ -164,9 +166,24 @@ export function attach(env) {
     await env.ensureChain(c);
     const bal = BigInt(await (await env.read())('eth_getBalance', [env.account(), 'latest']));
     if (bal < p.wei) throw new Error(`Your wallet holds ${formatEther(bal)} ETH on ${c.full}, less than the ${formatEther(p.wei)} ETH to deposit.`);
-    const out = await flowFor().deposit(p, {
-      onStep: (s) => step(s.step === 'find' ? 'looking for the next free note number' : s.step === 'sign' ? `sign for note ${s.i + 1} of ${s.of}` : s.step === 'send' ? 'confirm the deposits in your wallet' : `deposit ${s.i} of ${s.of} confirmed`),
-    });
+    let out;
+    try {
+      out = await flowFor().deposit(p, {
+        onStep: (s) => step(s.step === 'find' ? 'looking for the next free note number' : s.step === 'sign' ? `sign for note ${s.i + 1} of ${s.of}` : s.step === 'send' ? 'confirm the deposits in your wallet' : `deposit ${s.i} of ${s.of} confirmed`),
+      });
+    } catch (e) {
+      // Notes sent before it stopped (one declined in the wallet, a read that failed) are the wallet's: kept, and taken off the amount, so the
+      // next press does not deposit them again.
+      const sent = e?.done || [];
+      if (sent.length) {
+        const got = sent.reduce((t, n) => t + n.pool.denomination, 0n);
+        writeNotes(env.store, chainId, env.account(), [...readNotes(env.store, chainId, env.account()), ...sent.map(metaOf)]);
+        env.setAmount(p.wei - got);
+        loadNotes();
+        throw new Error(`${sent.length} of ${p.noteCount} notes ${sent.length === 1 ? 'was' : 'were'} sent (${formatEther(got)} ETH) and kept. The amount above is what is left to deposit. ${env.errText(e)}`);
+      }
+      throw e;
+    }
     writeNotes(env.store, chainId, env.account(), [...readNotes(env.store, chainId, env.account()), ...out.notes.map(metaOf)]);
     env.setAmount(p.remainder);
     loadNotes();
@@ -192,6 +209,8 @@ export function attach(env) {
     }
   }
   function paintNotes() {
+    // while the fee panel is open the card is not redrawn: its Send and Cancel buttons live in it, and a late read or the gas choice would take them away
+    if (st.confirming) { st.dirty = true; return; }
     const account = env.account();
     const rows = st.notes.map((n, i) => {
       const pool = poolOf(n.pool), gone = st.spent.get(n.nh);
@@ -236,7 +255,8 @@ export function attach(env) {
         : `Gas is paid from the note: up to ${formatEther(fee)} ETH (${pct.toFixed(2)}% of it), and what is not used comes back to the address. The address gets at least ${formatEther(receive)} ETH.`;
       ask.innerHTML = `${where}<p class="note">${cost}</p>
         <div style="display:flex;gap:8px"><button class="btn" type="button" id="lg-send" style="margin-top:6px">Send</button><button class="btn ghost" type="button" id="lg-cancel" style="margin-top:6px">Cancel</button></div>`;
-      const done = (ok) => { clearTimeout(t); ask.hidden = true; ask.innerHTML = ''; resolve(ok); };
+      st.confirming = true;
+      const done = (ok) => { clearTimeout(t); ask.hidden = true; ask.innerHTML = ''; st.confirming = false; resolve(ok); if (st.dirty) { st.dirty = false; paintNotes(); } };
       const t = setTimeout(() => done(false), 3 * 60 * 1000);
       ask.querySelector('#lg-send').onclick = () => done(true);
       ask.querySelector('#lg-cancel').onclick = () => done(false);
@@ -407,7 +427,8 @@ export function attachWithdraw(env) {
 // gas figure, the refund box and the clock, and `send`, which makes the spend.
 // Gas of the whole transaction: the pool's own withdrawal (450 thousand) and the deposits (measured on the live pools: about 1.00 million
 // for the first, 0.81 million for each more).
-const WATCH_MS = 5000;   // how often the pool is asked whether a pending spend's notes have landed
+const WATCH_MS = 5000;
+const SEND_GRACE_MS = 60_000;   // how long a landed spend's unanswered send is waited for before the next one is started   // how often the pool is asked whether a pending spend's notes have landed
 export const intakeGas = (notes) => 450_000 + 1_040_000 + 850_000 * Math.max(0, notes - 1);
 export function attachIntake(env) {
   const { host } = env;
@@ -417,7 +438,7 @@ export function attachIntake(env) {
   const st = { via: 'relay', amount: '', fee: null, feeErr: null, busy: false };
   const smallest = () => { try { const v = BigInt(env.store.get(MIN_KEY(chainId))); return v > 0n ? v : DEFAULT_MIN_DENOMINATION; } catch { return DEFAULT_MIN_DENOMINATION; } };
   const planOf = () => {
-    const wei = parseEther(st.amount);
+    const wei = (env.parseAmount ? env.parseAmount(st.amount) : parseEther(st.amount));
     if (!wei) return null;
     return { wei, ...planSplit(wei, chainId, { minDenominationWei: smallest(), maxNotes: DEFAULT_MAX_NOTES }) };
   };
@@ -483,11 +504,13 @@ export function attachIntake(env) {
         // The pool, not the send's answer, says whether the notes are made: a relay's answer can be slow (a mainnet canary waited twelve minutes for one) or
         // lost though its transaction landed in a minute. So the pool is watched while the send is pending: the notes landing ends the wait, a send that
         // fails is believed only if they did not land, and what a send says after that is not shown.
-        let live = true, sendErr = null, stop = false;
-        const sending = env.send({ intent, amount, gas, maxFee, via: st.via === 'wallet' ? 'self' : 'relay', onStep: (m) => { if (live) tag(m); } }).then(() => 'sent', (e) => { sendErr = e; return 'failed'; });
+        let live = true, sendErr = null, stop = false, settled = false;
+        const sending = env.send({ intent, amount, gas, maxFee, via: st.via === 'wallet' ? 'self' : 'relay', onStep: (m) => { if (live) tag(m); } })
+          .then(() => 'sent', (e) => { sendErr = e; return 'failed'; }).finally(() => { settled = true; });
         const watching = (async () => {
           while (!stop) {
-            if ((await flow.landedNotes(g, { wait: false })).length === g.length) return 'landed';
+            // one failed read must not end the wait (and fail the spend that is still going): ask again
+            try { if ((await flow.landedNotes(g, { wait: false })).length === g.length) return 'landed'; } catch { /* ask again */ }
             await new Promise((r) => setTimeout(r, WATCH_MS));
           }
           return 'stopped';
@@ -501,6 +524,12 @@ export function attachIntake(env) {
         if (landed.length !== g.length) {
           if (sendErr) throw new Error(`${env.errText(sendErr)} If it was sent after all, Look for notes will show the note once it lands.`);
           throw new Error('The spend went through but the deposit is not in the pool yet. Look for notes will show it in a minute.');
+        }
+        // The notes are in the pool but the send has not answered: the next spend must not start while this one may still be using the same private
+        // notes (two spends of them at once). Give it a moment, and stop here if it is still out.
+        if (!settled && k < groups.length - 1) {
+          await Promise.race([sending, new Promise((r) => setTimeout(r, env.sendGraceMs ?? SEND_GRACE_MS))]);
+          if (!settled) throw new Error('The relay has not answered for the last note, so the others were not started: starting them now could spend the same funds twice. Look for notes lists what has landed.');
         }
       } catch (e) {
         if (placed.length) writeNotes(env.store, chainId, env.account(), [...readNotes(env.store, chainId, env.account()), ...placed.map(metaOf)]);

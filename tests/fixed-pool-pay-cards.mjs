@@ -60,7 +60,7 @@ const read = async () => async (method, params = []) => {
       if (!p) return '0x';
       const s = data.slice(2, 10), arg = data.slice(10);
       if (s === SEL.den) return '0x' + hex(p.d, 64);
-      if (s === SEL.com) return '0x' + (p.seen.has(arg) ? '1' : '0').padStart(64, '0');
+      if (s === SEL.com) { if (window.__failReads > 0) { window.__failReads--; throw new Error('rpc busy'); } return '0x' + (p.seen.has(arg) ? '1' : '0').padStart(64, '0'); }
       if (s === SEL.spent) return '0x' + ((window.__order ? window.__order.slice(0, window.__spentN).includes('0x' + arg) : window.__spentAll) ? '1' : '0').padStart(64, '0');
       if (s === SEL.root) return '0x' + '1'.padStart(64, '0');
       throw new Error('call ' + s);
@@ -75,7 +75,9 @@ const wallet = { async request({ method, params = [] }) {
     window.__spentAll = true; window.__spentN++;
     return '0x' + hex(900 + window.__wsent, 64);
   }
-  if (method === 'eth_sendTransaction') { const tx = params[0], p = pools.get(tx.to.toLowerCase()); if (BigInt(tx.value) !== p.d) throw new Error('value'); p.seen.add(tx.data.slice(10)); window.__log.sends++; return '0x' + hex(window.__log.sends, 64); }
+  if (method === 'eth_sendTransaction') { const tx = params[0], p = pools.get(tx.to.toLowerCase()); if (BigInt(tx.value) !== p.d) throw new Error('value');
+    window.__deposits = (window.__deposits || 0) + 1;
+    if (window.__rejectDepositAt === window.__deposits) throw new Error('User rejected the request.'); p.seen.add(tx.data.slice(10)); window.__log.sends++; return '0x' + hex(window.__log.sends, 64); }
   if (method === 'eth_requestAccounts') { window.__log.accountRequests++; return ['${WALLET}']; }
   throw new Error('unsupported ' + method);
 } };
@@ -129,7 +131,7 @@ const env3 = {
   balance: () => (window.__bal == null ? null : BigInt(window.__bal)),
   relayFee: async (gas) => { if (window.__relayErr) throw new Error(window.__relayErr); window.__quotedGas = gas; return 100000000000000n; },
   refundBox: async () => REFUND,
-  clock: async () => 1800000000,
+  clock: async () => 1800000000, sendGraceMs: 3000,
   send: async (a) => {
     window.__intents.push({ calls: a.intent.calls.map((c) => ({ target: c.target, value: c.value.toString(), data: c.data })), refund: a.intent.refund, deadline: a.intent.deadline.toString(), amount: a.amount.toString(), gas: a.gas, maxFee: a.maxFee == null ? null : a.maxFee.toString(), via: a.via });
     if (window.__sendFailAt === window.__intents.length) throw new Error('the relay refused');
@@ -137,6 +139,7 @@ const env3 = {
     // the notes are in their pools; what the send then does is up to the test: answer, lose the answer, or never answer
     if (window.__sendMode === 'lose') throw new Error('the relay timed out');
     if (window.__sendMode === 'hang') { a.onStep?.('sending through the relay'); await new Promise(() => {}); }
+    if (window.__sendMode === 'hangflaky') { window.__failReads = 3; await new Promise(() => {}); }
     return '0x' + hex(700 + window.__intents.length, 64);
   },
 };
@@ -257,6 +260,10 @@ await test('Move into Tacit: proved in a worker, the fee shown and pressed, one 
   await page.click('[data-move="0"]');
   await page.waitForSelector('#lg-ask:not([hidden]) #lg-send', { timeout: 240000 });
   assert.equal(sent.length, 0, 'nothing is sent before the press');
+  // a redraw of the card while the panel is open (a late read of the pool, the gas choice) must not take its buttons away
+  await page.evaluate(() => { window.__repaint(); });
+  await page.waitForTimeout(800);
+  assert.equal(await page.locator('#lg-ask:not([hidden]) #lg-send').count(), 1, 'the panel and its Send button are still there');
   const ask = await page.locator('#lg-ask').innerText();
   assert.match(ask, /up to 0\.\d+ ETH \(\d\.\d\d% of it\)/); assert.match(ask, /at least 0\.\d+ ETH/);
   await shot(page, 'confirm');
@@ -631,6 +638,49 @@ await test('a relay that will not take the gas falls back to the wallet and says
   await page.waitForFunction(() => /The relay cannot send this one \(gas above the 1500000 cap\), so your wallet does/.test(document.querySelector('#in').textContent));
   assert.equal(await page.locator('#li-via').inputValue(), 'wallet');
   await page.evaluate(() => { window.__relayErr = null; });
+});
+// ---- what a code review found, held in place ----
+await test('a deposit that stops after the first note (the second declined in the wallet) keeps that note, takes it off the amount, and the next press deposits only the rest', async () => {
+  await page.reload(); await page.waitForFunction(() => window.__ready === true);
+  await page.evaluate((k) => { localStorage.removeItem(k); window.__restFail = false; window.__rest = []; window.__deposits = 0; window.__rejectDepositAt = 2; }, NOTES_KEY);
+  await page.fill('#amt', '2.5');
+  await page.click('#lg-go'); // connect
+  await page.waitForFunction(() => /Deposit 2\.5 ETH: 2 whole notes \+ 0\.5/.test(document.querySelector('#lg-go')?.textContent || ''));
+  await page.click('#lg-go');
+  await page.waitForFunction(() => /1 of 2 notes was sent \(1 ETH\) and kept\. The amount above is what is left to deposit\./.test(document.querySelector('#status').textContent), null, { timeout: 90000 });
+  assert.match(await status(), /User rejected the request/);
+  assert.equal(await page.inputValue('#amt'), '1.5', 'the note that was sent is off the amount');
+  assert.equal((await keptNotes()).length, 1, 'and kept');
+  assert.deepEqual(await page.evaluate(() => window.__rest), [], 'the part for the private balance was not deposited either');
+  await page.evaluate(() => { window.__rejectDepositAt = null; });
+  await page.waitForFunction(() => /Deposit 1\.5 ETH: 1 whole note \+ 0\.5/.test(document.querySelector('#lg-go')?.textContent || ''));
+  const sendsBefore = await page.evaluate(() => window.__log.sends);
+  await page.click('#lg-go');
+  await page.waitForFunction(() => /0\.5 ETH went into your private balance/.test(document.querySelector('#status').textContent), null, { timeout: 90000 });
+  assert.equal((await page.evaluate(() => window.__log.sends)) - sendsBefore, 1, 'one more note, not two');
+  assert.equal((await keptNotes()).length, 2);
+  assert.deepEqual(await page.evaluate(() => window.__rest), ['500000000000000000']);
+});
+await test('a send that never answers, with the pool reads failing for a while, still ends once a read gets through and the notes are there', async () => {
+  await page.evaluate(() => { window.__intents.length = 0; window.__sendMode = 'hangflaky'; });
+  const before = (await keptNotes()).length;
+  await typeIn('1');
+  await page.click('#li-go');
+  await page.waitForFunction(() => /The note is in the large pool \(1 ETH\), made from your private balance/.test(document.querySelector('#status').textContent), null, { timeout: 120000 });
+  assert.equal((await keptNotes()).length, before + 1);
+  assert.doesNotMatch(await status(), /did not go/);
+  await page.evaluate(() => { window.__sendMode = null; window.__failReads = 0; });
+});
+await test('two notes by the relay: the second is not started while the first send is still unanswered, and the message says why', async () => {
+  await page.evaluate(() => { window.__intents.length = 0; window.__sendMode = 'hang'; });
+  const before = (await keptNotes()).length;
+  await typeIn('2');
+  await page.click('#li-go');
+  await page.waitForFunction(() => /The relay has not answered for the last note, so the others were not started/.test(document.querySelector('#status').textContent), null, { timeout: 90000 });
+  assert.equal((await intents()).length, 1, 'only the first spend was made');
+  assert.match(await status(), /1 of 2 notes is in the large pool/);
+  assert.equal((await keptNotes()).length, before + 1, 'the note that landed is kept');
+  await page.evaluate(() => { window.__sendMode = null; });
 });
 await test('no errors reached the console', async () => { assert.deepEqual(problems, []); });
 

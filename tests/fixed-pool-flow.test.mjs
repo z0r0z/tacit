@@ -47,9 +47,9 @@ const signReal = async (json) => {
   return '0x' + bytesToHex(sig.toCompactRawBytes()) + (sig.recovery + 27).toString(16);
 };
 
-function world({ chainId = 11155111, atomic = false, flaky = false, wrongDenomination = null, noCode = null, failSendAt = null } = {}) {
+function world({ chainId = 11155111, atomic = false, flaky = false, wrongDenomination = null, noCode = null, failSendAt = null, flakyReceipts = 0, flakyCommitments = 0 } = {}) {
   const pools = new Map(FIXED_POOLS[chainId].map((p) => [p.address.toLowerCase(), { ...p, seen: new Set(), spent: new Set() }]));
-  const log = { signs: 0, sends: [], batches: [], calls: 0 };
+  const log = { signs: 0, sends: [], batches: [], calls: 0, rc: 0, cm: 0 };
   let flip = 0;
   const provider = {
     async request({ method, params = [] }) {
@@ -72,7 +72,7 @@ function world({ chainId = 11155111, atomic = false, flaky = false, wrongDenomin
             const d = wrongDenomination && wrongDenomination.toLowerCase() === to.toLowerCase() ? p.denomination * 2n : p.denomination;
             return '0x' + d.toString(16).padStart(64, '0');
           }
-          if (s === sel('commitments(bytes32)')) return '0x' + (p.seen.has(arg) ? '1' : '0').padStart(64, '0');
+          if (s === sel('commitments(bytes32)')) { if (log.sends.length && log.cm++ < flakyCommitments) throw new Error('rpc busy'); return '0x' + (p.seen.has(arg) ? '1' : '0').padStart(64, '0'); }
           if (s === sel('isSpent(bytes32)')) return '0x' + (p.spent.has(arg) ? '1' : '0').padStart(64, '0');
           throw new Error('unknown call ' + s);
         }
@@ -94,7 +94,7 @@ function world({ chainId = 11155111, atomic = false, flaky = false, wrongDenomin
           land(tx);
           return '0x' + String(log.sends.length).padStart(64, '0');
         }
-        case 'eth_getTransactionReceipt': return { status: '0x1' };
+        case 'eth_getTransactionReceipt': if (log.rc++ < flakyReceipts) throw new Error('rpc busy'); return { status: '0x1' };
         default: throw new Error('unexpected ' + method);
       }
     },
@@ -143,9 +143,15 @@ await test('a note that never lands is not counted, and does not move the hint',
 console.log('amounts');
 await test('parseEther and formatEther', () => {
   eq(parseEther('100.001234'), 100n * E + 1234n * 10n ** 12n);
-  eq(parseEther('0.1'), E / 10n); eq(parseEther('.5'), E / 2n); eq(parseEther('5.'), 5n * E); eq(parseEther('1,000'), 1000n * E);
+  eq(parseEther('0.1'), E / 10n); eq(parseEther('.5'), E / 2n); eq(parseEther('5.'), 5n * E);
   for (const bad of ['', '.', 'abc', '1e3', '-1', '1.0000000000000000001', '1 2']) eq(parseEther(bad), null, bad);
   eq(formatEther(100n * E + 1234n * 10n ** 12n), '100.001234'); eq(formatEther(E / 10n), '0.1'); eq(formatEther(0n), '0');
+});
+
+await test('commas are read as the Pay page reads them: a decimal comma is a decimal point, thousands separators are taken out, an ambiguous one is not an amount', () => {
+  eq(parseEther('1,5'), E * 3n / 2n, '1,5 is 1.5, not 15'); eq(parseEther('12,5'), E * 25n / 2n); eq(parseEther('0,5'), E / 2n);
+  eq(parseEther('1,000.5'), 1000n * E + E / 2n); eq(parseEther('1,000,000'), 1000000n * E); eq(parseEther('12,345.67'), 12345n * E + 67n * E / 100n);
+  for (const amb of ['1,000', '1,500', '1,2,3', '1,5,', ',,', '1,00,000', '1.000,5']) eq(parseEther(amb), null, amb + ' is ambiguous or malformed');
 });
 
 console.log('deposit');
@@ -205,6 +211,16 @@ await test('a wallet whose signature changes is refused, and nothing is sent', a
   const w = world({ flaky: true });
   await rejects(flow(w).deposit(planFor('0.1')), /signs the same request differently/);
   eq(w.log.sends.length, 0);
+});
+await test('a receipt read that fails once after the transaction was sent does not make the deposit a failure (a retry would deposit it again)', async () => {
+  const w = world({ flakyReceipts: 2 }); const f = flow(w);
+  const out = await f.deposit(planFor('0.2'));
+  eq(out.notes.length, 2); eq(w.log.sends.length, 2, 'each note was sent once');
+});
+await test('commitment reads that fail after the deposits were sent are asked again, and the notes are returned', async () => {
+  const w = world({ flakyCommitments: 3 }); const f = flow(w);
+  const out = await f.deposit(planFor('0.1'));
+  eq(out.notes.length, 1); eq(w.log.sends.length, 1);
 });
 await test('a rejected second transaction keeps the first, and says so', async () => {
   const w = world({ failSendAt: 1 });
