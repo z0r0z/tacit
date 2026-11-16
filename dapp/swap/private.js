@@ -8,7 +8,7 @@ import { makeRunner } from '/activity.js?cb=a0384066';
 export { Cancelled, relayWords };
 
 let namesP = null;
-const names = () => (namesP ||= import('/confidential-names.js?cb=26ecda09').then(({ makeConfidentialNames, makeMainnetCall }) => makeConfidentialNames({ call: makeMainnetCall(), secp, keccak256: keccak_256 })).catch((e) => { namesP = null; throw e; }));
+const names = () => (namesP ||= import('/confidential-names.js?cb=c7e1989f').then(({ makeConfidentialNames, makeMainnetCall }) => makeConfidentialNames({ call: makeMainnetCall(), secp, keccak256: keccak_256 })).catch((e) => { namesP = null; throw e; }));
 export async function resolveTacit(raw) {
   const n = await names();
   const local = (s) => {

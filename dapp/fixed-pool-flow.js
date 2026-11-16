@@ -244,7 +244,7 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
   // The steps both withdrawals share: the note is for this network and a pool, the recipient is an address, the
   // pool is what it says, the note is unspent and among the pool's deposits, and the tree built from them lands on
   // a root the pool knows. Everything here is checked before any proof is made.
-  async function readyToWithdraw({ noteText, recipient, prover, onStep, leaves, beforeRead = () => {} }) {
+  async function readyToWithdraw({ noteText, recipient, prover, onStep, leaves, beforeRead = () => {}, cache = null }) {
     const note = parseNoteString(noteText);
     if (note.chainId !== chainId) throw new Error(`This note is for network ${note.chainId}; the wallet is on ${chainId}.`);
     const pool = pools.find((p) => formatEther(p.denomination) === note.amount);
@@ -253,20 +253,41 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     beforeRead(pool);
     await checkPool(pool);
     if (await spent(pool, note.nullifierHash)) throw new Error('This note is already spent.');
-    onStep({ step: 'read' });
-    const { bytes, count } = await leaves({
-      chainId, pool,
-      getLogs: (f) => provider.request({ method: 'eth_getLogs', params: [f] }),
-      blockNumber: async () => Number(await provider.request({ method: 'eth_blockNumber' })),
-      onProgress: (p) => onStep({ step: 'read', ...p }),
-    });
     const mine = commitmentBytes32(note.commitment).slice(2);
-    let found = false;
-    for (let i = 0; i < count && !found; i++) found = bytesToHex(bytes.subarray(i * 32, i * 32 + 32)) === mine;
-    if (!found) throw new Error('This note\'s deposit is not among the pool\'s deposits. Check the note, or try again in a minute if it was just made.');
-    onStep({ step: 'tree', count });
-    const { root } = await prover.load(bytes);
-    if (!(await knownRoot(pool, root))) throw new Error('The deposits read do not add up to a root the pool knows. Try again in a minute.');
+    const has = (bytes, count) => { for (let i = 0; i < count; i++) if (bytesToHex(bytes.subarray(i * 32, i * 32 + 32)) === mine) return true; return false; };
+    // A run of withdrawals that shares `cache` ({ pools: Map, loaded }, with one prover) reads each pool's deposits and builds its tree once: the
+    // pool is read again only if it no longer knows that root or the note is not among the deposits read (a busy pool moved on, a note was made
+    // since). The proved call is still checked against this root before anything is sent, so a tree left in the prover by mistake cannot spend.
+    let src = cache?.pools.get(pool.address) ?? null, reused = false;
+    if (src && has(src.bytes, src.count) && (await knownRoot(pool, src.root))) reused = true; else src = null;
+    if (!src) {
+      onStep({ step: 'read' });
+      const r = await leaves({
+        chainId, pool,
+        getLogs: (f) => provider.request({ method: 'eth_getLogs', params: [f] }),
+        blockNumber: async () => Number(await provider.request({ method: 'eth_blockNumber' })),
+        onProgress: (p) => onStep({ step: 'read', ...p }),
+      });
+      if (!has(r.bytes, r.count)) throw new Error('This note\'s deposit is not among the pool\'s deposits. Check the note, or try again in a minute if it was just made.');
+      src = { bytes: r.bytes, count: r.count };
+    }
+    let root;
+    if (reused) {
+      if (cache.loaded !== pool.address) {
+        cache.loaded = null;
+        const again = await prover.load(src.bytes.slice());   // another pool's tree is in the prover: give it this one back (it takes the buffer it is given)
+        if (again.root !== src.root) throw new Error('The deposits read before do not give the same root now. Try again.');
+        cache.loaded = pool.address;
+      }
+      root = src.root;
+    } else {
+      onStep({ step: 'tree', count: src.count });
+      const keep = cache ? src.bytes.slice() : null;           // the prover takes the buffer it is given
+      if (cache) cache.loaded = null;
+      ({ root } = await prover.load(src.bytes));
+      if (!(await knownRoot(pool, root))) throw new Error('The deposits read do not add up to a root the pool knows. Try again in a minute.');
+      if (cache) { cache.pools.set(pool.address, { bytes: keep, count: src.count, root }); cache.loaded = pool.address; }
+    }
     return { note, pool, root, preimageHex: bytesToHex(note.preimage) };
   }
 
@@ -283,8 +304,8 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
   // `send` is false) sends it from the connected account. `prover` has `load(bytes)` and `prove(args)`.
   // `confirm({ fee, receive, denomination })`, when given, is asked once the proof is made, before anything is sent (fee is 0: the wallet
   // pays the gas, and the recipient gets the whole note); a false answer ends it with nothing sent.
-  async function withdraw({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves, confirm = null }) {
-    const { note, pool, root, preimageHex } = await readyToWithdraw({ noteText, recipient, prover, onStep, leaves });
+  async function withdraw({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves, confirm = null, cache = null }) {
+    const { note, pool, root, preimageHex } = await readyToWithdraw({ noteText, recipient, prover, onStep, leaves, cache });
     onStep({ step: 'prove' });
     const out = await prover.prove({ chainId, pool: pool.address, preimageHex, recipient });
     checkWithdrawCall(out, { pool, recipient, root, nullifierHash: note.nullifierHash });
@@ -302,11 +323,11 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
   // recipient is paid directly (it can be a Tacit receive address) and needs no ETH.
   // `confirm({ fee, receive, denomination })` is asked once the proof is made and the fee is fixed, before anything is
   // sent; a false answer ends it with nothing sent.
-  async function withdrawSponsored({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves, bundler = null, confirm = null, maxFeePercent }) {
+  async function withdrawSponsored({ noteText, recipient, prover, send = true, onStep = () => {}, leaves = fixedPoolLeaves, bundler = null, confirm = null, maxFeePercent, cache = null }) {
     const cfg = PAYMASTERS[chainId];
     if (!cfg) throw new Error('Paying the gas from the note is not available on this network.');
     const { note, pool, root, preimageHex } = await readyToWithdraw({
-      noteText, recipient, prover, onStep, leaves,
+      noteText, recipient, prover, onStep, leaves, cache,
       beforeRead: (p) => paymasterFor(chainId, p.address), // a pool the paymaster does not take stops here
     });
     const client = bundler || bundlerClient(cfg.bundler, fetchImpl);

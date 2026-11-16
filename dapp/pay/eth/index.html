@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-dZ5P0+s1B/1V87DUZ33EHbTnwFsymV8w0kZqDDZXACs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-HKyfjjKHIcCAC8PV3Ljr6NIh3COk2yC4B4n5pzKzx2Q=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -776,6 +776,7 @@ import { addrView } from '/address-view.js?cb=58dd4914';
 import { qrSvg as qrMarkup } from '/qr.js?cb=7ca24213';
 import { keeperIdOf, KEEPERS as POOL_KEEPERS } from '/evm-pool-tokens.js?cb=16e0e196';
 import { keeperFetch, available as routeAvailable, enabled as routeOn, turn as routeTurn } from '/private-route.js?cb=da84ce7e';
+import { signBoxSync as signBox, boxSigOk as boxRecordOk } from '/box-record.js?cb=c66c8473';
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 // preload-later:begin
@@ -2838,7 +2839,7 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=9767d011');
+    const m = await import('/fixed-pool-pay.js?cb=701ac806');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2855,7 +2856,7 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=9767d011');
+    const m = await import('/fixed-pool-pay.js?cb=701ac806');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
@@ -2878,7 +2879,7 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=9767d011');
+    const m = await import('/fixed-pool-pay.js?cb=701ac806');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2898,7 +2899,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=9767d011');
+    const m = await import('/fixed-pool-pay.js?cb=701ac806');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -3725,10 +3726,6 @@ async function bridgeQuote(dest) {
 }
 
 const npkHex = (v) => BigInt(v).toString(16).padStart(64, '0');
-const BOX_TAG = new TextEncoder().encode('tacit-pay-box-v1');
-const boxDigest = (npk) => keccak_256(concatBytes(BOX_TAG, hexToBytes(npkHex(npk))));
-const signBox = (v, npk) => secp.sign(boxDigest(npk), hexToBytes(npkHex(v))).toCompactHex();
-const boxSigOk = (V, nHex, sigHex) => { try { return secp.verify(sigHex, boxDigest(BigInt('0x' + nHex)), V.toRawBytes(true)); } catch { return false; } };
 function payLink({ bp, n, ns, amount, chain, note }) {
   const q = new URLSearchParams({ pay: bp });
   if (n != null) { q.set('n', npkHex(n)); if (ns) q.set('ns', ns); }
@@ -4007,7 +4004,7 @@ function boxOfName(name, fresh = false) {
   const hit = NAME_BOXES.get(name);
   if (hit && !fresh && Date.now() - hit.at < 60e3) return hit.p;
   const p = (async () => {
-    try { return await (await import('/fixed-pool-box.js?cb=24625493')).depositAddressOfName(await getNames(), name, ROUTER); }
+    try { return await (await import('/fixed-pool-box.js?cb=8abc44f0')).depositAddressOfName(await getNames(), name, ROUTER); }
     catch (e) { return { error: errText(e), code: e?.code }; }
   })();
   NAME_BOXES.set(name, { at: Date.now(), p });
@@ -4061,7 +4058,7 @@ async function payFromWallet(btn) {
       const m = await mods();
       const dto = await resolveRecipient(r.bp), payee = dto.bp ? m.recipientOf(await spareKeys(), dto.bp) : null;
       if (dto.bp) pinReq(r, dto.bp);
-      if (!r.ns || !payee || !boxSigOk(payee.V, r.n, r.ns)) return await shieldTo(r, a, c);
+      if (!r.ns || !payee || !boxRecordOk(payee.V.toRawBytes(true), r.n, r.ns)) return await shieldTo(r, a, c);
       const npk = BigInt('0x' + r.n), box = m.receiveBoxAddress(npk, m.RECEIVE_FEE_BPS, ROUTER), rpc = await rpcOn(c);
       if (await reqBoxPaid(r, c).catch(() => false)) { (r.boxPaid ||= {})[c.chainId] = true; throw new Error(BOX_USED); }
       const q = await keeperJson(c, '/quote').catch(() => null);

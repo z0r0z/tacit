@@ -17,11 +17,11 @@
 // secrets come from signing the nonce again.
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32, parseNoteString } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=5ea5dba6';
+import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=7f4f9327';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=40893745';
 export { MAX_FEE_PERCENT };
-import { depositAddressOfName, signBox } from '/fixed-pool-box.js?cb=24625493';
+import { depositAddressOfName, signBox } from '/fixed-pool-box.js?cb=8abc44f0';
 import { callIntent, call as intentCall } from '/evm-pool-gateway.js';
 import { keccak_256 } from './vendor/tacit-deps.min.js';
 
@@ -46,15 +46,16 @@ export function planExit(amount, dens) {
 
 const exitWords = (s) => (s.step === 'read' ? (s.of ? `reading the pool's deposits (${s.done} of ${s.of})` : 'reading the pool\'s deposits') : s.step === 'tree' ? `building the tree from ${s.count} deposits` : s.step === 'prove' ? 'proving' : s.step === 'estimate' ? 'asking the bundler about the gas' : s.step === 'price' ? 'gas is high right now, waiting for a calmer price' : s.step === 'quote' ? 'check the fee below' : s.step === 'wait' ? 'waiting for the withdrawal to be mined' : 'working');
 // One note out, its gas paid from the note: proved in a worker, `confirm` asked once the fee is fixed and before anything is sent.
-async function sponsoredExit({ flow, text, to, step, confirm, workerUrl }) {
-  const prover = workerProver(workerUrl);
-  try { return await flow.withdrawSponsored({ noteText: text, recipient: to, prover, confirm, onStep: (s) => step(exitWords(s)) }); } finally { prover.close(); }
+// `prover` and `cache` are for a run of notes: one prover and one cache for the run, so a pool's deposits are read and its tree built once (the caller closes the prover).
+async function sponsoredExit({ flow, text, to, step, confirm, workerUrl, prover: given = null, cache = null }) {
+  const prover = given || workerProver(workerUrl);
+  try { return await flow.withdrawSponsored({ noteText: text, recipient: to, prover, confirm, cache, onStep: (s) => step(exitWords(s)) }); } finally { if (!given) prover.close(); }
 }
 // The same withdrawal sent from the wallet, which pays the gas and shows as the sender: proved in a worker, `confirm` asked once it is proved and
 // before the wallet is asked, and the whole note goes to the recipient. No paymaster and no bundler.
-async function walletExit({ flow, text, to, step, confirm, workerUrl }) {
-  const prover = workerProver(workerUrl);
-  try { return await flow.withdraw({ noteText: text, recipient: to, prover, confirm, onStep: (s) => step(s.step === 'send' ? 'confirm in your wallet' : exitWords(s)) }); } finally { prover.close(); }
+async function walletExit({ flow, text, to, step, confirm, workerUrl, prover: given = null, cache = null }) {
+  const prover = given || workerProver(workerUrl);
+  try { return await flow.withdraw({ noteText: text, recipient: to, prover, confirm, cache, onStep: (s) => step(s.step === 'send' ? 'confirm in your wallet' : exitWords(s)) }); } finally { if (!given) prover.close(); }
 }
 // Notes found by signing numbers again (Find) and which of them are spent are shared by the cards, so a note that was seen spent is not asked about again.
 const SPENT = new Set();
@@ -396,13 +397,17 @@ export function attachWithdraw(env) {
     if (!fromWallet && !PAYMASTERS[chainId]) throw new Error('Paying the gas from a note is not available on this network. Choose your wallet for the gas.');
     if (!env.account()) throw new Error('Connect your wallet first.');
     await env.ensureChain(c);
-    const flow = flowFor(), outs = [];
+    // one prover and one cache for the whole run, the notes of a pool together: each pool's deposits are read and its tree built once, not once a note
+    const flow = flowFor(), outs = [], prover = workerProver(env.workerUrl), cache = { pools: new Map(), loaded: null };
+    const ordered = [...notes].sort((x, y) => String((x.meta ?? x).pool).toLowerCase().localeCompare(String((y.meta ?? y).pool).toLowerCase()));
+    notes = ordered;
+    try {
     for (let k = 0; k < notes.length; k++) {
       const n = notes[k].meta ?? notes[k];
       const tag = (m) => step(notes.length > 1 ? `note ${k + 1} of ${notes.length}: ${m}` : m);
       try {
         const text = await flow.noteText(n);
-        const out = await (fromWallet ? walletExit : sponsoredExit)({ flow, text, to, step: tag, confirm: ({ fee, denomination }) => fee * 100n <= denomination * MAX_FEE_PERCENT, workerUrl: env.workerUrl });
+        const out = await (fromWallet ? walletExit : sponsoredExit)({ flow, text, to, step: tag, confirm: ({ fee, denomination }) => fee * 100n <= denomination * MAX_FEE_PERCENT, workerUrl: env.workerUrl, prover, cache });
         outs.push(out);
         if (out.spent && n.nh) SPENT.add(n.nh);
       } catch (e) {
@@ -411,6 +416,7 @@ export function attachWithdraw(env) {
         throw Object.assign(new Error(outs.length ? `${outs.length} of ${notes.length} notes went out to ${short(to)} (${formatEther(out)} ETH). Note ${k + 1} did not: ${why}` : why), { done: outs });
       }
     }
+    } finally { prover.close(); }
     load();
     return outs;
   }

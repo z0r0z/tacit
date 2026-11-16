@@ -523,7 +523,7 @@ test('recipient field: names resolve and pin the key; a bare account address is 
 });
 
 // ── mainnet eth_call helper ──
-test('makeMainnetCall: falls through failing endpoints, treats a revert as final', async () => {
+test('makeMainnetCall: falls through failing endpoints, and a revert is final once two endpoints give it', async () => {
   const seen = [];
   const mk = (handler) => async (url, init) => { seen.push({ url, body: JSON.parse(init.body) }); return handler(url); };
   const ok = (result) => ({ ok: true, json: async () => ({ result }) });
@@ -537,11 +537,31 @@ test('makeMainnetCall: falls through failing endpoints, treats a revert as final
 
   seen.length = 0;
   const reverting = makeMainnetCall({ rpcs: ['https://a', 'https://b'], fetchImpl: mk(() => ({ ok: true, json: async () => ({ error: { code: 3, message: 'execution reverted', data: '0xdeadbeef' } }) })) });
-  // Every endpoint is asked at once; the first revert settles the call as a revert, never as an answer.
+  // Every endpoint is asked at once; two that revert the same way settle the call as a revert, never as an answer.
   await assert.rejects(reverting({ to: WNS, data: '0x' }), (e) => e instanceof CallRevert && e.data === '0xdeadbeef');
 
   const down = makeMainnetCall({ rpcs: ['https://a', 'https://b'], fetchImpl: mk(() => { throw new Error('boom'); }) });
   await assert.rejects(down({ to: WNS, data: '0x' }), (e) => e instanceof NameError && e.code === 'rpc');
+});
+
+// A revert needs the same agreement as an answer: one endpoint cannot make a registered name look unpublished.
+test('makeMainnetCall: a lone revert is not believed against endpoints that agree, and a revert with nothing agreeing is a disagreement, not a revert', async () => {
+  const REAL = '0x' + '11'.repeat(32);
+  const revertBody = { ok: true, json: async () => ({ error: { code: 3, message: 'execution reverted', data: '0xdeadbeef' } }) };
+  const ok = (result) => ({ ok: true, json: async () => ({ result }) });
+  const mk = (handler) => async (url) => handler(url);
+  // the reverting endpoint answers first; the two honest ones then agree
+  const lone = makeMainnetCall({ rpcs: ['https://hostile', 'https://b', 'https://c'], fetchImpl: mk((u) => (u === 'https://hostile' ? revertBody : new Promise((r) => setTimeout(() => r(ok(REAL)), 20)))) });
+  assert.strictEqual(await lone({ to: WNS, data: '0x' }), REAL, 'two endpoints that agree beat one that reverts');
+  // one reverts and one answers, nothing else: no agreement, so a refusal the user can act on and not "no record"
+  const split = makeMainnetCall({ rpcs: ['https://a', 'https://b'], fetchImpl: mk((u) => (u === 'https://a' ? revertBody : ok(REAL))) });
+  await assert.rejects(split({ to: WNS, data: '0x' }), (e) => e instanceof NameError && e.code === 'rpc-disagreement');
+  // one endpoint reverts and the others are down: not two that agree either
+  const aloneRevert = makeMainnetCall({ rpcs: ['https://a', 'https://b'], fetchImpl: mk((u) => (u === 'https://a' ? revertBody : { ok: false, status: 503 })) });
+  await assert.rejects(aloneRevert({ to: WNS, data: '0x' }), (e) => e instanceof NameError && e.code === 'rpc');
+  // two reverting differently are not agreement; the same revert twice is a revert
+  const different = makeMainnetCall({ rpcs: ['https://a', 'https://b'], fetchImpl: mk((u) => ({ ok: true, json: async () => ({ error: { code: 3, message: 'execution reverted', data: u === 'https://a' ? '0xaa' : '0xbb' } }) })) });
+  await assert.rejects(different({ to: WNS, data: '0x' }), (e) => e instanceof NameError && e.code === 'rpc-disagreement');
 });
 
 // What a name resolves to decides where a private send goes, so one endpoint's word is never enough.

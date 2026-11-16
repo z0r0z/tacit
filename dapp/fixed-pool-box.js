@@ -6,25 +6,12 @@
 // address from `n` and checks `ns` against that pool address, so a record that was swapped, copied from another name or
 // made up names no address and pays no one. Nothing here sends anything.
 
-import { keccak_256, secp, concatBytes, hexToBytes } from './vendor/tacit-deps.min.js';
 import { poolKeysOf } from '/tacit-address.js?cb=00000000';
 import { receiveBoxAddress, RECEIVE_FEE_BPS, EVM_POOL_ROUTER } from '/evm-pool-gateway.js?cb=00000000';
+import { hex64, boxDigest, signBox, boxSigOk } from '/box-record.js?cb=00000000';
 
-const TAG = new TextEncoder().encode('tacit-pay-box-v1');
-const hex64 = (n) => BigInt(n).toString(16).padStart(64, '0');
-
-// What the owner signs, as the Pay page signs it for a payment link: keccak256("tacit-pay-box-v1" || be32(n)).
-export const boxDigest = (n) => keccak_256(concatBytes(TAG, hexToBytes(hex64(n))));
-
-// The owner's signature of box key `n`: `v` is the view scalar. 128 hex (r then s).
-export async function signBox(v, n) {
-  return (await secp.signAsync(boxDigest(n), hexToBytes(hex64(v)))).toCompactHex();
-}
-
-// Whether `ns` is a signature of `n` under `V`, the view key (33 bytes) of a pool address.
-export function boxSigOk(V, n, ns) {
-  try { return secp.verify(String(ns).replace(/^0x/, ''), boxDigest(BigInt('0x' + String(n).replace(/^0x/, ''))), V); } catch { return false; }
-}
+// The signature itself (what is signed, how it is made and checked) lives in box-record.js, which the Pay page's payment links share.
+export { boxDigest, signBox, boxSigOk };
 
 // The record's text for box key `n` (a bigint or 64 hex) and its signature.
 export const boxValue = (n, ns) => `${hex64(typeof n === 'bigint' ? n : BigInt('0x' + String(n).replace(/^0x/, '')))}:${String(ns).replace(/^0x/, '')}`;
