@@ -158,7 +158,9 @@ The same swap in the log: `swap` lines show each phase change (`accepted`, `lock
   new quotes. To stop taking swaps, set `quote.maxAmount` below `quote.minAmount` and restart; open swaps finish.
 - **Do not run two processes on one key.**
 - **Rebalancing is not done here.** Bitcoin TAC builds up as the pool TAC drains. Move it back over the reflection bridge
-  from the Bridge tab, signed in with the same key.
+  from the Bridge tab, signed in with the same key. Not all of it can go: the bridge's proof cannot follow a note whose history passes
+  through the Bitcoin shielded pool. `tools/fastbridge-lp-inventory.mjs` (read only; the key in `FB_LP_KEY`, never printed) opens the key's notes
+  from the chain and asks the bridge's trace about each, so you can see how much of the Bitcoin TAC could come home and how much cannot.
 - **The claimer's prover** is the one remaining trust assumption (see the design doc): the process never proves the user's
   claim, and the user chooses who does.
 
