@@ -21,8 +21,11 @@ function memKv() {
   return { get: async (k, t) => { const v = m.get(k); return v == null ? null : t === 'json' ? JSON.parse(v) : v; }, put: async (k, v) => { m.set(k, String(v)); }, delete: async (k) => { m.delete(k); }, list: async () => ({ keys: [], list_complete: true }), _m: m };
 }
 const day = () => new Date().toISOString().slice(0, 10);
-// A fresh env per case: the gas reading is kept per env, and the counters per KV.
-const fresh = (extra = {}) => { const kv = memKv(); return { kv, env: { CONFIDENTIAL_SETTLE: '1', REGISTRY_KV: kv, CONFIDENTIAL_KV: kv, CONFIDENTIAL_BOX_TOKEN: BOX, PROVE_RL_BURST: '1000', FREE_RELAY_GAS_TTL_MS: '0', OP_SHAPE_CHECK: '0', ...extra } }; };   // placeholder ops: the shape doors are not under test here
+// A fresh env per case: the gas reading is kept per env, and the counters per KV. The PRICE, though, is kept for eight
+// seconds in a map of the worker module's own (no env setting reaches it), so a case that reads one price would otherwise
+// be answered with the previous case's — dear gas from the case above, and every cheap-gas assertion below false. Forget
+// it with the env.
+const fresh = (extra = {}) => { worker._forgetGasPrice(); const kv = memKv(); return { kv, env: { CONFIDENTIAL_SETTLE: '1', REGISTRY_KV: kv, CONFIDENTIAL_KV: kv, CONFIDENTIAL_BOX_TOKEN: BOX, PROVE_RL_BURST: '1000', FREE_RELAY_GAS_TTL_MS: '0', OP_SHAPE_CHECK: '0', ...extra } }; };   // placeholder ops: the shape doors are not under test here
 const fixture = (f) => JSON.parse(readFileSync(new URL(`../contracts/sp1/confidential/fixtures/${f}.json`, import.meta.url), 'utf8'));
 const SHAPED = { cbtcmint: fixture('cbtc_mint_op'), cdpmint: fixture('cdp_mint_op'), cdptopup: fixture('cdp_topup_op') };
 let ip = 0, n = 0;
