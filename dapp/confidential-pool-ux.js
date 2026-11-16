@@ -2023,6 +2023,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       const receiptIndex = slot.get(d.receiptLeaf);
       if (receiptIndex != null && !hits.has(d.receiptLeaf)) hits.set(d.receiptLeaf, { lpAsset: d.lpAsset, anchorLeaf: d.anchorLeaf, receiptLeaf: d.receiptLeaf, receiptIndex, via: 'bonded-event' });
     }
+    if ((farm.standalone || []).length) await recoverSoloFarmPositions({ walletPriv, st, events: evs });
     const imported = [];
     for (const rec of await _importedFarmRecords(walletPriv)) {
       const receiptIndex = slot.get(String(rec.receiptLeaf).toLowerCase());
@@ -2103,6 +2104,57 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     }
     if (background) (async () => { for (let i = 0; i < later; i++) { await sleep(laterGapMs); if ((await once()) !== 'later') return; } })().catch(() => {});
     return false;
+  }
+
+  // Positions opened with lpBond into a stand-alone farm before a page kept a record of them (keepFarmPosition), and positions on a device that never had
+  // one, are found from the settle that opened each. The wallet's spent notes say which settles to read: only one that spent two of them which could be the
+  // two sides of a stand-alone farm's pool is fetched, once per page, and its entry is the wallet's only if the wallet's own key re-derives its receipt leaf.
+  // A position found is kept as a record (importFarmPosition checks it is in the pool tree and live in the farm), so it is listed, harvested and exited like
+  // any other. Never throws. → the receipt leaves kept.
+  const _soloChecked = new Set();
+  async function recoverSoloFarmPositions({ walletPriv, st, events, getTxInput = async (h) => { const t = await rpc('eth_getTransactionByHash', [h]); return t && t.input; }, importer = importFarmPosition, checked = _soloChecked } = {}) {
+    const kept = [];
+    try {
+      const solo = (cfg.farm && cfg.farm.standalone) || [];
+      if (!solo.length || !st || !Array.isArray(st.owned) || !st.spent) return kept;
+      const spentIn = new Map();
+      for (const e of events || []) if (e && e.type === 'NullifiersSpent' && e.txHash) for (const nf of e.nullifiers || []) spentIn.set(lc(nf), e.txHash);
+      const byTx = new Map();
+      for (const n of st.owned) {
+        const nu = lc(n.nullifier), h = nu && st.spent.has(nu) ? spentIn.get(nu) : null;
+        if (!h) continue;
+        if (!byTx.has(h)) byTx.set(h, []);
+        byTx.get(h).push(n);
+      }
+      const sides = (notes) => {
+        const assets = [...new Set(notes.map((n) => lc(n.asset)))];
+        for (let i = 0; i < assets.length; i++) for (let j = i + 1; j < assets.length; j++) for (const f of solo) {
+          if (lc(pool.evmLpShareId(pool.evmPoolId(assets[i], assets[j], f.feeBps ?? 30))) === lc(f.lpAsset)) return true;
+        }
+        return false;
+      };
+      const who = lc(st.id && st.id.pubHex);
+      for (const [h, notes] of byTx) {
+        const key = `${who}:${lc(h)}`;
+        if (checked.has(key) || notes.length < 2 || !sides(notes)) continue;
+        let input;
+        try { input = await getTxInput(h); } catch { continue; }
+        if (!input) continue;
+        const decoded = _lockScan.decodeSettleCalls(input), mints = [];
+        for (const call of (decoded && decoded.calls) || []) { try { mints.push(...recovery().decodeCdpFields(call.publicValues).mints); } catch { /* a call that does not read holds none */ } }
+        const hits = recovery().deriveStandalonePositions({
+          mints, standalone: solo, anchors: notes.map((n) => ({ leaf: n.leaf || _noteLeaf(n) })),
+          lpBondPosition: ({ controller, lpAsset, anchorLeaf }) => lpBondPosition({ walletPriv, controller, lpAsset, anchorLeaf }),
+        });
+        let done = true;
+        for (const p of hits) {
+          try { await importer({ ...p, shares: String(p.shares) }, { events, walletPriv, own: true }); kept.push(p.receiptLeaf); }
+          catch (e) { if (/not in the pool tree/i.test(String((e && e.message) || e))) done = false; }   // not visible yet: looked at again; a closed position is not
+        }
+        if (done) checked.add(key);
+      }
+    } catch { /* recovery is best effort: what it cannot read it leaves */ }
+    return kept;
   }
 
   const FARM_UNBOND_DUST_UNITS = 100000n;
@@ -3731,7 +3783,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, addAsset, externalAsset, externalAssets, readAsset, registerTokenCall, tokenTicker, registeredTokens, pooledTokens, lpShareId: (poolId) => String(_lp.lpShareId(poolId)).toLowerCase(), account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
     deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
-    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, lpBondRecord, keepFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
+    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, lpBondRecord, keepFarmPosition, recoverSoloFarmPositions, decodeCdpMints: (pv) => recovery().decodeCdpFields(pv).mints, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };
 }

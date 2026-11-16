@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { hmac } from '../node_modules/@noble/hashes/hmac.js';
@@ -1583,4 +1584,103 @@ test('keepFarmPosition: tried again while the position cannot be seen yet, stopp
   await flush();
   assert.equal(only, 2, 'quick: 0 waits for nothing and tries only in the background');
   await assert.doesNotReject(ux.keepFarmPosition(rec, { walletPriv: 'w', importer: async () => { throw 'a string'; }, sleep: nap, quick: 1, background: false }));
+});
+
+
+// ── positions opened into a stand-alone farm before a page kept a record of them are found from the settle that opened each ──
+const SOLO_PV = readFileSync(new URL('./fixtures/solo-bond-public-values.hex', import.meta.url), 'utf8').trim();   // the public values of a real SPX/TAC join on mainnet
+const soloStub = async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '{}' });
+const soloUx = () => makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: soloStub });
+// a settle(bytes,bytes,bytes[]) call carrying public values, as a transaction's input
+const settleInput = (pvHex) => {
+  const word = (n) => BigInt(n).toString(16).padStart(64, '0'), padTo = (h) => h + '0'.repeat((64 - (h.length % 64)) % 64);
+  const bytes = (h) => word(h.length / 2) + padTo(h), pv = pvHex.replace(/^0x/, ''), proof = '00';
+  const offProof = 96 + 32 + padTo(pv).length / 2, offMemos = offProof + 32 + padTo(proof).length / 2;
+  return '0x717fd7f2' + word(96) + word(offProof) + word(offMemos) + bytes(pv) + bytes(proof) + word(0);
+};
+// the real public values with the first cdpMints entry's shares, receipt leaf and owner replaced (the layout is the one decodeCdpFields reads)
+const withMint = (pvHex, { shares, receipt, owner }) => {
+  let s = pvHex.replace(/^0x/, '');
+  const base = Number(BigInt('0x' + s.slice(0, 64))), at = (o) => (base + o) * 2, u = (o) => BigInt('0x' + s.slice(at(o), at(o) + 64));
+  const arr = Number(u(22 * 32)), el = arr + 32 + Number(u(arr + 32)), legs = el + Number(u(el + 5 * 32));
+  const put = (o, hex) => { const i = at(o); s = s.slice(0, i) + hex.replace(/^0x/, '').padStart(64, '0') + s.slice(i + 64); };
+  put(legs + 64, BigInt(shares).toString(16)); put(el + 128, receipt); put(el + 192, owner);
+  return '0x' + s;
+};
+
+test('decodeCdpMints: a real SPX/TAC join on mainnet reads as one receipt bond into its stand-alone farm, with its shares and receipt leaf', async () => {
+  const ux = soloUx(), f = getConfidentialDeployment('mainnet').farm.standalone[0];
+  const mints = ux.decodeCdpMints('0x' + SOLO_PV);
+  assert.equal(mints.length, 1);
+  const m = mints[0];
+  assert.equal(m.controller.toLowerCase(), f.controller.toLowerCase());
+  assert.equal(m.positionLeaf, '0x' + '00'.repeat(31) + '01', 'the receipt sentinel');
+  assert.equal(m.debtValue, 0n, 'a bond, not a harvest');
+  assert.equal(m.legs.length, 1);
+  assert.equal(m.legs[0].asset.toLowerCase(), f.lpAsset.toLowerCase());
+  assert.equal(m.legs[0].value, 59478039n);
+  assert.equal(m.rateSnapshot.toLowerCase(), '0x34228afedbd6b6ad9f52957c999cc4ac551a61eadc694f89353cc80858535967', 'the receipt leaf');
+  assert.match(m.owner, /^0xb467f2ea/i);
+  const { makeConfidentialLockScan } = await import('../dapp/confidential-lock-scan.js');
+  const fields = makeConfidentialLockScan({ pool: ux.pool }).decodePublicValuesLockFields('0x' + SOLO_PV);
+  assert.ok(fields.leaves.some((l) => l.toLowerCase() === m.rateSnapshot.toLowerCase()), 'the receipt leaf is one of the leaves that settle inserted');
+});
+
+test('recoverSoloFarmPositions: a position opened before any record was kept is found from its settle, only for the wallet whose key re-derives it', async () => {
+  const { sha256: nsha } = await import('../node_modules/@noble/hashes/sha2.js');
+  const ux = soloUx(), pool = ux.pool, farm = getConfidentialDeployment('mainnet').farm, f = farm.standalone[0];
+  const b = new Uint8Array(46); b.set(new TextEncoder().encode('tacit-evm-token-v1')); new DataView(b.buffer).setBigUint64(18, 1n); b.set(Uint8Array.from(Buffer.from('e0f63a424a4439cbe457d80e4f4b51ad25b2c56c', 'hex')), 26);
+  const SPX = '0x' + Buffer.from(nsha(b)).toString('hex'), TAC = ux.assetByTicker.cTAC.assetId;
+  const lc = (x) => String(x).toLowerCase();
+  const wallet = (seed) => {
+    const walletPriv = '0x' + seed.repeat(32), id = ux.identity(walletPriv), mk = (asset, idx) => {
+      const dn = pool.deriveNote(id.priv, asset, idx), blinding = '0x' + BigInt(dn.blinding).toString(16).padStart(64, '0'), owner = pool.nkToOwner(dn.secret), c = pool.commitXY(1000n, blinding);
+      const leaf = pool.leaf(asset, c.cx, c.cy, owner);
+      return { asset, value: 1000n, ...c, owner, secret: dn.secret, blinding, leaf, nullifier: pool.nativeNu(owner, dn.secret, leaf) };
+    };
+    const [lo, hi] = BigInt(SPX) < BigInt(TAC) ? [SPX, TAC] : [TAC, SPX], a = mk(lo, 0), c = mk(hi, 1);
+    return { walletPriv, id, a, b: c, st: { id, owned: [a, c], spent: new Set([lc(a.nullifier), lc(c.nullifier)]) } };
+  };
+  const mine = wallet('c7'), other = wallet('c8');
+  const keys = ux.lpBondPosition({ walletPriv: mine.walletPriv, controller: f.controller, lpAsset: f.lpAsset, anchorLeaf: mine.a.leaf });
+  const receipt = pool.farmReceiptLeaf('0x' + '00'.repeat(12) + f.controller.slice(2).toLowerCase(), f.lpAsset, 777n, keys.owner, keys.nonce);
+  const input = settleInput(withMint('0x' + SOLO_PV, { shares: 777n, receipt, owner: keys.owner }));
+  const H = '0x' + 'ab'.repeat(32), events = (w) => [{ type: 'NullifiersSpent', nullifiers: [w.a.nullifier, w.b.nullifier], txHash: H }];
+  const run = async (w, over = {}) => {
+    const fetched = [], imported = [], checked = over.checked || new Set();
+    const kept = await ux.recoverSoloFarmPositions({ walletPriv: w.walletPriv, st: w.st, events: over.events || events(w), checked,
+      getTxInput: async (h) => { fetched.push(h); return input; }, importer: over.importer || (async (rec, o) => { imported.push({ rec, o }); }) });
+    return { kept, fetched, imported, checked };
+  };
+
+  const r1 = await run(mine);
+  assert.deepEqual(r1.kept, [receipt.toLowerCase()]);
+  assert.equal(r1.fetched.length, 1);
+  const { rec, o } = r1.imported[0];
+  assert.equal(rec.receiptLeaf.toLowerCase(), receipt.toLowerCase());
+  assert.equal(rec.lpAsset.toLowerCase(), f.lpAsset.toLowerCase());
+  assert.equal(rec.shares, '777');
+  assert.equal(rec.owner, keys.owner); assert.equal(rec.nonce, keys.nonce); assert.equal(rec.ownerPriv, keys.ownerPriv);
+  assert.equal(rec.controller.toLowerCase(), f.controller.toLowerCase());
+  assert.equal(o.own, true, 'a record the page re-derived is its own, not an imported one');
+  const again = await run(mine, { checked: r1.checked });
+  assert.equal(again.fetched.length, 0, 'a settle already read is not fetched again');
+
+  const r2 = await run(other);
+  assert.equal(r2.fetched.length, 1);
+  assert.deepEqual(r2.kept, [], 'another wallet\'s key does not re-derive this receipt, so nothing is kept for it');
+  assert.equal(r2.imported.length, 0);
+
+  const closed = await run(mine, { importer: async () => { throw new Error('farm-import: the farm does not hold this position live (already unbonded?)'); } });
+  assert.deepEqual(closed.kept, []);
+  assert.equal((await run(mine, { checked: closed.checked })).fetched.length, 0, 'a closed position is not looked for again');
+
+  const early = await run(mine, { importer: async () => { throw new Error('farm-import: the receipt leaf is not in the pool tree'); } });
+  assert.deepEqual(early.kept, []);
+  assert.equal((await run(mine, { checked: early.checked })).fetched.length, 1, 'a settle whose leaf is not visible yet is looked at again');
+
+  const none = await run(mine, { events: [] });
+  assert.equal(none.fetched.length, 0, 'no spending transaction is known for the wallet\'s notes: nothing is fetched');
+  const unrelated = wallet('c9'); unrelated.a.asset = '0x' + '0a'.repeat(32); unrelated.b.asset = '0x' + '0b'.repeat(32);
+  assert.equal((await run(unrelated)).fetched.length, 0, 'two notes that are not the two sides of a stand-alone farm\'s pool: nothing is fetched');
 });
