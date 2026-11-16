@@ -516,12 +516,21 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
           } else if (clock() - (j.postedAt || 0) >= PROVER_BOARD.drawOfferMs) {
             j.drawOpen = true;                                           // the drawn machine never came for it
           } else {
-            ws = ws || await workers();
-            trouble = trouble || (storage.getTrouble && await storage.getTrouble()) || {};
-            const pick = drawPick(ws, open, j, trouble);
-            if (pick == null) j.drawOpen = true;                         // no one to draw: raced as before
-            else if (pick !== worker.name) continue;
+            // The draw is made ONCE, by the first machine to ask after the block is posted, and kept on the job. Drawn afresh at each
+            // ask, the winner moved as machines came and went (the odds of new places depend on how many there are), so a machine drawn at
+            // one ask was not the winner at its own, and the machine that asks most often took the block whenever the draw passed over it:
+            // the race again. On 2026-11-16 it went to one machine 10 times of 10 within 12.5 s.
+            if (!j.drawPick) {
+              ws = ws || await workers();
+              trouble = trouble || (storage.getTrouble && await storage.getTrouble()) || {};
+              const pick = drawPick(ws, open, j, trouble);
+              if (pick == null) j.drawOpen = true;                       // no one to draw: raced as before
+              else { j.drawPick = pick; await storage.putJob(j.id, j); }
+            }
+            if (j.drawOpen) { /* raced below */ }
+            else if (j.drawPick !== worker.name) continue;
             else {
+              ws = ws || await workers();
               const w = ws[worker.name];
               turnMs = w && w.blocks && w.blockSecs > 0
                 ? Math.min(PROVER_BOARD.drawNewMs, Math.max(PROVER_BOARD.drawMinMs, PROVER_BOARD.drawFactor * w.blockSecs * 1000)) : PROVER_BOARD.drawNewMs;
