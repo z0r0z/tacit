@@ -150,15 +150,16 @@ function unitPriceCeil(rec) {
 // Build the per-bid engine context from a registration record. Returns null if
 // the record can't be serviced (decrypt failure or pubkey mismatch — the latter
 // means a tampered/forged ciphertext, which the cross-check below rejects).
+// A record ctxForBid could not service, and why (the reason is fixed by the record: decrypting it again gives the same answer).
+const unserviceable = new WeakMap(), overCapSaid = new Set();
 function ctxForBid(rec) {
   let bidPriv;
   try { bidPriv = decryptBidKeyWithService(rec.enc_bid_privkey, SERVICE_SK, hexToBytes(rec.owner_pubkey), rec.asset_id, rec.bid_id); }
-  catch (e) { log('warn', 'skip bid: key decrypt failed', { bid_id: rec.bid_id, err: e.message }); return null; }
+  catch (e) { unserviceable.set(rec, `its key does not decrypt (${e.message})`); return null; }
   const bidPub = pubkeyFor(bidPriv);
-  if (bytesToHex(bidPub) !== rec.bid_pubkey) {
-    log('warn', 'skip bid: decrypted pubkey != registered bid_pubkey (record tampered)', { bid_id: rec.bid_id });
-    return null;
-  }
+  // the API cannot check the ciphertext (only this service decrypts it), so a registration whose key was not encrypted to this
+  // service, or does not open to the bid key it names, is junk: it is never serviced
+  if (bytesToHex(bidPub) !== rec.bid_pubkey) { unserviceable.set(rec, 'its key does not open to the bid key it registered'); return null; }
   return {
     dapp: m,
     workerBase: API_BASE,
@@ -198,6 +199,15 @@ createServer((req, res) => {
   res.writeHead(404); res.end();
 }).listen(PORT, () => log('info', 'health endpoint up', { port: PORT }));
 
+// A record no key opens is marked invalid once, logged once, and skipped from then on (a junk registration costs one decrypt, not one
+// each cycle until it expires); the owner's own page still sees it and returns its wallet itself.
+async function markInvalid(rec, name, now) {
+  const why = unserviceable.get(rec);
+  log('info', 'bid not serviceable: marked invalid', { bid_id: rec.bid_id, owner: String(rec.owner_pubkey || '').slice(0, 12), why });
+  rec.status = 'invalid'; rec.invalid_reason = why; rec.invalid_at = now;
+  await kv.put(name, JSON.stringify(rec), { expiration: recordExpiration(rec.expiry) });
+}
+
 // ---- one cycle over all registered bids ----
 async function cycle() {
   const now = Math.floor(Date.now() / 1000);
@@ -208,8 +218,10 @@ async function cycle() {
     cursor = page.list_complete ? null : page.cursor;
     for (const k of page.keys) {
       const rec = await kv.get(k.name, 'json');
-      // a self-take bid's offers are taken by the buyer's own wallet: the watchtower holds no key for it and leaves it alone
-      if (rec?.self_take) continue;
+      // a self-take bid's offers are taken by the buyer's own wallet: the watchtower holds no key for it and leaves it alone; a record
+      // already found unserviceable is not read again
+      if (rec?.self_take || rec?.status === 'invalid') continue;
+      if (RETURN_TO_OWNER && returnDue(rec, m, now) && !ctxForBid(rec) && unserviceable.has(rec)) { await markInvalid(rec, k.name, now); continue; }
       if (RETURN_TO_OWNER && returnDue(rec, m, now)) {
         if (returns < MAX_RETURNS_PER_CYCLE) {
           returns++;
@@ -220,11 +232,16 @@ async function cycle() {
       if (!rec || rec.status !== 'active') continue;
       if (Number(rec.expiry || 0) <= now) continue;
       if (MAX_BID_PRICE_SATS > 0 && Number(rec.bid_price_sats) > MAX_BID_PRICE_SATS) {
-        log('warn', 'skip bid: exceeds pilot per-bid cap', { bid_id: rec.bid_id, bid_price_sats: rec.bid_price_sats });
+        // said once a process: the page refuses such a bid, so one here was registered around it, and it is skipped every cycle
+        if (!overCapSaid.has(rec.bid_id)) { overCapSaid.add(rec.bid_id); log('warn', 'skip bid: exceeds pilot per-bid cap', { bid_id: rec.bid_id, bid_price_sats: rec.bid_price_sats }); }
         continue;
       }
       const ctx = ctxForBid(rec);
-      if (!ctx) continue;
+      if (!ctx) {
+        // marked once, then skipped: a junk registration costs one decrypt, not one each cycle until it expires
+        if (unserviceable.has(rec)) await markInvalid(rec, k.name, now);
+        continue;
+      }
       active++;
       const coreState = {
         filledBase: (() => { try { return BigInt(rec.filled_base || '0'); } catch { return 0n; } })(),

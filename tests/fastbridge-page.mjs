@@ -209,7 +209,7 @@ try {
     // what a finished bridge is, and what to do with it: a private balance is not an Ethereum wallet, and the way to one is a link that carries the amount
     {
       const done = await page.$eval('#fx-list .fx-rec[data-phase="done"]', (e) => ({ text: e.textContent, hrefs: [...e.querySelectorAll('a')].map((a) => a.getAttribute('href')) }));
-      ok(/not yet in an Ethereum wallet/.test(done.text) && done.hrefs.includes('/?from=TAC&to=TAC&private=from&amt=98'), 'a finished bridge says its TAC is private, not in a wallet yet, and links to withdraw the amount');
+      ok(/not yet in an Ethereum wallet/.test(done.text) && done.hrefs.includes('/#card=shield:tac:wallet'), 'a finished bridge says its TAC is private, not in a wallet yet, and links to the Withdraw tab');
       ok(!/not yet in an Ethereum wallet/.test(await text(page, '#fx-list .fx-rec[data-phase="refunded"]')), 'a bridge that came back to Bitcoin does not say it');
       ok(/Private TAC on Ethereum, in your Tacit wallet/.test(await text(page, '.fx-tip')) && /withdraw it afterwards/.test(await text(page, '.fx-tip')), 'the receive line says what private means and how to hold it in a wallet');
       await page.click('#fx-how summary');

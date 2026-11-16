@@ -37,7 +37,7 @@ const dapp = await import('../dapp/tacit.js');
 // The worker needs caches.default at import time.
 globalThis.caches = createCacheStorage({ maxBytes: 16 * 1024 * 1024 });
 const worker = (await import('../worker/src/index.js')).default;
-const env = buildEnv(createMemDriver(), { extra: { WATCHTOWER_REGISTER_ENABLED: 'true' } });
+const env = buildEnv(createMemDriver(), { extra: { WATCHTOWER_REGISTER_ENABLED: 'true', WATCHTOWER_FUNDING_CHECK: 'false' } });   // the funding check has its own test (watchtower-funding-check)
 const ctx = { waitUntil: () => {} };
 
 let pass = 0, fail = 0;

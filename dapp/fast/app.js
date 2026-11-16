@@ -1,10 +1,10 @@
-import { openBtcWallet } from '/trade/btc-session.js?cb=16eb7432';
+import { openBtcWallet } from '/trade/btc-session.js?cb=dec97995';
 import { isPasskeyAvailable } from '/prf-wallet.js';
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=cd7be661';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=6a3631c7';
+import { mountFast } from '/fast/ui.js?cb=4c896448';
 import { mountProvide } from '/fast/provide.js?cb=afe91e95';
 import { mountBound } from '/fast/bound.js?cb=862c8d6e';
 import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=d17ea9e5';
@@ -15,7 +15,7 @@ import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 // (docs/FAST-BRIDGE.md). The providers are the ones /fast/lp.json names, each with the key it signs for, and the ones that post
 // their ads on the boards it names. A provider run on this machine can be named in the address
 // (?lp=<url>&claimPub=<hex>&board=<url>) when the page is open from localhost.
-const TACIT_URL = '/tacit.js?cb=17106b9e';
+const TACIT_URL = '/tacit.js?cb=8b2865c7';
 // the bridge itself (the lock, the settle, the key's own provider) loads when a key opens; a touch on the page fetches its modules ahead
 let warmed = false;
 const warm = () => { if (warmed) return; warmed = true; const t = document.getElementById('warm'); if (t) document.head.append(t.content.cloneNode(true)); };

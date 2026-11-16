@@ -92,8 +92,16 @@ already in this response — sizing an LP share (§4) needs no extra call.
 `activity` is how often the pool's state (reserves and shares) has changed, from a log the server keeps at its
 five-minute tick: `at` is the time of its last reading (ms), `since` where its unbroken record starts, `hour` and
 `day` the number of changes in the hour and the day before `at`, `lastMoveAt` the time of the latest. A change
-counts once however many trades made it between two readings, so each count is a floor, and a gap in the
-readings starts a new record rather than being counted. A deposit into a private pool is proved against the
+counts once however many trades made it in a span of about four minutes (between two readings, or two of the
+old-block reads below), so each count is a floor.
+
+A record that starts empty, or has a gap in it, or is shorter than a day, is filled in from the chain: the
+server asks an archive node for the pool's state at an hourly spread of old blocks and halves each hour that
+differs until it knows the change to about four minutes, so a day of history costs a few hundred reads once,
+and a record is a day long from the first tick after a start (a gap within the day is joined, not counted
+as lost). Where the old blocks cannot be read the record starts at its first reading and `since` says so; it
+is tried again half an hour later. `FARM_ARCHIVE_RPCS` (comma separated) names the nodes, and
+`FARM_ACTIVITY_BACKFILL=0` leaves the history unread. A deposit into a private pool is proved against the
 pool's exact state and any change while it is proved ends that proof, so this is what says how likely that is.
 It is left off a pool the server has no record of (a fresh start, or the log switched off with
 `FARM_ACTIVITY=0`). The SDK's `farm.program()` returns the same groups; its `epoch` additionally carries

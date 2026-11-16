@@ -82,7 +82,7 @@ function actFoot(it) {
   if (it.kind === 'fast') {
     // a fast bridge is followed by the fast route (the records it keeps in this browser), which says where it stands; this shows it beside the other work
     const lock = it.lockTxid ? html` · <a href="${MEMPOOL}/tx/${it.lockTxid}" target="_blank" rel="noopener">Bitcoin lock ↗</a>` : '';
-    return it.status === 'settled' ? html`<div class="actr-f">Done. ${it.receive && it.receive !== '0' ? `${fmt(BigInt(it.receive), 8, 4)} TAC` : 'The TAC'} is in your private balance, not yet in an Ethereum wallet. <a href="/?from=TAC&to=TAC&private=from">Withdraw it to Ethereum</a>.${lock}</div>`
+    return it.status === 'settled' ? html`<div class="actr-f">Done. ${it.receive && it.receive !== '0' ? `${fmt(BigInt(it.receive), 8, 4)} TAC` : 'The TAC'} is in your private balance, not yet in an Ethereum wallet. <a href="/#card=shield:tac:wallet">Withdraw it to Ethereum</a>.${lock}</div>`
       : it.status === 'pending' ? html`<div class="actr-f">${it.title ? html`<b>${it.title}.</b> ` : ''}${it.note || ''}${lock} · <a href="/fast/">Open the fast bridge</a></div>`
       : html`<div class="actr-f">${it.err || 'The lock came back to your Bitcoin address.'}${lock}</div>`;
   }
