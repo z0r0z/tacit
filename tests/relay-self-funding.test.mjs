@@ -265,7 +265,11 @@ test('cUSD: the same floor applies to a USD-pegged fee', async () => {
   const over = BigInt(Math.ceil((floorUsd * 1.5) / usdPerUnit)), under = BigInt(Math.floor((floorUsd * 0.5) / usdPerUnit));
   ok(await gate({ type: 'transfer', op: transfer(cUsd, over) }) === true, `a cUSD fee of ~$${(floorUsd * 1.5).toFixed(4)} must pass`);
   ok(await gate({ type: 'transfer', op: transfer(cUsd, under) }) === false, `a cUSD fee of ~$${(floorUsd * 0.5).toFixed(4)} must be rejected — it was free before`);
-  ok(await gate({ type: 'transfer', op: transfer(cUsd, 0) }) === false, 'a zero cUSD fee must be rejected');
+  // A fee of ZERO is not an underpayment the floor turns back: since a82075710 (2026-11-05) a transfer carrying no fee
+  // rides the day's free settles like the other fee-less ops, and the free budgets at submit bound it instead
+  // (FREE_RELAY_DAILY_CAP / FREE_RELAY_CAP_OTHER — pinned by the free-budget checks further down this file). What the
+  // floor still owes us is the case above: a fee that is present but under the floor is refused, in any asset.
+  ok(await gate({ type: 'transfer', op: transfer(cUsd, 0) }) === true, 'a transfer with no fee at all is the subsidised path, bounded by the free budgets rather than the floor');
 });
 
 test('the floor tracks live gas and ETH price, not a constant', async () => {
@@ -392,14 +396,25 @@ test('a priced job names the public token its fee pays out in, and the job keeps
 });
 
 // ── prove-mode: a bounded subsidy, and a budget that junk cannot drain ─────────
-const submitSrc = worker.slice(worker.indexOf('const budgetKey'), worker.indexOf('async function handleConfidentialJob'));
+// These slices are evaluated as a function body, so an `export` anywhere inside one is a syntax error, and every check in
+// the section then fails at once on "Unexpected token 'export'" whatever it was really testing — which is how a single
+// `export function queueSender` added inside this span quietly took 31 checks down. Once the keyword is dropped a top-level
+// export is an ordinary declaration, so drop it here rather than hold index.js to where its exports may sit.
+const unexport = (s) => s.replace(/^([ \t]*)export[ \t]+(?=(?:async[ \t]+)?(?:function|const|let|var|class)\b)/gm, '$1');
+const CSETTLE = await import(join(ROOT, 'worker/src/confidential-settle.js'));
+const COPEN = await import(join(ROOT, 'worker/src/confidential-open.js'));
+const SHA3 = await import(join(ROOT, 'node_modules/@noble/hashes/sha3.js'));
+const NOBLE = await import(join(ROOT, 'node_modules/@noble/hashes/utils.js'));
+const submitSrc = unexport(worker.slice(worker.indexOf('const budgetKey'), worker.indexOf('async function handleConfidentialJob')));
 function loadSubmit({ cap = '3', freeCap = '3', env = {}, submitJob, jobStatus = async () => null, boardWorkers = [], kvStore = new Map(), feeOf = () => 0n, tipPaid = async () => false, health = async () => ({ status: 'ok', age_seconds: 5, note: 'settle: idle — queue empty' }), expiryOf = (type, op) => (type === 'unwrap' ? Number(op?.opDeadline || 0) : 0) }) {
   const kv = { get: async (k) => (kvStore.has(k) ? kvStore.get(k) : null), put: async (k, v) => { kvStore.set(k, v); } };
   // confPool: no pool named, so a bridge mint's admission (checked against the mainnet pool's burn root only) passes as it does off mainnet.
   const mk = new Function('confSettler', 'buildProverBoard', 'FEELESS_TYPES', 'proveRateLimit', 'jsonResponse', 'hasVerifiableFee', 'totalFee', 'ctx', 'withKvKeyLock', 'wrapTipPaid', 'readProverKindHealth', 'opExpiry', 'checkPostedShape', 'confPool', '_CONFIDENTIAL_DEPLOYMENTS', 'SHAPED_TYPES', 'admitOpShape',
+    'keccak_256', 'bytesToHex', 'hexToBytes', 'FREE_POSTED_TYPES', 'pvFees',
     submitSrc + '; return handleConfidentialSubmit;');
   const handler = mk(() => ({ submitJob, jobIdOf: (type, op, mode) => `${mode}:${type}:${JSON.stringify(op)}`, jobStatus }), () => ({ summary: async () => ({ workers: boardWorkers }) }), rq.FEELESS_TYPES, async () => ({ ok: true }), (body, status, headers) => ({ body, status, headers }), () => false, (type, op) => feeOf(type, op), {},
-    (_key, fn) => fn(), tipPaid, health, expiryOf, () => null, () => null, {}, opAdmit.SHAPED_TYPES, opAdmit.admitOpShape);
+    (_key, fn) => fn(), tipPaid, health, expiryOf, () => null, () => null, {}, opAdmit.SHAPED_TYPES, opAdmit.admitOpShape,
+    SHA3.keccak_256, NOBLE.bytesToHex, NOBLE.hexToBytes, CSETTLE.FREE_POSTED_TYPES, COPEN.pvFees);
   const call = (body) => handler({ json: async () => body, headers: { get: () => '1.2.3.4' } }, { REGISTRY_KV: kv, PROVE_MODE_DAILY_CAP: cap, FREE_RELAY_DAILY_CAP: freeCap, ...env }, {});
   return { call, kvStore };
 }
@@ -798,7 +813,9 @@ test('Tacit\'s own front page pays the splitter when the quote names one, and th
   const page = readFileSync(join(ROOT, 'dapp/index.html'), 'utf8');
   ok(page.includes('j.tipSplitter || j.recommendedTipRecipient'), 'the Shield card takes the tip address from tipSplitter first');
   ok(page.includes('[ADDR.tipOps, ADDR.tipSplitter].find('), 'and pays only one of Tacit\'s two tip addresses, whatever the quote names');
-  ok(page.includes('tip * 10000n > wei * 500n'), 'and refuses a tip over a twentieth of the deposit');
+  // The ceiling, not the name that holds it: this read `tip * 10000n` until the variable became `full`, and the check then
+  // failed while the guard itself was untouched. What matters is that the tip is measured against 5% of the deposit.
+  ok(/\*\s*10000n\s*>\s*wei\s*\*\s*500n/.test(page), 'and refuses a tip over a twentieth of the deposit');
 });
 
 test('prove-mode is not counted against the free-relay budget', async () => {
