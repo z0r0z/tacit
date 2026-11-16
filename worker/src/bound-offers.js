@@ -145,6 +145,14 @@ export function makeBoundOffers(deps) {
     if (rec.status !== 'open') return jsonResponse({ error: `the offer is ${rec.status}` }, 409, cors);
     const next = { ...rec, status: 'filled', reveal_txid: reveal, commit_txid: commit, filled_at: now() };
     await env.REGISTRY_KV.put(boundOfferKey(network, asset, id), JSON.stringify(next), { expirationTtl: 30 * 86400 });
+    // a self-take bid has no watchtower to count its fills: the fill counts here, and a bid filled in full is closed
+    const wt = await bidOf(env, network, rec.owner_pubkey, rec.bid_id).catch(() => null);
+    if (wt && wt.self_take && wt.status === 'active') {
+      const filledBase = BigInt(wt.filled_base || '0') + BigInt(rec.amount);
+      const done = filledBase >= BigInt(wt.bid_amount_base || '0');
+      const k = watchtowerBidKey(network, bytesToHex(hash160(hexToBytes(rec.owner_pubkey))), rec.bid_id);
+      await env.REGISTRY_KV.put(k, JSON.stringify({ ...wt, filled_base: filledBase.toString(), ...(done ? { status: 'filled' } : {}) }), { expirationTtl: Math.max(60, Number(wt.expiry || 0) - now() + 86400) });
+    }
     return jsonResponse({ ok: true, offer: next }, 200, cors);
   }
 

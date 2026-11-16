@@ -61,5 +61,32 @@ await tick(); await tick();
 ok(calls.homes.length === 1 && calls.homes[0].txid === 'ee'.repeat(32), 'Move to Ethereum moves that bought note home by the fast lane');
 ctl.destroy();
 ok(!box.querySelector('.bound-mkt'), 'destroy removes the view');
+
+// a bid kept on this device: placed with selfTake, its offers listed checked or not, Take on a checked one, Close returns its sats
+const box2 = document.createElement('div'); document.body.append(box2);
+const OFF = { id: '77'.repeat(32), buyerXonly: '11'.repeat(32) };
+const T2 = { ...T,
+  async myBoundBids(id) { return id === ID ? [{ bid_id: 'cd'.repeat(16), status: 'active', amount: 100000000n, filled: 20000000n, priceSats: 800, walletSats: 3600,
+    offers: [{ offer: OFF, amount: 80000000n, priceSats: 600, checked: true }, { offer: { id: '88'.repeat(32) }, amount: 1n, priceSats: 546, checked: false, why: 'the bid wallet coin it was signed against is spent' }] }] : []; },
+  async takeMyBoundOffer(o) { calls.takes = [...(calls.takes || []), o]; return { revealTxid: 'd6ba6529'.padEnd(64, '0') }; },
+  async closeMyBoundBid(b) { calls.closes = [...(calls.closes || []), b]; return { swept: 2900 }; },
+};
+mountBoundMarket(box2, { T: T2, asset: { id: ID, ticker: 'SPX', decimals: 8 }, unlock: async () => {}, notify: (m, k) => notes.push([k, m]) });
+await tick(); await tick();
+const t2 = box2.textContent.replace(/\s+/g, ' ');
+ok(/Your bids you take yourself/.test(t2) && /0\.8 SPX/.test(t2) && /for 600 sats/.test(t2) && /checked/.test(t2) && /0\.8 SPX wanted/.test(t2) && /3,600 sats in its wallet/.test(t2), `a self-take bid lists what it still wants, its wallet's sats and its checked offer (${t2.slice(-260)})`);
+ok(box2.querySelectorAll('[data-take]').length === 1 && /does not check: the bid wallet coin/.test(t2), 'only a checked offer can be taken; one that does not check says why');
+box2.querySelector('#bb-amt').value = '1'; box2.querySelector('#bb-sats').value = '800'; box2.querySelector('#bb-self').checked = true;
+box2.querySelector('[data-bid-place]').click();
+await tick(); await tick();
+ok(calls.bids.at(-1).selfTake === true, 'Place a bid with "Take offers myself" places a self-take bid');
+for (let i = 0; i < 6; i++) await tick();
+box2.querySelector('[data-take]').click();
+await tick(); await tick();
+ok(calls.takes?.length === 1 && calls.takes[0].id === OFF.id && notes.some(([k, m]) => k === 'ok' && /Took 0\.8 SPX for 600 sats/.test(m)), 'Take takes that offer with this wallet\'s own bid key');
+for (let i = 0; i < 6; i++) await tick();
+box2.querySelector('[data-close]').click();
+await tick(); await tick();
+ok(calls.closes?.[0] === 'cd'.repeat(16) && notes.some(([k, m]) => /2,900 sats are on their way back/.test(m)), 'Close bid takes it off the book and returns its wallet\'s sats');
 console.log(`\n${pass} trade-bound checks passed${fail ? `, ${fail} FAILED` : ''}`);
 process.exit(fail ? 1 : 0);

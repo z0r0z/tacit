@@ -47,7 +47,7 @@
       // and a link to TAC's page (its card, the bridge, a claim) the TAC page's code too
       if (/^#(?:tac|bridge)(?:\/|$)|^#tacclaim=/.test(window.location.hash)) {
         var tac = document.createElement('link');
-        tac.rel = 'modulepreload'; tac.href = '/front/tac.js?cb=a73d016f';
+        tac.rel = 'modulepreload'; tac.href = '/front/tac.js?cb=24f44b11';
         document.head.appendChild(tac);
       }
     }

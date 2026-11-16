@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-2RvPoGTbXDluiyiY47MvLqBf/gYkUMVwCMyutVl7Pc0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5EJtNLKaubRaoy0Ahucyorty/B76MFh1OJTuj1j0res=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -1157,7 +1157,7 @@ function otherWallet() { return knownWallets(KNOWN_IDS).other; }
 const viaText = (k) => ({ eth: `Ethereum ${short(k.address || '')}`, btc: `Bitcoin ${short(k.address || '', 6)}`, ext: `a key funded by ${short(k.address || '', 6)}`,
   passkey: `passkey “${k.label || 'Tacit'}”`, local: 'the key saved in this browser', key: 'a pasted key' })[k.mode] || 'your wallet';
 
-const TACIT_URL = '/tacit.js?cb=3323e25b';
+const TACIT_URL = '/tacit.js?cb=db2d2bf9';
 const SHARED_NET = 'tacit-network-v1', PREV_NET = 'tacit-pay-prev-net-v1';
 const SHARED_WALLET_KEYS = ['tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1',
   ...['mainnet', 'signet'].flatMap((n) => [`tacit-eth-identity:${n}`, `tacit-btc-identity:${n}`, `tacit-active-mode-v1:${n}`])];
@@ -1194,7 +1194,7 @@ const tPriv = () => { const h = bytesToHex(T.wallet.priv); T.wallet.priv.fill(0)
 async function setKey(k) {
   const pubHex = String(k.pubHex || pubOf(k.priv)).replace(/^0x/, '').toLowerCase();
   if (pubOf(k.priv) !== pubHex) throw new Error('That wallet opened a different key than expected. Nothing was changed.');
-  const m = await mods();
+  const [m] = await Promise.all([mods(), loadLane()]);
   const keys = m.evmPoolKeys(m.zk, hexToBytes(k.priv));
   forget();
   S.key = { ...k, pubHex, bp: keys.address };
@@ -1205,7 +1205,7 @@ async function setKey(k) {
   const { priv, ...pub } = S.key;
   if (k.mode === 'key') writeJson(PAY_ID, null); else writeJson(PAY_ID, pub);
   paintWallet(); renderApp(); paintRecover(); paintPoints();
-  toast(`Opened ${short(UNIFIED_LIVE ? unifiedAddress() : keys.address, 8)}`);
+  toast(`Opened ${short(UNIFIED_LIVE ? shownAddress() : keys.address, 8)}`);
   syncAll(true);
   historyAll();
   for (const c of CHAINS) boxScan(c);
@@ -2477,7 +2477,7 @@ const ethIcon = html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/>
 function paintWallet() {
   document.body.classList.toggle('in', !!S.key);
   $('#wallet-dot').className = 'dot' + (S.key ? ' on' : S.wallet ? ' live' : '');
-  mount($('#wallet-label'), S.key ? chipView(UNIFIED_LIVE ? unifiedAddress() : S.key.bp) : html`${S.wallet ? short(S.wallet) : knownWallet() ? 'Open wallet' : 'Sign in'}`);
+  mount($('#wallet-label'), S.key ? chipView(UNIFIED_LIVE ? shownAddress() : S.key.bp) : html`${S.wallet ? short(S.wallet) : knownWallet() ? 'Open wallet' : 'Sign in'}`);
   if ($('#sheet-wallet').open) renderWalletSheet();
 }
 const PUB = {};
@@ -3094,6 +3094,20 @@ function addressBase() {
 }
 const unifiedAddress = () => TADDR.encodeTacitAddress({ ...addressBase(), poolKeys: poolKeysOf(S.key.bp) });
 const legacyAddress = () => TADDR.encodeTacitAddress(addressBase());
+// What the page shows and offers to copy: the address with the key's chain lane as well (as on /tac/), so a payer on the Tacit chain finds the key and every page
+// shows the one address. Links and the page's own "is this mine" checks keep the plain address. Until the lane module is in (it is awaited at sign-in), the plain one.
+let LANE = null;
+const loadLane = lazy(() => import('/tacit-chain-lane.js?cb=258bf4f8').then((m) => (LANE = m), () => null));
+const SHOWN_ADDR = { pub: null, addr: null };
+function shownAddress() {
+  if (!LANE || !S.key) return unifiedAddress();
+  if (SHOWN_ADDR.pub === S.key.pubHex) return SHOWN_ADDR.addr;
+  try {
+    const addr = TADDR.encodeTacitAddress({ ...addressBase(), poolKeys: poolKeysOf(S.key.bp), chainHash: LANE.chainLane(S.key.priv) });
+    SHOWN_ADDR.pub = S.key.pubHex; SHOWN_ADDR.addr = addr;
+    return addr;
+  } catch { return unifiedAddress(); }
+}
 const getNames = lazy(async () => { const n = await import('/confidential-names.js'); return n.makeConfidentialNames({ call: n.makeMainnetCall(), secp, keccak256: keccak_256 }); });
 // the lookups made for the wallet's own address (its primary name, a name upgrade) go to the one node apart from the node that reads this key's pool and boxes, as the page's other wallet reads do
 const getWalletNames = lazy(async () => { const n = await import('/confidential-names.js'), rpc = await rpcApart(CHAINS[0]); return n.makeConfidentialNames({ call: ({ to, data, from }) => rpc('eth_call', [{ to: String(to).toLowerCase(), data, ...(from ? { from: String(from).toLowerCase() } : {}) }, 'latest']), secp, keccak256: keccak_256 }); });
@@ -3846,8 +3860,8 @@ function formReceive(f) {
       <div class="row2"><button class="btn" type="button" id="f-link" ${box ? html`data-box="${k}"` : ''}>Copy payment link</button><button class="btn ghost" type="button" id="f-share">Share</button></div>`}
       <p class="note">From a Tacit wallet it is private end to end. From any other wallet it reaches your private balance on ${cname(c)} within minutes, for at most 0.25%. Each link gets a fresh address, so payments are not linked.</p></div>
     ${UNIFIED_LIVE ? html`<div class="blk"><div class="lbl"><span>Your Tacit address</span><span>works in every Tacit app</span></div>
-      <div class="addr"><code>${unifiedAddress()}</code><button class="link" type="button" data-copy="${unifiedAddress()}">copy</button></div>
-      <p class="note">ID <b class="num nw">${addressId(unifiedAddress())}</b>. Whoever pays you sees the same ID.</p>
+      <div class="addr"><code>${shownAddress()}</code><button class="link" type="button" data-copy="${shownAddress()}">copy</button></div>
+      <p class="note">ID <b class="num nw">${addressId(shownAddress())}</b>. Whoever pays you sees the same ID.</p>
       <p class="note">It never appears on chain. Your pool-only address (ID <span class="num nw">${addressId(S.key.bp)}</span>) also works: <button class="link" type="button" data-copy="${S.key.bp}">copy bp1…</button></p></div>
       <div id="f-up"></div>`
     : html`<div class="blk"><div class="lbl"><span>Your pool address</span><span>same on every chain</span></div>
@@ -4340,8 +4354,8 @@ function renderWalletSheet() {
   }
   const k = S.key, kept = k.mode === 'ext' || k.mode === 'local';
   mount(el, html`
-    <div class="who"><div class="a num">${short(UNIFIED_LIVE ? unifiedAddress() : k.bp, 14)}</div><div class="u">${UNIFIED_LIVE ? 'Your Tacit address' : 'Your pool address'} · opened with ${viaText(k)}</div>
-      <div class="u">ID <b class="num nw">${addressId(UNIFIED_LIVE ? unifiedAddress() : k.bp)}</b> · a payer sees the same ID</div>
+    <div class="who"><div class="a num">${short(UNIFIED_LIVE ? shownAddress() : k.bp, 14)}</div><div class="u">${UNIFIED_LIVE ? 'Your Tacit address' : 'Your pool address'} · opened with ${viaText(k)}</div>
+      <div class="u">ID <b class="num nw">${addressId(UNIFIED_LIVE ? shownAddress() : k.bp)}</b> · a payer sees the same ID</div>
       <div class="row2"><button class="btn ghost" type="button" id="w-copy">Copy address</button><button class="btn ghost" type="button" id="w-lock">Lock</button></div></div>
     <div class="kv"><span>Pays the network fee when you send it yourself</span>${S.wallet ? html`<b>${viewAddr(S.wallet, 6)} <button class="link" type="button" id="w-wc-change">Change account</button> <button class="link" type="button" id="w-wc-off">Disconnect</button></b>` : html`<button class="link" type="button" id="w-conn">Connect wallet</button>`}</div>
     ${routeAvailable() ? html`<label class="kv chk"><span>Hide my address from the relay</span><input type="checkbox" id="w-route" ${routeOn() ? 'checked' : ''}></label>${routeOn() ? html`<p class="more">The nodes you read the chain through still see it.</p>` : ''}` : ''}
@@ -4357,7 +4371,7 @@ function renderWalletSheet() {
     catch (err) { routeTurn(false); toast(`The private route did not answer, so it is off. ${errText(err)}`, true); }
     renderWalletSheet();
   });
-  $('#w-copy').onclick = () => copy(UNIFIED_LIVE ? unifiedAddress() : k.bp, 'Address copied');
+  $('#w-copy').onclick = () => copy(UNIFIED_LIVE ? shownAddress() : k.bp, 'Address copied');
   $('#w-backup')?.addEventListener('click', () => navigator.clipboard.writeText(k.priv).then(() => toast('Key copied. Keep it somewhere private.'), () => toast('Could not copy the key: the browser refused clipboard access.', true)));
   nameUpgrade().then((plan) => { const el = $('#w-up'); if (plan && el?.isConnected) { mount(el, upgradeView(plan)); wireUpgrade(el, plan, () => mount(el, html``)); } });
   $('#w-lock').onclick = () => { if (paying()) return toast('Finish the payment in progress first.', true); lock(); renderWalletSheet(); };
@@ -4901,8 +4915,8 @@ function tokWithdraw(f, t) {
   });
 }
 function tokReceive(f, t) {
-  const addr = UNIFIED_LIVE ? unifiedAddress() : S.key.bp;
-  mount(f, html`<div class="blk"><div class="kv"><span>Your Tacit address</span><b class="mono">${viewAddr(addr, 10)}</b><button class="link" type="button" id="f-acopy">copy</button></div>
+  const addr = UNIFIED_LIVE ? unifiedAddress() : S.key.bp, shown = UNIFIED_LIVE ? shownAddress() : S.key.bp;
+  mount(f, html`<div class="blk"><div class="kv"><span>Your Tacit address</span><b class="mono">${viewAddr(shown, 10)}</b><button class="link" type="button" id="f-acopy">copy</button></div>
       <p class="note">Anyone with private ${t.sym} pays it here privately, and it lands in your private ${t.sym}. The same address takes ETH and every token pool.</p></div>
     ${tokAmountField('f-ramt', 'Ask for (optional)', t)}
     <div class="row2"><button class="btn" type="button" id="f-rcopy">Copy payment link</button><button class="btn ghost" type="button" id="f-rshare">Share</button></div>
@@ -4916,7 +4930,7 @@ function tokReceive(f, t) {
     if (bad) return mount(qr, html``);
     const w = Math.min(qr.clientWidth || 220, 220); mount(qr, qrSvg(link(), w));
   };
-  $('#f-acopy').onclick = () => copy(addr, 'Tacit address copied');
+  $('#f-acopy').onclick = () => copy(shown, 'Tacit address copied');
   $('#f-rcopy').onclick = () => copy(link(), 'Payment link copied');
   const share = $('#f-rshare');
   if (!navigator.share) { share.hidden = true; $('#f-rcopy').style.gridColumn = '1 / -1'; }

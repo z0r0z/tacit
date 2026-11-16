@@ -28551,12 +28551,14 @@ async function watchtowerBidAddress(assetIdHex, bidIdHex) {
   return p2wpkhAddress(secp.getPublicKey(bidPriv, true));
 }
 
-async function registerWatchtowerBid({ assetIdHex, bidIdHex, amountBase, priceSats, decimals, expiry, feeBudgetSats = 10000, kind = null }) {
+async function registerWatchtowerBid({ assetIdHex, bidIdHex, amountBase, priceSats, decimals, expiry, feeBudgetSats = 10000, kind = null, selfTake = false }) {
   const _kind = kind || (_bridgedNonLegacy(assetIdHex) ? 'bound' : 'axfer');
+  // a self-take bid (bound only): the bid key stays with this wallet, which takes the offers itself (takeMyBoundOffer); the watchtower is never given it
+  selfTake = !!selfTake && _kind === 'bound';
   await ensurePrivkey();
-  if (!WATCHTOWER_SERVICE_PUB) throw new Error('watchtower is not configured (no service pubkey)');
+  if (!selfTake && !WATCHTOWER_SERVICE_PUB) throw new Error('watchtower is not configured (no service pubkey)');
   if (!WORKER_BASE) throw new Error('worker disabled');
-  if (Number(priceSats) > WATCHTOWER_MAX_BID_SATS) {
+  if (!selfTake && Number(priceSats) > WATCHTOWER_MAX_BID_SATS) {
     throw new Error(`bid total ${Number(priceSats).toLocaleString()} sats exceeds the watchtower limit of ${WATCHTOWER_MAX_BID_SATS.toLocaleString()} sats — post this bid without the watchtower, or split it`);
   }
   let _preStatus;
@@ -28576,7 +28578,7 @@ async function registerWatchtowerBid({ assetIdHex, bidIdHex, amountBase, priceSa
   const fundingTxidHex = sent.txid, fundingVout = 0;
 
   try {
-    const encBidPrivkeyHex = encryptWatchtowerBidKey(bidPriv, mainPriv, hexToBytes(WATCHTOWER_SERVICE_PUB), assetIdHex, bidIdHex);
+    const encBidPrivkeyHex = selfTake ? '00'.repeat(32) : encryptWatchtowerBidKey(bidPriv, mainPriv, hexToBytes(WATCHTOWER_SERVICE_PUB), assetIdHex, bidIdHex);
     const msg = watchtowerRegisterMsg({
       network: NET.name, assetIdHex, bidIdHex, bidPubHex: bytesToHex(bidPub), ownerPubHex: bytesToHex(ownerPub),
       encBidPrivkeyHex, bidPriceSats: Number(priceSats), bidAmountBaseStr: BigInt(amountBase).toString(),
@@ -28587,7 +28589,7 @@ async function registerWatchtowerBid({ assetIdHex, bidIdHex, amountBase, priceSa
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         asset_id: assetIdHex, bid_id: bidIdHex, owner_pubkey: bytesToHex(ownerPub), bid_pubkey: bytesToHex(bidPub),
-        enc_bid_privkey: encBidPrivkeyHex, bid_price_sats: Number(priceSats), bid_amount_base: BigInt(amountBase).toString(),
+        ...(selfTake ? { self_take: true } : { enc_bid_privkey: encBidPrivkeyHex }), bid_price_sats: Number(priceSats), bid_amount_base: BigInt(amountBase).toString(),
         decimals: decimals | 0, expiry, funding_outpoint: { txid: fundingTxidHex, vout: fundingVout }, auth_sig: bytesToHex(sig), kind: _kind,
       }),
     });
@@ -28635,13 +28637,54 @@ async function browseBoundBids(assetIdHex) {
   return (Array.isArray(list) ? list : list?.intents || []).filter((b) => b && b.bound && /^[0-9a-f]{64}$/.test(String(b.buyer_xonly || '')));
 }
 // A buyer's bid for a bridged token: a bid-intent (the book's entry) and its watchtower registration as a bound bid.
-async function placeBoundBid({ assetIdHex, amount, priceSats, expiry, decimals = 8, feeBudgetSats = 10000 }) {
+async function placeBoundBid({ assetIdHex, amount, priceSats, expiry, decimals = 8, feeBudgetSats = 10000, selfTake = false }) {
   const aid = String(assetIdHex).replace(/^0x/, '').toLowerCase();
   const bid = await publishBidIntent({ assetIdHex: aid, amount, priceSats, expiry, bound: true, skipOverCommitCheck: true });
   const bidId = bid?.bid_id || bid?.bidId || bid?.id;
   if (!/^[0-9a-f]{32}$/.test(String(bidId || ''))) throw new Error('the bid was posted but its id was not returned');
-  const wt = await registerWatchtowerBid({ assetIdHex: aid, bidIdHex: bidId, amountBase: amount, priceSats, decimals, expiry, feeBudgetSats, kind: 'bound' });
-  return { bid_id: bidId, ...wt };
+  const wt = await registerWatchtowerBid({ assetIdHex: aid, bidIdHex: bidId, amountBase: amount, priceSats, decimals, expiry, feeBudgetSats, kind: 'bound', selfTake });
+  return { bid_id: bidId, self_take: !!selfTake, ...wt };
+}
+// The bid key of this wallet's bid with this x-only key (an offer names the bid by it).
+const _bidKeyByXonly = (xonlyHex) => { const x = String(xonlyHex || '').toLowerCase(); return _watchtowerBidKeyOf('02' + x) || _watchtowerBidKeyOf('03' + x); };
+// This wallet's self-take bound bids of an asset (active ones, and finished ones whose bid wallet may still hold sats), with the open
+// offers posted into each. Each offer is checked here exactly as a take checks it (the seller's note live in the reflection's set, the
+// buyer's note opening to the amount offered, the kernel, the pinned pair), nothing broadcast: `checked` true, or `why` it does not check.
+async function myBoundBids(assetIdHex) {
+  await ensurePrivkey();
+  const aid = String(assetIdHex).replace(/^0x/, '').toLowerCase();
+  const bids = (await listWatchtowerBids()).filter((b) => b && b.kind === 'bound' && b.self_take && b.asset_id === aid && b.status !== 'cancelled' && b.status !== 'returned');
+  const out = [];
+  for (const b of bids) {
+    const bidPriv = _watchtowerBidKeyOf(b.bid_pubkey);
+    if (!bidPriv) continue;
+    const offers = [];
+    for (const o of b.status === 'active' ? await listBoundOffers(aid, b.bid_id).catch(() => []) : []) {
+      try { await takeBoundOffer({ offer: o, bidPriv, broadcast: false }); offers.push({ offer: o, amount: BigInt(o.amount), priceSats: o.priceSats, checked: true }); }
+      catch (e) { offers.push({ offer: o, amount: BigInt(o.amount), priceSats: o.priceSats, checked: false, why: String(e?.message || e) }); }
+    }
+    const sats = (await getUtxos(p2wpkhAddress(secp.getPublicKey(bidPriv, true))).catch(() => [])).reduce((s, u) => s + u.value, 0);
+    out.push({ bid_id: b.bid_id, status: b.status, amount: BigInt(b.bid_amount_base), filled: BigInt(b.filled_base || '0'), priceSats: b.bid_price_sats, expiry: b.expiry, walletSats: sats, offers });
+  }
+  return out;
+}
+// The buyer's own take of an offer into one of its self-take bids: checked, signed with the bid key this wallet derives, broadcast and
+// reported, with no watchtower in between. The bought note lands at the bid key's Taproot address (boughtBoundNotes, moveBoundNoteHome).
+async function takeMyBoundOffer(offer) {
+  await ensurePrivkey();
+  const bidPriv = _bidKeyByXonly(offer?.buyerXonly);
+  if (!bidPriv) throw new Error('that offer is not into one of this wallet\'s bids');
+  return takeBoundOffer({ offer, bidPriv });
+}
+// Closes a self-take bid: taken off the book, and the sats left in its bid wallet sent back to this wallet's Bitcoin address.
+async function closeMyBoundBid(bidIdHex) {
+  await ensurePrivkey();
+  const b = (await listWatchtowerBids()).find((x) => x && x.bid_id === bidIdHex && x.self_take);
+  if (!b) throw new Error('no self-take bid of this wallet with that id');
+  const bidPriv = _watchtowerBidKeyOf(b.bid_pubkey);
+  if (!bidPriv) throw new Error('this wallet does not derive that bid\'s key');
+  if (b.status === 'active') await cancelWatchtowerBid(bidIdHex);
+  return sweepWatchtowerBidWallet(bidPriv, [], { to: wallet.pub });
 }
 // The seller's one round: a note of this asset (a cross-out mint at the key's Taproot address, or a note at its P2WPKH address, live
 // and not fast-lane spendable) into `bid`, at the most the bid pays for that amount, payout to the key's Bitcoin address. A note that
@@ -62417,6 +62460,6 @@ export {
   _ceremonyFetchIpfsWithFailover as ceremonyFetchIpfsWithFailover,
   getUtxos,
   getBtcUsdPrice,
-  placeBoundBid, browseBoundBids, publishBoundOffer, listBoundOffers, takeBoundOffer,
+  placeBoundBid, browseBoundBids, publishBoundOffer, listBoundOffers, takeBoundOffer, myBoundBids, takeMyBoundOffer, closeMyBoundBid,
   boughtBoundNotes, moveBoundNoteHome,
 };

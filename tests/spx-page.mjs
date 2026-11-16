@@ -151,7 +151,10 @@ for (const tab of ['send', 'earn', 'swap']) {
   await p.goto(BASE + '/spx/', { waitUntil: 'load' });
   const t = await waitFor(p, /Shield SPX/i, 20000);
   await p.evaluate(() => { location.hash = '#wallet'; });
-  const paste = await p.waitForSelector('#wallet-body [data-in="paste"]', { timeout: 8000 }).then(() => true, () => false);
+  // Alternate sign-in methods live inside a collapsed disclosure.
+  await p.locator('#wallet-body .more-in > summary').click();
+  await p.locator('#wallet-body [data-in="paste"]').click();
+  const paste = await p.waitForSelector('#wallet-body #ws-hex', { timeout: 8000 }).then(() => true, () => false);
   ok(bad.length === 0 && /Shield SPX/i.test(t) && paste, `a browser that last left the tile on ${tab} gets the page on Shield SPX, with no script error and a working wallet sheet${bad.length ? ` (${bad.join(' | ')})` : ''}`);
   await ctx.close();
 }

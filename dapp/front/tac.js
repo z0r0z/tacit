@@ -161,7 +161,7 @@ function renderBridgeIn(el) {
   if (BR.act) BR.pick = null;
   mount(el, html`
     <p class="lede-s">TAC on your Bitcoin address becomes private TAC on Ethereum. You pay a Bitcoin fee, in sats. It arrives once Bitcoin’s proof on Ethereum records the burn, usually a few hours, up to a day. Tick the receipt’s choice to arrive as public TAC (ERC20), or press Withdraw after. <a href="/bridge/">How the bridge is proven</a></p>
-    ${ctx.brLooking === pub ? html`<p class="note">Looking through your Bitcoin history for bridges this browser has no record of…</p>` : ''}
+    ${ctx.brLooking === pub ? html`<p class="note">Checking your Bitcoin history once for bridges this device has not seen. This can take a minute.</p>` : ''}
     ${preps.length || swaps.length ? html`<div class="lbl"><span>Getting ready</span></div><ul class="acts brs">${preps.map(brPrepRow)}${swaps.map(bswRow)}</ul>` : ''}
     ${recs.length ? html`<div class="lbl"><span>On the way</span></div><ul class="acts brs">${recs.map(brRow)}</ul>` : ''}
     ${done.length ? html`<div class="lbl"><span>Arrived</span></div><ul class="acts brs">${done.map(brRow)}</ul>` : ''}
