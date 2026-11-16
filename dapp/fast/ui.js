@@ -4,10 +4,8 @@ import { minutesFor } from './route.js';
 export { fmtTac, parseTac, slowNet, lineageText };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
 const SCAN = 'https://mempool.space/tx/';
-// where private TAC is turned into public TAC in an Ethereum wallet: the front page's card on TAC from the private balance to the wallet, with the amount when it is known
-const WITHDRAW = '/?from=TAC&to=TAC&private=from';
-const plainTac = (raw) => { try { const v = BigInt(raw), f = String(v % ONE).padStart(8, '0').replace(/0+$/, ''); return f ? `${v / ONE}.${f}` : String(v / ONE); } catch { return ''; } };
-const withdrawHref = (r) => (r && r.receive && r.receive !== '0' && plainTac(r.receive) ? `${WITHDRAW}&amt=${plainTac(r.receive)}` : WITHDRAW);
+// where private TAC is turned into public TAC in an Ethereum wallet: the front page's Withdraw tab on TAC, set to take it all (the app's own link for it)
+const WITHDRAW = '/#card=shield:tac:wallet';
 const KEPT = 'tacit-fast-providers-v1';
 const big = (xs, pick) => xs.reduce((a, x) => (pick(x) > a ? pick(x) : a), 0n);
 
@@ -134,7 +132,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         ${r.returned ? '' : `<ol class="fx-steps" aria-label="Steps">${r.steps.map((s, i) => `<li${i < r.at || r.ended ? ' class="on"' : i === r.at ? ' class="at"' : ''}>${esc(s)}</li>`).join('')}</ol>`}
         <p class="note">${esc(r.detail)}${r.error && !r.ended ? ` <span class="err">${esc(r.error)}</span>` : ''}</p>
         <p class="note fx-meta">${esc(ago(r.created))}${r.lockTxid ? ` · <a href="${SCAN}${esc(r.lockTxid)}" target="_blank" rel="noopener noreferrer">Bitcoin lock ↗</a>` : ''}${r.ended && !r.returned ? ' · <a href="/">Your TAC, on the front page</a>' : ''}</p>
-        ${r.ended && !r.returned && Date.now() / 1000 - Number(r.created || 0) < 7 * 86400 ? `<p class="note fx-next"><b>It is in your private balance on Tacit, not yet in an Ethereum wallet.</b> Swap, send or earn with it privately, or <a href="${esc(withdrawHref(r))}">withdraw it to an Ethereum address</a> (public TAC).</p>` : ''}
+        ${r.ended && !r.returned && Date.now() / 1000 - Number(r.created || 0) < 7 * 86400 ? `<p class="note fx-next"><b>It is in your private balance on Tacit, not yet in an Ethereum wallet.</b> Swap, send or earn with it privately, or <a href="${WITHDRAW}">withdraw it to an Ethereum address</a> (public TAC).</p>` : ''}
       </div>`).join('') : '';
   }
 
