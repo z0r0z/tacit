@@ -96,6 +96,8 @@ async function stubbed(answer) {
 async function run(answer) {
   const { A, to, seen, b, page, errors, down } = await stubbed(answer);
   await page.goto(ORIGIN + '/pay/#tac');
+  await page.waitForSelector('#g-in [data-in="paste"]', { state: 'attached' });
+  await page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
   await page.click('#g-in [data-in="paste"]');
   await page.fill('#g-hex', A);
   await page.click('#g-in [data-in="key"]');
@@ -148,6 +150,8 @@ async function runTac() {
   const { A, to, seen, b, page, errors, down } = await stubbed('tac');
   await page.goto(ORIGIN + '/tac/');
   await page.click('#wallet-chip');
+  await page.waitForSelector('#ws-in [data-in="paste"]', { state: 'attached' });
+  await page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
   await page.click('#ws-in [data-in="paste"]');
   await page.fill('#ws-hex', A);
   await page.click('#ws-in [data-in="key"]');

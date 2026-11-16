@@ -177,7 +177,8 @@ try {
     const { page } = await open(c.ctx, PAGES[k].path);
     await showing(page, k, SHORT_A);
     await page.click(PAGES[k].chip);
-    await page.waitForSelector(`${PAGES[k].sheet}[open] [data-in="paste"]`);
+    await page.waitForSelector(`${PAGES[k].sheet}[open] [data-in="paste"]`, { state: 'attached' });
+    await page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
     await page.click(`${PAGES[k].sheet}[open] [data-in="paste"]`);
     await page.fill(`${PAGES[k].sheet}[open] #ws-hex`, '11'.repeat(32));
     await page.click(`${PAGES[k].sheet}[open] [data-in="key"]`);
