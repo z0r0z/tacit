@@ -40,10 +40,13 @@ on:
       - '.github/workflows/js-suites.yml'
   workflow_dispatch:
 
-# A later push supersedes a run still going for the same ref: the verdict that matters is the newest one.
+# On a pull request a later push supersedes the run still going: only the newest state of the branch matters.
+# NOT on main. Pushes here land minutes apart from several people at once, and cancelling meant a commit could be
+# superseded before it was ever judged — the gate's own second run was cancelled 90 seconds in, by the next push.
+# A commit that reaches main gets its own verdict, so a failure can be traced to the change that caused it.
 concurrency:
   group: js-suites-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   suites:
@@ -68,14 +71,20 @@ jobs:
         with:
           version: v1.5.1 # the version contracts-ci.yml pins
 
-      # Three npm packages, and the suites resolve against all three: a tests/ suite reads the repo root's
-      # node_modules by path, while worker-relay's own suites import bare specifiers (viem, better-sqlite3)
-      # from theirs. `npm ci` honours each lockfile; a failure here is a dependency problem, not a test one.
+      # FOUR npm packages, and the suites resolve against all four: a tests/ suite reads the repo root's node_modules by
+      # path, worker-relay's own suites import bare specifiers (viem, better-sqlite3) from theirs, and two suites import
+      # `../worker/node_modules/@noble/...` by path, which is a directory that only exists if worker/ is installed too
+      # (leaving it out is what failed tests/worker-amm-parity and tests/community-ops on this gate's first run, where
+      # both pass locally because a developer's tree has all four). `npm ci` honours each lockfile; a failure in these
+      # steps is a dependency problem, not a test one.
       - name: Install (root)
         run: npm ci --no-audit --no-fund
       - name: Install (tests)
         run: npm ci --no-audit --no-fund
         working-directory: tests
+      - name: Install (worker)
+        run: npm ci --no-audit --no-fund
+        working-directory: worker
       - name: Install (worker-relay)
         run: npm ci --no-audit --no-fund
         working-directory: worker-relay
