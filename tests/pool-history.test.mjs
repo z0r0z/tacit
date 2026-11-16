@@ -1,7 +1,7 @@
 // worker-relay/src/lib/pool-history.js, what a pool's state did over old blocks, found with few reads: the changes between two blocks against a stand-in chain whose changes are at known
 // blocks, what a read costs, what is not seen, and every way the search can fail. Offline: node tests/pool-history.test.mjs
 import assert from 'node:assert/strict';
-import { changesBetween, stateReader, makeGate, STEP_BLOCKS, RES_BLOCKS } from '../worker-relay/src/lib/pool-history.js';
+import { changesBetween, stateReader, makeGate, makeArchiveRpc, ARCHIVE_RPCS_MAINNET, REST_LIMITED_MS, REST_FAILED_MS, STEP_BLOCKS, RES_BLOCKS } from '../worker-relay/src/lib/pool-history.js';
 
 // a pool whose state is `before` until the first change, then each [block, state] from that block on
 const chain = (changes, before = null) => {
@@ -154,5 +154,71 @@ const FROM = 1_000_000, TO = FROM + 7200;
   const order = [], gate = makeGate(1);
   const rs = await Promise.allSettled([gate(async () => { order.push(1); return 'a'; }), gate(async () => { order.push(2); throw new Error('x'); }), gate(async () => { order.push(3); return 'c'; })]);
   assert.deepEqual(order, [1, 2, 3]); assert.deepEqual(rs.map((r) => r.status), ['fulfilled', 'rejected', 'fulfilled']);
+}
+
+// ── makeArchiveRpc: a read through nodes that limit ──
+{
+  const ok = (result = '0xabc') => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: 1, result }) });
+  const http = (status) => ({ ok: false, status, json: async () => ({}) });
+  const rpcErr = (message) => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: 1, error: { code: -32005, message } }) });
+  const notJson = { ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <'); } };
+  const A = 'https://a.test', B = 'https://b.test/v2/SECRETKEY123', C = 'https://c.test:8545/path';
+  const rig = (script, urls = [A, B, C], rounds = 3) => {
+    const calls = [], sleeps = [], clock = { t: 0 };
+    const fetchFn = async (url) => { calls.push(url); const r = script(url, calls.filter((x) => x === url).length, calls.length); if (r instanceof Error) throw r; return r; };
+    const rpc = makeArchiveRpc(urls, { fetchFn, now: () => clock.t, sleep: async (ms) => { sleeps.push(ms); clock.t += ms; }, rounds });
+    return { rpc, calls, sleeps, clock };
+  };
+  const CALL = ['0xpool', '0xdata', '0x1'];
+  // the first node that answers, and nothing asked of the rest
+  { const r = rig(() => ok('0x01')); assert.equal(await r.rpc.call(...CALL), '0x01'); assert.deepEqual(r.calls, [A]); }
+  // a node that limits: the next answers, and the one that limited is not walked into again until its rest is over
+  {
+    const r = rig((u) => (u === A ? http(429) : ok()));
+    await r.rpc.call(...CALL); await r.rpc.call(...CALL);
+    assert.deepEqual(r.calls, [A, B, B], 'the second read goes straight to the node that answered');
+    assert.deepEqual(r.rpc.resting(), ['a.test']);
+    r.clock.t += REST_LIMITED_MS - 1; await r.rpc.call(...CALL); assert.equal(r.calls.at(-1), B, 'still resting a moment before its time');
+    r.clock.t += 2; await r.rpc.call(...CALL); assert.equal(r.calls.at(-2), A, 'asked again once the rest is over');
+  }
+  // a node that fails some other way rests for less
+  { const r = rig((u) => (u === A ? http(500) : ok())); await r.rpc.call(...CALL); r.clock.t += REST_FAILED_MS + 1; await r.rpc.call(...CALL); assert.equal(r.calls.at(-2), A, 'a failed node is back after REST_FAILED_MS'); assert.ok(REST_FAILED_MS < REST_LIMITED_MS); }
+  // every node fails and none was limiting: one round, and the message says each one's reason, by host and never by address
+  {
+    const r = rig((u) => (u === A ? http(500) : u === B ? notJson : new TypeError('fetch failed')));
+    await assert.rejects(r.rpc.call(...CALL), (e) => {
+      assert.equal(e.message, 'rpc eth_call failed: a.test HTTP 500; b.test not JSON; c.test:8545 no answer');
+      assert.ok(!/SECRETKEY|\/v2|path/.test(e.message), 'no address and no key in it'); return true;
+    });
+    assert.deepEqual(r.sleeps, [], 'nothing was limiting, so no pause'); assert.equal(r.calls.length, 3);
+  }
+  // a timeout is said as one
+  { const r = rig((u) => Object.assign(new Error('x'), { name: 'TimeoutError' }), [A]); await assert.rejects(r.rpc.call(...CALL), /a\.test timed out/); }
+  // limited: the round is made again after a pause, up to the rounds given, and the last round's reasons are the message
+  {
+    const r = rig(() => http(429));
+    await assert.rejects(r.rpc.call(...CALL), (e) => { assert.equal(e.message, 'rpc eth_call failed: a.test HTTP 429; b.test HTTP 429; c.test:8545 HTTP 429'); return true; });
+    assert.deepEqual(r.sleeps, [1500, 3000], 'two pauses between three rounds'); assert.equal(r.calls.length, 9);
+  }
+  // and a limit that lifts between rounds is read through
+  { const r = rig((u, n) => (n < 2 ? rpcErr('Rate limit exceeded') : ok('0x77'))); assert.equal(await r.rpc.call(...CALL), '0x77'); assert.deepEqual(r.sleeps, [1500]); }
+  // what a node says in an error is kept short and without addresses; JSON-RPC errors count as limits when they say so
+  {
+    const r = rig(() => rpcErr('Too Many Requests, see https://secret.example/key/abcdef for plans and more words that go on and on and on and on'), [A], 1);
+    await assert.rejects(r.rpc.call(...CALL), (e) => { assert.ok(!/secret\.example|abcdef/.test(e.message), e.message); assert.ok(e.message.length < 200); return true; });
+  }
+  // an empty result ('0x') is an answer; a missing one is not
+  { const r = rig(() => ok('0x')); assert.equal(await r.rpc.call(...CALL), '0x'); }
+  { const r = rig(() => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: 1 }) }), [A], 1); await assert.rejects(r.rpc.call(...CALL), /a\.test empty result/); }
+  // every node resting: they are still asked, in order, rather than refusing the read
+  {
+    let fail = true;
+    const r = rig((u) => (fail ? http(500) : ok('0x02')), [A, B]);
+    await assert.rejects(r.rpc.call(...CALL)); fail = false;
+    assert.equal(await r.rpc.call(...CALL), '0x02', 'both resting, and the read still goes through'); assert.equal(r.calls.at(-1), A);
+  }
+  // the default list: archive nodes only (not the present-only ones), no repeats, a public key last
+  assert.ok(ARCHIVE_RPCS_MAINNET.length >= 4 && new Set(ARCHIVE_RPCS_MAINNET).size === ARCHIVE_RPCS_MAINNET.length); assert.ok(!ARCHIVE_RPCS_MAINNET.some((u) => /publicnode/.test(u)));
+  assert.match(ARCHIVE_RPCS_MAINNET.at(-1), /nodereal/, 'the node that limits readily is last');
 }
 console.log('pool-history: all checks passed');

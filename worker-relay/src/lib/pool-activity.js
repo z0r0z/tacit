@@ -4,16 +4,19 @@
 // follows from how often the pool changes, which a page cannot see without reading old blocks from nodes that charge dearly for it. So the server keeps a log: at each tick
 // the program says each pool's reserves and shares at one block, and a state that differs from the last one read is a change, kept with the time and the block.
 //
-// The log is one JSON document ({ v: 1, pools: { <poolId>: { first, fb, last: { t, b, s }, ev: [[t, b, kind], ...], bf: { at, ok } } } }): `first` is when this pool's unbroken record starts
-// (and `fb` the block it starts at), `last` the state as last read (`s` is "reserveA:reserveB:shares"), `ev` the changes, oldest first, `bf` the last time the record was filled in from old
-// blocks (pool-history.js) and whether that worked. A change is told to the tick, not to the block: two trades between ticks are one change, so the count is a floor.
+// The log is one JSON document ({ v: 1, pools: { <poolId>: { first, fb, last: { t, b, s }, ev: [[t, b, kind], ...], bf: { at, ok, mode, reads | err, full } } } }): `first` is when this pool's
+// unbroken record starts (and `fb` the block it starts at), `last` the state as last read (`s` is "reserveA:reserveB:shares"), `ev` the changes, oldest first, `bf` the last time the record
+// was filled in from old blocks (pool-history.js): when, whether it worked, for which of the cases below, how many reads it took, or why it failed, and `full` once the pool's own beginning
+// has been reached. The summary a page is sent carries it as `backfill`, so the API itself says whether the old blocks were read and why not. A change is told to the tick, not to the block:
+// two trades between ticks are one change, so the count is a floor.
 //
 // A record that starts empty (the service has just started, or the pool is new to the log), or has a gap in it (the service was off, or its reads failed, for longer than GAP_MS), would
-// say nothing of the time before its first reading. The chain has that time: historyPlan() says, for each pool, what to read from old blocks (a whole new record's window, the gap's blocks,
-// or the window before a live record that is shorter than it), and applyHistory() puts what was read into the record. A pool whose old blocks could not be read keeps what it had, marked in
-// `bf` so the read is tried again later, not at every tick (noteFailed()).
+// say nothing of the time before its first reading. The chain has that time: historyPlan() says, for each pool, what to read from old blocks (the gap's blocks, or a stretch of CHUNK_BLOCKS
+// before the record's start, repeated at each tick until the record is a day long: a free node limits a burst of hundreds of reads from one address, a few dozen a tick it does not), and
+// applyHistory() puts what was read into the record. A pool whose old blocks could not be read keeps what it had, marked in `bf` with the reason so the read is tried again after RETRY_MS,
+// not at every tick (noteFailed()).
 export const KEEP_MS = 48 * 3600e3, MAX_EVENTS = 400, GAP_MS = 20 * 60e3;
-export const WINDOW_BLOCKS = 7200, BLOCK_MS = 12_000, SLACK_BLOCKS = 100, MARGIN_BLOCKS = 20, RETRY_MS = 30 * 60e3;      // a day of blocks; a record within SLACK_BLOCKS of that is long enough
+export const WINDOW_BLOCKS = 7200, CHUNK_BLOCKS = 1200, BLOCK_MS = 12_000, SLACK_BLOCKS = 100, MARGIN_BLOCKS = 20, RETRY_MS = 10 * 60e3;      // a day of blocks, read four hours at a time; a record within SLACK_BLOCKS of a day is long enough
 
 const stateOf = (p) => {
   const r = p && p.reserves;
@@ -57,9 +60,10 @@ export function foldSample(log, sample, { t, block }) {
 const firstBlockOf = (rec) => (Number.isFinite(rec.fb) ? { b: rec.fb, exact: true } : { b: Math.round(rec.last.b - (rec.last.t - rec.first) / BLOCK_MS), exact: false });
 
 // What each pool's record needs from old blocks, from the log as it was BEFORE this tick's reading was folded in and the reading itself (`head` the block it was read at):
-//   { poolId, mode: 'new',     from, to, toState }              no record (or a gap longer than the window): the window before the reading
+//   { poolId, mode: 'new',     from, to, toState }              no record (or a gap longer than the window): the last CHUNK_BLOCKS before the reading
 //   { poolId, mode: 'gap',     from, fromState, to, toState }   a record broken by a gap within the window: the blocks of the gap, joined to the record
-//   { poolId, mode: 'prepend', from, to }                       a live record shorter than the window, not yet filled in (or the last try failed long enough ago): the window before it
+//   { poolId, mode: 'prepend', from, to }                       a live record shorter than the window: the CHUNK_BLOCKS before it (at each tick until it reaches the window, or the pool's
+//                                                               own beginning, or the last try failed less than RETRY_MS ago)
 // Blocks are for changesBetween() (pool-history.js): the changes in (from, to].
 export function historyPlan(log, sample, { t, head }) {
   const pools = readLog(log).pools, floor = head - WINDOW_BLOCKS, out = [];
@@ -67,14 +71,14 @@ export function historyPlan(log, sample, { t, head }) {
   for (const { poolId, state } of sample) {
     if (!state) continue;
     const rec = pools[poolId];
-    if (!rec || !rec.last) { out.push({ poolId, mode: 'new', from: floor, to: head, toState: state }); continue; }
+    if (!rec || !rec.last) { out.push({ poolId, mode: 'new', from: Math.max(floor, head - CHUNK_BLOCKS), to: head, toState: state }); continue; }
     if (!isLive(rec, t)) {
       if (rec.last.b >= floor && rec.last.b < head) out.push({ poolId, mode: 'gap', from: rec.last.b, fromState: rec.last.s, to: head, toState: state });
-      else out.push({ poolId, mode: 'new', from: floor, to: head, toState: state });
+      else out.push({ poolId, mode: 'new', from: Math.max(floor, head - CHUNK_BLOCKS), to: head, toState: state });
       continue;
     }
-    const f = firstBlockOf(rec), tried = rec.bf && (rec.bf.ok || t - rec.bf.at <= RETRY_MS);
-    if (!tried && f.b > floor + SLACK_BLOCKS) out.push({ poolId, mode: 'prepend', from: floor, to: f.exact ? f.b : f.b - MARGIN_BLOCKS });
+    const f = firstBlockOf(rec), waiting = rec.bf && !rec.bf.ok && t - rec.bf.at <= RETRY_MS, to = f.exact ? f.b : f.b - MARGIN_BLOCKS;
+    if (!waiting && !(rec.bf && rec.bf.full) && f.b > floor + SLACK_BLOCKS) out.push({ poolId, mode: 'prepend', from: Math.max(floor, to - CHUNK_BLOCKS), to });
   }
   return out;
 }
@@ -85,7 +89,7 @@ export function applyHistory(logBefore, logAfter, plan, result, { t, head }) {
   const out = { v: 1, pools: { ...readLog(logAfter).pools } };
   const post = out.pools[plan.poolId];
   if (!post) return out;
-  const timeOf = (b) => t - (head - b) * BLOCK_MS, bf = { at: t, ok: true };
+  const timeOf = (b) => t - (head - b) * BLOCK_MS, bf = { at: t, ok: true, mode: plan.mode, reads: result.calls, ...(result.from > plan.from ? { full: true } : {}) };      // `full`: the pool began inside what was asked for
   const evs = result.events.map(({ block, kind }) => [timeOf(block), block, kind]);
   let rec;
   if (plan.mode === 'new') rec = { first: timeOf(result.from), fb: result.from, last: post.last, ev: evs, bf };
@@ -98,10 +102,13 @@ export function applyHistory(logBefore, logAfter, plan, result, { t, head }) {
   return out;
 }
 
-// The log with a failed read of old blocks noted on the pool's record, so it is tried again after RETRY_MS and not at the next tick.
-export function noteFailed(logAfter, plan, { t }) {
+// What an error says, fit to be shown: no address (an RPC address can carry a key), one line, bounded.
+export const scrub = (e) => String((e && e.message) || e || '').replace(/https?:\/\/\S+/g, '[address]').replace(/\s+/g, ' ').slice(0, 300);
+
+// The log with a failed read of old blocks noted on the pool's record, with the reason, so it is tried again after RETRY_MS and not at the next tick.
+export function noteFailed(logAfter, plan, { t, err }) {
   const out = { v: 1, pools: { ...readLog(logAfter).pools } };
-  if (out.pools[plan.poolId]) out.pools[plan.poolId] = { ...out.pools[plan.poolId], bf: { at: t, ok: false } };
+  if (out.pools[plan.poolId]) out.pools[plan.poolId] = { ...out.pools[plan.poolId], bf: { at: t, ok: false, mode: plan.mode, err: scrub(err) } };
   return out;
 }
 
@@ -110,8 +117,10 @@ export function noteFailed(logAfter, plan, { t }) {
 export function summarize(log, poolId) {
   const p = readLog(log).pools[String(poolId).toLowerCase()];
   if (!p || !p.last) return null;
-  const at = p.last.t, within = (ms) => p.ev.filter(([et]) => at - et <= ms).length;
-  return { at, since: p.first, hour: within(3600e3), day: within(86400e3), lastMoveAt: p.ev.length ? p.ev[p.ev.length - 1][0] : null };
+  const at = p.last.t, within = (ms) => p.ev.filter(([et]) => at - et <= ms).length, b = p.bf;
+  // `backfill` is always there (null where no read of old blocks has been made): a server that does not send it is one that cannot make one
+  return { at, since: p.first, hour: within(3600e3), day: within(86400e3), lastMoveAt: p.ev.length ? p.ev[p.ev.length - 1][0] : null,
+    backfill: b ? { at: b.at, ok: !!b.ok, ...(b.mode ? { mode: b.mode } : {}), ...(b.reads != null ? { reads: b.reads } : {}), ...(b.err ? { err: b.err } : {}), ...(b.full ? { full: true } : {}) } : null };
 }
 
 export const summaries = (log) => Object.fromEntries(Object.keys(readLog(log).pools).map((id) => [id, summarize(log, id)]).filter(([, s]) => s));

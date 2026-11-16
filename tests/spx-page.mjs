@@ -4,7 +4,8 @@
 //   file: made for /spx/ (data-page, title, address, share card), the front page's own CSP and script, one h1, the four moves' links on $SPX's address, every
 //   file the page names exists, outside links open without the opener, the contract address is shown whole and is the token the swap card lists as SPX;
 //   browser: the tile opens on Shield SPX; Send, Withdraw and Bridge each open it on $SPX (a visitor who holds none yet, with no key); the tabs (Swap shut, Bridge for More),
-//   the picker (ETH and SPX only), ETH priced as buy-and-shield, Bridge on SPX alone, Earn with the SPX pool shut; the page's fonts load; nothing
+//   the picker (ETH and SPX only), ETH priced as buy-and-shield, Bridge on SPX alone, Earn with the SPX pool shut; SPX drawn with its logo (not a letter) on Send, its asset
+//   list, Request and Bridge even when the swap card, which holds the token list, loads late; the page's fonts load; nothing
 //   scrolls sideways at 1280, 820 and 390; no script error and no CSP violation; the front page is still the front page (ETH first, none of this page's parts).
 //
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/spx-page.mjs
@@ -117,6 +118,37 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   ok(await p.evaluate(() => { const a = document.querySelector('#spx-news'); return !!a && !a.offsetParent; }), 'the landing strip’s link to this page is not shown on this page itself');
   await ctx.close();
 }
+// the token's logo does not wait for the swap card (which holds the token list, mounts with the Swap tab, and so is late or never comes on a visit that begins on Send, Request or
+// Bridge): with that card held back, the Send chip and its asset list, the Request view, the Bridge chips and their From list all draw SPX with its logo, never as a letter mark,
+// and the marks are the same once the card arrives
+{
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage(), bad = [], HOLD = 9000, LOGO = `/swap/logos/${SPX}.webp`;
+  p.on('pageerror', (e) => bad.push(e.message));
+  await p.route(/\/swap\/card\.js/, async (route) => { await new Promise((r) => setTimeout(r, HOLD)); await route.continue().catch(() => {}); });
+  const marks = (sel) => p.evaluate(([s, logo]) => { const r = document.querySelector(s); return r ? { letters: r.querySelectorAll('.tk.letter').length, logos: [...r.querySelectorAll('img.tk')].filter((i) => (i.getAttribute('src') || '').endsWith(logo)).length } : null; }, [sel, LOGO]);
+  const SHEET = 'dialog[open], .bsheet, [role=dialog]';
+  await p.goto(BASE + `/spx/#card=send:xp${SPX}`, { waitUntil: 'load' });
+  await p.waitForSelector('span.coin[data-pk="hx-sa"]', { timeout: 40000 }).catch(() => {});
+  await p.waitForTimeout(2500);
+  const send = await marks('#hx');
+  await p.click('span.coin[data-pk="hx-sa"]').catch(() => {}); await p.waitForTimeout(1200);
+  const sheet = await marks(SHEET);
+  await p.keyboard.press('Escape'); await p.waitForTimeout(500);
+  await p.click('#hx-ask').catch(() => {}); await p.waitForTimeout(1500);
+  const ask = await marks('#hx');
+  await p.click('[data-hxm="more"]').catch(() => {}); await p.waitForTimeout(2500);
+  const br = await marks('#hx');
+  await p.click('span.coin[data-pk="hx-from"]').catch(() => {}); await p.waitForTimeout(1200);
+  const from = await marks(SHEET);
+  await p.keyboard.press('Escape'); await p.waitForTimeout(HOLD);
+  const late = await marks('#hx');
+  const good = (m, n) => !!m && m.letters === 0 && m.logos >= n;
+  ok(good(send, 1) && good(sheet, 1), `with the swap card held back, the Send chip and its asset list draw SPX with its logo, no letter mark (${JSON.stringify([send, sheet])})`);
+  ok(good(ask, 1), `and so does the Request view (${JSON.stringify(ask)})`);
+  ok(good(br, 2) && good(from, 2), `and the Bridge tab’s two chips and its From list (${JSON.stringify([br, from])})`);
+  ok(good(late, 2) && bad.length === 0, `and the same once the card has arrived, with no script error (${JSON.stringify(late)}${bad.length ? ' ' + bad[0] : ''})`);
+  await ctx.close();
+}
 // the deep link to the ETH zap into the tETH / SPX farm: /spx/#card=earn:ether:spx&amt=0.05 opens Earn on ETH, on that farm, with the amount in (and the card's share link is that link)
 {
   const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage(), bad = [];
@@ -140,6 +172,31 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   ok(seen.length > 0 && seen.every((k) => !k.split('|')[0] || k.startsWith('xa:')), `and no launch pool is ever the checked farm on the way in (${seen.join(' > ')})`);
   const link = await p.evaluate(() => { try { return document.querySelector('#hx-copy')?.dataset?.link || document.querySelector('#hx-copy')?.getAttribute('data-link') || null; } catch { return null; } });
   ok(!link || /\/spx\/#card=earn:ether:spx&amt=0\.05$/.test(link), `its share link, when the card shows one, is the same link (${link || 'none shown'})`);
+  await ctx.close();
+}
+// the Bridge tab names SPX's market on Bitcoin, where a holder sells into a bid or a buyer places one (a bridged token has no atomic sale): the link is there, and opens the market's own sheet
+{
+  ok(/data-btcmarket="\$\{mk\.addr\}">Buy or sell \$\{mk\.sym\} for sats →<\/a>/.test(front) && /makeBitcoin\(\{[^}]*asset: \{ id: b\.hex, title: `\$\{b\.name\} on Bitcoin`, ticker: b\.name, decimals: r\.tdec, bound: true/.test(front), 'the Bridge tab’s footer has a Buy or sell link for a community token, which opens the Bitcoin market with the token’s own bound-bid market (bound: true)');
+  const sheets = read('front/sheets.js');
+  ok(/BTC_NOTE_ASSETS\.some\(\(x\) => x\.id === a\.id && x\.runtime\) \? html`<button class="btn ghost" type="button" data-btcmarket-id="\$\{a\.id\}">Buy or sell for sats<\/button>`/.test(sheets) && /\[data-btcmarket\], \[data-btcmarket-id\]/.test(front) && /XT\.ids\.get\(`0x\$\{a\.dataset\.btcmarketId\}`\)/.test(front) && /const d = a\.closest\('dialog'\); if \(d\?\.open\) d\.close\(\);/.test(front), 'the Bitcoin sheet’s Notes offer the same market for a community token held at the Bitcoin address (by its asset id), and the sheet is shut as the market opens');
+  ok(/if \(HX\.tab === 'bridge' && \$\('#hx-brl'\)\) hxBrLine\(\);/.test(front), 'the Bridge footer is drawn again when the token’s bridge first exists, so a visit that opened the tab early still gets the link');
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage(), bad = [];
+  p.on('pageerror', (e) => bad.push(e.message));
+  p.on('console', (m) => { if (/Content Security Policy/.test(m.text())) bad.push('CSP: ' + m.text().slice(0, 140)); });
+  await p.goto(BASE + `/spx/#card=send:xp${SPX}`, { waitUntil: 'load' });
+  await p.waitForSelector('span.coin[data-pk="hx-sa"]', { timeout: 40000 }).catch(() => {});      // the deep link has settled on Send: a press on Bridge before then is undone by it
+  await p.waitForTimeout(1500);
+  await p.click('[data-hxm="more"]').catch(() => {});
+  await p.waitForSelector('#hx-brl a[data-btcmarket]', { timeout: 40000 }).catch(() => {});
+  const link = await p.evaluate(() => { const a = document.querySelector('#hx-brl a[data-btcmarket]'); return a ? { text: a.textContent.trim(), addr: a.dataset.btcmarket, shown: !!a.offsetParent } : null; });
+  ok(!!link && link.shown && link.addr === SPX && /^Buy or sell SPX for sats →$/.test(link.text), `on the Bridge tab, the footer offers SPX’s market (${JSON.stringify(link)})`);
+  await p.click('#hx-brl a[data-btcmarket]').catch(() => {});
+  await p.waitForFunction(() => /SPX on Bitcoin/.test(document.querySelector('.bsheet-head')?.textContent || ''), null, { timeout: 40000 }).catch(() => {});
+  const sheet = await p.evaluate(() => ({ head: (document.querySelector('.bsheet-head')?.textContent || '').replace(/\s+/g, ' ').trim(), body: (document.querySelector('.bsheet')?.innerText || '').replace(/\s+/g, ' ').slice(0, 200) }));
+  ok(/SPX on Bitcoin/.test(sheet.head), `pressing it opens the market’s sheet, titled SPX on Bitcoin (${JSON.stringify(sheet.head)})`);
+  await p.waitForFunction(() => /bid/i.test(document.querySelector('.bsheet')?.innerText || ''), null, { timeout: 40000 }).catch(() => {});
+  const text = await p.evaluate(() => (document.querySelector('.bsheet')?.innerText || '').replace(/\s+/g, ' '));
+  ok(/bid/i.test(text) && !/Could not load the Bitcoin market/.test(text) && bad.length === 0, `and the sheet loads the bid market, with no script error and no CSP violation (${JSON.stringify(text.slice(0, 160))}${bad.length ? ' ' + bad[0] : ''})`);
   await ctx.close();
 }
 // a payment-request link made on this page (the Send tab's Request view) opens that payment on this page for a first-time visitor: the token's own key has digits (xp0x…), which the

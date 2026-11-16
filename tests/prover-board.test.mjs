@@ -5,7 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeProverBoard, parseWorkerTokens, workerOf, proverBoardConfig, goesByRecord, PROVER_BOARD } from '../worker/src/prover-board.js';
+import { makeProverBoard, parseWorkerTokens, workerOf, proverBoardConfig, goesByRecord, goesByDraw, drawWinner, PROVER_BOARD } from '../worker/src/prover-board.js';
 import worker from '../worker/src/index.js';
 
 const store = () => {
@@ -403,7 +403,7 @@ test('points: each proof the relay takes from a community machine counts for its
 });
 
 test('points config: env sets the points and a count a day, 0 points pays nothing, no count or 0 is no count, nonsense keeps the default', () => {
-  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3 });
+  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3, drawPct: 0, drawNew: 15 });
   assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10', POINTS_BOARD_BTC_PER_PROOF: '800' }), { pointsPerProof: 50, proofsPerMinerDay: 10, ...btc(800) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0', POINTS_BOARD_BTC_PER_PROOF: '0' }), { pointsPerProof: 0, proofsPerMinerDay: Infinity, ...btc(0) });
@@ -843,4 +843,160 @@ test('batches by record: a machine is timed per MB of input, so a bigger batch g
   const turn = await ask(big);
   assert.equal(turn.jobId, two.jobId);
   assert.equal(turn.leaseUntil, now() + 3 * 100 * 2 * 1000, 'three times 100 s per MB for a 2 MB batch: 600 s');
+});
+
+// ── Tacit chain blocks by draw ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// An open race gives every block to the fastest machine; the draw gives each place odds in proportion to its speed, as hashpower does.
+const blockOn = (b) => { let k = 0; return () => b.post({ class: 'public', program: 'tacit-block', stdin: Buffer.from(`block ${++k} ${t}`).toString('base64'), cycleLimit: 1e8, gasLimit: 1e9, deadline: now() / 1000 + 900 }); };
+const drawBoard = (extra = {}) => { const st = store(); return { st, b: makeProverBoard({ storage: st, now, cfg: { ...PROVER_BOARD, drawPct: 100, drawNew: 15, ...extra } }) }; };
+const askBlock = (b, w) => b.claim({ worker: w, classes: ['public'], programs: ['tacit-block'] });
+// seen by the board, each with a proof already taken from it (an address that has proved nothing holds no ticket)
+const ready = async (st, b, machines) => { for (const w of machines) await askBlock(b, w); const ws = await st.getWorkers(); for (const w of machines) ws[w.name].proved = 1; await st.putWorkers(ws); };
+
+test('draw: a ticket wins in proportion to its weight, the same winner for every reader, and a block goes by draw at the share set', () => {
+  let fast = 0;
+  for (let i = 0; i < 20000; i++) if (drawWinner(`job${i}`, [['a', 10], ['b', 1]]) === 'a') fast++;
+  assert.ok(fast / 20000 > 0.895 && fast / 20000 < 0.925, `10 to 1 wins about 91% (${fast / 200}%)`);
+  assert.equal(drawWinner('x', [['a', 1], ['b', 2]]), drawWinner('x', [['b', 2], ['a', 1]]), 'the order tickets are read in changes nothing');
+  assert.equal(drawWinner('x', [['a', 0]]), null, 'no weight, no ticket');
+  assert.equal(drawWinner('x', []), null);
+  let n = 0;
+  for (let i = 0; i < 2000; i++) if (goesByDraw(`id${i}`, 30)) n++;
+  assert.ok(n > 520 && n < 680, `30% go by draw (${n} of 2000)`);
+  assert.equal(goesByDraw('anything', 0), false, '0 is off');
+  assert.equal(goesByDraw('anything', 100), true);
+  assert.deepEqual([proverBoardConfig({}).drawPct, proverBoardConfig({ PROVER_BOARD_BLOCK_DRAW_PCT: '40' }).drawPct, proverBoardConfig({ PROVER_BOARD_BLOCK_DRAW_PCT: '400' }).drawPct, proverBoardConfig({ PROVER_BOARD_BLOCK_DRAW_NEW: '95' }).drawNew],
+    [0, 40, 100, 90], 'off unless set; a share is at most all of them; new places at most 90 of the odds');
+});
+
+test('draw: off by default, a block is raced as before', async () => {
+  t = 20_000_000;
+  const st = store(), b = makeProverBoard({ storage: st, now }), block = blockOn(b);
+  const x = gpu('d1'), y = gpu('e2');
+  await ready(st, b, [x, y]);
+  const j = await block();
+  assert.equal((await askBlock(b, x)).jobId, j.jobId);
+  assert.equal((await askBlock(b, y)).jobId, j.jobId, 'both race it');
+});
+
+test('draw: the block is held for the drawn machine, which proves it and earns a record; the summary shows it', async () => {
+  t = 21_000_000;
+  const { st, b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1'), y = gpu('e2');
+  await ready(st, b, [x, y]);
+  const j = await block();
+  const gx = await askBlock(b, x), gy = await askBlock(b, y);
+  assert.equal([gx, gy].filter(Boolean).length, 1, 'one machine is drawn');
+  const [won, other] = gx ? [x, y] : [y, x];
+  assert.equal(await askBlock(b, other), null, 'held while the drawn machine proves it');
+  assert.equal((gx || gy).leaseUntil, now() + PROVER_BOARD.drawNewMs, 'a machine with no record has drawNewMs');
+  t += 4000;
+  assert.deepEqual(await answer(b, won, j.jobId), { ok: true, status: 'proved' });
+  const row = (await b.summary()).workers.find((w) => w.name === won.name);
+  assert.deepEqual([row.blocks, row.blockSecs], [1, 4], 'its record: one block in 4 s');
+  const day = Math.floor(now() / 86400000);
+  assert.deepEqual((await b.credits(day)).body.miners.map((m) => m.points), [PROVER_BOARD.pointsByProgram['tacit-block']], 'paid as a block always was');
+});
+
+test('draw: a drawn machine that lets the block lapse, gives it back or answers wrongly opens it to the race, and its place goes after the others', async () => {
+  t = 22_000_000;
+  for (const how of ['lapse', 'error', 'bad']) {
+    const { st, b } = drawBoard(), block = blockOn(b);
+    const x = gpu('d1'), y = gpu('e2');
+    await ready(st, b, [x, y]);
+    const j = await block();
+    const gx = await askBlock(b, x), gy = await askBlock(b, y);
+    const [won, other] = gx ? [x, y] : [y, x];
+    if (how === 'lapse') t += PROVER_BOARD.drawNewMs + 1;
+    if (how === 'error') await b.result({ worker: won, jobId: j.jobId, error: 'out of memory' });
+    if (how === 'bad') { t += 1000; await answer(b, won, j.jobId, false); }
+    if (how === 'lapse') await askBlock(b, won); // still seen: it asks again
+    const g = await askBlock(b, other);
+    assert.equal(g && g.jobId, j.jobId, `${how}: the race's now`);
+    assert.ok(!g.leaseUntil || g.leaseUntil === j.deadline * 1000 || g.leaseUntil > now(), `${how}: raced with the block's own lease`);
+    const trouble = await st.getTrouble();
+    assert.ok(trouble[won.client] != null, `${how}: the drawn machine's place goes after the others`);
+    t += 60_000;
+  }
+});
+
+test('draw: a drawn machine that never comes for the block leaves it to the race after drawOfferMs', async () => {
+  t = 23_000_000;
+  const { st, b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1'), y = gpu('e2');
+  await ready(st, b, [x, y]);
+  let j = null;
+  for (let i = 0; i < 40 && !j; i++) {
+    const c = await block();
+    const g = await askBlock(b, y);
+    if (g) { await b.cancel({ jobId: c.jobId }); continue; } // y was drawn: free it and try another block
+    j = c;                                                    // x was drawn, and x is not asking
+  }
+  assert.ok(j, 'some block is drawn for x');
+  assert.equal(await askBlock(b, y), null, 'held for x');
+  t += PROVER_BOARD.drawOfferMs;
+  assert.equal((await askBlock(b, y)).jobId, j.jobId, 'x never came: the race\'s');
+});
+
+test('draw: odds follow speed, places without a record share their slice, and one place is one ticket whatever it calls itself', async () => {
+  t = 24_000_000;
+  // a board holds maxPending jobs (an ended one stays readable for an hour), so the blocks are drawn 40 to a fresh board
+  const tally = async (machines, records, n = 300) => {
+    const won = {};
+    for (let done = 0; done < n; done += 40) {
+      const { st, b } = drawBoard(), block = blockOn(b);
+      for (const w of machines) await askBlock(b, w);
+      const ws = await st.getWorkers();
+      for (const w of machines) ws[w.name].proved = 1;
+      for (const [name, secs] of Object.entries(records)) Object.assign(ws[name], { blocks: 3, blockSecs: secs });
+      await st.putWorkers(ws);
+      for (let i = 0; i < Math.min(40, n - done); i++) {
+        t += 1;                                                   // a new block, a new id
+        const j = await block();
+        for (const w of machines) { const g = await askBlock(b, w); if (g) { won[w.client] = (won[w.client] || 0) + 1; break; } }
+        await b.cancel({ jobId: j.jobId });
+      }
+    }
+    return won;
+  };
+  const fast = gpu('a1'), slow = gpu('b2');
+  const sp = await tally([fast, slow], { [fast.name]: 5, [slow.name]: 50 });
+  assert.ok(sp[fast.client] / 300 > 0.85 && sp[fast.client] / 300 < 0.96, `5 s against 50 s wins about 91% (${JSON.stringify(sp)})`);
+  assert.ok(sp[slow.client] > 0, 'and the slower machine still wins its share');
+  const fresh = [gpu('c3'), gpu('d4'), gpu('e5')];
+  const nw = await tally([fast, ...fresh], { [fast.name]: 5 });
+  const others = fresh.reduce((s, w) => s + (nw[w.client] || 0), 0);
+  assert.ok(others / 300 > 0.09 && others / 300 < 0.22, `places with no record share about 15% (${others} of 300)`);
+  const p = gpu('f6', 'one-place'), q = gpu('a7', 'one-place'), r = gpu('b8', 'other-place');
+  const pl = await tally([p, q, r], {});
+  assert.ok(pl['one-place'] / 300 > 0.4 && pl['one-place'] / 300 < 0.6, `two addresses at one place hold one ticket: about half, not two thirds (${JSON.stringify(pl)})`);
+  const slowest = gpu('c9');
+  const cut = await tally([fast, slowest], { [fast.name]: 5, [slowest.name]: PROVER_BOARD.drawMaxSecs + 1 });
+  assert.equal(cut[slowest.client] || 0, 0, 'a machine slower than drawMaxSecs is left to the race');
+});
+
+test('draw: an address that has proved nothing on the board holds no ticket, so the block is raced as before', async () => {
+  t = 25_000_000;
+  const { b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1'), y = gpu('e2');
+  await askBlock(b, x); await askBlock(b, y);                     // seen, never proved anything
+  const j = await block();
+  assert.equal((await askBlock(b, x)).jobId, j.jobId);
+  assert.equal((await askBlock(b, y)).jobId, j.jobId, 'no one to draw: both race it');
+});
+
+test('draw: past 1.5 times its usual time the race joins the drawn machine, which keeps its claim, can still win, and is not marked down', async () => {
+  t = 26_000_000;
+  const { st, b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1'), y = gpu('e2');
+  await ready(st, b, [x, y]);
+  const j = await block();
+  const gx = await askBlock(b, x), gy = await askBlock(b, y);
+  const [won, other] = gx ? [x, y] : [y, x];
+  t += PROVER_BOARD.drawNewHedgeMs - 1;
+  assert.equal(await askBlock(b, other), null, 'alone until its hedge time');
+  t += 2;
+  assert.equal((await askBlock(b, other)).jobId, j.jobId, 'then the race joins it');
+  assert.deepEqual(await answer(b, won, j.jobId), { ok: true, status: 'proved' }, 'the drawn machine answers first and is paid');
+  assert.equal((await st.getTrouble())[won.client], undefined, 'slow is not a lapse: its place keeps its standing');
 });

@@ -148,14 +148,19 @@ async function checkAmmRoute() {
   fit('pay'); paint();
   if (S.q && `${S.pay}>${S.get}:${kindOf(S.pay, S.get)}` !== was) requote(true);
 }
+const listFiles = () => Promise.all([import('/swap/tokens.js?cb=73f33d2c'), import('/swap/uni-tokens.js?cb=866feaad')]);
 function loadList() {
   if (TL.at) return Promise.resolve();
   return (TL.p ||= (async () => {
-    const [{ LIST }, { UNI }] = await Promise.all([import('/swap/tokens.js?cb=73f33d2c'), import('/swap/uni-tokens.js?cb=866feaad')]);
+    const [{ LIST }, { UNI }] = await listFiles();
     takeList(LIST, UNI); TL.at = Date.now();
     paintSides(); if (W.account) readBalances(false).then(paintSides);
   })().catch(() => {}).finally(() => { TL.p = null; }));
 }
+// A token's logo from the token list, with no card mounted: the card mounts with the Swap tab, so a page that draws a token before then (a visit that begins on
+// Send, Request or Bridge) asks here, once, and gets the lookup.
+let LOGOS = null;
+export const tokenLogos = () => (LOGOS ||= listFiles().then(([{ LIST }, { UNI }]) => { if (!TL.at) takeList(LIST, UNI); return (a) => LOGO[lc(String(a || ''))] || null; }).catch((e) => { LOGOS = null; throw e; }));
 const pooled = (k) => !!SERVED[k];
 const tacitPooled = (k) => isEth(k) || tacitKey(k) || pooled(k);
 let LISTED = { rows: null, custom: null, list: [], by: new Map() };
