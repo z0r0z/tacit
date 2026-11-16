@@ -6,7 +6,10 @@
 // good answer is served (marked stale) until it is two minutes old and then a plain 503: a dashboard that keeps showing a two-hour-old treasury is
 // worse than one that says it cannot tell.
 import { makeRpc, readFarmRaw, buildProgram, publicProgram, farmHealth, FARM_MANAGER_MAINNET, FARM_RPCS_MAINNET } from '../../worker-relay/src/lib/farm-health.js';
-import { sampleOf, foldSample, summaries } from '../../worker-relay/src/lib/pool-activity.js';
+import { sampleOf, foldSample, summaries, historyPlan, applyHistory, noteFailed } from '../../worker-relay/src/lib/pool-activity.js';
+import { stateReader, changesBetween, makeGate, ARCHIVE_RPCS_MAINNET } from '../../worker-relay/src/lib/pool-history.js';
+
+const FARM_POOL_MAINNET = '0x000000000Ed1eabD231Be41d93b719056F7febFC';      // the confidential pool (the manager names it too: a read of the program carries it as `pool`)
 
 export const FARM_TTL_MS = 15000;     // an answer this young is served as it is
 export const FARM_STALE_MS = 120000;   // one this old is the last good answer: served at once while the next is read behind it, and marked stale if that read fails
@@ -25,7 +28,7 @@ async function load(network, env) {
   const manager = env.FARM_MANAGER_ADDR || FARM_MANAGER_MAINNET;
   const raw = await readFarmRaw(makeRpc(FARM_RPCS_MAINNET), manager);
   const program = raw.codeMissing ? raw : buildProgram(raw, { network });
-  return { program, health: farmHealth(program), updatedAt: new Date().toISOString() };
+  return { program, health: farmHealth(program), updatedAt: new Date().toISOString(), pool: raw.pool };
 }
 
 // One read at a time per network, shared by everyone who asks while it runs.
@@ -116,15 +119,39 @@ async function activitySummaries(env) {
 
 // One tick: the program read afresh (it serves whoever is asking too), one reading folded into the log. One service does it per tick (a lease in the shared store, a little under
 // the tick), so two services running this do not write over each other. Returns the log it wrote, or null when it did nothing.
-export async function farmActivityTick(env, now = () => Date.now()) {
+// What the log has not seen is read from old blocks (worker-relay/src/lib/pool-history.js): a record that starts empty, or has a gap in it, or is shorter than a day, is filled in from the
+// chain, so the hour and day counts are whole from the first tick after a start and not a day later. `history` is for a test: `stateAt(poolId)` in place of the archive nodes.
+export async function farmActivityTick(env, now = () => Date.now(), history = {}) {
   const kv = actStore(env);
   if (!kv || env.FARM_ACTIVITY === '0') return null;
   if (await kv.get(ACT_LEASE)) return null;
   await kv.put(ACT_LEASE, String(now()), { expirationTtl: 240 });
-  const { program } = await refresh('mainnet', env);
+  const value = await refresh('mainnet', env), { program } = value;
   if (!program || program.codeMissing) return null;
-  const pub = publicProgram(program), log = foldSample(await kv.get(ACT_KEY), sampleOf(pub), { t: now(), block: Number(pub.block) || 0 });
+  const pub = publicProgram(program), t = now(), head = Number(pub.block) || 0, sample = sampleOf(pub), before = await kv.get(ACT_KEY);
+  let log = foldSample(before, sample, { t, block: head });
+  if (env.FARM_ACTIVITY_BACKFILL !== '0') log = await fillFromHistory(env, { before, log, sample, t, head, pool: value.pool }, history);
   await kv.put(ACT_KEY, JSON.stringify(log), { expirationTtl: 7 * 86400 });
   act = { at: now(), by: summaries(log), reading: null };
   return log;
+}
+
+// Each pool that needs old blocks is searched for its changes (a few reads at once across all of them, and no longer than HISTORY_MS in all). A pool whose search fails (a node that does
+// not serve old state, the reads over their budget, the time up) keeps its record as it was, marked so that it is tried again in half an hour and not at the next tick.
+const HISTORY_MS = 100_000;
+async function fillFromHistory(env, { before, log, sample, t, head, pool }, { stateAt = null, deadlineMs = HISTORY_MS } = {}) {
+  const plans = historyPlan(before, sample, { t, head });
+  if (!plans.length) return log;
+  const named = String(env.FARM_ARCHIVE_RPCS || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const rpc = stateAt ? null : makeRpc(named.length ? named : ARCHIVE_RPCS_MAINNET, undefined, 10000), addr = pool || env.POOL_ADDR || FARM_POOL_MAINNET;
+  const gate = makeGate(5), deadline = Date.now() + deadlineMs;
+  const got = await Promise.allSettled(plans.map((plan) => changesBetween({
+    stateAt: stateAt ? stateAt(plan.poolId) : stateReader(rpc, addr, plan.poolId), from: plan.from, to: plan.to, fromState: plan.fromState, toState: plan.toState, gate, deadline,
+  })));
+  let out = log;
+  plans.forEach((plan, i) => {
+    if (got[i].status === 'fulfilled') out = applyHistory(before, out, plan, got[i].value, { t, head });
+    else { out = noteFailed(out, plan, { t }); console.warn(`[farm-activity] old blocks for ${plan.poolId.slice(0, 10)} (${plan.mode}) not read: ${String(got[i].reason?.message || got[i].reason).slice(0, 160)}`); }
+  });
+  return out;
 }
