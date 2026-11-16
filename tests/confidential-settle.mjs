@@ -428,7 +428,7 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
 
 // ───────────────── 21. one sender's share of the queue is capped; others still get in ─────────────────
 {
-  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, maxProveOnlyPerSender: 0 });   // the tighter prove-only limit is test 24's business
   const op = (n) => ({ chainBinding: '0xcb', spendRoot: '0xr', fee: 0, n });
   for (let i = 0; i < 32; i++) await q.submitJob({ type: 'transfer', op: op(`c${i}`), mode: 'prove', client: '203.0.113.0/24' });
   await assert.rejects(q.submitJob({ type: 'transfer', op: op('c32'), mode: 'prove', client: '203.0.113.0/24' }), /32 of your jobs are already waiting/);
@@ -476,6 +476,33 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   assert.ok(st.oldestProvingSec >= 200, `the loop has been on it ${st.oldestProvingSec} s`);
   assert.strictEqual(st.pendingProveOnly, 1); assert.strictEqual(st.pendingSettle, 1);
   ok('queueStats: pendingProveOnly, and what the loop has been proving longest (a stuck queue shows here)');
+}
+
+// ───────────────── 24. one sender may have only a few prove-only jobs waiting (the relay is paid nothing for them); settles, paid and pre-proved ones are not held to it ───────────────
+{
+  const op = (k) => ({ chainBinding: '0xcb', spendRoot: '0xr', fee: 0, n: k });
+  const A = '203.0.113.0/24', B = '198.51.100.0/24';
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, maxProveOnlyPerSender: 3 });
+  const mine = [];
+  for (let i = 0; i < 3; i++) mine.push((await q.submitJob({ type: 'farmunbond', op: op(`po${i}`), memos: [], mode: 'prove', client: A })).jobId);
+  await assert.rejects(q.submitJob({ type: 'farmunbond', op: op('po3'), memos: [], mode: 'prove', client: A }), /3 of your prove-only jobs are already waiting/, 'a fourth prove-only job from the same network is turned back');
+  assert.ok((await q.submitJob({ type: 'farmunbond', op: op('po0'), memos: [], mode: 'prove', client: A })).deduped, 'the same job sent again is still answered, it takes no new place');
+  assert.strictEqual((await q.submitJob({ type: 'transfer', op: op('s0'), memos: [], client: A })).status, 'pending', 'a relayed settle from the same network is not held to it');
+  assert.strictEqual((await q.submitJob({ type: 'farmunbond', op: op('b0'), memos: [], mode: 'prove', client: B })).status, 'pending', 'another network is not affected');
+  assert.strictEqual((await q.submitJob({ type: 'farmunbond', op: op('e0'), memos: [], mode: 'prove', client: A, early: true })).status, 'pending', 'a proof asked for ahead of a press (the page pre-proving) is exempt');
+  assert.strictEqual((await q.submitJob({ type: 'farmunbond', op: op('p0'), memos: [], mode: 'prove', client: A, paid: true })).status, 'pending', 'one the relay is paid for is exempt');
+  assert.strictEqual((await q.submitJob({ type: 'farmunbond', op: op('n0'), memos: [], mode: 'prove' })).status, 'pending', 'a job with no sender is held to no one’s share');
+  // a slot frees when one ends
+  const claimed = await q.nextJob({ mode: 'prove' });
+  await q.ackJob(claimed.jobId, { error: 'groth16 proof failed' });
+  assert.strictEqual((await q.submitJob({ type: 'farmunbond', op: op('po4'), memos: [], mode: 'prove', client: A })).status, 'pending', 'once one of theirs has ended a new one may join');
+  // the default is six, and 0 turns it off
+  const d = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
+  for (let i = 0; i < 6; i++) await d.submitJob({ type: 'farmunbond', op: op(`d${i}`), memos: [], mode: 'prove', client: A });
+  await assert.rejects(d.submitJob({ type: 'farmunbond', op: op('d6'), memos: [], mode: 'prove', client: A }), /6 of your prove-only jobs/);
+  const off = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, maxProveOnlyPerSender: 0 });
+  for (let i = 0; i < 10; i++) await off.submitJob({ type: 'farmunbond', op: op(`o${i}`), memos: [], mode: 'prove', client: A });
+  ok('a sender is held to a few prove-only jobs waiting (default 6): settles, paid, pre-proved, other networks and unsent-from ones are not; a slot frees when one ends; 0 turns it off');
 }
 
 console.log(`\n${n} confidential-settle checks passed.`);
