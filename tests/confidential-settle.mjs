@@ -442,4 +442,40 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   ok('a sender with 32 jobs waiting is refused a 33rd (a sealed one too); a resend, another sender and a job with no sender still get in');
 }
 
+// ───────────────── 22. a settle is not counted behind prove-only jobs (the relay takes settles first), except one it is proving right now ───────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep });
+  const op = (k) => ({ chainBinding: '0xcb', spendRoot: '0xr', fee: 0, n: k });
+  const p1 = await q.submitJob({ type: 'transfer', op: op('ah-p1'), memos: [], mode: 'prove' });
+  const p2 = await q.submitJob({ type: 'transfer', op: op('ah-p2'), memos: [], mode: 'prove' });
+  const s1 = await q.submitJob({ type: 'transfer', op: op('ah-s1'), memos: [] });
+  const s2 = await q.submitJob({ type: 'transfer', op: op('ah-s2'), memos: [] });
+  assert.strictEqual((await q.jobStatus(s1.jobId)).ahead, 0, 'a settle with only prove-only jobs before it has nobody ahead: the relay takes it first');
+  assert.strictEqual((await q.jobStatus(s2.jobId)).ahead, 1, 'a second settle has the first one ahead, not the two prove-only jobs');
+  assert.strictEqual((await q.jobStatus(p2.jobId)).ahead, 1, 'a prove-only job still counts everything before it, as it waits behind them');
+  const claimed = await q.nextJob({ mode: 'prove' });
+  assert.strictEqual(claimed.jobId, p1.jobId);
+  assert.strictEqual((await q.jobStatus(s1.jobId)).ahead, 1, 'the prove-only job the relay is on right now holds the loop, so it counts');
+  ok('`ahead` for a settle counts the settles before it and the job being proved, not prove-only jobs it will pass');
+}
+
+// ───────────────── 23. the queue picture names what is waiting by kind and what the loop has been on longest ───────────────
+{
+  let t0 = 5000; const clock = () => t0;
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now: clock, sleep: instantSleep });
+  const op = (k) => ({ chainBinding: '0xcb', spendRoot: '0xr', fee: 0, n: k });
+  await q.submitJob({ type: 'farmunbond', op: op('qp1'), memos: [], mode: 'prove' });
+  await q.submitJob({ type: 'farmunbond', op: op('qp2'), memos: [], mode: 'prove' });
+  await q.submitJob({ type: 'transfer', op: op('qs1'), memos: [] });
+  assert.strictEqual((await q.queueStats()).pendingProveOnly, 2);
+  assert.strictEqual((await q.queueStats()).provingType, null, 'nothing is being proved yet');
+  await q.nextJob({ mode: 'prove' });
+  t0 += 200_000;
+  const st = await q.queueStats();
+  assert.strictEqual(st.proving, 1); assert.strictEqual(st.provingType, 'farmunbond (prove-only)');
+  assert.ok(st.oldestProvingSec >= 200, `the loop has been on it ${st.oldestProvingSec} s`);
+  assert.strictEqual(st.pendingProveOnly, 1); assert.strictEqual(st.pendingSettle, 1);
+  ok('queueStats: pendingProveOnly, and what the loop has been proving longest (a stuck queue shows here)');
+}
+
 console.log(`\n${n} confidential-settle checks passed.`);

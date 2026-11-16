@@ -686,7 +686,10 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     let ahead = -1;
     if (status === 'pending') {
       const pend = await servedOrder(await storage.getPending()), before = pend.slice(0, Math.max(0, pend.indexOf(jobId)));
-      ahead = j.early ? before.length : (await Promise.all(before.map((id) => storage.getJob(id)))).filter((x) => x && !x.early).length;
+      // The relay takes relayed settles before prove-only jobs (settle-relay.js, lib/job-picker.js), so for a settle only the settles ahead of it count,
+      // and a job the relay is proving right now whatever its kind (the loop is busy with it); a prove-only job waits behind every one.
+      const mine = j.mode || 'settle';
+      ahead = j.early ? before.length : (await Promise.all(before.map((id) => storage.getJob(id)))).filter((x) => x && !x.early && (mine !== 'settle' || (x.mode || 'settle') === 'settle' || x.status === 'proving')).length;
     }
     return { jobId, type: j.type, mode: j.mode || 'settle', status, txHash: j.txHash, error: j.error, lane: j.lane || null, sealed: !!j.sealed,
       createdAt: j.createdAt, ...(ahead >= 0 ? { ahead } : {}), publicValues: j.publicValues || null, proof: j.proof || null,
@@ -708,20 +711,25 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   async function queueStats() {
     const pend = await storage.getPending();
     const t = clock();
-    let pending = 0, proving = 0, oldestPendingMs = 0, oldestProvingMs = 0, pendingSettle = 0, oldestPendingSettleMs = 0;
+    let pending = 0, proving = 0, oldestPendingMs = 0, oldestProvingMs = 0, pendingSettle = 0, oldestPendingSettleMs = 0, pendingProveOnly = 0, provingType = null;
     for (const id of pend) {
       const j = await storage.getJob(id);
       if (!j) continue;
       if (j.status === 'pending') {
         pending++; oldestPendingMs = Math.max(oldestPendingMs, t - (j.createdAt || t));
+        if ((j.mode || 'settle') === 'prove') pendingProveOnly++;
         // Only a relayed settle can share a settle with another: a prove-only job is handed back to its page and is never batched.
         if ((j.mode || 'settle') === 'settle' && !j.exit && !(j.retryAfter && t < j.retryAfter)) { pendingSettle++; oldestPendingSettleMs = Math.max(oldestPendingSettleMs, t - (j.createdAt || t)); }
       }
-      else if (j.status === 'proving') { proving++; oldestProvingMs = Math.max(oldestProvingMs, t - (j.claimedAt || t)); }
+      else if (j.status === 'proving') {
+        proving++;
+        const age = t - (j.claimedAt || t);
+        if (age >= oldestProvingMs) { oldestProvingMs = age; provingType = `${j.type}${(j.mode || 'settle') === 'prove' ? ' (prove-only)' : ''}`; }   // what the loop has been on longest: a stuck queue shows here
+      }
     }
     // `open`: proved jobs waiting on the board for a sender (they are not in the pending queue).
     const open = (await getOpen()).length;
-    return { pending, proving, open, pendingSettle, oldestPendingSec: Math.round(oldestPendingMs / 1000), oldestPendingSettleSec: Math.round(oldestPendingSettleMs / 1000), oldestProvingSec: Math.round(oldestProvingMs / 1000) };
+    return { pending, proving, open, pendingSettle, pendingProveOnly, oldestPendingSec: Math.round(oldestPendingMs / 1000), oldestPendingSettleSec: Math.round(oldestPendingSettleMs / 1000), oldestProvingSec: Math.round(oldestProvingMs / 1000), provingType };
   }
 
   async function pendingCount() {

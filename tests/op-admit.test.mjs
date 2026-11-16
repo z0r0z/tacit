@@ -18,13 +18,28 @@ const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b))
 const pool = makeConfidentialPool({ secp, keccak256: keccak_256, sha256 });
 const cdp = makeConfidentialCdp({ keccak256: keccak_256, pool, signSchnorr });
 const fixture = (f) => JSON.parse(readFileSync(new URL(`../contracts/sp1/confidential/fixtures/${f}.json`, import.meta.url), 'utf8'));
-const FX = { cbtcmint: fixture('cbtc_mint_op'), cdpmint: fixture('cdp_mint_op'), cdptopup: fixture('cdp_topup_op') };
+const FX = { cbtcmint: fixture('cbtc_mint_op'), cdpmint: fixture('cdp_mint_op'), cdptopup: fixture('cdp_topup_op'), farmunbond: fixture('farm_unbond_op') };
 // As the relay client posts an op: every BigInt a decimal string (dapp/confidential-relay.js bigintSafe).
 const wire = (op) => JSON.parse(JSON.stringify(op, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
-test('the types it judges are the ones the relay sponsors without a fee', () => {
-  assert.deepEqual([...SHAPED_TYPES].sort(), ['cbtcmint', 'cdpmint', 'cdptopup']);
+test('the types it judges are the ones the relay sponsors without a fee, and the farm unbond a burst of junk jobs held the relay on', () => {
+  assert.deepEqual([...SHAPED_TYPES].sort(), ['cbtcmint', 'cdpmint', 'cdptopup', 'farmunbond']);
+});
+
+test('a farm unbond is read as its prover reads it: the signature is 64 bytes, the path 32 long, the fee optional', () => {
+  const op = clone(FX.farmunbond);
+  assert.deepEqual(admitOpShape('farmunbond', op), { ok: true });
+  const noFee = clone(op); delete noFee.fee;
+  assert.deepEqual(admitOpShape('farmunbond', noFee), { ok: true }, 'fee is optional, as the prover reads it');
+  for (const v of ['0x' + 'ab'.repeat(65), '0x' + 'ab'.repeat(63), 'ab'.repeat(64)]) assert.equal(admitOpShape('farmunbond', { ...op, ownerSig: v }).ok, false, `a signature of ${v.length} characters`);
+  assert.equal(admitOpShape('farmunbond', { ...op, oldPath: op.oldPath.slice(1) }).ok, false, 'a path of 31');
+  assert.equal(admitOpShape('farmunbond', { ...op, controller: '0x' + '11'.repeat(32) }).ok, false, 'a controller is an address');
+  assert.equal(admitOpShape('farmunbond', { ...op, shares: -1 }).ok, false);
+  assert.equal(admitOpShape('farmunbond', { ...op, fee: 'x' }).ok, false);
+  assert.equal(admitOpShape('farmunbond', {}).ok, false, 'the empty op of the burst');
+  // As the page posts it: every BigInt a decimal string.
+  assert.deepEqual(admitOpShape('farmunbond', wire({ ...op, shares: BigInt(op.shares), oldIndex: BigInt(op.oldIndex), fee: 0n })), { ok: true });
 });
 
 test('the ops the prover\'s harnesses were built against pass', () => {
@@ -99,7 +114,7 @@ test('the door turns back a junk op, before it is queued or counted, and takes a
   const kv = memKv(), env = { CONFIDENTIAL_SETTLE: '1', REGISTRY_KV: kv, CONFIDENTIAL_KV: kv, PROVE_RL_BURST: '1000', FREE_RELAY_CHEAP_GWEI: '0' };
   let ip = 0;
   const post = async (type, op, mode = 'settle') => { const r = await worker.default.fetch(new Request('https://api.test/confidential/submit', { method: 'POST', headers: { 'content-type': 'application/json', 'CF-Connecting-IP': `203.0.113.${++ip}` }, body: JSON.stringify({ type, op, memos: [], mode }) }), env, { waitUntil() {} }); return { status: r.status, body: await r.json() }; };
-  for (const [type, mode] of [['cbtcmint', 'settle'], ['cdpmint', 'settle'], ['cdptopup', 'settle'], ['cbtcmint', 'prove']]) {
+  for (const [type, mode] of [['cbtcmint', 'settle'], ['cdpmint', 'settle'], ['cdptopup', 'settle'], ['cbtcmint', 'prove'], ['farmunbond', 'settle'], ['farmunbond', 'prove']]) {
     const r = await post(type, { fee: 0, junk: true }, mode);
     assert.equal(r.status, 400, `${type} ${mode}`);
     assert.equal(r.body.code, 'bad_op');

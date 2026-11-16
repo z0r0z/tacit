@@ -32,7 +32,10 @@ ok(s.headers.get('access-control-allow-origin') === '*', 'and the refusal is rea
 await beat('idle — queue empty');
 ({ r, j } = await read());
 ok(j.state === 'ok' && j.proving && j.settling && !j.board && Number.isInteger(j.ageSeconds), 'an idle relay is ok', JSON.stringify(j));
-ok(JSON.stringify(Object.keys(j).sort()) === JSON.stringify(['ageSeconds', 'board', 'failing', 'proving', 'settling', 'state']), 'and the answer is the six fields, nothing else', Object.keys(j).join(','));
+ok(JSON.stringify(Object.keys(j).sort()) === JSON.stringify(['ageSeconds', 'board', 'failing', 'proving', 'queue', 'settling', 'state']), 'and the answer is the six fields and the queue picture, nothing else', Object.keys(j).join(','));
+ok(JSON.stringify(Object.keys(j.queue).sort()) === JSON.stringify(['oldestPendingSec', 'oldestPendingSettleSec', 'oldestProvingSec', 'pending', 'pendingProveOnly', 'pendingSettle', 'proving', 'provingType']),
+  'the queue picture is counts and ages and the kind of the job in hand, never a job', Object.keys(j.queue).join(','));
+ok(j.queue.pending === 0 && j.queue.proving === 0 && j.queue.provingType === null, 'an empty queue reads as empty', JSON.stringify(j.queue));
 s = await submit({ type: 'transfer', op: { n: 2 }, mode: 'prove' }); sj = await s.json();
 ok(s.status === 200 && sj.ok && sj.jobId && sj.relay === 'ok', 'an accepted submit says where the relay stands', JSON.stringify(sj));
 
