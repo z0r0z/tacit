@@ -643,4 +643,27 @@ const swapOp = { reserveAPre: 1000, reserveBPre: 1000, intents: [{ amountIn: 100
   ok('settle: a settled answer without its transaction hash is read again whether or not the op makes notes');
 }
 
+// A page can end a proof's wait early: the wait pauses through `waitOpts.sleep` between the relay's answers, and a pause that throws ends it at once with that error, for the
+// proof (an add whose pool a trade has moved, which nothing can send) and for a settle alike. The relay is not asked again after it, and its job is left as it is.
+{
+  const asked = [], tick = () => new Promise((r) => setTimeout(r, 1));
+  for (const how of ['prove', 'settle']) {
+    const q = makeConfidentialSettler({ storage: freshStore(), hash });
+    const base = mockFetch(q);
+    const relay = makeConfidentialRelay({ base: '', fetchImpl: async (u, o) => { if (String(u).includes('/confidential/status')) asked.push(how); return base(u, o); } });
+    let pauses = 0, jobId = null;
+    const moved = Object.assign(new Error('The pool traded while this was being proved.'), { moved: true, early: true });
+    const waitOpts = { intervalMs: 0, onJob: (id) => { jobId = id; }, sleep: async () => { await tick(); if (++pauses >= 3) throw moved; } };
+    const before = asked.length;
+    await assert.rejects(() => relay[how]({ type: 'swap', op: swapOp, memos: [] }, waitOpts), (e) => e === moved && e.moved === true);
+    const polls = asked.length - before;
+    assert.ok(jobId && pauses === 3, `${how}: three pauses and out (${pauses})`);
+    await tick(); await tick();
+    assert.equal(asked.length - before, polls, `${how}: the relay is not asked again once the wait has ended`);
+    assert.ok(polls >= 2 && polls <= 5, `${how}: it had been asking each pause (${polls} answers)`);
+    assert.equal((await q.jobStatus(jobId)).status, 'pending', `${how}: and the job itself is left as it was`);
+  }
+  ok('a pause that throws ends a proof\'s or a settle\'s wait at once, and the relay is not asked again');
+}
+
 console.log(`\n${n} confidential-relay checks passed.`);
