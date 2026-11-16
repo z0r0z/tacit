@@ -3960,7 +3960,17 @@ async function handleProverBoard(req, env, url, cors) {
   const board = buildProverBoard(env, { hash: boardHash });
   if (!board) return jsonResponse({ error: 'not found' }, 404, cors);
   const body = async () => { try { return await req.json(); } catch { return null; } };
-  if (url.pathname === '/prover/board' && req.method === 'GET') return jsonResponse(await board.summary(), 200, { ...cors, 'Cache-Control': 'max-age=10' });
+  if (url.pathname === '/prover/board' && req.method === 'GET') {
+    // ?address=0x… is one machine's standing for its owner (its records, whether it holds a ticket in the block draw and why not): the same public
+    // facts as its row on the summary, put in words (&format=text, for the installer's --status, which has no JSON reader to hand).
+    const who = url.searchParams.get('address');
+    if (who != null) {
+      const s = await board.standing(who);
+      if (url.searchParams.get('format') === 'text') return new Response(s.ok ? `${s.text}\n` : `${s.error}\n`, { status: s.ok ? 200 : 400, headers: { ...cors, 'content-type': 'text/plain; charset=utf-8', 'Cache-Control': 'max-age=5' } });
+      return jsonResponse(s, s.ok ? 200 : 400, { ...cors, 'Cache-Control': 'max-age=5' });
+    }
+    return jsonResponse(await board.summary(), 200, { ...cors, 'Cache-Control': 'max-age=10' });
+  }
   // A UTC day's community proofs taken and their points, for the points service (POINTS_BOARD_PER_PROOF, POINTS_BOARD_DAILY_CAP).
   if (url.pathname === '/prover/board/credits' && req.method === 'GET') {
     const r = await board.credits(Number(url.searchParams.get('day') ?? NaN));
