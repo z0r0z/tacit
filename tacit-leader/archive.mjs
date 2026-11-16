@@ -8,7 +8,7 @@ const word = (pv, i) => hexOf(pv.subarray(32 * i, 32 * i + 32));
 
 /// A block's file, from its public values and the lists it published (bytes or hex, as the call carried them). `ethBlock`: where it landed, when known.
 export function archiveEntry(pv, lists, ethBlock = null) {
-  return { publicValues: hexOf(bytesOf(pv)), lists: { leaves: hexOf(bytesOf(lists.leaves)), memos: hexOf(bytesOf(lists.memos)), nullifiers: [...lists.nullifiers].map((n) => hexOf(bytesOf(n))) }, includes: [], ...(ethBlock != null ? { ethBlock } : {}) };
+  return { publicValues: hexOf(bytesOf(pv)), lists: { leaves: hexOf(bytesOf(lists.leaves)), memos: hexOf(bytesOf(lists.memos)), nullifiers: [...lists.nullifiers].map((n) => hexOf(bytesOf(n))), ...(lists.hops && bytesOf(lists.hops).length ? { hops: hexOf(bytesOf(lists.hops)) } : {}) }, includes: [], ...(ethBlock != null ? { ethBlock } : {}) };
 }
 
 /// Blocks 1..`upTo` from the archive, each read and checked to start where the one before ended. → { ok: true, blocks: [{ height, pv, lists, spends (how many

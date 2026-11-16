@@ -25,9 +25,17 @@ const hexOf = (n) => '0x' + BigInt(n).toString(16);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const word = (hex) => '0x' + String(hex).replace(/^0x/, '').padStart(64, '0');
 
-// ETH as text <-> wei. Eighteen decimals at most; anything else is not an amount.
+// ETH as text <-> wei. Eighteen decimals at most; anything else is not an amount. Commas are read as the Pay page reads them (its parseUnits), so
+// the form and the notes agree on what was typed: "1,5" is 1.5, "1,000.5" and "1,000,000" have thousands separators, and "1,000" or "1,500", which
+// could be either, is not an amount (a looser reading turned "1,5" into 15 ETH).
 export function parseEther(text) {
-  const m = /^(\d*)(?:\.(\d{0,18}))?$/.exec(String(text).trim().replace(/,/g, ''));
+  let t = String(text ?? '').trim();
+  if (t.includes(',')) {
+    if (/^[1-9]\d{0,2}(?:,\d{3})+(?:\.\d*)?$/.test(t) && (t.includes('.') || t.indexOf(',') !== t.lastIndexOf(','))) t = t.replace(/,/g, '');
+    else if (/^\d*,\d*$/.test(t) && !/^[1-9]\d{0,2},\d{3}$/.test(t)) t = t.replace(',', '.');
+    else return null;
+  }
+  const m = /^(\d*)(?:\.(\d{0,18}))?$/.exec(t);
   if (!m || (m[1] === '' && (m[2] === undefined || m[2] === ''))) return null;
   return BigInt(m[1] || '0') * 10n ** 18n + BigInt((m[2] || '').padEnd(18, '0') || '0');
 }
@@ -141,7 +149,9 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
   async function until(fn, what) {
     const end = Date.now() + timeout;
     for (;;) {
-      const r = await fn();
+      // a failed read (a node busy for a moment) is not an answer: the transaction may well be mined, so ask again until the time is up
+      let r = null;
+      try { r = await fn(); } catch { /* ask again */ }
       if (r) return r;
       if (Date.now() > end) throw new Error(`Timed out waiting for ${what}.`);
       await sleep(poll);
@@ -197,7 +207,10 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     for (const n of notes) {
       const pool = pools.find((p) => p.address === n.pool.address);
       let landed = false;
-      for (let t = 0; t < (wait ? 8 : 1) && !landed; t++) { if (t) await sleep(poll); landed = await seen(pool, n.secrets.commitment); }
+      for (let t = 0; t < (wait ? 8 : 1) && !landed; t++) {
+        if (t) await sleep(poll);
+        try { landed = await seen(pool, n.secrets.commitment); } catch { /* a read that failed says nothing: not landed yet */ }
+      }
       if (landed) ok.push(n);
     }
     if (ok.length) remember(Math.max(...ok.map((n) => n.nonce)) + 1);
@@ -222,12 +235,7 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     }
     remember(next + notes.length);
     // each commitment must be in its pool now (a node a block behind needs a moment to say so)
-    for (const n of notes) {
-      const pool = pools.find((p) => p.address === n.pool.address);
-      let landed = false;
-      for (let t = 0; t < 8 && !landed; t++) { if (t) await sleep(poll); landed = await seen(pool, n.secrets.commitment); }
-      if (!landed) throw Object.assign(new Error('A deposit was sent but its commitment is not in the pool yet. Find will show it in a minute.'), { done, notes });
-    }
+    if ((await landedNotes(notes)).length !== notes.length) throw Object.assign(new Error('A deposit was sent but its commitment is not in the pool yet. Find will show it in a minute.'), { done, notes });
     return { notes: notes.map((n) => ({ ...n, text: noteString({ denomination: n.pool.denomination, chainId, preimage: n.secrets.preimage }) })), sent };
   }
 
@@ -263,7 +271,11 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
   }
 
   const settled = async (pool, note) => {
-    for (let t = 0; t < 8; t++) { if (t) await sleep(poll); if (await spent(pool, note.nullifierHash)) return true; }
+    for (let t = 0; t < 8; t++) {
+      if (t) await sleep(poll);
+      // the withdrawal has been sent: a read that fails here must not make it look as if it had not, so it counts as "not shown yet"
+      try { if (await spent(pool, note.nullifierHash)) return true; } catch { /* not shown yet */ }
+    }
     return false;
   };
 

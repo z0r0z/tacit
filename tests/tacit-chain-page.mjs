@@ -379,6 +379,25 @@ try {
       .then(() => ok(true, `the key's TAC on the Tacit chain, found from the note sealed to it (${WANT_BAL})`), async () => ok(false, `chain row: ${await text(page, '.tpg-leg')}`));
     await page.waitForFunction(() => /moves have not landed yet/.test(document.querySelector('#tpg-top')?.textContent || ''), null, { timeout: 30000 })
       .then(async () => ok(true, `what waits is said, with the tile's move that shows it (${await text(page, '#tpg-top .note')})`), async () => ok(false, `kept: ${await text(page, '#tpg-top')}`));
+    // a hop that landed and was not sent on into the pool (the leader sends them itself, and had missed this one) leaves its TAC on neither side: it is said on
+    // TAC's page apart from the moves that have not landed, and in the front page's list of what needs doing, each with a button that sends it on
+    await page.waitForFunction(() => /7 TAC to the private pool has not been sent on/.test(document.querySelector('#tpg-top')?.textContent || '') && !!document.querySelector('#tpg-top [data-chainhop]'), null, { timeout: 30000 })
+      .then(async () => ok(true, `a landed hop not sent on is said on TAC's page, with its button (${await text(page, '#tpg-top [data-chainhop]')})`), async () => ok(false, `hop: ${await text(page, '#tpg-top')}`));
+    const top = await text(page, '#tpg-top');
+    ok(/\b3 of your Tacit chain moves have not landed yet/.test(top), `and it is not counted among the moves that have not landed (${(top.match(/\d+ of your Tacit chain moves[^.]*\./) || [''])[0]})`);
+    await page.waitForFunction(() => /7 TAC to the private pool has not been sent on/.test(document.querySelector('#dash-due')?.textContent || '') && !!document.querySelector('#dash-due [data-chainhop]'), null, { timeout: 30000 })
+      .then(async () => ok(true, `and in the list of what needs doing (${await text(page, '#dash-due')})`), async () => ok(false, `dash: ${await text(page, '#dash-due')} / ${await page.evaluate(() => document.querySelector('#dash')?.outerHTML.slice(0, 300))}`));
+    // pressed, each reports in its own line (the dash is not shown on this page, so its button is pressed by script), and the account sends the hop on
+    const sent0 = press.raw.length;
+    for (const [btn, line, what] of [['#tpg-top [data-chainhop]', '#tpg-top-st', "TAC's page"], ['#dash-due [data-chainhop]', '#dash-due .status', 'the list']]) {
+      await page.evaluate((sel) => document.querySelector(sel).click(), btn);
+      await page.waitForFunction((sel) => /In the private pool|Sent |Confirm it in/.test(document.querySelector(sel)?.textContent || ''), line, { timeout: 30000 })
+        .then(async () => ok(true, `${what}: the button reports in its own line (${await text(page, line)})`), async () => ok(false, `${what}: press: ${await text(page, line)}`));
+      await page.waitForFunction((sel) => /In the private pool/.test(document.querySelector(sel)?.textContent || ''), line, { timeout: 30000 })
+        .then(() => ok(true, `${what}: and it ends with the TAC in the pool, to be finished`), async () => ok(false, `${what}: ended: ${await text(page, line)}`));
+    }
+    ok(press.raw.length === sent0 + 2 && press.raw.every((r) => r.includes(strip(BLOCKS)) && r.includes(sel('sendHop(uint256,bytes32)') + word(700000000n) + '88'.repeat(32))), `two sends, each sendHop(7 TAC, the hop's commitment) to the chain's contract (${press.raw.length - sent0})`);
+    press.raw.length = sent0;       // (the pressed shields below count what the account sent)
     // its account holds ETH, so a shield's gas is its own: one signature, then one transaction, no fee; the leader's way, for its fee in TAC, is a press away
     await page.waitForFunction(() => /\d in /.test(document.querySelector('#tcd-have')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
     await page.waitForFunction(() => !!document.querySelector('#tcd-q [data-tcd-way]'), null, { timeout: 30000 }).catch(() => {});

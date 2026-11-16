@@ -2,7 +2,7 @@
 
 Follows `TacitBlocks` on Ethereum, keeps `tacit-block-node` (the chain's state and the mempool wallets submit to) in step with it, and when it
 is this leader's turn builds a block from what is waiting and the forced queue, proves it, and lands it (then sends the block's hops into the
-confidential pool). Configuration is in the header of `leader.mjs`.
+confidential pool, and tries again until the contract holds none of them). Configuration is in the header of `leader.mjs`.
 
     cargo build --release --manifest-path contracts/sp1/confidential/tacit-block/node/Cargo.toml
     RPC_URL=… BLOCKS=0x… FROM_BLOCK=… LEADER_KEY=0x… PROVER='tacit-block-gpu elf/tacit-block {stdin} --groth16' node tacit-leader/leader.mjs
@@ -49,4 +49,6 @@ Not built yet: sending blocks whose data is in blobs (the program, contract and 
 format) and replaying blob blocks another leader landed (needs a beacon node's blob sidecars).
 
 **Restarts.** A restart rebuilds the node, from the blocks kept in `ARCHIVE_DIR` when they are the whole chain (every block from 1 to the contract's height is there, each starts where the one before ended, the last ends at the contract's `state`, and no forced entry waits), else from the logs of `BLOCKS` from `FROM_BLOCK`. Every block this leader builds or reads is kept there. `RPC_URL` may list several endpoints, comma apart (`https://a,https://b`): the first that answers is used, and one that refuses, rate-limits or has dropped old logs is passed over. Keep `ARCHIVE_DIR` on the persistent disk.
+
+**Hops.** What the leader owes the pool is kept in `ARCHIVE_DIR/owed-hops.json`: a block's hops go in when it lands (the leader's own, at once; another leader's, after `HOP_GRACE_SECS`, default 120), and out when `hops(key)` reads 0. Each step sends what is due in one `sendHops`; a send that fails is tried again after 10 s, doubling to 10 minutes, and a hop the pool refuses (`HopRefused`: it takes a commitment once) is left alone. At a start the files of the last `HOP_ARCHIVE_BLOCKS` blocks (default 1000) are read for hops, so one that waited through a restart is found. Anyone may still send a waiting hop on with `sendHop(value, commit)`.
 

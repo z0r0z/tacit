@@ -30,6 +30,7 @@ import { decode, decodeLand, landCalldata, selector, encode, hexOf, bytesOf } fr
 import { makeRpc, send as sendTx, addressOf, num, suggestedTip } from './rpc.mjs';
 import { feeTerms, readPrice, makeFeeDesk, admitPaying, blockReady, landCover } from './fees.mjs';
 import { archiveEntry, loadArchive } from './archive.mjs';
+import { hopsIn, hopKey, makeHopLedger, sweepHops } from './hops.mjs';
 import { makeLooks } from './look.mjs';
 import { makeBoardProver } from '../worker-relay/src/lib/board-prover.js';
 
@@ -100,6 +101,35 @@ async function view(sig, types, args = [], to = BLOCKS) {
   const data = hexOf(new Uint8Array([...selector(sig), ...encode(args.map(() => 'uint256'), args)]));
   const r = await rpc.call('eth_call', [{ to, data }, 'latest']);
   return decode(types, bytesOf(r));
+}
+
+// Hops landed are sent on into the confidential pool (TacitBlocks.sendHops; anyone may). What is owed is kept in a file next to the archive until the
+// contract holds no more of it, and tried again with a growing rest: the one send made right after a landing, with nothing behind it, left a hop waiting
+// whenever it failed (a node a block behind refuses the estimate), the leader restarted, or another leader landed the block.
+const HOPS_FILE = join(ARCHIVE, 'owed-hops.json');
+const hopLedger = makeHopLedger({
+  read: () => { try { return readFileSync(HOPS_FILE, 'utf8'); } catch { return null; } },
+  write: (text) => { mkdirSync(ARCHIVE, { recursive: true }); writeFileSync(`${HOPS_FILE}.tmp`, text); renameSync(`${HOPS_FILE}.tmp`, HOPS_FILE); },
+});
+const HOP_GRACE = Number(env.HOP_GRACE_SECS || 120) * 1000;        // a block another leader landed is left to it this long
+const HOP_RECENT = Number(env.HOP_ARCHIVE_BLOCKS || 1000);          // blocks back, at a start, whose files are read for hops
+const T_HOP_REFUSED = topic('HopRefused(uint256,bytes32)');
+const hopsHeld = async (h) => BigInt(await rpc.call('eth_call', [{ to: BLOCKS, data: hexOf(new Uint8Array([...selector('hops(bytes32)'), ...bytesOf(h.key)])) }, 'latest']));
+async function hopsSendOn(group) {
+  const chainId = num(await rpc.call('eth_chainId'));
+  const r = await send(rpc, KEY, BLOCKS, new Uint8Array([...selector('sendHops(uint256[],bytes32[])'), ...encode(['uint256[]', 'bytes32[]'], [group.map((h) => BigInt(h.value)), group.map((h) => h.commit)])]), { chainId });
+  log({ hopsSent: group.length, tx: r.transactionHash });
+  return (r.logs || []).filter((l) => String(l.address).toLowerCase() === BLOCKS.toLowerCase() && l.topics?.[0] === T_HOP_REFUSED)
+    .map((l) => hopKey({ value: BigInt('0x' + String(l.data).slice(2, 66)), commit: '0x' + String(l.data).slice(66, 130) }));
+}
+const sweepOwed = () => sweepHops({ ledger: hopLedger, waiting: hopsHeld, sendOn: hopsSendOn, log }).catch((e) => log({ hopsSweepFailed: String(e?.message || e).slice(0, 200) }));
+/// What the archive's files say landed: hops of the last HOP_RECENT blocks are owed again (the contract is asked before any is sent, so one long since sent on costs a read).
+function hopsFromArchive(upTo) {
+  let n = 0;
+  for (let h = Math.max(1, upTo - HOP_RECENT + 1); h <= upTo; h++) {
+    try { n += hopLedger.owe(hopsIn(JSON.parse(readFileSync(join(ARCHIVE, `${h}.json`), 'utf8')).lists?.hops || '0x'), { at: Date.now(), height: h }); } catch { /* no file, or not one that reads */ }
+  }
+  return n;
 }
 
 // TacitBlocks.sweep for a deposit record (asset ‖ shares ‖ cx ‖ cy ‖ body ‖ amount) whose inbox holds its TAC, or, with a holder's
@@ -208,13 +238,15 @@ async function sync() {
       const a = JSON.parse(readFileSync(f, 'utf8'));
       lists = { ...lists, leaves: bytesOf(a.lists.leaves), memos: bytesOf(a.lists.memos), nullifiers: a.lists.nullifiers };
     }
+    // owed before anything that can fail below, and left to its own leader for a while: it sends its hops on itself, right after landing
+    try { hopLedger.owe(hopsIn(call.lists.hops), { at: Date.now() + HOP_GRACE, height }); } catch (e) { log({ hopsNotKept: height, error: String(e.message || e) }); }
     await node('POST', '/landed', landedBody(call.publicValues, lists));
     nodeHeight = height;
     log({ synced: height, by: lg.topics[2] && '0x' + lg.topics[2].slice(26) });
     // kept on disk, so a restart can rebuild from the disk (the leader's own blocks are kept when it builds them)
     try {
       const f = join(ARCHIVE, `${height}.json`);
-      if (!existsSync(f)) { mkdirSync(ARCHIVE, { recursive: true }); writeFileSync(`${f}.tmp`, JSON.stringify(archiveEntry(call.publicValues, lists, num(lg.blockNumber)))); renameSync(`${f}.tmp`, f); }
+      if (!existsSync(f)) { mkdirSync(ARCHIVE, { recursive: true }); writeFileSync(`${f}.tmp`, JSON.stringify(archiveEntry(call.publicValues, { ...lists, hops: call.lists.hops }, num(lg.blockNumber)))); renameSync(`${f}.tmp`, f); }
     } catch (e) { log({ archiveNotKept: height, error: String(e.message || e) }); }
   }
   syncedTo = head;
@@ -355,6 +387,7 @@ async function replayArchive() {
 let restored = false, lowGasAt = 0;
 async function step() {
   await sync();
+  await sweepOwed();
   if (!restored) { restored = true; log({ restored: await node('POST', '/restore', {}).catch((e) => ({ error: String(e.message || e) })) }); }
   const [done, queued, lastLanded, window_, forceDelay] = await Promise.all([
     view('queueDone()', ['uint256']), view('queued()', ['uint256']), view('lastLanded()', ['uint256']), view('WINDOW()', ['uint256']), view('FORCE_DELAY()', ['uint256']),
@@ -447,24 +480,13 @@ async function step() {
     firstSeen = null;
     return;
   }
+  // the block's hops are owed from here on, before anything below can throw; they are sent on together, and tried again by every step until sent
+  try { hopLedger.owe(hopsIn(l.hops), { at: Date.now(), height: nodeHeight + 1 }); } catch (e) { log({ hopsNotKept: nodeHeight + 1, error: String(e.message || e) }); }
   await node('POST', '/landed', landedBody(pv, lists));
   nodeHeight += 1;
   firstSeen = null;
   log({ landed: nodeHeight, tx: receipt.transactionHash, gas: num(receipt.gasUsed) });
-  // hops landed are sent on into the confidential pool, together
-  const hopBytes = bytesOf(l.hops);
-  if (hopBytes.length) {
-    const values = [];
-    const commits = [];
-    for (let i = 0; i < hopBytes.length; i += 96) {
-      values.push(BigInt(hexOf(hopBytes.subarray(i + 32, i + 64))));
-      commits.push(hexOf(hopBytes.subarray(i + 64, i + 96)));
-    }
-    try {
-      const r = await send(rpc, KEY, BLOCKS, new Uint8Array([...selector('sendHops(uint256[],bytes32[])'), ...encode(['uint256[]', 'bytes32[]'], [values, commits])]), { chainId });
-      log({ hopsSent: values.length, tx: r.transactionHash });
-    } catch (e) { log({ hopsFailed: String(e.message || e) }); }
-  }
+  await sweepOwed();
   // exits landed are paid out to their addresses (TacitBlocks.withdraw, which anyone may send): a holder needs no ETH to withdraw, and a payment to
   // an address is not tied to any wallet of the payer's by a transaction of its own. Each item is asset ‖ amount ‖ address, 96 bytes.
   // (PAY_OUT_EXITS=0 leaves them for the holders to send)
@@ -498,6 +520,7 @@ async function main() {
     setInterval(() => quoteFee().catch((e) => log({ feeNotQuoted: String(e.message || e) })), FEE_REFRESH);
   } else await node('POST', '/fee', { fee: '0', shieldCap: String(SHIELD_CAP) });
   await replayArchive().catch((e) => log({ archiveReplayFailed: String(e.message || e) }));        // (never fatal: the logs are read for what it did not give)
+  try { const [h] = await view('height()', ['uint256']); log({ hopsOwedFromArchive: hopsFromArchive(Number(h)), owed: hopLedger.items().length }); } catch (e) { log({ hopsArchiveUnread: String(e.message || e) }); }
   // the epoch's seed has a window of a few blocks: watched on its own, not between a block's proving and landing
   setInterval(() => keepSeed().catch((e) => log({ seedNotKept: String(e.message || e) })), 4000);
   for (;;) {

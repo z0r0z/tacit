@@ -661,7 +661,8 @@ function tpgTop(el) {
   const rows = TPG_ROWS.filter(([key]) => by[key] && ((by[key].v || 0n) > 0n || (key === 'chain' && chainOn())));
   const seg = rows.filter(([key]) => (by[key].v || 0n) > 0n);
   const nudge = chainOn() && (by.defi?.v || 0n) > 0n && hxWays('tac').includes('chain');
-  const kept = k && chainOn() && ctx.CH.pub === k ? [...ctx.CH.kept, ...ctx.CH.hops.filter((x) => Date.now() - x.at > CHAIN_HOP_WAIT).map((x) => ({ kind: 'hop', ...x }))] : [];
+  // (a hop has landed: what is kept here has not, and a hop still waiting is TAC that is on neither side until someone sends it into the pool)
+  const mine = k && chainOn() && ctx.CH.pub === k, kept = mine ? ctx.CH.kept : [], stuck = mine ? ctx.CH.hops.filter((x) => Date.now() - x.at > CHAIN_HOP_WAIT) : [];
   mount(el, html`
     <h2 class="tpg-h" id="tpg-top-h">All your TAC</h2>
     <p class="tpg-tot num">${known || total || failed ? fmt(total, 18, 2) : html`<span class="sk" style="--w:8ch"></span>`}<small>TAC${known ? (stale ? ' · updating' : '') : failed ? ', some places unread' : ''}</small></p>
@@ -673,6 +674,7 @@ function tpgTop(el) {
     ${k ? shLookingNote(k) : ''}
     ${k ? depositCallout('tac', 'tac-finish') : ''}
     ${kept.length ? html`<p class="note">${kept.length === 1 ? 'One of your Tacit chain moves has' : `${kept.length} of your Tacit chain moves have`} not landed yet. <button class="link" type="button" data-hx="${tpgKeptWay(kept[0])}">See ${kept.length === 1 ? 'it' : 'them'}</button></p>` : ''}
+    ${stuck.map((h) => html`<p class="note">A move of ${fmt(BigInt(h.units), 8, 4)} TAC to the private pool has not been sent on, so the TAC is in neither place yet. <button class="link" type="button" data-chainhop="${h.commit}" data-st="tpg-top-st">Send it on</button></p>`)}
     <div class="status" role="status" id="tpg-top-st"></div>`);
   if (k) wireFinish(el, 'tac', 'tac-finish', 'tpg-top-st');
   const tnTop = $('[data-tn-top]', el);
@@ -680,7 +682,7 @@ function tpgTop(el) {
   ctx.TACP.tot = { k, total, known, pub };
   if (k && chainOn() && ctx.CH.bal != null) chainClient().then((c) => { const v = c.balance(); if (S.key?.pubHex === k && ctx.TACP.sh?.v !== v) { ctx.TACP.sh = { pub: k, v }; rerender('tac'); } }).catch(() => {});
 }
-const tpgKeptWay = (e) => (e.kind === 'shield' && (!e.inbox || e.src === 'wallet') ? 'shield:wtac:chain' : e.inbox ? 'shield:tac:chain' : e.kind === 'hop' ? 'shield:ctac:defi' : 'shield:ctac:wallet');
+const tpgKeptWay = (e) => (e.kind === 'shield' && (!e.inbox || e.src === 'wallet') ? 'shield:wtac:chain' : e.inbox ? 'shield:tac:chain' : 'shield:ctac:wallet');
 async function tpgPrivGo(from) {
   if (from === 'btc') return tacPoolOpen('shield');
   if (!chainOn()) return tpgTile('shield:wtac:defi', '', 'Make it private');
