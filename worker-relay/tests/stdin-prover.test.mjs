@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { keccak_256 } from '@noble/hashes/sha3.js';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { makeStdinProver, inputPolicy, notExecuted } from '../src/lib/stdin-prover.js';
 import { batchStdin, LIMITS } from '../src/lib/spn/sp1-stdin.js';
 

@@ -84,13 +84,15 @@ jobs:
       # steps is a dependency problem, not a test one.
       - name: Install (root)
         run: npm ci --no-audit --no-fund
-      # tests/ is deliberately NOT installed. It has a package.json of its own, but its lockfile pins @noble/hashes 1.3.3
-      # while the root pins 1.8.0, and 1.3.3 does not export './sha3.js' — so installing it put an older copy in front of
-      # the root one and broke `import { keccak_256 } from '@noble/hashes/sha3.js'` in tests/community-ops.test.mjs with
-      # ERR_PACKAGE_PATH_NOT_EXPORTED. No developer's tree has tests/node_modules (the suites resolve up to the root), so
-      # installing it made CI differ from every machine these suites are written and run on. The root package provides
-      # everything tests/package.json lists. The stale tests/ lockfile is a real inconsistency, but fixing it is a
-      # dependency bump for the bulletproofs/snarkjs suites that own that package, not something this gate should force.
+      # tests/ must be installed: about 25 suites need jsdom, and only tests/ pins one that loads on Node 20 (the root's
+      # is newer and wants webidl.util.markAsUncloneable, which arrived in Node 22 — without this step those suites fail
+      # with "no jsdom that loads on Node 20"). Its @noble/hashes is older than the root's and shadows it, which is why
+      # the three suites that imported '@noble/hashes/sha3.js' now import '@noble/hashes/sha3' like the other 54 do:
+      # that subpath exists in both versions. Installing tests/ before worker/ and worker-relay/ keeps the nearer, newer
+      # copies in front for the suites that live there.
+      - name: Install (tests)
+        run: npm ci --no-audit --no-fund
+        working-directory: tests
       - name: Install (worker)
         run: npm ci --no-audit --no-fund
         working-directory: worker
