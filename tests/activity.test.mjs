@@ -61,6 +61,13 @@ assert.equal(A.listed(J.state.items).length, A.ACT_MAX, `kept to the newest ${A.
 J.state.items = J.state.items.filter((x) => x.kind !== 'tx');                       // the page may replace the list in place
 assert.equal(J.get('tx:1:0x24'), undefined, 'and the journal reads what the page left');
 assert.equal(A.ahead('settled', 'failed'), true, 'settled wins over a failure'); assert.equal(A.ahead('open', 'sending'), true); assert.equal(A.ahead('pending', 'proving'), false);
+// a proved job whose pool has moved on is a failure (its send reverts every time), and nothing else turns a proved job into one by accident
+assert.equal(A.ahead('failed', 'proven'), true, 'a proved job can be ended as failed'); assert.equal(A.ahead('proven', 'failed'), false, 'and a failed one is not proved again');
+assert.equal(A.ahead('failed', 'settled'), false, 'a settled job is never failed'); assert.equal(A.ahead('unknown', 'proven'), false, 'an unknown answer does not unprove it');
+J.put('job:dead', { kind: 'job', status: 'proven' }); J.put('job:dead', { status: 'failed', err: 'The pool moved.' });
+assert.equal(J.get('job:dead').status, 'failed', 'the journal ends a proved job on a failure'); assert.equal(J.get('job:dead').err, 'The pool moved.');
+J.put('job:dead', { status: 'proven' }); assert.equal(J.get('job:dead').status, 'failed', 'a later proved answer does not bring the offer back');
+assert.ok(A.ENDS.job.includes('failed') && A.actDone(J.get('job:dead')), 'and it is finished');
 
 // ── following ──
 const tick = () => new Promise((r) => setTimeout(r, 20));
