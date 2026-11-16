@@ -230,12 +230,13 @@ export function attach(env) {
       <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lg-find">${account ? 'Find' : 'Connect wallet'}</button> · <button class="link" type="button" id="lg-paste">Paste a note</button></span></div>
       ${rows || '<p class="note">None found in this browser. Find looks for notes made with this wallet; Paste adds one from anywhere.</p>'}
       <div id="lg-ask" hidden></div>
-      <div class="lbl"><span>Gas</span><span><label>Paid from <select id="lg-gas" aria-label="Where a note's gas is paid from"><option value="note"${st.gas === 'note' ? ' selected' : ''}>the note</option><option value="wallet"${st.gas === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>
-      <p class="note">${st.gas === 'wallet' ? 'Your wallet sends the withdrawal and pays its gas, so it shows as the sender.' : `Gas comes out of the note (${MAX_FEE_PERCENT}% at most), so your wallet needs no ETH.`} <a href="https://github.com/ethereum/kohaku" target="_blank" rel="noopener noreferrer">Kohaku</a> can withdraw these notes too.</p>
+      ${st.notes.length ? `      <div class="lbl"><span>Gas</span><span><label>Paid from <select id="lg-gas" aria-label="Where a note's gas is paid from"><option value="note"${st.gas === 'note' ? ' selected' : ''}>the note</option><option value="wallet"${st.gas === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>
+      <p class="note">${st.gas === 'wallet' ? 'Your wallet sends the withdrawal and pays its gas, so it shows as the sender.' : `Gas comes out of the note (${MAX_FEE_PERCENT}% at most), so your wallet needs no ETH.`} <a href="https://github.com/ethereum/kohaku" target="_blank" rel="noopener noreferrer">Kohaku</a> can withdraw these notes too.</p>` : ''}
     </div>`;
     notesHost.querySelector('#lg-find').onclick = () => (account ? find(notesHost.querySelector('#lg-find')) : env.connect().then(loadNotes, (e) => env.toast(env.errText(e), true)));
     notesHost.querySelector('#lg-paste').onclick = askPaste;
-    notesHost.querySelector('#lg-gas').onchange = (e) => { st.gas = e.target.value === 'wallet' ? 'wallet' : 'note'; saveGas(env.store, chainId, st.gas); paintNotes(); };
+    const gasSel = notesHost.querySelector('#lg-gas');
+    if (gasSel) gasSel.onchange = (e) => { st.gas = e.target.value === 'wallet' ? 'wallet' : 'note'; saveGas(env.store, chainId, st.gas); paintNotes(); };
     notesHost.querySelectorAll('[data-move]').forEach((b) => { b.onclick = () => moveInto(b, st.notes[Number(b.dataset.move)]); });
     notesHost.querySelectorAll('[data-out]').forEach((b) => { b.onclick = () => askAddress(st.notes[Number(b.dataset.out)]); });
   }
@@ -449,7 +450,7 @@ export function attachIntake(env) {
   const chainId = env.chain.chainId;
   const provider = composeProvider({ read: env.read, wallet: env.walletProvider });
   const flowFor = () => makeFlow({ provider, account: env.account(), chainId, store: env.store, poll: 3000, timeout: 10 * 60 * 1000 });
-  const st = { via: 'relay', amount: '', fee: null, feeErr: null, busy: false };
+  const st = { via: 'relay', amount: '', fee: null, feeErr: null, busy: false, open: false };
   const smallest = () => { try { const v = BigInt(env.store.get(MIN_KEY(chainId))); return v > 0n ? v : DEFAULT_MIN_DENOMINATION; } catch { return DEFAULT_MIN_DENOMINATION; } };
   const planOf = () => {
     const wei = (env.parseAmount ? env.parseAmount(st.amount) : parseEther(st.amount));
@@ -466,6 +467,9 @@ export function attachIntake(env) {
   }
   function paint() {
     if (!host.isConnected) return;
+    // A toggle event can still be queued when an input or fee update redraws the panel.
+    const previousDetails = host.querySelector('details');
+    if (previousDetails) st.open = previousDetails.open;
     const p = planOf(), have = env.balance?.();
     const body = !p || !p.notes.length
       ? `<p class="note">${p ? 'That is less than the smallest note, ' + formatEther(smallest()) + ' ETH.' : 'Whole notes for a large amount, made from your private balance with no wallet in between.'}</p>`
@@ -478,13 +482,16 @@ export function attachIntake(env) {
         const short = have != null && have < total ? `<p class="note err" role="alert">Your private balance holds ${esc(formatEther(have))} ETH, less than the ${esc(formatEther(total))} ETH of notes.</p>` : '';
         return `${rows}${left}${cost}${short}<button class="btn" type="button" id="li-go"${short || (st.via === 'relay' && st.fee == null) ? ' disabled' : ''}>${env.account() ? `Move ${esc(formatEther(total))} ETH into ${n} ${n === 1 ? 'note' : 'notes'}` : 'Connect wallet'}</button>`;
       })();
-    host.innerHTML = `<div class="blk" style="margin-top:18px;padding-top:12px;border-top:1px solid var(--hair)">
-      <div class="lbl"><span>Into whole notes</span><span><label>Sent by <select id="li-via" aria-label="Who sends it"><option value="relay"${st.via === 'relay' ? ' selected' : ''}>the relay</option><option value="wallet"${st.via === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>
+    host.innerHTML = `<details class="blk" style="margin-top:18px;padding-top:12px;border-top:1px solid var(--hair)"${st.open ? ' open' : ''}>
+      <summary style="cursor:pointer">Make whole notes from your private balance</summary>
+      <div class="lbl" style="margin-top:10px"><span>Into whole notes</span><span><label>Sent by <select id="li-via" aria-label="Who sends it"><option value="relay"${st.via === 'relay' ? ' selected' : ''}>the relay</option><option value="wallet"${st.via === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>
       <div class="amt text"><input id="li-amt" inputmode="decimal" placeholder="ETH to move into notes" autocomplete="off" aria-label="ETH to move into notes" value="${esc(st.amount)}"></div>
       ${body}
       ${st.feeErr && st.via === 'wallet' ? `<p class="note">The relay cannot send this one (${esc(st.feeErr.replace(/^[A-Z](?![A-Z])/, (c) => c.toLowerCase()))}), so your wallet does.</p>` : ''}
       <p class="note">Leave notes in the pool a while: the longer they sit, the better they blend in.</p>
-    </div>`;
+    </details>`;
+    const how = host.querySelector('details');
+    how.ontoggle = () => { if (how.isConnected) st.open = how.open; };
     const amt = host.querySelector('#li-amt');
     amt.oninput = () => { st.amount = amt.value; paintKeep(); };
     host.querySelector('#li-via').onchange = (e) => { st.via = e.target.value === 'wallet' ? 'wallet' : 'relay'; if (st.via === 'relay' && st.fee == null && !st.feeErr) quote(); paint(); };

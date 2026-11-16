@@ -48,7 +48,9 @@ export function onActivity(fn) {
 
 const RANK = { pending: 0, proving: 1, stale: 1, open: 1.5, sending: 1.5, proven: 2, failed: 2, unknown: 2, settled: 3, confirmed: 3 };
 export const OPENISH = ['open', 'sending'];
-export const ahead = (next, cur) => next !== cur && (cur == null || cur === 'unknown' || next === 'settled' || next === 'confirmed' || (OPENISH.includes(next) && OPENISH.includes(cur)) || (RANK[next] ?? -1) > (RANK[cur] ?? -1));
+// A proved job ('proven' ranks with 'failed') is the one end that can still turn out dead: its proof was made against a pool that has since moved, so
+// sending it reverts. That is a failure, and the row says so rather than offering to send it again.
+export const ahead = (next, cur) => next !== cur && (cur == null || cur === 'unknown' || next === 'settled' || next === 'confirmed' || (next === 'failed' && cur === 'proven') || (OPENISH.includes(next) && OPENISH.includes(cur)) || (RANK[next] ?? -1) > (RANK[cur] ?? -1));
 
 export function makeJournal({ pub = () => null, onTrim = () => {}, onStatus = () => {}, onChange = () => {}, shared = false } = {}) {
   const state = readActivity();
