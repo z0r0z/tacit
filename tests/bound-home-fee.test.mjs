@@ -29,8 +29,8 @@ const body = src.slice(src.indexOf('async function moveBoundNoteHome('), src.ind
 ok(/homeFeePlan\(\{ amount: note\.amount, quote:/.test(body) && /fee: plan\.fee, selfRelay: plan\.selfRelay \}\)/.test(body) && !/selfRelay: false/.test(body),
   'moveBoundNoteHome asks homeFeePlan and passes its fee and relay choice to fastlaneExit (no fixed relay)');
 
-ok(/ux\.poolTickerOf\(aid\)/.test(body) && /ux\.relayFeeEligible\(t\)/.test(body) && !/assetById/.test(body),
-  'the quote names the token by its pool ticker (cUSDT, not the asset id), and a token the relay does not price gets no quote');
+ok(/ux\.poolTickerOf\(aid\)/.test(body) && /ux\.relayFeeEligible\(t\)/.test(body) && !/assetById/.test(body) && /readAsset\(aid\)\)\?\.poolMinted/.test(body),
+  'the quote names the token by its pool ticker (cUSDT, not the asset id), and a token the relay does not price, or one the pool does not mint (its fee would revert BtcHomedValueExitMustBridge), gets no quote');
 
 console.log(`\n${pass} bound-home-fee checks passed${fail ? `, ${fail} FAILED` : ''}`);
 process.exit(fail ? 1 : 0);

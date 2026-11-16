@@ -41,7 +41,8 @@ assert.equal(marked(n1, deep).eligible, false);
 assert.equal(marked(n1, deep).reason, '5,000 transfers in its history; the bridge proves up to 1000.');
 assert.equal(marked({ ...n1, amount: '0' }, new Map()).reason, 'Holds no TAC');
 assert.equal(marked({ ...n1, eligible: false, reason: 'unconfirmed' }, new Map([['aa:0', { tooLong: true }]])).reason, 'unconfirmed', 'a note already off the list keeps its own reason');
-assert.match(longReason({ unprovable: true, through: 'shielded' }), /^Its history includes a move through Bitcoin’s shielded pool, which the bridge does not follow\.$/);
+assert.match(longReason({ unprovable: true, through: 'shielded' }), /^Its history includes a move through Bitcoin’s shielded pool, which the bridge does not follow\. The fast bridge can take it\.$/, 'a note the regular bridge cannot take points to the fast bridge, which can');
+assert.match(T({ name: 'trace', unprovable: true, through: 'shielded' }), /The fast bridge can: a provider pays out the same TAC to your private balance/);
 
 // the listing: the key's TAC with each note's form, tracking and eligibility, the eligible first and the larger first among them
 {
