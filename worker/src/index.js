@@ -3318,7 +3318,9 @@ function buildRelayFeeGate(env) {
   return async ({ type, op }) => {
     // A transfer that carries no fee (a note cut to its owner's own identity, as a fast bridge provider cuts the note it locks) rides the
     // day's free settles like the other fee-less ops: the free budgets at submit bound it (FREE_RELAY_DAILY_CAP, FREE_RELAY_CAP_OTHER).
-    if (type === 'transfer' && totalFee(type, op) === 0n) return true;
+    // An add-and-bond into a farm is the same: the relay sponsors it, and with a first asset the gate can price (tETH) the missing fee leg
+    // was read as an underpaid fee, so a tETH pair join was turned back at submit (FREE_RELAY_CAP_FARM bounds it).
+    if ((type === 'transfer' || type === 'lpbond') && totalFee(type, op) === 0n) return true;
     const p = feeAssetRow(type, op, env) || ammFeeAsset(type, op, env);
     if (!p) return true; // can't price it — pass through
     const weiPerFeeUnit = await weiPerFeeUnitOf(p);
@@ -3830,7 +3832,7 @@ async function freeRelayBudget(env) {
 // class of its own (FREE_RELAY_CAP_SEND) and the day's merges, pool adds and the rest cannot use up the sends.
 // The lock a fast-bridge provider puts in the pool and the claim of the one who bridges (adaptorlock, adaptorclaim) carry no fee leg either, and are
 // a class of their own (FREE_RELAY_CAP_FAST) for the same reason: a bridge that waits on the day's free settles waits on whatever else used them.
-const FREE_CLASS = { bridgemint: 'bridge', bridgestealthmint: 'bridge', cbtcmint: 'onboard', cdpmint: 'cusd', cdpclose: 'cusd', cdptopup: 'cusd', cdpliquidate: 'cusd', farmharvest: 'farm', farmunbond: 'farm', farmbond: 'farm', wrap: 'wrap', stealthlock: 'send', stealthlockbatch: 'send', adaptorlock: 'fast', adaptorclaim: 'fast' };
+const FREE_CLASS = { bridgemint: 'bridge', bridgestealthmint: 'bridge', cbtcmint: 'onboard', cdpmint: 'cusd', cdpclose: 'cusd', cdptopup: 'cusd', cdpliquidate: 'cusd', farmharvest: 'farm', farmunbond: 'farm', farmbond: 'farm', lpbond: 'farm', wrap: 'wrap', stealthlock: 'send', stealthlockbatch: 'send', adaptorlock: 'fast', adaptorclaim: 'fast' };
 const FREE_CLASSES = ['onboard', 'bridge', 'cusd', 'farm', 'wrap', 'send', 'fast', 'other'];
 const freeClassOf = (type) => FREE_CLASS[String(type)] || 'other';
 const freeClassCap = (env, cls) => { const raw = env[`FREE_RELAY_CAP_${cls.toUpperCase()}`]; return raw == null || String(raw).trim() === '' || !(Number(raw) >= 0) ? null : Math.floor(Number(raw)); };

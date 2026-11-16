@@ -248,6 +248,18 @@ const ASSET = (t) => DEPLOY.mainnet.assets.filter((a) => a.ticker === t)[0];
 const cEth = ASSET('cETH'), cUsd = ASSET('cUSD'), cBtc = ASSET('cBTC');
 const transfer = (asset, fee) => ({ asset: asset.assetId, fee: String(fee) });
 
+// An add-and-bond into a farm carries no fee: the relay sponsors it (the day's free budgets bound it, as they bound a zero-fee transfer). With a first asset the gate can
+// price (tETH), the gate found no fee leg and refused it as "fee below the current floor", so every tETH pair join relayed from the farm page was turned back at submit.
+test('gate: a farm entry (lpbond) that carries no fee is not refused for it, and one that pays under the floor still is', async () => {
+  const { gate } = loadGate();
+  const bond = (fee) => ({ assetA: cEth.assetId, assetB: '0x' + '45'.repeat(32), feeBps: 30, fee: String(fee), controller: '0x' + '91'.repeat(20) });
+  ok(await gate({ type: 'lpbond', op: bond(0) }) === true, 'a zero-fee add-and-bond rides the free budgets, as a zero-fee transfer does');
+  ok(await gate({ type: 'lpbond', op: bond(1) }) === false, 'a fee that is under the floor is still refused');
+  ok(await gate({ type: 'lpbond', op: bond(100_000_000) }) === true, 'a fee over the floor is accepted');
+});
+test('free budgets: an add-and-bond is metered on the farm allowance, not the shared one', () => {
+  ok(/lpbond: 'farm'/.test(worker.slice(worker.indexOf('const FREE_CLASS ='), worker.indexOf('const FREE_CLASSES ='))), 'lpbond must be in the farm class with the other farm ops');
+});
 test('cETH: a fee under the gas-aware floor is rejected, one over it is accepted', async () => {
   const { gate } = loadGate();
   // floor in cETH units at this gas, using the same function the gate uses
