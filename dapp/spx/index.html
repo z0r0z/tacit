@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-U2iXOrPgOlIffD+Hw9kgMDRJHddXr0rR/QLjiVF9Bos=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OtPtygeZIqgmPNmhAFb6UmqDNqx4v9sUd1E0807eebo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -71,7 +71,7 @@
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=7bb002cf">
-<link rel="modulepreload" href="/swap/card.js?cb=7e33aaec">
+<link rel="modulepreload" href="/swap/card.js?cb=a2fdf5e2">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -3469,6 +3469,7 @@ function opSync(id) {
   const bad = steps.find((s) => !s.it || badStatus(s.it.status)), live = RUN_OF.get(id)?.live;
   let patch;
   if (main?.it && okStatus(main.it.status)) patch = { status: 'settled', hash: main.it.hash };
+  else if (op.done) patch = { status: 'settled' };   // a flow that ran its last step outside the relay's jobs (the move out of the private pool) says so itself: its steps alone would read as "the rest did not start"
   else if (op.stop) patch = { status: 'failed', err: op.stop };
   else if (bad) {
     const why = failText(bad.it || { status: 'unknown' }), kept = bad.main && steps.some((s) => s.step === 'Deposit' && okStatus(s.it?.status));
@@ -4681,7 +4682,7 @@ const chainSaid = (m) => Object.assign(new Error(m), { said: true });
 const CHAIN_PROVE_S = globalThis.crossOriginIsolated ? 8 : 30;
 const chainProveSay = () => (globalThis.crossOriginIsolated ? 'a few seconds' : 'about half a minute');
 
-const TACIT_URL = '/tacit.js?cb=3d6cd2fa';
+const TACIT_URL = '/tacit.js?cb=17106b9e';
 let T = null;
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; try { xtEngines(m); } catch { } } });
 const loadTacit = TS.load, tacitTurn = TS.turn, withKey = TS.withKey, dropTacitKey = TS.drop, tPriv = TS.tPriv;
@@ -15088,6 +15089,7 @@ async function chainInRun(run, st, units, shown = null, given = null, phase = nu
     t.releaseWrapIndex?.({ walletPriv: priv, ticker: 'TAC', index });
     say(st, html`<span class="ok">Moved.</span> About ${fmt(amount - (s.fee ?? 0n), 8, 4)} TAC is on the Tacit chain.`);
     toast('Moved to the Tacit chain');
+    if (run.op) actPut(run.op, { done: true });
     Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]).then(() => hxMoveAfter());
     chainClient().then(chainKeptRead).catch(() => {});
     chainSettle((b) => b > was).then(() => hxMoveAfter(), () => {});
@@ -15620,9 +15622,10 @@ async function hxReadyRead() {
   if ([...HX.ready].join() !== had) hxSub();
 }
 function hxSizesView() {
-  return html`<span class="quick">${HX_SIZES.map((v) => (HX.ready?.has(String(parseUnits(v, 18)))
-    ? html`<button type="button" data-hxq="${v}" class="rd" title="Proved already: one transaction"><svg aria-hidden="true"><use href="#i-bolt"/></svg>${v}</button>`
-    : html`<button type="button" data-hxq="${v}">${v}</button>`))}</span>`;
+  const rd = (v) => !!HX.ready?.has(String(parseUnits(v, 18)));
+  return html`<span class="quick">${HX_SIZES.map((v) => (rd(v)
+    ? html`<button type="button" data-hxq="${v}" class="rd" title="Proved already: one transaction" aria-label="${v}, ready now: one transaction">${v}</button>`
+    : html`<button type="button" data-hxq="${v}">${v}</button>`))}${HX_SIZES.some(rd) ? html`<span class="rdn" aria-hidden="true"><svg><use href="#i-bolt"/></svg>ready now</span>` : ''}</span>`;
 }
 const hxNb = (t) => String(t ?? '').replace(/ · /g, '\u00a0· ');
 const HX_MEM = 'tacit-hx-card-v1', HX_AMT = 'tacit-hx-amt-v1';
@@ -15728,7 +15731,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=7e33aaec').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=a2fdf5e2').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

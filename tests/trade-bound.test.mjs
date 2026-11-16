@@ -88,5 +88,13 @@ for (let i = 0; i < 6; i++) await tick();
 box2.querySelector('[data-close]').click();
 await tick(); await tick();
 ok(calls.closes?.[0] === 'cd'.repeat(16) && notes.some(([k, m]) => /2,900 sats are on their way back/.test(m)), 'Close bid takes it off the book and returns its wallet\'s sats');
+// the offer's notes are read whatever the page registered: /trade/ never registers a runtime token, so a note held at the Bitcoin address
+// (a part sale's change, a bound send's arrival) must still be found
+{
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../dapp/tacit.js', import.meta.url), 'utf8');
+  const pub = src.slice(src.indexOf('async function publishBoundOffer('), src.indexOf('async function listBoundOffers('));
+  ok(/bridgedHeldNotes\(aid, \{ anyBridged: true \}\)/.test(pub) && /async function bridgedHeldNotes\(assetIdHex, \{ anyBridged = false \} = \{\}\)/.test(src), 'a bound offer reads the notes held at the Bitcoin address without the page\'s token registry');
+}
 console.log(`\n${pass} trade-bound checks passed${fail ? `, ${fail} FAILED` : ''}`);
 process.exit(fail ? 1 : 0);
