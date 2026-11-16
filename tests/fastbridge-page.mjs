@@ -33,7 +33,7 @@ const STEPS = ['Lock on Bitcoin', 'Lock in the pool', 'Claim', 'Done'];
 const rec = (o) => ({ phase: 'broadcast', title: 'Waiting for Bitcoin', detail: 'The lock needs one confirmation, about ten minutes.', at: 0, steps: STEPS, ended: false, returned: false, amount: String(100n * TAC), receive: String(98n * TAC), created: 1, lockTxid: 'bb'.repeat(32), ...o });
 let recs = [
   rec({ id: '01'.repeat(36), phase: 'offered', title: 'Waiting for the pool lock', detail: 'The provider is locking TAC in the pool for you.', at: 1, amount: String(2500n * TAC), receive: String(2492n * TAC) }),
-  rec({ id: '02'.repeat(36), phase: 'done', title: 'Done', detail: 'The TAC is in your private balance.', at: 3, ended: true }),
+  rec({ id: '02'.repeat(36), phase: 'done', title: 'Done', detail: 'The TAC is in your private balance.', at: 3, ended: true, created: Math.floor(Date.now() / 1000) - 3000 }),
   rec({ id: '03'.repeat(36), phase: 'refund-wait', title: 'Returning to Bitcoin', detail: 'The lock returns to your Bitcoin address when its timelock ends.', returned: true, amount: String(40n * TAC), receive: '0' }),
   rec({ id: '04'.repeat(36), phase: 'refunded', title: 'Returned', detail: 'The lock came back to your Bitcoin address.', at: 3, ended: true, returned: true, amount: String(40n * TAC), receive: '0', lockTxid: null }),
 ];
@@ -206,6 +206,17 @@ try {
     await page.click('#fx-go');
     await page.waitForFunction(() => /Started/.test(document.getElementById('fx-st').textContent), null, { timeout: 5000 });
     ok((await page.$$('#fx-list .fx-rec')).length === 5 && (await page.inputValue('#fx-amt')) === '', 'the new bridge is at the top and the amount is cleared');
+    // what a finished bridge is, and what to do with it: a private balance is not an Ethereum wallet, and the way to one is a link that carries the amount
+    {
+      const done = await page.$eval('#fx-list .fx-rec[data-phase="done"]', (e) => ({ text: e.textContent, hrefs: [...e.querySelectorAll('a')].map((a) => a.getAttribute('href')) }));
+      ok(/not yet in an Ethereum wallet/.test(done.text) && done.hrefs.includes('/?from=TAC&to=TAC&private=from&amt=98'), 'a finished bridge says its TAC is private, not in a wallet yet, and links to withdraw the amount');
+      ok(!/not yet in an Ethereum wallet/.test(await text(page, '#fx-list .fx-rec[data-phase="refunded"]')), 'a bridge that came back to Bitcoin does not say it');
+      ok(/Private TAC on Ethereum, in your Tacit wallet/.test(await text(page, '.fx-tip')) && /withdraw it afterwards/.test(await text(page, '.fx-tip')), 'the receive line says what private means and how to hold it in a wallet');
+      await page.click('#fx-how summary');
+      ok(await page.$eval('#fx-how', (e) => e.open) && /not an Ethereum wallet/.test(await text(page, '#fx-how')) && /Keep this page open until it says Done/.test(await text(page, '#fx-how')), 'the explainer opens and says what a private balance is and to keep the page open');
+      await shot('fast-explainer');
+      await page.click('#fx-how summary');
+    }
     await shot('fast-bridges');
     // the ready-for-Ethereum panel: bound notes listed, a ready one moved, a bind sent
     ok(await page.$eval('#ready', (e) => e.hidden), 'the ready-for-Ethereum panel is unlisted');

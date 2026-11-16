@@ -6,7 +6,7 @@ const THROUGH = { pool: 'a pool or farm trade on Bitcoin', shielded: 'a move thr
 export const through = (s) => (THROUGH[s.through] ? `${THROUGH[s.through]}, which` : 'a transaction');
 export const transfers = (n) => `${n.toLocaleString('en-US')} transfer${n === 1 ? '' : 's'}`;
 export const longCount = (s) => (s.hops ? `${s.atLeast ? 'more than ' : ''}${transfers(s.hops)}` : `far more than ${transfers(s.max)}`);
-export const longReason = (s) => (s.unprovable ? `Its history includes ${through(s)} the bridge does not follow.`
+export const longReason = (s) => (s.unprovable ? `Its history includes ${through(s)} the bridge does not follow. The fast bridge can take it.`
   : `${longCount(s).replace(/^./, (c) => c.toUpperCase())} in its history; the bridge proves up to ${s.max}.`);
 
 export function bridgeError(e, errText = (x) => String(x?.message || x || '')) {
@@ -27,7 +27,7 @@ export function checkText(s, errText) {
   if (s.name === 'source-ownership') return 'This TAC is not at this key’s own Bitcoin address.';
   if (s.name === 'source-confirmed') return 'This TAC is waiting for its Bitcoin confirmation.';
   if (s.name === 'trace' && s.tooLong) return `This TAC has ${longCount(s)} in its history, and the bridge proves up to ${s.max}, so it goes to Ethereum by the fast bridge instead.`;
-  if (s.name === 'trace' && s.unprovable) return `This TAC’s history includes ${through(s)} the bridge’s proof does not follow${!THROUGH[s.through] && s.at ? ` (${s.at.slice(0, 8)}…${s.at.slice(-6)})` : ''}, so the regular bridge cannot take it.`;
+  if (s.name === 'trace' && s.unprovable) return `This TAC’s history includes ${through(s)} the bridge’s proof does not follow${!THROUGH[s.through] && s.at ? ` (${s.at.slice(0, 8)}…${s.at.slice(-6)})` : ''}, so the regular bridge cannot take it. The fast bridge can: a provider pays out the same TAC to your private balance, usually in about 25 minutes.`;
   if (s.name === 'trace' && s.reading) return `Reading this TAC’s history from Bitcoin: ${transfers(Number(s.read) || 0)} so far. Pick it again in a few minutes and the reading goes on from there.`;
   if (s.name === 'trace') {
     const wait = /retry in ~(\d+)s/.exec(s.detail || '');

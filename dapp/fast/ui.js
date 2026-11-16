@@ -4,6 +4,10 @@ import { minutesFor } from './route.js';
 export { fmtTac, parseTac, slowNet, lineageText };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
 const SCAN = 'https://mempool.space/tx/';
+// where private TAC is turned into public TAC in an Ethereum wallet: the front page's card on TAC from the private balance to the wallet, with the amount when it is known
+const WITHDRAW = '/?from=TAC&to=TAC&private=from';
+const plainTac = (raw) => { try { const v = BigInt(raw), f = String(v % ONE).padStart(8, '0').replace(/0+$/, ''); return f ? `${v / ONE}.${f}` : String(v / ONE); } catch { return ''; } };
+const withdrawHref = (r) => (r && r.receive && r.receive !== '0' && plainTac(r.receive) ? `${WITHDRAW}&amt=${plainTac(r.receive)}` : WITHDRAW);
 const KEPT = 'tacit-fast-providers-v1';
 const big = (xs, pick) => xs.reduce((a, x) => (pick(x) > a ? pick(x) : a), 0n);
 
@@ -26,6 +30,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       <div class="fx-out" id="fx-out" hidden>
         <p class="eyebrow"><span>You receive, private</span><span class="who">in your Tacit wallet</span></p>
         <div class="fx-big"><output class="num" id="fx-big" for="fx-amt">0</output><span>TAC</span></div>
+        <p class="note fx-tip">Private TAC on Ethereum, in your Tacit wallet. To hold it in an Ethereum wallet, withdraw it afterwards.</p>
       </div>
       <div class="rows" id="fx-recv" hidden></div>
       <div class="kv" id="fx-wait" hidden><span></span><button class="linkbtn" id="fx-unwait" type="button">Stop waiting</button></div>
@@ -33,6 +38,13 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     <button class="btn" id="fx-go" type="button" hidden>Open wallet</button>
     <p class="status" id="fx-st" role="status" aria-live="polite"></p>
     <p class="alt" id="fx-alt">No provider fee? The <a href="/#card=bridge">regular bridge</a>, about 4 hours. Or <a href="#provide">provide liquidity</a> and earn the fee.</p>
+    <details class="fx-how" id="fx-how"><summary>New to the fast bridge?</summary>
+      <p class="note">You lock TAC on Bitcoin. A liquidity provider pays you the same TAC, less its fee, into your private balance on Tacit (Ethereum’s private pool). It takes minutes; the quote says how many.</p>
+      <p class="note">A private balance is not an Ethereum wallet. To hold the TAC in a wallet, withdraw it afterwards: <a href="${WITHDRAW}">Withdraw to Ethereum</a>.</p>
+      <p class="note">Use this when the regular bridge cannot take your TAC (a long history, or TAC that came out of Bitcoin’s shielded pool). The regular bridge has no provider fee but takes about 4 hours.</p>
+      <p class="note">Keep this page open until it says Done: it claims your TAC at the end. If a bridge cannot finish, your lock returns to your Bitcoin address after about a day.</p>
+      <p class="note">Your Bitcoin address needs a few thousand sats for the Bitcoin fee. The quote shows how many.</p>
+    </details>
     <div class="rows" id="fx-list" hidden></div>`;
   const $ = (id) => doc.getElementById(id);
 
@@ -122,6 +134,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         ${r.returned ? '' : `<ol class="fx-steps" aria-label="Steps">${r.steps.map((s, i) => `<li${i < r.at || r.ended ? ' class="on"' : i === r.at ? ' class="at"' : ''}>${esc(s)}</li>`).join('')}</ol>`}
         <p class="note">${esc(r.detail)}${r.error && !r.ended ? ` <span class="err">${esc(r.error)}</span>` : ''}</p>
         <p class="note fx-meta">${esc(ago(r.created))}${r.lockTxid ? ` · <a href="${SCAN}${esc(r.lockTxid)}" target="_blank" rel="noopener noreferrer">Bitcoin lock ↗</a>` : ''}${r.ended && !r.returned ? ' · <a href="/">Your TAC, on the front page</a>' : ''}</p>
+        ${r.ended && !r.returned && Date.now() / 1000 - Number(r.created || 0) < 7 * 86400 ? `<p class="note fx-next"><b>It is in your private balance on Tacit, not yet in an Ethereum wallet.</b> Swap, send or earn with it privately, or <a href="${esc(withdrawHref(r))}">withdraw it to an Ethereum address</a> (public TAC).</p>` : ''}
       </div>`).join('') : '';
   }
 
