@@ -131,6 +131,7 @@ console.log('T_LP_HARVEST reward:');
   W.receipts.set(txid, receipt());
   const i = await verdict(txid, 1);
   ok('a worker with no receipt route: not credited by the validator', i.v === false, JSON.stringify(i));
+  ok('and not condemned: a route that is not there is a read to try again (fetch-failed), not an invalid note', i.reason === 'fetch-failed', JSON.stringify(i));
   W.route = true;
 
   dapp.setStrictValidation({ failures: [] });
