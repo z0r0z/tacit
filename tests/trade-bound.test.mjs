@@ -13,7 +13,8 @@ const tick = () => new Promise((r) => setTimeout(r, 20));
 const ID = '45addc633189749428e8fc36ea4ca067fcb4b0c7abc186a095360db10dbe0b48';
 const calls = { offers: [], bids: [], homes: [], unlocks: 0 }, notes = [];
 const T = {
-  async browseBoundBids(id) { return id === ID ? [{ bid_id: 'cd'.repeat(16), bound: true, buyer_xonly: '11'.repeat(32), buyer_pubkey: '02' + '22'.repeat(32), amount: '2000000000', remaining_amount: '2000000000', price_sats: 9000 }] : []; },
+  // the book: another buyer's bid, and the wallet's own watchtower bid (listWatchtowerBids below) which is marked 'your bid' and not offered for selling into
+  async browseBoundBids(id) { return id === ID ? [{ bid_id: 'cd'.repeat(16), bound: true, buyer_xonly: '11'.repeat(32), buyer_pubkey: '02' + '22'.repeat(32), amount: '2000000000', remaining_amount: '2000000000', price_sats: 9000 }, { bid_id: 'ef'.repeat(16), bound: true, buyer_xonly: '44'.repeat(32), amount: '10000000', price_sats: 600 }] : []; },
   async publishBoundOffer(a) { calls.offers.push(a); return { id: 'ff'.repeat(32), amount: 2000000000n, priceSats: 9000 }; },
   async placeBoundBid(a) { calls.bids.push(a); return { bid_id: 'ab'.repeat(16) }; },
   async boughtBoundNotes() { return [{ assetIdHex: ID, txid: 'ee'.repeat(32), vout: 0, amount: 500000000n, blinding: 7n, bidPub: '02' + '33'.repeat(32) }, { assetIdHex: 'aa'.repeat(32), txid: 'dd'.repeat(32), vout: 0, amount: 1n }]; },
@@ -38,6 +39,7 @@ ok(/Bids for SPX/.test(text) && /20 SPX/.test(text) && /450 sats each/.test(text
 ok(box.querySelectorAll('[data-home]').length === 1 && /5 SPX/.test(text), 'only this token\'s bought notes are listed, each with Move to Ethereum');
 ok(/Your bids/.test(text) && /0\.1 SPX wanted/.test(text) && /for 600 sats/.test(text) && /waiting for a seller/.test(text), 'a bid placed through the watchtower is listed under Your bids, with what it wants, its price and that it waits for a seller');
 ok(box.querySelectorAll('[data-wclose]').length === 1, 'only an active bound bid of this token that is not kept on this device is listed there (a self-take, a cancelled or another token\'s bid is not)');
+ok(box.querySelectorAll('[data-sell]').length === 1 && /your bid/.test(text) && box.querySelector('[data-bid="' + 'ef'.repeat(16) + '"] [data-sell]') === null, 'the wallet\'s own bid on the book is marked "your bid" and has no Sell into this bid');
 
 box.querySelector('[data-sell]').click();
 await tick(); await tick();

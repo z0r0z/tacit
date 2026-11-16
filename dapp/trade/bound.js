@@ -43,8 +43,12 @@ export function mountBoundMarket(box, { T, asset, unlock = async () => {}, notif
     try { await unlock(); await fn(); } catch (e) { notify(e?.message || String(e), 'error', 9000); } finally { st.busy = null; await load(); }
   };
   function paint() {
+    // a bid of this wallet's own is marked, not offered for selling into: its Close bid is under Your bids
+    const ownIds = new Set([...st.wt.map((b) => b.bid_id), ...st.mine.map((b) => b.bid_id)]);
     const bidRows = st.bids.map((b) => {
       const amt = b.remaining_amount ?? b.amount, unit = perUnit(b.amount, b.price_sats, decimals);
+      if (ownIds.has(b.bid_id)) return `<li class="row" data-bid="${esc(b.bid_id)}"><span class="num">${esc(fmtUnits(amt, decimals))} ${esc(ticker)}</span>
+        <span class="num mute">${unit.toLocaleString('en-US')} sats each</span><span class="mute">your bid</span></li>`;
       return `<li class="row" data-bid="${esc(b.bid_id)}"><span class="num">${esc(fmtUnits(amt, decimals))} ${esc(ticker)}</span>
         <span class="num mute">${unit.toLocaleString('en-US')} sats each</span>
         <input class="part" data-part="${esc(b.bid_id)}" inputmode="decimal" placeholder="Amount (optional)" aria-label="Amount of ${esc(ticker)} to sell into this bid">
