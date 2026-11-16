@@ -170,6 +170,14 @@ your address filled in). It races the Tacit chain's blocks on the board ([`TACIT
 proof pool's wraps between jobs, and on a card of 24 GB or more takes its turn at the board's Bitcoin-state batches. Each proof the
 relay or the pool takes earns the address its points.
 
+`curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- --status` says whether it is running and where it stands: the proofs the board
+has taken from it, its Tacit chain block record (blocks taken, its usual time per block), how often it was drawn, and whether it is in
+the [block draw](#board-opt-in-not-part-of-all) now with its odds, or, if not, why (not asking for work, blocks switched off, no accepted
+proof yet, a missed turn it is waiting out, a usual block time over 60 s, or another machine on the same connection holding its one
+ticket). The same answer is `GET /prover/board?address=0x…` (JSON, or plain text with `&format=text`): the facts on the board's own
+public summary, put in one place. A new machine needs one accepted proof of any kind, a wrap for the pool counts, before it holds a
+ticket, and its odds start low and rise as its block record forms.
+
 ## Tests
 
 ```sh

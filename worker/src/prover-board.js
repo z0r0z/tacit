@@ -578,7 +578,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   // this block and ask from a place in no trouble, one ticket per place (its fastest machine). A place with a record (usual time at most
   // drawMaxSecs) weighs 1 / its usual seconds; places with none share drawNew hundredths of the odds between them (all of them, if no place
   // has a record). drawWinner picks by the job's id. The machine's name, or null when no one waits.
-  function drawPick(ws, open, j, troubles = {}) {
+  function drawTickets(ws, open, j, troubles = {}) {
     const t = clock(), busy = new Set(open.flatMap(liveRacers));
     const usual = (w) => (w.blocks && w.blockSecs > 0 ? w.blockSecs : Infinity);
     // A machine with no block record draws only once the board has taken a proof from it: a ticket costs a waiting user time when it is not
@@ -598,7 +598,10 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     }
     const sum = rec.reduce((s, r) => s + r[2], 0);
     const each = !rec.length ? 1 : draw.fresh > 0 && fresh.length ? (draw.fresh / (100 - draw.fresh)) * sum / fresh.length : 0;
-    const tickets = [...rec.map(([p, , w]) => [p, w]), ...fresh.map(([p]) => [p, each])];
+    return { tickets: [...rec.map(([p, , w]) => [p, w]), ...fresh.map(([p]) => [p, each])], byPlace };
+  }
+  function drawPick(ws, open, j, troubles = {}) {
+    const { tickets, byPlace } = drawTickets(ws, open, j, troubles);
     const won = drawWinner(j.id, tickets);
     return won == null ? null : byPlace.get(won)[0];
   }
@@ -703,7 +706,42 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     return { ...counts, recent, workers: list, lease: PROVER_BOARD.leaseMs / 1000, pay: { pointsPerProof: pay.pointsPerProof, pointsByProgram: pay.pointsByProgram } };
   }
 
-  return { post, status, cancel, claim, result, raceVerdict, summary, credits };
+  // One machine's standing, for its owner: its records, whether it holds a ticket in the block draw now and, if not, the reason in words, and
+  // the odds it would have (its place's share of the tickets, as a block drawn this moment would use them). The same tickets as the draw:
+  // drawTickets. Everything here is already public on the summary; this only puts one address's row, and what follows from it, in one place.
+  async function standing(address) {
+    const addr = String(address || '').toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(addr)) return { ok: false, error: 'address must be a 0x address' };
+    const name = `c-${addr}`, ws = await workers(), w = ws[name], t = clock();
+    if (!w || !w.community) return { ok: true, found: false, name, text: `The board has not seen ${addr.slice(0, 6)}...${addr.slice(-4)} yet. Its machine appears here a few seconds after it first asks for work.` };
+    const seen = w.lastSeen ? Math.max(0, Math.floor((t - w.lastSeen) / 1000)) : null;
+    const rec = w.blocks && w.blockSecs > 0;
+    const trouble = (storage.getTrouble && await storage.getTrouble()) || {};
+    const { tickets, byPlace } = drawTickets(ws, [], { program: 'tacit-block', raced: [] }, trouble);
+    const place = w.client || name, mine = tickets.find(([p]) => p === place), here = byPlace.get(place);
+    const total = tickets.reduce((s, [, x]) => s + x, 0);
+    // why not: in the order a machine can fix them
+    let why = null;
+    if (seen == null || seen * 1000 >= PROVER_BOARD.turnSeenMs) why = 'It is not asking for work right now. Start it and it joins within seconds.';
+    else if (!(w.programs || []).includes('tacit-block')) why = 'It is not offering Tacit chain blocks (TACIT_BLOCK=0 on the worker, or its block key check failed).';
+    else if (!rec && !((w.proved || 0) >= 1)) why = 'It needs one accepted proof of any kind first (a wrap for the pool counts). Then it joins the draw.';
+    else if (w.client && trouble[w.client] != null && t - trouble[w.client] < PROVER_BOARD.turnTroubleMs) why = 'Its connection missed a turn recently, so it waits behind the others for a while.';
+    else if (rec && w.blockSecs > PROVER_BOARD.drawMaxSecs) why = `Its usual block time (${Math.round(w.blockSecs)} s) is over ${PROVER_BOARD.drawMaxSecs} s, so blocks stay with faster machines; its batches and wraps are unaffected.`;
+    else if (mine && here && here[0] !== name) why = 'Another machine on the same connection holds this connection\'s one ticket (its faster one).';
+    else if (!mine) why = 'No ticket right now.';
+    const odds = !why && mine && total > 0 ? mine[1] / total : null;
+    const lines = [];
+    lines.push(`${name.slice(0, 10)}...${name.slice(-4)}: ${w.proved || 0} proofs taken by the board${seen != null ? `, last asked ${seen} s ago` : ''}.`);
+    if (rec) lines.push(`Tacit chain blocks: ${w.blocks} taken, usually ${Math.round(w.blockSecs * 10) / 10} s each.`);
+    else lines.push('Tacit chain blocks: none taken yet.');
+    if (w.draws) lines.push(`Drawn for ${w.draws} block${w.draws === 1 ? '' : 's'}${w.drawMissed ? `, ${w.drawMissed} not taken in time` : ', all taken'}.`);
+    if (odds != null) lines.push(`In the block draw now: about ${odds >= 0.995 ? 'every' : Math.max(1, Math.round(odds * 100)) + ' in 100 of the'} blocks drawn this minute would be this machine's${rec ? '' : ' (a machine with no record yet shares a set-aside slice, so its odds start low and rise as its record forms)'}.`);
+    else lines.push(`Not in the block draw: ${why}`);
+    return { ok: true, found: true, name, proved: w.proved || 0, blocks: w.blocks || 0, blockSecs: rec ? Math.round(w.blockSecs * 10) / 10 : null, draws: w.draws || 0, drawMissed: w.drawMissed || 0,
+      lastSeenSeconds: seen, inDraw: odds != null, oddsPct: odds != null ? Math.round(odds * 1000) / 10 : null, why, text: lines.join('\n') };
+  }
+
+  return { post, status, cancel, claim, result, raceVerdict, summary, credits, standing };
 }
 
 const kvLocks = new WeakMap();

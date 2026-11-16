@@ -7,7 +7,7 @@
 # Bigger cards prove wraps too, between batches. The TAC comes from the points service. No key, no token, no ETH.
 #
 #   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- 0xYourAddress    install it and start it; the TAC goes to that address
-#   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- --status         is it running, and its last lines
+#   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- --status         is it running, where it stands in the block draw, and its last lines
 #   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- --stop           stop it
 #
 # x86-64 Linux with an NVIDIA GPU of 16 GB or more and compute capability 8.0 or newer (an RTX A4000, 4060 Ti 16 GB, 4080, 5080 or larger), its
@@ -155,6 +155,14 @@ main() {
   case "${1:-}" in
     --status)
       p=$(run_pid); if [ -n "$p" ]; then say "running (pid $p)"; else say "not running"; fi
+      # Where this machine stands with the board: its proofs, its Tacit chain block record, and whether it is in the block draw (and why not).
+      # The address is the one this install was started for, read from the run script. Not being able to ask is no reason to hide the log.
+      who=$(sed -n 's/.*COMMUNITY_MINER=\(0x[0-9a-fA-F]\{40\}\).*/\1/p' "$HOME_DIR/run.sh" 2>/dev/null | head -1)
+      if [ -n "$who" ] && command -v curl >/dev/null 2>&1; then
+        say ""
+        curl -fsS -m 15 "${TACIT_BOARD_URL:-https://api.tacit.finance}/prover/board?address=$who&format=text" 2>/dev/null || say "(could not reach the prover board just now)"
+        say ""
+      fi
       [ -f "$HOME_DIR/worker.log" ] && tail -n 8 "$HOME_DIR/worker.log"
       return 0 ;;
     --stop)
@@ -247,7 +255,8 @@ EOF
   else
     say "tacit-prover-worker is running for $who. Bitcoin batches the relay takes from it earn that address TAC, and wraps for the pool between them."
   fi
-  say "Watch it:  tacit.finance/prove   or   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- --status"
+  say "It also takes part in the draw for Tacit chain blocks once the board has taken a proof from it: the faster it proves, the better its odds, and a new machine has a set-aside slice."
+  say "Watch it:  tacit.finance/prove   or   curl -fsSL https://tacit.finance/prove-gpu.sh | sh -s -- --status   (shows its odds in the draw)"
   say "Its log:   $HOME_DIR/worker.log"
   if is_wsl; then say "WSL stops Ubuntu a few seconds after its last window closes, and the worker with it: keep an Ubuntu window open while it proves."; fi
 }

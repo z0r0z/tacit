@@ -236,6 +236,11 @@ try {
       check(rv.l === r.gpu.l && rv.t - r.gpu.b === 18, 'and the code-review card right under the GPU card', JSON.stringify([rv, r.gpu]));
       check(Math.max(...r.rows) < 40, 'a feed row is one line', JSON.stringify(r.rows));
     }
+    {
+      // the vanity shop's deployment is noted in the salts card, with a link to its verified source
+      const n = await page.evaluate(() => { const p = document.querySelector('[data-card="salts"] #salt-shop'), a = p?.querySelector('a'); return p ? { text: p.textContent, href: a?.href, target: a?.target, rel: a?.rel, shown: p.getBoundingClientRect().height > 0 } : null; });
+      check(n && n.shown && n.href === 'https://etherscan.io/address/0x00000000000785882df83d4CC6ED45c21eB1176C#code' && n.target === '_blank' && /noopener/.test(n.rel) && /vanity-address shop/.test(n.text) && n.text.includes('0x00000000000785882df83d4C…176C'), 'the salts card notes the vanity shop as deployed, with a link to its verified contract', JSON.stringify(n));
+    }
     const saltRows = await page.locator('#feed li.salt').allInnerTexts();
     check(saltRows.filter((x) => x.includes('≈ +9.83 TAC')).length === 1 && saltRows.filter((x) => x.includes('< 0.01 TAC')).length === 1, 'a salt shows its part of the day\'s salt pot so far: a 44-bit find 9.83 TAC, a 32-bit one under a cent', saltRows.join(' / '));
     check(saltRows.filter((x) => x.includes('TAC')).length === 2, 'and Tacit\'s own find shows none');

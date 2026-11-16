@@ -28884,7 +28884,10 @@ async function moveBoundNoteHome(note) {
   const aid = '0x' + String(note.assetIdHex).replace(/^0x/, '').toLowerCase();
   const lane = await fastLaneNote({ pool: ux.pool, roots, witnessFor, chainBinding: binding, authKey: '0x' + bytesToHex(secp.getPublicKey(authPriv, true).slice(1)),
     note: { txid: note.txid, vout: note.vout, value: note.value ?? DUST, amount: BigInt(note.amount), blinding: BigInt(note.blinding), asset: aid } });
-  if (!lane.ready) throw new Error(lane.why === 'reflecting' ? 'this note is not ready yet: Bitcoin\'s proof on Ethereum has not reached its block' : lane.why === 'spent' ? 'this note is already spent' : 'the relay and the pool differ for now: try again in a few minutes');
+  // A note waiting on the reflection says so (POST /reflection/wait): the Bitcoin lane then sends headers and attests its block as soon
+  // as it can, instead of holding them for cheap gas or for company. Fire and forget: a wait not heard is only the slower path.
+  if (!lane.ready && lane.why === 'reflecting') fetch(withNet(`${WORKER_BASE}/reflection/wait`), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ txid: note.txid }) }).catch(() => {});
+  if (!lane.ready) throw new Error(lane.why === 'reflecting' ?'this note is not ready yet: Bitcoin\'s proof on Ethereum has not reached its block' : lane.why === 'spent' ? 'this note is already spent' : 'the relay and the pool differ for now: try again in a few minutes');
   // the relay settles it for its quoted fee in the token; with no quote (a runtime token it does not price) the wallet settles it itself.
   // The pool takes a Bitcoin-homed note's fee only in a token it mints (BtcHomedValueExitMustBridge), so an escrow-backed token (cUSDT) goes home from the wallet too.
   // A try whose wait ran out left its job in the relay's queue: the next try sends that same op, which the API answers with the job it holds,

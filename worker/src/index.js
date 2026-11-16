@@ -661,7 +661,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -1897,6 +1897,67 @@ async function handleReflectionStatus(req, env, url, cors) {
   const r = await reflectionStatusBody(env, network);
   if (r.error) return jsonResponse({ error: r.error }, r.status, r.status === 404 ? { ...cors, 'Cache-Control': 'no-store' } : cors);
   return jsonResponse(r.body, 200, { ...cors, 'Cache-Control': 'public, max-age=10' });
+}
+
+// Someone waiting on the reflection for a note of theirs. The Bitcoin lane holds headers for cheap gas (up to hours) and gathers
+// matured blocks before an attest, unless a user waits on them; a bonded cBTC lock was the only such sign it could read, so a bought
+// note waiting to go home (2026-11-16) sat behind gas the lane was waiting out. The page that finds its note "not ready yet" says so:
+//   POST /reflection/wait?network= { txid }   the note's transaction: confirmed, carrying a Tacit envelope, above the attested height
+//   GET  /reflection/wait?network=            (box token) → { waits: [{ height, at }] }, the fresh ones, lowest first
+// A wait costs the relay only an earlier send of headers and an attest it would make anyway, and a transaction with no Tacit
+// envelope cannot ask for either. Only the height is kept for the lane: which transaction waits is not handed on.
+const REFLECTION_WAIT_TTL_MS = 6 * 3600_000, REFLECTION_WAIT_MAX = 64;
+const _reflWaitKey = (network) => `reflection:wait:${network}`;
+async function _reflectionWaits(env, network, now = Date.now()) {
+  let list = [];
+  try { list = JSON.parse((await env.REGISTRY_KV.get(_reflWaitKey(network))) || '[]'); } catch { list = []; }
+  return (Array.isArray(list) ? list : []).filter((w) => w && Number.isInteger(w.height) && now - Number(w.at) < REFLECTION_WAIT_TTL_MS);
+}
+function _txCarriesEnvelope(tx) {
+  for (const input of tx?.vin || []) {
+    const w = input?.witness;
+    if (!Array.isArray(w) || w.length < 3) continue;
+    for (const item of w) {
+      if (typeof item !== 'string' || item.length < 72 || !/^[0-9a-f]+$/i.test(item)) continue;
+      try { if (decodeEnvelopeScript(hexToBytes(item))) return true; } catch { /* not an envelope */ }
+    }
+  }
+  return false;
+}
+async function handleReflectionWait(req, env, url, cors) {
+  const nostore = { ...cors, 'Cache-Control': 'no-store' };
+  if (!env.REGISTRY_KV) return jsonResponse({ error: 'no kv' }, 500, nostore);
+  const network = url.searchParams.get('network') === 'signet' ? 'signet' : 'mainnet';
+  if (req.method === 'GET') {
+    if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, nostore);
+    const waits = (await _reflectionWaits(env, network)).map(({ height, at }) => ({ height, at })).sort((a, b) => a.height - b.height);
+    return jsonResponse({ network, waits }, 200, nostore);
+  }
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const rl = await proveRateLimit(env, ip, 'reflwait', 6, 60_000);
+  const all = rl.ok ? await proveRateLimit(env, 'all', 'reflwait-all', 30, 5_000) : rl;
+  if (!all.ok) return jsonResponse({ ok: false, error: `too many requests — retry in ~${all.retryAfter}s`, retryAfter: all.retryAfter }, 429, { ...nostore, 'Retry-After': String(all.retryAfter) });
+  let body; try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, nostore); }
+  const txid = String(body?.txid ?? '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(txid)) return jsonResponse({ ok: false, error: 'txid must be 32-byte hex', code: 'bad_txid' }, 400, nostore);
+  const now = Date.now();
+  const list = await _reflectionWaits(env, network, now);
+  if (list.some((w) => w.txid === txid)) return jsonResponse({ ok: true, height: list.find((w) => w.txid === txid).height, already: true }, 200, nostore);
+  let r;
+  try { r = await esploraFailoverFetch(proxyBases(env, network), `/tx/${txid}`, () => _buildUpstreamInit({ timeoutMs: 10_000 })); }
+  catch { return jsonResponse({ ok: false, error: 'the transaction could not be read right now', code: 'unchecked' }, 503, nostore); }
+  if (r.status === 404) return jsonResponse({ ok: false, error: 'transaction not found', code: 'not_found' }, 404, nostore);
+  if (!r.ok) return jsonResponse({ ok: false, error: 'the transaction could not be read right now', code: 'unchecked' }, 503, nostore);
+  const tx = await r.json().catch(() => null);
+  const height = Number(tx?.status?.block_height);
+  if (!tx?.status?.confirmed || !Number.isInteger(height)) return jsonResponse({ ok: false, error: 'not confirmed yet: ask again once it is in a block', code: 'not_confirmed' }, 409, nostore);
+  if (!_txCarriesEnvelope(tx)) return jsonResponse({ ok: false, error: 'not a Tacit transaction', code: 'not_tacit' }, 400, nostore);
+  const st = await reflectionStatusBody(env, network);
+  const attested = Number(st?.body?.attestedHeight);
+  if (Number.isFinite(attested) && height <= attested) return jsonResponse({ ok: true, height, covered: true }, 200, nostore);
+  const next = [...list, { txid, height, at: now }].sort((a, b) => b.at - a.at).slice(0, REFLECTION_WAIT_MAX);
+  await env.REGISTRY_KV.put(_reflWaitKey(network), JSON.stringify(next));
+  return jsonResponse({ ok: true, height }, 200, nostore);
 }
 // The reflection's status from its persisted record (cached for REFLECTION_STATUS_TTL_MS), for /reflection/status and
 // for the stats reading this API keeps: { body } or { error, status }.
@@ -3899,7 +3960,17 @@ async function handleProverBoard(req, env, url, cors) {
   const board = buildProverBoard(env, { hash: boardHash });
   if (!board) return jsonResponse({ error: 'not found' }, 404, cors);
   const body = async () => { try { return await req.json(); } catch { return null; } };
-  if (url.pathname === '/prover/board' && req.method === 'GET') return jsonResponse(await board.summary(), 200, { ...cors, 'Cache-Control': 'max-age=10' });
+  if (url.pathname === '/prover/board' && req.method === 'GET') {
+    // ?address=0x… is one machine's standing for its owner (its records, whether it holds a ticket in the block draw and why not): the same public
+    // facts as its row on the summary, put in words (&format=text, for the installer's --status, which has no JSON reader to hand).
+    const who = url.searchParams.get('address');
+    if (who != null) {
+      const s = await board.standing(who);
+      if (url.searchParams.get('format') === 'text') return new Response(s.ok ? `${s.text}\n` : `${s.error}\n`, { status: s.ok ? 200 : 400, headers: { ...cors, 'content-type': 'text/plain; charset=utf-8', 'Cache-Control': 'max-age=5' } });
+      return jsonResponse(s, s.ok ? 200 : 400, { ...cors, 'Cache-Control': 'max-age=5' });
+    }
+    return jsonResponse(await board.summary(), 200, { ...cors, 'Cache-Control': 'max-age=10' });
+  }
   // A UTC day's community proofs taken and their points, for the points service (POINTS_BOARD_PER_PROOF, POINTS_BOARD_DAILY_CAP).
   if (url.pathname === '/prover/board/credits' && req.method === 'GET') {
     const r = await board.credits(Number(url.searchParams.get('day') ?? NaN));
@@ -28652,6 +28723,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/reflection/dump' && req.method === 'GET') return handleReflectionDump(req, env, url, cors);
     if (url.pathname === '/reflection/live' && req.method === 'GET') return handleReflectionLive(req, env, url, cors);
     if (url.pathname === '/reflection/status' && req.method === 'GET') return handleReflectionStatus(req, env, url, cors);
+    if (url.pathname === '/reflection/wait' && (req.method === 'GET' || req.method === 'POST')) return handleReflectionWait(req, env, url, cors);
     if (url.pathname === '/farm/program' && req.method === 'GET') return handleFarm('program', url, env, cors, jsonResponse);
     if (url.pathname === '/farm/health' && req.method === 'GET') return handleFarm('health', url, env, cors, jsonResponse);
     if (url.pathname === '/reflection/note-witness' && (req.method === 'GET' || req.method === 'POST')) return handleReflectionNoteWitness(req, env, url, cors);

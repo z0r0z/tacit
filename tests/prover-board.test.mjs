@@ -1024,3 +1024,83 @@ test('draw: made once per block and kept on it, so a machine that turns up after
   }
   assert.ok(tested >= 8, `enough blocks were drawn for the other machine to test it (${tested})`);
 });
+
+// ── a machine's standing, for its owner ──────────────────────────────────────────────────────────────────────────────────────────────
+const addrOf = (w) => w.name.slice(2);
+
+test('standing: an address the board has not seen says so, and a malformed one is refused', async () => {
+  t = 28_000_000;
+  const { b } = drawBoard();
+  const s = await b.standing('0x' + 'ab'.repeat(20));
+  assert.deepEqual([s.ok, s.found], [true, false]);
+  assert.match(s.text, /has not seen 0xabab\.\.\.abab yet/);
+  for (const bad of ['', 'nope', '0x12', '0x' + 'zz'.repeat(20)]) assert.equal((await b.standing(bad)).ok, false, `refused: ${bad}`);
+});
+
+test('standing: each reason a machine is not in the block draw is said, in the order it can be fixed', async () => {
+  t = 29_000_000;
+  const { st, b } = drawBoard();
+  const x = gpu('d1'), y = gpu('e2');
+  await askBlock(b, x); await askBlock(b, y);
+  const say = async (w) => b.standing(addrOf(w));
+  // seen, but nothing proved yet
+  let s = await say(x);
+  assert.equal(s.inDraw, false); assert.match(s.why, /needs one accepted proof of any kind first/);
+  // it has proved something and holds a ticket: its odds are its slice
+  const ws = await st.getWorkers(); ws[x.name].proved = 1; ws[y.name].proved = 1; await st.putWorkers(ws);
+  s = await say(x);
+  assert.equal(s.inDraw, true); assert.equal(s.why, null);
+  assert.ok(s.oddsPct > 0 && s.oddsPct <= 100, `odds are a share (${s.oddsPct})`);
+  assert.match(s.text, /In the block draw now/);
+  // a record sets its odds by speed; two machines' odds add up to the whole
+  const w2 = await st.getWorkers(); Object.assign(w2[x.name], { blocks: 5, blockSecs: 5 }); Object.assign(w2[y.name], { blocks: 5, blockSecs: 20 }); await st.putWorkers(w2);
+  const [sx, sy] = [await say(x), await say(y)];
+  assert.ok(Math.abs(sx.oddsPct + sy.oddsPct - 100) < 0.2, `the two add up to the whole (${sx.oddsPct} + ${sy.oddsPct})`);
+  assert.ok(Math.abs(sx.oddsPct - 80) < 0.2, '5 s against 20 s: four in five');
+  assert.deepEqual([sx.blocks, sx.blockSecs], [5, 5]);
+  // it stops asking
+  t += PROVER_BOARD.turnSeenMs + 1000;
+  s = await say(x); assert.equal(s.inDraw, false); assert.match(s.why, /not asking for work right now/);
+  // too slow for the draw
+  await askBlock(b, x);
+  const w3 = await st.getWorkers(); w3[x.name].blockSecs = PROVER_BOARD.drawMaxSecs + 5; await st.putWorkers(w3);
+  s = await say(x); assert.match(s.why, /over 60 s, so blocks stay with faster machines/);
+  // not offering blocks at all
+  const w4 = await st.getWorkers(); w4[y.name].programs = ['confidential']; await st.putWorkers(w4);
+  await b.claim({ worker: y, classes: ['public'], programs: ['confidential'] });
+  s = await say(y); assert.match(s.why, /not offering Tacit chain blocks/);
+});
+
+test('standing: the odds it quotes are the odds the draw uses, and a drawn machine shows its draws', async () => {
+  t = 30_000_000;
+  const { st, b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1'), y = gpu('e2'), z = gpu('f3');
+  await ready(st, b, [x, y, z]);
+  const ws = await st.getWorkers();
+  Object.assign(ws[x.name], { blocks: 3, blockSecs: 4 }); Object.assign(ws[y.name], { blocks: 3, blockSecs: 12 }); Object.assign(ws[z.name], { blocks: 3, blockSecs: 36 });
+  await st.putWorkers(ws);
+  const quoted = {}; for (const w of [x, y, z]) quoted[w.client] = (await b.standing(addrOf(w))).oddsPct / 100;
+  assert.ok(Math.abs(Object.values(quoted).reduce((s, v) => s + v, 0) - 1) < 0.01, 'the three quoted shares make one');
+  const won = {};
+  for (let done = 0; done < 600; done += 40) {
+    const fresh = drawBoard(), blk = blockOn(fresh.b);
+    for (const w of [x, y, z]) await askBlock(fresh.b, w);
+    const w2 = await fresh.st.getWorkers();
+    for (const [w, secs] of [[x, 4], [y, 12], [z, 36]]) Object.assign(w2[w.name], { proved: 1, blocks: 3, blockSecs: secs });
+    await fresh.st.putWorkers(w2);
+    for (let i = 0; i < 40; i++) {
+      t += 1; const j = await blk();
+      for (const w of [x, y, z]) { const g = await askBlock(fresh.b, w); if (g) { won[w.client] = (won[w.client] || 0) + 1; break; } }
+      await fresh.b.cancel({ jobId: j.jobId });
+    }
+  }
+  for (const w of [x, y, z]) assert.ok(Math.abs((won[w.client] || 0) / 600 - quoted[w.client]) < 0.07, `${w.client}: quoted ${quoted[w.client].toFixed(2)}, drawn ${((won[w.client] || 0) / 600).toFixed(2)}`);
+  const j = await block();
+  const g = await askBlock(b, x) || await askBlock(b, y) || await askBlock(b, z);
+  assert.ok(g, 'one of them is drawn');
+  const drawn = [x, y, z].find((w) => w.name !== undefined && g);
+  const rows = await Promise.all([x, y, z].map((w) => b.standing(addrOf(w))));
+  assert.equal(rows.reduce((s, r) => s + r.draws, 0), 1, 'one draw is on one machine\'s record');
+  assert.match(rows.find((r) => r.draws).text, /Drawn for 1 block, all taken/);
+  void drawn; void j;
+});
