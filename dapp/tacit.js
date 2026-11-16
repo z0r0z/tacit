@@ -28840,7 +28840,7 @@ async function moveBoundNoteHome(note) {
   if (!lane.ready) throw new Error(lane.why === 'reflecting' ? 'this note is not ready yet: Bitcoin\'s proof on Ethereum has not reached its block' : lane.why === 'spent' ? 'this note is already spent' : 'the relay and the pool differ for now: try again in a few minutes');
   // the relay settles it for its quoted fee in the token; with no quote (a runtime token it does not price) the wallet settles it itself
   const { homeFeePlan } = await _boundSwapLib();
-  const plan = await homeFeePlan({ amount: note.amount, quote: async () => { const row = ux.assetById ? ux.assetById(aid) : null; return ux.quoteTransferFee(BigInt(note.amount), row?.ticker || aid); } });
+  const plan = await homeFeePlan({ amount: note.amount, quote: async () => { const t = ux.poolTickerOf(aid); return t && ux.relayFeeEligible(t) ? ux.quoteTransferFee(BigInt(note.amount), t) : null; } });
   return ux.fastlaneExit({ walletPriv: wallet.priv, notes: [lane.input], authPriv: '0x' + bytesToHex(authPriv), spendRoot: lane.spendRoot, bitcoinSpentRoot: lane.bitcoinSpentRoot, fee: plan.fee, selfRelay: plan.selfRelay });
 }
 

@@ -17,6 +17,8 @@ const none = await homeFeePlan({ amount: 5_000_000n, quote: async () => { throw 
 ok(none.fee === 0n && none.selfRelay === true, 'no quote (it throws, as for a runtime token): the wallet settles it itself, fee 0');
 const empty = await homeFeePlan({ amount: 5_000_000n, quote: async () => null });
 ok(empty.fee === 0n && empty.selfRelay === true, 'an empty quote: the wallet settles it itself');
+const zero = await homeFeePlan({ amount: 5_000_000n, quote: async () => 0n });
+ok(zero.fee === 0n && zero.selfRelay === true, 'a zero quote (the relay refuses a fast-lane job with no fee): the wallet settles it itself');
 const odd = await homeFeePlan({ amount: 5_000_000n, quote: async () => -5n });
 ok(odd.fee === 0n && odd.selfRelay === true, 'a quote below zero is no quote');
 ok(await rejects(homeFeePlan({ amount: 1000n, quote: async () => 1000n }), /smaller than the fee/), 'a quote at or above the note\'s amount is refused');
@@ -26,6 +28,9 @@ const src = readFileSync(new URL('../dapp/tacit.js', import.meta.url), 'utf8');
 const body = src.slice(src.indexOf('async function moveBoundNoteHome('), src.indexOf('\n}\n', src.indexOf('async function moveBoundNoteHome(')));
 ok(/homeFeePlan\(\{ amount: note\.amount, quote:/.test(body) && /fee: plan\.fee, selfRelay: plan\.selfRelay \}\)/.test(body) && !/selfRelay: false/.test(body),
   'moveBoundNoteHome asks homeFeePlan and passes its fee and relay choice to fastlaneExit (no fixed relay)');
+
+ok(/ux\.poolTickerOf\(aid\)/.test(body) && /ux\.relayFeeEligible\(t\)/.test(body) && !/assetById/.test(body),
+  'the quote names the token by its pool ticker (cUSDT, not the asset id), and a token the relay does not price gets no quote');
 
 console.log(`\n${pass} bound-home-fee checks passed${fail ? `, ${fail} FAILED` : ''}`);
 process.exit(fail ? 1 : 0);
