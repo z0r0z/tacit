@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-CgR9nqG3mQNhZc6b6WcNW1VqIrwuNLOInx3Ada4/Qbw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-eDghE1csgphOU1ncq1YccwtAF3geDKo/bhpiDjopzSI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Pay BTC, TAC and ETH privately from one key and one tacit1 address. Every payment is made on your device.">
@@ -680,10 +680,9 @@ footer.sf nav a { border-radius: 6px; }
   <main>
     <section class="card app" aria-label="Pay privately">
       <nav class="modes" id="modes" aria-label="What to pay in">
-        <a href="/pay/#btc" data-mode="btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>BTC</b><small>silent</small></span></a>
+        <a href="/pay/eth/" data-mode="eth"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small>shielded</small></span></a>
         <a href="/pay/#tac" data-mode="tac"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span><b>TAC</b><small>shielded</small></span></a>
-        <a href="/pay/eth/" data-mode="eth"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg><span><b>ETH</b><small><span class="cs" role="img" aria-label="Ethereum, Base and Robinhood Chain" title="Ethereum, Base and Robinhood Chain"><svg class="tk" aria-hidden="true"><use href="#c-eth"/></svg><svg class="tk" aria-hidden="true"><use href="#c-base"/></svg><svg class="tk" aria-hidden="true"><use href="#c-rh"/></svg></span></small></span></a>
-        <a href="/#card=send:eth" data-mode="teth"><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg><span><b>tETH</b><small>Tacit pool</small></span></a>
+        <a href="/pay/#btc" data-mode="btc"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><span><b>BTC</b><small>silent</small></span></a>
       </nav>
       <div class="req" id="found" hidden><div id="found-body"></div><div class="status" role="status" id="fd-status"></div></div>
       <div class="req" id="hreq" hidden><div id="hreq-body"></div><div class="status" role="status" id="hreq-status"></div></div>
@@ -704,7 +703,7 @@ footer.sf nav a { border-radius: 6px; }
       <div class="how">
         <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</b><p>Sent as a silent payment (BIP‑352): each one lands at a fresh address only the recipient’s key can find. The amount and your Bitcoin address show.</p></div>
         <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</b><p>Paid inside the shielded pool, proved on this device. Who paid, who was paid and how much stay hidden; posted from your own Bitcoin address instead, it shows as the sender.</p></div>
-        <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</b><p>Paid inside the private pool on <span class="nw"><span class="cs" role="img" aria-label="Ethereum, Base and Robinhood Chain" title="Ethereum, Base and Robinhood Chain"><svg class="tk xs" aria-hidden="true"><use href="#c-eth"/></svg><svg class="tk xs" aria-hidden="true"><use href="#c-base"/></svg><svg class="tk xs" aria-hidden="true"><use href="#c-rh"/></svg></span>,</span> proved on this device, with no network fee. Nothing on chain links payer and payee; deposits and withdrawals show.</p></div>
+        <div><b><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</b><p>Paid inside the private pool on Ethereum, proved on this device, with no network fee. Nothing on chain links payer and payee; deposits and withdrawals show.</p></div>
       </div>
     </details>
   </main>
@@ -764,6 +763,7 @@ const forwardOld = (h) => {
   location.replace('/pay/eth/' + h); return true;
 };
 if (forwardOld(location.hash)) await new Promise(() => {});
+if (!location.hash.slice(1) && !location.search) { location.replace('/pay/eth/'); await new Promise(() => {}); }
 const [{ secp, keccak_256, sha256, hmac, bytesToHex, hexToBytes, concatBytes }, { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPasskeyAvailable }, { knownWallets },
   { makeEvmWallet, declinedWords }, { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID }, { makeTacitAddress }, { bip352TaggedHash }, { addressId }] = await Promise.all([
   import('/vendor/tacit-deps.min.js'), import('/prf-wallet.js'), import('/tacit-wallet-known.js?cb=ec5b5193'),
@@ -981,7 +981,7 @@ function otherWallet() { return knownWallets(KNOWN_IDS).other; }
 const viaText = (k) => ({ eth: `Ethereum ${short(k.address || '')}`, btc: `Bitcoin ${short(k.address || '', 6)}`, ext: `a key funded by ${short(k.address || '', 6)}`,
   passkey: `passkey “${k.label || 'Tacit'}”`, local: 'the key saved in this browser', key: 'a pasted key' })[k.mode] || 'your wallet';
 
-const TACIT_URL = '/tacit.js?cb=1f0848cc';
+const TACIT_URL = '/tacit.js?cb=8914a4ba';
 const SHARED_NET = 'tacit-network-v1', PREV_NET = 'tacit-pay-prev-net-v1';
 const SHARED_WALLET_KEYS = ['tacit-eth-identity', 'tacit-btc-identity', 'tacit-active-mode-v1', 'tacit-ext-mode-v1', 'tacit-ext-state-v1',
   ...['mainnet', 'signet'].flatMap((n) => [`tacit-eth-identity:${n}`, `tacit-btc-identity:${n}`, `tacit-active-mode-v1:${n}`])];

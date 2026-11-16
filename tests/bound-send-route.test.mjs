@@ -48,6 +48,9 @@ const sends = (SPXP, held) => new Function('XT', 'SPXP', 'SPX_A', 'BTC', 'xtIco'
 ok(sends(false, [{ id: SPX }]).join() === `xb${ADDR_SPX}`, 'front page: SPX held on Bitcoin is in the Send picker, a token not held is not');
 ok(sends(false, []).length === 0, 'front page: nothing held on Bitcoin, no Bitcoin entries');
 ok(sends(true, []).join() === `xb${ADDR_SPX}`, '/spx/: SPX on Bitcoin is always offered');
+// the Send tab reads the wallet's Bitcoin address itself (no Bitcoin coin need be picked first) and paints again when that adds an entry
+const sendTab = html.slice(html.indexOf("if (m === 'send') {"), html.indexOf("if (sa) sa.onchange"));
+ok(/BTC\.pub !== S\.key\.pubHex/.test(sendTab) && /loadBtc\(\)\.then\(\(\) => \{ if \(HX\.tab === 'send' && xbs\(\) !== was\) paintHx\(\)/.test(sendTab), 'the Send tab reads the Bitcoin address once per key and repaints when a Bitcoin entry appears');
 
 console.log(`\n${n} bound-send-route checks passed${failures ? `, ${failures} FAILED` : ''}`);
 process.exit(failures ? 1 : 0);

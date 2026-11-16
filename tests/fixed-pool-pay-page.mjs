@@ -1,5 +1,5 @@
-// The real Pay page (dapp/pay/eth/) with the large-pool cards: off unless the page was opened with ?fixed=1 (the form is
-// then exactly what it was), and on Ethereum with the flag the cards load under the page's own content-security policy
+// The real Pay page (dapp/pay/eth/) with the large-pool cards: on by default, with ?fixed=0 preserving the ordinary form.
+// On Ethereum the cards load under the page's own content-security policy
 // and the split shows for an amount. Every request that leaves the machine is answered by a stand-in.
 //   PLAYWRIGHT=<path to playwright-core> node tests/fixed-pool-pay-page.mjs        (SHOTS=<dir> saves screenshots)
 
@@ -71,7 +71,8 @@ const WALLET_SCRIPT = (addr) => {
 };
 // the gate: the Tacit wallet is opened with the Ethereum wallet, which signs once (twice, to be sure it signs the same)
 async function unlock(page) {
-  const gate = page.locator('button', { hasText: 'Ethereum wallet' }).first(), form = page.locator('#f-damt');
+  // Reloads offer the remembered Tacit wallet instead of the first-visit Ethereum button.
+  const gate = page.locator('#g-in [data-in="known"], #g-in [data-in="eth"]').first(), form = page.locator('#f-damt');
   // a page that was opened before keeps the Tacit wallet open, and shows the form at once
   await Promise.race([gate.waitFor({ state: 'visible', timeout: 60000 }), form.waitFor({ state: 'attached', timeout: 60000 })]);
   if (!(await form.count())) await gate.click();
@@ -205,8 +206,8 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
 }
 
 console.log('Pay page');
-await test('without the flag the deposit form has no large-pool cards and the module is never asked for', async () => {
-  const { ctx, page, problems } = await open();
+await test('with ?fixed=0 the deposit form has no large-pool cards and the module is never asked for', async () => {
+  const { ctx, page, problems } = await open({ search: '?fixed=0' });
   const asked = [];
   page.on('request', (r) => { if (/fixed-pool-pay/.test(r.url())) asked.push(r.url()); });
   await unlock(page);
@@ -215,7 +216,7 @@ await test('without the flag the deposit form has no large-pool cards and the mo
   assert.equal(await page.locator('#lg-notes').count(), 0);
   await page.click('#dep-addr'); // From an exchange
   await page.waitForSelector('#f-check', { timeout: 30000 });
-  assert.equal(await page.locator('#lg-name').count(), 0, 'no deposit-address row without the flag');
+  assert.equal(await page.locator('#lg-name').count(), 0, 'no deposit-address row with the cards off');
   assert.deepEqual(asked, []);
   assert.deepEqual(problems, []);
   await ctx.close();
@@ -349,9 +350,9 @@ await test('a record that changes after it is shown is read again at the press, 
   assert.notEqual(BOX1, BOX2);
   await ctx.close();
 });
-await test('without the flag the Send form never looks for a deposit address', async () => {
+await test('with the cards off (?fixed=0) the Send form never looks for a deposit address', async () => {
   const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
-  const { ctx, page, sent } = await open({ names, keeper: QUOTE });
+  const { ctx, page, sent } = await open({ search: '?fixed=0', names, keeper: QUOTE });
   await toSend(page, 'ross.wei', '0.5');
   assert.match(await receiptText(page, /More than your private balance covers/), /^((?!from my wallet)[\s\S])*$/);
   assert.equal(await page.locator('#f-go').isDisabled(), true);
@@ -408,8 +409,9 @@ await test('a balance spread over too many notes keeps the private message, and 
   const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
   const { ctx, page, sent } = await open({ search: '?fixed=1', names, keeper: QUOTE, notes: Array(12).fill(ETH / 10n) });
   await sendToName(page, '1.15');
-  const text = await receiptText(page, /spread over 12 notes/);
-  assert.match(text, /Send up to/); assert.match(text, /Pay ross\.wei from my wallet instead/);
+  // The private-balance message precedes the asynchronous deposit-address lookup.
+  const text = await receiptText(page, /Pay ross\.wei from my wallet instead/);
+  assert.match(text, /spread over 12 notes/); assert.match(text, /Send up to/);
   assert.doesNotMatch(text, /You send/); assert.doesNotMatch(text, /can’t cover this/);
   assert.equal(await page.locator('#f-go').isDisabled(), true);
   await page.click('#f-viawallet');
@@ -427,9 +429,9 @@ await test('with too little in the private balance the wallet is the way, and th
   assert.equal(await page.locator('#f-private').count(), 0);
   await ctx.close();
 });
-await test('without the flag a funded Send form has no wallet link', async () => {
+await test('with the cards off (?fixed=0) a funded Send form has no wallet link', async () => {
   const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
-  const { ctx, page } = await open({ names, keeper: QUOTE, notes: [ETH] });
+  const { ctx, page } = await open({ search: '?fixed=0', names, keeper: QUOTE, notes: [ETH] });
   await sendToName(page, '0.5');
   assert.match(await receiptText(page, /They receive/), /0\.5 ETH/);
   await page.waitForTimeout(1500);
@@ -530,8 +532,8 @@ await test('Withdraw: an amount under a whole note is the ordinary withdrawal, w
   assert.doesNotMatch(text, /whole notes/);
   await ctx.close();
 });
-await test('Withdraw: without the flag the form has no notes block and counts none', async () => {
-  const { ctx, page } = await open({ ...WD, search: '' });
+await test('Withdraw: with the cards off (?fixed=0) the form has no notes block and counts none', async () => {
+  const { ctx, page } = await open({ ...WD, search: '?fixed=0' });
   await toWithdraw(page, '2.3');
   assert.equal(await page.locator('#lg-wd').count(), 0);
   const text = await receiptText(page, /Arrives|More than your private balance/);
@@ -622,6 +624,34 @@ await test('"1,5" is 1.5 ETH in the deposit plan and the way in as it is on the 
   await ctx.close();
 });
 
+// ── on by default ──
+await test('the cards are on with no flag in the address and nothing stored, the explainer is in the notes card and opens, and ?fixed=0 turns them off for good', async () => {
+  const { ctx, page, problems } = await open();   // no ?fixed, nothing in the browser
+  await unlock(page);
+  await page.waitForSelector('#lg-notes', { state: 'attached', timeout: 30000 });
+  await page.waitForFunction(() => /Notes in the large pools/.test(document.querySelector('#lg-notes')?.textContent || ''), null, { timeout: 30000 });
+  assert.match(await page.locator('#lg-notes summary').innerText(), /How it works/);
+  await page.click('#lg-notes summary');
+  const how = await page.locator('#lg-notes details').innerText();
+  assert.match(how, /Tornado Cash/); assert.match(how, /1, 10 or 100 ETH/); assert.match(how, /Find/); assert.match(how, /blends in/);
+  if (SHOTS) await page.screenshot({ path: join(SHOTS, 'explainer.png'), fullPage: true });
+  await page.fill('#f-damt', '2.5');
+  await page.waitForFunction(() => /Deposit 2\.5 ETH: 2 whole notes \+ 0\.5/.test(document.querySelector('#f-go')?.textContent || ''), null, { timeout: 30000 });
+  assert.deepEqual(problems, []);
+  // ?fixed=0 turns them off, and they stay off without the flag in the address
+  await page.goto(base + '/pay/eth/?fixed=0');
+  await unlock(page);
+  assert.equal(await page.locator('#lg-notes').count(), 0);
+  await page.goto(base + '/pay/eth/');
+  await unlock(page);
+  await page.waitForTimeout(1500);
+  assert.equal(await page.locator('#lg-notes').count(), 0, 'still off: the choice is kept');
+  // ?fixed=1 turns them on again
+  await page.goto(base + '/pay/eth/?fixed=1');
+  await unlock(page);
+  await page.waitForSelector('#lg-notes', { state: 'attached', timeout: 30000 });
+  await ctx.close();
+});
 await browser.close();
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);

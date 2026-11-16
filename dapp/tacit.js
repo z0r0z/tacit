@@ -13385,7 +13385,10 @@ async function _farmMintNote(env, txidHex, vout, tx) {
   if (!dec) return { reason: _REASON_INVALID };
   const acc = await _fetchFarmReceipt(txidHex);
   if (!acc.available) { _strictUnavailable(`farm mint ${txidHex}: receipt unavailable`); return { reason: _REASON_FETCH_FAILED }; }
-  if (acc.endpoint === false) { _strictUnavailable(`farm mint ${txidHex}: no receipt service`); return { reason: _REASON_INVALID, endpoint: false }; }
+  // A route that answers 404 is a route that is not there (a deploy not yet out, a rollback, a host without it), not a statement about this note: it is
+  // not credited, but it is not condemned either, so whoever asked asks again (a provider declined a user's lock for good on a verdict like this). The
+  // wallet's own harvest or unbond note is still taken from the opening it kept (`endpoint: false` below).
+  if (acc.endpoint === false) { _strictUnavailable(`farm mint ${txidHex}: no receipt service`); return { reason: _REASON_FETCH_FAILED, endpoint: false }; }
   if (!acc.found) {
     if (_strictDecided(acc.scannedHeight, _confirmedHeight(tx))) return { reason: _REASON_INVALID };
     _strictUnavailable(`farm mint ${txidHex}: receipt not decided`);

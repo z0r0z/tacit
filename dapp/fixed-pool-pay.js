@@ -1,4 +1,4 @@
-// The large-pool part of the Pay page's Deposit tab (Ethereum, off until the page is opened with ?fixed=1).
+// The large-pool part of the Pay page's Deposit tab (Ethereum; on, and ?fixed=0 turns it off in a browser).
 //
 // Two cards under the deposit form:
 //   - an amount from a whole note up goes into the large pools in whole notes (the pool takes only those sizes) and
@@ -29,6 +29,13 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const WALLET_METHODS = new Set(['eth_signTypedData_v4', 'eth_sendTransaction', 'wallet_sendCalls', 'wallet_getCallsStatus', 'wallet_getCapabilities']);
 const SMALLEST = [{ wei: DEFAULT_MIN_DENOMINATION, label: '1 ETH' }, { wei: 10n ** 17n, label: '0.1 ETH' }, { wei: 0n, label: 'off' }];
+// What the cards do, in plain words: why a large amount is split, what a note is, how it comes out, and why to wait. Shown at the top of the notes card,
+// which is on the Deposit tab for ETH on Ethereum whatever is typed, closed until it is opened.
+const HOW_IT_WORKS = `<details class="lg-how" style="margin:0 0 12px"><summary style="cursor:pointer">How it works</summary>
+  <p class="note">Big amounts go through Tornado Cash. Deposit 1 ETH or more and it is split into whole notes (1, 10 or 100 ETH) that go into Tornado Cash pools, where every deposit is the same size, so yours blends in with the others. Whatever is left over goes into your Tacit private balance. One press does both.</p>
+  <p class="note">Your notes come from your wallet's signature, so there is nothing to save. <b>Find</b> brings them back on any device.</p>
+  <p class="note">Take a note out to any address, or into your Tacit balance. Wait a while first: the more deposits after yours, the better it blends in.</p>
+</details>`;
 const MIN_KEY = (chainId) => `tacit-fixed-min:${chainId}`;
 const GAS_KEY = (chainId) => `tacit-fixed-gas:${chainId}`;
 const readGas = (store, chainId) => { try { return store.get(GAS_KEY(chainId)) === 'wallet' ? 'wallet' : 'note'; } catch { return 'note'; } };
@@ -150,7 +157,7 @@ export function attach(env) {
     host.innerHTML = frame(`<div class="lbl"><span>Large amount</span><span>${selectHtml()}</span></div>
       ${rows}
       <div class="kv"><span>${p.remainder === 0n ? 'Nothing' : esc(formatEther(p.remainder)) + ' ETH'}</span><b>${p.remainder === 0n ? 'left for your private balance' : 'into your private balance'}</b></div>
-      <p class="note">One press above deposits both. The notes go to the large pools from your wallet; the note numbers come from your wallet's signature, so they can be found again with it.</p>`);
+      <p class="note">One press deposits both: the notes go from your wallet into Tornado Cash pools, and the rest joins your private balance.</p>`);
     host.querySelector('#lg-min').onchange = (e) => { setSmallest(BigInt(e.target.value)); paintSplit(); };
     const noteTotal = noteTotalOf(p);
     env.onPlan?.({
@@ -219,11 +226,12 @@ export function attach(env) {
         <b>${gone ? '' : `<button class="link" type="button" data-move="${i}">Move into Tacit</button> <button class="link" type="button" data-out="${i}">Withdraw</button>`}</b></div>`;
     }).join('');
     notesHost.innerHTML = `<div class="blk" style="margin-top:22px;padding-top:14px;border-top:1px solid var(--hair)">
+      ${HOW_IT_WORKS}
       <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lg-find">${account ? 'Find' : 'Connect wallet'}</button> · <button class="link" type="button" id="lg-paste">Paste a note</button></span></div>
-      ${rows || '<p class="note">None found in this browser. Find looks through this wallet\'s deposits and asks for a signature for each number it tries. A note from anywhere else can be pasted.</p>'}
+      ${rows || '<p class="note">None found in this browser. Find looks for notes made with this wallet; Paste adds one from anywhere.</p>'}
       <div id="lg-ask" hidden></div>
       <div class="lbl"><span>Gas</span><span><label>Paid from <select id="lg-gas" aria-label="Where a note's gas is paid from"><option value="note"${st.gas === 'note' ? ' selected' : ''}>the note</option><option value="wallet"${st.gas === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>
-      <p class="note">${st.gas === 'wallet' ? 'Your wallet sends the withdrawal and pays its gas, so it shows as the sender, and the address gets the whole note.' : 'The note pays its own gas, so no ETH is needed in a wallet.'} If paying the gas from a note is not available, these notes follow <a href="https://github.com/ethereum/kohaku" target="_blank" rel="noopener noreferrer">Kohaku</a>'s format, so it can withdraw them too.</p>
+      <p class="note">${st.gas === 'wallet' ? 'Your wallet sends the withdrawal and pays its gas, so it shows as the sender.' : `Gas comes out of the note (${MAX_FEE_PERCENT}% at most), so your wallet needs no ETH.`} <a href="https://github.com/ethereum/kohaku" target="_blank" rel="noopener noreferrer">Kohaku</a> can withdraw these notes too.</p>
     </div>`;
     notesHost.querySelector('#lg-find').onclick = () => (account ? find(notesHost.querySelector('#lg-find')) : env.connect().then(loadNotes, (e) => env.toast(env.errText(e), true)));
     notesHost.querySelector('#lg-paste').onclick = askPaste;
@@ -336,7 +344,7 @@ export function attach(env) {
 }
 
 
-// The notes block of the Withdraw form (Ethereum, ?fixed=1): the unspent notes this wallet holds in the large pools, which the form
+// The notes block of the Withdraw form (Ethereum): the unspent notes this wallet holds in the large pools, which the form
 // counts first for an amount of a whole note or more (`planExit`); the rest of the amount comes from the private balance, through
 // the page. `exit` sends the chosen notes to an address one after the other, each with its gas paid from the note. Whatever the
 // fee turns out to be, a note is only sent if it is within the ceiling the form states (MAX_FEE_PERCENT of the note), so the
@@ -357,9 +365,9 @@ export function attachWithdraw(env) {
       <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lw-find">${account ? 'Look for notes' : 'Connect wallet'}</button></span></div>
       ${st.list.length
         ? `<div class="kv"><span>${st.list.length} whole ${st.list.length === 1 ? 'note' : 'notes'}</span><b>${formatEther(total)} ETH</b></div>
-           <p class="note">An amount of a whole note or more takes these first, and the rest comes from your private balance. ${st.gas === 'wallet' ? 'Your wallet sends each note and pays its gas, so it shows as the sender.' : `The notes pay their own gas, at most ${MAX_FEE_PERCENT}% of each.`}</p>
+           <p class="note">Withdrawals use these first, then your private balance. ${st.gas === 'wallet' ? 'Your wallet sends each note and pays its gas, so it shows as the sender.' : `Gas comes out of the notes, at most ${MAX_FEE_PERCENT}% of each.`}</p>
            <div class="lbl"><span>Gas</span><span><label>Paid from <select id="lw-gas" aria-label="Where the notes' gas is paid from"><option value="note"${st.gas === 'note' ? ' selected' : ''}>the notes</option><option value="wallet"${st.gas === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>`
-        : '<p class="note">None known in this browser. Looking asks your wallet for a signature for each note number it tries.</p>'}
+        : '<p class="note">None known in this browser. Look for notes asks your wallet to sign each number it tries.</p>'}
     </div>`;
     const g = host.querySelector('#lw-gas');
     if (g) g.onchange = (e) => { st.gas = e.target.value === 'wallet' ? 'wallet' : 'note'; saveGas(env.store, chainId, st.gas); paint(); publish(); };
@@ -425,7 +433,7 @@ export function attachWithdraw(env) {
 }
 
 
-// The way in, under the Withdraw form (Ethereum, ?fixed=1): whole notes made from the private balance. One private spend into the router's
+// The way in, under the Withdraw form (Ethereum): whole notes made from the private balance. One private spend into the router's
 // call escrow, whose calls are the large pools' deposits, so no wallet's ETH passes: the relay sends it (one note a transaction, since a deposit
 // takes about a million gas and the relay's cap is 1.5 million), or the wallet does (no cap, all the notes in one transaction, the wallet shows as
 // the sender and pays the gas). If any call fails the whole transaction reverts and nothing is spent. The note numbers come from the wallet's
@@ -475,7 +483,7 @@ export function attachIntake(env) {
       <div class="amt text"><input id="li-amt" inputmode="decimal" placeholder="ETH to move into notes" autocomplete="off" aria-label="ETH to move into notes" value="${esc(st.amount)}"></div>
       ${body}
       ${st.feeErr && st.via === 'wallet' ? `<p class="note">The relay cannot send this one (${esc(st.feeErr.replace(/^[A-Z](?![A-Z])/, (c) => c.toLowerCase()))}), so your wallet does.</p>` : ''}
-      <p class="note">The notes are best left in the pool a while before they are taken out: the longer they sit, the more deposits they hide among. They can be taken out from this page, or with any tool that reads Kohaku's note format.</p>
+      <p class="note">Leave notes in the pool a while: the longer they sit, the better they blend in.</p>
     </div>`;
     const amt = host.querySelector('#li-amt');
     amt.oninput = () => { st.amount = amt.value; paintKeep(); };
@@ -553,7 +561,7 @@ export function attachIntake(env) {
 }
 
 
-// The deposit-address row of the exchange-deposit panel (Ethereum, ?fixed=1): the owner's primary name can carry the deposit address,
+// The deposit-address row of the exchange-deposit panel (Ethereum): the owner's primary name can carry the deposit address,
 // so that anyone can pay "name.wei" in plain ETH from a Tacit page (the record is signed with the view key, and checked by payers).
 // `env` is what the page owns: the wallet, a node for names, one that can send, the wallet's own box key and the address it shows.
 export function attachName(env) {

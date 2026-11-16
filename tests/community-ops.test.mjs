@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { keccak_256 } from '@noble/hashes/sha3.js';
+import { keccak_256 } from '@noble/hashes/sha3';
 import * as ops from '../dapp/community-ops.js';
 import { pickOpen } from '../worker-relay/src/lib/open-board.js';
 import { settleCalldata as workerSettleCalldata } from '../worker/src/confidential-open.js';

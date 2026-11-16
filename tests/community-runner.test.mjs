@@ -6,7 +6,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { keccak_256 } from '@noble/hashes/sha3.js';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { readConfig, headersVerdict, attestVerdict, gasAllows, makeSigner, makeRunner, MODES } from '../tools/community-runner.mjs';
 import { POOL, ETH_ASSET_ID, ETH_UNIT_SCALE, SEL_ATTEST, SEL_ATTESTED_DIGEST, TAC_ASSET_ID } from '../dapp/community-ops.js';
 import { makePost } from '../dapp/nostr-board.js';
