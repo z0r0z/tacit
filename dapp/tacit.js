@@ -3399,6 +3399,31 @@ function setFeeTierPref(tier) {
   try { localStorage.setItem(FEE_TIER_PREF_KEY, tier); return true; } catch { return false; }
 }
 
+// The lowest rate this network is taking right now. mempool.space's recommended fees never say less than 1 sat/vB, and the 1 sat/vB floor in getFeeRate was the min-relay fee of the
+// day; when the mempool is a backlog of 0.12 sat/vB transactions (every block of 2026-11-16 took them) that floor made a withdraw quote 1,480 sats where the same carrier cost the relay
+// 379. The floor now follows the blocks: twice the worst "lowest rate included" of the last six, never above 1 and never under NET_MIN_FLOOR. Mainnet only; unreadable ⇒ 1, as it was.
+const NET_MIN_FLOOR = 0.2;
+const _netFloor = { at: 0, v: 1 };
+async function _networkMinRate(net) {
+  if (net !== 'mainnet') return net === 'signet' ? 2 : 1;
+  if (Date.now() - _netFloor.at < 5 * 60_000) return _netFloor.v;
+  let v = 1;
+  try {
+    const bases = [NET.api, 'https://mempool.fra.mempool.space/api', 'https://mempool.tk7.mempool.space/api'];
+    const blocks = await Promise.any(bases.map(async (b) => {
+      const r = await fetch(`${b}/v1/blocks`, { signal: AbortSignal.timeout(3000) });
+      if (!r.ok) throw new Error('http ' + r.status);
+      const j = await r.json();
+      if (!Array.isArray(j)) throw new Error('bad shape');
+      return j;
+    }));
+    const lows = blocks.slice(0, 6).map((x) => Number(x?.extras?.feeRange?.[0]));
+    if (lows.length === 6 && lows.every((n) => Number.isFinite(n) && n > 0)) v = Math.min(1, Math.max(NET_MIN_FLOOR, Math.round(Math.max(...lows) * 2 * 1000) / 1000));
+  } catch { v = 1; }
+  _netFloor.at = Date.now(); _netFloor.v = v;
+  return v;
+}
+
 async function getFeeRate(tier = null, opts = {}) {
   const net = NET.name;
   const resolvedTier = tier && FEE_TIERS.includes(tier) ? tier : getFeeTierPref();
@@ -3409,7 +3434,7 @@ async function getFeeRate(tier = null, opts = {}) {
   const cacheKey = `${net}|${resolvedTier}`;
   if (!fresh && _cachedRate.has(cacheKey) && Date.now() - (_cachedRateAt.get(cacheKey) || 0) < 60000) {
     return safetyMult > 1
-      ? Math.max(1, Math.round(_cachedRate.get(cacheKey) * safetyMult * 1000) / 1000)
+      ? Math.max(_netFloor.v, Math.round(_cachedRate.get(cacheKey) * safetyMult * 1000) / 1000)
       : _cachedRate.get(cacheKey);
   }
   let apiOk = false;
@@ -3450,20 +3475,28 @@ async function getFeeRate(tier = null, opts = {}) {
     return rate;
   };
   const attempts = [_mempoolStyle(NET.api)];
+  const fractional = [];   // the explorers that answer with Core's fractional estimates (mempool.space's stop at 1)
   // a host the explorers throttle asks the API's chain proxy too (else every source fails and the 15 sat/vB fallback overpays)
   if (_CHAIN_VIA_WORKER && WORKER_BASE) {
     const q = `?network=${encodeURIComponent(net)}`;
-    attempts.push(_mempoolStyle(`${WORKER_BASE}/chain`, q), _blockstreamStyle(`${WORKER_BASE}/chain`, q));
+    const viaProxy = _blockstreamStyle(`${WORKER_BASE}/chain`, q);
+    attempts.push(_mempoolStyle(`${WORKER_BASE}/chain`, q), viaProxy); fractional.push(viaProxy);
   }
-  if (NET.api2) attempts.push(_blockstreamStyle(NET.api2));
+  if (NET.api2) { const second = _blockstreamStyle(NET.api2); attempts.push(second); fractional.push(second); }
   if (net === 'mainnet') {
     attempts.push(_mempoolStyle('https://mempool.fra.mempool.space/api'));
     attempts.push(_mempoolStyle('https://mempool.tk7.mempool.space/api'));
   }
+  let floorNow = 1;
   try {
-    const rate = await Promise.any(attempts);
-    const minFloor = net === 'signet' ? 2 : 1;
-    base = Math.max(minFloor, rate);
+    let rate = await Promise.any(attempts);
+    // mempool.space's recommended fees stop at 1 sat/vB: when that is what came back, an explorer with fractional estimates may say less (a backlog of 0.12 sat/vB transactions)
+    if (net === 'mainnet' && rate <= 1 && fractional.length) {
+      const frac = await Promise.race([Promise.any(fractional).catch(() => null), new Promise((r) => setTimeout(() => r(null), 1200))]);
+      if (Number.isFinite(frac) && frac > 0 && frac < rate) rate = frac;
+    }
+    floorNow = await _networkMinRate(net);
+    base = Math.max(floorNow, rate);
     apiOk = true;
     sharedAbort.abort();
   } catch {
@@ -3480,10 +3513,10 @@ async function getFeeRate(tier = null, opts = {}) {
   } else {
     rate = base;
   }
-  rate = Math.max(1, Math.round(rate * 1000) / 1000);
+  rate = Math.max(floorNow, Math.round(rate * 1000) / 1000);
   _cachedRate.set(cacheKey, rate);
   if (safetyMult > 1) {
-    rate = Math.max(1, Math.round(rate * safetyMult * 1000) / 1000);
+    rate = Math.max(floorNow, Math.round(rate * safetyMult * 1000) / 1000);
   }
   _cachedRateAt.set(cacheKey, apiOk ? Date.now() : Date.now() - 50_000);
   return rate;
@@ -17344,7 +17377,9 @@ const p2wpkhOutVbytes = 31;
 const p2trOutVbytes = 43;
 const opReturnAxintentOnchainVbytes = 51;
 function estCommitVb(numInputs) { return 11 + numInputs * inputVbytes + p2trOutVbytes + p2wpkhOutVbytes; }
-const feeFor = (vb, rate) => Math.max(500, Math.ceil(vb * rate));
+// A transaction pays at least 500 sats, as it always did, except when the rate itself is under 1 sat/vB (the network is taking such rates: getFeeRate says so only then): the 500
+// made a 152 vB commit cost 3.3 sat/vB beside a reveal at 0.3. There the floor is 150 sats, about 1 sat/vB on the smallest transaction.
+const feeFor = (vb, rate) => Math.max(rate < 1 ? 150 : 500, Math.ceil(vb * rate));
 
 function estCEtchRevealVb({ tickerLen = 8, imageUriLen = 0 } = {}) {
   const payloadLen = 768 + tickerLen + imageUriLen;
