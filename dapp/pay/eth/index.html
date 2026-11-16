@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-p9w/kpFxDWw7cb0GjDeEXCq75e2axVFbeZPF/jLGr+0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-GfWONv9EI+RBloWnU2yWHzWBzMKHXHs4g+oftJiGIds=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -1093,7 +1093,7 @@ async function prove(input) {
 const warm = () => { if (!navigator.connection?.saveData) prover().catch(() => {}); };
 const warmIfSaved = () => { if (PROVER.cached) (globalThis.requestIdleCallback || setTimeout)(warm); };
 
-const S = { key: null, keys: null, wallet: null, provider: null, chain: chainOf(readJson(CHAIN_PREF)) || CHAINS[1], tab: 'deposit', depMode: 'wallet', dest: 'addr', busy: 0, chainOnly: false };
+const S = { key: null, keys: null, wallet: null, provider: null, chain: chainOf(readJson(CHAIN_PREF)) || CHAINS[0], tab: 'deposit', depMode: 'wallet', dest: 'addr', busy: 0, chainOnly: false };
 // The pool mode of Deposit is off until switched on: open the page once with ?pool=1 (?pool=0 turns it off again).
 const POOL_ON = (() => {
   try { const q = new URLSearchParams(location.search).get('pool'); if (q === '1') kv.set('tacit-assoc-pool', 'on'); else if (q === '0') kv.set('tacit-assoc-pool', 'off'); } catch {}
@@ -1104,6 +1104,16 @@ const LARGE_ON = (() => {
   try { const q = new URLSearchParams(location.search).get('fixed'); if (q === '1') kv.set('tacit-fixed-pools', '1'); else if (q === '0') kv.set('tacit-fixed-pools', '0'); } catch {}
   return kv.get('tacit-fixed-pools') !== '0';
 })();
+// Base, Robinhood Chain and the tokens other than ETH are not liquid yet, so the page is ETH on Ethereum and the large pools. A chain or a token is still shown
+// when it holds something of yours (its private balance), when it is the one in use (a payment link, a saved choice), or when ?chains=all asks for everything
+// (kept in this browser; ?chains=eth goes back), so nothing a person holds is ever out of reach.
+const SHOW_ALL = (() => {
+  try { const q = new URLSearchParams(location.search).get('chains'); if (q === 'all' || q === 'eth') kv.set('tacit-pay-chains', q); } catch {}
+  return kv.get('tacit-pay-chains') === 'all';
+})();
+const heldAny = (...v) => v.some((x) => { try { return x != null && BigInt(x) > 0n; } catch { return false; } });
+const chainShown = (c) => SHOW_ALL || c.chainId === 1 || c === S.chain || heldAny(CH[c.chainId]?.bal, CH[c.chainId]?.last) || TOKENS.some((t) => t.chain === c && heldAny(TK[t.id]?.bal));
+const tokShown = (t) => SHOW_ALL || S.tok === t || heldAny(TK[t.id]?.bal);
 const CH = Object.fromEntries(CHAINS.map((c) => [c.chainId, { W: null, for: null, bal: null, notes: [], quote: null, waiting: null, err: null, syncing: null, at: 0, fails: 0, fill: null, hist: null, histing: null, histNext: null, histErr: null, histFails: 0, histTimer: null, histStart: 0, last: null }]));
 const evm = makeEvmWallet({ secp, sha256, keccak256: keccak_256, bytesToHex, hexToBytes, prfBytesToScalar, netName: 'mainnet' });
 const wcSheet = wcSheets(dialogHost({ dialog: $('#sheet-wc'), title: $('#wc-h'), body: $('#wc-body') }));
@@ -2463,7 +2473,9 @@ const TALLY = {};
 function paintChains() {
   readPub();
   const el = $('#chains');
-  keepFocus(el, () => mountOnce(el, html`${CHAINS.map((c) => {
+  const shown = CHAINS.filter(chainShown);
+  el.hidden = shown.length < 2;
+  keepFocus(el, () => mountOnce(el, html`${shown.map((c) => {
     const st = CH[c.chainId], q = PUB[c.chainId];
     const v = !S.key ? (q?.locked != null ? `${fmt(q.locked, 18, 3)} in pool` : '') : st.bal != null ? `${ethDown(st.bal)} ETH` : st.last != null ? html`<span class="stale">${ethDown(st.last)} ETH</span>` : st.err ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
     return html`<button type="button" role="tab" id="chain-${c.chainId}" data-chain="${c.chainId}" aria-selected="${c === S.chain ? 'true' : 'false'}" tabindex="${c === S.chain ? '0' : '-1'}" ${S.busy ? 'disabled' : ''} ${!S.key && q?.locked != null ? html`aria-label="${c.name}, ${fmt(q.locked, 18, 3)} ETH in the pool"` : ''}>${cicon(c)}${c.name}${v ? html`<small>${v}</small>` : ''}</button>`;
@@ -3565,10 +3577,10 @@ function formWithdraw(f) {
   const c = S.chain, tab = 'withdraw', l2 = S.dest !== 'addr' ? chainOf(S.dest) : null, wdOn = LARGE_ON && c.chainId === 1 && !l2;
   const bridgeFee = BRIDGE_Q.fee?.[S.dest];
   mount(f, html`
-    ${c.chainId === 1 ? html`<div class="seg sub" role="tablist" aria-label="Withdraw to">
+    ${c.chainId === 1 && (chainShown(CHAINS[1]) || chainShown(CHAINS[2])) ? html`<div class="seg sub" role="tablist" aria-label="Withdraw to">
       <button type="button" role="tab" id="dest-addr" data-dest="addr" aria-selected="${!l2 ? 'true' : 'false'}" tabindex="${!l2 ? '0' : '-1'}">An address</button>
-      <button type="button" role="tab" id="dest-8453" data-dest="8453" aria-selected="${l2?.chainId === 8453 ? 'true' : 'false'}" tabindex="${l2?.chainId === 8453 ? '0' : '-1'}" aria-label="Your Base balance" title="Your Base balance">${cname(CHAINS[1], true)}</button>
-      <button type="button" role="tab" id="dest-4663" data-dest="4663" aria-selected="${l2?.chainId === 4663 ? 'true' : 'false'}" tabindex="${l2?.chainId === 4663 ? '0' : '-1'}" aria-label="Your Robinhood Chain balance" title="Your Robinhood Chain balance">${cname(CHAINS[2], true)}</button>
+      ${chainShown(CHAINS[1]) ? html`<button type="button" role="tab" id="dest-8453" data-dest="8453" aria-selected="${l2?.chainId === 8453 ? 'true' : 'false'}" tabindex="${l2?.chainId === 8453 ? '0' : '-1'}" aria-label="Your Base balance" title="Your Base balance">${cname(CHAINS[1], true)}</button>` : ''}
+      ${chainShown(CHAINS[2]) ? html`<button type="button" role="tab" id="dest-4663" data-dest="4663" aria-selected="${l2?.chainId === 4663 ? 'true' : 'false'}" tabindex="${l2?.chainId === 4663 ? '0' : '-1'}" aria-label="Your Robinhood Chain balance" title="Your Robinhood Chain balance">${cname(CHAINS[2], true)}</button>` : ''}
     </div>` : ''}
     ${l2 ? '' : html`<div class="lbl"><span>To</span>${S.wallet ? html`<button type="button" id="f-me">My wallet</button>` : ''}</div>
       <div class="amt text"><input id="f-wto" placeholder="0x… a fresh address" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient address"></div>`}
@@ -4248,7 +4260,7 @@ function paintRecover() {
   };
   keepFocus(el, () => mountOnce(el, html`
     <p class="lede-s">Rebuilt from your key and the chain. Your key is the only backup; this browser keeps only a view, never a spend key.</p>
-    <ul class="chainsum">${CHAINS.map(line)}</ul>
+    <ul class="chainsum">${CHAINS.filter(chainShown).map(line)}</ul>
     <details class="adv"${S.advOpen ? ' open' : ''}><summary id="rc-adv">Rebuild from scratch</summary>
       <label class="chk"><input type="checkbox" id="rc-chain" ${(S.rcChain ?? S.chainOnly) ? 'checked' : ''}>Read the chain alone, skipping the relay’s index (slower)</label>
       <div class="foot-a"><button class="btn ghost sm" type="button" id="rc-go" ${S.rebuilding ? html`aria-disabled="true" aria-busy="true"` : ''}>Forget this device’s copy and rebuild</button></div>
@@ -4652,7 +4664,7 @@ const tokPoolLine = (t) => { tokPool(t); const p = TK[t.id].pool; return p ? htm
 function paintAssets() {
   const el = $('#assets');
   if (!el) return;
-  const ts = TOKENS.filter((t) => t.chain === S.chain);
+  const ts = TOKENS.filter((t) => t.chain === S.chain && tokShown(t));
   el.hidden = !ts.length || linkOnly();
   if (el.hidden) return;
   const eth = cur();
