@@ -444,10 +444,10 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
 @media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
-/* the glyph layer (glyphs.js). The field lies behind a page's first screen and scrolls away with it, fading out at its foot. It is behind everything, so a
+/* the glyph layer (glyphs.js). The field is fixed behind a page, so it is there wherever the page is scrolled to. It is behind everything, so a
    page's ground has to be on <html> for it to be seen: <body> keeps its own pattern and gives up only its colour. The menu's panel has Tacit's mark struck
    across its foot. Neither is there on a page the script leaves alone, or when the script does not load. */
-canvas.gx-field { position: absolute; top: 0; left: 0; z-index: -1; max-width: 100%; pointer-events: none; -webkit-mask-image: linear-gradient(#000 58%, transparent 94%); mask-image: linear-gradient(#000 58%, transparent 94%); }
+canvas.gx-field { position: fixed; top: 0; left: 0; z-index: -1; max-width: 100%; pointer-events: none; }
 :root:has(> body > canvas.gx-field) { background-color: var(--paper, var(--bg)); }
 :root:has(> body > canvas.gx-field) > body { background-color: transparent; }
 .sm-p canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .24; pointer-events: none; }

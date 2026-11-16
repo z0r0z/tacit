@@ -3,8 +3,8 @@
 // quietly changing. Its uses, each standing for something the page says in words elsewhere:
 //
 //   on every page that wears the shared header
-//   1. the field    a quiet field of glyphs behind the first screen, kept off the header and the column the page's content
-//                   keeps to, off on a phone;
+//   1. the field    a quiet field of glyphs behind the whole page, wherever it is scrolled to, kept off the header and
+//                   whatever the page holds, off on a phone;
 //   2. the menu     Tacit's own mark struck across the foot of the menu's panel;
 //
 //   on the front page
@@ -23,7 +23,6 @@ const RAMP = ".,:;'-+/\\|!*=%#&$@";   // light to dense. Punctuation only: lette
 const LIGHT = RAMP.slice(0, 10);      // the field and the cipher use the light half, so they stay quiet
 const MONO = 'ui-monospace, "SF Mono", Menlo, monospace';
 const still = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
-const clamp01 = (v) => Math.max(0, Math.min(1, v));
 const pick = (s) => s[(Math.random() * s.length) | 0];
 // the page's ink as "r,g,b", so the glyphs are the colour of its text in either scheme
 function ink() {
@@ -32,31 +31,37 @@ function ink() {
 }
 const canvasOf = (cls) => { const c = Object.assign(document.createElement('canvas'), { className: cls }); c.setAttribute('aria-hidden', 'true'); return c; };
 
-// ── 1. the field ──
+// ── the field ──
 // Every glyph is a particle on a spring. The pointer pushes glyphs out of its way and sweeps them along with it, and they
 // spring back; while one moves it is drawn as a stroke along its motion. A press sends out a ring. At rest one glyph in a
-// hundred is re-rolled each frame. `quiet(x, y, w, h)` is 0 where the field must not be drawn and 1 where it is whole.
+// hundred is re-rolled each frame. The canvas is fixed behind the page, so the field is there wherever the page is scrolled
+// to. `ground.at(x, y)` says how much of the field a point of the window may have (0 where the page has something, 1 well
+// clear of it), and each glyph eases towards that as the page moves under it.
 const FIELD = { w: 11, h: 18, font: `13px ${MONO}`, reach: 110, fps: 45, rest: 6 };
 function strokeOf(dx, dy) {
   const a = ((Math.atan2(dy, dx) * 180) / Math.PI + 180) % 180;
   return a < 22.5 || a >= 157.5 ? '-' : a < 67.5 ? '\\' : a < 112.5 ? '|' : '/';
 }
-function field(canvas, quiet) {
+function field(canvas, ground) {
   const ctx = canvas.getContext('2d'), rgb = ink(), calm = still();
   const ptr = { x: -9999, y: -9999, vx: 0, vy: 0, px: -9999, py: -9999, on: false }, rings = [];
-  let cells = [], raf = 0, last = 0, awake = 0, size = '';
+  let cells = [], raf = 0, last = 0, awake = 0, moved = true, later = 0;
 
   function resize() {
-    // the page's own width, not the window's: the canvas lies in the page, and must never be the thing that makes it scroll sideways
+    // the page's own width, not the window's: the canvas must never be the thing that makes the page scroll sideways
     const dpr = Math.min(devicePixelRatio || 1, 2), w = document.documentElement.clientWidth, h = innerHeight;
     canvas.width = w * dpr; canvas.height = h * dpr; canvas.style.width = `${w}px`; canvas.style.height = `${h}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
-    cells = []; size = `${w} ${h} ${quiet.key?.() || ''}`;
-    for (let r = 0; r < Math.ceil(h / FIELD.h); r++) for (let c = 0; c < Math.ceil(w / FIELD.w); c++) {
-      const hx = c * FIELD.w + FIELD.w / 2, hy = r * FIELD.h + FIELD.h / 2, fade = quiet(hx, hy, w, h);
-      if (fade > 0) cells.push({ hx, hy, ox: 0, oy: 0, vx: 0, vy: 0, ch: pick(LIGHT), fade });
-    }
-    draw();
+    cells = [];
+    if (w >= 700) for (let r = 0; r < Math.ceil(h / FIELD.h); r++) for (let c = 0; c < Math.ceil(w / FIELD.w); c++)   // under 700 px a page has no margin for it
+      cells.push({ hx: c * FIELD.w + FIELD.w / 2, hy: r * FIELD.h + FIELD.h / 2, ox: 0, oy: 0, vx: 0, vy: 0, ch: pick(LIGHT), fade: 0, to: 0 });
+    ground.read(); aim(true); draw();
+  }
+  // where each glyph may be, for where the page now is
+  function aim(now) {
+    ground.move();
+    for (const c of cells) { c.to = ground.at(c.hx, c.hy); if (now || calm) c.fade = c.to; }
+    moved = false;
   }
   function physics() {
     if (ptr.px > -9000) { ptr.vx = ptr.vx * 0.5 + (ptr.x - ptr.px) * 0.5; ptr.vy = ptr.vy * 0.5 + (ptr.y - ptr.py) * 0.5; }   // the pointer's speed, for the sweep
@@ -66,6 +71,8 @@ function field(canvas, quiet) {
     const R = FIELD.reach, R2 = R * R;
     let moving = rings.length > 0;
     for (const c of cells) {
+      if (c.fade !== c.to) { c.fade += (c.to - c.fade) * 0.22; if (Math.abs(c.to - c.fade) < 0.01) c.fade = c.to; else moving = true; }
+      if (c.fade <= 0 && !c.ox && !c.oy) continue;
       const x = c.hx + c.ox, y = c.hy + c.oy;
       if (ptr.on) {
         const dx = x - ptr.x, dy = y - ptr.y, d2 = dx * dx + dy * dy;
@@ -77,7 +84,8 @@ function field(canvas, quiet) {
       }
       c.vx = (c.vx - c.ox * 0.07) * 0.84; c.vy = (c.vy - c.oy * 0.07) * 0.84;   // the spring home, then the damping
       c.ox += c.vx; c.oy += c.vy;
-      if (!moving && Math.abs(c.vx) + Math.abs(c.vy) + Math.abs(c.ox) + Math.abs(c.oy) > 0.05) moving = true;
+      if (Math.abs(c.vx) + Math.abs(c.vy) + Math.abs(c.ox) + Math.abs(c.oy) > 0.05) moving = true;
+      else c.ox = c.oy = c.vx = c.vy = 0;
     }
     return moving;
   }
@@ -85,9 +93,10 @@ function field(canvas, quiet) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.font = FIELD.font;
     for (const c of cells) {
-      const moved = Math.hypot(c.ox, c.oy), speed = Math.hypot(c.vx, c.vy);
-      const ch = speed > 0.9 ? strokeOf(c.vx, c.vy) : moved > 3 ? strokeOf(c.ox, c.oy) : c.ch;
-      ctx.fillStyle = `rgba(${rgb},${Math.min(0.5, 0.06 + moved * 0.006 + speed * 0.02) * c.fade})`;   // barely there at rest, brighter as it moves
+      if (c.fade < 0.02) continue;
+      const off = Math.hypot(c.ox, c.oy), speed = Math.hypot(c.vx, c.vy);
+      const ch = speed > 0.9 ? strokeOf(c.vx, c.vy) : off > 3 ? strokeOf(c.ox, c.oy) : c.ch;
+      ctx.fillStyle = `rgba(${rgb},${Math.min(0.5, 0.06 + off * 0.006 + speed * 0.02) * c.fade})`;   // barely there at rest, brighter as it moves
       ctx.fillText(ch, c.hx + c.ox, c.hy + c.oy);
     }
   }
@@ -96,28 +105,33 @@ function field(canvas, quiet) {
     const resting = now > awake;   // nothing has moved for a while: only the re-rolls are left to draw, and they need few frames
     if (now - last < 1000 / (resting ? FIELD.rest : FIELD.fps) - 2) return;
     last = now;
+    if (moved) aim(false);
     if (physics()) awake = now + 600;
-    for (let i = 0; i < cells.length * (resting ? 0.04 : 0.01); i++) { const c = cells[(Math.random() * cells.length) | 0]; if (Math.abs(c.ox) + Math.abs(c.oy) < 1) c.ch = pick(LIGHT); }   // only glyphs at rest
+    for (let i = 0; i < cells.length * (resting ? 0.04 : 0.01); i++) { const c = cells[(Math.random() * cells.length) | 0]; if (c && Math.abs(c.ox) + Math.abs(c.oy) < 1) c.ch = pick(LIGHT); }   // only glyphs at rest
     draw();
   }
-  // the canvas lies over the first screen and scrolls with the page, so the pointer is placed in the page, not the window
-  const onMove = (e) => { const y = e.clientY + scrollY; if (ptr.px < -9000) { ptr.px = e.clientX; ptr.py = y; } ptr.x = e.clientX; ptr.y = y; ptr.on = true; awake = performance.now() + 600; };
+  const wake = () => { awake = performance.now() + 600; };
+  const onMove = (e) => { if (ptr.px < -9000) { ptr.px = e.clientX; ptr.py = e.clientY; } ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; wake(); };
   const onLeave = () => { ptr.on = false; ptr.vx = ptr.vy = 0; };
-  const onDown = (e) => { rings.push({ x: e.clientX, y: e.clientY + scrollY, r: 0, life: 40 }); awake = performance.now() + 600; };
+  const onDown = (e) => { rings.push({ x: e.clientX, y: e.clientY, r: 0, life: 40 }); wake(); };
   const onHide = () => { cancelAnimationFrame(raf); if (!document.hidden && !calm) raf = requestAnimationFrame(tick); };
+  // the page has moved under the field. With motion reduced there is no loop: the field is laid again where it may now be, and left.
+  const onScroll = () => { moved = true; wake(); if (calm) { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { aim(true); draw(); }); } };
+  // a page's content can come after the field is laid (its own script puts it in, a font arrives): what the page holds is read again a moment after its size changes
+  const reread = () => { clearTimeout(later); later = setTimeout(() => { ground.read(); onScroll(); }, 250); };
+  const grown = new ResizeObserver(reread);
   resize();
-  addEventListener('resize', resize);
-  // a page's column can settle after the field is laid (its content is put in by its own script): it is laid again when the answer changes
-  const settled = quiet.key ? new ResizeObserver(() => { if (size !== `${document.documentElement.clientWidth} ${innerHeight} ${quiet.key()}`) resize(); }) : null;
-  settled?.observe(document.body);
+  addEventListener('resize', resize); addEventListener('scroll', onScroll, { passive: true }); addEventListener('load', reread);
+  grown.observe(document.body);
   if (!calm) {
     addEventListener('pointermove', onMove, { passive: true }); addEventListener('pointerdown', onDown, { passive: true });
     document.addEventListener('pointerleave', onLeave); addEventListener('blur', onLeave); document.addEventListener('visibilitychange', onHide);
     raf = requestAnimationFrame(tick);
   }
   return () => {
-    settled?.disconnect();
-    cancelAnimationFrame(raf); removeEventListener('resize', resize); removeEventListener('pointermove', onMove); removeEventListener('pointerdown', onDown);
+    grown.disconnect(); clearTimeout(later);
+    cancelAnimationFrame(raf); removeEventListener('resize', resize); removeEventListener('scroll', onScroll); removeEventListener('load', reread);
+    removeEventListener('pointermove', onMove); removeEventListener('pointerdown', onDown);
     document.removeEventListener('pointerleave', onLeave); removeEventListener('blur', onLeave); document.removeEventListener('visibilitychange', onHide);
   };
 }
@@ -212,34 +226,57 @@ const paintOf = (key) => paints.get(key) || paints.set(key, read(key).then((m) =
   return c;
 })).get(key);
 
-// 1. the field. On the front page it keeps off the header and the card's column. On any other page it keeps off the column
-// that page's content keeps to: the outermost boxes in the flow of its first screen that are narrower than the window. Under 700 px there
-// is no margin for it, and it is off.
+// 1. the field, behind the whole page. It keeps off whatever the page holds: the header and the footer across the full
+// width, and every box of content, with a soft edge so it thins out towards them. What a page holds is read from the page
+// itself, in the page's own coordinates, and only moved by the scroll after that: a thing with a ground or an edge of its
+// own (a card, a button, an image) is one box; words are measured as they are set, not as the block that holds them; and
+// anything else is looked into. Under 700 px there is no margin for a field, and it is off.
 if (!own) {
-  const column = () => {
-    const w = root.clientWidth; let lo = w, hi = 0;
-    const walk = (el, depth) => {
-      for (const c of el.children) {
-        if (c.matches('header, footer, canvas, dialog, script, style, template, [hidden], [popover]')) continue;
-        const r = c.getBoundingClientRect();
-        if (!r.width || !r.height || r.right <= 0 || r.left >= w || r.top + scrollY >= innerHeight || /absolute|fixed/.test(getComputedStyle(c).position)) continue;
-        if (r.width < w * 0.9 && !c.querySelector('header.top')) { lo = Math.min(lo, r.left); hi = Math.max(hi, r.right); }   // a box that holds the header is the page's shell, not its column
-        else if (depth < 5) walk(c, depth + 1);
-        else { lo = 0; hi = w; }   // a box as wide as the window all the way down: the page has no margin
+  const SOFT = [10, 160], SKIP = 'header.top, canvas, dialog, script, style, template, noscript, [hidden], [popover]', WHOLE = /^(IMG|SVG|VIDEO|BUTTON|INPUT|SELECT|TEXTAREA|IFRAME|TABLE|HR)$/i;
+  const head = document.querySelector('header.top'), words = document.createRange();
+  let boxes = [], near = [], top = 0, w = 0;
+  const ground = {
+    read() {
+      w = root.clientWidth; boxes = [];
+      const sx = scrollX, sy = scrollY; let n = 0;
+      const box = (r) => boxes.push([r.left + sx, r.top + sy, r.right + sx, r.bottom + sy]);
+      const walk = (el, depth) => {
+        for (const c of el.children) {
+          if (c.matches(SKIP)) continue;
+          const r = c.getBoundingClientRect();
+          if (!r.width || !r.height || r.right <= 0 || r.left >= w || r.bottom + sy <= 0) continue;
+          const cs = getComputedStyle(c);
+          if (cs.position === 'fixed' || cs.visibility === 'hidden' || (depth === 0 && cs.position === 'absolute')) continue;
+          if (c.matches('footer')) { boxes.push([0, r.top + sy, w, r.bottom + sy]); continue; }
+          const solid = cs.backgroundColor !== 'rgba(0, 0, 0, 0)' || cs.backgroundImage !== 'none' || (parseFloat(cs.borderTopWidth) > 0 && parseFloat(cs.borderLeftWidth) > 0) || WHOLE.test(c.tagName);
+          if (solid || depth >= 8 || ++n > 1500) { box(r); continue; }
+          if ([...c.childNodes].some((t) => t.nodeType === 3 && t.nodeValue.trim())) { words.selectNodeContents(c); const t = words.getBoundingClientRect(); if (t.width && t.height) box(t); continue; }
+          walk(c, depth + 1);
+        }
+      };
+      walk(document.body, 0);
+    },
+    // the boxes on screen now, in the window's coordinates, and how far down the header reaches
+    move() {
+      const sx = scrollX, sy = scrollY, reach = SOFT[0] + SOFT[1], h = innerHeight;
+      near = [];
+      for (const b of boxes) if (b[3] - sy > -reach && b[1] - sy < h + reach) near.push([b[0] - sx, b[1] - sy, b[2] - sx, b[3] - sy]);
+      top = head ? Math.max(0, head.getBoundingClientRect().bottom + 8) : 0;
+    },
+    at(x, y) {
+      if (y < top) return 0;
+      let f = 1;
+      for (const b of near) {
+        const dx = x < b[0] ? b[0] - x : x > b[2] ? x - b[2] : 0, dy = y < b[1] ? b[1] - y : y > b[3] ? y - b[3] : 0;
+        const v = ((dx && dy ? Math.hypot(dx, dy) : dx + dy) - SOFT[0]) / SOFT[1];
+        if (v < f) { if (v <= 0) return 0; f = v; }
       }
-    };
-    walk(document.body, 0);
-    return hi > lo ? [Math.max(0, Math.round(lo)), Math.min(w, Math.round(hi))] : [0, w];
+      return f;
+    },
   };
-  let col = [0, 0], top = 76;
-  const quiet = front
-    ? (x, y, w) => (w < 700 || y < 76 ? 0 : clamp01((Math.abs(x - w / 2) - 300) / 160))
-    : Object.assign((x, y, w) => (w < 700 || y < top ? 0 : clamp01(((x < col[0] ? col[0] - x : x - col[1]) - 6) / 54)), {
-      key: () => { col = column(); top = Math.max(76, Math.round((document.querySelector('header.top')?.getBoundingClientRect().bottom || 0) + scrollY) + 8); return `${col} ${top}`; },
-    });
-  const ground = canvasOf('gx-field');
-  document.body.prepend(ground);
-  piece(() => field(ground, quiet));
+  const under = canvasOf('gx-field');
+  document.body.prepend(under);
+  piece(() => field(under, ground));
 }
 
 // 2. the menu: Tacit's own mark, struck across the foot of the panel and running off its corner
