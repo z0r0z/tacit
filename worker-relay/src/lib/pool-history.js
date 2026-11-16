@@ -8,10 +8,57 @@
 import { FARM_SELECTORS } from './farm-health.js';
 
 export const STEP_BLOCKS = 300, RES_BLOCKS = 25;      // how far apart the first reads are, and how narrow a span is searched down to (the window itself is pool-activity.js's)
-// Nodes that serve old state (publicnode does not; the farm program's own list is for the present). Public keys, so a deployment may name its own (FARM_ARCHIVE_RPCS, comma separated).
-export const ARCHIVE_RPCS_MAINNET = ['https://rpc.mevblocker.io', 'https://mainnet.rpc.buidlguidl.com', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7'];
+// Nodes that serve old state (publicnode does not; the farm program's own list is for the present), those a free tier answers least often with a rate limit first. The last is a public
+// key that rate-limits readily. A deployment may name its own (FARM_ARCHIVE_RPCS, comma separated), which is the way to a reliable read from a shared address: a keyed archive node.
+export const ARCHIVE_RPCS_MAINNET = ['https://rpc.mevblocker.io', 'https://mainnet.rpc.buidlguidl.com', 'https://eth.drpc.org', 'https://gateway.tenderly.co/public/mainnet', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7'];
 
-// `stateAt` for one pool: pools(poolId) on the confidential pool at a block, through `rpc` (farm-health makeRpc: each read goes to the first node that answers).
+const hostOf = (u) => { try { return new URL(u).host; } catch { return String(u).replace(/^https?:\/\//, '').split(/[/?#]/)[0]; } };
+const LIMITED = /rate.?limit|too many|\b429\b|exceeded|capacity|compute units|quota|unauthorized|not whitelisted|\b403\b/i;
+
+// JSON-RPC over a list of archive nodes, for reads that come in the hundreds from one address, which a free node limits. A read goes to the first node that is not resting and the next
+// when one fails. A node that rate-limits rests for REST_LIMITED_MS and one that fails otherwise for REST_FAILED_MS, so the reads after it do not walk into it again (a node that is all
+// that is left is still tried). When every node fails and one of them was limiting, the round is made again after a pause, `rounds` times in all. A failure says every node's reason, by host
+// and never by address (a keyed address is a secret, and this message is shown): "rpc eth_call failed: rpc.mevblocker.io HTTP 429; mainnet.rpc.buidlguidl.com not JSON; ...".
+export const REST_LIMITED_MS = 60_000, REST_FAILED_MS = 30_000;
+export function makeArchiveRpc(urls, { fetchFn = (...a) => globalThis.fetch(...a), timeoutMs = 10_000, now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), rounds = 3 } = {}) {
+  const rest = new Map();
+  let id = 0;
+  const resting = (u) => (rest.get(u) || 0) > now();
+  async function ask(url, method, params) {
+    let r;
+    try {
+      r = await fetchFn(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: AbortSignal.timeout(timeoutMs) });
+    } catch (e) { throw new Error(e && e.name === 'TimeoutError' ? 'timed out' : 'no answer'); }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    let j;
+    try { j = await r.json(); } catch { throw new Error('not JSON'); }
+    if (j && j.error) throw new Error(String(j.error.message || j.error.code || 'error').replace(/https?:\/\/\S+/g, '').slice(0, 70));
+    if (!j || j.result === undefined || j.result === null) throw new Error('empty result');
+    return j.result;
+  }
+  async function rpc(method, params) {
+    let errs = [];
+    for (let round = 0; round < rounds; round++) {
+      errs = [];
+      let limited = false;
+      for (const u of [...urls.filter((x) => !resting(x)), ...urls.filter(resting)]) {
+        try { const v = await ask(u, method, params); rest.delete(u); return v; }
+        catch (e) {
+          const m = String(e.message), lim = LIMITED.test(m);
+          limited ||= lim;
+          rest.set(u, now() + (lim ? REST_LIMITED_MS : REST_FAILED_MS));
+          errs.push(`${hostOf(u)} ${m}`);
+        }
+      }
+      if (!limited || round === rounds - 1) break;
+      await sleep(1500 * (round + 1));
+    }
+    throw new Error(`rpc ${method} failed: ${errs.join('; ')}`);
+  }
+  return { call: (to, data, blockHex) => rpc('eth_call', [{ to, data }, blockHex]), resting: () => urls.filter(resting).map(hostOf) };
+}
+
+// `stateAt` for one pool: pools(poolId) on the confidential pool at a block, through `rpc` (makeArchiveRpc below, or farm-health's makeRpc: anything with `call(to, data, blockHex)`).
 export function stateReader(rpc, poolAddr, poolId) {
   return async (block) => {
     const r = String(await rpc.call(poolAddr, FARM_SELECTORS.pools + String(poolId).slice(2), '0x' + block.toString(16)) || '');

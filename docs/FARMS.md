@@ -97,11 +97,15 @@ old-block reads below), so each count is a floor.
 
 A record that starts empty, or has a gap in it, or is shorter than a day, is filled in from the chain: the
 server asks an archive node for the pool's state at an hourly spread of old blocks and halves each hour that
-differs until it knows the change to about four minutes, so a day of history costs a few hundred reads once,
-and a record is a day long from the first tick after a start (a gap within the day is joined, not counted
-as lost). Where the old blocks cannot be read the record starts at its first reading and `since` says so; it
-is tried again half an hour later. `FARM_ARCHIVE_RPCS` (comma separated) names the nodes, and
-`FARM_ACTIVITY_BACKFILL=0` leaves the history unread. A deposit into a private pool is proved against the
+differs until it knows the change to about four minutes. It reads four hours of history at a tick, so a record
+is a day long about half an hour after a start and no tick asks a free node for more than a few dozen reads; a
+gap within the day is joined, not counted as lost. `backfill` says how that went, and is always there (a server
+that does not send it is one that cannot read old blocks): `null` before a read has been made, else
+`{ at, ok, mode, reads, err, full }` for the last one, `mode` `new`, `gap` or `prepend`, `reads` how many it took,
+`err` why it failed (node by node, by host, never by address) and `full` once the pool's own beginning has been
+reached. Where the old blocks cannot be read the record starts at its first reading, `since` says so, and it is
+tried again ten minutes later. `FARM_ARCHIVE_RPCS` (comma separated) names the nodes (a keyed archive node is the
+reliable way to read from a shared address), and `FARM_ACTIVITY_BACKFILL=0` leaves the history unread. A deposit into a private pool is proved against the
 pool's exact state and any change while it is proved ends that proof, so this is what says how likely that is.
 It is left off a pool the server has no record of (a fresh start, or the log switched off with
 `FARM_ACTIVITY=0`). The SDK's `farm.program()` returns the same groups; its `epoch` additionally carries

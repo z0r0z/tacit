@@ -1,7 +1,7 @@
 // worker-relay/src/lib/pool-activity.js and its use in worker/src/farm-program.js: the log of how often each confidential pool's state changes, kept by the 5-minute tick from the farm
 // program's own reads, and the summary each pool carries in GET /farm/program. Offline: node tests/pool-activity.test.mjs
 import assert from 'node:assert/strict';
-import { sampleOf, foldSample, summarize, summaries, readLog, historyPlan, applyHistory, noteFailed, KEEP_MS, MAX_EVENTS, GAP_MS, WINDOW_BLOCKS, BLOCK_MS, SLACK_BLOCKS, MARGIN_BLOCKS, RETRY_MS } from '../worker-relay/src/lib/pool-activity.js';
+import { sampleOf, foldSample, summarize, summaries, readLog, historyPlan, applyHistory, noteFailed, scrub, KEEP_MS, MAX_EVENTS, GAP_MS, WINDOW_BLOCKS, CHUNK_BLOCKS, BLOCK_MS, SLACK_BLOCKS, MARGIN_BLOCKS, RETRY_MS } from '../worker-relay/src/lib/pool-activity.js';
 import { handleFarm, farmActivityTick, _setFarmLoader, _resetFarmCache, _resetFarmActivity } from '../worker/src/farm-program.js';
 
 const P1 = '0x' + '11'.repeat(32), P2 = '0x' + '22'.repeat(32), P3 = '0x' + '33'.repeat(32);
@@ -66,13 +66,13 @@ for (const bad of [null, undefined, '', 'not json', '{"v":2,"pools":{}}', '{"v":
   let dense = foldSample(null, [{ poolId: P1, state: '0:0:1' }], { t: T, block: 0 }), state = 0;
   for (let m = 5; m <= 1000; m += 5) { if (at.includes(m)) state++; dense = foldSample(dense, [{ poolId: P1, state: `${state}:0:1` }], { t: T + m * MIN, block: m }); }
   const s = summarize(dense, P1);
-  assert.deepEqual(s, { at: T + 1000 * MIN, since: T, hour: 1, day: 5, lastMoveAt: T + 1000 * MIN }, 'one change in the hour to the last reading, five in the day');
+  assert.deepEqual(s, { at: T + 1000 * MIN, since: T, hour: 1, day: 5, lastMoveAt: T + 1000 * MIN, backfill: null }, 'one change in the hour to the last reading, five in the day');
   assert.equal(summarize(dense, P2), null, 'a pool with no record'); assert.equal(summarize(dense, P1.toUpperCase().replace('0X', '0x')).day, 5, 'ids are matched in lowercase');
   assert.equal(summarize(null, P1), null);
   assert.deepEqual(Object.keys(summaries(dense)), [P1]);
   // a quiet pool: no change, no last move
   const quiet = foldSample(foldSample(null, [{ poolId: P2, state: '1:1:1' }], { t: T, block: 0 }), [{ poolId: P2, state: '1:1:1' }], { t: T + 5 * MIN, block: 25 });
-  assert.deepEqual(summarize(quiet, P2), { at: T + 5 * MIN, since: T, hour: 0, day: 0, lastMoveAt: null });
+  assert.deepEqual(summarize(quiet, P2), { at: T + 5 * MIN, since: T, hour: 0, day: 0, lastMoveAt: null, backfill: null });
 }
 
 // ── the tick and the program's answer ──
@@ -165,23 +165,26 @@ const ask = (env) => handleFarm('program', new URL('https://api.test/farm/progra
 
 // ── filling a record in from old blocks ──
 {
-  const T0 = 1_800_000_000_000, HEAD = 26_000_000, floor = HEAD - WINDOW_BLOCKS, one = [{ poolId: P1, state: '100:200:50' }];
+  const T0 = 1_800_000_000_000, HEAD = 26_000_000, floor = HEAD - WINDOW_BLOCKS, newFrom = HEAD - CHUNK_BLOCKS, one = [{ poolId: P1, state: '100:200:50' }];
   const logOf = (rec) => ({ v: 1, pools: { [P1]: rec } });
   const rec = (o) => ({ first: T0 - 60 * MIN, fb: HEAD - 300, last: { t: T0 - 5 * MIN, b: HEAD - 25, s: 'x:y:1' }, ev: [], ...o });
   const planOf = (log) => historyPlan(log, one, { t: T0, head: HEAD });
-  // historyPlan: what each pool needs, from the log as it was before the reading
-  assert.deepEqual(planOf(null), [{ poolId: P1, mode: 'new', from: floor, to: HEAD, toState: '100:200:50' }], 'no record: the window before the reading');
+  // historyPlan: what each pool needs, from the log as it was before the reading. A stretch of CHUNK_BLOCKS at a time, so no tick reads more than a few dozen blocks
+  assert.equal(CHUNK_BLOCKS, 1200, 'four hours a tick');
+  assert.deepEqual(planOf(null), [{ poolId: P1, mode: 'new', from: newFrom, to: HEAD, toState: '100:200:50' }], 'no record: the last four hours before the reading');
   assert.deepEqual(historyPlan(null, [{ poolId: P1, state: null }], { t: T0, head: HEAD }), [], 'a pool not read has no plan'); assert.deepEqual(historyPlan(null, one, { t: T0, head: 0 }), [], 'nor does a reading with no block');
   assert.deepEqual(planOf(logOf(rec({ first: T0 - 86400e3, fb: floor }))), [], 'a record a day long needs nothing');
   assert.deepEqual(planOf(logOf(rec({ first: T0 - 86400e3 + 1, fb: floor + SLACK_BLOCKS }))), [], 'within the slack of a day it is long enough');
   assert.deepEqual(planOf(logOf(rec({ fb: floor + SLACK_BLOCKS + 1 }))).map((x) => x.mode), ['prepend'], 'a shade shorter is not');
-  assert.deepEqual(planOf(logOf(rec())), [{ poolId: P1, mode: 'prepend', from: floor, to: HEAD - 300 }], 'a live short record: the window before its first block');
-  assert.deepEqual(planOf(logOf(rec({ fb: undefined }))), [{ poolId: P1, mode: 'prepend', from: floor, to: HEAD - 300 - MARGIN_BLOCKS }], 'one made before blocks were kept: its first block worked out from its times, a margin early');
-  assert.deepEqual(planOf(logOf(rec({ bf: { at: T0 - MIN, ok: true } }))), [], 'already filled in');
-  assert.deepEqual(planOf(logOf(rec({ bf: { at: T0 - RETRY_MS, ok: false } }))), [], 'a failed try is not repeated at once');
-  assert.equal(planOf(logOf(rec({ bf: { at: T0 - RETRY_MS - 1, ok: false } }))).length, 1, 'but after the wait it is');
+  assert.deepEqual(planOf(logOf(rec())), [{ poolId: P1, mode: 'prepend', from: HEAD - 300 - CHUNK_BLOCKS, to: HEAD - 300 }], 'a live short record: the four hours before its first block');
+  assert.deepEqual(planOf(logOf(rec({ fb: floor + 500 }))), [{ poolId: P1, mode: 'prepend', from: floor, to: floor + 500 }], 'near the window the stretch ends at it, no further');
+  assert.deepEqual(planOf(logOf(rec({ fb: undefined }))), [{ poolId: P1, mode: 'prepend', from: HEAD - 300 - MARGIN_BLOCKS - CHUNK_BLOCKS, to: HEAD - 300 - MARGIN_BLOCKS }], 'one made before blocks were kept: its first block worked out from its times, a margin early');
+  assert.equal(planOf(logOf(rec({ bf: { at: T0 - MIN, ok: true, mode: 'new', reads: 20 } }))).length, 1, 'a good stretch is followed by the next, at the next tick');
+  assert.deepEqual(planOf(logOf(rec({ bf: { at: T0 - MIN, ok: true, full: true } }))), [], 'but not once the pool\'s own beginning is reached');
+  assert.deepEqual(planOf(logOf(rec({ bf: { at: T0 - RETRY_MS, ok: false, err: 'x' } }))), [], 'a failed try is not repeated at once');
+  assert.equal(planOf(logOf(rec({ bf: { at: T0 - RETRY_MS - 1, ok: false, err: 'x' } }))).length, 1, 'but after the wait it is'); assert.equal(RETRY_MS, 10 * 60e3);
   assert.deepEqual(planOf(logOf(rec({ last: { t: T0 - 60 * MIN, b: HEAD - 300, s: 'x:y:1' } }))), [{ poolId: P1, mode: 'gap', from: HEAD - 300, fromState: 'x:y:1', to: HEAD, toState: '100:200:50' }], 'a gap within the window: its blocks, from the state the record ended in');
-  assert.deepEqual(planOf(logOf(rec({ last: { t: T0 - 60 * MIN, b: floor - 10, s: 'x:y:1' } }))).map((x) => x.mode), ['new'], 'a gap longer than the window is a new record');
+  assert.deepEqual(planOf(logOf(rec({ last: { t: T0 - 60 * MIN, b: floor - 10, s: 'x:y:1' } }))).map((x) => [x.mode, x.from]), [['new', newFrom]], 'a gap longer than the window is a new record');
   assert.deepEqual(planOf(logOf(rec({ last: { t: T0 + MIN, b: HEAD - 1, s: 'x:y:1' } }))).map((x) => x.mode), ['gap'], 'a clock that went back is not live, and its blocks are still the record\'s own to fill');
 
   // foldSample keeps what a record carries, and a new one says its first block
@@ -189,40 +192,48 @@ const ask = (env) => handleFarm('program', new URL('https://api.test/farm/progra
   const f = foldSample(live, [{ poolId: P1, state: 'a2:b:1' }], { t: T0 + 5 * MIN, block: 30 });
   assert.equal(f.pools[P1].fb, 5); assert.deepEqual(f.pools[P1].bf, { at: T0, ok: true }); assert.equal(f.pools[P1].ev.length, 1);
 
-  // applyHistory: a new record
+  // applyHistory: a new record, with what the read did said on it
   const t = T0, head = HEAD, timeOf = (b) => t - (head - b) * BLOCK_MS;
-  const fresh = foldSample(null, one, { t, block: head });
-  const ev1 = [{ block: head - 5000, kind: 'trade' }, { block: head - 100, kind: 'liquidity' }];
-  const made = applyHistory(null, fresh, planOf(null)[0], { from: floor, fromState: 'a', events: ev1, calls: 30 }, { t, head });
-  assert.deepEqual(made.pools[P1], { first: timeOf(floor), fb: floor, last: { t, b: head, s: '100:200:50' }, ev: [[timeOf(head - 5000), head - 5000, 'trade'], [timeOf(head - 100), head - 100, 'liquidity']], bf: { at: t, ok: true } });
-  assert.equal(timeOf(floor), t - 86400e3, 'a window of blocks is a day');
-  assert.deepEqual(summarize(made, P1), { at: t, since: t - 86400e3, hour: 1, day: 2, lastMoveAt: timeOf(head - 100) }, 'the summary is whole at once');
-  // a pool made inside the window starts where the search found it
-  const late = applyHistory(null, fresh, planOf(null)[0], { from: floor + 1800, fromState: 'a', events: [], calls: 8 }, { t, head });
-  assert.equal(late.pools[P1].fb, floor + 1800); assert.equal(late.pools[P1].first, timeOf(floor + 1800));
+  const fresh = foldSample(null, one, { t, block: head }), planNew = planOf(null)[0];
+  const ev1 = [{ block: head - 1000, kind: 'trade' }, { block: head - 100, kind: 'liquidity' }];
+  const made = applyHistory(null, fresh, planNew, { from: newFrom, fromState: 'a', events: ev1, calls: 30 }, { t, head });
+  assert.deepEqual(made.pools[P1], { first: timeOf(newFrom), fb: newFrom, last: { t, b: head, s: '100:200:50' }, ev: [[timeOf(head - 1000), head - 1000, 'trade'], [timeOf(head - 100), head - 100, 'liquidity']], bf: { at: t, ok: true, mode: 'new', reads: 30 } });
+  assert.equal(timeOf(newFrom), t - 4 * 3600e3, 'four hours of blocks');
+  assert.deepEqual(summarize(made, P1), { at: t, since: t - 4 * 3600e3, hour: 1, day: 2, lastMoveAt: timeOf(head - 100), backfill: { at: t, ok: true, mode: 'new', reads: 30 } }, 'the summary says what was read');
+  // a pool made inside what was asked for starts where the search found it, and that is the whole of it
+  const late = applyHistory(null, fresh, planNew, { from: newFrom + 600, fromState: 'a', events: [], calls: 8 }, { t, head });
+  assert.equal(late.pools[P1].fb, newFrom + 600); assert.equal(late.pools[P1].first, timeOf(newFrom + 600)); assert.deepEqual(late.pools[P1].bf, { at: t, ok: true, mode: 'new', reads: 8, full: true }, 'full: nothing earlier to read');
   // a gap joins the record it broke: its first, its first block, its events and its mark stay, and the gap's changes follow
-  const broken = logOf(rec({ first: T0 - 600 * MIN, fb: HEAD - 3000, last: { t: T0 - 60 * MIN, b: HEAD - 300, s: 'x:y:1' }, ev: [[T0 - 400 * MIN, HEAD - 2000, 'trade']], bf: { at: T0 - 600 * MIN, ok: true } }));
+  const broken = logOf(rec({ first: T0 - 600 * MIN, fb: HEAD - 3000, last: { t: T0 - 60 * MIN, b: HEAD - 300, s: 'x:y:1' }, ev: [[T0 - 400 * MIN, HEAD - 2000, 'trade']], bf: { at: T0 - 600 * MIN, ok: true, mode: 'new', reads: 20 } }));
   const foldedGap = foldSample(broken, one, { t, block: head }), gp = planOf(broken)[0];
   const joined = applyHistory(broken, foldedGap, gp, { from: HEAD - 300, fromState: 'x:y:1', events: [{ block: head - 150, kind: 'trade' }], calls: 4 }, { t, head });
-  assert.deepEqual(joined.pools[P1], { first: T0 - 600 * MIN, fb: HEAD - 3000, last: { t, b: head, s: '100:200:50' }, ev: [[T0 - 400 * MIN, HEAD - 2000, 'trade'], [timeOf(head - 150), head - 150, 'trade']], bf: { at: T0 - 600 * MIN, ok: true } });
+  assert.deepEqual(joined.pools[P1], { first: T0 - 600 * MIN, fb: HEAD - 3000, last: { t, b: head, s: '100:200:50' }, ev: [[T0 - 400 * MIN, HEAD - 2000, 'trade'], [timeOf(head - 150), head - 150, 'trade']], bf: { at: T0 - 600 * MIN, ok: true, mode: 'new', reads: 20 } });
   const nomark = logOf({ first: T0 - 600 * MIN, last: { t: T0 - 60 * MIN, b: HEAD - 300, s: 'x:y:1' }, ev: [] });
   assert.equal('bf' in applyHistory(nomark, foldSample(nomark, one, { t, block: head }), planOf(nomark)[0], { from: HEAD - 300, events: [], calls: 2 }, { t, head }).pools[P1], false, 'a record never filled in before its start is still to be');
-  // a live short record gets the window before it, oldest first, with what it has kept
+  // a live short record gets the stretch before it, oldest first, with what it has kept
   const shortRec = logOf(rec({ ev: [[T0 - 30 * MIN, HEAD - 150, 'trade']] }));
-  const foldedShort = foldSample(shortRec, one, { t, block: head });
-  const pre = applyHistory(shortRec, foldedShort, planOf(shortRec)[0], { from: floor, events: [{ block: head - 7000, kind: 'trade' }, { block: head - 4000, kind: 'liquidity' }], calls: 40 }, { t, head });
-  assert.deepEqual(pre.pools[P1].ev.map((e) => e[1]), [head - 7000, head - 4000, HEAD - 150, HEAD], 'older first, then the one it kept, then what this reading itself found'); assert.equal(pre.pools[P1].first, timeOf(floor)); assert.equal(pre.pools[P1].fb, floor);
-  assert.deepEqual(pre.pools[P1].bf, { at: t, ok: true }); assert.equal(pre.pools[P1].last.b, head);
+  const foldedShort = foldSample(shortRec, one, { t, block: head }), pp = planOf(shortRec)[0];
+  const pre = applyHistory(shortRec, foldedShort, pp, { from: pp.from, events: [{ block: pp.from + 100, kind: 'trade' }, { block: pp.from + 700, kind: 'liquidity' }], calls: 14 }, { t, head });
+  assert.deepEqual(pre.pools[P1].ev.map((e) => e[1]), [pp.from + 100, pp.from + 700, HEAD - 150, HEAD], 'older first, then the one it kept, then what this reading itself found');
+  assert.equal(pre.pools[P1].first, timeOf(pp.from)); assert.equal(pre.pools[P1].fb, pp.from); assert.deepEqual(pre.pools[P1].bf, { at: t, ok: true, mode: 'prepend', reads: 14 }); assert.equal(pre.pools[P1].last.b, head);
   // events older than KEEP_MS go, and the cap holds
-  const many = Array.from({ length: MAX_EVENTS + 30 }, (_, i) => ({ block: floor + 1 + i, kind: 'trade' }));
-  assert.equal(applyHistory(null, fresh, planOf(null)[0], { from: floor, events: many, calls: 1 }, { t, head }).pools[P1].ev.length, MAX_EVENTS);
-  // noteFailed marks the record, and leaves a pool with none alone
-  assert.deepEqual(noteFailed(fresh, planOf(null)[0], { t }).pools[P1].bf, { at: t, ok: false }); assert.deepEqual(noteFailed({ v: 1, pools: {} }, planOf(null)[0], { t }), { v: 1, pools: {} });
+  const many = Array.from({ length: MAX_EVENTS + 30 }, (_, i) => ({ block: newFrom + 1 + i, kind: 'trade' }));
+  assert.equal(applyHistory(null, fresh, planNew, { from: newFrom, events: many, calls: 1 }, { t, head }).pools[P1].ev.length, MAX_EVENTS);
+  // noteFailed marks the record with why, and leaves a pool with none alone
+  const failed = noteFailed(fresh, planNew, { t, err: new Error('rpc eth_call failed: a.test HTTP 429; b.test not JSON') });
+  assert.deepEqual(failed.pools[P1].bf, { at: t, ok: false, mode: 'new', err: 'rpc eth_call failed: a.test HTTP 429; b.test not JSON' });
+  assert.deepEqual(noteFailed({ v: 1, pools: {} }, planNew, { t, err: 'x' }), { v: 1, pools: {} });
+  assert.deepEqual(summarize(failed, P1).backfill, { at: t, ok: false, mode: 'new', err: 'rpc eth_call failed: a.test HTTP 429; b.test not JSON' }, 'the reason reaches the summary');
+  assert.equal(summarize(fresh, P1).backfill, null, 'a record no read was made for says null, not nothing');
+  // scrub: no address (a node's address can carry a key), one line, bounded
+  assert.equal(scrub(new Error('failed: https://eth-mainnet.example/v2/SECRETKEY HTTP 429\n  at x')), 'failed: [address] HTTP 429 at x');
+  assert.ok(!/SECRETKEY/.test(JSON.stringify(noteFailed(fresh, planNew, { t, err: 'rpc failed https://x.example/v2/SECRETKEY: down' }))), 'a keyed address is not kept in the log either');
+  assert.equal(scrub('y'.repeat(900)).length, 300); assert.equal(scrub(null), ''); assert.equal(scrub(undefined), ''); assert.equal(scrub('plain words'), 'plain words');
 }
 
 // ── the tick filling a record in, against a stand-in chain ──
 {
-  const quiet = console.warn; console.warn = () => {};
+  const quiet = console.warn; const warned = []; console.warn = (m) => { warned.push(String(m)); };
   const HEAD = 26_000_000, floor = HEAD - WINDOW_BLOCKS;
   // the pool's state a number of blocks back from the head: changes at 7000 (trade), 4000 (an add), 1000 (trade) and 200 (a remove) blocks back, and the program's own state at the end
   const steps = [[7000, '1:1:50'], [4000, '2:2:51'], [1000, '3:3:51'], [200, '100:200:50']];
@@ -230,83 +241,93 @@ const ask = (env) => handleFarm('program', new URL('https://api.test/farm/progra
   const histOf = (fn, calls) => ({ stateAt: (id) => async (b) => { calls.push([id, b]); return fn(id, b); } });
   const run = async (kv, env, hist, m) => { kv.clock.now += m * MIN; return farmActivityTick(env, () => kv.clock.now, hist); };
   const on = (kv) => ({ REGISTRY_KV: kv });
+  const P1chain = (fn) => (id, b) => (id === P1 ? fn(b) : null);
+  // ticks until the plan is empty (or the cap), returning how many reads each took
+  const fill = async (kv, env, hist, calls, cap = 12) => { const per = []; for (let i = 0; i < cap; i++) { const n = calls.length; await run(kv, env, hist, 5); per.push(calls.length - n); if (!per.at(-1)) break; } return per; };
 
-  // the first tick of all: a day of the pool's history at once, and the program's answer carries it
+  // the first tick of all reads four hours, and each tick after it four hours more, until the day is whole: no tick reads more than a few dozen blocks
   {
     reset(); block = HEAD;
-    const kv = store(), calls = [], env = on(kv), hist = histOf((id, b) => (id === P1 ? chainFn('0:0:50')(b) : null), calls);
-    const log = await run(kv, env, hist, 0), t = kv.clock.now, r = log.pools[P1];
-    assert.equal(r.fb, floor); assert.equal(r.first, t - 86400e3); assert.deepEqual(r.bf, { at: t, ok: true });
-    assert.deepEqual(r.ev.map((e) => e[2]), ['trade', 'liquidity', 'trade', 'liquidity'], 'the four changes, with their kinds');
-    [7000, 4000, 1000, 200].forEach((back, i) => assert.ok(r.ev[i][1] >= HEAD - back && r.ev[i][1] < HEAD - back + 25, 'change ' + i + ' found to its span (' + r.ev[i][1] + ')'));
-    assert.ok(calls.length > 20 && calls.length < 80, 'a few dozen reads for the pool (' + calls.length + ')'); assert.ok(calls.every(([id]) => id === P1), 'the pool that was not read in the program is not read');
+    const kv = store(), calls = [], env = on(kv), hist = histOf(P1chain(chainFn('0:0:50')), calls);
+    const log = await run(kv, env, hist, 0), t0 = kv.clock.now, r = log.pools[P1], n1 = calls.length;
+    assert.equal(r.fb, HEAD - CHUNK_BLOCKS); assert.equal(r.first, t0 - 4 * 3600e3); assert.equal(r.bf.mode, 'new'); assert.equal(r.bf.ok, true);
+    assert.deepEqual(r.ev.map((e) => e[2]), ['trade', 'liquidity'], 'only the changes inside the four hours: 1000 and 200 blocks back'); assert.ok(n1 < 30, 'a few reads for the first stretch (' + n1 + ')');
+    assert.ok(calls.every(([id]) => id === P1), 'the pool that was not read in the program is not read');
+    const mid = (await ask(env)).obj.pools[0].activity; assert.equal(mid.backfill.ok, true); assert.equal(mid.backfill.mode, 'new'); assert.equal(mid.backfill.reads, n1);
+    const per = await fill(kv, env, hist, calls), done = readLog(await kv.get('farm:activity:v1')).pools[P1], t = kv.clock.now;
+    assert.equal(done.fb, floor, 'the day is whole'); assert.equal(done.first, t - 5 * MIN - 86400e3, 'a day before the tick that read the last stretch (the one before the idle tick)');
+    assert.equal(done.ev.length, 4, 'all four changes'); assert.deepEqual(done.ev.map((e) => e[2]), ['trade', 'liquidity', 'trade', 'liquidity']);
+    assert.ok(per.slice(0, -1).every((c) => c > 0 && c < 40), 'each tick a few dozen reads at most (' + per + ')'); assert.equal(per.at(-1), 0, 'and then none');
+    assert.equal(per.length, 6, 'five more stretches and then a tick with nothing to read');
     const a = (await ask(env)).obj.pools[0].activity;
-    assert.deepEqual({ hour: a.hour, day: a.day, since: a.since }, { hour: 1, day: 4, since: t - 86400e3 }, 'the hour and the day are whole from the first tick');
-    // five minutes on: nothing more to read
-    const n = calls.length; await run(kv, env, hist, 5);
-    assert.equal(calls.length, n, 'a filled-in record is not read for again');
+    assert.equal(a.day, 4); assert.equal(a.hour, 0, 'the change 40 minutes before the first tick is over an hour before the seventh (the stand-in head does not move on)'); assert.equal(a.backfill.mode, 'prepend'); assert.equal(a.backfill.ok, true);
+    const n = calls.length; await run(kv, env, hist, 5); assert.equal(calls.length, n, 'a whole record is not read for again');
   }
-  // the records already live, made before blocks were kept, with no mark: the window before them is filled in once
+  // the records already live, made before blocks were kept, with no mark: extended a stretch a tick, once each has its first block
   {
     reset(); block = HEAD;
-    const kv = store(), calls = [], env = on(kv), t0 = kv.clock.now, hist = histOf((id, b) => (id === P1 ? chainFn('0:0:50')(b) : null), calls);
+    const kv = store(), calls = [], env = on(kv), t0 = kv.clock.now, hist = histOf(P1chain(chainFn('0:0:50')), calls);
     await kv.put('farm:activity:v1', JSON.stringify({ v: 1, pools: { [P1]: { first: t0 - 55 * MIN, last: { t: t0, b: HEAD - 25, s: '100:200:50' }, ev: [[t0 - 30 * MIN, HEAD - 150, 'trade']] } } }));
-    const log = await run(kv, env, hist, 5), t = kv.clock.now, r = log.pools[P1];
-    assert.equal(r.fb, floor); assert.equal(r.first, t - 86400e3);
-    assert.deepEqual(r.ev.slice(0, 3).map((e) => e[2]), ['trade', 'liquidity', 'trade'], 'the old changes first, in order');
-    assert.ok(r.ev[0][1] >= HEAD - 7000 && r.ev[0][1] < HEAD - 6975 && r.ev[1][1] >= HEAD - 4000 && r.ev[1][1] < HEAD - 3975, 'at their blocks');
-    assert.equal(r.ev.at(-1)[1], HEAD - 150, 'what the record had kept stays, last');
-    assert.equal(r.ev.length, 4, 'three before it, one it kept (the change at 200 blocks back is after the estimated start, so it is the record\'s own to have seen)');
-    assert.ok(calls.every(([, b]) => b <= HEAD - 300 + 25), 'no block after where the record starts is read');
+    const log = await run(kv, env, hist, 5), r = log.pools[P1];
+    assert.equal(r.fb, HEAD - 300 - MARGIN_BLOCKS - CHUNK_BLOCKS, 'a stretch before the estimated start'); assert.equal(r.bf.mode, 'prepend');
+    assert.equal(r.ev.at(-1)[1], HEAD - 150, 'what the record had kept stays, last'); assert.ok(calls.every(([, b]) => b <= HEAD - 300 - MARGIN_BLOCKS + 25), 'no block after where the record starts is read');
+    await fill(kv, env, hist, calls);
+    const done = readLog(await kv.get('farm:activity:v1')).pools[P1];
+    assert.equal(done.fb, floor); assert.equal(done.ev.length, 4, 'three before it, one it kept (the change at 200 blocks back is after the estimated start, so it is the record\'s own to have seen)');
   }
-  // a gap: the blocks of the gap are read, and the record is whole across it
+  // a gap: the blocks of the gap are read at once, and the record is whole across it
   {
     reset(); block = HEAD;
-    const kv = store(), calls = [], env = on(kv), t0 = kv.clock.now, hist = histOf((id, b) => (id === P1 ? chainFn('0:0:50')(b) : null), calls);
+    const kv = store(), calls = [], env = on(kv), t0 = kv.clock.now, hist = histOf(P1chain(chainFn('0:0:50')), calls);
     await kv.put('farm:activity:v1', JSON.stringify({ v: 1, pools: { [P1]: { first: t0 - 600 * MIN, fb: HEAD - 3000, last: { t: t0 - 55 * MIN, b: HEAD - 300, s: '3:3:51' }, ev: [[t0 - 400 * MIN, HEAD - 2000, 'trade']], bf: { at: t0 - 600 * MIN, ok: true } } } }));
     const log = await run(kv, env, hist, 5), r = log.pools[P1];
     assert.equal(r.first, t0 - 600 * MIN, 'the record is the one it was'); assert.equal(r.fb, HEAD - 3000); assert.equal(r.ev.length, 2);
     assert.equal(r.ev[1][2], 'liquidity', 'the remove 200 blocks back, which the gap hid'); assert.ok(calls.length <= 8 && calls.every(([, b]) => b > HEAD - 300 && b <= HEAD), 'only the gap\'s blocks (' + calls.length + ' reads)');
   }
-  // old blocks that cannot be read: the record is what the ticks make of it, marked, and not asked again for half an hour
+  // old blocks that cannot be read: the record is what the ticks make of it, marked with why, said in the summary, and tried again after ten minutes, not at each tick
   {
-    reset(); block = HEAD;
+    reset(); block = HEAD; warned.length = 0;
     const kv = store(), calls = [], env = on(kv);
     let works = false;
-    const hist = histOf((id, b) => { if (!works) throw new Error('archive down'); return id === P1 ? chainFn('0:0:50')(b) : null; }, calls);
+    const hist = histOf((id, b) => { if (!works) throw new Error('rpc eth_call failed: rpc.mevblocker.io HTTP 403; mainnet.rpc.buidlguidl.com HTTP 429 at https://x.example/v2/SECRETKEY'); return id === P1 ? chainFn('0:0:50')(b) : null; }, calls);
     let log = await run(kv, env, hist, 0), t = kv.clock.now;
-    assert.equal(log.pools[P1].first, t, 'the record starts at the reading, as it did before'); assert.deepEqual(log.pools[P1].bf, { at: t, ok: false });
-    assert.equal(log.pools[P1].fb, HEAD);
+    assert.equal(log.pools[P1].first, t, 'the record starts at the reading, as it did before'); assert.equal(log.pools[P1].fb, HEAD);
+    assert.equal(log.pools[P1].bf.ok, false); assert.equal(log.pools[P1].bf.mode, 'new');
+    const said = (await ask(env)).obj.pools[0].activity.backfill;
+    assert.equal(said.ok, false); assert.match(said.err, /mevblocker.*HTTP 403.*buidlguidl.*HTTP 429/); assert.ok(!/SECRETKEY|x\.example/.test(JSON.stringify(said)), 'the reason is in the API, and without an address'); assert.equal(said.mode, 'new');
+    assert.ok(warned.some((w) => /\[farm-activity\].*not read: rpc eth_call failed/.test(w) && !/SECRETKEY/.test(w)), 'and in the log');
     const n = calls.length;
-    works = true; log = await run(kv, env, hist, 5);
-    assert.equal(calls.length, n, 'not asked again at the next tick');
-    log = await run(kv, env, hist, 5); assert.equal(calls.length, n, 'nor ten minutes on');
-    log = await run(kv, env, hist, 25), t = kv.clock.now;      // 35 minutes after the failure
-    assert.ok(calls.length > n, 'after the wait, again'); assert.deepEqual(log.pools[P1].bf, { at: t, ok: true }); assert.equal(log.pools[P1].fb, floor, 'the window before the record, now read');
-    assert.equal(log.pools[P1].ev.filter((e) => e[2] === 'liquidity').length, 2, 'the changes are all there');
+    works = true; log = await run(kv, env, hist, 5); assert.equal(calls.length, n, 'not asked again at the next tick');
+    log = await run(kv, env, hist, 5); assert.equal(calls.length, n, 'nor ten minutes on, to the minute');
+    log = await run(kv, env, hist, 5), t = kv.clock.now;      // 15 minutes after the failure (a tick sooner than the lease's four minutes does not run at all)
+    assert.ok(calls.length > n, 'after the wait, again'); assert.equal(log.pools[P1].bf.ok, true); assert.equal(log.pools[P1].bf.mode, 'prepend'); assert.equal(log.pools[P1].fb, HEAD - CHUNK_BLOCKS, 'the stretch before the record, now read');
+    assert.equal((await ask(env)).obj.pools[0].activity.backfill.ok, true, 'and the summary says it worked');
+    await fill(kv, env, hist, calls); assert.equal(readLog(await kv.get('farm:activity:v1')).pools[P1].ev.filter((e) => e[2] === 'liquidity').length, 2, 'the changes are all there in the end');
   }
-  // a pool made a day's three quarters ago: its record starts where it was first there
+  // a pool made 5400 blocks ago: its record starts where it was first there, and the reading stops there
   {
     reset(); block = HEAD;
     const kv = store(), calls = [], env = on(kv);
-    const hist = histOf((id, b) => (id === P1 ? chainFn(null, [[5400, '0:0:50'], ...steps.slice(1)])(b) : null), calls);      // made 5400 blocks back, then the later changes
-    const log = await run(kv, env, hist, 0), t = kv.clock.now;
-    assert.equal(log.pools[P1].fb, floor + 1800, 'the first coarse block the pool was there'); assert.equal(log.pools[P1].first, t - 5400 * BLOCK_MS);
-    assert.equal(log.pools[P1].ev.length, 3, 'its making is not a change; the three after it are');
+    const hist = histOf(P1chain(chainFn(null, [[5400, '0:0:50'], ...steps.slice(1)])), calls);      // made 5400 blocks back, then the later changes
+    await run(kv, env, hist, 0); await fill(kv, env, hist, calls);
+    const r = readLog(await kv.get('farm:activity:v1')).pools[P1], t = kv.clock.now;
+    assert.equal(r.fb, floor + 1800, 'the first coarse block the pool was there'); assert.equal(r.bf.full, true, 'and nothing earlier is looked for'); assert.equal(r.ev.length, 3, 'its making is not a change; the three after it are');
+    const n = calls.length; await run(kv, env, hist, 5); assert.equal(calls.length, n, 'no more reads once its beginning is reached');
   }
-  // no time left for the search: the same as a failure
+  // no time left for the search: the same as a failure, said as one
   {
     reset(); block = HEAD;
     const kv = store(), calls = [], env = on(kv), hist = { ...histOf((id, b) => chainFn('0:0:50')(b), calls), deadlineMs: -1 };
     const log = await run(kv, env, hist, 0);
-    assert.deepEqual(log.pools[P1].bf, { at: kv.clock.now, ok: false }); assert.equal(calls.length, 0, 'it stopped before reading');
+    assert.equal(log.pools[P1].bf.ok, false); assert.match(log.pools[P1].bf.err, /ran out of time/); assert.equal(calls.length, 0, 'it stopped before reading');
   }
-  // switched off: no old block is read, and the record starts at the reading
+  // switched off: no old block is read, and the record starts at the reading, with no status
   {
     reset(); block = HEAD;
     const kv = store(), calls = [], env = { REGISTRY_KV: kv, FARM_ACTIVITY_BACKFILL: '0' }, hist = histOf(() => '1:1:1', calls);
     const log = await run(kv, env, hist, 0);
     assert.equal(calls.length, 0); assert.equal(log.pools[P1].bf, undefined); assert.equal(log.pools[P1].first, kv.clock.now);
+    assert.equal((await ask(env)).obj.pools[0].activity.backfill, null, 'the summary says null: this server can read old blocks and has not');
   }
   console.warn = quiet;
 }
