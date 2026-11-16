@@ -24,8 +24,14 @@ interface IPermit {
 ///         anywhere, or burned in `VanityMarket.deploy` to put any contract at the address.
 ///
 ///         A listing fixes the id's nonce (which of the id's addresses the token stands for) and a price, nothing else; the vanity address it buys is in the
-///         `Listed` event and `VanityMarket.computeAddress(id, nonce)`. A listing is for one sale: a purchase removes it. The price is the owner's to set and
-///         change, so `buy` takes the most the buyer will pay and refuses a listing that has moved above it.
+///         `Listed` event and `VanityMarket.computeAddress(id, nonce)`. A listing is for one sale: a purchase removes it. The price and the nonce are the
+///         owner's to set and change, so `buy` names the nonce the buyer is paying for and the most they will pay, and refuses a listing that has moved
+///         from either, or a purchase that has waited past its deadline.
+///
+///         The owner can list, unlist, mint any unsold id of the shop's to anyone (`keep`) and change the treasury, at once and without limit: it is meant to
+///         be a multisig whose own delay is the brake. `renounceOwnership` is disabled, since a shop with no owner could never list or keep again; handing
+///         ownership to an address nobody controls would do the same, so it goes only to one that has been checked. The shop answers no signature query
+///         (ERC-1271) and has no fallback, so none of the market's signature paths (`permitForAll`, `claimGivenUpWithSig`, `mintAndBuyWithSig`) can act for it.
 contract VanityShop is Ownable {
     using SafeTransferLib for address;
 
@@ -49,9 +55,14 @@ contract VanityShop is Ownable {
     error NotThisShopsSalt();
     error AlreadyMinted();
     error BadListing();
+    error BadNonce();
+    error BadRecipient();
     error NotListed();
+    error ListingChanged();
     error PriceAboveMax();
-    error BadTreasury();
+    error Expired();
+    error CannotRenounce();
+    error BadAddress();
 
     event Listed(uint256 indexed id, address indexed vanity, uint8 nonce, uint128 price);
     event Unlisted(uint256 indexed id);
@@ -60,7 +71,7 @@ contract VanityShop is Ownable {
     event TreasurySet(address treasury);
 
     constructor(address owner_, address market, address tac, address treasury_) {
-        if (treasury_ == address(0)) revert BadTreasury();
+        if (owner_ == address(0) || market == address(0) || tac == address(0) || treasury_ == address(0) || treasury_ == address(this)) revert BadAddress();
         _initializeOwner(owner_);
         MARKET = IVanityMarket(market);
         TAC = tac;
@@ -74,7 +85,8 @@ contract VanityShop is Ownable {
     function list(Item[] calldata items) external onlyOwner {
         for (uint256 i; i < items.length; ++i) {
             Item calldata it = items[i];
-            if (it.price == 0 || it.nonce == type(uint8).max) revert BadListing();
+            if (it.price == 0) revert BadListing();
+            if (it.nonce == type(uint8).max) revert BadNonce();
             _check(it.id);
             listings[it.id] = Listing(it.price, it.nonce);
             emit Listed(it.id, MARKET.computeAddress(bytes32(it.id), it.nonce), it.nonce, it.price);
@@ -90,6 +102,8 @@ contract VanityShop is Ownable {
 
     /// Mints an id's token to `to` without a sale (the ones kept back): any id of this shop's, listed or not.
     function keep(uint256 id, uint8 nonce, address to) external onlyOwner {
+        if (nonce == type(uint8).max) revert BadNonce();
+        _checkRecipient(to);
         _check(id);
         delete listings[id];
         MARKET.mint(to, id, nonce);
@@ -97,31 +111,47 @@ contract VanityShop is Ownable {
     }
 
     function setTreasury(address treasury_) external onlyOwner {
-        if (treasury_ == address(0)) revert BadTreasury();
+        if (treasury_ == address(0) || treasury_ == address(this)) revert BadAddress();
         emit TreasurySet(treasury = treasury_);
     }
 
     // ---- buyers ----
 
-    /// Buys a listed id: TAC from the caller (who has approved this shop) to the treasury, the token to `to`.
-    function buy(uint256 id, address to, uint256 maxPrice) external {
-        _buy(id, to, maxPrice);
+    /// Buys a listed id: TAC from the caller (who has approved this shop) to the treasury, the token to `to`. `nonce` is the one the buyer was shown (it
+    /// fixes the address the token stands for) and `maxPrice` the most they will pay: a listing that has changed either way since is refused, and so is a
+    /// purchase that lands after `deadline`.
+    function buy(uint256 id, address to, uint8 nonce, uint256 maxPrice, uint256 deadline) external {
+        if (block.timestamp > deadline) revert Expired();
+        _buy(id, to, nonce, maxPrice);
     }
 
-    /// The same with TAC's EIP-2612 permit (for `maxPrice`) in one transaction. A permit someone else already used is not an error while the allowance stands.
-    function buyWithPermit(uint256 id, address to, uint256 maxPrice, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external {
+    /// The same with TAC's EIP-2612 permit (for `maxPrice`, with the same `deadline`) in one transaction. A permit someone else already used is not an error
+    /// while the allowance stands.
+    function buyWithPermit(uint256 id, address to, uint8 nonce, uint256 maxPrice, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external {
+        if (block.timestamp > deadline) revert Expired();
         try IPermit(TAC).permit(msg.sender, address(this), maxPrice, deadline, v, r, s) {} catch {}
-        _buy(id, to, maxPrice);
+        _buy(id, to, nonce, maxPrice);
     }
 
-    function _buy(uint256 id, address to, uint256 maxPrice) internal {
+    function _buy(uint256 id, address to, uint8 nonce, uint256 maxPrice) internal {
         Listing memory l = listings[id];
         if (l.price == 0) revert NotListed();
+        if (l.nonce != nonce) revert ListingChanged();
         if (l.price > maxPrice) revert PriceAboveMax();
+        _checkRecipient(to);
         delete listings[id];
         TAC.safeTransferFrom(msg.sender, treasury, l.price);
         MARKET.mint(to, id, l.nonce);
         emit Sold(id, to, msg.sender, l.price);
+    }
+
+    /// A token sent to the shop, the market or TAC could never be moved again.
+    function _checkRecipient(address to) internal view {
+        if (to == address(this) || to == address(MARKET) || to == TAC) revert BadRecipient();
+    }
+
+    function renounceOwnership() public payable override onlyOwner {
+        revert CannotRenounce();
     }
 
     function _check(uint256 id) internal view {

@@ -81,14 +81,26 @@ export function refuses(url, method, params, head = null) {
 
 const WALLET_READS = new Set(['eth_call', 'eth_getBalance', 'eth_gasPrice', 'eth_blockNumber', 'eth_getCode', 'eth_getStorageAt', 'eth_getLogs',
   'eth_getTransactionReceipt', 'eth_getTransactionByHash', 'eth_getTransactionCount', 'eth_getBlockByNumber', 'eth_maxPriorityFeePerGas']);
+// The wallet is a read node of last resort, never a flood: its extension answers these reads and shows its sign prompts from one queue, so a page that spilled dozens of reads into it
+// (public nodes slow or limited puts the wallet first in the hedge order, and a pool scan asks for hundreds) saw its sign-in popup take 20 to 30 seconds. At most WALLET_LIVE reads are
+// with the wallet at once, counted across every node the page makes (one wallet, one queue): a read over that is left to the public nodes, and a read the wallet never answers frees its place
+// after WALLET_HOLD_MS.
+const WALLET_LIVE = 2, WALLET_HOLD_MS = 30e3;
+let walletLive = 0;
 export function walletNode(get) {
   return {
     id: 'wallet',
     usable: (m, p) => {
       const w = get();
-      return !prompts.promptOpen?.() && WALLET_READS.has(m) && typeof w?.request === 'function' && !w.isWalletConnect && !(m === 'eth_call' && (p[0]?.gas || p[2]));
+      return walletLive < WALLET_LIVE && !prompts.promptOpen?.() && WALLET_READS.has(m) && typeof w?.request === 'function' && !w.isWalletConnect && !(m === 'eth_call' && (p[0]?.gas || p[2]));
     },
-    send: (m, p) => get().request({ method: m, params: p }),
+    send: (m, p) => {
+      walletLive++;
+      let freed = false;
+      const free = () => { if (!freed) { freed = true; walletLive--; } };
+      const hold = setTimeout(free, WALLET_HOLD_MS);
+      try { return Promise.resolve(get().request({ method: m, params: p })).finally(() => { clearTimeout(hold); free(); }); } catch (e) { clearTimeout(hold); free(); throw e; }
+    },
   };
 }
 
