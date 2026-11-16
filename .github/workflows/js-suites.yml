@@ -1,0 +1,84 @@
+name: Worker + relay suites
+permissions:
+  contents: read
+
+# The JS suites for the worker and the relay, on a clean checkout, cut off from the internet.
+#
+# WHY THIS EXISTS: until 2026-11-16 nothing ran these. Two suites had been red for weeks and no one knew —
+# tests/relay-self-funding.test.mjs for six (31 of its checks died on an `export` added inside a span it
+# evaluates, and an assertion still demanded a fee policy the relay dropped on 11-05), and
+# tests/free-relay-cheap-gas.test.mjs because one case's gas price was served to the next from an eight-second
+# cache. Neither was a product fault: both were tests decaying against code that had moved on. That is the
+# failure this gate is for — it catches rot, which is invisible precisely because nobody is looking.
+#
+# OFFLINE ON PURPOSE (tools/noweb.cjs): a suite that reaches a public node passes on a good day and fails on a
+# bad one, and a gate that fails for reasons unrelated to the diff is one people learn to ignore. Suites that
+# genuinely need the live chain are named, with reasons, in tools/run-js-suites.mjs SKIP; the mainnet canary
+# keeps its own schedule in canary.yml, where an unreachable host is inconclusive rather than a failure.
+#
+# Everything matching the runner's patterns runs. A new suite is covered the moment it is added — a list of
+# suites to RUN would rot exactly the way the two above did.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker/**'
+      - 'worker-relay/**'
+      - 'tests/**'
+      - 'tools/run-js-suites.mjs'
+      - 'tools/noweb.cjs'
+      - '.github/workflows/js-suites.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'worker/**'
+      - 'worker-relay/**'
+      - 'tests/**'
+      - 'tools/run-js-suites.mjs'
+      - 'tools/noweb.cjs'
+      - '.github/workflows/js-suites.yml'
+  workflow_dispatch:
+
+# A later push supersedes a run still going for the same ref: the verdict that matters is the newest one.
+concurrency:
+  group: js-suites-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suites:
+    name: Worker + relay suites (offline)
+    runs-on: ubuntu-latest
+    # About 40 minutes of suites, so ~20-25 min two at a time; the cap leaves room rather than cutting a run short.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      # Three npm packages, and the suites resolve against all three: a tests/ suite reads the repo root's
+      # node_modules by path, while worker-relay's own suites import bare specifiers (viem, better-sqlite3)
+      # from theirs. `npm ci` honours each lockfile; a failure here is a dependency problem, not a test one.
+      - name: Install (root)
+        run: npm ci --no-audit --no-fund
+      - name: Install (tests)
+        run: npm ci --no-audit --no-fund
+        working-directory: tests
+      - name: Install (worker-relay)
+        run: npm ci --no-audit --no-fund
+        working-directory: worker-relay
+
+      - name: List what runs
+        run: node tools/run-js-suites.mjs --list
+
+      # --jobs 2 and a long per-suite cap on purpose. These suites are CPU-bound (proving, fuzzing, parity
+      # checks), so running more of them at once than the runner has cores does not finish sooner — it starves
+      # each one until it trips the cap, and a timeout says nothing about the diff. Measured on a loaded laptop
+      # (load ~40, 4 jobs): suites that take 11-50 s idle ran past 180 s. If this job reports timeouts, lower
+      # --jobs or raise --timeout before suspecting the suites.
+      - name: Run the suites
+        run: node tools/run-js-suites.mjs --offline --jobs 2 --timeout 300
