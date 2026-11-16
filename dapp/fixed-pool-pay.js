@@ -1,4 +1,4 @@
-// The large-pool part of the Pay page's Deposit tab (Ethereum, off until the page is opened with ?fixed=1).
+// The large-pool part of the Pay page's Deposit tab (Ethereum; on, and ?fixed=0 turns it off in a browser).
 //
 // Two cards under the deposit form:
 //   - an amount from a whole note up goes into the large pools in whole notes (the pool takes only those sizes) and
@@ -29,6 +29,14 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const WALLET_METHODS = new Set(['eth_signTypedData_v4', 'eth_sendTransaction', 'wallet_sendCalls', 'wallet_getCallsStatus', 'wallet_getCapabilities']);
 const SMALLEST = [{ wei: DEFAULT_MIN_DENOMINATION, label: '1 ETH' }, { wei: 10n ** 17n, label: '0.1 ETH' }, { wei: 0n, label: 'off' }];
+// What the cards do, in plain words: why a large amount is split, what a note is, how it comes out, and why to wait. Shown at the top of the notes card,
+// which is on the Deposit tab for ETH on Ethereum whatever is typed, closed until it is opened.
+const HOW_IT_WORKS = `<details class="lg-how" style="margin:0 0 12px"><summary style="cursor:pointer">How large amounts work</summary>
+  <p class="note">A large deposit would stand out in Tacit's pool, which is still young. So an amount of a whole note or more is split: whole notes (1, 10 or 100 ETH, or 0.1 ETH if you choose that) go from your wallet into large pools where every deposit is the same size, and what is left goes into your private balance. One press does both.</p>
+  <p class="note">A note is yours alone. Its secret comes from a signature of your wallet, so there is nothing to save: <b>Find</b> brings your notes back on any device with the same wallet.</p>
+  <p class="note">To take a note out, send it to any address or into your private balance. Its gas is paid from the note (a small fee, at most ${MAX_FEE_PERCENT}%) or from your wallet, which then shows as the sender. The longer a note sits, and the more deposits come after it, the better it hides, so avoid taking it out right away.</p>
+  <p class="note">Going the other way, <b>Withdraw</b> makes notes from your private balance, and takes whole notes first when you withdraw a large amount.</p>
+</details>`;
 const MIN_KEY = (chainId) => `tacit-fixed-min:${chainId}`;
 const GAS_KEY = (chainId) => `tacit-fixed-gas:${chainId}`;
 const readGas = (store, chainId) => { try { return store.get(GAS_KEY(chainId)) === 'wallet' ? 'wallet' : 'note'; } catch { return 'note'; } };
@@ -219,6 +227,7 @@ export function attach(env) {
         <b>${gone ? '' : `<button class="link" type="button" data-move="${i}">Move into Tacit</button> <button class="link" type="button" data-out="${i}">Withdraw</button>`}</b></div>`;
     }).join('');
     notesHost.innerHTML = `<div class="blk" style="margin-top:22px;padding-top:14px;border-top:1px solid var(--hair)">
+      ${HOW_IT_WORKS}
       <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lg-find">${account ? 'Find' : 'Connect wallet'}</button> · <button class="link" type="button" id="lg-paste">Paste a note</button></span></div>
       ${rows || '<p class="note">None found in this browser. Find looks through this wallet\'s deposits and asks for a signature for each number it tries. A note from anywhere else can be pasted.</p>'}
       <div id="lg-ask" hidden></div>
@@ -336,7 +345,7 @@ export function attach(env) {
 }
 
 
-// The notes block of the Withdraw form (Ethereum, ?fixed=1): the unspent notes this wallet holds in the large pools, which the form
+// The notes block of the Withdraw form (Ethereum): the unspent notes this wallet holds in the large pools, which the form
 // counts first for an amount of a whole note or more (`planExit`); the rest of the amount comes from the private balance, through
 // the page. `exit` sends the chosen notes to an address one after the other, each with its gas paid from the note. Whatever the
 // fee turns out to be, a note is only sent if it is within the ceiling the form states (MAX_FEE_PERCENT of the note), so the
@@ -425,7 +434,7 @@ export function attachWithdraw(env) {
 }
 
 
-// The way in, under the Withdraw form (Ethereum, ?fixed=1): whole notes made from the private balance. One private spend into the router's
+// The way in, under the Withdraw form (Ethereum): whole notes made from the private balance. One private spend into the router's
 // call escrow, whose calls are the large pools' deposits, so no wallet's ETH passes: the relay sends it (one note a transaction, since a deposit
 // takes about a million gas and the relay's cap is 1.5 million), or the wallet does (no cap, all the notes in one transaction, the wallet shows as
 // the sender and pays the gas). If any call fails the whole transaction reverts and nothing is spent. The note numbers come from the wallet's
@@ -553,7 +562,7 @@ export function attachIntake(env) {
 }
 
 
-// The deposit-address row of the exchange-deposit panel (Ethereum, ?fixed=1): the owner's primary name can carry the deposit address,
+// The deposit-address row of the exchange-deposit panel (Ethereum): the owner's primary name can carry the deposit address,
 // so that anyone can pay "name.wei" in plain ETH from a Tacit page (the record is signed with the view key, and checked by payers).
 // `env` is what the page owns: the wallet, a node for names, one that can send, the wallet's own box key and the address it shows.
 export function attachName(env) {

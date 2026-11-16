@@ -226,6 +226,18 @@ await test('an amount under a whole note shows no card; a large one shows the sp
   assert.equal((await page.locator('#lg-go').innerText()).trim(), 'Connect wallet');
   await shot(page, 'split');
 });
+await test('the notes card opens with an explainer, closed until opened, in plain words and with the fee ceiling the exit enforces', async () => {
+  const d = page.locator('#notes details.lg-how');
+  assert.equal(await d.count(), 1);
+  assert.equal(await d.evaluate((el) => el.open), false, 'closed at first');
+  assert.match(await page.locator('#notes summary').innerText(), /How large amounts work/);
+  await page.click('#notes summary');
+  assert.equal(await d.evaluate((el) => el.open), true);
+  const t = await d.innerText();
+  assert.match(t, /stand out in Tacit's pool/); assert.match(t, /Find/); assert.match(t, /at most 3%/); assert.match(t, /avoid taking it out right away/);
+  assert.doesNotMatch(t, /tornado/i, 'the product is not named');
+  await page.click('#notes summary');
+});
 await test('the smallest note can be lowered to 0.1 ETH', async () => {
   await typeAmount('0.35');
   assert.equal(await page.locator('#lg-go').count(), 0);
