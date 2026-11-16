@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-wH8HjjFOO3yXyx1Zuk54zQLIhXsfhfJugykUd+NHGJI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-EG0EjgffCaRNpLLIQKUmIwaot/n9o6ZZalgq2ZvHFmU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -2847,7 +2847,7 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=75f72500');
+    const m = await import('/fixed-pool-pay.js?cb=b9e8bf95');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2864,7 +2864,7 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=75f72500');
+    const m = await import('/fixed-pool-pay.js?cb=b9e8bf95');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
@@ -2887,7 +2887,7 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=75f72500');
+    const m = await import('/fixed-pool-pay.js?cb=b9e8bf95');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2907,7 +2907,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=75f72500');
+    const m = await import('/fixed-pool-pay.js?cb=b9e8bf95');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -2975,8 +2975,10 @@ function formDeposit(f) {
   } else {
     mount(f, html`${seg}
       ${amountField('f-damt', 'Amount', S.wallet ? html`<button type="button" id="f-max" disabled title="Reading your wallet’s balance on ${c.full}">Wallet <span id="f-wb" class="num"><span class="sk" style="--w:5ch"></span></span> ETH</button>` : html`<button type="button" id="f-conn">Connect wallet</button>`)}
-      <div class="lbl"><span>To</span><span>yourself, unless you name someone</span></div>
-      <div class="amt text"><input id="f-dto" placeholder="Yourself, or an address" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Deposit to"></div>
+      <details class="else"${DRAFT['f-dto'] ? ' open' : ''}><summary class="more" style="cursor:pointer">Deposit to someone else</summary>
+        <div class="lbl"><span>To</span><span>a name or an address</span></div>
+        <div class="amt text"><input id="f-dto" placeholder="A name or an address" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Deposit to"></div>
+      </details>
       <div class="rcpt" id="f-rcpt" role="status" hidden></div>
       <button class="btn" type="button" id="f-go" aria-describedby="f-rcpt" disabled>${S.wallet ? 'Deposit privately' : 'Connect wallet'}</button>
       <p class="note">Proved on this device. You pay the network fee, with no relay fee. The deposit and your wallet show on chain; whose balance it lands in does not.</p>${LARGE_ON && c.chainId === 1 ? html`<div id="lg-split"></div><div id="lg-notes"></div>` : ''}`);

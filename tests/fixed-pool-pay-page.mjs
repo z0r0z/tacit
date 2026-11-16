@@ -467,6 +467,7 @@ await test('Deposit: to someone else the notes are not used, and the form says s
   await unlock(page);
   await page.fill('#f-damt', '2.5');
   await page.waitForFunction(() => /2 whole notes/.test(document.querySelector('#f-go')?.textContent || ''));
+  await page.click('summary:has-text("Deposit to someone else")');
   await page.fill('#f-dto', 'ross.wei');
   await page.waitForFunction(() => /Deposit to them privately/.test(document.querySelector('#f-go')?.textContent || ''), null, { timeout: 30000 });
   assert.match(await page.locator('#f-rcpt').innerText(), /Whole notes are for your own balance/);
@@ -545,7 +546,8 @@ await test('Withdraw: whole notes from the private balance: the plan and the rel
   await unlock(page);
   await page.evaluate(() => { window.__fakeIntake = true; });
   await page.click('#tab-withdraw');
-  await page.waitForSelector('#li-amt', { timeout: 30000 });
+  await page.waitForSelector('#li-amt', { state: 'attached', timeout: 30000 });
+  await page.click('#lg-in summary');
   await page.fill('#li-amt', '2.5');
   await page.waitForFunction(() => /Relay fee\s*up to 0\.000125 ETH/.test(document.querySelector('#lg-in')?.textContent || ''), null, { timeout: 30000 });
   const t = await page.locator('#lg-in').innerText();
@@ -567,7 +569,8 @@ await test('Withdraw: the relay path sends one note a transaction, priced for it
   await unlock(page);
   await page.evaluate(() => { window.__fakeIntake = true; });
   await page.click('#tab-withdraw');
-  await page.waitForSelector('#li-amt', { timeout: 30000 });
+  await page.waitForSelector('#li-amt', { state: 'attached', timeout: 30000 });
+  await page.click('#lg-in summary');
   await page.fill('#li-amt', '2');
   await page.waitForFunction(() => /Relay fee/.test(document.querySelector('#lg-in')?.textContent || '') && !document.querySelector('#li-go')?.disabled, null, { timeout: 30000 });
   await page.click('#li-go');
@@ -579,7 +582,8 @@ await test('Withdraw: a relay that will not quote the gas of a note sends the no
   const { ctx, page } = await open({ search: '?fixed=1', payWrap: true, keeper: QUOTE, keeperCap: 1000000, notes: [10n * ETH] });
   await unlock(page);
   await page.click('#tab-withdraw');
-  await page.waitForSelector('#li-amt', { timeout: 30000 });
+  await page.waitForSelector('#li-amt', { state: 'attached', timeout: 30000 });
+  await page.click('#lg-in summary');
   await page.fill('#li-amt', '2');
   await page.waitForFunction(() => /The relay cannot send this one \(gas above the 1000000 cap\), so your wallet does/.test(document.querySelector('#lg-in')?.textContent || ''), null, { timeout: 30000 });
   assert.equal(await page.locator('#li-via').inputValue(), 'wallet');
@@ -611,7 +615,8 @@ await test('"1,5" is 1.5 ETH in the deposit plan and the way in as it is on the 
   assert.equal((await page.locator('#lg-split').innerText()).trim(), '', 'nothing is planned for an amount the form does not take');
   assert.match(await page.locator('#f-go').innerText(), /^Deposit privately$/);
   await page.click('#tab-withdraw');
-  await page.waitForSelector('#li-amt', { timeout: 30000 });
+  await page.waitForSelector('#li-amt', { state: 'attached', timeout: 30000 });
+  await page.click('#lg-in summary');
   await page.fill('#li-amt', '1,5');
   await page.waitForFunction(() => /1 × 1 ETH/.test(document.querySelector('#lg-in')?.textContent || ''), null, { timeout: 30000 });
   const t = await page.locator('#lg-in').innerText();

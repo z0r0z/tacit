@@ -238,6 +238,11 @@ await test('the notes card opens with a short explainer that names Tornado Cash,
   assert.ok(t.split(/\s+/).length < 110, 'short: ' + t.split(/\s+/).length + ' words');
   await page.click('#notes summary');
 });
+await test('with no notes the card has no gas picker (nothing to take out yet), and Find and Paste are there', async () => {
+  assert.equal(await page.locator('#notes #lg-gas').count(), 0);
+  assert.equal(await page.locator('#notes #lg-find').count(), 1); assert.equal(await page.locator('#notes #lg-paste').count(), 1);
+  assert.doesNotMatch(await page.locator('#notes').innerText(), /Paid from/);
+});
 await test('the smallest note can be lowered to 0.1 ETH', async () => {
   await typeAmount('0.35');
   assert.equal(await page.locator('#lg-go').count(), 0);
@@ -553,7 +558,9 @@ await test('the same choice in the Withdraw block: a stored note goes out from t
 // ---- the way in: whole notes from the private balance ----
 const inText = () => page.locator('#in').innerText();
 const intents = () => page.evaluate(() => window.__intents);
-const typeIn = async (v) => { await page.fill('#li-amt', v); };
+// the form to make notes is one line until it is opened
+const openIntake = () => page.evaluate(() => { const d = document.querySelector('#in details'); if (d && !d.open) d.open = true; });
+const typeIn = async (v) => { await openIntake(); await page.fill('#li-amt', v); };
 await test('Into whole notes: the plan and the relay\'s fee show for an amount, priced for one note\'s gas, and the relay is the default', async () => {
   await page.reload(); await page.waitForFunction(() => window.__ready === true);
   await page.evaluate((k) => { localStorage.removeItem(k); }, NOTES_KEY);
@@ -588,7 +595,7 @@ await test('by the relay the notes go one to a transaction: each spend is one de
 });
 await test('from the wallet all the notes go in one transaction, with the escrow paying each deposit, and the wallet is named as the sender', async () => {
   await page.evaluate(() => { window.__intents.length = 0; });
-  await page.selectOption('#li-via', 'wallet');
+  await openIntake(); await page.selectOption('#li-via', 'wallet');
   await typeIn('2.5');
   assert.match(await inText(), /Sent by\s+your wallet: it pays the gas and shows as the sender/);
   await page.click('#li-go');
@@ -628,7 +635,7 @@ await test('a send that fails with nothing landed keeps its error and says where
   await page.evaluate(() => { window.__sendFailAt = null; });
 });
 await test('a refused second spend leaves the first note in the pool and kept, and the message says how far it got', async () => {
-  await page.selectOption('#li-via', 'relay');
+  await openIntake(); await page.selectOption('#li-via', 'relay');
   await page.evaluate(() => { window.__intents.length = 0; window.__sendFailAt = 2; });
   const before = (await keptNotes()).length;
   await typeIn('2.5');
