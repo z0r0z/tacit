@@ -28651,7 +28651,10 @@ async function placeBoundBid({ assetIdHex, amount, priceSats, expiry, decimals =
   const bid = await publishBidIntent({ assetIdHex: aid, amount, priceSats, expiry, bound: true, skipOverCommitCheck: true });
   const bidId = bid?.bid_id || bid?.bidId || bid?.id;
   if (!/^[0-9a-f]{32}$/.test(String(bidId || ''))) throw new Error('the bid was posted but its id was not returned');
-  const wt = await registerWatchtowerBid({ assetIdHex: aid, bidIdHex: bidId, amountBase: amount, priceSats, decimals, expiry, feeBudgetSats, kind: 'bound', selfTake });
+  // a bid that could not be funded (the wallet holds less than its price and fee budget) is not left on the book
+  let wt;
+  try { wt = await registerWatchtowerBid({ assetIdHex: aid, bidIdHex: bidId, amountBase: amount, priceSats, decimals, expiry, feeBudgetSats, kind: 'bound', selfTake }); }
+  catch (e) { await cancelBidIntent(aid, bidId).catch(() => {}); throw e; }
   return { bid_id: bidId, self_take: !!selfTake, ...wt };
 }
 // The bid key of this wallet's bid with this x-only key (an offer names the bid by it).
