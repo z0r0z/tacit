@@ -2,6 +2,7 @@ import { sha256, keccak_256, hmac, concatBytes, secp } from './vendor/tacit-deps
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from './vendor/tacit-poseidon.min.js';
 import { makeChainWallet, hopOp, poolOp, worthOf, sharesFor, sharesToPay, poolShare } from './tacit-chain-wallet.js';
 import { makeChainMemoWorkers } from './confidential-chain-memo-workers.js';
+import { chainSeed } from './tacit-chain-lane.js';
 
 export const UNIT = 10n ** 10n;
 const te = new TextEncoder();
@@ -20,7 +21,7 @@ const SHIELD_AHEAD_MS = 3 * 60e3;
 
 export const keyMessage = (key, address) => sha256(concatBytes(te.encode('tacit-chain-key-v1'), key, address));
 
-export const chainSeed = (priv) => hmac(sha256, priv, te.encode('tacit-chain-seed-v1'));
+export { chainSeed };
 
 export function sharesWorth(units, rate) {
   let n = sharesFor(units, rate, 0n);
