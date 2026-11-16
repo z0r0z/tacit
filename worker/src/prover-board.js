@@ -78,6 +78,11 @@ export const PROVER_BOARD = Object.freeze({
   drawMinMs: 20_000,
   drawNewMs: 45_000,
   drawMaxSecs: 60,
+  // Past drawHedgeFactor times its usual time (at least drawHedgeMinMs; drawNewHedgeMs for a machine with no record) the drawn machine is
+  // joined by the race but keeps its claim, so a slow draw costs a user little and the drawn machine still wins if it is first.
+  drawHedgeFactor: 1.5,
+  drawHedgeMinMs: 10_000,
+  drawNewHedgeMs: 30_000,
   communityRacers: 8,                                  // community machines racing one job at most
   communityPrograms: Object.freeze(['confidential', 'btc-state', 'tacit-block']), // what a community machine may race, when it says it proves it
   communityOpen: 1,                                    // jobs one community machine races at a time
@@ -492,12 +497,22 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
         let turnMs = null;
         if (drawHeld(j)) {
           if (j.drawn) {
-            // its machine is proving it, or its answer waits on the relay's check: no one else's yet
-            if (racers.includes(j.drawn) || (j.race || []).some((c) => c.worker === j.drawn)) continue;
-            // its time ran out unanswered: the race's, and the place goes after the others
-            j.drawOpen = true;
-            await mark(j.drawn, 'lapsed');
-            await troubled(placeOf(j, j.drawn));
+            // its answer waits on the relay's check: no one else's yet
+            if ((j.race || []).some((c) => c.worker === j.drawn)) continue;
+            if (racers.includes(j.drawn)) {
+              // its machine is proving it: alone until drawHedgeFactor times its usual time, then the race joins it (a user is waiting)
+              // while it keeps its claim and is paid if it answers first. Slow is not a lapse: its place keeps its standing.
+              ws = ws || await workers();
+              const d = ws[j.drawn];
+              const hedge = d && d.blocks && d.blockSecs > 0 ? Math.max(PROVER_BOARD.drawHedgeMinMs, PROVER_BOARD.drawHedgeFactor * d.blockSecs * 1000) : PROVER_BOARD.drawNewHedgeMs;
+              if (clock() - ((j.racedAt || {})[j.drawn] || 0) < hedge) continue;
+              j.drawOpen = true;
+            } else {
+              // its time ran out unanswered: the race's, and the place goes after the others
+              j.drawOpen = true;
+              await mark(j.drawn, 'lapsed');
+              await troubled(placeOf(j, j.drawn));
+            }
           } else if (clock() - (j.postedAt || 0) >= PROVER_BOARD.drawOfferMs) {
             j.drawOpen = true;                                           // the drawn machine never came for it
           } else {
@@ -555,9 +570,12 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   // has a record). drawWinner picks by the job's id. The machine's name, or null when no one waits.
   function drawPick(ws, open, j, troubles = {}) {
     const t = clock(), busy = new Set(open.flatMap(liveRacers));
-    const ok = ([n, w]) => w.community && (w.programs || []).includes(j.program) && t - (w.lastSeen || 0) < PROVER_BOARD.turnSeenMs
-      && !busy.has(n) && !(j.raced || []).includes(n) && !(w.client && troubles[w.client] != null && t - troubles[w.client] < PROVER_BOARD.turnTroubleMs);
     const usual = (w) => (w.blocks && w.blockSecs > 0 ? w.blockSecs : Infinity);
+    // A machine with no block record draws only once the board has taken a proof from it: a ticket costs a waiting user time when it is not
+    // answered, and an address that has proved nothing (one of a swarm of connections, say) has shown no machine behind it.
+    const ok = ([n, w]) => w.community && (w.programs || []).includes(j.program) && t - (w.lastSeen || 0) < PROVER_BOARD.turnSeenMs
+      && !busy.has(n) && !(j.raced || []).includes(n) && !(w.client && troubles[w.client] != null && t - troubles[w.client] < PROVER_BOARD.turnTroubleMs)
+      && (usual(w) < Infinity || (w.proved || 0) >= 1);
     const byPlace = new Map();
     for (const [n, w] of Object.entries(ws).filter(ok)) {
       const p = w.client || n, had = byPlace.get(p);

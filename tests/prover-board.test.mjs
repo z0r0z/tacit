@@ -850,6 +850,8 @@ test('batches by record: a machine is timed per MB of input, so a bigger batch g
 const blockOn = (b) => { let k = 0; return () => b.post({ class: 'public', program: 'tacit-block', stdin: Buffer.from(`block ${++k} ${t}`).toString('base64'), cycleLimit: 1e8, gasLimit: 1e9, deadline: now() / 1000 + 900 }); };
 const drawBoard = (extra = {}) => { const st = store(); return { st, b: makeProverBoard({ storage: st, now, cfg: { ...PROVER_BOARD, drawPct: 100, drawNew: 15, ...extra } }) }; };
 const askBlock = (b, w) => b.claim({ worker: w, classes: ['public'], programs: ['tacit-block'] });
+// seen by the board, each with a proof already taken from it (an address that has proved nothing holds no ticket)
+const ready = async (st, b, machines) => { for (const w of machines) await askBlock(b, w); const ws = await st.getWorkers(); for (const w of machines) ws[w.name].proved = 1; await st.putWorkers(ws); };
 
 test('draw: a ticket wins in proportion to its weight, the same winner for every reader, and a block goes by draw at the share set', () => {
   let fast = 0;
@@ -871,7 +873,7 @@ test('draw: off by default, a block is raced as before', async () => {
   t = 20_000_000;
   const st = store(), b = makeProverBoard({ storage: st, now }), block = blockOn(b);
   const x = gpu('d1'), y = gpu('e2');
-  await askBlock(b, x); await askBlock(b, y);
+  await ready(st, b, [x, y]);
   const j = await block();
   assert.equal((await askBlock(b, x)).jobId, j.jobId);
   assert.equal((await askBlock(b, y)).jobId, j.jobId, 'both race it');
@@ -879,9 +881,9 @@ test('draw: off by default, a block is raced as before', async () => {
 
 test('draw: the block is held for the drawn machine, which proves it and earns a record; the summary shows it', async () => {
   t = 21_000_000;
-  const { b } = drawBoard(), block = blockOn(b);
+  const { st, b } = drawBoard(), block = blockOn(b);
   const x = gpu('d1'), y = gpu('e2');
-  await askBlock(b, x); await askBlock(b, y);
+  await ready(st, b, [x, y]);
   const j = await block();
   const gx = await askBlock(b, x), gy = await askBlock(b, y);
   assert.equal([gx, gy].filter(Boolean).length, 1, 'one machine is drawn');
@@ -901,7 +903,7 @@ test('draw: a drawn machine that lets the block lapse, gives it back or answers 
   for (const how of ['lapse', 'error', 'bad']) {
     const { st, b } = drawBoard(), block = blockOn(b);
     const x = gpu('d1'), y = gpu('e2');
-    await askBlock(b, x); await askBlock(b, y);
+    await ready(st, b, [x, y]);
     const j = await block();
     const gx = await askBlock(b, x), gy = await askBlock(b, y);
     const [won, other] = gx ? [x, y] : [y, x];
@@ -920,9 +922,9 @@ test('draw: a drawn machine that lets the block lapse, gives it back or answers 
 
 test('draw: a drawn machine that never comes for the block leaves it to the race after drawOfferMs', async () => {
   t = 23_000_000;
-  const { b } = drawBoard(), block = blockOn(b);
+  const { st, b } = drawBoard(), block = blockOn(b);
   const x = gpu('d1'), y = gpu('e2');
-  await askBlock(b, x); await askBlock(b, y);
+  await ready(st, b, [x, y]);
   let j = null;
   for (let i = 0; i < 40 && !j; i++) {
     const c = await block();
@@ -945,6 +947,7 @@ test('draw: odds follow speed, places without a record share their slice, and on
       const { st, b } = drawBoard(), block = blockOn(b);
       for (const w of machines) await askBlock(b, w);
       const ws = await st.getWorkers();
+      for (const w of machines) ws[w.name].proved = 1;
       for (const [name, secs] of Object.entries(records)) Object.assign(ws[name], { blocks: 3, blockSecs: secs });
       await st.putWorkers(ws);
       for (let i = 0; i < Math.min(40, n - done); i++) {
@@ -970,4 +973,30 @@ test('draw: odds follow speed, places without a record share their slice, and on
   const slowest = gpu('c9');
   const cut = await tally([fast, slowest], { [fast.name]: 5, [slowest.name]: PROVER_BOARD.drawMaxSecs + 1 });
   assert.equal(cut[slowest.client] || 0, 0, 'a machine slower than drawMaxSecs is left to the race');
+});
+
+test('draw: an address that has proved nothing on the board holds no ticket, so the block is raced as before', async () => {
+  t = 25_000_000;
+  const { b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1'), y = gpu('e2');
+  await askBlock(b, x); await askBlock(b, y);                     // seen, never proved anything
+  const j = await block();
+  assert.equal((await askBlock(b, x)).jobId, j.jobId);
+  assert.equal((await askBlock(b, y)).jobId, j.jobId, 'no one to draw: both race it');
+});
+
+test('draw: past 1.5 times its usual time the race joins the drawn machine, which keeps its claim, can still win, and is not marked down', async () => {
+  t = 26_000_000;
+  const { st, b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1'), y = gpu('e2');
+  await ready(st, b, [x, y]);
+  const j = await block();
+  const gx = await askBlock(b, x), gy = await askBlock(b, y);
+  const [won, other] = gx ? [x, y] : [y, x];
+  t += PROVER_BOARD.drawNewHedgeMs - 1;
+  assert.equal(await askBlock(b, other), null, 'alone until its hedge time');
+  t += 2;
+  assert.equal((await askBlock(b, other)).jobId, j.jobId, 'then the race joins it');
+  assert.deepEqual(await answer(b, won, j.jobId), { ok: true, status: 'proved' }, 'the drawn machine answers first and is paid');
+  assert.equal((await st.getTrouble())[won.client], undefined, 'slow is not a lapse: its place keeps its standing');
 });
