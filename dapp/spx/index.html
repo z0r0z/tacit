@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-JOYIo0sQC8Z1rB28+VyGsHY/xMwjWo1Lsaz44BA571w=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-M8GyBUJH7XTxwhU3w24dRu1+sh6OS7PAXLkqruTT1BA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -12400,6 +12400,12 @@ function hxSub() {
   const view = !units && !HX.amt && hxSizesOn() ? hxSizesView() : v ? html`≈ ${v}` : html``;
   if (el.__h !== view.s) { el.__h = view.s; mount(el, view); }
 }
+// The fee row of the 'Move ETH into tETH' card: the relay's fee for a move (the quote the press caps its fee by), or that the wallet sends it with no relay fee
+// ('self'); until the quote is read the row says 'shown next'.
+function hxMoveRows(h, fee) {
+  const row = fee === 'self' ? ['Sent from', `${your()}, no relay fee`] : fee ? ['Relay fee', `about ${fmt(fee, 18, 6)} ETH`, '', 'Paid from your private balance, on top of the amount'] : null;
+  return row ? { ...h, rc: h.rc.map((r) => (r[0] === 'Relay fee' ? row : r)) } : h;
+}
 function hxHandoff(m, units) {
   const dec = hxDec(), amt = units ? fmt(units, dec, dec === 6 ? 2 : 6) : null, ch = hxChain(), n = (u) => `${amt ? `${amt} ` : ''}${u}`;
   const deposit = (u, on) => [['Arrives', n(`${u}, for payments`)], ['Fee', 'the network fee only', '', `Proved on this device and sent from ${your()}`], ['Chain sees', `a deposit on ${on}, not whose`]];
@@ -13479,6 +13485,7 @@ async function hxQuote() {
     if (S.key && units) { HX.q = { ...(HX.q || {}), busy: true }; paintHxQ(); }
     return done(await hxChainQuote(m, units).catch(() => ({ out: '—', warn: true, line: 'The fees could not be read. Try again in a moment.' })));
   }
+  if (m === 'ppv1' && units) return done(hxMoveRows(hxHandoff(m, units), DEV.self && DEV.chain === hxChain() ? 'self' : S.key ? await hxDevFee(hxPp()).catch(() => null) : null));
   { const h = hxHandoff(m, units); if (h) return done(h); }
   HX.q = { ...(HX.q || {}), busy: true }; paintHxQ();
   if (S.key && units && HX.tab === 'bridge' && (m === 'xo' || (m === 'btc' && HX.dir === 'out'))) xoUx().catch(() => {});
@@ -15121,10 +15128,14 @@ async function hxPoolOutGo(m, amt) {
   SWC.card?.working?.(true);
   return busy(go, (run) => poolOutNow({ run, c: hxChain(), dest: m === 'ppv1' ? 'v1' : 'addr', amt, st, clear: () => SWC.card?.clear?.(), after: hxMoveAfter })).finally(() => SWC.card?.working?.(false));
 }
+// The gas a move into the Tacit pool burns: the wallet's toV1 asks the relay for its fee at this gas, which is more than a plain withdrawal's. The most the
+// relay may take is 1.25 times its quote at the move's own gas, the quote the card shows.
+const V1_MOVE_GAS = 700_000;
 async function poolOutNow({ run, c, dest, amt, to = null, st, clear, after }) {
   const step = (x) => { x = String(x).replace(/relayer/gi, 'relay'); say(st, x[0].toUpperCase() + x.slice(1) + '…'); };
-  const viaWallet = (why) => { DEV.self = true; say(st, html`<span class="err">${why}</span> Press it again: ${your()} sends it, with no relay fee.`); if (HX.tab === 'send') hxQuoteSoon(true); };
+  const viaWallet = (why) => { DEV.self = true; say(st, html`<span class="err">${why}</span> Press it again: ${your()} sends it, with no relay fee.`); if (HX.tab === 'send' || HX.mode === 'ppv1') hxQuoteSoon(true); };
   const pre = (text) => Object.assign(new Error(text), { said: true, pre: true });
+  let fee = 0n;
   PROVE_AT.el = st;
   try {
     const amount = parseUnits(amt, 18);
@@ -15134,9 +15145,10 @@ async function poolOutNow({ run, c, dest, amt, to = null, st, clear, after }) {
     await deviceSync();
     if (!DEV.self && c.keeper) { await keeperRead(c.keeper); if (keeperDown(c.keeper) && (dest === 'addr' || dest === 'v1' || c.chainId !== 1)) DEV.self = true; }
     const W = await deviceWallet(), mods = await getDeviceMods(), self = !!DEV.self;
-    DEV.quote ||= await W.quote().catch(() => null);
-    if (!self && !DEV.quote) return viaWallet('The relay’s fee could not be read.');
-    const fee = self ? 0n : BigInt(DEV.quote.fee || 0), maxFee = fee ? (fee * 5n) / 4n : null;
+    const q = self ? null : dest === 'v1' ? (DEV.gq[V1_MOVE_GAS] = await W.quote(V1_MOVE_GAS).catch(() => null)) : (DEV.quote ||= await W.quote().catch(() => null));
+    if (!self && !q) return viaWallet('The relay’s fee could not be read.');
+    fee = q ? BigInt(q.fee || 0) : 0n;
+    const maxFee = fee ? (fee * 5n) / 4n : null;
     if (mods.mergePlan(W.notes().map((n) => n.v), amount + fee, fee) == null) {
       throw pre(amount + fee > (DEV.bal ?? 0n) ? `More than your private balance${fee ? ', once the relay fee is counted' : ''}.` : 'More than one withdrawal can take: your private balance is spread over too many notes.');
     }
@@ -15150,7 +15162,11 @@ async function poolOutNow({ run, c, dest, amt, to = null, st, clear, after }) {
     after();
   } catch (e) {
     if (e?.pre) say(st, html`<span class="err">${errText(e)}</span>`);
-    else if (e?.feeMoved != null) { DEV.quote = (await DEV.W?.quote().catch(() => null)) || { ...DEV.quote, fee: String(e.feeMoved) }; say(st, html`<span class="err">The relay fee changed to ${fmt(e.feeMoved, 18, 6)} ETH. Check it and press again.</span>`); }
+    else if (e?.feeMoved != null) {
+      DEV.quote = null; DEV.gq = {}; if (HXD[c.chainId]) HXD[c.chainId].at = 0;
+      say(st, html`<span class="err">${fee && e.feeMoved > fee ? html`The relay fee is now ${fmt(e.feeMoved, 18, 6)} ETH, up from ${fmt(fee, 18, 6)}.` : html`The relay fee changed to ${fmt(e.feeMoved, 18, 6)} ETH.`} Check it and press again.</span>`);
+      hxQuoteSoon(true);
+    }
     else if (e?.pending) { clear(); txFail(run, st, e); }
     else if (e?.said || waitRanOut(e)) { clear(); say(st, html`<span class="err">${errText(e)}</span>`); }
     else if (!DEV.self && keeperTrouble(e)) viaWallet(errText(e));
