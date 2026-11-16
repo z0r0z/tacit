@@ -60,6 +60,14 @@ jobs:
         with:
           node-version: '20'
 
+      # A few suites start a BARE anvil (no fork) and drive it over localhost — hermetic, but they need the binary,
+      # and without it they fail with `spawn anvil ENOENT` rather than skipping. The ones that start
+      # `anvil --fork-url <public node>` cannot run offline at all and are named in the runner's SKIP instead.
+      - name: Install Foundry (anvil)
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.5.1 # the version contracts-ci.yml pins
+
       # Three npm packages, and the suites resolve against all three: a tests/ suite reads the repo root's
       # node_modules by path, while worker-relay's own suites import bare specifiers (viem, better-sqlite3)
       # from theirs. `npm ci` honours each lockfile; a failure here is a dependency problem, not a test one.

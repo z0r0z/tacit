@@ -42,6 +42,12 @@ const SKIP = new Map(Object.entries({
   // Passes offline, but only by soft-skipping every live check, so in this gate it would assert nothing. It is a
   // mainnet canary and canary.yml runs it on its own schedule, where an unreachable host is inconclusive, not a failure.
   'tests/canary-asset-tac-mainnet.test.mjs': 'live mainnet canary — run by canary.yml; offline it skips its checks',
+  // Start `anvil --fork-url <a public node>`, so they need the internet by construction and cannot be part of an offline
+  // gate. (A BARE anvil is fine and does run here — see the Foundry step in the workflow — so this is about the fork, not
+  // the binary.) They want a job with network of their own; until then they run locally.
+  'worker-relay/tests/evm-pool-keeper-send.test.mjs': 'anvil --fork-url: forks mainnet, so it cannot run offline',
+  'worker-relay/tests/tasks-gen4-fork.test.mjs': 'anvil --fork-url: forks mainnet, so it cannot run offline',
+  'tests/checkpoints-admin.test.mjs': 'anvil --fork-url: forks mainnet, so it cannot run offline',
   // Passes offline every time, but takes 130–175 s on the machine this was measured on, which leaves no headroom under
   // any per-suite cap a slower runner could meet. Not broken and not flaky — just too slow to gate on. It comes back by
   // getting faster, or by being run with a longer --timeout outside the push gate.
@@ -113,9 +119,18 @@ if (bad.length) {
   console.log(`\n${'='.repeat(70)}\n${bad.length} of ${results.length} suites did not pass:\n`);
   for (const r of bad) {
     console.log(`── ${r.rel}${r.timedOut ? ` (killed after ${TIMEOUT / 1000}s)` : ''}`);
-    // The failing lines, not the whole log: node --test prints a line per check and the summary at the end.
-    const lines = r.out.split('\n').filter((l) => /^not ok|error:|AssertionError|Error:|^# (fail|pass)/.test(l.trim()));
-    for (const l of (lines.length ? lines : r.out.split('\n')).slice(0, 12)) console.log('   ' + l.trim().slice(0, 200));
+    const all = r.out.split('\n');
+    const lines = all.filter((l) => /^not ok|error:|AssertionError|Error:|^# (fail|pass)/.test(l.trim()));
+    // A file-level "not ok 1 - /path/to/suite" with `error: 'test failed'` is node reporting that the file failed and
+    // says nothing about WHY, so matching those lines alone can hide the cause completely — it did on this gate's first
+    // run, where two suites reported only "test failed". When nothing matched names a cause, print the tail instead.
+    const named = lines.some((l) => /AssertionError|Error:(?! 'test failed')|^not ok \d+ - (?!\/)/.test(l.trim()));
+    for (const l of lines.slice(0, 12)) console.log('   ' + l.trim().slice(0, 200));
+    if (!named) {
+      const tail = all.filter((l) => l.trim() && !/^(ok|# (Sub|tests|pass|fail|cancel|skip|todo|dura))/.test(l.trim())).slice(-20);
+      console.log('   ── its output (nothing above named a cause):');
+      for (const l of tail) console.log('      ' + l.trim().slice(0, 200));
+    }
     console.log('');
   }
 }
