@@ -164,8 +164,11 @@ for (const [i, r] of chosen.entries()) {
   sats += rv.cost.fee + (rv.cost.later || 0); ok++;
   if (mode === 'start' && SEND) {
     if (rate > MAX_FEE) { console.log(`  not started: ${Math.round(rate)} sat/vB is above --max-fee ${MAX_FEE}`); continue; }
-    const made = await begin(T, { review: rv, priv });
+    let made;
+    try { made = await begin(T, { review: rv, priv }); }
+    catch (e) { console.log(`  not started: ${String(e.message || e).slice(0, 200)}\n  stopping here: the notes started so far go on, and a later run starts the rest (Bitcoin allows only so many unconfirmed transactions in a chain: press again once these confirm)`); break; }
     planSet(mem, pubHex, made.id, { at: Date.now(), burn: { maxRate: burnMaxRate(rv.pf) } });
+    store.flush?.();
     console.log(`  STARTED ${made.id.slice(0, 10)}… stage ${made.stage}`);
     await new Promise((x) => setTimeout(x, 3000));
   }
