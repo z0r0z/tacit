@@ -108,6 +108,31 @@ const waitFor = async (p, re, ms = 25000) => { const t0 = Date.now(); let t = ''
   ok(seen.length > 0 && seen.every((k) => k === 'true|false|0') && logos >= 2, `the tile never shows the default pair or a letter mark for SPX: its first paint is SPX with its logo (${seen.join(' > ')}, ${logos} logos)`);
   await ctx.close();
 }
+// the deep link to the ETH zap into the tETH / SPX farm: /spx/#card=earn:ether:spx&amt=0.05 opens Earn on ETH, on that farm, with the amount in (and the card's share link is that link)
+{
+  const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage(), bad = [];
+  p.on('pageerror', (e) => bad.push(e.message));
+  // every state of the Earn card on the way in: which farm row is checked, and what its button says
+  await p.addInitScript(() => {
+    window.__earnSeen = [];
+    const snap = () => {
+      const go = (document.querySelector('#hx-go')?.innerText || '').trim(); if (!go) return;
+      const k = `${[...document.querySelectorAll('#hx [data-hxr][aria-checked=true]')].map((x) => x.dataset.hxr.slice(0, 3)).join(',')}|${go}`;
+      if (window.__earnSeen.at(-1) !== k) window.__earnSeen.push(k);
+    };
+    new MutationObserver(snap).observe(document, { childList: true, subtree: true, characterData: true, attributes: true });
+  });
+  await p.goto(BASE + '/spx/#card=earn:ether:spx&amt=0.05', { waitUntil: 'load' });
+  await p.waitForFunction(() => [...document.querySelectorAll('#hx [data-hxr][aria-checked=true]')].some((x) => x.dataset.hxr.startsWith('xa:')), null, { timeout: 40000 }).catch(() => {});
+  await p.waitForTimeout(1500);
+  const t = await tile(p), seen = await p.evaluate(() => window.__earnSeen);
+  const st = await p.evaluate(() => ({ tab: document.querySelector('[data-hxm][aria-selected=true]')?.dataset.hxm, amt: document.querySelector('#hx-amt')?.value, from: document.querySelector('#hx-from')?.value, row: [...document.querySelectorAll('#hx [data-hxr][aria-checked=true]')].map((x) => x.dataset.hxr.slice(0, 3)).join(',') }));
+  ok(st.tab === 'earn' && st.from === 'ether' && st.amt === '0.05' && st.row === 'xa:' && /Zap into the farm/i.test(t) && /tETH \/ SPX/.test(t) && bad.length === 0, `/spx/#card=earn:ether:spx&amt=0.05 opens Earn on ETH, the tETH / SPX zap, with 0.05 in (${JSON.stringify(st)}${bad.length ? ' ' + bad.join(' | ') : ''})`);
+  ok(seen.length > 0 && seen.every((k) => !k.split('|')[0] || k.startsWith('xa:')), `and no launch pool is ever the checked farm on the way in (${seen.join(' > ')})`);
+  const link = await p.evaluate(() => { try { return document.querySelector('#hx-copy')?.dataset?.link || document.querySelector('#hx-copy')?.getAttribute('data-link') || null; } catch { return null; } });
+  ok(!link || /\/spx\/#card=earn:ether:spx&amt=0\.05$/.test(link), `its share link, when the card shows one, is the same link (${link || 'none shown'})`);
+  await ctx.close();
+}
 // a browser that last left the tile on another tab (the tile remembers it) still gets the page: it opens on Shield SPX, with no script error, and the wallet sheet works.
 // On the Send tab the page's Send list is tETH alone until its token is read: it has no picker then, and its start stopped on that (the wallet sheet stayed empty).
 for (const tab of ['send', 'earn', 'swap']) {
@@ -223,6 +248,21 @@ for (const [bond, want, not, said] of [['settled', /In the farm\./, /Putting it 
   ok(keys(rows).indexOf('xa:<spx>') >= 0 && keys(rows).indexOf('xa:<spx>') < keys(rows).indexOf('0') && /tETH \/ SPX/.test(rows.find((x) => x[0].startsWith('xa:'))[2]), `ETH farms tETH / SPX first, then the launch pools (${keys(rows).join(', ')})`);
   const zt = await waitFor(p, /Zap into the farm/i, 20000);
   ok(/Zap into the farm/i.test(zt) && /in the farm/.test(zt), 'its button is Zap into the farm, and the receipt says the share goes into the farm');
+  // the preview says what the deposit earns a day (it read 0 for the SPX farms), for every source
+  const earnOf = async (src, amount) => {
+    await source(src);
+    await p.fill('#hx-amt', amount);
+    await p.waitForFunction(() => { const m = /You earn\s*([\d.,]+)\s*a day/.exec((document.querySelector('#hx')?.innerText || '').replace(/\s+/g, ' ')); return m && Number(m[1].replace(/,/g, '')) > 0; }, null, { timeout: 25000 }).catch(() => {});
+    const m = /You earn\s*([\d.,]+)\s*a day/.exec((await tile(p)));
+    return m ? Number(m[1].replace(/,/g, '')) : null;
+  };
+  const dayEth = await earnOf('ether', '0.05');
+  ok(dayEth > 0 && dayEth < 34, `the preview shows the TAC a day a 0.05 ETH deposit earns in tETH / SPX, below the farm's whole 33 a day (${dayEth})`);
+  await source('tac'); const dayTac = await earnOf('tac', '5');
+  ok(dayTac > 0 && dayTac < 70, `and for 5 private TAC in SPX / TAC, below its whole 66 a day (${dayTac})`);
+  await source(`xp${SPX}`); const daySpx = await earnOf(`xp${SPX}`, '1');
+  ok(daySpx > 0 && daySpx < 70, `and for 1 private SPX (${daySpx})`);
+  await p.fill('#hx-amt', ''); await source('ether');
   await source('tac'); rows = await rowsOf('1000');
   ok(JSON.stringify(keys(rows)) === JSON.stringify(['1000', '0']) && /SPX \/ TAC/.test(rows[0][2]), `private TAC farms SPX / TAC and tETH / TAC (${keys(rows).join(', ')})`);
   await source(`xp${SPX}`); rows = await rowsOf('1001');

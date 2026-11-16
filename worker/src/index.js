@@ -5327,6 +5327,10 @@ async function _ethGasPrice(network) {
   if (v !== null) _gasPriceKept.set(network, { at: Date.now(), v });
   return v;
 }
+// The kept price lives for eight seconds in a module-level map, which no env setting reaches. A test that moves the gas
+// price between cases (tests/free-relay-cheap-gas.test.mjs: one case dear, the next cheap) would otherwise read the
+// previous case's price and judge the cheap-gas rule off when it is on. Test-only; nothing in production forgets it.
+function _forgetGasPrice() { _gasPriceKept.clear(); }
 async function _ethGasPriceRead(network) {
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] });
   for (const rpc of (_TETH_ETH_RPCS[network] || [])) {
@@ -27993,7 +27997,7 @@ async function scanForEtches(env, network) {
 // Workers ignores extra named exports — only the default object's fetch /
 // scheduled handlers are invoked at runtime — so this has no production effect.
 export {
-  _ethGasPrice, fetchIpfsJson, _deriveTradeFromChain, _settleFillRecords, _hintMaySettle, magicMatches,
+  _ethGasPrice, _forgetGasPrice, fetchIpfsJson, _deriveTradeFromChain, _settleFillRecords, _hintMaySettle, magicMatches,
   assembleReflectionJobBody,
   openingMsg, buyerOpeningMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,

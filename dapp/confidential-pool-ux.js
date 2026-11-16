@@ -1943,8 +1943,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const outputs = [{ seedDerived: true }];
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand: freshEph });
     guard.assertOutputsRecoverable({ leaves, outputs, memos: sealedMemos });
-    const r = await _dispatch({ type: 'lpbond', spec: { op: b.op, leaves, outputs, ephRand: freshEph }, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts });
-    return { ...r, dShares: b.dShares, bondNonce: b.bondNonce, receiptOwner: b.receiptOwner, receiptLeaf: b.receiptLeaf, anchorLeaf: b.anchorLeaf, lpAsset: b.lpAsset, assetA: b.assetA, assetB: b.assetB, controller: b.controller };
+    const rec = ((cfg.farm && cfg.farm.standalone) || []).some((x) => String(x.lpAsset).toLowerCase() === String(b.lpAsset).toLowerCase()) ? lpBondRecord({ walletPriv, controller: b.controller, lpAsset: b.lpAsset, anchorLeaf: b.anchorLeaf, shares: b.dShares, receiptLeaf: b.receiptLeaf }) : null;
+    let r;
+    try { r = await _dispatch({ type: 'lpbond', spec: { op: b.op, leaves, outputs, ephRand: freshEph }, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts }); }
+    catch (e) {
+      // proved and waiting to be sent, or still in the relay's line: it may yet land, and its position is then kept all the same
+      if (rec && e && (e.code === 'open' || e.open || /settle timed out|status polling for job/i.test(String(e.message || '')))) keepFarmPosition(rec, { walletPriv, quick: 0 }).catch(() => {});
+      throw e;
+    }
+    const out = { ...r, dShares: b.dShares, bondNonce: b.bondNonce, receiptOwner: b.receiptOwner, receiptLeaf: b.receiptLeaf, anchorLeaf: b.anchorLeaf, lpAsset: b.lpAsset, assetA: b.assetA, assetB: b.assetB, controller: b.controller };
+    // a stand-alone farm leaves nothing on chain a position can be found by, so the record is made here, once the settle can be seen (no throw: the bond has landed)
+    if (rec) out.kept = await keepFarmPosition(rec, { walletPriv }).catch(() => false);
+    return out;
   }
 
   const _farmCfg = () => {
@@ -2017,7 +2027,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     for (const rec of await _importedFarmRecords(walletPriv)) {
       const receiptIndex = slot.get(String(rec.receiptLeaf).toLowerCase());
       if (receiptIndex == null || hits.has(String(rec.receiptLeaf).toLowerCase())) continue;
-      hits.set(String(rec.receiptLeaf).toLowerCase(), { lpAsset: rec.lpAsset, anchorLeaf: null, receiptLeaf: rec.receiptLeaf, receiptIndex, shares: rec.shares, via: 'imported-record' });
+      hits.set(String(rec.receiptLeaf).toLowerCase(), { lpAsset: rec.lpAsset, anchorLeaf: null, receiptLeaf: rec.receiptLeaf, receiptIndex, shares: rec.shares, via: 'imported-record', own: !!rec.own });
       imported.push(rec.receiptLeaf);
     }
     const prog = farmProgram();
@@ -2036,20 +2046,21 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       ...(_farmSolo(h.lpAsset) ? { standalone: true } : {}),
       shares: p.shares, receiptLeaf: h.receiptLeaf, receiptIndex: h.receiptIndex, anchorLeaf: h.anchorLeaf,
       unlockAt: p.unlockAt, pendingUnits: p.pendingUnits, pendingTac: p.pendingTac,
-      ...(h.via === 'imported-record' ? { imported: true } : {}),
+      ...(h.via === 'imported-record' && !h.own ? { imported: true } : {}),
     })).sort((a, b) => a.receiptIndex - b.receiptIndex);
   }
   const _farmPoolOf = (lpAsset) => [...(_farmCfg().pools || []), ...(_farmCfg().standalone || [])].find((p) => String(p.lpAsset).toLowerCase() === String(lpAsset).toLowerCase());
 
   const _farmStore = makeImportedFarmStore({ sha256 });
   const _importedFarmRecords = (walletPriv) => _farmStore.list(walletPriv);
-  async function importFarmPosition(record, { events, walletPriv } = {}) {
+  async function importFarmPosition(record, { events, walletPriv, own = false } = {}) {
     const farm = _farmCfg();
     const r = record || {};
     const hex32 = (v, what) => { const h = String(v || '').toLowerCase(); if (!/^0x[0-9a-f]{64}$/.test(h)) throw new Error(`farm-import: ${what} must be a 32-byte hex value`); return h; };
     const rec = {
       lpAsset: hex32(r.lpAsset, 'lpAsset'), receiptLeaf: hex32(r.receiptLeaf, 'receiptLeaf'),
       owner: hex32(r.owner, 'owner'), nonce: hex32(r.nonce, 'nonce'), ownerPriv: hex32(r.ownerPriv, 'ownerPriv'), shares: String(BigInt(r.shares)),
+      ...(own ? { own: true } : {}),
     };
     const ctl = _farmControllerOf(rec.lpAsset);
     if (r.controller && String(r.controller).toLowerCase() !== String(ctl).toLowerCase()) throw new Error('farm-import: the record is for a different farm');
@@ -2069,6 +2080,29 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const saved = await _farmStore.add(walletPriv || null, rec);
     await _farmStore.migrate(walletPriv || null).catch(() => ({}));
     return { imported: true, persisted: saved.persisted, receiptLeaf: rec.receiptLeaf, pid: cur.pid, lpAsset: rec.lpAsset, shares: cur.shares, unlockAt: cur.unlockAt, pendingUnits: cur.pendingUnits };
+  }
+
+  // What a page keeps of a position it opened with lpBond. A stand-alone farm emits nothing a position could later be found by, and the shares of
+  // an add-and-bond sit in no note, so without this record the position is on chain and nowhere on the page. The keys re-derive from the wallet
+  // key; the record is the shape importFarmPosition takes (its secret is sealed under the wallet key by the store).
+  function lpBondRecord({ walletPriv, controller, lpAsset, anchorLeaf, shares, receiptLeaf }) {
+    const { owner, nonce, ownerPriv } = lpBondPosition({ walletPriv, controller, lpAsset, anchorLeaf });
+    return { lpAsset, receiptLeaf, owner, nonce, ownerPriv, shares: String(shares), controller };
+  }
+  // importFarmPosition refuses a position that is not visible yet (the settle not mined, a node or an event read a block behind): those are tried
+  // again; a record that cannot be right is not.
+  const _keepLater = (e) => !/different farm|no pool for this LP asset|do not reproduce|not the private key|does not match|must be a 32-byte/i.test(String((e && e.message) || e));
+  // Keep a record once its position can be seen: `quick` tries, `quickGapMs` apart, are waited for; then, if it is still not visible, it is tried
+  // quietly for a few minutes more. Never throws. → true when the record is kept.
+  async function keepFarmPosition(rec, { walletPriv, importer = importFarmPosition, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), quick = 5, quickGapMs = 4000, later = 12, laterGapMs = 15000, background = true } = {}) {
+    const once = async () => { try { await importer(rec, { walletPriv, own: true }); return 'kept'; } catch (e) { return _keepLater(e) ? 'later' : 'no'; } };
+    for (let i = 0; i < quick; i++) {
+      const st = await once();
+      if (st !== 'later') return st === 'kept';
+      if (i < quick - 1) await sleep(quickGapMs);
+    }
+    if (background) (async () => { for (let i = 0; i < later; i++) { await sleep(laterGapMs); if ((await once()) !== 'later') return; } })().catch(() => {});
+    return false;
   }
 
   const FARM_UNBOND_DUST_UNITS = 100000n;
@@ -3697,7 +3731,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, addAsset, externalAsset, externalAssets, readAsset, registerTokenCall, tokenTicker, registeredTokens, pooledTokens, lpShareId: (poolId) => String(_lp.lpShareId(poolId)).toLowerCase(), account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
     deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
-    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
+    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, lpBondRecord, keepFarmPosition, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };
 }
