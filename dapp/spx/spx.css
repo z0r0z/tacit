@@ -145,7 +145,7 @@ html[data-page="spx"] .spx-fine { grid-column: 1 / -1; max-width: 60ch; margin: 
    COMMUNITY PAGE KIT: the pieces every community token page on Tacit shares, in one block, so another page can copy it.
      the frame (the tile, its tabs, main button, fields, switches) · the controls (coin chip, swap arrow, small chips, tap sizes) · what is under way (the
      strip over the tile, the header's Activity chip, the Activity sheet) · the sheets (the wallet, Activity and Bitcoin sheets, the coin picker, the help
-     launcher, a bottom sheet on a phone) · the Bitcoin market.
+     launcher, a bottom sheet on a phone) · the Bitcoin market · the tile that stays in view beside the copy on a wide screen.
    TO MAKE A PAGE FOR ANOTHER TOKEN: copy this block to that page's stylesheet and replace data-page="spx" with its name in every selector (a find and
    replace: the page's build puts that name on <html>, and the page's stylesheet test wants every selector to start with it). What a new page sets is
    its own token rule, the first rule of its stylesheet: the accent colours --lime (what fills a button, a chip, a bar), --magenta (the focus ring, the tab
@@ -312,3 +312,14 @@ html[data-page="spx"] .bsheet label.note { display: flex; align-items: flex-star
 @media (max-width: 640px) { html[data-page="spx"] .bsheet-head .who { flex-direction: column; align-items: flex-start; gap: 0; padding: 4px 8px; font-size: 11px; } }
 html[data-page="spx"] .bsheet input[type="checkbox"] { flex: none; width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--black); }
 html[data-page="spx"] .bsheet .note.err, html[data-page="spx"] .bound-mkt .err { color: var(--err); font-weight: 700; }
+
+/* a wide screen (1280 and up): the tile stays in view while the copy beside it scrolls, and lets go where its column ends. The figures that were under the tile end the left
+   column, under the picture, and the tile's cell runs down beside all three, so the tile is held inside its own cell and never reaches the figures, the sections after the hero or the
+   footer. A panel taller than the window scrolls inside itself (under the tabs, so the coin picker and the sheets that open over the card stay where they open). Nothing here applies
+   on a tablet or a phone. */
+@media (min-width: 1280px) and (min-height: 560px) {
+  html[data-page="spx"] .hero { grid-template-areas: 'tick tick' 'copy tile' 'luma tile' 'proof tile'; }
+  html[data-page="spx"] .hx { position: sticky; top: 16px; align-self: start; }
+  html[data-page="spx"] .hx .hx-b { max-height: calc(100vh - 88px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--black) transparent; }
+  html[data-page="spx"] .hx:has(.hx-live) .hx-b { max-height: calc(100vh - 132px); }
+}
