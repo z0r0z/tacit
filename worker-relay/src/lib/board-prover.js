@@ -13,14 +13,21 @@
 export function makeBoardProver({ post, status, cancel, verify, race = null, alive = null, waitMs = 240_000, pollMs = 1000, claimStallMs = 100_000, now = Date.now, sleep, log = () => {} } = {}) {
   const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const miss = (reason, extra = {}) => Object.assign(new Error(`prover board: ${reason}`), { code: 'board_miss', reason, ...extra });
+  // The check's word for an op the pool refuses: 'op:<name> <selector>'.
+  const opWord = (ok) => (typeof ok === 'string' && ok.startsWith('op:') ? ok.slice(3) : null);
+  // The words carry "refused" and "nothing was spent": the settle relay keeps a reason in the op's own words for the holder's page (proveFailureForJob),
+  // and the API gives back the free settle for a failure that says nothing was spent (worker/src/confidential-settle.js NOT_THE_HOLDERS). The selector
+  // stays in the message for the pages that read it (a pool that moved while the op was proved: dapp/index.html proofMoved).
+  const refusal = (word, extra = {}) => Object.assign(new Error(`the pool refused this op as it stands (${word}); it was not proved again and nothing was spent`), { code: 'op_refused', effect: word, ...extra });
 
   // `stdin`: bincode SP1Stdin bytes, or `sealed`: { worker, epk, iv, ct } (the input encrypted to that worker; the board
   // offers it to no one else). `cls`: 'private' for a user's witness. `memos`: what the settle will carry, so the proof's
   // memo root is checked. `program` and `mode`: what the board proves ('confidential', groth16, by default; 'eth-state' is
   // proved compressed), with `check` in place of the lane's `verify` for a program the pool does not settle. A check answers
   // true (use it), 'stale' (sound, but behind the pool), 'unchecked' (it could not be checked here: no mark against the
-  // worker) or false (refused: it counts against the worker). → { publicValues, proof, worker, jobId }, or an error with code
-  // 'board_miss'.
+  // worker), 'op:<name> <selector>' (the pool refuses the OP as it stands, so no prover could pass it: lib/settle-check.js
+  // EFFECT_REVERTS) or false (refused: it counts against the worker). → { publicValues, proof, worker, jobId }, or an error with
+  // code 'board_miss', or with code 'op_refused' (the job must fail now: the next lane would prove the same op into the same revert).
   async function prove({ stdin = null, sealed = null, cycleLimit, gasLimit, cls = 'private', label = null, memos = [], timeoutMs = waitMs, program = 'confidential', mode = null, check = null } = {}) {
     if (sealed == null && (!(stdin instanceof Uint8Array) || !stdin.length)) throw new Error('prover board: stdin must be the input bytes');
     if (sealed != null && (typeof sealed !== 'object' || typeof sealed.worker !== 'string' || typeof sealed.ct !== 'string')) throw new Error('prover board: sealed must be { worker, epk, iv, ct }');
@@ -47,11 +54,15 @@ export function makeBoardProver({ post, status, cancel, verify, race = null, ali
         log(`prover board: job ${jobId.slice(0, 10)} candidate from ${c.worker}: ${ok === true ? 'taken' : ok}`);
         await Promise.resolve(race(jobId, c.worker, ok === true ? true : ok === false ? false : null)).catch(() => {});
         if (ok === true) return { publicValues: c.publicValues, proof: c.proof, worker: c.worker, jobId };
+        if (opWord(ok)) { await cancel(jobId, 'stale').catch(() => {}); throw refusal(opWord(ok), { jobId, worker: c.worker }); }
       }
       if (s && s !== lastSeen) { lastSeen = s; log(`prover board: job ${jobId.slice(0, 10)} ${s}${st.worker ? ` (${st.worker})` : ''}`); }
       if (s === 'proved') {
         const ok = await Promise.resolve((check || verify)({ publicValues: st.publicValues, proof: st.proof, memos })).catch(() => (check ? 'unchecked' : false));
         if (ok !== true) {
+          // 'op:...': the op cannot land whoever proves it, so the job is cancelled with no mark against the worker and fails here; going on to the
+          // prover network would only pay to prove the same op into the same revert.
+          if (opWord(ok)) { await cancel(jobId, 'stale').catch(() => {}); throw refusal(opWord(ok), { jobId, worker: st.worker }); }
           // 'stale': the op's roots are behind the pool, so the proof cannot land whoever made it; 'unchecked': the check itself could
           // not run here. Either way the job is cancelled without a mark against the worker. Anything else is a proof that was
           // refused, which counts against the worker that made it.

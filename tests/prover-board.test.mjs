@@ -1000,3 +1000,23 @@ test('draw: past 1.5 times its usual time the race joins the drawn machine, whic
   assert.deepEqual(await answer(b, won, j.jobId), { ok: true, status: 'proved' }, 'the drawn machine answers first and is paid');
   assert.equal((await st.getTrouble())[won.client], undefined, 'slow is not a lapse: its place keeps its standing');
 });
+
+test('draw: made once per block and kept on it, so a machine that turns up after the draw cannot move it', async () => {
+  t = 27_000_000;
+  let tested = 0;
+  for (let k = 0; k < 40; k++) {
+    t += 1;                                                       // a new block id each time, so a new draw
+    const { st, b } = drawBoard(), block = blockOn(b);
+    const a = gpu('a1'), c = gpu('c3'), late = gpu('f6');
+    await ready(st, b, [a, c]);
+    const j = await block();
+    if (await askBlock(b, a)) continue;                           // a was drawn: nothing to test on this block
+    // c was drawn. Before c asks, another machine turns up and becomes eligible (it has proved something).
+    await askBlock(b, late);
+    const ws = await st.getWorkers(); ws[late.name].proved = 1; await st.putWorkers(ws);
+    assert.equal(await askBlock(b, late), null, 'a machine that turned up after the draw cannot take the block');
+    assert.equal((await askBlock(b, c)).jobId, j.jobId, 'the drawn machine still can');
+    tested++;
+  }
+  assert.ok(tested >= 8, `enough blocks were drawn for the other machine to test it (${tested})`);
+});

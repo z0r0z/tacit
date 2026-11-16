@@ -25,6 +25,12 @@ export const privateOff = (now = Date.now()) => now - privateOffAt < PRIVATE_OFF
 // prover account could not pay for (marked `creditShort` by lib/prover.js).
 export function retryPublic(e) {
   if (e && e.creditShort === true) return false;
+  if (unexecutable(e)) return false;
   const m = String(e && e.message || e);
   return !/unexecutable|execution failed|failed to execute|exceeded cycle limit|VKEY DRIFT|EXPECT_VKEY mismatch/i.test(m);
 }
+// The network's answer that it cannot run the request at all ("Proof request 0x… is unexecutable"): the binary panics with it on stderr, which the
+// error's message leaves out, so it is read from `e.stderr` as the refusal of private inputs is. (A request nobody fulfilled, 'is unfulfillable',
+// is another matter: a public input can still find a prover.) Only the message was read here before, so a private request that came back unexecutable
+// was sent again in public to be refused the same way.
+export const unexecutable = (e) => !!e && (e.unexecutable === true || /\bis unexecutable\b/i.test(String(e.stderr || '')));
