@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { SHOP, MARKET, TAC, TOPICS, foldShelf, sortShelf, zeroBits, addressParts, tacText, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress, isId,
-  zerosOf, zerosText, usdText, tacUsdFrom, priceUsd, zeroTiers, filterShelf, tokenNumber, tokenUrl, ownerOfData, addressOfData, parseTokenId, soldTo, forwarderRuntime, forwarderInit, forwardRefusal, deployData, decodeAddress, initcodeOf, deployRefusal } from '../dapp/shop/shelf.js';
+  zerosOf, zerosText, usdText, tacUsdFrom, priceUsd, zeroTiers, filterShelf, tokenNumber, tokenUrl, ownerOfData, addressOfData, parseTokenId, soldTo, forwarderRuntime, forwarderInit, forwardRefusal, deployData, decodeAddress, initcodeOf, deployRefusal, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, ethText } from '../dapp/shop/shelf.js';
 
 const W = 10n ** 18n, w32 = (n) => BigInt(n).toString(16).padStart(64, '0');
 const id = (n) => '0x' + SHOP.slice(2) + '00' + '5125' + n.toString(16).padStart(18, '0');
@@ -76,7 +76,7 @@ test('an address is shown whole, its zeros apart from the rest; a price is whole
 
 test('the calls are what `cast calldata` encodes for the same arguments', () => {
   const gold = Object.fromEntries(readFileSync(new URL('./fixtures/vanity-shop-calldata.txt', import.meta.url), 'utf8').split('\n').filter((l) => l && !l.startsWith('#')).map((l) => l.split(' ')));
-  assert.deepEqual(Object.keys(gold).filter((k) => !/error:/.test(k)), ['buy', 'buyWithPermit', 'approve', 'listings', 'balanceOf', 'allowance', 'nonces', 'ownerOf', 'deploy', 'deployLong', 'addressOf']);
+  assert.deepEqual(Object.keys(gold).filter((k) => !/error:/.test(k)), ['buy', 'buyWithPermit', 'approve', 'listings', 'balanceOf', 'allowance', 'nonces', 'ownerOf', 'deploy', 'deployLong', 'addressOf', 'buyWithEth']);
   const ID = '0x00000000000785882df83d4cc6ed45c21eb1176c0051250123456789abcdef01', TO = '0x1111111111111111111111111111111111111111';
   const R = '0x' + '00'.repeat(31) + '01', S = '0x' + '00'.repeat(31) + '02';
   assert.equal(buyData({ id: ID, to: TO, nonce: 3, maxPrice: 100n * W, deadline: 1800000000 }), gold.buy);
@@ -187,4 +187,17 @@ test('a token id is read as a person types it, and the tokens a wallet bought ar
   assert.deepEqual(soldTo(logs.filter(Boolean), me.toUpperCase().replace('0X', '0x')), [id(1), id(3), id(4)], 'the case of the address does not matter');
   assert.deepEqual(soldTo(logs.filter(Boolean), '0x3333333333333333333333333333333333333333'), []); assert.deepEqual(soldTo(logs, 'nope'), []); assert.deepEqual(soldTo(null, me), []); assert.deepEqual(soldTo([], me), []);
   assert.equal(addressOfData(ID), readFileSync(new URL('./fixtures/vanity-shop-calldata.txt', import.meta.url), 'utf8').split('\n').find((l) => l.startsWith('addressOf ')).split(' ')[1], 'addressOf against cast');
+});
+
+test('paying with ETH: the call to the zap against cast, the next amount of ETH to try, and ETH as text', () => {
+  const gold = Object.fromEntries(readFileSync(new URL('./fixtures/vanity-shop-calldata.txt', import.meta.url), 'utf8').split('\n').filter((l) => l && !l.startsWith('#')).map((l) => l.split(' ')));
+  const ID = '0x00000000000785882df83d4cc6ed45c21eb1176c0051250123456789abcdef01', TO = '0x1111111111111111111111111111111111111111';
+  assert.equal(buyWithEthData({ swapData: '0xabcdef', id: ID, to: TO, nonce: 3, maxPrice: 28n * W, deadline: 1800000000 }), gold.buyWithEth);
+  // swap data that fills whole words, and longer than one
+  const long = '0x' + 'ab'.repeat(64), longer = '0x' + 'cd'.repeat(100);
+  for (const sw of [long, longer, '0x']) { const d = buyWithEthData({ swapData: sw, id: ID, to: TO, nonce: 0, maxPrice: 1n, deadline: 1 }); assert.equal((d.length - 2) % 64, 8, 'the selector and whole words'); assert.equal(BigInt('0x' + d.slice(10 + 6 * 64, 10 + 7 * 64)), BigInt((sw.length - 2) / 2), 'the length word'); }
+  assert.equal(ZAP, null, 'no zap is named until one is deployed'); assert.equal(ZAP_MARGIN_BPS, 150n);
+  assert.equal(retryAmountIn(10n ** 15n, 28n * W, 20n * W), 1400000000000001n, 'scaled to what is wanted, and a wei over');
+  assert.ok(retryAmountIn(1000n, 7n, 3n) * 3n >= 7000n, 'never short');
+  assert.equal(ethText(12345678901234567n), '0.0123'); assert.equal(ethText(123456789012345n), '0.00012'); assert.equal(ethText(2500000000000000000n), '2.500'); assert.equal(ethText(0n), '0'); assert.equal(ethText(999999999999999999n), '1.000');
 });
