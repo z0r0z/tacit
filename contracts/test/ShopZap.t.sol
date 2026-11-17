@@ -104,6 +104,35 @@ contract ShopZapTest is Test {
         assertEq(user.balance, before); assertEq(tac.balanceOf(treasury), 0); assertEq(shop.soldTo(ID), address(0));
     }
 
+    function testATokenCannotBeSentToTheZapItselfOrTheRouter() public {
+        uint256 before = user.balance;
+        for (uint256 i; i < 2; i++) {
+            vm.prank(user);
+            vm.expectRevert(ShopZap.BadRecipient.selector);
+            zap.buyWithEth{value: 1 ether}(_swap(PRICE, 0), ID, i == 0 ? address(zap) : address(router), 3, PRICE, block.timestamp + 1 hours);
+        }
+        assertEq(user.balance, before, 'the buyer keeps the ETH'); assertEq(shop.soldTo(ID), address(0)); assertEq(tac.balanceOf(treasury), 0);
+    }
+
+    function testItAnswersNoSignatureCheck() public {
+        // TAC gives Permit2 an unlimited allowance on every address: a contract holding TAC that said yes to a bad signature would be emptied. The zap has no fallback to say it.
+        (bool ok,) = address(zap).call(abi.encodeWithSignature('isValidSignature(bytes32,bytes)', bytes32(uint256(1)), new bytes(65)));
+        assertFalse(ok, 'an ERC-1271 call to the zap reverts');
+        (ok,) = address(zap).call(abi.encodeWithSignature('onERC721Received(address,address,uint256,bytes)', user, user, 1, ''));
+        assertFalse(ok, 'and so does a token transfer that asks for a receiver');
+    }
+
+    function testItDeploysEvenWithEthInTheConstructorCall() public {
+        // the market's deploy gives the constructor the whole balance of its deploy address, and a wei can be sent there beforehand
+        ShopZap funded = new ShopZap{value: 1}(address(router), address(tac), address(shop));
+        assertEq(address(funded).balance, 1);
+        vm.deal(user, 100 ether);
+        vm.prank(user);
+        funded.buyWithEth{value: 1 ether}(_swap(PRICE, 0), ID, recipient, 3, PRICE, block.timestamp + 1 hours);
+        assertEq(address(funded).balance, 0, 'the wei goes to the first buyer, with the rest');
+        assertEq(user.balance, 100 ether - 1 ether + 1, 'the buyer paid the 1 ETH it sent and got the wei');
+    }
+
     function testTheRoutersOwnRevertIsPassedOn() public {
         vm.prank(user);
         vm.expectRevert(bytes('the router said no'));

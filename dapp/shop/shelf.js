@@ -3,6 +3,7 @@
 export const SHOP = '0x00000000000785882df83d4cc6ed45c21eb1176c';
 export const MARKET = '0x000000000000b361194cfe6312ee3210d53c15aa';
 export const TAC = '0xa1313eb9f3a445606d9583bcac3ebeb56a858279';
+export const ROUTER = '0x000000000000fb114709235f1ccbffb925f600e4';       // zRouter, which the zap swaps through
 export const TAC_NAME = 'Tacit Token';      // the name in TAC's permit domain (its version is "1")
 export const FROM_BLOCK = 26428082;         // the block the shop was deployed in: its events start there
 export const TOPICS = {
@@ -107,8 +108,9 @@ const REFUSALS = {
 };
 export const refusalWords = (data) => REFUSALS[String(data || '').slice(0, 10).toLowerCase()] || null;
 
-// What the shop would refuse for a recipient, said before anything is signed: nothing, itself, the market and TAC (a token sent there could never be moved).
-export const badRecipient = (to) => { const a = isAddress(to) ? String(to).toLowerCase() : ''; return !a || a === SHOP || a === MARKET || a === TAC; };
+// What cannot be sent a token, said before anything is signed: nothing, the shop, the market and TAC (the shop refuses them), and the contracts it is bought through, the router
+// and the zap (a token sent to any of them could never be moved).
+export const badRecipient = (to) => { const a = isAddress(to) ? String(to).toLowerCase() : ''; return !a || a === SHOP || a === MARKET || a === TAC || a === ROUTER || (!!ZAP && a === String(ZAP).toLowerCase()); };
 
 // ---- what the page shows around the list
 // An address's leading zero digits, from its zero bits: the count a buyer and the market speak of.
@@ -165,7 +167,7 @@ export function forwardRefusal(to, vanity) {
   const a = String(to).toLowerCase();
   if (/^0x0{40}$/.test(a)) return 'That is the empty address: whatever arrived would be lost.';
   if (vanity && a === String(vanity).toLowerCase()) return 'It cannot pass ETH on to itself.';
-  if (badRecipient(a)) return 'It cannot pass ETH on to the shop, the market or TAC.';
+  if (badRecipient(a)) return 'It cannot pass ETH on to the shop, the market, TAC or the swap contracts.';
   return null;
 }
 // deploy(uint256 id, bytes initcode)
@@ -186,6 +188,10 @@ const DEPLOY_REFUSALS = {
   '0x4b6e7f18': 'The wallet connected now does not hold this token.',     // NotOwnerNorApproved()
 };
 export const deployRefusal = (data) => DEPLOY_REFUSALS[String(data || '').slice(0, 10).toLowerCase()] || null;
+// The market gives a constructor the whole balance of the address it deploys from, and anyone can send ETH there beforehand. Code that creates fine on its own, with nothing sent,
+// but that the market says does not deploy, is that: a constructor that does not take ETH.
+export const deployFailed = (data) => String(data || '').slice(0, 10).toLowerCase() === '0x30116425';
+export const ETH_AT_DEPLOY_ADDRESS = 'Someone has sent ETH to the address this one is deployed from, and a constructor that does not take ETH fails when it has some. Make the constructor payable and try again.';
 
 // ---- paying with ETH
 // The deployed ShopZap (contracts/src/ShopZap.sol): it swaps the ETH sent to it into TAC through zRouter and buys the address with that TAC in the same transaction. null until it

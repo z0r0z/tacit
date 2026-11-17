@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, extname } from 'node:path';
 import { marketAddress } from '../worker/src/salt-pool.js';
 import { encodeList } from '../tools/vanity-shop-list.mjs';
-import { foldShelf, TOPICS, FROM_BLOCK } from '../dapp/shop/shelf.js';
+import { foldShelf, TOPICS, FROM_BLOCK, deployData } from '../dapp/shop/shelf.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const REPO = new URL('..', import.meta.url).pathname, DAPP = join(REPO, 'dapp/');
@@ -54,19 +54,20 @@ async function fundedWallet(eth) {
   return { account: who, key: j.private_key };
 }
 
-// ShopZap, built from the repo's source and deployed on the fork
+// ShopZap, built from the repo's source with the repo's compiler settings (contracts/foundry.toml), so that what is tested is the code that is deployed
 const proj = mkdtempSync(join(tmpdir(), 'shopzap-'));
-writeFileSync(join(proj, 'foundry.toml'), '[profile.default]\nsrc = "src"\nout = "out"\nlibs = ["lib"]\nsolc = "0.8.37"\noptimizer = true\noptimizer_runs = 200\n');
+writeFileSync(join(proj, 'foundry.toml'), '[profile.default]\nsrc = "src"\nout = "out"\nlibs = ["lib"]\nsolc = "0.8.37"\nvia_ir = true\noptimizer = true\noptimizer_runs = 1\nbytecode_hash = "none"\ncbor_metadata = false\n');
 // the libraries: the repo's own when its submodules are there (a git worktree has them empty), else CONTRACT_LIBS or the main checkout's
 const LIB = [process.env.CONTRACT_LIBS, join(REPO, 'contracts/lib'), '/Users/z/tacit/contracts/lib'].filter(Boolean).find((d) => existsSync(join(d, 'solady/src/utils/SafeTransferLib.sol')));
 if (!LIB) throw new Error('no contracts/lib with solady in it: set CONTRACT_LIBS=<path to contracts/lib>');
 mkdirSync(join(proj, 'src')); symlinkSync(LIB, join(proj, 'lib')); symlinkSync(join(REPO, 'contracts/src/ShopZap.sol'), join(proj, 'src/ShopZap.sol'));
 execFileSync('forge', ['build', '--root', proj, '--silent'], { stdio: 'inherit' });
 const art = JSON.parse(readFileSync(join(proj, 'out/ShopZap.sol/ShopZap.json'), 'utf8'));
-const deployer = await fundedWallet(10n * E18);
-const zapDeploy = await rpcA('eth_sendTransaction', [{ from: deployer.account, data: art.bytecode.object + aw(ZROUTER) + aw(TACADDR) + aw(SHOP), gas: '0x1e8480' }]);
-const ZAP = (await mined(zapDeploy)).contractAddress;
-console.log(`  ShopZap deployed on the fork at ${ZAP}`);
+// the creation code with the three addresses the contract is built with on the end: what a buyer pastes into the shop page's own form
+const initcode = art.bytecode.object + aw(ZROUTER) + aw(TACADDR) + aw(SHOP);
+console.log(`  ShopZap creation code: ${(initcode.length - 2) / 2} bytes, keccak256 ${cast('keccak', initcode)}; runtime: ${(art.deployedBytecode.object.length - 2) / 2} bytes, keccak256 ${cast('keccak', art.deployedBytecode.object)} (the three addresses are filled in on deployment)`);
+let ZAP = null;
+const setTac = (who, amount) => rpcA('anvil_setStorageAt', [TACADDR, cast('keccak', '0x' + who.slice(2).toLowerCase() + '0000000000000000' + '87a211a2'), '0x' + word(amount)]);
 
 // the page's files, from the repo; the zap named in shelf.js only when a run says so
 const flags = { zap: false };
@@ -135,6 +136,32 @@ try {
   for (let from = FROM_BLOCK; from <= head; from += 2000) live = live.concat(await rpcA('eth_getLogs', [{ address: SHOP, fromBlock: hex(from), toBlock: hex(Math.min(from + 1999, head)), topics: [Object.values(TOPICS)] }]));
   const onShelf = foldShelf(live);
   if (onShelf.length) await sendAs(OPS, SHOP, cast('calldata', 'unlist(uint256[])', `[${onShelf.map((x) => x.id).join(',')}]`));
+  // ---- the zap, put where it is meant to go: an address bought from the shop with TAC, then the market's deploy with the creation code
+  {
+    const Z = { ...findId(3), price: 20n * E18 };
+    await listAs([Z]);
+    const owner = await fundedWallet(E18);
+    await setTac(owner.account, 25n * E18);
+    await sendAs(owner.account, TACADDR, '0x095ea7b3' + aw(SHOP) + word(Z.price));
+    await sendAs(owner.account, SHOP, cast('calldata', 'buy(uint256,address,uint8,uint256,uint256)', BigInt(Z.id).toString(), owner.account, String(Z.nonce), Z.price.toString(), String(Math.floor(Date.now() / 1000) + 3600)));
+    ok((await ownerOf(Z.id))?.toLowerCase() === owner.account.toLowerCase(), `the address ${Z.address} is bought from the shop`);
+    // anyone can put a wei at the address the market deploys from before the deploy, and the market hands that balance to the constructor: the zap's constructor takes it
+    const initHash = await rpcA('eth_call', [{ to: MARKET, data: cast('sig', 'DEPLOY_PROXY_INITHASH()') }, 'latest']);
+    const deployProxy = '0x' + cast('keccak', '0xff' + MARKET.slice(2).toLowerCase() + word(BigInt(Z.id)) + initHash.slice(2)).slice(-40);
+    await rpcA('anvil_setBalance', [deployProxy, '0x1']);
+    await sendAs(owner.account, MARKET, deployData(Z.id, initcode));
+    ZAP = Z.address;
+    ok((await ethBal(ZAP)) === 1n, 'a wei put at the address the market deploys from does not stop the deploy: the constructor takes it');
+    const code = await rpcA('eth_getCode', [ZAP, 'latest']);
+    ok((code.length - 2) / 2 === (art.deployedBytecode.object.length - 2) / 2 && (await ownerOf(Z.id)) === null, 'the market\'s deploy puts the zap at that address, the same length as its runtime code, and the token is used up');
+    ok((await read(ZAP, cast('sig', 'ZROUTER()'))) === BigInt(ZROUTER) && (await read(ZAP, cast('sig', 'TAC()'))) === BigInt(TACADDR) && (await read(ZAP, cast('sig', 'SHOP()'))) === BigInt(SHOP), 'built with the router, TAC and the shop it is meant for');
+    const refused = {};
+    for (const [name, to] of [['the zap itself', ZAP], ['the router', ZROUTER]]) {
+      try { await rpcA('eth_call', [{ to: ZAP, from: owner.account, value: '0x1', data: cast('calldata', 'buyWithEth(bytes,uint256,address,uint8,uint256,uint256)', '0x', '1', to, '0', '1', '1') }, 'latest']); refused[name] = false; }
+      catch (e) { refused[name] = JSON.stringify(e.rpc || e.message).includes(cast('sig', 'BadRecipient()')); }
+    }
+    ok(refused['the zap itself'] && refused['the router'], `a purchase that would send the token to the zap itself or to the router is refused on the deployed code (${JSON.stringify(refused)})`);
+  }
   const H = { ...findId(2), price: 30n * E18 };
   await listAs([H]);
   const treasury0 = await tacBal(OPS);

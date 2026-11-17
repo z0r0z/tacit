@@ -3,8 +3,8 @@
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
-import { SHOP, MARKET, TAC, TOPICS, foldShelf, sortShelf, zeroBits, addressParts, tacText, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress, isId,
-  zerosOf, zerosText, usdText, tacUsdFrom, priceUsd, zeroTiers, filterShelf, tokenNumber, tokenUrl, ownerOfData, addressOfData, parseTokenId, soldTo, forwarderRuntime, forwarderInit, forwardRefusal, deployData, decodeAddress, initcodeOf, deployRefusal, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, ethText } from '../dapp/shop/shelf.js';
+import { SHOP, MARKET, TAC, ROUTER, TOPICS, foldShelf, sortShelf, zeroBits, addressParts, tacText, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress, isId,
+  zerosOf, zerosText, usdText, tacUsdFrom, priceUsd, zeroTiers, filterShelf, tokenNumber, tokenUrl, ownerOfData, addressOfData, parseTokenId, soldTo, forwarderRuntime, forwarderInit, forwardRefusal, deployData, decodeAddress, initcodeOf, deployRefusal, deployFailed, ETH_AT_DEPLOY_ADDRESS, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, ethText } from '../dapp/shop/shelf.js';
 
 const W = 10n ** 18n, w32 = (n) => BigInt(n).toString(16).padStart(64, '0');
 const id = (n) => '0x' + SHOP.slice(2) + '00' + '5125' + n.toString(16).padStart(18, '0');
@@ -98,8 +98,8 @@ test('what the shop answers is read as words', () => {
   assert.equal(decodeWord('0x' + w32(77)), 77n); assert.equal(decodeWord('0x'), null); assert.equal(decodeWord(null), null);
 });
 
-test('a recipient is refused when it is nothing, this shop, the market or TAC, in any case', () => {
-  for (const bad of ['', null, undefined, '0x12', SHOP, SHOP.toUpperCase().replace('0X', '0x'), MARKET, TAC, TAC.toUpperCase().replace('0X', '0x')]) assert.equal(badRecipient(bad), true, String(bad));
+test('a recipient is refused when it is nothing, this shop, the market, TAC or the router, in any case', () => {
+  for (const bad of ['', null, undefined, '0x12', SHOP, SHOP.toUpperCase().replace('0X', '0x'), MARKET, TAC, TAC.toUpperCase().replace('0X', '0x'), ROUTER, ROUTER.toUpperCase().replace('0X', '0x')]) assert.equal(badRecipient(bad), true, String(bad));
   assert.equal(badRecipient('0x1111111111111111111111111111111111111111'), false);
   assert.equal(isAddress(SHOP), true); assert.equal(isAddress('0x12'), false); assert.equal(isId(id(1)), true); assert.equal(isId(SHOP), false);
 });
@@ -151,6 +151,10 @@ test('a bought token: its number and page, the calls that read and use it agains
   assert.notEqual(deployRefusal(gold['market-error:DeploymentFailed']), deployRefusal(gold['market-error:NotOwnerNorApproved']));
   assert.equal(deployRefusal(gold['market-error:DeploymentFailed'] + '00'.repeat(28)), deployRefusal(gold['market-error:DeploymentFailed']), 'with revert data after the selector');
   assert.equal(deployRefusal('0xdeadbeef'), null); assert.equal(deployRefusal(undefined), null);
+  // a failed deploy is told apart by its selector, so that the page can ask whether the code works when simply created (ETH sent to the deploy address beforehand is what stops one that does)
+  assert.equal(deployFailed(gold['market-error:DeploymentFailed']), true); assert.equal(deployFailed(gold['market-error:DeploymentFailed'].toUpperCase().replace('0X', '0x') + '00'.repeat(28)), true);
+  assert.equal(deployFailed(gold['market-error:NotOwnerNorApproved']), false); assert.equal(deployFailed(undefined), false); assert.equal(deployFailed('0x'), false);
+  assert.match(ETH_AT_DEPLOY_ADDRESS, /payable/);
 });
 
 test('the forwarder is the 35 bytes it is said to be, with the receiver inside and nothing else to change', () => {
@@ -169,7 +173,7 @@ test('the forwarder is the 35 bytes it is said to be, with the receiver inside a
 test('what stops an address from being the one ETH is passed on to', () => {
   const vanity = '0x0000000000f5e9a4599fb175ca03db96a7e19bb3', fine = '0x1111111111111111111111111111111111111111';
   assert.equal(forwardRefusal(fine, vanity), null);
-  for (const [bad, re] of [['', /Name the address/], ['0x12', /Name the address/], [null, /Name the address/], ['0x' + '0'.repeat(40), /empty address/], [vanity, /itself/], [vanity.toUpperCase().replace('0X', '0x'), /itself/], [SHOP, /shop, the market or TAC/], [MARKET, /shop, the market or TAC/], [TAC, /shop, the market or TAC/]]) assert.match(forwardRefusal(bad, vanity) ?? '', re, String(bad));
+  for (const [bad, re] of [['', /Name the address/], ['0x12', /Name the address/], [null, /Name the address/], ['0x' + '0'.repeat(40), /empty address/], [vanity, /itself/], [vanity.toUpperCase().replace('0X', '0x'), /itself/], [SHOP, /shop, the market, TAC or the swap contracts/], [MARKET, /shop, the market, TAC or the swap contracts/], [TAC, /shop, the market, TAC or the swap contracts/], [ROUTER, /swap contracts/]]) assert.match(forwardRefusal(bad, vanity) ?? '', re, String(bad));
   assert.equal(forwardRefusal(fine, null), null, 'with no address to compare to it is only the others');
 });
 

@@ -5,7 +5,7 @@ import { readSpot, readPrecision } from '/trade/farm-read.js?cb=fb6ec72f';
 import { makeEvmTradeVenues, ZROUTER } from '/evm-trade-venues.js?cb=196b14fb';
 import { SHOP, MARKET, TAC, TAC_NAME, FROM_BLOCK, TOPICS, foldShelf, sortShelf, filterShelf, zeroTiers, zerosOf, zerosText, zeroBits, addressParts, tacText, usdText, priceUsd, tacUsdFrom, tokenNumber,
   tokenUrl, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, ownerOfData, addressOfData, deployData, initcodeOf, parseTokenId, soldTo, forwarderInit,
-  forwardRefusal, decodeAddress, decodeListing, decodeWord, refusalWords, deployRefusal, badRecipient, isAddress, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, ethText } from '/shop/shelf.js?cb=741c567f';
+  forwardRefusal, decodeAddress, decodeListing, decodeWord, refusalWords, deployRefusal, deployFailed, ETH_AT_DEPLOY_ADDRESS, badRecipient, isAddress, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, ethText } from '/shop/shelf.js?cb=4669deda';
 
 // The shop's shelf (contracts/src/VanityShop.sol): addresses that start with zeros, each a token the buyer can deploy a contract to on Ethereum. The page reads the shelf
 // from the shop's events, checks the one a buyer picks against the shop again, and sends one transaction: the buy, with a TAC permit signed first when the shop has no
@@ -101,7 +101,7 @@ async function buy(id) {
   if (!row || S.busy) return;
   if (!W.account) { await conn.connect(); return; }
   const to = (S.to || W.account).trim();
-  if (!isAddress(to) || badRecipient(to)) { say('Name an address to send the token to. It cannot be this shop, the market or TAC.', true); return; }
+  if (!isAddress(to) || badRecipient(to)) { say('Name an address to send the token to. It cannot be this shop, the market, TAC or the swap contracts.', true); return; }
   S.busy = id; S.done = null; render(); renderAfter(); say('Checking it is still for sale.');
   let hash = null;
   try {
@@ -194,7 +194,7 @@ async function zapBuy(id) {
   const row = S.shelf.find((x) => x.id === id);
   if (!row || S.busy || !W.account) return;
   const who = W.account, to = (S.to || who).trim();
-  if (!isAddress(to) || badRecipient(to)) { say('Name an address to send the token to. It cannot be this shop, the market or TAC.', true); return; }
+  if (!isAddress(to) || badRecipient(to)) { say('Name an address to send the token to. It cannot be this shop, the market, TAC or the swap contracts.', true); return; }
   S.busy = id; S.done = null; render(); renderAfter(); say('Checking it is still for sale.');
   let hash = null;
   try {
@@ -231,6 +231,8 @@ async function zapBuy(id) {
 // ── using an address ──
 // Deploys to the chosen address through the market, which burns the token: either the small contract that passes ETH on (forwarderInit) or the bytecode pasted. The same call is
 // made as a read first: it returns the address the contract would land at, which must be the one the token stands for, and a refusal is said before the wallet is asked for anything.
+// Whether code creates a contract when it is simply created with nothing sent: false when it does not, or when that cannot be asked.
+const createsPlainly = (from, data) => rpc('eth_call', [{ from, data }, 'latest']).then(() => true, () => false);
 async function useDeploy() {
   const who = W.account;
   if (!who || U.busy) return;
@@ -254,7 +256,8 @@ async function useDeploy() {
       if (at !== vanity) { set('The market would put it somewhere else than the address the token stands for, so nothing was sent.', true); return; }
     } catch (e) {
       if (!e?.revert) throw new Error('Could not reach the network to check this. Nothing was sent.');
-      set(`${deployRefusal(e.data) || 'The market would refuse this.'} Nothing was sent.`, true); return;
+      const why = deployFailed(e.data) && await createsPlainly(who, code) ? ETH_AT_DEPLOY_ADDRESS : deployRefusal(e.data);
+      set(`${why || 'The market would refuse this.'} Nothing was sent.`, true); return;
     }
     set('Confirm the deployment in your wallet. It uses the token up.');
     hash = await conn.wallet.sendTx({ to: MARKET, data, from: who });
