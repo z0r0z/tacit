@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-C5F+LBmZMQt6T0KijXNmeDwzuXflCrU7Kv1kBALmxd4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-s4qHbTKTKczuiD9mPX+Epew/SxqwhdZWJ8RonUmQQZc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
@@ -199,6 +199,7 @@ body.in .hero p, body.in .facts, body.in .hero .more { display: none; }
 #chains:empty { min-height: 69px; }
 @media (max-width: 640px) { #chains:empty { min-height: 73px; } }
 #chains button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; }
+#chains.tight .ip { display: none; }
 /* the asset row (the chain's ETH and its token pools): the coin beside its name, the balance under */
 #assets button { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 2px 6px; }
 #assets button small { flex-basis: 100%; text-align: center; }
@@ -2495,12 +2496,21 @@ function paintChains() {
   el.hidden = shown.length < 2;
   keepFocus(el, () => mountOnce(el, html`${shown.map((c) => {
     const st = CH[c.chainId], q = PUB[c.chainId];
-    const v = !S.key ? (q?.locked != null ? `${fmt(q.locked, 18, 3)} in pool` : '') : st.bal != null ? `${ethDown(st.bal)} ETH` : st.last != null ? html`<span class="stale">${ethDown(st.last)} ETH</span>` : st.err ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
+    const v = !S.key ? (q?.locked != null ? html`${fmt(q.locked, 18, 3)}<span class="ip"> in pool</span>` : '') : st.bal != null ? `${ethDown(st.bal)} ETH` : st.last != null ? html`<span class="stale">${ethDown(st.last)} ETH</span>` : st.err ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
     return html`<button type="button" role="tab" id="chain-${c.chainId}" data-chain="${c.chainId}" aria-selected="${c === S.chain ? 'true' : 'false'}" tabindex="${c === S.chain ? '0' : '-1'}" ${S.busy ? 'disabled' : ''} ${!S.key && q?.locked != null ? html`aria-label="${c.name}, ${fmt(q.locked, 18, 3)} ETH in the pool"` : ''}>${cicon(c)}${c.name}<small>${v || '\u00a0'}</small></button>`;
   })}`));
   $$('#chains [data-chain]').forEach((b) => b.onclick = () => { if (!S.busy) switchChain(chainOf(b.dataset.chain)); });
+  fitChains(el);
   paintAssets();
 }
+// A figure line that would wrap (three tabs on a narrow phone) loses its " in pool" for the row, in the same turn it is set and so before it is drawn: the row keeps one height, and the
+// tab's label for a screen reader and the pool line under the row still say what the figure is.
+function fitChains(el = $('#chains')) {
+  if (!el) return;
+  el.classList.toggle('tight', false);
+  el.classList.toggle('tight', [...el.querySelectorAll('small')].some((sm) => sm.offsetHeight > 1.5 * parseFloat(getComputedStyle(sm).lineHeight)));
+}
+window.addEventListener('resize', () => fitChains());
 function switchChain(c, tab = null) {
   if (!c) return;
   S.chain = c; writeJson(CHAIN_PREF, c.chainId);
