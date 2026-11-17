@@ -323,7 +323,7 @@ try {
     ok(opts.some((o) => o.includes(C.address)) && opts.some((o) => o.includes(F.address)) && !opts.some((o) => o.includes(A.address)), `it lists the addresses the wallet holds from the shop, and not the one that went to another wallet (${opts.length - 1} and the field for an id)`);
     await p.selectOption('#use-token', C.id);
     ok((await p.$eval('#use-kind', (e) => e.value)) === 'forward' && /ETH sent to the address goes straight on[\s\S]*cannot be changed[\s\S]*tokens sent to it would be stuck/.test(await text(p, '#use')), 'passing ETH on is what it offers first, with what it cannot do said plainly');
-    for (const [bad, re] of [[C.address, /itself/], ['0x' + '0'.repeat(40), /empty address/], [SHOP, /shop, the market or TAC/], ['nonsense', /Name the address/]]) {
+    for (const [bad, re] of [[C.address, /itself/], ['0x' + '0'.repeat(40), /empty address/], [SHOP, /shop, the market, TAC or the swap contracts/], ['0x000000000000FB114709235f1ccBFfb925F600e4', /swap contracts/], ['nonsense', /Name the address/]]) {
       await p.fill('#use-to', bad);
       await p.click('#use-go');
       await until(p, (s) => new RegExp(s).test(document.querySelector('#use-note')?.textContent || ''), re.source, 60000);
@@ -368,6 +368,28 @@ try {
     await p.click('#use-go');
     await until(p, () => /Deployed at/.test(document.querySelector('#use')?.textContent || ''), null, 240000);
     ok((await rpcA('eth_getCode', [F.address, 'latest'])) === '0x00' && (await ownerOf(F.id)) === null && W.sends.length === sendsBefore + 2, 'pasted bytecode, for a token entered by its number, deploys exactly that code at its address');
+    // ETH at the address the market deploys from: code that refuses ETH cannot deploy there, and the page says that instead of blaming the code
+    {
+      await p.click('#use-again');
+      await until(p, () => !!document.querySelector('#use-token'), null, 60000);
+      const Y = findId(2, (b) => b >= 8);
+      await sendAs(OPS, SHOP, cast('calldata', 'keep(uint256,uint8,address)', BigInt(Y.id).toString(), String(Y.nonce), W.account));
+      const initHash = await rpcA('eth_call', [{ to: MARKET, data: cast('sig', 'DEPLOY_PROXY_INITHASH()') }, 'latest']);
+      const proxy = '0x' + cast('keccak', '0xff' + MARKET.slice(2).toLowerCase() + word(BigInt(Y.id)) + initHash.slice(2)).slice(-40);
+      await rpcA('anvil_setBalance', [proxy, '0x1']);
+      await p.selectOption('#use-kind', 'custom');
+      await p.selectOption('#use-token', 'other');
+      await p.fill('#use-id', BigInt(Y.id).toString());
+      await p.fill('#use-init', '0x34600b5760006000f3fefe5b60006000fd');          // a constructor that reverts when it is sent any ETH, and otherwise creates an empty contract
+      const sendsNow = W.sends.length;
+      await p.click('#use-go');
+      await until(p, () => /Someone has sent ETH/.test(document.querySelector('#use-note')?.textContent || ''), null, 120000);
+      ok(W.sends.length === sendsNow && (await ownerOf(Y.id))?.toLowerCase() === W.account.toLowerCase(), 'code that refuses ETH, with ETH at the address the market deploys from, is told so rather than blamed: nothing was sent and the token is still the wallet\'s');
+      await rpcA('anvil_setBalance', [proxy, '0x0']);
+      await p.click('#use-go');
+      await until(p, () => /Deployed at/.test(document.querySelector('#use')?.textContent || ''), null, 240000);
+      ok(W.sends.length === sendsNow + 1 && (await ownerOf(Y.id)) === null, 'and with nothing there the same code deploys');
+    }
   }
 
   // ---- a change of account in the wallet
