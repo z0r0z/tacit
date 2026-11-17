@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ZULcaB1nXnuWu8K8rloFNwbS/2wM+YDZYMVWjVPcAkE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ocWzPsgGw1pkPSeF7kVGACgFTlI0rqKIPHv0RroMRQs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -4404,6 +4404,15 @@ function chainOn() { return !!CHAIN_ON; }
 var CH = null;
 function chainReset(pub = null) { CH = { pub, cfg: null, p: null, bal: null, at: 0, scanP: null, err: null, lane: null, pubd: false, kept: [], hops: [], qs: new Map(), delay: null, cap: null, capAt: 0 }; }
 chainReset();
+// A passkey wallet's sign-in brings its PQ ID (prf-wallet.js). Once per key on this device, while its backup phrase is not written down, say where to.
+function pqNudge(privHex, pubHex) {
+  if (!chainOn()) return;
+  import('/tacit-chain-root.js').then(({ keptRoot }) => {
+    if (!keptRoot(privHex) || store.get(`tacit-pq-backed-v1:${pubHex}`) || store.get(`tacit-pq-nudged-v1:${pubHex}`)) return;
+    store.set(`tacit-pq-nudged-v1:${pubHex}`, Date.now());
+    setTimeout(() => { if (S.key?.pubHex === pubHex) toast('Your Tacit chain payments are now quantum-private. Write down your PQ ID backup phrase: TAC, then Receive.'); }, 2500);
+  }).catch(() => {});
+}
 // A landed hop is sent on into the pool by the leader right after it lands; one still waiting after this long is one it missed, and its TAC is on neither side until someone sends it
 const CHAIN_HOP_WAIT = 5 * 60e3;
 const chainHopsStuck = () => (chainOn() && S.key && CH.pub === S.key.pubHex ? CH.hops.filter((h) => Date.now() - h.at > CHAIN_HOP_WAIT) : []);
@@ -4491,6 +4500,13 @@ async function chainStart() {
     let done = false;
     try { done = sessionStorage.getItem(k) === '1'; } catch { }
     if (!done && !CH.pubd) { try { await c.publish(); CH.pubd = true; try { sessionStorage.setItem(k, '1'); } catch { } } catch { } }
+    // (a key whose PQ ID was made on another device, on a device marked to ask its passkey the first salt alone: it asks both again at its next
+    // sign-in, once per key, so a device whose authenticator truly cannot is not sent round again; see prf-wallet.js)
+    if (key.mode === 'passkey') {
+      let flagged = false, healed = true;
+      try { flagged = localStorage.getItem('tacit-pq-second') === 'no' || !!localStorage.getItem('tacit-pq-cancels'); healed = !!localStorage.getItem(`tacit-pq-healed-v1:${key.pubHex}`); } catch { }
+      if (flagged && !healed) c.pqState().then((s) => { if (s.elsewhere) try { localStorage.setItem(`tacit-pq-healed-v1:${key.pubHex}`, '1'); for (const f of ['tacit-pq-second', 'tacit-pq-cancels']) localStorage.removeItem(f); } catch { } }, () => {});
+    }
     c.forceDelay().then((s) => { CH.delay = chainSpan(s); }, () => {});
     for (const e of await chainKeptRead(c)) if (!e.forced && !e.refused) c.resubmit(e).then(() => { chainKeptRead(c); chainScan(true); }, () => chainKeptRead(c));
   } catch (e) { if (S.key === key) CH.err = e; }
@@ -4515,7 +4531,7 @@ const chainSaid = (m) => Object.assign(new Error(m), { said: true });
 const CHAIN_PROVE_S = globalThis.crossOriginIsolated ? 8 : 30;
 const chainProveSay = () => (globalThis.crossOriginIsolated ? 'a few seconds' : 'about half a minute');
 
-const TACIT_URL = '/tacit.js?cb=f8e51b62';
+const TACIT_URL = '/tacit.js?cb=455448dc';
 let T = null;
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; try { xtEngines(m); } catch { } } });
 const loadTacit = TS.load, tacitTurn = TS.turn, withKey = TS.withKey, dropTacitKey = TS.drop, tPriv = TS.tPriv;
@@ -4543,6 +4559,7 @@ const open = {
     savePrfMap(m);
     const priv = bytesToHex(r.priv); r.priv.fill(0);
     setKey({ mode: 'passkey', priv, pubHex, label, credentialId: r.credentialId });
+    pqNudge(priv, pubHex);
   },
   async newPasskey({ signal } = {}) {
     if (!isPasskeyAvailable()) throw new Error('Passkeys need a browser that supports them.');
@@ -4555,6 +4572,7 @@ const open = {
     savePrfMap(m);
     const priv = bytesToHex(r.priv); r.priv.fill(0);
     setKey({ mode: 'passkey', priv, pubHex: r.pubHex, label, credentialId: r.credentialId });
+    pqNudge(priv, r.pubHex);
   },
   async btc(k, { signal } = {}) {
     const opened = await tacitTurn(async () => {
@@ -15688,7 +15706,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=99e12239').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=77ee3b21').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {
@@ -16300,7 +16318,7 @@ async function hxBtcMarket(addr) {
   const r = xtOf(addr), b = r && xtBridge(r);
   if (!b) return;
   try {
-    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=85c1658f')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
+    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=207d2bf9')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
     await BTC_MKT.get(b.hex).open();
   } catch (e) { toast(`The ${b.name} market on Bitcoin did not open: ${errText(e)}`, true); }
 }

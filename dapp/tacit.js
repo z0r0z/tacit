@@ -712,7 +712,11 @@ async function _promptUnlockPassphrase(errorHint) {
   });
 }
 
-function _exportKeyModal({ hex, allowAck, alreadyAcked, title = null, reason = null }) {
+// With a PQ ID the key alone does not open the TAC on the Tacit chain (its passkey or its backup phrase does): an export of the key says so.
+async function _pqExportNote(priv) {
+  try { return (await import('./tacit-chain-root.js')).keptRoot(priv) ? 'This key alone does not open your TAC on the Tacit chain: that also needs your PQ ID passkey or its 24-word backup phrase. Keep one of those too.' : null; } catch { return null; }
+}
+function _exportKeyModal({ hex, allowAck, alreadyAcked, title = null, reason = null, note = null }) {
   return new Promise((resolve) => {
     const modal = document.getElementById('export-modal');
     const text = document.getElementById('export-key-text');
@@ -730,7 +734,7 @@ function _exportKeyModal({ hex, allowAck, alreadyAcked, title = null, reason = n
     const defaultTitle = titleEl ? titleEl.textContent : '';
     const defaultReason = reasonEl ? reasonEl.textContent : '';
     if (titleEl) titleEl.textContent = title || defaultTitle;
-    if (reasonEl) reasonEl.textContent = reason || defaultReason;
+    if (reasonEl) reasonEl.textContent = (reason || defaultReason) + (note ? ` ${note}` : '');
     text.value = hex;
     ackBox.checked = false;
     ackLabel.style.display = (allowAck && !alreadyAcked) ? 'inline-flex' : 'none';
@@ -928,6 +932,7 @@ async function ensureBurnerBackedUp(opLabel) {
     reason:
       `[${tier}] this private key controls every tacit asset utxo in this browser. if you lose this browser's localStorage — cache clear, device loss, switching browsers — those assets are unrecoverable. ` +
       'copy the key into a password manager, paper backup, or hardware-wallet seed slip, then tick "mark as backed up" below to proceed. close without ticking to abort.',
+    note: await _pqExportNote(wallet.priv),
   });
   if (!acked) return false;
   markBurnerBackedUp();
@@ -41193,7 +41198,7 @@ function setupWalletButtons() {
         ({ priv } = await prfLogin({ credentialId: prfWallet.state?.credentialId }));
       } catch (e) { toast('Export cancelled: ' + e.message, 'error'); return; }
       try {
-        await _exportKeyModal({ hex: bytesToHex(priv), allowAck: false });
+        await _exportKeyModal({ hex: bytesToHex(priv), allowAck: false, note: await _pqExportNote(priv) });
       } finally {
         priv.fill(0);
       }
@@ -41202,7 +41207,7 @@ function setupWalletButtons() {
     if (wallet.mode === 'eth') {
       try { await ensurePrivkey(); }
       catch (e) { toast('Export cancelled: ' + (e?.message || e), ''); return; }
-      await _exportKeyModal({ hex: bytesToHex(wallet.priv), allowAck: false });
+      await _exportKeyModal({ hex: bytesToHex(wallet.priv), allowAck: false, note: await _pqExportNote(wallet.priv) });
       return;
     }
     try { await ensurePrivkey(); }
@@ -41211,6 +41216,7 @@ function setupWalletButtons() {
       hex: bytesToHex(wallet.priv),
       allowAck: true,
       alreadyAcked: isBurnerBackedUp(),
+      note: await _pqExportNote(wallet.priv),
     });
     if (acked) {
       markBurnerBackedUp();
@@ -41381,6 +41387,7 @@ function setupWalletButtons() {
       alreadyAcked: isBurnerBackedUp(),
       title: 'last chance: export before forgetting',
       reason: 'this is the only opportunity to copy the private key. once forgotten, any tacit assets it controls become unrecoverable.',
+      note: await _pqExportNote(wallet.priv),
     });
     if (!acked) { toast('Forget cancelled.', ''); return; }
     const oldPub = wallet.pub;

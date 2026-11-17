@@ -425,32 +425,36 @@ await (async () => {
   // an authenticator that answers every salt it is asked (hmac-secret), one that answers only the first, and one that refuses a second
   const both = (o, flags = SYNCED) => { const e = o.publicKey.extensions.prf.eval; return makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { results: { first: prfOf(e.first), ...(e.second ? { second: prfOf(e.second) } : {}) } }, flags }); };
   const firstOnly = (o) => makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { results: { first: prfOf(o.publicKey.extensions.prf.eval.first) } }, flags: SYNCED });
-  // off (the default): sign-in asks the first salt alone and keeps nothing, as it always did
+  // on by default; off in a browser where 'tacit-pq-signin' is '0': sign-in asks the first salt alone and keeps nothing, as it always did
+  const fresh = (k) => { if (k) dropRoot(k); localStorage.removeItem('tacit-pq-second'); localStorage.removeItem('tacit-pq-cancels'); };
   {
     const asked = [];
+    localStorage.setItem('tacit-pq-signin', '0');
     await withMockedCredentials({ create: async (o) => { asked.push(o.publicKey.extensions.prf.eval); return both(o); }, get: async (o) => { asked.push(o.publicKey.extensions.prf.eval); return both(o); } }, async () => {
       const k = await prfLogin({ credentialId: strToB64Url('cred-pq') });
       dropRoot(k.priv);
       const n = await prfRegister('alice');
-      test('off by default: sign-in and a new passkey wallet ask the first salt alone and keep no root', () => asked.length === 2 && asked.every((e) => !e.second) && keptRoot(k.priv) === null && keptRoot(n.priv) === null);
+      test('off by the switch: sign-in and a new passkey wallet ask the first salt alone and keep no root', () => asked.length === 2 && asked.every((e) => !e.second) && keptRoot(k.priv) === null && keptRoot(n.priv) === null);
     });
+    localStorage.removeItem('tacit-pq-signin');
   }
-  localStorage.setItem('tacit-pq-signin', '1');
   let calls = 0;
   const refusesSecond = (name) => async (o) => { calls++; if (o.publicKey.extensions.prf.eval.second) throw new DOMException('second salt', name); return firstOnly(o); };
   const cid = strToB64Url('cred-pq');
   let plainKey;
+  fresh();
   await withMockedCredentials({ create: async () => null, get: async (o) => firstOnly(o) }, async () => { plainKey = await prfLogin({ credentialId: cid }); });
-  dropRoot(plainKey.priv);
+  fresh(plainKey.priv);
   await withMockedCredentials({ create: async () => null, get: async (o) => both(o) }, async () => {
     const k = await prfLogin({ credentialId: cid });
     const kept = keptRoot(k.priv);
-    test('asking for the second salt leaves the Tacit key as it was', () => bytesToHex(k.priv) === bytesToHex(plainKey.priv));
+    test('on by default: asking for the second salt leaves the Tacit key as it was', () => bytesToHex(k.priv) === bytesToHex(plainKey.priv));
     test('and the PQ ID\'s root is kept on this device, the same one Generate PQ ID asks for', () => !!kept && bytesToHex(kept.root) === bytesToHex(prfOf(CHAIN)) && kept.credentialId === cid);
     test('the root is not the Tacit key\'s salt output', () => bytesToHex(kept.root) !== bytesToHex(prfOf(LOGIN)));
+    test('a ceremony that went well leaves the device asking both salts', () => localStorage.getItem('tacit-pq-second') === null);
   });
   // a passkey kept on one device makes no PQ ID: its loss would lose the TAC
-  dropRoot(plainKey.priv);
+  fresh(plainKey.priv);
   await withMockedCredentials({ create: async () => null, get: async (o) => both(o, ONE_DEVICE) }, async () => {
     const k = await prfLogin({ credentialId: cid });
     test('a passkey that is not backed up keeps no root, and opens the same key', () => keptRoot(k.priv) === null && bytesToHex(k.priv) === bytesToHex(plainKey.priv));
@@ -460,32 +464,77 @@ await (async () => {
     const k = await prfLogin({ credentialId: cid });
     test('a browser that does not say whether it is backed up keeps no root', () => keptRoot(k.priv) === null);
   });
-  dropRoot(plainKey.priv); calls = 0;
+  fresh(plainKey.priv); calls = 0;
   await withMockedCredentials({ create: async () => null, get: refusesSecond('NotSupportedError') }, async () => {
     const k = await prfLogin({ credentialId: cid });
-    test('an authenticator that refuses a second salt is asked again with the first alone, and opens the same key', () => calls === 2 && bytesToHex(k.priv) === bytesToHex(plainKey.priv) && keptRoot(k.priv) === null);
+    test('an authenticator that refuses a second salt is asked again at once with the first alone, and opens the same key', () => calls === 2 && bytesToHex(k.priv) === bytesToHex(plainKey.priv) && keptRoot(k.priv) === null);
+    test('and the device asks the first salt alone from then on', () => localStorage.getItem('tacit-pq-second') === 'no');
   });
-  calls = 0;
+  // a refusal that looks like a cancel: not asked again now; one cancel turns nothing off, the second in a row does, and the next press opens the wallet
+  fresh(plainKey.priv); calls = 0;
   await withMockedCredentials({ create: async () => null, get: refusesSecond('NotAllowedError') }, async () => {
     let threw = null;
     try { await prfLogin({ credentialId: cid }); } catch (e) { threw = e; }
-    test('a person who cancels is not asked again', () => calls === 1 && threw?.name === 'NotAllowedError');
+    test('a cancel (or a refusal that looks like one) is not asked again, and one alone turns nothing off', () => calls === 1 && threw?.name === 'NotAllowedError' && localStorage.getItem('tacit-pq-second') === null);
+    threw = null;
+    try { await prfLogin({ credentialId: cid }); } catch (e) { threw = e; }
+    test('the second in a row with both salts asked makes the device ask the first salt alone', () => calls === 2 && threw?.name === 'NotAllowedError' && localStorage.getItem('tacit-pq-second') === 'no');
+    const k = await prfLogin({ credentialId: cid });
+    test('the next press opens the same key: an authenticator refusing as a cancel costs two sign-ins at most', () => calls === 3 && bytesToHex(k.priv) === bytesToHex(plainKey.priv));
+  });
+  // a person who closes the prompt once, then signs in: the PQ ID comes with it, and the count is cleared
+  fresh(plainKey.priv); calls = 0;
+  await withMockedCredentials({ create: async () => null, get: async (o) => { calls++; if (calls === 1) throw new DOMException('closed', 'NotAllowedError'); return both(o); } }, async () => {
+    try { await prfLogin({ credentialId: cid }); } catch { }
+    const k = await prfLogin({ credentialId: cid });
+    test('one closed prompt, then a sign-in: the PQ ID comes with it and the count is cleared', () => !!keptRoot(k.priv) && localStorage.getItem('tacit-pq-cancels') === null && localStorage.getItem('tacit-pq-second') === null);
+  });
+  // the page's own errors (no passkey picked, a request already pending) say nothing about the second salt
+  fresh(plainKey.priv);
+  await withMockedCredentials({ create: async () => null, get: async () => null }, async () => {
+    try { await prfLogin({ credentialId: cid }); } catch { }
+  });
+  await withMockedCredentials({ create: async () => null, get: async () => { throw new DOMException('pending', 'InvalidStateError'); } }, async () => {
+    try { await prfLogin({ credentialId: cid }); } catch { }
+    test('the page\'s own errors and a pending request mark nothing', () => localStorage.getItem('tacit-pq-second') === null && localStorage.getItem('tacit-pq-cancels') === null);
+  });
+  // an authenticator whose first output changed with the second salt asked would open another wallet: the known key is asked for again the other way
+  fresh(plainKey.priv); calls = 0;
+  savePrfMap({ alice: { credentialId: cid, pubkey: plainKey.pubHex } });
+  await withMockedCredentials({ create: async () => null, get: async (o) => { calls++; const e = o.publicKey.extensions.prf.eval; return e.second ? makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { results: { first: prfOf(e.second), second: prfOf(e.first) } }, flags: SYNCED }) : firstOnly(o); } }, async () => {
+    const k = await prfLogin({ credentialId: cid });
+    test('a passkey opens the key it opened before: asked again with the first salt alone when two salts gave another', () => calls === 2 && bytesToHex(k.priv) === bytesToHex(plainKey.priv) && keptRoot(k.priv) === null && localStorage.getItem('tacit-pq-second') === 'no');
+  });
+  clearPrfMap();
+  // a cancel by the page (its own Cancel, an AbortError) is not the authenticator's doing: the device keeps asking both salts
+  fresh(plainKey.priv);
+  await withMockedCredentials({ create: async () => null, get: async () => { throw new DOMException('aborted', 'AbortError'); } }, async () => {
+    try { await prfLogin({ credentialId: cid }); } catch { }
+    test('the page\'s own cancel leaves the device asking both salts', () => localStorage.getItem('tacit-pq-second') === null);
   });
   // an authenticator that gives no output at all when asked two salts is asked again with the first alone
-  dropRoot(plainKey.priv); calls = 0;
+  fresh(plainKey.priv); calls = 0;
   await withMockedCredentials({ create: async () => null, get: async (o) => { calls++; return o.publicKey.extensions.prf.eval.second ? makeFakeCred({ rawIdStr: 'cred-pq', prfShape: {} }) : firstOnly(o); } }, async () => {
     const k = await prfLogin({ credentialId: cid });
-    test('no output for two salts: asked again with the first alone, the same key', () => calls === 2 && bytesToHex(k.priv) === bytesToHex(plainKey.priv));
+    test('no output for two salts: asked again with the first alone, the same key', () => calls === 2 && bytesToHex(k.priv) === bytesToHex(plainKey.priv) && localStorage.getItem('tacit-pq-second') === 'no');
   });
   // creation that gives no PRF output, then a ceremony that refuses the second salt: one passkey made, read again with the first salt alone
-  dropRoot(plainKey.priv); calls = 0;
+  fresh(plainKey.priv); calls = 0;
   let creates = 0;
   await withMockedCredentials({ create: async () => { creates++; return makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { enabled: true } }); }, get: refusesSecond('NotSupportedError') }, async () => {
     const k = await prfRegister('alice');
     test('a refused second salt after creation never makes a second passkey', () => creates === 1 && calls === 2 && bytesToHex(k.priv) === bytesToHex(plainKey.priv) && keptRoot(k.priv) === null);
   });
+  // a creation the user cancels (or the platform refuses as a cancel): not repeated now; two in a row and the next asks the first salt alone
+  fresh(plainKey.priv); creates = 0;
+  await withMockedCredentials({ create: async (o) => { creates++; if (o.publicKey.extensions.prf.eval.second) throw new DOMException('no', 'NotAllowedError'); return firstOnly(o); }, get: async (o) => firstOnly(o) }, async () => {
+    const threw = [];
+    for (let i = 0; i < 2; i++) { try { await prfRegister('alice'); } catch (e) { threw.push(e?.name); } }
+    const k = await prfRegister('alice');
+    test('a cancelled creation is not repeated; after two in a row the next asks the first salt alone and makes the wallet', () => threw.join() === 'NotAllowedError,NotAllowedError' && creates === 3 && bytesToHex(k.priv) === bytesToHex(plainKey.priv));
+  });
   // a root kept for the key (made with another passkey) is not replaced by a sign-in
-  dropRoot(plainKey.priv);
+  fresh(plainKey.priv);
   const { keepRoot } = await import('../dapp/tacit-chain-root.js');
   const other = new Uint8Array(32).fill(0x42);
   keepRoot(plainKey.priv, other, 'cred-other');
@@ -495,12 +544,13 @@ await (async () => {
   });
   // a new passkey wallet: the root at creation, or from the ceremony that follows when creation gives no PRF output
   for (const [label, create] of [['at creation', async (o) => both(o)], ['after creation', async () => makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { enabled: true } })]]) {
-    dropRoot(plainKey.priv);
+    fresh(plainKey.priv);
     await withMockedCredentials({ create, get: async (o) => both(o) }, async () => {
       const k = await prfRegister('alice');
       test(`a new passkey wallet keeps its PQ ID's root (${label})`, () => bytesToHex(k.priv) === bytesToHex(plainKey.priv) && bytesToHex(keptRoot(k.priv)?.root || []) === bytesToHex(prfOf(CHAIN)));
     });
   }
+  fresh(plainKey.priv);
   localStorage.removeItem('tacit-pq-signin');
 })();
 

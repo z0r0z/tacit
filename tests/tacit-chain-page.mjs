@@ -490,12 +490,12 @@ try {
     await ctx.close();
   }
   // Passkey wallets through the browser's own WebAuthn, on a virtual authenticator with PRF (a passkey needs a secure origin: localhost). A new
-  // passkey wallet makes its PQ ID from its own passkey: the phrase, then on. With the sign-in switch on, a passkey that is backed up brings its PQ
-  // ID with the sign-in itself; one kept on a single device does not.
+  // passkey wallet makes its PQ ID from its own passkey: the phrase, then on (automatic PQ ID switched off in that browser). By default a passkey
+  // that is backed up brings its PQ ID with the sign-in itself, and says where to write its phrase down; one kept on a single device does not.
   if (PRESS !== 'only') {
     const LOCAL = WEB.replace('127.0.0.1', 'localhost');
     const passkeyVisit = async ({ backedUp = true, auto = false } = {}) => {
-      const v = await visit({ host: LOCAL, seed: auto ? { 'tacit-pq-signin': '1' } : {} });
+      const v = await visit({ host: LOCAL, seed: auto ? {} : { 'tacit-pq-signin': '0' } });
       const cdp = await v.ctx.newCDPSession(v.page);
       await cdp.send('WebAuthn.enable', { enableUI: false });
       await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', ctap2Version: 'ctap2_1', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true, hasPrf: true, defaultBackupEligibility: backedUp, defaultBackupState: backedUp } });
@@ -512,7 +512,7 @@ try {
     {
       const { page, ctx, bad, signedIn, kept } = await passkeyVisit();
       ok(signedIn, 'a new passkey wallet opens through the browser\'s WebAuthn (virtual authenticator with PRF)');
-      ok(!(await kept()), 'with the sign-in switch off, its sign-in keeps no PQ ID root');
+      ok(!(await kept()), 'with automatic PQ ID switched off in this browser, its sign-in keeps no PQ ID root');
       await page.click('#tcd-t-receive');
       await page.waitForSelector('#tpq-go', { timeout: 20000 }).catch(() => {});
       await page.click('#tpq-go');
@@ -528,7 +528,9 @@ try {
     }
     {
       const { page, ctx, bad, signedIn, kept } = await passkeyVisit({ auto: true });
-      ok(signedIn && (await kept()), 'switch on, a backed-up passkey: the sign-in itself keeps the PQ ID root (one ceremony, two salts)');
+      ok(signedIn && (await kept()), 'by default, a backed-up passkey: the sign-in itself keeps the PQ ID root (one ceremony, two salts)');
+      const nudged = await page.waitForFunction(() => [...document.querySelectorAll('.toast')].some((t) => /quantum-private.*backup phrase/.test(t.textContent)), null, { timeout: 10000 }).then(() => true, () => false);
+      ok(nudged, 'and a message says the payments are now quantum-private and where to write the phrase down');
       await page.click('#tcd-t-receive');
       await page.waitForFunction(() => /On/.test(document.querySelector('#tcd-pq .tpq-on')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
       ok(/Back up your PQ ID/.test(await text(page, '#tcd-pq')), 'and the panel says it is on, with its backup phrase still to write down');
@@ -537,7 +539,7 @@ try {
     }
     {
       const { ctx, bad, signedIn, kept } = await passkeyVisit({ auto: true, backedUp: false });
-      ok(signedIn && !(await kept()), 'switch on, a passkey kept on one device: the sign-in opens the wallet and keeps no root');
+      ok(signedIn && !(await kept()), 'by default, a passkey kept on one device: the sign-in opens the wallet and keeps no root');
       ok(bad.length === 0, `no errors or CSP violations (${bad.join(' | ')})`);
       await ctx.close();
     }
