@@ -1,9 +1,9 @@
-// The vanity page's shelf (dapp/vanity/shelf.js): the shelf read from the shop's events, an address as its zeros and the rest, and the calls a buyer makes, against `cast calldata`.
+// The shop page's shelf (dapp/shop/shelf.js): the shelf read from the shop's events, an address as its zeros and the rest, and the calls a buyer makes, against `cast calldata`.
 //   node --test tests/vanity-shelf.test.mjs
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
-import { SHOP, MARKET, TAC, TOPICS, foldShelf, sortShelf, zeroBits, addressParts, tacText, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress, isId } from '../dapp/vanity/shelf.js';
+import { SHOP, MARKET, TAC, TOPICS, foldShelf, sortShelf, zeroBits, addressParts, tacText, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress, isId } from '../dapp/shop/shelf.js';
 
 const W = 10n ** 18n, w32 = (n) => BigInt(n).toString(16).padStart(64, '0');
 const id = (n) => '0x' + SHOP.slice(2) + '00' + '5125' + n.toString(16).padStart(18, '0');

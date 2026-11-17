@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The vanity shop's page (dapp/vanity/) in a real browser under the page's own CSP, against an anvil fork of mainnet that holds the live shop, the vanity market and TAC: the
+// The shop page (dapp/shop/) in a real browser under the page's own CSP, against an anvil fork of mainnet that holds the live shop, the vanity market and TAC: the
 // shelf (read from the shop's events, the rarest first), a buy with TAC's permit, a buy with an allowance already in place, the refusals the page makes before anything is
 // signed, a price that changed or an address that went while the page was open, a wallet that cannot sign a permit (approval first), a wallet that says no, a sale lost in
 // the moment of signing, a shelf that cannot be read, and a phone. The ops multisig is impersonated on the fork to list and unlist.
@@ -12,7 +12,7 @@ import { readFileSync, existsSync, statSync, mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { marketAddress } from '../worker/src/salt-pool.js';
 import { encodeList } from '../tools/vanity-shop-list.mjs';
-import { foldShelf, TOPICS, FROM_BLOCK } from '../dapp/vanity/shelf.js';
+import { foldShelf, TOPICS, FROM_BLOCK } from '../dapp/shop/shelf.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
@@ -126,7 +126,7 @@ async function openPage(viewport, wallet = null) {
   const page = await ctx.newPage(), errors = [], blocked = [];
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
   page.on('console', (m) => { if (m.type() === 'error') { const t = m.text(); if (/favicon/i.test(t)) return; (/Content Security Policy|Refused to/i.test(t) ? blocked : errors).push(t); } });
-  await page.goto(`http://127.0.0.1:${WEB}/vanity/`);
+  await page.goto(`http://127.0.0.1:${WEB}/shop/`);
   return { browser, page, errors, blocked, walletLog };
 }
 

@@ -2,7 +2,7 @@ import { makeConnect } from '/trade/connect.js?cb=b758e60b';
 import { esc } from '/trade/sheet.js?cb=d857446c';
 import { $, rpc } from '/trade/util.js?cb=1d2cd8d3';
 import { SHOP, MARKET, TAC, TAC_NAME, FROM_BLOCK, TOPICS, foldShelf, sortShelf, addressParts, tacText, buyData, buyWithPermitData, approveData, listingsData, balanceOfData,
-  allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress } from '/vanity/shelf.js?cb=30055da6';
+  allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress } from '/shop/shelf.js?cb=30055da6';
 
 // The vanity shop's shelf (contracts/src/VanityShop.sol): addresses that start with zeros, each a token the buyer can deploy a contract to on Ethereum. The page reads the shelf
 // from the shop's events, checks the one a buyer picks against the shop again, and sends one transaction: the buy, with a TAC permit signed first when the shop has no
@@ -11,7 +11,7 @@ const S = { shelf: [], loaded: false, failed: false, bal: null, busy: null, note
 const hex = (n) => '0x' + n.toString(16);
 const say = (text, bad = false) => { S.note = text; S.bad = bad; paintNote(); };
 const conn = makeConnect({
-  describe: 'Buy a vanity address with TAC', name: 'tacit vanity', rewards: false,
+  describe: 'Buy an address that starts with zeros, for TAC', name: 'tacit shop', rewards: false,
   say: (t, b) => say(t, b), busy: () => !!S.busy, onChange: () => { S.bal = null; S.to = ''; render(); readBalance(); },
 });
 const W = conn.W;
