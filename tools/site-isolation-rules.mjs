@@ -13,6 +13,12 @@ export const ISOLATION_RULES = [
   ['/evm-pool-prove-worker.js', COEP, 'credentialless'],
   ['/evm-pool-sync-worker.js', COEP, 'credentialless'],
   ['/holding-prove-worker.js', COEP, 'credentialless'],
+  ['/btc-pool-scan-worker.js', COEP, 'credentialless'],
+  ['/confidential-bridge-worker.js', COEP, 'credentialless'],
+  ['/confidential-chain-memo-worker.js', COEP, 'credentialless'],
+  ['/confidential-memo-worker.js', COEP, 'credentialless'],
+  ['/confidential-tree-worker.js', COEP, 'credentialless'],
+  ['/stealth-scan-worker.js', COEP, 'credentialless'],
 ];
 
 const covers = (pattern, path) => (pattern.endsWith('*') ? path.startsWith(pattern.slice(0, -1)) : path === pattern);
