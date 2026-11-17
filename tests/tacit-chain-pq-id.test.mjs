@@ -83,6 +83,7 @@ try {
   await go((await alice.shield(1000n * T)).submit());
   await go((await bob.shield(600n * T)).submit());
   await go((await alice.shield(200n * T)).submit());
+  await go((await alice.shield(120n * T)).submit());
   await alice.publish(); await bob.publish();
   const oldLane = await alice.lane(), oldAddr = await alice.address();
   const lanes = { btc: { spendPub: aliceKey }, evm: { ownerPub: aliceKey }, chain: { hash: oldLane } };   // her Tacit address, as it stays
@@ -105,24 +106,35 @@ try {
   const keyOnly = makeChainClient({ cfg, rpcCall, priv: ALICE, system, root: null, storage: store() });
   assert.equal(await keyOnly.scan(), held0, 'from the Tacit key alone only the notes from before can be read');
 
-  // A small payment: the smaller old note covers it and the other old note rides in the free slot; both old notes are gone after, the change
-  // under the PQ ID
-  await go(alice.pay(await alice.recipientOf({ btc: { spendPub: secp.getPublicKey(new Uint8Array(32).fill(0x22), true) } }), 50n * T));
+  // A small payment (old notes 1,000, 200 and 120, a PQ ID note of 250): the smallest old note covers it, and the 200 rides in the free slot (it is
+  // not one of the two largest left free, so the next payment can spend as much as before); both are gone after, the change under the PQ ID
+  const bobAddr = await alice.recipientOf({ btc: { spendPub: secp.getPublicKey(new Uint8Array(32).fill(0x22), true) } });
+  const olderBefore = (await alice.pqState()).older;
+  await go(alice.pay(bobAddr, 50n * T));
   await alice.scan();
-  assert.equal((await alice.pqState()).older, 0n, 'nothing left under the old keys');
-  assert.equal(await keyOnly.scan(), 0n, 'and the Tacit key alone reads nothing of hers');
+  const left = (await alice.pqState()).older;
+  assert.ok(left > olderBefore / 2n && left < olderBefore * 4n / 5n, `two old notes went in one spend, the 1,000 stays (${left} of ${olderBefore})`);
+  assert.equal(await keyOnly.scan(), left, 'the Tacit key alone reads only the old note left');
 
-  // Someone still paying her old chain address (by its lane, as a client from before this would): the note is found under the old keys, and the
-  // next spend proves it beside a PQ ID note
+  // A payment the old note cannot cover alone: it is proved beside a PQ ID note, in one proof
+  const before = alice.balance();
+  await go(alice.pay(bobAddr, 1200n * T));
+  await alice.scan();
+  assert.equal((await alice.pqState()).older, 0n, 'the old note was spent beside a PQ ID note');
+  assert.equal(await keyOnly.scan(), 0n, 'and the Tacit key alone reads nothing of hers');
+  assert.ok(alice.balance() < before, 'the payment went');
+
+  // Someone still paying her old chain address (by its lane, as a client from before this would): the note is found under the old keys, and moved
+  // to the PQ ID at once on request
   await go(bob.pay(await bob.resolve(oldLane), 40n * T));
   await alice.scan();
   const older = (await alice.pqState()).older;
   assert.ok(older > 0n, 'a payment to the old address is still hers');
-  const before = alice.balance();
-  await go(alice.pay(pqAddr, 100n * T));
+  const before2 = alice.balance();
+  await go(alice.moveOlder());
   await alice.scan();
-  assert.equal((await alice.pqState()).older, 0n, 'the old note rode beside a PQ ID note, in one proof');
-  assert.ok(alice.balance() < before && alice.balance() > before - older, 'and came back as change: she lost only the pool share');
+  assert.equal((await alice.pqState()).older, 0n, 'moved to the PQ ID');
+  assert.ok(alice.balance() < before2 && alice.balance() > before2 - older, 'and she lost only the pool share');
 
   // Another device: without the root it reads the old keys only and does not replace the key's record; it takes the root only from her passkey
   const device = makeChainClient({ cfg, rpcCall, priv: ALICE, system, storage: store() });

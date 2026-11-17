@@ -232,13 +232,17 @@ function strToB64Url(s) {
 // Build a fake credential the way a browser would: rawId is a buffer, and
 // getClientExtensionResults().prf shape is configurable per test (results
 // vs resultsByCredential, etc).
-function makeFakeCred({ rawIdStr, prfShape }) {
+function makeFakeCred({ rawIdStr, prfShape, flags = null }) {
   const rawId = new TextEncoder().encode(rawIdStr).buffer;
+  // (authenticator data: the rp id hash, then the flags byte: 0x10 is backed up)
+  const data = flags == null ? null : (() => { const d = new Uint8Array(37); d[32] = flags; return d.buffer; })();
   return {
     rawId,
+    ...(data ? { response: { authenticatorData: data, getAuthenticatorData: () => data } } : {}),
     getClientExtensionResults() { return { prf: prfShape }; },
   };
 }
+const SYNCED = 0x1d, ONE_DEVICE = 0x05;
 
 // 32-byte deterministic PRF output — fed back identically on every login so
 // the derived priv must match across calls.
@@ -396,7 +400,7 @@ await (async () => {
   const { hmac } = await import('@noble/hashes/hmac');
   const { sha256 } = await import('@noble/hashes/sha256');
   const SECRET = new Uint8Array(32).fill(0x5c), salts = [];
-  const answer = (o) => { const salt = new Uint8Array(o.publicKey.extensions.prf.eval.first); salts.push(bytesToHex(salt)); return makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { results: { first: hmac(sha256, SECRET, salt) } } }); };
+  const answer = (o) => { const salt = new Uint8Array(o.publicKey.extensions.prf.eval.first); salts.push(bytesToHex(salt)); return makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { results: { first: hmac(sha256, SECRET, salt) } }, flags: SYNCED }); };
   await withMockedCredentials({ create: async (o) => answer(o), get: async (o) => answer(o) }, async () => {
     const key = await prfLogin({ credentialId: strToB64Url('cred-pq') });
     const a = await prfChainRoot({ credentialId: strToB64Url('cred-pq') });
@@ -407,7 +411,97 @@ await (async () => {
     test('the same passkey gives the same root, picked or named', () => a.root.length === 32 && bytesToHex(a.root) === bytesToHex(b.root) && a.credentialId === strToB64Url('cred-pq'));
     test('a passkey made for the root gives it at creation', () => bytesToHex(made.root) === bytesToHex(a.root));
     test('the root is not the Tacit key', () => bytesToHex(a.root) !== bytesToHex(key.priv));
+    test('the root comes with whether its passkey is backed up', () => a.backedUp === true && made.backedUp === true);
   });
+  await withMockedCredentials({ create: async () => null, get: async (o) => makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { results: { first: hmac(sha256, SECRET, new Uint8Array(o.publicKey.extensions.prf.eval.first)) } }, flags: ONE_DEVICE }) }, async () => {
+    const r = await prfChainRoot({ credentialId: strToB64Url('cred-pq') });
+    test('a passkey kept on one device says so', () => r.backedUp === false);
+  });
+
+  // ---- a passkey wallet's sign-in can bring its PQ ID: the chain's salt asked as the second of the same ceremony ----
+  const { keptRoot, dropRoot } = await import('../dapp/tacit-chain-root.js');
+  const enc2 = new TextEncoder(), LOGIN = sha256(enc2.encode('tacit-prf-v1')), CHAIN = sha256(enc2.encode('tacit-chain-root-v1'));
+  const prfOf = (salt) => hmac(sha256, SECRET, new Uint8Array(salt));
+  // an authenticator that answers every salt it is asked (hmac-secret), one that answers only the first, and one that refuses a second
+  const both = (o, flags = SYNCED) => { const e = o.publicKey.extensions.prf.eval; return makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { results: { first: prfOf(e.first), ...(e.second ? { second: prfOf(e.second) } : {}) } }, flags }); };
+  const firstOnly = (o) => makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { results: { first: prfOf(o.publicKey.extensions.prf.eval.first) } }, flags: SYNCED });
+  // off (the default): sign-in asks the first salt alone and keeps nothing, as it always did
+  {
+    const asked = [];
+    await withMockedCredentials({ create: async (o) => { asked.push(o.publicKey.extensions.prf.eval); return both(o); }, get: async (o) => { asked.push(o.publicKey.extensions.prf.eval); return both(o); } }, async () => {
+      const k = await prfLogin({ credentialId: strToB64Url('cred-pq') });
+      dropRoot(k.priv);
+      const n = await prfRegister('alice');
+      test('off by default: sign-in and a new passkey wallet ask the first salt alone and keep no root', () => asked.length === 2 && asked.every((e) => !e.second) && keptRoot(k.priv) === null && keptRoot(n.priv) === null);
+    });
+  }
+  localStorage.setItem('tacit-pq-signin', '1');
+  let calls = 0;
+  const refusesSecond = (name) => async (o) => { calls++; if (o.publicKey.extensions.prf.eval.second) throw new DOMException('second salt', name); return firstOnly(o); };
+  const cid = strToB64Url('cred-pq');
+  let plainKey;
+  await withMockedCredentials({ create: async () => null, get: async (o) => firstOnly(o) }, async () => { plainKey = await prfLogin({ credentialId: cid }); });
+  dropRoot(plainKey.priv);
+  await withMockedCredentials({ create: async () => null, get: async (o) => both(o) }, async () => {
+    const k = await prfLogin({ credentialId: cid });
+    const kept = keptRoot(k.priv);
+    test('asking for the second salt leaves the Tacit key as it was', () => bytesToHex(k.priv) === bytesToHex(plainKey.priv));
+    test('and the PQ ID\'s root is kept on this device, the same one Generate PQ ID asks for', () => !!kept && bytesToHex(kept.root) === bytesToHex(prfOf(CHAIN)) && kept.credentialId === cid);
+    test('the root is not the Tacit key\'s salt output', () => bytesToHex(kept.root) !== bytesToHex(prfOf(LOGIN)));
+  });
+  // a passkey kept on one device makes no PQ ID: its loss would lose the TAC
+  dropRoot(plainKey.priv);
+  await withMockedCredentials({ create: async () => null, get: async (o) => both(o, ONE_DEVICE) }, async () => {
+    const k = await prfLogin({ credentialId: cid });
+    test('a passkey that is not backed up keeps no root, and opens the same key', () => keptRoot(k.priv) === null && bytesToHex(k.priv) === bytesToHex(plainKey.priv));
+  });
+  // nor one whose browser does not say
+  await withMockedCredentials({ create: async () => null, get: async (o) => { const e = o.publicKey.extensions.prf.eval; return makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { results: { first: prfOf(e.first), ...(e.second ? { second: prfOf(e.second) } : {}) } } }); } }, async () => {
+    const k = await prfLogin({ credentialId: cid });
+    test('a browser that does not say whether it is backed up keeps no root', () => keptRoot(k.priv) === null);
+  });
+  dropRoot(plainKey.priv); calls = 0;
+  await withMockedCredentials({ create: async () => null, get: refusesSecond('NotSupportedError') }, async () => {
+    const k = await prfLogin({ credentialId: cid });
+    test('an authenticator that refuses a second salt is asked again with the first alone, and opens the same key', () => calls === 2 && bytesToHex(k.priv) === bytesToHex(plainKey.priv) && keptRoot(k.priv) === null);
+  });
+  calls = 0;
+  await withMockedCredentials({ create: async () => null, get: refusesSecond('NotAllowedError') }, async () => {
+    let threw = null;
+    try { await prfLogin({ credentialId: cid }); } catch (e) { threw = e; }
+    test('a person who cancels is not asked again', () => calls === 1 && threw?.name === 'NotAllowedError');
+  });
+  // an authenticator that gives no output at all when asked two salts is asked again with the first alone
+  dropRoot(plainKey.priv); calls = 0;
+  await withMockedCredentials({ create: async () => null, get: async (o) => { calls++; return o.publicKey.extensions.prf.eval.second ? makeFakeCred({ rawIdStr: 'cred-pq', prfShape: {} }) : firstOnly(o); } }, async () => {
+    const k = await prfLogin({ credentialId: cid });
+    test('no output for two salts: asked again with the first alone, the same key', () => calls === 2 && bytesToHex(k.priv) === bytesToHex(plainKey.priv));
+  });
+  // creation that gives no PRF output, then a ceremony that refuses the second salt: one passkey made, read again with the first salt alone
+  dropRoot(plainKey.priv); calls = 0;
+  let creates = 0;
+  await withMockedCredentials({ create: async () => { creates++; return makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { enabled: true } }); }, get: refusesSecond('NotSupportedError') }, async () => {
+    const k = await prfRegister('alice');
+    test('a refused second salt after creation never makes a second passkey', () => creates === 1 && calls === 2 && bytesToHex(k.priv) === bytesToHex(plainKey.priv) && keptRoot(k.priv) === null);
+  });
+  // a root kept for the key (made with another passkey) is not replaced by a sign-in
+  dropRoot(plainKey.priv);
+  const { keepRoot } = await import('../dapp/tacit-chain-root.js');
+  const other = new Uint8Array(32).fill(0x42);
+  keepRoot(plainKey.priv, other, 'cred-other');
+  await withMockedCredentials({ create: async () => null, get: async (o) => both(o) }, async () => {
+    const k = await prfLogin({ credentialId: cid });
+    test('a root already kept for the key is left as it is', () => bytesToHex(keptRoot(k.priv).root) === bytesToHex(other) && keptRoot(k.priv).credentialId === 'cred-other');
+  });
+  // a new passkey wallet: the root at creation, or from the ceremony that follows when creation gives no PRF output
+  for (const [label, create] of [['at creation', async (o) => both(o)], ['after creation', async () => makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { enabled: true } })]]) {
+    dropRoot(plainKey.priv);
+    await withMockedCredentials({ create, get: async (o) => both(o) }, async () => {
+      const k = await prfRegister('alice');
+      test(`a new passkey wallet keeps its PQ ID's root (${label})`, () => bytesToHex(k.priv) === bytesToHex(plainKey.priv) && bytesToHex(keptRoot(k.priv)?.root || []) === bytesToHex(prfOf(CHAIN)));
+    });
+  }
+  localStorage.removeItem('tacit-pq-signin');
 })();
 
 console.log(`\n${pass} passed, ${fail} failed.`);

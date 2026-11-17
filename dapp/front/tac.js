@@ -1319,11 +1319,13 @@ function tpqPaint() {
   const head = (on) => html`<p class="tpq-h"><b>PQ ID</b><span class="tpq-x">Experimental</span>${on ? html`<span class="tpq-on">On</span>` : ''}</p>`;
   const fine = html`<p class="note tpq-fine">We are hardening how wallet keys are made, and this may change as post-quantum research moves on. Changing keys from time to time is good for privacy anyway.</p>`;
   const err = TPQ.err ? html`<p class="note err">${TPQ.err}</p>` : '';
+  // (what keeps a PQ ID's TAC: the passkey as well as the key, since nothing the key alone makes can open it)
+  const keep = html`<p class="note"><b>Keep this passkey.</b> Your TAC on the Tacit chain needs it from now on: ${own ? 'a copy of your key alone will not open it.' : 'your wallet alone will not open it.'} Passkeys kept in iCloud Keychain, Google Password Manager or a password manager follow you to new devices.</p>`;
   const v = !s ? html``
-    : s.on ? html`${head(true)}<p class="note">Payments to your Tacit address are sealed to keys no published key leads to, so they stay private even against a future quantum computer.${s.olderUnits > 0n ? html` ${fmt(s.olderUnits, 8, 4)} TAC from before moves over with your next payment. <button class="link" type="button" id="tpq-move">Move it now</button>` : ''}</p>${err}${fine}`
+    : s.on ? html`${head(true)}<p class="note">Payments to your Tacit address are sealed to keys no published key leads to, so they stay private even against a future quantum computer.${s.olderUnits > 0n ? html` ${fmt(s.olderUnits, 8, 4)} TAC from before moves over with your next payment. <button class="link" type="button" id="tpq-move">Move it now</button>` : ''}</p>${keep}${err}${fine}`
     : s.elsewhere ? html`${head(false)}<p class="note">This wallet has a PQ ID made on another device. Open it with that passkey to see all of your TAC on the Tacit chain.</p><button class="btn ghost tcd-go" type="button" id="tpq-go">Open with your passkey</button>${err}${fine}`
     : html`${head(false)}<p class="note">Seals the payments you get on the Tacit chain to keys made from ${own ? 'your passkey' : 'a passkey'}, which no published key leads to, so payments recorded today stay private even against a future quantum computer. Your Tacit address stays the same.</p>
-      <button class="btn ghost tcd-go" type="button" id="tpq-go">Generate PQ ID</button>${err}${fine}`;
+      ${keep}<button class="btn ghost tcd-go" type="button" id="tpq-go">Generate PQ ID</button>${err}${fine}`;
   if (el.__h === v.s) return;
   el.__h = v.s; mount(el, v);
   const go = $('#tpq-go', el), mv = $('#tpq-move', el);
@@ -1345,6 +1347,8 @@ async function tpqGo(btn) {
         : S.key.mode === 'passkey' && S.key.credentialId ? await m.prfChainRoot({ credentialId: S.key.credentialId })
         : await m.prfRegisterChainRoot('Tacit PQ ID');
       if (S.key?.pubHex !== k) return;
+      // (a PQ ID's TAC needs its passkey, so only one that is backed up beyond this device makes one: losing the device must not lose the TAC)
+      if (r.backedUp !== true) throw new Error(r.backedUp === false ? 'This passkey is kept on this device only, so losing the device would lose your TAC on the Tacit chain. A PQ ID needs a passkey that syncs: iCloud Keychain, Google Password Manager or a password manager.' : 'This browser does not say whether the passkey is backed up beyond this device, so no PQ ID was made. Try a browser that does, with a passkey that syncs.');
       await (await chainClient()).harden(r.root, r.credentialId);
       toast('PQ ID on. Your Tacit address stays the same.');
       tpqRead(true); chainScan(true);
