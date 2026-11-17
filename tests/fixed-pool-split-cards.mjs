@@ -193,6 +193,21 @@ await test('with the forwarder, 2.5 ETH is one call: the rest goes to the page w
   assert.deepEqual(problems, []);
   await ctx.close();
 });
+await test('the status names each signature the wallet is asked for, and the notes already signed for are only prepared', async () => {
+  const { ctx, page } = await open({ amount: '2.5' });
+  await page.evaluate(() => {
+    window.__texts = [];
+    new MutationObserver((rs) => rs.forEach((r) => r.addedNodes.forEach((n) => window.__texts.push(n.textContent)))).observe(document.querySelector('#status'), { childList: true, characterData: true, subtree: true });
+  });
+  await page.click('#lg-go');
+  await page.waitForFunction(() => /all in one transaction/.test(document.querySelector('#status').textContent), null, { timeout: 60000 });
+  const texts = await page.evaluate(() => window.__texts);
+  assert.ok(texts.some((t) => /^Sign in your wallet to find your next note number…$/.test(t)), 'the scan\'s signatures are named: ' + JSON.stringify(texts));
+  assert.ok(texts.some((t) => /^Preparing note 1 of 2…$/.test(t)) && texts.some((t) => /^Preparing note 2 of 2…$/.test(t)), 'the notes the scan signed for are prepared, not signed again');
+  assert.ok(!texts.some((t) => /Sign in your wallet for note/.test(t)), 'no signature is announced where none is asked');
+  assert.ok(!texts.some((t) => /looking for the next free note number/i.test(t)), 'the old wording is gone');
+  await ctx.close();
+});
 await test('the page failing to send it leaves nothing: none deposited, none kept, no number used, the amount as typed', async () => {
   const { ctx, page } = await open({ amount: '2.5' });
   await page.evaluate(() => { window.__restFail = true; });

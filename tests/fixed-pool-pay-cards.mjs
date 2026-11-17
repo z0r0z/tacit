@@ -69,7 +69,7 @@ const read = async () => async (method, params = []) => {
   }
 };
 const wallet = { async request({ method, params = [] }) {
-  if (method === 'eth_signTypedData_v4') { window.__log.signs++; const n = Number(JSON.parse(params[1]).message.nonce); return '0x' + hex(0x1111 + n, 64) + hex(1 + n, 64) + '1b'; }
+  if (method === 'eth_signTypedData_v4') { window.__log.signs++; const n = Number(JSON.parse(params[1]).message.nonce); (window.__log.nonces ||= []).push(n); return '0x' + hex(0x1111 + n, 64) + hex(1 + n, 64) + '1b'; }
   if (method === 'eth_sendTransaction' && BigInt(params[0].value || 0) === 0n) {
     const tx = params[0]; window.__wsent = (window.__wsent || 0) + 1; window.__wtx = { to: tx.to, from: tx.from, value: tx.value || '0x0', data: tx.data };
     window.__spentAll = true; window.__spentN++;
@@ -222,7 +222,7 @@ await test('an amount under a whole note shows no card; a large one shows the sp
   assert.equal(await page.locator('#lg-go').count(), 0, 'under 1 ETH: nothing');
   await typeAmount('2.5');
   const text = await page.locator('#host').innerText();
-  assert.match(text, /2 × 1 ETH/); assert.match(text, /0\.5 ETH\s+into your private balance/);
+  assert.match(text, /2 × 1 ETH/); assert.match(text, /0\.5 ETH\s+your private balance/);
   assert.equal((await page.locator('#lg-go').innerText()).trim(), 'Connect wallet');
   await shot(page, 'split');
 });
@@ -296,7 +296,7 @@ await test('Move into Tacit: proved in a worker, the fee shown and pressed, one 
 await test('a note that has been moved shows spent and offers nothing', async () => {
   await page.waitForFunction(() => /· spent/.test(document.querySelector('#notes').textContent));
 });
-await test('Find brings the notes back from the wallet alone: both are listed again, and each number tried is signed for', async () => {
+await test('Find brings the notes back from the wallet alone: both are listed again, and only the numbers not signed for in this visit are asked for', async () => {
   const key = 'tacit-fixed-notes:1:0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
   await page.evaluate((k) => { localStorage.removeItem(k); window.__spentAll = false; window.__repaint(); }, key);
   assert.match(await page.locator('#notes').innerText(), /None found in this browser/);
@@ -306,7 +306,9 @@ await test('Find brings the notes back from the wallet alone: both are listed ag
   await page.waitForFunction(() => /note 1/.test(document.querySelector('#notes').textContent));
   const text = await page.locator('#notes').innerText();
   assert.match(text, /note 0/); assert.match(text, /note 1/);
-  assert.ok((await page.evaluate(() => window.__log.signs)) - signsBefore >= 4, 'a signature for each of the numbers 0 to 3 it tried');
+  const nonces = await page.evaluate(() => window.__log.nonces);
+  assert.ok(nonces.slice(0, signsBefore).includes(0) && nonces.slice(0, signsBefore).includes(1), 'numbers 0 and 1 were signed for when the notes were made in this visit');
+  assert.deepEqual(nonces.slice(signsBefore), [2, 3], 'Find tried 0 to 3 and asked only for 2 and 3: 0 and 1 are not asked for again');
   const kept = JSON.parse(await page.evaluate((k) => localStorage.getItem(k), key));
   assert.deepEqual(kept.map((n) => n.nonce), [0, 1], 'kept again, without secrets');
   assert.match(text, /Kohaku/, 'the way out that does not need the paymaster is named');
@@ -453,7 +455,8 @@ await test('an exact multiple of a note deposits only whole notes in one press, 
   await page.evaluate(() => { window.__restFail = false; });
   await page.fill('#amt', '1');
   await page.waitForFunction(() => /^Deposit 1 ETH: 1 whole note$/.test(document.querySelector('#lg-go')?.textContent || ''));
-  assert.match(await page.locator('#host').innerText(), /Nothing\s+left for your private balance/);
+  const drawn = await page.locator('#host').innerText();
+  assert.match(drawn, /1 × 1 ETH\s+whole note · Tornado Cash/); assert.doesNotMatch(drawn, /private balance/, 'no part is drawn for the private balance when nothing is left');
   await page.click('#lg-go');
   await page.waitForFunction(() => /The note is in the large pool \(1 ETH\)\./.test(document.querySelector('#status').textContent), null, { timeout: 60000 });
   assert.deepEqual(await page.evaluate(() => window.__rest), []);

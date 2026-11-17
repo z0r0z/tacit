@@ -13,7 +13,7 @@ export async function resolve(spec, ctx, next) {
   return next(spec, ctx);
 }`));
 
-const { makeFlow, parseEther, formatEther } = await import('../dapp/fixed-pool-flow.js');
+const { makeFlow, newSession, parseEther, formatEther } = await import('../dapp/fixed-pool-flow.js');
 const { planSplit, FIXED_POOLS, parseNoteString, deriveSecrets, commitmentBytes32 } = await import('../dapp/fixed-pool-notes.js');
 import { keccak_256, secp, hexToBytes, bytesToHex, concatBytes } from '../dapp/vendor/tacit-deps.min.js';
 
@@ -27,6 +27,7 @@ const rejects = async (p, re) => {
   try { await p; } catch (e) { if (!re.test(e.message)) throw new Error(`wrong error: ${e.message}`); return e; }
   throw new Error('did not throw');
 };
+const assert = (c, m = 'assertion failed') => { if (!c) throw new Error(m); };
 const E = 10n ** 18n;
 const enc = new TextEncoder();
 const sel = (s) => bytesToHex(keccak_256(enc.encode(s)).slice(0, 4));
@@ -211,6 +212,35 @@ await test('a wallet whose signature changes is refused, and nothing is sent', a
   const w = world({ flaky: true });
   await rejects(flow(w).deposit(planFor('0.1')), /signs the same request differently/);
   eq(w.log.sends.length, 0);
+});
+await test('flows given one session sign each note number once and check the wallet once; flows with none do both again', async () => {
+  const w = world(); const session = newSession();
+  const out = await flow(w, 11155111, { session }).deposit(planFor('0.1'));
+  eq(w.log.signs, 3, 'nonce 0 twice (the check), nonce 1 once (the gap)');
+  const note = { nonce: out.notes[0].nonce, pool: out.notes[0].pool.address };
+  const after = w.log.signs;
+  const text = await flow(w, 11155111, { session }).noteText(note);
+  eq(w.log.signs, after, 'taking the note out after depositing it asks for nothing');
+  eq(text, out.notes[0].text, 'and gives the same note');
+  eq(await flow(w).noteText(note), text, 'a flow without the session gets the same note'); eq(w.log.signs, after + 2, 'but signs it twice');
+  await flow(w, 11155111, { session }).noteText({ nonce: 7, pool: note.pool });
+  eq(w.log.signs, after + 3, 'a number not signed before is asked for once, with no second check');
+});
+await test('a wallet refused for signing differently is refused again through the same session, and nothing is kept as checked', async () => {
+  const w = world({ flaky: true }); const session = newSession();
+  await rejects(flow(w, 11155111, { session }).deposit(planFor('0.1')), /signs the same request differently/);
+  eq(session.checked, false); eq(session.sigs.size, 0, 'no signature of a wallet that failed the check is kept');
+  await rejects(flow(w, 11155111, { session }).deposit(planFor('0.1')), /signs the same request differently/);
+});
+await test('a step says it signs only where the wallet will be asked', async () => {
+  const w = world(); const session = newSession(), seen = [];
+  const run = () => flow(w, 11155111, { session }).deposit(planFor('0.1'), { onStep: (s) => seen.push(s) });
+  await run();
+  const first = seen.splice(0).filter((s) => s.step === 'probe' || s.step === 'sign');
+  assert(first.length >= 3); eq(first[0].step, 'probe'); eq(first[0].signs, true, 'the first number is new'); eq(first.find((s) => s.step === 'sign').signs, false, 'the note itself was signed for in the scan');
+  await run();
+  const again = seen.filter((s) => s.step === 'probe');
+  eq(again.find((s) => s.n === 0).signs, false, 'number 0 was signed for already'); eq(again.some((s) => s.signs === true), true, 'a number past the last one is new');
 });
 await test('a receipt read that fails once after the transaction was sent does not make the deposit a failure (a retry would deposit it again)', async () => {
   const w = world({ flakyReceipts: 2 }); const f = flow(w);

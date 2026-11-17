@@ -69,10 +69,13 @@ export function checkWithdrawCall(out, { pool, recipient, root, nullifierHash, r
   if (String(out.nullifierHash).toLowerCase() !== commitmentBytes32(nullifierHash)) fail('nullifier hash');
 }
 
-export function makeFlow({ provider, account, chainId, store = null, poll = 1500, timeout = 10 * 60 * 1000, fetchImpl = globalThis.fetch?.bind(globalThis) }) {
+// The signatures a wallet has given for one account on one network, and whether it was seen to sign the same request the same way. A caller that makes
+// several flows for the same wallet passes them one session, so a note number is signed for once and the wallet is checked once, not before every action.
+export const newSession = () => ({ sigs: new Map(), checked: false });
+
+export function makeFlow({ provider, account, chainId, store = null, poll = 1500, timeout = 10 * 60 * 1000, fetchImpl = globalThis.fetch?.bind(globalThis), session = newSession() }) {
   const pools = FIXED_POOLS[chainId] || [];
-  const sigs = new Map();
-  let determinismChecked = false;
+  const sigs = session.sigs;
 
   const call = async (to, data) => {
     const r = await provider.request({ method: 'eth_call', params: [{ to, data }, 'latest'] });
@@ -91,12 +94,12 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     if (sigs.has(nonce)) return sigs.get(nonce);
     const sig = await rawSign(nonce);
     canonicalRS(sig); // refuses a signature that is not 65 bytes
-    if (!determinismChecked) {
+    if (!session.checked) {
       const again = await rawSign(nonce);
       if (bytesToHex(canonicalRS(again)) !== bytesToHex(canonicalRS(sig))) {
         throw new Error('This wallet signs the same request differently each time, so a note made with it could not be found again.');
       }
-      determinismChecked = true;
+      session.checked = true;
     }
     sigs.set(nonce, sig);
     return sig;
@@ -122,7 +125,7 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     const found = [];
     let next = from, empty = 0;
     for (let n = from; empty < gap; n++) {
-      onProbe?.(n);
+      onProbe?.(n, !sigs.has(n));
       const hits = await probe(n);
       if (hits.length) { found.push(...hits); next = n + 1; empty = 0; } else empty++;
     }
@@ -188,11 +191,11 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     if (!wanted.length) return [];
     for (const p of new Map(wanted.map((w) => [w.address, w])).values()) await checkPool(p);
     onStep({ step: 'find' });
-    const { next } = await scan({ from: hint() });
+    const { next } = await scan({ from: hint(), onProbe: (n, signs) => onStep({ step: 'probe', n, signs }) });
     const notes = [];
     for (let i = 0; i < wanted.length; i++) {
       const nonce = next + i;
-      onStep({ step: 'sign', i, of: wanted.length });
+      onStep({ step: 'sign', i, of: wanted.length, signs: !sigs.has(nonce) });
       const sig = await signNonce(nonce);
       const secrets = deriveSecrets({ signature: sig, pool: wanted[i].address });
       notes.push({ nonce, pool: wanted[i], secrets, call: depositCall(wanted[i], secrets.commitment) });
