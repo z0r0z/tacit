@@ -271,6 +271,7 @@ export function describe(rec, clock = null) {
     id: rec.id, phase: rec.phase, title, detail,
     at, steps: STEPS, ended, returned: back, amount: rec.amount, receive: back ? '0' : rec.evmAmount, created: rec.created,
     lockTxid: rec.lock?.txid || null, error: waitingOnTimelock ? null : (rec.lastError || null), recovered: !!rec.recovered,
+    opens: back && !ended ? opensAt(rec) : null,           // when the lock is due back (seconds), for a bridge that did not go through
   };
 }
 
