@@ -22,6 +22,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
 
   root.innerHTML = `
     <p class="fx-sum" id="fx-lp" aria-live="polite"></p>
+    <div class="fx-back" id="fx-back" hidden></div>
     <div id="fx-form" hidden>
       <p class="eyebrow"><span>You bridge</span><span class="who num" id="fx-bal"></span></p>
       <div class="fx-amt"><input id="fx-amt" inputmode="decimal" placeholder="0" autocomplete="off" spellcheck="false" aria-label="TAC to bridge"><span>TAC</span><button class="linkbtn" id="fx-max" type="button" hidden>Max</button></div>
@@ -40,7 +41,8 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       <p class="note">You lock TAC on Bitcoin. A liquidity provider pays you the same TAC, less its fee, into your private balance on Tacit (Ethereum’s private pool). It takes minutes; the quote says how many.</p>
       <p class="note">A private balance is not an Ethereum wallet. To hold the TAC in a wallet, withdraw it afterwards: <a href="${WITHDRAW}">Withdraw to Ethereum</a>.</p>
       <p class="note">Use this when the regular bridge cannot take your TAC (a long history, or TAC that came out of Bitcoin’s shielded pool). The regular bridge has no provider fee but takes about 4 hours.</p>
-      <p class="note">Keep this page open until it says Done: it claims your TAC at the end. If a bridge cannot finish, your lock returns to your Bitcoin address after about a day.</p>
+      <p class="note">Keep this page open until it says Done: it claims your TAC at the end. If a bridge cannot finish, your lock returns to your Bitcoin address after about a day, and this page sends it back: open it with your wallet then.</p>
+      <p class="note">Closed the page mid-bridge, or cleared your browser? Open your wallet here: the page finds your lock from your key and, once its timelock has passed, sends your TAC back.</p>
       <p class="note">Your Bitcoin address needs a few thousand sats for the Bitcoin fee. The quote shows how many.</p>
     </details>
     <div class="rows" id="fx-list" hidden></div>`;
@@ -123,7 +125,57 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     const d = Math.max(0, Math.floor(Date.now() / 1000) - Number(sec || 0));
     return d < 90 ? 'just now' : d < 5400 ? `${Math.round(d / 60)} minutes ago` : d < 172800 ? `${Math.round(d / 3600)} hours ago` : `${Math.round(d / 86400)} days ago`;
   };
+  // Bridges this browser holds that are not finished (the records are plain files in the browser: no key is needed to see that there are some), and what a bridge
+  // that did not go through is waiting for. A returning visitor sees it at once, signed in or not, and is told what moves it on: this page, with the wallet open.
+  const DONE_PHASES = ['done', 'refunded', 'counter-took'];
+  function localPending() {
+    const out = [];
+    try {
+      const ls = doc.defaultView.localStorage;
+      for (let i = 0; i < ls.length; i++) {
+        const k = ls.key(i);
+        if (!k || !k.startsWith('tacit-fastbridge-v1:mainnet:')) continue;
+        let r = null; try { r = JSON.parse(ls.getItem(k)); } catch { continue; }
+        if (!r || !r.phase || DONE_PHASES.includes(r.phase)) continue;
+        const t = r.lockAt || r.confirmedAt;
+        out.push({ phase: r.phase, opens: r.phase === 'refund-wait' && t && r.csvBlocks ? t + (r.csvBlocks - 1) * 600 : null });
+      }
+    } catch { }
+    return out;
+  }
+  const reminder = (at) => {
+    const z = (d) => new Date(d * 1000).toISOString().replace(/[-:]|\.\d{3}/g, '');
+    const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//tacit//fast//EN', 'BEGIN:VEVENT', 'UID:tacit-take-back-' + at + '@tacit.finance', 'DTSTAMP:' + z(Date.now() / 1000), 'DTSTART:' + z(at), 'DURATION:PT15M',
+      'SUMMARY:Open Tacit to take your TAC back', 'DESCRIPTION:Your fast bridge lock is due back on Bitcoin. Open https://tacit.finance/fast/ with your wallet: the page sends it back while it is open.', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+    return `data:text/calendar;charset=utf-8,${encodeURIComponent(ics)}`;
+  };
+  function paintBack() {
+    const e = $('fx-back');
+    if (!e) return;
+    const now = Math.floor(Date.now() / 1000);
+    const returning = S.sess ? S.recs.filter((r) => r.returned && !r.ended) : [];
+    let html = '';
+    if (returning.length) {
+      const n = returning.length, ds = returning.map((r) => r.opens).filter((x) => x != null), first = ds.length ? Math.min(...ds) : null;
+      const what = `<b>${n === 1 ? 'A lock is' : `${n} locks are`} coming back to your Bitcoin address.</b>`;
+      if (first != null && first <= now) html = `${what} ${n === 1 ? 'It is' : 'They are'} due now, and this page sends ${n === 1 ? 'it' : 'them'} back: keep it open for a few minutes.`;
+      else if (first != null) {
+        const h = (first - now) / 3600, when = h >= 1.5 ? `about ${Math.round(h)} hours` : h >= 0.75 ? 'about an hour' : 'under an hour';
+        html = `${what} The first is due in ${when}. This page sends it back, so open it then with your wallet. <a href="${reminder(first)}" download="tacit-take-back.ics">Add a reminder</a>`;
+      } else html = `${what} This page sends ${n === 1 ? 'it' : 'them'} back when the timelock ends, about a day after the lock confirmed: open it then with your wallet.`;
+    } else if (!S.sess) {
+      const held = localPending();
+      if (held.length) {
+        const n = held.length, due = held.filter((x) => x.opens != null && x.opens <= now).length;
+        html = `<b>You have ${n === 1 ? 'a bridge' : `${n} bridges`} not finished in this browser.</b> Open your wallet and ${n === 1 ? 'it carries' : 'they carry'} on${due ? `; ${due === 1 ? 'a lock is' : `${due} locks are`} due back now and will be sent to your address` : ''}. <button class="linkbtn" id="fx-back-open" type="button">Open your wallet</button>`;
+      }
+    }
+    e.hidden = !html;
+    if (e.innerHTML !== html) e.innerHTML = html;
+  }
+
   function paintList() {
+    paintBack();
     const e = $('fx-list'), recs = S.recs.slice(0, 10), open = recs.some((r) => ['built', 'broadcast', 'offered', 'claiming'].includes(r.phase));
     e.hidden = !recs.length;
     e.innerHTML = recs.length ? `<div class="rows-h"><span>Your bridges</span>${open ? '<span class="fx-keep">Keep this page open until it is done</span>' : ''}</div>` + recs.map((r) => `
@@ -255,6 +307,10 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     }, quoteDelayMs);
   }
   $('fx-amt').addEventListener('input', typed);
+  $('fx-back').addEventListener('click', async (ev) => {
+    if (!ev.target.closest('#fx-back-open')) return;
+    try { await signIn(); } catch (e) { if (!e?.unlockCancelled) note(wording(e), true); }
+  });
   $('fx-max').addEventListener('click', () => {
     const sm = summary(), lim = sm && sm.cap > 0n ? sm.cap : S.bal, cap = S.bal > lim ? lim : S.bal;
     $('fx-amt').value = plain(cap);

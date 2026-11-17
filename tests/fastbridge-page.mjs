@@ -34,7 +34,7 @@ const rec = (o) => ({ phase: 'broadcast', title: 'Waiting for Bitcoin', detail: 
 let recs = [
   rec({ id: '01'.repeat(36), phase: 'offered', title: 'Waiting for the pool lock', detail: 'The provider is locking TAC in the pool for you.', at: 1, amount: String(2500n * TAC), receive: String(2492n * TAC) }),
   rec({ id: '02'.repeat(36), phase: 'done', title: 'Done', detail: 'The TAC is in your private balance.', at: 3, ended: true, created: Math.floor(Date.now() / 1000) - 3000 }),
-  rec({ id: '03'.repeat(36), phase: 'refund-wait', title: 'Returning to Bitcoin', detail: 'The lock returns to your Bitcoin address when its timelock ends.', returned: true, amount: String(40n * TAC), receive: '0' }),
+  rec({ id: '03'.repeat(36), phase: 'refund-wait', title: 'Returning to Bitcoin', detail: 'The lock returns to your Bitcoin address when its timelock ends.', returned: true, amount: String(40n * TAC), receive: '0', opens: Math.floor(Date.now() / 1000) + 3 * 3600 }),
   rec({ id: '04'.repeat(36), phase: 'refunded', title: 'Returned', detail: 'The lock came back to your Bitcoin address.', at: 3, ended: true, returned: true, amount: String(40n * TAC), receive: '0', lockTxid: null }),
 ];
 const terms = (feeBps, flat, max, avail = null) => ({ feeBps, flatFee: flat, minAmount: 10n * TAC, maxAmount: max, available: avail });
@@ -119,8 +119,9 @@ const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails+
 const browser = await chromium.launch();
 const text = (page, sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim());
 
-async function visit(path, { entry = null } = {}) {
+async function visit(path, { entry = null, seed = null } = {}) {
   const page = await (await browser.newContext({ viewport: { width: 1000, height: 900 } })).newPage();
+  if (seed) await page.addInitScript((kv) => { for (const [k, v] of kv) localStorage.setItem(k, v); }, seed);
   if (entry) await page.route(/\/fast\/app\.js/, (r) => r.fulfill({ status: 200, contentType: 'text/javascript', body: entry }));
   const bad = [];
   page.on('pageerror', (e) => bad.push(`page error: ${e.message}`));
@@ -165,6 +166,23 @@ try {
     ok(!/ fee/.test(await text(page, '#fx-lp')) && (await text(page, '#fx-go')) === 'Open wallet', 'a provider with another key than the pinned one is not offered, and the wallet can still open to provide');
     ok(bad.length === 0, `no errors (${bad.join(' | ')})`);
     await page.context().close();
+  }
+  // a visitor who comes back with nothing signed in, to a bridge this browser kept that did not go through: told at once, with the way to move it on
+  {
+    const t0 = Math.floor(Date.now() / 1000) - 3 * 86400;
+    const rec = (id, o) => [`tacit-fastbridge-v1:mainnet:02${'ab'.repeat(32)}:${id}`, JSON.stringify({ id, phase: 'refund-wait', confirmedAt: t0, csvBlocks: 144, created: t0, ...o })];
+    const { page, bad, shot } = await visit('/fast/', { seed: [rec('r1'), rec('d1', { phase: 'done' })] });
+    await page.waitForFunction(() => !document.getElementById('fx-back').hidden, null, { timeout: 15000 });
+    const t = await text(page, '#fx-back');
+    ok(/You have a bridge not finished in this browser/.test(t) && /a lock is due back now/.test(t), `a returning visitor is told of the bridge that did not finish, and that its lock is due (${t.slice(0, 110)})`);
+    ok(!!(await page.$('#fx-back-open')), 'with a button to open the wallet, which moves it on');
+    await shot('fast-returning');
+    ok(bad.length === 0, `no errors (${bad.join(' | ')})`);
+    await page.context().close();
+    const none = await visit('/fast/', { seed: [rec('d2', { phase: 'done' })] });
+    await none.page.waitForFunction(() => /No provider is online/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
+    ok(await none.page.$eval('#fx-back', (e) => e.hidden), 'a browser with only finished bridges shows nothing');
+    await none.page.context().close();
   }
   // no provider named: the list the page ships (none yet) says so, and that one can be waited for
   {
@@ -218,6 +236,9 @@ try {
       ok(await page.$eval('#fx-how', (e) => e.open) && /not an Ethereum wallet/.test(await text(page, '#fx-how')) && /Keep this page open until it says Done/.test(await text(page, '#fx-how')), 'the explainer opens and says what a private balance is and to keep the page open');
       await shot('fast-explainer');
       await page.click('#fx-how summary');
+      const back = await text(page, '#fx-back'), href = await page.$eval('#fx-back a[download]', (a) => a.getAttribute('href')).catch(() => '');
+      ok(/A lock is coming back to your Bitcoin address/.test(back) && /due in about 3 hours/.test(back) && /his page sends it back/.test(back), `a signed-in visitor is told a returning lock is due in about 3 hours and that the page sends it (${back.slice(0, 120)})`);
+      ok(/^data:text\/calendar/.test(href) && /DTSTART/.test(decodeURIComponent(href)) && /Open%20Tacit|Open Tacit/.test(decodeURIComponent(href)), 'with a calendar reminder for the time it is due');
     }
     await shot('fast-bridges');
     // the ready-for-Ethereum panel: bound notes listed, a ready one moved, a bind sent

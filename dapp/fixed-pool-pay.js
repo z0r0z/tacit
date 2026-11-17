@@ -17,7 +17,7 @@
 // secrets come from signing the nonce again.
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32, parseNoteString } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, newSession, parseEther, formatEther } from '/fixed-pool-flow.js?cb=d2fc3577';
+import { makeFlow, newSession, parseEther, formatEther } from '/fixed-pool-flow.js?cb=de6f8a23';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=b8ddfbc9';
 export { MAX_FEE_PERCENT };
@@ -856,14 +856,15 @@ export function attachName(env) {
       const r = await (await env.publishNames()).publish(plan);
       if (r.skipped) return env.say(`${primary.name} already carries it.`);
       step('waiting for the update');
-      const end = Date.now() + 3 * 60 * 1000;
-      for (;;) {
-        const rc = await (await env.read())('eth_getTransactionReceipt', [r.txHash]).catch(() => null);
-        if (rc) { if (rc.status === '0x1' || Number(rc.status) === 1) break; throw new Error(`The update of ${primary.name} failed, so nothing changed. Try again.`); }
-        if (Date.now() > end) throw new Error(`The update of ${primary.name} is not confirmed yet. Check it in your wallet.`);
-        await new Promise((res) => setTimeout(res, 4000));
-      }
-      env.done(c, r.txHash, `${primary.name} now carries your deposit address.`);
+      // (follows a speed-up or cancel in the wallet: activity.js waitMined, loaded when first wanted; where that cannot load, it is the plain wait it was)
+      const read = await env.read(), A = await import('./activity.js').catch(() => null);
+      let w;
+      if (A?.waitMined) w = await A.waitMined({ read, hash: r.txHash, timeoutMs: 3 * 60 * 1000, every: 4000 });
+      else for (const end = Date.now() + 3 * 60 * 1000; !w && Date.now() <= end; await new Promise((res) => setTimeout(res, 4000))) { const rc = await read('eth_getTransactionReceipt', [r.txHash]).catch(() => null); if (rc) w = { rc }; }
+      if (w?.replaced) throw new Error(`The update of ${primary.name} was replaced in your wallet, by a cancel or another transaction, before it was mined, so nothing changed. Try again.`);
+      if (!w?.rc) throw new Error(`The update of ${primary.name} is not confirmed yet. Check it in your wallet.`);
+      if (!(w.rc.status === '0x1' || Number(w.rc.status) === 1)) throw new Error(`The update of ${primary.name} failed, so nothing changed. Try again.`);
+      env.done(c, w.rc.transactionHash || r.txHash, `${primary.name} now carries your deposit address.`);
       paint().catch(() => {});
     });
   }

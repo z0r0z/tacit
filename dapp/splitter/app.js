@@ -72,14 +72,23 @@ async function rpc(method, params, hosts = RPCS) {
   }
   throw last || new Error('no node answered');
 }
-async function waitReceipt(hash, ms = 20 * 60e3) {
-  const end = Date.now() + ms;
-  for (;;) {
-    const r = await rpc('eth_getTransactionReceipt', [hash]).catch(() => null);
-    if (r) { if (r.status !== '0x1') throw new Error(`The transaction failed (${hash.slice(0, 10)}…). Nothing was lost but its network fee.`); return r; }
-    if (Date.now() > end) throw new Error('Not confirmed after 20 minutes. It can still land: check the transaction on Etherscan.');
-    await new Promise((res) => setTimeout(res, 4000));
+// The wait follows a speed-up or cancel in the wallet (activity.js waitMined, loaded when first wanted: a speed-up sends another transaction at the same nonce and the
+// first hash never confirms); where that cannot load, it is the plain wait it was.
+async function waitMined(hash, ms) {
+  const A = await import('../activity.js').catch(() => null);
+  if (A?.waitMined) return A.waitMined({ read: rpc, hash, timeoutMs: ms, every: 4000 });
+  for (const end = Date.now() + ms; Date.now() <= end; await new Promise((res) => setTimeout(res, 4000))) {
+    const rc = await rpc('eth_getTransactionReceipt', [hash]).catch(() => null);
+    if (rc) return { rc };
   }
+  return { timeout: true };
+}
+async function waitReceipt(hash, ms = 20 * 60e3) {
+  const w = await waitMined(hash, ms);
+  if (w.replaced) throw new Error('It was replaced in your wallet, by a cancel or another transaction, before it was mined.');
+  if (!w.rc) throw new Error('Not confirmed after 20 minutes. It can still land: check the transaction on Etherscan.');
+  if (w.rc.status !== '0x1') throw new Error(`The transaction failed (${hash.slice(0, 10)}…). Nothing was lost but its network fee.`);
+  return w.rc;
 }
 
 // ── wallet ──
@@ -371,7 +380,7 @@ function paintDeploy() {
     const rc = await waitReceipt(tx);
     if (!isAddress(rc.contractAddress)) throw new Error('The transaction did not create a contract.');
     S.addr = rc.contractAddress; S.dirty = false; S.rows = null; D.ownerOk = false;
-    store.set({ addr: S.addr, deployed: { addr: S.addr, args: encDeployArgs(D.owner, to, weight), tx } });   // its own key: opening another splitter leaves it be
+    store.set({ addr: S.addr, deployed: { addr: S.addr, args: encDeployArgs(D.owner, to, weight), tx: rc.transactionHash || tx } });   // its own key: opening another splitter leaves it be
     location.hash = S.addr;
     say_(h('span', { class: 'ok' }, 'Deployed at ', scan(`address/${S.addr}`, S.addr), '.'));
     await load();

@@ -9,7 +9,7 @@ const ET = new EventTarget();
 globalThis.addEventListener = ET.addEventListener.bind(ET); globalThis.removeEventListener = ET.removeEventListener.bind(ET); globalThis.dispatchEvent = ET.dispatchEvent.bind(ET);
 const A = await import('../dapp/activity.js');
 
-import { chain } from './fake-eth-chain.mjs';
+import { chain, whenLooked } from './fake-eth-chain.mjs';
 const me = '0x' + 'aa'.repeat(20), pool = '0x' + 'bb'.repeat(20), other = '0x' + 'cc'.repeat(20);
 const call = { to: pool, value: 5, input: '0x1234abcd' + '00'.repeat(500) };
 const orig = { hash: '0x' + '01'.repeat(32), from: me, nonce: 0, ...call };
@@ -65,7 +65,8 @@ for (const [what, rep] of [['a cancel', { to: me, value: 0, input: '0x' }], ['an
   c.down = true; assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen }), {}, 'an unreachable node says nothing');
   c.down = false; c.mempool.delete(orig.hash);
   c.mine({ hash: '0x' + '06'.repeat(32), from: me, nonce: 0, ...call }, 700); c.head = 1000;
-  assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen }), {}, 'a replacement older than the state a node keeps is not found, and nothing throws');
+  assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen }), { moved: true }, 'a replacement older than the state a node keeps is not found, and nothing throws: but the nonce is known to have been taken');
+  assert.deepEqual(await A.traceTx({ read: c.read, hash: orig.hash, seen }), { unknown: true, moved: true });
   assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen: { ...seen, nonce: '7' } }), { idle: true }, 'a nonce no mined transaction has reached yet is not a replacement');
 }
 
@@ -104,6 +105,47 @@ for (const [what, rep] of [['a cancel', { to: me, value: 0, input: '0x' }], ['an
   c = chain(); c.send(orig); c.mine(orig, 990); const r2 = c.read; c.read = async (m, p) => (m === 'eth_getTransactionReceipt' ? null : r2(m, p));
   assert.deepEqual(await trace(c), { pending: true }, 'mined, and this node\'s receipt a moment behind');
   c = chain(); c.down = true; await assert.rejects(trace(c, kept), /could not be read/, 'nothing readable: the caller is told, not given a guess');
+}
+
+// ── a page's own wait for a receipt ──
+{
+  const later = (ms, f) => new Promise((r) => setTimeout(() => { f(); r(); }, ms));
+  const wait = (c, o = {}) => A.waitMined({ read: c.read, hash: orig.hash, probeMs: 10, every: 5, timeoutMs: 2000, ...o });
+  const fast = { hash: '0x' + '0f'.repeat(32), from: me, nonce: 0, ...call }, cancel = { hash: '0x' + '0e'.repeat(32), from: me, nonce: 0, to: me, value: 0, input: '0x' };
+  let c = chain(); c.send(orig); later(8, () => c.mine(orig, 999));
+  const r1 = await wait(c, { probeMs: 1000 }); assert.equal(r1.rc.transactionHash, orig.hash); assert.ok(c.calls.every((m) => m === 'eth_getTransactionReceipt'), 'a transaction that lands soon costs nothing beyond its receipt');
+  c = chain(); c.send(orig); whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine(fast, 990); });
+  assert.equal((await wait(c)).rc.transactionHash, fast.hash, 'a speed-up: the receipt of what took its place');
+  c = chain(); c.send(orig); whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine(cancel, 990); });
+  assert.deepEqual(await wait(c), { replaced: cancel.hash }, 'a cancel: it never ran');
+  c = chain(); c.send(orig); whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine({ ...fast, status: '0x0' }, 990); });
+  assert.equal((await wait(c)).rc.status, '0x0', 'a revert is a receipt: the caller reads its status');
+  c = chain(); c.send(orig);
+  const t = await wait(c, { timeoutMs: 120 }); assert.equal(t.timeout, true); assert.equal(t.seen?.nonce, '0', 'the time runs out with what the wait learned, for traceTx');
+  c = chain(); c.send(orig); let stopped = false; later(30, () => { stopped = true; });
+  assert.deepEqual(await wait(c, { stop: () => stopped }), { stopped: true }, 'a page that has moved on ends its wait');
+  c = chain(); c.send(orig); const real = c.read; let n = 0;
+  c.read = async (m, p) => { if (m === 'eth_getTransactionReceipt' && ++n < 3) throw new Error('node busy'); return real(m, p); }; later(40, () => c.mine(orig, 999));
+  assert.equal((await wait(c, { read: c.read })).rc.transactionHash, orig.hash, 'a read that fails is asked again, not taken for the end');
+  let slept = 0; c = chain(); c.send(orig); c.mine(orig, 999);
+  assert.equal((await A.waitMined({ read: c.read, hash: orig.hash, sleep: async () => { slept++; } })).rc.transactionHash, orig.hash); assert.equal(slept, 0, 'a receipt already there is returned before any sleep');
+}
+
+// ── a row that ran out of time is looked at again from what was kept of it ──
+{
+  mem.clear();
+  const J2 = A.makeJournal({}), fin = [];
+  const mk = (h, extra = {}) => J2.put('tx:1:' + h, { kind: 'tx', status: 'stale', hash: h, chain: 1, finishes: ['op:1'], ...extra });
+  let t = {};
+  const F2 = A.makeFollow({ journal: J2, jobStatus: async () => ({}), btcConfirmed: async () => false, receipt: async () => null, receiptOnce: async () => null, finished: (f, h) => fin.push(h), trace: async () => t });
+  const tick2 = () => new Promise((r) => setTimeout(r, 20));
+  mk('0xs1'); t = { landed: { status: '0x1', transactionHash: '0xs2' } }; F2.tx('tx:1:0xs1', true); await tick2();
+  assert.equal(J2.get('tx:1:0xs1').status, 'confirmed'); assert.equal(J2.get('tx:1:0xs1').hash, '0xs2'); assert.deepEqual(fin, ['0xs2'], 'a stale row a speed-up landed for is confirmed, and what it finishes is told');
+  mk('0xs3'); t = { replaced: '0xs4' }; F2.tx('tx:1:0xs3', true); await tick2();
+  assert.equal(J2.get('tx:1:0xs3').status, 'failed'); assert.equal(J2.get('tx:1:0xs3').replaced, true);
+  mk('0xs5'); t = { dropped: true }; F2.tx('tx:1:0xs5', true); await tick2(); assert.equal(J2.get('tx:1:0xs5').why, 'dropped'); assert.equal(J2.get('tx:1:0xs5').status, 'stale');
+  mk('0xs6'); t = { unknown: true, moved: true }; F2.tx('tx:1:0xs6', true); await tick2(); assert.equal(J2.get('tx:1:0xs6').why, 'moved');
+  mk('0xs7'); t = { unknown: true }; F2.tx('tx:1:0xs7', true); await tick2(); assert.equal(J2.get('tx:1:0xs7').why, undefined, 'no telling: as it was');
 }
 
 // ── in the Activity list ──

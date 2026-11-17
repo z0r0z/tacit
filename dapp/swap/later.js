@@ -231,7 +231,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
   }
   const prover = { ms: null, ready: false };
   const mods = () => (modsP ||= (async () => {
-    const [zkm, wm, gw, pm, pos] = await Promise.all([import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=ad0cd797'), import('/evm-pool-gateway.js'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js')]);
+    const [zkm, wm, gw, pm, pos] = await Promise.all([import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=581ebb3b'), import('/evm-pool-gateway.js'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js')]);
     const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
     return { zk: zkm.makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) }), wm, gw, vkHash: pm.vkHash };
   })().catch((e) => { modsP = null; throw e; }));
@@ -593,7 +593,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     onStep('waiting for the block');
     const rc = signer.receipt ? await signer.receipt(h).catch(() => null) : null;
     if (rc && !(rc.status === '0x1' || rc.status === 1 || rc.status === 'success')) throw new Error('The swap was sent but failed on chain, so nothing reached the deposit box.');
-    return { hash: h, box: box.box, arrives: box.value, intent: box.intent ?? null, deadline: box.deadline ?? null };
+    return { hash: rc?.transactionHash || h, box: box.box, arrives: box.value, intent: box.intent ?? null, deadline: box.deadline ?? null };
   }
   function save(plan) { keepPlans([plan, ...readPlans(store).filter((p) => p.id !== plan.id)], store); }
   function keptOrStop(plan) {
@@ -619,7 +619,7 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       else { plan.state = 'stopped'; plan.err = plan.boxed ? 'The deposit did not reach the pool before its box’s deadline. If the relay’s swap ran, what it paid is still in the box, which anyone can send back to an address your key owns.' : 'The deposit did not reach the pool. If your wallet shows it as sent, check it there before swapping again.'; }
     } else if (await (async () => {
       const ran = await ranCall(plan);
-      if (ran !== undefined) { if (ran && ran.tx && !plan.swapTx) plan.swapTx = ran.tx; return ran !== null; }
+      if (ran !== undefined) { if (ran && ran.tx) plan.swapTx = ran.tx; return ran !== null; }                        // (the router's log names the transaction that ran the call: a speed-up or a gas bump sent another in place of the one the plan was given)
       const rc = plan.outTx ? await receiptOf(plan.outTx) : undefined, fresh = plan.swapAt && Date.now() - plan.swapAt < 20 * 60e3;
       if (rc && (rc.status === '0x1' || rc.status === 1 || rc.status === 'success')) { plan.swapTx ||= plan.outTx; return true; }
       if (plan.outIns?.length) {
@@ -656,9 +656,13 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     const p = readPlans(store).find((x) => x.id === plan.id) || plan;
     if (p.state !== 'stopped' || !p.boxed || !p.box || !p.boxIntent) throw new Error('This swap has no deposit box to send back. Nothing was sent.');
     if (p.reclaimTx) {
-      const rc = p.reclaimedAt ? { status: '0x1' } : await boxRead('eth_getTransactionReceipt', [p.reclaimTx], { found: true }).catch(() => null);
+      let rc = p.reclaimedAt ? { status: '0x1' } : await boxRead('eth_getTransactionReceipt', [p.reclaimTx], { found: true }).catch(() => null), gone = false;
+      if (!rc) {                                      // a speed-up in the wallet sent another transaction in its place: the one that landed is the send-back, and a cancel means it never ran
+        const tr = await signer.trace?.(p.reclaimTx).catch(() => null);
+        if (tr?.landed) { rc = tr.landed; p.reclaimTx = rc.transactionHash || p.reclaimTx; } else gone = !!tr?.replaced;
+      }
       if (rc && rc.status === '0x1') { p.reclaimedAt ||= Date.now(); save(p); return { plan: p, hash: p.reclaimTx, wei: BigInt(p.reclaimWei || 0), to: lc(p.boxIntent.refund), again: true }; }
-      if (!rc && Date.now() - (p.reclaimAt || 0) < 30 * 60e3) throw new Error('The send-back is still being mined. Check again in a few minutes; nothing more was sent.');
+      if (!rc && !gone && Date.now() - (p.reclaimAt || 0) < 30 * 60e3) throw new Error('The send-back is still being mined. Check again in a few minutes; nothing more was sent.');
       p.reclaimTx = null; p.reclaimAt = null; save(p);
     }
     const m = await mods(), args = boxArgs(p), refund = lc(p.boxIntent.refund), deadline = Number(p.boxIntent.deadline);
@@ -683,18 +687,24 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     p.reclaimTx = h; p.reclaimAt = Date.now(); p.reclaimWei = String(held); save(p);
     onStep('waiting for the block');
     const failed = 'The send-back failed on chain, so the box still holds it. Nothing was returned.';
-    try { await mined(h, failed); }
-    catch (e) { if (e?.message === failed) { p.reclaimTx = null; p.reclaimAt = null; save(p); } throw e; }
+    let rc;
+    try { rc = await mined(h, failed); }
+    catch (e) { if (e?.message === failed || e?.replaced) { p.reclaimTx = null; p.reclaimAt = null; save(p); } throw e; }
+    if (rc?.transactionHash) p.reclaimTx = rc.transactionHash;                       // (a speed-up in the wallet went in under another hash: that one is the plan's send-back)
     p.reclaimedAt = Date.now(); p.err = 'The deposit box was sent back to an address only your key controls.'; save(p);
-    return { plan: p, hash: h, wei: held, to: refund };
+    return { plan: p, hash: rc?.transactionHash || h, wei: held, to: refund };
   }
   async function reclaimIntoBox(rec, { onStep = () => {}, onSent = () => {} } = {}) {
     const router = rec?.router, token = lc(rec?.token || ZERO);
     if (!router || !rec?.box || !rec?.intent) throw new Error('This deposit box record is incomplete. Nothing was sent.');
     if (rec.reclaimTx) {
-      const rc = await boxRead('eth_getTransactionReceipt', [rec.reclaimTx], { found: true }).catch(() => null);
-      if (rc && rc.status === '0x1') return { hash: rec.reclaimTx, held: BigInt(rec.reclaimHeld || 0), to: lc(rec.intent.refund), again: true };
-      if (!rc && Date.now() - (rec.reclaimAt || 0) < 30 * 60e3) throw new Error('The send-back is still being mined. Check again in a few minutes; nothing more was sent.');
+      let rc = await boxRead('eth_getTransactionReceipt', [rec.reclaimTx], { found: true }).catch(() => null), gone = false;
+      if (!rc) {                                      // a speed-up in the wallet sent another transaction in its place: the one that landed is the send-back, and a cancel means it never ran
+        const tr = await signer.trace?.(rec.reclaimTx).catch(() => null);
+        if (tr?.landed) rc = tr.landed; else gone = !!tr?.replaced;
+      }
+      if (rc && rc.status === '0x1') return { hash: rc.transactionHash || rec.reclaimTx, held: BigInt(rec.reclaimHeld || 0), to: lc(rec.intent.refund), again: true };
+      if (!rc && !gone && Date.now() - (rec.reclaimAt || 0) < 30 * 60e3) throw new Error('The send-back is still being mined. Check again in a few minutes; nothing more was sent.');
     }
     const m = await mods(), args = boxArgs({ boxIntent: rec.intent }), refund = lc(rec.intent.refund), deadline = Number(rec.intent.deadline);
     const at = '0x' + String(await boxRead('eth_call', [{ to: router, data: m.gw.calldata(`depositBoxOf(${DEPOSIT_SIG})`, [{ tuple: DEPOSIT_TUPLE }], [args]) }, 'latest'])).slice(-40);
@@ -718,8 +728,8 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
     const h = await signer.send({ to: router, data, value: 0n });
     onSent(h, held);
     onStep('waiting for the block');
-    await mined(h, 'The send-back failed on chain, so the box still holds it. Nothing was returned.');
-    return { hash: h, held, to: refund };
+    const rc = await mined(h, 'The send-back failed on chain, so the box still holds it. Nothing was returned.');
+    return { hash: rc?.transactionHash || h, held, to: refund };
   }
 
   async function blend(plan) {
@@ -802,7 +812,9 @@ export function makeLater({ keyHex, signer, ethCall, venues = null, ux = null, s
       }
       plan.swapTx = h; plan.proveMs = prover.ms; delete plan.from;
       if (plan.into && r.intoBox) { plan.intoBox = r.intoBox.box; plan.intoIntent = r.intoBox.intent ?? null; plan.intoDeadline = r.intoBox.deadline ?? null; }
-      if (await chainKnows(h) !== true) throw new Error('The swap was sent but is not in a block yet; it may still have sent. Check it in a few minutes before swapping again.');
+      let known = await chainKnows(h);
+      if (known !== true) { const ran = await ranCall(plan).catch(() => undefined); if (ran && ran.tx) { plan.swapTx = ran.tx; known = true; } }   // (a speed-up in the wallet, or a gas bump by the relay, sent another transaction: the router's log has the one that ran the call)
+      if (known !== true) throw new Error('The swap was sent but is not in a block yet; it may still have sent. Check it in a few minutes before swapping again.');
       if (poolDest(plan)) { plan.state = 'shielding'; plan.swapDoneAt = Date.now(); }
       else { plan.state = 'done'; plan.doneAt = Date.now(); }
       return plan;

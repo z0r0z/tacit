@@ -1496,7 +1496,7 @@ const plans = () => { try { return (JSON.parse(localStorage.getItem(PLANS_KEY) |
 let LTP = null, LT = null;
 const pageSigner = { pin: null, get address() { return pageSigner.pin || W.account; }, ready: async () => { if (!W.account) await H.connect(); await wallet.ensureMainnet(); },
   send: ({ to, data, value }) => { if (pageSigner.pin && lc(W.account || '') !== lc(pageSigner.pin)) throw new Error('The wallet switched account since you pressed. Nothing was sent.'); return wallet.sendTx({ to, data, value: BigInt(value || 0), from: pageSigner.pin || W.account, label: 'Swap privately' }); }, rpc: (m, p) => rpc(m, p),
-  signTyped: (typed) => signTyped(typed, pageSigner.pin || W.account), receipt: (h) => wallet.receipt(h),
+  signTyped: (typed) => signTyped(typed, pageSigner.pin || W.account), receipt: (h) => wallet.receipt(h), trace: async (h, seen) => wallet.trace?.(h, seen),
   canBatch: () => (wallet.canBatch ? wallet.canBatch() : false),
   get batch() { return wallet.sendCalls ? (calls, sent) => wallet.sendCalls(calls, { from: pageSigner.pin || W.account, sent, label: 'Swap privately' }) : null; } };
 let proverAsked = 0;
@@ -1533,7 +1533,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=92fc2e8f').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=4418262d').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
 const laterPair = (kind, pay = S.pay, get = S.get) => laterPay(pay)
   && (isEth(pay) ? kind === 'agg' || (kind === 'tac' && get === lc(R.TAC)) : (kind === 'agg' && get !== lc(R.WETH)) || kind === 'any' || kind === 'out' || kind === 'tac');
@@ -2164,7 +2164,7 @@ async function walletIntoGo(q, r) {
       say('Waiting for the block…');
       const rc = await wallet.receipt(hash).catch(() => null);
       if (rc && !(rc.status === '0x1' || rc.status === 1 || rc.status === 'success')) throw new Error('The swap was sent but failed on chain, so nothing reached your private balance.');
-      out = { hash, box: bx.box, arrives: bx.value, intent: bx.intent ?? null, deadline: bx.deadline ?? null };
+      out = { hash: rc?.transactionHash || hash, box: bx.box, arrives: bx.value, intent: bx.intent ?? null, deadline: bx.deadline ?? null };
     }
     if (out?.box) keepIntoBox({ box: out.box, intent: out.intent ?? null, deadline: out.deadline ?? null, router: into_.hop?.state?.router || null, token: S.get, pay: S.pay, hash: out.hash || null });
     remember(out.hash, `${tidy(amtFmt(wei, pay.dec))} ${pay.sym} → ${get.sym}, privately, into your pool`);
@@ -2199,7 +2199,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=89824bc1').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=6ef0cf9d').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;

@@ -144,11 +144,16 @@ async function send({ to, data, gas, value = 0n }) {
   return String(hash).toLowerCase();
 }
 // A missed poll is tried again; a transaction still unconfirmed after five minutes is left to Etherscan, and stays the wallet's last send.
+// The wait follows a speed-up or cancel in the wallet (activity.js waitMined, loaded when first wanted: a speed-up sends another transaction at the same nonce and the first
+// hash never confirms); where that cannot load, it is the plain wait it was.
 async function waitReceipt(hash) {
-  for (let i = 0; i < 100; i++) {
-    try { const r = await rpc('eth_getTransactionReceipt', [hash]); if (r) { if (pendingGet()?.hash === hash) pendingSet(null); return r; } } catch {}
-    await sleep(3000);
-  }
+  const A = await import('../activity.js').catch(() => null);
+  let w;
+  if (A?.waitMined) w = await A.waitMined({ read: rpc, hash, timeoutMs: 100 * 3000, every: 3000 });
+  else for (let i = 0; i < 100 && !w; i++) { try { const rc = await rpc('eth_getTransactionReceipt', [hash]); if (rc) w = { rc }; } catch {} if (!w) await sleep(3000); }
+  if ((w?.rc || w?.replaced) && pendingGet()?.hash === hash) pendingSet(null);
+  if (w?.rc) return w.rc;
+  if (w?.replaced) throw new Error('It was replaced in your wallet, by a cancel or another transaction, before it was mined, so it never ran.');
   throw new Error('Not confirmed after 5 minutes. It can still land: follow it on Etherscan from the link above.');
 }
 const landed = (r) => r?.status === '0x1' || r?.status === 1;

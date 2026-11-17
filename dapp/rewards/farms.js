@@ -11,7 +11,7 @@
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=67d4d4de';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { makeRunner } from '/activity.js';
-import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond, coinNames, poolMoved, openProofMoved } from '/farm-ops.js?cb=e70f2612';
+import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond, coinNames, poolMoved, openProofMoved } from '/farm-ops.js?cb=c5192cc4';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
 import { esc, wordAt, parseUnits, rpc } from '/trade/util.js?cb=1d2cd8d3';
 
@@ -123,8 +123,11 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     // again, and one no node holds is let go only after a quarter of an hour (a node asked may not have seen one still going round)
     const earlier = J.state.items.find((x) => x.kind === 'tx' && x.status === 'pending' && /^tx:1:/.test(x.id) && /^Turn .* into TAC$/.test(x.label || '') && (!x.to || x.to.toLowerCase() === to.toLowerCase()));
     if (earlier) {
-      const rc = await rpc('eth_getTransactionReceipt', [earlier.hash]).catch(() => null);
-      if (rc) J.put(earlier.id, rc.status === '0x1' ? { status: 'confirmed' } : { status: 'failed', err: 'The transaction reverted.' });
+      // (what the wallet's trace says first: a speed-up that landed is the turn, and a cancel took its place means it never ran)
+      const tr = await wallet.trace?.(earlier.hash, earlier.seen, { read: rpc }).catch(() => null);
+      const rc = tr?.landed || await rpc('eth_getTransactionReceipt', [earlier.hash]).catch(() => null);
+      if (tr?.replaced) J.put(earlier.id, { status: 'failed', err: 'It was replaced in your wallet, by a cancel or another transaction, before it was mined.', hash: tr.replaced, replaced: true });
+      else if (rc) J.put(earlier.id, rc.status === '0x1' ? { status: 'confirmed', hash: rc.transactionHash || earlier.hash } : { status: 'failed', err: 'The transaction reverted.' });
       else if ((await rpc('eth_getTransactionByHash', [earlier.hash]).catch(() => true)) !== null || Date.now() - earlier.at < 15 * 60e3) throw new Error('An earlier turn into TAC is not confirmed yet. Wait for it, or speed it up or cancel it in your wallet, before pressing again.');
       else J.put(earlier.id, { status: 'stale' });
     }
@@ -141,8 +144,8 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     say('Confirm turning the wTAC into TAC in your wallet…');
     const hash = await wallet.sendTx({ ...wtacWithdrawCall(bal, to), from: to }), id = `tx:1:${String(hash).toLowerCase()}`;
     J.put(id, { kind: 'tx', label: `Turn ${tacTxt(bal)} wTAC into TAC`, chain: 1, hash, to, status: 'pending' });
-    const rc = await wallet.receipt(hash);
-    J.put(id, rc?.status === '0x1' ? { status: 'confirmed' } : { status: 'failed', err: 'The transaction reverted.' });
+    const rc = await wallet.receipt(hash).catch((e) => { if (e?.replaced) J.put(id, { status: 'failed', err: e.message, hash: e.hash, replaced: true }); else if (e?.seen) J.put(id, { seen: e.seen }); throw e; });   // (what the wait learned is kept, so a later press can follow a speed-up)
+    J.put(id, rc?.status === '0x1' ? { status: 'confirmed', hash: rc.transactionHash || hash } : { status: 'failed', err: 'The transaction reverted.' });
     if (rc?.status !== '0x1') throw new Error('Turning the wTAC into TAC did not go through. The wTAC is in your wallet: press again.');
     return `Turned ${tacTxt(bal)} wTAC into TAC, in your wallet.${small ? ` ${small} smaller reward${small === 1 ? ' is' : 's are'} worth less than the relay’s fee to unwrap: the front page can send ${small === 1 ? 'it' : 'them'} from this key’s address.` : ''}`;
   }

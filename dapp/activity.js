@@ -136,7 +136,7 @@ export async function nonceTaken({ read, hash, seen }) {
       if ((await count(hex(b))) <= nonce) { lo = b; break; }
       hi = b;
     }
-    if (lo == null) return {};
+    if (lo == null) return { moved: true };                          // taken, too long ago for a node to still hold the state that says by what
     while (hi - lo > 1) { const m = (lo + hi) >> 1; if ((await count(hex(m))) > nonce) hi = m; else lo = m; }
     const blk = await read('eth_getBlockByNumber', [hex(hi), true]);
     const t = blk?.transactions?.find((x) => String(x.from).toLowerCase() === seen.from && BigInt(x.nonce) === nonce);
@@ -175,10 +175,32 @@ export async function traceTx({ read, hash, seen = null }) {
     return r2 ? { landed: r2 } : { pending: true };
   }
   if (tx) return { pending: true };                                    // held, and its place in line is not taken
-  return v.idle ? { dropped: true } : { unknown: true };
+  return v.idle ? { dropped: true } : v.moved ? { unknown: true, moved: true } : { unknown: true };
 }
 
-export function makeFollow({ journal, jobStatus, receipt, receiptOnce, btcConfirmed, live = () => false, own = () => false, onOwn = () => {}, onSlow = () => {}, finished = () => {} }) {
+// The wait of a page that looks for a receipt itself, by the hash the wallet gave, following a speed-up or cancel in the wallet (lookReplaced). `read(method, params)` asks the chain
+// (a read that fails is asked again). Resolves { rc } with the receipt (a speed-up's carries its own `transactionHash`), { replaced: hash } when another transaction took the
+// nonce so this one never ran, { timeout: true, seen } when the time runs out (`seen`: what the wait learned of it, for traceTx later) or { stopped: true } when `stop()` says so.
+// For the first `probeMs` it asks nothing but the receipt, so a transaction that lands soon costs no more than it did.
+export async function waitMined({ read, hash, timeoutMs = 10 * 60e3, every = 3000, probeMs = 15e3, stop = () => false, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+  const t0 = Date.now(), st = { last: t0, seen: null, found: null };
+  for (;;) {
+    if (stop()) return { stopped: true };
+    if (st.found && !st.found.same) return { replaced: st.found.hash };
+    const rc = await read('eth_getTransactionReceipt', [st.found ? st.found.hash : hash]).catch(() => null);
+    if (rc) return { rc };
+    if (Date.now() - t0 > timeoutMs) return { timeout: true, seen: st.seen };
+    if (!st.found && Date.now() - st.last >= probeMs) {
+      st.last = Date.now();
+      const v = await lookReplaced({ read, hash, seen: st.seen }).catch(() => ({}));
+      if (v.seen) st.seen = v.seen;
+      if (v.found) st.found = v.found;
+    }
+    await sleep(every);
+  }
+}
+
+export function makeFollow({ journal, jobStatus, receipt, receiptOnce, trace = null, btcConfirmed, live = () => false, own = () => false, onOwn = () => {}, onSlow = () => {}, finished = () => {} }) {
   const going = new Map(), sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const hidden = () => typeof document !== 'undefined' && document.hidden;
   function job(id) {
@@ -204,6 +226,17 @@ export function makeFollow({ journal, jobStatus, receipt, receiptOnce, btcConfir
     const it = journal.get(id);
     if (going.has(id) || !it || (ended(it) && !once)) return;
     const note = { seen: it.seen, keep: (seen) => journal.put(id, { seen }) };
+    if (once && trace && it.status === 'stale') {             // a row that ran out of time: what became of it, from what was kept of it
+      const done = (r, hash) => { journal.put(id, r.status === '0x1' ? { status: 'confirmed', hash } : { status: 'failed', err: 'The transaction reverted.', hash }); if (r.status === '0x1') for (const f of it.finishes || []) finished(f, hash); };
+      const q = trace(it.hash, it.chain, it.seen).then((t) => {
+        if (t.landed) done(t.landed, t.landed.transactionHash || it.hash);
+        else if (t.replaced) journal.put(id, { status: 'failed', err: REPLACED_TEXT, hash: t.replaced, replaced: true });
+        else if (t.dropped) journal.put(id, { why: 'dropped' });
+        else if (t.moved) journal.put(id, { why: 'moved' });
+      }).catch(() => {}).finally(() => going.delete(id));
+      going.set(id, q);
+      return;
+    }
     const p = (once ? receiptOnce(it.hash, it.chain, note) : receipt(it.hash, it.chain, note)).then((r) => {
       if (r?.replaced) journal.put(id, { status: 'failed', err: REPLACED_TEXT, hash: r.transactionHash, replaced: true });
       else if (r) {

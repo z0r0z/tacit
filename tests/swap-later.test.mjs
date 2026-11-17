@@ -246,3 +246,97 @@ test('ahead: a failure with nothing newer asked is the run\'s, and a key that co
   await L2.ahead({ depositWei: 3n });
   assert.deepStrictEqual(proved, [3n]);
 });
+
+// ── a swap or a send-back whose first hash is not the one that landed: a speed-up in the wallet, or a gas bump by the relay, sent another transaction in its place ──
+// The router's log names the transaction that ran a swap's escrowed call, the wallet's trace says what became of a send-back's transaction; neither needs the first hash.
+const DEAD = '0x' + 'dd'.repeat(32), MINED = '0x' + 'a1'.repeat(32), CANCEL = '0x' + 'ca'.repeat(32), BOX = '0x' + '0b'.repeat(20), REFUND = '0x' + '0e'.repeat(20);
+function node(over = {}) {                                  // every read answers with nothing (a receipt not found, a zero balance); `over` answers a method of its own
+  globalThis.fetch = async (_url, init) => {
+    const one = (x) => { const o = over[x.method]; return o ? { jsonrpc: '2.0', id: x.id, ...(o(x.params) instanceof Error ? { error: { code: -32000, message: o(x.params).message } } : { result: o(x.params) }) } : { jsonrpc: '2.0', id: x.id, result: x.method === 'eth_getBalance' ? '0x0' : x.method === 'eth_estimateGas' ? '0x61a80' : null }; };
+    const j = JSON.parse(init.body);
+    return new Response(JSON.stringify(Array.isArray(j) ? j.map(one) : one(j)), { headers: { 'content-type': 'application/json' } });
+  };
+}
+function later({ signer = {}, walletOf = null, knows = null, callRan = null, plans = [] } = {}) {
+  const mem = new Map([['tacit-swap-later-v1', JSON.stringify(plans)]]), store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
+  return makeLater({ keyHex: async () => '11'.repeat(32), signer, ethCall: async () => '0x', store, walletOf, knows, callRan, prove: async () => ({}), chain: { chainId: 1, rpc: ['http://node.test'], keeper: null } });
+}
+const fakePool = (hash) => ({ sync: async () => ({ balance: 10n ** 18n, block: 123, leaves: 0 }), notes: () => [], refundBox: async () => REFUND, withdrawAndCall: async () => hash });
+const swapPlan = (o = {}) => ({ id: 'sw', at: Date.now(), state: 'waiting', swapWei: '1000', depositWei: '2000', token: '0x' + '70'.repeat(20), sym: 'USDC', dec: 6, to: ACCT, dest: { kind: 'address' }, gasWei: '0', depositedAt: Date.now(), ...o });
+const shownFor = () => ({ min: 1n, out: 1n, name: 'a route', at: Date.now(), callData: '0x01', deadline: BigInt(Math.floor(Date.now() / 1000) + 3600), standData: '0x02' });
+
+test('a swap whose first hash never mined is the swap the router\'s log says ran, and the plan keeps that transaction', async () => {
+  node();
+  const L = later({ walletOf: () => fakePool(DEAD), knows: () => false, callRan: () => ({ tx: MINED }), plans: [swapPlan()] });
+  await L.boxHolds({ boxed: true, box: BOX, boxIntent: {} });                                 // (opens the page's node, as the first press does)
+  const plan = await L.swapOut(swapPlan(), { shown: shownFor(), via: 'self' });
+  assert.strictEqual(plan.swapTx, MINED, 'the transaction that ran the call, not the one the pool wallet was given');
+  assert.strictEqual(plan.state, 'done');
+});
+test('a swap that no log shows ran, and whose hash is unknown, is still said to be unsure: nothing is claimed that was not seen', async () => {
+  node();
+  const L = later({ walletOf: () => fakePool(DEAD), knows: () => false, callRan: () => null, plans: [swapPlan()] });
+  await L.boxHolds({ boxed: true, box: BOX, boxIntent: {} });
+  await assert.rejects(L.swapOut(swapPlan(), { shown: shownFor(), via: 'self' }), /sent but is not in a block yet; it may still have sent/);
+  assert.strictEqual(L.plans().find((p) => p.id === 'sw').state, 'unsure');
+});
+test('a later check takes the router\'s log as the swap\'s transaction, over a hash the plan was given that never mined', async () => {
+  node();
+  const plan = swapPlan({ swapTx: DEAD, escrow: '0x' + 'e5'.repeat(20), state: 'unsure', swapAt: Date.now() - 60e3, balBefore: String(10n ** 18n), swapBlock: 100 });
+  const L = later({ walletOf: () => fakePool(DEAD), callRan: () => ({ tx: MINED }), plans: [plan] });
+  const done = await L.check(plan);
+  assert.strictEqual(done.swapTx, MINED); assert.strictEqual(done.state, 'done');
+  const none = swapPlan({ swapTx: DEAD, escrow: '0x' + 'e5'.repeat(20), state: 'unsure', swapAt: Date.now() - 60e3, balBefore: String(10n ** 18n), swapBlock: 100 });
+  const L2 = later({ walletOf: () => fakePool(DEAD), callRan: () => null, plans: [none] });
+  assert.strictEqual((await L2.check(none)).swapTx, DEAD, 'a call no log shows ran leaves the plan\'s transaction as it was');
+});
+
+const boxPlan = (o = {}) => ({ id: 'bx', at: Date.now(), state: 'stopped', boxed: true, box: BOX, boxIntent: { amount: '1', outLeaf0: '1', outLeaf1: '1', memo0Hash: '0x' + '00'.repeat(32), memo1Hash: '0x' + '00'.repeat(32), refund: REFUND, deadline: '1', nonce: '1' }, reclaimTx: DEAD, reclaimAt: Date.now() - 5 * 60e3, reclaimWei: '1000', ...o });
+test('a send-back a speed-up landed is a send-back that is done, under the hash that landed', async () => {
+  node();
+  const seen = [], L = later({ signer: { trace: async (h) => { seen.push(h); return { landed: { status: '0x1', transactionHash: MINED } }; } }, plans: [boxPlan()] });
+  const r = await L.reclaimBox(boxPlan());
+  assert.deepStrictEqual(seen, [DEAD]); assert.strictEqual(r.hash, MINED); assert.strictEqual(r.again, true);
+  const kept = L.plans().find((p) => p.id === 'bx'); assert.strictEqual(kept.reclaimTx, MINED); assert.ok(kept.reclaimedAt, 'and the plan says it was sent back');
+});
+test('a send-back a cancel took the place of never ran: it is let go at once, not waited on for half an hour', async () => {
+  node();
+  const L = later({ signer: { trace: async () => ({ replaced: CANCEL }) }, plans: [boxPlan()] });
+  await assert.rejects(L.reclaimBox(boxPlan()), (e) => !/still being mined/.test(e.message), 'it went on to the box checks rather than saying it is still being mined');
+  assert.strictEqual(L.plans().find((p) => p.id === 'bx').reclaimTx, null, 'and the plan no longer holds the cancelled transaction');
+});
+test('a send-back still on its way, or one nothing is known of, is waited on as before; a wallet with no trace the same', async () => {
+  for (const signer of [{ trace: async () => ({ pending: true }) }, { trace: async () => ({ unknown: true }) }, {}, { trace: async () => { throw new Error('unreadable'); } }]) {
+    node();
+    const L = later({ signer, plans: [boxPlan()] });
+    await assert.rejects(L.reclaimBox(boxPlan()), /The send-back is still being mined\. Check again in a few minutes; nothing more was sent\./);
+    assert.strictEqual(L.plans().find((p) => p.id === 'bx').reclaimTx, DEAD);
+  }
+});
+test('a box record\'s send-back follows a speed-up and a cancel the same way', async () => {
+  const rec = { box: BOX, router: '0x' + 'f0'.repeat(20), token: '0x' + '0'.repeat(40), intent: boxPlan().boxIntent, reclaimTx: DEAD, reclaimAt: Date.now() - 60e3, reclaimHeld: '1000' };
+  node();
+  const done = await later({ signer: { trace: async () => ({ landed: { status: '0x1', transactionHash: MINED } }) } }).reclaimIntoBox(rec);
+  assert.deepStrictEqual([done.hash, done.again], [MINED, true]);
+  await assert.rejects(later({ signer: { trace: async () => ({ replaced: CANCEL }) } }).reclaimIntoBox(rec), (e) => !/still being mined/.test(e.message));
+  await assert.rejects(later({ signer: { trace: async () => ({ unknown: true }) } }).reclaimIntoBox(rec), /still being mined/);
+});
+
+// the send itself, from the wallet: the plan keeps the hash that landed, and a cancel clears it
+const sendBack = (receipt) => {
+  const sent = [], signer = { address: '0x' + '01'.repeat(20), ready: async () => {}, send: async (tx) => { sent.push(tx); return DEAD; }, receipt };
+  node({ eth_call: (p) => (p[0]?.data?.startsWith('0x') && sent.length === 0 ? '0x' + '00'.repeat(12) + '0b'.repeat(20) : '0x'), eth_getBalance: () => '0x3e8' });
+  return { sent, L: later({ signer, plans: [boxPlan({ reclaimTx: null, reclaimAt: null })] }) };
+};
+test('a send-back a speed-up landed: the plan and the answer hold the hash that landed', async () => {
+  const { L, sent } = sendBack(async (h) => ({ status: '0x1', transactionHash: MINED }));
+  const plan = boxPlan({ reclaimTx: null, reclaimAt: null, boxIntent: { ...boxPlan().boxIntent, deadline: '1' } });
+  const r = await L.reclaimBox(plan);
+  assert.strictEqual(sent.length, 1); assert.strictEqual(r.hash, MINED);
+  const kept = L.plans().find((p) => p.id === 'bx'); assert.strictEqual(kept.reclaimTx, MINED); assert.ok(kept.reclaimedAt);
+});
+test('a send-back a cancel took the place of is not kept as sent: the plan can send it again', async () => {
+  const { L } = sendBack(async () => { throw Object.assign(new Error('It was replaced in your wallet, by a cancel or another transaction, before it was mined.'), { replaced: true, hash: CANCEL }); });
+  await assert.rejects(L.reclaimBox(boxPlan({ reclaimTx: null, reclaimAt: null })), /replaced in your wallet/);
+  const kept = L.plans().find((p) => p.id === 'bx'); assert.strictEqual(kept.reclaimTx, null); assert.strictEqual(kept.reclaimedAt, undefined);
+});

@@ -3,6 +3,7 @@
 // re-serves on a lost ack; the on-chain digest-chain / nullifier makes it idempotent).
 
 import { CFG } from './config.js';
+import { scrubPublic } from './safe-err.js';
 
 // Built per call, not once at module load: CFG.boxToken is required-on-read, and evaluating it at module
 // scope would make every importer of this file demand the control-plane token whether or not it calls one
@@ -270,7 +271,7 @@ export async function confidentialRefresh(jobId) {
 }
 export async function confidentialAck({ jobId, txHash, error, broadcastHashes, settledBy, publicValues, proof, open, requeue, release, lane }) {
   const body = error
-    ? { jobId, error, ...(broadcastHashes?.length ? { broadcastHashes } : {}), ...(requeue ? { requeue: true } : {}) }
+    ? { jobId, error: scrubPublic(error), ...(broadcastHashes?.length ? { broadcastHashes } : {}), ...(requeue ? { requeue: true } : {}) }
     : settledBy ? { jobId, settledBy, txHash: txHash || settledBy }
     : publicValues && proof ? { jobId, publicValues, proof, ...(open ? { open: true } : {}) }
     : release ? { jobId, release: true }
@@ -292,7 +293,7 @@ export async function confidentialAck({ jobId, txHash, error, broadcastHashes, s
 // The activateExit outcome for a settled exit that carried its recipe. A lost report only means the user's own
 // activate path takes over; the escrow stays activatable by anyone until the recipe deadline.
 export async function confidentialActivateAck({ jobId, txHash, error }) {
-  const body = error ? { jobId, activateError: error } : { jobId, activateTx: txHash };
+  const body = error ? { jobId, activateError: scrubPublic(error) } : { jobId, activateTx: txHash };
   try { await postJson('/confidential/ack', body); }
   catch { /* see above */ }
 }
@@ -323,7 +324,7 @@ export async function heartbeat(kind, detail) {
       network: CFG.network,
       kind,
       prover_alive: true,
-      note: `${kind}: ${detail || ''}`.slice(0, 200),
+      note: scrubPublic(`${kind}: ${detail || ''}`).slice(0, 200),
     });
     if (!res.ok && !_hbWarned) {
       _hbWarned = true;

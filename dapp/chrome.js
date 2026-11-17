@@ -177,13 +177,15 @@
   const main = document.querySelector('main');
   if (!main || !document.querySelector('.sn')) return;
   const front = () => location.pathname === '/' || location.pathname === '/index.html';
+  let whole = false;
   const at = () => {
     const p = location.pathname, h = location.hash;
     if (front()) { const m = /^#\/(payments|defi|chains)(?:\/([a-z]*))?$/.exec(h); return m ? [m[1], SEC[m[1]][2].some((v) => v[0] === m[2]) ? m[2] : SEC[m[1]][2][0][0]] : h === '#/menu' ? ['menu', ''] : null; }
     if (/^\/tac\/?$/.test(p)) { const v = new URLSearchParams(location.search).get('v'); return TAC_VIEW[v] ? [TAC_VIEW[v], v] : null; }
     if (p.startsWith('/farm/')) return ['defi', 'farm'];
     if (p.startsWith('/fast/')) return ['chains', 'fast'];
-    if (p.startsWith('/vault/')) return h === '#pools' ? null : ['borrow', h === '#btc' ? 'btc' : 'tac'];      // where TACD sells (linked from other pages) is the whole page's: the view of TAC's side leaves it out
+    if (h === '#pools') whole = true; else if (h === '#btc') whole = false;      // (the page takes #pools off the address once it has shown them: they stay the whole page's until a side is asked for)
+    if (p.startsWith('/vault/')) return whole ? null : ['borrow', h === '#btc' ? 'btc' : 'tac'];      // where TACD sells (linked from other pages) is the whole page's: the view of TAC's side leaves it out
     if (p.startsWith('/rewards/')) return /^#farms?$/.test(h) ? null : ['rewards', ''];      // the farms there (linked from tETH, cBTC, the vault, the farm) are the whole page's
     return null;
   };
@@ -214,7 +216,7 @@
     const tell = () => { for (const d of mine) if (d.open) d.dispatchEvent(new Event('toggle')); };
     if (mine.length && document.readyState !== 'complete') addEventListener('load', tell, { once: true });
   };
-  let head = document.getElementById('sec-head'), shown = '', first = true;      // (the head the build stamped into a page that is a view by its path)
+  let head = document.getElementById('sec-head'), shown = null, first = true;      // (the head the build stamped into a page that is a view by its path)
   const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
   // the pill under the current tab: put there at once, or slid there when the tabs were already on screen
   const place = (slide) => {

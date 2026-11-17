@@ -11,7 +11,7 @@ export function chain() {
     c.calls.push(method);
     if (c.down) throw new Error('Ethereum is unreachable');
     if (method === 'eth_blockNumber') return hex(c.head);
-    if (method === 'eth_getTransactionReceipt') { const t = c.mined.find((y) => y.hash === params[0]); return t ? { status: t.status || '0x1', transactionHash: t.hash, blockNumber: hex(t.block), logs: [] } : null; }
+    if (method === 'eth_getTransactionReceipt') { const t = c.mined.find((y) => y.hash === params[0]); return t ? { status: t.status || '0x1', transactionHash: t.hash, blockNumber: hex(t.block), logs: t.logs || [] } : null; }
     if (method === 'eth_getTransactionByHash') {
       const t = (c.all || []).find((y) => y.hash === params[0]);
       return t && (t.block != null || c.mempool.has(t.hash)) ? obj(t) : null;
@@ -26,3 +26,10 @@ export function chain() {
   };
   return c;
 }
+
+// Runs `f` once a wait has looked at a transaction while it was held, a moment after: a test's speed-up then never comes before the look it depends on, however busy the machine is
+// (a fixed delay did, now and then, and the wait then learned nothing of the transaction and ran out). Gives up after `give` ms, so a wait that never looks lets the process end.
+export function whenLooked(c, f, { after = 5, give = 4000 } = {}) {
+  const t = setInterval(() => { if (c.calls.includes('eth_getTransactionByHash')) { clearInterval(t); clearTimeout(g); setTimeout(f, after); } }, 2), g = setTimeout(() => clearInterval(t), give);
+}
+

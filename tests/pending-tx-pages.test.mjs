@@ -28,12 +28,15 @@ const me = '0x' + 'aa'.repeat(20), pool = '0x' + 'bb'.repeat(20);
 const call = { to: pool, value: 5, input: '0x1234abcd' + '00'.repeat(120) };
 const orig = { hash: '0x' + '01'.repeat(32), from: me, nonce: 0, ...call }, fast = { hash: '0x' + '02'.repeat(32), from: me, nonce: 0, ...call }, cancel = { hash: '0x' + '03'.repeat(32), from: me, nonce: 0, to: me, value: 0, input: '0x' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// (what a test waits for, rather than for a time: on a busy machine a fixed pause lands before or after the thing it was timed against)
+const until = async (f, ms = 5000) => { for (const end = Date.now() + ms; !f(); await sleep(5)) if (Date.now() > end) throw new Error('timed out waiting'); };
+const probed = (c) => until(() => c.calls.includes('eth_getTransactionByHash'));    // the wait has looked at the transaction while it was held
 
 // The chain, a wallet over it, and the record a page would have kept: the wait runs out while the transaction is held by a node (it learns who sent it), as the page's does.
 async function stuck() {
   const c = chain(); c.send(orig);
   const wallet = makeWallet({ rpc: c.read });
-  const fast_ = (o = {}) => ({ read: c.read, probeMs: 10, every: 5, timeoutMs: 250, ...o });
+  const fast_ = (o = {}) => ({ read: c.read, probeMs: 5, every: 5, timeoutMs: 1200, ...o });
   const err = await wallet.receipt(orig.hash, fast_()).then(() => null, (e) => e);
   assert.match(err.message, /Sent, not confirmed yet/); assert.equal(err.seen?.nonce, '0', 'the error the wait threw carries what it learned');
   // the page's own wallet: its wait is the real one, shortened for the test; its trace is the real trace over the same chain
@@ -115,7 +118,7 @@ test('rewards: a claim a speed-up landed is confirmed under the hash that landed
 // replacement learned nothing of the transaction and could tell nothing)
 function sent() {
   const c = chain(); c.send(orig);
-  const wallet = makeWallet({ rpc: c.read }), o = { read: c.read, probeMs: 10, every: 5, timeoutMs: 250 };
+  const wallet = makeWallet({ rpc: c.read }), o = { read: c.read, probeMs: 5, every: 5, timeoutMs: 1200 };
   return { c, page: { receipt: (h) => wallet.receipt(h, o), trace: (h, seen, x) => wallet.trace(h, seen, { read: c.read, ...x }) } };
 }
 function card({ wallet, rpc }) {
@@ -128,13 +131,13 @@ function card({ wallet, rpc }) {
 const replace = (c, by) => { c.mempool.delete(orig.hash); c.mine(by, 990); };
 test('swap card: a speed-up that lands while the wait is on is the swap', async () => {
   const { c, page } = sent(), k = card({ wallet: page, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH');
-  await sleep(100); replace(c, fast);
+  await probed(c); await sleep(10); replace(c, fast);
   assert.equal((await p).transactionHash, fast.hash); assert.equal(k.state(), null, 'and nothing is kept as pending');
   k.halt();
 });
 test('swap card: one that lands after the wait gave up is found by the loop that goes on, and the next press is not held', async () => {
   const { c, page } = sent(), k = card({ wallet: page, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH');
-  await sleep(350); assert.ok(k.state(), 'the wait gave up: kept as pending'); assert.equal(k.state().seen?.nonce, '0', 'with what the wait learned of it');
+  await until(() => k.state()); assert.ok(k.state(), 'the wait gave up: kept as pending'); assert.equal(k.state().seen?.nonce, '0', 'with what the wait learned of it');
   assert.equal(await k.pendingHolds(), true); assert.match(k.said.at(-1), /not confirmed yet/, 'while nothing has happened it holds, as it did');
   replace(c, fast);
   assert.equal((await p).transactionHash, fast.hash, 'the loop resolves with the speed-up\'s receipt'); assert.equal(k.state(), null);
@@ -142,28 +145,28 @@ test('swap card: one that lands after the wait gave up is found by the loop that
 });
 test('swap card: a press after a speed-up landed (before the loop looked) is booked, not held', async () => {
   const { c, page } = sent(), k = card({ wallet: page, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH').catch((e) => e);
-  await sleep(350); replace(c, fast);
+  await until(() => k.state()); replace(c, fast);
   assert.equal(await k.pendingHolds(), false, 'not held'); assert.equal(k.remembered.at(-1), 'Swap 1 ETH', 'and remembered as the swap');
   k.halt(); await Promise.race([p, sleep(50)]);
 });
 test('swap card: a cancel says nothing was swapped, found by the wait or by the loop after it', async () => {
   let { c, page } = sent(), k = card({ wallet: page, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH').catch((e) => e);
-  await sleep(100); replace(c, cancel);
+  await probed(c); await sleep(10); replace(c, cancel);
   let e = await p; assert.ok(e.html === true && /cancelled or replaced in your wallet.*nothing was swapped/.test(e.message), 'the wait itself found it'); k.halt();
   ({ c, page } = sent()); k = card({ wallet: page, rpc: c.read }); p = k.landed(orig.hash, me, 'Swap 1 ETH').catch((x) => x);
-  await sleep(350); replace(c, cancel);
+  await until(() => k.state()); replace(c, cancel);
   e = await p; assert.match(e.message, /cancelled or replaced in your wallet before it was mined, so it never ran and nothing was swapped/); assert.equal(k.state(), null); k.halt();
 });
 test('swap card: a press after a cancel says so once, and the next goes on', async () => {
   const { c, page } = sent(), k = card({ wallet: page, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH').catch((e) => e);
-  await sleep(350); replace(c, cancel);
+  await until(() => k.state()); replace(c, cancel);
   assert.equal(await k.pendingHolds(), true); assert.match(k.said.at(-1), /cancelled or replaced in your wallet before it was mined, so it never ran\. Nothing was swapped: press again/); assert.equal(k.state(), null);
   assert.equal(await k.pendingHolds(), false, 'with the record cleared the next press goes on'); k.halt(); await Promise.race([p, sleep(50)]);
 });
 test('swap card: a host with no trace holds as it always did', async () => {
   const c = chain(); c.send(orig);
   const k = card({ wallet: { receipt: async () => { throw new Error('Sent, not confirmed yet.'); } }, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH').catch((e) => e);
-  await sleep(100); assert.equal(await k.pendingHolds(), true); assert.match(k.said.at(-1), /not confirmed yet/);
+  await until(() => k.state()); assert.equal(await k.pendingHolds(), true); assert.match(k.said.at(-1), /not confirmed yet/);
   k.halt(); void p;
 });
 
@@ -216,7 +219,7 @@ test('front page: the swap card\'s wallet throws a cancel as the others do, and 
 // ── the trade page, whole: a press whose wait gave up, a speed-up in the wallet, and the next press ──
 test('trade: the press that gave up keeps what it learned, and the next press books the speed-up instead of trading again', async () => {
   const c = chain(), real = makeWallet({ rpc: c.read }), S = { pending: null }, said = [], booked = [], sentTx = [];
-  const wallet = { sendTx: async (t) => { sentTx.push(t); c.send(orig); return orig.hash; }, receipt: (h) => real.receipt(h, { read: c.read, probeMs: 10, every: 5, timeoutMs: 250 }), trace: (h, seen, o) => real.trace(h, seen, { read: c.read, ...o }) };
+  const wallet = { sendTx: async (t) => { sentTx.push(t); c.send(orig); return orig.hash; }, receipt: (h) => real.receipt(h, { read: c.read, probeMs: 5, every: 5, timeoutMs: 1200 }), trace: (h, seen, o) => real.trace(h, seen, { read: c.read, ...o }) };
   const body = `${sendSrc}\n${tradeSrc}\nreturn { sendAndReport, checkPending };`;
   const { sendAndReport, checkPending } = new Function('S', 'say', 'txLink', 'landed', 'wallet', 'rpc', 'clearTicket', 'readBalances', 'renderBalance', body)(
     S, (t) => said.push(String(t)), (h) => `[${h.slice(0, 6)}]`, async (rc, p) => { booked.push({ status: rc.status, hash: p.hash }); }, wallet, c.read, () => {}, async () => {}, () => {});
@@ -226,3 +229,35 @@ test('trade: the press that gave up keeps what it learned, and the next press bo
   assert.equal(await checkPending(), false, 'the next press sends nothing'); assert.deepEqual(booked, [{ status: '0x1', hash: fast.hash }]); assert.equal(sentTx.length, 1, 'one transaction was ever sent');
 });
 
+
+// ── the swap card: the signer it hands its saved plans ──
+test('swap card: the signer the plans use traces through the wallet, and answers with a promise where the wallet cannot trace', async () => {
+  const text = src('swap/card.js');
+  const body = cut(text, 'const pageSigner = {', '\nlet proverAsked = 0;', 'the card\'s signer');
+  const make = (wallet) => new Function('W', 'H', 'wallet', 'lc', 'signTyped', `${body}\nreturn pageSigner;`)({ account: '0xme' }, {}, wallet, (x) => String(x).toLowerCase(), async () => '0xsig');
+  const asked = [];
+  const traced = make({ trace: async (h, seen) => { asked.push([h, seen]); return { landed: { transactionHash: '0x2' } }; }, receipt: async () => ({}) });
+  assert.deepEqual(await traced.trace('0x1', { nonce: '3' }), { landed: { transactionHash: '0x2' } }); assert.deepEqual(asked, [['0x1', { nonce: '3' }]]);
+  const plain = make({ receipt: async () => ({}) });
+  const none = plain.trace('0x1');
+  assert.ok(none instanceof Promise, 'a promise, so a caller can ask with .catch and carry on'); assert.equal(await none, undefined);
+});
+
+// ── the front page: a transaction is learned in its first minute, so a speed-up can be followed later ──
+test('front page: learnSeen keeps the sender and nonce from the wallet\'s own node, or a public one, and stops once it has them', async () => {
+  const A = await import('../dapp/activity.js'), { c } = await stuck();
+  const body = cut(src('index.html'), 'async function learnSeen(id, hash, chainId) {', '\nfunction followTx(', 'learnSeen');
+  const make = (S, rpc, items) => new Function('sleep', 'actGet', 'actPut', 'ended', 'S', 'rpc', 'rpcsOf', 'lookReplaced', `${body}\nreturn learnSeen;`)(async () => {}, (id) => items.get(id), (id, p) => Object.assign(items.get(id), p), A.ended, S, rpc, () => null, A.lookReplaced);
+  let items = new Map([['t', { kind: 'tx', status: 'pending' }]]);
+  await make({ provider: { request: async ({ method, params }) => c.read(method, params) } }, async () => { throw new Error('no public node'); }, items)('t', orig.hash, 1);
+  assert.equal(items.get('t').seen?.nonce, '0', 'from the wallet\'s node');
+  items = new Map([['t', { kind: 'tx', status: 'pending' }]]);
+  await make({ provider: null }, (m, p) => c.read(m, p), items)('t', orig.hash, 1);
+  assert.equal(items.get('t').seen?.nonce, '0', 'from a public node when the wallet has none');
+  items = new Map([['t', { kind: 'tx', status: 'confirmed' }]]); const before = c.calls.length;
+  await make({}, (m, p) => c.read(m, p), items)('t', orig.hash, 1);
+  assert.equal(c.calls.length, before, 'a row that has ended is not asked about');
+  items = new Map([['t', { kind: 'tx', status: 'pending', seen: { nonce: '9' } }]]); const b2 = c.calls.length;
+  await make({}, (m, p) => c.read(m, p), items)('t', orig.hash, 1);
+  assert.equal(c.calls.length, b2, 'nor one that already has what it needs'); assert.equal(items.get('t').seen.nonce, '9');
+});

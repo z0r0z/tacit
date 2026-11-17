@@ -5,14 +5,14 @@
 // Whatever stops it after the transaction leaves a private share note in the key's balance, which `bondShare` farms later.
 // The front page's Earn card has more ways in (a proof kept ready, a swap split with the Precision pool, your own prover, LP only);
 // this is the one path a page with a wallet and a key needs. Everything it calls is the pool module's (confidential-pool-ux.js).
-import { zapPlan, zapPlanFor, zapSettleCalldata } from '/lp-zap.js?cb=28b3b478';
-import { relayedOrOwn } from '/farm-ops.js?cb=e70f2612';
+import { zapPlan, zapPlanFor, zapPlanExt, zapPlanExtFor, zapSettleCalldata } from '/lp-zap.js?cb=28b3b478';
+import { relayedOrOwn } from '/farm-ops.js?cb=c5192cc4';
 
 export const PUBLIC_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
 export const CETH = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 export const ZQUOTER = '0x000000bd2DB80567c23E353ca95a251c573cBf9B';
 // What the one transaction takes at most (it swaps, adds, shields and verifies a proof), half again for the fee line and the balance check.
-export const ZAP_GAS = 850000n;
+export const ZAP_GAS = 950000n;
 const SLACK = 50n;                                    // the ETH legs may cost up to 1/50 more than quoted by the time the proof is made
 const lc = (s) => String(s || '').toLowerCase(), strip = (h) => String(h).replace(/^0x/, '');
 const wordAt = (hex, i) => BigInt('0x' + (strip(hex).slice(i * 64, (i + 1) * 64) || '0'));
@@ -81,14 +81,27 @@ export function zapMath({ res, wei, market = null, unitB = 10n ** 10n, decimals 
 // network fee, and whether the wallet covers both. `pool` is the farm program's entry; `reserves` reads the pool now; `asset(res)` reads the
 // other coin as the pool holds it (assetRow): a page that passes it sizes the legs in that coin's own units and names its token, and one
 // that cannot read it says so rather than guess. Without it the coin is taken as an 18-decimal one with a pool unit of 1e10, as TAC is.
-export async function zapQuote({ pool, wei, reserves, gasPrice = async () => 0n, balance = async () => null, market = null, tacEth = 0, live = true, asset = null }) {
+// A thin pool moves a lot under the deposit's own swap, so where the coin trades outside (`outside(token)` gives a quote for that swap) the swap half is also priced there:
+// that plan leaves the pool's price alone and the deposit goes in at its ratio (lp-zap.js zapPlanExt). It is the plan when it gives more shares per ETH by more than its extra gas.
+const EXT_GAS = 140000n;
+async function outsidePlan({ res, wei, m, unitB, decimals, market, gp, token, outside }) {
+  const quote = token && outside ? outside(token) : null;
+  const ext = quote ? await zapPlanExt({ eth: wei, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, unitB, quote }).catch(() => null) : null;
+  if (!ext) return null;
+  const per = (p) => Number(p.shares) / Number(p.value);
+  if (m && !((per(ext) - per(m.plan)) / per(m.plan) * Number(wei) > Number(EXT_GAS * gp) * 1.5)) return null;
+  const dep = Number(wei) / 1e18, against = market ? Math.max(0, (Number(ext.ethLeg) / 1e18 - (Number(ext.bLeg) / 10 ** decimals) * market) / dep * 100) : 0;
+  return { plan: ext, impact: 0, against, cost: against, checked: market != null, outside: quote };
+}
+export async function zapQuote({ pool, wei, reserves, gasPrice = async () => 0n, balance = async () => null, market = null, tacEth = 0, live = true, asset = null, outside = null }) {
   const [res, gp, bal] = await Promise.all([reserves(), gasPrice().catch(() => 0n), balance().catch(() => null)]);
   if (!res || !(res.totalShares > 0n)) throw said('This pool is not open for liquidity yet.');
   if (lc(res.assetA) !== CETH) throw said('This pool reads differently from the farm program. Try again in a minute.');
   const row = asset ? await asset(res).catch(() => null) : null;
   if (asset && !row) throw said('This pool’s other coin could not be read. Try again in a minute.');
   const unitB = row ? row.unitScale : 10n ** 10n, decimals = row ? row.decimals : 18;
-  const m = zapMath({ res, wei, market, unitB, decimals });
+  const m0 = zapMath({ res, wei, market, unitB, decimals });
+  const m = (await outsidePlan({ res, wei, m: m0, unitB, decimals, market, gp, token: row?.underlying || null, outside })) || m0;
   if (!m) return { pid: pool.pid, wei, plan: null, at: Date.now() };
   const bonded = BigInt(pool.totalShares || 0), day = live ? Number(pool.tacPerDayForPool) * Number(m.plan.shares) / Number(bonded + m.plan.shares) : 0;
   const eth = Number(m.plan.value) / 1e18, fee = ZAP_GAS * gp * 3n / 2n;
@@ -116,8 +129,8 @@ const chainTime = async (rpc) => Number(BigInt((await rpc('eth_getBlockByNumber'
 // the job. Returns what `zapSend` takes; an index taken for a proof that did not come is given back.
 export async function zapProve({ t, priv, pool, q, wait = () => ({}), used = [], owned = () => ownedNotes(t, priv), say = () => {} }) {
   say('prepare');
-  const res = await t.poolReserves(pool.poolId), now = res && zapMath({ res, wei: q.wei, unitB: q.unitB, decimals: q.decimals });
-  if (!now || now.plan.shares !== q.plan.shares || now.plan.value !== q.plan.value) throw said('The pool moved since this was quoted. Check the new figures and press again; nothing was sent.', { moved: true });
+  const res = await t.poolReserves(pool.poolId), now = res && !q.plan.ext && zapMath({ res, wei: q.wei, unitB: q.unitB, decimals: q.decimals });
+  if (!q.plan.ext && (!now || now.plan.shares !== q.plan.shares || now.plan.value !== q.plan.value)) throw said('The pool moved since this was quoted. Check the new figures and press again; nothing was sent.', { moved: true });
   const rs = await t.relay.state().catch(() => null);
   if (rs && !rs.proving) throw said('Tacit’s prover is not taking proofs right now. Nothing was sent.', { code: 'relay_paused', front: true });
   const index = t.nextShareIndex({ walletPriv: priv(), poolId: pool.poolId, owned: await owned(), used });
@@ -128,7 +141,7 @@ export async function zapProve({ t, priv, pool, q, wait = () => ({}), used = [],
       { viaRelay: true, timeoutMs: 5 * 60e3, ...wait('prove') });
     if (!proven?.publicValues || !proven.proof) throw new Error(`prove failed: the prover returned no proof (${proven?.status || 'no status'})`);
     if (!t.wrapProofFits(built, proven)) throw said('The proof that came back is not for this share, so nothing was sent. Press again.');
-    return { pid: pool.pid, poolId: pool.poolId, wei: q.wei, shares: q.plan.shares, index, built, unitB: q.unitB, token: q.token, proven: { ...proven, memos: proven.memos || built.memos } };
+    return { pid: pool.pid, poolId: pool.poolId, wei: q.wei, shares: q.plan.shares, index, built, unitB: q.unitB, token: q.token, ext: q.plan.ext ? q.plan : null, outside: q.outside || null, proven: { ...proven, memos: proven.memos || built.memos } };
   } catch (e) {
     try { t.releaseShareIndex({ walletPriv: priv(), poolId: pool.poolId, index }); } catch { /* the index is skipped, which costs nothing */ }
     throw e;
@@ -142,12 +155,19 @@ export async function zapSend({ t, rpc, wallet, from, pool, ready, say = () => {
   const router = routerOf(t), max = ready.wei + ready.wei / SLACK;
   say('check');
   const res = await t.poolReserves(pool.poolId);
-  const plan = res && zapPlanFor({ shares: ready.shares, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps: BigInt(res.feeBps ?? 30), unitB: ready.unitB, maxEth: max, settles: true });      // sent with its proof in the same transaction: a mint of any other count reverts it (lp-zap.js)
+  let plan = null, swapData = null;
+  if (ready.ext) {
+    // the outside swap is asked for again at its size: its floor must still bring the token leg the proof's legs need
+    const fresh = res && ready.outside ? await ready.outside(ready.ext.swapIn).catch(() => null) : null;
+    plan = fresh ? zapPlanExtFor({ shares: ready.shares, prev: ready.ext, q: fresh, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, unitB: ready.unitB, maxEth: max }) : null;
+    swapData = plan?.callData || null;
+  } else plan = res && zapPlanFor({ shares: ready.shares, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps: BigInt(res.feeBps ?? 30), unitB: ready.unitB, maxEth: max, settles: true });      // sent with its proof in the same transaction: a mint of any other count reverts it (lp-zap.js)
+  if (!plan && await consumed(rpc, t, ready.built)) throw said('This share was already made private by an earlier press. It is in your private balance.', { already: true });
   if (!plan) throw said('The pool moved while your share was proved: this many shares now costs more than you entered. Nothing was sent; press again for a new quote.', { moved: true, stale: true });
   const [gp, bal, time] = await Promise.all([rpc('eth_gasPrice', []).then(BigInt).catch(() => 0n), rpc('eth_getBalance', [from, 'latest']).then(BigInt).catch(() => null), chainTime(rpc)]);
   if (bal != null && plan.value + ZAP_GAS * gp > bal) throw said('This wallet holds too little ETH for the deposit and its network fee. Nothing was sent.', { ready });
   const data = zapSettleCalldata({ plan, router, amm: PUBLIC_AMM, tokenB: tokenOf(t, res.assetB, ready.token), assetA: res.assetA, assetB: res.assetB, feeBps: Number(res.feeBps ?? 30),
-    deadline: BigInt(time + 1200), commit: ready.built.commit, publicValues: ready.proven.publicValues, proof: ready.proven.proof, memos: ready.proven.memos });
+    deadline: BigInt(time + 1200), commit: ready.built.commit, swapData, publicValues: ready.proven.publicValues, proof: ready.proven.proof, memos: ready.proven.memos });
   const value = '0x' + plan.value.toString(16);
   let sim;
   try { sim = await rpc('eth_call', [{ from, to: router, data, value }, 'latest']); }

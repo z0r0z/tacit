@@ -12,12 +12,15 @@ import { day as dayFmt } from '/trade/fmt.js?cb=172824e5';
 import { aprText, readPrecision, readSpot, readStake, privateFarms, poolWorthEth } from '/trade/farm-read.js?cb=fb6ec72f';
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
-import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=e70f2612';
+import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=c5192cc4';
+import { quoteEthToToken } from '/swap/route.js?cb=4a3ba95a';
+import { zapPlanExt } from '/lp-zap.js?cb=28b3b478';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=97ccc43e';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=f488f5fd';
 
 try { sessionStorage.removeItem('tacit-farm-back-v1'); } catch { /* the front page's way back to a farm: this page is where it goes, so it is spent */ }
-const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
+const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992';
+const outsideFor = (token) => (x) => quoteEthToToken({ ethCall: (to, data, block = 'latest', o = {}) => rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: o.value } : {}) }, block]), to: ROUTER, tokenOut: token, amount: x, slippageBps: 50, deadline: BigInt(Math.floor(Date.now() / 1000) + 1800) });
 const E10 = 10n ** 10n, HINT = 10n ** 17n;                                      // a tenth of an ETH: the deposit a tile's entry cost is said for
 const QUICK = ['0.05', '0.1', '0.5'];
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -96,7 +99,7 @@ function confetti() {
 const cheer = (words) => { react('up', 4200); confetti(); said(words); import('/reward-pop.js').then((m) => m.chime(), () => {}); };
 
 // ── what is read: the Precision farm, the private farms' program, the prices, the borrow markets' campaign, the wallet's stake ──
-const S = { pub: null, prog: null, priv: [], px: {}, camp: null, stake: null, mine: new Map(), read: false, failed: false, mk: new Map() };
+const S = { ext: new Map(), pub: null, prog: null, priv: [], px: {}, camp: null, stake: null, mine: new Map(), read: false, failed: false, mk: new Map() };
 // the farms a deposit of ETH goes into from here, in the menu's order: known before anything is read, filled in as it is
 const BASE = [
   { id: 'tac-eth', kind: 'public', name: 'TAC / ETH', icons: ['tac', 'eth'] },
@@ -119,7 +122,11 @@ function entryCost(f) {
   if (f.kind === 'public') { const r0 = Number(S.pub?.r0 || 0) / 1e18, half = Number(HINT) / 2e18; return r0 > 0 ? half / (r0 + half) * 50 : null; }          // the swap moves the price by half/(r0+half), on the half of the deposit that is swapped
   const r = f.pool?.reserves;
   if (!r || !Number(r.lpTotalShares) || !hasEth(f)) return null;
-  try { return zapMath({ res: { reserveA: BigInt(r.reserveA), reserveB: BigInt(r.reserveB), totalShares: BigInt(r.lpTotalShares), feeBps: f.pool.feeBps ?? 30 }, wei: HINT, market: marketFor(f.pool), ...unitsFor(f.pool) })?.cost ?? null; } catch { return null; }
+  try {
+    const inPool = zapMath({ res: { reserveA: BigInt(r.reserveA), reserveB: BigInt(r.reserveB), totalShares: BigInt(r.lpTotalShares), feeBps: f.pool.feeBps ?? 30 }, wei: HINT, market: marketFor(f.pool), ...unitsFor(f.pool) })?.cost ?? null;
+    const out = S.ext.get(otherId(f.pool))?.cost;                       // a coin that trades outside is also entered by buying part of the deposit's swap there, which leaves the pool's price alone (zap.js)
+    return out != null && (inPool == null || out < inPool) ? out : inPool;
+  } catch { return null; }
 }
 // The public price of a coin the page prices from the market: zQuoter's best route over the public pools for a hundredth of an ETH, kept a minute (a
 // failed read too, so a typing hand does not ask again at every key). The deposit's quote waits for it, a few seconds at most.
@@ -140,7 +147,27 @@ function readMarket(pool) {
   mkReads.set(id, p);
   return p;
 }
-const readMarkets = () => { for (const x of S.prog?.pools || []) if (x.reserves && !builtIn(x)) readMarket(x); };
+// The entry cost of a tenth of an ETH bought outside (the pool's ratio against the market), read a minute at a time like the market's price.
+const extReads = new Map();
+function readOutside(pool) {
+  const id = otherId(pool), r = pool?.reserves;
+  if (!id || builtIn(pool) || !r || !Number(r.lpTotalShares)) return Promise.resolve();
+  const had = S.ext.get(id);
+  if (had && Date.now() - had.at < MK_TTL) return Promise.resolve();
+  if (extReads.has(id)) return extReads.get(id);
+  const p = (async () => {
+    const row = await assetRow(call, POOL, id).catch(() => null);
+    if (!row || row.poolMinted || !row.underlying) return;
+    const ext = await zapPlanExt({ eth: HINT, ra: BigInt(r.reserveA), rb: BigInt(r.reserveB), total: BigInt(r.lpTotalShares), unitB: row.unitScale, quote: outsideFor(row.underlying) }).catch(() => null);
+    const m = marketFor(pool), dep = Number(HINT) / 1e18;
+    const cost = ext ? (m ? Math.max(0, (Number(ext.ethLeg) / 1e18 - (Number(ext.bLeg) / 10 ** row.decimals) * m) / dep * 100) : null) : null;
+    S.ext.set(id, { cost, at: Date.now() });
+    if (cost != null) paint();
+  })().finally(() => extReads.delete(id));
+  extReads.set(id, p);
+  return p;
+}
+const readMarkets = () => { for (const x of S.prog?.pools || []) if (x.reserves && !builtIn(x)) readMarket(x).then(() => readOutside(x)); };
 function farms() {
   const list = BASE.map((b) => ({ ...b, live: false, apr: null, perDay: 0, pool: null, finish: 0 }));
   const pub = list[0];
@@ -473,7 +500,8 @@ const quoteOf = async (f, wei) => {
   await Promise.race([readMarket(f.pool), new Promise((r) => setTimeout(r, 7000))]).catch(() => {});        // the market check is part of the quote: a coin priced from the public pools is read first
   return zapQuote({ pool: f.pool, wei, reserves: () => readReserves(call, POOL, f.pool.poolId), gasPrice: () => rpc('eth_gasPrice', []).then(BigInt),
     balance: async () => (W.account ? BigInt(await rpc('eth_getBalance', [W.account, 'latest'])) : null), market: marketFor(f.pool), tacEth: tacEth(), live: f.live,
-    asset: (res) => rowFor(f, res) });
+    asset: (res) => rowFor(f, res),
+    outside: outsideFor });
 };
 async function requote() {
   const my = ++Z.seq, f = Z.f, text = amtIn.value.trim(), wei = parseUnits(text);
@@ -754,7 +782,7 @@ $('#pz-loose').addEventListener('click', async (e) => {
 
 // the key's positions in the private farms: the rewards page's panel, on this page's key
 function mountMine() {
-  return mineP ||= import('/rewards/farms.js?cb=fedd7bc8').then((m) => {
+  return mineP ||= import('/rewards/farms.js?cb=cea421dd').then((m) => {
     mineUi = m.mountFarms($('#pf-mine'), { pick: pickProvider, session: key, wallet, W, connect: () => connect.connect(), program: () => S.prog,
       names: () => new Map(S.priv.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = S.priv.find((x) => String(x.pid) === String(pid))?.icons; return icons ? pairIcons(icons) : ''; },
       onRead: (list) => { S.mine = new Map(list.map((p) => [Number(p.pid), p])); paint(); },

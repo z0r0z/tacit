@@ -14,7 +14,7 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=5b7f38a3';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=04c24703';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=a59760d0';
+import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=7c08ce7f';
 import { makeLpService } from '/fastbridge-provider.js?cb=36620f82';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, gatewayOf } from '/fastbridge-mailbox.js?cb=e88908a8';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
@@ -22,8 +22,8 @@ import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=c8534a8d';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=d17ea9e5';
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=d17ea9e5';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=d9f3cea7';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=d9f3cea7';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api'];
@@ -127,11 +127,16 @@ export function walletSettle({ ux, wallet, ask = () => {}, sleep = (ms) => new P
     const to = ux.cfg.pool, data = ux.settleCalldata(x);
     await ux.rpc('eth_call', [{ from, to, data }, 'latest']);
     const txHash = await w.request({ method: 'eth_sendTransaction', params: [{ from, to, data }] });
-    for (const end = Date.now() + waitMs; Date.now() < end; await sleep(everyMs)) {
-      const rc = await ux.rpc('eth_getTransactionReceipt', [txHash]).catch(() => null);
-      if (rc) { if (rc.status !== '0x1') throw new Error(`the settle sent from your wallet failed (${txHash})`); return { txHash }; }
-    }
-    throw new Error(`the settle sent from your wallet has not landed yet (${txHash})`);
+    // The wait follows a speed-up or cancel in the wallet (activity.js waitMined, loaded when first wanted: a speed-up sends another transaction at the same nonce and the first
+    // hash never confirms); where that cannot load, it is the plain wait it was. What is told the relay is the hash that landed.
+    const A = await import('../activity.js').catch(() => null);
+    let got;
+    if (A?.waitMined) got = await A.waitMined({ read: (m, p) => ux.rpc(m, p), hash: txHash, timeoutMs: waitMs, every: everyMs, sleep });
+    else for (const end = Date.now() + waitMs; !got && Date.now() < end; await sleep(everyMs)) { const rc = await ux.rpc('eth_getTransactionReceipt', [txHash]).catch(() => null); if (rc) got = { rc }; }
+    if (got?.replaced) throw new Error(`the settle sent from your wallet was replaced there, by a cancel or another transaction, before it was mined, so it never ran (${txHash})`);
+    if (!got?.rc) throw new Error(`the settle sent from your wallet has not landed yet (${txHash})`);
+    if (got.rc.status !== '0x1') throw new Error(`the settle sent from your wallet failed (${txHash})`);
+    return { txHash: got.rc.transactionHash || txHash };
   }
 }
 
