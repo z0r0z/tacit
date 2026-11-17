@@ -183,23 +183,30 @@ export function makeWallet({ rpc, leave = null, busy = () => false }) {
   // A wallet's "speed up" and "cancel" send another transaction at the same nonce, and the first hash never confirms. While it waits, now and then
   // the chain is asked whether a mined transaction has taken that nonce (activity.js lookReplaced, loaded the first time it is wanted): the same call
   // at a higher fee gives its receipt, under its own hash (`transactionHash`), and anything else means the first never ran, which is thrown.
-  let looker = null;
-  const lookOf = () => (looker ||= import('../activity.js').then((m) => m.lookReplaced, () => null));
+  let acts = null;
+  const actOf = () => (acts ||= import('../activity.js').catch(() => null));
   async function receipt(hash, { timeoutMs = 5 * 60e3, every = null, read = rpc, where = 'Etherscan', look = null, probeMs = 15e3 } = {}) {
     const t0 = Date.now(), st = { last: t0, seen: null, found: null };
     for (;;) {
       if (st.found && !st.found.same) throw Object.assign(new Error('It was replaced in your wallet, by a cancel or another transaction, before it was mined.'), { replaced: true, hash: st.found.hash });
       const r = await read('eth_getTransactionReceipt', [st.found ? st.found.hash : hash]).catch(() => null);
       if (r) return r;
-      if (Date.now() - t0 > timeoutMs) throw new Error(`Sent, not confirmed yet. Check it on ${where} before sending anything again.`);
+      if (Date.now() - t0 > timeoutMs) throw Object.assign(new Error(`Sent, not confirmed yet. Check it on ${where} before sending anything again.`), { seen: st.seen });   // (what was learned of it goes with the error: see trace)
       if (!st.found && Date.now() - st.last >= probeMs) {
         st.last = Date.now();
-        const f = look || await lookOf(), v = f ? await f({ read, hash, seen: st.seen }).catch(() => ({})) : {};
+        const f = look || (await actOf())?.lookReplaced, v = f ? await f({ read, hash, seen: st.seen }).catch(() => ({})) : {};
         if (v.seen) st.seen = v.seen;
         if (v.found) st.found = v.found;
       }
       await new Promise((res) => setTimeout(res, every ?? (Date.now() - t0 < 90e3 ? 1000 : 3000)));
     }
   }
-  return { state: W, available, connect, restore, disconnect, chooseAccount, ensureMainnet, ensureChain, sendTx, canBatch, sendCalls, signPermit, signMessage, receipt, watchAsset, onChange: (f) => W.listeners.add(f) };
+  // What became of a transaction whose wait ran out, asked again when a page next needs to know (activity.js traceTx). `seen` is the `seen` on the error the wait threw.
+  // { landed: receipt } (its own, or a speed-up's: `transactionHash` says which), { pending }, { replaced: hash } (a cancel took its place: it never ran), { dropped }, { unknown }.
+  // Throws when the chain could not be read; where activity.js could not be loaded there is no telling, which is { unknown } (a page then does what it does with no `seen`).
+  async function trace(hash, seen = null, { read = rpc } = {}) {
+    const m = await actOf();
+    return m?.traceTx ? m.traceTx({ read, hash, seen }) : { unknown: true };
+  }
+  return { state: W, available, connect, restore, disconnect, chooseAccount, ensureMainnet, ensureChain, sendTx, canBatch, sendCalls, signPermit, signMessage, receipt, trace, watchAsset, onChange: (f) => W.listeners.add(f) };
 }

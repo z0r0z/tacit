@@ -11,7 +11,7 @@ import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1
 import { mountDepth } from '/trade/depth.js?cb=4f87419e';
 import { precisionPool, tacitPool, poolBook, perLevel, roundDown, CHART_STEPS } from '/trade/pools.js?cb=8f983ea2';
 import { readBook, planBuy as planBoardBuy, planSell as planBoardSell, refine as refineBoards, buildFill as buildBoardFill, BOARD_NAMES } from '/zboards.js?cb=e8d21aec';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=c663f030';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=6419e9c5';
 import { takeEarly, hedgedRpc, nodeHealth, shareReads } from '/trade/rpc.js';
 import { mountFarm } from '/trade/farm.js?cb=017e9b13';
 import { grp, sig, group, satsFmt, day as dayFmt, warm as warmFormatters } from '/trade/fmt.js?cb=172824e5';
@@ -1295,7 +1295,7 @@ async function sendAndReport(tx, { from, buy, P }) {
   try { rc = await wallet.receipt(hash); }
   catch (e) {
     // Not seen landing within the wait: the ticket is cleared and the hash kept, so the next press asks the chain about it before anything else is sent.
-    S.pending = { hash, from, buy, P, eth0 }; clearTicket(); readBalances().then(renderBalance).catch(() => {});
+    S.pending = { hash, from, buy, P, eth0, seen: e?.seen || null }; clearTicket(); readBalances().then(renderBalance).catch(() => {});
     throw e;
   }
   await landed(rc, { hash, from, buy, P, eth0 });
@@ -1317,19 +1317,20 @@ async function landed(rc, { hash, from, buy, P, eth0 }) {
   say(`<span class="ok">${buy ? 'Bought' : 'Sold'}.</span> ${got != null ? `${buy ? 'Received' : 'Received about'} ${esc(fmtUnits(got, 18, buy ? 2 : 6))} ${buy ? 'TAC' : 'ETH'} · ` : ''}${txLink(hash)}${buy && !tacAdded() ? ' · <button class="linkbtn" type="button" id="add-tac">Add TAC to your wallet</button>' : ''}${buy && got ? ` · <button class="linkbtn" type="button" id="farm-it" data-tac="${got}">Farm it</button>` : ''}`);
 }
 function clearTicket() { S.seq++; S.quote = null; S.qfail = false; S.ack = null; S.amt = ''; S.pin = null; $('#amt').value = ''; fitAmt(); keepInHash(); renderBalance(); renderQuote(null); renderVenues(null); renderPin(); }
-// A trade not seen landing within the wait keeps its hash (S.pending), and a press asks the chain about it before anything else is sent: landed, it gets its
-// bookkeeping as if the wait had seen it; still in the mempool, nothing is sent; unknown to the nodes (dropped, or replaced from the wallet), the press goes on.
+// A trade not seen landing within the wait keeps its hash (S.pending) and what the wait learned of it (its sender and nonce), and a press asks the chain about it
+// before anything else is sent: landed (its own receipt, or the one a speed-up in the wallet gave) it gets its bookkeeping as if the wait had seen it; still in the
+// mempool, nothing is sent; replaced by a cancel, or dropped with its nonce still free, it never ran and the press goes on; and when no node holds it and
+// there is no telling what became of it (a speed-up may have landed) the press says so once and sends nothing, so a second trade is not sent for one that went in.
 async function checkPending() {
   const p = S.pending;
   if (!p) return true;
   say(`Checking the earlier transaction ${txLink(p.hash)} first…`);
-  const read = (method) => rpc(method, [p.hash]).catch(() => undefined);
-  const rc = await read('eth_getTransactionReceipt');
-  if (rc) { S.pending = null; await landed(rc, p); return false; }
-  const tx = rc === undefined ? undefined : await read('eth_getTransactionByHash');
-  if (tx === undefined) throw new Error('Could not check the earlier transaction, so nothing was sent. Try again in a moment.');
-  if (tx) { say(`Still waiting for ${txLink(p.hash)} to land, so nothing was sent. Your wallet can speed it up or cancel it.`); return false; }
+  let t;
+  try { t = await wallet.trace(p.hash, p.seen, { read: rpc }); } catch { throw new Error('Could not check the earlier transaction, so nothing was sent. Try again in a moment.'); }
+  if (t.landed) { S.pending = null; await landed(t.landed, { ...p, hash: t.landed.transactionHash || p.hash }); return false; }
+  if (t.pending) { say(`Still waiting for ${txLink(p.hash)} to land, so nothing was sent. Your wallet can speed it up or cancel it.`); return false; }
   S.pending = null;
+  if (t.unknown) { say(`The earlier transaction ${txLink(p.hash)} is not known to the network any more: it was dropped, or sped up in your wallet and the new one may have landed. Nothing was sent. Check your wallet’s activity, then press again.`); return false; }
   return true;
 }
 

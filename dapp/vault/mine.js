@@ -197,6 +197,11 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
   // the lock record the front page keeps for this key, once its lock is minted
   const markMinted = (pub, l, txHash) => { try { const rec = JSON.parse(localStorage.getItem(recKeyOf(pub))); if (rec && rec.lockTxid === l.lockTxid && Number(rec.lockVout) === Number(l.lockVout)) localStorage.setItem(recKeyOf(pub), JSON.stringify({ ...rec, minted: txHash || true })); } catch {} };
 
+  // A transaction whose wait ended without a receipt: what the wait learned of it is kept in its entry (so a later look can follow a speed-up), and one a cancel took the
+  // place of is ended there.
+  const replacedPut = (hash) => ({ status: 'failed', err: 'It was replaced in your wallet, by a cancel or another transaction, before it was mined.', hash, replaced: true });
+  const stopped = (J, id, e) => { if (e?.replaced) J.put(id, replacedPut(e.hash)); else if (e?.seen) J.put(id, { seen: e.seen }); };
+
   // A lock's bond, posted in ETH from the connected wallet: the bond helper stakes it and holds the wstETH against the lock.
   async function bond(i) {
     const l = D.locks?.[i];
@@ -207,9 +212,13 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
     const was = J.state.items.find((x) => x.kind === 'tx' && x.op === op && x.status === 'pending' && x.hash && Date.now() - x.at < 30 * 60e3);
     if (was) {
       say('A bond for this lock is already on its way…');
-      const rc = await wallet.receipt(was.hash, { timeoutMs: 20e3 }).catch(() => null);
-      if (!rc) throw new Error('A bond for this lock was sent and has not landed yet. Wait for it, or speed it up in your wallet, before sending another.');
-      J.put(was.id, rc.status === '0x1' ? { status: 'confirmed' } : { status: 'failed', err: 'The transaction reverted.' });
+      const seen = await wallet.trace?.(was.hash, was.seen).catch(() => null);   // its receipt, the one a speed-up gave, or a cancel's: the first never ran
+      if (seen?.replaced) J.put(was.id, replacedPut(seen.replaced));
+      else {
+        const rc = seen?.landed || await wallet.receipt(was.hash, { timeoutMs: 20e3 }).catch(() => null);
+        if (!rc) throw new Error('A bond for this lock was sent and has not landed yet. Wait for it, or speed it up in your wallet, before sending another.');
+        J.put(was.id, rc.status === '0x1' ? { status: 'confirmed', hash: rc.transactionHash || was.hash } : { status: 'failed', err: 'The transaction reverted.', hash: rc.transactionHash || was.hash });
+      }
     }
     say('Sizing the bond…');
     const [need, have] = await Promise.all([t.ethCall(ENGINE, '0x' + SEL.requiredEscrow + word(l.vBtc)), t.ethCall(ENGINE, '0x' + SEL.escrowTotal + op)]).then((r) => r.map((x) => wordAt(x, 0)));
@@ -225,8 +234,8 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
     const label = `Post the bond for ${btcTxt(l.sats)} BTC`, id = `tx:1:${String(hash).toLowerCase()}`;
     J.put(id, { kind: 'tx', label, chain: 1, hash, op, status: 'pending' });
     say('Posting the bond…');
-    const rc = await wallet.receipt(hash);
-    J.put(id, rc?.status === '0x1' ? { status: 'confirmed' } : { status: 'failed', err: 'The transaction reverted.' });
+    const rc = await wallet.receipt(hash).catch((e) => { stopped(J, id, e); throw e; });
+    J.put(id, rc?.status === '0x1' ? { status: 'confirmed', hash: rc.transactionHash || hash } : { status: 'failed', err: 'The transaction reverted.' });
     if (rc?.status !== '0x1') throw new Error('The bond did not go through.');
     return 'Bond posted. Mint once the lock is proven.';
   }
@@ -246,8 +255,8 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
     const hash = await wallet.sendTx({ ...bondBackCall(t, l), from: W.account }), id = `tx:1:${String(hash).toLowerCase()}`;
     J.put(id, { kind: 'tx', label: `Take back a ${ethTxt(share)} wstETH bond`, chain: 1, hash, status: 'pending' });
     say('Taking the bond back…');
-    const rc = await wallet.receipt(hash);
-    J.put(id, rc?.status === '0x1' ? { status: 'confirmed' } : { status: 'failed', err: 'The transaction reverted.' });
+    const rc = await wallet.receipt(hash).catch((e) => { stopped(J, id, e); throw e; });
+    J.put(id, rc?.status === '0x1' ? { status: 'confirmed', hash: rc.transactionHash || hash } : { status: 'failed', err: 'The transaction reverted.' });
     if (rc?.status !== '0x1') throw new Error('The bond did not come back: cBTC may have been minted on its lock since.');
     if (D?.form) D.form.bondFor = null;
     return 'The bond is back in your wallet, as wstETH.';

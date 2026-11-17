@@ -2,7 +2,7 @@ import { secp, keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeConfidentialNames, makeMainnetCall, MAINNET_RPCS, NameError } from '/confidential-names.js?cb=c7e1989f';
 import { bodyType } from '/rpc-body.js';
 import { makeTacAirdrop } from '/tac-airdrop.js';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=c663f030';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=6419e9c5';
 import { rpc as readRpc } from '/trade/util.js?cb=1d2cd8d3';
 import { nodeHealth } from '/trade/rpc.js';
 import { batchReads } from '/trade/batch.js';
@@ -299,16 +299,18 @@ function confetti() {
 
 const word = (n) => BigInt(n).toString(16).padStart(64, '0');
 const txLink = (h) => `<a href="https://etherscan.io/tx/${h}" target="_blank" rel="noopener noreferrer">${h.slice(0, 10)}…${h.slice(-6)} ↗</a>`;
-// A claim sent and not confirmed when its wait ran out, by (kind, address): a press looks it up before sending another. It is 'pending' while
-// a node still holds it, 'gone' once none does and it has gone unconfirmed for a quarter of an hour (a node asked may not have seen one still
-// going round), otherwise what its receipt says.
+// A claim sent and not confirmed when its wait ran out, by (kind, address), with what the wait learned of it (`seen`: its sender and nonce): a press looks it up
+// before sending another. It is 'pending' while a node still holds it; 'confirmed' or 'failed' by its receipt, which a speed-up in the wallet may have given under
+// another hash (said in `hash`); 'gone' at once when a cancel took its place, and once none holds it and it has gone unconfirmed for a quarter of an hour (a node
+// asked may not have seen one still going round).
 const pendingOf = () => { try { const v = JSON.parse(store.get(PENDING) || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } };
 const pendingSet = (k, v) => { const all = pendingOf(); if (v) all[k] = v; else delete all[k]; store.set(PENDING, JSON.stringify(all)); };
-async function pendingState({ hash, at }) {
-  const rc = await readRpc('eth_getTransactionReceipt', [hash], undefined, { health }).catch(() => null);
-  if (rc) return rc.status === '0x1' ? 'confirmed' : 'failed';
-  const tx = await readRpc('eth_getTransactionByHash', [hash], undefined, { health }).catch(() => undefined);
-  return tx === null && Date.now() - at > 10 * 60e3 ? 'gone' : 'pending';
+async function pendingState({ hash, at, seen }) {
+  let t;
+  try { t = await wallet.trace(hash, seen, { read: (m, q) => readRpc(m, q, undefined, { health }) }); } catch { return { state: 'pending', hash }; }
+  if (t.landed) return { state: t.landed.status === '0x1' ? 'confirmed' : 'failed', hash: t.landed.transactionHash || hash };
+  if (t.replaced) return { state: 'gone', hash };
+  return { state: (t.dropped || t.unknown) && Date.now() - at > 10 * 60e3 ? 'gone' : 'pending', hash };
 }
 async function signedIn(address) {
   if (!W.account && !(await connect.connect())) throw new UserStopped();
@@ -351,12 +353,12 @@ async function claim(kind, address, btn, to = '') {
     await signedIn(address);
     btn.textContent = 'Confirm in your wallet…'; react('think');
     const send = (t) => wallet.sendTx({ to: t.to, data: t.data, from: address });
-    const key = `${kind}:${address}`, earlier = pendingOf()[key], state = earlier ? await pendingState(earlier) : null;
+    const key = `${kind}:${address}`, earlier = pendingOf()[key], was0 = earlier ? await pendingState(earlier) : null, state = was0?.state ?? null;
     if (state === 'pending') { hash = earlier.hash; throw Object.assign(new Error('Your earlier claim is not confirmed yet. Wait for it, or speed it up or cancel it in your wallet, before claiming again.'), { still: true }); }
     if (earlier) pendingSet(key, null);
-    hash = state === 'confirmed' ? earlier.hash : kind === 'airdrop' ? (await (dest ? air.claimTo(address, dest, { send }) : air.claim(address, { from: address, send }))).txHash : await pointsTx(address);
+    hash = state === 'confirmed' ? was0.hash : kind === 'airdrop' ? (await (dest ? air.claimTo(address, dest, { send }) : air.claim(address, { from: address, send }))).txHash : await pointsTx(address);
     btn.textContent = 'Claiming…'; say(`<p class="note-claim st mute">Claiming ${esc(amt)} TAC · ${txLink(hash)}</p>`);
-    const rc = await wallet.receipt(hash).catch((e) => { pendingSet(key, { hash, at: Date.now() }); throw e; });   // not confirmed when the wait ran out: kept, so a press does not send it twice
+    const rc = await wallet.receipt(hash).catch((e) => { pendingSet(key, { hash, at: Date.now(), seen: e?.seen || null }); throw e; });   // not confirmed when the wait ran out: kept, so a press does not send it twice
     if (rc.status !== '0x1') throw new Error(`The transaction failed (${hash.slice(0, 10)}…). Nothing was claimed.`);
     $('#done')?.querySelector('.note-claim')?.remove();
     // claimed TAC is public: the next step offered is making it private (the TAC page: one signature onto the Tacit chain)

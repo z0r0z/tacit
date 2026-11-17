@@ -1,6 +1,6 @@
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeEvmTradeVenues, _internal as V, MULTICALL3, SPLIT_EXTRA_GAS } from '/evm-trade-venues.js?cb=196b14fb';
-import { UserStopped } from '/trade/wallet.js?cb=6441a33e';
+import { UserStopped } from '/trade/wallet.js?cb=938e6a72';
 import { declinedWords } from '/wallet-prompts.js';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=1d2cd8d3';
@@ -1101,33 +1101,38 @@ function privRow(q, r) {
 }
 
 let PENDING = null;
-async function pendingState(h, from) {
-  const rc = await rpc('eth_getTransactionReceipt', [h]).catch(() => null);
-  if (rc) return { rc };
-  const tx = await rpc('eth_getTransactionByHash', [h]).catch(() => null);
-  if (tx?.nonce == null || tx.blockNumber) return {};
-  const count = await rpc('eth_getTransactionCount', [from, 'latest']).then(BigInt, () => null);
-  return { gone: count != null && count > BigInt(tx.nonce) };
+// What became of a swap's transaction once its wait ran out, from the wallet's trace of it: its receipt (its own, or the one a speed-up in the wallet gave) is
+// { rc }; { gone } when a cancel or another transaction took its nonce, so it never ran; anything else (still held, dropped, or no telling) is {}: it is waited on.
+async function pendingState(h, seen) {
+  let t;
+  try { t = await wallet.trace?.(h, seen, { read: rpc }); } catch { return {}; }
+  if (t?.landed) return { rc: t.landed };
+  return t?.replaced ? { gone: true } : {};
 }
 async function landed(h, from, what) {
   const t0 = Date.now();
-  try { return await wallet.receipt(h); } catch { }
-  PENDING = { h, from, s: what }; remember(h, `${what} · not confirmed yet`); paintRecent();
+  let seen = null;
+  try { return await wallet.receipt(h); }
+  catch (e) {
+    if (e?.replaced) throw Object.assign(new Error(`${txLink(h)} was cancelled or replaced in your wallet before it was mined, so nothing was swapped.`), { html: true });
+    seen = e?.seen || null;
+  }
+  PENDING = { h, from, s: what, seen }; remember(h, `${what} · not confirmed yet`); paintRecent();
   for (let gone = 0; Date.now() - t0 < 30 * 60e3; ) {
     say(`Sent ${txLink(h)}. Not confirmed yet, ${Math.round((Date.now() - t0) / 60e3)} minutes on: still waiting for it to land. Do not send it again.`);
     await new Promise((r) => setTimeout(r, 15e3));
-    const st = await pendingState(h, from);
+    const st = await pendingState(h, seen);
     if (st.rc) { PENDING = null; return st.rc; }
-    if (st.gone && ++gone > 1) { PENDING = null; throw Object.assign(new Error(`${txLink(h)} was replaced or dropped before it was mined (sped up or cancelled in the wallet). Check your wallet: a replacement that swapped needs nothing more.`), { html: true }); }
+    if (st.gone && ++gone > 1) { PENDING = null; throw Object.assign(new Error(`${txLink(h)} was cancelled or replaced in your wallet before it was mined, so it never ran and nothing was swapped.`), { html: true }); }
     if (!st.gone) gone = 0;
   }
   throw Object.assign(new Error(`${txLink(h)} is still not confirmed. Check it on Etherscan before sending anything again; this card looks for it before its next swap.`), { html: true });
 }
 async function pendingHolds() {
   if (!PENDING) return false;
-  const { h, from, s } = PENDING, st = await pendingState(h, from);
+  const { h, s, seen } = PENDING, st = await pendingState(h, seen);
   if (st.rc) { PENDING = null; remember(h, st.rc.status === '0x1' ? s : `${s} · failed`); paintRecent(); H.onDone?.(); readBalances().then(paintSides, () => {}); return false; }
-  if (st.gone) { PENDING = null; say(`Your last swap ${txLink(h)} was replaced or dropped before it was mined. Check your wallet before sending another.`, '', true); return true; }
+  if (st.gone) { PENDING = null; say(`Your last swap ${txLink(h)} was cancelled or replaced in your wallet before it was mined, so it never ran. Nothing was swapped: press again to swap.`, '', true); return true; }
   say(`Your last swap ${txLink(h)} is not confirmed yet. Check it on Etherscan before sending another.`, '', true);
   return true;
 }
@@ -2194,7 +2199,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=189a4107').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=89824bc1').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;

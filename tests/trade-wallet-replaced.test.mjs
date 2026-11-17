@@ -9,6 +9,7 @@ const ET = new EventTarget();
 globalThis.addEventListener = ET.addEventListener.bind(ET); globalThis.removeEventListener = ET.removeEventListener.bind(ET); globalThis.dispatchEvent = ET.dispatchEvent.bind(ET);
 const mem = new Map(); globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
 const { makeWallet } = await import('../dapp/trade/wallet.js');
+await import('../dapp/activity.js');                                       // (what the wallet loads the first time it is wanted: loaded here, so these short waits do not depend on how busy the machine is)
 
 const me = '0x' + 'aa'.repeat(20), pool = '0x' + 'bb'.repeat(20), later = (ms, f) => new Promise((r) => setTimeout(() => { f(); r(); }, ms));
 const call = { to: pool, value: 5, input: '0x1234abcd' + '00'.repeat(200) };

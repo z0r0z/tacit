@@ -1,4 +1,4 @@
-import { makeConnect } from '/trade/connect.js?cb=c663f030';
+import { makeConnect } from '/trade/connect.js?cb=6419e9c5';
 import { $, esc, short, word, strip, fmtUnits, parseUnits, rpc, ethCall } from '/trade/util.js?cb=1d2cd8d3';
 import { SALE, FROM_BLOCK, TOTAL, FACE, LOCK_DAYS } from '/face/config.js?cb=aa6672a5';
 import { pixelText, ghost, blocks } from '/face/pixel.js?cb=2a763b38';

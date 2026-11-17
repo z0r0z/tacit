@@ -6,7 +6,7 @@ export function chain() {
   const obj = (t) => ({ hash: t.hash, from: t.from, nonce: hex(t.nonce), to: t.to, value: hex(t.value || 0), input: t.input || '0x', blockNumber: t.block == null ? null : hex(t.block) });
   c.all = [];
   c.send = (t) => { const x = { ...t }; c.mempool.add(x.hash); c.all.push(x); return x; };            // (a copy: the chain's records are its own, whatever a test does to its fixtures)
-  c.mine = (t, block) => { const x = c.all.find((y) => y.hash === t.hash) || c.send(t); x.block = block; c.mined.push(x); c.mempool.delete(x.hash); };
+  c.mine = (t, block) => { const x = c.all.find((y) => y.hash === t.hash) || c.send(t); Object.assign(x, t, { block }); c.mined.push(x); c.mempool.delete(x.hash); };
   c.read = async (method, params) => {
     c.calls.push(method);
     if (c.down) throw new Error('Ethereum is unreachable');
