@@ -65,11 +65,12 @@ const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : 
 // The sections of the app, always in the header: what you hold, paying, DeFi, moving between chains, borrowing, and what there is to claim. A wide
 // header names them, a narrower one shows their glyphs, and on a phone they are the bar at the foot of the window (its fifth entry is the More page).
 // Payments, DeFi and Chains are views of the front page (its card, TAC's page and its sheets, each cut to the one thing); Borrow and Rewards are pages
-// of their own. The menu holds every other page; the builder's pages sit together in it (Etch makes a token, the Shop sells an address to
-// deploy a contract to, Prove is mining).
+// of their own. The menu holds the pages no section is, in order by kind and with no divider: the holder's own (Assets, TAC, Pay pool, Bridges),
+// then the builder's (Etch makes a token, the Shop sells an address to deploy a contract to, Prove is mining, Tasks pay for small jobs), then
+// FACE. Build and Stats are in every page's footer, and Trade is linked from the pages that show TAC's price, so the menu does not repeat them.
 const MAIN = [['portfolio', '/#portfolio', 'Portfolio'], ['payments', '/#/payments', 'Payments'], ['defi', '/#/defi', 'DeFi'], ['chains', '/#/chains', 'Chains'], ['borrow', '/vault/', 'Borrow'], ['rewards', '/rewards/', 'Rewards']];
-const MORE = [['trade', '/trade/tac/', 'Trade'], ['assets', '/assets/', 'Assets'], ['etch', '/etch/', 'Etch'], ['shop', '/shop/', 'Shop'], ['prove', '/prove/', 'Prove'], ['tasks', '/tasks/', 'Tasks'], ['stats', '/weld/stats/', 'Stats'], ['classic', '/classic.html', 'Classic app'], ['build', '/build/', 'Docs'],
-  ['pay', '/pay/', 'Pay pool'], ['bridge', '/bridge/', 'Bridges'], ['tac', '/tac/', 'TAC'], ['face', '/face/', 'FACE']];
+const MORE = [['assets', '/assets/', 'Assets'], ['tac', '/tac/', 'TAC'], ['pay', '/pay/', 'Pay pool'], ['bridge', '/bridge/', 'Bridges'],
+  ['etch', '/etch/', 'Etch'], ['shop', '/shop/', 'Shop'], ['prove', '/prove/', 'Prove'], ['tasks', '/tasks/', 'Tasks'], ['face', '/face/', 'FACE']];
 const BAR = 4;   // how many of the sections the phone's bar holds before More; the rest are first in the menu there
 
 const here = (key, k) => (key === k ? ' aria-current="page"' : '');

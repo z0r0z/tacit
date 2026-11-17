@@ -30,10 +30,10 @@ const ok = (c, m, extra = '') => { console.log(`${c ? 'ok  ' : 'FAIL'} ${m}${ext
 
 const HEADER = 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains Borrow:/vault/ Rewards:/rewards/';
 const BAR = 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains More:/#/menu', PHONE = 'Borrow:/vault/ Rewards:/rewards/';
-const MENU = 'Trade:/trade/tac/ Assets:/assets/ Etch:/etch/ Shop:/shop/ Prove:/prove/ Tasks:/tasks/ Stats:/weld/stats/ Classic app:/classic.html Docs:/build/ Pay pool:/pay/ Bridges:/bridge/ TAC:/tac/ FACE:/face/';
+const MENU = 'Assets:/assets/ TAC:/tac/ Pay pool:/pay/ Bridges:/bridge/ Etch:/etch/ Shop:/shop/ Prove:/prove/ Tasks:/tasks/ FACE:/face/';
 const FOOTER = 'Whitepaper | Build | Security | Source | Pool contract | Stats | DefiLlama | Listed on ETHBeat | @tacitfi on X | Tacit Discord community';
 // page → the section or menu entry marked as the page you are on (none for a page neither lists)
-const PAGES = { '/': null, '/tac/': 'TAC', '/chain/': 'TAC', '/vault/': 'Borrow', '/bridge/': 'Bridges', '/pay/': 'Pay pool', '/shop/': 'Shop', '/build/': 'Docs', '/docs/chain/': null, '/weld/stats/': 'Stats' };
+const PAGES = { '/': null, '/tac/': 'TAC', '/chain/': 'TAC', '/vault/': 'Borrow', '/bridge/': 'Bridges', '/pay/': 'Pay pool', '/shop/': 'Shop', '/build/': null, '/docs/chain/': null, '/weld/stats/': null };
 const VIEWS = { desktop: { width: 1280, height: 800 }, 'phone 390': { width: 390, height: 800 }, 'phone 360': { width: 360, height: 800 }, 'phone 320': { width: 320, height: 700 } };
 
 const browser = await chromium.launch();
