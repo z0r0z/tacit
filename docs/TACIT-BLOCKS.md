@@ -159,7 +159,8 @@ That holds for as long as the seed itself does not follow from a published key. 
 (`tacit-chain-lane.js`): from the Tacit key (`chainSeed`), whose public key is in every Tacit address, or from a **PQ ID** (`rootSeed`): a
 passkey's output for its own salt (`prf-wallet.js`, `prfChainRoot`), which no published key leads to. Only a PQ ID keeps memos closed to
 whoever later solves the Tacit key. A PQ ID changes the wallet's chain address but not its Tacit address: the key signs a record naming it
-(the leader's directory, `GET /address/key/<key>`), which payers read before the address's chain lane. The wallet keeps reading the keys
+(the leader's directory, `GET /address/key/<key>`), which payers read before the address's chain lane. Records are dated under the key's
+signature and the leader keeps only a key's newest, so a record it signed before cannot be posted again over its latest. The wallet keeps reading the keys
 from before, and spends their notes first, one in each input slot a spend leaves free, so they move over with its next spends. Since nothing
 the Tacit key makes opens a PQ ID's notes, the app turns one on only once its backup phrase is written down: the 32-byte root as 24 BIP39 words
 (`tacit-chain-phrase.js`), which restores it on any device with no passkey. Its notes then open with the passkey or the phrase.
