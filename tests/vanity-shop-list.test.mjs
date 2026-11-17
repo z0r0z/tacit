@@ -7,7 +7,7 @@ import { writeFileSync, readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { priceTac, encodeList, encodeKeep, buildPlan, buildCalls, chunks, makeChain } from '../tools/vanity-shop-list.mjs';
+import { priceTac, priceAnchored, MARKET_ANCHORS, encodeList, encodeKeep, buildPlan, buildCalls, chunks, makeChain } from '../tools/vanity-shop-list.mjs';
 import { marketAddress } from '../worker/src/salt-pool.js';
 
 const SHOP = '0x' + 'aa'.repeat(20);
@@ -40,6 +40,33 @@ test('the price is the cost of grinding it in TAC, doubling with every bit, roun
   assert.ok(priceTac({ bits: 59, ...P }) > 1_000_000n * W, 'the 59-bit one is a million TAC and more at these terms');
   assert.throws(() => priceTac({ bits: 48, ...P, tacUsd: 0 }), /positive/);
   assert.throws(() => priceTac({ bits: 120, ...P, tacUsd: 1e-12 }), /cost more than a listing can hold/);
+});
+
+test('the anchored price follows the market\'s points on a log scale: its own at each, between them in proportion, halving every four bits below the first', () => {
+  const A = { tacUsd: 0.1, ethUsd: 2000 };           // an ETH is 20,000 TAC
+  const t = (bits, o = {}) => Number(priceAnchored({ bits, ...A, ...o }) / 10n ** 12n) / 1e6;
+  assert.deepEqual(MARKET_ANCHORS, [[40, 0.005], [48, 0.02], [52, 0.05], [56, 2]], '10, 12, 13 and 14 leading zero digits');
+  assert.deepEqual([40, 48, 52, 56].map((b) => t(b)), [100, 400, 1000, 40000], 'at each point: its ETH price in TAC');
+  assert.equal(t(44), 200, 'halfway between two points is the geometric mean (the straight line on a log scale)');
+  assert.equal(t(50), 640, '632 TAC reads as 640, up to two figures');
+  assert.equal(t(54), 6400, '6,325 reads as 6,400');
+  assert.equal(t(36), 50); assert.equal(t(32), 25); assert.equal(t(28), 13, 'below the first point it halves for every four bits fewer (12.5 reads as 13)');
+  assert.equal(t(60), 1_600_000, 'and above the last it goes on at the last two points\' slope, forty times for four bits');
+  for (let b = 21; b < 70; b++) assert.ok(t(b) >= t(b - 1), `never cheaper for a rarer one (${b})`);
+  assert.equal(t(40, { discount: 0.5 }), 50); assert.equal(t(40, { discount: 0.25 }), 75, 'a discount scales it');
+  assert.equal(t(40, { tacUsd: 0.2 }), 50, 'a dearer TAC is fewer of them'); assert.equal(t(40, { ethUsd: 4000 }), 200, 'a dearer ETH is more');
+  assert.equal(t(8), 1, 'never under the floor'); assert.equal(t(8, { minPrice: 5 }), 5);
+  const mine = { tacUsd: 1, ethUsd: 1 };
+  assert.deepEqual([5, 10, 15, 20].map((b) => Number(priceAnchored({ bits: b, ...mine, anchors: [[20, 100], [10, 1]], minPrice: 0.01 }) / 10n ** 12n) / 1e6), [0.1, 1, 10, 100], 'points of your own, in any order');
+  assert.throws(() => priceAnchored({ bits: 40, ...A, discount: 1 }), /discount/);
+  assert.throws(() => priceAnchored({ bits: 40, ...A, discount: -0.1 }), /discount/);
+  assert.throws(() => priceAnchored({ bits: 40, ...A, discount: NaN }), /discount/);
+  assert.throws(() => priceAnchored({ bits: 40, ...A, ethUsd: 0 }), /positive/);
+  assert.throws(() => priceAnchored({ bits: 40, ...A, tacUsd: -1 }), /positive/);
+  assert.throws(() => priceAnchored({ bits: 40, ...A, anchors: [[40, 1]] }), /anchors/);
+  assert.throws(() => priceAnchored({ bits: 40, ...A, anchors: [[40, 1], [40, 2]] }), /anchors/);
+  assert.throws(() => priceAnchored({ bits: 40, ...A, anchors: [[40, 1], [48, 0]] }), /anchors/);
+  assert.throws(() => priceAnchored({ bits: 200, ...A }), /cost more than a listing can hold/);
 });
 
 test('the calldata is what cast and the contract encode for the same calls', () => {
@@ -126,7 +153,7 @@ test('the command: a bank file in, a plan and the calls out, no RPC needed (it w
   const bank = [entry(12), entry(11), entry(10), entry(9)];
   writeFileSync(join(dir, 'bank.json'), JSON.stringify({ bank: [], marketBank: bank }));
   const run = (...a) => spawnSync(process.execPath, ['tools/vanity-shop-list.mjs', ...a], { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8' });
-  const r = run('--shop', SHOP, '--bank', join(dir, 'bank.json'), '--tac-usd', '1', '--keep', '1', '--min-bits', '10', '--out', join(dir, 'plan.json'));
+  const r = run('--model', 'cost', '--shop', SHOP, '--bank', join(dir, 'bank.json'), '--tac-usd', '1', '--keep', '1', '--min-bits', '10', '--out', join(dir, 'plan.json'));
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /WARNING: no --rpc/);
   assert.match(r.stdout, /4 salts in the bank, 1 to keep, 2 to list, 1 left out/);
@@ -136,6 +163,33 @@ test('the command: a bank file in, a plan and the calls out, no RPC needed (it w
   assert.notEqual(run('--bank', join(dir, 'bank.json'), '--tac-usd', '1').status, 0, 'no shop');
   assert.notEqual(run('--shop', SHOP, '--bank', join(dir, 'bank.json')).status, 0, 'no TAC price');
   writeFileSync(join(dir, 'old.json'), JSON.stringify({ bank: [] }));
-  const old = run('--shop', SHOP, '--bank', join(dir, 'old.json'), '--tac-usd', '1');
+  const old = run('--model', 'cost', '--shop', SHOP, '--bank', join(dir, 'old.json'), '--tac-usd', '1');
   assert.notEqual(old.status, 0); assert.match(old.stderr, /not taking market salts yet/);
+});
+
+test('the command prices by the market by default: the points, the ETH and TAC prices and the discount in, each price and the whole listing out', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vsl-'));
+  const bank = [entry(12), entry(11), entry(10), entry(9)];
+  writeFileSync(join(dir, 'bank.json'), JSON.stringify({ bank: [], marketBank: bank }));
+  const run = (...a) => spawnSync(process.execPath, ['tools/vanity-shop-list.mjs', ...a], { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8' });
+  // the market's own points sit at 40 bits and up, which a test cannot grind: the same shape at 10, 12, 13 and 14
+  const base = ['--shop', SHOP, '--bank', join(dir, 'bank.json'), '--tac-usd', '0.1', '--eth-usd', '2000', '--anchors', '10:0.005,12:0.02,13:0.05,14:2', '--keep', '1', '--min-bits', '10'];
+  const r = run(...base, '--discount', '0.5', '--out', join(dir, 'plan.json'));
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /pricing: the market's prices \(10 bits 0\.005 ETH, 12 bits 0\.02 ETH, 13 bits 0\.05 ETH, 14 bits 2 ETH\), ETH at \$2000, TAC at \$0\.1, 50% off/);
+  assert.match(r.stdout, /4 salts in the bank, 1 to keep, 2 to list, 1 left out/);
+  assert.match(r.stdout, /list\s+11 bits .* 100 TAC ≈ \$10\.00/); assert.match(r.stdout, /list\s+10 bits .* 50 TAC ≈ \$5\.00/);
+  assert.match(r.stdout, /the listing comes to 150 TAC \(≈ \$15\.00 at \$0\.1 a TAC\) for 2 salts/);
+  const out = JSON.parse(readFileSync(join(dir, 'plan.json'), 'utf8'));
+  assert.deepEqual(out.plan.filter((p) => p.action === 'list').map((p) => p.priceWei), [String(100n * W), String(50n * W)]);
+  assert.equal(out.params.model, 'anchored'); assert.equal(out.params.discount, 0.5); assert.equal(out.params.ethUsd, 2000);
+  const full = run(...base);
+  assert.match(full.stdout, /list\s+11 bits .* 200 TAC/); assert.doesNotMatch(full.stdout, /% off/, 'no discount, none said');
+  assert.notEqual(run('--shop', SHOP, '--bank', join(dir, 'bank.json'), '--tac-usd', '0.1').status, 0, 'no ETH price');
+  assert.match(run('--shop', SHOP, '--bank', join(dir, 'bank.json'), '--tac-usd', '0.1').stderr, /--eth-usd/);
+  assert.notEqual(run(...base, '--discount', '1').status, 0, 'a discount of all of it');
+  assert.match(run(...base, '--discount', '1').stderr, /discount/);
+  assert.notEqual(run(...base, '--model', 'nonsense').status, 0, 'a model that is neither');
+  const one = run('--shop', SHOP, '--bank', join(dir, 'bank.json'), '--tac-usd', '0.1', '--eth-usd', '2000', '--anchors', '10:0.005', '--min-bits', '10');
+  assert.notEqual(one.status, 0, 'one point is not a curve'); assert.match(one.stderr, /anchors/);
 });

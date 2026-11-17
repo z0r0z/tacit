@@ -3,13 +3,20 @@
 // an address of ours) and the rest are listed for sale at a price in TAC (`list`). It sends nothing: it prints the plan and the calls (to, value, data) for
 // whoever owns the shop (the ops multisig: each call goes through its queue) to make, and can write them to a file.
 //
-//   node tools/vanity-shop-list.mjs --shop 0x… --tac-usd 0.05 [--bank <url|file>] [--rpc <url>] [--keep 8] [--keep-to 0x…] [--min-bits 40]
-//        [--usd-hour 0.45] [--rate 1.43e9] [--markup 1] [--min-price 1] [--chunk 40] [--out plan.json]
+//   node tools/vanity-shop-list.mjs --shop 0x… --tac-usd 0.166 --eth-usd 1800 [--discount 0.5] [--bank <url|file>] [--rpc <url>] [--keep 8] [--keep-to 0x…]
+//        [--min-bits 36] [--min-price 1] [--chunk 40] [--anchors 40:0.005,48:0.02,52:0.05,56:2] [--out plan.json]
+//   node tools/vanity-shop-list.mjs --model cost --shop 0x… --tac-usd 0.05 [--usd-hour 0.45] [--rate 1.43e9] [--markup 1] [...the rest as above]
 //
-// The price is what the salt would cost to grind, in TAC: 2^bits tries at --rate per second on a card rented at --usd-hour dollars an hour, times --markup,
-// at --tac-usd dollars a TAC, never under --min-price TAC, rounded up to two significant figures. Every extra bit doubles it. The default rate is the one
-// measured for createXcrunch on an RTX 4090 against CreateX, which is slower than a miner that tries a salt's nonces for one hash each: a lower --rate prices
-// higher, a higher one lower. The plan prints each price in dollars too.
+// The default price follows what the vanity market charges. --anchors are [leading zero bits : price in ETH] points (the defaults are 10, 12, 13 and 14 leading
+// zero digits at 0.005, 0.02, 0.05 and 2 ETH); between two points the price follows the straight line between them on a log scale, below the first by the slope of
+// the first two (it halves for every four bits fewer) and above the last by the slope of the last two. It is turned into dollars at --eth-usd, cut by --discount
+// (0 up to under 1: an introduction price is a discount now and a re-listing later), and into TAC at --tac-usd, never under --min-price TAC, rounded up to two
+// significant figures. The plan prints each price in dollars too, and what the whole listing comes to.
+//
+// --model cost prices a salt at what it would cost to grind instead, in TAC: 2^bits tries at --rate per second on a card rented at --usd-hour dollars an hour,
+// times --markup, at --tac-usd dollars a TAC. Every extra bit doubles it. The default rate is the one measured for createXcrunch on an RTX 4090 against CreateX,
+// which is slower than a miner that tries a salt's nonces for one hash each: a lower --rate prices higher, a higher one lower. It is far under what the market
+// charges for the zeros the pool finds in a day, and far over it for the rarest.
 //
 // Without --rpc nothing is checked against the chain: pass it, so that a salt already minted or already listed, or an address the market computes
 // differently, is left out. The bank keeps only the best 64 salts, so stock the shop before a better find pushes an unsold one out.
@@ -30,14 +37,33 @@ const U128 = (1n << 128n) - 1n;
 export function priceTac({ bits, tacUsd, usdPerHour = 0.45, rate = 1.43e9, markup = 1, minPrice = 1 }) {
   if (!(tacUsd > 0) || !(rate > 0) || !(usdPerHour >= 0) || !(markup > 0) || !(minPrice > 0)) throw new Error('tacUsd, rate, markup and minPrice must be positive');
   const usd = (2 ** bits / rate / 3600) * usdPerHour * markup;
-  let tac = Math.max(usd / tacUsd, minPrice);
-  // up to two significant figures, so a price reads as a price
+  return roundedWei(Math.max(usd / tacUsd, minPrice), bits);
+}
+
+// up to two significant figures, so a price reads as a price; TAC wei as a BigInt
+function roundedWei(tac, bits) {
   const mag = 10 ** (Math.floor(Math.log10(tac)) - 1);
   tac = Math.ceil(Math.round(tac / mag * 1e6) / 1e6) * mag;
   const wei = BigInt(Math.round(tac * 1e6)) * 10n ** 12n;
   if (wei > U128) throw new Error(`a ${bits}-bit salt would cost more than a listing can hold`);
   return wei;
 }
+
+// What the vanity market charges, as [leading zero bits, ETH]: 10, 12, 13 and 14 leading zero digits.
+export const MARKET_ANCHORS = [[40, 0.005], [48, 0.02], [52, 0.05], [56, 2]];
+
+// The price in TAC wei of a salt of `bits` zero bits by those points (see the header), at `ethUsd` and `tacUsd` dollars, less `discount`.
+export function priceAnchored({ bits, tacUsd, ethUsd, discount = 0, anchors = MARKET_ANCHORS, minPrice = 1 }) {
+  if (!(tacUsd > 0) || !(ethUsd > 0) || !(minPrice > 0)) throw new Error('tacUsd, ethUsd and minPrice must be positive');
+  if (!(discount >= 0 && discount < 1)) throw new Error('the discount runs from 0 up to, not including, 1');
+  const pts = [...anchors].sort((a, b) => a[0] - b[0]);
+  if (pts.length < 2 || pts.some(([b, p], i) => !(b >= 0) || !(p > 0) || (i > 0 && b === pts[i - 1][0]))) throw new Error('anchors need two or more [bits, ETH] points, each bit count once and each price above 0');
+  const k = bits <= pts[0][0] ? 1 : bits >= pts[pts.length - 1][0] ? pts.length - 1 : pts.findIndex(([b]) => b >= bits);
+  const [b0, p0] = pts[k - 1], [b1, p1] = pts[k];
+  const eth = Math.exp(Math.log(p0) + ((bits - b0) / (b1 - b0)) * (Math.log(p1) - Math.log(p0)));
+  return roundedWei(Math.max((eth * ethUsd * (1 - discount)) / tacUsd, minPrice), bits);
+}
+const parseAnchors = (s) => String(s).split(',').map((x) => x.split(':').map(Number));
 const tacOf = (wei) => Number(wei / 10n ** 12n) / 1e6;
 
 // ---- calldata (the shop's ABI; tests/vanity-shop-list.test.mjs and contracts/test/VanityShop.t.sol hold the same strings) ----
@@ -132,22 +158,39 @@ export async function main(argv, out = console.log) {
   if (!shop || !ADDR.test(shop)) throw new Error('--shop <the shop\'s address> is required');
   const tacUsd = Number(opt('tac-usd'));
   if (!(tacUsd > 0)) throw new Error('--tac-usd <dollars per TAC> is required');
-  const keep = Number(opt('keep', 8)), minBits = Number(opt('min-bits', 40)), chunk = Number(opt('chunk', 40));
+  const model = opt('model', 'anchored');
+  if (model !== 'anchored' && model !== 'cost') throw new Error('--model is anchored or cost');
+  const keep = Number(opt('keep', 8)), minBits = Number(opt('min-bits', 36)), chunk = Number(opt('chunk', 40));
   const keepTo = opt('keep-to', OPS);
   if (!ADDR.test(keepTo)) throw new Error('--keep-to must be an address');
-  const pricing = { tacUsd, usdPerHour: Number(opt('usd-hour', 0.45)), rate: Number(opt('rate', 1.43e9)), markup: Number(opt('markup', 1)), minPrice: Number(opt('min-price', 1)) };
+  let pricing, price, how;
+  if (model === 'cost') {
+    pricing = { model, tacUsd, usdPerHour: Number(opt('usd-hour', 0.45)), rate: Number(opt('rate', 1.43e9)), markup: Number(opt('markup', 1)), minPrice: Number(opt('min-price', 1)) };
+    price = (bits) => priceTac({ bits, ...pricing });
+    how = `the cost of grinding it ($${pricing.usdPerHour} an hour at ${pricing.rate} a second, times ${pricing.markup}), TAC at $${tacUsd}`;
+  } else {
+    const ethUsd = Number(opt('eth-usd'));
+    if (!(ethUsd > 0)) throw new Error('--eth-usd <dollars per ETH> is required (or --model cost)');
+    pricing = { model, tacUsd, ethUsd, discount: Number(opt('discount', 0)), anchors: opt('anchors') ? parseAnchors(opt('anchors')) : MARKET_ANCHORS, minPrice: Number(opt('min-price', 1)) };
+    price = (bits) => priceAnchored({ bits, ...pricing });
+    how = `the market's prices (${pricing.anchors.map(([b, e]) => `${b} bits ${e} ETH`).join(', ')}), ETH at $${ethUsd}, TAC at $${tacUsd}${pricing.discount ? `, ${Math.round(pricing.discount * 1000) / 10}% off` : ''}`;
+  }
+  price(minBits);                                   // a price that cannot be worked out stops the plan here
   const rpc = opt('rpc');
   const entries = await readBank(opt('bank', BANK_URL));
   const chain = rpc ? makeChain({ rpc, market: opt('market', SALT_POOL.market), shop }) : null;
   if (!chain) out('WARNING: no --rpc, so nothing is checked against the chain (a salt already minted or listed would be listed again).');
-  const plan = await buildPlan(entries, { shop, keep, minBits, price: (bits) => priceTac({ bits, ...pricing }) }, chain);
+  const plan = await buildPlan(entries, { shop, keep, minBits, price }, chain);
   const calls = buildCalls(plan, { shop, keepTo, chunk });
 
-  out(`\n${entries.length} salts in the bank, ${plan.filter((p) => p.action === 'keep').length} to keep, ${plan.filter((p) => p.action === 'list').length} to list, ${plan.filter((p) => p.action === 'skip').length} left out\n`);
+  out(`\npricing: ${how}`);
+  out(`${entries.length} salts in the bank, ${plan.filter((p) => p.action === 'keep').length} to keep, ${plan.filter((p) => p.action === 'list').length} to list, ${plan.filter((p) => p.action === 'skip').length} left out\n`);
   for (const p of plan) {
     const dollars = p.priceWei ? ` ≈ $${(tacOf(p.priceWei) * tacUsd).toFixed(2)}` : '';
     out(`${p.action.padEnd(5)} ${String(p.bits).padStart(2)} bits  ${p.address}  nonce ${p.nonce}${p.priceWei ? `  ${tacOf(p.priceWei)} TAC${dollars}` : ''}${p.reason ? `  (${p.reason})` : ''}${p.note ? `  (${p.note})` : ''}`);
   }
+  const listed = plan.filter((p) => p.action === 'list'), total = listed.reduce((s, p) => s + p.priceWei, 0n);
+  if (listed.length) out(`\nthe listing comes to ${tacOf(total).toLocaleString('en-US')} TAC (≈ $${(tacOf(total) * tacUsd).toFixed(2)} at $${tacUsd} a TAC) for ${listed.length} salt${listed.length === 1 ? '' : 's'}`);
   out(`\n${calls.length} call${calls.length === 1 ? '' : 's'} for the shop's owner to make (to ${shop}, value 0):`);
   calls.forEach((c, i) => out(`  ${i + 1}. ${c.label}`));
   const file = opt('out');

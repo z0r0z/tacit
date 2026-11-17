@@ -6,6 +6,12 @@
 //   address = keccak(0xd6 0x94 ‖ proxy ‖ 0x01)[12..]
 // and a share is a salt whose address starts with at least the pool's minBits zero bits.
 //
+// The pool can also ask for the salts of the vanity-address market (GET /prover/salt `schemes`, the first the one to grind; worker/src/salt-pool.js, the same in
+// tacit-prover's salt.rs): the same layout with the shop's address in place of the deployer's, whose address is the contract the market's deploy proxy creates:
+//   proxy   = keccak(0xff ‖ market ‖ id ‖ keccak(the market's proxy init code))[12..]
+//   address = keccak(0xd6 0x94 ‖ proxy ‖ nonce + 1)[12..]      for the token's nonce, 0 to 254
+// The nonce is free, so each id is tried at the first NONCES of them (one more hash each: the proxy is the same) and the best is the share, sent as `0x<id>:<nonce>`.
+//
 // Every message here fits one 136-byte block, so each hash is one Keccak-f[1600] permutation. The state is 25 lanes of 64 bits kept as 50 32-bit words, low word
 // first, which is also the byte order of the message: word i is bytes 4i..4i+3, little-endian.
 
@@ -84,17 +90,47 @@ export function saltAddress(salt) {
   return { address, bits: zeroBits(address) };
 }
 
+// ---- the vanity market's salts
+export const MARKET = '000000000000b361194cfe6312ee3210d53c15aa', NONCES = 8;
+const MARKET_PROXY_INIT = hex('60288060093d393df36001600581360334348434363434376d01e4a82b33373de1334e7d8f48795af49247f034521b34f3');
+export const MARKET_PROXY_HASH = keccak256(MARKET_PROXY_INIT);
+const ADDR40 = /^0x[0-9a-f]{40}$/;
+export const CREATEX_TERMS = Object.freeze({ kind: 'createx' });
+// What the pool asks to be ground, from its GET /prover/salt: market salts only when its first scheme is `market` and it names the shop and the market, else CreateX's.
+export function termsFrom(summary) {
+  const first = Array.isArray(summary?.schemes) ? summary.schemes[0] : null;
+  const shop = String(summary?.shop || '').toLowerCase(), market = String(summary?.market || '').toLowerCase();
+  return first === 'market' && ADDR40.test(shop) && ADDR40.test(market) ? Object.freeze({ kind: 'market', shop: shop.slice(2), market: market.slice(2) }) : CREATEX_TERMS;
+}
+export const termsKey = (t) => (t?.kind === 'market' ? `market:${t.shop}:${t.market}` : 'createx');
+export const ownerOf = (terms) => (terms?.kind === 'market' ? hex(terms.shop) : DEP);
+// An id's addresses at its first NONCES nonces, hash by hash: the plain way, which the fast grinders are checked against.
+export function marketAddresses(id, market = MARKET) {
+  const m1 = new Uint8Array(85); m1[0] = 0xff; m1.set(hex(market), 1); m1.set(id, 21); m1.set(MARKET_PROXY_HASH, 53);
+  const proxy = keccak256(m1).subarray(12);
+  const out = [];
+  for (let nonce = 0; nonce < NONCES; nonce++) {
+    const m = new Uint8Array(23); m[0] = 0xd6; m[1] = 0x94; m.set(proxy, 2); m[22] = nonce + 1;
+    const address = keccak256(m).subarray(12);
+    out.push({ address, bits: zeroBits(address), nonce });
+  }
+  return out;
+}
+// the best of them: the lowest nonce among equals
+export const marketBest = (id, market = MARKET) => marketAddresses(id, market).reduce((a, b) => (b.bits > a.bits ? b : a));
+
 export const utcDay = (ms = Date.now()) => Math.floor(ms / 86400000);
 // A salt of a UTC day with 9 bytes of the grinder's own: 5 it drew at random (so no two grinders walk the same salts) and a 4-byte counter.
-export function saltOf(day, prefix, n) {
-  const salt = new Uint8Array(32); salt.set(DEP); salt[21] = (day >> 8) & 0xff; salt[22] = day & 0xff; salt.set(prefix.subarray(0, 5), 23);
+export function saltOf(day, prefix, n, owner = DEP) {
+  const salt = new Uint8Array(32); salt.set(owner); salt[21] = (day >> 8) & 0xff; salt[22] = day & 0xff; salt.set(prefix.subarray(0, 5), 23);
   salt[28] = n & 0xff; salt[29] = (n >>> 8) & 0xff; salt[30] = (n >>> 16) & 0xff; salt[31] = (n >>> 24) & 0xff;
   return salt;
 }
 
 // The fast grinder. The three messages are laid out once as words; a salt changes one word of the first, and each hash's result is shifted into the next message
 // by whole words. grind(count, minBits) walks `count` salts from where the last call stopped and returns the counters of those that are shares.
-export function makeGrinder({ day, prefix }) {
+export function makeGrinder({ day, prefix, terms }) {
+  if (terms?.kind === 'market') return makeMarketGrinder({ day, prefix, terms });
   const le = (bytes) => new Int32Array(bytes.buffer.slice(0));
   const b1 = new Uint8Array(200); b1.set(DEP, 12); b1.set(saltOf(day, prefix, 0), 32); b1[64] = 0x01; b1[135] = 0x80;
   const b2 = new Uint8Array(200); b2[0] = 0xff; b2.set(CX, 1); b2.set(PROXY_INIT_HASH, 53); b2[85] = 0x01; b2[135] = 0x80;
@@ -139,12 +175,53 @@ export function makeGrinder({ day, prefix }) {
   return { grind, saltOf: (k) => saltOf(day, prefix, k), day, at: () => n };
 }
 
+// The market's grinder, word by word as makeGrinder is: hash 1 is the proxy (the counter is bytes 49..52 of its message: bits 8..31 of word 12 and the low byte of
+// word 13), then one hash for each nonce, whose message differs from the others in one byte. grind(count, minBits) returns { n, bits, nonce } for each counter whose
+// best nonce has bits enough.
+export function makeMarketGrinder({ day, prefix, terms }) {
+  const owner = ownerOf(terms), market = hex(terms.market), le = (bytes) => new Int32Array(bytes.buffer.slice(0));
+  const b1 = new Uint8Array(200); b1[0] = 0xff; b1.set(market, 1); b1.set(saltOf(day, prefix, 0, owner), 21); b1.set(MARKET_PROXY_HASH, 53); b1[85] = 0x01; b1[135] = 0x80;
+  const b3 = new Uint8Array(200); b3[0] = 0xd6; b3[1] = 0x94; b3[23] = 0x01; b3[135] = 0x80;
+  const T1 = le(b1), T3 = le(b3), s = new Int32Array(50), c12 = T1[12], c13 = T1[13], c0 = T3[0];
+  let n = 0;
+  function grind(count, minBits) {
+    const found = [];
+    for (let i = 0; i < count; i++) {
+      n = (n + 1) | 0;
+      s.set(T1); s[12] = c12 | (n << 8); s[13] = c13 | (n >>> 24); keccakF(s);
+      const p3 = s[3], p4 = s[4], p5 = s[5], p6 = s[6], p7 = s[7];
+      let best = -1, bestNonce = 0;
+      for (let k = 0; k < NONCES; k++) {
+        s.set(T3);
+        s[0] = c0 | (p3 << 16); s[1] = (p3 >>> 16) | (p4 << 16); s[2] = (p4 >>> 16) | (p5 << 16); s[3] = (p5 >>> 16) | (p6 << 16); s[4] = (p6 >>> 16) | (p7 << 16);
+        s[5] = (p7 >>> 16) | ((k + 1) << 16) | (1 << 24);
+        keccakF(s);
+        if (minBits >= 8 && (s[3] & 0xff) !== 0) continue;
+        let bits = 0;
+        for (let w = 3; w < 8; w++) {
+          const v = s[w];
+          if (v === 0) { bits += 32; continue; }
+          if ((v & 0xff) !== 0) bits += Math.clz32(v & 0xff) - 24;
+          else if ((v & 0xff00) !== 0) bits += 8 + Math.clz32((v >>> 8) & 0xff) - 24;
+          else if ((v & 0xff0000) !== 0) bits += 16 + Math.clz32((v >>> 16) & 0xff) - 24;
+          else bits += 24 + Math.clz32(v >>> 24) - 24;
+          break;
+        }
+        if (bits > best) { best = bits; bestNonce = k; }
+      }
+      if (best >= minBits) found.push({ n, bits: best, nonce: bestNonce });
+    }
+    return found;
+  }
+  return { grind, saltOf: (k) => saltOf(day, prefix, k, owner), day, terms, at: () => n };
+}
+
 // ---- the same grinder as a WebAssembly module, where a lane is one 64-bit integer: many times the speed of the words above. The module is written out here
 // instruction by instruction (there is no compiled file to trust): `f` is Keccak-f[1600] on the 25 lanes at the start of its memory, and `grind` lays out the three
 // messages lane by lane exactly as makeGrinder does word by word, and notes each counter whose address starts with the zero bytes asked for. Its memory: the
-// state at 0, the round constants at 256, the constant lanes of the first message at 512 and of the second at 640, how many salts it walked at 1020, and the
-// counters it noted from 1024 (256 at most in one call).
-const W = { S: 0, RC: 256, T1: 512, T2: 640, DONE: 1020, OUT: 1024, CAP: 256 };
+// state at 0, the round constants at 256, the constant lanes of the first message at 512 and of the second at 640 (the market's first message, 11 lanes, at 768),
+// how many salts it walked at 1020, and the counters it noted from 1024 (256 at most in one call).
+const W = { S: 0, RC: 256, T1: 512, T2: 640, T1M: 768, DONE: 1020, OUT: 1024, CAP: 256 };
 const uleb = (n) => { const out = []; do { let b = n & 0x7f; n >>>= 7; if (n) b |= 0x80; out.push(b); } while (n); return out; };
 const sleb = (v) => { v = BigInt.asIntN(64, BigInt(v)); const out = []; for (;;) { const b = Number(v & 0x7fn); v >>= 7n; const end = (v === 0n && !(b & 0x40)) || (v === -1n && !!(b & 0x40)); out.push(end ? b : b | 0x80); if (end) return out; } };
 const op = {
@@ -206,6 +283,32 @@ export function grinderWasm() {
   g.push(...bump(I), ...op.set(I), 0x0c, 0, 0x0b, 0x0b);
   g.push(...op.i32(0), ...op.get(I), 0x36, 2, ...uleb(W.DONE), ...op.get(FOUND));
 
+  // grindMarket(n, count, mask) -> how many it noted: the same parameters and locals as grind. Hash 1 is the proxy (the 85-byte message is eleven lanes held at T1M, the
+  // counter bits 8..39 of lane 6, the padding byte in lane 10); the proxy is bytes 12..31 of its hash. Then one hash for each of the first NONCES nonces, whose message
+  // is the same but for the byte after the proxy (nonce + 1, in lane 2 with the padding byte above it). A counter is noted once, for the first nonce whose address
+  // starts with the zero bytes asked for: the caller works out the best nonce. It stops before a counter when the notes are full, so none is lost.
+  const h = [0x02, 0x40, 0x03, 0x40];
+  h.push(...op.get(I), ...op.get(COUNT), 0x4f, 0x0d, 1);                                                 // walked them all: out
+  h.push(...op.get(FOUND), ...op.i32(W.CAP), 0x46, 0x0d, 1);                                              // the notes are full: out, with this counter still to do
+  h.push(...bump(N), ...op.set(N));
+  for (let l = 0; l < 11; l++) {
+    if (l === 6) h.push(...op.store64(W.S + 48, [...op.load64(W.T1M + 48), ...op.get(N), 0xad, ...op.i64(8), ...op.shl, ...op.or]));
+    else h.push(...op.store64(W.S + 8 * l, op.load64(W.T1M + 8 * l)));
+  }
+  h.push(...zero(11, 24), 0x10, 0);
+  for (let k = 1; k < 4; k++) h.push(...op.load64(W.S + 8 * k), ...op.set(G(k)));
+  for (let k = 0; k < NONCES; k++) {
+    h.push(...op.store64(W.S, [...op.get(G(1)), ...op.i64(32), ...op.shru, ...op.i64(16), ...op.shl, ...op.get(G(2)), ...op.i64(48), ...op.shl, ...op.or, ...op.i64(0x94d6), ...op.or]));
+    h.push(...op.store64(W.S + 8, shifted(G(2), 16, G(3), 48)));
+    h.push(...op.store64(W.S + 16, [...op.get(G(3)), ...op.i64(16), ...op.shru, ...op.i64((BigInt(k + 1) << 48n) | (1n << 56n)), ...op.or]));
+    h.push(...zero(3, 24), 0x10, 0);
+    h.push(...op.load64(W.S + 8), ...op.i64(32), ...op.shru, 0xa7, ...op.get(MASK), 0x71, 0x45, 0x04, 0x40);   // the address's first four bytes under the mask are zero:
+    h.push(...op.get(FOUND), ...op.i32(2), 0x74, ...op.get(N), 0x36, 2, ...uleb(W.OUT));                      // note the counter,
+    h.push(...bump(FOUND), ...op.set(FOUND), ...bump(I), ...op.set(I), 0x0c, 1, 0x0b);                         // and go on to the next one
+  }
+  h.push(...bump(I), ...op.set(I), 0x0c, 0, 0x0b, 0x0b);
+  h.push(...op.i32(0), ...op.get(I), 0x36, 2, ...uleb(W.DONE), ...op.get(FOUND));
+
   const vec = (items) => [...uleb(items.length), ...items.flat()];
   const section = (id, body) => [id, ...uleb(body.length), ...body];
   const name = (s) => [...uleb(s.length), ...Array.from(s, (c) => c.charCodeAt(0))];
@@ -213,10 +316,10 @@ export function grinderWasm() {
   return Uint8Array.from([
     0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
     ...section(1, vec([[0x60, 0, 0], [0x60, 3, 0x7f, 0x7f, 0x7f, 1, 0x7f]])),     // types: f(), grind(i32, i32, i32) -> i32
-    ...section(3, vec([[0], [1]])),
+    ...section(3, vec([[0], [1], [1]])),
     ...section(5, vec([[0x00, 1]])),                                              // one page of memory
-    ...section(7, vec([[...name('memory'), 0x02, 0], [...name('grind'), 0x00, 1]])),
-    ...section(10, vec([body([[56, 0x7e], [1, 0x7f]], f), body([[2, 0x7f], [4, 0x7e]], g)])),
+    ...section(7, vec([[...name('memory'), 0x02, 0], [...name('grind'), 0x00, 1], [...name('grindMarket'), 0x00, 2]])),
+    ...section(10, vec([body([[56, 0x7e], [1, 0x7f]], f), body([[2, 0x7f], [4, 0x7e]], g), body([[2, 0x7f], [4, 0x7e]], h)])),
   ]);
 }
 // The constant bytes of the first two messages for a day and a grinder's five bytes: the first with the counter (its last four bytes) left zero, the second with
@@ -226,9 +329,35 @@ export function templates(day, prefix) {
   const m2 = new Uint8Array(88); m2[0] = 0xff; m2.set(CX, 1); m2.set(PROXY_INIT_HASH, 53); m2[85] = 0x01;
   return { m1, m2 };
 }
+// The market's first message (88 bytes, eleven lanes) for a day and a grinder's five bytes: 0xff, the market, the id with its counter zero, the proxy's init hash and the
+// padding byte.
+export function marketTemplates(day, prefix, terms) {
+  const m1 = new Uint8Array(88); m1[0] = 0xff; m1.set(hex(terms.market), 1); m1.set(saltOf(day, prefix, 0, ownerOf(terms)), 21); m1.set(MARKET_PROXY_HASH, 53); m1[85] = 0x01;
+  return { m1 };
+}
+// The market's grinder on the module above: each counter it notes is worked out the plain way (its best nonce) before it counts.
+export function makeMarketWasmGrinder({ day, prefix, terms }) {
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(grinderWasm())), mem = new Uint8Array(inst.exports.memory.buffer), words = new Int32Array(inst.exports.memory.buffer);
+  const owner = ownerOf(terms);
+  words.set(RC, W.RC >> 2);
+  mem.set(marketTemplates(day, prefix, terms).m1, W.T1M);
+  let n = 0;
+  function grind(count, minBits) {
+    if (minBits < 8) throw new Error('minBits under 8: use makeGrinder');
+    const k = Math.min(4, minBits >> 3), mask = k >= 4 ? -1 : (1 << (8 * k)) - 1, found = [];
+    for (let left = count; left > 0;) {
+      const noted = inst.exports.grindMarket(n, left, mask), walked = words[W.DONE >> 2];
+      for (let j = 0; j < noted; j++) { const c = words[(W.OUT >> 2) + j], b = marketBest(saltOf(day, prefix, c, owner), terms.market); if (b.bits >= minBits) found.push({ n: c, bits: b.bits, nonce: b.nonce }); }
+      n = (n + walked) | 0; left -= walked;
+    }
+    return found;
+  }
+  return { grind, saltOf: (c) => saltOf(day, prefix, c, owner), day, terms, at: () => n, wasm: true };
+}
 // A grinder like makeGrinder's, on the module above. Each counter the module notes is checked the plain way before it counts, so nothing is sent that the pool would
 // refuse. minBits under 8 is left to makeGrinder (the module looks at whole zero bytes).
-export function makeWasmGrinder({ day, prefix }) {
+export function makeWasmGrinder({ day, prefix, terms }) {
+  if (terms?.kind === 'market') return makeMarketWasmGrinder({ day, prefix, terms });
   const inst = new WebAssembly.Instance(new WebAssembly.Module(grinderWasm())), mem = new Uint8Array(inst.exports.memory.buffer), words = new Int32Array(inst.exports.memory.buffer);
   words.set(RC, W.RC >> 2);
   const { m1, m2 } = templates(day, prefix); mem.set(m1, W.T1); mem.set(m2, W.T2);

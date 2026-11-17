@@ -65,14 +65,17 @@ export const PROVER_BOARD = Object.freeze({
   // open race the fastest wins all of them (on 2026-11-16 one machine took 22 of 22 in about five seconds each, with 37 others waiting), so the
   // chain has one prover in practice, and losing it means slow blocks until another warms up. So drawPct of blocks (by the block's id) go by
   // DRAW first, as Bitcoin blocks do: a lottery among the places waiting for one, each place's odds its speed (1 / its usual seconds per block,
-  // like a share of hashpower), drawNew hundredths of the odds kept for places with no record yet so new machines can earn one. The fastest
-  // still wins most; the others win their share and stay warm. One ticket per place (its fastest machine), as in the proof pool, so more
+  // like a share of hashpower), drawNew hundredths of the odds kept for places with no record yet so new machines can earn one. Those go to a
+  // few of them at a time, not to all: the drawSeats that have waited longest hold a ticket each, and a place that is drawn goes to the back of
+  // the line (one that takes the block has a record from then on), so a newcomer's turn comes in order and is worth having, where spread over
+  // thirty it was worth a fraction of a hundredth each. The fastest still wins most; the others win their share and stay warm. One ticket per place (its fastest machine), as in the proof pool, so more
   // addresses on one connection buy no more odds. The block waits drawOfferMs for the drawn machine to take it and then drawFactor times its
   // usual time (at least drawMinMs; drawNewMs for one with no record); one that lets it lapse, gives it back or answers wrongly opens it to the
   // race at once, and its place goes after the others for turnTroubleMs. A machine whose usual block takes over drawMaxSecs is left to the race.
   drawPrograms: Object.freeze(['tacit-block']),
   drawPct: 0,                                          // PROVER_BOARD_BLOCK_DRAW_PCT: blocks that go by draw first, in hundredths (0: all raced)
   drawNew: 15,                                         // PROVER_BOARD_BLOCK_DRAW_NEW: hundredths of the odds for places with no block record
+  drawSeats: 3,                                        // PROVER_BOARD_BLOCK_DRAW_SEATS: places with no block record that hold a ticket at a time (the longest waiting)
   drawOfferMs: 15_000,
   drawFactor: 3,
   drawMinMs: 20_000,
@@ -126,6 +129,7 @@ export function proverBoardConfig(env = {}) {
     bestOf: n(env.PROVER_BOARD_BEST_OF, PROVER_BOARD.bestOf, 1),
     drawPct: Math.min(100, n(env.PROVER_BOARD_BLOCK_DRAW_PCT, PROVER_BOARD.drawPct)),
     drawNew: Math.min(90, n(env.PROVER_BOARD_BLOCK_DRAW_NEW, PROVER_BOARD.drawNew)),
+    drawSeats: Math.min(50, n(env.PROVER_BOARD_BLOCK_DRAW_SEATS, PROVER_BOARD.drawSeats, 1)),
   });
 }
 const DAY_MS = 86_400_000;
@@ -214,7 +218,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   const firstMs = cfg.communityFirstMs ?? PROVER_BOARD.communityFirstMs;
   const best = { pct: cfg.bestPct ?? PROVER_BOARD.bestPct, of: cfg.bestOf ?? PROVER_BOARD.bestOf };
   const byRecord = (j) => goesByRecord(j.id, best.pct);
-  const draw = { pct: cfg.drawPct ?? PROVER_BOARD.drawPct, fresh: cfg.drawNew ?? PROVER_BOARD.drawNew };
+  const draw = { pct: cfg.drawPct ?? PROVER_BOARD.drawPct, fresh: cfg.drawNew ?? PROVER_BOARD.drawNew, seats: Math.max(1, cfg.drawSeats ?? PROVER_BOARD.drawSeats) };
   // Whether a machine offers a program: it named it in a claim within offerHoldMs, or (a record from before offers were kept) its latest claim does.
   const offers = (w, program) => (w.offered && w.offered[program] != null ? clock() - w.offered[program] < PROVER_BOARD.offerHoldMs : (w.programs || []).includes(program));
   // a block still held for its draw: one that goes by draw and has not been opened to the race
@@ -389,6 +393,15 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     w[field] = (w[field] || 0) + 1;
     await storage.putWorkers(ws);
   }
+  // A machine drawn for a block: counted on its record, and one with no block record yet has had its turn at the newcomers' share and goes to the
+  // back of their line (whether or not it takes the block: one that does has a record from then on).
+  async function markDraw(name) {
+    const ws = await workers(), w = ws[name];
+    if (!w) return;
+    w.draws = (w.draws || 0) + 1;
+    if (!(w.blocks && w.blockSecs > 0)) w.sliceAt = clock();
+    await storage.putWorkers(ws);
+  }
   const liveRacers = (j) => (j.racers || []).filter((r) => clock() - ((j.racedAt || {})[r] || 0) < ((j.racerLease || {})[r] ?? leaseFor(j)));
   // A batch the relay took: the machine's record (the batches taken from it, and as running averages its usual time from turn to proof and
   // its time per MB of input, which ranks it and sets how long it has for a turn).
@@ -535,7 +548,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
               trouble = trouble || (storage.getTrouble && await storage.getTrouble()) || {};
               const pick = drawPick(ws, open, j, trouble);
               if (pick == null) j.drawOpen = true;                       // no one to draw: raced as before
-              else { j.drawPick = pick; await storage.putJob(j.id, j); await mark(pick, 'draws'); }   // how often each machine is drawn, on its record
+              else { j.drawPick = pick; await storage.putJob(j.id, j); await markDraw(pick); }   // how often each machine is drawn, on its record
             }
             if (j.drawOpen) { /* raced below */ }
             else if (j.drawPick !== worker.name) continue;
@@ -585,8 +598,9 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
 
   // Who a block is drawn for: of the machines that prove its program, asked for work in the last turnSeenMs, are proving nothing, have not had
   // this block and ask from a place in no trouble, one ticket per place (its fastest machine). A place with a record (usual time at most
-  // drawMaxSecs) weighs 1 / its usual seconds; places with none share drawNew hundredths of the odds between them (all of them, if no place
-  // has a record). drawWinner picks by the job's id. The machine's name, or null when no one waits.
+  // drawMaxSecs) weighs 1 / its usual seconds; places with none share drawNew hundredths of the odds, but only the drawSeats of them that
+  // have waited longest (since their last draw, or since the board first saw them) hold a ticket; all of them if no place has a record.
+  // `line` is every such place in that order, for a machine to read its place in it. drawWinner picks by the job's id.
   function drawTickets(ws, open, j, troubles = {}) {
     const t = clock(), busy = new Set(open.flatMap(liveRacers));
     const usual = (w) => (w.blocks && w.blockSecs > 0 ? w.blockSecs : Infinity);
@@ -600,14 +614,17 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       const p = w.client || n, had = byPlace.get(p);
       if (!had || usual(w) < usual(had[1]) || (usual(w) === usual(had[1]) && n < had[0])) byPlace.set(p, [n, w]);
     }
-    const rec = [], fresh = [];
+    const rec = [], line = [];
     for (const [p, [n, w]] of byPlace) {
-      if (usual(w) === Infinity) fresh.push([p, n]);
+      if (usual(w) === Infinity) line.push([p, n, w]);
       else if (usual(w) <= PROVER_BOARD.drawMaxSecs) rec.push([p, n, 1 / usual(w)]);
     }
+    // in order of waiting: the place drawn longest ago (one never drawn: the one the board saw first) goes first, and the name breaks a tie
+    line.sort(([pa, , a], [pb, , b]) => (a.sliceAt || 0) - (b.sliceAt || 0) || (a.firstSeen || 0) - (b.firstSeen || 0) || (pa < pb ? -1 : pa > pb ? 1 : 0));
+    const fresh = draw.fresh > 0 ? line.slice(0, draw.seats) : [];
     const sum = rec.reduce((s, r) => s + r[2], 0);
-    const each = !rec.length ? 1 : draw.fresh > 0 && fresh.length ? (draw.fresh / (100 - draw.fresh)) * sum / fresh.length : 0;
-    return { tickets: [...rec.map(([p, , w]) => [p, w]), ...fresh.map(([p]) => [p, each])], byPlace };
+    const each = !rec.length ? 1 : fresh.length ? (draw.fresh / (100 - draw.fresh)) * sum / fresh.length : 0;
+    return { tickets: [...rec.map(([p, , w]) => [p, w]), ...fresh.map(([p]) => [p, each])], byPlace, line: line.map(([p]) => p), seats: draw.seats };
   }
   function drawPick(ws, open, j, troubles = {}) {
     const { tickets, byPlace } = drawTickets(ws, open, j, troubles);
@@ -726,8 +743,9 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     const seen = w.lastSeen ? Math.max(0, Math.floor((t - w.lastSeen) / 1000)) : null;
     const rec = w.blocks && w.blockSecs > 0;
     const trouble = (storage.getTrouble && await storage.getTrouble()) || {};
-    const { tickets, byPlace } = drawTickets(ws, [], { program: 'tacit-block', raced: [] }, trouble);
+    const { tickets, byPlace, line, seats } = drawTickets(ws, [], { program: 'tacit-block', raced: [] }, trouble);
     const place = w.client || name, mine = tickets.find(([p]) => p === place), here = byPlace.get(place);
+    const spot = !rec && here && here[0] === name ? line.indexOf(place) : -1;      // its place in the newcomers' line, from 0
     const total = tickets.reduce((s, [, x]) => s + x, 0);
     // why not: in the order a machine can fix them
     let why = null;
@@ -737,6 +755,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     else if (w.client && trouble[w.client] != null && t - trouble[w.client] < PROVER_BOARD.turnTroubleMs) why = 'Its connection missed a turn recently, so it waits behind the others for a while.';
     else if (rec && w.blockSecs > PROVER_BOARD.drawMaxSecs) why = `Its usual block time (${Math.round(w.blockSecs)} s) is over ${PROVER_BOARD.drawMaxSecs} s, so blocks stay with faster machines; its batches and wraps are unaffected.`;
     else if (mine && here && here[0] !== name) why = 'Another machine on the same connection holds this connection\'s one ticket (its faster one).';
+    else if (!mine && spot >= seats) why = `Machines with no block record yet take turns at a set-aside share of the blocks: ${seats} hold a ticket at a time, the ones that have waited longest, and a machine goes to the back of the line once it is drawn. This one is number ${spot + 1} in line, so ${spot - seats + 1} ${spot - seats + 1 === 1 ? 'machine' : 'machines'} must be drawn before it holds a ticket.`;
     else if (!mine) why = 'No ticket right now.';
     const odds = !why && mine && total > 0 ? mine[1] / total : null;
     const lines = [];
@@ -744,10 +763,11 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     if (rec) lines.push(`Tacit chain blocks: ${w.blocks} taken, usually ${Math.round(w.blockSecs * 10) / 10} s each.`);
     else lines.push('Tacit chain blocks: none taken yet.');
     if (w.draws) lines.push(`Drawn for ${w.draws} block${w.draws === 1 ? '' : 's'}${w.drawMissed ? `, ${w.drawMissed} not taken in time` : ', all taken'}.`);
-    if (odds != null) lines.push(`In the block draw now: ${odds >= 0.995 ? 'about every block' : odds < 0.01 ? 'less than 1 in 100 of the blocks' : 'about ' + Math.round(odds * 100) + ' in 100 of the blocks'} drawn this minute would be this machine's${rec ? '' : ' (a machine with no record yet shares a set-aside slice, so its odds start low and rise as its record forms)'}.`);
+    if (odds != null) lines.push(`In the block draw now: ${odds >= 0.995 ? 'about every block' : odds < 0.01 ? 'less than 1 in 100 of the blocks' : 'about ' + Math.round(odds * 100) + ' in 100 of the blocks'} drawn this minute would be this machine's${rec ? '' : ' (a machine with no block record yet takes turns at a set-aside share of the blocks: it goes to the back of the line once it is drawn, and a block taken gives it a record, which sets its odds by speed from then on)'}.`);
     else lines.push(`Not in the block draw: ${why}`);
     return { ok: true, found: true, name, proved: w.proved || 0, blocks: w.blocks || 0, blockSecs: rec ? Math.round(w.blockSecs * 10) / 10 : null, draws: w.draws || 0, drawMissed: w.drawMissed || 0,
-      lastSeenSeconds: seen, inDraw: odds != null, oddsPct: odds != null ? Math.round(odds * 1000) / 10 : null, why, text: lines.join('\n') };
+      lastSeenSeconds: seen, inDraw: odds != null, oddsPct: odds != null ? Math.round(odds * 1000) / 10 : null,
+      line: spot >= 0 ? { position: spot + 1, seats, ahead: Math.max(0, spot - seats + 1), of: line.length } : null, why, text: lines.join('\n') };
   }
 
   return { post, status, cancel, claim, result, raceVerdict, summary, credits, standing };

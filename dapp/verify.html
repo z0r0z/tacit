@@ -12,9 +12,10 @@
      (npm run build:verify fails on drift), so editing the script cannot silently
      leave a stale pin behind. Fonts are same-origin static files, not a third-party
      CDN. connect-src is limited to public Bitcoin explorers, IPFS gateways and public
-     Ethereum nodes.
+     Ethereum nodes, plus a node on the reader's own computer (127.0.0.1:8545) that is
+     asked only when the reader ticks the box for it.
      No third-party script, no analytics. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Tea7FUEx2+ay3JjHq6fWhzbJ8Xd7RgtZvHRXMsLaVsc='; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src https://mempool.space https://blockstream.info https://gateway.pinata.cloud https://ipfs.filebase.io https://ipfs.orbitor.dev https://ipfs.io https://dweb.link https://ethereum-rpc.publicnode.com https://rpc.mevblocker.io https://eth.drpc.org; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-cco6Hr7QJ0bSJuxW5xse33drstdSKF451qEKp9Yrlww='; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src https://mempool.space https://blockstream.info https://gateway.pinata.cloud https://ipfs.filebase.io https://ipfs.orbitor.dev https://ipfs.io https://dweb.link https://ethereum-rpc.publicnode.com https://rpc.mevblocker.io https://eth.drpc.org http://127.0.0.1:8545; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
@@ -125,6 +126,9 @@ code { font: inherit; }
 .section p { color: var(--mute); font-size: 13px; line-height: 1.65; margin: 0 0 10px; }
 .section p:last-child { margin-bottom: 0; }
 .section a { color: var(--orange); }
+.own { display: flex; gap: 10px; align-items: baseline; margin: 0 0 6px; font-size: 13px; color: var(--ink); cursor: pointer; }
+.own input { accent-color: var(--ink); flex: none; }
+#ownsay { margin-bottom: 10px; }
 
 footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; margin-top: 40px; padding-top: 18px;
   border-top: 1px solid var(--hair-2); color: var(--mute); font-size: 12px; }
@@ -178,9 +182,12 @@ footer a:hover { color: var(--ink); }
       burned when it is wrapped back in. These checks read Ethereum directly: every value must come back the same
       from two public nodes.
     </p>
+    <label class="own"><input type="checkbox" id="ownnode"><span>Read Ethereum from my own node at <code>127.0.0.1:8545</code> instead</span></label>
+    <p class="note" id="ownsay">With a light client or a full node running on this computer, tick this and the page asks only that node, once for each value. The public nodes are not asked. The node has to allow this page&rsquo;s origin (CORS), and your browser may ask before letting a page reach a service on this computer.</p>
     <div class="idcard">
       <div class="kv"><span>ERC-20</span><b id="ethtoken"></b></div>
       <div class="kv"><span>Pool</span><b id="ethpool"></b></div>
+      <div class="kv"><span>Reads</span><b id="ethsrc"></b></div>
     </div>
     <ol class="steps" id="erows"></ol>
     <div id="everdict" class="verdict run" role="status" aria-live="polite">Waiting for the Bitcoin checks&hellip;</div>
@@ -369,8 +376,36 @@ async function fetchVerifiedIpfs(cid) {
   console.error('IPFS gateway failures:\n  ' + errors.join('\n  '));
   throw new Error(`none of the ${IPFS_GATEWAYS.length} IPFS gateways served this CID (details are in the console). Press Re-run to try again.`);
 }
+// The reader's own node, when they ask for it. Its answer counts alone: they chose it as their root of trust (a light client checks
+// what it serves against Ethereum's consensus), and the public nodes are never asked in its place, so a ✓ means this node said so.
+const OWN_NODE = 'http://127.0.0.1:8545', OWN_KEY = 'tacit-verify-own-node-v1';
+let useOwn = false, readOwn = false, ownChain = null;
+try { useOwn = localStorage.getItem(OWN_KEY) === '1'; } catch { }
+async function ownCall(method, params) {
+  let last;
+  // text/plain first: it needs no preflight, which a node that does not answer OPTIONS would fail; then application/json, for one that insists on it.
+  for (const type of ['text/plain', 'application/json']) {
+    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 15000);
+    let j;
+    try {
+      const r = await fetch(OWN_NODE, { method: 'POST', headers: { 'content-type': type }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: ctl.signal });
+      j = await r.json();
+    } catch (e) { last = e; continue; } finally { clearTimeout(t); }
+    if (typeof j.result === 'string') return j.result;
+    throw new Error(`it answered ${method} with: ${j.error?.message || 'nothing'}`);
+  }
+  throw new Error(`it did not answer (${last?.message || 'no reply'}). Is it running, and does it allow this page's origin (CORS)?`);
+}
+async function ownRead(method, params) {
+  try {
+    ownChain ||= ownCall('eth_chainId', []).then((c) => { if (BigInt(c) !== 1n) throw new Error(`it is on chain ${BigInt(c)}, not Ethereum mainnet`); });
+    await ownChain;
+    return (await ownCall(method, params)).toLowerCase();
+  } catch (e) { throw new Error(`your node at ${OWN_NODE.slice(7)}: ${e.message}`); }
+}
 // One Ethereum read, answered the same by two public nodes (or the first to repeat another's answer).
 async function ethRead(method, params) {
+  if (readOwn) return ownRead(method, params);
   const seen = new Map(), errors = [];
   for (const url of ETH_RPCS) {
     try {
@@ -413,7 +448,9 @@ function settle(el, pass, extra = '') {
   if (!pass) anyFail = true;
 }
 
+let btcBusy = false, ethBusy = false, ethAgain = false;
 async function run() {
+  btcBusy = true;
   rowsEl.innerHTML = ''; anyFail = false;
   verdictEl.className = 'verdict run'; verdictEl.textContent = 'Running checks…';
   try {
@@ -462,10 +499,17 @@ async function run() {
   } catch (e) {
     verdictEl.className = 'verdict bad'; verdictEl.textContent = '✗ Could not complete: ' + e.message;
   }
-  if (IS_CANONICAL) await runEthereum();
+  try { if (IS_CANONICAL) await runEthereum(); } finally { btcBusy = false; }
 }
 
+// One Ethereum pass at a time; a change of node while one runs asks for another pass once it ends, so the rows of one pass never mix sources.
 async function runEthereum() {
+  if (ethBusy) { ethAgain = true; return; }
+  ethBusy = true;
+  try { do { ethAgain = false; await runEthereumOnce(); } while (ethAgain); } finally { ethBusy = false; }
+}
+async function runEthereumOnce() {
+  readOwn = useOwn; ownChain = null;
   erowsEl.innerHTML = ''; const before = anyFail; anyFail = false;
   everdictEl.className = 'verdict run'; everdictEl.textContent = 'Running the Ethereum checks…';
   try {
@@ -505,12 +549,22 @@ async function runEthereum() {
     settle(r, wtacToken === TAC_TOKEN && wBacking >= wSupply, `${(wBacking / 10n ** 18n).toLocaleString('en-US')} TAC held for ${(wSupply / 10n ** 18n).toLocaleString('en-US')} wTAC`);
 
     if (anyFail) { everdictEl.className = 'verdict bad'; everdictEl.textContent = '✗ An Ethereum check failed. See the steps marked ✗.'; }
-    else { everdictEl.className = 'verdict ok'; everdictEl.textContent = '✓ TAC’s ERC-20 is minted only by the pool, bound to this etch and within its 21,000,000 supply'; }
+    else { everdictEl.className = 'verdict ok'; everdictEl.textContent = '✓ TAC’s ERC-20 is minted only by the pool, bound to this etch and within its 21,000,000 supply' + (readOwn ? `, as read from your own node at ${OWN_NODE.slice(7)}` : ''); }
   } catch (e) {
     everdictEl.className = 'verdict bad'; everdictEl.textContent = '✗ Could not complete: ' + e.message;
   }
   anyFail = anyFail || before;
 }
+const ownEl = document.getElementById('ownnode'), srcEl = document.getElementById('ethsrc');
+const showSrc = () => { srcEl.textContent = useOwn ? `your node at ${OWN_NODE.slice(7)}, alone` : 'two public nodes that agree'; };
+ownEl.checked = useOwn; showSrc();
+ownEl.addEventListener('change', () => {
+  useOwn = ownEl.checked;
+  try { localStorage.setItem(OWN_KEY, useOwn ? '1' : '0'); } catch { }
+  showSrc();
+  // While the Bitcoin pass runs its Ethereum pass has not started and will read the new choice itself.
+  if (IS_CANONICAL && (ethBusy || !btcBusy)) runEthereum();
+});
 document.getElementById('rerun').addEventListener('click', run);
 run();
 </script>

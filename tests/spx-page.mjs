@@ -292,6 +292,9 @@ for (const [bond, want, not, said] of [['settled', /In the farm\./, /Putting it 
   const z = await waitFor(p, /swap, then shield and prove it/, 40000);
   ok(/swap, then shield and prove it/.test(z) && /private SPX/.test(z) && /To\s*DeFi pool\s*[\d.,]+\s*SPX/.test(z) && !/tETH/.test(z), `ETH is bought for SPX and shielded in one go: the To side is SPX, the route says so (${z.slice(z.indexOf('Price'), z.indexOf('Price') + 110)})`);
   ok(/Connect wallet/i.test(await p.evaluate(() => document.querySelector('#hx #go')?.textContent || '')), 'and with no wallet its button asks to connect one');
+  // the buy and the shield are one transaction (the router swaps and deposits): the card says that exactly the least goes into the pool and that the rest of what the swap pays comes back to the wallet, public
+  const one = await waitFor(p, /Back to wallet\s*about [\d.,]+ SPX, public/, 20000);
+  ok(/At least\s*[\d.,]+ SPX/.test(one) && /Back to wallet\s*about [\d.,]+ SPX, public/.test(one), `one transaction buys and shields: the card shows what is shielded at least and what comes back to the wallet (${one.slice(one.indexOf('At least'), one.indexOf('At least') + 60)} … ${(one.match(/Back to wallet\s*about [\d.,]+ SPX, public/) || [''])[0]})`);
   await p.click('#spx-ops li:nth-child(1) button'); await waitFor(p, /Shield SPX/i);
   // Bridge: only SPX, to Bitcoin
   await p.click('#hx-tab-more');

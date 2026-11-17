@@ -4,7 +4,9 @@
 // that the rest of the immutable wiring matches the deployment manifest, and that the live state is internally
 // consistent. Read-only over public RPC — it never broadcasts, never signs, and needs no key or API token.
 //
-// Usage: node tools/verify-live.mjs      exit 0 = every check passed, 1 = at least one failed
+// Usage: node tools/verify-live.mjs [--rpc <url>]      exit 0 = every check passed, 1 = at least one failed
+//   --rpc <url>   ask only this node (or set RPC), for example your own node or a light client on http://127.0.0.1:8545.
+//                 The public list is not tried if it fails: the run answers for that node alone.
 //
 // `note` rows are deliberate: parameter combinations a reader should judge for themselves. They never fail the run.
 // What this does NOT prove is in docs/VERIFY-LIVE.md; read that before quoting a green run at anyone.
@@ -19,7 +21,10 @@ for (const ev of ['uncaughtException', 'unhandledRejection']) {
 }
 
 const ROOT = new URL('..', import.meta.url).pathname;
-const RPCS = [
+const flag = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
+const OWN_RPC = flag('--rpc') || process.env.RPC || '';
+if (OWN_RPC && !/^https?:\/\/[^\s/]+/.test(OWN_RPC)) { console.error(`verify-live: --rpc wants an http(s) URL, got ${OWN_RPC}`); process.exit(1); }
+const RPCS = OWN_RPC ? [OWN_RPC] : [
   'https://ethereum-rpc.publicnode.com',
   'https://eth.drpc.org',
   'https://1rpc.io/eth',
@@ -71,7 +76,7 @@ async function rpc(method, params) {
       return out;
     } catch (e) { last = e; }
   }
-  throw new Error(`${method} failed on every RPC: ${last && last.message}`);
+  throw new Error(OWN_RPC ? `${method} failed on ${OWN_RPC}: ${last && last.message}` : `${method} failed on every RPC: ${last && last.message}`);
 }
 
 // --------------------------------------------------------------- abi basics

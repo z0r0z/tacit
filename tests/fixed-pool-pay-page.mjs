@@ -83,8 +83,15 @@ const POOL_DEN = new Map(FIXED_POOLS[1].map((p) => [p.address.toLowerCase(), p.d
 const SELS = { den: bytesToHex(keccak_256(new TextEncoder().encode('denomination()')).slice(0, 4)), com: bytesToHex(keccak_256(new TextEncoder().encode('commitments(bytes32)')).slice(0, 4)), next: bytesToHex(keccak_256(new TextEncoder().encode('nextIndex()')).slice(0, 4)) };
 // how many deposits each pool has had and how many notes are in it now (the line under a row of notes in the split)
 const POOL_SIZE = new Map([[10n ** 17n, [76863n, 6502n]], [10n ** 18n, [97860n, 4221n]], [10n * 10n ** 18n, [79970n, 2409n]], [100n * 10n ** 18n, [50287n, 2810n]]]);
-const rpcAnswer = (method, params = [], landed = new Set()) => {
+const rpcAnswer = (method, params = [], landed = new Set(), depositLogs = []) => {
   switch (method) {
+    // a note's deposit, as the pool logged it: [{ c, index, time }] by commitment (the pool's 1 ETH pool, 29,999,000)
+    case 'eth_getLogs': {
+      const q = params[0] || {}, a = parseInt(q.fromBlock, 16), b = parseInt(q.toBlock, 16), blk = 29_999_000;
+      return depositLogs.filter((d) => String(q.topics?.[1]).toLowerCase() === d.c && blk >= a && blk <= b).map((d) => ({
+        address: q.address, topics: [q.topics[0], d.c], blockNumber: '0x' + blk.toString(16),
+        data: '0x' + BigInt(d.index).toString(16).padStart(64, '0') + BigInt(d.time).toString(16).padStart(64, '0') }));
+    }
     case 'eth_call': {
       const { to, data } = params[0] || {};
       const den = POOL_DEN.get(String(to).toLowerCase());
@@ -103,7 +110,6 @@ const rpcAnswer = (method, params = [], landed = new Set()) => {
       return String(params[0]).toLowerCase() === ADDR.toLowerCase() ? '0x' + (100n * 10n ** 18n).toString(16) : '0x0';   // the test wallet holds 100 ETH
     }
     case 'eth_gasPrice': return '0x0';
-    case 'eth_getLogs': return [];
     case 'eth_getTransactionReceipt': return { status: '0x1', blockNumber: '0x1c9c380', logs: [] };
     case 'eth_getBlockByNumber': return { number: '0x1c9c380', timestamp: '0x6a000000', baseFeePerGas: '0x5f5e100', transactions: [] };
     default: return '0x';
@@ -159,7 +165,7 @@ export function attachWithdraw(env) {
   } };
 }`;
 const POOL1 = FIXED_POOLS[1][1].address;
-async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, keeperCap = null, notes = null, payWrap = false, fixedNotes = null } = {}) {
+async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, keeperCap = null, notes = null, payWrap = false, fixedNotes = null, depositLogs = [] } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 560, height: 1100 } });
   const page = await ctx.newPage();
   const problems = [], sent = [], told = [], landed = new Set();
@@ -202,7 +208,7 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
     if (keeper && req.method() === 'POST' && /\/evm-pool\/keeper\/receive/.test(req.url())) { told.push(req.postDataJSON()); return route.fulfill({ status: 200, headers, contentType: 'application/json', body: '{"ok":true}' }); }
     if (req.method() === 'POST') {
       let body = null; try { body = req.postDataJSON(); } catch { /* not JSON */ }
-      const one = (b) => ({ jsonrpc: '2.0', id: b?.id ?? 1, result: rpcAnswer(b?.method, b?.params, landed) });
+      const one = (b) => ({ jsonrpc: '2.0', id: b?.id ?? 1, result: rpcAnswer(b?.method, b?.params, landed, depositLogs) });
       if (body) return route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify(Array.isArray(body) ? body.map(one) : one(body)) });
     }
     return route.fulfill({ status: 404, headers, body: '{}' });
@@ -537,6 +543,38 @@ await test('Withdraw: when the notes fail partway the module\'s message is shown
   await page.click('#f-go');
   await page.waitForFunction(() => /1 of 2 notes went out/.test(document.querySelector('#status')?.textContent || ''), null, { timeout: 30000 });
   assert.doesNotMatch(await page.locator('#status').innerText(), /The other 0\.3 ETH/, 'the rest was never attempted');
+  await ctx.close();
+});
+await test('Notes: each shows when it went in and how many deposits came after it, the Withdraw tab names the newest, and the receipt asks to wait for more', async () => {
+  const now = Math.floor(Date.now() / 1000), [n0, n1] = held(2);
+  // the 1 ETH pool has 97,860 deposits: leaf 97,852 has 7 after it (five hours ago), leaf 97,855 has 4 (ten minutes ago)
+  const depositLogs = [{ c: n0.c, index: 97852, time: now - 5 * 3600 }, { c: n1.c, index: 97855, time: now - 600 }];
+  const { ctx, page, problems } = await open({ ...WD, depositLogs });
+  await unlock(page);
+  await page.waitForFunction(() => /Deposited 10 minutes ago · 4 deposits since/.test(document.querySelector('#lg-notes')?.textContent || ''), null, { timeout: 60000 });
+  const card = await page.locator('#lg-notes').innerText();
+  assert.match(card, /Deposited 5 hours ago · 7 deposits since/);
+  assert.match(card, /Few deposits have come after it/, 'both are early');
+  assert.equal(await page.locator('#lg-notes p.note.warn').count(), 2, 'a warning line for each note');
+  await page.evaluate(() => { window.__fakeExit = true; });
+  await page.click('#tab-withdraw');
+  await page.fill('#f-wto', DEAD);
+  await page.fill('#f-wamt', '2');
+  await page.waitForFunction(() => /Newest note: deposited 10 minutes ago · 4 deposits since\./.test(document.querySelector('#lg-wd')?.textContent || ''), null, { timeout: 60000 });
+  const text = await receiptText(page, /From whole notes/);
+  assert.match(text, /Part of this went in recently: the newest note has only 4 deposits after it\. Waiting for more makes it blend in better\./);
+  assert.equal(await page.locator('#f-rcpt p.note.warn').count(), 1);
+  assert.deepEqual(problems, []);
+  await ctx.close();
+});
+await test('Notes: a note that is not in the log (or whose log cannot be read) has no line and no warning, and the withdrawal goes as before', async () => {
+  const { ctx, page, problems } = await open({ ...WD });
+  await toWithdraw(page, '2', { __fakeExit: true });
+  const text = await receiptText(page, /From whole notes/);
+  assert.doesNotMatch(text, /Part of this went in recently|less than an hour/);
+  assert.doesNotMatch(await page.locator('#lg-wd').innerText(), /Newest note/);
+  assert.equal(await page.locator('#lg-notes p.note.warn').count(), 0);
+  assert.deepEqual(problems, []);
   await ctx.close();
 });
 await test('Withdraw: an amount under a whole note is the ordinary withdrawal, with no notes in it', async () => {

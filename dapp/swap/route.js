@@ -148,6 +148,24 @@ export async function quoteEthToToken({ ethCall, to, tokenOut, amount, slippageB
   if (checkRoute(q.callData, { to, tokenIn: ZERO, tokenOut, exactOut: false, amount, maxIn: amount, minOut: q.amountLimit, deadline })) return null;
   return { ...q, name: SOURCES[q.source] || 'a pool', to, tokenOut, deadline };
 }
+// What goes into the pool when ETH buys a token and shields it in one transaction: the swap's least, cut down to whole units of the token (`scale`, the pool takes no finer amount).
+export const zapWrapAmount = (amountLimit, scale = 1n) => { const unit = BigInt(scale); return unit > 0n ? (BigInt(amountLimit) / unit) * unit : 0n; };
+// The call that buys `tokenOut` with ETH and puts that much of it into the confidential pool in ONE transaction (ConfidentialRouter.zapETHToShieldedNote), made from a
+// quoteEthToToken answer whose swap pays the ROUTER (quoted with `to: CONF_ROUTER`). The router runs this swap, wraps EXACTLY `wrapAmount` of what reaches it (a deposit for the
+// sender's own note), and sends the rest of the token, with any ETH the swap left, back to the sender. Read again here, whatever the quote says: the swap must spend the ETH asked,
+// pay the router the asked token, carry the deadline asked and promise the router at least `wrapAmount` of it (a swap that could pay less would only be undone by the router).
+// → { wrapAmount, value, zrSwapData, to, rest } (`rest`: what the quote expects to come back above the note), or { why } when it is not a call to send.
+export function zapShieldPlan({ quote, tokenOut, wei, scale = 1n, deadline = quote?.deadline }) {
+  if (!quote || typeof quote.callData !== 'string') return { why: 'there is no swap to send' };
+  if (deadline == null) return { why: 'the swap has no deadline to check' };
+  const wrapAmount = zapWrapAmount(quote.amountLimit, scale);
+  if (wrapAmount <= 0n) return { why: 'the swap pays less than the pool takes of this token' };
+  if (BigInt(quote.msgValue) !== BigInt(wei)) return { why: 'the swap spends another amount of ETH' };
+  const why = checkRoute(quote.callData, { to: CONF_ROUTER, tokenIn: ZERO, tokenOut, exactOut: false, amount: wei, maxIn: wei, minOut: wrapAmount, deadline });
+  if (why) return { why };
+  const paid = BigInt(quote.amountOut);
+  return { wrapAmount, value: BigInt(wei), zrSwapData: quote.callData, to: CONF_ROUTER, rest: paid > wrapAmount ? paid - wrapAmount : 0n };
+}
 const bestToWeth = ({ ethCall, tokenIn, amount, exactOut, slippageBps, deadline, reuse }) => zqSwap({ ethCall, to: PRECISION_ROUTE, tokenIn, tokenOut: WETH, amount, exactOut, slippageBps, deadline, reuse });
 
 export async function quoteAnyToTac({ ethCall, venues, token, amountIn, account, slippageBps = 50, deadline, reuse = false }) {

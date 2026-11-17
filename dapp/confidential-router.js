@@ -303,6 +303,12 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
         { bytes: zrSwapData }, { bytes: publicValues }, { bytes: proof }, { bytesArray: memos },
       ]);
   }
+  // ETH → `tokenOut` on zRouter (the caller's calldata, paid to the router), then EXACTLY `wrapAmount` of it into the pool as a deposit bound to `commit`;
+  // what the swap paid beyond that, and any ETH it did not spend, go back to the sender (the router's zapETHToShieldedNote; msg.value is the ETH swapped)
+  function zapETHToShieldedNoteCalldata({ tokenOut, wrapAmount, commit, zrSwapData }) {
+    return '0x' + selector('zapETHToShieldedNote(address,uint256,bytes32,bytes)')
+      + abiArgs([{ static: addrWord(tokenOut) }, { static: word(BigInt(wrapAmount)) }, { static: word(commit) }, { bytes: zrSwapData }]);
+  }
   function zapETHToCanonicalNoteCalldata({ assetId, wrapAmount, commit, zrSwapData }) {
     return '0x' + selector('zapETHToCanonicalNote(bytes32,uint256,bytes32,bytes)')
       + abiArgs([{ static: word(assetId) }, { static: word(BigInt(wrapAmount)) }, { static: word(commit) }, { bytes: zrSwapData }]);
@@ -446,6 +452,9 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
   }
   function buildZapETHToPayment({ tokenOut, wrapAmount, commit, zrSwapData, amount, publicValues, proof, memos }) {
     return { to: routerAddr(), value: BigInt(amount), calldata: zapETHToPaymentCalldata({ tokenOut, wrapAmount, commit, zrSwapData, publicValues, proof, memos }) };
+  }
+  function buildZapETHToShieldedNote({ tokenOut, wrapAmount, commit, zrSwapData, amount }) {
+    return { to: routerAddr(), value: BigInt(amount), calldata: zapETHToShieldedNoteCalldata({ tokenOut, wrapAmount, commit, zrSwapData }) };
   }
   function buildZapETHToCanonicalNote({ assetId, wrapAmount, commit, zrSwapData, amount }) {
     return { to: routerAddr(), value: BigInt(amount), calldata: zapETHToCanonicalNoteCalldata({ assetId, wrapAmount, commit, zrSwapData }) };
@@ -703,7 +712,7 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     addLiquidityPublicETHWithPermit2Calldata, removeLiquidityPublicCalldata,
     wrapAndSettleWithPermitCalldata, wrapAndSettleWithPermit2Calldata, wrapAndSettleETHCalldata, zapETHToPaymentCalldata,
     wrapAndMintCusdWithPermitCalldata, wrapAndMintCusdWithPermit2Calldata, wrapETHAndMintCusdCalldata,
-    zapETHToCanonicalNoteCalldata, zapTokenToCanonicalNoteWithPermit2Calldata,
+    zapETHToShieldedNoteCalldata, zapETHToCanonicalNoteCalldata, zapTokenToCanonicalNoteWithPermit2Calldata,
     zapETHToCdpMintCalldata, zapTokenToCdpMintWithPermit2Calldata,
     zapETHToCanonicalCdpMintCalldata, zapTokenToCanonicalCdpMintWithPermit2Calldata,
     buildWrapWithPermit, buildWrapWithPermit2, buildWrapETH, buildSwapPublicWithPermit2, buildSwapPublicETH,
@@ -712,7 +721,7 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     buildAddLiquidityPublicETHWithPermit2, buildRemoveLiquidityPublic,
     buildWrapAndSettleWithPermit, buildWrapAndSettleWithPermit2, buildWrapAndSettleETH, buildZapETHToPayment,
     buildWrapAndMintCusdWithPermit, buildWrapAndMintCusdWithPermit2, buildWrapETHAndMintCusd,
-    buildZapETHToCanonicalNote, buildZapTokenToCanonicalNoteWithPermit2,
+    buildZapETHToShieldedNote, buildZapETHToCanonicalNote, buildZapTokenToCanonicalNoteWithPermit2,
     buildZapETHToCdpMint, buildZapTokenToCdpMintWithPermit2,
     buildZapETHToCanonicalCdpMint, buildZapTokenToCanonicalCdpMintWithPermit2,
   };
