@@ -7,16 +7,17 @@
 // Disabled (exits 0) while FORWARDER_GATEWAYS is unset.
 
 import { createServer } from 'node:http';
+import { pathToFileURL } from 'node:url';
 import { makeForwarder } from './lib/evm-pool-forwarder.js';
 
 const log = (...a) => console.log(`[evm-pool-forwarder ${new Date().toISOString()}]`, ...a);
 
-function gatewaysOf(raw) {
+export function gatewaysOf(raw) {
   let g;
   try { g = JSON.parse(raw); } catch { throw new Error('FORWARDER_GATEWAYS is not JSON'); }
   if (!g || typeof g !== 'object' || Array.isArray(g)) throw new Error('FORWARDER_GATEWAYS is an object of chain id → URL');
   for (const [id, url] of Object.entries(g)) {
-    if (!/^\d+$/.test(id)) throw new Error(`FORWARDER_GATEWAYS: "${id}" is not a chain id`);
+    if (!/^[0-9A-Za-z_-]{1,40}$/.test(id)) throw new Error(`FORWARDER_GATEWAYS: "${id}" is not an id (a chain's "1", a pool's "1-xdac17f958d", or a service's "k")`);
     const u = new URL(url);
     if (u.protocol !== 'https:' && !/^(127\.0\.0\.1|localhost)$/.test(u.hostname)) throw new Error(`FORWARDER_GATEWAYS: the URL for ${id} must be https`);
   }
@@ -31,4 +32,6 @@ function main() {
   createServer(makeForwarder({ gateways, ratePerMin })).listen(port, () => log(`listening on ${port}: chains ${Object.keys(gateways).join(', ')}`));
 }
 
-try { main(); } catch (e) { log('failed:', e.message); process.exit(1); }
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try { main(); } catch (e) { log('failed:', e.message); process.exit(1); }
+}
