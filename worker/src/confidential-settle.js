@@ -646,7 +646,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       delete j.broadcastHashes;
     } else if ((j.mode || 'settle') === 'prove') {
       if (!publicValues || !proof) { j.status = 'failed'; j.error = 'prove-only ack missing publicValues/proof'; }
-      else { j.status = 'proven'; j.publicValues = publicValues; j.proof = proof; }
+      else { j.status = 'proven'; j.publicValues = publicValues; j.proof = proof; forgetWitness(j); }   // the proof is all the page needs back; the witness it was made from is not kept
     } else {
       j.status = 'settled'; j.txHash = txHash || null;
       if (LANES.includes(lane)) j.lane = lane;

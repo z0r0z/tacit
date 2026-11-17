@@ -57,4 +57,18 @@ ok('a settled exit loses its recipe once the activation is reported, and still r
   assert.ok(!(await q.jobStatus(j.jobId)).error.includes(ADDR));
   ok('a failed job publishes no address in its error');
 }
+// a prove-only job keeps its proof for the page and drops the witness it was made from
+{
+  const store = freshStore();
+  const q = makeConfidentialSettler({ storage: store, hash, now: () => 1000, sleep });
+  const j = await q.submitJob({ type: 'swap', op: { reserveAPre: 1, reserveBPre: 1, secretNote: 'witness' }, mode: 'prove' });
+  await q.nextJob({ mode: 'prove' });
+  await q.ackJob(j.jobId, { publicValues: '0xaa', proof: '0xbb' });
+  const rec = await store.getJob(j.jobId);
+  assert.ok(!('op' in rec) && !JSON.stringify(rec).includes('witness'), 'no witness left on a proven job: ' + JSON.stringify(rec));
+  const st = await q.jobStatus(j.jobId);
+  assert.ok(st.status === 'proven' && st.publicValues === '0xaa' && st.proof === '0xbb', 'the proof is still served');
+  assert.strictEqual((await q.submitJob({ type: 'swap', op: { reserveAPre: 1, reserveBPre: 1, secretNote: 'witness' }, mode: 'prove' })).deduped, true, 'asking again still finds the job');
+  ok('a proven job keeps its proof and drops its witness');
+}
 console.log(`${n} passed`);
