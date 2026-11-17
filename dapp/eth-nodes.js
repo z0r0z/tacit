@@ -56,6 +56,7 @@ const LIMITS = {
   'base.drpc.org': { logs: 0 },
   'base-mainnet.public.blastapi.io': { logs: 0 },
   'robinhood.drpc.org': { logs: 0, state: true },
+  '127.0.0.1:8545': { logs: 512, state: true },
 };
 const limitsOf = (url) => {
   const id = String(url).replace(/^https?:\/\//, '');
