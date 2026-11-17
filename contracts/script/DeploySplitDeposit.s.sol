@@ -4,6 +4,11 @@ pragma solidity 0.8.37;
 import {Script, console2} from "forge-std/Script.sol";
 import {TacitSplitDeposit} from "../src/TacitSplitDeposit.sol";
 
+interface IPoolView {
+    function ASSET() external view returns (address);
+    function denomination() external view returns (uint256);
+}
+
 interface ICreateX4 {
     function deployCreate3(bytes32 salt, bytes memory initCode) external payable returns (address newContract);
     function computeCreate3Address(bytes32 guardedSalt, address deployer) external pure returns (address computedAddress);
@@ -43,8 +48,15 @@ contract DeploySplitDeposit is Script {
         bytes32 salt = vm.envOr("SPLIT_SALT", bytes32(0));
         address expected = vm.envOr("SPLIT_EXPECTED", address(0));
 
-        require(tacit.code.length > 0, "no Tacit ETH pool at SPLIT_TACIT_POOL on this chain");
+        require(tacit.code.length > 0, "no Tacit pool at SPLIT_TACIT_POOL on this chain");
+        require(IPoolView(tacit).ASSET() == address(0), "the Tacit pool is not the ETH pool (its ASSET is not the zero address)");
         for (uint256 i; i < pools.length; ++i) require(pools[i].code.length > 0, "a pool in the list has no code on this chain");
+        // A salted CREATE3 address does not depend on the constructor arguments, so a wrong but valid argument would burn the salt for good: with the defaults, the
+        // four pools must be the four sizes they are meant to be, in this order. With SPLIT_POOLS the sizes are printed below for the operator to check.
+        if (!vm.envExists("SPLIT_POOLS")) {
+            uint256[4] memory want = [uint256(0.1 ether), 1 ether, 10 ether, 100 ether];
+            for (uint256 i; i < 4; ++i) require(IPoolView(pools[i]).denomination() == want[i], "a default pool is not the size it should be");
+        }
 
         vm.startBroadcast();
         if (salt == bytes32(0)) {
