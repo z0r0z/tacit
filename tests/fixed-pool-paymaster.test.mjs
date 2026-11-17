@@ -301,6 +301,35 @@ await test('the estimate: the first bundler\'s "cannot tell" followed by the sec
   const r = await prep(set);
   eq(r.gasEstimation.status, 'fallback'); eq(r.gasEstimation.reason, 'bundler-internal');
 });
+// What the two public bundlers answered for a valid sponsored withdrawal on mainnet (11-17): Pimlico's estimator reverts with the paymaster's gas-ceiling
+// error, and Candide answers with the limits it was sent, without the paymaster's. Taken as estimates, those grow by a fifth at every try and never settle.
+const QUIRK = rpcErr(-32501, 'UserOperation reverted during simulation with reason: AA33 reverted 0x54107e37' + (20_000_000n).toString(16).padStart(64, '0'));
+const echoed = (params) => ({ callGasLimit: '0xda2', preVerificationGas: params[0].preVerificationGas, verificationGasLimit: params[0].verificationGasLimit });
+await test('the estimate: a second bundler that hands back the limits it was sent, with none for the paymaster, gives no estimate: the first\'s "cannot tell" stands and the fallback limits are used', async () => {
+  const { set, calls } = setOf({ [PIM]: { pimlico_getUserOperationGasPrice: PRICE, eth_estimateUserOperationGas: QUIRK }, [CAN]: { eth_estimateUserOperationGas: echoed } });
+  const r = await prep(set);
+  eq(r.gasEstimation.status, 'fallback'); eq(r.gasEstimation.reason, 'bundler-internal');
+  eq(calls.filter((c) => c === 'candide eth_estimateUserOperationGas').length, 1, 'the second was asked once, not once per try');
+  eq(calls.filter((c) => c === 'pimlico eth_estimateUserOperationGas').length, 1);
+});
+await test('the estimate: with the first bundler down and the second giving no paymaster limits, the fallback limits are used too', async () => {
+  const { set } = setOf({ [PIM]: { pimlico_getUserOperationGasPrice: PRICE, eth_estimateUserOperationGas: 'down' }, [CAN]: { eth_estimateUserOperationGas: echoed } });
+  const r = await prep(set);
+  eq(r.gasEstimation.status, 'fallback'); eq(r.gasEstimation.reason, 'transport-unavailable');
+});
+await test('the estimate: a lone bundler that answers without the paymaster limits is no more an estimate: the fallback limits, not zeros for the paymaster', async () => {
+  const { set } = setOf({ [PIM]: { pimlico_getUserOperationGasPrice: PRICE, eth_estimateUserOperationGas: echoed } }, [URLS[0]]);
+  const r = await prep(set);
+  eq(r.gasEstimation.status, 'fallback'); eq(r.gasEstimation.reason, 'bundler-internal');
+  if (BigInt(r.op.paymasterVerificationGasLimit) < 450_000n) throw new Error('the paymaster verification limit fell below the baseline');
+});
+await test('the estimate: an answer with the paymaster limits is used from whichever bundler gives it, and an operation with no paymaster is not held to them', async () => {
+  const { set } = setOf({ [PIM]: { pimlico_getUserOperationGasPrice: PRICE, eth_estimateUserOperationGas: QUIRK }, [CAN]: { eth_estimateUserOperationGas: est() } });
+  eq((await prep(set)).gasEstimation.status, 'estimated');
+  const bare = setOf({ [PIM]: { eth_estimateUserOperationGas: { callGasLimit: '0x1', preVerificationGas: '0x1', verificationGasLimit: '0x1' } } }, [URLS[0]]);
+  eq((await bare.set.request('eth_estimateUserOperationGas', [{ callData: '0x' }, P.ENTRY_POINT])).verificationGasLimit, '0x1');
+  eq(P.estimationUnavailableReason({ kind: 'incomplete-estimate' }, { callData: '0x', callGasLimit: '0x0' }), 'bundler-internal');
+});
 await test('the send: a first bundler that cannot be reached passes it to the second, which is then the one asked for the receipt (an unknown there is final)', async () => {
   let polls = 0;
   const { set, calls } = setOf({ [PIM]: { eth_sendUserOperation: 'down', eth_getUserOperationReceipt: okReceipt }, [CAN]: { eth_sendUserOperation: '0x1', eth_getUserOperationReceipt: () => (polls++ < 2 ? null : okReceipt) } });

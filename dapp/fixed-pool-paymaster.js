@@ -253,13 +253,16 @@ export function bundlerClient(url, fetchImpl = globalThis.fetch.bind(globalThis)
 }
 
 // The bundlers an operation can go to, in order, as one client. A bundler that cannot be reached, cannot quote a price (Candide has no quote
-// call), or says nothing about the operation (see estimationUnavailableReason) is passed over for the next; a refusal of the operation is
+// call), says nothing about the operation (see estimationUnavailableReason) or answers an estimate with no gas limits for the paymaster (a sponsored
+// operation always has them; Candide hands back the limits it was sent, which says nothing) is passed over for the next; a refusal of the operation is
 // final when the first bundler asked gives it, as with one bundler. Past the last, the first error is the answer, and a refusal by a later
-// bundler never replaces it, so a single bundler behaves exactly as bundlerClient does. An operation is sent to the first that takes it,
+// bundler never replaces it, so a single bundler that answers as a bundler does behaves exactly as bundlerClient does. An operation is sent to the first that takes it,
 // which is then asked first about it: its receipt is looked for there (an unknown operation there is an unknown one: the receipt is read from
 // the chain's logs, so another bundler would say the same), and before any send every bundler is asked. The same operation may sit in two
 // bundlers after a send whose reply was lost; the EntryPoint runs it once, and only one inclusion can pay the paymaster.
 const READS = new Set(['eth_getUserOperationReceipt', 'eth_getUserOperationByHash']);
+// An estimate of a sponsored operation says what the paymaster's validation and post-operation need; an answer without them is no estimate of it.
+const completeEstimate = (r, op) => !op?.paymaster || (r != null && r.paymasterVerificationGasLimit != null && r.paymasterPostOpGasLimit != null);
 export function bundlerSet(urls, fetchImpl) {
   const clients = urls.map((u) => bundlerClient(u, fetchImpl));
   let took = null;   // the index of the bundler that took the operation
@@ -283,6 +286,10 @@ export function bundlerSet(urls, fetchImpl) {
           if (first === null) { first = e; if (!passable(method, params, e)) throw e; }
           continue;
         }
+        if (method === 'eth_estimateUserOperationGas' && !completeEstimate(r, params?.[0])) {
+          if (first === null) first = Object.assign(new Error('the bundler gave no gas limits for the paymaster\'s part of the operation'), { kind: 'incomplete-estimate' });
+          continue;
+        }
         if (method === 'eth_sendUserOperation') took = i;
         if (r == null && READS.has(method)) { unknown = true; if (i === took) return r; continue; }
         return r;
@@ -297,6 +304,7 @@ export function bundlerSet(urls, fetchImpl) {
 // 'transport-unavailable' or 'bundler-internal' for a failure that says nothing about the operation, undefined for
 // one that does (a refusal of it).
 export function estimationUnavailableReason(error, op) {
+  if (error?.kind === 'incomplete-estimate') return 'bundler-internal';
   if (error?.kind === 'network') return 'transport-unavailable';
   if (error?.kind === 'http') return RETRYABLE_STATUS.has(error.status) ? 'transport-unavailable' : undefined;
   if (error?.kind === 'rpc') {
