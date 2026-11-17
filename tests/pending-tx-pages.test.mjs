@@ -261,3 +261,19 @@ test('front page: learnSeen keeps the sender and nonce from the wallet\'s own no
   await make({}, (m, p) => c.read(m, p), items)('t', orig.hash, 1);
   assert.equal(c.calls.length, b2, 'nor one that already has what it needs'); assert.equal(items.get('t').seen.nonce, '9');
 });
+
+test('front page: a wallet\'s transaction gets the guess for its entry, unless a real look already has it', async () => {
+  const A = await import('../dapp/activity.js');
+  const body = cut(src('index.html'), 'function guessFor(hash, chainId, n0, what) {', '\n// What a transaction is, learned', 'guessFor');
+  const make = (items) => new Function('actGet', 'actPut', 'guessSeen', `${body}\nreturn guessFor;`)((id) => items.get(id), (id, p) => Object.assign(items.get(id), p), A.guessSeen);
+  const id = `tx:1:${orig.hash}`, what = { from: me, to: pool, value: 5n, data: call.input };
+  let items = new Map([[id, { kind: 'tx', status: 'pending' }]]);
+  make(items)(orig.hash, 1, Promise.resolve(7n), what); await sleep(10);
+  assert.equal(items.get(id).seen.nonce, '7'); assert.equal(items.get(id).seen.guess, true);
+  items = new Map([[id, { kind: 'tx', status: 'pending', seen: { nonce: '2' } }]]);
+  make(items)(orig.hash, 1, Promise.resolve(7n), what); await sleep(10);
+  assert.equal(items.get(id).seen.nonce, '2', 'a real look is kept');
+  items = new Map([[id, { kind: 'tx', status: 'pending' }]]);
+  make(items)(orig.hash, 1, Promise.resolve(null), what); await sleep(10);
+  assert.equal(items.get(id).seen, undefined, 'no nonce read: no guess');
+});

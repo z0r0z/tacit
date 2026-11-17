@@ -107,6 +107,24 @@ for (const [what, rep] of [['a cancel', { to: me, value: 0, input: '0x' }], ['an
   c = chain(); c.down = true; await assert.rejects(trace(c, kept), /could not be read/, 'nothing readable: the caller is told, not given a guess');
 }
 
+// ── a transaction no node holds (a wallet on a private mempool): what the page asked the wallet to send, and the nonce it most likely used ──
+{
+  const fast = { hash: '0x' + '0f'.repeat(32), from: me, nonce: 0, ...call }, other = { hash: '0x' + '0d'.repeat(32), from: me, nonce: 0, to: other_(), value: 1, input: '0x' };
+  function other_() { return '0x' + 'ee'.repeat(20); }
+  const guess = (nonce = 0) => A.guessSeen({ from: me, to: pool, value: 5, data: call.input, nonce });
+  let c = chain();                                                                      // the first hash was never in any node's pool
+  c.mine(fast, 990);
+  assert.equal((await A.traceTx({ read: c.read, hash: orig.hash, seen: guess() })).landed.transactionHash, fast.hash, 'the same call at the guessed nonce is the transaction, held by no node');
+  c = chain(); c.mine(other, 990);
+  assert.deepEqual(await A.traceTx({ read: c.read, hash: orig.hash, seen: guess() }), { unknown: true }, 'another call at the guessed nonce proves nothing: the guess may be another transaction\'s nonce, not a cancel');
+  assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen: guess() }), {});
+  c = chain();
+  assert.deepEqual(await A.traceTx({ read: c.read, hash: orig.hash, seen: guess() }), { unknown: true }, 'a nonce nobody has taken is not "dropped" on a guess');
+  c = chain(); c.send(orig);
+  assert.equal((await A.lookReplaced({ read: c.read, hash: orig.hash, seen: guess(3) })).seen?.nonce, '0', 'a node that does hold it replaces the guess with what it says');
+  assert.equal(guess().guess, true); assert.equal(guess().to, pool);
+}
+
 // ── a page's own wait for a receipt ──
 {
   const later = (ms, f) => new Promise((r) => setTimeout(() => { f(); r(); }, ms));

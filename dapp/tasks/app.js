@@ -1,4 +1,4 @@
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=6419e9c5';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=06b41e2f';
 import { declinedWords } from '/wallet-prompts.js';
 import { esc } from '/trade/sheet.js?cb=d857446c';
 import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=1d2cd8d3';

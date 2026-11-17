@@ -122,12 +122,16 @@ export const fingerprint = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.le
 const hex = (n) => '0x' + n.toString(16);
 // What a look at a pending transaction keeps of it: its sender and nonce, and what it does (target, value, a fingerprint of its data).
 const seenOf = (tx) => ({ from: String(tx.from).toLowerCase(), nonce: BigInt(tx.nonce).toString(), to: String(tx.to || '').toLowerCase(), value: BigInt(tx.value || 0).toString(), data: fingerprint(tx.input || '0x') });
+// What a page can say of a transaction it asked a wallet to send, when no node holds it (a wallet on a private mempool, MEV Blocker or Flashbots Protect, hands it to builders that
+// public nodes never ask): the sender, the call, and the nonce the wallet will most likely have given it, the sender's pending count read just before the wallet was asked. A guess:
+// it is believed only when the transaction found at that nonce is the same call, and a real look at the transaction (a node that holds it) replaces it.
+export const guessSeen = ({ from, to, value = 0n, data = '0x', nonce }) => ({ from: String(from).toLowerCase(), nonce: BigInt(nonce).toString(), to: String(to || '').toLowerCase(), value: BigInt(value || 0).toString(), data: fingerprint(String(data).startsWith('0x') ? data : '0x' + data), guess: true });
 // Whether a mined transaction has taken the nonce of one that went out (`seen`): { found: { hash, same } } the mined transaction at that nonce, { idle: true }
 // when the sender's nonce has not moved (nothing took its place), or {} when that cannot be told. `read(method, params)` asks the chain.
 export async function nonceTaken({ read, hash, seen }) {
   try {
     const nonce = BigInt(seen.nonce), count = (tag) => read('eth_getTransactionCount', [seen.from, tag]).then(BigInt);
-    if ((await count('latest')) <= nonce) return { idle: true };
+    if ((await count('latest')) <= nonce) return seen.guess ? {} : { idle: true };
     // The block that took the nonce: found from the head back (a node keeps recent state only), then halved.
     const top = Number(await read('eth_blockNumber', []));
     let hi = top, lo = null;
@@ -136,13 +140,14 @@ export async function nonceTaken({ read, hash, seen }) {
       if ((await count(hex(b))) <= nonce) { lo = b; break; }
       hi = b;
     }
-    if (lo == null) return { moved: true };                          // taken, too long ago for a node to still hold the state that says by what
+    if (lo == null) return seen.guess ? {} : { moved: true };                          // taken, too long ago for a node to still hold the state that says by what
     while (hi - lo > 1) { const m = (lo + hi) >> 1; if ((await count(hex(m))) > nonce) hi = m; else lo = m; }
     const blk = await read('eth_getBlockByNumber', [hex(hi), true]);
     const t = blk?.transactions?.find((x) => String(x.from).toLowerCase() === seen.from && BigInt(x.nonce) === nonce);
     if (!t) return {};
     const same = String(t.hash).toLowerCase() === String(hash).toLowerCase()
       || (String(t.to || '').toLowerCase() === seen.to && BigInt(t.value || 0).toString() === seen.value && fingerprint(t.input || '0x') === seen.data);
+    if (seen.guess && !same) return {};                                  // a guessed nonce may be another transaction's: nothing is concluded from a different call
     return { found: { hash: t.hash, same } };
   } catch { return {}; }
 }
@@ -151,7 +156,7 @@ export async function nonceTaken({ read, hash, seen }) {
 export async function lookReplaced({ read, hash, seen }) {
   const tx = await read('eth_getTransactionByHash', [hash]).then((x) => x || null, () => undefined);
   if (tx === undefined) return {};
-  if (tx) return tx.blockNumber || seen ? {} : { seen: seenOf(tx) };
+  if (tx) return tx.blockNumber || (seen && !seen.guess) ? {} : { seen: seenOf(tx) };
   return seen ? nonceTaken({ read, hash, seen }) : {};
 }
 // What became of a transaction a page sent and has stopped waiting for: one look, to be asked again by whoever keeps it. `seen` is what the wait learned of it (the
