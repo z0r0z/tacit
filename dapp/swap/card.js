@@ -2678,7 +2678,8 @@ function applyParams(p) {
   const side = (k, priv) => (priv ? (isEth(k) ? 'teth' : k) : k === 'teth' ? lc(R.ZERO) : k);
   if (f) S.pay = side(f, S.inP); else if (S.inP) S.pay = 'teth';
   if (t) S.get = side(t, S.outP); else if (S.outP) S.get = S.pay === 'teth' ? lc(R.TAC) : 'teth';
-  if (S.outP && t && !inPool(S.get)) { const r = outRoute(S.get); if (r) { S.outP = false; if (r === 'later') LATER.on = true; } }
+  if (S.outP && t && !inPool(S.get) && !(FLOW === 'shield' && isEth(S.pay) && H.moves?.zapTo?.() === S.get)) {      // (the SPX page's ETH buy stays private)
+    const r = outRoute(S.get); if (r) { S.outP = false; if (r === 'later') LATER.on = true; } }
   // a listed token a link names for the Shield tab, paid from the wallet: its own private form in the DeFi pool (an unlisted one is read first and lands the same, below)
   if (FLOW === 'shield' && f && !t && S.outP && !S.inP && ownForm(S.pay) && flowFit()) { /* its own form */ } else if (!kindOf(S.pay, S.get)) fit(t ? 'get' : 'pay');
   const a = p.get('amt');
