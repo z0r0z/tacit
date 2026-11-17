@@ -118,22 +118,38 @@ try {
     await page.close();
   }
 
-  // ── arriving connected barely moves the header (the account is wider than "Sign in", so the right-hand group grows leftward), on a phone or at a desktop ──
-  for (const [w, h] of [[390, 844], [1280, 900]]) {
-    for (const k of ['front', 'hub', 'eth', 'keeper']) {
-      const page = await c.ctx.newPage();
-      await page.setViewportSize({ width: w, height: h });
-      await page.addInitScript(() => {
-        window.__moved = [];
-        new PerformanceObserver((list) => { for (const e of list.getEntries()) for (const s of e.sources || []) { const el = s.node?.nodeType === 3 ? s.node.parentElement : s.node; if (el?.closest?.('header') && !e.hadRecentInput) window.__moved.push(e.value); } }).observe({ type: 'layout-shift', buffered: true });
-      });
-      await page.goto(`http://127.0.0.1:${WEB}${PAGES[k].path}`);
-      await showing(page, k, SHORT_A);
-      await page.waitForTimeout(800);
-      const moved = (await page.evaluate(() => window.__moved)).reduce((a, b) => a + b, 0);
-      ok(moved <= 0.04, `${k} at ${w}px: the chip changing to the account shifts the header by ${moved.toFixed(3)}, within the 0.04 every page keeps to`);
-      await page.close();
+  // ── arriving connected moves nothing in the header but the chip's own growth: the account is wider than "Sign in", so the right-hand group (the menu button beside the chip, and the chip)
+  // grows leftward; the brand, the header's height and the group's right edge stay where they were, on a phone or at a desktop. Measured as the header's own geometry against the same page
+  // signed out, not as the browser's layout-shift score: that scores a whole frame, so a shift elsewhere on the page in the same frame (a heading a sub-pixel off, a hidden block coming in
+  // at the foot of the screen) is added to the header's, and which frame the chip lands in changed the number from run to run (0.014 or 0.052 for the same header). ──
+  {
+    const idle = await newContext([]);
+    const headerOf = (page, k) => page.evaluate((chipSel) => {
+      const h = document.querySelector('header'), chip = document.querySelector(chipSel), r = (e) => { const b = e.getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height }; };
+      const group = [...h.children].find((e) => e.contains(chip));
+      return { header: r(h), group: r(group), chip: r(chip), rest: [...h.children].filter((e) => e !== group).map(r) };
+    }, PAGES[k].chip);
+    for (const [w, h] of [[390, 844], [1280, 900]]) {
+      for (const k of ['front', 'hub', 'eth', 'keeper']) {
+        const look = async (ctx, text) => {
+          const page = await ctx.newPage();
+          await page.setViewportSize({ width: w, height: h });
+          await page.goto(`http://127.0.0.1:${WEB}${PAGES[k].path}`);
+          if (text) await showing(page, k, text); else await page.waitForSelector(PAGES[k].chip);
+          await page.waitForTimeout(800);
+          const g = await headerOf(page, k);
+          await page.close();
+          return g;
+        };
+        const before = await look(idle.ctx, null), after = await look(c.ctx, SHORT_A);
+        const grew = after.chip.w - before.chip.w, still = (a, b) => ['x', 'y', 'w', 'h'].every((m) => Math.abs(a[m] - b[m]) <= 0.5);
+        const stays = still(after.header, before.header) && before.rest.length === after.rest.length && before.rest.every((r, i) => still(r, after.rest[i]))
+          && Math.abs((after.group.x + after.group.w) - (before.group.x + before.group.w)) <= 0.5 && Math.abs(after.group.y - before.group.y) <= 0.5 && Math.abs(after.group.h - before.group.h) <= 0.5;
+        const moved = before.group.x - after.group.x;
+        ok(stays && grew >= -0.5 && Math.abs(moved - grew) <= 0.5, `${k} at ${w}px: the chip changing to the account grows ${grew.toFixed(1)}px leftward and moves nothing else in the header (the group's left edge moved ${moved.toFixed(1)}px; the header, the brand and the group's right edge held)`);
+      }
     }
+    await idle.ctx.close();
   }
 
   // ── the wallet moves to another account: the chip follows ───────────────────────────────────────────────────────
