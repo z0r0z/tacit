@@ -253,13 +253,16 @@ export function bundlerClient(url, fetchImpl = globalThis.fetch.bind(globalThis)
 }
 
 // The bundlers an operation can go to, in order, as one client. A bundler that cannot be reached, cannot quote a price (Candide has no quote
-// call), or says nothing about the operation (see estimationUnavailableReason) is passed over for the next; a refusal of the operation is
+// call), says nothing about the operation (see estimationUnavailableReason) or answers an estimate with no gas limits for the paymaster (a sponsored
+// operation always has them; Candide hands back the limits it was sent, which says nothing) is passed over for the next; a refusal of the operation is
 // final when the first bundler asked gives it, as with one bundler. Past the last, the first error is the answer, and a refusal by a later
-// bundler never replaces it, so a single bundler behaves exactly as bundlerClient does. An operation is sent to the first that takes it,
+// bundler never replaces it, so a single bundler that answers as a bundler does behaves exactly as bundlerClient does. An operation is sent to the first that takes it,
 // which is then asked first about it: its receipt is looked for there (an unknown operation there is an unknown one: the receipt is read from
 // the chain's logs, so another bundler would say the same), and before any send every bundler is asked. The same operation may sit in two
 // bundlers after a send whose reply was lost; the EntryPoint runs it once, and only one inclusion can pay the paymaster.
 const READS = new Set(['eth_getUserOperationReceipt', 'eth_getUserOperationByHash']);
+// An estimate of a sponsored operation says what the paymaster's validation and post-operation need; an answer without them is no estimate of it.
+const completeEstimate = (r, op) => !op?.paymaster || (r != null && r.paymasterVerificationGasLimit != null && r.paymasterPostOpGasLimit != null);
 export function bundlerSet(urls, fetchImpl) {
   const clients = urls.map((u) => bundlerClient(u, fetchImpl));
   let took = null;   // the index of the bundler that took the operation
@@ -283,6 +286,10 @@ export function bundlerSet(urls, fetchImpl) {
           if (first === null) { first = e; if (!passable(method, params, e)) throw e; }
           continue;
         }
+        if (method === 'eth_estimateUserOperationGas' && !completeEstimate(r, params?.[0])) {
+          if (first === null) first = Object.assign(new Error('the bundler gave no gas limits for the paymaster\'s part of the operation'), { kind: 'incomplete-estimate' });
+          continue;
+        }
         if (method === 'eth_sendUserOperation') took = i;
         if (r == null && READS.has(method)) { unknown = true; if (i === took) return r; continue; }
         return r;
@@ -297,6 +304,7 @@ export function bundlerSet(urls, fetchImpl) {
 // 'transport-unavailable' or 'bundler-internal' for a failure that says nothing about the operation, undefined for
 // one that does (a refusal of it).
 export function estimationUnavailableReason(error, op) {
+  if (error?.kind === 'incomplete-estimate') return 'bundler-internal';
   if (error?.kind === 'network') return 'transport-unavailable';
   if (error?.kind === 'http') return RETRYABLE_STATUS.has(error.status) ? 'transport-unavailable' : undefined;
   if (error?.kind === 'rpc') {
@@ -372,10 +380,21 @@ export async function prepareSponsoredWithdrawal({
     return { op, fee };
   };
 
-  let gas = { ...BASELINE };
+  // The fixed limits, with the fee and proof that go with them: for a bundler that cannot say what the operation needs. They are never below the
+  // limits an estimate has already raised them to.
+  const atFallback = async (now, op, gasEstimation) => {
+    const fb = fallbackGas(now, op);
+    assertGasLimitsWithinBounds(fb, BASELINE, op);
+    const again = await build(fb);
+    assertGasLimitsWithinBounds(fb, BASELINE, again.op);
+    if (fallbackGas(fb, again.op).preVerificationGas > fb.preVerificationGas) throw new Error('The payload changed size while it was prepared.');
+    return { ...again, gasEstimation, price, sender: again.op.sender };
+  };
+  let gas = { ...BASELINE }, last = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     assertGasLimitsWithinBounds(gas, BASELINE);
     const built = await build(gas);
+    last = built;
     assertGasLimitsWithinBounds(gas, BASELINE, built.op);
     onStep({ step: 'estimate' });
     let estimated;
@@ -384,13 +403,7 @@ export async function prepareSponsoredWithdrawal({
     } catch (e) {
       const reason = estimationUnavailableReason(e, built.op);
       if (!reason) throw new Error(`The bundler would not take the withdrawal: ${e.details || e.message}. Nothing was sent.`);
-      // rebuild at the fallback limits, with the fee and proof that go with them
-      const fb = fallbackGas(gas, built.op);
-      assertGasLimitsWithinBounds(fb, BASELINE, built.op);
-      const again = await build(fb);
-      assertGasLimitsWithinBounds(fb, BASELINE, again.op);
-      if (fallbackGas(fb, again.op).preVerificationGas > fb.preVerificationGas) throw new Error('The payload changed size while it was prepared.');
-      return { ...again, gasEstimation: { status: 'fallback', reason, message: e.details || e.message }, price, sender: again.op.sender };
+      return atFallback(gas, built.op, { status: 'fallback', reason, message: e.details || e.message });
     }
     if (estimated.preVerificationGas <= 0n || estimated.verificationGasLimit <= 0n || GAS_FIELDS.some((f) => estimated[f] < 0n)) throw new Error('The bundler returned invalid gas estimates.');
     const next = { ...gas };
@@ -404,7 +417,8 @@ export async function prepareSponsoredWithdrawal({
     assertGasLimitsWithinBounds(next, BASELINE, built.op);
     gas = next;
   }
-  throw new Error('The bundler\'s gas estimates did not settle after 3 tries. Nothing was sent; try later.');
+  // Three estimates in a row still asked for more: none of them says what the operation needs.
+  return atFallback(gas, last.op, { status: 'fallback', reason: 'estimates-not-settling' });
 }
 
 // Sends the operation and waits for it to be mined. A lost reply to the send does not mean it was refused: the

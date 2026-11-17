@@ -92,7 +92,11 @@ try {
   assert.deepEqual(await pq(alice), { on: false, elsewhere: false, older: 0n, credentialId: null });
 
   // A PQ ID: new chain keys, the key's record names them, the old notes still hers
+  const oldRec = await api('GET', `/address/key/${hx(aliceKey).slice(2)}`);
   const pqAddr = await alice.harden(ROOT, 'cred-a');
+  // her record from before, posted again by anyone (dated or not), does not replace the PQ ID's
+  assert.ok(!(await api('POST', '/address', { address: oldRec.address, key: hx(aliceKey), sig: oldRec.sig, at: oldRec.at, sig2: oldRec.sig2 })).ok, 'the old dated record is refused');
+  assert.ok(!(await api('POST', '/address', { address: oldRec.address, key: hx(aliceKey), sig: oldRec.sig })).ok, 'and posted undated');
   assert.notDeepStrictEqual(pqAddr, oldAddr);
   assert.deepStrictEqual(await alice.address(), pqAddr);
   assert.equal(await alice.scan(), held0, 'the notes from before are still counted');

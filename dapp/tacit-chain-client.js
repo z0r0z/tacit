@@ -20,6 +20,9 @@ const KEEP_MS = 30 * 864e5;
 const SHIELD_AHEAD_MS = 3 * 60e3;
 
 export const keyMessage = (key, address) => sha256(concatBytes(te.encode('tacit-chain-key-v1'), key, address));
+// A dated record (the leader keeps a key's newest, so one the key signed before cannot be posted again over it): ‖ at as 8 bytes big-endian
+const be8 = (n) => { const o = new Uint8Array(8); new DataView(o.buffer).setBigUint64(0, BigInt(n)); return o; };
+export const keyMessageDated = (key, address, at) => sha256(concatBytes(te.encode('tacit-chain-key-v2'), key, address, be8(at)));
 
 export { chainSeed };
 
@@ -99,20 +102,29 @@ export function makeChainClient({ cfg, rpcCall, priv, system, root = undefined, 
     nullifiers: (from, limit) => api('GET', `/nullifiers?from=${from}&limit=${limit}`),
     spent: async (nf) => (await api('GET', `/spent/${nf}`)).spent,
     address: async (h) => (await api('GET', `/address/${h}`)).address,
+    // (signed both ways: the dated signature orders the key's records, and the undated one is what clients from before it check; dated after the
+    // key's record now, so one made in the same second, or on a device whose clock is behind, still comes after it)
     publish: async (a) => {
-      const key = secp.getPublicKey(priv, true), sig = (await secp.signAsync(keyMessage(key, hexBytes(a)), priv)).toCompactRawBytes();
-      const r = await api('POST', '/address', { address: a, key: hx(key), sig: hx(sig) });
+      const key = secp.getPublicKey(priv, true), ab = hexBytes(a), now = Math.floor(Date.now() / 1000);
+      const cur = await api('GET', `/address/key/${hx(key).slice(2)}`).catch(() => null);
+      const at = Math.max(now, Math.min(Number.isSafeInteger(cur?.at) ? cur.at + 1 : 0, now + 86_000));
+      const sig = (await secp.signAsync(keyMessage(key, ab), priv)).toCompactRawBytes(), sig2 = (await secp.signAsync(keyMessageDated(key, ab, at), priv)).toCompactRawBytes();
+      const r = await api('POST', '/address', { address: a, key: hx(key), sig: hx(sig), at, sig2: hx(sig2) });
       if (!r.ok) throw new Error(r.error || `the leader did not take the address (${r.status})`);
       return r.hash;
     },
   };
   // The chain address a key's own record names, checked against the key, or null. A key's record is its latest chain address (its PQ ID's, once it
-  // has one), so a Tacit address stays the same while the keys behind it change.
+  // has one), so a Tacit address stays the same while the keys behind it change. A dated record's date is checked too.
   async function keyRecord(k) {
     const r = await api('GET', `/address/key/${strip(k)}`).catch(() => null);
     if (!r?.ok || !r.address || !r.sig) return null;
     let good = false;
-    try { good = secp.verify(hexBytes(r.sig), keyMessage(hexBytes(k), hexBytes(r.address)), hexBytes(k)); } catch { }
+    try {
+      const kb = hexBytes(k), ab = hexBytes(r.address);
+      good = secp.verify(hexBytes(r.sig), keyMessage(kb, ab), kb)
+        && (r.sig2 == null || (Number.isSafeInteger(r.at) && r.at > 0 && secp.verify(hexBytes(r.sig2), keyMessageDated(kb, ab, r.at), kb)));
+    } catch { }
     return good ? 'tc1' + strip(r.address) : null;
   }
   // A payer asks for the key's record first (it is signed by the key the Tacit address carries), and the address's chain lane is the fallback.

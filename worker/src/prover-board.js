@@ -72,11 +72,16 @@ export const PROVER_BOARD = Object.freeze({
   // addresses on one connection buy no more odds. The block waits drawOfferMs for the drawn machine to take it and then drawFactor times its
   // usual time (at least drawMinMs; drawNewMs for one with no record); one that lets it lapse, gives it back or answers wrongly opens it to the
   // race at once, and its place goes after the others for turnTroubleMs. A machine whose usual block takes over drawMaxSecs is left to the race.
+  // Only machines that asked for work in the last drawFreshMs are drawn. A drawn machine that has not asked by the time the offer ends costs
+  // the user the whole offer (drawOfferMs) and then the race's start: on 2026-11-17 over half the draws to machines other than the fastest ended
+  // that way, a machine busy with another proof or between slow asks having been drawn because it had asked within turnSeenMs (30 s). One that asked
+  // a moment ago is about to ask again and sees the block inside its offer.
   drawPrograms: Object.freeze(['tacit-block']),
   drawPct: 0,                                          // PROVER_BOARD_BLOCK_DRAW_PCT: blocks that go by draw first, in hundredths (0: all raced)
   drawNew: 15,                                         // PROVER_BOARD_BLOCK_DRAW_NEW: hundredths of the odds for places with no block record
   drawSeats: 3,                                        // PROVER_BOARD_BLOCK_DRAW_SEATS: places with no block record that hold a ticket at a time (the longest waiting)
   drawOfferMs: 15_000,
+  drawFreshMs: 6_000,                                  // PROVER_BOARD_BLOCK_DRAW_FRESH_MS: a machine is drawn only if it asked for work within this long
   drawFactor: 3,
   drawMinMs: 20_000,
   drawNewMs: 45_000,
@@ -130,6 +135,7 @@ export function proverBoardConfig(env = {}) {
     drawPct: Math.min(100, n(env.PROVER_BOARD_BLOCK_DRAW_PCT, PROVER_BOARD.drawPct)),
     drawNew: Math.min(90, n(env.PROVER_BOARD_BLOCK_DRAW_NEW, PROVER_BOARD.drawNew)),
     drawSeats: Math.min(50, n(env.PROVER_BOARD_BLOCK_DRAW_SEATS, PROVER_BOARD.drawSeats, 1)),
+    drawFreshMs: Math.min(PROVER_BOARD.turnSeenMs, n(env.PROVER_BOARD_BLOCK_DRAW_FRESH_MS, PROVER_BOARD.drawFreshMs, 1000)),
   });
 }
 const DAY_MS = 86_400_000;
@@ -218,7 +224,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   const firstMs = cfg.communityFirstMs ?? PROVER_BOARD.communityFirstMs;
   const best = { pct: cfg.bestPct ?? PROVER_BOARD.bestPct, of: cfg.bestOf ?? PROVER_BOARD.bestOf };
   const byRecord = (j) => goesByRecord(j.id, best.pct);
-  const draw = { pct: cfg.drawPct ?? PROVER_BOARD.drawPct, fresh: cfg.drawNew ?? PROVER_BOARD.drawNew, seats: Math.max(1, cfg.drawSeats ?? PROVER_BOARD.drawSeats) };
+  const draw = { pct: cfg.drawPct ?? PROVER_BOARD.drawPct, fresh: cfg.drawNew ?? PROVER_BOARD.drawNew, seats: Math.max(1, cfg.drawSeats ?? PROVER_BOARD.drawSeats), freshMs: cfg.drawFreshMs ?? PROVER_BOARD.drawFreshMs };
   // Whether a machine offers a program: it named it in a claim within offerHoldMs, or (a record from before offers were kept) its latest claim does.
   const offers = (w, program) => (w.offered && w.offered[program] != null ? clock() - w.offered[program] < PROVER_BOARD.offerHoldMs : (w.programs || []).includes(program));
   // The draw is open to the race from `at`: the time a racer's wait for the block is counted from, if it was not the machine drawn.
@@ -621,7 +627,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       && !busy.has(n) && !(j.raced || []).includes(n));
   }
 
-  // Who a block is drawn for: of the machines that prove its program, asked for work in the last turnSeenMs, are proving nothing, have not had
+  // Who a block is drawn for: of the machines that prove its program, asked for work in the last drawFreshMs, are proving nothing, have not had
   // this block and ask from a place in no trouble, one ticket per place (its fastest machine). A place with a record (usual time at most
   // drawMaxSecs) weighs 1 / its usual seconds; places with none share drawNew hundredths of the odds, but only the drawSeats of them that
   // have waited longest (since their last draw, or since the board first saw them) hold a ticket; all of them if no place has a record.
@@ -631,7 +637,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     const usual = usualSecs;
     // A machine with no block record draws only once the board has taken a proof from it: a ticket costs a waiting user time when it is not
     // answered, and an address that has proved nothing (one of a swarm of connections, say) has shown no machine behind it.
-    const ok = ([n, w]) => w.community && offers(w, j.program) && t - (w.lastSeen || 0) < PROVER_BOARD.turnSeenMs
+    const ok = ([n, w]) => w.community && offers(w, j.program) && t - (w.lastSeen || 0) < Math.min(PROVER_BOARD.turnSeenMs, draw.freshMs)
       && !busy.has(n) && !(j.raced || []).includes(n) && !(w.client && troubles[w.client] != null && t - troubles[w.client] < PROVER_BOARD.turnTroubleMs)
       && (usual(w) < Infinity || (w.proved || 0) >= 1);
     const byPlace = new Map();
@@ -780,6 +786,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     else if (w.client && trouble[w.client] != null && t - trouble[w.client] < PROVER_BOARD.turnTroubleMs) why = 'Its connection missed a turn recently, so it waits behind the others for a while.';
     else if (rec && usualSecs(w) > PROVER_BOARD.drawMaxSecs) why = `Its usual block time (${Math.round(usualSecs(w))} s) is over ${PROVER_BOARD.drawMaxSecs} s, so blocks stay with faster machines; its batches and wraps are unaffected.`;
     else if (mine && here && here[0] !== name) why = 'Another machine on the same connection holds this connection\'s one ticket (its faster one).';
+    else if (seen * 1000 >= draw.freshMs) why = `It last asked for work ${seen} s ago. Blocks are drawn only among machines that asked in the last ${Math.round(draw.freshMs / 1000)} s, so one that is busy with another proof, or asks less often than that, is out of the draw at this moment and in it when it happens to have asked a moment before.`;
     else if (!mine && spot >= seats) why = `Machines with no block record yet take turns at a set-aside share of the blocks: ${seats} hold a ticket at a time, the ones that have waited longest, and a machine goes to the back of the line once it is drawn. This one is number ${spot + 1} in line, so ${spot - seats + 1} ${spot - seats + 1 === 1 ? 'machine' : 'machines'} must be drawn before it holds a ticket.`;
     else if (!mine) why = 'No ticket right now.';
     const odds = !why && mine && total > 0 ? mine[1] / total : null;

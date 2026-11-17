@@ -240,15 +240,18 @@ await test('?fixed=1 on Ethereum: the cards load under the page\'s policy and th
   await page.fill('#f-damt', '2.5');
   await page.waitForFunction(() => /2 × 1 ETH/.test(document.querySelector('#lg-split')?.textContent || ''), null, { timeout: 30000 });
   const text = await page.locator('#lg-split').innerText();
-  assert.match(text, /0\.5 ETH\s+into your private balance/);
+  assert.match(text, /2 × 1 ETH\s+whole notes · Tornado Cash/); assert.match(text, /0\.5 ETH\s+your private balance/);
+  assert.match(text, /a few signatures first \(nothing is sent\)/, 'the signatures are announced before the first is asked for');
   assert.match(await page.locator('#lg-notes').innerText(), /Notes in the large pools/);
   assert.equal(await page.locator('#lg-go').count(), 0, 'the card has no button of its own: the form\'s is the one');
   assert.match(await page.locator('#f-go').innerText(), /Deposit 2\.5 ETH: 2 whole notes \+ 0\.5/, 'the wallet that opened the page is the one that deposits');
-  assert.match(await page.locator('#f-rcpt').innerText(), /Into the large pools\s+2 whole notes · 2 ETH/);
-  assert.match(await page.locator('#f-rcpt').innerText(), /Into your private balance\s+0\.5 ETH/);
+  // the split is drawn once, between the amount and the receipt, and the receipt does not say it again
+  assert.equal(await page.evaluate(() => { const a = document.querySelector('#f-damt'), s = document.querySelector('#lg-split'), r = document.querySelector('#f-rcpt'); return !!(a.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING) && !!(s.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING); }), true, 'amount, then the split, then the receipt');
+  assert.doesNotMatch(await page.locator('#f-rcpt').innerText(), /Into the large pools|Into your private balance/);
+  assert.match(await page.locator('#f-rcpt').innerText(), /Relay fee\s+none/);
   // the crowd the notes blend in with, read from the pool, and the points the part that goes to Tacit earns
   await page.waitForFunction(() => /1 ETH pool: 97,860 deposits so far, 4,221 notes in it now\./.test(document.querySelector('#lg-split')?.textContent || ''), null, { timeout: 30000 });
-  assert.match(await page.locator('#lg-split').innerText(), /Only the part in your private balance earns TAC points/);
+  assert.match(await page.locator('#lg-split').innerText(), /Whole notes earn no TAC points/);
   assert.equal(await page.locator('#f-rcpt svg.tk use[href="#tk-tac"]').count(), 1, 'the points row has the TAC icon');
   const pts = (await page.locator('#f-rcpt').innerText()).match(/TAC points\s+how\?\s+(?:≈|at least)\s*([\d,.]+)/);
   assert.ok(pts && Number(pts[1].replace(/,/g, '')) >= 500, 'the points are an amount, at least 1,000 a ETH on the 0.5 ETH that goes to Tacit: ' + (pts && pts[0]));

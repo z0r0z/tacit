@@ -1,11 +1,11 @@
-import { makeConnect } from '/trade/connect.js?cb=b758e60b';
+import { makeConnect } from '/trade/connect.js?cb=c663f030';
 import { esc } from '/trade/sheet.js?cb=d857446c';
 import { $, rpc } from '/trade/util.js?cb=1d2cd8d3';
 import { readSpot, readPrecision } from '/trade/farm-read.js?cb=fb6ec72f';
 import { makeEvmTradeVenues, ZROUTER } from '/evm-trade-venues.js?cb=196b14fb';
 import { SHOP, MARKET, TAC, TAC_NAME, FROM_BLOCK, TOPICS, foldShelf, sortShelf, filterShelf, zeroTiers, zerosOf, zerosText, zeroBits, addressParts, tacText, usdText, priceUsd, tacUsdFrom, tokenNumber,
   tokenUrl, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, ownerOfData, addressOfData, deployData, initcodeOf, parseTokenId, soldTo, forwarderInit,
-  forwardRefusal, decodeAddress, decodeListing, decodeWord, refusalWords, deployRefusal, deployFailed, ETH_AT_DEPLOY_ADDRESS, badRecipient, isAddress, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, ethText } from '/shop/shelf.js?cb=666bd2c5';
+  forwardRefusal, decodeAddress, decodeListing, decodeWord, refusalWords, deployRefusal, deployFailed, ETH_AT_DEPLOY_ADDRESS, badRecipient, isAddress, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, pickVenue, ethText } from '/shop/shelf.js?cb=0182afe8';
 
 // The shop's shelf (contracts/src/VanityShop.sol): addresses that start with zeros, each a token the buyer can deploy a contract to on Ethereum. The page reads the shelf
 // from the shop's events, checks the one a buyer picks against the shop again, and sends one transaction: the buy, with a TAC permit signed first when the shop has no
@@ -182,14 +182,21 @@ async function zapOn() {
   if (zapLive === null) { try { zapLive = (await rpc('eth_getCode', [ZAP, 'latest'])) !== '0x'; } catch { return false; } }
   return zapLive;
 }
-async function zapQuote(price, who, deadline) {
+// The pool is chosen as the front page's swap chooses it for ETH to TAC (shelf.js pickVenue): the Precision pool unless the Tacit AMM pays over a percent more, and the one that
+// answers when the other does not, so a pool that is down does not take the offer with it. `skip` names pools whose call was refused when it was read (zapBuy tries the other).
+// A split between the two is not tried: it costs about 116,000 gas more, and at the size of a purchase here (a few dollars) no split pays that.
+async function zapQuote(price, who, deadline, skip = []) {
   const target = (price * (10000n + ZAP_MARGIN_BPS)) / 10000n;
   let amountIn = S.tacEth ? BigInt(Math.ceil(Number(price) * S.tacEth * 1.03)) : 0n;
   if (amountIn <= 0n) amountIn = 10n ** 15n;
   let best = null;
   for (let i = 0; i < 5; i++) {
-    const q = await venues.quotePrecision({ dir: 'ETH_TO_TAC', amountIn, account: who, block: 'latest' });
-    if (!q || !(q.amountOut > 0n)) return null;
+    const [precision, tacit] = await Promise.all([
+      venues.quotePrecision({ dir: 'ETH_TO_TAC', amountIn, account: who, block: 'latest' }).catch(() => null),
+      venues.quoteTacitAmm({ dir: 'ETH_TO_TAC', amountIn, block: 'latest' }).catch(() => null),
+    ]);
+    const q = pickVenue(precision, tacit, skip);
+    if (!q) return null;
     if (q.amountOut >= target) {
       best = { amountIn, q };
       if (q.amountOut * 1000n <= target * 1005n) break;                 // within half a percent over the target: close enough
@@ -198,7 +205,8 @@ async function zapQuote(price, who, deadline) {
   }
   if (!best) return null;
   const tx = venues.build({ quote: best.q, dir: 'ETH_TO_TAC', account: who, to: ZAP, minOut: price, deadline: BigInt(deadline) });
-  return tx && String(tx.to).toLowerCase() === ZROUTER.toLowerCase() && tx.value === best.amountIn ? { amountIn: best.amountIn, tx } : null;
+  // what is sent is what the built call says (the Tacit AMM takes whole multiples of 1e10 wei), never more than was asked
+  return tx && String(tx.to).toLowerCase() === ZROUTER.toLowerCase() && tx.value > 0n && tx.value <= best.amountIn ? { amountIn: tx.value, venue: best.q.venue, tx } : null;
 }
 // the ETH offered when the wallet has too little TAC: only with a zap that holds code, a price from the pool, and more ETH in the wallet than that
 async function zapOffer(row, who) {
@@ -222,17 +230,27 @@ async function zapBuy(id) {
     if (cur.nonce !== row.nonce || cur.price !== row.price) { say('Its price changed. The list is updated; look again.', true); await readShelf(); return; }
     if (!(await zapOn())) throw new Error('Paying with ETH is not available right now.');
     const deadline = Math.floor(Date.now() / 1000) + 20 * 60;
-    say('Getting a price for the ETH.');
-    const z = await zapQuote(row.price, who, deadline);
-    if (!z) throw new Error('The pool gave no price for this just now. Try again in a moment.');
-    const eth = BigInt(await rpc('eth_getBalance', [who, 'latest']));
-    if (eth <= z.amountIn) { say(`This takes about ${ethText(z.amountIn)} ETH and the wallet holds ${ethText(eth)}. ${BUY_TAC}`, true); return; }
-    const data = buyWithEthData({ swapData: z.tx.data, id, to, nonce: row.nonce, maxPrice: row.price, deadline });
-    say('Checking the purchase before it is sent.');
-    try { await rpc('eth_call', [{ from: who, to: ZAP, data, value: hex(z.amountIn) }, 'latest']); }
-    catch (e) {
-      if (!e?.revert) throw new Error('Could not reach the network to check this. Nothing was sent.');
-      say(`${refusalWords(e.data) || 'The swap or the purchase would not go through at this price.'} Nothing was sent. The list is updated.`, true); await readShelf(); return;
+    // The whole call is read first. If it would not go through with the pool chosen (a refusal the shop does not give), the other pool is tried before anything is said to be wrong.
+    let z = null, data = null;
+    const tried = [];
+    while (tried.length < 3) {
+      say(tried.length ? 'Trying the other pool.' : 'Getting a price for the ETH.');
+      z = await zapQuote(row.price, who, deadline, tried);
+      if (!z) break;
+      const eth = BigInt(await rpc('eth_getBalance', [who, 'latest']));
+      if (eth <= z.amountIn) { say(`This takes about ${ethText(z.amountIn)} ETH and the wallet holds ${ethText(eth)}. ${BUY_TAC}`, true); return; }
+      data = buyWithEthData({ swapData: z.tx.data, id, to, nonce: row.nonce, maxPrice: row.price, deadline });
+      say('Checking the purchase before it is sent.');
+      try { await rpc('eth_call', [{ from: who, to: ZAP, data, value: hex(z.amountIn) }, 'latest']); break; }
+      catch (e) {
+        if (!e?.revert) throw new Error('Could not reach the network to check this. Nothing was sent.');
+        if (refusalWords(e.data)) { say(`${refusalWords(e.data)} Nothing was sent. The list is updated.`, true); await readShelf(); return; }    // the shop's own refusal: another pool changes nothing
+        tried.push(z.venue); z = null;                                                                                                          // the swap in this pool would not go through
+      }
+    }
+    if (!z) {
+      if (!tried.length) throw new Error('The pool gave no price for this just now. Try again in a moment.');
+      say('The swap or the purchase would not go through at this price. Nothing was sent. The list is updated.', true); await readShelf(); return;
     }
     const dollars = S.ethUsd ? ` (≈ ${usdText((Number(z.amountIn) / 1e18) * S.ethUsd)})` : '';
     say(`Confirm in your wallet: about ${esc(ethText(z.amountIn))} ETH${esc(dollars)}, swapped into ${esc(tacText(row.price))} TAC and spent on this address in the same transaction.`);

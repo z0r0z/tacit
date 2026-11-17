@@ -14,11 +14,14 @@
 //!   GET  /mempool                the ids of what is waiting
 //!   GET  /fee                    the leader's terms, as its leader posted them: { address (its chain address), fee (units of 1e-8 TAC a
 //!                                spend), sweepFee (TAC wei a permitted shield adds), shieldCap (units), at, window }, fee "0" when it asks none
-//!   POST /address                { address, key?, sig? } → { hash }      GET /address/<hash> → { address }   (the chain lane's directory)
+//!   POST /address                { address, key?, sig?, at?, sig2? } → { hash }      GET /address/<hash> → { address }   (the chain lane's directory)
 //!                                With `key` (a Tacit key's compressed secp256k1 public key, 33 bytes) and `sig` (its 64-byte signature over
-//!                                SHA-256("tacit-chain-key-v1" ‖ key ‖ address)), the address is also kept under the key, checked here:
-//!   GET  /address/key/<key>      → { address, sig }: the chain address a Tacit address from before the chain (which carries the key, not the
-//!                                chain lane) is paid at. A payer checks the signature again.
+//!                                SHA-256("tacit-chain-key-v1" ‖ key ‖ address)), the address is also kept under the key, checked here. With
+//!                                `at` (unix seconds) and `sig2` (over SHA-256("tacit-chain-key-v2" ‖ key ‖ address ‖ at as 8 bytes BE)) too, the
+//!                                record is dated: one replaces a key's record only when it is newer, and an undated one never replaces a dated
+//!                                one, so a record the key signed before cannot be posted again over its latest.
+//!   GET  /address/key/<key>      → { address, sig, at?, sig2? }: the chain address a Tacit address is paid at under its key (the key's latest
+//!                                record). A payer checks the signatures again.
 //!   POST /spend                  { publics, proof, data, memos[], opMemos[], back?, permit? } → { id }   (back: a shield paid to its inbox;
 //!                                permit: { owner, fee, deadline, v, r, s, back } a holder's permit for it, TacitBlocks.sweepWithPermit)
 //!   POST /settle                 { settle, memo } → { id }
@@ -202,12 +205,23 @@ pub struct Leader {
 pub struct Directory {
     map: BTreeMap<[u8; 32], Vec<u8>>,
     file: Option<String>,
-    /// Chain addresses by the Tacit key that signed for them (key → (signature, the address's hash)): how a Tacit address from before the
-    /// chain is paid on it. Only a signature by the key itself puts an entry here, so no one else can name another address for a key.
-    keys: BTreeMap<[u8; 33], ([u8; 64], [u8; 32])>,
+    /// Chain addresses by the Tacit key that signed for them: how a Tacit address is paid under its key. Only a signature by the key itself
+    /// puts an entry here, so no one else can name another address for a key.
+    keys: BTreeMap<[u8; 33], KeyRecord>,
+}
+/// A key's record: its signature for the address (sig, undated), the address's hash, and for a dated record its time and the signature
+/// that dates it (at, sig2). An undated record has at = 0.
+#[derive(Clone, PartialEq, Eq)]
+pub struct KeyRecord {
+    pub sig: [u8; 64],
+    pub hash: [u8; 32],
+    pub at: u64,
+    pub sig2: Option<[u8; 64]>,
 }
 const ADDRESS_LEN: usize = 128 + 33 + 1184;
 const DIRECTORY_MAX: usize = 50_000;
+/// How far ahead of the leader's clock a dated record may be (a key's own clock running fast), in seconds.
+const RECORD_AHEAD: u64 = 86_400;
 
 impl Directory {
     pub fn open(file: Option<String>) -> Directory {
@@ -220,18 +234,22 @@ impl Directory {
                     }
                 }
             }
-            // the keyed entries, each checked again as it is read
+            // the keyed entries, each checked again as it is read (undated "key sig hash", dated "key sig hash at sig2"), in the order written
             if let Ok(text) = std::fs::read_to_string(format!("{f}.keys")) {
                 for line in text.lines() {
                     let p: Vec<&str> = line.split_whitespace().collect();
-                    if p.len() != 3 {
+                    if p.len() != 3 && p.len() != 5 {
                         continue;
                     }
                     let (Ok(k), Ok(s), Ok(h)) = (hex::decode(p[0]), hex::decode(p[1]), hex::decode(p[2])) else { continue };
                     let Ok(h) = <[u8; 32]>::try_from(h.as_slice()) else { continue };
-                    if let Some(addr) = d.map.get(&h).cloned() {
-                        let _ = d.add_key(&k, &s, &addr);
-                    }
+                    let Some(addr) = d.map.get(&h).cloned() else { continue };
+                    let dated = if p.len() == 5 { p[3].parse::<u64>().ok().zip(hex::decode(p[4]).ok()) } else { None };
+                    let _ = match dated {
+                        Some((at, s2)) => d.add_key_dated(&k, &s, at, &s2, &addr, None),
+                        None if p.len() == 3 => d.add_key(&k, &s, &addr),
+                        None => continue,
+                    };
                 }
             }
         }
@@ -243,36 +261,74 @@ impl Directory {
         use sha2::{Digest, Sha256};
         Sha256::new().chain_update(b"tacit-chain-key-v1").chain_update(key).chain_update(address).finalize().into()
     }
-    /// Keeps `address` (already in the directory) under `key`, if `sig` is the key's signature for it; the entry a key signed last stands.
-    pub fn add_key(&mut self, key: &[u8], sig: &[u8], address: &[u8]) -> Result<(), String> {
+    /// What a key signs to date that record: SHA-256("tacit-chain-key-v2" ‖ key ‖ address ‖ at as 8 bytes big-endian).
+    pub fn key_message_dated(key: &[u8], address: &[u8], at: u64) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::new().chain_update(b"tacit-chain-key-v2").chain_update(key).chain_update(address).chain_update(at.to_be_bytes()).finalize().into()
+    }
+    fn check_sig(key: &[u8], sig: &[u8], msg: &[u8; 32]) -> Result<([u8; 33], [u8; 64]), String> {
         use k256::ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
         let k: [u8; 33] = key.try_into().map_err(|_| "a key is a 33-byte compressed public key".to_string())?;
         let s: [u8; 64] = sig.try_into().map_err(|_| "a signature is 64 bytes".to_string())?;
         let vk = VerifyingKey::from_sec1_bytes(&k).map_err(|_| "not a secp256k1 public key".to_string())?;
         let sg = Signature::from_slice(&s).map_err(|_| "not a signature".to_string())?;
-        vk.verify_prehash(&Self::key_message(&k, address), &sg).map_err(|_| "the signature is not the key's for this address".to_string())?;
-        let h = Self::hash(address);
-        if !self.map.contains_key(&h) {
-            return Err("that address is not in the directory".into());
-        }
-        if self.keys.get(&k) == Some(&(s, h)) {
-            return Ok(());
-        }
+        vk.verify_prehash(msg, &sg).map_err(|_| "the signature is not the key's for this address".to_string())?;
+        Ok((k, s))
+    }
+    fn keep(&mut self, k: [u8; 33], r: KeyRecord) -> Result<(), String> {
         if !self.keys.contains_key(&k) && self.keys.len() >= DIRECTORY_MAX {
             return Err("the directory is full".into());
         }
         if let Some(f) = &self.file {
             use std::io::Write;
             let mut out = std::fs::OpenOptions::new().create(true).append(true).open(format!("{f}.keys")).map_err(|e| e.to_string())?;
-            writeln!(out, "{} {} {}", hex::encode(k), hex::encode(s), hex::encode(h)).map_err(|e| e.to_string())?;
+            match r.sig2 {
+                Some(s2) => writeln!(out, "{} {} {} {} {}", hex::encode(k), hex::encode(r.sig), hex::encode(r.hash), r.at, hex::encode(s2)),
+                None => writeln!(out, "{} {} {}", hex::encode(k), hex::encode(r.sig), hex::encode(r.hash)),
+            }
+            .map_err(|e| e.to_string())?;
         }
-        self.keys.insert(k, (s, h));
+        self.keys.insert(k, r);
         Ok(())
     }
-    /// The chain address a key signed for, with its signature.
-    pub fn by_key(&self, key: &[u8; 33]) -> Option<(Vec<u8>, [u8; 64])> {
-        let (s, h) = self.keys.get(key)?;
-        Some((self.map.get(h)?.clone(), *s))
+    /// Keeps `address` (already in the directory) under `key`, if `sig` is the key's signature for it. An undated record replaces only an
+    /// undated one (the one a key signed last stands); once the key has a dated record, an undated one for another address is refused.
+    pub fn add_key(&mut self, key: &[u8], sig: &[u8], address: &[u8]) -> Result<(), String> {
+        let (k, s) = Self::check_sig(key, sig, &Self::key_message(key, address))?;
+        let h = Self::hash(address);
+        if !self.map.contains_key(&h) {
+            return Err("that address is not in the directory".into());
+        }
+        match self.keys.get(&k) {
+            Some(r) if r.hash == h && (r.at > 0 || r.sig == s) => return Ok(()),
+            Some(r) if r.at > 0 => return Err("this key has a newer, dated record".into()),
+            _ => {}
+        }
+        self.keep(k, KeyRecord { sig: s, hash: h, at: 0, sig2: None })
+    }
+    /// Keeps a dated record: both signatures the key's, `at` newer than the key's dated record (and not more than RECORD_AHEAD past `now`,
+    /// when it is given). The same address again at an older time leaves the record as it is.
+    pub fn add_key_dated(&mut self, key: &[u8], sig: &[u8], at: u64, sig2: &[u8], address: &[u8], now: Option<u64>) -> Result<(), String> {
+        let (k, s) = Self::check_sig(key, sig, &Self::key_message(key, address))?;
+        let (_, s2) = Self::check_sig(key, sig2, &Self::key_message_dated(key, address, at))?;
+        if at == 0 || now.is_some_and(|n| at > n.saturating_add(RECORD_AHEAD)) {
+            return Err("the record's time is not one the leader takes".into());
+        }
+        let h = Self::hash(address);
+        if !self.map.contains_key(&h) {
+            return Err("that address is not in the directory".into());
+        }
+        if let Some(r) = self.keys.get(&k) {
+            if at <= r.at {
+                return if r.hash == h { Ok(()) } else { Err("this key has a newer record".into()) };
+            }
+        }
+        self.keep(k, KeyRecord { sig: s, hash: h, at, sig2: Some(s2) })
+    }
+    /// The chain address a key signed for, with its record.
+    pub fn by_key(&self, key: &[u8; 33]) -> Option<(Vec<u8>, KeyRecord)> {
+        let r = self.keys.get(key)?;
+        Some((self.map.get(&r.hash)?.clone(), r.clone()))
     }
     pub fn hash(address: &[u8]) -> [u8; 32] {
         use sha2::{Digest, Sha256};
@@ -903,13 +959,25 @@ impl Leader {
                 let h = self.directory.add(a.clone()).map_err(bad)?;
                 if body.get("key").is_some_and(|k| !k.is_null()) {
                     let (k, s) = (hexv(&body["key"]).map_err(bad)?, hexv(&body["sig"]).map_err(bad)?);
-                    self.directory.add_key(&k, &s, &a).map_err(bad)?;
+                    if body.get("sig2").is_some_and(|x| !x.is_null()) {
+                        let at = body["at"].as_u64().ok_or(bad("a record's time (unix seconds)".into()))?;
+                        let s2 = hexv(&body["sig2"]).map_err(bad)?;
+                        self.directory.add_key_dated(&k, &s, at, &s2, &a, Some(now)).map_err(bad)?;
+                    } else {
+                        self.directory.add_key(&k, &s, &a).map_err(bad)?;
+                    }
                 }
                 Ok(json!({ "hash": hx(&h) }))
             }
             ("GET", p) if p.starts_with("/address/key/") => {
                 let k: [u8; 33] = hex::decode(p[13..].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or(bad("a 33-byte key".into()))?;
-                self.directory.by_key(&k).map(|(a, s)| json!({ "address": hx(&a), "sig": hx(&s) })).ok_or((404, "no chain address for that key".to_string()))
+                self.directory
+                    .by_key(&k)
+                    .map(|(a, r)| match r.sig2 {
+                        Some(s2) => json!({ "address": hx(&a), "sig": hx(&r.sig), "at": r.at, "sig2": hx(&s2) }),
+                        None => json!({ "address": hx(&a), "sig": hx(&r.sig) }),
+                    })
+                    .ok_or((404, "no chain address for that key".to_string()))
             }
             ("GET", p) if p.starts_with("/address/") => {
                 let h: [u8; 32] = hex::decode(p[9..].trim_start_matches("0x")).ok().and_then(|b| b.try_into().ok()).ok_or(bad("a 32-byte hash".into()))?;

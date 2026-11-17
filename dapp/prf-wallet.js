@@ -46,18 +46,40 @@ export function clearPrfMap() { localStorage.removeItem(PRF_MAP_KEY); }
 // state bit of its authenticator data. → true, false, or null when the browser does not show it
 const backedUp = (data) => { try { const b = new Uint8Array(data); return b.length > 32 ? (b[32] & 0x10) !== 0 : null; } catch { return null; } };
 
-// A passkey wallet's sign-in can also ask its passkey for the chain's root (the second salt of the same ceremony: no other prompt) and keep it on this
+// A passkey wallet's sign-in also asks its passkey for the chain's root (the second salt of the same ceremony: no other prompt) and keeps it on this
 // device when the passkey is backed up, so the wallet's Tacit chain keys are its PQ ID from the start. The Tacit key is the first salt's output either
-// way. An authenticator that refuses a second salt (an error of its own, or no output at all) is asked again with the first alone, as before; a person
-// who cancels, or a passkey that is not there, is not asked again. A ceremony that made a passkey is never repeated. For now this is on only in a
-// browser where localStorage 'tacit-pq-signin' is '1'.
-const pqAtSignIn = () => { try { return globalThis.localStorage?.getItem('tacit-pq-signin') === '1'; } catch { return false; } };
+// way. An authenticator that mishandles the second salt marks this device ('tacit-pq-second' = 'no'), which then asks the first salt alone, as
+// before: an error of its own, or no output, marks it and is asked again at once with the first salt alone; a cancel is not asked again, and marks
+// the device only when it is the second in a row (a refusal can look like a cancel, a person closing the prompt once must not turn the device's PQ ID
+// off), so such an authenticator costs at most two sign-ins. The page's own errors, a cancel by the page, a request already pending and a security
+// error say nothing about the second salt and mark nothing. A ceremony that asked both salts and went well clears the count. A ceremony that made a
+// passkey is never repeated. Off in a browser where localStorage 'tacit-pq-signin' is '0'.
+const ls = (k) => { try { return globalThis.localStorage?.getItem(k) ?? null; } catch { return null; } };
+const lsSet = (k, v) => { try { const s = globalThis.localStorage; if (!s) return false; v == null ? s.removeItem(k) : s.setItem(k, v); return true; } catch { return false; } };
+// (kept in this page's memory instead when its storage refuses writes)
+const here = { no: false, cancels: 0 };
+const pqAtSignIn = () => !here.no && ls('tacit-pq-signin') !== '0' && ls('tacit-pq-second') !== 'no';
+const noSecondHere = () => { if (!lsSet('tacit-pq-second', 'no')) here.no = true; };
 const AGAIN = new Set(['NotSupportedError', 'UnknownError', 'DataError', 'SyntaxError', 'ConstraintError', 'NotReadableError', 'EncodingError', 'OperationError']);
 const refusedSecond = (e) => typeof DOMException === 'function' && e instanceof DOMException && AGAIN.has(e.name);
+function failedTwoSalt(e) {
+  if (refusedSecond(e)) return noSecondHere();
+  if (e?.name !== 'NotAllowedError' || !(typeof DOMException === 'function' && e instanceof DOMException)) return;
+  const kept = ls('tacit-pq-cancels'), n = (kept != null ? Number(kept) || 0 : here.cancels) + 1;
+  if (!lsSet('tacit-pq-cancels', String(n))) here.cancels = n;
+  if (n >= 2) noSecondHere();
+}
+const wentWell = () => { here.cancels = 0; lsSet('tacit-pq-cancels', null); };
 async function withChainRoot(ask) {
   let r;
-  try { r = await ask(CHAIN_SALT); } catch (e) { if (!refusedSecond(e)) throw e; return ask(null); }
-  return r?.raw ? r : ask(null);
+  try { r = await ask(CHAIN_SALT); } catch (e) {
+    failedTwoSalt(e);
+    if (!refusedSecond(e)) throw e;
+    return ask(null);
+  }
+  if (r?.raw) { wentWell(); return r; }
+  noSecondHere();
+  return ask(null);
 }
 
 export async function prfRegister(label, { signal } = {}) {
@@ -97,8 +119,13 @@ async function prfCreate(label, salt, { signal, second = null } = {}) {
   const create = (s) => navigator.credentials.create({ publicKey: publicKey(s), ...(signal ? { signal } : {}) });
   // (a refused creation made no passkey, so it is asked again with the first salt alone; once one is made, only the ceremony that reads it is)
   let cred;
-  try { cred = await create(second); } catch (e) { if (!second || !refusedSecond(e)) throw e; second = null; cred = await create(null); }
+  try { cred = await create(second); } catch (e) {
+    if (second) failedTwoSalt(e);
+    if (!second || !refusedSecond(e)) throw e;
+    second = null; cred = await create(null);
+  }
   if (!cred) throw new Error('creation cancelled');
+  if (second) wentWell();
   const credentialId = toB64(cred.rawId);
   const prfOut = cred.getClientExtensionResults()?.prf;
   let made = null;
@@ -131,9 +158,20 @@ export function prfTryRestore() {
   return { label: lbl, credentialId: entry.credentialId, pubkey: entry.pubkey };
 }
 
+// The key a passkey opened before (its entry in this browser's passkey list), and the key raw PRF output makes.
+const knownPub = (credentialId) => { const e = Object.values(loadPrfMap()).find((x) => x?.credentialId === credentialId); return e?.pubkey ? String(e.pubkey).replace(/^0x/, '').toLowerCase() : null; };
+const pubOf = (raw) => bytesToHex(secp.getPublicKey(prfBytesToScalar(raw instanceof Uint8Array ? raw : new Uint8Array(raw)), true));
+
 export async function prfLogin({ credentialId, signal }) {
-  const r = pqAtSignIn() ? await withChainRoot((s) => prfEval(credentialId, { signal, second: s })) : await prfEval(credentialId, { signal });
+  let r = pqAtSignIn() ? await withChainRoot((s) => prfEval(credentialId, { signal, second: s })) : await prfEval(credentialId, { signal });
   if (!r.raw) throw new Error('PRF result not returned');
+  // A passkey opens the key it opened before. One that gives another (an authenticator whose first output were to change with the second salt asked,
+  // or not) is asked once the other way, and the answer that opens the known key is the one used; neither does, the sign-in stands as it always did.
+  const known = knownPub(r.gotId);
+  if (known && pubOf(r.raw) !== known) {
+    const other = await prfEval(r.gotId, { signal, second: r.asked ? null : CHAIN_SALT }).catch(() => null);
+    if (other?.raw && pubOf(other.raw) === known) { if (r.asked) noSecondHere(); r = other; }
+  }
   return keyOf(r.gotId, r.raw, r.backedUp === true ? r.second : null);
 }
 
@@ -168,5 +206,5 @@ async function prfEval(credentialId, { signal, salt = PRF_SALT, second = null } 
   }
   let b = null;
   try { b = backedUp(cred.response?.authenticatorData); } catch { }
-  return { gotId, raw: results?.first || null, second: second ? results?.second || null : null, backedUp: b };
+  return { gotId, raw: results?.first || null, second: second ? results?.second || null : null, backedUp: b, asked: !!second };
 }

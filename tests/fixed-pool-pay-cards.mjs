@@ -69,7 +69,7 @@ const read = async () => async (method, params = []) => {
   }
 };
 const wallet = { async request({ method, params = [] }) {
-  if (method === 'eth_signTypedData_v4') { window.__log.signs++; const n = Number(JSON.parse(params[1]).message.nonce); return '0x' + hex(0x1111 + n, 64) + hex(1 + n, 64) + '1b'; }
+  if (method === 'eth_signTypedData_v4') { window.__log.signs++; const n = Number(JSON.parse(params[1]).message.nonce); (window.__log.nonces ||= []).push(n); return '0x' + hex(0x1111 + n, 64) + hex(1 + n, 64) + '1b'; }
   if (method === 'eth_sendTransaction' && BigInt(params[0].value || 0) === 0n) {
     const tx = params[0]; window.__wsent = (window.__wsent || 0) + 1; window.__wtx = { to: tx.to, from: tx.from, value: tx.value || '0x0', data: tx.data };
     window.__spentAll = true; window.__spentN++;
@@ -222,7 +222,7 @@ await test('an amount under a whole note shows no card; a large one shows the sp
   assert.equal(await page.locator('#lg-go').count(), 0, 'under 1 ETH: nothing');
   await typeAmount('2.5');
   const text = await page.locator('#host').innerText();
-  assert.match(text, /2 × 1 ETH/); assert.match(text, /0\.5 ETH\s+into your private balance/);
+  assert.match(text, /2 × 1 ETH/); assert.match(text, /0\.5 ETH\s+your private balance/);
   assert.equal((await page.locator('#lg-go').innerText()).trim(), 'Connect wallet');
   await shot(page, 'split');
 });
@@ -293,10 +293,33 @@ await test('Move into Tacit: proved in a worker, the fee shown and pressed, one 
   assert.ok(op.paymasterData.toLowerCase().includes(BOX.slice(2)), 'pays the deposit address');
   assert.ok(op.eip7702Auth && op.eip7702Auth.chainId === '0x1');
 });
-await test('a note that has been moved shows spent and offers nothing', async () => {
-  await page.waitForFunction(() => /· spent/.test(document.querySelector('#notes').textContent));
+await test('notes taken out fold into one closed line with nothing to do on them; the unspent ones are listed by number, and the line keeps its state', async () => {
+  const key = 'tacit-fixed-notes:1:0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
+  await page.waitForFunction(() => /\d+ spent notes?/.test(document.querySelector('#notes details.lg-spent summary')?.textContent || ''));
+  const box = () => page.locator('#notes details.lg-spent');
+  assert.equal(await box().evaluate((el) => el.open), false, 'closed at first');
+  assert.match((await box().locator('summary').innerText()).trim(), /^\d+ spent notes?$/);
+  assert.equal(await page.locator('#notes [data-move], #notes [data-out]').count(), 0, 'nothing to do on a spent note');
+  assert.match(await page.locator('#notes').innerText(), /No unspent notes/);
+  assert.equal(await page.locator('#notes #lg-gas').count(), 1, 'the gas choice stays: a pasted note is taken out with it too');
+  await box().locator('summary').click();
+  await page.evaluate(() => { window.__repaint(); });
+  assert.equal(await box().evaluate((el) => el.open), true, 'stays open when the card is drawn again');
+  const nums = [...(await box().innerText()).matchAll(/note (\d+)/g)].map((m) => Number(m[1]));
+  assert.deepEqual(nums, [...nums].sort((a, b) => a - b), 'by number');
+  await box().locator('summary').click();
+  // one taken out, one still in its pool: the one in the pool keeps its actions, and the other is the one folded line
+  const kept = JSON.parse(await page.evaluate((k) => localStorage.getItem(k), key));
+  const spentN = await page.evaluate(() => window.__spentN);
+  await page.evaluate(([nh]) => { window.__spentAll = false; window.__order = [nh]; window.__spentN = 1; window.__repaint(); }, [kept[0].nh.toLowerCase()]);
+  await page.waitForFunction(() => document.querySelectorAll('#notes [data-move]').length === 1);
+  assert.match((await box().locator('summary').innerText()).trim(), /^1 spent note$/);
+  assert.equal(await page.locator('#notes [data-out]').count(), 1);
+  assert.doesNotMatch(await page.locator('#notes').innerText(), /No unspent notes/);
+  await page.evaluate(([n]) => { window.__order = null; window.__spentAll = true; window.__spentN = n; window.__repaint(); }, [spentN]);
+  await page.waitForFunction(() => document.querySelectorAll('#notes [data-move]').length === 0);
 });
-await test('Find brings the notes back from the wallet alone: both are listed again, and each number tried is signed for', async () => {
+await test('Find brings the notes back from the wallet alone: both are listed again, and only the numbers not signed for in this visit are asked for', async () => {
   const key = 'tacit-fixed-notes:1:0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
   await page.evaluate((k) => { localStorage.removeItem(k); window.__spentAll = false; window.__repaint(); }, key);
   assert.match(await page.locator('#notes').innerText(), /None found in this browser/);
@@ -306,10 +329,46 @@ await test('Find brings the notes back from the wallet alone: both are listed ag
   await page.waitForFunction(() => /note 1/.test(document.querySelector('#notes').textContent));
   const text = await page.locator('#notes').innerText();
   assert.match(text, /note 0/); assert.match(text, /note 1/);
-  assert.ok((await page.evaluate(() => window.__log.signs)) - signsBefore >= 4, 'a signature for each of the numbers 0 to 3 it tried');
+  const nonces = await page.evaluate(() => window.__log.nonces);
+  assert.ok(nonces.slice(0, signsBefore).includes(0) && nonces.slice(0, signsBefore).includes(1), 'numbers 0 and 1 were signed for when the notes were made in this visit');
+  assert.deepEqual(nonces.slice(signsBefore), [2, 3], 'Find tried 0 to 3 and asked only for 2 and 3: 0 and 1 are not asked for again');
   const kept = JSON.parse(await page.evaluate((k) => localStorage.getItem(k), key));
   assert.deepEqual(kept.map((n) => n.nonce), [0, 1], 'kept again, without secrets');
   assert.match(text, /Kohaku/, 'the way out that does not need the paymaster is named');
+});
+await test('the explainer stays as the user left it when the card is drawn again', async () => {
+  await page.click('#notes summary');
+  assert.equal(await page.locator('#notes details.lg-how').evaluate((el) => el.open), true);
+  await page.evaluate(() => { window.__repaint(); });
+  assert.equal(await page.locator('#notes details.lg-how').evaluate((el) => el.open), true, 'still open after a late read draws the card again');
+  await page.click('#notes summary');
+  await page.evaluate(() => { window.__repaint(); });
+  assert.equal(await page.locator('#notes details.lg-how').evaluate((el) => el.open), false, 'and still closed when it was closed');
+});
+await test('a form left open keeps what was typed when the card is drawn again, and the card is drawn once the form closes', async () => {
+  const key = 'tacit-fixed-notes:1:0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
+  const stored = await page.evaluate((k) => localStorage.getItem(k), key);
+  await page.click('#lg-paste');
+  await page.fill('#lg-note', 'tornado-eth-1-5-0xabc');
+  await page.evaluate((k) => { localStorage.removeItem(k); window.__repaint(); }, key);
+  assert.equal(await page.inputValue('#lg-note'), 'tornado-eth-1-5-0xabc', 'what was typed is still there');
+  assert.equal(await page.locator('#lg-ask').isVisible(), true, 'the form is still open');
+  assert.match(await page.locator('#notes').innerText(), /note 0/, 'the list waits while the form is open');
+  await page.click('#lg-pno');
+  assert.match(await page.locator('#notes').innerText(), /None found in this browser/, 'the card is drawn when the form closes');
+  await page.evaluate(([k, v]) => { localStorage.setItem(k, v); window.__repaint(); }, [key, stored]);
+  await page.waitForFunction(() => /note 1/.test(document.querySelector('#notes').textContent));
+});
+await test('the way-in card stays open when it is drawn again right after it is opened', async () => {
+  const open = await page.evaluate(() => {
+    const d = document.querySelector('#in details');
+    d.open = true;             // the browser says so in a later task; a redraw that comes first must not close it
+    window.__in.repaint();
+    return document.querySelector('#in details').open;
+  });
+  assert.equal(open, true);
+  await page.evaluate(() => { document.querySelector('#in details').open = false; window.__in.repaint(); });
+  assert.equal(await page.locator('#in details').evaluate((el) => el.open), false);
 });
 await test('Withdraw to an address: a mistyped checksum is refused before anything is read or signed', async () => {
   await page.reload(); await page.waitForFunction(() => window.__ready === true);
@@ -453,7 +512,8 @@ await test('an exact multiple of a note deposits only whole notes in one press, 
   await page.evaluate(() => { window.__restFail = false; });
   await page.fill('#amt', '1');
   await page.waitForFunction(() => /^Deposit 1 ETH: 1 whole note$/.test(document.querySelector('#lg-go')?.textContent || ''));
-  assert.match(await page.locator('#host').innerText(), /Nothing\s+left for your private balance/);
+  const drawn = await page.locator('#host').innerText();
+  assert.match(drawn, /1 × 1 ETH\s+whole note · Tornado Cash/); assert.doesNotMatch(drawn, /private balance/, 'no part is drawn for the private balance when nothing is left');
   await page.click('#lg-go');
   await page.waitForFunction(() => /The note is in the large pool \(1 ETH\)\./.test(document.querySelector('#status').textContent), null, { timeout: 60000 });
   assert.deepEqual(await page.evaluate(() => window.__rest), []);

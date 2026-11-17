@@ -99,8 +99,9 @@ export async function wrapFirst({ priv, wei, tip = 0n, to = null, from, wallet, 
   let rc;
   try { rc = await wallet.receipt(hash); } catch (e) { throw Object.assign(e, { sent: hash }); }
   if (rc.status !== '0x1') throw Object.assign(new Error(`The transaction failed (${hash.slice(0, 10)}…). Nothing was lost but its network fee.`), { reverted: true, ready: r });
-  if (!prover && r.proven.jobId) t.relay.landed(r.proven.jobId, hash).catch(() => {});
-  return { hash, built: r.built };
+  const mined = rc.transactionHash || hash;                                       // a sped-up deposit went in under another hash
+  if (!prover && r.proven.jobId) t.relay.landed(r.proven.jobId, mined).catch(() => {});
+  return { hash: mined, built: r.built };
 }
 
 export async function proveRelay({ t = null, built, hash = null, wallet, from, say = () => {} }) {
@@ -212,9 +213,10 @@ export async function selfFinish({ t = null, built, hash = null, jobId = null, o
       if (await consumed(built)) return { txHash: null, already: true };
       throw new Error('The settle failed. Nothing was lost but its network fee, and the deposit still waits to be finished.');
     }
-    mine = txHash;
-    if (id) await ux.relay.landed(id, txHash);
-    return { txHash };
+    const mined = rc.transactionHash || txHash;                                   // a sped-up settle went in under another hash
+    mine = mined;
+    if (id) await ux.relay.landed(id, mined);
+    return { txHash: mined };
   }
   const done = (txHash = mine) => ({ hash, built, txHash, already: !mine });
   try {
