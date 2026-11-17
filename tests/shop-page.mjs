@@ -172,6 +172,7 @@ try {
   await until(p1, () => /Nothing for sale right now/.test(document.querySelector('#shelf')?.textContent || ''), null, 120000);
   ok(true, 'and when the nodes answer again, the retry shows an empty shelf as empty');
   ok(await p1.$('[data-buy]') === null && /Connect/.test(await text(p1, '#wallet-chip')), 'with nothing listed there is nothing to buy, and the wallet chip offers to connect');
+  ok((await p1.$eval('#shelf .need a', (a) => a.getAttribute('href'))) === '/?from=ETH&to=TAC' && /Need TAC\? Buy it/.test(await text(p1, '#shelf .need')), 'the shelf says where to get TAC: "Need TAC? Buy it", to the front page\'s swap with ETH to TAC chosen');
   await r1.browser.close(); r1 = null;
 
   // ---- the ops multisig lists four: the rarest, two of equal rarity at two prices, and one at a high nonce
@@ -205,6 +206,7 @@ try {
   await clickBuy(p, A);
   await noteHas(p, /You hold 10 TAC\. This one costs 250\./);
   ok(W.signAttempts === 0 && W.sends.length === 0, 'with too little TAC the page says what the wallet holds and what the address costs, and asks for nothing');
+  ok((await p.$eval('#note a', (a) => a.getAttribute('href'))) === '/?from=ETH&to=TAC', 'and that note links to buying TAC, on the front page\'s swap with ETH to TAC chosen');
   await setTac(buyer.account, 1000n * E18);
   for (const bad of [SHOP, TACADDR, MARKET, 'hello', '0x1234']) {
     await p.fill('#to', bad);
