@@ -38,7 +38,7 @@ function actSteps(it) {
     return names.map((l, i) => st(l, s === 'settled' || i < at ? 'done' : i === at ? 'now' : ''));
   }
   const first = it.kind === 'btc' ? 'Broadcast' : it.via === 'keeper' ? 'Relayed' : 'Sent';
-  if (s === 'failed') return [st(first, 'done'), st('Reverted', 'bad')];
+  if (s === 'failed') return [st(first, 'done'), st(it.replaced ? 'Replaced' : 'Reverted', 'bad')];
   if (s === 'stale') return [st(first, 'done'), st('Not confirmed yet')];
   return [st(first, s === 'pending' ? 'now' : 'done'), st('Confirmed', s === 'confirmed' ? 'done' : '')];
 }

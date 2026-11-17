@@ -107,6 +107,45 @@ export function makeJournal({ pub = () => null, onTrim = () => {}, onStatus = ()
   return { state, get, put, trim, save, write };
 }
 
+// A wallet's "speed up" and "cancel" send a second transaction at the same nonce, and the first hash never confirms. A
+// transaction whose nonce a mined one has taken can never run, so once the sender's nonce has moved past it the transaction
+// that took the nonce is found: the same call at a higher fee stands in for it, anything else means it never went in.
+export const REPLACED_TEXT = 'It was replaced in your wallet, by a cancel or another transaction, before it was mined.';
+export const fingerprint = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0; return `${s.length}:${h.toString(16)}`; };
+const hex = (n) => '0x' + n.toString(16);
+// One look. `read(method, params)` asks the chain; `seen` is what an earlier look learned of the transaction while it was
+// pending: { from, nonce, to, value, data }. Returns { seen } to keep, { found: { hash, same } } once the transaction
+// at its nonce is known, or {}.
+export async function lookReplaced({ read, hash, seen }) {
+  const tx = await read('eth_getTransactionByHash', [hash]).then((x) => x || null, () => undefined);
+  if (tx === undefined) return {};
+  if (tx) {
+    if (tx.blockNumber || seen) return {};
+    return { seen: { from: String(tx.from).toLowerCase(), nonce: BigInt(tx.nonce).toString(), to: String(tx.to || '').toLowerCase(), value: BigInt(tx.value || 0).toString(), data: fingerprint(tx.input || '0x') } };
+  }
+  if (!seen) return {};
+  try {
+    const nonce = BigInt(seen.nonce), count = (tag) => read('eth_getTransactionCount', [seen.from, tag]).then(BigInt);
+    if ((await count('latest')) <= nonce) return {};
+    // The block that took the nonce: found from the head back (a node keeps recent state only), then halved.
+    const top = Number(await read('eth_blockNumber', []));
+    let hi = top, lo = null;
+    for (let back = 4; back <= 128; back *= 2) {
+      const b = Math.max(0, top - back);
+      if ((await count(hex(b))) <= nonce) { lo = b; break; }
+      hi = b;
+    }
+    if (lo == null) return {};
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if ((await count(hex(m))) > nonce) hi = m; else lo = m; }
+    const blk = await read('eth_getBlockByNumber', [hex(hi), true]);
+    const t = blk?.transactions?.find((x) => String(x.from).toLowerCase() === seen.from && BigInt(x.nonce) === nonce);
+    if (!t) return {};
+    const same = String(t.hash).toLowerCase() === String(hash).toLowerCase()
+      || (String(t.to || '').toLowerCase() === seen.to && BigInt(t.value || 0).toString() === seen.value && fingerprint(t.input || '0x') === seen.data);
+    return { found: { hash: t.hash, same } };
+  } catch { return {}; }
+}
+
 export function makeFollow({ journal, jobStatus, receipt, receiptOnce, btcConfirmed, live = () => false, own = () => false, onOwn = () => {}, onSlow = () => {}, finished = () => {} }) {
   const going = new Map(), sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const hidden = () => typeof document !== 'undefined' && document.hidden;
@@ -132,10 +171,13 @@ export function makeFollow({ journal, jobStatus, receipt, receiptOnce, btcConfir
   function tx(id, once = false) {
     const it = journal.get(id);
     if (going.has(id) || !it || (ended(it) && !once)) return;
-    const p = (once ? receiptOnce(it.hash, it.chain) : receipt(it.hash, it.chain)).then((r) => {
-      if (r) {
-        journal.put(id, r.status === '0x1' ? { status: 'confirmed' } : { status: 'failed', err: 'The transaction reverted.' });
-        if (r.status === '0x1') for (const f of it.finishes || []) finished(f, it.hash);
+    const note = { seen: it.seen, keep: (seen) => journal.put(id, { seen }) };
+    const p = (once ? receiptOnce(it.hash, it.chain, note) : receipt(it.hash, it.chain, note)).then((r) => {
+      if (r?.replaced) journal.put(id, { status: 'failed', err: REPLACED_TEXT, hash: r.transactionHash, replaced: true });
+      else if (r) {
+        const hash = r.transactionHash || it.hash;
+        journal.put(id, r.status === '0x1' ? { status: 'confirmed', hash } : { status: 'failed', err: 'The transaction reverted.', hash });
+        if (r.status === '0x1') for (const f of it.finishes || []) finished(f, hash);
       } else if (!once) journal.put(id, { status: 'stale' });
     }).catch(() => {}).finally(() => going.delete(id));
     going.set(id, p);
