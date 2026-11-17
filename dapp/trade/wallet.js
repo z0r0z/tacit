@@ -114,8 +114,14 @@ export function makeWallet({ rpc, leave = null, busy = () => false }) {
     same(from);
     if (chain && hexChain(chain.id) !== MAINNET) await ensureChain(chain); else await ensureMainnet();
     same(from);
-    return req('eth_sendTransaction', [{ from: from || W.account, to, data, ...(value ? { value: '0x' + BigInt(value).toString(16) } : {}), ...(gas ? { gas: '0x' + BigInt(gas).toString(16) } : {}) }]);
+    const sender = from || W.account, n0 = Promise.resolve(read0('eth_getTransactionCount', [sender, 'pending'])).then(BigInt, () => null);   // (read while the wallet is being asked)
+    const h = await req('eth_sendTransaction', [{ from: sender, to, data, ...(value ? { value: '0x' + BigInt(value).toString(16) } : {}), ...(gas ? { gas: '0x' + BigInt(gas).toString(16) } : {}) }]);
+    Promise.all([n0, actOf()]).then(([n, m]) => { if (n != null && m?.guessSeen) GUESS.set(lcs(h), m.guessSeen({ from: sender, to, value, data, nonce: n })); }).catch(() => {});
+    return h;
   }
+  // What the wallet was asked to send and the nonce it most likely used, by hash: where no node holds the transaction (a private mempool) the wait and the trace still have something to go on.
+  const GUESS = new Map();
+  const read0 = (m, p) => rpc(m, p);
   const BATCH_NO = [4200, -32601, -32602, 5700, 5710, 5740, 5750, 5760], noBatch = new Set();
   async function canBatch() {
     if (!W.prov || !W.account || noBatch.has(lcs(W.account))) return false;
@@ -186,7 +192,7 @@ export function makeWallet({ rpc, leave = null, busy = () => false }) {
   let acts = null;
   const actOf = () => (acts ||= import('../activity.js').catch(() => null));
   async function receipt(hash, { timeoutMs = 5 * 60e3, every = null, read = rpc, where = 'Etherscan', look = null, probeMs = 15e3 } = {}) {
-    const t0 = Date.now(), st = { last: t0, seen: null, found: null };
+    const t0 = Date.now(), st = { last: t0, seen: GUESS.get(lcs(hash)) || null, found: null };
     for (;;) {
       if (st.found && !st.found.same) throw Object.assign(new Error('It was replaced in your wallet, by a cancel or another transaction, before it was mined.'), { replaced: true, hash: st.found.hash });
       const r = await read('eth_getTransactionReceipt', [st.found ? st.found.hash : hash]).catch(() => null);

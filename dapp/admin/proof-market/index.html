@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-u6sXTAOg2HOcyYW+YX55jGxW95Y6uA/eM0qLDL4wONg='; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://eth.drpc.org https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-dhWIkq5djIL33/wxDvv1/eyacuuC2x5/XzzqJ3Fo7II='; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://rpc.mevblocker.io https://eth-mainnet.nodereal.io https://eth.drpc.org https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; base-uri 'none'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="robots" content="noindex">
 <title>tacit admin · proof market</title>
@@ -90,6 +90,37 @@ const lc = (s) => String(s || '').toLowerCase();
 const word = (v) => BigInt(v).toString(16).padStart(64, '0');
 const short = (a) => a.slice(0, 6) + '…' + a.slice(-4);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A wallet's speed-up or cancel sends another transaction at the same nonce, and the first hash never confirms. This page cannot load a module (its CSP allows only this script), so
+// this is dapp/activity.js waitMined in short: after a quarter minute, now and then, ask whether a mined transaction has taken the nonce. The same call is the receipt of the
+// speed-up; anything else means the first never ran. → { rc } | { replaced: hash } | { timeout: true }
+async function waitMined(read, hash, tries, every) {
+  const hx = (n) => '0x' + n.toString(16), lc = (s) => String(s || '').toLowerCase();
+  let seen = null, found = null, last = Date.now();
+  async function look() {
+    const tx = await read('eth_getTransactionByHash', [hash]).catch(() => undefined);
+    if (tx) { if (!tx.blockNumber && !seen) seen = { from: lc(tx.from), nonce: BigInt(tx.nonce), to: lc(tx.to), value: BigInt(tx.value || 0), input: tx.input || '0x' }; return; }
+    if (tx !== null || !seen) return;
+    try {
+      const count = (tag) => read('eth_getTransactionCount', [seen.from, tag]).then(BigInt);
+      if ((await count('latest')) <= seen.nonce) return;
+      const top = Number(await read('eth_blockNumber', []));
+      let hi = top, lo = null;
+      for (let back = 4; back <= 128; back *= 2) { const b = Math.max(0, top - back); if ((await count(hx(b))) <= seen.nonce) { lo = b; break; } hi = b; }
+      if (lo == null) return;
+      while (hi - lo > 1) { const m = (lo + hi) >> 1; if ((await count(hx(m))) > seen.nonce) hi = m; else lo = m; }
+      const blk = await read('eth_getBlockByNumber', [hx(hi), true]), t = blk?.transactions?.find((x) => lc(x.from) === seen.from && BigInt(x.nonce) === seen.nonce);
+      if (t) found = { hash: t.hash, same: lc(t.hash) === lc(hash) || (lc(t.to) === seen.to && BigInt(t.value || 0) === seen.value && (t.input || '0x') === seen.input) };
+    } catch { }
+  }
+  for (let i = 0; i < tries; i++) {
+    if (found && !found.same) return { replaced: found.hash };
+    const rc = await read('eth_getTransactionReceipt', [found ? found.hash : hash]).catch(() => null);
+    if (rc) return { rc };
+    if (!found && Date.now() - last >= 15000) { last = Date.now(); await look(); }
+    await sleep(every);
+  }
+  return { timeout: true };
+}
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); for (const k of kids) if (k != null) e.append(k); return e; };
 const reason = (e) => String(e?.data?.message || e?.message || e).replace(/^.*?execution reverted:?\s*/i, 'reverted ').slice(0, 160);
 const SEL = { POOL: '0x7535d246', TAC: '0x19f68523', WINDOW: '0x9f34fc80', BOND: '0xc7cf7484', OWNER: '0x117803e3', TREASURY: '0x2d2c5565', DEPLOY: '0x26307668' };   // POOL(), TAC(), CLAIM_WINDOW(), claimBond(), OWNER(), TREASURY(), CreateX deployCreate2(bytes32,bytes)
@@ -240,8 +271,8 @@ async function deploy() {
     if (W.chain !== k.chainId) { drawWho(); say('err', 'Your wallet is no longer on Ethereum. Switch back and deploy again. Nothing was sent.'); return; }
     const hash = await ask('eth_sendTransaction', [{ from: W.account, to: k.factory, data, gas: '0x' + (gas * 12n / 10n).toString(16) }]);
     say('ok', 'Sent. Waiting for it to land…', `https://etherscan.io/tx/${hash}`);
-    let rc = null;
-    for (let i = 0; i < 180 && !rc; i++) { rc = await rpc('eth_getTransactionReceipt', [hash]).catch(() => null); if (!rc) await sleep(2000); }
+    const w = await waitMined(rpc, hash, 180, 2000), rc = w.rc;
+    if (w.replaced) { say('err', 'It was replaced in your wallet, by a cancel or another transaction, so it never ran.', `https://etherscan.io/tx/${w.replaced}`); return; }
     if (!rc) { say('err', 'No receipt yet: check the transaction on Etherscan.', `https://etherscan.io/tx/${hash}`); return; }
     if (rc.status !== '0x1') { say('err', 'The transaction reverted.', `https://etherscan.io/tx/${hash}`); return; }
     await verify();

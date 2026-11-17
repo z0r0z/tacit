@@ -126,10 +126,10 @@ export function walletSettle({ ux, wallet, ask = () => {}, sleep = (ms) => new P
     if (!from) throw new Error('the wallet gave no account');
     const to = ux.cfg.pool, data = ux.settleCalldata(x);
     await ux.rpc('eth_call', [{ from, to, data }, 'latest']);
-    const txHash = await w.request({ method: 'eth_sendTransaction', params: [{ from, to, data }] });
     // The wait follows a speed-up or cancel in the wallet (activity.js waitMined, loaded when first wanted: a speed-up sends another transaction at the same nonce and the first
     // hash never confirms); where that cannot load, it is the plain wait it was. What is told the relay is the hash that landed.
-    const A = await import('../activity.js').catch(() => null);
+    const A = await import('../activity.js').catch(() => null), ask = () => w.request({ method: 'eth_sendTransaction', params: [{ from, to, data }] });
+    const txHash = A?.sendGuess ? await A.sendGuess({ read: (m, p) => ux.rpc(m, p), request: ask, from, to, data }) : await ask();   // (with the guess a wallet on a private mempool needs)
     let got;
     if (A?.waitMined) got = await A.waitMined({ read: (m, p) => ux.rpc(m, p), hash: txHash, timeoutMs: waitMs, every: everyMs, sleep });
     else for (const end = Date.now() + waitMs; !got && Date.now() < end; await sleep(everyMs)) { const rc = await ux.rpc('eth_getTransactionReceipt', [txHash]).catch(() => null); if (rc) got = { rc }; }

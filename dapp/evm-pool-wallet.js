@@ -18,6 +18,7 @@ import { secp, keccak_256, sha256, hmac, concatBytes } from './vendor/tacit-deps
 import { makeBtcShieldedPool } from './btc-shielded-pool.js';
 import { poolAsset, extDataHash } from './evm-pool-zk.js';
 import { sharedSecrets } from './evm-pool-scan.js';
+import { relaysOf, orderQuotes, QUOTE_MS } from './evm-pool-relays.js';
 export { jsonRpc } from './json-rpc.js';
 import { depositIntent, receiveKeys, receivedNote, receiveBoxAddress, sweepWitness, callIntent, callEscrowAddress, callIntentJson, callIntentAbi, CALL_INTENT_SIG, calldata, selector, bridgeEthCall, L2_BRIDGES, RECEIVE_FEE_BPS, RECEIVE_INDEX } from './evm-pool-gateway.js';
 
@@ -630,7 +631,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       const cand = saved, from = cand.block + 1;
       if (from > safe) break;
       let r;
-      try { r = await keeperGet(`/events?from=${ask}`, near ? 0 : 4); } catch (e) { if (near) feedBusyUntil = Date.now() + 30_000; throw e; }
+      try { r = await feedGet(`/events?from=${ask}`, near ? 0 : 4); } catch (e) { if (near) feedBusyUntil = Date.now() + 30_000; throw e; }
       if (Number(r.chainId) !== Number(chain.chainId) || String(r.pool).toLowerCase() !== chain.pool.toLowerCase()) throw new Error('feed is for another pool');
       const through = Math.min(Number(r.through), safe);
       if (!Number.isInteger(through)) throw new Error('the feed named no block');
@@ -828,10 +829,10 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // A busy keeper answers 429 with Retry-After (10 s from this keeper), which a page on another origin cannot read: wait
   // what it says, 10 s when unread, at most 30 s, and ask again up to four times. A keeper that never answers gives up
   // in time (a relay may wait on the chain; everything else answers fast), so no read or action waits on it forever.
-  async function keeperFetch(path, init = {}, tries = 4) {
-    if (!keeper) throw new Error('no relayer is configured for this chain');
+  async function keeperFetch(path, init = {}, tries = 4, relay = current) {
+    if (!relay) throw new Error('no relayer is configured for this chain');
     for (let i = 0; ; i++) {
-      const r = await fetchImpl(`${keeper}${path}`, { ...init, signal: init.signal || AbortSignal.timeout?.(path === '/relay' ? 180_000 : 30_000) });
+      const r = await fetchImpl(`${relay.url}${path}`, { ...init, signal: init.signal || AbortSignal.timeout?.(path === '/relay' ? 180_000 : 30_000) });
       if (r.status !== 429 || i >= tries) return r;
       const after = Number(r.headers?.get?.('retry-after'));
       await sleep(Math.min(after > 0 ? after : 10, 30) * 1000 * (0.5 + Math.random()));
@@ -840,11 +841,17 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   const realOrigin = !!globalThis.location?.hostname && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(globalThis.location.hostname);
   const wantRelayer = (chain.relayer ?? (realOrigin ? RELAYERS[chain.chainId] : undefined))?.toLowerCase();
   const maxRelayFee = chain.maxRelayFee != null ? BigInt(chain.maxRelayFee) : MAX_RELAY_FEE[chain.chainId];
-  function vetQuote(q) {
+  // The relays this wallet may use: the chain's list and the one `keeper` it has always named (with the address pinned for that one). Each is pinned to
+  // the address its quote must name. `current` is the first, which what is not a spend goes to (an intent, a receive box); a spend goes through the relay
+  // its quote came from (`q.relay`), for its queue slot, its proof and its send.
+  const relays = relaysOf({ keeper, keepers: chain.keepers, relayer: wantRelayer, pinned: realOrigin });
+  if (!keeper && relays[0]) keeper = relays[0].url;
+  let current = relays[0] || null;
+  function vetQuote(q, relay = current) {
     if (Number(q.chainId) !== Number(chain.chainId) || String(q.pool).toLowerCase() !== chain.pool.toLowerCase()) {
       throw new Error('the relayer quoted another chain or pool, so nothing was signed');
     }
-    if (!/^0x[0-9a-fA-F]{40}$/.test(q.relayer ?? '') || (wantRelayer && q.relayer.toLowerCase() !== wantRelayer)) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(q.relayer ?? '') || (relay?.relayer && q.relayer.toLowerCase() !== relay.relayer.toLowerCase())) {
       throw new Error('the relayer quoted an address this wallet does not expect, so nothing was signed');
     }
     if (!/^\d+$/.test(String(q.fee)) || (maxRelayFee != null && BigInt(q.fee) > maxRelayFee)) {
@@ -852,14 +859,24 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     }
     return q;
   }
-  async function keeperGet(path, tries = 4) {
-    const r = await keeperFetch(path, {}, tries);
+  async function keeperGet(path, tries = 4, relay = current) {
+    const r = await keeperFetch(path, {}, tries, relay);
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || `relayer returned ${r.status}`);
-    return path.startsWith('/quote') ? vetQuote(j) : j;
+    return path.startsWith('/quote') ? vetQuote(j, relay) : j;
   }
-  async function keeperPost(path, body) {
-    const r = await keeperFetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  // History is read from any relay that answers, the one that did last first; it does not move the relay a spend goes through.
+  let feedAt = 0;
+  async function feedGet(path, tries) {
+    if (relays.length < 2) return keeperGet(path, tries);
+    let first = null;
+    for (const relay of [...relays.slice(feedAt), ...relays.slice(0, feedAt)]) {
+      try { const j = await keeperGet(path, tries, relay); feedAt = relays.indexOf(relay); return j; } catch (e) { first ||= e; }
+    }
+    throw first;
+  }
+  async function keeperPost(path, body, relay = current) {
+    const r = await keeperFetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 4, relay);
     const j = await r.json().catch(() => ({}));
     return { status: r.status, body: j };
   }
@@ -938,10 +955,10 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // The tree a relayed insertion is proven against: this wallet's, plus the insertions the keeper has queued after
   // the pool's head (GET /head), checked to reach the keeper's announced tail. With `empty`, waits for an empty
   // queue (a call or wrap is simulated, so it cannot follow unmined ones). null: prove against the wallet's own.
-  async function queueTail(empty) {
+  async function queueTail(empty, relay = current) {
     for (let i = 0; i < 30; i++) {
       let h;
-      try { h = await keeperGet('/head'); } catch { return null; }
+      try { h = await keeperGet('/head', 4, relay); } catch { return null; }
       if (empty && h.pending.length) { await sleep(3000); continue; }
       let t = state().tree;
       if (BigInt(h.root) !== t.root) {
@@ -962,12 +979,12 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // them spent), 'stale' (refused for the queue's state: try again), 'tail' (the keeper has paused this connection's
   // reservations: prove against the queue's tail and send without one), or null (prove without a slot). On the private route
   // (dapp/sealed-request.js) a caller has no address of its own to hold a slot under, so it sends without one, as a paused one does.
-  async function reserveSlot(sealed, ins) {
+  async function reserveSlot(sealed, ins, relay = current) {
     if (fetchImpl?.sealed) return 'tail';
     const leaf = (k) => String(sealed[k] ? sealed[k].leaf : 0n);
     let r;
     try {
-      const res = await keeperPost('/reserve', { outLeaf0: leaf(0), outLeaf1: leaf(1), nfs: ins.map((n) => n.nf) });
+      const res = await keeperPost('/reserve', { outLeaf0: leaf(0), outLeaf1: leaf(1), nfs: ins.map((n) => n.nf) }, relay);
       const why = String(res.body?.error || '');
       if (res.status === 409) return /already queued/.test(why) ? 'queued' : 'stale';
       if (res.status === 400 && /already spent/.test(why)) return 'spent';
@@ -977,7 +994,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     } catch { return null; }
     for (let i = 0; i < 3; i++) {
       let t = state().tree;
-      if (BigInt(r.root) !== t.root) { await sync().catch(async (e) => { await releaseSlot(r.id); throw e; }); t = state().tree; }
+      if (BigInt(r.root) !== t.root) { await sync().catch(async (e) => { await releaseSlot(r.id, relay); throw e; }); t = state().tree; }
       if (BigInt(r.root) === t.root) {
         const c = t.clone();
         c.append(r.pending.flatMap((x) => [BigInt(x.outLeaf0), BigInt(x.outLeaf1)]));
@@ -986,10 +1003,10 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       }
       await sleep(1000);
     }
-    await releaseSlot(r.id);
+    await releaseSlot(r.id, relay);
     return null;
   }
-  const releaseSlot = (id) => keeperPost('/cancel', { reservation: id }).catch(() => {});
+  const releaseSlot = (id, relay = current) => keeperPost('/cancel', { reservation: id }, relay).catch(() => {});
 
   // true once mined, false if it reverted, 'unseen' on no answer in time (truthy: it may still land; sync will tell). A spend
   // counts only when the receipt carries the pool's Transact for its nullifiers, so a hash for some other transaction is not
@@ -1007,7 +1024,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         if (!found && Date.now() - last >= 15_000) {
           last = Date.now();
           const A = await import('./activity.js').catch(() => null);
-          const v = A?.lookReplaced ? await A.lookReplaced({ read, hash, seen }).catch(() => ({})) : {};
+          const v = A?.lookReplaced ? await A.lookReplaced({ read, hash, seen: seen || A.takeGuess?.(hash) || null }).catch(() => ({})) : {};   // (a send through a page's provider has a guess to go on where no node holds it)
           if (v.seen) seen = v.seen;
           if (v.found) found = v.found;
         }
@@ -1070,7 +1087,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       if (!holds(ins)) throw spentAlready();
       let tree = state().tree, slot = null;
       if (q && inserts && !simulated) {
-        const r = await reserveSlot(sealed, ins);
+        const r = await reserveSlot(sealed, ins, q.relay);
         if (r === 'spent') throw await spentOnChain(ins, onStep);
         // A spend of these notes waits in the relay's queue: from this key elsewhere, or the reservation of an earlier try,
         // which the keeper drops 90 s after it was made. Once it lands the funds are spent; else reserve again.
@@ -1080,13 +1097,13 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
           continue;
         }
         if (r === 'stale') continue;
-        if (r === 'tail') tree = (await queueTail(false)) || tree;
+        if (r === 'tail') tree = (await queueTail(false, q.relay)) || tree;
         else if (r) { slot = r.id; tree = r.tree; }
-      } else if (q && inserts) tree = (await queueTail(true)) || tree;
+      } else if (q && inserts) tree = (await queueTail(true, q.relay)) || tree;
       try { onSend?.(ins.map((n) => n.index)); } catch { }       // the leaves of the notes this spend is built from, given before it is proved and sent, for a caller that must tell later whether it went
       let tx = !round && made && made.root === tree.root && made.size === tree.size ? made.tx : null;
       if (!tx) {
-        try { tx = await proveTx({ tree, inputs, sealed, extAmount, recipient, relayer, fee, onStep }); } catch (e) { if (slot) await releaseSlot(slot); throw e; }
+        try { tx = await proveTx({ tree, inputs, sealed, extAmount, recipient, relayer, fee, onStep }); } catch (e) { if (slot) await releaseSlot(slot, q?.relay); throw e; }
       }
       let h;
       if (q) {
@@ -1105,7 +1122,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         let r;
         for (let tries = 0; ; tries++) {
           const t0 = Date.now();
-          r = await keeperPost('/relay', { tx, ...extra, ...(slot ? { reservation: slot } : {}) }).catch(() => null);
+          r = await keeperPost('/relay', { tx, ...extra, ...(slot ? { reservation: slot } : {}) }, q.relay).catch(() => null);
           if (!noAnswer(r)) break;
           if (tries >= 2 || Date.now() - t0 > 20_000) throw unanswered();
           onStep('the relay did not answer; trying again');
@@ -1113,7 +1130,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         }
         if (r.status === 200 && !r.body?.error && !r.body?.txHash) throw unanswered();
         if (r.status !== 200 || !r.body.txHash) {
-          if (slot) await releaseSlot(slot);
+          if (slot) await releaseSlot(slot, q.relay);
           const why = String(r.body?.error || '');
           // Final: the pool has the notes spent, or the relay is sending this spend already (it lands, or is on its way).
           if (/AlreadyNullified|already spent/.test(why)) throw await spentOnChain(ins, onStep);
@@ -1123,6 +1140,13 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
               : Object.assign(new Error('A spend of these funds is already on its way. Check Activity before sending again.'), { said: true, maybeSent: true });
           }
           if (r.status === 409 && r.body.stale) { if (/StaleRoot|WrongInsertionIndex|unknown membership root/i.test(why)) treeRefused = true; continue; }
+          // A relay that cannot take this spend now (full, cannot front the gas, rate limiting this connection, its fee above what the spend was proved with)
+          // says so before it sends anything: another relay may take it. The spend's fee is in its outputs, so it is built again for that relay's quote
+          // (withRelays), not handed on as it is.
+          if (r.status === 429 || r.status === 503 || /^\d+$/.test(String(r.body?.needFee ?? ''))) {
+            const next = await q.failover?.().catch(() => null);
+            if (next) throw Object.assign(new Error('this relay cannot take the spend now; another will'), { retryWith: next });
+          }
           // A relay that rate limits this connection has been asked over the time it asked to be waited for (keeperFetch). Proving again cannot help a limiter and costs
           // half a minute a round, so this ends here, with nothing sent, in words that offer the wallet's own send.
           if (r.status === 429) throw Object.assign(new Error('The relay is rate limiting this connection, so nothing was sent. Try again in a minute, or send it from your own wallet.'), { said: true, busy: true });
@@ -1189,14 +1213,56 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     if (maxFee == null || BigInt(q.fee) <= BigInt(maxFee)) return q;
     throw feeWentUp(q.fee);
   }
-  // The relayer's quote for a spend, or null when the signer submits it.
+  // A relay's quote for a spend, vetted against what that relay is pinned to: null when it did not answer in time, or answered with anything
+  // this wallet would not sign for.
+  const quoteAt = async (relay, path) => {
+    try {
+      const r = await fetchImpl(`${relay.url}${path}`, { signal: AbortSignal.timeout?.(QUOTE_MS) });
+      return r.ok ? vetQuote(await r.json(), relay) : null;
+    } catch { return null; }
+  };
+  // The quote of the relay a spend will go through. `rest`: the relays to try instead, in order, when this one refuses the spend for a reason another
+  // might not (it is full, it is rate limiting this connection, its fee went up): q.failover() asks the next afresh, within `maxFee`, and gives its
+  // quote, or null when none is left. `relay` (where the spend's slot, proof and send go) and `failover` are not enumerable: a quote that is copied
+  // has neither, and its spend goes through the first relay.
+  function quoteOf(relay, q, rest, path, maxFee) {
+    const out = { ...q };
+    Object.defineProperty(out, 'relay', { enumerable: false, value: relay });
+    Object.defineProperty(out, 'failover', { enumerable: false, value: async () => {
+      for (let i = 0; i < rest.length; i++) {
+        const next = await quoteAt(rest[i], path);
+        if (!next || (maxFee != null && BigInt(next.fee) > BigInt(maxFee))) continue;
+        return quoteOf(rest[i], next, rest.slice(i + 1), path, maxFee);
+      }
+      return null;
+    } });
+    return out;
+  }
+  // The relayer's quote for a spend, or null when the signer submits it. With several relays, every one is asked and a spend goes through one of the
+  // cheapest (orderQuotes); with one, as it has always been.
   async function quoteFor(via, gas = null, maxFee = null) {
     if (via === 'relay' && !keeper) throw new Error('no relayer is configured for this chain');
     if (via === 'self' || !keeper) {
       if (!signer) throw new Error('no relayer and no wallet to send from');
       return null;
     }
-    return withinFee(await keeperGet(gas ? `/quote?gas=${gas}` : '/quote'), maxFee);
+    const path = gas ? `/quote?gas=${gas}` : '/quote';
+    if (relays.length < 2) return withinFee(await keeperGet(path), maxFee);
+    const asked = (await Promise.all(relays.map(async (e) => { const q = await quoteAt(e, path); return q && { e, q }; }))).filter(Boolean);
+    if (!asked.length) return withinFee(await keeperGet(path, 4, relays[0]), maxFee);      // none answered: the first relay's own answer, or its error
+    const cheap = asked.filter((x) => maxFee == null || BigInt(x.q.fee) <= BigInt(maxFee));
+    if (!cheap.length) throw feeWentUp(asked.map((x) => BigInt(x.q.fee)).reduce((a, b) => (a < b ? a : b)));
+    const [first, ...rest] = orderQuotes(cheap);
+    return quoteOf(first.e, first.q, rest.map((x) => x.e), path, maxFee);
+  }
+
+  // A spend is built for one relay's quote: its fee is in the spend's outputs. When that relay refuses it before sending anything, the spend ends with
+  // `retryWith`, the next relay's quote, and is built again for that, with its own fee, notes and change, not handed on as it is.
+  async function withRelays(q, build, onStep) {
+    for (;;) {
+      try { return await build(q); }
+      catch (e) { if (!e?.retryWith) throw e; q = e.retryWith; onStep?.('trying another relay'); }
+    }
   }
 
   // Merges the two largest notes into one, repeatedly, until two notes cover `need` (each merge pays a fee). Refuses
@@ -1282,11 +1348,12 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       if (!/^0x[0-9a-fA-F]{40}$/.test(String(to)) || BigInt(to) === 0n) throw new Error('enter a 0x address');
       if (amount !== 'max' && BigInt(amount) <= 0n) throw new Error('enter an amount');
       await sync();
-      const q = await quoteFor(via, null, maxFee);
-      const fee = q ? BigInt(q.fee) : 0n, a = amount === 'max' ? maxOf(fee) : BigInt(amount);
-      const ins = await prepare(a + fee, q, onStep);
-      const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
-      return transact({ ins, outs: [change > 0n ? { to: self, value: change } : null, null], extAmount: -a, recipient: to, q, onStep, onSend, onSent });
+      return withRelays(await quoteFor(via, null, maxFee), async (q) => {
+        const fee = q ? BigInt(q.fee) : 0n, a = amount === 'max' ? maxOf(fee) : BigInt(amount);
+        const ins = await prepare(a + fee, q, onStep);
+        const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
+        return transact({ ins, outs: [change > 0n ? { to: self, value: change } : null, null], extAmount: -a, recipient: to, q, onStep, onSend, onSent });
+      }, onStep);
     },
 
     // Watches receive boxes through `index`, e.g. a payment-request box a payment reached on another chain, so a payment
@@ -1335,15 +1402,17 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       if (a <= 0n) throw new Error('enter an amount');
       await sync();
       const self_ = via === 'self';
-      const q = self_ ? null : withinFee(await keeperGet(`/quote?gas=${gas ?? 450_000 + 250_000 * (intent.calls?.length ?? 1)}`), maxFee);
-      const fee = q ? BigInt(q.fee) : 0n;
-      const ins = await prepare(a + fee, q, onStep, () => quoteFor(via, null, maxFee));
-      const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
-      return transact({
-        ins, outs: [change > 0n ? { to: self, value: change } : null, null], extAmount: -a, recipient: callEscrowAddress(intent, chain.router),
-        q, extra: q ? { call: callIntentJson(intent) } : {}, onStep,
-        selfCall: self_ ? (tx) => ({ to: chain.router, data: withdrawAndCallData(tx, intent) }) : null,
-      });
+      const q0 = self_ ? null : await quoteFor('relay', gas ?? 450_000 + 250_000 * (intent.calls?.length ?? 1), maxFee);
+      return withRelays(q0, async (q) => {
+        const fee = q ? BigInt(q.fee) : 0n;
+        const ins = await prepare(a + fee, q, onStep, () => quoteFor(via, null, maxFee));
+        const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
+        return transact({
+          ins, outs: [change > 0n ? { to: self, value: change } : null, null], extAmount: -a, recipient: callEscrowAddress(intent, chain.router),
+          q, extra: q ? { call: callIntentJson(intent) } : {}, onStep,
+          selfCall: self_ ? (tx) => ({ to: chain.router, data: withdrawAndCallData(tx, intent) }) : null,
+        });
+      }, onStep);
     },
 
     // Sends `amount` wei (or 'max') privately to a Secret Sats address. → tx hash.
@@ -1351,11 +1420,12 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       const recipient = recipientOf(keys, to);
       if (amount !== 'max' && BigInt(amount) <= 0n) throw new Error('enter an amount');
       await sync();
-      const q = await quoteFor(via, null, maxFee);
-      const fee = q ? BigInt(q.fee) : 0n, a = amount === 'max' ? maxOf(fee) : BigInt(amount);
-      const ins = await prepare(a + fee, q, onStep);
-      const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
-      return transact({ ins, outs: [{ to: recipient, value: a }, { to: self, value: change }], q, onStep });
+      return withRelays(await quoteFor(via, null, maxFee), async (q) => {
+        const fee = q ? BigInt(q.fee) : 0n, a = amount === 'max' ? maxOf(fee) : BigInt(amount);
+        const ins = await prepare(a + fee, q, onStep);
+        const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
+        return transact({ ins, outs: [{ to: recipient, value: a }, { to: self, value: change }], q, onStep });
+      }, onStep);
     },
 
     // Deposits `amount` wei from the signer into a private note here. → tx hash.
@@ -1485,8 +1555,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       if (a <= 0n || a % V1_UNIT !== 0n) throw new Error('the amount must be a positive multiple of 1e10 wei');
       if (!/^0x[0-9a-fA-F]{64}$/.test(String(commit)) || BigInt(commit) === 0n) throw new Error('commit must be a 32-byte V1 wrap commitment');
       await sync();
-      const q = await quoteFor(via, 700_000, maxFee);
-      const fee = q ? BigInt(q.fee) : 0n;
+      const q0 = await quoteFor(via, 700_000, maxFee);
       const intent = {
         assetId: V1_TETH_ASSET_ID, amount: a, tip: 0n, tipTo: ZERO, commit,
         // Only a box funded and never completed is reclaimable; withdrawToV1 funds and completes in one call.
@@ -1494,13 +1563,16 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         deadline: BigInt((now ?? (await chainNow())) + 3600), nonce: BigInt(hex(globalThis.crypto.getRandomValues(new Uint8Array(16)))),
       };
       const box = '0x' + String(await chain.rpc('eth_call', [{ to: chain.router, data: calldata(`wrapBoxOf(${WRAP_SIG})`, [{ tuple: WRAP_TYPES }], [wrapValues(intent)]) }, 'latest'])).slice(-40);
-      const ins = await prepare(a + fee, q, onStep, () => quoteFor(via, null, maxFee));
-      const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
-      return transact({
-        ins, outs: [change > 0n ? { to: self, value: change } : null, null], extAmount: -a, recipient: box, q, onStep,
-        extra: { wrap: { ...intent, amount: a.toString(), tip: '0', deadline: intent.deadline.toString(), nonce: intent.nonce.toString() } },
-        selfCall: (tx) => ({ to: chain.router, data: withdrawToV1Data(tx, intent) }),
-      });
+      return withRelays(q0, async (q) => {
+        const fee = q ? BigInt(q.fee) : 0n;
+        const ins = await prepare(a + fee, q, onStep, () => quoteFor(via, null, maxFee));
+        const change = ins.reduce((s, n) => s + BigInt(n.v), 0n) - a - fee;
+        return transact({
+          ins, outs: [change > 0n ? { to: self, value: change } : null, null], extAmount: -a, recipient: box, q, onStep,
+          extra: { wrap: { ...intent, amount: a.toString(), tip: '0', deadline: intent.deadline.toString(), nonce: intent.nonce.toString() } },
+          selfCall: (tx) => ({ to: chain.router, data: withdrawToV1Data(tx, intent) }),
+        });
+      }, onStep);
     },
   };
   return api;

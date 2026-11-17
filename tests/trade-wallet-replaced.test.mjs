@@ -69,3 +69,23 @@ const fresh = () => { const c = chain(); const w = makeWallet({ rpc: c.read }); 
   assert.equal((await wait({ read: c.read })).transactionHash, orig.hash);
 }
 console.log('ok');
+
+// a wallet on a private mempool: no node holds the transaction it sent, yet the wait follows its speed-up, from what the page asked it to send
+{
+  const c = chain(), sent = [];
+  const w = makeWallet({ rpc: c.read });
+  w.state.prov = { request: async ({ method, params }) => { if (method === 'eth_chainId') return '0x1'; if (method === 'eth_sendTransaction') { sent.push(params[0]); return orig.hash; } throw new Error('no ' + method); } };
+  w.state.account = me; w.state.chain = '0x1';
+  const h = await w.sendTx({ to: call.to, data: call.input, value: BigInt(call.value) });
+  assert.equal(h, orig.hash); assert.equal(sent.length, 1);
+  await new Promise((r) => setTimeout(r, 30));                                           // (the nonce is read while the wallet is asked)
+  setTimeout(() => c.mine(fast, 990), 40);                                               // the speed-up lands: the first hash was never in any node's pool
+  const r = await w.receipt(h, { read: c.read, probeMs: 10, every: 5, timeoutMs: 3000 });
+  assert.equal(r.transactionHash, fast.hash, 'followed without any node having held the first');
+  const other = { hash: '0x' + '0d'.repeat(32), from: me, nonce: 1, to: me, value: 0, input: '0x' };
+  const c2 = chain(); c2.mine({ ...other, nonce: 0 }, 990);                              // another transaction at that nonce: not a cancel of this one, as far as can be told
+  const w2 = makeWallet({ rpc: c2.read });
+  w2.state.prov = { request: async ({ method }) => (method === 'eth_chainId' ? '0x1' : orig.hash) }; w2.state.account = me; w2.state.chain = '0x1';
+  await w2.sendTx({ to: call.to, data: call.input, value: BigInt(call.value) }); await new Promise((r2) => setTimeout(r2, 30));
+  await assert.rejects(w2.receipt(orig.hash, { read: c2.read, probeMs: 10, every: 5, timeoutMs: 200 }), (e) => !e.replaced && /Sent, not confirmed yet/.test(e.message) && e.seen?.guess === true, 'nothing is concluded; the wait ends as it always did, with the guess kept for a later look');
+}

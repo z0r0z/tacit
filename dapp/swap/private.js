@@ -3,7 +3,7 @@ import { forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=cace1489';
 import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=c02d8bf6';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
-import { makeRunner } from '/activity.js?cb=beb2e0ed';
+import { makeRunner } from '/activity.js?cb=d93291ee';
 
 export { Cancelled, relayWords };
 

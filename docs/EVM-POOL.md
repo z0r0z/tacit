@@ -677,6 +677,17 @@ more than the wallet allows:
 - on the anon.wei page, the fee is also at most the larger of 0.0001 ETH and 8 times the cost of the quoted gas at the
   node's current gas price, and a fee that later moves more than 20% above the one shown asks the user to confirm again.
 
+**Several relays.** A chain config can list more than one relay (`chain.keepers`: `{ url, relayer, weight? }` each, with `url` ending in
+`/evm-pool/keeper`; the one `keeper` a config names stays the first). Each relay is pinned to its own `relayer`, which its quote must
+name, and on a real origin a listed relay without one is not used. For each relayed spend the wallet asks every relay for a quote
+(six seconds each), drops any it would not sign for, and uses one of the cheapest: the relays within a quarter of the lowest fee
+are drawn from by `weight` (1 when absent), so no one relay is the only one asked. The spend's queue slot, proof and send all go
+to that relay. When it refuses before sending anything (it is full, it rate limits this connection, or its fee is above what the
+spend was proved with), the spend is built again for the next relay's quote, within the fee shown, with that relay's address and
+fee in the proof; an answer that does not say whether a relay sent the spend is never handed to another. History (`/events`) is
+read from whichever relay answers. With one relay everything is as it was. A relay is listed in a page's config with its URL and
+address, and its origin in the page's `connect-src`; `dapp/evm-pool-relays.js` has the rules.
+
 **What the relay sees.** Your IP address; the transaction it is asked to send (all of which becomes public); at
 `/reserve`, the new leaves and the nullifiers being spent; at `/receive`, the chain, note key and fee cap of each box
 it is asked to watch; and at `/events`, the block a history read begins in: the start of a range of blocks after an absence, not the wallet's
@@ -856,9 +867,9 @@ from a Blob) and submission. It checks the ceremony files against their pinned h
 served at `https://tacit.finance/evm-pool/tacit-evm-pool-wallet.js` with `Access-Control-Allow-Origin: *`, as are the
 ceremony files beside it.
 
-Current build, as served (699,699 bytes): sha256 `9226fa938968e684a1c09c207f7cb5dce40e82c995c07808fa1157a7816189d8`. The
+Current build, as served (703,308 bytes): sha256 `3e8e42a79e1be86b823844a41512faeacbca21ab58fcb3bdb1d5b275007e45df`. The
 build is deterministic from the repository: `npm ci` in `build/`, then `node build/build-evm-pool-wallet.mjs` prints the
-same hash. The build before this one (674,893 bytes) was `0e8431ebfbb5651d59340fe3b6ad9889d305d7e501aa81b21607042cb7d3df43`. The 12 October 2026 build (667,636 bytes, sha256
+same hash. The build before this one (699,699 bytes) was `9226fa938968e684a1c09c207f7cb5dce40e82c995c07808fa1157a7816189d8`. The 12 October 2026 build (667,636 bytes, sha256
 `384a88220fb78f576e60480439bceb3e91e0fe8a32557f5c01c672390b81f5bc`) is pinned on IPFS
 (`bafybeihtthsjejf4ij3g2yfpkcvhavkvvw6tfryismkrw5c6ij5ifb6u3y`, Filebase) and stored on Base Sepolia
 ([above](#an-onchain-copy-of-the-proving-files-base-sepolia)). The build before that, which knew only Ethereum, Base and

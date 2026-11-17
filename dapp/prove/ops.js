@@ -138,7 +138,8 @@ async function send({ to, data, gas, value = 0n }) {
   if (!S.address) await connect();
   await ensureMainnet();
   await noneOnItsWay();
-  const hash = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.address, to, data, gas: '0x' + gas.toString(16), chainId: '0x1', ...(value ? { value: '0x' + value.toString(16) } : {}) }] });
+  const tx = { from: S.address, to, data, gas: '0x' + gas.toString(16), chainId: '0x1', ...(value ? { value: '0x' + value.toString(16) } : {}) }, A = await import('../activity.js').catch(() => null), ask = () => S.provider.request({ method: 'eth_sendTransaction', params: [tx] });
+  const hash = A?.sendGuess ? await A.sendGuess({ read: rpc, request: ask, from: S.address, to, value, data }) : await ask();   // (with the guess a wallet on a private mempool needs)
   if (!TX_HASH.test(String(hash))) throw new Error('The wallet did not return a transaction hash.');
   pendingSet({ from: S.address, hash: String(hash).toLowerCase(), at: Date.now() });
   return String(hash).toLowerCase();
