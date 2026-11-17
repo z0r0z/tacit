@@ -17,7 +17,7 @@
 // secrets come from signing the nonce again.
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32, parseNoteString } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=7f4f9327';
+import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=cdb468ea';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=40893745';
 export { MAX_FEE_PERCENT };
@@ -140,6 +140,30 @@ export function exitWarning(entries) {
     return `Part of this went in recently: the newest note has ${n === 0 ? 'no deposits' : `only ${count(n, 'deposit')}`} after it. Waiting for more makes it blend in better.`;
   }
   return 'Part of this went in less than an hour ago. Waiting longer hides it better.';
+}
+// The split deposit's forwarder (contracts/src/TacitSplitDeposit.sol), where there is one: a large deposit is then ONE transaction, the notes and the Tacit part
+// together, all of it or none, for every wallet. Empty until the contract is deployed and a canary has shown a Tacit deposit goes through it: the deposit then
+// goes as it did (the notes, then the rest). `tacit-split-depositor:<chain>` in the browser's storage names one to test with (the canary sets it).
+// The check below is a sanity check, not a proof of the code: the address must hold code and answer as this contract does (the Tacit pool it sends to and
+// the size of each pool the notes go to), so a wrong chain or a contract that is not it is passed over, and the deposit goes the old way.
+export const SPLIT_DEPOSITORS = { 1: null };
+const SPLIT_KEY = (chainId) => `tacit-split-depositor:${chainId}`;
+const isAddress = (a) => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a);
+const sel4 = (sig) => '0x' + Array.from(keccak_256(new TextEncoder().encode(sig)).slice(0, 4), (b) => b.toString(16).padStart(2, '0')).join('');
+export async function splitForwarder({ read, store, chainId, tacitPool, pools }) {
+  let addr = SPLIT_DEPOSITORS[chainId];
+  try { const o = store?.get(SPLIT_KEY(chainId)); if (isAddress(o)) addr = o; } catch { /* the constant stands */ }
+  if (!isAddress(addr) || !isAddress(tacitPool)) return null;
+  const r = await read();
+  const code = await r('eth_getCode', [addr, 'latest']);
+  if (typeof code !== 'string' || code === '0x') return null;
+  const wired = await r('eth_call', [{ to: addr, data: sel4('TACIT_POOL()') }, 'latest']);
+  if (!hexWord(wired) || ('0x' + wired.slice(-40)).toLowerCase() !== tacitPool.toLowerCase()) return null;
+  for (const p of pools) {
+    const d = await r('eth_call', [{ to: addr, data: sel4('denominationOf(address)') + p.address.toLowerCase().replace(/^0x/, '').padStart(64, '0') }, 'latest']);
+    if (!hexWord(d) || BigInt(d) !== BigInt(p.denomination)) return null;
+  }
+  return addr;
 }
 const MIN_KEY = (chainId) => `tacit-fixed-min:${chainId}`;
 const GAS_KEY = (chainId) => `tacit-fixed-gas:${chainId}`;
@@ -291,6 +315,11 @@ export function attach(env) {
     await env.ensureChain(c);
     const bal = BigInt(await (await env.read())('eth_getBalance', [env.account(), 'latest']));
     if (bal < p.wei) throw new Error(`Your wallet holds ${formatEther(bal)} ETH on ${c.full}, less than the ${formatEther(p.wei)} ETH to deposit.`);
+    // Where the split's forwarder is deployed and answers as it should, the notes and the rest go in ONE transaction. A single note with nothing left over
+    // is a plain deposit either way, so it keeps the old path.
+    const fwd = (p.remainder > 0n || p.noteCount >= 2) && env.tacitPool
+      ? await splitForwarder({ read: env.read, store: env.store, chainId, tacitPool: env.tacitPool, pools: p.notes }).catch(() => null) : null;
+    if (fwd) return depositAtomic(p, noteTotal, step, c, fwd);
     let out;
     try {
       out = await flowFor().deposit(p, {
@@ -319,6 +348,32 @@ export function attach(env) {
       throw new Error(`${placed}. The rest, ${formatEther(p.remainder)} ETH, did not go in: ${env.errText(e)} The amount above is what is left; press the button again.`);
     }
     return { text: `${placed}, and ${formatEther(p.remainder)} ETH went into your private balance.`, h };
+  }
+
+  // The split as ONE transaction through the forwarder `fwd`: the notes are prepared and signed for as ever, then the page proves the Tacit part and sends the one
+  // call (with nothing left over, this sends it): every note and the rest land together or none does, so there is no half-done state to explain.
+  async function depositAtomic(p, noteTotal, step, c, fwd) {
+    let out;
+    try {
+      out = await flowFor().depositWith(p, async (notes) => {
+        const split = { forwarder: fwd, pools: notes.map((n) => n.pool), commitments: notes.map((n) => commitmentBytes32(n.secrets.commitment)) };
+        if (p.remainder > 0n) return env.depositRest(p.remainder, step, c, split);
+        step('confirm the deposit in your wallet');
+        return (await flowFor().sendOne(await env.splitCall(fwd, null, split))).hash;
+      }, { onStep: (s) => step(s.step === 'find' ? 'looking for the next free note number' : s.step === 'sign' ? `sign for note ${s.i + 1} of ${s.of}` : 'getting the deposit ready') });
+    } catch (e) {
+      if (e?.done?.length) {   // the deposit was sent and its notes are not in the pool yet: they are the wallet's, so they are kept
+        writeNotes(env.store, chainId, env.account(), [...readNotes(env.store, chainId, env.account()), ...e.done.map(metaOf)]);
+        loadNotes();
+        throw e;
+      }
+      throw new Error(`None of it was deposited. ${env.errText(e)} If your wallet sent it after all, Find shows the notes once it is mined.`);
+    }
+    writeNotes(env.store, chainId, env.account(), [...readNotes(env.store, chainId, env.account()), ...out.notes.map(metaOf)]);
+    loadNotes();
+    const placed = `${out.notes.length === 1 ? 'The note is' : 'The notes are'} in the large ${out.notes.length === 1 ? 'pool' : 'pools'} (${formatEther(noteTotal)} ETH)`;
+    if (p.remainder === 0n) return { text: `${placed}, in one transaction.`, h: null };
+    return { text: `${placed}, and ${formatEther(p.remainder)} ETH went into your private balance, all in one transaction.`, h: out.hash };
   }
 
   // ---- card two: the notes ----
