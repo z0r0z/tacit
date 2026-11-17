@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-// The pool line under the chain row of /pay/eth/ (#poolstat), in a real browser under the page's own CSP. It holds the room its figures take (two lines, three on a phone) whether they
+// The pool line under the chain row of /pay/eth/ (#poolstat), and the chain row itself (#chains, shown to a visitor whose last chain was not Ethereum), in a real browser under the page's own CSP. It holds the room its figures take (two lines, three on a phone) whether they
 // are in yet or not, so nothing under it moves when they arrive: not when the read for them fails (the form would jump up 64px on a phone, 46px at a desktop), and not when they come
 // in two pieces (the pool's balance first, the tally of what it has carried a moment after: the box shrank to the first piece's one line and grew back). A visitor with a wallet
 // connected arrives as /pay/ -> /pay/eth/, one with none arrives on it; every host but the page's own is refused (the read fails) or, in the last checks, answers.
 //   · the read fails: the pool line stays in the page at the room it held, and the form is where it was before the read ended (a phone and a desktop, connected and not);
 //   · the read answers, the tally a second behind: the line shows the pool's figures and then the tally's, and in every frame from the form's first the form is at one height;
+//   · the chain row holds one height from the form's first frame: its tabs carry their figure line from the first (a blank one while there is no figure) and the empty row holds the height
+//     they settle at, on a phone and at a desktop, whether the pool reads answer, come late or fail;
 //   · the read answers: the line shows the pool's figures;
 //   · Robinhood Chain's line, with big figures, on a 360 or 375px phone: it names the chain as its tab does (Robinhood), so it keeps to three lines like the others, not four.
 //
@@ -64,7 +66,8 @@ async function open({ width, connected, reads, tally = 0, chain = 1, big = false
     window.__frames = [];
     const f = () => {
       const form = document.querySelector('#form'), p = document.querySelector('#poolstat');
-      if (form && p) window.__frames.push({ top: Math.round(form.getBoundingClientRect().top * 10) / 10, h: Math.round(p.getBoundingClientRect().height), form: form.textContent.trim().length > 0, stage: /transacted/.test(p.textContent) ? 2 : /holds/.test(p.textContent) ? 1 : 0 });
+      const row = document.querySelector('#chains');
+      if (form && p) window.__frames.push({ top: Math.round(form.getBoundingClientRect().top * 10) / 10, h: Math.round(p.getBoundingClientRect().height), c: row && !row.hidden ? Math.round(row.getBoundingClientRect().height) : 0, form: form.textContent.trim().length > 0, stage: /transacted/.test(p.textContent) ? 2 : /holds/.test(p.textContent) ? 1 : 0 });
       requestAnimationFrame(f);
     };
     requestAnimationFrame(f);
@@ -118,9 +121,24 @@ try {
     await page.waitForFunction(() => /transacted in/.test(document.querySelector('#poolstat')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(500);
     const frames = (await page.evaluate(() => window.__frames)), live = frames.slice(frames.findIndex((f) => f.form));
-    const heights = [...new Set(live.map((f) => f.h))], text = (await page.textContent('#poolstat')).replace(/\s+/g, ' ').trim();
+    const heights = [...new Set(live.map((f) => f.h))], rows = [...new Set(frames.filter((f) => f.c > 0).map((f) => f.c))], tops = [...new Set(live.map((f) => f.top))], text = (await page.textContent('#poolstat')).replace(/\s+/g, ' ').trim();
     ok(/^The pool on Robinhood holds 12,345\.679 ETH in 123,456 notes · 123,456\.78 ETH transacted in 98,765 deposits\.$/.test(text), `${width}px: Robinhood's line names the chain as its tab does (${text.slice(0, 48)}…)`);
     ok(heights.length === 1 && heights[0] === 54, `${width}px: the line keeps to three lines through the figures arriving, never a fourth (heights ${heights.join('px, ')}px over ${live.length} frames)`);
+    ok(rows.length === 1 && rows[0] > 0 && tops.length === 1, `${width}px: the chain row holds one height (${rows.join('px, ')}px) and so does the form (${tops.join('px, ')}px)`);
+    await ctx.close();
+  }
+
+  // the chain row of a visitor whose last chain was Base: its tabs hold their height as the figures arrive in two pieces, come not at all, or the page is a desktop
+  for (const [width, label, reads] of [[390, 'a phone', true], [430, 'a wide phone', true], [641, 'a narrow desktop', true], [1280, 'a desktop', true], [390, 'a phone, the reads failing', false]]) {
+    const { ctx, page, readEnded } = await open({ width, connected: false, reads, tally: reads ? 800 : 0, chain: 8453 });
+    if (reads) await page.waitForFunction(() => /in pool/.test(document.querySelector('#chains')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+    else await Promise.race([readEnded, new Promise((r) => setTimeout(r, 20000))]);
+    await page.waitForTimeout(reads ? 1500 : 800);
+    const frames = (await page.evaluate(() => window.__frames)), live = frames.slice(frames.findIndex((f) => f.form));
+    const rows = [...new Set(frames.filter((f) => f.c > 0).map((f) => f.c))], tops = [...new Set(live.map((f) => f.top))];       // the row over every frame from the first, the empty row before its tabs included
+    const tabs = await page.$$eval('#chains button', (bs) => bs.map((b) => b.querySelector('small') ? b.querySelector('small').textContent.replace(/\u00a0/g, '·').trim() : 'no figure line'));
+    ok(tabs.length === 2 && tabs.every((t) => t !== 'no figure line'), `${label}: every tab has its figure line, from the first (${tabs.join(' | ')})`);
+    ok(rows.length === 1 && rows[0] >= 69 && tops.length === 1, `${label}: the chain row held one height (${rows.join('px, ')}px) and the form one place (${tops.join('px, ')}px), over ${live.length} frames`);
     await ctx.close();
   }
 
