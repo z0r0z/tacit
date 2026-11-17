@@ -1217,6 +1217,8 @@ test('draw: a machine\'s usual time is the whole wait, so one slow to ask record
   assert.equal(s.blockFelt, 18);
   assert.match(s.text, /usually 18 s from the block being posted to this machine's proof arriving \(10 s of that proving it\)/);
   assert.match(s.text, /About 8 s of that is the block waiting/);
+  assert.doesNotMatch(s.text, /none taken yet/, 'a machine with a record is not told it has taken none');
+  assert.equal(((s.text.match(/Tacit chain blocks:/g)) || []).length, 1, 'and its block line is said once');
 });
 
 test('draw: a racer is counted from when the block was open to it, and a machine drawn but not there has the wait counted against it', async () => {
@@ -1254,5 +1256,7 @@ test('draw: odds follow the whole wait, and a record from before it was kept wei
   await st.putWorkers(ws);
   const [sx, sy, sz] = await Promise.all([x, y, z].map((w) => b.standing(addrOf(w))));
   assert.ok(Math.abs(sx.oddsPct - sz.oddsPct) < 0.2, 'an older record weighs as its proving time');
+  assert.match(sz.text, /Tacit chain blocks: 3 taken, usually 10 s each\./, 'an older record is said as before');
+  assert.doesNotMatch(sz.text, /none taken yet/);
   assert.ok(Math.abs(sx.oddsPct / sy.oddsPct - 3) < 0.1, `10 s of waiting against 30 s: three to one (${sx.oddsPct} / ${sy.oddsPct})`);
 });
