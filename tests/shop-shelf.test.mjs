@@ -1,9 +1,10 @@
 // The shop page's shelf (dapp/shop/shelf.js): the shelf read from the shop's events, an address as its zeros and the rest, and the calls a buyer makes, against `cast calldata`.
-//   node --test tests/vanity-shelf.test.mjs
+//   node --test tests/shop-shelf.test.mjs
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
-import { SHOP, MARKET, TAC, TOPICS, foldShelf, sortShelf, zeroBits, addressParts, tacText, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress, isId } from '../dapp/shop/shelf.js';
+import { SHOP, MARKET, TAC, TOPICS, foldShelf, sortShelf, zeroBits, addressParts, tacText, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress, isId,
+  zerosOf, zerosText, usdText, tacUsdFrom, priceUsd, zeroTiers, filterShelf, tokenNumber, tokenUrl, ownerOfData, addressOfData, parseTokenId, soldTo, forwarderRuntime, forwarderInit, forwardRefusal, deployData, decodeAddress, initcodeOf, deployRefusal } from '../dapp/shop/shelf.js';
 
 const W = 10n ** 18n, w32 = (n) => BigInt(n).toString(16).padStart(64, '0');
 const id = (n) => '0x' + SHOP.slice(2) + '00' + '5125' + n.toString(16).padStart(18, '0');
@@ -75,7 +76,7 @@ test('an address is shown whole, its zeros apart from the rest; a price is whole
 
 test('the calls are what `cast calldata` encodes for the same arguments', () => {
   const gold = Object.fromEntries(readFileSync(new URL('./fixtures/vanity-shop-calldata.txt', import.meta.url), 'utf8').split('\n').filter((l) => l && !l.startsWith('#')).map((l) => l.split(' ')));
-  assert.deepEqual(Object.keys(gold).filter((k) => !k.startsWith('error:')), ['buy', 'buyWithPermit', 'approve', 'listings', 'balanceOf', 'allowance', 'nonces']);
+  assert.deepEqual(Object.keys(gold).filter((k) => !/error:/.test(k)), ['buy', 'buyWithPermit', 'approve', 'listings', 'balanceOf', 'allowance', 'nonces', 'ownerOf', 'deploy', 'deployLong', 'addressOf']);
   const ID = '0x00000000000785882df83d4cc6ed45c21eb1176c0051250123456789abcdef01', TO = '0x1111111111111111111111111111111111111111';
   const R = '0x' + '00'.repeat(31) + '01', S = '0x' + '00'.repeat(31) + '02';
   assert.equal(buyData({ id: ID, to: TO, nonce: 3, maxPrice: 100n * W, deadline: 1800000000 }), gold.buy);
@@ -109,4 +110,81 @@ test('a refusal is told in words by its error selector (the shop\'s own and the 
   for (const [name, sel] of errs) { assert.ok(refusalWords(sel), name); assert.equal(refusalWords(sel + '00'.repeat(28)), refusalWords(sel), `${name} with revert data after it`); assert.equal(refusalWords(sel.toUpperCase().replace('0X', '0x')), refusalWords(sel)); }
   assert.notEqual(refusalWords(errs[0][1]), refusalWords(errs[2][1]), 'a sale lost and a price changed are not told alike');
   assert.equal(refusalWords('0xdeadbeef'), null); assert.equal(refusalWords(undefined), null); assert.equal(refusalWords('0x'), null); assert.equal(refusalWords(null), null);
+});
+
+test('the list says an address\'s zeros in digits and its price in dollars when TAC has one, and the filter keeps the rows it should', () => {
+  assert.equal(zerosOf(40), 10); assert.equal(zerosOf(39), 9); assert.equal(zerosOf(36), 9); assert.equal(zerosOf(3), 0); assert.equal(zerosOf(0), 0);
+  assert.equal(zerosText(10), '10 zeros'); assert.equal(zerosText(1), '1 zero'); assert.equal(zerosText(0), '0 zeros');
+  assert.equal(usdText(4.654), '$4.65'); assert.equal(usdText(99.994), '$99.99'); assert.equal(usdText(100), '$100'); assert.equal(usdText(1234.5), '$1,235'); assert.equal(usdText(3652), '$3,652');
+  assert.equal(tacUsdFrom({ ethUsd: 2000, tacEth: 0.0001 }), 0.2);
+  for (const bad of [{}, { ethUsd: 0, tacEth: 1 }, { ethUsd: 2000 }, { tacEth: 1 }, { ethUsd: 2000, tacEth: NaN }, { ethUsd: -1, tacEth: 1 }]) assert.equal(tacUsdFrom(bad), null, JSON.stringify(bad));
+  assert.ok(Math.abs(priceUsd(28n * W, 0.166) - 4.648) < 1e-9); assert.equal(priceUsd(28n * W, null), null); assert.equal(priceUsd(28n * W, 0), null);
+  const row = (n, bits, v) => ({ id: id(n), vanity: v, nonce: 0, price: BigInt(n) * W, bits });
+  const shelf = [row(1, 40, '0x0000000000f5e9a4599fb175ca03db96a7e19bb3'), row(2, 39, '0x000000000110d317ed602ca7ef10a72bd72bd56f'), row(3, 36, '0x000000000a2ebf67bc9794f7a504e10c3b859cbc'), row(4, 37, '0x0000000001dead0000000000000000000000beef')];
+  const ids = (list) => list.map((x) => x.id);
+  assert.deepEqual(zeroTiers(shelf), [9, 10]); assert.deepEqual(zeroTiers([]), []);
+  assert.deepEqual(ids(filterShelf(shelf)), ids(shelf), 'no filter keeps all, in order');
+  assert.deepEqual(ids(filterShelf(shelf, { zeros: 10 })), [id(1)]);
+  assert.deepEqual(ids(filterShelf(shelf, { zeros: 9 })), [id(2), id(3), id(4)]);
+  assert.deepEqual(ids(filterShelf(shelf, { q: 'dead' })), [id(4)]); assert.deepEqual(ids(filterShelf(shelf, { q: 'BEEF' })), [id(4)]);
+  assert.deepEqual(ids(filterShelf(shelf, { q: '0xF5E9' })), [id(1)], 'case and a 0x do not matter');
+  assert.deepEqual(ids(filterShelf(shelf, { q: ' a2eb f6 ' })), [id(3)], 'spaces are dropped');
+  assert.deepEqual(ids(filterShelf(shelf, { zeros: 9, q: 'a2eb' })), [id(3)]); assert.deepEqual(filterShelf(shelf, { zeros: 10, q: 'dead' }), [], 'both must hold');
+  assert.deepEqual(filterShelf(shelf, { q: 'xyz' }), [], 'not hex finds nothing'); assert.deepEqual(filterShelf(shelf, { q: 'g0' }), []);
+  assert.equal(filterShelf(shelf, { q: '   ' }).length, 4); assert.equal(filterShelf(shelf, { q: null }).length, 4); assert.equal(filterShelf(shelf, { zeros: 11 }).length, 0);
+});
+
+test('a bought token: its number and page, the calls that read and use it against cast, and what pasted bytecode may be', () => {
+  const gold = Object.fromEntries(readFileSync(new URL('./fixtures/vanity-shop-calldata.txt', import.meta.url), 'utf8').split('\n').filter((l) => l && !l.startsWith('#')).map((l) => l.split(' ')));
+  const ID = '0x00000000000785882df83d4cc6ed45c21eb1176c0051250123456789abcdef01';
+  assert.match(tokenNumber(ID), /^[1-9]\d+$/); assert.equal(BigInt(tokenNumber(ID)), BigInt(ID));
+  assert.equal(tokenUrl(ID), `https://etherscan.io/nft/${MARKET}/${BigInt(ID)}`);
+  assert.equal(ownerOfData(ID), gold.ownerOf);
+  assert.equal(deployData(ID, '0x60016000f3'), gold.deploy, 'five bytes: the code is padded to the word');
+  assert.equal(deployData(ID, '0x' + '6001'.repeat(35)), gold.deployLong, 'seventy bytes: two words and a little over');
+  assert.equal(deployData(ID.toUpperCase().replace('0X', '0x'), '0X60016000F3'), gold.deploy, 'case and the prefix do not matter');
+  assert.equal(decodeAddress('0x' + '00'.repeat(12) + 'ab'.repeat(20)), '0x' + 'ab'.repeat(20)); assert.equal(decodeAddress('0x12'), null); assert.equal(decodeAddress(null), null);
+  assert.equal(initcodeOf(' 0x6001 6000\nF3 '), '0x60016000f3'); assert.equal(initcodeOf('60016000f3'), '0x60016000f3');
+  for (const bad of ['0x600', '0xzz', '', '0x', '   ', null, undefined, '6001 6000 f']) assert.equal(initcodeOf(bad), null, String(bad));
+  assert.equal(initcodeOf('00'.repeat(49152)).length, 2 + 98304, '49,152 bytes is the most the EVM takes'); assert.equal(initcodeOf('00'.repeat(49153)), null);
+  assert.ok(deployRefusal(gold['market-error:DeploymentFailed']) && deployRefusal(gold['market-error:NotOwnerNorApproved']));
+  assert.notEqual(deployRefusal(gold['market-error:DeploymentFailed']), deployRefusal(gold['market-error:NotOwnerNorApproved']));
+  assert.equal(deployRefusal(gold['market-error:DeploymentFailed'] + '00'.repeat(28)), deployRefusal(gold['market-error:DeploymentFailed']), 'with revert data after the selector');
+  assert.equal(deployRefusal('0xdeadbeef'), null); assert.equal(deployRefusal(undefined), null);
+});
+
+test('the forwarder is the 35 bytes it is said to be, with the receiver inside and nothing else to change', () => {
+  const to = '0x00000000000000000000000000000000000000b2';
+  const rt = forwarderRuntime(to);
+  // spelled out opcode by opcode: PUSH0 x4, SELFBALANCE, PUSH20 <to>, GAS, CALL, PUSH1 0x22, JUMPI, PUSH0, PUSH0, REVERT, JUMPDEST
+  assert.equal(rt, '0x' + '5f5f5f5f' + '47' + '73' + to.slice(2) + '5a' + 'f1' + '6022' + '57' + '5f5f' + 'fd' + '5b');
+  assert.equal((rt.length - 2) / 2, 35, 'thirty-five bytes');
+  assert.equal(parseInt(rt.slice(2 + 34 * 2, 2 + 35 * 2), 16), 0x5b, 'the jump lands on the JUMPDEST at 0x22, the last byte');
+  assert.equal(forwarderInit(to), '0x' + '602380' + '6009' + '5f' + '39' + '5f' + 'f3' + rt.slice(2), 'its creation code copies 0x23 bytes from offset 9 and returns them');
+  assert.equal((forwarderInit(to).length - 2) / 2, 44);
+  assert.equal(forwarderRuntime(to.toUpperCase().replace('0X', '0x')), rt, 'the case of the address does not matter');
+  assert.notEqual(forwarderRuntime('0x00000000000000000000000000000000000000b3'), rt);
+});
+
+test('what stops an address from being the one ETH is passed on to', () => {
+  const vanity = '0x0000000000f5e9a4599fb175ca03db96a7e19bb3', fine = '0x1111111111111111111111111111111111111111';
+  assert.equal(forwardRefusal(fine, vanity), null);
+  for (const [bad, re] of [['', /Name the address/], ['0x12', /Name the address/], [null, /Name the address/], ['0x' + '0'.repeat(40), /empty address/], [vanity, /itself/], [vanity.toUpperCase().replace('0X', '0x'), /itself/], [SHOP, /shop, the market or TAC/], [MARKET, /shop, the market or TAC/], [TAC, /shop, the market or TAC/]]) assert.match(forwardRefusal(bad, vanity) ?? '', re, String(bad));
+  assert.equal(forwardRefusal(fine, null), null, 'with no address to compare to it is only the others');
+});
+
+test('a token id is read as a person types it, and the tokens a wallet bought are found in the shop\'s logs', () => {
+  const ID = '0x00000000000785882df83d4cc6ed45c21eb1176c0051250123456789abcdef01';
+  assert.equal(parseTokenId(ID), ID); assert.equal(parseTokenId(BigInt(ID).toString()), ID); assert.equal(parseTokenId(' ' + BigInt(ID).toString().replace(/(\d{3})/g, '$1 ') + ' '), ID, 'spaces inside are dropped');
+  assert.equal(parseTokenId('0x1'), '0x' + '0'.repeat(63) + '1'); assert.equal(parseTokenId('255'), '0x' + '0'.repeat(62) + 'ff'); assert.equal(parseTokenId('0XFF'), '0x' + '0'.repeat(62) + 'ff');
+  for (const bad of ['', '  ', 'abc', '0x', '-1', '1.5', null, undefined, '0x' + '1'.repeat(65), (2n ** 256n).toString()]) assert.equal(parseTokenId(bad), null, String(bad));
+  assert.equal(parseTokenId((2n ** 256n - 1n).toString()), '0x' + 'f'.repeat(64));
+  const me = '0x1111111111111111111111111111111111111111', you = '0x2222222222222222222222222222222222222222';
+  const sold = (n, to, block, idx = 0) => ({ topics: [TOPICS.sold, id(n), topicAddr(to), topicAddr(you)], data: '0x' + w32(5n * W), blockNumber: '0x' + block.toString(16), logIndex: '0x' + idx.toString(16) });
+  const logs = [sold(1, me, 100), sold(2, you, 101), sold(3, me, 102, 1), sold(4, me, 102, 0), listed(5, vanityOf(5), 0, 5n * W, 103), gone('unlisted', 6, 104), sold(1, me, 105), null, {}];
+  assert.deepEqual(soldTo(logs.filter(Boolean), me), [id(1), id(3), id(4)].sort((a, b) => 0) && [id(1), id(3), id(4)], 'newest first, once each');
+  assert.deepEqual(soldTo(logs.filter(Boolean), you), [id(2)]);
+  assert.deepEqual(soldTo(logs.filter(Boolean), me.toUpperCase().replace('0X', '0x')), [id(1), id(3), id(4)], 'the case of the address does not matter');
+  assert.deepEqual(soldTo(logs.filter(Boolean), '0x3333333333333333333333333333333333333333'), []); assert.deepEqual(soldTo(logs, 'nope'), []); assert.deepEqual(soldTo(null, me), []); assert.deepEqual(soldTo([], me), []);
+  assert.equal(addressOfData(ID), readFileSync(new URL('./fixtures/vanity-shop-calldata.txt', import.meta.url), 'utf8').split('\n').find((l) => l.startsWith('addressOf ')).split(' ')[1], 'addressOf against cast');
 });
