@@ -732,7 +732,8 @@ function spender(seed, { sealed = false, extra = [] } = {}) {
     if (m === 'eth_call' && p[0]?.from && s.callFail) throw new Error('fetch failed');
     if (m === 'eth_call' && p[0]?.from && s.callRevert) throw Object.assign(new Error('execution reverted'), { data: s.callRevert });
     if (m === 'eth_blockNumber' && after && !--after) s.spend();
-    return inner(m, p);
+    const answered = s.answer?.(m, p);
+    return answered !== undefined ? answered : inner(m, p);
   };
   const fetchImpl = async (url, init) => {
     const path = url.slice('https://k.test'.length).split('?')[0];
@@ -892,6 +893,57 @@ await check('a repeat that finds the first request on its way, which the wallet 
   await s.ready();
   await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), (e) => e.said === true && e.maybeSent === true && e.spent !== true && /already on its way/.test(e.message)));
   assert.equal(s.count('/relay'), 2);
+});
+
+// The pool's own answer to isSpent(bytes32[]), from the fake pool's logs: one word per note, 1 once a Transact spent it.
+const IS_SPENT = '0x' + Buffer.from(keccak_256(new TextEncoder().encode('isSpent(bytes32[])'))).toString('hex').slice(0, 8);
+const spentAnswer = (s) => (m, p) => {
+  if (m !== 'eth_call' || !String(p[0]?.data).startsWith(IS_SPENT)) return undefined;
+  const words = String(p[0].data).slice(10).match(/.{64}/g).slice(2).map((h) => BigInt('0x' + h));
+  return '0x' + w64(32) + w64(words.length) + words.map((nf) => w64(s.pool.logs.some((l) => [l.topics[1], l.topics[2]].some((t) => BigInt(t) === nf)) ? 1 : 0)).join('');
+};
+const NEVER_MINED = '0x' + 'ab'.repeat(32);
+
+await check('a relay that gives a hash which is never mined, with the notes unspent on the chain, ends with "it did not go through", frees the notes, and a second try goes', async () => {
+  const s = spender(41);
+  s.reserve = () => slotOf(s.pool);
+  s.relay = (n) => (n === 1 ? [200, { txHash: NEVER_MINED }] : [200, { txHash: s.spend().tx }]);
+  s.answer = spentAnswer(s);
+  s.make();
+  await s.ready();
+  let steps = [];
+  const delays = await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', onStep: (x) => steps.push(x) }),
+    (e) => e.said === true && e.unmined === true && e.hash === NEVER_MINED && e.maybeSent !== true && /did not go through.*never mined.*nothing was spent/.test(e.message)));
+  assert.ok(delays.reduce((a, b) => a + b, 0) >= 150_000, 'after the wait for a receipt');
+  assert.ok(!delays.some((d) => d >= 60_000), 'and without a further minute of waiting for a spend that is not coming');
+  assert.equal(s.count('/relay'), 1);
+  const again = await quickly(async () => { await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); });
+  assert.equal(s.count('/relay'), 2, 'its notes are free: a second try is sent');
+  assert.equal(s.proofs, 2);
+});
+
+await check('the same with the notes spent on the chain (the hash given has no receipt, a transaction replaced it): no such message, the spend is taken as sent', async () => {
+  const s = spender(42);
+  s.reserve = () => slotOf(s.pool);
+  s.relay = () => { s.spend(); return [200, { txHash: NEVER_MINED }]; };   // the spend is in the pool (by another transaction: the hash given has no receipt)
+  s.answer = spentAnswer(s);
+  s.make();
+  await s.ready();
+  let h;
+  await quickly(async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); });
+  assert.equal(h, NEVER_MINED);
+  assert.equal(s.count('/relay'), 1);
+});
+
+await check('a node that does not serve the spent-notes read leaves the wait as it was: the spend is returned as sent, not called a failure', async () => {
+  const s = spender(43);
+  s.reserve = () => slotOf(s.pool);
+  s.relay = () => [200, { txHash: NEVER_MINED }];
+  s.make();
+  await s.ready();
+  let h;
+  await quickly(async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); });
+  assert.equal(h, NEVER_MINED);
 });
 
 await check('a withdrawal the relay refuses gave its notes and no hash; one whose notes are spent already gave neither; a callback that throws changes nothing', async () => {

@@ -991,8 +991,8 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   }
   const releaseSlot = (id) => keeperPost('/cancel', { reservation: id }).catch(() => {});
 
-  // true once mined, false if it reverted, true on no answer in time (it may still land; sync will tell). A spend counts
-  // only when the receipt carries the pool's Transact for its nullifiers, so a hash for some other transaction is not
+  // true once mined, false if it reverted, 'unseen' on no answer in time (truthy: it may still land; sync will tell). A spend
+  // counts only when the receipt carries the pool's Transact for its nullifiers, so a hash for some other transaction is not
   // taken as this payment.
   async function landed(hash, nfs = [], read = chain.rpc) {
     for (let i = 0; i < 120; i++) {
@@ -1002,7 +1002,16 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       return !nfs.length || (r.logs || []).some((l) => String(l.address).toLowerCase() === String(chain.pool).toLowerCase()
         && String(l.topics?.[0]).toLowerCase() === TRANSACT_TOPIC && nfs.every((nf) => [l.topics[1], l.topics[2]].some((t) => t != null && BigInt(t) === BigInt(nf))));
     }
-    return true;
+    return 'unseen';
+  }
+  // The pool has none of `ins` spent, read from the chain itself (isSpent). false when any is spent, and when the answer is not what a
+  // read of that many notes looks like (a node that does not serve the call): the caller then takes the slower way.
+  async function unspentOnChain(ins) {
+    try {
+      const out = await chain.rpc('eth_call', [{ to: chain.pool, data: calldata('isSpent(bytes32[])', [{ array: 'bytes32' }], [ins.map((n) => BigInt(n.nf))]) }, 'latest']);
+      const words = String(out).slice(2).match(/.{64}/g) || [];
+      return words.length === ins.length + 2 && BigInt('0x' + words[1]) === BigInt(ins.length) && words.slice(2).every((x) => BigInt('0x' + x) === 0n);
+    } catch { return false; }
   }
 
   // Notes already spent (from this key elsewhere, or by an earlier try of this spend), said in words. `spent` lets a caller whose spend it
@@ -1119,7 +1128,17 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       try { onSent?.(h); } catch { }                              // (the hash, before the wait for the block)
       for (const n of ins) pending.add(n.nf);
       onStep('waiting for it to be mined');
-      if (await landed(h, ins.map((n) => n.nf), q ? chain.rpc : signer?.rpc || chain.rpc)) {
+      const mined = await landed(h, ins.map((n) => n.nf), q ? chain.rpc : signer?.rpc || chain.rpc);
+      // A relay gave a hash, three minutes passed with no receipt, and the pool has none of the notes spent: the relay's transaction was
+      // dropped before it was mined (the relay sends it again on its own, so this is the case where that did not help either). Nothing
+      // of the wallet's has moved; a spend of the same notes is safe, since only one transaction can spend them, so it is said so now
+      // and the notes are free for the next try, instead of left unconfirmed for a quarter of an hour.
+      if (mined === 'unseen' && q && await unspentOnChain(ins) && !(await chain.rpc('eth_getTransactionReceipt', [h]).catch(() => null))) {
+        for (const n of ins) pending.delete(n.nf);
+        sync().catch(() => {});
+        throw Object.assign(new Error('It did not go through: the relay sent it, but it was never mined, and nothing was spent. Try again.'), { said: true, unmined: true, hash: h });
+      }
+      if (mined) {
         // Returns once this wallet sees it (spent notes gone, change in), so the next action can build on it.
         const spent = new Set(ins.map((n) => n.nf));
         const seen = await waitFor(() => !state().notes.some((n) => spent.has(n.nf)), 60_000).then(() => true, () => false);

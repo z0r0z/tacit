@@ -179,6 +179,75 @@ const args = [1n, 25, [[0n, 0n], [[0n, 0n], [0n, 0n]], [0n, 0n], Array(11).fill(
   ok(landed.every((x) => x && x.status === '0x1' || x?.status === '0x0'), 'both are mined once the endpoint lets them go', landed.map((x) => x?.status).join());
   hold.close();
 }
+// A private endpoint that takes a transaction and never mines it (the case that left a relayed payment unmined): with no receipt after
+// `resendSecs`, the keeper sends the same signed transaction again, to the private endpoint and to the read node, which mines it. A mined
+// transaction is left alone, and with public sends off the read node is not used.
+{
+  const { keccak256, parseTransaction } = await import('viem');
+  const swallow = () => {
+    const held = [];
+    const srv = http.createServer(async (q, r) => {
+      let body = ''; for await (const c of q) body += c;
+      const req = JSON.parse(body), one = async (x) => {
+        if (x.method !== 'eth_sendRawTransaction') { const f = await rpc(x.method, x.params); return { jsonrpc: '2.0', id: x.id, ...(f.error ? { error: f.error } : { result: f.result }) }; }
+        held.push(x.params[0]);
+        return { jsonrpc: '2.0', id: x.id, result: keccak256(x.params[0]) };
+      };
+      const out = Array.isArray(req) ? await Promise.all(req.map(one)) : await one(req);
+      r.writeHead(200, { 'content-type': 'application/json' }); r.end(JSON.stringify(out));
+    }).listen(0);
+    return { url: `http://127.0.0.1:${srv.address().port}/`, held, close: () => srv.close() };
+  };
+  const fresh = async (byte) => { const a = privateKeyToAccount('0x' + byte.repeat(32)); await rpc('anvil_setBalance', [a.address, '0x' + (10n ** 18n).toString(16)]); return a; };
+  const receiptOf = (h) => rpc('eth_getTransactionReceipt', [h]).then((x) => x.result);
+
+  const acct = await fresh('8a'), s = swallow();
+  const chain = await makeKeeperChain({ cfg: { ...base, rpcUrls: [pubUrl], sendRpcUrls: [s.url], resendSecs: 0.6, resendTries: 2 }, account: acct });
+  const before = pubSeen.length;
+  const hash = await chain.send('sweepReceive', args, { gas: 300_000n, simulate: false });
+  ok(s.held.length === 1 && pubSeen.length === before && !(await receiptOf(hash)), 'the private endpoint takes it and nothing mines it', `held ${s.held.length}`);
+  for (let i = 0; i < 80 && !(await receiptOf(hash)); i++) await sleep(100);
+  const rc = await receiptOf(hash);
+  ok(!!rc, 'with no receipt, it is sent again and mined', rc ? `block ${Number(rc.blockNumber)}` : 'no receipt');
+  ok(s.held.length >= 2 && s.held.every((r) => r === s.held[0]), 'to the private endpoint again, as the same signed transaction', `${s.held.length}`);
+  ok(pubSeen.length === before + 1 && pubSeen[before] === s.held[0], 'and to the read node, which got that same transaction', `${pubSeen.length - before}`);
+  ok(keccak256(s.held[0]) === hash && parseTransaction(s.held[0]).nonce === Number((await rpc('eth_getTransactionByHash', [hash])).result.nonce), 'it is the transaction first sent: same hash, same nonce');
+  await sleep(1500);
+  ok(pubSeen.length === before + 1, 'and once mined it is not sent again');
+  ok(await chain.resend(hash) === false, 'asking to send a mined one again does nothing');
+  s.close();
+}
+{
+  const a = privateKeyToAccount('0x' + '8b'.repeat(32));
+  await rpc('anvil_setBalance', [a.address, '0x' + (10n ** 18n).toString(16)]);
+  const { keccak256 } = await import('viem');
+  const held = [];
+  const srv = http.createServer(async (q, r) => {
+    let body = ''; for await (const c of q) body += c;
+    const req = JSON.parse(body), one = async (x) => {
+      if (x.method !== 'eth_sendRawTransaction') { const f = await rpc(x.method, x.params); return { jsonrpc: '2.0', id: x.id, ...(f.error ? { error: f.error } : { result: f.result }) }; }
+      held.push(x.params[0]);
+      return { jsonrpc: '2.0', id: x.id, result: keccak256(x.params[0]) };
+    };
+    const out = Array.isArray(req) ? await Promise.all(req.map(one)) : await one(req);
+    r.writeHead(200, { 'content-type': 'application/json' }); r.end(JSON.stringify(out));
+  }).listen(0);
+  const url = `http://127.0.0.1:${srv.address().port}/`;
+  const before = pubSeen.length;
+  const strict = await makeKeeperChain({ cfg: { ...base, allowPublicSend: false, rpcUrls: [pubUrl], sendRpcUrls: [url], resendSecs: 0.5, resendTries: 2 }, account: a });
+  await strict.send('sweepReceive', args, { gas: 300_000n, simulate: false });
+  for (let i = 0; i < 200 && held.length < 3; i++) await sleep(100);   // (the fork looks an unknown receipt up upstream, so each look takes a moment)
+  await sleep(1500);
+  ok(held.length === 3 && pubSeen.length === before, 'with public sends off it is sent to the private endpoint again, never the read node', `${held.length} private, ${pubSeen.length - before} public`);
+  const b2 = privateKeyToAccount('0x' + '8c'.repeat(32));
+  await rpc('anvil_setBalance', [b2.address, '0x' + (10n ** 18n).toString(16)]);
+  const off = await makeKeeperChain({ cfg: { ...base, rpcUrls: [pubUrl], sendRpcUrls: [url], resendSecs: 0 }, account: b2 });
+  held.length = 0;
+  await off.send('sweepReceive', args, { gas: 300_000n, simulate: false });
+  await sleep(1500);
+  ok(held.length === 1, 'and with resendSecs 0 it is never sent again', `${held.length}`);
+  srv.close();
+}
 pubSrv.close();
 console.log(`\n${passed} passed${failures ? `, ${failures} failed` : ''}`);
 process.exit(failures ? 1 : 0);

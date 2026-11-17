@@ -3959,7 +3959,7 @@ const forgetPaid = (r) => { const all = paidReqs(); delete all[r?.src]; writeJso
 // Kept before a payment of the request goes out, with no hash yet: a tab closed while the relay or the wallet holds it reopens the link as one
 // that may be paid, not as unpaid. The hash replaces it once the payment is out; a send that ends saying nothing went drops it.
 const beginPaid = (r, c, a, self) => rememberPaid({ ...r, paid: { h: null, c, a, self } });
-const sentMaybe = (e) => !!e?.said && !/nothing was sent/i.test(e?.message || '');
+const sentMaybe = (e) => !!e?.said && !e.unmined && !/nothing was sent/i.test(e?.message || '');   // (unmined: the relay's transaction never landed and the notes are unspent)
 // A pay link opened while a payment ran (applyHash, held): its chain, token and the Send tab are taken up once the payment ends, as the open would have.
 const takeUpHeld = () => { const r = REQ.v, c = S.chain; if (r?.held && !S.busy && location.hash.slice(1) === r.src) { r.held = false; applyHash(); if (S.chain !== c) { syncChain(S.chain); tokSyncOn(S.chain); } } };
 function watchPaid(r) {
