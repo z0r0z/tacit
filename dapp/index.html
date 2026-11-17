@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-PSYNrIWk9AteegelhRPNa03VbZi0ZpDs1zGMS/V7cPg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-EA/PkJuEZ998D/guXSXEXG0gVbZbd6HcjON/Wg7nuac=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -2358,7 +2358,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
 <script src="/skin.js?cb=efbd19be" async></script>
-<script src="/chrome.js?cb=ed408d0c" defer></script>
+<script src="/chrome.js?cb=b08b61ce" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -5309,7 +5309,7 @@ function pfPageView() {
   const held = groups.filter((g) => PF_HUE[g.id] && g.usd != null && g.usd >= 0.005);
   const total = html`<div class="ppg-card ppg-o1"><div class="ppg-lbl"><span>Total</span>${w?.all > 0 ? html`<span>${w.priv >= w.all * 0.999 ? 'all private' : `${Math.round(w.priv / w.all * 100)}% private`}</span>` : ''}</div>
     ${w?.all > 0 ? html`<p class="ppg-big num">${usdFmt(w.all)}</p><div class="ppg-bar" aria-hidden="true">${held.map((g) => html`<i style="flex:${g.usd.toFixed(2)};background:${PF_HUE[g.id]}"></i>`)}</div><div class="ppg-tags">${held.map((g) => html`<span class="ppg-tag">${dot(g.id)}${g.name} ${usdFmt(g.usd)}</span>`)}</div>`
-      : html`<p class="ppg-big num none">—</p><p class="note">${wbReading ? 'Reading what you hold…' : 'Its worth shows once every balance and the prices are read.'}</p>`}
+      : html`<p class="ppg-big num none">—</p><p class="note">${!dashId() ? 'Open a wallet to see what it is worth.' : wbReading ? 'Reading what you hold…' : 'Its worth shows once every balance and the prices are read.'}</p>`}
     ${DASH.since ? html`<p class="note">${DASH.since}</p>` : ''}</div>`;
   const amount = (r) => (r.v == null ? '…' : r.num ? ptsFmt(r.v) : fmt(r.v, r.dec, r.max));
   const asset = (a) => {
@@ -5327,7 +5327,7 @@ function pfPageView() {
   if (moving) needs.push(html`<div class="ppg-need"><span>${moving} thing${moving === 1 ? '' : 's'} in motion</span><button class="ppg-go" type="button" data-pf-act>Follow</button></div>`);
   const positions = [...pf.positions, ...pf.owed];
   return html`<div class="ppg-cols"><div>${total}
-    <div class="ppg-card ppg-o3"><div class="ppg-lbl"><span>Assets</span><span>press one for where it is</span></div>${pf.assets.length ? html`<ul class="ppg-list">${pf.assets.map(asset)}</ul>` : html`<p class="note">Nothing held yet.</p>`}
+    <div class="ppg-card ppg-o3"><div class="ppg-lbl"><span>Assets</span><span>press one for where it is</span></div>${pf.assets.length ? html`<ul class="ppg-list">${pf.assets.map(asset)}</ul>` : dashId() ? html`<p class="note">Nothing held yet.</p>` : ''}
       ${S.key ? '' : html`<p class="note">Open your Tacit wallet to see what you hold privately. <button class="link" type="button" data-signin>Open wallet</button></p>`}</div>
   </div><div>
     <div class="ppg-card ppg-o2"><h2>Needs you</h2>${needs.length ? html`<div class="ppg-needs">${needs}</div>` : html`<p class="note">Nothing is waiting on you.</p>`}</div>
@@ -5337,8 +5337,7 @@ function pfPageView() {
 }
 function paintPfPage() {
   const el = $('#ppg-body');
-  if (!el || !PFP.on) return;
-  if (!dashId()) { pfPageSet(false); return; }
+  if (!el || !PFP.on) return;   // with no wallet open it is drawn too: the page's signed-out self (a paint never closes the page; only the address does)
   const view = pfPageView().s;
   if (el.__v === view) return;
   const f = document.activeElement?.closest?.('#ppg-body [data-pf-open], #ppg-body [data-dash-open], #ppg-body [data-asset]');
@@ -5347,11 +5346,19 @@ function paintPfPage() {
   $('#ppg-re').disabled = wbReading; $('#ppg-re').textContent = wbReading ? 'Reading…' : 'Refresh';
   if (was) $(was, el)?.focus();
 }
+// The tab's title names what this document shows, worked out in this one place from the one mark of each: a section's view (<html data-sec>, which
+// chrome.js keeps), the Portfolio page, TAC's page, or the front page. A section's name wins, so TAC's page cut to Request reads "tacit payments".
+const SEC_TITLE = { payments: 'payments', defi: 'defi', chains: 'chains', menu: 'more' };
+function viewTitle() {
+  const sec = (document.documentElement.dataset.sec || '').split('/')[0];
+  document.title = `tacit ${SEC_TITLE[sec] || (PFP.on ? 'portfolio' : TACP.on ? 'TAC' : 'defi')}`;
+}
+document.addEventListener('tacit:sec', () => viewTitle());
 function pfPageSet(on) {
   if (PFP.on === on) { if (on) paintPfPage(); return; }
   PFP.on = on;
   if (on) document.documentElement.dataset.view = 'portfolio'; else delete document.documentElement.dataset.view;
-  document.title = on ? 'tacit portfolio' : 'tacit defi';
+  viewTitle();
   for (const a of $$('a[href="/#portfolio"]')) { if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
   if (on) paintPfPage(); else { const el = $('#ppg-body'); el.__v = el.innerHTML = ''; PFP.open = null; }
 }
@@ -5615,23 +5622,20 @@ function syncLink() {
   const h = linkNow();
   if (location.hash !== h) history.replaceState(null, '', location.pathname + location.search + h);
 }
-// Portfolio: the sheet that lists what "Your Tacit" counts. With no wallet open it has nothing to show, so the wallet sheet asks for one and the
-// Portfolio opens once it is open. `at` names a group to show first.
+// Portfolio: the page that lists what "Your Tacit" counts, at /#portfolio. With no wallet open it is its signed-out self (nothing of anyone's, a way
+// to open a wallet) and the wallet sheet asks for one over it; it fills once one is open. `at` names a group to show first.
 const PF = { want: 0 };
 function openPortfolio(at = null) {
-  if (dashId()) {
-    if (TACP.on) return tacPageLeave('#portfolio');      // from TAC's page: back to the front page, which opens it
-    if (!DASH.groups) paintDash();
-    for (const o of $$('dialog.sheet[open]:not(.layer)')) o.close();
-    const was = PFP.on;
-    pfPageSet(true);
-    if (!was) {
-      if (location.hash !== '#portfolio') history.pushState(null, '', location.pathname + location.search + '#portfolio');
-      window.scrollTo(0, 0); $('#ppg-h')?.focus({ preventScroll: true });
-    }
-    return;
+  if (TACP.on) return tacPageLeave('#portfolio');      // from TAC's page: back to the front page, which opens it
+  if (dashId() && !DASH.groups) paintDash();
+  for (const o of $$('dialog.sheet[open]:not(.layer)')) o.close();
+  const was = PFP.on;
+  pfPageSet(true);
+  if (!was) {
+    if (location.hash !== '#portfolio') history.pushState(null, '', location.pathname + location.search + '#portfolio');
+    window.scrollTo(0, 0); $('#ppg-h')?.focus({ preventScroll: true });
   }
-  history.replaceState(null, '', location.pathname + location.search);      // so the same link works again
+  if (dashId()) return;
   PF.want = Date.now();
   openSheet('wallet');
   if (!S.key) getUx().catch(() => {});
@@ -9381,7 +9385,7 @@ function tacPageSet(on) {
   if (on && PFP.on) pfPageSet(false);
   TACP.on = on;
   if (on) document.documentElement.dataset.page = 'tac'; else delete document.documentElement.dataset.page;
-  document.title = on ? 'tacit TAC' : 'tacit defi';
+  viewTitle();
   for (const a of $$('a[href="/tac/"]')) { if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
   if (!on) {
     TPOOL.open = false; tpgAct(null); tacClaimStop(); chainLive(false); chlRead(); refreshTape();
@@ -9419,7 +9423,9 @@ function tacPageOpen(part = null) {
   syncLink();
 }
 function tacPageLeave(hash = '') {
-  history.pushState(null, '', '/' + location.search + hash);
+  const q = new URLSearchParams(location.search); q.delete('v');      // ?v= is TAC's page cut to a section's view (chrome.js); the front page has none
+  const qs = q.toString();
+  history.pushState(null, '', '/' + (qs ? '?' + qs : '') + hash);
   tacPageSet(false);
   window.scrollTo(0, 0);
   if (hash) route();
@@ -16803,13 +16809,16 @@ const route = () => {
   HX.routed = true; LINK_READ = true;
   const h = location.hash.slice(1), pay = h.match(/^(sp|st)=([0-9a-fA-F]{64})/);
   if (PFP.on && h !== 'portfolio' && (!h || h.startsWith('/'))) pfPageSet(false);      // the address has left /#portfolio (the logo, back, or another section)
-  // a section's view of this page, /#/section/view: the card held to the one thing the view is (chrome.js draws the section's head and tabs)
-  const sec = h.match(/^\/(payments|defi|chains|menu)(?:\/([a-z]+))?$/);
-  SECV.hash = sec ? '#' + h : '';
-  if (sec) {
+  // a section's view of this page, /#/section/view: the card held to the one thing the view is. chrome.js is the one reader of the address for a
+  // section (it draws the section's head and tabs, puts a view the section lacks right, and sends one another page shows there) and marks the view
+  // on <html data-sec> before this runs, so the card follows that mark, never an address of its own reading
+  const sec = h.startsWith('/') ? document.documentElement.dataset.sec || '' : '';
+  SECV.hash = sec ? location.hash : '';
+  if (h.startsWith('/')) {
     for (const o of $$('dialog.sheet[open]:not(.layer)')) o.close();
-    const spec = { 'payments/send': `send:${HX.send}`, 'payments/': `send:${HX.send}`, 'defi/swap': 'swap', 'defi/': 'swap', 'chains/move': 'shield', 'chains/': 'shield', 'chains/bridge': 'bridge' }[`${sec[1]}/${sec[2] || ''}`];
+    const spec = { 'payments/send': `send:${HX.send}`, 'defi/swap': 'swap', 'chains/move': 'shield', 'chains/bridge': 'bridge' }[sec];
     if (spec) hxPreset(spec, '');
+    viewTitle();
     window.scrollTo(0, 0);
     return;
   }
@@ -16842,6 +16851,7 @@ const route = () => {
 };
 window.addEventListener('hashchange', route);
 if (TACP.on) tacPageSet(true);
+viewTitle();
 // the SPX page opens the tile on its token (a link in the address is taken after this, so it still wins), and asks the pool about it a moment later so that
 // its Send, Withdraw and Bridge answer at once. It opens on Shield SPX whatever tab the browser last left the tile on: a saved Send tab opened before the
 // token is read, with a Send list of tETH alone, and stopped the page's start.

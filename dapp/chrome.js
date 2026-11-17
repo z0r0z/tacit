@@ -143,6 +143,9 @@
 // one place however many pages they are made of. Which view a page is, is read from its address alone: the front page's #/section/view, TAC's page's
 // ?v=, and a page's own path. <html data-sec="section/view"> says it to the stylesheets, which put each page's own heading out of the way, and the
 // header's and the bar's entry for the section is marked. /#/menu is the More page: the sections a phone's bar has no room for, and the menu's pages.
+// This is the one place the address is read for a section: the front page holds its card to the view it finds on <html data-sec> (and is told of a
+// change by a `tacit:sec` event on the document), so the two cannot disagree. Each view lives at one address (its href in SEC): an address on the
+// front page that names a view another page shows goes there, and one that names a view the section does not have is put right, to its first view.
 (() => {
   const SEC = {
     payments: ['Payments', 'Send to anyone, ask to be paid, or leave TAC for someone with no wallet yet.', [['send', 'Send', '/#/payments/send'], ['request', 'Request', '/tac/?v=request#receive'], ['links', 'Claim links', '/tac/?v=links#pool/send']]],
@@ -155,9 +158,10 @@
   const HREF = { portfolio: '/#portfolio', payments: '/#/payments', defi: '/#/defi', chains: '/#/chains', borrow: '/vault/', rewards: '/rewards/', menu: '/#/menu' };
   const main = document.querySelector('main');
   if (!main || !document.querySelector('.sn')) return;
+  const front = () => location.pathname === '/' || location.pathname === '/index.html';
   const at = () => {
     const p = location.pathname, h = location.hash;
-    if (p === '/' || p === '/index.html') { const m = /^#\/(payments|defi|chains)(?:\/([a-z]+))?$/.exec(h); return m ? [m[1], SEC[m[1]][2].some((v) => v[0] === m[2]) ? m[2] : SEC[m[1]][2][0][0]] : h === '#/menu' ? ['menu', ''] : null; }
+    if (front()) { const m = /^#\/(payments|defi|chains)(?:\/([a-z]*))?$/.exec(h); return m ? [m[1], SEC[m[1]][2].some((v) => v[0] === m[2]) ? m[2] : SEC[m[1]][2][0][0]] : h === '#/menu' ? ['menu', ''] : null; }
     if (/^\/tac\/?$/.test(p)) { const v = new URLSearchParams(location.search).get('v'); return TAC_VIEW[v] ? [TAC_VIEW[v], v] : null; }
     if (p.startsWith('/farm/')) return ['defi', 'farm'];
     if (p.startsWith('/fast/')) return ['chains', 'fast'];
@@ -166,13 +170,25 @@
     return null;
   };
   const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  // the view's own address: false when it is another page's (that page is loading in this one's place), and the address made the view's own when
+  // it named a view the section lacks or none (/#/defi is /#/defi/swap), without a step in the history
+  const home = (a) => {
+    if (!a || a[0] === 'menu' || !front()) return true;
+    const href = SEC[a[0]][2].find((v) => v[0] === a[1])[2], u = new URL(href, location.href), v = u.searchParams.get('v');
+    if (u.pathname !== '/' || (v && new URLSearchParams(location.search).get('v') !== v)) { location.replace(href); return false; }
+    if (u.hash !== location.hash) history.replaceState(history.state, '', location.pathname + location.search + u.hash);
+    return true;
+  };
   let head = null, shown = '';
   const sync = () => {
-    const a = at(), key = a ? a.join('/') : '';
+    const a = at();
+    if (!home(a)) return;
+    const key = a ? a.join('/') : '';
     if (key === shown) return;
     shown = key;
     const root = document.documentElement;
     if (a) root.dataset.sec = key; else delete root.dataset.sec;
+    document.dispatchEvent(new CustomEvent('tacit:sec', { detail: key }));
     // the section's entry, in the header and in the bar; a page that is not a view of one keeps what the build marked
     if (a || document.querySelector('.sn > a[data-sec-on], .bn a[data-sec-on]')) for (const l of document.querySelectorAll('.sn > a, .bn a')) {
       const on = !!a && l.getAttribute('href') === HREF[a[0] === 'menu' ? 'menu' : a[0]];
