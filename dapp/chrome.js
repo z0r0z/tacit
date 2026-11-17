@@ -235,7 +235,7 @@
   const mark = () => { for (const b of document.querySelectorAll('.skt')) { b.setAttribute('aria-checked', String(graphite())); b.title = graphite() ? 'Graphite look (turn off for Classic)' : 'Classic look (turn on for Graphite)'; } };
   const use = (skin, keep) => {
     skin = skin === 'classic' ? 'classic' : 'graphite';
-    if (keep) try { localStorage.setItem(KEY, skin); } catch {}
+    if (keep) { try { localStorage.setItem(KEY, skin); } catch {} for (const b of document.querySelectorAll('.skt')) b.dataset.turned = '1'; }      // a press: the shine crosses it (chrome.css)
     if (root.dataset.skin !== skin) { root.dataset.skin = skin; glyphs(); }
     mark();
   };
