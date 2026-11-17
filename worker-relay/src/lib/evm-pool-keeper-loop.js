@@ -456,6 +456,7 @@ export function createKeeper({
     return backoff(r, t);
   }
 
+  let prunedAt = 0;
   async function tick() {
     const rows = [...store.due(now(), cfg.maxChecksPerTick), ...store.dueReceive(now(), cfg.maxReceiveChecksPerTick)];
     for (const r of rows) {
@@ -466,6 +467,7 @@ export function createKeeper({
       }
     }
     await sweepSurplusBoxes(now()).catch((e) => log(`surplus: ${safeErr(e)}`));
+    try { if (store.pruneTerminal && now() - prunedAt >= 3600) { prunedAt = now(); store.pruneTerminal(now(), cfg.terminalKeepSecs ?? 7 * 86400); } } catch (e) { log(`prune: ${safeErr(e)}`); }
     return rows.length;
   }
 

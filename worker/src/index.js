@@ -4004,7 +4004,7 @@ async function handleProverBoard(req, env, url, cors) {
     const claimPath = url.pathname === '/prover/community/claim';
     const rl = await proveRateLimit(env, ip, claimPath ? 'board-community-claim' : 'board-community-result', claimPath ? 20 : 6, claimPath ? 3000 : 20000);
     if (!rl.ok) return jsonResponse({ ok: false, code: 'rate', error: `too many asks, retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...nostore, 'Retry-After': String(rl.retryAfter) });
-    const worker = { name: `c-${b.miner.toLowerCase()}`, classes: ['public'], community: true, client: clientOf(queueSender(ip) || ip) };
+    const worker = { name: `c-${b.miner.toLowerCase()}`, classes: ['public'], community: true, client: clientOf(queueSender(ip) || ip, env) };
     try {
       if (claimPath) { const job = await board.claim({ worker, classes: ['public'], programs: Array.isArray(b.programs) ? b.programs.slice(0, 8).map(String) : null }); return jsonResponse(job ? { job } : {}, 200, nostore); }
       return jsonResponse(await board.result({ worker, jobId: b.jobId, publicValues: b.publicValues ?? null, proof: b.proof ?? null, error: b.error ?? null }), 200, nostore);
@@ -4202,7 +4202,7 @@ async function handleSaltPool(req, env, url, cors) {
   let b;
   try { b = await req.json(); } catch { b = null; }
   if (!b || typeof b !== 'object' || Array.isArray(b)) return jsonResponse({ ok: false, error: 'bad json' }, 400, nostore);
-  return send(await pool.submit({ miner: b.miner, salts: b.salts, client: clientOf(req.headers.get('CF-Connecting-IP') || 'anon'), software: b.client, ua: req.headers.get('User-Agent') || '' }));
+  return send(await pool.submit({ miner: b.miner, salts: b.salts, client: clientOf(req.headers.get('CF-Connecting-IP') || 'anon', env), software: b.client, ua: req.headers.get('User-Agent') || '' }));
 }
 
 async function handleProofPool(req, env, url, cors) {
@@ -4212,7 +4212,7 @@ async function handleProofPool(req, env, url, cors) {
     verify: ({ publicValues, proof }) => ethCallVerdict(env, [{ to: POOL_SP1_VERIFIER, data: verifyCalldata({ vkey: POOL_PROGRAM_VKEY, publicValues, proof }) }, 'latest']),
   });
   if (!pool) return jsonResponse({ error: 'not found' }, 404, cors);
-  const ip = req.headers.get('CF-Connecting-IP') || 'anon', client = clientOf(ip);
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon', client = clientOf(ip, env);
   const send = (r, headers = nostore) => (r.status === 204 ? new Response(null, { status: 204, headers }) : jsonResponse(r.body, r.status, headers));
   const p = url.pathname;
   if (req.method === 'GET') {

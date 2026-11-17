@@ -28,6 +28,7 @@
 // clients' strikes and counts, kept long enough for the campaign to read), pp:req:<day>:<client> (the requests one client made that day). A client is
 // a hash of its IP address, never the address itself. pp:paid:<depositId> marks a deposit already proved (paid for once), pp:mined:<leaf>
 // who proved it, pp:recent the newest proofs.
+import { ipBucket } from './ip-bucket.js';
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { keccak_256 } from '@noble/hashes/sha3';
@@ -264,8 +265,8 @@ const B32 = /^0x[0-9a-fA-F]{64}$/;
 export const POOL_ID = /^[0-9a-f]{32}$/;
 const reply = (status, body) => ({ status, body });
 
-// A client as the pool keeps it: a hash of its IP address.
-export const clientOf = (ip) => bytesToHex(sha256(new TextEncoder().encode(`tacit-proof-pool-client|${ip}`))).slice(0, 16);
+// A client as the pool keeps it: a keyed hash of its IP address (a bare hash of an IPv4 address can be undone by trying them all).
+export const clientOf = (ip, env = {}) => ipBucket(env, ip).slice(0, 16);
 
 function makeLock() {
   let tail = Promise.resolve();

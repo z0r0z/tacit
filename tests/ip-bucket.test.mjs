@@ -25,6 +25,17 @@ console.log('  ok - keyed, stable, per-source, sentinels pass through');
   assert.strictEqual(senderKey(env, null), null, 'no address, no sender');
   console.log('  ok - a job keeps a hashed sender, same grouping');
 }
+// the proof pool's client key is keyed too, not a bare hash of the address
+{
+  const { clientOf } = await import('../worker/src/proof-pool.js');
+  const { sha256 } = await import('@noble/hashes/sha256');
+  const { bytesToHex } = await import('@noble/hashes/utils');
+  const bare = bytesToHex(sha256(new TextEncoder().encode('tacit-proof-pool-client|203.0.113.7'))).slice(0, 16);
+  assert.notStrictEqual(clientOf('203.0.113.7', env), bare, 'not the bare hash an enumeration of IPv4 could undo');
+  assert.strictEqual(clientOf('203.0.113.7', env), clientOf('203.0.113.7', env), 'stable');
+  assert.notStrictEqual(clientOf('203.0.113.7', env), clientOf('203.0.113.7', { IP_HASH_SALT: 'c'.repeat(64) }), 'salted');
+  console.log('  ok - the proof pool keys its clients with the salt');
+}
 // no store key in the worker is built from a raw address
 for (const f of ['../worker/src/index.js', '../worker/src/governance.js']) {
   const bad = readFileSync(new URL(f, import.meta.url), 'utf8').split('\n')
