@@ -4749,7 +4749,7 @@ await step('xbring', async () => {
   await shot(r.page, 'xbring-tab-notes');
   // The dashboard and the landing card read the same notes: what is on Bitcoin, and how much of it can come back now.
   await r.page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
-  await until(r.page, () => /2 notes · 1 ready to bring back/.test(document.querySelector('#pf-bitcoin + ul')?.textContent || ''), null, 120000)
+  await until(r.page, () => /2 notes · 1 ready to bring back/.test(document.querySelector('#dash-g a[href="#private/bitcoin/back"]')?.textContent || ''), null, 120000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | dash: ${(await text(r.page, '#dash-g')).replace(/\s+/g, ' ').slice(0, 300)}`); });
   ok(/0\.007/.test(await r.page.$eval('#dash-g a[href="#private/bitcoin/back"]', (a) => a.textContent)), `xbring: the dashboard counts the tETH on Bitcoin, 0.007 in 2 notes, 1 ready (${(await r.page.$eval('#dash-g a[href="#private/bitcoin/back"]', (a) => a.textContent)).replace(/\s+/g, ' ')})`);
   await shot(r.page, 'xbring-dashboard');
@@ -10531,7 +10531,7 @@ await step('xtspx', async () => {
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | saved ${await p.evaluate(() => localStorage.getItem('tacit-pool-tokens-v1'))} | errors ${r.errors.slice(0, 2).join(' | ')}`); });
     ok(await p.evaluate(() => JSON.parse(localStorage.getItem('tacit-pool-tokens-v1') || '[]')).then((l) => l.includes(SPX)), 'xtspx: the page found SPX under its notes\' asset id and remembers it');
     const row = await p.evaluate((k) => { const b = [...document.querySelectorAll('[data-dash-open]')].find((x) => x.dataset.dashOpen === `send:${k}`); return b ? b.textContent.replace(/\s+/g, ' ').trim() : ''; }, key);
-    ok(/SPX\s*25\s*2 notes/.test(row), `xtspx: Your Tacit lists 25 private SPX in 2 notes, as a row that opens Send (${row})`);
+    ok(/SPX\s*25\s*(Private · )?2 notes/.test(row), `xtspx: Your Tacit lists 25 private SPX in 2 notes, as a row that opens Send (${row})`);      // (the Portfolio page's row names its place)
     await p.click('#hold-tot');
     await until(p, () => /SPX/.test(document.querySelector('#ppg-body')?.textContent || ''), null, 60000).catch(() => {});
     const pf = (await text(p, '#ppg-body')).replace(/\s+/g, ' ');
