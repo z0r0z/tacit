@@ -1303,38 +1303,68 @@ function tcardWire(el) {
 }
 // PQ ID (experimental): the Tacit chain's keys made from a passkey's own output, which no published key leads to (tacit-chain-lane.js rootSeed),
 // so memos recorded today stay closed to whoever later solves the Tacit key. The Tacit address stays the same: payers find the PQ ID's address in
-// the record the key signs. A passkey wallet uses its own passkey; a wallet opened another way makes one for it.
-const TPQ = { pub: null, st: null, err: '' };
+// the record the key signs. A passkey wallet uses its own passkey; a wallet opened another way makes one for it. A PQ ID turns on only once its
+// backup phrase (the root as 24 words, tacit-chain-phrase.js) is written down, so its TAC always opens two ways: the passkey, or the phrase.
+// step: a root waiting for its phrase to be written down; view: 'show' (the phrase shown) or 'restore' (a phrase being typed in)
+const TPQ = { pub: null, st: null, err: '', step: null, view: null, phrase: '' };
+const tpqBackedKey = (k) => `tacit-pq-backed-v1:${k}`;
 function tpqRead(force = false) {
   const k = S.key?.pubHex;
   if (!k || !chainOn() || (!force && TPQ.pub === k && TPQ.st)) return;
+  if (TPQ.pub !== k) Object.assign(TPQ, { step: null, view: null, phrase: '', err: '' });
   TPQ.pub = k;
   if (force) TPQ.st = null;
   chainClient().then((c) => c.pqState()).then((s) => { if (S.key?.pubHex === k) { TPQ.st = s; tpqPaint(); } }, () => {});
 }
+function tpqDrop() { TPQ.step?.root?.fill(0); Object.assign(TPQ, { step: null, view: null, phrase: '' }); }
 function tpqPaint() {
   const el = $('#tcd-pq');
   if (!el) return;
-  const s = S.key && TPQ.pub === S.key.pubHex ? TPQ.st : null, own = S.key?.mode === 'passkey' && !!S.key.credentialId;
+  const k = S.key?.pubHex, s = S.key && TPQ.pub === k ? TPQ.st : null, own = S.key?.mode === 'passkey' && !!S.key.credentialId;
   const head = (on) => html`<p class="tpq-h"><b>PQ ID</b><span class="tpq-x">Experimental</span>${on ? html`<span class="tpq-on">On</span>` : ''}</p>`;
   const fine = html`<p class="note tpq-fine">We are hardening how wallet keys are made, and this may change as post-quantum research moves on. Changing keys from time to time is good for privacy anyway.</p>`;
   const err = TPQ.err ? html`<p class="note err">${TPQ.err}</p>` : '';
-  // (what keeps a PQ ID's TAC: the passkey as well as the key, since nothing the key alone makes can open it)
-  const keep = html`<p class="note"><b>Keep this passkey.</b> Your TAC on the Tacit chain needs it from now on: ${own ? 'a copy of your key alone will not open it.' : 'your wallet alone will not open it.'} Passkeys kept in iCloud Keychain, Google Password Manager or a password manager follow you to new devices.</p>`;
+  const alone = own ? 'a copy of your key' : 'your wallet';
+  const words = (p) => html`<ol class="tpq-words" aria-label="Backup phrase">${p.split(' ').map((w, i) => html`<li><span>${i + 1}</span>${w}</li>`)}</ol>`;
+  const restoreLink = html`<p class="note"><button class="link" type="button" id="tpq-restore-open">Restore from a backup phrase</button></p>`;
+  const backed = !!(k && store.get(tpqBackedKey(k)));
   const v = !s ? html``
-    : s.on ? html`${head(true)}<p class="note">Payments to your Tacit address are sealed to keys no published key leads to, so they stay private even against a future quantum computer.${s.olderUnits > 0n ? html` ${fmt(s.olderUnits, 8, 4)} TAC from before moves over with your next payment. <button class="link" type="button" id="tpq-move">Move it now</button>` : ''}</p>${keep}${err}${fine}`
-    : s.elsewhere ? html`${head(false)}<p class="note">This wallet has a PQ ID made on another device. Open it with that passkey to see all of your TAC on the Tacit chain.</p><button class="btn ghost tcd-go" type="button" id="tpq-go">Open with your passkey</button>${err}${fine}`
+    : TPQ.step ? html`${head(false)}<p class="note"><b>Your backup phrase.</b> Write these 24 words down, in order, and keep them private. With them you can open your TAC on the Tacit chain on any device if the passkey is ever lost, and so could anyone else who has them.</p>
+      ${words(TPQ.step.phrase)}<p class="note"><button class="link" type="button" id="tpq-copy">Copy the words</button></p>
+      ${TPQ.step.backedUp !== true ? html`<p class="note">This passkey may be kept on this device only, so these words may be your only other way back.</p>` : ''}
+      <label class="tpq-saved"><input type="checkbox" id="tpq-saved"> I wrote down the 24 words</label>
+      <button class="btn tcd-go" type="button" id="tpq-on" disabled>Turn on PQ ID</button><p class="note"><button class="link" type="button" id="tpq-cancel">Not now</button></p>${err}${fine}`
+    : TPQ.view === 'restore' ? html`${head(false)}<p class="note">Type or paste the 24 words of your PQ ID’s backup phrase.</p>
+      <textarea id="tpq-phrase" rows="4" autocomplete="off" spellcheck="false" autocapitalize="off" aria-label="Backup phrase"></textarea>
+      <button class="btn tcd-go" type="button" id="tpq-restore">Restore PQ ID</button><p class="note"><button class="link" type="button" id="tpq-cancel">Cancel</button></p>${err}${fine}`
+    : s.on ? html`${head(true)}<p class="note">Payments to your Tacit address are sealed to keys no published key leads to, so they stay private even against a future quantum computer.${s.olderUnits > 0n ? html` ${fmt(s.olderUnits, 8, 4)} TAC from before moves over with your next payment. <button class="link" type="button" id="tpq-move">Move it now</button>` : ''}</p>
+      <p class="note"><b>Keep this passkey and your backup phrase.</b> Your TAC on the Tacit chain opens with either one, not with ${alone} alone.</p>
+      ${TPQ.view === 'show' && TPQ.phrase ? html`${words(TPQ.phrase)}${backed ? html`<p class="note"><button class="link" type="button" id="tpq-hide">Hide the words</button></p>` : html`<label class="tpq-saved"><input type="checkbox" id="tpq-saved"> I wrote down the 24 words</label><button class="btn tcd-go" type="button" id="tpq-done" disabled>Done</button>`}`
+        : backed ? html`<p class="note"><button class="link" type="button" id="tpq-show">Show backup phrase</button></p>` : html`<button class="btn ghost tcd-go" type="button" id="tpq-show">Back up your PQ ID</button>`}${err}${fine}`
+    : s.elsewhere ? html`${head(false)}<p class="note">This wallet has a PQ ID made on another device. Open it with that passkey, or its backup phrase, to see all of your TAC on the Tacit chain.</p><button class="btn ghost tcd-go" type="button" id="tpq-go">Open with your passkey</button>${restoreLink}${err}${fine}`
     : html`${head(false)}<p class="note">Seals the payments you get on the Tacit chain to keys made from ${own ? 'your passkey' : 'a passkey'}, which no published key leads to, so payments recorded today stay private even against a future quantum computer. Your Tacit address stays the same.</p>
-      ${keep}<button class="btn ghost tcd-go" type="button" id="tpq-go">Generate PQ ID</button>${err}${fine}`;
+      <p class="note">Before it turns on you write down a 24-word backup phrase. From then on your TAC on the Tacit chain opens with ${own ? 'your passkey' : 'the passkey'} or that phrase, not with ${alone} alone.</p>
+      <button class="btn ghost tcd-go" type="button" id="tpq-go">Generate PQ ID</button>${restoreLink}${err}${fine}`;
   if (el.__h === v.s) return;
   el.__h = v.s; mount(el, v);
-  const go = $('#tpq-go', el), mv = $('#tpq-move', el);
-  if (go) go.onclick = () => tpqGo(go);
-  if (mv) mv.onclick = () => busy(mv, async () => {
+  const on = (id, f) => { const b = $(`#${id}`, el); if (b) b.onclick = () => f(b); };
+  const saved = $('#tpq-saved', el), turn = $('#tpq-on', el) || $('#tpq-done', el);
+  if (saved && turn) saved.onchange = () => { turn.disabled = !saved.checked; };
+  on('tpq-go', tpqGo);
+  on('tpq-on', (b) => tpqTurnOn(b));
+  on('tpq-cancel', () => { TPQ.err = ''; tpqDrop(); tpqPaint(); });
+  on('tpq-copy', () => copy(TPQ.step?.phrase || '', 'Backup phrase copied. Keep it somewhere private.'));
+  on('tpq-restore-open', () => { TPQ.err = ''; TPQ.view = 'restore'; tpqPaint(); requestAnimationFrame(() => $('#tpq-phrase')?.focus()); });
+  on('tpq-restore', (b) => tpqRestore(b));
+  on('tpq-show', () => tpqShow());
+  on('tpq-hide', () => { TPQ.view = null; TPQ.phrase = ''; tpqPaint(); });
+  on('tpq-done', () => { store.set(tpqBackedKey(k), Date.now()); TPQ.view = null; TPQ.phrase = ''; tpqPaint(); });
+  on('tpq-move', (mv) => busy(mv, async () => {
     TPQ.err = '';
     try { await (await chainClient()).moveOlder(); toast('Moved to your PQ ID.'); chainScan(true); tpqRead(true); } catch (e) { TPQ.err = errText(e); tpqPaint(); }
-  });
+  }));
 }
+// Generate: the passkey's root, then its phrase to write down before anything changes. Open (a PQ ID made on another device): its passkey.
 async function tpqGo(btn) {
   const k = S.key?.pubHex;
   if (!k) return;
@@ -1347,16 +1377,70 @@ async function tpqGo(btn) {
         : S.key.mode === 'passkey' && S.key.credentialId ? await m.prfChainRoot({ credentialId: S.key.credentialId })
         : await m.prfRegisterChainRoot('Tacit PQ ID');
       if (S.key?.pubHex !== k) return;
-      // (a PQ ID's TAC needs its passkey, so only one that is backed up beyond this device makes one: losing the device must not lose the TAC)
-      if (r.backedUp !== true) throw new Error(r.backedUp === false ? 'This passkey is kept on this device only, so losing the device would lose your TAC on the Tacit chain. A PQ ID needs a passkey that syncs: iCloud Keychain, Google Password Manager or a password manager.' : 'This browser does not say whether the passkey is backed up beyond this device, so no PQ ID was made. Try a browser that does, with a passkey that syncs.');
-      await (await chainClient()).harden(r.root, r.credentialId);
-      toast('PQ ID on. Your Tacit address stays the same.');
-      tpqRead(true); chainScan(true);
+      if (TPQ.st?.elsewhere) {
+        await (await chainClient()).harden(r.root, r.credentialId);
+        r.root.fill(0);
+        toast('PQ ID opened on this device.');
+        tpqRead(true); chainScan(true);
+        return;
+      }
+      const { rootToPhrase } = await import('/tacit-chain-phrase.js');
+      TPQ.step = { root: r.root, credentialId: r.credentialId, backedUp: r.backedUp, phrase: rootToPhrase(r.root) };
+      tpqPaint();
     } catch (e) {
       if (e?.name === 'NotAllowedError' || e?.name === 'AbortError') return;
-      TPQ.err = errText(e); tpqPaint();
+      TPQ.err = /not the passkey/.test(String(e?.message)) ? 'That is not the passkey this wallet’s PQ ID was made with. Choose the other one, or restore it from its backup phrase.' : errText(e);
+      tpqPaint();
     }
   });
+}
+async function tpqTurnOn(btn) {
+  const k = S.key?.pubHex, st = TPQ.step;
+  if (!k || !st) return;
+  await busy(btn, async () => {
+    TPQ.err = '';
+    try {
+      await (await chainClient()).harden(st.root, st.credentialId);
+      if (S.key?.pubHex !== k) return;
+      store.set(tpqBackedKey(k), Date.now());
+      tpqDrop();
+      toast('PQ ID on. Your Tacit address stays the same.');
+      tpqRead(true); chainScan(true);
+    } catch (e) { TPQ.err = errText(e); tpqPaint(); }
+  });
+}
+async function tpqRestore(btn) {
+  const k = S.key?.pubHex, text = $('#tpq-phrase')?.value || '';
+  if (!k) return;
+  await busy(btn, async () => {
+    TPQ.err = '';
+    let root = null;
+    try {
+      root = (await import('/tacit-chain-phrase.js')).phraseToRoot(text);
+      await (await chainClient()).harden(root, null);
+      if (S.key?.pubHex !== k) return;
+      store.set(tpqBackedKey(k), Date.now());
+      tpqDrop();
+      toast('PQ ID restored on this device.');
+      tpqRead(true); chainScan(true);
+    } catch (e) {
+      TPQ.err = /not the passkey/.test(String(e?.message)) ? 'That phrase is not this wallet’s PQ ID.' : errText(e);
+      tpqPaint();
+      const box = $('#tpq-phrase'); if (box) box.value = text;
+    } finally { root?.fill(0); }
+  });
+}
+// the phrase of the PQ ID this device keeps (sealed under the Tacit key: tacit-chain-root.js)
+async function tpqShow() {
+  TPQ.err = '';
+  try {
+    const [{ keptRoot }, { rootToPhrase }] = await Promise.all([import('/tacit-chain-root.js'), import('/tacit-chain-phrase.js')]);
+    const kept = keptRoot(walletPriv());
+    if (!kept) throw new Error('This device does not hold the PQ ID: open it with its passkey first.');
+    TPQ.phrase = rootToPhrase(kept.root); kept.root.fill(0);
+    TPQ.view = 'show';
+  } catch (e) { TPQ.err = errText(e); }
+  tpqPaint();
 }
 function tcard() {
   if (!$('#tpg-card') || !ctx.TACP.on) return;
