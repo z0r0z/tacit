@@ -103,7 +103,7 @@ try {
   await page.fill('#ws-hex', KEY);
   await page.click('#ws-in [data-in="key"]');
   await page.waitForFunction(() => (document.querySelector('#wd-id')?.textContent || '').length > 12, null, { timeout: 30000 });
-  await page.click('#wallet');
+  await page.click('#wallet'); if (await page.$('#acct-pop:not([hidden])')) await page.click('#acct-pop [data-acct="wallet"]');      // (with a key open the chip is the account's menu, and the wallet sheet its first entry)
   await page.waitForSelector('#wbal-re:not([disabled])', { timeout: 30000 });
   await page.click('#wbal-re');
   await page.waitForFunction(() => /6,388,437\.49/.test(document.querySelector('#wbal-box')?.textContent || ''), null, { timeout: 60000 }).catch(() => {});
@@ -158,14 +158,14 @@ try {
     const t2 = (sel) => p2.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
     await p2.goto(BASE + '/', { waitUntil: 'commit' });
     await p2.waitForSelector('#wallet', { timeout: 30000 });
-    await p2.click('#wallet');
+    await p2.click('#wallet'); if (await p2.$('#acct-pop:not([hidden])')) await p2.click('#acct-pop [data-acct="wallet"]');
     await p2.waitForSelector('#ws-in', { timeout: 15000 });
     await p2.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
     await p2.click('#ws-in [data-in="paste"]');
     await p2.fill('#ws-hex', KEY);
     await p2.click('#ws-in [data-in="key"]');
     await p2.waitForFunction(() => (document.querySelector('#wd-id')?.textContent || '').length > 12, null, { timeout: 30000 });
-    await p2.click('#wallet');
+    await p2.click('#wallet'); if (await p2.$('#acct-pop:not([hidden])')) await p2.click('#acct-pop [data-acct="wallet"]');
     await p2.waitForSelector('#wbal-re:not([disabled])', { timeout: 30000 });
     await p2.click('#wbal-re');
     await p2.waitForFunction(() => /2,000/.test(document.querySelector('#wbal-box')?.textContent || ''), null, { timeout: 60000 }).catch(() => {});
@@ -197,7 +197,7 @@ try {
     const t3 = (sel) => p3.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
     await p3.goto(BASE + '/', { waitUntil: 'commit' });
     await p3.waitForSelector('#wallet', { timeout: 30000 });
-    await p3.click('#wallet');
+    await p3.click('#wallet'); if (await p3.$('#acct-pop:not([hidden])')) await p3.click('#acct-pop [data-acct="wallet"]');
     await p3.waitForSelector('#ws-in', { timeout: 15000 });
     await p3.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
     await p3.click('#ws-in [data-in="paste"]');

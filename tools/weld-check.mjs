@@ -567,8 +567,11 @@ const flowFeed = () => { const t = Math.floor(Date.now() / 1000), ago = (x) => t
   events: { attests: [ago(70000), ago(30000), ago(900)], settles: [ago(50000), ago(3000)], deposits: [ago(20000)], tacOut: [ago(10000), ago(9000)], tacIn: [ago(5000)] } }; };
 const until = (page, fn, arg, timeout = 60000) => page.waitForFunction(fn, arg, { timeout });
 const go = (p, h) => p.evaluate((x) => { location.hash = ''; location.hash = x; }, h);
-// The Portfolio sheet, open: its rows (#dash-g) are kept current while it is closed, and are pressed with it open.
-const port = async (p) => { if (!(await p.$('#sheet-portfolio[open]'))) await go(p, '#portfolio'); await p.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 30000 }); };
+// The Portfolio page, open: its rows (#dash-g) are kept current while it is closed (an asset's rows are in it whether the asset is open or shut), and
+// are pressed with the page open: a row of a shut asset once its asset is opened (portPress).
+const PORT = 'html[data-view="portfolio"] #dash-g';
+const port = async (p) => { if (!(await p.$(PORT))) await go(p, '#portfolio'); await p.waitForSelector(PORT, { timeout: 30000 }); };
+const portPress = async (p, sel) => { await port(p); await p.evaluate((s) => { const more = document.querySelector(s)?.closest('.ppg-more'); if (more?.hidden) more.previousElementSibling.click(); }, sel); await p.click(sel); };
 // a tab of the card: Bridge and Borrow sit under its More tab, which is opened first when they are not shown
 // a route row of the card: Earn shows only the farm it picked until its Change opens the others
 const rowClick = async (page, sel) => { const c = await page.$('#hx-routes .chg'); if (c && !(await page.isVisible(sel))) await c.click(); await page.click(sel); };
@@ -1938,8 +1941,7 @@ await step('hxborrowback', async () => {
     ok(!(await p.$('[data-hxm="borrow"][data-due]')), `hxborrowback: and the tab does not call for it (${await p.$eval('#hx-bw', (e) => e.textContent.replace(/\s+/g, ' ').slice(0, 160))})`);
     await p.click('[data-hxm="swap"]');
     await until(p, () => !!document.querySelector('#dash-g [data-dash-open="borrow"]'), null, 120000);
-    await port(p);
-    await p.click('#dash-g [data-dash-open="borrow"]');
+    await portPress(p, '#dash-g [data-dash-open="borrow"]');
     await until(p, () => document.querySelector('[data-hxm="borrow"]')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#hx-bw'), null, 60000);
     ok(!(await p.$('dialog.sheet[open]')), "hxborrowback: the dashboard's cBTC opens the card's Borrow tab, where the lock is followed");
     if (r.errors.length) { fails++; console.log('FAIL hxborrowback page errors: ' + r.errors.slice(0, 3).join(' | ')); }
@@ -3539,8 +3541,7 @@ await step('btc', async () => {
   ok(!(await r.page.$(`#dash-g [data-btc-asset="${TAC}"], #dash-g [data-btc-asset="${TETH}"]`)), 'btc: TAC and tETH keep the rows they have, not a second one');
   const fake = (await text(r.page, `#dash-g [data-btc-asset="${'b9'.repeat(32)}"]`)).replace(/\s+/g, ' ');
   ok(/TAC \(b9b9…\)/.test(fake) && !(await text(r.page, '#dash-g [data-btc-asset="' + ORANGE + '"]')).includes('('), `btc: another asset called TAC is shown with the start of its id, beside the real one (${fake})`);
-  await port(r.page);
-  await r.page.click(`#dash-g [data-btc-asset="${ORANGE}"]`);
+  await portPress(r.page, `#dash-g [data-btc-asset="${ORANGE}"]`);
   await until(r.page, () => /Send ORANGE/.test(document.querySelector('#bt-go')?.textContent || ''), null, 60000);
   ok(true, 'btc: the row opens the Bitcoin sheet on Send, with that asset chosen');
   await r.page.keyboard.press('Escape');
@@ -4754,8 +4755,7 @@ await step('xbring', async () => {
   await until(r.page, () => /0\.007 tETH on Bitcoin, in 2 notes/.test(document.querySelector('#hx-have')?.textContent || ''), null, 60000);
   ok(/1 of them can come back now \(0\.004 tETH\)/.test(await text(r.page, '#hx-have')), `xbring: and the card, with tETH on Bitcoin picked, says the same (${(await text(r.page, '#hx-have')).replace(/\s+/g, ' ')})`);
   await shot(r.page, 'xbring-card');
-  await port(r.page);
-  await r.page.click('#dash-g a[href="#private/bitcoin/back"]');
+  await portPress(r.page, '#dash-g a[href="#private/bitcoin/back"]');
   await until(r.page, () => document.querySelectorAll('#eth-v1 input[name="xb-note"]').length === 2, null, 120000);
   ok(true, 'xbring: the dashboard line opens the To Bitcoin tab with the notes');
   // Above the ceiling nothing is offered: the receipt says so, with the cost, and there is no box to tick.
@@ -7143,8 +7143,10 @@ await step('dash', async () => {
       if (tag === 'desk') {
         await until(r.page, () => !!document.querySelector('#hints [data-hint="bal"]'), null, 30000);
         await r.page.click('#hints [data-hint="bal"]');
-        await r.page.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 15000 });
+        await r.page.waitForSelector(PORT, { timeout: 15000 });
         ok(true, 'dash: signed in, the chips under the tile are My balances (and Activity once there is some), and My balances opens the Portfolio');
+        await r.page.click('header.top a.brand');      // the Portfolio is a page: the mark leaves it for the front page
+        await r.page.waitForFunction(() => !document.documentElement.dataset.view, null, { timeout: 15000 });
       }
       await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
       const early = await r.page.evaluate(() => document.querySelectorAll('#dash-g .sk').length);
@@ -8029,7 +8031,7 @@ await step('hxbal', async () => {
     const worth = (await text(p, '#dash-worth')).replace(/\s+/g, ' ');
     ok(/private/.test(worth) && !(await p.$eval('#hold-tot', (b) => b.hidden)), `hxbal: Your Tacit and the header say what it is all worth, and how much is private (${worth})`);
     await p.click('#hold-tot');
-    ok(await p.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 15000 }).then(() => true, () => false), 'hxbal: the header total opens the Portfolio');
+    ok(await p.waitForSelector(PORT, { timeout: 15000 }).then(() => true, () => false), 'hxbal: the header total opens the Portfolio');
     if (r.errors.length) { fails++; console.log('FAIL hxbal page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
@@ -10529,8 +10531,8 @@ await step('xtspx', async () => {
     const row = await p.evaluate((k) => { const b = [...document.querySelectorAll('[data-dash-open]')].find((x) => x.dataset.dashOpen === `send:${k}`); return b ? b.textContent.replace(/\s+/g, ' ').trim() : ''; }, key);
     ok(/SPX\s*25\s*2 notes/.test(row), `xtspx: Your Tacit lists 25 private SPX in 2 notes, as a row that opens Send (${row})`);
     await p.click('#hold-tot');
-    await until(p, () => /SPX/.test(document.querySelector('#portfolio-body')?.textContent || ''), null, 60000).catch(() => {});
-    const pf = (await text(p, '#portfolio-body')).replace(/\s+/g, ' ');
+    await until(p, () => /SPX/.test(document.querySelector('#ppg-body')?.textContent || ''), null, 60000).catch(() => {});
+    const pf = (await text(p, '#ppg-body')).replace(/\s+/g, ' ');
     ok(/SPX\s*25/.test(pf), `xtspx: the Portfolio lists it too (${pf.slice(pf.indexOf('SPX') - 20, pf.indexOf('SPX') + 60)})`);
     // the private notes list is the wallet sheet's
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); location.hash = 'wallet'; });
@@ -12559,8 +12561,7 @@ await step('hxheld', async () => {
     await until(r.page, () => [...document.querySelectorAll('#dash-g .wb-go')].some((d) => /cUSD owed/.test(d.textContent) && /1 loan · \d+%/.test(d.textContent)), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(r.page, '#dash-g').catch(() => '?')).replace(/\s+/g, ' ').slice(0, 300)}`); });
     ok(true, 'hxheld: the Portfolio shows what is owed, the number of loans and the ratio');
-    await port(r.page);
-    await r.page.click('#dash-g [data-dash-open="loans"]');
+    await portPress(r.page, '#dash-g [data-dash-open="loans"]');
     await until(r.page, () => document.querySelector('[data-hxm="borrow"]')?.getAttribute('aria-selected') === 'true' && !document.querySelector('#hx-bwl')?.hidden, null, 60000);
     ok(true, 'hxheld: and pressed, it opens the Borrow tab on the loans');
     await r.page.click('#hx-bwl [data-brp]');

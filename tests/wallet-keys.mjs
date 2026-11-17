@@ -56,14 +56,14 @@ try {
   const errors = []; page.on('pageerror', (e) => errors.push(String(e.message || e)));
   await page.goto(BASE + '/', { waitUntil: 'commit' });
   await page.waitForSelector('#wallet', { timeout: 30000 });
-  await page.click('#wallet');
+  await page.click('#wallet'); if (await page.$('#acct-pop:not([hidden])')) await page.click('#acct-pop [data-acct="wallet"]');      // (with a key open the chip is the account's menu, and the wallet sheet its first entry)
   await page.waitForSelector('#ws-in', { timeout: 15000 });
   await page.$eval('#ws-in .more-in', (d) => { d.open = true; });           // 'Paste a key' sits under 'Other ways to sign in'
   await page.click('#ws-in [data-in="paste"]');
   await page.fill('#ws-hex', KEY);
   await page.click('#ws-in [data-in="key"]');
   await page.waitForFunction(() => (document.querySelector('#wd-id')?.textContent || '').length > 12, null, { timeout: 30000 });
-  await page.click('#wallet');
+  await page.click('#wallet'); if (await page.$('#acct-pop:not([hidden])')) await page.click('#acct-pop [data-acct="wallet"]');
   await page.waitForSelector('#w-keys summary', { timeout: 20000 });
   ok(await page.$eval('#w-keys details', (d) => !d.open) && !(await page.isVisible('#w-keys .keyrow')), 'the public addresses and key are shut until asked for');
   await page.click('#w-keys summary');
@@ -135,7 +135,7 @@ try {
   await page.keyboard.press('Escape');
 
   // Refresh reads the Bitcoin address again
-  await page.click('#wallet');
+  await page.click('#wallet'); if (await page.$('#acct-pop:not([hidden])')) await page.click('#acct-pop [data-acct="wallet"]');
   await page.waitForSelector('#wbal-re', { timeout: 15000 });
   // tacit.js answers an address's coins from a 15-second cache, so Refresh is pressed once the last read is older than that
   await page.waitForTimeout(Math.max(0, lastRead + 15500 - Date.now()));

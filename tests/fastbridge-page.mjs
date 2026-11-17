@@ -238,7 +238,7 @@ try {
     await shot('fast-ready-bound');
     // the provider panel: shown once a key is open, read when opened, started with a fee and a size, stopped
     ok(!(await page.$eval('#provide', (e) => e.hidden)), 'the provider panel shows once a key is open');
-    await page.click('#provide > summary');
+    if (!(await page.$eval('#provide', (e) => e.open))) await page.click('#provide > summary');      // (the Chains section's view of this page opens the panel itself)
     await page.waitForFunction(() => /Your private TAC/.test(document.getElementById('pv-inv').textContent), null, { timeout: 5000 });
     ok(/4,200 TAC/.test(await text(page, '#pv-inv')) && (await page.inputValue('#pv-fee')) === '0.30' && (await page.inputValue('#pv-most')) === '1000', `the panel reads the key (${await text(page, '#pv-inv')})`);
     await page.fill('#pv-fee', '0.25'); await page.fill('#pv-most', '500');

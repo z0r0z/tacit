@@ -543,11 +543,12 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 @container top (min-width: 540px) { .sn .sm > summary > .bd { display: none; } }
 /* the Activity link chrome.js adds on a page without its own chip: at every width, once there is something in it, with the count still going */
 .sn > a.sa:not([hidden]) { display: inline-flex; }
+.sn > a.sa[hidden] { display: none; }
 .sn > a.sa .n { position: absolute; top: 3px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 8px; background: var(--orange); color: #fff; font: 600 10px/16px var(--mono); text-align: center; }
 @container top (min-width: 900px) {
   .sn > a { padding: 0 13px; }
   .sn > a span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
-  .sn > a > svg { display: none; }      /* named, the sections need no glyph */
+  .sn > a:not(.sa) > svg { display: none; }      /* named, the sections need no glyph (Activity is a glyph alone) */
 }
 
 /* a very narrow header keeps the mark and the name; the page's label, and the Activity and total chips' room, go first */
@@ -612,21 +613,45 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh-t a { display: flex; align-items: center; justify-content: center; min-height: 38px; padding: 6px 16px; border-radius: 12px; color: var(--mute); font: 500 13px/1.2 var(--mono); text-decoration: none; white-space: nowrap; transition: background-color .15s, color .15s; }
 .sh-t a[aria-current="page"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
 .sh-t a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+/* the pill under the current tab: chrome.js places it and, between two views of one document, slides it; unplaced, the tab wears it itself */
+.sh-t { position: relative; }
+.sh-t a { position: relative; }
+.sh-t .sh-i { position: absolute; top: 3px; bottom: 3px; left: 0; width: 0; border-radius: 12px; background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); pointer-events: none; transition: transform .24s cubic-bezier(.2,.7,.2,1), width .24s cubic-bezier(.2,.7,.2,1); }
+.sh-t.pill a[aria-current="page"] { background: none; box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { .sh-t .sh-i { transition: none; } }
+.sh p.sh-n { margin-top: 14px; max-width: 52em; font-size: 12.5px; color: var(--faint, var(--mute)); min-height: 1.5em; }
+.sh.sh-l { max-width: 560px; text-align: left; } .sh.sh-l .sh-more { margin-top: 18px; }
 @media (hover: hover) { .sh-t a:hover { color: var(--ink); } }
 @media (max-width: 520px) { .sh { margin-top: 18px; } .sh-t { display: grid; grid-auto-columns: 1fr; } .sh-t a { padding: 6px 6px; font-size: 12px; } }
 .sh-more { list-style: none; margin: 22px auto 0; padding: 4px 18px; max-width: 560px; text-align: left; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
 .sh-more li + li { border-top: 1px solid var(--hair); }
-.sh-more a { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; padding: 14px 2px; color: var(--ink); font: 400 14px/1.3 var(--mono); text-decoration: none; }
-.sh-more a b { font-weight: 500; } .sh-more a small { grid-column: 1; font-size: 12px; color: var(--mute); } .sh-more a i { grid-column: 2; grid-row: 1 / span 2; font-style: normal; color: var(--mute); }
+.sh-more a { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 2px 14px; padding: 14px 2px; color: var(--ink); font: 400 14px/1.3 var(--mono); text-decoration: none; }
+.sh-more a svg { grid-column: 1; grid-row: 1 / span 2; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; color: var(--mute); } .sh-more a svg.fill { fill: currentColor; stroke: none; }
+.sh-more a b { grid-column: 2; font-weight: 500; } .sh-more a small { grid-column: 2; font-size: 12px; color: var(--mute); } .sh-more a i { grid-column: 3; grid-row: 1 / span 2; font-style: normal; color: var(--mute); }
 /* in Graphite the sections' words are set in the grotesk, as the header's are; a page that has no --sans keeps its own face */
 :where(:root:not([data-skin="classic"])) .sh p, :where(:root:not([data-skin="classic"])) .sh-t a, :where(:root:not([data-skin="classic"])) .sh-more a, :where(:root:not([data-skin="classic"])) .bn a { font-family: var(--sans, var(--mono)); }
 :where(:root:not([data-skin="classic"])) .sh-t { border-radius: 10px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); }
 :where(:root:not([data-skin="classic"])) .sh-t a { border-radius: 8px; }
 :where(:root:not([data-skin="classic"])) .sh-t a[aria-current="page"] { background: var(--raise, var(--card)); }
+:where(:root:not([data-skin="classic"])) .sh-t .sh-i { border-radius: 8px; background: var(--raise, var(--card)); }
 /* each page of its own, as the view of its section: its own heading gives way to the section's, and what belongs to the other view is out of the way */
-html[data-sec="borrow/btc"] :is(.hero, #app, #soon, #how), html[data-sec="borrow/tac"] :is(.hero, .btc-side, #soon) { display: none !important; }
+/* (the vault is stamped with its section alone, data-sec="borrow", until chrome.js names the side from the address: the hero and "soon" go on
+   either, and the page's own rules already keep each side's blocks to that side from the first paint) */
+html[data-sec^="borrow"] :is(.hero, #soon) { display: none !important; }
+html[data-sec="borrow/btc"] :is(#app, #how), html[data-sec="borrow/tac"] :is(.btc-side, #pools) { display: none !important; }
+:root:has(#pools:target) #sec-head { display: none; }
+/* opened on #btc, the head stamped for the first view shows the Bitcoin tab as the current one until chrome.js has said so (as the page's own switch does) */
+:root:has(#btc:target) .sh-t:not(.pill) a[data-side="tac"] { color: var(--mute); background: none; box-shadow: none; }
+:root:has(#btc:target) .sh-t:not(.pill) a[data-side="btc"] { color: var(--ink); background: var(--raise, var(--card)); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }      /* /vault/#pools is the whole page (chrome.js takes the head away) */
 html[data-sec="chains/fast"] .hero { display: none !important; }
-html[data-sec="rewards/"] :is(#find-h, #farms-h, #farms, #pf-row, nav.uses) { display: none !important; }
+html[data-sec="rewards/"]:not(:has(#farms:target, #farm:target)) :is(#find-h, #farms-h, #farms, #pf-row, nav.uses) { display: none !important; }
+/* the view opens Points and its Leaderboard (chrome.js), which the page fills from the network a moment later: each holds the height it fills to
+   until it is drawn (its filler marks it data-done), so nothing under it moves; Points runs longer the narrower the window */
+html[data-sec="rewards/"] #earn[open] #earn-b:not([data-done]) { min-height: max(574px, calc(1900px - 265vw)); }
+html[data-sec="rewards/"] #lb[open] #lb-b:not([data-done]) { min-height: 410px; }
+/* and before chrome.js has opened them (the page is painted first), the shut fold stands as tall as it is about to be */
+html[data-sec="rewards/"]:not(:has(#farms:target, #farm:target)) #earn:not([open], [data-sec-open]) { box-sizing: border-box; min-height: calc(max(574px, 1900px - 265vw) + 573px); }
+:root:has(#farms:target, #farm:target) #sec-head { display: none; }      /* the farms there, linked by #farms, are the whole page's (chrome.js takes the mark and the head away) */
 
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
@@ -721,7 +746,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
 <script src="/skin.js?cb=efbd19be" async></script>
-<script src="/chrome.js?cb=d3dff3c3" defer></script>
+<script src="/chrome.js?cb=841af26c" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>

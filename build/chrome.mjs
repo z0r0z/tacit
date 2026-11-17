@@ -135,6 +135,25 @@ const token = (dapp, file) => createHash('sha256').update(readFileSync(join(dapp
 // `<!-- chrome:head:begin inline -->` puts the styles in the page instead, so the first paint needs the HTML alone.
 export const headHtml = (dapp, inline = false) => `${inline ? `<style>\n${readFileSync(join(dapp, 'chrome.css'), 'utf8').trim()}\n</style>` : `<link rel="stylesheet" href="/chrome.css?cb=${token(dapp, 'chrome.css')}">`}\n<script src="/skin.js?cb=${token(dapp, 'skin.js')}" async></script>\n<script src="/chrome.js?cb=${token(dapp, 'chrome.js')}" defer></script>`;
 
+// The pages that are a section's view by their path alone, and the view. The view's mark (<html data-sec>) and the section's head (the name, its
+// line, the tabs, the view's own line) are stamped into these, so the page is cut to the view and the head is there from the first paint:
+// drawn by chrome.js once it runs, the head pushed the whole page down under the reader (tools/layout-shift-check.mjs). The vault is two views,
+// told apart by the address's #btc, which chrome.js reads: it is stamped as its section alone, with the head of its first view.
+//   <!-- chrome:sec:begin -->…<!-- chrome:sec:end -->     the section's head, first in <main>
+export const SEC_PAGES = { 'farm/index.html': 'defi/farm', 'fast/index.html': 'chains/fast', 'rewards/index.html': 'rewards/', 'vault/index.html': 'borrow' };
+// the sections' names, lines and views are chrome.js's (its SEC table), read from it so the two cannot differ
+const secTable = (dapp) => {
+  const m = /\n  const SEC = (\{\n[\s\S]*?\n  \});\n/.exec(readFileSync(join(dapp, 'chrome.js'), 'utf8'));
+  if (!m) throw new Error('dapp/chrome.js should have its SEC table: update build/chrome.mjs');
+  return new Function(`return ${m[1]}`)();
+};
+const escHtml = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+// the head as chrome.js draws it (its sync())
+export function secHtml(dapp, key) {
+  const [sec, view] = key.split('/'), [name, line, views] = secTable(dapp)[sec], cur = view || views[0]?.[0], note = views.find((v) => v[0] === cur)?.[3] || '';
+  return `<div class="sh" id="sec-head" data-of="${sec}"><h1 tabindex="-1">${escHtml(name)}</h1><p>${escHtml(line)}</p>${views.length > 1 ? `<nav class="sh-t" aria-label="${escHtml(name)}"><i class="sh-i" aria-hidden="true"></i>${views.map(([k, label, href]) => `<a href="${escHtml(href)}" data-v="${k}"${sec === 'borrow' ? ` data-side="${k}"` : ''}${k === cur ? ' aria-current="page"' : ''}>${escHtml(label)}</a>`).join('')}</nav>` : ''}${views.length ? `<p class="sh-n">${escHtml(note)}</p>` : ''}</div>`;
+}
+
 // a block is the begin marker's line, what is stamped (indented as the marker is) and the end marker's line
 const BLOCK = (name) => new RegExp(`^([ \\t]*)(<!-- chrome:${name}:begin([^>]*?)-->)[\\s\\S]*?<!-- chrome:${name}:end -->`, 'm');
 const attr = (s, k) => (new RegExp(`${k}="([^"]*)"`).exec(s) || [])[1];
@@ -148,5 +167,11 @@ export function chromePage(text, rel, dapp) {
   out = out.replace(BLOCK('nav'), (m, ind, begin) => block('nav', ind, begin, navHtml(key)));
   out = out.replace(BLOCK('foot'), (m, ind, begin, params) => block('foot', ind, begin, `${footHtml(attr(params, 'label'), attr(params, 'id'))}\n${barHtml(key)}`));
   out = out.replace(BLOCK('head'), (m, ind, begin, params) => block('head', ind, begin, headHtml(dapp, /\binline\b/.test(params))));
+  const sec = SEC_PAGES[rel], HTML = /<html lang="en"(?: data-sec="[^"]*")?>/;
+  if (sec) {
+    if (!BLOCK('sec').test(out) || !HTML.test(out)) throw new Error(`${rel} is a section's view: it should have chrome:sec markers first in <main>, and <html lang="en">`);
+    out = out.replace(BLOCK('sec'), (m, ind, begin) => block('sec', ind, begin, secHtml(dapp, sec)));
+    out = out.replace(HTML, `<html lang="en" data-sec="${sec}">`);
+  }
   return out;
 }

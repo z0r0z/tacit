@@ -148,12 +148,30 @@
 // front page that names a view another page shows goes there, and one that names a view the section does not have is put right, to its first view.
 (() => {
   const SEC = {
-    payments: ['Payments', 'Send to anyone, ask to be paid, or leave TAC for someone with no wallet yet.', [['send', 'Send', '/#/payments/send'], ['request', 'Request', '/tac/?v=request#receive'], ['links', 'Claim links', '/tac/?v=links#pool/send']]],
-    defi: ['DeFi', 'Swap, farm and stake, privately when you want.', [['swap', 'Swap', '/#/defi/swap'], ['farm', 'Farm', '/farm/'], ['stake', 'Stake', '/tac/?v=stake#private']]],
-    chains: ['Chains', 'Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.', [['move', 'Move', '/#/chains/move'], ['bridge', 'Bridge', '/#/chains/bridge'], ['fast', 'Fast bridge', '/fast/'], ['notes', 'Notes', '/tac/?v=notes#bridge']]],
-    borrow: ['Borrow', 'Borrow dollars against your BTC or your TAC.', [['btc', 'Against BTC', '/vault/#btc'], ['tac', 'Against TAC', '/vault/']]],
+    payments: ['Payments', 'Send to anyone, ask to be paid, or leave TAC for someone with no wallet yet.', [
+      ['send', 'Send', '/#/payments/send', 'One send for every asset: private TAC, ETH, cUSD, cBTC, TAC on the Tacit chain, BTC. To a tacit1 address, a name or 0x.'],
+      ['request', 'Request', '/tac/?v=request#receive', 'Ask for an amount: a pay link and a QR that waits for the payment to land.'],
+      ['links', 'Claim links', '/tac/?v=links#pool/send', 'Leave TAC for someone with no wallet yet, with a PIN if you like; take it back if they never claim.']]],
+    defi: ['DeFi', 'Swap, farm and stake, privately when you want.', [
+      ['swap', 'Swap', '/#/defi/swap', 'Public or private swaps at the best route.'],
+      ['farm', 'Farm', '/farm/', 'Pick a farm, put ETH in, earn TAC.'],
+      ['stake', 'Stake', '/tac/?v=stake#private', 'Stake TAC on the Tacit chain: it earns a share of every payment, with no lock.']]],
+    chains: ['Chains', 'Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.', [
+      ['move', 'Move', '/#/chains/move', 'Make it private, or take it back out: pick what and where it goes. ↕ flips to withdraw.'],
+      ['bridge', 'Bridge', '/#/chains/bridge', 'Any asset between Bitcoin and Ethereum, either way, with the steps, fee and time up front.'],
+      ['fast', 'Fast bridge', '/fast/', 'TAC from Bitcoin in about 15 minutes, paid out by a provider for a fee; or be a provider.'],
+      ['notes', 'Notes', '/tac/?v=notes#bridge', 'Your TAC notes on Bitcoin: merge, split, bridge them all; and everything getting ready or on the way.']]],
+    borrow: ['Borrow', 'Borrow dollars against your BTC or your TAC.', [
+      ['btc', 'Against BTC', '/vault/#btc', 'Lock BTC (you keep the key), mint cBTC, borrow cUSD.'],
+      ['tac', 'Against TAC', '/vault/', 'Put TAC in a vault, borrow TACD (dollars) or TACE (ether).']]],
     rewards: ['Rewards', 'Your airdrop, your points and the leaderboard.', []],
   };
+  // the More page's line for each page of the menu
+  const ABOUT = { '/assets/': 'TAC, tETH, cBTC, cUSD and how each is backed', '/tac/': 'the Tacit chain: stake, pay, bridge', '/pay/': 'BTC, TAC and ETH paid privately from one key', '/bridge/': 'every way between Bitcoin and Ethereum',
+    '/etch/': 'issue your own asset', '/shop/': 'addresses that start with zeros, for TAC', '/prove/': 'run a prover, send waiting settles', '/tasks/': 'small jobs paid in TAC', '/face/': 'buy TAC: the biggest buyer wins the address' };
+  // the mock-up's addresses for what is a page, a sheet or another address here
+  const ELSE = { '#/portfolio': '/#portfolio', '#/borrow': '/vault/', '#/borrow/btc': '/vault/#btc', '#/borrow/tac': '/vault/', '#/rewards': '/rewards/', '#/more': '/#/menu', '#/activity': '/#activity',
+    '#/account': '/#wallet', '#/account/wallet': '/#wallet', '#/account/addresses': '/#bitcoin/receive', '#/account/proofs': '/#prove-self' };
   const TAC_VIEW = { request: 'payments', links: 'payments', stake: 'defi', notes: 'chains' };
   const HREF = { portfolio: '/#portfolio', payments: '/#/payments', defi: '/#/defi', chains: '/#/chains', borrow: '/vault/', rewards: '/rewards/', menu: '/#/menu' };
   const main = document.querySelector('main');
@@ -165,7 +183,7 @@
     if (/^\/tac\/?$/.test(p)) { const v = new URLSearchParams(location.search).get('v'); return TAC_VIEW[v] ? [TAC_VIEW[v], v] : null; }
     if (p.startsWith('/farm/')) return ['defi', 'farm'];
     if (p.startsWith('/fast/')) return ['chains', 'fast'];
-    if (p.startsWith('/vault/')) return ['borrow', h === '#btc' ? 'btc' : 'tac'];
+    if (p.startsWith('/vault/')) return h === '#pools' ? null : ['borrow', h === '#btc' ? 'btc' : 'tac'];      // where TACD sells (linked from other pages) is the whole page's: the view of TAC's side leaves it out
     if (p.startsWith('/rewards/')) return /^#farms?$/.test(h) ? null : ['rewards', ''];      // the farms there (linked from tETH, cBTC, the vault, the farm) are the whole page's
     return null;
   };
@@ -185,16 +203,44 @@
     if (u.hash !== location.hash) history.replaceState(history.state, '', location.pathname + location.search + u.hash);
     return true;
   };
-  let head = null, shown = '';
+  // A view opens the folds its page keeps shut that the view is for: the fast bridge's provider panel, the rewards page's points and its leaderboard.
+  // At once, so they are open at the first paint and nothing under them moves when they open (chrome.css holds the height each will fill to);
+  // once only, so a fold the holder shuts stays shut. The page's script fills a fold when it is told it opened, and may not have been listening
+  // yet: once the page has loaded it is told again (each filler leaves a fold it has filled alone).
+  const FOLDS = { 'chains/fast': ['provide'], 'rewards/': ['earn', 'lb'] };
+  const folds = (key) => {
+    const mine = [];
+    for (const id of FOLDS[key] || []) { const d = document.getElementById(id); if (d && !d.dataset.secOpen) { d.dataset.secOpen = '1'; if (!d.open) { d.open = true; mine.push(d); } } }
+    const tell = () => { for (const d of mine) if (d.open) d.dispatchEvent(new Event('toggle')); };
+    if (mine.length && document.readyState !== 'complete') addEventListener('load', tell, { once: true });
+  };
+  let head = document.getElementById('sec-head'), shown = '', first = true;      // (the head the build stamped into a page that is a view by its path)
+  const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // the pill under the current tab: put there at once, or slid there when the tabs were already on screen
+  const place = (slide) => {
+    const nav = head?.querySelector('.sh-t'), on = nav?.querySelector('a[aria-current="page"]'), ind = nav?.querySelector('.sh-i');
+    if (!on || !ind || !on.offsetWidth) return;
+    if (!slide) ind.style.transition = 'none';
+    ind.style.width = on.offsetWidth + 'px'; ind.style.transform = `translateX(${on.offsetLeft}px)`;
+    nav.classList.add('pill');
+    if (!slide) { ind.offsetWidth; ind.style.transition = ''; }
+  };
+  addEventListener('resize', () => place(false));
+  let pressed = false;      // a tab of the head was just pressed (so focus stays on the tabs through the change of view)
+  document.addEventListener('click', (e) => { if (e.target.closest?.('#sec-head .sh-t a')) { pressed = true; setTimeout(() => { pressed = false; }, 400); } }, true);
+  document.fonts?.ready.then(() => place(false));
   const sync = (nav = false) => {
+    if (front() && ELSE[location.hash]) { location.replace(ELSE[location.hash]); return; }
     const a = at();
     if (!home(a, nav)) return;
     const key = a ? a.join('/') : '';
     if (key === shown) return;
     shown = key;
+    if (!first && a && scrollY > 0) scrollTo(0, 0);      // another view starts at its head
     const root = document.documentElement;
     if (a) root.dataset.sec = key; else delete root.dataset.sec;
     document.dispatchEvent(new CustomEvent('tacit:sec', { detail: key }));
+    folds(key);
     // the section's entry, in the header and in the bar; a page that is not a view of one keeps what the build marked
     if (a || document.querySelector('.sn > a[data-sec-on], .bn a[data-sec-on]')) for (const l of document.querySelectorAll('.sn > a, .bn a')) {
       const on = !!a && l.getAttribute('href') === HREF[a[0] === 'menu' ? 'menu' : a[0]];
@@ -202,17 +248,34 @@
     }
     if (!a) { head?.remove(); head = null; return; }
     if (!head) { head = document.createElement('div'); head.className = 'sh'; head.id = 'sec-head'; }
+    head.classList.toggle('sh-l', a[0] === 'menu');
+    let slid = false;
     if (a[0] === 'menu') {
-      const row = (href, name, line) => `<li><a href="${esc(href)}"><b>${esc(name)}</b>${line ? `<small>${esc(line)}</small>` : ''}<i aria-hidden="true">→</i></a></li>`;
-      const rest = [...document.querySelectorAll('.sm-p a:not(.pr)')].map((l) => row(l.getAttribute('href'), [...l.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim(), ''));      // the name, not a count appended to it
+      const glyph = (href) => document.querySelector(`.sm-p a[href="${href}"] svg`)?.outerHTML || '<svg viewBox="0 0 24 24" aria-hidden="true"></svg>';
+      const row = (href, name, line) => `<li><a href="${esc(href)}">${glyph(href)}<b>${esc(name)}</b>${line ? `<small>${esc(line)}</small>` : ''}<i aria-hidden="true">→</i></a></li>`;
+      const rest = [...document.querySelectorAll('.sm-p a:not(.pr)')].map((l) => row(l.getAttribute('href'), [...l.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim(), ABOUT[l.getAttribute('href')] || ''));      // the name, not a count appended to it
       head.innerHTML = `<h1 tabindex="-1">More</h1><ul class="sh-more">${row('/vault/', 'Borrow', 'against BTC or TAC')}${row('/rewards/', 'Rewards', 'airdrop, points, leaderboard')}${rest.join('')}</ul>`;
+      head.dataset.of = 'menu';
     } else {
-      const [name, line, views] = SEC[a[0]];
-      head.innerHTML = `<h1 tabindex="-1">${esc(name)}</h1><p>${esc(line)}</p>${views.length > 1 ? `<nav class="sh-t" aria-label="${esc(name)}">${views.map(([k, label, href]) => `<a href="${esc(href)}"${k === a[1] ? ' aria-current="page"' : ''}>${esc(label)}</a>`).join('')}</nav>` : ''}`;
+      const [name, line, views] = SEC[a[0]], note = views.find((v) => v[0] === a[1])?.[3] || '';
+      if (head.dataset.of === a[0] && head.isConnected) {
+        // another view of the same section, in the same document (or the head the build stamped): the head stays, so the tab pressed keeps focus
+        // and nothing under it moves; only what differs changes
+        for (const l of head.querySelectorAll('.sh-t a')) { if (l.dataset.v === a[1]) l.setAttribute('aria-current', 'page'); else l.removeAttribute('aria-current'); }
+        place(!first); slid = true;
+        if (pressed && !head.contains(document.activeElement)) head.querySelector('.sh-t a[aria-current="page"]')?.focus({ preventScroll: true });      // the page it opened took focus for its own heading: the tab pressed keeps it
+        const n = head.querySelector('.sh-n');
+        if (n && n.textContent !== note) { n.textContent = note; if (!first && !calm()) n.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'ease' }); }
+      } else {
+        // (the vault's two views are its two sides: a tab marked data-side is turned by the page's own switch, vault/app.js, with no reload)
+        head.innerHTML = `<h1 tabindex="-1">${esc(name)}</h1><p>${esc(line)}</p>${views.length > 1 ? `<nav class="sh-t" aria-label="${esc(name)}"><i class="sh-i" aria-hidden="true"></i>${views.map(([k, label, href]) => `<a href="${esc(href)}" data-v="${k}"${a[0] === 'borrow' ? ` data-side="${k}"` : ''}${k === a[1] ? ' aria-current="page"' : ''}>${esc(label)}</a>`).join('')}</nav>` : ''}${views.length ? `<p class="sh-n">${esc(note)}</p>` : ''}`;
+        head.dataset.of = a[0];
+      }
     }
     if (head.parentNode !== main || main.firstElementChild !== head) main.prepend(head);
+    if (!slid) place(false);
   };
-  sync(true);
+  sync(true); first = false;
   addEventListener('hashchange', () => sync(true)); addEventListener('popstate', () => sync(true));
   // the front page and TAC's page change the address without leaving the document
   for (const k of ['pushState', 'replaceState']) { const was = history[k]; history[k] = function (...args) { const r = was.apply(this, args); queueMicrotask(sync); return r; }; }

@@ -1,4 +1,4 @@
-// What a key and its wallet hold, as the Portfolio sheet groups it. The front page keeps one row for each thing held (its "Your Tacit"
+// What a key and its wallet hold, as the Portfolio groups it. The front page keeps one row for each thing held (its "Your Tacit"
 // items); this sorts those rows into the places they are held, splits TAC into its private and its public part, and counts a pool's
 // liquidity once whether it is farming or not. Pure: no DOM and no network, so it runs in a test.
 const PLACES = [['private', 'Private'], ['pay', 'Pay pool'], ['lp', 'Liquidity'], ['public', 'Public'], ['bitcoin', 'On Bitcoin'], ['earned', 'Rewards'], ['owed', 'Loans']];
