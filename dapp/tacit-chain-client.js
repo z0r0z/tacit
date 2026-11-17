@@ -244,7 +244,8 @@ export function makeChainClient({ cfg, rpcCall, priv, system, root = undefined, 
   const feeOut = (f, r) => (f.units > 0n ? [{ to: f.to, value: sharesWorth(f.units, r) }] : []);
 
   // Two notes at most. Notes under the keys from before the PQ ID go first, and one rides in a slot a spend leaves free (it proves two inputs either
-  // way), its value coming back as change under the PQ ID: what the old keys hold moves over with the next spends, at no cost.
+  // way), its value coming back as change under the PQ ID: what the old keys hold moves over with the next spends, at no cost. A note rides only
+  // when it is not one of the two largest left free, so a payment straight after this one can spend as much as it could without the ride.
   function inputs(need) {
     const ns = owned().sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1));
     const cover = (xs) => {
@@ -254,7 +255,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, root = undefined, 
     };
     const ins = cover(ns.filter((n) => n.k)) || cover(ns);
     if (ins) {
-      const ride = ins.length === 1 && ns.find((n) => n.k && n !== ins[0]);
+      const ride = ins.length === 1 && ns.filter((n) => n !== ins[0]).slice(2).reverse().find((n) => n.k);
       return ride ? [...ins, ride] : ins;
     }
     if (settling() > 0n && balance() >= need) throw Object.assign(new Error('your last payment is settling: this one can go once it lands, in about a minute'), { settling: true });

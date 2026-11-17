@@ -221,6 +221,12 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   const draw = { pct: cfg.drawPct ?? PROVER_BOARD.drawPct, fresh: cfg.drawNew ?? PROVER_BOARD.drawNew, seats: Math.max(1, cfg.drawSeats ?? PROVER_BOARD.drawSeats) };
   // Whether a machine offers a program: it named it in a claim within offerHoldMs, or (a record from before offers were kept) its latest claim does.
   const offers = (w, program) => (w.offered && w.offered[program] != null ? clock() - w.offered[program] < PROVER_BOARD.offerHoldMs : (w.programs || []).includes(program));
+  // The draw is open to the race from `at`: the time a racer's wait for the block is counted from, if it was not the machine drawn.
+  const openDraw = (j, at = clock()) => { j.drawOpen = true; if (!j.drawOpenAt) j.drawOpenAt = at; };
+  // A machine's usual time for a block, as the draw reads it: the whole wait (the block posted, or opened to the race, to its proof arriving),
+  // so a machine that is slow to ask, or busy with another proof when a block is posted, weighs less than one with the same GPU that is not;
+  // a record from before it was kept falls back to the time spent proving. Infinity: no record.
+  const usualSecs = (w) => (w.blocks && w.blockSecs > 0 ? (w.blockFelt > 0 ? w.blockFelt : w.blockSecs) : Infinity);
   // a block still held for its draw: one that goes by draw and has not been opened to the race
   const drawHeld = (j) => PROVER_BOARD.drawPrograms.includes(j.program) && !j.drawOpen && goesByDraw(j.id, draw.pct);
   const hasRecord = (w) => !!w && (w.batches || 0) >= PROVER_BOARD.bestRecordMin && w.batchRate > 0;
@@ -331,12 +337,17 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
         await storage.putJob(j.id, j);
         await bump(c.worker, 'proved', null, null, true);
         if (PROVER_BOARD.turnPrograms.includes(j.program)) await noteBatch(c.worker, c.secs, sizeOf(j));
-        if (PROVER_BOARD.drawPrograms.includes(j.program)) await noteBlock(c.worker, c.secs);
+        if (PROVER_BOARD.drawPrograms.includes(j.program)) {
+          // the whole wait: from the posting for the machine drawn (or when nothing was drawn), from the opening to the race for any other
+          const start = j.drawPick === c.worker || !j.drawOpenAt ? j.postedAt : j.drawOpenAt;
+          await noteBlock(c.worker, c.secs, start && c.at > start ? (c.at - start) / 1000 : null);
+          if (j.drawPick && j.drawPick !== c.worker && j.postedAt && c.at > j.postedAt) await noteMissed(j.drawPick, (c.at - j.postedAt) / 1000);
+        }
         await credit(c.worker, j.program || 'confidential');
         return { ok: true, status: 'proved' };
       }
       // the drawn machine's answer did not pass: the block is the race's now
-      if (ok === false && j.drawn === c.worker && !j.drawOpen) j.drawOpen = true;
+      if (ok === false && j.drawn === c.worker && !j.drawOpen) openDraw(j);
       await storage.putJob(j.id, j);
       if (ok === false) { await bump(c.worker, 'bad', null, null, true); await troubled(c.client); }
       return { ok: true, status: j.status };
@@ -416,11 +427,25 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   }
   // A block the relay took: the machine's block record (how many, and as a running average its usual time from claim to proof), which sets
   // its odds in the draw and how long it has when drawn.
-  async function noteBlock(name, secs) {
+  // A block taken from `name`: `secs` is its proving time (the job claimed to its answer: what its lease and hedge are set by), `felt` the whole
+  // wait (the block posted, or opened to the race when the machine was not the one drawn, to its answer arriving: what a user waits and what the draw
+  // weighs). Both are running averages (0.7 old, 0.3 new); a record from before `felt` was kept starts its average at its proving time.
+  async function noteBlock(name, secs, felt = null) {
     const ws = await workers(), w = ws[name];
     if (!w || !(secs > 0)) return;
+    const prior = w.blockFelt > 0 ? w.blockFelt : w.blocks && w.blockSecs > 0 ? w.blockSecs : null;
+    if (felt > 0) w.blockFelt = prior != null ? 0.7 * prior + 0.3 * felt : felt;
     w.blockSecs = w.blocks && w.blockSecs > 0 ? 0.7 * w.blockSecs + 0.3 * secs : secs;
     w.blocks = (w.blocks || 0) + 1;
+    await storage.putWorkers(ws);
+  }
+  // A block that was drawn for a machine with a record and taken from another (it did not come for it in time, or was slow): the wait the user had
+  // is counted against the machine, as if it had been its own. A machine with no record has none to count it against.
+  async function noteMissed(name, felt) {
+    const ws = await workers(), w = ws[name];
+    if (!w || !(w.blocks && w.blockSecs > 0) || !(felt > 0)) return;
+    const prior = w.blockFelt > 0 ? w.blockFelt : w.blockSecs;
+    w.blockFelt = 0.7 * prior + 0.3 * felt;
     await storage.putWorkers(ws);
   }
   // The place a racer claimed a job from (a race claimed before places were kept holds none, and is anyone's under its name).
@@ -528,15 +553,15 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
               const d = ws[j.drawn];
               const hedge = d && d.blocks && d.blockSecs > 0 ? Math.max(PROVER_BOARD.drawHedgeMinMs, PROVER_BOARD.drawHedgeFactor * d.blockSecs * 1000) : PROVER_BOARD.drawNewHedgeMs;
               if (clock() - ((j.racedAt || {})[j.drawn] || 0) < hedge) continue;
-              j.drawOpen = true;
+              openDraw(j);
             } else {
               // its time ran out unanswered: the race's, and the place goes after the others
-              j.drawOpen = true;
+              openDraw(j);
               await mark(j.drawn, 'lapsed');
               await troubled(placeOf(j, j.drawn));
             }
           } else if (clock() - (j.postedAt || 0) >= PROVER_BOARD.drawOfferMs) {
-            j.drawOpen = true;                                           // the drawn machine never came for it
+            openDraw(j, (j.postedAt || clock()) + PROVER_BOARD.drawOfferMs);   // the drawn machine never came for it: open from the end of its offer
             if (j.drawPick) await mark(j.drawPick, 'drawMissed');        // counted on its record: drawn, and not there
           } else {
             // The draw is made ONCE, by the first machine to ask after the block is posted, and kept on the job. Drawn afresh at each
@@ -547,7 +572,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
               ws = ws || await workers();
               trouble = trouble || (storage.getTrouble && await storage.getTrouble()) || {};
               const pick = drawPick(ws, open, j, trouble);
-              if (pick == null) j.drawOpen = true;                       // no one to draw: raced as before
+              if (pick == null) openDraw(j, j.postedAt || clock());      // no one to draw: raced as before, open since it was posted
               else { j.drawPick = pick; await storage.putJob(j.id, j); await markDraw(pick); }   // how often each machine is drawn, on its record
             }
             if (j.drawOpen) { /* raced below */ }
@@ -603,7 +628,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   // `line` is every such place in that order, for a machine to read its place in it. drawWinner picks by the job's id.
   function drawTickets(ws, open, j, troubles = {}) {
     const t = clock(), busy = new Set(open.flatMap(liveRacers));
-    const usual = (w) => (w.blocks && w.blockSecs > 0 ? w.blockSecs : Infinity);
+    const usual = usualSecs;
     // A machine with no block record draws only once the board has taken a proof from it: a ticket costs a waiting user time when it is not
     // answered, and an address that has proved nothing (one of a swarm of connections, say) has shown no machine behind it.
     const ok = ([n, w]) => w.community && offers(w, j.program) && t - (w.lastSeen || 0) < PROVER_BOARD.turnSeenMs
@@ -669,7 +694,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
         // a turn given back: the next machine's, and this place waits behind the others for a while
         if (error != null && PROVER_BOARD.turnPrograms.includes(j.program)) { await mark(worker.name, 'lapsed'); await troubled(worker.client); }
         // a drawn block given back: the race's at once, and this place waits behind the others for a while
-        if (error != null && j.drawn === worker.name && !j.drawOpen) { j.drawOpen = true; await mark(worker.name, 'lapsed'); await troubled(worker.client); }
+        if (error != null && j.drawn === worker.name && !j.drawOpen) { openDraw(j); await mark(worker.name, 'lapsed'); await troubled(worker.client); }
         if (error == null) {
           if (!isHex(publicValues) || publicValues.length < 2 + 64 * 2 || publicValues.length > 2 + 2 * PROVER_BOARD.maxCandidatePvBytes) return { ok: false, error: 'publicValues must be the hex of the proof\'s public values' };
           if (!isHex(proof) || proof.length < 2 + 2 * 4 || proof.length > 2 + 2 * 4096) return { ok: false, error: 'proof must be the hex of the groth16 proof bytes' };
@@ -720,7 +745,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       // a community machine: the program it is proving now (it asks for nothing meanwhile), the turns it has had, and its batch record
       ...(w.community ? { community: true, racing: racing.get(name) || null, turns: w.turns || 0, lapsed: w.lapsed || 0,
         ...(w.batches ? { batches: w.batches, batchSecs: Math.round(w.batchSecs) } : {}),
-        ...(w.blocks ? { blocks: w.blocks, blockSecs: Math.round(w.blockSecs * 10) / 10 } : {}),
+        ...(w.blocks ? { blocks: w.blocks, blockSecs: Math.round(w.blockSecs * 10) / 10, ...(w.blockFelt > 0 ? { blockFelt: Math.round(w.blockFelt * 10) / 10 } : {}) } : {}),
         // how many blocks it was drawn for, and of those how many it never came to take (taken ones show in `blocks`)
         ...(w.draws ? { draws: w.draws, drawMissed: w.drawMissed || 0 } : {}) } : {}) }))
       .sort((a, b) => b.proved - a.proved || a.name.localeCompare(b.name));
@@ -753,19 +778,22 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
     else if (!offers(w, 'tacit-block')) why = 'It has not offered Tacit chain blocks in the last minute (TACIT_BLOCK=0 on the worker, its block key check failed, or a second worker under the same address that does not offer them is the one asking).';
     else if (!rec && !((w.proved || 0) >= 1)) why = 'It needs one accepted proof of any kind first (a wrap for the pool counts). Then it joins the draw.';
     else if (w.client && trouble[w.client] != null && t - trouble[w.client] < PROVER_BOARD.turnTroubleMs) why = 'Its connection missed a turn recently, so it waits behind the others for a while.';
-    else if (rec && w.blockSecs > PROVER_BOARD.drawMaxSecs) why = `Its usual block time (${Math.round(w.blockSecs)} s) is over ${PROVER_BOARD.drawMaxSecs} s, so blocks stay with faster machines; its batches and wraps are unaffected.`;
+    else if (rec && usualSecs(w) > PROVER_BOARD.drawMaxSecs) why = `Its usual block time (${Math.round(usualSecs(w))} s) is over ${PROVER_BOARD.drawMaxSecs} s, so blocks stay with faster machines; its batches and wraps are unaffected.`;
     else if (mine && here && here[0] !== name) why = 'Another machine on the same connection holds this connection\'s one ticket (its faster one).';
     else if (!mine && spot >= seats) why = `Machines with no block record yet take turns at a set-aside share of the blocks: ${seats} hold a ticket at a time, the ones that have waited longest, and a machine goes to the back of the line once it is drawn. This one is number ${spot + 1} in line, so ${spot - seats + 1} ${spot - seats + 1 === 1 ? 'machine' : 'machines'} must be drawn before it holds a ticket.`;
     else if (!mine) why = 'No ticket right now.';
     const odds = !why && mine && total > 0 ? mine[1] / total : null;
     const lines = [];
     lines.push(`${name.slice(0, 10)}...${name.slice(-4)}: ${w.proved || 0} proofs taken by the board${seen != null ? `, last asked ${seen} s ago` : ''}.`);
-    if (rec) lines.push(`Tacit chain blocks: ${w.blocks} taken, usually ${Math.round(w.blockSecs * 10) / 10} s each.`);
+    const felt = rec && w.blockFelt > 0 ? w.blockFelt : null;
+    if (rec && felt != null) lines.push(`Tacit chain blocks: ${w.blocks} taken, usually ${Math.round(felt * 10) / 10} s from the block being posted to this machine's proof arriving (${Math.round(w.blockSecs * 10) / 10} s of that proving it).`);
+    else if (rec) lines.push(`Tacit chain blocks: ${w.blocks} taken, usually ${Math.round(w.blockSecs * 10) / 10} s each.`);
     else lines.push('Tacit chain blocks: none taken yet.');
-    if (w.draws) lines.push(`Drawn for ${w.draws} block${w.draws === 1 ? '' : 's'}${w.drawMissed ? `, ${w.drawMissed} not taken in time` : ', all taken'}.`);
+    if (felt != null && felt - w.blockSecs >= 4) lines.push(`About ${Math.round(felt - w.blockSecs)} s of that is the block waiting: for this machine to ask for it, or for the machine drawn first to give up on it. The odds count the whole wait, so asking for work every few seconds and not being busy with another proof when a block is posted lifts them.`);
+    if (w.draws) lines.push(`Drawn for ${w.draws} block${w.draws === 1 ? '' : 's'}${w.drawMissed ? `, ${w.drawMissed} not taken in time (it had not asked for the block within ${PROVER_BOARD.drawOfferMs / 1000} s of its being posted)` : ', all taken'}.`);
     if (odds != null) lines.push(`In the block draw now: ${odds >= 0.995 ? 'about every block' : odds < 0.01 ? 'less than 1 in 100 of the blocks' : 'about ' + Math.round(odds * 100) + ' in 100 of the blocks'} drawn this minute would be this machine's${rec ? '' : ' (a machine with no block record yet takes turns at a set-aside share of the blocks: it goes to the back of the line once it is drawn, and a block taken gives it a record, which sets its odds by speed from then on)'}.`);
     else lines.push(`Not in the block draw: ${why}`);
-    return { ok: true, found: true, name, proved: w.proved || 0, blocks: w.blocks || 0, blockSecs: rec ? Math.round(w.blockSecs * 10) / 10 : null, draws: w.draws || 0, drawMissed: w.drawMissed || 0,
+    return { ok: true, found: true, name, proved: w.proved || 0, blocks: w.blocks || 0, blockSecs: rec ? Math.round(w.blockSecs * 10) / 10 : null, blockFelt: felt != null ? Math.round(felt * 10) / 10 : null, draws: w.draws || 0, drawMissed: w.drawMissed || 0,
       lastSeenSeconds: seen, inDraw: odds != null, oddsPct: odds != null ? Math.round(odds * 1000) / 10 : null,
       line: spot >= 0 ? { position: spot + 1, seats, ahead: Math.max(0, spot - seats + 1), of: line.length } : null, why, text: lines.join('\n') };
   }

@@ -200,7 +200,7 @@ test('paying with ETH: the call to the zap against cast, the next amount of ETH 
   // swap data that fills whole words, and longer than one
   const long = '0x' + 'ab'.repeat(64), longer = '0x' + 'cd'.repeat(100);
   for (const sw of [long, longer, '0x']) { const d = buyWithEthData({ swapData: sw, id: ID, to: TO, nonce: 0, maxPrice: 1n, deadline: 1 }); assert.equal((d.length - 2) % 64, 8, 'the selector and whole words'); assert.equal(BigInt('0x' + d.slice(10 + 6 * 64, 10 + 7 * 64)), BigInt((sw.length - 2) / 2), 'the length word'); }
-  assert.equal(ZAP, null, 'no zap is named until one is deployed'); assert.equal(ZAP_MARGIN_BPS, 150n);
+  assert.equal(ZAP, '0x000000000110d317ed602ca7ef10a72bd72bd56f', 'the deployed zap, in lower case like the other addresses the page compares'); assert.equal(ZAP_MARGIN_BPS, 150n);
   assert.equal(retryAmountIn(10n ** 15n, 28n * W, 20n * W), 1400000000000001n, 'scaled to what is wanted, and a wei over');
   assert.ok(retryAmountIn(1000n, 7n, 3n) * 3n >= 7000n, 'never short');
   assert.equal(ethText(12345678901234567n), '0.0123'); assert.equal(ethText(123456789012345n), '0.00012'); assert.equal(ethText(2500000000000000000n), '2.500'); assert.equal(ethText(0n), '0'); assert.equal(ethText(999999999999999999n), '1.000');

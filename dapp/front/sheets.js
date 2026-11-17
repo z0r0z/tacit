@@ -271,7 +271,12 @@ render.wallet = () => {
   if (!plainAddr()) loadPlain().then(() => { const w = $('#w-keys'); if (w?.isConnected && S.key?.pubHex === k.pubHex) mount(w, walletKeys(!!w.querySelector('details')?.open)); }).catch(() => {});
   loadBtc().then(paintWalletBal, paintWalletBal);
   $('#wbal-box').onclick = wbClick;
-  $('#w-backup')?.addEventListener('click', () => navigator.clipboard.writeText(k.priv).then(() => toast('Key copied. Keep it somewhere private.'), () => toast('Could not copy the key: the browser refused clipboard access.', true)));
+  // (with a PQ ID the key alone does not open the TAC on the Tacit chain: its passkey does too, and the copy says so)
+  $('#w-backup')?.addEventListener('click', () => navigator.clipboard.writeText(k.priv).then(async () => {
+    let pq = false;
+    try { pq = !!(await import('/tacit-chain-root.js')).keptRoot(k.priv); } catch { }
+    toast(pq ? 'Key copied. Keep it somewhere private. Your TAC on the Tacit chain also needs your PQ ID passkey.' : 'Key copied. Keep it somewhere private.');
+  }, () => toast('Could not copy the key: the browser refused clipboard access.', true)));
   $('#w-lock').onclick = () => { if (midAction()) return; evm.deselectProvider(); S.key = null; syncAccount(); resetPrivate(); paintWallet(); refreshAll(); rerender('wallet'); };
   const bal = (id, who) => { const e = $('#' + id); if (who && e) rpc('eth_getBalance', [who, 'latest']).then((b) => `${fmt(BigInt(b), 18, 4)} ETH`, () => '—').then((t) => { e.textContent = t; }); };
   bal('ac-abal', a.address); bal('ac-wbal', S.wallet);

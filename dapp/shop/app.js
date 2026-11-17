@@ -5,7 +5,7 @@ import { readSpot, readPrecision } from '/trade/farm-read.js?cb=fb6ec72f';
 import { makeEvmTradeVenues, ZROUTER } from '/evm-trade-venues.js?cb=196b14fb';
 import { SHOP, MARKET, TAC, TAC_NAME, FROM_BLOCK, TOPICS, foldShelf, sortShelf, filterShelf, zeroTiers, zerosOf, zerosText, zeroBits, addressParts, tacText, usdText, priceUsd, tacUsdFrom, tokenNumber,
   tokenUrl, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, ownerOfData, addressOfData, deployData, initcodeOf, parseTokenId, soldTo, forwarderInit,
-  forwardRefusal, decodeAddress, decodeListing, decodeWord, refusalWords, deployRefusal, deployFailed, ETH_AT_DEPLOY_ADDRESS, badRecipient, isAddress, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, ethText } from '/shop/shelf.js?cb=4669deda';
+  forwardRefusal, decodeAddress, decodeListing, decodeWord, refusalWords, deployRefusal, deployFailed, ETH_AT_DEPLOY_ADDRESS, badRecipient, isAddress, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, ethText } from '/shop/shelf.js?cb=666bd2c5';
 
 // The shop's shelf (contracts/src/VanityShop.sol): addresses that start with zeros, each a token the buyer can deploy a contract to on Ethereum. The page reads the shelf
 // from the shop's events, checks the one a buyer picks against the shop again, and sends one transaction: the buy, with a TAC permit signed first when the shop has no
@@ -14,11 +14,22 @@ import { SHOP, MARKET, TAC, TAC_NAME, FROM_BLOCK, TOPICS, foldShelf, sortShelf, 
 // Where TAC is bought: the front page's swap, with ETH to TAC already chosen (its own "Buy TAC" button opens the same one).
 const BUY_TAC_URL = '/?from=ETH&to=TAC';
 const BUY_TAC = `<a href="${BUY_TAC_URL}">Buy TAC</a>`;
-const S = { shelf: [], logs: [], loaded: false, failed: false, bal: null, busy: null, note: '', bad: false, to: '', done: null, tacUsd: null, tacEth: null, ethUsd: null, zeros: null, q: '' };
+const S = { shelf: [], logs: [], loaded: false, failed: false, bal: null, busy: null, note: '', bad: false, noteAt: null, to: '', done: null, tacUsd: null, tacEth: null, ethUsd: null, zeros: null, q: '' };
 // the section at the bottom: the addresses this wallet holds, and what to put at the one chosen (a contract that passes ETH on, or the bytecode someone pastes)
 const U = { tokens: [], sel: '', otherId: '', kind: 'forward', to: '', init: '', busy: false, note: '', bad: false, result: null };
 const hex = (n) => '0x' + n.toString(16);
-const say = (text, bad = false) => { S.note = text; S.bad = bad; paintNote(); };
+// the note is under the row that was pressed (S.noteAt), or at the foot of the list when that row is gone: a note said after a press is brought into view if it is not
+const say = (text, bad = false) => { S.note = text; S.bad = bad; paintNote(); if (text && S.noteAt) revealNote(); };
+const pressed = (id) => { if (S.noteAt !== id) { S.noteAt = id; S.note = ''; S.bad = false; render(); } };
+const reveal = (el) => {
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  if (r.top < 0 || r.bottom > innerHeight) el.scrollIntoView?.({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+};
+const revealNote = () => reveal($('#note'));
+// a token's mark beside an amount, as on the other pages: the TAC coin in the shop's own sprite, the standard ETH mark for the way to pay with ETH
+const TAC_MARK = '<svg class="tk xs inl" aria-hidden="true"><use href="#tk-tac"/></svg>';
+const ETH_MARK = '<svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>';
 const conn = makeConnect({
   describe: 'Buy an address that starts with zeros, for TAC', name: 'tacit shop', rewards: false,
   say: (t, b) => say(t, b), busy: () => !!S.busy,
@@ -91,14 +102,17 @@ async function readPrice() {
 // ── buying ──
 // What a purchase leaves: the bought panel, and the address offered at once at the bottom, before the logs have the sale.
 function finishBuy({ hash, id, row, to, who }) {
-  S.done = { hash, id, vanity: row.vanity, nonce: row.nonce, to, price: row.price };
+  S.done = { hash, id, vanity: row.vanity, nonce: row.nonce, to, price: row.price }; S.noteAt = null;
   if (to.toLowerCase() === who.toLowerCase()) { U.tokens = [{ id, vanity: row.vanity, bits: row.bits }, ...U.tokens.filter((t) => t.id !== id)]; U.sel = id; U.result = null; U.note = ''; renderUse(); }
   say('');
+  // the result is drawn above the list by the caller, right after this returns, and the buyer may be far down the list: it is brought into view
+  setTimeout(() => reveal($('#after')), 0);
 }
 const txLink = (hash) => (/^0x[0-9a-fA-F]{64}$/.test(String(hash)) ? ` <a href="https://etherscan.io/tx/${hash}" target="_blank" rel="noopener noreferrer">See it on Etherscan</a>.` : '');
 async function buy(id) {
   const row = S.shelf.find((x) => x.id === id);
   if (!row || S.busy) return;
+  pressed(id);
   if (!W.account) { await conn.connect(); return; }
   const to = (S.to || W.account).trim();
   if (!isAddress(to) || badRecipient(to)) { say('Name an address to send the token to. It cannot be this shop, the market, TAC or the swap contracts.', true); return; }
@@ -114,7 +128,11 @@ async function buy(id) {
     if (bal === null || bal < row.price) {
       const offer = await zapOffer(row, who);
       const dollars = offer && S.ethUsd ? ` (≈ ${usdText((Number(offer.amountIn) / 1e18) * S.ethUsd)})` : '';
-      say(`You hold ${bal === null ? 'no readable' : tacText(bal)} TAC. This one costs ${tacText(row.price)}.${offer ? ` <button class="linkbtn" type="button" data-zap="${esc(id)}">Pay about ${esc(ethText(offer.amountIn))} ETH${esc(dollars)} instead</button>, in one transaction.` : ''} ${BUY_TAC}`, true);
+      const holds = `You hold ${bal === null ? 'no readable' : tacText(bal)} TAC. This one costs ${tacText(row.price)}.`;
+      // with the ETH way offered this is not an error but a choice: the button is in the note's own colour, with the ETH mark
+      say(offer
+        ? `${holds} <span class="ways"><button class="btn ghost" type="button" data-zap="${esc(id)}">${ETH_MARK}Pay about ${esc(ethText(offer.amountIn))} ETH${esc(dollars)}</button> <span class="alt">One transaction · ${BUY_TAC}</span></span>`
+        : `${holds} ${BUY_TAC}`, !offer);
       return;
     }
     const deadline = Math.floor(Date.now() / 1000) + 20 * 60, args = { id, to, nonce: row.nonce, maxPrice: row.price, deadline };
@@ -193,6 +211,7 @@ async function zapOffer(row, who) {
 async function zapBuy(id) {
   const row = S.shelf.find((x) => x.id === id);
   if (!row || S.busy || !W.account) return;
+  pressed(id);
   const who = W.account, to = (S.to || who).trim();
   if (!isAddress(to) || badRecipient(to)) { say('Name an address to send the token to. It cannot be this shop, the market, TAC or the swap contracts.', true); return; }
   S.busy = id; S.done = null; render(); renderAfter(); say('Checking it is still for sale.');
@@ -289,7 +308,8 @@ const rowHtml = (x) => {
   const { zeros, rest } = addressParts(x.vanity, x.bits), mine = S.busy === x.id, usd = priceUsd(x.price, S.tacUsd);
   const label = !W.account ? 'Connect to buy' : mine ? 'Buying…' : 'Buy';
   return `<li class="row" data-id="${esc(x.id)}"><div class="addr"><code title="${esc(x.vanity)}"><b>${esc(zeros)}</b>${esc(rest)}</code><small class="num">${esc(zerosText(zerosOf(x.bits)))}</small></div>
-    <div class="buy"><span class="price num">${esc(tacText(x.price))} <small>TAC</small>${usd === null ? '' : ` <em class="usd">≈ ${esc(usdText(usd))}</em>`}</span><button class="btn ghost" type="button" data-buy="${esc(x.id)}"${S.busy ? ' disabled' : ''}>${label}</button></div></li>`;
+    <div class="buy"><span class="price num">${TAC_MARK}${esc(tacText(x.price))} <small>TAC</small>${usd === null ? '' : ` <em class="usd">≈ ${esc(usdText(usd))}</em>`}</span><button class="btn ghost" type="button" data-buy="${esc(x.id)}"${S.busy ? ' disabled' : ''}>${label}</button></div></li>`
+    + (S.noteAt === x.id ? '<li id="note" class="status" aria-live="polite"></li>' : '');     // what a press says, under its row
 };
 const filtersHtml = () => {
   const tiers = zeroTiers(S.shelf);
@@ -307,7 +327,10 @@ function render() {
   if (!root) return;
   if (S.zeros !== null && !zeroTiers(S.shelf).includes(S.zeros)) S.zeros = null;      // the last of a kind was sold: show them all again
   const shown = filterShelf(S.shelf, { zeros: S.zeros, q: S.q });
-  let out = `<p class="eyebrow"><span>For sale${S.loaded ? ` · ${shown.length}${shown.length === S.shelf.length ? '' : ` of ${S.shelf.length}`}` : ''}</span><span class="who num">${W.account && S.bal !== null ? `${esc(tacText(S.bal))} TAC` : ''}</span></p>`;
+  const gone = !!S.noteAt && S.loaded && !S.shelf.some((x) => x.id === S.noteAt);      // the row the note was about was sold or taken down: the note stays, at the foot of the list
+  if (gone) S.noteAt = null;
+  const anchored = !!S.noteAt && shown.some((x) => x.id === S.noteAt);
+  let out = `<p class="eyebrow"><span>For sale${S.loaded ? ` · ${shown.length}${shown.length === S.shelf.length ? '' : ` of ${S.shelf.length}`}` : ''}</span><span class="who num">${W.account && S.bal !== null ? `${TAC_MARK}${esc(tacText(S.bal))} TAC` : ''}</span></p>`;
   out += `<p class="note need">Need TAC? <a href="${BUY_TAC_URL}">Buy it</a>.</p>`;     // at the top: a shelf of sixty rows would bury it
   if (S.failed && !S.loaded) out += `<p class="empty">The list could not be read. <button class="linkbtn" type="button" id="again">Try again</button></p>`;
   else if (!S.loaded) out += `<p class="empty">Reading the shop.</p>`;
@@ -317,9 +340,10 @@ function render() {
     out += shown.length ? `<ol class="shelf">${shown.map(rowHtml).join('')}</ol>` : `<p class="empty">No address matches that. <button class="linkbtn" type="button" id="clear">Show them all</button></p>`;
   }
   if (W.account && S.shelf.length) out += `<label class="to"><span class="mute">Send the token to</span><input id="to" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="${esc(W.account)}" value="${esc(S.to)}"></label>`;
-  out += `<div id="note" class="status" aria-live="polite"></div>`;
+  if (!anchored) out += `<div id="note" class="status" aria-live="polite"></div>`;
   keepFocus(root, ['to', 'find'], () => { root.innerHTML = out; });     // a refresh of the list must not take a field from someone typing in it
   paintNote();
+  if (gone && S.note) revealNote();
   root.querySelectorAll('[data-buy]').forEach((b) => { b.onclick = () => buy(b.dataset.buy); });
   root.querySelectorAll('[data-zeros]').forEach((b) => { b.onclick = () => { S.zeros = b.dataset.zeros === '' ? null : Number(b.dataset.zeros); render(); }; });
   const to = $('#to'); if (to) to.oninput = () => { S.to = to.value; };
