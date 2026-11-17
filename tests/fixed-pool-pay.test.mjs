@@ -299,9 +299,11 @@ const fwdNode = ({ code = '0x6080', tacit = TP, sizes = null, calls = [] } = {})
 };
 function sel4(sig) { return '0x' + Array.from(keccak_256(new TextEncoder().encode(sig)).slice(0, 4), (b) => b.toString(16).padStart(2, '0')).join(''); }
 const kv = (o = {}) => ({ get: (k) => o[k] ?? null, set() {} });
-await test('the forwarder is off until it is deployed and a canary has shown it: the constant is empty, and with nothing named there is none', async () => {
-  eq(SPLIT_DEPOSITORS[1], null, 'no address is shipped yet');
-  eq(await splitForwarder({ read: fwdNode(), store: kv(), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null);
+await test('Ethereum ships the deployed forwarder, used when it answers as the contract does; another chain has none shipped, so its deposit goes the old way', async () => {
+  eq(SPLIT_DEPOSITORS[1], '0x0000000000049541f6582aB13C0b3a8dC35165Ae', 'the deployed, verified, canaried address');
+  eq(await splitForwarder({ read: fwdNode(), store: kv(), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), SPLIT_DEPOSITORS[1], 'nothing named in storage: the shipped one');
+  eq(await splitForwarder({ read: fwdNode(), store: kv(), chainId: 8453, tacitPool: TP, pools: NOTE_POOLS }), null, 'no address shipped for Base');
+  eq(await splitForwarder({ read: fwdNode({ code: '0x' }), store: kv(), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null, 'the shipped one with no code answering is passed over');
 });
 await test('one named in the browser\'s storage is used when it holds code and answers as the contract does', async () => {
   eq(await splitForwarder({ read: fwdNode(), store: kv({ 'tacit-split-depositor:1': FWD }), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), FWD);
@@ -313,9 +315,10 @@ await test('it is passed over when it has no code, sends to another Tacit pool, 
   eq(await splitForwarder({ read: fwdNode({ sizes: { [NOTE_POOLS[1].address.toLowerCase()]: E } }), store, chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null, 'another size');
   eq(await splitForwarder({ read: fwdNode({ sizes: { [NOTE_POOLS[0].address.toLowerCase()]: 0n } }), store, chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null, 'a pool it does not know (size 0)');
 });
-await test('a stored value that is not an address, or another chain\'s, is not used, and a node that fails is an error the caller turns into the old way', async () => {
-  eq(await splitForwarder({ read: fwdNode(), store: kv({ 'tacit-split-depositor:1': 'not an address' }), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null);
-  eq(await splitForwarder({ read: fwdNode(), store: kv({ 'tacit-split-depositor:8453': FWD }), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null, 'another chain\'s');
+await test('a stored value that is not an address, or another chain\'s, is not used (the shipped one stands), and a node that fails is an error the caller turns into the old way', async () => {
+  eq(await splitForwarder({ read: fwdNode(), store: kv({ 'tacit-split-depositor:1': 'not an address' }), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), SPLIT_DEPOSITORS[1], 'junk is ignored');
+  eq(await splitForwarder({ read: fwdNode(), store: kv({ 'tacit-split-depositor:8453': FWD }), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), SPLIT_DEPOSITORS[1], 'another chain\'s is not this chain\'s');
+  eq(await splitForwarder({ read: fwdNode(), store: kv({ 'tacit-split-depositor:8453': FWD }), chainId: 8453, tacitPool: TP, pools: NOTE_POOLS }), FWD, 'but it is that chain\'s own');
   let err = null; try { await splitForwarder({ read: async () => async () => { throw new Error('rpc down'); }, store: kv({ 'tacit-split-depositor:1': FWD }), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }); } catch (e) { err = e; }
   if (!err) throw new Error('should have thrown');
 });

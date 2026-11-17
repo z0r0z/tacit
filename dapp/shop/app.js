@@ -234,7 +234,7 @@ async function zapBuy(id) {
 async function useDeploy() {
   const who = W.account;
   if (!who || U.busy) return;
-  const set = (note, bad = false) => { U.note = note; U.bad = bad; const el = $('#use-note'); if (el) { el.className = `status${bad ? ' err' : ''}`; el.innerHTML = note; } };
+  const set = (note, bad = false) => { U.note = note; U.bad = bad; const el = $('#use-note'); if (el) { el.className = `status wide${bad ? ' err' : ''}`; el.innerHTML = note; } };
   const sel = U.sel || U.tokens[0]?.id || 'other';
   let id = sel, receiver = null, code = null;
   if (sel === 'other') { id = parseTokenId(U.otherId); if (!id) { set('Enter the token id: a number, or 0x and hex.', true); return; } }
@@ -362,16 +362,18 @@ function renderUse() {
   const opts = U.tokens.map((t) => `<option value="${esc(t.id)}"${sel === t.id ? ' selected' : ''}>${esc(t.vanity)} · ${esc(zerosText(zerosOf(t.bits)))}</option>`).join('')
     + `<option value="other"${sel === 'other' ? ' selected' : ''}>${U.tokens.length ? 'Another token id' : 'A token id I enter'}</option>`;
   const html = `${head}
-    <label class="to"><span class="mute">Address</span><select id="use-token">${opts}</select></label>
-    ${sel === 'other' ? `<label class="to"><span class="mute">Token id (a number, or 0x and hex)</span><input id="use-id" type="text" autocomplete="off" spellcheck="false" value="${esc(U.otherId)}"></label>` : ''}
-    <label class="to"><span class="mute">What should it do?</span><select id="use-kind"><option value="forward"${forward ? ' selected' : ''}>Pass ETH on to an address of mine</option><option value="custom"${forward ? '' : ' selected'}>Run my own contract</option></select></label>
-    ${forward
-      ? `<label class="to"><span class="mute">Send everything that arrives to</span><input id="use-to" type="text" autocomplete="off" spellcheck="false" placeholder="${esc(who)}" value="${esc(U.to)}"></label>
-         <p class="note">A tiny contract with one job: ETH sent to the address goes straight on to the one above, for good. It cannot be changed, and only ETH is passed on: tokens sent to it would be stuck.</p>`
-      : `<label class="to"><span class="mute">Creation bytecode (hex)</span><textarea id="use-init" rows="4" spellcheck="false" autocomplete="off" placeholder="0x6080…">${esc(U.init)}</textarea></label>
-         <p class="note">Your contract is deployed to the address with no ETH sent along.</p>`}
-    <button class="btn" type="button" id="use-go"${U.busy ? ' disabled' : ''}>${U.busy ? 'Deploying…' : 'Deploy'}</button>
-    <div id="use-note" class="status${U.bad ? ' err' : ''}" aria-live="polite">${U.note}</div>`;
+    <div class="useform">
+      <label class="to"><span class="mute">Address</span><span class="sel"><select id="use-token">${opts}</select></span></label>
+      <label class="to"><span class="mute">What should it do?</span><span class="sel"><select id="use-kind"><option value="forward"${forward ? ' selected' : ''}>Pass ETH on to an address of mine</option><option value="custom"${forward ? '' : ' selected'}>Run my own contract</option></select></span></label>
+      ${sel === 'other' ? `<label class="to wide"><span class="mute">Token id (a number, or 0x and hex)</span><input id="use-id" type="text" autocomplete="off" spellcheck="false" placeholder="0x…" value="${esc(U.otherId)}"></label>` : ''}
+      ${forward
+        ? `<label class="to wide"><span class="mute">Send everything that arrives to</span><input id="use-to" type="text" autocomplete="off" spellcheck="false" placeholder="${esc(who)}" value="${esc(U.to)}"></label>
+           <p class="note wide">A tiny contract with one job: ETH sent to the address goes straight on to the one above, for good. It cannot be changed, and only ETH is passed on: tokens sent to it would be stuck.</p>`
+        : `<label class="to wide"><span class="mute">Creation bytecode (hex)</span><textarea id="use-init" rows="4" spellcheck="false" autocomplete="off" placeholder="0x6080…">${esc(U.init)}</textarea></label>
+           <p class="note wide">Your contract is deployed to the address with no ETH sent along.</p>`}
+      <button class="btn wide" type="button" id="use-go"${U.busy ? ' disabled' : ''}>${U.busy ? 'Deploying…' : 'Deploy'}</button>
+      <div id="use-note" class="status wide${U.bad ? ' err' : ''}" aria-live="polite">${U.note}</div>
+    </div>`;
   keepFocus(box, ['use-id', 'use-to', 'use-init'], () => { box.innerHTML = html; });
   const on = (id, f) => { const el = $(`#${id}`); if (el) f(el); };
   on('use-token', (el) => { el.onchange = () => { U.sel = el.value; U.note = ''; renderUse(); }; });
