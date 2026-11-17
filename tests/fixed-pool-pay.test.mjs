@@ -270,7 +270,8 @@ await test('the withdrawal\'s warning names the newest early note, and says noth
   eq(exitWarning([e(10, now - 86400 * 9, 5000)]), '', 'a note with many after it');
   eq(exitWarning([{}, { seen: null }, { seen: seenInfo({ old: true }, null, now) }]), '');
   eq(exitWarning([{ seen: seenInfo({ i: 1, t: now - 60 }, null, now) }]), 'Part of this went in less than an hour ago. Waiting longer hides it better.');
-  eq(exitWarning([e(4990, now - 600, 5000), e(4999, now - 60, 5000)]).includes('only 0 deposits'), true, 'the fewest of the early ones');
+  eq(exitWarning([e(4990, now - 600, 5000), e(4999, now - 60, 5000)]).startsWith('Part of this went in recently: the newest note has no deposits after it.'), true, 'the fewest of the early ones, and none is said as none');
+  eq(exitWarning([e(4998, now - 60, 5000)]).includes('only 1 deposit after it'), true, 'one, singular');
 });
 await test('the Withdraw tab\'s line is for the newest note', () => {
   const now = 1_700_010_000;

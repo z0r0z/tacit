@@ -135,7 +135,10 @@ export function exitWarning(entries) {
   const lows = entries.map((x) => x?.seen).filter((s) => s?.low);
   if (!lows.length) return '';
   const counted = lows.filter((s) => s.since != null);
-  if (counted.length) return `Part of this went in recently: the newest note has only ${count(Math.min(...counted.map((s) => s.since)), 'deposit')} after it. Waiting for more makes it blend in better.`;
+  if (counted.length) {
+    const n = Math.min(...counted.map((s) => s.since));
+    return `Part of this went in recently: the newest note has ${n === 0 ? 'no deposits' : `only ${count(n, 'deposit')}`} after it. Waiting for more makes it blend in better.`;
+  }
   return 'Part of this went in less than an hour ago. Waiting longer hides it better.';
 }
 const MIN_KEY = (chainId) => `tacit-fixed-min:${chainId}`;
