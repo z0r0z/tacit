@@ -10,7 +10,9 @@
 //   · with all three tabs (?chains=all) on a narrow phone the figure line would wrap to two lines: a tab whose figure would wrap drops its " in pool" (its label for a screen reader keeps it),
 //     so the row holds one height at 320, 360, 375 and 390px, and at a desktop keeps the whole line;
 //   · the read answers: the line shows the pool's figures;
-//   · Robinhood Chain's line, with big figures, on a 360 or 375px phone: it names the chain as its tab does (Robinhood), so it keeps to three lines like the others, not four.
+//   · Robinhood Chain's line, with big figures, on a 360 or 375px phone: it names the chain as its tab does (Robinhood), so it keeps to three lines like the others, not four;
+//   · the line on a 320 or 340px phone, where its sentence would take a fourth line: it takes the short lead ("Ethereum pool: …"), keeps three lines and the form stays put; from 360px up the
+//     sentence stays, and the line follows the window as it changes.
 //
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/pay-eth-poolstat.mjs
 import { createRequire } from 'node:module';
@@ -123,7 +125,7 @@ try {
     await page.waitForFunction(() => /transacted in/.test(document.querySelector('#poolstat')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(500);
     const frames = (await page.evaluate(() => window.__frames)), live = frames.slice(frames.findIndex((f) => f.form));
-    const heights = [...new Set(live.map((f) => f.h))], rows = [...new Set(frames.filter((f) => f.c > 0).map((f) => f.c))], tops = [...new Set(live.map((f) => f.top))], text = (await page.textContent('#poolstat')).replace(/\s+/g, ' ').trim();
+    const heights = [...new Set(live.map((f) => f.h))], rows = [...new Set(frames.filter((f) => f.c > 0).map((f) => f.c))], tops = [...new Set(live.map((f) => f.top))], text = (await page.$eval('#poolstat', (e) => e.innerText)).replace(/\s+/g, ' ').trim();
     ok(/^The pool on Robinhood holds 12,345\.679 ETH in 123,456 notes · 123,456\.78 ETH transacted in 98,765 deposits\.$/.test(text), `${width}px: Robinhood's line names the chain as its tab does (${text.slice(0, 48)}…)`);
     ok(heights.length === 1 && heights[0] === 54, `${width}px: the line keeps to three lines through the figures arriving, never a fourth (heights ${heights.join('px, ')}px over ${live.length} frames)`);
     ok(rows.length === 1 && rows[0] > 0 && tops.length === 1, `${width}px: the chain row holds one height (${rows.join('px, ')}px) and so does the form (${tops.join('px, ')}px)`);
@@ -158,8 +160,7 @@ try {
     });
     ok(what.n === 3 && what.lines.every((h) => h <= 16), `${width}px: three tabs, each figure line on one line (${what.lines.join('px, ')}px)`);
     ok((tight === null || (what.ip === 'none') === tight) && /in the pool/.test(what.label), `${width}px: the tab ${what.ip === 'none' ? 'drops' : 'keeps'} " in pool" (shows "${what.text}"), and its label still says "in the pool"`);
-    // (at 320px the pool line under the row reaches a fourth line with these figures and the form moves with it: that line's own business, left as the notes say, so the form is not held to a place there)
-    ok(rows.length === 1 && (width === 320 || tops.length === 1), `${width}px: the chain row held one height (${rows.join('px, ')}px)${width === 320 ? '' : ` and the form one place (${tops.join('px, ')}px)`}, over ${live.length} frames`);
+    ok(rows.length === 1 && tops.length === 1, `${width}px: the chain row held one height (${rows.join('px, ')}px) and the form one place (${tops.join('px, ')}px), over ${live.length} frames`);
     await ctx.close();
   }
 
@@ -178,11 +179,40 @@ try {
     await ctx.close();
   }
 
+  // the pool line on the narrowest phones: its sentence ("The pool on Ethereum holds 123.457 ETH in 4,321 notes · 1,234.56 ETH transacted in 987 deposits.") takes four lines at 320px, a line
+  // more than the room it holds; it takes the short lead ("Ethereum pool: …") there, keeps its three lines, and the form is where it was. At 360px up, the sentence stays.
+  for (const [width, chain, big, short] of [[320, 1, false, true], [320, 4663, true, true], [340, 1, true, true], [360, 1, false, false]]) {
+    const { ctx, page } = await open({ width, connected: false, reads: true, tally: 800, chain, big });
+    await page.waitForFunction(() => /transacted in/.test(document.querySelector('#poolstat')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(500);
+    const frames = (await page.evaluate(() => window.__frames)), live = frames.slice(frames.findIndex((f) => f.form));
+    const heights = [...new Set(live.map((f) => f.h))], tops = [...new Set(live.map((f) => f.top))], text = (await page.$eval('#poolstat', (e) => e.innerText)).replace(/\s+/g, ' ').trim();
+    const name = chain === 1 ? 'Ethereum' : 'Robinhood';
+    ok(short ? text.startsWith(`${name} pool: `) : text.startsWith(`The pool on ${name} holds `), `${width}px: the line reads "${text.slice(0, 40)}…", ${short ? 'the short lead' : 'the sentence'}`);
+    ok(/ transacted in [\d,]+ deposits\.$/.test(text) && /[\d.,]+ ETH in [\d,]+ notes · /.test(text), `${width}px: whichever lead, the figures are all there (${text.slice(-60)})`);
+    ok(heights.length === 1 && heights[0] === 54 && tops.length === 1, `${width}px: the line held three lines' room (${heights.join('px, ')}px) and the form one place (${tops.join('px, ')}px), over ${live.length} frames`);
+    await ctx.close();
+  }
+
+  // the line fits again when the window changes: narrow takes the short lead, wide brings the sentence back
+  {
+    const { ctx, page } = await open({ width: 1280, connected: false, reads: true, tally: 400, big: true });
+    await page.waitForFunction(() => /transacted in/.test(document.querySelector('#poolstat')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+    const lead = () => page.$eval('#poolstat', (e) => e.innerText.replace(/\s+/g, ' ').trim().slice(0, 22));
+    const wide = await lead();
+    await page.setViewportSize({ width: 320, height: 844 }); await page.waitForTimeout(400);
+    const narrow = await lead();
+    await page.setViewportSize({ width: 1280, height: 844 }); await page.waitForTimeout(400);
+    const back = await lead();
+    ok(wide.startsWith('The pool on Ethereum') && narrow.startsWith('Ethereum pool:') && back === wide, `the line fits again as the window changes: "${wide}" at 1280px, "${narrow}" at 320px, "${back}" at 1280px`);
+    await ctx.close();
+  }
+
   // the read answers: the line is the pool's figures
   {
     const { ctx, page } = await open({ width: 390, connected: false, reads: true });
-    await page.waitForFunction(() => /holds .* ETH in 4,321 notes/.test(document.querySelector('#poolstat')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
-    const text = (await page.textContent('#poolstat')).replace(/\s+/g, ' ').trim();
+    await page.waitForFunction(() => /holds .* ETH in 4,321 notes/.test(document.querySelector('#poolstat')?.innerText || ''), null, { timeout: 30000 }).catch(() => {});
+    const text = (await page.$eval('#poolstat', (e) => e.innerText)).replace(/\s+/g, ' ').trim();
     ok(/^The pool on Ethereum holds 123\.457 ETH in 4,321 notes/.test(text) && (await room(page)).here, `the read answers: the line gives the pool's figures (${text.slice(0, 70)})`);
     await ctx.close();
   }

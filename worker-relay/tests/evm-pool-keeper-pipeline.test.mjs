@@ -115,6 +115,19 @@ await test('cancelling a slot cuts it and everything behind', async () => {
   p.stop();
 });
 
+await test('a slot sent and never landed is cut after staleMs (default 200 s), and its notes can be sent again', async () => {
+  const { p, sender, advance } = setup({ reserveMs: 10_000_000 });
+  const a = await p.reserve({ outLeaf: [11n, 12n], nfs: [1n] });
+  assert.equal(await p.fulfil(a.id, txFor(a, { outLeaf: [11n, 12n], nfs: [1n] }), sender('a'), opts), '0xa');
+  advance(190_000);
+  await assert.rejects(p.reserve({ outLeaf: [21n, 22n], nfs: [1n] }), code(409, true), 'its notes are held at 190 s, while it may still land');
+  advance(20_000);
+  assert.equal((await p.head()).pending.length, 0, 'cut at 210 s');
+  const b = await p.reserve({ outLeaf: [21n, 22n], nfs: [1n] });
+  assert.equal(b.start, '4', 'the same notes are sent again from the pool\'s head');
+  p.stop();
+});
+
 await test('landed slots leave the queue; another sender landing first drops it', async () => {
   const { p, chain, sender } = setup();
   const a = await p.reserve({ outLeaf: [11n, 12n], nfs: [1n] });

@@ -209,6 +209,66 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
     if (!f.ok) throw Object.assign(new Error(`keeper ${account.address} holds ${f.balance} wei, under the ${f.need} wei a ${gas}-gas send needs at the current base fee`), { shortOfGas: true });
     return { maxFeePerGas: f.maxFeePerGas, maxPriorityFeePerGas: f.maxPriorityFeePerGas };
   };
+  // One signed call to a list of endpoints: `nonce` and `fee` are part of the call, so the same call signs to the same hash each time it
+  // is made. `fail(e)` hears each endpoint's error. → the hash, or null when no endpoint took it; a revert is thrown.
+  const sendMs = cfg.sendTimeoutMs ?? 8000;
+  const via = async ({ functionName, args, gas, nonce, fee }, urls, firstWins, fail) => {
+    const send1 = (url) => createWalletClient({ account, chain: viemChain, transport: http(url, { timeout: sendMs, retryCount: 1 }) })
+      .writeContract({ ...target(functionName), args, gas, nonce, ...fee });
+    if (firstWins) {
+      // the public nodes, one after another: the first that takes it
+      let hash = null;
+      for (const url of urls) {
+        try { hash = (await send1(url)) || hash; if (hash) break; }
+        catch (e) { fail(e); log(`  submit via ${new URL(url).host} failed: ${safeErr(e)}`); if (revertName(e)) throw e; }
+      }
+      return hash;
+    }
+    // The private endpoints, all at once. The hash is the same at each, so whichever takes it first is the answer and the others go on
+    // in the background: one that hangs no longer holds the relay up for the sum of the timeouts, one that refuses does not stop the
+    // others, and a revert fails the send only when no endpoint took it.
+    return new Promise((resolve, reject) => {
+      let left = urls.length, done = false, reverted = null;
+      for (const url of urls) {
+        send1(url).then(
+          (h) => { if (h && !done) { done = true; resolve(h); } },
+          (e) => { fail(e); log(`  submit via ${new URL(url).host} failed: ${safeErr(e)}`); if (revertName(e) && !reverted) reverted = e; },
+        ).finally(() => { if (--left === 0 && !done) { done = true; if (reverted) reject(reverted); else resolve(null); } });
+      }
+    });
+  };
+  async function receiptOf(hash) {
+    try { return await pub.getTransactionReceipt({ hash }); }
+    catch (e) { if (/could not be found|not found/i.test(String(e?.shortMessage || e?.message))) return null; throw e; }
+  }
+  // A private endpoint can take a transaction and never mine it (the builder drops it, or holds it past its window), and then the
+  // transaction is nowhere the read nodes can see it. Each send is kept as it was signed (the last few), and one with no receipt after
+  // `resendSecs` is sent again unchanged (same nonce and fees: the same hash, never a second transaction), to every private endpoint and,
+  // when public sends are allowed, to the read nodes too, up to `resendTries` times. A mined one is left alone, and an endpoint that
+  // already has it, or a nonce used since, is no failure.
+  const sentCalls = new Map();
+  const remember = (hash, call) => { sentCalls.set(hash, call); if (sentCalls.size > 64) sentCalls.delete(sentCalls.keys().next().value); };
+  async function resend(hash) {
+    const call = sentCalls.get(hash);
+    if (!call || await receiptOf(hash).catch(() => null)) return false;
+    for (const urls of [privateUrls, publicUrls]) {
+      if (urls.length) await via(call, urls, urls === publicUrls, () => {}).catch(() => {});
+    }
+    return true;
+  }
+  function watch(hash) {
+    const ms = Math.round((cfg.resendSecs ?? 40) * 1000), tries = cfg.resendTries ?? 3;
+    if (!(ms > 0)) return;
+    (async () => {
+      for (let i = 1; i <= tries; i++) {
+        await new Promise((r) => { setTimeout(r, ms).unref?.(); });
+        if (await receiptOf(hash).catch(() => null)) return;
+        log(`  ${hash} not mined after ${Math.round(ms * i / 1000)} s; sending it again`);
+        await resend(hash).catch(() => {});
+      }
+    })();
+  }
+
   const b32 = (x) => `0x${BigInt(x).toString(16).padStart(64, '0')}`;
   const transactOf = (logs) => logs.map((l) => ({
     firstIndex: l.args.firstIndex, outLeaf0: BigInt(l.args.outLeaf0), outLeaf1: BigInt(l.args.outLeaf1), blockNumber: l.blockNumber,
@@ -299,53 +359,29 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
     send: (functionName, args, { gas, simulate = true }) => serial(async () => {
       if (simulate) await pub.estimateContractGas({ ...target(functionName), args, account });
       let lastErr;
-      const sendMs = cfg.sendTimeoutMs ?? 8000;
-      const via = async (urls, nonce, fee, firstWins = false) => {
-        const send1 = (url) => createWalletClient({ account, chain: viemChain, transport: http(url, { timeout: sendMs, retryCount: 1 }) })
-          .writeContract({ ...target(functionName), args, gas, nonce, ...fee });
-        if (firstWins) {
-          // the public nodes, one after another: the first that takes it
-          let hash = null;
-          for (const url of urls) {
-            try { hash = (await send1(url)) || hash; if (hash) break; }
-            catch (e) { lastErr = e; log(`  submit via ${new URL(url).host} failed: ${safeErr(e)}`); if (revertName(e)) throw e; }
-          }
-          return hash;
-        }
-        // The private endpoints, all at once. The hash is the same at each, so whichever takes it first is the answer and the others go on
-        // in the background: one that hangs no longer holds the relay up for the sum of the timeouts, one that refuses does not stop the
-        // others, and a revert fails the send only when no endpoint took it.
-        return new Promise((resolve, reject) => {
-          let left = urls.length, done = false, reverted = null;
-          for (const url of urls) {
-            send1(url).then(
-              (h) => { if (h && !done) { done = true; resolve(h); } },
-              (e) => { lastErr = e; log(`  submit via ${new URL(url).host} failed: ${safeErr(e)}`); if (revertName(e) && !reverted) reverted = e; },
-            ).finally(() => { if (--left === 0 && !done) { done = true; if (reverted) reject(reverted); else resolve(null); } });
-          }
-        });
-      };
+      const fail = (e) => { lastErr = e; };
       for (const urls of [privateUrls, publicUrls]) {
         if (!urls.length) continue;
         const hash = await withNonceRetry(functionName, async () => {
           const [nonce, fee] = await Promise.all([nextNonce(), fees(gas)]);
-          const h = await via(urls, nonce, fee, urls === publicUrls);
+          const call = { functionName, args, gas, nonce, fee };
+          const h = await via(call, urls, urls === publicUrls, fail);
           if (!h) throw lastErr || new Error('no submission endpoint took it');
           signer.sentNonce = nonce;
           signer.sentAt = Date.now();
+          remember(h, call);
+          watch(h);
           return h;
         }, { log }).catch((e) => { if (revertName(e)) throw e; lastErr = e; return null; });
         if (hash) return hash;
       }
       throw lastErr || new Error('no submission endpoint');
     }),
+    resend,
     async waitReceipt(hash, timeoutMs) {
       try { return await pub.waitForTransactionReceipt({ hash, timeout: timeoutMs }); }
       catch (e) { if (/timed out|could not be found/i.test(String(e?.shortMessage || e?.message))) return null; throw e; }
     },
-    async receipt(hash) {
-      try { return await pub.getTransactionReceipt({ hash }); }
-      catch (e) { if (/could not be found|not found/i.test(String(e?.shortMessage || e?.message))) return null; throw e; }
-    },
+    receipt: receiptOf,
   };
 }
