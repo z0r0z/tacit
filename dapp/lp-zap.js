@@ -183,17 +183,33 @@ export async function zapPlanExt({ eth, ra, rb, total, unitA = 10n ** 10n, unitB
   return { ext: true, swapIn: X, ethLeg: legs.a * uA, bLeg: legs.b * uB, shares: legs.s, value, left: W - value, out: BigInt(q.amountOut ?? q.amountLimit), floor: BigInt(q.amountLimit), callData: q.callData, q,
     impact: 0, shareOfPool: Number(legs.s) / Number(total + legs.s) };
 }
-// The same plan for exactly `shares` (the count a proof was made for) at the reserves now and a fresh quote of the same swap: the least legs that mint
-// exactly that many (each floors to it), or null when the pool has moved so that none do, or the swap would no longer bring the token leg.
-export function zapPlanExtFor({ shares, prev, q, ra, rb, total, unitA = 10n ** 10n, unitB = 10n ** 10n, maxEth = null }) {
+// The same plan for exactly `shares` (the count a proof was made for) at the reserves now, with the outside swap asked for again: `quote(wei)` answers as it did for zapPlanExt.
+// The proof fixes the share count, so the pool moving while it was made (a trade, someone else's add: the proof takes minutes) must not cost the proof. The least legs for that
+// count are taken at the pool as it stands (the pool mints the smaller side, so the count is minted when the smaller side floors to it: the token side moves in whole units
+// of the pool's shares, the ETH side jumps by a few, and only the smaller side has to land on it), and the swap is sized again to bring the token leg at its floor, the way it was
+// first sized. Null when no such legs mint exactly that count, when the swap cannot bring the leg, or when it would cost more than `maxEth` (the pool moved too far).
+export async function zapPlanExtFor({ shares, prev, quote = null, q = null, ra, rb, total, unitA = 10n ** 10n, unitB = 10n ** 10n, maxEth = null }) {
   ra = BigInt(ra); rb = BigInt(rb); total = BigInt(total);
   const S = BigInt(shares), uA = BigInt(unitA), uB = BigInt(unitB);
-  if (S < 1n || !q || !(ra > 0n && rb > 0n && total > 0n)) return null;
-  const a = ceil(S * ra, total), b = ceil(S * rb, total);
-  if ((a * total) / ra !== S || (b * total) / rb !== S) return null;
-  const value = prev.swapIn + a * uA;
-  if (b * uB > BigInt(q.amountLimit) || (maxEth != null && value > BigInt(maxEth))) return null;
-  return { ...prev, ethLeg: a * uA, bLeg: b * uB, shares: S, value, left: prev.value + prev.left - value, floor: BigInt(q.amountLimit), callData: q.callData, q };
+  const ask = quote || (q ? async () => q : null);
+  if (S < 1n || !ask || !(ra > 0n && rb > 0n && total > 0n)) return null;
+  const a = ceil(S * ra, total), b = ceil(S * rb, total), sA = (a * total) / ra, sB = (b * total) / rb;
+  if ((sA < sB ? sA : sB) !== S) return null;
+  const need = b * uB, up = (x) => ((x + uA - 1n) / uA) * uA;
+  let X = BigInt(prev.swapIn), got = await ask(X);
+  for (let i = 0; i < 4; i++) {
+    const lim = got ? BigInt(got.amountLimit) : 0n;
+    if (!(lim > 0n)) return null;
+    if (lim >= need && lim - need <= need / 500n) break;                 // brings the leg, and no more than 0.2% over it
+    const next = up((X * need * 10005n) / (lim * 10000n));               // the floor is near linear in what is spent: what brings the leg, a hair over for the rate's small move with size
+    X = next === X ? X + uA : next;
+    if (maxEth != null && X > BigInt(maxEth)) return null;
+    got = await ask(X);
+  }
+  const lim = got ? BigInt(got.amountLimit) : 0n;
+  const value = X + a * uA;
+  if (lim < need || X < uA || (maxEth != null && value > BigInt(maxEth))) return null;
+  return { ...prev, swapIn: X, ethLeg: a * uA, bLeg: b * uB, shares: S, value, left: prev.value + prev.left - value, floor: lim, out: BigInt(got.amountOut ?? lim), callData: got.callData, q: got };
 }
 
 export function zapCalldata({ plan, router, amm, tokenB, assetA, assetB, feeBps = 30, deadline, commit, swapData = null }) {

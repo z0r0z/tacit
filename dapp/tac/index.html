@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-6RJnSo9G1rN8Rm7fZqvvlyuf2zm2WIdKt6yMiL2uB1k=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kZBqw2bqNwvqrjUn9j1GfAAoGZijEjKgfLRLZcOWbdc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -61,7 +61,7 @@
 <link rel="modulepreload" href="/portfolio.js?cb=4bd81bcc">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=fb6ec72f">
 <link rel="modulepreload" href="/bridge-all.js?cb=45f85325">
-<link rel="modulepreload" href="/lp-zap.js?cb=28b3b478">
+<link rel="modulepreload" href="/lp-zap.js?cb=a14dd27e">
 <link rel="modulepreload" href="/farm-ops.js?cb=c5192cc4">
 <link rel="modulepreload" href="/relay-outcome.js?cb=ad7c898d">
 <link rel="modulepreload" href="/btc-borrow.js?cb=e1f5e408">
@@ -2602,7 +2602,7 @@ import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { balanceRows } from '/wallet-balances.js?cb=1cd3e7a4';
 import { portfolio } from '/portfolio.js?cb=4bd81bcc';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=d4520508';
-import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapPlanExt, zapPlanExtFor, zapWorth, foundingPlan, zapEntry, farmPick } from '/lp-zap.js?cb=28b3b478';
+import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapPlanExt, zapPlanExtFor, zapWorth, foundingPlan, zapEntry, farmPick } from '/lp-zap.js?cb=a14dd27e';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
 import * as GR from '/gas-relay.js?cb=e8d173a8';
 import { netPicker } from '/net-pick.js?cb=9229f173';
@@ -7392,9 +7392,8 @@ async function xtAddCore({ run, r, wei, st }) {
   const { res, ra, rb } = await xtAddPlan(t, r, wei);
   let now, swapData = null;
   if (plan.ext) {
-    // the swap is asked for again, at its size and with its own floor: the legs must still be the ones the proof names, and the swap must still bring the token leg
-    const fresh = await xtPoolQuote(r, plan.swapIn, 50).catch(() => null);
-    now = fresh ? zapPlanExtFor({ shares: plan.shares, prev: plan, q: fresh, ra, rb, total: res.totalShares, unitA: E10, unitB: r.scale, maxEth: wei + wei / 50n }) : null;
+    // the pool may have moved while the share was proved: the legs are the least that mint exactly the proved count at the pool now, and the swap is asked for again, sized to bring the token leg at its floor
+    now = await zapPlanExtFor({ shares: plan.shares, prev: plan, quote: (x) => xtPoolQuote(r, x, 50), ra, rb, total: res.totalShares, unitA: E10, unitB: r.scale, maxEth: wei + wei / 50n }).catch(() => null);
     swapData = now?.callData || null;
   } else now = zapPlanFor({ shares: plan.shares, ra, rb, total: res.totalShares, feeBps: BigInt(res.feeBps), unitA: E10, unitB: r.scale, maxEth: wei + wei / 50n, settles: true });
   if (!now) throw xtSaid('The pool or the price moved while your share was proved, so nothing was sent. Press again for a fresh quote.');

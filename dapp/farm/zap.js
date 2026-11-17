@@ -5,7 +5,7 @@
 // Whatever stops it after the transaction leaves a private share note in the key's balance, which `bondShare` farms later.
 // The front page's Earn card has more ways in (a proof kept ready, a swap split with the Precision pool, your own prover, LP only);
 // this is the one path a page with a wallet and a key needs. Everything it calls is the pool module's (confidential-pool-ux.js).
-import { zapPlan, zapPlanFor, zapPlanExt, zapPlanExtFor, zapSettleCalldata } from '/lp-zap.js?cb=28b3b478';
+import { zapPlan, zapPlanFor, zapPlanExt, zapPlanExtFor, zapSettleCalldata } from '/lp-zap.js?cb=a14dd27e';
 import { relayedOrOwn } from '/farm-ops.js?cb=c5192cc4';
 
 export const PUBLIC_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
@@ -157,9 +157,8 @@ export async function zapSend({ t, rpc, wallet, from, pool, ready, say = () => {
   const res = await t.poolReserves(pool.poolId);
   let plan = null, swapData = null;
   if (ready.ext) {
-    // the outside swap is asked for again at its size: its floor must still bring the token leg the proof's legs need
-    const fresh = res && ready.outside ? await ready.outside(ready.ext.swapIn).catch(() => null) : null;
-    plan = fresh ? zapPlanExtFor({ shares: ready.shares, prev: ready.ext, q: fresh, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, unitB: ready.unitB, maxEth: max }) : null;
+    // the pool may have moved while the share was proved: the legs are the least that mint exactly the proved count at the pool now, and the outside swap is asked for again, sized to bring the token leg
+    plan = res && ready.outside ? await zapPlanExtFor({ shares: ready.shares, prev: ready.ext, quote: ready.outside, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, unitB: ready.unitB, maxEth: max }).catch(() => null) : null;
     swapData = plan?.callData || null;
   } else plan = res && zapPlanFor({ shares: ready.shares, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, feeBps: BigInt(res.feeBps ?? 30), unitB: ready.unitB, maxEth: max, settles: true });      // sent with its proof in the same transaction: a mint of any other count reverts it (lp-zap.js)
   if (!plan && await consumed(rpc, t, ready.built)) throw said('This share was already made private by an earlier press. It is in your private balance.', { already: true });

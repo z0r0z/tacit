@@ -126,9 +126,21 @@ try {
   const proven = await t.relay.prove({ type: 'wrap', op: built.wrapOp, leaves: [built.leaf], outputs: built.outputs, memos: built.memos, ephRand: built.ephRand }, { viaRelay: true, timeoutMs: 60000 });
   ok(t.wrapProofFits(built, proven) && await depositStatus(built.depositId) === 0n && await balanceOf(FROM) === before, 'the share is proved with nothing sent and no deposit existing');
 
+  // the pool moves while the share is proved (the proof takes minutes, and the pool is other people's too): somebody trades MOVE_WEI of ETH in through the pool's own AMM
+  const MOVE = BigInt(process.env.MOVE_WEI ?? 10n ** 15n);
+  if (MOVE > 0n) {
+    const TRADER = '0x00000000000000000000000000000000000Ba5E1', dl = Math.floor(Date.now() / 1000) + 1200;
+    await rpcA('anvil_impersonateAccount', [TRADER]); await rpcA('anvil_setBalance', [TRADER, hex(10n ** 18n)]);
+    const tradeData = '0xcfdf9dcc' + strip(res.assetA).padStart(64, '0') + strip(res.assetB).padStart(64, '0') + W(res.feeBps ?? 30) + W(MOVE) + W(0) + W(dl) + strip(TRADER).padStart(64, '0');
+    const th = await rpcA('eth_sendTransaction', [{ from: TRADER, to: PUBLIC_AMM, data: tradeData, value: hex(MOVE), gas: hex(600000) }]);
+    const trc = await wallet.receipt(th), after = await readReserves(call, POOL, pool.poolId);
+    ok(trc.status === '0x1' && after.reserveA !== res.reserveA, `the pool moved while the share was proved: a trade of ${Number(MOVE) / 1e18} ETH took its tETH from ${res.reserveA} to ${after.reserveA} units and its SPX from ${res.reserveB} to ${after.reserveB}`);
+  }
+
   // step 2: the swap asked for again, the legs for exactly the proved shares, run as a call first, then sent
-  const res2 = await readReserves(call, POOL, pool.poolId), fresh = await quoteAt(ext.swapIn);
-  const now = zapPlanExtFor({ shares: ext.shares, prev: ext, q: fresh, ra: res2.reserveA, rb: res2.reserveB, total: res2.totalShares, unitA: A, unitB, maxEth: WEI + WEI / 50n });
+  const res2 = await readReserves(call, POOL, pool.poolId);
+  const now = await zapPlanExtFor({ shares: ext.shares, prev: ext, quote: (x) => quoteAt(x), ra: res2.reserveA, rb: res2.reserveB, total: res2.totalShares, unitA: A, unitB, maxEth: WEI + WEI / 50n });
+  if (now) { const a2 = now.ethLeg / A, b2 = now.bLeg / unitB, T2 = res2.totalShares; console.log(`  info the legs before: ${ext.ethLeg / A} / ${ext.bLeg / unitB}, now: ${a2} / ${b2}; both sides floor to the count? ${(a2 * T2) / res2.reserveA === ext.shares && (b2 * T2) / res2.reserveB === ext.shares} (the old rule needed both); swap ${Number(ext.swapIn) / 1e18} -> ${Number(now.swapIn) / 1e18} ETH`); }
   ok(!!now && now.shares === ext.shares && now.value <= WEI + WEI / 50n, `the legs for exactly ${ext.shares} shares at the reserves now: ${Number(now?.ethLeg) / 1e18} ETH and ${now?.bLeg} of the token, ${Number(now?.value) / 1e18} ETH in all`);
   const time = Number(BigInt((await rpcA('eth_getBlockByNumber', ['latest', false])).timestamp));
   const data = zapSettleCalldata({ plan: now, router: ROUTER, amm: PUBLIC_AMM, tokenB: SPX, assetA: res2.assetA, assetB: res2.assetB, feeBps: Number(res2.feeBps ?? 30), deadline: BigInt(time + 1200),
