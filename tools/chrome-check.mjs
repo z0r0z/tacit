@@ -29,10 +29,10 @@ let failed = 0;
 const ok = (c, m, extra = '') => { console.log(`${c ? 'ok  ' : 'FAIL'} ${m}${extra ? ` (${extra})` : ''}`); if (!c) failed++; };
 
 const HEADER = 'Assets:/assets/ Farm:/farm/ Rewards:/rewards/ Prove:/prove/';
-const MENU = 'Portfolio:/#portfolio Pay:/pay/ Borrow:/vault/ Bridges:/bridge/ TAC:/tac/ Etch:/etch/ Vanity:/vanity/ Tasks:/tasks/ FACE:/face/';
+const MENU = 'Portfolio:/#portfolio Pay:/pay/ Borrow:/vault/ Bridges:/bridge/ TAC:/tac/ Etch:/etch/ Shop:/shop/ Tasks:/tasks/ FACE:/face/';
 const FOOTER = 'Whitepaper | Build | Security | Source | Pool contract | Stats | DefiLlama | Listed on ETHBeat | @tacitfi on X | Tacit Discord community';
 // page → the menu entry marked as the page you are on (none for a page the menu does not list)
-const PAGES = { '/': null, '/tac/': 'TAC', '/chain/': 'TAC', '/vault/': 'Borrow', '/bridge/': 'Bridges', '/pay/': 'Pay', '/vanity/': 'Vanity', '/build/': null, '/docs/chain/': null, '/weld/stats/': null };
+const PAGES = { '/': null, '/tac/': 'TAC', '/chain/': 'TAC', '/vault/': 'Borrow', '/bridge/': 'Bridges', '/pay/': 'Pay', '/shop/': 'Shop', '/build/': null, '/docs/chain/': null, '/weld/stats/': null };
 const VIEWS = { desktop: { width: 1280, height: 800 }, 'phone 390': { width: 390, height: 800 }, 'phone 360': { width: 360, height: 800 }, 'phone 320': { width: 320, height: 700 } };
 
 const browser = await chromium.launch();

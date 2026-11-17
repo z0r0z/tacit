@@ -2,16 +2,19 @@ import { makeConnect } from '/trade/connect.js?cb=5725b977';
 import { esc } from '/trade/sheet.js?cb=71cade73';
 import { $, rpc } from '/trade/util.js?cb=1d2cd8d3';
 import { SHOP, MARKET, TAC, TAC_NAME, FROM_BLOCK, TOPICS, foldShelf, sortShelf, addressParts, tacText, buyData, buyWithPermitData, approveData, listingsData, balanceOfData,
-  allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress } from '/vanity/shelf.js?cb=30055da6';
+  allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress } from '/shop/shelf.js?cb=30055da6';
 
 // The vanity shop's shelf (contracts/src/VanityShop.sol): addresses that start with zeros, each a token the buyer can deploy a contract to on Ethereum. The page reads the shelf
 // from the shop's events, checks the one a buyer picks against the shop again, and sends one transaction: the buy, with a TAC permit signed first when the shop has no
 // allowance. The shop holds nothing: the TAC goes to its treasury and the token to the address the buyer names, in the same transaction.
 const S = { shelf: [], loaded: false, failed: false, bal: null, busy: null, note: '', bad: false, to: '', done: null };
 const hex = (n) => '0x' + n.toString(16);
-const say = (text, bad = false) => { S.note = text; S.bad = bad; paintNote(); };
+// Where TAC is bought: the front page's swap, with ETH to TAC already chosen (its own "Buy TAC" button opens the same one).
+const BUY_TAC_URL = '/?from=ETH&to=TAC';
+const BUY_TAC = `<a href="${BUY_TAC_URL}">Buy TAC</a>`;
+const say =(text, bad = false) => { S.note = text; S.bad = bad; paintNote(); };
 const conn = makeConnect({
-  describe: 'Buy a vanity address with TAC', name: 'tacit vanity', rewards: false,
+  describe: 'Buy an address that starts with zeros, for TAC', name: 'tacit shop', rewards: false,
   say: (t, b) => say(t, b), busy: () => !!S.busy, onChange: () => { S.bal = null; S.to = ''; render(); readBalance(); },
 });
 const W = conn.W;
@@ -57,7 +60,7 @@ async function buy(id) {
     if (cur.nonce !== row.nonce || cur.price !== row.price) { say('Its price changed. The list is updated; look again.', true); await readShelf(); return; }
     const who = W.account, call = (data, to2) => rpc('eth_call', [{ to: to2, data }, 'latest']);
     const bal = decodeWord(await call(balanceOfData(who), TAC));
-    if (bal === null || bal < row.price) { say(`You hold ${bal === null ? 'no readable' : tacText(bal)} TAC. This one costs ${tacText(row.price)}.`, true); return; }
+    if (bal === null || bal < row.price) { say(`You hold ${bal === null ? 'no readable' : tacText(bal)} TAC. This one costs ${tacText(row.price)}. ${BUY_TAC}`, true); return; }
     const deadline = Math.floor(Date.now() / 1000) + 20 * 60, args = { id, to, nonce: row.nonce, maxPrice: row.price, deadline };
     let data;
     if ((decodeWord(await call(allowanceData(who, SHOP), TAC)) ?? 0n) >= row.price) data = buyData(args);
@@ -118,6 +121,7 @@ function render() {
   else if (!S.loaded) out += `<p class="empty">Reading the shop.</p>`;
   else if (!S.shelf.length) out += `<p class="empty">Nothing for sale right now.</p>`;
   else out += `<ol class="shelf">${S.shelf.map(rowHtml).join('')}</ol>`;
+  if (S.loaded) out += `<p class="note need">Need TAC? <a href="${BUY_TAC_URL}">Buy it</a>.</p>`;
   if (W.account && S.shelf.length) out += `<label class="to"><span class="mute">Send the token to</span><input id="to" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="${esc(W.account)}" value="${esc(S.to)}"></label>`;
   out += `<div id="note" class="status" aria-live="polite"></div>`;
   const typing = document.activeElement?.id === 'to', caret = typing ? document.activeElement.selectionStart : 0;     // a refresh of the list must not take the field from someone typing in it

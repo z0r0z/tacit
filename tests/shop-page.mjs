@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The vanity shop's page (dapp/vanity/) in a real browser under the page's own CSP, against an anvil fork of mainnet that holds the live shop, the vanity market and TAC: the
+// The shop page (dapp/shop/) in a real browser under the page's own CSP, against an anvil fork of mainnet that holds the live shop, the vanity market and TAC: the
 // shelf (read from the shop's events, the rarest first), a buy with TAC's permit, a buy with an allowance already in place, the refusals the page makes before anything is
 // signed, a price that changed or an address that went while the page was open, a wallet that cannot sign a permit (approval first), a wallet that says no, a sale lost in
 // the moment of signing, a shelf that cannot be read, and a phone. The ops multisig is impersonated on the fork to list and unlist.
@@ -12,7 +12,7 @@ import { readFileSync, existsSync, statSync, mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { marketAddress } from '../worker/src/salt-pool.js';
 import { encodeList } from '../tools/vanity-shop-list.mjs';
-import { foldShelf, TOPICS, FROM_BLOCK } from '../dapp/vanity/shelf.js';
+import { foldShelf, TOPICS, FROM_BLOCK } from '../dapp/shop/shelf.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
@@ -126,7 +126,7 @@ async function openPage(viewport, wallet = null) {
   const page = await ctx.newPage(), errors = [], blocked = [];
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
   page.on('console', (m) => { if (m.type() === 'error') { const t = m.text(); if (/favicon/i.test(t)) return; (/Content Security Policy|Refused to/i.test(t) ? blocked : errors).push(t); } });
-  await page.goto(`http://127.0.0.1:${WEB}/vanity/`);
+  await page.goto(`http://127.0.0.1:${WEB}/shop/`);
   return { browser, page, errors, blocked, walletLog };
 }
 
@@ -172,6 +172,7 @@ try {
   await until(p1, () => /Nothing for sale right now/.test(document.querySelector('#shelf')?.textContent || ''), null, 120000);
   ok(true, 'and when the nodes answer again, the retry shows an empty shelf as empty');
   ok(await p1.$('[data-buy]') === null && /Connect/.test(await text(p1, '#wallet-chip')), 'with nothing listed there is nothing to buy, and the wallet chip offers to connect');
+  ok((await p1.$eval('#shelf .need a', (a) => a.getAttribute('href'))) === '/?from=ETH&to=TAC' && /Need TAC\? Buy it/.test(await text(p1, '#shelf .need')), 'the shelf says where to get TAC: "Need TAC? Buy it", to the front page\'s swap with ETH to TAC chosen');
   await r1.browser.close(); r1 = null;
 
   // ---- the ops multisig lists four: the rarest, two of equal rarity at two prices, and one at a high nonce
@@ -205,6 +206,7 @@ try {
   await clickBuy(p, A);
   await noteHas(p, /You hold 10 TAC\. This one costs 250\./);
   ok(W.signAttempts === 0 && W.sends.length === 0, 'with too little TAC the page says what the wallet holds and what the address costs, and asks for nothing');
+  ok((await p.$eval('#note a', (a) => a.getAttribute('href'))) === '/?from=ETH&to=TAC', 'and that note links to buying TAC, on the front page\'s swap with ETH to TAC chosen');
   await setTac(buyer.account, 1000n * E18);
   for (const bad of [SHOP, TACADDR, MARKET, 'hello', '0x1234']) {
     await p.fill('#to', bad);
