@@ -29,7 +29,7 @@ const orig = { hash: '0x' + '01'.repeat(32), from: me, nonce: 0, ...call };
   const { seen } = await A.lookReplaced({ read: c.read, hash: orig.hash });
   c.mempool.delete(orig.hash);                                                                    // the wallet replaced it: this node dropped the first
   c.calls.length = 0;
-  assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen }), {}, 'dropped but the nonce is free: still only waiting (the wallet may send it again)');
+  assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen }), { idle: true }, 'dropped but the nonce is free: nothing took its place (the wallet may send it again)');
   assert.deepEqual(c.calls, ['eth_getTransactionByHash', 'eth_getTransactionCount'], 'which costs two reads, so waiting a long time does not search the blocks again and again');
   const fast = { hash: '0x' + '02'.repeat(32), from: me, nonce: 0, ...call };
   c.mine({ hash: '0x' + '03'.repeat(32), from: other, nonce: 0, to: me, block: 990 }, 990); c.mine(fast, 990); c.mine({ hash: '0x' + '04'.repeat(32), from: me, nonce: 1, to: pool, block: 995 }, 995);
@@ -66,7 +66,7 @@ for (const [what, rep] of [['a cancel', { to: me, value: 0, input: '0x' }], ['an
   c.down = false; c.mempool.delete(orig.hash);
   c.mine({ hash: '0x' + '06'.repeat(32), from: me, nonce: 0, ...call }, 700); c.head = 1000;
   assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen }), {}, 'a replacement older than the state a node keeps is not found, and nothing throws');
-  assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen: { ...seen, nonce: '7' } }), {}, 'a nonce no mined transaction has reached yet is not a replacement');
+  assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen: { ...seen, nonce: '7' } }), { idle: true }, 'a nonce no mined transaction has reached yet is not a replacement');
 }
 
 // ── a contract creation (no target) is told apart the same way ──
@@ -75,6 +75,35 @@ for (const [what, rep] of [['a cancel', { to: me, value: 0, input: '0x' }], ['an
   const { seen } = await A.lookReplaced({ read: c.read, hash: mk.hash }); assert.equal(seen.to, '');
   c.mempool.delete(mk.hash); c.mine({ ...mk, hash: '0x' + '08'.repeat(32) }, 997);
   assert.equal((await A.lookReplaced({ read: c.read, hash: mk.hash, seen })).found.same, true);
+}
+
+// ── what became of a transaction a page stopped waiting for ──
+{
+  const trace = (c, seen = null, hash = orig.hash) => A.traceTx({ read: c.read, hash, seen });
+  const kept = { from: me, nonce: '0', to: pool, value: '5', data: A.fingerprint(call.input) };
+  const fast = { hash: '0x' + '0f'.repeat(32), from: me, nonce: 0, ...call }, cancel = { hash: '0x' + '0e'.repeat(32), from: me, nonce: 0, to: me, value: 0, input: '0x' };
+  let c = chain(); c.mine(orig, 990);
+  const r = (await trace(c)).landed; assert.equal(r.transactionHash, orig.hash, 'mined: its own receipt');
+  c = chain(); c.mine({ ...orig, status: '0x0' }, 990); assert.equal((await trace(c)).landed.status, '0x0', 'a revert is a receipt too: the caller reads its status');
+  c = chain(); c.send(orig); assert.deepEqual(await trace(c), { pending: true }, 'still held by a node, with nothing kept of it');
+  assert.deepEqual(await trace(c, kept), { pending: true }, 'and with its place in line not taken');
+  c = chain(); c.send(orig); c.mine(fast, 990);
+  assert.equal((await trace(c)).landed.transactionHash, fast.hash, 'a node that still holds the first while a speed-up has taken its place: the speed-up landed (read from the node\'s own copy, nothing kept needed)');
+  c = chain(); c.send(orig); c.mine(cancel, 990); assert.deepEqual(await trace(c), { replaced: cancel.hash }, 'and a cancel: it never ran');
+  c = chain(); c.send(orig); c.mempool.delete(orig.hash); c.mine(fast, 990);
+  assert.equal((await trace(c, kept)).landed.transactionHash, fast.hash, 'no node holds the first, a speed-up took its nonce: that one landed');
+  assert.deepEqual(await trace(c), { unknown: true }, 'without what was kept there is no telling');
+  c = chain(); c.send(orig); c.mempool.delete(orig.hash); c.mine(cancel, 990); assert.deepEqual(await trace(c, kept), { replaced: cancel.hash });
+  c = chain(); c.send(orig); c.mempool.delete(orig.hash); assert.deepEqual(await trace(c, kept), { dropped: true }, 'no node holds it and nothing took its nonce: dropped');
+  assert.deepEqual(await trace(c, { ...kept, nonce: '7' }), { dropped: true });
+  c = chain(); c.send(orig); c.mempool.delete(orig.hash); c.mine(fast, 990); const real = c.read;
+  c.read = async (m, p) => { if (m === 'eth_getTransactionCount') throw new Error('not served'); return real(m, p); };
+  assert.deepEqual(await trace(c, kept), { unknown: true }, 'a node that does not serve the nonce leaves it unknown, not dropped');
+  c.read = async (m, p) => { if (m === 'eth_getTransactionReceipt' && p[0] === fast.hash) return null; return real(m, p); };
+  assert.deepEqual(await trace(c, kept), { pending: true }, 'the speed-up is found but its receipt is not served yet: look again');
+  c = chain(); c.send(orig); c.mine(orig, 990); const r2 = c.read; c.read = async (m, p) => (m === 'eth_getTransactionReceipt' ? null : r2(m, p));
+  assert.deepEqual(await trace(c), { pending: true }, 'mined, and this node\'s receipt a moment behind');
+  c = chain(); c.down = true; await assert.rejects(trace(c, kept), /could not be read/, 'nothing readable: the caller is told, not given a guess');
 }
 
 // ── in the Activity list ──

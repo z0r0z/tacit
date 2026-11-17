@@ -120,20 +120,14 @@ export const landedHash = (hash, journal, map) => {
 };
 export const fingerprint = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0; return `${s.length}:${h.toString(16)}`; };
 const hex = (n) => '0x' + n.toString(16);
-// One look. `read(method, params)` asks the chain; `seen` is what an earlier look learned of the transaction while it was
-// pending: { from, nonce, to, value, data }. Returns { seen } to keep, { found: { hash, same } } once the transaction
-// at its nonce is known, or {}.
-export async function lookReplaced({ read, hash, seen }) {
-  const tx = await read('eth_getTransactionByHash', [hash]).then((x) => x || null, () => undefined);
-  if (tx === undefined) return {};
-  if (tx) {
-    if (tx.blockNumber || seen) return {};
-    return { seen: { from: String(tx.from).toLowerCase(), nonce: BigInt(tx.nonce).toString(), to: String(tx.to || '').toLowerCase(), value: BigInt(tx.value || 0).toString(), data: fingerprint(tx.input || '0x') } };
-  }
-  if (!seen) return {};
+// What a look at a pending transaction keeps of it: its sender and nonce, and what it does (target, value, a fingerprint of its data).
+const seenOf = (tx) => ({ from: String(tx.from).toLowerCase(), nonce: BigInt(tx.nonce).toString(), to: String(tx.to || '').toLowerCase(), value: BigInt(tx.value || 0).toString(), data: fingerprint(tx.input || '0x') });
+// Whether a mined transaction has taken the nonce of one that went out (`seen`): { found: { hash, same } } the mined transaction at that nonce, { idle: true }
+// when the sender's nonce has not moved (nothing took its place), or {} when that cannot be told. `read(method, params)` asks the chain.
+export async function nonceTaken({ read, hash, seen }) {
   try {
     const nonce = BigInt(seen.nonce), count = (tag) => read('eth_getTransactionCount', [seen.from, tag]).then(BigInt);
-    if ((await count('latest')) <= nonce) return {};
+    if ((await count('latest')) <= nonce) return { idle: true };
     // The block that took the nonce: found from the head back (a node keeps recent state only), then halved.
     const top = Number(await read('eth_blockNumber', []));
     let hi = top, lo = null;
@@ -151,6 +145,37 @@ export async function lookReplaced({ read, hash, seen }) {
       || (String(t.to || '').toLowerCase() === seen.to && BigInt(t.value || 0).toString() === seen.value && fingerprint(t.input || '0x') === seen.data);
     return { found: { hash: t.hash, same } };
   } catch { return {}; }
+}
+// One look while a transaction waits. `seen` is what an earlier look learned of it. Returns { seen } to keep, { found: { hash, same } } once the transaction
+// at its nonce is known, { idle: true } when nothing has taken it, or {}.
+export async function lookReplaced({ read, hash, seen }) {
+  const tx = await read('eth_getTransactionByHash', [hash]).then((x) => x || null, () => undefined);
+  if (tx === undefined) return {};
+  if (tx) return tx.blockNumber || seen ? {} : { seen: seenOf(tx) };
+  return seen ? nonceTaken({ read, hash, seen }) : {};
+}
+// What became of a transaction a page sent and has stopped waiting for: one look, to be asked again by whoever keeps it. `seen` is what the wait learned of it (the
+// `seen` on the error it threw). { landed: receipt } its own, or the one that took its nonce as a speed-up (`transactionHash` says which; the status may be a revert);
+// { pending: true } a node still holds it (or a speed-up's receipt is not served yet); { replaced: hash } another transaction took its nonce, so it never ran;
+// { dropped: true } no node holds it and its sender's nonce is still free; { unknown: true } no node holds it and there is no telling what became of it.
+// Throws when the chain could not be read at all.
+export async function traceTx({ read, hash, seen = null }) {
+  const rc = await read('eth_getTransactionReceipt', [hash]).catch(() => undefined);
+  if (rc === undefined) throw new Error('The chain could not be read.');
+  if (rc) return { landed: rc };
+  const tx = await read('eth_getTransactionByHash', [hash]).catch(() => undefined);
+  if (tx === undefined) throw new Error('The chain could not be read.');
+  if (tx?.blockNumber) return { pending: true };                       // mined, and this node's receipt is a moment behind
+  const s = tx ? seenOf(tx) : seen;                                    // what a node holds of it says more than what was kept
+  if (!s) return tx ? { pending: true } : { unknown: true };
+  const v = await nonceTaken({ read, hash, seen: s });
+  if (v.found) {
+    if (!v.found.same) return { replaced: v.found.hash };
+    const r2 = await read('eth_getTransactionReceipt', [v.found.hash]).catch(() => null);
+    return r2 ? { landed: r2 } : { pending: true };
+  }
+  if (tx) return { pending: true };                                    // held, and its place in line is not taken
+  return v.idle ? { dropped: true } : { unknown: true };
 }
 
 export function makeFollow({ journal, jobStatus, receipt, receiptOnce, btcConfirmed, live = () => false, own = () => false, onOwn = () => {}, onSlow = () => {}, finished = () => {} }) {

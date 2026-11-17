@@ -4,7 +4,7 @@
 // private, and the relay bonds it. What the key holds in the private farms is the rewards page's panel (rewards/farms.js), on one
 // sign-in with the deposits. The borrow markets' pools are joined on the vault page: their tiles lead there.
 // Figures are read as /assets/ and /rewards/ read them (trade/farm-read.js, trade/lp-campaign.js), so a farm's APR is the same on each.
-import { makeConnect } from '/trade/connect.js?cb=c663f030';
+import { makeConnect } from '/trade/connect.js?cb=6419e9c5';
 import { rpc, api, esc, usd, fmtUnits, parseUnits, plain, $ } from '/trade/util.js?cb=1d2cd8d3';
 import { nodeHealth } from '/trade/rpc.js';
 import { batchReads } from '/trade/batch.js';

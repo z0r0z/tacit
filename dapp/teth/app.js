@@ -1,5 +1,5 @@
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=c663f030';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=6419e9c5';
 import { makeKeySession, signInSheet, pickWalletSheet, Cancelled } from '/trade/key.js?cb=67d4d4de';
 import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=c02d8bf6';
 import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=cace1489';
@@ -515,8 +515,10 @@ function failFirst(e, at, q, lane) {
   }
   if (e instanceof UserStopped || e?.userStopped || e?.code === 4001) { paintSteps(null); say(`${esc(e.message)}${keep}`); return; }
   paintSteps(at, { failed: true });
+  // Cancelled in the wallet, or another transaction took its place: the deposit never went in.
+  if (e?.replaced) { say(`<span class="err">${esc(e.message)} Nothing was deposited.</span>`); return; }
   // Sent and not yet confirmed: the deposit and its settle land together or not at all, so it is only waited on.
-  if (e?.sent) { S.stuck = { hash: e.sent, wei: q.wei, landed: false, first: true }; renderGo(); say(stuckText(e, S.stuck)); return; }
+  if (e?.sent) { S.stuck = { hash: e.sent, wei: q.wei, landed: false, first: true, seen: e.seen || null }; renderGo(); say(stuckText(e, S.stuck)); return; }
   const words = lane === 'device' ? deviceWords(e) : ownWords(e);
   say(`<span class="err">${esc(words)}</span>${keep || (/nothing was sent/i.test(words) ? '' : ' Nothing was sent.')}${lane === 'own' && e?.code === 'prover_credit' ? ' <button class="linkbtn" type="button" id="ps-open">Add PROVE</button>' : ''}`);
 }
@@ -586,10 +588,17 @@ async function landing(st) {
   S.busy = true; S.steps = STEPS.slice(3); lockTicket(); renderGo();
   try {
     say('Waiting for the deposit to land…'); paintSteps('landing');
-    const rc = await wallet.receipt(st.hash);
+    const t = st.seen ? await wallet.trace?.(st.hash, st.seen).catch(() => null) : null;      // a speed-up in the wallet may have landed while nobody was waiting
+    if (t?.replaced) { S.stuck = null; paintSteps('landing', { failed: true }); say(`<span class="err">The deposit was replaced in your wallet, by a cancel or another transaction, before it was mined. Nothing was lost.</span>`); return false; }
+    const rc = t?.landed || await wallet.receipt(st.hash);
     if (rc.status !== '0x1') { S.stuck = null; paintSteps('landing', { failed: true }); say(`<span class="err">The transaction failed (${esc(st.hash.slice(0, 10))}…). Nothing was lost but its network fee.</span>`); return false; }
+    st.hash = rc.transactionHash || st.hash;                                                    // the hash it went in under is the one the settle names
     return (st.landed = true);
-  } catch (e) { paintSteps('landing', { failed: true }); say(stuckText(e, st)); return false; }
+  } catch (e) {
+    paintSteps('landing', { failed: true });
+    if (e?.replaced) { S.stuck = null; say(`<span class="err">The deposit was replaced in your wallet, by a cancel or another transaction, before it was mined. Nothing was lost.</span>`); return false; }
+    st.seen = e?.seen || st.seen; say(stuckText(e, st)); return false;
+  }
   finally { S.busy = false; lockTicket(); renderGo(); }
 }
 async function retry({ relay = false } = {}) {
