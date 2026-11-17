@@ -837,7 +837,7 @@ async function copy() {
 // connect again or a relay account (whose settles are sent or seen home from any tab) has it once the page has settled; a wallet connected
 // in another tab loads it here too.
 let opsLoad = null, opsReady = false;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=0b4f21b9').then((m) => { opsReady = true; return m; }));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=a98c488b').then((m) => { opsReady = true; return m; }));
 $('#wallet').title = 'Connect an Ethereum wallet to pay the network fee';
 $('#wallet').addEventListener('click', async (e) => {
   if (opsReady) return;                                            // loaded: ops.js has its own handler on the chip

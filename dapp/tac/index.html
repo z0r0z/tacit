@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-fnGNm3GEyohz0uvso/n0lPbts2zW91Qqo69wAKh0yek=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-NiU46ewzuprhP5ZUzuOIEWQlzW0NBHW+ZZFUtxhRLYg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -71,7 +71,7 @@
 <link rel="modulepreload" href="/bridge-in.js?cb=4cd75cac">
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
-<link rel="modulepreload" href="/activity.js?cb=48cffe50">
+<link rel="modulepreload" href="/activity.js?cb=d93291ee">
 <link rel="modulepreload" href="/pool-hint.js?cb=a5413c70">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -2616,7 +2616,7 @@ import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEE
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll, proofWait as brProofWait, whyText as brWhy, splitTag as brSplitTag, waitFor as brWaitFor, splitFee as brSplitFeeOf } from '/bridge-in.js?cb=4cd75cac';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=42d78071';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
-import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead, fastItem, lookReplaced, landedHash, traceTx, guessSeen, REPLACED_TEXT } from '/activity.js?cb=48cffe50';
+import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead, fastItem, lookReplaced, landedHash, traceTx, guessSeen, REPLACED_TEXT } from '/activity.js?cb=d93291ee';
 if (window.__tacitAway) await new Promise(() => {});
 document.querySelector('link[rel="stylesheet"][href^="/swap/card.css"]')?.setAttribute('media', 'all');
 
@@ -7582,7 +7582,7 @@ async function usdtBackRows(t, arrives) {
 const DEV = { chain: DEVICE_CHAINS.find((c) => c.chainId === store.get('tacit-lite-device-chain')) || DEVICE_CHAINS[1], tok: null, mode: 'deposit', dest: 'addr', W: null, bal: null, key: null, quote: null, gq: {}, err: null, self: false };
 const getDeviceMods = lazy(async () => {
   const [zkm, wm, pm, pos] = await Promise.all([
-    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=bfd8c78d'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
+    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=d90c3236'), import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
   ]);
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
   return { zk: zkm.makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) }), ...wm, vkHash: pm.vkHash };
@@ -7652,7 +7652,7 @@ const PSW = { w: null, n: 0, wait: new Map(), q: Promise.resolve() };
 function pswWorker() {
   try {
     if (PSW.w) return PSW.w;
-    const w = PSW.w = new Worker('/evm-pool-sync-worker.js?cb=88918aa9', { type: 'module' });
+    const w = PSW.w = new Worker('/evm-pool-sync-worker.js?cb=cb9e95c8', { type: 'module' });
     w.onmessage = (e) => { const f = PSW.wait.get(e.data?.id); if (f) { if (!e.data.write && e.data.part == null) PSW.wait.delete(e.data.id); f(e.data); } };
     w.onerror = () => { for (const f of PSW.wait.values()) f({ ok: false }); PSW.wait.clear(); PSW.w = null; };
     return w;
@@ -8645,7 +8645,7 @@ const FAST_OFF = 'tacit-fast-route-off-v1';
 try { const q = new URLSearchParams(location.search).get('fast'); if (q === '0') store.set(FAST_OFF, 1); else if (q === '1') store.set(FAST_OFF, null); } catch {}
 const fastOn = () => !store.get(FAST_OFF);
 const FASTR = { route: null, pub: null, fr: null, frP: null, offers: new Map(), slow: null, stop: null, recs: [], open: new Set() };
-const fastMods = lazy(() => Promise.all([import('/fast/route.js?cb=b2904b5c'), import('/fast/wire.js?cb=a7ade080'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]));
+const fastMods = lazy(() => Promise.all([import('/fast/route.js?cb=b2904b5c'), import('/fast/wire.js?cb=eab61202'), fetch('/fast/lp.json', { cache: 'no-cache' }).then((r) => r.json()).catch(() => ({}))]));
 function fastForget() { FASTR.stop?.(); Object.assign(FASTR, { pub: null, fr: null, frP: null, stop: null, recs: [], slow: null }); FASTR.offers.clear(); FASTR.open.clear(); }
 function fastRoute() {
   const pub = S.key?.pubHex;
@@ -15768,7 +15768,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=370a00d8').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=933d9f24').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

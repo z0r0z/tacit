@@ -1024,7 +1024,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         if (!found && Date.now() - last >= 15_000) {
           last = Date.now();
           const A = await import('./activity.js').catch(() => null);
-          const v = A?.lookReplaced ? await A.lookReplaced({ read, hash, seen }).catch(() => ({})) : {};
+          const v = A?.lookReplaced ? await A.lookReplaced({ read, hash, seen: seen || A.takeGuess?.(hash) || null }).catch(() => ({})) : {};   // (a send through a page's provider has a guess to go on where no node holds it)
           if (v.seen) seen = v.seen;
           if (v.found) found = v.found;
         }

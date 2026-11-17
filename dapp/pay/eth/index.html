@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-NxzEtNwL53LdQO/ONBPQdgQxprgaieiBFZB+Ko8YoUM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yf01nzWsosuvFK1f6CZJOjOP0WsQ+RjOTm2XTIG3oqQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -805,7 +805,7 @@ import { signBoxSync as signBox, boxSigOk as boxRecordOk } from '/box-record.js?
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 // preload-later:begin
-for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=bfd8c78d","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-relays.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
+for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=d90c3236","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-relays.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
 // preload-later:end
 
 const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5';
@@ -1022,7 +1022,7 @@ function sayLive(el, view) {
 
 const mods = lazy(async () => {
   const [zkm, wm, gw, pm, pos] = await Promise.all([
-    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=bfd8c78d'), import('/evm-pool-gateway.js'),
+    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=d90c3236'), import('/evm-pool-gateway.js'),
     import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
   ]);
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
@@ -1453,10 +1453,16 @@ async function ensureChain(id) {
   }
   if (Number(await S.provider.request({ method: 'eth_chainId' })) !== id) throw new Error(`Switch your wallet to ${CHAIN_META[id].chainName}.`);
 }
+// A send through the wallet, with what the page asked for and the nonce the wallet most likely used noted (activity.js sendGuess): where no node holds the transaction (a wallet on a
+// private mempool) a speed-up can still be followed from it.
+async function walletSend(c, tx) {
+  const A = await import('/activity.js').catch(() => null), ask = () => S.provider.request({ method: 'eth_sendTransaction', params: [tx] });
+  return A?.sendGuess ? A.sendGuess({ read: await rpcOn(c), request: ask, from: tx.from, to: tx.to, value: tx.value ? BigInt(tx.value) : 0n, data: tx.data || '0x' }) : ask();
+}
 const signerFor = (c) => ({
   get address() { return S.wallet; },
   ready: async () => { if (!S.wallet || !S.provider) await connectWallet(); await ensureChain(c.chainId); },
-  send: ({ to, data, value }) => S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.wallet, to, data, value: '0x' + BigInt(value || 0).toString(16), chainId: '0x' + c.chainId.toString(16) }] }),
+  send: ({ to, data, value }) => walletSend(c, { from: S.wallet, to, data, value: '0x' + BigInt(value || 0).toString(16), chainId: '0x' + c.chainId.toString(16) }),
   rpc: async (method, params) => (await rpcApart(c))(method, params),
 });
 
@@ -1469,7 +1475,7 @@ const PSW = { w: null, n: 0, wait: new Map() };
 function pswDrop() { PSW.w?.terminate(); PSW.w = null; for (const f of PSW.wait.values()) f({ ok: false }); PSW.wait.clear(); }
 function pswWorker() {
   if (PSW.w) return PSW.w;
-  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=88918aa9', { type: 'module' }); } catch { return null; }
+  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=cb9e95c8', { type: 'module' }); } catch { return null; }
   PSW.w.onmessage = (e) => PSW.wait.get(e.data?.id)?.(e.data);
   PSW.w.onerror = pswDrop;
   return PSW.w;
@@ -1542,7 +1548,7 @@ function backfillChain(c) {
     syncChain(c, true).then(() => historyOf(c, true));
   });
 }
-const sealing = lazy(() => import('/evm-pool-wallet.js?cb=bfd8c78d'));
+const sealing = lazy(() => import('/evm-pool-wallet.js?cb=d90c3236'));
 // `whole`: a state that held the whole history is read whole again, in the worker, before a wallet is made from it (syncInWorker, walletOn), and the
 // balance it showed stays on screen, as older history being read, until then; without it the new state begins at a catch-up point.
 async function freshWallet(c, whole = false) {
@@ -2868,8 +2874,9 @@ const receiptOf = async (c, h, self = false) => {
   if (!st.found && Date.now() - st.last >= 15_000) {
     st.last = Date.now();
     const A = await import('/activity.js').catch(() => null);
-    const v = A?.lookReplaced ? await A.lookReplaced({ read, hash: h, seen: st.seen }).catch(() => ({})) : {};
+    const v = A?.lookReplaced ? await A.lookReplaced({ read, hash: h, seen: st.seen || A.takeGuess?.(h) || null }).catch(() => ({})) : {};
     if (v.seen) { st.seen = v.seen; keepSeen(k, v.seen); }
+    else if (!st.seen) { const g = A?.takeGuess?.(h); if (g) { st.seen = g; keepSeen(k, g); } }       // (no node holds it: what the page asked the wallet to send, kept with the request)
     if (v.found) st.found = v.found;
   }
   return null;
@@ -2951,7 +2958,7 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=445e1f57');
+    const m = await import('/fixed-pool-pay.js?cb=6dbb58cc');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2968,7 +2975,7 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=445e1f57');
+    const m = await import('/fixed-pool-pay.js?cb=6dbb58cc');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
@@ -2991,7 +2998,7 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=445e1f57');
+    const m = await import('/fixed-pool-pay.js?cb=6dbb58cc');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -3012,7 +3019,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=445e1f57');
+    const m = await import('/fixed-pool-pay.js?cb=6dbb58cc');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -3021,7 +3028,7 @@ async function largeName(c, W) {
         const n = await import('/confidential-names.js');
         return n.makeConfidentialNames({
           call: n.makeMainnetCall(), secp, keccak256: keccak_256,
-          send: async (tx) => { if (!S.provider) await connectWallet(); await ensureChain(1); return S.provider.request({ method: 'eth_sendTransaction', params: [{ from: tx.from, to: tx.to, data: tx.data }] }); },
+          send: async (tx) => { if (!S.provider) await connectWallet(); await ensureChain(1); return walletSend(CHAINS[0], { from: tx.from, to: tx.to, data: tx.data }); },
         });
       },
       boxKey: async () => { const mm = await mods(), k = mm.receiveKeys(mm.zk, S.keys.zkWallet, 0); return { n: k.npk, v: S.keys.v, box: mm.receiveBoxAddress(k.npk, mm.RECEIVE_FEE_BPS, ROUTER) }; },
@@ -3226,7 +3233,7 @@ async function upgradeName(plan) {
   const n = await import('/confidential-names.js');
   const names = n.makeConfidentialNames({
     call: n.makeMainnetCall(), secp, keccak256: keccak_256,
-    send: async (tx) => { if (!S.provider) await connectWallet(); await ensureChain(1); return S.provider.request({ method: 'eth_sendTransaction', params: [{ from: tx.from, to: tx.to, data: tx.data }] }); },
+    send: async (tx) => { if (!S.provider) await connectWallet(); await ensureChain(1); return walletSend(CHAINS[0], { from: tx.from, to: tx.to, data: tx.data }); },
   });
   return names.publish(plan);
 }
@@ -4155,7 +4162,7 @@ async function payBox(c, shown, a, step) {
   await ensureChain(c.chainId);
   keeperFetch(`${chainKeeper(c)}/receive`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chainId: c.chainId, npk: BigInt('0x' + found.n).toString(), feeBps: m.RECEIVE_FEE_BPS }), signal: AbortSignal.timeout?.(20e3) }).catch(() => {});
   step('confirm in your wallet');
-  const h = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.wallet, to: found.box, value: '0x' + a.toString(16), chainId: '0x' + c.chainId.toString(16) }] });
+  const h = await walletSend(c, { from: S.wallet, to: found.box, value: '0x' + a.toString(16), chainId: '0x' + c.chainId.toString(16) });
   ptsExpect(c, a);
   return h;
 }
@@ -4201,7 +4208,7 @@ async function payFromWallet(btn) {
       keeperFetch(`${chainKeeper(c)}/receive`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chainId: c.chainId, npk: npk.toString(), feeBps: m.RECEIVE_FEE_BPS }), signal: AbortSignal.timeout?.(20e3) }).catch(() => {});
       r.err = null; r.lost = null; r.state = 'confirm'; paintReq();
       beginPaid(r, c, a, true);
-      const h = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.wallet, to: box, value: '0x' + a.toString(16), chainId: '0x' + c.chainId.toString(16) }] });
+      const h = await walletSend(c, { from: S.wallet, to: box, value: '0x' + a.toString(16), chainId: '0x' + c.chainId.toString(16) });
       Object.assign(r, { paid: { h, c, a, self: true }, state: 'mining', paidAt: Date.now(), paying: false }); rememberPaid(r); paintReq(); clearDraft('f-amt', 'f-to');
       ptsExpect(c, a);
       toast(`Paid ${exact(a)} ETH.`);
@@ -4699,7 +4706,7 @@ const zeroFirst = (t) => t.key === 'usdt' && t.chainId === 1;
 async function tokApprove(t, amount, step, had = 0n) {
   const R = await ROUTE_MOD(), send = async (v, label) => {
     step(label);
-    const h = await S.provider.request({ method: 'eth_sendTransaction', params: [{ from: S.wallet, to: t.token, data: R.encApprove(t.router, v), value: '0x0', chainId: '0x' + t.chainId.toString(16) }] });
+    const h = await walletSend(t.chain, { from: S.wallet, to: t.token, data: R.encApprove(t.router, v), value: '0x0', chainId: '0x' + t.chainId.toString(16) });
     for (let i = 0; i < 120; i++) { const s = await receiptOf(t.chain, h, true).catch(() => null); if (s === 'ok') return; if (s === 'reverted') throw new Error('The approval failed. Nothing was lost but its network fee.'); await sleep(3000); }
     throw new Error('The approval has not landed yet. Try again in a moment.');
   };

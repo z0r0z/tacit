@@ -252,3 +252,21 @@ test('pool wallet: its own receipt is as it was, and a transaction nothing is se
   c = pending(); const w = poolWait(c, NOWHERE); later(20, () => { c.mempool.delete(orig.hash); c.mine({ ...fast, logs: spendLogs }, 990); });
   assert.equal((await w()).v, 'unseen', 'where activity.js cannot load it is the plain wait it was');
 });
+
+// ── a wallet on a private mempool: no node holds the transaction, and the pages still follow its speed-up from what they asked the wallet to send ──
+test('pay and splitter: a speed-up of a transaction no node ever held is followed, from the guess made around the send', async () => {
+  const A = await import(REAL), hashP = '0x' + '6a'.repeat(32);
+  const first = { hash: hashP, from: me, nonce: 0, ...call }, speed = { hash: '0x' + '6b'.repeat(32), from: me, nonce: 0, ...call };
+  let c = chain();
+  await A.sendGuess({ read: c.read, request: async () => hashP, from: me, to: pool, value: 5n, data: call.input }); await sleep(10);
+  c.mine(speed, 990);
+  const receiptOf = payPage({ on: c.read, apart: c.read });
+  assert.equal(await receiptOf(chainOf, hashP), null, 'the first look takes the guess and finds the speed-up'); await sleep(15);
+  assert.equal(await receiptOf(chainOf, hashP), 'ok', 'the Pay page: paid');
+  const h2 = '0x' + '6c'.repeat(32), sp2 = { hash: '0x' + '6d'.repeat(32), from: me, nonce: 0, ...call };
+  c = chain(); await A.sendGuess({ read: c.read, request: async () => h2, from: me, to: pool, value: 5n, data: call.input }); await sleep(10);
+  c.mine(sp2, 990);
+  const rc = await splitter(c.read)(h2, 3000);
+  assert.equal(rc.transactionHash, sp2.hash, 'the splitter: the wait, with no node having held the first');
+  void first;
+});

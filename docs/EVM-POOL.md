@@ -867,9 +867,9 @@ from a Blob) and submission. It checks the ceremony files against their pinned h
 served at `https://tacit.finance/evm-pool/tacit-evm-pool-wallet.js` with `Access-Control-Allow-Origin: *`, as are the
 ceremony files beside it.
 
-Current build, as served (699,699 bytes): sha256 `9226fa938968e684a1c09c207f7cb5dce40e82c995c07808fa1157a7816189d8`. The
+Current build, as served (703,308 bytes): sha256 `3e8e42a79e1be86b823844a41512faeacbca21ab58fcb3bdb1d5b275007e45df`. The
 build is deterministic from the repository: `npm ci` in `build/`, then `node build/build-evm-pool-wallet.mjs` prints the
-same hash. The build before this one (674,893 bytes) was `0e8431ebfbb5651d59340fe3b6ad9889d305d7e501aa81b21607042cb7d3df43`. The 12 October 2026 build (667,636 bytes, sha256
+same hash. The build before this one (699,699 bytes) was `9226fa938968e684a1c09c207f7cb5dce40e82c995c07808fa1157a7816189d8`. The 12 October 2026 build (667,636 bytes, sha256
 `384a88220fb78f576e60480439bceb3e91e0fe8a32557f5c01c672390b81f5bc`) is pinned on IPFS
 (`bafybeihtthsjejf4ij3g2yfpkcvhavkvvw6tfryismkrw5c6ij5ifb6u3y`, Filebase) and stored on Base Sepolia
 ([above](#an-onchain-copy-of-the-proving-files-base-sepolia)). The build before that, which knew only Ethereum, Base and

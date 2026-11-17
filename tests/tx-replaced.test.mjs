@@ -125,6 +125,22 @@ for (const [what, rep] of [['a cancel', { to: me, value: 0, input: '0x' }], ['an
   assert.equal(guess().guess, true); assert.equal(guess().to, pool);
 }
 
+// ── a send through a page's own provider call: the guess is made around it, and the wait takes it from there ──
+{
+  const fast = { hash: '0x' + '0f'.repeat(32), from: me, nonce: 0, ...call };
+  let c = chain();                                                                       // the wallet's transaction is in no node's pool
+  const h = await A.sendGuess({ read: c.read, request: async () => orig.hash, from: me, to: pool, value: 5n, data: call.input });
+  assert.equal(h, orig.hash); await new Promise((r) => setTimeout(r, 10));
+  assert.equal(A.takeGuess(orig.hash)?.guess, true); assert.equal(A.takeGuess(orig.hash.toUpperCase().replace('0X', '0x'))?.nonce, '0');
+  setTimeout(() => c.mine(fast, 990), 30);
+  const w = await A.waitMined({ read: c.read, hash: orig.hash, probeMs: 10, every: 5, timeoutMs: 3000 });
+  assert.equal(w.rc?.transactionHash, fast.hash, 'followed with no node ever having held the first');
+  const h2 = '0x' + '5e'.repeat(32); c = chain();
+  assert.equal(await A.sendGuess({ read: async () => { throw new Error('no node'); }, request: async () => h2, from: me, to: pool }), h2, 'a nonce that cannot be read does not stop the send');
+  await new Promise((r) => setTimeout(r, 10)); assert.equal(A.takeGuess(h2), null);
+  await assert.rejects(A.sendGuess({ read: c.read, request: async () => { throw new Error('rejected in the wallet'); }, from: me, to: pool }), /rejected/);
+}
+
 // ── a page's own wait for a receipt ──
 {
   const later = (ms, f) => new Promise((r) => setTimeout(() => { f(); r(); }, ms));

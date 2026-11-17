@@ -185,7 +185,8 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     return { rc: await until(() => read('eth_getTransactionReceipt', [hash]), 'the deposit') };
   }
   async function sendOne(c) {
-    const hash = await provider.request({ method: 'eth_sendTransaction', params: [txOf(c)] });
+    const A = await import('./activity.js').catch(() => null), tx = txOf(c), ask = () => provider.request({ method: 'eth_sendTransaction', params: [tx] });
+    const hash = A?.sendGuess ? await A.sendGuess({ read: (method, params) => provider.request({ method, params }), request: ask, from: tx.from, to: tx.to, value: tx.value ? BigInt(tx.value) : 0n, data: tx.data || '0x' }) : await ask();   // (with the guess a wallet on a private mempool needs)
     const w = await mined(hash);
     if (w.replaced) throw new Error(`The deposit ${hash} was replaced in your wallet, by a cancel or another transaction, before it was mined. Nothing was deposited.`);
     if (!w.rc) throw new Error('Timed out waiting for the deposit.');

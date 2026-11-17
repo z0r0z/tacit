@@ -109,7 +109,8 @@ async function connect() {
 async function sendTx(tx) {
   if (!S.account) await connect();
   await ensureChain();
-  return provider().request({ method: 'eth_sendTransaction', params: [{ from: S.account, ...tx }] });
+  const A = await import('../activity.js').catch(() => null), ask = () => provider().request({ method: 'eth_sendTransaction', params: [{ from: S.account, ...tx }] });
+  return A?.sendGuess ? A.sendGuess({ read: rpc, request: ask, from: S.account, to: tx.to, value: tx.value ? BigInt(tx.value) : 0n, data: tx.data || '0x' }) : ask();   // (with the guess a wallet on a private mempool needs)
 }
 const walletWords = (e) => (e?.code === 4001 || /user (rejected|denied)/i.test(e?.message || '') ? declinedWords(e) : String(e?.message || e).slice(0, 240));
 
