@@ -41,7 +41,7 @@ const depositStep = (s, atomic) => {
 };
 // What the cards do, in plain words: why a large amount is split, what a note is, how it comes out, and why to wait. Shown at the top of the notes card,
 // which is on the Deposit tab for ETH on Ethereum whatever is typed, closed until it is opened.
-const HOW_IT_WORKS = `<details class="lg-how" style="margin:0 0 12px"><summary style="cursor:pointer">How it works</summary>
+const howItWorks = (open) => `<details class="lg-how" style="margin:0 0 12px"${open ? ' open' : ''}><summary style="cursor:pointer">How it works</summary>
   <p class="note">Big amounts go through Tornado Cash. Deposit 1 ETH or more and it is split into whole notes (1, 10 or 100 ETH) that go into Tornado Cash pools, where every deposit is the same size, so yours blends in with the others. Whatever is left over goes into your Tacit private balance. One press does both.</p>
   <p class="note">Your notes come from your wallet's signature, so there is nothing to save. <b>Find</b> brings them back on any device.</p>
   <p class="note">Take a note out to any address, or into your Tacit balance. Wait a while first: the more deposits after yours, the better it blends in.</p>
@@ -441,8 +441,12 @@ export function attach(env) {
   }
   const seenLine = (n) => { const s = st.seen.get(n.c); return s ? `<p class="note ${s.low ? 'warn' : 'mute'}">${esc(s.text)}${s.low ? '. ' + esc(s.nudge) : ''}</p>` : ''; };
   function paintNotes() {
-    // while the fee panel is open the card is not redrawn: its Send and Cancel buttons live in it, and a late read or the gas choice would take them away
-    if (st.confirming) { st.dirty = true; return; }
+    // while a form or the fee panel is open the card is not redrawn: what is typed in the form and the panel's Send and Cancel buttons would go with a late
+    // read or the gas choice; the card is drawn when the panel closes
+    const asking = notesHost.querySelector('#lg-ask');
+    if (st.confirming || (asking && !asking.hidden)) { st.dirty = true; return; }
+    const how = notesHost.querySelector('details.lg-how');
+    if (how) st.howOpen = how.open;
     const account = env.account();
     const rows = st.notes.map((n, i) => {
       const pool = poolOf(n.pool), gone = st.spent.get(n.nh);
@@ -450,14 +454,14 @@ export function attach(env) {
         <b>${gone ? '' : `<button class="link" type="button" data-move="${i}">Move into Tacit</button> <button class="link" type="button" data-out="${i}">Withdraw</button>`}</b></div>${gone ? '' : seenLine(n)}`;
     }).join('');
     notesHost.innerHTML = `<div class="blk" style="margin-top:22px;padding-top:14px;border-top:1px solid var(--hair)">
-      ${HOW_IT_WORKS}
+      ${howItWorks(st.howOpen)}
       <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lg-find">${account ? 'Find' : 'Connect wallet'}</button> · <button class="link" type="button" id="lg-paste">Paste a note</button></span></div>
       ${rows || '<p class="note">None found in this browser. Find looks for notes made with this wallet; Paste adds one from anywhere.</p>'}
       <div id="lg-ask" hidden></div>
       ${st.notes.length ? `      <div class="lbl"><span>Gas</span><span><label>Paid from <select id="lg-gas" aria-label="Where a note's gas is paid from"><option value="note"${st.gas === 'note' ? ' selected' : ''}>the note</option><option value="wallet"${st.gas === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>
       <p class="note">${st.gas === 'wallet' ? 'Your wallet sends the withdrawal and pays its gas, so it shows as the sender.' : `Gas comes out of the note (${MAX_FEE_PERCENT}% at most), so your wallet needs no ETH.`} <a href="https://github.com/ethereum/kohaku" target="_blank" rel="noopener noreferrer">Kohaku</a> can withdraw these notes too.</p>` : ''}
     </div>`;
-    notesHost.querySelector('#lg-find').onclick = () => (account ? find(notesHost.querySelector('#lg-find')) : env.connect().then(loadNotes, (e) => env.toast(env.errText(e), true)));
+    notesHost.querySelector('#lg-find').onclick = () => { closeAsk(); return account ? find(notesHost.querySelector('#lg-find')) : env.connect().then(loadNotes, (e) => env.toast(env.errText(e), true)); };
     notesHost.querySelector('#lg-paste').onclick = askPaste;
     const gasSel = notesHost.querySelector('#lg-gas');
     if (gasSel) gasSel.onchange = (e) => { st.gas = e.target.value === 'wallet' ? 'wallet' : 'note'; saveGas(env.store, chainId, st.gas); paintNotes(); };
@@ -465,6 +469,13 @@ export function attach(env) {
     notesHost.querySelectorAll('[data-out]').forEach((b) => { b.onclick = () => askAddress(st.notes[Number(b.dataset.out)]); });
   }
 
+  // Closes the form under the notes; a redraw held back while it was open is made now.
+  function closeAsk() {
+    const ask = notesHost.querySelector('#lg-ask');
+    if (!ask) return;
+    ask.hidden = true; ask.innerHTML = '';
+    if (st.dirty && !st.confirming) { st.dirty = false; paintNotes(); }
+  }
   async function find(btn) {
     return env.act(btn, async (step, c) => {
       await env.ensureChain(c);
@@ -535,14 +546,14 @@ export function attach(env) {
       <div class="amt text"><input id="lg-pto" placeholder="Empty: your deposit address. Or an address, or a name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Send to"></div>
       <p class="note">The note stays in this page. Nothing here is signed by your wallet.</p>
       <div style="display:flex;gap:8px"><button class="btn" type="button" id="lg-pgo" style="margin-top:6px">Withdraw</button><button class="btn ghost" type="button" id="lg-pno" style="margin-top:6px">Cancel</button></div>`;
-    ask.querySelector('#lg-pno').onclick = () => { ask.hidden = true; ask.innerHTML = ''; };
+    ask.querySelector('#lg-pno').onclick = closeAsk;
     const go = ask.querySelector('#lg-pgo');
     go.onclick = () => {
       const text = ask.querySelector('#lg-note').value.trim(), to = ask.querySelector('#lg-pto').value.trim();
       try { parseNoteString(text); } catch { return env.toast('That is not a note.', true); }
       const problem = to ? addressProblem(to) : null;
       if (problem) return env.toast(problem, true);
-      ask.hidden = true; ask.innerHTML = '';
+      closeAsk();
       env.act(go, (step, c) => exitNote(step, c, { text }, to, (out, t) => (to ? `${formatEther(out.receive)} ETH is on its way to ${t.label}.` : `${formatEther(out.receive)} ETH is on its way to your deposit address; it joins your private balance within minutes.`)));
     };
   }
@@ -552,12 +563,12 @@ export function attach(env) {
     ask.innerHTML = `<div class="lbl"><span>Withdraw to</span><span></span></div>
       <div class="amt text"><input id="lg-to" placeholder="0x… or a name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Withdraw to"></div>
       <div style="display:flex;gap:8px"><button class="btn" type="button" id="lg-out" style="margin-top:6px">Withdraw</button><button class="btn ghost" type="button" id="lg-no" style="margin-top:6px">Cancel</button></div>`;
-    ask.querySelector('#lg-no').onclick = () => { ask.hidden = true; ask.innerHTML = ''; };
+    ask.querySelector('#lg-no').onclick = closeAsk;
     const go = ask.querySelector('#lg-out');
     go.onclick = () => {
       const to = ask.querySelector('#lg-to').value.trim(), problem = addressProblem(to);
       if (problem) return env.toast(problem, true);
-      ask.hidden = true; ask.innerHTML = '';
+      closeAsk();
       env.act(go, (step, c) => exitNote(step, c, n, to, (out, t) => `${formatEther(out.receive)} ETH is on its way to ${t.label}.`));
     };
   }
@@ -708,6 +719,9 @@ export function attachIntake(env) {
   }
   function paint() {
     if (!host.isConnected) return;
+    // whether the card is open is read from the card itself, not from its toggle event, which fires after a redraw that came right behind the click
+    const live = host.querySelector('details');
+    if (live) st.open = live.open;
     const p = planOf(), have = env.balance?.();
     const body = !p || !p.notes.length
       ? `<p class="note">${p ? 'That is less than the smallest note, ' + formatEther(smallest()) + ' ETH.' : 'Whole notes for a large amount, made from your private balance with no wallet in between.'}</p>`
@@ -728,8 +742,6 @@ export function attachIntake(env) {
       ${st.feeErr && st.via === 'wallet' ? `<p class="note">The relay cannot send this one (${esc(st.feeErr.replace(/^[A-Z](?![A-Z])/, (c) => c.toLowerCase()))}), so your wallet does.</p>` : ''}
       <p class="note">Leave notes in the pool a while: the longer they sit, the better they blend in.</p>
     </details>`;
-    const how = host.querySelector('details');
-    how.ontoggle = () => { st.open = how.open; };
     const amt = host.querySelector('#li-amt');
     amt.oninput = () => { st.amount = amt.value; paintKeep(); };
     host.querySelector('#li-via').onchange = (e) => { st.via = e.target.value === 'wallet' ? 'wallet' : 'relay'; if (st.via === 'relay' && st.fee == null && !st.feeErr) quote(); paint(); };

@@ -313,6 +313,40 @@ await test('Find brings the notes back from the wallet alone: both are listed ag
   assert.deepEqual(kept.map((n) => n.nonce), [0, 1], 'kept again, without secrets');
   assert.match(text, /Kohaku/, 'the way out that does not need the paymaster is named');
 });
+await test('the explainer stays as the user left it when the card is drawn again', async () => {
+  await page.click('#notes summary');
+  assert.equal(await page.locator('#notes details.lg-how').evaluate((el) => el.open), true);
+  await page.evaluate(() => { window.__repaint(); });
+  assert.equal(await page.locator('#notes details.lg-how').evaluate((el) => el.open), true, 'still open after a late read draws the card again');
+  await page.click('#notes summary');
+  await page.evaluate(() => { window.__repaint(); });
+  assert.equal(await page.locator('#notes details.lg-how').evaluate((el) => el.open), false, 'and still closed when it was closed');
+});
+await test('a form left open keeps what was typed when the card is drawn again, and the card is drawn once the form closes', async () => {
+  const key = 'tacit-fixed-notes:1:0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
+  const stored = await page.evaluate((k) => localStorage.getItem(k), key);
+  await page.click('#lg-paste');
+  await page.fill('#lg-note', 'tornado-eth-1-5-0xabc');
+  await page.evaluate((k) => { localStorage.removeItem(k); window.__repaint(); }, key);
+  assert.equal(await page.inputValue('#lg-note'), 'tornado-eth-1-5-0xabc', 'what was typed is still there');
+  assert.equal(await page.locator('#lg-ask').isVisible(), true, 'the form is still open');
+  assert.match(await page.locator('#notes').innerText(), /note 0/, 'the list waits while the form is open');
+  await page.click('#lg-pno');
+  assert.match(await page.locator('#notes').innerText(), /None found in this browser/, 'the card is drawn when the form closes');
+  await page.evaluate(([k, v]) => { localStorage.setItem(k, v); window.__repaint(); }, [key, stored]);
+  await page.waitForFunction(() => /note 1/.test(document.querySelector('#notes').textContent));
+});
+await test('the way-in card stays open when it is drawn again right after it is opened', async () => {
+  const open = await page.evaluate(() => {
+    const d = document.querySelector('#in details');
+    d.open = true;             // the browser says so in a later task; a redraw that comes first must not close it
+    window.__in.repaint();
+    return document.querySelector('#in details').open;
+  });
+  assert.equal(open, true);
+  await page.evaluate(() => { document.querySelector('#in details').open = false; window.__in.repaint(); });
+  assert.equal(await page.locator('#in details').evaluate((el) => el.open), false);
+});
 await test('Withdraw to an address: a mistyped checksum is refused before anything is read or signed', async () => {
   await page.reload(); await page.waitForFunction(() => window.__ready === true);
   await page.fill('#amt', '2.5'); await page.click('#lg-go'); // connect again: this page forgot it
