@@ -1418,7 +1418,7 @@ function renderDevice(el) {
         }
         if (dest !== 'v1') await waitTx(h, { timeoutMs: 20e3, chainId: dest === 'addr' ? c.chainId : 1 });
         clearField(amt); rc.hidden = true;
-        afterAction(html`<span class="ok">${done}</span> ${explorer(h)}`);
+        afterAction(html`<span class="ok">${done}</span> ${h ? explorer(h) : ''}`);
       } catch (e) {
         if (e?.pending) { clearField(amt); rc.hidden = true; txFail(run, status, e); }
         else if (e?.said || waitRanOut(e)) { clearField(amt); rc.hidden = true; afterAction(html`<span class="err">${errText(e)}</span>`); }

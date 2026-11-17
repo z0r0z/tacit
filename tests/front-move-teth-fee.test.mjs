@@ -34,8 +34,8 @@ const src = between('const V1_MOVE_GAS', 'async function hxSendPoolOutGo') + '\n
 const PER_GAS = 271_000_000n, PLAIN_GAS = 450_000n;
 const feeFor = (gas) => PER_GAS * BigInt(gas ?? PLAIN_GAS);
 
-function make({ bal = 10n ** 18n, onSend = null } = {}) {
-  const log = { quotes: [], sends: [], said: [], redraw: 0 };
+function make({ bal = 10n ** 18n, onSend = null, h = '0xhash' } = {}) {
+  const log = { quotes: [], sends: [], said: [], redraw: 0, links: 0 };
   const DEV = { chain: { chainId: 1, keeper: 'k' }, quote: null, gq: {}, bal, self: false, W: null };
   const W = {
     quote: async (gas) => { log.quotes.push(gas ?? null); return { fee: String(feeFor(gas)), gas: String(gas ?? PLAIN_GAS) }; },
@@ -55,9 +55,9 @@ function make({ bal = 10n ** 18n, onSend = null } = {}) {
       log.sends.push({ dest, gas, maxFee });
       if (onSend) onSend(q);
       if (maxFee != null && BigInt(q.fee) > maxFee) throw Object.assign(new Error('The relay fee went up since it was shown. Check the new fee and try again.'), { feeMoved: BigInt(q.fee) });
-      return { h: '0xhash', done: 'Moved.' };
+      return { h, done: 'Moved.' };
     },
-    waitTx: async () => {}, txLink: () => '', PB: { at: {} }, hxWalletBals: () => {}, payBals: async () => {}, txFail: (_, __, e) => { throw e; },
+    waitTx: async () => {}, txLink: () => { log.links++; return '[link]'; }, PB: { at: {} }, hxWalletBals: () => {}, payBals: async () => {}, txFail: (_, __, e) => { throw e; },
     waitRanOut: () => false, keeperTrouble: () => false, errText: (e) => String(e.message || e),
     fmt: (v, d, dp) => (Number(v) / 10 ** d).toFixed(dp),
   };
@@ -88,6 +88,14 @@ await test('the press reads the quote at the move\'s gas and goes through', asyn
   ok(t.log.sends.length === 1 && t.log.sends[0].maxFee === (feeFor(700_000) * 5n) / 4n, `cap ${t.log.sends[0]?.maxFee}`);
   ok(/Moved\./.test(t.log.said.at(-1)), `said ${t.log.said.at(-1)}`);
   ok(!t.log.said.some((x) => /fee/.test(x)), `a fee message appeared: ${t.log.said}`);
+  ok(t.log.links === 1 && /\[link\]/.test(t.log.said.at(-1)), 'the transaction was not linked');
+});
+
+await test('a move that landed with no hash to show (its answer was lost) says it is done, with no link', async () => {
+  const t = make({ h: null });
+  await t.press('v1');
+  ok(/Moved\./.test(t.log.said.at(-1)), `said ${t.log.said.at(-1)}`);
+  ok(t.log.links === 0 && !/\[link\]|undefined|null/.test(t.log.said.at(-1)), `said ${t.log.said.at(-1)}, links ${t.log.links}`);
 });
 
 await test('a press that is told the fee moved says what it was and now is, and the next press goes through', async () => {

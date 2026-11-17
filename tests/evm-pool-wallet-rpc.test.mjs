@@ -752,7 +752,7 @@ function spender(seed, { sealed = false, extra = [] } = {}) {
 }
 const TO = '0x' + '22'.repeat(20);
 const slotOf = (pool) => [200, { id: 'a'.repeat(24), root: String(pool.root), size: String(pool.size), pending: [], oldRoot: String(pool.root), start: String(pool.size) }];
-const isSpent = (e) => e.said === true && e.message === 'Those funds were already spent. Check Activity.';
+const isSpent = (e) => e.said === true && e.spent === true && e.message === 'Those funds were already spent. Check Activity.';
 
 await check('a note the relay already queues a spend of: nothing is proved, and once that spend lands the wallet says the funds were spent', async () => {
   const s = spender(21);
@@ -836,7 +836,7 @@ await check('a relay that never answers is asked three times, then the wallet sa
   s.relay = () => { throw dropped(); };
   s.make();
   await s.ready();
-  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), (e) => e.said === true && /did not answer, and it may still have sent your payment/.test(e.message)));
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), (e) => e.said === true && e.maybeSent === true && /did not answer, and it may still have sent your payment/.test(e.message)));
   assert.equal(s.count('/relay'), 3);
   assert.equal(s.proofs, 1);
 });
@@ -882,6 +882,16 @@ await check('a repeat that finds the first request still on its way waits for it
   await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), isSpent));
   assert.equal(s.count('/relay'), 2);
   assert.equal(s.proofs, 1);
+});
+
+await check('a repeat that finds the first request on its way, which the wallet never reads as landing, says it may have gone out', async () => {
+  const s = spender(38);
+  s.reserve = () => slotOf(s.pool);
+  s.relay = (n) => { if (n === 1) throw dropped(); return [409, { error: 'this spend is already being relayed', stale: true }]; };
+  s.make();
+  await s.ready();
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), (e) => e.said === true && e.maybeSent === true && e.spent !== true && /already on its way/.test(e.message)));
+  assert.equal(s.count('/relay'), 2);
 });
 
 await check('a withdrawal the relay refuses gave its notes and no hash; one whose notes are spent already gave neither; a callback that throws changes nothing', async () => {

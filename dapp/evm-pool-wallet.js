@@ -986,8 +986,9 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     return true;
   }
 
-  // Notes already spent (from this key elsewhere, or by an earlier try of this spend), said in words.
-  const spentAlready = () => Object.assign(new Error('Those funds were already spent. Check Activity.'), { said: true });
+  // Notes already spent (from this key elsewhere, or by an earlier try of this spend), said in words. `spent` lets a caller whose spend it
+  // may have been (a move into V1) look for what that spend leaves behind.
+  const spentAlready = () => Object.assign(new Error('Those funds were already spent. Check Activity.'), { said: true, spent: true });
   const holds = (ins) => ins.every((n) => state().notes.some((m) => m.nf === n.nf));
   // Waits up to `ms` for this wallet to read `ins` spent. → whether it did.
   const seenSpent = (ins, ms) => waitFor(() => !holds(ins), ms).then(() => true, () => false);
@@ -1049,7 +1050,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         // An unanswered request may still have been sent: read the chain again, and say so rather than invite a blind retry.
         const unanswered = () => {
           sync().catch(() => {});
-          return Object.assign(new Error('The relay did not answer, and it may still have sent your payment. Check Activity before sending again.'), { said: true });
+          return Object.assign(new Error('The relay did not answer, and it may still have sent your payment. Check Activity before sending again.'), { said: true, maybeSent: true });
         };
         // A gateway's own timeout or error (502-504, 520-524) says nothing of whether the relay sent it: the same as no answer.
         // The relay's own refusals come with its JSON error (a 503 when it cannot front the gas or is full) and send nothing.
@@ -1075,7 +1076,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
           if (/already being relayed/.test(why)) {
             onStep('a spend of these funds is on its way already; waiting for it');
             throw (await seenSpent(ins, 120_000)) ? spentAlready()
-              : Object.assign(new Error('A spend of these funds is already on its way. Check Activity before sending again.'), { said: true });
+              : Object.assign(new Error('A spend of these funds is already on its way. Check Activity before sending again.'), { said: true, maybeSent: true });
           }
           if (r.status === 409 && r.body.stale) { if (/StaleRoot|WrongInsertionIndex|unknown membership root/i.test(why)) treeRefused = true; continue; }
           // A relay that rate limits this connection has been asked over the time it asked to be waited for (keeperFetch). Proving again cannot help a limiter and costs
