@@ -13,7 +13,7 @@ import { aprText, readPrecision, readSpot, readStake, privateFarms, poolWorthEth
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=c5192cc4';
-import { quoteEthToToken } from '/swap/route.js?cb=4a3ba95a';
+import { quoteEthToToken } from '/swap/route.js?cb=7c0d8f3b';
 import { zapPlanExt } from '/lp-zap.js?cb=a14dd27e';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
 import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=5487907c';
@@ -33,6 +33,7 @@ const txLink = (h) => `<a href="https://etherscan.io/tx/${h}" target="_blank" re
 const tk = (k) => `<svg class="tk" aria-hidden="true"><use href="#tk-${k}"/></svg>`;
 const pairIcons = (icons) => `<span class="pairtk">${icons.map(tk).join('')}</span>`;
 const pctTxt = (x) => `${x.toFixed(x < 10 ? 1 : 0)}%`;
+const sharePct = (f) => `${(f * 100).toFixed(f >= 0.1 ? 0 : f >= 0.01 ? 1 : 2)}%`;
 const tacTxt = (n) => (n >= 99.5 ? Math.round(n).toLocaleString('en-US') : n >= 0.995 ? String(Number(n.toFixed(2))) : n > 0 ? String(Number(n.toPrecision(2))) : '0');
 const slug = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const joining = () => !!mineUi?.busy?.();                                         // the both-sides join in the card is under way (minutes, through the relay)
@@ -177,7 +178,8 @@ function farms() {
     const id = slug(x.name), pool = pools.find((p) => Number(p.pid) === x.pid);
     let f = list.find((y) => y.id === id);
     if (!f) list.push(f = { id, kind: 'private', name: x.name, icons: x.icons });
-    Object.assign(f, { read: true, live: true, apr: x.apr, perDay: x.perDay, pid: x.pid, pool, finish: Number(S.prog.epoch?.periodFinish) || 0 });
+    const epoch = pool?.epoch?.periodFinish ? pool.epoch : S.prog.epoch;                  // a standalone farm (SPX) runs its own reward period; the launch farms share the program's
+    Object.assign(f, { read: true, live: true, apr: x.apr, perDay: x.perDay, pid: x.pid, pool, epoch, finish: Number(epoch?.periodFinish) || 0 });
   }
   if (S.prog) for (const f of list) if (f.kind === 'private' && !f.read) {
     // a farm the program does not pay now: its pool still takes liquidity, with nothing streaming to it
@@ -247,7 +249,9 @@ function paintTiles() {
     const a = tileFor(f), dry = f.read && !f.live;
     a.classList.toggle('off', dry); a.classList.toggle('pick', f.id === pick); a.classList.toggle('held', !!f.yours);
     $('.apr', a).textContent = f.apr == null ? '' : aprText(f.apr);
-    $('.kind', a).textContent = dry ? 'Between reward periods' : f.kind === 'public' ? 'Public pool' : 'Private pool';
+    const worth = f.kind === 'private' && f.pool ? poolWorthEth(f.pool, tacEth(), S.px) : null, size = worth > 0 && S.px.ethUsd > 0 ? usd(worth * S.px.ethUsd) : '';
+    $('.kind', a).textContent = dry ? 'Between reward periods' : f.kind === 'public' ? 'Public pool' : `Private pool${size ? ` · ${size}` : ''}`;
+    $('.kind', a).title = size && !dry ? 'What the pool holds, in dollars: its APR is shared by everyone in it, so a small pool pays a small deposit a lot and a large one little.' : '';
     $('.sel', a).textContent = f.yours ? 'Manage' : 'Select';
     $('.day', a).textContent = f.live && f.perDay ? `${tacTxt(f.perDay)} TAC a day` : '';
     flag(a, 'tag', f.id === pick ? 'Chef’s pick' : '', 'The most TAC over a week for 0.1 ETH, once the way in is paid');
@@ -445,6 +449,11 @@ for (const host of ['#pz-join', '#pf-mine']) $(host).addEventListener('click', (
   b.setAttribute('aria-busy', 'true');
   openKey().then(() => mountMine()).then((ui) => ui?.read(), () => {}).finally(() => b.removeAttribute('aria-busy'));
 }, true);
+// Where the TAC that funds a stream runs out before its period does (the stream stops then, whatever the date says), as a line under the date.
+function fundedNote(f) {
+  const run = Number(f.epoch?.fundedRunwaySeconds), at = Math.floor(Date.now() / 1000);
+  return run > 0 && at + run < f.finish - 3600 ? `funded until ${dayFmt(at + run)}` : '';
+}
 function paintPrivate() {
   const f = VIEW;
   Z.f = f;
@@ -453,7 +462,7 @@ function paintPrivate() {
   const stats = !f.read ? '<p class="note">Reading the farm…</p>'
     : cell('Rewards', f.live ? `${tk('tac').replace('class="tk"', 'class="tk xs inl"')}${tacTxt(f.perDay)} TAC a day` : 'between periods', f.live && eu && tacEth() ? `about ${usd(f.perDay * tacEth() * eu)} a day` : '')
       + cell('In the pool', worth == null ? '—' : eu ? usd(worth * eu) : `${worth.toFixed(2)} ETH`, f.name.replace(' / ', ' and '))
-      + cell('Stream ends', f.live && f.finish ? dayFmt(f.finish) : '—');
+      + cell('Stream ends', f.live && f.finish ? dayFmt(f.finish) : '—', f.live && f.finish ? fundedNote(f) : '');
   if ($('#pz-stats').__h !== stats) { $('#pz-stats').__h = stats; $('#pz-stats').innerHTML = stats; }
   $('#pz-both').textContent = `${f.name.split(' / ')[0] || 'tETH'} + ${f.name.split(' / ')[1] || 'TAC'}`;
   $('#pz-mode').hidden = !(hasEth(f) && bothOk(f));                              // two ways in only where there are two
@@ -537,6 +546,7 @@ function paintQuote() {
     : q.cost >= 15 ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>I accept losing about ${n}% of this deposit to the pool’s price.</span></label>`
     : !q.checked ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>The market’s price for ${esc(other)} could not be read, so this pool’s price is not checked against it. I accept that.</span></label>` : '';
   rcpt.innerHTML = (f.live ? row('Earns about', `${tacTxt(q.day)} TAC a day${dayUsd ? ` · ${dayUsd}` : ''}`) + row('APR', q.apr == null ? '—' : aprText(q.apr)) : '')
+    + (q.plan.shareOfPool > 0 ? row('Your share', `${sharePct(q.plan.shareOfPool)} of the pool`, '', 'What this deposit would be of the pool once it is in, counting its own shares. The farm’s TAC is shared in proportion, and a deposit that is a big part of the pool moves its price on the way in and out.') : '')
     + (q.impact >= 0.5 ? row('Price impact', pctTxt(q.impact), q.impact >= 5 ? 'err' : '') : '')
     + (q.against >= 1 ? row('Against the market', `${pctTxt(q.against)} of this deposit`, q.against >= 5 ? 'err' : '') : '')
     + row('You hold', `a private ${esc(f.name)} position`)
