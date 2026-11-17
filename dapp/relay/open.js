@@ -4,7 +4,7 @@
 import { makeConfidentialRelay } from '/confidential-relay.js?cb=fc0e58c1';
 import { CONFIDENTIAL_DEPLOYMENTS, shownTicker } from '/confidential-deployments.js?cb=fa423929';
 import { pvFees, pvDeadline, settleCalldata, typeWords } from '/relay/abi.js?cb=190ea12d';
-import { UserStopped } from '/trade/wallet.js?cb=5d19a733';
+import { UserStopped } from '/trade/wallet.js?cb=6441a33e';
 import { rpc, esc, fmtUnits, short } from '/trade/util.js?cb=1d2cd8d3';
 
 const API = 'https://api.tacit.finance';
@@ -95,8 +95,9 @@ export function mountOpen({ el, wallet, W, connect, say }) {
       say(`Sent ${link(hash)}. Waiting for it to land…`);
       const rc = await wallet.receipt(hash);
       if (rc.status !== '0x1') { say(`It did not go through ${link(hash)}: someone most likely sent it first. Nothing was lost but its network fee.`, true); return; }
-      await relay.landed(job.jobId, hash);
-      say(`<span class="ok">Sent.</span> ${link(hash)} ${f.none ? 'It carried no fee.' : `Its fee, ${esc(f.text)}, went to ${esc(short(from, 4))}.`}`);
+      const mined = rc.transactionHash || hash;                                   // a sped-up send went in under another hash
+      await relay.landed(job.jobId, mined);
+      say(`<span class="ok">Sent.</span> ${link(mined)} ${f.none ? 'It carried no fee.' : `Its fee, ${esc(f.text)}, went to ${esc(short(from, 4))}.`}`);
     } catch (e) { say(esc(e instanceof UserStopped || e?.userStopped ? e.message : (e?.message || 'It could not be sent.')), true); }
     finally { S.busy = null; render(); load(); }
   }

@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-8+oVIuCuquGiv6jXXmarl4E8eJj5oRFb+rG8PVFhJ7c=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-/tJ/Aphfii8/ejILt2AYmtWN3yF7cIM73ZMY4J65D9o=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -70,10 +70,10 @@
 <link rel="modulepreload" href="/bridge-in.js?cb=4cd75cac">
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
-<link rel="modulepreload" href="/activity.js?cb=6a8945a5">
+<link rel="modulepreload" href="/activity.js?cb=76e3f90e">
 <link rel="modulepreload" href="/pool-hint.js?cb=a5413c70">
-<link rel="modulepreload" href="/swap/card.js?cb=4cdc9c4f">
-<link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
+<link rel="modulepreload" href="/swap/card.js?cb=23dc2099">
+<link rel="modulepreload" href="/trade/wallet.js?cb=6441a33e">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -2624,7 +2624,7 @@ import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEE
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll, proofWait as brProofWait, whyText as brWhy, splitTag as brSplitTag, waitFor as brWaitFor, splitFee as brSplitFeeOf } from '/bridge-in.js?cb=4cd75cac';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=42d78071';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
-import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead, fastItem, lookReplaced, REPLACED_TEXT } from '/activity.js?cb=6a8945a5';
+import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead, fastItem, lookReplaced, landedHash, REPLACED_TEXT } from '/activity.js?cb=76e3f90e';
 if (window.__tacitAway) await new Promise(() => {});
 document.querySelector('link[rel="stylesheet"][href^="/swap/card.css"]')?.setAttribute('media', 'all');
 
@@ -3129,6 +3129,7 @@ const receiptOnce = (hash, chainId = 1) => rpc('eth_getTransactionReceipt', [has
 // never confirms: while it waits, now and then the chain is asked whether a mined transaction has taken its nonce. The
 // same call at a higher fee gives its receipt (under its own hash); anything else gives { replaced: true }.
 // `st`: { seen, keep }, what an earlier look learned of the transaction, and where to keep it.
+const MINED = new Map(), minedAs = (h) => landedHash(h, JRN, MINED);       // a sped-up transaction's first hash → the one it went in under
 async function receiptNow(hash, chainId = 1, st = {}) {
   if (st.found) return st.found.same ? receiptOnce(st.found.hash, chainId) : { status: '0x0', replaced: true, transactionHash: st.found.hash };
   const r = await receiptOnce(hash, chainId);
@@ -3136,7 +3137,7 @@ async function receiptNow(hash, chainId = 1, st = {}) {
   st.last = Date.now();
   const v = await lookReplaced({ read: (m, p) => rpc(m, p, rpcsOf(chainId)), hash, seen: st.seen }).catch(() => ({}));
   if (v.seen) { st.seen = v.seen; st.keep?.(v.seen); }
-  if (v.found) { st.found = v.found; return receiptNow(hash, chainId, st); }
+  if (v.found) { st.found = v.found; if (v.found.same) MINED.set(String(hash).toLowerCase(), v.found.hash); return receiptNow(hash, chainId, st); }
   return null;
 }
 function receipt(hash, chainId = 1, note = {}) {
@@ -3561,7 +3562,7 @@ const settleFrom = (t, { label, nest = null, say: tell, finishes = null, already
   const hash = await sendTx({ to: t.cfg.pool, data, label, nest, finishes: finishes || [nest, x.jobId && 'job:' + x.jobId].filter(Boolean) });
   tell(html`Sent ${txLink(hash)}. Waiting for it to land…`);
   await waitTx(hash);
-  return { txHash: hash };
+  return { txHash: minedAs(hash) };
 };
 async function sendOpen(t, o, { label, nest = null, say: tell, finishes = null }) {
   const st = await t.relay.status(o.jobId).catch(() => null);
@@ -5609,8 +5610,8 @@ async function finishDeposits(run, sheet, status, { self = false } = {}) {
       try {
         const tell = (v) => run.say(status, v);
         await t.submitWrapSettle(self
-          ? { built, waitOpts: spTell({ ...run.wait(`Prove a ${what} deposit`, 15 * 60e3), ...(own ? {} : VIA_RELAY) }, tell), selfSettle: settleFrom(t, { label: `Finish a ${what} deposit`, say: tell }), depositTx: p.txHash || null }
-          : { built, waitOpts: run.wait(`Finish a ${what} deposit`, 15 * 60e3, { deps: [kDep(p)] }), depositTx: p.txHash || null });
+          ? { built, waitOpts: spTell({ ...run.wait(`Prove a ${what} deposit`, 15 * 60e3), ...(own ? {} : VIA_RELAY) }, tell), selfSettle: settleFrom(t, { label: `Finish a ${what} deposit`, say: tell }), depositTx: minedAs(p.txHash) || null }
+          : { built, waitOpts: run.wait(`Finish a ${what} deposit`, 15 * 60e3, { deps: [kDep(p)] }), depositTx: minedAs(p.txHash) || null });
         done++;
       } catch (e) { miss(e); }
     }
@@ -5827,7 +5828,7 @@ async function wrapNow({ run, x, via = payer(), status, line, anchor, sheet = 'e
     say(status, html`Deposited ${txLink(hash)}. The relay is proving your note, about a minute…`);
     await proveOr({ run, types: ['wrap'], offer: false, label: run.to.label, sheet, status: line,
       go: (y) => t.submitWrapSettle({ built: w, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
-      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: hash }) });
+      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: minedAs(hash) }) });
     await scanPrivate(true).catch(() => {});
     after();
   } catch (e) {
@@ -6828,7 +6829,7 @@ async function usdtWrapNow({ run, units, src, status, line, sheet = 'usdt', clea
     say(status, html`Deposited ${txLink(w.txHash)}. The relay is proving your note…`);
     await proveOr({ run, types: ['wrap'], offer: false, label: run.to.label, sheet, status: line,
       go: (y) => t.submitWrapSettle({ built: w, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
-      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: w.txHash }) });
+      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: minedAs(w.txHash) }) });
     await refresh();
     after();
   } catch (e) {
@@ -7229,7 +7230,7 @@ async function xtWrapNow({ run, r, wei, src, status, line, sheet = '', clear, af
     say(status, html`Deposited ${txLink(w.txHash)}. The relay is proving your note…`);
     await proveOr({ run, types: ['wrap'], offer: false, label: run.to.label, sheet, status: line,
       go: (y) => t.submitWrapSettle({ built: w, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
-      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: w.txHash }) });
+      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: minedAs(w.txHash) }) });
     await refresh();
     after();
   } catch (e) {
@@ -9563,7 +9564,7 @@ async function tacWrapNow({ run, wei, src, status, line, sheet = 'tac', clear, a
     say(status, html`Deposited ${txLink(w.txHash)}. The relay is proving your note…`);
     await proveOr({ run, types: ['wrap'], offer: false, label: run.to.label, sheet, status: line,
       go: (y) => t.submitWrapSettle({ built: w, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
-      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: w.txHash }) });
+      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: minedAs(w.txHash) }) });
     await Promise.allSettled([scanPrivate(true), W.again()]);
     after();
   } catch (e) {
@@ -10465,8 +10466,8 @@ async function zapFinish(run, p, rec, built, tell, status, { bond = true } = {})
     const what = `Make your ${pairName(p.pair)} share private`;
     await proveOr({ run, types: ['wrap'], ...(devOn() ? { self: false } : {}), label: what, sheet: 'farm', status: () => status, tell, wait: () => run.wait(what, 15 * 60e3, { deps: [kDep(built)] }),
       then: bond ? 'Your share is a private note. Press Finish it to put it in the farm.' : 'Your share is a private note.', after: () => rerender('farm'),
-      go: (y) => y.t.submitWrapSettle({ built, waitOpts: y.waitOpts, selfSettle: y.selfSettle, depositTx: rec.tx }),
-      relayed: () => t.submitWrapSettle({ built, waitOpts: run.wait(what, 15 * 60e3, { deps: [kDep(built)] }), depositTx: rec.tx }) });
+      go: (y) => y.t.submitWrapSettle({ built, waitOpts: y.waitOpts, selfSettle: y.selfSettle, depositTx: minedAs(rec.tx) }),
+      relayed: () => t.submitWrapSettle({ built, waitOpts: run.wait(what, 15 * 60e3, { deps: [kDep(built)] }), depositTx: minedAs(rec.tx) }) });
   }
   zapDone(rec.depositId); rec.settled = true;
   let note = held();
@@ -11317,9 +11318,9 @@ const BWX = {
         const hash = await sendTx({ to: call.to, data: call.data, value: 0n, label });
         tell(html`Sent ${txLink(hash)}. Waiting for it to land…`);
         await waitTx(hash);
-        t.relay?.landed?.(p.jobId, hash)?.catch?.(() => {});
-        await LN.opened(ps, priv, { controller: c, debtValue, keyNonce, positionOwner, rate, anchor: positionOwner, basket: [{ asset, value: String(sats) }], txHash: hash });
-        return { txHash: hash };
+        t.relay?.landed?.(p.jobId, minedAs(hash))?.catch?.(() => {});
+        await LN.opened(ps, priv, { controller: c, debtValue, keyNonce, positionOwner, rate, anchor: positionOwner, basket: [{ asset, value: String(sats) }], txHash: minedAs(hash) });
+        return { txHash: minedAs(hash) };
       };
       const tell = (v) => say(where(), v);
       say(where(), 'The relay is proving your loan…');
@@ -11345,7 +11346,7 @@ const BWX = {
         say(where(), `Sending the loan from ${your()}…`);
         const hash = await sendTx({ to: t.cfg.pool, data: t.settleCalldata(x), label: `Send the ${fmt(debtValue, 8, 2)} cUSD loan` });
         await waitTx(hash);
-        return { txHash: hash };
+        return { txHash: minedAs(hash) };
       };
       say(where(), 'The relay is proving your loan…');
       const label = `Borrow ${fmt(debtValue, 8, 2)} cUSD`;
@@ -15138,7 +15139,7 @@ async function chainHopRun(run, st, units, { clear = null, after = hxMoveAfter }
     say(st, 'In the private pool. The relay is making it a private note…');
     await proveOr({ run, types: ['wrap'], offer: false, quiet: true, label, sheet: 'tac', status: () => st,
       go: (y) => t.submitWrapSettle({ built: w, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
-      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: p?.txHash || null }) });
+      relayed: () => t.submitWrapSettle({ built: w, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(w)] }), depositTx: minedAs(p?.txHash) || null }) });
     say(st, html`<span class="ok">Moved.</span> ${fmt(units, 8, 4)} TAC is private. <a href="#" data-hx="bridge:tac" data-amt="${plain(units, 8)}">Send it on to Bitcoin</a>`);
     toast('Moved to the private pool');
     await Promise.allSettled([scanPrivate(true), loadTacHoldings(true)]);
@@ -15729,7 +15730,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=4cdc9c4f').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=23dc2099').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

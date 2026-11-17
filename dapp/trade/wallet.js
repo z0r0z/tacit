@@ -180,12 +180,24 @@ export function makeWallet({ rpc, leave = null, busy = () => false }) {
     if (!W.prov) return false;
     try { return !!(await req('wallet_watchAsset', { type: 'ERC20', options })); } catch { return false; }
   }
-  async function receipt(hash, { timeoutMs = 5 * 60e3, every = null, read = rpc, where = 'Etherscan' } = {}) {
-    const t0 = Date.now();
+  // A wallet's "speed up" and "cancel" send another transaction at the same nonce, and the first hash never confirms. While it waits, now and then
+  // the chain is asked whether a mined transaction has taken that nonce (activity.js lookReplaced, loaded the first time it is wanted): the same call
+  // at a higher fee gives its receipt, under its own hash (`transactionHash`), and anything else means the first never ran, which is thrown.
+  let looker = null;
+  const lookOf = () => (looker ||= import('../activity.js').then((m) => m.lookReplaced, () => null));
+  async function receipt(hash, { timeoutMs = 5 * 60e3, every = null, read = rpc, where = 'Etherscan', look = null, probeMs = 15e3 } = {}) {
+    const t0 = Date.now(), st = { last: t0, seen: null, found: null };
     for (;;) {
-      const r = await read('eth_getTransactionReceipt', [hash]).catch(() => null);
+      if (st.found && !st.found.same) throw Object.assign(new Error('It was replaced in your wallet, by a cancel or another transaction, before it was mined.'), { replaced: true, hash: st.found.hash });
+      const r = await read('eth_getTransactionReceipt', [st.found ? st.found.hash : hash]).catch(() => null);
       if (r) return r;
       if (Date.now() - t0 > timeoutMs) throw new Error(`Sent, not confirmed yet. Check it on ${where} before sending anything again.`);
+      if (!st.found && Date.now() - st.last >= probeMs) {
+        st.last = Date.now();
+        const f = look || await lookOf(), v = f ? await f({ read, hash, seen: st.seen }).catch(() => ({})) : {};
+        if (v.seen) st.seen = v.seen;
+        if (v.found) st.found = v.found;
+      }
       await new Promise((res) => setTimeout(res, every ?? (Date.now() - t0 < 90e3 ? 1000 : 3000)));
     }
   }

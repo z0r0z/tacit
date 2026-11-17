@@ -164,8 +164,9 @@ export async function zapSend({ t, rpc, wallet, from, pool, ready, say = () => {
   let rc;
   try { rc = await wallet.receipt(hash); } catch (e) { throw Object.assign(e, { sent: hash }); }
   if (rc.status !== '0x1') throw said(`The transaction failed (${hash.slice(0, 10)}…). Nothing was lost but its network fee. Your share’s proof is kept: press again to send it.`, { reverted: true, ready });
-  if (ready.proven.jobId) Promise.resolve(t.relay.landed?.(ready.proven.jobId, hash)).catch(() => {});
-  return { hash, value: plan.value };
+  const mined = rc.transactionHash || hash;                                       // a sped-up deposit went in under another hash: that one goes to the relay
+  if (ready.proven.jobId) Promise.resolve(t.relay.landed?.(ready.proven.jobId, mined)).catch(() => {});
+  return { hash, value: plan.value };                                             // (the page keeps its journal entry under the hash it sent)
 }
 const consumed = async (rpc, t, built) => { try { return wordAt(await rpc('eth_call', [{ to: t.cfg.pool, data: '0x7da9874f' + strip(built.depositId).padStart(64, '0') }, 'latest']), 0) === 2n; } catch { return false; } };
 

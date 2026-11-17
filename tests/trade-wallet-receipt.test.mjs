@@ -23,7 +23,8 @@ test('a receipt is looked for each second at first, and every three seconds afte
   const c = clock();
   try {
     let n = 0;
-    const read = async () => (++n > 100 ? receipt : null);
+    // (after a quarter of a minute it also asks whether a speed-up took the transaction's place: those reads are not receipt reads, and are tested in trade-wallet-replaced.test.mjs)
+    const read = async (m) => (m !== 'eth_getTransactionReceipt' ? null : ++n > 100 ? receipt : null);
     const r = await wallet(read).receipt('0xabc', { read });
     assert.strictEqual(r, receipt);
     assert.strictEqual(n, 101, 'one read before each wait, and the last one found it');

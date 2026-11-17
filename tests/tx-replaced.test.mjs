@@ -9,31 +9,7 @@ const ET = new EventTarget();
 globalThis.addEventListener = ET.addEventListener.bind(ET); globalThis.removeEventListener = ET.removeEventListener.bind(ET); globalThis.dispatchEvent = ET.dispatchEvent.bind(ET);
 const A = await import('../dapp/activity.js');
 
-// A chain just big enough: a mempool (the hashes this node has heard of), mined transactions, a head, and state kept for the last 128 blocks.
-function chain() {
-  const c = { head: 1000, mempool: new Set(), mined: [], calls: [], down: false };
-  const hex = (n) => '0x' + BigInt(n).toString(16);
-  const obj = (t) => ({ hash: t.hash, from: t.from, nonce: hex(t.nonce), to: t.to, value: hex(t.value || 0), input: t.input || '0x', blockNumber: t.block == null ? null : hex(t.block) });
-  c.send = (t) => { c.mempool.add(t.hash); c.all = [...(c.all || []), t]; return t; };
-  c.mine = (t, block) => { const x = (c.all || []).find((y) => y.hash === t.hash) || c.send(t); x.block = block; c.mined.push(x); c.mempool.delete(x.hash); };
-  c.read = async (method, params) => {
-    c.calls.push(method);
-    if (c.down) throw new Error('Ethereum is unreachable');
-    if (method === 'eth_blockNumber') return hex(c.head);
-    if (method === 'eth_getTransactionByHash') {
-      const t = (c.all || []).find((y) => y.hash === params[0]);
-      return t && (t.block != null || c.mempool.has(t.hash)) ? obj(t) : null;
-    }
-    if (method === 'eth_getTransactionCount') {
-      const at = params[1] === 'latest' ? c.head : Number(params[1]);
-      if (c.head - at > 128) throw new Error('missing trie node');
-      return hex(c.mined.filter((t) => t.from === params[0].toLowerCase() && t.block <= at).length);
-    }
-    if (method === 'eth_getBlockByNumber') return { transactions: c.mined.filter((t) => t.block === Number(params[0])).map(obj) };
-    throw new Error('no ' + method);
-  };
-  return c;
-}
+import { chain } from './fake-eth-chain.mjs';
 const me = '0x' + 'aa'.repeat(20), pool = '0x' + 'bb'.repeat(20), other = '0x' + 'cc'.repeat(20);
 const call = { to: pool, value: 5, input: '0x1234abcd' + '00'.repeat(500) };
 const orig = { hash: '0x' + '01'.repeat(32), from: me, nonce: 0, ...call };
@@ -76,7 +52,7 @@ for (const [what, rep] of [['a cancel', { to: me, value: 0, input: '0x' }], ['an
 {
   const c = chain(); c.send(orig);
   const { seen } = await A.lookReplaced({ read: c.read, hash: orig.hash });
-  c.mine(orig, 999); c.all.find((t) => t.hash === orig.hash).block = 999;
+  c.mine(orig, 999);
   const real = c.read; c.read = async (m, p) => (m === 'eth_getTransactionByHash' ? null : real(m, p));       // this node has lost the lookup, not the chain
   assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen }), { found: { hash: orig.hash, same: true } });
 }
@@ -125,4 +101,11 @@ assert.deepEqual(finished, ['op:1@0xbb'], 'and finishes nothing');
 J.put('tx:1:0xee', { kind: 'tx', status: 'pending', hash: '0xee', chain: 1 });
 reply['0xee'] = { status: '0x0' }; F.tx('tx:1:0xee'); await tick();
 assert.equal(J.get('tx:1:0xee').err, 'The transaction reverted.'); assert.equal(J.get('tx:1:0xee').hash, '0xee', 'a plain revert is as it was');
+
+// ── the hash that goes on to the relay or a record ──
+const mapped = new Map([['0x11', '0x12']]);
+assert.equal(A.landedHash('0xAA', J, new Map()), '0xbb', 'a sped-up transaction that was followed to its end: the hash it went in under (found in the journal, so after a reload too)');
+assert.equal(A.landedHash('0xcc', J, new Map()), '0xcc', 'a cancelled one has no such hash: what took its place did not do what it was sent for');
+assert.equal(A.landedHash('0x11', J, mapped), '0x12', 'one seen replaced while the page lives (before the journal has it)');
+assert.equal(A.landedHash('0xzz', J, mapped), '0xzz', 'one nothing is known of is itself'); assert.equal(A.landedHash(null, J, mapped), null); assert.equal(A.landedHash('0xaa', null, null), '0xaa', 'with no journal or map');
 console.log('ok');

@@ -4,7 +4,7 @@
 // private, and the relay bonds it. What the key holds in the private farms is the rewards page's panel (rewards/farms.js), on one
 // sign-in with the deposits. The borrow markets' pools are joined on the vault page: their tiles lead there.
 // Figures are read as /assets/ and /rewards/ read them (trade/farm-read.js, trade/lp-campaign.js), so a farm's APR is the same on each.
-import { makeConnect } from '/trade/connect.js?cb=b758e60b';
+import { makeConnect } from '/trade/connect.js?cb=c663f030';
 import { rpc, api, esc, usd, fmtUnits, parseUnits, plain, $ } from '/trade/util.js?cb=1d2cd8d3';
 import { nodeHealth } from '/trade/rpc.js';
 import { batchReads } from '/trade/batch.js';
@@ -14,7 +14,7 @@ import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=e70f2612';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=2743fe33';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=8f6a8352';
 
 try { sessionStorage.removeItem('tacit-farm-back-v1'); } catch { /* the front page's way back to a farm: this page is where it goes, so it is spent */ }
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';

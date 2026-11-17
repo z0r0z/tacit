@@ -111,6 +111,13 @@ export function makeJournal({ pub = () => null, onTrim = () => {}, onStatus = ()
 // transaction whose nonce a mined one has taken can never run, so once the sender's nonce has moved past it the transaction
 // that took the nonce is found: the same call at a higher fee stands in for it, anything else means it never went in.
 export const REPLACED_TEXT = 'It was replaced in your wallet, by a cancel or another transaction, before it was mined.';
+// The hash a transaction went in under: what its wallet replaced it with (a speed-up), once that was seen (kept in `map` while the page lives, and
+// in the journal's entry for it after a reload), or the hash itself. What goes on to the relay or a record is that one: the first never mined.
+export const landedHash = (hash, journal, map) => {
+  if (!hash) return hash;
+  const k = String(hash).toLowerCase(), it = journal?.get(`tx:1:${k}`);
+  return map?.get(k) || (it && it.status === 'confirmed' && it.hash) || hash;
+};
 export const fingerprint = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0; return `${s.length}:${h.toString(16)}`; };
 const hex = (n) => '0x' + n.toString(16);
 // One look. `read(method, params)` asks the chain; `seen` is what an earlier look learned of the transaction while it was
