@@ -276,7 +276,8 @@ const noSideways = (page) => page.evaluate(() => document.documentElement.scroll
 // the key pasted in the front page's wallet sheet, which TAC's page shares
 async function signIn(page) {
   await page.click('#tcd-go');
-  await page.waitForSelector('#sheet-wallet[open] [data-in="paste"]', { timeout: 10000 });
+  await page.waitForSelector('#sheet-wallet[open] [data-in="paste"]', { state: 'attached', timeout: 10000 });
+  await page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
   await page.click('#sheet-wallet [data-in="paste"]');
   await page.fill('#ws-hex', KEY);
   await page.click('#sheet-wallet [data-in="key"]');
