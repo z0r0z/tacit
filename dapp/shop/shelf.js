@@ -18,6 +18,7 @@ const SELECTORS = {
   approve: '0x095ea7b3', balanceOf: '0x70a08231', allowance: '0xdd62ed3e', nonces: '0x7ecebe00',
   ownerOf: '0x6352211e',         // the market's ownerOf(uint256 id): reverts for a token that does not exist or was used
   addressOf: '0x11a800bc',       // the market's addressOf(uint256 id) -> the address the token stands for
+  buyWithEth: '0x01d351d9',      // ShopZap's buyWithEth(bytes swapData, uint256 id, address to, uint8 nonce, uint256 maxPrice, uint256 deadline)
   deploy: '0x61ff715f',          // the market's deploy(uint256 id, bytes initcode) -> address: burns the token, deploys the code at the address it stands for
 };
 
@@ -185,3 +186,22 @@ const DEPLOY_REFUSALS = {
   '0x4b6e7f18': 'The wallet connected now does not hold this token.',     // NotOwnerNorApproved()
 };
 export const deployRefusal = (data) => DEPLOY_REFUSALS[String(data || '').slice(0, 10).toLowerCase()] || null;
+
+// ---- paying with ETH
+// The deployed ShopZap (contracts/src/ShopZap.sol): it swaps the ETH sent to it into TAC through zRouter and buys the address with that TAC in the same transaction. null until it
+// is deployed (contracts/script/DeployShopZap.s.sol prints the address): the page offers to pay with ETH only when this address holds code.
+export const ZAP = null;
+// A little over the price is asked of the swap, so that a small move of the pool before the transaction lands does not stop it; what is over comes back as TAC.
+export const ZAP_MARGIN_BPS = 150n;
+// buyWithEth(swapData, id, to, nonce, maxPrice, deadline)
+export function buyWithEthData({ swapData, id, to, nonce, maxPrice, deadline }) {
+  const sw = strip(swapData);
+  return SELECTORS.buyWithEth + word(192) + strip(id) + addrWord(to) + word(nonce) + word(maxPrice) + word(deadline) + word(sw.length / 2) + sw + '0'.repeat((64 - (sw.length % 64)) % 64);
+}
+// The ETH to try next when `amountIn` bought `got` and `needed` is wanted: scaled up to it, and a wei over so that it never rounds short.
+export const retryAmountIn = (amountIn, needed, got) => (BigInt(amountIn) * BigInt(needed)) / BigInt(got) + 1n;
+// ETH as text: three decimals from 1, four from a thousandth, two significant figures under that.
+export function ethText(wei) {
+  const n = Number(BigInt(wei)) / 1e18;
+  return n >= 1 ? n.toFixed(3) : n >= 0.001 ? n.toFixed(4) : n === 0 ? '0' : n.toPrecision(2);
+}
