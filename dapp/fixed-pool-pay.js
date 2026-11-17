@@ -142,11 +142,13 @@ export function exitWarning(entries) {
   return 'Part of this went in less than an hour ago. Waiting longer hides it better.';
 }
 // The split deposit's forwarder (contracts/src/TacitSplitDeposit.sol), where there is one: a large deposit is then ONE transaction, the notes and the Tacit part
-// together, all of it or none, for every wallet. Empty until the contract is deployed and a canary has shown a Tacit deposit goes through it: the deposit then
-// goes as it did (the notes, then the rest). `tacit-split-depositor:<chain>` in the browser's storage names one to test with (the canary sets it).
+// together, all of it or none, for every wallet. Ethereum's is deployed (0x0000000000049541f6582aB13C0b3a8dC35165Ae, verified on Etherscan, Sourcify and Blockscout)
+// and has been through a mainnet canary: one wallet transaction put two notes and a Tacit deposit in, and all of it came back out. Where there is none (another
+// chain), or the one named does not answer as it should, the deposit goes as it did (the notes, then the rest). `tacit-split-depositor:<chain>` in the browser's
+// storage names another to test with (the canary sets it).
 // The check below is a sanity check, not a proof of the code: the address must hold code and answer as this contract does (the Tacit pool it sends to and
 // the size of each pool the notes go to), so a wrong chain or a contract that is not it is passed over, and the deposit goes the old way.
-export const SPLIT_DEPOSITORS = { 1: null };
+export const SPLIT_DEPOSITORS = { 1: '0x0000000000049541f6582aB13C0b3a8dC35165Ae' };
 const SPLIT_KEY = (chainId) => `tacit-split-depositor:${chainId}`;
 const isAddress = (a) => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a);
 const sel4 = (sig) => '0x' + Array.from(keccak_256(new TextEncoder().encode(sig)).slice(0, 4), (b) => b.toString(16).padStart(2, '0')).join('');

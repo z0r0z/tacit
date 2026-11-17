@@ -244,7 +244,7 @@ for (const [mode, why] of [['nocode', 'it has no code'], ['wrongpool', 'it sends
     await ctx.close();
   });
 }
-await test('none named (as shipped): 2.5 ETH is the notes one at a time, then the rest through the page without a split', async () => {
+await test('a forwarder this stand-in node does not know (the shipped address is the real one, which it never answers for): 2.5 ETH is the notes one at a time, then the rest through the page without a split', async () => {
   const { ctx, page } = await open({ named: false, amount: '2.5' });
   await page.click('#lg-go');
   await page.waitForFunction(() => /0\.5 ETH went into your private balance/.test(document.querySelector('#status').textContent), null, { timeout: 60000 });
