@@ -1,9 +1,9 @@
 // /pay's TAC Send when the relay quoted on load and then cannot take the payment: the page asks on the status line before
-// posting it from the key's Bitcoin address. "Not now" sends nothing; leaving the question unanswered (its ten minutes
+// posting it from the key's Bitcoin address, and /tac's Send likewise. "Not now" sends nothing; leaving the question unanswered (its ten minutes
 // shortened here) is a no; a second writer to the status line does not remove it; "Post it from my Bitcoin address" goes
 // on to prove the payment (stopped here at the prover's download). The pool, the relay and the explorers are stubbed,
 // and nothing is broadcast.
-//   PLAYWRIGHT=<path to playwright-core> [SHOTS=<dir>] node tests/pay-tac-ask-self.browser.mjs
+//   PLAYWRIGHT=<path to playwright-core> [SHOTS=<dir>] [ONLY=no|none|yes|tac] node tests/pay-tac-ask-self.browser.mjs
 
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
@@ -145,11 +145,47 @@ async function run(answer) {
   await b.close();
 }
 
-// /tac now hosts the Tacit-chain dashboard; its former Bitcoin Send form is no longer served.
-// The live Bitcoin relay-fallback flow is exercised above through /pay/#tac for no, timeout and yes.
+// /tac's Send (the Bitcoin side of its card, opened by #pool/send): the same question on its status line, and "Not now" sends nothing.
+async function runTac() {
+  const { A, to, seen, b, page, errors, down } = await stubbed('tac');
+  await page.goto(ORIGIN + '/tac/#pool/send');
+  await page.waitForSelector('#wallet', { timeout: 30e3 });
+  await page.click('#wallet');
+  await page.waitForSelector('#ws-in [data-in="paste"]', { state: 'attached' });
+  await page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
+  await page.click('#ws-in [data-in="paste"]');
+  await page.fill('#ws-hex', A);
+  await page.click('#ws-in [data-in="key"]');
+  await page.waitForFunction(() => (document.querySelector('#wd-id')?.textContent || '').length > 12, null, { timeout: 90e3 });
+  await page.evaluate(() => { const d = document.querySelector('#sheet-wallet'); if (d?.open) d.close(); });
+  await page.waitForFunction(() => /^1(\.0+)? TAC shielded, in 1 note\b/.test((document.querySelector('#tp-bal')?.textContent || '').trim()), null, { timeout: 90e3 });
+  ok(true, 'tac: the stubbed shielded balance reads 1 TAC');
+  await page.waitForSelector('#tp-p-send:not([hidden])', { timeout: 30e3 });
+  await page.fill('#tp-send-to', to);
+  await page.fill('#tp-send-amt', '0.1');
+  const posted = () => seen.posts.filter((u) => !/\/evm-pool\/keeper\//.test(u));         // the page's own POSTs to the Ethereum pools' keepers are not this Send's
+  down();
+  await page.click('#tp-send-go');
+  await page.waitForFunction(() => [...document.querySelectorAll('#tp-st-send button')].some((x) => x.textContent === 'Not now'), null, { timeout: 60e3 });
+  if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, 'tac-ask.png'), fullPage: true });
+  const ask = (await page.textContent('#tp-st-send')).replace(/\s+/g, ' ').trim();
+  ok(/^The relay didn’t take this payment\. Post it from your Bitcoin address instead\? Your Bitcoin address shows as the sender\.Post it from my Bitcoin addressNot now$/.test(ask), `tac: the question: ${ask}`);
+  await page.click('#tp-st-send button:text-is("Not now")');
+  await page.waitForFunction(() => /Nothing was sent/.test(document.querySelector('#tp-st-send').textContent), null, { timeout: 30e3 });
+  const said = (await page.textContent('#tp-st-send')).trim();
+  ok(said === 'The relay can’t take this one right now. Nothing was sent.' && !(await page.$('#tp-st-send .err')), `tac: says so plainly: ${said}`);
+  await page.waitForTimeout(1500);
+  ok(!posted().length && !seen.relay.some((x) => /submit/.test(x)) && !local.length, `tac: nothing was posted, handed to the relay or proved (${[...posted(), ...local].join(' ') || 'none'})`);
+  ok(!(await page.$eval('#tp-send-go', (x) => x.disabled)), 'tac: Send works again afterwards');
+  ok(!errors.length, `tac: no page errors ${errors.join(' | ')}`);
+  await b.close();
+}
 
 try {
-  for (const a of ['no', 'none', 'yes']) await run(a);
+  const only = process.env.ONLY;                 // ONLY=no|none|yes|tac runs just that one
+  for (const a of ['no', 'none', 'yes']) if (!only || only === a) await run(a);
+  local.length = 0;
+  if (!only || only === 'tac') await runTac();
 } finally { server.close(); }
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

@@ -239,6 +239,22 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     return { notes: notes.map((n) => ({ ...n, text: noteString({ denomination: n.pool.denomination, chainId, preimage: n.secrets.preimage }) })), sent };
   }
 
+  // The same split with ONE sender for all of it (TacitSplitDeposit: every note and the Tacit deposit in one transaction, so all of it lands or none).
+  // The notes are prepared and signed for as ever; `send(notes)` makes the transaction and returns its hash. A send that throws after the transaction
+  // was in fact sent (a wallet that lost its wait) is not a failure if every note is in its pool; if none is, nothing landed (all or nothing), the
+  // notes were never kept, and their numbers are free for the next try.
+  async function depositWith(plan, send, { onStep = () => {} } = {}) {
+    const notes = await prepareNotes(plan, { onStep });
+    if (!notes.length) return { notes: [], sent: 'none' };
+    onStep({ step: 'send', count: notes.length });
+    let hash = null;
+    try { hash = await send(notes); } catch (e) {
+      if ((await landedNotes(notes, { wait: false })).length !== notes.length) { e.done = []; e.notes = notes; throw e; }
+    }
+    if ((await landedNotes(notes)).length !== notes.length) throw Object.assign(new Error('A deposit was sent but its commitment is not in the pool yet. Find will show it in a minute.'), { done: notes, notes });
+    return { notes: notes.map((n) => ({ ...n, text: noteString({ denomination: n.pool.denomination, chainId, preimage: n.secrets.preimage }) })), sent: 'one transaction', hash };
+  }
+
   const knownRoot = async (pool, root) => (await call(pool.address, SEL.isKnownRoot + word(root).slice(2))) !== 0n;
 
   // The steps both withdrawals share: the note is for this network and a pool, the recipient is an address, the
@@ -358,7 +374,7 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     return noteString({ denomination: p.denomination, chainId, preimage: secrets.preimage });
   }
 
-  return { pools, signNonce, probe, scan, deposit, prepareNotes, landedNotes, checkPool, atomicSupported, seen, spent, withdraw, withdrawSponsored, knownRoot, noteText };
+  return { pools, signNonce, probe, scan, deposit, depositWith, sendOne, prepareNotes, landedNotes, checkPool, atomicSupported, seen, spent, withdraw, withdrawSponsored, knownRoot, noteText };
 }
 
 // What a found or fresh note shows: its size, its place, and the line that spends it elsewhere.

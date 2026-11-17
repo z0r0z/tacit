@@ -11,7 +11,7 @@ export async function resolve(spec, ctx, next) {
   return next(spec, ctx);
 }`));
 
-const { checksumOk, composeProvider, readNotes, writeNotes, metaOf, planExit, poolSize, sizeWords, findDeposit, noteSeen, seenInfo, ageWords, newestSeen, exitWarning, LOW_SINCE, LOOKBACK_BLOCKS } = await import('../dapp/fixed-pool-pay.js');
+const { checksumOk, composeProvider, readNotes, writeNotes, metaOf, planExit, poolSize, sizeWords, findDeposit, noteSeen, seenInfo, ageWords, newestSeen, exitWarning, LOW_SINCE, LOOKBACK_BLOCKS, splitForwarder, SPLIT_DEPOSITORS } = await import('../dapp/fixed-pool-pay.js');
 const { keccak_256 } = await import('../dapp/vendor/tacit-deps.min.js');
 const { FIXED_POOLS } = await import('../dapp/fixed-pool-notes.js');
 
@@ -280,6 +280,44 @@ await test('the Withdraw tab\'s line is for the newest note', () => {
   eq(n.text.startsWith('Newest note: deposited 2 hours ago · 4 deposits since.'), true, n.text); eq(n.low, true);
   eq(newestSeen([{}, { seen: seenInfo({ old: true }, null, now) }]), null, 'an old note has no time to compare');
   eq(newestSeen([]), null);
+});
+
+console.log('the split deposit\'s forwarder (where it is used)');
+const FWD = '0x' + 'f0'.repeat(20), TP = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9';
+const NOTE_POOLS = [{ address: '0x47CE0C6eD5B0Ce3d3A51fdb1C52DC66a7c3c2936', denomination: E }, { address: '0x12D66f87A04A9E220743712cE6d9bB1B5616B8Fc', denomination: E / 10n }];
+const fwdNode = ({ code = '0x6080', tacit = TP, sizes = null, calls = [] } = {}) => async () => async (method, params) => {
+  calls.push(method);
+  if (method === 'eth_getCode') return code;
+  if (method !== 'eth_call') throw new Error('unexpected ' + method);
+  const { data } = params[0];
+  if (data.slice(0, 10) === sel4('TACIT_POOL()')) return '0x' + tacit.slice(2).toLowerCase().padStart(64, '0');
+  if (data.slice(0, 10) === sel4('denominationOf(address)')) {
+    const who = '0x' + data.slice(34).toLowerCase(), p = NOTE_POOLS.find((x) => x.address.toLowerCase() === who);
+    return '0x' + (sizes?.[who] ?? p?.denomination ?? 0n).toString(16).padStart(64, '0');
+  }
+  throw new Error('unexpected call');
+};
+function sel4(sig) { return '0x' + Array.from(keccak_256(new TextEncoder().encode(sig)).slice(0, 4), (b) => b.toString(16).padStart(2, '0')).join(''); }
+const kv = (o = {}) => ({ get: (k) => o[k] ?? null, set() {} });
+await test('the forwarder is off until it is deployed and a canary has shown it: the constant is empty, and with nothing named there is none', async () => {
+  eq(SPLIT_DEPOSITORS[1], null, 'no address is shipped yet');
+  eq(await splitForwarder({ read: fwdNode(), store: kv(), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null);
+});
+await test('one named in the browser\'s storage is used when it holds code and answers as the contract does', async () => {
+  eq(await splitForwarder({ read: fwdNode(), store: kv({ 'tacit-split-depositor:1': FWD }), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), FWD);
+});
+await test('it is passed over when it has no code, sends to another Tacit pool, or gives another size for a pool: the deposit then goes the old way', async () => {
+  const store = kv({ 'tacit-split-depositor:1': FWD });
+  eq(await splitForwarder({ read: fwdNode({ code: '0x' }), store, chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null, 'no code');
+  eq(await splitForwarder({ read: fwdNode({ tacit: '0x' + '11'.repeat(20) }), store, chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null, 'another Tacit pool');
+  eq(await splitForwarder({ read: fwdNode({ sizes: { [NOTE_POOLS[1].address.toLowerCase()]: E } }), store, chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null, 'another size');
+  eq(await splitForwarder({ read: fwdNode({ sizes: { [NOTE_POOLS[0].address.toLowerCase()]: 0n } }), store, chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null, 'a pool it does not know (size 0)');
+});
+await test('a stored value that is not an address, or another chain\'s, is not used, and a node that fails is an error the caller turns into the old way', async () => {
+  eq(await splitForwarder({ read: fwdNode(), store: kv({ 'tacit-split-depositor:1': 'not an address' }), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null);
+  eq(await splitForwarder({ read: fwdNode(), store: kv({ 'tacit-split-depositor:8453': FWD }), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }), null, 'another chain\'s');
+  let err = null; try { await splitForwarder({ read: async () => async () => { throw new Error('rpc down'); }, store: kv({ 'tacit-split-depositor:1': FWD }), chainId: 1, tacitPool: TP, pools: NOTE_POOLS }); } catch (e) { err = e; }
+  if (!err) throw new Error('should have thrown');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

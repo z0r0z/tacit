@@ -357,6 +357,25 @@ export function zapDeposit(zap, tx, { token, amountIn, swap, pull = { kind: 'all
   throw new Error(`evm-pool-wallet: unknown way to pay, ${pull.kind}`);
 }
 
+// The split deposit's one call (TacitSplitDeposit), as the `selfCall` of deposit: each note's commitment into its fixed-denomination pool and the
+// proof's `extAmount` into the Tacit ETH pool, in one transaction that either does all of it or none. `pools[i]` is { address, denomination } and
+// `commitments[i]` the note's commitment (bytes32 hex or a bigint). The value sent is exactly the notes' sizes plus `extAmount`; the contract
+// refuses any other. The wallet's own checks run on it as on any deposit (the call is simulated first, and a stale proof, which the pool answers
+// with StaleRoot, is proved again), since the contract passes the pool's error up unchanged.
+// `tx` null: notes only, no Tacit part (the contract skips an all-zero one), still one transaction for every wallet.
+const NO_TACIT = { pA: [0n, 0n], pB: [[0n, 0n], [0n, 0n]], pC: [0n, 0n], publicInputs: Array(11).fill(0n), recipient: '0x' + '00'.repeat(20), extAmount: 0n, relayer: '0x' + '00'.repeat(20), fee: 0n, memo0: '0x', memo1: '0x' };
+export function splitDepositCall(forwarder, tx, { pools, commitments }) {
+  if (pools.length !== commitments.length) throw new Error('evm-pool-wallet: a note for each pool');
+  if (tx && BigInt(tx.extAmount) <= 0n) throw new Error('evm-pool-wallet: the Tacit part of a split deposit has a positive amount');
+  if (!tx && !pools.length) throw new Error('evm-pool-wallet: nothing to deposit');
+  const ext = tx ? BigInt(tx.extAmount) : 0n;
+  tx = tx || NO_TACIT;
+  const cs = commitments.map((c) => (typeof c === 'bigint' ? '0x' + c.toString(16).padStart(64, '0') : c));
+  const notes = pools.reduce((t, p) => t + BigInt(p.denomination), 0n);
+  const data = calldata(`splitDeposit(address[],bytes32[],${TX_SIG})`, [{ array: 'address' }, { array: 'bytes32' }, { tuple: TX_TYPES }], [pools.map((p) => p.address), cs, txValues(tx)]);
+  return { to: forwarder, value: notes + ext, data };
+}
+
 // ── wallet ──
 
 // chain: { chainId, pool, router, rpc (a jsonRpc), deployBlock, logChunk?, confirmations?, token? }

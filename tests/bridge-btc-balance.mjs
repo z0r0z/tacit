@@ -98,6 +98,7 @@ try {
   await page.waitForSelector('#ws-in', { timeout: 15000 });
   ok(true, 'that button opens the wallet sheet');
 
+  await page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
   await page.click('#ws-in [data-in="paste"]');
   await page.fill('#ws-hex', KEY);
   await page.click('#ws-in [data-in="key"]');
@@ -159,6 +160,7 @@ try {
     await p2.waitForSelector('#wallet', { timeout: 30000 });
     await p2.click('#wallet');
     await p2.waitForSelector('#ws-in', { timeout: 15000 });
+    await p2.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
     await p2.click('#ws-in [data-in="paste"]');
     await p2.fill('#ws-hex', KEY);
     await p2.click('#ws-in [data-in="key"]');
@@ -197,6 +199,7 @@ try {
     await p3.waitForSelector('#wallet', { timeout: 30000 });
     await p3.click('#wallet');
     await p3.waitForSelector('#ws-in', { timeout: 15000 });
+    await p3.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
     await p3.click('#ws-in [data-in="paste"]');
     await p3.fill('#ws-hex', KEY);
     await p3.click('#ws-in [data-in="key"]');
