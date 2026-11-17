@@ -1260,7 +1260,8 @@ function tcardForm() {
       <div id="tcd-linkrow"></div>
       ${navigator.share ? html`<button class="btn ghost tcd-go" type="button" id="tcd-share">Share your pay link</button>` : ''}
       ${keyRow('Your Tacit address', S.key.tacit || '', 'Tacit address', '', { fold: 44, qr: true })}
-      <button class="btn ghost tcd-go" type="button" id="tcd-scan">Scan for payments</button><div class="status" role="status" id="tcd-st"></div>`;
+      <button class="btn ghost tcd-go" type="button" id="tcd-scan">Scan for payments</button><div class="status" role="status" id="tcd-st"></div>
+      ${chainOn() ? html`<div class="tpq" id="tcd-pq"></div>` : ''}`;
   }
   const go = !key ? 'Sign in' : { shield: 'Shield TAC', send: 'Send privately', withdraw: { wallet: 'Withdraw to your wallet', pool: 'Move to the private pool', btc: 'Move toward Bitcoin' }[ctx.TCARD.dest] }[tab];
   return html`${line}
@@ -1297,6 +1298,60 @@ function tcardWire(el) {
     const st = $('#tcd-st'), api = await tacPool();
     await Promise.allSettled([api.scan((m) => say(st, m)), chainScan(true)]);
     rerender('tac');
+  });
+  if ($('#tcd-pq', el)) { $('#tcd-pq', el).__h = null; tpqPaint(); tpqRead(); }
+}
+// PQ ID (experimental): the Tacit chain's keys made from a passkey's own output, which no published key leads to (tacit-chain-lane.js rootSeed),
+// so memos recorded today stay closed to whoever later solves the Tacit key. The Tacit address stays the same: payers find the PQ ID's address in
+// the record the key signs. A passkey wallet uses its own passkey; a wallet opened another way makes one for it.
+const TPQ = { pub: null, st: null, err: '' };
+function tpqRead(force = false) {
+  const k = S.key?.pubHex;
+  if (!k || !chainOn() || (!force && TPQ.pub === k && TPQ.st)) return;
+  TPQ.pub = k;
+  if (force) TPQ.st = null;
+  chainClient().then((c) => c.pqState()).then((s) => { if (S.key?.pubHex === k) { TPQ.st = s; tpqPaint(); } }, () => {});
+}
+function tpqPaint() {
+  const el = $('#tcd-pq');
+  if (!el) return;
+  const s = S.key && TPQ.pub === S.key.pubHex ? TPQ.st : null, own = S.key?.mode === 'passkey' && !!S.key.credentialId;
+  const head = (on) => html`<p class="tpq-h"><b>PQ ID</b><span class="tpq-x">Experimental</span>${on ? html`<span class="tpq-on">On</span>` : ''}</p>`;
+  const fine = html`<p class="note tpq-fine">We are hardening how wallet keys are made, and this may change as post-quantum research moves on. Changing keys from time to time is good for privacy anyway.</p>`;
+  const err = TPQ.err ? html`<p class="note err">${TPQ.err}</p>` : '';
+  const v = !s ? html``
+    : s.on ? html`${head(true)}<p class="note">Payments to your Tacit address are sealed to keys no published key leads to, so they stay private even against a future quantum computer.${s.olderUnits > 0n ? html` ${fmt(s.olderUnits, 8, 4)} TAC from before moves over with your next payment. <button class="link" type="button" id="tpq-move">Move it now</button>` : ''}</p>${err}${fine}`
+    : s.elsewhere ? html`${head(false)}<p class="note">This wallet has a PQ ID made on another device. Open it with that passkey to see all of your TAC on the Tacit chain.</p><button class="btn ghost tcd-go" type="button" id="tpq-go">Open with your passkey</button>${err}${fine}`
+    : html`${head(false)}<p class="note">Seals the payments you get on the Tacit chain to keys made from ${own ? 'your passkey' : 'a passkey'}, which no published key leads to, so payments recorded today stay private even against a future quantum computer. Your Tacit address stays the same.</p>
+      <button class="btn ghost tcd-go" type="button" id="tpq-go">Generate PQ ID</button>${err}${fine}`;
+  if (el.__h === v.s) return;
+  el.__h = v.s; mount(el, v);
+  const go = $('#tpq-go', el), mv = $('#tpq-move', el);
+  if (go) go.onclick = () => tpqGo(go);
+  if (mv) mv.onclick = () => busy(mv, async () => {
+    TPQ.err = '';
+    try { await (await chainClient()).moveOlder(); toast('Moved to your PQ ID.'); chainScan(true); tpqRead(true); } catch (e) { TPQ.err = errText(e); tpqPaint(); }
+  });
+}
+async function tpqGo(btn) {
+  const k = S.key?.pubHex;
+  if (!k) return;
+  await busy(btn, async () => {
+    TPQ.err = '';
+    try {
+      const m = await import('/prf-wallet.js');
+      if (!m.isPasskeyAvailable()) throw new Error('A PQ ID needs a browser with passkeys.');
+      const r = TPQ.st?.elsewhere ? await m.prfChainRoot({})
+        : S.key.mode === 'passkey' && S.key.credentialId ? await m.prfChainRoot({ credentialId: S.key.credentialId })
+        : await m.prfRegisterChainRoot('Tacit PQ ID');
+      if (S.key?.pubHex !== k) return;
+      await (await chainClient()).harden(r.root, r.credentialId);
+      toast('PQ ID on. Your Tacit address stays the same.');
+      tpqRead(true); chainScan(true);
+    } catch (e) {
+      if (e?.name === 'NotAllowedError' || e?.name === 'AbortError') return;
+      TPQ.err = errText(e); tpqPaint();
+    }
   });
 }
 function tcard() {

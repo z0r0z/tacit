@@ -2,7 +2,7 @@ import { sha256, keccak_256, hmac, concatBytes, secp } from './vendor/tacit-deps
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from './vendor/tacit-poseidon.min.js';
 import { makeChainWallet, hopOp, poolOp, worthOf, sharesFor, sharesToPay, poolShare } from './tacit-chain-wallet.js';
 import { makeChainMemoWorkers } from './confidential-chain-memo-workers.js';
-import { chainSeed } from './tacit-chain-lane.js';
+import { chainSeed, rootSeed, keptRoot, keepRoot } from './tacit-chain-lane.js';
 
 export const UNIT = 10n ** 10n;
 const te = new TextEncoder();
@@ -83,7 +83,8 @@ export async function chainStatus({ cfg, rpcCall, fetchImpl = (...a) => globalTh
 // opens the chain's memos in workers when the page has them (the wallet opens them itself otherwise); one set of workers for the page
 const sharedMemoWorkers = makeChainMemoWorkers();
 
-export function makeChainClient({ cfg, rpcCall, priv, system, route = null, routeMs = 4000, storage = globalThis.localStorage, fetchImpl = (...a) => globalThis.fetch(...a), memoWorkers = sharedMemoWorkers }) {
+// root: the key's PQ ID root (32 bytes, tacit-chain-lane.js rootSeed), or null for none; left out, the one this device keeps for the key is used.
+export function makeChainClient({ cfg, rpcCall, priv, system, root = undefined, route = null, routeMs = 4000, storage = globalThis.localStorage, fetchImpl = (...a) => globalThis.fetch(...a), memoWorkers = sharedMemoWorkers }) {
   if (!cfg) throw new Error('tacit chain: not deployed');
   const call = async (sig, args = '') => strip(await rpcCall('eth_call', [{ to: cfg.blocks, data: '0x' + sel(sig) + args }, 'latest']));
   const api = async (method, path, body, base = cfg.leader) => {
@@ -105,37 +106,51 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
       return r.hash;
     },
   };
+  // The chain address a key's own record names, checked against the key, or null. A key's record is its latest chain address (its PQ ID's, once it
+  // has one), so a Tacit address stays the same while the keys behind it change.
+  async function keyRecord(k) {
+    const r = await api('GET', `/address/key/${strip(k)}`).catch(() => null);
+    if (!r?.ok || !r.address || !r.sig) return null;
+    let good = false;
+    try { good = secp.verify(hexBytes(r.sig), keyMessage(hexBytes(k), hexBytes(r.address)), hexBytes(k)); } catch { }
+    return good ? 'tc1' + strip(r.address) : null;
+  }
+  // A payer asks for the key's record first (it is signed by the key the Tacit address carries), and the address's chain lane is the fallback.
   async function recipientOf(lanes) {
     await ready();
-    if (lanes?.chain?.hash) return w.resolve(lanes.chain.hash, leader);
     const keys = [lanes?.evm?.ownerPub, lanes?.btc?.spendPub].filter(Boolean).map(hx);
     for (const k of [...new Set(keys)]) {
-      const r = await api('GET', `/address/key/${k.slice(2)}`).catch(() => null);
-      if (!r?.ok || !r.address || !r.sig) continue;
-      const ab = hexBytes(r.address);
-      let good = false;
-      try { good = secp.verify(hexBytes(r.sig), keyMessage(hexBytes(k), ab), hexBytes(k)); } catch { }
-      if (!good) continue;
-      return w.decodeAddress('tc1' + strip(r.address));
+      const a = await keyRecord(k);
+      if (a) { try { return w.decodeAddress(a); } catch { } }
     }
+    if (lanes?.chain?.hash) return w.resolve(lanes.chain.hash, leader);
     throw new Error('tacit chain: this Tacit address has not opened the Tacit chain yet');
   }
-  let w = null, me = null, prover = null, assetHex = null;
-  const st = { next: 0, notes: [] };
-  const lane = () => hx(w.chainAddressHash(w.address(me))).slice(2, 18);
-  const key = () => `tacit-chain-notes-v1:${cfg.blocks.toLowerCase()}:${lane()}`;
+  let w = null, prover = null, assetHex = null, rootNow = root;
+  // me: the keys new notes go to. old: the keys from before the PQ ID (made from the Tacit key), still read and spent; null with no PQ ID.
+  // Each is { k, lane, st: { next, notes } }. elsewhere: the key's record names a PQ ID this device does not hold.
+  let me = null, old = null, elsewhere = false;
+  const sets = () => (old ? [me, old] : [me]);
+  const allNotes = () => sets().flatMap((K) => K.st.notes);
+  const keyset = (k) => ({ k, lane: hx(w.chainAddressHash(w.address(k))).slice(2, 18), st: { next: 0, notes: [] } });
+  // (the keys from before a PQ ID name the spends and hops kept here, so those stay where they were)
+  const lane = () => (old || me).lane;
+  const notesKey = (K) => `tacit-chain-notes-v1:${cfg.blocks.toLowerCase()}:${K.lane}`;
   const leavesKey = () => `tacit-chain-leaves-v1:${cfg.blocks.toLowerCase()}`;
   const nullifiersKey = () => `tacit-chain-nullifiers-v1:${cfg.blocks.toLowerCase()}`;
   const save = () => {
-    try { storage?.setItem(key(), JSON.stringify({ next: st.next, notes: st.notes.map((n) => ({ ...n, value: String(n.value), leaf: String(n.leaf) })) })); } catch {}
+    for (const K of sets()) { try { storage?.setItem(notesKey(K), JSON.stringify({ next: K.st.next, notes: K.st.notes.map((n) => ({ ...n, value: String(n.value), leaf: String(n.leaf) })) })); } catch {} }
     try { storage?.setItem(leavesKey(), w.leavesKept()); } catch {}
     try { storage?.setItem(nullifiersKey(), w.nullifiersKept()); } catch {}
   };
-  const load = () => {
+  const loadSet = (K) => {
     try {
-      const j = JSON.parse(storage?.getItem(key()) || 'null');
-      if (j) { const notes = j.notes.map((n) => ({ ...n, value: BigInt(n.value), leaf: BigInt(n.leaf) })); st.notes = notes; st.next = j.next; }
+      const j = JSON.parse(storage?.getItem(notesKey(K)) || 'null');
+      if (j) { K.st.notes = j.notes.map((n) => ({ ...n, value: BigInt(n.value), leaf: BigInt(n.leaf) })); K.st.next = j.next; }
     } catch {}
+  };
+  const load = () => {
+    for (const K of sets()) loadSet(K);
     try { w.leavesKeep(storage?.getItem(leavesKey()) || ''); } catch {}
     try { w.nullifiersKeep(storage?.getItem(nullifiersKey()) || ''); } catch {}
   };
@@ -145,24 +160,38 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
     if (w) return;
     const [chain, asset] = await Promise.all([call('CHAIN()'), call('TAC_ASSET()')]);
     w = makeChainWallet({ poseidon, prover: { prove: async (i, o) => (await proverP()).prove(i, o) }, chain: '0x' + chain, asset: BigInt('0x' + asset), openMany: memoWorkers });
-    me = w.keys(chainSeed(priv));
+    const before = keyset(w.keys(chainSeed(priv)));
+    if (rootNow === undefined) rootNow = keptRoot(priv, storage)?.root ?? null;
+    if (rootNow) { me = keyset(w.keys(rootSeed(rootNow))); old = before; } else me = before;
     assetHex = asset.padStart(64, '0');
     load();
   }
 
   async function scan() {
     await ready();
-    const r = await w.scan(me, leader, { from: st.next, known: st.notes.map((n) => ({ ...n, s: hexBytes(n.s) })) });
-    st.next = Math.max(st.next, r.next);
-    st.notes = r.notes.map((n) => ({ index: n.index, value: n.value, s: hx(n.s), leaf: n.leaf, nullifier: n.nullifier }));
+    for (const K of sets()) {
+      const r = await w.scan(K.k, leader, { from: K.st.next, known: K.st.notes.map((n) => ({ ...n, s: hexBytes(n.s) })) });
+      K.st.next = Math.max(K.st.next, r.next);
+      K.st.notes = r.notes.map((n) => ({ index: n.index, value: n.value, s: hx(n.s), leaf: n.leaf, nullifier: n.nullifier }));
+    }
     save();
     return balance();
+  }
+  const myKey = () => hx(secp.getPublicKey(priv, true));
+  // The key's record names the PQ ID's address once it has one; keys without it (a device that does not hold the root) must not replace it.
+  async function publishMine() {
+    await ready();
+    if (!old) {
+      const a = await keyRecord(myKey()).catch(() => null);
+      if (a && a !== w.encodeAddress(w.address(me.k))) { elsewhere = true; return null; }
+    }
+    return w.publish(me.k, leader);
   }
   const held = () => kept().filter((e) => e.queued && !e.refused && (e.nullifiers || []).length);
   const taken = () => new Set(held().flatMap((e) => e.nullifiers.map(strip)));
   const leafKey = (l) => BigInt(l).toString(16).padStart(64, '0');
-  const settling = () => { const have = new Set(st.notes.map((n) => leafKey(n.leaf))); return held().flatMap((e) => e.own || []).filter((o) => !have.has(leafKey(o.leaf))).reduce((t, o) => t + BigInt(o.value), 0n); };
-  const balance = () => { const t = taken(); return st.notes.filter((n) => !t.has(strip(n.nullifier))).reduce((a, n) => a + BigInt(n.value), 0n) + settling(); };
+  const settling = () => { const have = new Set(allNotes().map((n) => leafKey(n.leaf))); return held().flatMap((e) => e.own || []).filter((o) => !have.has(leafKey(o.leaf))).reduce((t, o) => t + BigInt(o.value), 0n); };
+  const balance = () => { const t = taken(); return allNotes().filter((n) => !t.has(strip(n.nullifier))).reduce((a, n) => a + BigInt(n.value), 0n) + settling(); };
   async function rate() {
     const [pool, shares] = await Promise.all([call('pool()'), call('shares()')]);
     return { pool: big(pool), shares: big(shares) };
@@ -175,14 +204,17 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
     const seen = new Set(), r = { ok: true, leaves: [], memos: [] };
     for (const x of rs) x.leaves.forEach((l, i) => { const k = leafKey(l); if (!seen.has(k)) { seen.add(k); r.leaves.push(l); r.memos.push(x.memos[i]); } });
     if (!r.leaves.length) return [];
-    const skip = new Set([...held().flatMap((e) => e.own || []).map((x) => leafKey(x.leaf)), ...st.notes.map((x) => leafKey(x.leaf))]);
+    const skip = new Set([...held().flatMap((e) => e.own || []).map((x) => leafKey(x.leaf)), ...allNotes().map((x) => leafKey(x.leaf))]);
     const page = { leaves: r.leaves, memos: r.memos, next: r.leaves.length, total: r.leaves.length };
-    const got = (await w.scan(me, { notes: async () => page, spent: async () => false }, { from: 0, known: [], keep: false })).notes.filter((x) => !skip.has(leafKey(x.leaf)));
+    const got = [];
+    for (const K of sets()) got.push(...(await w.scan(K.k, { notes: async () => page, spent: async () => false }, { from: 0, known: [], keep: false })).notes.filter((x) => !skip.has(leafKey(x.leaf))));
     if (!got.length) return [];
     const at = await rate();
     return got.map((x) => ({ key: leafKey(x.leaf), units: worthOf(BigInt(x.value), at) }));
   }
-  const owned = () => { const t = taken(); return st.notes.filter((n) => !t.has(strip(n.nullifier))).map((n) => ({ ...n, s: hexBytes(n.s) })); };
+  // (a note under the keys from before the PQ ID names them, k, and is spent under them)
+  const owned = () => { const t = taken(); return sets().flatMap((K) => K.st.notes.filter((n) => !t.has(strip(n.nullifier))).map((n) => ({ ...n, s: hexBytes(n.s), ...(K === old ? { k: old.k } : {}) }))); };
+  const olderHeld = () => owned().filter((n) => n.k).reduce((a, n) => a + BigInt(n.value), 0n);
 
   async function feeAt(base = cfg.leader) {
     await ready();
@@ -211,10 +243,20 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
   };
   const feeOut = (f, r) => (f.units > 0n ? [{ to: f.to, value: sharesWorth(f.units, r) }] : []);
 
+  // Two notes at most. Notes under the keys from before the PQ ID go first, and one rides in a slot a spend leaves free (it proves two inputs either
+  // way), its value coming back as change under the PQ ID: what the old keys hold moves over with the next spends, at no cost.
   function inputs(need) {
     const ns = owned().sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1));
-    if (ns[0] && BigInt(ns[0].value) >= need) return [ns.filter((n) => BigInt(n.value) >= need).pop()];
-    if (ns.length >= 2 && BigInt(ns[0].value) + BigInt(ns[1].value) >= need) return ns.slice(0, 2);
+    const cover = (xs) => {
+      if (xs[0] && BigInt(xs[0].value) >= need) return [xs.filter((n) => BigInt(n.value) >= need).pop()];
+      if (xs.length >= 2 && BigInt(xs[0].value) + BigInt(xs[1].value) >= need) return xs.slice(0, 2);
+      return null;
+    };
+    const ins = cover(ns.filter((n) => n.k)) || cover(ns);
+    if (ins) {
+      const ride = ins.length === 1 && ns.find((n) => n.k && n !== ins[0]);
+      return ride ? [...ins, ride] : ins;
+    }
     if (settling() > 0n && balance() >= need) throw Object.assign(new Error('your last payment is settling: this one can go once it lands, in about a minute'), { settling: true });
     throw new Error(balance() >= need ? 'that amount spans more than two of your chain notes: move part of it first' : 'more than you hold on the tacit chain, with its fees');
   }
@@ -277,7 +319,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
     hopNote(e);
     forget(e.id);
     const gone = new Set((spent.nullifiers || []).map(strip));
-    st.notes = st.notes.filter((n) => !gone.has(strip(n.nullifier)));
+    for (const K of sets()) K.st.notes = K.st.notes.filter((n) => !gone.has(strip(n.nullifier)));
     save();
     onStatus?.({ id: r.id, status: 'landed', height });
     return { id: r.id, height };
@@ -299,7 +341,7 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
 
   async function spend(opts) {
     await ready();
-    const made = await w.spend(me, { ...opts, leader });
+    const made = await w.spend(me.k, { ...opts, leader });
     save();
     return made;
   }
@@ -340,9 +382,47 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
     ready, scan, balance, rate, fee: feeAt,
     shieldCap: async () => (await feeNow()).shieldCap,
     leaderNow: async () => { const f = await pick(); return { base: f.base, routed: f.base !== cfg.leader }; },
-    address: async () => { await ready(); return w.address(me); },
-    lane: async () => { await ready(); return w.chainAddressHash(w.address(me)); },
-    publish: async () => { await ready(); return w.publish(me, leader); },
+    address: async () => { await ready(); return w.address(me.k); },
+    lane: async () => { await ready(); return w.chainAddressHash(w.address(me.k)); },
+    publish: publishMine,
+    // PQ ID: chain keys from a root no published key leads to (a passkey's own output). → { on, elsewhere, older (shares still under the keys from
+    // before it), olderUnits (what they are worth), credentialId }
+    async pqState() {
+      await ready();
+      if (!old && !elsewhere) { const a = await keyRecord(myKey()).catch(() => null); elsewhere = !!a && a !== w.encodeAddress(w.address(me.k)); }
+      const older = olderHeld();
+      return { on: !!old, elsewhere: !old && elsewhere, older, olderUnits: older > 0n ? worthOf(older, await rate()) : 0n, credentialId: old ? keptRoot(priv, storage)?.credentialId ?? null : null };
+    },
+    // Takes a PQ ID's root: kept on this device (sealed under the Tacit key), its keys made the ones new notes go to, and its address named in the
+    // key's record so payers of the same Tacit address reach it. A root that does not make the PQ ID the key's record names is refused.
+    async harden(r, credentialId = null) {
+      await ready();
+      if (!(r instanceof Uint8Array) || r.length !== 32) throw new Error('tacit chain: a root is 32 bytes');
+      const next = keyset(w.keys(rootSeed(r)));
+      if (old) {
+        if (next.lane === me.lane) return w.address(me.k);
+        throw new Error('This wallet already has a PQ ID, made with another passkey.');
+      }
+      const a = await keyRecord(myKey()).catch(() => null);
+      if (a && a !== w.encodeAddress(w.address(me.k)) && a !== w.encodeAddress(w.address(next.k))) throw new Error('That is not the passkey this wallet’s PQ ID was made with. Choose the other one.');
+      keepRoot(priv, r, credentialId, storage);
+      rootNow = Uint8Array.from(r); old = me; me = next; elsewhere = false;
+      loadSet(me);
+      await w.publish(me.k, leader);
+      await scan().catch(() => {});
+      return w.address(me.k);
+    },
+    // Moves up to two notes from the keys from before the PQ ID to it now, as a payment to itself (the next spends move them anyway).
+    async moveOlder(o = {}) {
+      await ready();
+      const ns = owned().filter((n) => n.k).sort((a, b) => (BigInt(b.value) > BigInt(a.value) ? 1 : -1)).slice(0, 2);
+      if (!ns.length) return null;
+      const [r, f] = await Promise.all([rate(), feeNow()]);
+      const pool = poolShare(r), out = feeOut(f, r), total = ns.reduce((a, n) => a + BigInt(n.value), 0n);
+      if (total <= pool + (out[0]?.value ?? 0n)) throw new Error('Too little is under the older keys to pay for moving it. It moves with your next payment.');
+      const units = worthOf(total - pool - (out[0]?.value ?? 0n), r);
+      return submit(await spend({ inputs: ns, outputs: out, exit: { v: pool, amount: 0n, op: poolOp() }, onProgress: o.onProgress }), {}, { ...o, kind: 'pay', units, base: f.base, meta: { self: true } });
+    },
     resolve: async (hash) => { await ready(); return w.resolve(hash, leader); },
     recipientOf,
     resubmit: (e, o = {}) => submit({ submission: e.submission, nullifiers: e.nullifiers }, e.extra || {}, { kind: e.kind, units: e.units, base: e.lead || cfg.leader, ...o }),
@@ -355,9 +435,9 @@ export function makeChainClient({ cfg, rpcCall, priv, system, route = null, rout
     async noteList() {
       await ready();
       const r = await rate();
-      return st.notes.map((n) => ({ key: leafKey(n.leaf), units: worthOf(BigInt(n.value), r) }));
+      return allNotes().map((n) => ({ key: leafKey(n.leaf), units: worthOf(BigInt(n.value), r) }));
     },
-    has: (key) => st.notes.some((x) => leafKey(x.leaf) === key),
+    has: (key) => allNotes().some((x) => leafKey(x.leaf) === key),
     ownLeaf: (key) => madeKeys.has(key) || kept().some((e) => (e.leaves || []).some((l) => leafKey(l) === key)),
     async pending() {
       await ready();
