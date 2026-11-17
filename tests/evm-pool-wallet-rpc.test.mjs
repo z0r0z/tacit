@@ -862,6 +862,17 @@ await check('a repeat that finds the first request did land (its answer was lost
   assert.equal(s.proofs, 1);
 });
 
+await check('a repeat of a request that landed, answered as the relay answers a spend whose root has moved on (409 StaleRoot), reads the pool again and says the funds were spent, with no second proof', async () => {
+  const s = spender(37);
+  s.reserve = () => slotOf(s.pool);
+  s.relay = (n) => { if (n === 1) { s.spend(); throw dropped(); } return [409, { error: "StaleRoot: re-prove against the pool's current root", stale: true }]; };
+  s.make();
+  await s.ready();
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), isSpent));
+  assert.equal(s.count('/relay'), 2);
+  assert.equal(s.proofs, 1, 'no second proof');
+});
+
 await check('a repeat that finds the first request still on its way waits for it', async () => {
   const s = spender(36);
   s.reserve = () => slotOf(s.pool);
