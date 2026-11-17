@@ -153,7 +153,7 @@ assert.equal(exitSaid(0, 'TAC'), 'any time, as private TAC', 'a name that is not
   const sent = [], rpcSeen = [];
   const tt = { cfg: { pool: '0xpool' }, settleCalldata: ({ publicValues, proof, memos }) => `0xsettle:${publicValues}:${proof}:${memos.length}`,
     rpc: async (m, p) => { rpcSeen.push([m, p[0].from, p[0].to]); if (tt.revert) throw new Error('execution reverted: stale root'); return '0x7a120'; } };
-  const wallet = { sendTx: async (x) => { sent.push(x); return '0xabc'; }, receipt: async () => ({ status: wallet.status ?? '0x1' }) };
+  const wallet = { sendTx: async (x) => { sent.push(x); return '0xabc'; }, receipt: async () => ({ status: wallet.status ?? '0x1', ...(wallet.hash ? { transactionHash: wallet.hash } : {}) }) };
   let asked = 0;
   const self = walletSettle(tt, wallet, async () => '0xme', { confirm: () => asked++ });
   assert.deepEqual(await self({ publicValues: '0xpv', proof: '0xpf', memos: ['0x1', '0x2'] }), { txHash: '0xabc' });
@@ -165,6 +165,9 @@ assert.equal(exitSaid(0, 'TAC'), 'any time, as private TAC', 'a name that is not
   assert.equal(sent.length, 0, 'a step that would revert is not sent');
   tt.revert = false; wallet.status = '0x0';
   await assert.rejects(self({ publicValues: '0xpv', proof: '0xpf', memos: [] }), /did not go through \(0xabc…\)\. Nothing was lost but its network fee/);
+  wallet.status = '0x1'; wallet.hash = '0xdef';
+  assert.deepEqual(await self({ publicValues: '0xpv', proof: '0xpf', memos: [] }), { txHash: '0xdef' }, 'a speed-up in the wallet went in under another hash: that one is what the pool module reads the settle from');
+  wallet.hash = undefined;
   await assert.rejects(walletSettle(tt, wallet, async () => null)({ publicValues: '0x', proof: '0x', memos: [] }), /connect a wallet and press again/);
   assert.equal(walletSettle(tt, null, '0xme'), null, 'no wallet that sends: no sender, so the relay’s refusal stands');
 }

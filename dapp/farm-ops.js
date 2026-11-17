@@ -51,7 +51,7 @@ export function walletSettle(t, wallet, from, { confirm = () => {} } = {}) {
     const hash = await wallet.sendTx({ to, data, from: who, ...(gas ? { gas } : {}) });
     const rc = await wallet.receipt(hash);
     if (rc?.status !== '0x1') throw new Error(`The transaction did not go through (${String(hash).slice(0, 10)}…). Nothing was lost but its network fee: press again.`);
-    return { txHash: hash };
+    return { txHash: rc.transactionHash || hash };                                  // a speed-up in the wallet went in under another hash: the pool module reads the memos from that one's receipt
   };
 }
 // The step through the relay; when the relay will prove it but not send it, again with the wallet sending (`onOwn(e)` first, to say so).

@@ -28,6 +28,9 @@ const me = '0x' + 'aa'.repeat(20), pool = '0x' + 'bb'.repeat(20);
 const call = { to: pool, value: 5, input: '0x1234abcd' + '00'.repeat(120) };
 const orig = { hash: '0x' + '01'.repeat(32), from: me, nonce: 0, ...call }, fast = { hash: '0x' + '02'.repeat(32), from: me, nonce: 0, ...call }, cancel = { hash: '0x' + '03'.repeat(32), from: me, nonce: 0, to: me, value: 0, input: '0x' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// (what a test waits for, rather than for a time: on a busy machine a fixed pause lands before or after the thing it was timed against)
+const until = async (f, ms = 5000) => { for (const end = Date.now() + ms; !f(); await sleep(5)) if (Date.now() > end) throw new Error('timed out waiting'); };
+const probed = (c) => until(() => c.calls.includes('eth_getTransactionByHash'));    // the wait has looked at the transaction while it was held
 
 // The chain, a wallet over it, and the record a page would have kept: the wait runs out while the transaction is held by a node (it learns who sent it), as the page's does.
 async function stuck() {
@@ -128,13 +131,13 @@ function card({ wallet, rpc }) {
 const replace = (c, by) => { c.mempool.delete(orig.hash); c.mine(by, 990); };
 test('swap card: a speed-up that lands while the wait is on is the swap', async () => {
   const { c, page } = sent(), k = card({ wallet: page, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH');
-  await sleep(100); replace(c, fast);
+  await probed(c); await sleep(10); replace(c, fast);
   assert.equal((await p).transactionHash, fast.hash); assert.equal(k.state(), null, 'and nothing is kept as pending');
   k.halt();
 });
 test('swap card: one that lands after the wait gave up is found by the loop that goes on, and the next press is not held', async () => {
   const { c, page } = sent(), k = card({ wallet: page, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH');
-  await sleep(350); assert.ok(k.state(), 'the wait gave up: kept as pending'); assert.equal(k.state().seen?.nonce, '0', 'with what the wait learned of it');
+  await until(() => k.state()); assert.ok(k.state(), 'the wait gave up: kept as pending'); assert.equal(k.state().seen?.nonce, '0', 'with what the wait learned of it');
   assert.equal(await k.pendingHolds(), true); assert.match(k.said.at(-1), /not confirmed yet/, 'while nothing has happened it holds, as it did');
   replace(c, fast);
   assert.equal((await p).transactionHash, fast.hash, 'the loop resolves with the speed-up\'s receipt'); assert.equal(k.state(), null);
@@ -142,28 +145,28 @@ test('swap card: one that lands after the wait gave up is found by the loop that
 });
 test('swap card: a press after a speed-up landed (before the loop looked) is booked, not held', async () => {
   const { c, page } = sent(), k = card({ wallet: page, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH').catch((e) => e);
-  await sleep(350); replace(c, fast);
+  await until(() => k.state()); replace(c, fast);
   assert.equal(await k.pendingHolds(), false, 'not held'); assert.equal(k.remembered.at(-1), 'Swap 1 ETH', 'and remembered as the swap');
   k.halt(); await Promise.race([p, sleep(50)]);
 });
 test('swap card: a cancel says nothing was swapped, found by the wait or by the loop after it', async () => {
   let { c, page } = sent(), k = card({ wallet: page, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH').catch((e) => e);
-  await sleep(100); replace(c, cancel);
+  await probed(c); await sleep(10); replace(c, cancel);
   let e = await p; assert.ok(e.html === true && /cancelled or replaced in your wallet.*nothing was swapped/.test(e.message), 'the wait itself found it'); k.halt();
   ({ c, page } = sent()); k = card({ wallet: page, rpc: c.read }); p = k.landed(orig.hash, me, 'Swap 1 ETH').catch((x) => x);
-  await sleep(350); replace(c, cancel);
+  await until(() => k.state()); replace(c, cancel);
   e = await p; assert.match(e.message, /cancelled or replaced in your wallet before it was mined, so it never ran and nothing was swapped/); assert.equal(k.state(), null); k.halt();
 });
 test('swap card: a press after a cancel says so once, and the next goes on', async () => {
   const { c, page } = sent(), k = card({ wallet: page, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH').catch((e) => e);
-  await sleep(350); replace(c, cancel);
+  await until(() => k.state()); replace(c, cancel);
   assert.equal(await k.pendingHolds(), true); assert.match(k.said.at(-1), /cancelled or replaced in your wallet before it was mined, so it never ran\. Nothing was swapped: press again/); assert.equal(k.state(), null);
   assert.equal(await k.pendingHolds(), false, 'with the record cleared the next press goes on'); k.halt(); await Promise.race([p, sleep(50)]);
 });
 test('swap card: a host with no trace holds as it always did', async () => {
   const c = chain(); c.send(orig);
   const k = card({ wallet: { receipt: async () => { throw new Error('Sent, not confirmed yet.'); } }, rpc: c.read }), p = k.landed(orig.hash, me, 'Swap 1 ETH').catch((e) => e);
-  await sleep(100); assert.equal(await k.pendingHolds(), true); assert.match(k.said.at(-1), /not confirmed yet/);
+  await until(() => k.state()); assert.equal(await k.pendingHolds(), true); assert.match(k.said.at(-1), /not confirmed yet/);
   k.halt(); void p;
 });
 

@@ -177,11 +177,20 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     return { id };
   }
 
+  // The wait for a deposit's receipt follows a speed-up or cancel in the wallet (activity.js waitMined, loaded when first wanted: a speed-up sends another transaction at the
+  // same nonce and the first hash never confirms); where that cannot load, it is the plain wait it was.
+  async function mined(hash) {
+    const A = await import('./activity.js').catch(() => null), read = (method, params) => provider.request({ method, params });
+    if (A?.waitMined) return A.waitMined({ read, hash, timeoutMs: timeout, every: poll });
+    return { rc: await until(() => read('eth_getTransactionReceipt', [hash]), 'the deposit') };
+  }
   async function sendOne(c) {
     const hash = await provider.request({ method: 'eth_sendTransaction', params: [txOf(c)] });
-    const rc = await until(() => provider.request({ method: 'eth_getTransactionReceipt', params: [hash] }), 'the deposit');
-    if (rc.status !== '0x1' && Number(rc.status) !== 1) throw new Error(`The deposit ${hash} failed.`);
-    return { hash };
+    const w = await mined(hash);
+    if (w.replaced) throw new Error(`The deposit ${hash} was replaced in your wallet, by a cancel or another transaction, before it was mined. Nothing was deposited.`);
+    if (!w.rc) throw new Error('Timed out waiting for the deposit.');
+    if (w.rc.status !== '0x1' && Number(w.rc.status) !== 1) throw new Error(`The deposit ${hash} failed.`);
+    return { hash: w.rc.transactionHash || hash };
   }
 
   // The notes of `plan` (planSplit's result), made but not sent: the next free numbers are found, and each is signed for (a prompt

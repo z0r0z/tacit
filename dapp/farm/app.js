@@ -12,10 +12,10 @@ import { day as dayFmt } from '/trade/fmt.js?cb=172824e5';
 import { aprText, readPrecision, readSpot, readStake, privateFarms, poolWorthEth } from '/trade/farm-read.js?cb=fb6ec72f';
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
-import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=e70f2612';
+import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=c5192cc4';
 import { quoteEthToToken } from '/swap/route.js?cb=4a3ba95a';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=22d45837';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=4ce85f80';
 
 try { sessionStorage.removeItem('tacit-farm-back-v1'); } catch { /* the front page's way back to a farm: this page is where it goes, so it is spent */ }
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992';
@@ -756,7 +756,7 @@ $('#pz-loose').addEventListener('click', async (e) => {
 
 // the key's positions in the private farms: the rewards page's panel, on this page's key
 function mountMine() {
-  return mineP ||= import('/rewards/farms.js?cb=fedd7bc8').then((m) => {
+  return mineP ||= import('/rewards/farms.js?cb=cea421dd').then((m) => {
     mineUi = m.mountFarms($('#pf-mine'), { pick: pickProvider, session: key, wallet, W, connect: () => connect.connect(), program: () => S.prog,
       names: () => new Map(S.priv.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = S.priv.find((x) => String(x.pid) === String(pid))?.icons; return icons ? pairIcons(icons) : ''; },
       onRead: (list) => { S.mine = new Map(list.map((p) => [Number(p.pid), p])); paint(); },

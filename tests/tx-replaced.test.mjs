@@ -106,6 +106,30 @@ for (const [what, rep] of [['a cancel', { to: me, value: 0, input: '0x' }], ['an
   c = chain(); c.down = true; await assert.rejects(trace(c, kept), /could not be read/, 'nothing readable: the caller is told, not given a guess');
 }
 
+// ── a page's own wait for a receipt ──
+{
+  const later = (ms, f) => new Promise((r) => setTimeout(() => { f(); r(); }, ms));
+  const wait = (c, o = {}) => A.waitMined({ read: c.read, hash: orig.hash, probeMs: 10, every: 5, timeoutMs: 400, ...o });
+  const fast = { hash: '0x' + '0f'.repeat(32), from: me, nonce: 0, ...call }, cancel = { hash: '0x' + '0e'.repeat(32), from: me, nonce: 0, to: me, value: 0, input: '0x' };
+  let c = chain(); c.send(orig); later(8, () => c.mine(orig, 999));
+  const r1 = await wait(c, { probeMs: 1000 }); assert.equal(r1.rc.transactionHash, orig.hash); assert.ok(c.calls.every((m) => m === 'eth_getTransactionReceipt'), 'a transaction that lands soon costs nothing beyond its receipt');
+  c = chain(); c.send(orig); later(50, () => { c.mempool.delete(orig.hash); c.mine(fast, 990); });
+  assert.equal((await wait(c)).rc.transactionHash, fast.hash, 'a speed-up: the receipt of what took its place');
+  c = chain(); c.send(orig); later(50, () => { c.mempool.delete(orig.hash); c.mine(cancel, 990); });
+  assert.deepEqual(await wait(c), { replaced: cancel.hash }, 'a cancel: it never ran');
+  c = chain(); c.send(orig); later(50, () => { c.mempool.delete(orig.hash); c.mine({ ...fast, status: '0x0' }, 990); });
+  assert.equal((await wait(c)).rc.status, '0x0', 'a revert is a receipt: the caller reads its status');
+  c = chain(); c.send(orig);
+  const t = await wait(c, { timeoutMs: 120 }); assert.equal(t.timeout, true); assert.equal(t.seen?.nonce, '0', 'the time runs out with what the wait learned, for traceTx');
+  c = chain(); c.send(orig); let stopped = false; later(30, () => { stopped = true; });
+  assert.deepEqual(await wait(c, { stop: () => stopped }), { stopped: true }, 'a page that has moved on ends its wait');
+  c = chain(); c.send(orig); const real = c.read; let n = 0;
+  c.read = async (m, p) => { if (m === 'eth_getTransactionReceipt' && ++n < 3) throw new Error('node busy'); return real(m, p); }; later(40, () => c.mine(orig, 999));
+  assert.equal((await wait(c, { read: c.read })).rc.transactionHash, orig.hash, 'a read that fails is asked again, not taken for the end');
+  let slept = 0; c = chain(); c.send(orig); c.mine(orig, 999);
+  assert.equal((await A.waitMined({ read: c.read, hash: orig.hash, sleep: async () => { slept++; } })).rc.transactionHash, orig.hash); assert.equal(slept, 0, 'a receipt already there is returned before any sleep');
+}
+
 // ── in the Activity list ──
 const tick = () => new Promise((r) => setTimeout(r, 20));
 const J = A.makeJournal({});

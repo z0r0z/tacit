@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-wH2cfG5rh1LtRsfmT5fx4og/AI+qNlJN64E+TJ+Hx1M=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-pcy/hiqR152PBpLiFIgbXosT003ucc5NJ2j/BCaRCmQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -2831,9 +2831,25 @@ function applyLockDue(err = null) {
   lock(); if (typeof msg === 'string') toast(msg);
 }
 const done = (c, h, text) => { say($('#status'), html`<span class="ok">${text}</span> ${txLink(c, h)}`); toast(text); };
+// A transaction's receipt as 'ok', 'reverted' or null (not mined). A speed-up or cancel in the wallet sends another transaction at the same nonce and the first hash never
+// confirms: a transaction that has waited a while is asked about now and then (activity.js lookReplaced, loaded when first wanted), and once a mined one has taken its nonce, the
+// same call is the receipt of the speed-up, and anything else means it never ran, which this page treats as a payment that did not go through ('reverted').
+const TRACK = new Map();
 const receiptOf = async (c, h, self = false) => {
-  const r = await (await (self ? rpcApart(c) : rpcOn(c)))('eth_getTransactionReceipt', [h]);
-  return !r ? null : r.status === '0x1' || r.status === 1 ? 'ok' : 'reverted';
+  const read = await (self ? rpcApart(c) : rpcOn(c)), k = `${c.chainId}:${String(h).toLowerCase()}`;
+  let st = TRACK.get(k);
+  if (!st) TRACK.set(k, st = { last: Date.now(), seen: null, found: null });
+  if (st.found && !st.found.same) return 'reverted';
+  const r = await read('eth_getTransactionReceipt', [st.found ? st.found.hash : h]);
+  if (r) return r.status === '0x1' || r.status === 1 ? 'ok' : 'reverted';
+  if (!st.found && Date.now() - st.last >= 15_000) {
+    st.last = Date.now();
+    const A = await import('/activity.js').catch(() => null);
+    const v = A?.lookReplaced ? await A.lookReplaced({ read, hash: h, seen: st.seen }).catch(() => ({})) : {};
+    if (v.seen) st.seen = v.seen;
+    if (v.found) st.found = v.found;
+  }
+  return null;
 };
 const mined = (c, h, via) => receiptOf(c, h, via === 'self').then((s) => s === 'ok', () => false);
 const UNMINED = 'Sent, not confirmed yet. Check Activity before sending again.';
@@ -2860,7 +2876,7 @@ let poolP = null, poolFor = null;
 function poolPanel() {
   if (poolFor !== S.key.pubHex) { poolP = null; poolFor = S.key.pubHex; }
   return (poolP ||= (async () => {
-    const ui = await import('/assoc-pool-ui.js?cb=d5caf7b0'), c = CHAINS[0], call = await rpcOn(c);
+    const ui = await import('/assoc-pool-ui.js?cb=e471a29d'), c = CHAINS[0], call = await rpcOn(c);
     return ui.makeAssocPanel({
       html, mount, copy, toast, fmt, parseUnits, short, amountField,
       tacitPriv: hexToBytes(S.key.priv),
@@ -2912,7 +2928,7 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=ec67e00f');
+    const m = await import('/fixed-pool-pay.js?cb=445e1f57');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2929,7 +2945,7 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=ec67e00f');
+    const m = await import('/fixed-pool-pay.js?cb=445e1f57');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
@@ -2952,7 +2968,7 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=ec67e00f');
+    const m = await import('/fixed-pool-pay.js?cb=445e1f57');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2973,7 +2989,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=ec67e00f');
+    const m = await import('/fixed-pool-pay.js?cb=445e1f57');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -4165,11 +4181,11 @@ async function payFromWallet(btn) {
       Object.assign(r, { paid: { h, c, a, self: true }, state: 'mining', paidAt: Date.now(), paying: false }); rememberPaid(r); paintReq(); clearDraft('f-amt', 'f-to');
       ptsExpect(c, a);
       toast(`Paid ${exact(a)} ETH.`);
-      let rc = null;
-      for (let i = 0; i < 180 && !rc && REQ.v === r; i++) { rc = await rpc('eth_getTransactionReceipt', [h]).catch(() => null); if (!rc) await sleep(5_000); }
+      let st = null;
+      for (let i = 0; i < 180 && !st && REQ.v === r; i++) { st = await receiptOf(c, h, false).catch(() => null); if (!st) await sleep(5_000); }
       if (REQ.v !== r) return;
-      if (rc && rc.status !== '0x1') { forgetPaid(r); Object.assign(r, { paid: null, lost: r.paid, state: null }); paintReq(); return; }
-      if (!rc) { r.state = 'missing'; paintReq(); return; }
+      if (st === 'reverted') { forgetPaid(r); Object.assign(r, { paid: null, lost: r.paid, state: null }); paintReq(); return; }
+      if (!st) { r.state = 'missing'; paintReq(); return; }
       rememberPaid(r, true);
       const n0 = await receiveCount(c, box).catch(() => null);
       r.state = 'moving'; paintReq();

@@ -32,8 +32,14 @@ export function makeAssocPanel(ctx) {
 
   // ──────────────────── sending and proving ────────────────────
 
+  // (follows a speed-up or cancel in the wallet: activity.js waitMined, loaded when first wanted; where that cannot load, it is the plain wait it was)
   async function receiptOf(hash) {
-    for (let i = 0; i < 240; i++) { const r = await rpc('eth_getTransactionReceipt', [hash]).catch(() => null); if (r) return r; await sleep(2500); }
+    const A = await import('./activity.js').catch(() => null);
+    let w;
+    if (A?.waitMined) w = await A.waitMined({ read: rpc, hash, timeoutMs: 240 * 2500, every: 2500 });
+    else for (let i = 0; i < 240 && !w; i++) { const rc = await rpc('eth_getTransactionReceipt', [hash]).catch(() => null); if (rc) w = { rc }; else await sleep(2500); }
+    if (w?.rc) return w.rc;
+    if (w?.replaced) throw new Error('It was replaced in your wallet, by a cancel or another transaction, before it was mined. Nothing was deposited.');
     throw new Error('Sent, not confirmed yet. Check the transaction before sending anything again.');
   }
   // A transaction from the pool key: signed here, sent raw.

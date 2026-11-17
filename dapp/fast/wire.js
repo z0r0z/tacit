@@ -127,11 +127,16 @@ export function walletSettle({ ux, wallet, ask = () => {}, sleep = (ms) => new P
     const to = ux.cfg.pool, data = ux.settleCalldata(x);
     await ux.rpc('eth_call', [{ from, to, data }, 'latest']);
     const txHash = await w.request({ method: 'eth_sendTransaction', params: [{ from, to, data }] });
-    for (const end = Date.now() + waitMs; Date.now() < end; await sleep(everyMs)) {
-      const rc = await ux.rpc('eth_getTransactionReceipt', [txHash]).catch(() => null);
-      if (rc) { if (rc.status !== '0x1') throw new Error(`the settle sent from your wallet failed (${txHash})`); return { txHash }; }
-    }
-    throw new Error(`the settle sent from your wallet has not landed yet (${txHash})`);
+    // The wait follows a speed-up or cancel in the wallet (activity.js waitMined, loaded when first wanted: a speed-up sends another transaction at the same nonce and the first
+    // hash never confirms); where that cannot load, it is the plain wait it was. What is told the relay is the hash that landed.
+    const A = await import('../activity.js').catch(() => null);
+    let got;
+    if (A?.waitMined) got = await A.waitMined({ read: (m, p) => ux.rpc(m, p), hash: txHash, timeoutMs: waitMs, every: everyMs, sleep });
+    else for (const end = Date.now() + waitMs; !got && Date.now() < end; await sleep(everyMs)) { const rc = await ux.rpc('eth_getTransactionReceipt', [txHash]).catch(() => null); if (rc) got = { rc }; }
+    if (got?.replaced) throw new Error(`the settle sent from your wallet was replaced there, by a cancel or another transaction, before it was mined, so it never ran (${txHash})`);
+    if (!got?.rc) throw new Error(`the settle sent from your wallet has not landed yet (${txHash})`);
+    if (got.rc.status !== '0x1') throw new Error(`the settle sent from your wallet failed (${txHash})`);
+    return { txHash: got.rc.transactionHash || txHash };
   }
 }
 
