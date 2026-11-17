@@ -162,12 +162,27 @@ header.top .top-r { position: relative; display: flex; align-items: center; gap:
 header.top .top-r { flex: 1 1 auto; margin-left: 14px; }
 .sn { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; }
 header.top .sn > .sm { margin-left: auto; }
+/* the skin switch, beside the menu: a track with a knob, on (to the right, the track in ink) for Graphite, off for Classic. It takes the menu's
+   place at the right of the links, the menu beside it. The hit area is the header's 40 px; the track is drawn inside it */
+header.top .sn > .skt { margin-left: auto; }
+header.top .sn > .skt ~ .sm { margin-left: 0; }
+.skt { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 48px; height: 40px; margin: 0; padding: 0; border: 0; border-radius: 12px; background: none; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.skt i { position: relative; width: 34px; height: 20px; border-radius: 999px; background: var(--hair); box-shadow: inset 0 0 0 1px var(--hair-2, var(--hair)); transition: background-color .2s, box-shadow .2s; }
+.skt i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--mute); transition: transform .25s var(--spring, ease), background-color .2s; }
+.skt[aria-checked="true"] i { background: var(--ink); box-shadow: none; }
+.skt[aria-checked="true"] i::after { transform: translateX(14px); background: var(--paper, var(--bg, #fff)); }
+.skt:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+.skt:active i::after { width: 17px; }
+.skt[aria-checked="true"]:active i::after { transform: translateX(11px); }
+@media (prefers-reduced-motion: reduce) { .skt i, .skt i::after { transition: none; } }
 .sn > a, .sn summary {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: none;
   height: 40px; min-width: 40px; padding: 0 9px; border-radius: 12px; color: var(--mute);
   font: 500 12.5px/1 var(--mono); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
   transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
+/* Graphite, the default skin (every page not marked <html data-skin="classic"> by the switch in the header): each of its rules sits under the rule it restyles, at the same weight */
+:where(:root:not([data-skin="classic"])) .sn > a, :where(:root:not([data-skin="classic"])) .sn summary { font: 400 14px/1 var(--sans, var(--mono)); }
 .sn summary::-webkit-details-marker { display: none; }
 /* the menu is a <details>: a page's own rules for details and summary (a border, a "+", a margin) are not for it */
 header.top .sm { margin: 0; padding: 0; border: 0; font: inherit; }
@@ -209,11 +224,13 @@ header.top .chip {
   font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
+:where(:root:not([data-skin="classic"])) header.top .chip { background: var(--card, transparent); border-radius: 10px; font: 500 14px/1 var(--sans, var(--mono)); }
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
 header.top .chip .dot.on { background: var(--ok); }
 header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); }
 header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; }
+:where(:root:not([data-skin="classic"])) header.top .chip.act { background: transparent; }
 header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
 @media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
 header.top .chip:active { transform: scale(.97); }
@@ -259,6 +276,11 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh-more li + li { border-top: 1px solid var(--hair); }
 .sh-more a { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; padding: 14px 2px; color: var(--ink); font: 400 14px/1.3 var(--mono); text-decoration: none; }
 .sh-more a b { font-weight: 500; } .sh-more a small { grid-column: 1; font-size: 12px; color: var(--mute); } .sh-more a i { grid-column: 2; grid-row: 1 / span 2; font-style: normal; color: var(--mute); }
+/* in Graphite the sections' words are set in the grotesk, as the header's are; a page that has no --sans keeps its own face */
+:where(:root:not([data-skin="classic"])) .sh p, :where(:root:not([data-skin="classic"])) .sh-t a, :where(:root:not([data-skin="classic"])) .sh-more a, :where(:root:not([data-skin="classic"])) .bn a { font-family: var(--sans, var(--mono)); }
+:where(:root:not([data-skin="classic"])) .sh-t { border-radius: 10px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); }
+:where(:root:not([data-skin="classic"])) .sh-t a { border-radius: 8px; }
+:where(:root:not([data-skin="classic"])) .sh-t a[aria-current="page"] { background: var(--raise, var(--card)); }
 /* each page of its own, as the view of its section: its own heading gives way to the section's, and what belongs to the other view is out of the way */
 html[data-sec="borrow/btc"] :is(.hero, #app, #soon, #how), html[data-sec="borrow/tac"] :is(.hero, .btc-side, #pools, #soon) { display: none !important; }
 html[data-sec="chains/fast"] .hero { display: none !important; }
@@ -274,6 +296,7 @@ html[data-sec="rewards/"] :is(#find-h, #farms-h, #farms, #pf-row, nav.uses) { di
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 .sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
+:where(:root:not([data-skin="classic"])) .sm-p a { font: 400 14px/1 var(--sans, var(--mono)); }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
 .sm-p a[aria-current="page"] { background: var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
@@ -281,6 +304,13 @@ html[data-sec="rewards/"] :is(#find-h, #farms-h, #farms, #pf-row, nav.uses) { di
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
 @media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
+/* Graphite's glyph layer (glyphs.js, drawn only in that skin). The field is fixed behind a page, so it is there wherever the page is scrolled to. It is behind everything, so a
+   page's ground has to be on <html> for it to be seen: <body> keeps its own pattern and gives up only its colour. The menu's panel has Tacit's mark struck
+   across its foot. Neither is there on a page the script leaves alone, or when the script does not load. */
+canvas.gx-field { position: fixed; top: 0; left: 0; z-index: -1; max-width: 100%; pointer-events: none; }
+:root:has(> body > canvas.gx-field) { background-color: var(--paper, var(--bg)); }
+:root:has(> body > canvas.gx-field) > body { background-color: transparent; }
+.sm-p canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .24; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .sm-p { animation: none; } .sn > a, .sn summary, header.top .chip { transition: none; } }
 
 /* a page with little on it still reaches the bottom of the window, so its footer is not left floating under a few lines (a page that sets a height for its own <main> keeps it) */
@@ -290,6 +320,7 @@ html[data-sec="rewards/"] :is(#find-h, #farms-h, #farms, #pf-row, nav.uses) { di
    places that have a mark of their own are that mark; in a narrow one every place is an icon that says its name on hover and to a screen reader (they narrow a little on a small
    phone before they would run off the page) */
 footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
+:where(:root:not([data-skin="classic"])) footer.sf { font: 400 13px/1.4 var(--sans, var(--mono)); }
 footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
 footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); text-decoration: none; transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
 footer.sf nav a:active { transform: scale(.92); }
@@ -307,10 +338,37 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
 /* what only one page has to point at (papers, the pool on each chain): a quiet line above the footer */
 .sf-x { display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; margin-top: 48px; color: var(--mute); font: 400 12px/1.4 var(--mono); }
+:where(:root:not([data-skin="classic"])) .sf-x { font: 400 13px/1.4 var(--sans, var(--mono)); }
 .sf-x + footer.sf { margin-top: 12px; }
 .sf-x span { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
 .sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
 @media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
+
+/* Graphite's palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
+   its head, so the one block recolours them all and a page's own styles are untouched. The values are the front page's (index.html keeps them with the rest of its
+   tokens). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and are left out: the SPX page, by
+   its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the build gives it. */
+:root:where(:not([data-skin="classic"])):not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
+  --paper: #E6E6E4; --bg: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --ink: #17181B; --mute: #5C5D62;
+  --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24); --hair-strong: rgba(23,24,27,.24); --skel: rgba(23,24,27,.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-skin="classic"])):not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
+    --paper: #131417; --bg: #131417; --card: #1A1B1F; --field: #15161A; --ink: #E4E4E1; --mute: #9A9BA1;
+    --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22); --hair-strong: rgba(228,228,225,.22); --skel: rgba(228,228,225,.07);
+  }
+}
+
+/* Graphite's grotesk, for the header, the menu and the footer of every page that wears them (the front page names it in its own head as well, for its first paint), and a
+   local face scaled to its width and line metrics that shows until it arrives; the same for Newsreader, the front page's serif in that skin. Measured against each font's own
+   advances. A font is only fetched when something is set in it, so in Classic none of these is. */
+@font-face { font-family: 'Schibsted Grotesk'; font-weight: 400 600; font-display: swap; src: url('/fonts/schibsted-grotesk-latin.woff2') format('woff2'); }
+:root:where(:not([data-skin="classic"])) { --sans: 'Schibsted Grotesk', 'Schibsted Grotesk Fallback', system-ui, sans-serif; }
+@font-face { font-family: 'Schibsted Grotesk Fallback'; src: local('Arial'), local('Helvetica'), local('Liberation Sans'), local('Arimo'); size-adjust: 103.5%; ascent-override: 94.7%; descent-override: 25.1%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback'; src: local('Georgia'); size-adjust: 96.1%; ascent-override: 77%; descent-override: 27.1%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback'; font-style: italic; src: local('Georgia Italic'), local('Georgia-Italic'); size-adjust: 89.1%; ascent-override: 83.1%; descent-override: 29.2%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback T'; src: local('Times New Roman'), local('TimesNewRomanPSMT'), local('Liberation Serif'), local('Tinos'); size-adjust: 105%; ascent-override: 70.5%; descent-override: 24.8%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 98.9%; ascent-override: 74.8%; descent-override: 26.3%; line-gap-override: 0%; }
 
 /* A serif scaled to Instrument Serif's width and line metrics (Georgia, Times or Noto Serif, whichever the device has) shows until the font arrives, so the swap moves nothing */
 @font-face { font-family: 'Instrument Serif Fallback'; src: local('Georgia'); size-adjust: 75.8%; ascent-override: 130.6%; descent-override: 40.9%; line-gap-override: 0%; }
@@ -320,7 +378,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=8f64ec7e" defer></script>
+<script src="/skin.js?cb=efbd19be" async></script>
+<script src="/chrome.js?cb=ed408d0c" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -343,6 +402,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
           <a href="/#/chains" title="Chains"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Chains</span></a>
           <a href="/vault/" title="Borrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg><span>Borrow</span></a>
           <a href="/rewards/" title="Rewards"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg><span>Rewards</span></a>
+          <button type="button" class="skt" role="switch" aria-checked="true" aria-label="Graphite look" title="Graphite look"><i aria-hidden="true"></i></button>
           <details class="sm">
             <summary aria-label="More pages" title="More"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.7"/></svg></summary>
             <div class="sm-p">

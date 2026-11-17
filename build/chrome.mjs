@@ -1,11 +1,12 @@
 // The header's links and the footer, made once and stamped into every page that wears them (build.mjs calls this and
-// `--verify-only` fails when a page differs). The styles are dapp/chrome.css and the one script dapp/chrome.js, which
-// only closes the menu; without it the menu still opens and shuts, as a <details>.
+// `--verify-only` fails when a page differs). The styles are dapp/chrome.css and the scripts dapp/skin.js, which puts the skin
+// picked with the header's switch on <html>, and dapp/chrome.js, which closes the menu and turns the switch; without them the menu
+// still opens and shuts, as a <details>, and the page is in Graphite, the default.
 //
 // A page marks where they go:
 //   <!-- chrome:nav:begin -->…<!-- chrome:nav:end -->     the page links, inside the header's .top-r, before the page's own chips
 //   <!-- chrome:foot:begin -->…<!-- chrome:foot:end -->   the footer; `label="…"` and `id="…"` on the begin marker name the left-hand text
-//   <!-- chrome:head:begin -->…<!-- chrome:head:end -->   the stylesheet and script, last in the head, tokens taken from the files;
+//   <!-- chrome:head:begin -->…<!-- chrome:head:end -->   the stylesheet and scripts, last in the head, tokens taken from the files;
 //                                                         `inline` on the begin marker writes the stylesheet into the page (no request to wait for)
 // What belongs to one page alone (the Secret Sats papers, the pool's addresses on each chain) is the page's own, in a
 // `<nav class="sf-x">` above the footer.
@@ -71,6 +72,10 @@ const BAR = 4;   // how many of the sections the phone's bar holds before More; 
 
 const here = (key, k) => (key === k ? ' aria-current="page"' : '');
 
+// the skin switch, beside the menu: Graphite (on, the default) or Classic (off). skin.js marks it as the page is read; chrome.js turns it,
+// keeps the choice on the device and draws Graphite's glyphs
+const SKIN = `<button type="button" class="skt" role="switch" aria-checked="true" aria-label="Graphite look" title="Graphite look"><i aria-hidden="true"></i></button>`;
+
 export function navHtml(key) {
   const main = MAIN.map(([k, href, name]) => `<a href="${href}" title="${name}"${here(key, k)}>${svg(k)}<span>${name}</span></a>`).join('\n    ');
   const phone = MAIN.slice(BAR).map(([k, href, name]) => `<a class="pr" href="${href}"${here(key, k)}>${svg(k)}${name}</a>`).join('\n      ');
@@ -78,6 +83,7 @@ export function navHtml(key) {
   const inMenu = MORE.some(([k]) => k === key);
   return `<nav class="sn" aria-label="Sections">
     ${main}
+    ${SKIN}
     <details class="sm">
       <summary aria-label="More pages" title="More"${inMenu ? ' class="here"' : ''}>${svg('more')}</summary>
       <div class="sm-p">
@@ -124,7 +130,7 @@ export function footHtml(label = 'tacit.finance · mainnet', id = '') {
 const token = (dapp, file) => createHash('sha256').update(readFileSync(join(dapp, file))).digest('hex').slice(0, 8);
 // A stylesheet link is a request the first paint waits for, and it queues behind the page's preloads (fonts, modules).
 // `<!-- chrome:head:begin inline -->` puts the styles in the page instead, so the first paint needs the HTML alone.
-export const headHtml = (dapp, inline = false) => `${inline ? `<style>\n${readFileSync(join(dapp, 'chrome.css'), 'utf8').trim()}\n</style>` : `<link rel="stylesheet" href="/chrome.css?cb=${token(dapp, 'chrome.css')}">`}\n<script src="/chrome.js?cb=${token(dapp, 'chrome.js')}" defer></script>`;
+export const headHtml = (dapp, inline = false) => `${inline ? `<style>\n${readFileSync(join(dapp, 'chrome.css'), 'utf8').trim()}\n</style>` : `<link rel="stylesheet" href="/chrome.css?cb=${token(dapp, 'chrome.css')}">`}\n<script src="/skin.js?cb=${token(dapp, 'skin.js')}" async></script>\n<script src="/chrome.js?cb=${token(dapp, 'chrome.js')}" defer></script>`;
 
 // a block is the begin marker's line, what is stamped (indented as the marker is) and the end marker's line
 const BLOCK = (name) => new RegExp(`^([ \\t]*)(<!-- chrome:${name}:begin([^>]*?)-->)[\\s\\S]*?<!-- chrome:${name}:end -->`, 'm');

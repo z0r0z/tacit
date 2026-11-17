@@ -195,3 +195,31 @@
   // the front page and TAC's page change the address without leaving the document
   for (const k of ['pushState', 'replaceState']) { const was = history[k]; history[k] = function (...args) { const r = was.apply(this, args); queueMicrotask(sync); return r; }; }
 })();
+
+// The skins. skin.js put the one in use on <html data-skin>; here the switch beside the menu shows it (on is Graphite, the default), a press
+// turns it at once and keeps the choice on this device, and another tab's change is followed. Graphite's glyph layer (glyphs.js) is drawn
+// while that skin is on, once the page is idle, and taken away when it is not; nothing is reloaded, so an open key stays open.
+(() => {
+  const root = document.documentElement, KEY = 'tacit-skin';
+  let stop = null, loading = false;
+  const graphite = () => root.dataset.skin !== 'classic';
+  const glyphs = () => {
+    if (!graphite() && stop) { stop(); stop = null; }
+    if (graphite() && !stop && !loading) {
+      loading = true;
+      import('/glyphs.js').then((g) => { loading = false; if (graphite() && !stop) stop = g.start(); }, () => { loading = false; });
+    }
+  };
+  const mark = () => { for (const b of document.querySelectorAll('.skt')) { b.setAttribute('aria-checked', String(graphite())); b.title = graphite() ? 'Graphite look (turn off for Classic)' : 'Classic look (turn on for Graphite)'; } };
+  const use = (skin, keep) => {
+    skin = skin === 'classic' ? 'classic' : 'graphite';
+    if (keep) try { localStorage.setItem(KEY, skin); } catch {}
+    if (root.dataset.skin !== skin) { root.dataset.skin = skin; glyphs(); }
+    mark();
+  };
+  document.addEventListener('click', (e) => { if (e.target.closest?.('.skt')) use(graphite() ? 'classic' : 'graphite', true); });
+  addEventListener('storage', (e) => { if (e.key === KEY) use(e.newValue, false); });
+  if (!root.dataset.skin) { let skin = 'graphite'; try { if (localStorage.getItem(KEY) === 'classic') skin = 'classic'; } catch {} root.dataset.skin = skin; }
+  mark();
+  (window.requestIdleCallback || setTimeout)(glyphs);
+})();
