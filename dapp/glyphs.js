@@ -31,7 +31,10 @@ function ink() {
   const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(getComputedStyle(document.documentElement).getPropertyValue('--ink').trim());
   return m ? m.slice(1).map((h) => parseInt(h, 16)).join(',') : '228,228,225';
 }
-const canvasOf = (cls) => { const c = Object.assign(document.createElement('canvas'), { className: cls }); c.setAttribute('aria-hidden', 'true'); return c; };
+// A canvas carries its own place, as the stylesheets also give it (the field fixed to the window, a stamp over the whole of what holds it), so a page
+// whose styles lack those rules (an older copy of chrome.css, a test harness) never has it in its flow or wider than the window.
+const PLACE = { 'gx-field': 'position:fixed;top:0;left:0;z-index:-1;max-width:100%;pointer-events:none', 'gx-stamp': 'position:absolute;inset:0;z-index:-1;width:100%;height:100%;pointer-events:none' };
+const canvasOf = (cls) => { const c = Object.assign(document.createElement('canvas'), { className: cls }); c.setAttribute('aria-hidden', 'true'); c.style.cssText = PLACE[cls.split(' ')[0]] || ''; return c; };
 
 // ── the field ──
 // Every glyph is a particle on a spring. The pointer pushes glyphs out of its way and sweeps them along with it, and they
@@ -47,7 +50,7 @@ function strokeOf(dx, dy) {
 function field(canvas, ground) {
   const ctx = canvas.getContext('2d'), rgb = ink(), calm = still();
   const ptr = { x: -9999, y: -9999, vx: 0, vy: 0, px: -9999, py: -9999, on: false }, rings = [];
-  let cells = [], raf = 0, last = 0, awake = 0, moved = true, later = 0;
+  let cells = [], raf = 0, last = 0, awake = 0, moved = true, later = 0, idle = 0;
 
   function resize() {
     // the page's own width, not the window's: the canvas must never be the thing that makes the page scroll sideways
@@ -120,7 +123,9 @@ function field(canvas, ground) {
   // the page has moved under the field. With motion reduced there is no loop: the field is laid again where it may now be, and left.
   const onScroll = () => { moved = true; wake(); if (calm) { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { aim(true); draw(); }); } };
   // a page's content can come after the field is laid (its own script puts it in, a font arrives): what the page holds is read again a moment after its size changes
-  const reread = () => { clearTimeout(later); later = setTimeout(() => { ground.read(); onScroll(); }, 250); };
+  // (measured when the browser is idle, so reading the page never takes a turn from the page's own work: a form answering what was typed comes first)
+  const whenIdle = window.requestIdleCallback ? (f) => requestIdleCallback(f, { timeout: 1000 }) : (f) => setTimeout(f, 0), cancelIdle = window.cancelIdleCallback || clearTimeout;
+  const reread = () => { clearTimeout(later); cancelIdle(idle); later = setTimeout(() => { idle = whenIdle(() => { ground.read(); onScroll(); }); }, 250); };
   const grown = new ResizeObserver(reread);
   resize();
   addEventListener('resize', resize); addEventListener('scroll', onScroll, { passive: true }); addEventListener('load', reread);
@@ -131,7 +136,7 @@ function field(canvas, ground) {
     raf = requestAnimationFrame(tick);
   }
   return () => {
-    grown.disconnect(); clearTimeout(later);
+    grown.disconnect(); clearTimeout(later); cancelIdle(idle);
     cancelAnimationFrame(raf); removeEventListener('resize', resize); removeEventListener('scroll', onScroll); removeEventListener('load', reread);
     removeEventListener('pointermove', onMove); removeEventListener('pointerdown', onDown);
     document.removeEventListener('pointerleave', onLeave); removeEventListener('blur', onLeave); document.removeEventListener('visibilitychange', onHide);

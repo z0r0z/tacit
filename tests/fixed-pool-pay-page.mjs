@@ -427,7 +427,8 @@ await test('a balance spread over too many notes keeps the private message, and 
   const names = { 'ross.wei': { ...ENTRY, box: await rec(payee.v, N1) } };
   const { ctx, page, sent } = await open({ search: '?fixed=1', names, keeper: QUOTE, notes: Array(12).fill(ETH / 10n) });
   await sendToName(page, '1.15');
-  const text = await receiptText(page, /spread over 12 notes/);
+  await receiptText(page, /spread over 12 notes/);
+  const text = await receiptText(page, /from my wallet instead/);   // the link comes a moment after the message: wait for it, as for the message, before reading the receipt
   assert.match(text, /Send up to/); assert.match(text, /Pay ross\.wei from my wallet instead/);
   assert.doesNotMatch(text, /You send/); assert.doesNotMatch(text, /can’t cover this/);
   assert.equal(await page.locator('#f-go').isDisabled(), true);

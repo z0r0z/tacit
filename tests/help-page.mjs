@@ -159,10 +159,12 @@ for (const scheme of ['light', 'dark']) {
   await page.waitForFunction(() => document.getElementById('nodes').textContent !== '');
   await page.fill('#q', 'What does the confidential pool hide, and what stays public?'); await page.click('#go');
   await page.waitForSelector('#out .a');
-  const m = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth, bg: getComputedStyle(document.body).backgroundColor, tap: [...document.querySelectorAll('#go, #eg button')].map((e) => Math.round(e.getBoundingClientRect().height)) }));
+  const m = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth, bg: (() => { const b = getComputedStyle(document.body).backgroundColor; return b === 'rgba(0, 0, 0, 0)' ? getComputedStyle(document.documentElement).backgroundColor : b; })(), skin: document.documentElement.dataset.skin || 'graphite', tap: [...document.querySelectorAll('#go, #eg button')].map((e) => Math.round(e.getBoundingClientRect().height)) }));
   ok(m.sw <= m.iw, `${scheme}: no sideways scroll at 375 px (${m.sw} <= ${m.iw})`);
   ok(m.tap.every((h) => h >= 34), `${scheme}: the buttons are tall enough to press (${m.tap.join(', ')} px)`);
-  ok(scheme === 'dark' ? /rgb\(2[0-9], 1[0-9], 1[0-9]\)/.test(m.bg) : /rgb\(23\d, 22\d, 20\d\)/.test(m.bg), `${scheme}: the page wears the ${scheme} paper (${m.bg})`);
+  // each skin's own paper: Classic's warm one, or Graphite's grey (#E6E6E4, #131417)
+  const paper = { classic: { dark: /^rgb\(2[0-9], 1[0-9], 1[0-9]\)$/, light: /^rgb\(23\d, 22\d, 20\d\)$/ }, graphite: { dark: /^rgb\(19, 20, 23\)$/, light: /^rgb\(230, 230, 228\)$/ } }[m.skin][scheme];
+  ok(paper.test(m.bg), `${scheme}: the page wears the ${scheme} paper of its skin, ${m.skin} (${m.bg})`);
   ok(errs.length === 0 && csp.length === 0, `${scheme}: no page error, no CSP violation`);
   await shot(page, `help-phone-${scheme}`);
   await ctx.close();
@@ -174,8 +176,9 @@ for (const scheme of ['light', 'dark']) {
   await page.fill('#q', 'x'); await page.tap('#go');
   await page.waitForSelector('#out .a');
   await page.waitForTimeout(400);
-  const bg = await page.locator('#go').evaluate((e) => getComputedStyle(e).backgroundColor);
-  ok(!(await page.evaluate(() => matchMedia('(hover: hover)').matches)) && bg === 'rgb(26, 26, 26)', `after a tap the Ask button is still filled (${bg})`);
+  const bg = await page.locator('#go').evaluate((e) => getComputedStyle(e).backgroundColor), skin = await page.evaluate(() => document.documentElement.dataset.skin || 'graphite');
+  const ink = { classic: 'rgb(26, 26, 26)', graphite: 'rgb(23, 24, 27)' }[skin];   // filled with its skin's ink
+  ok(!(await page.evaluate(() => matchMedia('(hover: hover)').matches)) && bg === ink, `after a tap the Ask button is still filled with ${skin}'s ink (${bg})`);
   await ctx.close();
 }
 
