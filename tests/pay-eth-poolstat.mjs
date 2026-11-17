@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-// The pool line under the chain row of /pay/eth/ (#poolstat), in a real browser under the page's own CSP. It holds the room the figures will take while they load; when the read
-// for them fails it keeps that room, so the form under it does not jump up (64px on a phone, 46px at a desktop) a moment after the page showed it. A visitor with a wallet connected
-// arrives as /pay/ -> /pay/eth/, one with none arrives on it; every host but the page's own is refused (the read fails) or, in the last check, answers.
+// The pool line under the chain row of /pay/eth/ (#poolstat), in a real browser under the page's own CSP. It holds the room its figures take (two lines, three on a phone) whether they
+// are in yet or not, so nothing under it moves when they arrive: not when the read for them fails (the form would jump up 64px on a phone, 46px at a desktop), and not when they come
+// in two pieces (the pool's balance first, the tally of what it has carried a moment after: the box shrank to the first piece's one line and grew back). A visitor with a wallet
+// connected arrives as /pay/ -> /pay/eth/, one with none arrives on it; every host but the page's own is refused (the read fails) or, in the last checks, answers.
 //   · the read fails: the pool line stays in the page at the room it held, and the form is where it was before the read ended (a phone and a desktop, connected and not);
+//   · the read answers, the tally a second behind: the line shows the pool's figures and then the tally's, and in every frame from the form's first the form is at one height;
 //   · the read answers: the line shows the pool's figures.
 //
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/pay-eth-poolstat.mjs
@@ -39,7 +41,7 @@ const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers
 const answer = (m) => (m.method === 'eth_chainId' ? '0x1' : m.method === 'eth_getBalance' ? '0x' + (123456789000000000000n).toString(16) : m.method === 'eth_call' ? '0x' + (4321).toString(16).padStart(64, '0') : m.method === 'eth_blockNumber' ? '0x1900000' : null);
 
 const browser = await chromium.launch();
-async function open({ width, connected, reads }) {
+async function open({ width, connected, reads, tally = 0 }) {
   const ctx = await browser.newContext({ viewport: { width, height: 844 }, colorScheme: 'light' });
   if (connected) await ctx.addInitScript(WALLET);
   await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, (r) => r.abort());
@@ -51,6 +53,19 @@ async function open({ width, connected, reads }) {
     let j = {}; try { j = JSON.parse(q.postData() || '{}'); } catch { }
     const one = (m) => { const v = answer(m); return v == null ? { jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'unsupported' } } : { jsonrpc: '2.0', id: m.id, result: v }; };
     return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify(Array.isArray(j) ? j.map(one) : one(j)) });
+  });
+  if (tally) await ctx.route(/^https:\/\/api\.tacit\.finance\/stats/, async (r) => {            // what the pool has carried, `tally` ms after the pool's own figures
+    await new Promise((res) => setTimeout(res, tally));
+    return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify({ dev: [{ chain: 1, dep: { $n: (1234560000000000000000n).toString() }, nd: 987 }] }) });
+  });
+  await ctx.addInitScript(() => {                                                    // every frame: where the form is, how tall the pool line is, whether the form and the figures are in
+    window.__frames = [];
+    const f = () => {
+      const form = document.querySelector('#form'), p = document.querySelector('#poolstat');
+      if (form && p) window.__frames.push({ top: Math.round(form.getBoundingClientRect().top * 10) / 10, h: Math.round(p.getBoundingClientRect().height), form: form.textContent.trim().length > 0, stage: /transacted/.test(p.textContent) ? 2 : /holds/.test(p.textContent) ? 1 : 0 });
+      requestAnimationFrame(f);
+    };
+    requestAnimationFrame(f);
   });
   const page = await ctx.newPage(), pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(String(e.message || e)));
@@ -80,6 +95,19 @@ try {
       ok(!pageErrors.length, `${who}: no page errors${pageErrors.length ? ': ' + pageErrors[0] : ''}`);
       await ctx.close();
     }
+  }
+
+  // the read answers, the tally a second behind it: the form holds one height from its first frame on, through the figures arriving in two pieces
+  for (const [width, label, reserve] of [[390, 'a phone', 54], [1280, 'a desktop', 36]]) {
+    const { ctx, page } = await open({ width, connected: false, reads: true, tally: 1200 });
+    await page.waitForFunction(() => /transacted in/.test(document.querySelector('#poolstat')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(500);
+    const frames = (await page.evaluate(() => window.__frames)), live = frames.slice(frames.findIndex((f) => f.form));
+    const tops = [...new Set(live.map((f) => f.top))], stages = [...new Set(live.map((f) => f.stage))], low = Math.min(...live.map((f) => f.h));
+    ok(stages.includes(1) && stages.includes(2), `${label}: the figures arrived in two pieces (the pool's, then the tally's; stages seen ${stages.join(', ')})`);
+    ok(tops.length === 1, `${label}: the form held one height through the form's first frame to the last (${tops.join('px, ')}px, over ${live.length} frames)`);
+    ok(low >= reserve, `${label}: the pool line never fell below its room (${low}px, at least ${reserve}px)`);
+    await ctx.close();
   }
 
   // the read answers: the line is the pool's figures
