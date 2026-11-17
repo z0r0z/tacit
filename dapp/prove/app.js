@@ -4,7 +4,7 @@
 import { cleanAddress, proveCommand, utcDay, mineLines, capOf, perPoint } from '/community-prove.js?cb=e2a65259';
 import { localState, jobView, headline, isPhone, isWindows, setupText, proverUpdate, updateText } from '/prove/view.js?cb=f0f73815';
 import { invaderSvg, gpuSvg } from '/prove/invader.js?cb=e8a5ec59';
-import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS, dayShare } from '/prove/tabmine.js?cb=a9294239';
+import { makeTabMiner, defaultThreads, maxThreads, GPU_LEVELS, dayShare, termsFrom } from '/prove/tabmine.js?cb=ab8f8e8f';
 import { HELPDESK, FETCH_CMD, cleanDesk, cleanStats, reviewView, pressTurnsOn } from '/prove/review.js?cb=23bfbd4a';
 import { short, cells, opsText, tac, rewardWei, payPoints, payRuleText, ago, took, fresh, blockAgo, kindOf, KINDS, kindText, median, proofSpan, dayTotals, untilDayEnds, cleanBlock, cleanProof, cleanMiner } from '/prove/chain.js?cb=e4dfccf1';
 
@@ -625,6 +625,8 @@ function askAddress() {
 const HEX40 = /^0x[0-9a-f]{40}$/;
 const cleanFind = (b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true, at: count(b?.at) });
 const cleanSalts = (s) => (s && typeof s === 'object' ? {
+  // the kinds of salt the pool takes (the first is the one to grind) and the shop and market of the vanity kind: all the tab miner needs to follow the pool (tabmine.js termsFrom)
+  schemes: (Array.isArray(s.schemes) ? s.schemes : []).filter((x) => x === 'createx' || x === 'market'), shop: HEX40.test(String(s.shop)) ? s.shop : null, market: HEX40.test(String(s.market)) ? s.market : null,
   minBits: count(s.minBits), maxWeightBits: count(s.maxWeightBits), pointsPerDay: count(s.pointsPerDay), miners: count(s.today?.miners), shares: count(s.today?.shares), weight: Number(s.today?.weight) || 0,
   top: (Array.isArray(s.top) ? s.top : []).map((m) => ({ miner: cleanAddress(m?.miner), weight: Number(m?.weight) || 0, shares: count(m?.shares),
     best: HEX40.test(String(m?.best?.address)) && count(m?.best?.bits) ? { address: m.best.address, bits: m.best.bits } : null })).filter((m) => m.miner),
@@ -684,6 +686,7 @@ function paintSalt() {
   $('#salt-row').hidden = !(on || mineRow);
   $('#salt').textContent = [mineRow ? `${(mineRow.shares || 0).toLocaleString('en-US')} shares` : null, part ? `${tac(part)} TAC so far` : null, on ? rateText(rate) : null].filter(Boolean).join(' · ') || '—';
   if (salts?.minBits) tab.setMinBits(salts.minBits);
+  if (salts) tab.setTerms(termsFrom(salts));
   paintTab();
 }
 // Whether this computer's tacit-prover is mining, as last heard, and the address it pays. A read that gets no answer (a busy computer can be slow to say) is not
@@ -703,7 +706,7 @@ const savedThreads = () => { try { const n = Number(localStorage.getItem(SAVED_T
 const SAVED_GPU = 'tacit-prove-tab-gpu';
 const savedGpu = () => { try { const g = localStorage.getItem(SAVED_GPU); return GPU_LEVELS.includes(g) ? g : null; } catch { return null; } };
 let tabThreads = savedThreads() ?? defaultThreads(CORES), tabLock = null, tabNote = '', onBattery = false, batteryOk = false, gpuAble = false, tabGpu = savedGpu() ?? 'half';
-const tab = makeTabMiner({ api: API, makeWorker: () => new Worker('/prove/salt-worker.js?cb=6df5c0ae', { type: 'module' }), onChange: () => paintTab() });
+const tab = makeTabMiner({ api: API, makeWorker: () => new Worker('/prove/salt-worker.js?cb=6b29d3e8', { type: 'module' }), onChange: () => paintTab() });
 const holdTab = () => (navigator.locks ? new Promise((res) => { navigator.locks.request('tacit-prove-tab-miner', { ifAvailable: true }, (lock) => { if (!lock) { res(false); return undefined; } res(true); return new Promise((r) => { tabLock = r; }); }).catch(() => res(true)); }) : Promise.resolve(true));
 async function tabStart() {
   const beside = proverMining, a = beside ? proverMiner || addr() : addr();   // beside the prover: its address, and the GPU alone
@@ -712,7 +715,7 @@ async function tabStart() {
   if (!(await holdTab())) { tabNote = 'Another tab is mining already.'; paintTab(); return; }
   tabNote = ''; say('');   // an earlier "enter the address" is answered
   if (beside && tabGpu === 'off') tabGpu = 'half';
-  tab.start({ miner: a, threads: beside ? 0 : tabThreads, minBits: salts?.minBits || 26, gpu: gpuAble ? tabGpu : 'off' });
+  tab.start({ miner: a, threads: beside ? 0 : tabThreads, minBits: salts?.minBits || 26, terms: termsFrom(salts), gpu: gpuAble ? tabGpu : 'off' });
   paint();
 }
 function tabStop(o) { tab.stop(o); tabLock?.(); tabLock = null; paint(); }
