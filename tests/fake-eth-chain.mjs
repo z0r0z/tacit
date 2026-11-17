@@ -11,7 +11,7 @@ export function chain() {
     c.calls.push(method);
     if (c.down) throw new Error('Ethereum is unreachable');
     if (method === 'eth_blockNumber') return hex(c.head);
-    if (method === 'eth_getTransactionReceipt') { const t = c.mined.find((y) => y.hash === params[0]); return t ? { status: t.status || '0x1', transactionHash: t.hash, blockNumber: hex(t.block), logs: [] } : null; }
+    if (method === 'eth_getTransactionReceipt') { const t = c.mined.find((y) => y.hash === params[0]); return t ? { status: t.status || '0x1', transactionHash: t.hash, blockNumber: hex(t.block), logs: t.logs || [] } : null; }
     if (method === 'eth_getTransactionByHash') {
       const t = (c.all || []).find((y) => y.hash === params[0]);
       return t && (t.block != null || c.mempool.has(t.hash)) ? obj(t) : null;

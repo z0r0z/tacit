@@ -994,10 +994,26 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
   // true once mined, false if it reverted, 'unseen' on no answer in time (truthy: it may still land; sync will tell). A spend
   // counts only when the receipt carries the pool's Transact for its nullifiers, so a hash for some other transaction is not
   // taken as this payment.
-  async function landed(hash, nfs = [], read = chain.rpc) {
+  // A speed-up in the wallet (or a gas bump by the relay) sends another transaction at the same nonce and the first hash never confirms: after the first quarter
+  // minute the chain is asked now and then whether a mined transaction has taken that nonce (activity.js lookReplaced, loaded when first wanted). The same call
+  // stands in for the first (its receipt must still carry the spend's Transact), a different one means the first never ran (false). `info.hash` says which landed.
+  async function landed(hash, nfs = [], read = chain.rpc, info = {}) {
+    const t0 = Date.now();
+    let seen = null, found = null, last = t0;
     for (let i = 0; i < 120; i++) {
-      const r = await read('eth_getTransactionReceipt', [hash]).catch(() => null);
-      if (!r) { await sleep(i < 60 ? 1000 : 2000); continue; }       // each second for the first minute, then every two: three minutes in all
+      if (found && !found.same) return false;
+      const r = await read('eth_getTransactionReceipt', [found ? found.hash : hash]).catch(() => null);
+      if (!r) {
+        if (!found && Date.now() - last >= 15_000) {
+          last = Date.now();
+          const A = await import('./activity.js').catch(() => null);
+          const v = A?.lookReplaced ? await A.lookReplaced({ read, hash, seen }).catch(() => ({})) : {};
+          if (v.seen) seen = v.seen;
+          if (v.found) found = v.found;
+        }
+        await sleep(i < 60 ? 1000 : 2000); continue;                 // each second for the first minute, then every two: three minutes in all
+      }
+      info.hash = r.transactionHash || hash;
       if (!(r.status === '0x1' || r.status === 1 || r.status === 'success')) return false;
       return !nfs.length || (r.logs || []).some((l) => String(l.address).toLowerCase() === String(chain.pool).toLowerCase()
         && String(l.topics?.[0]).toLowerCase() === TRANSACT_TOPIC && nfs.every((nf) => [l.topics[1], l.topics[2]].some((t) => t != null && BigInt(t) === BigInt(nf))));
@@ -1128,7 +1144,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       try { onSent?.(h); } catch { }                              // (the hash, before the wait for the block)
       for (const n of ins) pending.add(n.nf);
       onStep('waiting for it to be mined');
-      const mined = await landed(h, ins.map((n) => n.nf), q ? chain.rpc : signer?.rpc || chain.rpc);
+      const info = {}, mined = await landed(h, ins.map((n) => n.nf), q ? chain.rpc : signer?.rpc || chain.rpc, info);
       // A relay gave a hash, three minutes passed with no receipt, and the pool has none of the notes spent: the relay's transaction was
       // dropped before it was mined (the relay sends it again on its own, so this is the case where that did not help either). Nothing
       // of the wallet's has moved; a spend of the same notes is safe, since only one transaction can spend them, so it is said so now
@@ -1145,7 +1161,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         // Not seen landing (no receipt in time, or dropped or replaced): its notes come back if the chain still has
         // them unspent a while later. A late landing then only makes a spend of them fail and read the chain again.
         if (!seen) setTimeout(() => { sync().catch(() => {}).then(() => { for (const nf of spent) pending.delete(nf); }); }, 15 * 60_000).unref?.();
-        return h;
+        return info.hash || h;                                        // (the one that landed, when a speed-up sent another)
       }
       for (const n of ins) pending.delete(n.nf);
     }
@@ -1412,7 +1428,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         const { proof, publicSignals } = await prove(w.input);
         const tx = toTx(proof, publicSignals, { recipient: ZERO, extAmount: amount.toString(), relayer: ZERO, fee: '0', memo0: '0x', memo1: '0x' });
         const h = await sendSelf(chain.router, sweepData(npk, RECEIVE_FEE_BPS, tx), 0n, onStep);
-        if (h) { onStep('waiting for the block'); if (await landed(h)) return h; }
+        if (h) { onStep('waiting for the block'); const info = {}; if (await landed(h, [], chain.rpc, info)) return info.hash || h; }
         onStep('someone else got in first, proving again');
       }
       throw new Error('the pool kept moving; try again');

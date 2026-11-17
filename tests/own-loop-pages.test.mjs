@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { chain } from './fake-eth-chain.mjs';
+import { chain, whenLooked } from './fake-eth-chain.mjs';
 
 const ET = new EventTarget();
 globalThis.addEventListener = ET.addEventListener.bind(ET); globalThis.removeEventListener = ET.removeEventListener.bind(ET); globalThis.dispatchEvent = ET.dispatchEvent.bind(ET);
@@ -227,4 +227,28 @@ test('pay: what a payment\'s transaction was learned to be is kept with the paid
   again.trackFrom(chainOf, orig.hash, store.paid.req1.seen);
   assert.equal(await again.receiptOf(chainOf, orig.hash), null, 'the look that finds it takes a moment'); await sleep(15);
   assert.equal(await again.receiptOf(chainOf, orig.hash), 'ok', 'found from what was kept, with no look at it while it waited');
+});
+
+// ── the private ETH pool wallet: the wait for a spend's transaction ──
+const poolSrc = scale(cut(src('evm-pool-wallet.js'), '  async function landed(hash, nfs = [], read = chain.rpc, info = {}) {', "  // The pool has none of `ins` spent", 'the pool wallet\'s landed'), [['15_000', '10'], ['i < 60 ? 1000 : 2000', '5'], ['i < 120', 'i < 120']]);
+const POOLADDR = '0x' + 'f0'.repeat(20), TRANSACT = '0x' + '77'.repeat(32), NF = 12345n;
+const spendLogs = [{ address: POOLADDR, topics: [TRANSACT, '0x' + NF.toString(16).padStart(64, '0'), '0x' + '00'.repeat(32)] }];
+function poolWait(c, act = ACT) {
+  const fn = new Function('chain', 'sleep', 'ACT', 'TRANSACT_TOPIC', `${poolSrc.replace(IMPORT, 'import(ACT)')}\nreturn landed;`)({ pool: POOLADDR, rpc: c.read }, sleep, act, TRANSACT);
+  return (nfs = [NF]) => { const info = {}; return fn(orig.hash, nfs, c.read, info).then((v) => ({ v, info })); };
+}
+test('pool wallet: a spend a speed-up landed counts, under the hash that landed; one a cancel replaced did not happen', async () => {
+  let c = pending(); const w = poolWait(c);
+  const p = w(); whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine({ ...fast, logs: spendLogs }, 990); });
+  const r = await p; assert.equal(r.v, true); assert.equal(r.info.hash, fast.hash);
+  c = pending(); const w2 = poolWait(c); const p2 = w2(); whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine(cancel, 990); });
+  assert.equal((await p2).v, false, 'never ran: the notes are free for the next try');
+  c = pending(); const w3 = poolWait(c); const p3 = w3(); whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine({ ...fast, logs: [] }, 990); });
+  assert.equal((await p3).v, false, 'a replacement without the spend\'s Transact is not this payment');
+});
+test('pool wallet: its own receipt is as it was, and a transaction nothing is seen of is unseen after the wait', async () => {
+  let c = pending(); later(20, () => c.mine({ ...orig, logs: spendLogs }, 999));
+  const r = await poolWait(c)(); assert.equal(r.v, true); assert.equal(r.info.hash, orig.hash);
+  c = pending(); const w = poolWait(c, NOWHERE); later(20, () => { c.mempool.delete(orig.hash); c.mine({ ...fast, logs: spendLogs }, 990); });
+  assert.equal((await w()).v, 'unseen', 'where activity.js cannot load it is the plain wait it was');
 });
