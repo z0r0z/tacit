@@ -117,11 +117,11 @@ function render() {
       <a href="https://etherscan.io/address/${MARKET}#writeContract" target="_blank" rel="noopener noreferrer">Deploy with it</a> · <a href="https://etherscan.io/tx/${esc(S.done.hash)}" target="_blank" rel="noopener noreferrer">Transaction</a></p></div>`;
   }
   out += `<p class="eyebrow"><span>For sale${S.loaded ? ` · ${S.shelf.length}` : ''}</span><span class="who num">${W.account && S.bal !== null ? `${esc(tacText(S.bal))} TAC` : ''}</span></p>`;
+  out += `<p class="note need">Need TAC? <a href="${BUY_TAC_URL}">Buy it</a>.</p>`;     // at the top: a shelf of sixty rows would bury it
   if (S.failed && !S.loaded) out += `<p class="empty">The list could not be read. <button class="linkbtn" type="button" id="again">Try again</button></p>`;
   else if (!S.loaded) out += `<p class="empty">Reading the shop.</p>`;
   else if (!S.shelf.length) out += `<p class="empty">Nothing for sale right now.</p>`;
   else out += `<ol class="shelf">${S.shelf.map(rowHtml).join('')}</ol>`;
-  if (S.loaded) out += `<p class="note need">Need TAC? <a href="${BUY_TAC_URL}">Buy it</a>.</p>`;
   if (W.account && S.shelf.length) out += `<label class="to"><span class="mute">Send the token to</span><input id="to" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="${esc(W.account)}" value="${esc(S.to)}"></label>`;
   out += `<div id="note" class="status" aria-live="polite"></div>`;
   const typing = document.activeElement?.id === 'to', caret = typing ? document.activeElement.selectionStart : 0;     // a refresh of the list must not take the field from someone typing in it
