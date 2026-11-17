@@ -65,7 +65,8 @@ for (const [what, rep] of [['a cancel', { to: me, value: 0, input: '0x' }], ['an
   c.down = true; assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen }), {}, 'an unreachable node says nothing');
   c.down = false; c.mempool.delete(orig.hash);
   c.mine({ hash: '0x' + '06'.repeat(32), from: me, nonce: 0, ...call }, 700); c.head = 1000;
-  assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen }), {}, 'a replacement older than the state a node keeps is not found, and nothing throws');
+  assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen }), { moved: true }, 'a replacement older than the state a node keeps is not found, and nothing throws: but the nonce is known to have been taken');
+  assert.deepEqual(await A.traceTx({ read: c.read, hash: orig.hash, seen }), { unknown: true, moved: true });
   assert.deepEqual(await A.lookReplaced({ read: c.read, hash: orig.hash, seen: { ...seen, nonce: '7' } }), { idle: true }, 'a nonce no mined transaction has reached yet is not a replacement');
 }
 
@@ -128,6 +129,23 @@ for (const [what, rep] of [['a cancel', { to: me, value: 0, input: '0x' }], ['an
   assert.equal((await wait(c, { read: c.read })).rc.transactionHash, orig.hash, 'a read that fails is asked again, not taken for the end');
   let slept = 0; c = chain(); c.send(orig); c.mine(orig, 999);
   assert.equal((await A.waitMined({ read: c.read, hash: orig.hash, sleep: async () => { slept++; } })).rc.transactionHash, orig.hash); assert.equal(slept, 0, 'a receipt already there is returned before any sleep');
+}
+
+// ── a row that ran out of time is looked at again from what was kept of it ──
+{
+  mem.clear();
+  const J2 = A.makeJournal({}), fin = [];
+  const mk = (h, extra = {}) => J2.put('tx:1:' + h, { kind: 'tx', status: 'stale', hash: h, chain: 1, finishes: ['op:1'], ...extra });
+  let t = {};
+  const F2 = A.makeFollow({ journal: J2, jobStatus: async () => ({}), btcConfirmed: async () => false, receipt: async () => null, receiptOnce: async () => null, finished: (f, h) => fin.push(h), trace: async () => t });
+  const tick2 = () => new Promise((r) => setTimeout(r, 20));
+  mk('0xs1'); t = { landed: { status: '0x1', transactionHash: '0xs2' } }; F2.tx('tx:1:0xs1', true); await tick2();
+  assert.equal(J2.get('tx:1:0xs1').status, 'confirmed'); assert.equal(J2.get('tx:1:0xs1').hash, '0xs2'); assert.deepEqual(fin, ['0xs2'], 'a stale row a speed-up landed for is confirmed, and what it finishes is told');
+  mk('0xs3'); t = { replaced: '0xs4' }; F2.tx('tx:1:0xs3', true); await tick2();
+  assert.equal(J2.get('tx:1:0xs3').status, 'failed'); assert.equal(J2.get('tx:1:0xs3').replaced, true);
+  mk('0xs5'); t = { dropped: true }; F2.tx('tx:1:0xs5', true); await tick2(); assert.equal(J2.get('tx:1:0xs5').why, 'dropped'); assert.equal(J2.get('tx:1:0xs5').status, 'stale');
+  mk('0xs6'); t = { unknown: true, moved: true }; F2.tx('tx:1:0xs6', true); await tick2(); assert.equal(J2.get('tx:1:0xs6').why, 'moved');
+  mk('0xs7'); t = { unknown: true }; F2.tx('tx:1:0xs7', true); await tick2(); assert.equal(J2.get('tx:1:0xs7').why, undefined, 'no telling: as it was');
 }
 
 // ── in the Activity list ──

@@ -242,3 +242,22 @@ test('swap card: the signer the plans use traces through the wallet, and answers
   const none = plain.trace('0x1');
   assert.ok(none instanceof Promise, 'a promise, so a caller can ask with .catch and carry on'); assert.equal(await none, undefined);
 });
+
+// ── the front page: a transaction is learned in its first minute, so a speed-up can be followed later ──
+test('front page: learnSeen keeps the sender and nonce from the wallet\'s own node, or a public one, and stops once it has them', async () => {
+  const A = await import('../dapp/activity.js'), { c } = await stuck();
+  const body = cut(src('index.html'), 'async function learnSeen(id, hash, chainId) {', '\nfunction followTx(', 'learnSeen');
+  const make = (S, rpc, items) => new Function('sleep', 'actGet', 'actPut', 'ended', 'S', 'rpc', 'rpcsOf', 'lookReplaced', `${body}\nreturn learnSeen;`)(async () => {}, (id) => items.get(id), (id, p) => Object.assign(items.get(id), p), A.ended, S, rpc, () => null, A.lookReplaced);
+  let items = new Map([['t', { kind: 'tx', status: 'pending' }]]);
+  await make({ provider: { request: async ({ method, params }) => c.read(method, params) } }, async () => { throw new Error('no public node'); }, items)('t', orig.hash, 1);
+  assert.equal(items.get('t').seen?.nonce, '0', 'from the wallet\'s node');
+  items = new Map([['t', { kind: 'tx', status: 'pending' }]]);
+  await make({ provider: null }, (m, p) => c.read(m, p), items)('t', orig.hash, 1);
+  assert.equal(items.get('t').seen?.nonce, '0', 'from a public node when the wallet has none');
+  items = new Map([['t', { kind: 'tx', status: 'confirmed' }]]); const before = c.calls.length;
+  await make({}, (m, p) => c.read(m, p), items)('t', orig.hash, 1);
+  assert.equal(c.calls.length, before, 'a row that has ended is not asked about');
+  items = new Map([['t', { kind: 'tx', status: 'pending', seen: { nonce: '9' } }]]); const b2 = c.calls.length;
+  await make({}, (m, p) => c.read(m, p), items)('t', orig.hash, 1);
+  assert.equal(c.calls.length, b2, 'nor one that already has what it needs'); assert.equal(items.get('t').seen.nonce, '9');
+});

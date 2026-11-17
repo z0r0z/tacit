@@ -100,7 +100,7 @@ function actFoot(it) {
     proven: () => (ownJob(it.id) ? jobWhere(it) : JOBS.get(it.id.slice(4))?.run.live ? 'Proved. It lands with the transaction sent from this page.'
       : `Proved, but the page that asked for it stopped waiting, so it was never sent.${openOf(it) ? '' : ' Start it again.'}`),
     confirmed: () => html`${it.flip ? 'Confirmed' : `Confirmed in ${took}`} · ${link}`,
-    stale: () => html`${it.kind === 'btc' ? 'Not confirmed after three days.' : 'Not seen after half an hour; it may have been dropped or replaced.'} ${link}`,
+    stale: () => html`${it.kind === 'btc' ? 'Not confirmed after three days.' : it.why === 'dropped' ? 'Not seen after half an hour, and nothing has taken its place: it was dropped, so it did not go through.' : it.why === 'moved' ? 'Not seen after half an hour. Another transaction from the same account has taken its place, probably your wallet’s speed-up, too long ago to find: check your wallet’s history.' : 'Not seen after half an hour; it may have been dropped or replaced.'} ${link}`,
   }[it.status];
   const note = bondNote(it);
   return html`<div class="actr-f">${say_ ? say_() : ''}</div>${note ? html`<div class="actr-f">${note}</div>` : ''}${it.warn ? html`<div class="actr-f err">${it.warn}</div>` : ''}${selfLine(it)}${openLine(it)}`;
