@@ -41,7 +41,8 @@ if (mode === 'start' && !SEND) console.log('(no --send: this only says what it w
 
 // the dapp's modules read these globals: a file for localStorage, so a run carries on from the last; the chain read through Tacit's API (explorers rate limit)
 const { JSDOM } = await import(REPO + '/tests/_jsdom.mjs');
-const dom = new JSDOM('', { url: 'http://localhost/' });
+// (the site's own origin: the dapp points its API reads at localhost when it runs there, which is not where the API is)
+const dom = new JSDOM('', { url: 'https://tacit.finance/' });
 const { makeFileStorage } = await import(REPO + '/fastbridge-lp/lib/storage.mjs');
 const store = makeFileStorage(join(HOME, 'storage.json'));
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, localStorage: store, location: dom.window.location, __TACIT_NO_INIT__: true, __TACIT_CHAIN_VIA_WORKER__: true });
