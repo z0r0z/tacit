@@ -237,9 +237,13 @@ try {
       check(Math.max(...r.rows) < 40, 'a feed row is one line', JSON.stringify(r.rows));
     }
     {
-      // the vanity shop's deployment is noted in the salts card, with a link to its verified source
-      const n = await page.evaluate(() => { const p = document.querySelector('[data-card="salts"] #salt-shop'), a = p?.querySelector('a'); return p ? { text: p.textContent, href: a?.href, target: a?.target, rel: a?.rel, shown: p.getBoundingClientRect().height > 0 } : null; });
-      check(n && n.shown && n.href === 'https://etherscan.io/address/0x00000000000785882df83d4CC6ED45c21eB1176C#code' && n.target === '_blank' && /noopener/.test(n.rel) && /vanity-address shop/.test(n.text) && n.text.includes('0x00000000000785882df83d4C…176C'), 'the salts card notes the vanity shop as deployed, with a link to its verified contract', JSON.stringify(n));
+      // the shop's deployment is noted in the salts card: the shop named plainly and linked to its page, and the contract linked to its verified source
+      const n = await page.evaluate(() => { const p = document.querySelector('[data-card="salts"] #salt-shop'), as = [...(p?.querySelectorAll('a') || [])]; return p ? { text: p.textContent, links: as.map((a) => ({ href: a.getAttribute('href'), target: a.target, rel: a.rel, text: a.textContent })), shown: p.getBoundingClientRect().height > 0 } : null; });
+      const [shop, code] = n?.links || [];
+      check(n && n.shown && n.links.length === 2 && shop.href === '/shop/' && shop.text === 'the shop' && !shop.target && code.href === 'https://etherscan.io/address/0x00000000000785882df83d4CC6ED45c21eB1176C#code' && code.target === '_blank' && /noopener/.test(code.rel) && code.text === '0x00000000000785882df83d4C…176C' && !/vanity/i.test(n.text), 'the salts card names the shop plainly and links to its page, and to its verified contract', JSON.stringify(n));
+      // and says up near the top that the latest version finds addresses for it, in the same card as the mining
+      const s = await page.evaluate(() => { const p = document.querySelector('[data-card="salts"] #salt-sell'), a = p?.querySelector('a'), day = document.querySelector('[data-card="salts"] #salt-day'); return p ? { text: p.textContent, href: a?.getAttribute('href'), target: a?.target, shown: p.getBoundingClientRect().height > 0, belowIntro: !!day && !!(day.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING), above: p.getBoundingClientRect().top < (document.querySelector('[data-card="salts"] #salt-bank')?.getBoundingClientRect().top ?? Infinity) } : null; });
+      check(s && s.shown && s.belowIntro && s.above && s.href === '/shop/' && !s.target && /latest version/.test(s.text) && /buy one with TAC/.test(s.text) && !/vanity/i.test(s.text), 'the mining section says the latest version finds addresses for the shop, where anyone can buy one with TAC, and links to it', JSON.stringify(s));
     }
     const saltRows = await page.locator('#feed li.salt').allInnerTexts();
     check(saltRows.filter((x) => x.includes('≈ +9.83 TAC')).length === 1 && saltRows.filter((x) => x.includes('< 0.01 TAC')).length === 1, 'a salt shows its part of the day\'s salt pot so far: a 44-bit find 9.83 TAC, a 32-bit one under a cent', saltRows.join(' / '));
