@@ -10,7 +10,7 @@
 // into the second state (readBack), which the page's own wallet then takes in place of its own (adopt). Without `partial` a state
 // begun at a point (another page's) is completed here, before the balance is sent.
 import { makeEvmPoolZk } from '/evm-pool-zk.js?cb=2f062779';
-import { makeEvmPoolWallet, evmPoolKeys, jsonRpc, batchedRpc } from '/evm-pool-wallet.js?cb=581ebb3b';
+import { makeEvmPoolWallet, evmPoolKeys, jsonRpc, batchedRpc } from '/evm-pool-wallet.js?cb=bfd8c78d';
 import { poseidon2, poseidon3, poseidon4, poseidon5, poseidon7 } from '/vendor/tacit-poseidon.min.js';
 
 const PO = { 2: poseidon2, 3: poseidon3, 4: poseidon4, 5: poseidon5, 7: poseidon7 };
@@ -18,7 +18,7 @@ const zk = makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) });
 
 const walletOf = (id, keys, c, pool, router, kept, rpc, partial = false) => makeEvmPoolWallet({ zk, keys, keeper: c.keeper, prove: null, partial,
   store: { get: (k) => kept.get(k) ?? null, set: (k, v) => { kept.set(k, v); self.postMessage({ id, write: [k, v] }); } },
-  chain: { chainId: c.chainId, pool, router, rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk, token: c.token } });
+  chain: { chainId: c.chainId, pool, router, rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk, token: c.token, keepers: c.keepers } });
 
 self.onmessage = async ({ data: { id, priv, chain: c, pool, router, entries, pools, watch, back, partial } }) => {
   const kept = new Map(Object.entries(entries || {}));

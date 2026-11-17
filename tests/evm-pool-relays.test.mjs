@@ -1,0 +1,124 @@
+// dapp/evm-pool-relays.js: which relays a wallet accepts for a chain, and how a spend picks one.
+//
+// Run: node tests/evm-pool-relays.test.mjs
+
+import assert from 'node:assert/strict';
+import { relaysOf, orderQuotes, NEAR_PCT } from '../dapp/evm-pool-relays.js';
+
+let pass = 0, fail = 0;
+const check = async (label, fn) => {
+  try { await fn(); console.log(`  PASS  ${label}`); pass++; } catch (e) { console.log(`  FAIL  ${label}: ${e.message}`); fail++; }
+};
+
+const A = '0x' + 'a1'.repeat(20), B = '0x' + 'b2'.repeat(20), C = '0x' + 'c3'.repeat(20);
+const U1 = 'https://one.example/1/evm-pool/keeper', U2 = 'https://two.example/evm-pool/keeper', U3 = 'https://three.example/8453/evm-pool/keeper';
+
+console.log('the entries');
+await check('the one keeper a chain config has always named is kept as it is, with the pin given for it, and nothing else is invented', () => {
+  assert.deepEqual(relaysOf({ keeper: U1, relayer: A }), [{ url: U1, relayer: A, weight: 1 }]);
+  assert.deepEqual(relaysOf({ keeper: U1 }), [{ url: U1, relayer: null, weight: 1 }], 'with no pin, none');
+  assert.deepEqual(relaysOf({}), []);
+});
+await check('a listed relay is pinned to the address its quote must name: on a real origin one without it is left out, off one it may go without', () => {
+  const list = [{ url: U2, relayer: B }, { url: U3 }];
+  assert.deepEqual(relaysOf({ keeper: U1, relayer: A, keepers: list, pinned: true }).map((e) => e.url), [U1, U2]);
+  assert.deepEqual(relaysOf({ keeper: U1, relayer: A, keepers: list, pinned: false }).map((e) => e.url), [U1, U2, U3]);
+  assert.equal(relaysOf({ keepers: list, pinned: false }).find((e) => e.url === U3).relayer, null);
+});
+await check('the chain\'s own keeper is never dropped for lacking a pin, even on a real origin (a token pool has none)', () => {
+  assert.deepEqual(relaysOf({ keeper: U1, relayer: null, pinned: true }).map((e) => e.url), [U1]);
+});
+await check('only plain https URLs (and a local one, for a page and a test on this machine) are taken; no other scheme, no credentials, no query', () => {
+  const bad = ['http://evil.example/evm-pool/keeper', 'javascript:alert(1)', 'https://user:pw@evil.example/evm-pool/keeper', 'https://evil.example/evm-pool/keeper?y=1', 'ftp://x.example/evm-pool/keeper', 'data:text/plain,hi', '//evil.example/evm-pool/keeper', '', null, 5];
+  for (const url of bad) assert.deepEqual(relaysOf({ keepers: [{ url, relayer: A }], pinned: true }), [], String(url));
+  assert.deepEqual(relaysOf({ keepers: [{ url: 'http://127.0.0.1:8787/evm-pool/keeper', relayer: A }], pinned: false }).map((e) => e.url), ['http://127.0.0.1:8787/evm-pool/keeper']);
+  assert.deepEqual(relaysOf({ keepers: [{ url: 'http://localhost:3000/evm-pool/keeper', relayer: A }], pinned: false }).map((e) => e.url), ['http://localhost:3000/evm-pool/keeper']);
+});
+await check('a listed relay must end in /evm-pool/keeper, the path the private route knows a relay by: any other is left out, so no request to it can go past the route', () => {
+  for (const url of ['https://two.example', 'https://two.example/relay', 'https://two.example/evm-pool', 'https://two.example/evm-pool/keeper/quote', 'https://two.example/evm-pool/keepers', 'https://two.example/x/evm-pool/keeper/y']) {
+    assert.deepEqual(relaysOf({ keepers: [{ url, relayer: A }], pinned: false }), [], url);
+  }
+  assert.deepEqual(relaysOf({ keepers: [{ url: 'https://two.example/1/evm-pool/keeper/', relayer: A }], pinned: true }).map((e) => e.url), ['https://two.example/1/evm-pool/keeper'], 'with a slash after it, and under a chain\'s id');
+  assert.deepEqual(relaysOf({ keeper: 'https://old.example', relayer: A }).map((e) => e.url), ['https://old.example'], 'the keeper a chain has always named is not held to it: it is the one the wallet already knew');
+});
+await check('a pin that is not an address is no pin; a trailing slash is not a different relay; the same relay listed twice is one (the first entry wins)', () => {
+  assert.deepEqual(relaysOf({ keepers: [{ url: U2, relayer: 'nope' }], pinned: true }), []);
+  const two = relaysOf({ keeper: U1 + '/', relayer: A, keepers: [{ url: U1, relayer: B, weight: 9 }, { url: 'https://TWO.example/evm-pool/keeper', relayer: C }, { url: U2, relayer: B }], pinned: true });
+  assert.equal(two[0].url, U1); assert.equal(two[0].relayer, A, 'the keeper the chain named, with its pin, not the list\'s second word on it');
+  assert.equal(two.length, 2, 'U1 once; U2 once (the capital letters in a host are no other relay)');
+  assert.equal(two[1].relayer, C, 'the first entry for it wins');
+});
+await check('a weight is a positive finite number, else 1', () => {
+  const w = (x) => relaysOf({ keepers: [{ url: U2, relayer: B, weight: x }], pinned: true })[0].weight;
+  assert.equal(w(3), 3); assert.equal(w(0.5), 0.5); assert.equal(w('4'), 4);
+  for (const x of [0, -1, NaN, Infinity, undefined, null, 'x']) assert.equal(w(x), 1, String(x));
+});
+
+console.log('the choice');
+const quote = (fee, weight = 1, id = String(fee)) => ({ e: { url: `https://${id}.example`, relayer: A, weight }, q: { fee: String(fee) } });
+const urls = (list) => list.map((x) => x.e.url);
+await check('one quote, or none, is returned as it is', () => {
+  assert.deepEqual(orderQuotes([]), []);
+  const one = [quote(5)];
+  assert.deepEqual(orderQuotes(one), one);
+});
+await check('a quote well above the lowest is never drawn first, however the draw falls, and follows the others by fee', () => {
+  const qs = [quote(1000, 1, 'dear'), quote(100, 1, 'cheap'), quote(300, 1, 'mid')];
+  for (const r of [0, 0.3, 0.5, 0.99999]) assert.equal(orderQuotes(qs, () => r)[0].e.url, 'https://cheap.example');
+  assert.deepEqual(urls(orderQuotes(qs, () => 0)), ['https://cheap.example', 'https://mid.example', 'https://dear.example']);
+});
+await check('quotes within the margin of the lowest are drawn from by weight: the draw falls where the weights say', () => {
+  const lo = 1000, edge = 1000 + Number(NEAR_PCT) * 10;       // exactly at the margin: still near
+  const qs = [quote(lo, 1, 'a'), quote(edge, 3, 'b')];
+  assert.equal(orderQuotes(qs, () => 0.0)[0].e.url, 'https://a.example');
+  assert.equal(orderQuotes(qs, () => 0.24)[0].e.url, 'https://a.example');
+  assert.equal(orderQuotes(qs, () => 0.26)[0].e.url, 'https://b.example');
+  assert.equal(orderQuotes(qs, () => 0.9999)[0].e.url, 'https://b.example');
+  assert.deepEqual(urls(orderQuotes(qs, () => 0.9)), ['https://b.example', 'https://a.example'], 'the one not drawn follows');
+});
+await check('one fee unit over the margin is out of the draw', () => {
+  const qs = [quote(1000, 1, 'a'), quote(1251, 1000, 'b')];       // 25.1% over, with a thousand times the weight
+  for (const r of [0, 0.5, 0.9999]) assert.equal(orderQuotes(qs, () => r)[0].e.url, 'https://a.example');
+});
+await check('over many draws the shares follow the weights (3 : 1)', () => {
+  const qs = [quote(100, 3, 'a'), quote(100, 1, 'b')];
+  let a = 0, seed = 12345;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed / 2 ** 31; };
+  const n = 4000;
+  for (let i = 0; i < n; i++) if (orderQuotes(qs, rnd)[0].e.url === 'https://a.example') a++;
+  assert.ok(Math.abs(a / n - 0.75) < 0.03, `share ${a / n}`);
+});
+await check('equal fees and weights are shared evenly, and a relay with the weight of a thousand does not shut the others out of its margin only by being listed first', () => {
+  const qs = [quote(100, 1, 'a'), quote(100, 1, 'b')];
+  assert.equal(orderQuotes(qs, () => 0.1)[0].e.url, 'https://a.example');
+  assert.equal(orderQuotes(qs, () => 0.9)[0].e.url, 'https://b.example');
+});
+await check('fees are compared exactly, as whole numbers: no rounding at the sizes of wei', () => {
+  const big = 10n ** 18n;
+  const qs = [{ e: { url: 'https://a.example', weight: 1 }, q: { fee: String(big * 4n) } }, { e: { url: 'https://b.example', weight: 1 }, q: { fee: String(big * 5n + 1n) } }];
+  assert.equal(orderQuotes(qs, () => 0.99)[0].e.url, 'https://a.example', '5e18 + 1 is over 125% of 4e18');
+  const near = [qs[0], { e: { url: 'https://c.example', weight: 1 }, q: { fee: String(big * 5n) } }];
+  assert.equal(orderQuotes(near, () => 0.99)[0].e.url, 'https://c.example', 'exactly 125% is near');
+});
+
+console.log('the Pay page');
+await check('every relay the Pay page lists for a chain is pinned to an address, ends in /evm-pool/keeper, and is a place its policy lets it connect to', async () => {
+  const { readFileSync } = await import('node:fs');
+  const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8');
+  const connect = /connect-src([^;"]*)/.exec(page)[1].split(/\s+/).filter(Boolean);
+  const lists = [...page.matchAll(/keepers:\s*\[([^\]]*)\]/g)].map((m) => m[1]);
+  for (const body of lists) {
+    const entries = [...body.matchAll(/\{([^}]*)\}/g)].map((m) => m[1]);
+    for (const e of entries) {
+      const url = /url:\s*'([^']+)'/.exec(e)?.[1], pin = /relayer:\s*'(0x[0-9a-fA-F]{40})'/.exec(e)?.[1];
+      assert.ok(url && pin, `an entry needs its url and the address it is pinned to: ${e.trim()}`);
+      assert.equal(relaysOf({ keepers: [{ url, relayer: pin }], pinned: true }).length, 1, `${url} is not a relay the wallet accepts`);
+      assert.ok(connect.includes(new URL(url).origin) || connect.includes('https:'), `${new URL(url).origin} is not in the page's connect-src`);
+    }
+  }
+  // the chain's own keeper (the one every chain names) is reachable too
+  for (const m of page.matchAll(/keeper:\s*'(https:\/\/[^']+)'/g)) assert.ok(connect.includes(new URL(m[1]).origin), `${new URL(m[1]).origin} is not in connect-src`);
+});
+
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

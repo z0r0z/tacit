@@ -1,7 +1,7 @@
 // jsonRpc over several nodes, and the wallet's log scan against nodes with different eth_getLogs range limits.
 import assert from 'node:assert/strict';
 import { jsonRpc, makeEvmPoolWallet, evmPoolKeys, recipientOf, logFailure, sealNote, openNote, paymentKey, sealState, openState, mergePlan, feedStart } from '../dapp/evm-pool-wallet.js';
-import { poolAsset } from '../dapp/evm-pool-zk.js';
+import { poolAsset, publicAmount } from '../dapp/evm-pool-zk.js';
 import { makeEvmPoolZk } from '../dapp/evm-pool-zk.js';
 import { receiveKeys, receiveBoxAddress, RECEIVE_FEE_BPS } from '../dapp/evm-pool-gateway.js';
 import { poseidon2, poseidon3, poseidon4, poseidon5, poseidon7 } from 'poseidon-lite';
@@ -716,7 +716,7 @@ function spender(seed, { sealed = false, extra = [] } = {}) {
   let proofs = 0, after = 0, base = 0;
   const fromStart = () => seen.filter((f) => Number(f.fromBlock) === 1).length;
   const s = {
-    pool, nf, asked: [], feed: null, keeperHeaders: () => null,
+    pool, nf, asked: [], calls: [], hosts: {}, inputs: [], feed: null, keeperHeaders: () => null,
     reserve: () => [404, { error: 'this keeper does not queue' }],
     relay: () => [500, { error: 'internal error' }],
     quote: () => [200, { chainId: 8453, pool: POOLF, relayer: RELAYER, fee: '1000000000000' }],
@@ -736,18 +736,19 @@ function spender(seed, { sealed = false, extra = [] } = {}) {
     return answered !== undefined ? answered : inner(m, p);
   };
   const fetchImpl = async (url, init) => {
-    const path = url.slice('https://k.test'.length).split('?')[0];
-    s.asked.push(path);
-    const [status, body] = await (path === '/quote' ? s.quote(s.count(path)) : path === '/reserve' ? s.reserve(s.count(path), JSON.parse(init.body))
-      : path === '/relay' ? s.relay(s.count(path), JSON.parse(init.body)) : path === '/cancel' ? [200, { ok: true }]
+    const u = new URL(url), origin = u.origin, path = u.pathname.replace(/^\/evm-pool\/keeper/, '').replace(/\/$/, '');
+    s.asked.push(path); s.calls.push(origin + path);
+    const h = (name) => s.hosts[origin]?.[name] ?? s[name];      // a relay at another origin may answer in its own way: s.hosts[origin] = { quote, reserve, relay }
+    const [status, body] = await (path === '/quote' ? h('quote')(s.count(path)) : path === '/reserve' ? h('reserve')(s.count(path), JSON.parse(init.body))
+      : path === '/relay' ? h('relay')(s.count(path), JSON.parse(init.body)) : path === '/cancel' ? [200, { ok: true }]
         : path === '/events' && s.feed ? [s.feedStatus ?? 200, s.feed(Number(new URL(url).searchParams.get('from')))] : [404, { error: 'not found' }]);
     return { ok: status === 200, status, headers: { get: (h) => s.keeperHeaders(h) }, json: async () => body };
   };
   fetchImpl.sealed = sealed;
-  s.make = () => (s.w = makeEvmPoolWallet({
+  s.make = (chainExtra = {}) => (s.w = makeEvmPoolWallet({
     zk, keys, keeper: 'https://k.test', fetchImpl, feed: !!s.feed, store: null,
-    prove: async () => { if (s.gate) await s.gate; proofs++; return { proof: { pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['1', '2'] }, publicSignals: Array(11).fill('0') }; },
-    chain: { chainId: 8453, pool: POOLF, router: ROUTERF, rpc, deployBlock: 1, confirmations: 0, relayer: RELAYER },
+    prove: async (input) => { if (s.gate) await s.gate; s.inputs.push(input); proofs++; return { proof: { pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['1', '2'] }, publicSignals: Array(11).fill('0') }; },
+    chain: { chainId: 8453, pool: POOLF, router: ROUTERF, rpc, deployBlock: 1, confirmations: 0, relayer: RELAYER, ...chainExtra },
   }));
   return s;
 }
@@ -1290,6 +1291,203 @@ await check('notes under the dust floor are not kept, whoever pays them; with no
   // a sweep to a receive box is under the same floor
   const c = mk(10n ** 12n); c.pool.sweep(keys, 1, 500n); c.pool.sweep(keys, 2, 5n * 10n ** 12n); c.pool.tip += 5;
   assert.equal((await c.w.sync()).balance, 5n * 10n ** 12n, 'a sweep of 500 wei is not kept, one of 5e12 is');
+});
+
+// ── several relays ──
+// Two relays, k.test (the chain's own keeper, pinned to RELAYER) and k2.test (listed, pinned to RELAYER2), each with a fee to quote.
+const RELAYER2 = '0x' + 'b2'.repeat(20), K1 = 'https://k.test', K2 = 'https://k2.test', K2URL = K2 + '/evm-pool/keeper';   // K1, K2: the origins the stub tells apart
+function twoRelays(seed, { fee1 = '2000000000000', fee2 = '1000000000000', weights = {} } = {}) {
+  const s = spender(seed);
+  s.bodies = { [K1]: [], [K2]: [] };
+  s.quote = () => [200, { chainId: 8453, pool: POOLF, relayer: RELAYER, fee: fee1 }];
+  s.relay = (n, body) => { s.bodies[K1].push(body); return [200, { txHash: s.spend().tx }]; };
+  s.hosts[K2] = {
+    quote: () => [200, { chainId: 8453, pool: POOLF, relayer: RELAYER2, fee: fee2 }],
+    relay: (n, body) => { s.bodies[K2].push(body); return [200, { txHash: s.spend().tx }]; },
+  };
+  s.make({ keepers: [{ url: K2URL, relayer: RELAYER2, weight: weights[K2] }] });
+  return s;
+}
+const sentTo = (s) => s.calls.filter((c) => c.endsWith('/relay'));
+const withRandom = async (v, fn) => { const r = Math.random; Math.random = () => v; try { return await fn(); } finally { Math.random = r; } };
+const lc = (x) => String(x).toLowerCase();
+
+await check('two relays: the spend goes through the cheaper one, and the proof names that relay\'s address and fee', async () => {
+  const s = twoRelays(61);
+  await s.ready();
+  let h;
+  await quickly(async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); });
+  assert.match(h, /^0x[0-9a-f]{64}$/);
+  assert.deepEqual(sentTo(s), [K2 + '/relay'], 'sent through k2 alone');
+  assert.equal(lc(s.bodies[K2][0].tx.relayer), lc(RELAYER2));
+  assert.equal(String(s.bodies[K2][0].tx.fee), '1000000000000');
+  assert.ok(s.calls.includes(K1 + '/quote') && s.calls.includes(K2 + '/quote'), 'both were asked for a quote');
+});
+
+await check('two relays: one that cannot be reached for its quote is left out, and the spend goes through the other', async () => {
+  const s = twoRelays(62);
+  s.hosts[K2].quote = () => { throw new Error('fetch failed'); };
+  await s.ready();
+  await quickly(async () => { await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); });
+  assert.deepEqual(sentTo(s), [K1 + '/relay']);
+  assert.equal(lc(s.bodies[K1][0].tx.relayer), lc(RELAYER));
+  assert.equal(String(s.bodies[K1][0].tx.fee), '2000000000000');
+});
+
+await check('two relays: a quote that names an address other than the one the relay is pinned to is refused, not signed for', async () => {
+  const s = twoRelays(63);
+  s.hosts[K2].quote = () => [200, { chainId: 8453, pool: POOLF, relayer: '0x' + '99'.repeat(20), fee: '1000' }];     // cheap, but not the pinned address
+  await s.ready();
+  await quickly(async () => { await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); });
+  assert.deepEqual(sentTo(s), [K1 + '/relay'], 'the cheap one with the wrong address was not used');
+});
+
+await check('two relays: a quote for another chain or pool is refused the same way', async () => {
+  for (const bad of [{ chainId: 1 }, { pool: '0x' + '77'.repeat(20) }]) {
+    const s = twoRelays(64);
+    s.hosts[K2].quote = () => [200, { chainId: 8453, pool: POOLF, relayer: RELAYER2, fee: '1000', ...bad }];
+    await s.ready();
+    await quickly(async () => { await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); });
+    assert.deepEqual(sentTo(s), [K1 + '/relay'], JSON.stringify(bad));
+  }
+});
+
+await check('two relays: with none answering, the first relay\'s own error is what is said, and nothing is proved', async () => {
+  const s = twoRelays(65);
+  s.quote = () => [503, { error: 'the relay is down' }];
+  s.hosts[K2].quote = () => { throw new Error('fetch failed'); };
+  await s.ready();
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), /the relay is down/));
+  assert.equal(s.proofs, 0); assert.deepEqual(sentTo(s), []);
+});
+
+await check('two relays: the fee shown is a ceiling: only a relay at or under it is used, and when every quote is over it the spend says what the fee is now', async () => {
+  const s = twoRelays(66);
+  await s.ready();
+  await quickly(async () => { await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', maxFee: 1_500_000_000_000n }); });
+  assert.deepEqual(sentTo(s), [K2 + '/relay'], 'k2 is under 1.5e12');
+  const t = twoRelays(67);
+  await t.ready();
+  await quickly(() => assert.rejects(t.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', maxFee: 500_000_000_000n }), (e) => e.feeMoved === 1_000_000_000_000n));
+  assert.equal(t.proofs, 0); assert.deepEqual(sentTo(t), []);
+});
+
+await check('two relays priced alike: the draw decides, by weight', async () => {
+  for (const [r, want] of [[0.1, K1], [0.9, K2]]) {
+    const s = twoRelays(68, { fee1: '1000000000000', fee2: '1000000000000' });
+    await s.ready();
+    await withRandom(r, () => quickly(async () => { await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); }));
+    assert.deepEqual(sentTo(s), [want + '/relay'], `a draw of ${r}`);
+  }
+  const heavy = twoRelays(69, { fee1: '1000000000000', fee2: '1000000000000', weights: { [K2]: 9 } });
+  await heavy.ready();
+  await withRandom(0.5, () => quickly(async () => { await heavy.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); }));
+  assert.deepEqual(sentTo(heavy), [K2 + '/relay'], 'k2 weighs nine to one, so a draw of one half falls in it');
+});
+
+// A relay that takes the spend for a fee a little over the other's, drawn first.
+const nearTwo = (seed) => twoRelays(seed, { fee1: '1000000000000', fee2: '1200000000000' });
+const refuse = (s, status, body) => { s.hosts[K2].relay = (n, b) => { s.bodies[K2].push(b); return [status, body]; }; };
+
+await check('a relay that is full: the spend is built again for the other relay, with that relay\'s address and fee, and goes through', async () => {
+  const s = nearTwo(71);
+  refuse(s, 503, { error: 'the keeper is at capacity; try again later' });
+  await s.ready();
+  const steps = [];
+  let h;
+  // k2 (the dearer one) is drawn first: both are within the margin, and the draw falls on it
+  await withRandom(0.99, () => quickly(async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', onStep: (m) => steps.push(m) }); }));
+  assert.match(h, /^0x[0-9a-f]{64}$/);
+  assert.deepEqual(sentTo(s), [K2 + '/relay', K1 + '/relay'], 'refused at k2, then sent through k');
+  assert.equal(lc(s.bodies[K2][0].tx.relayer), lc(RELAYER2)); assert.equal(String(s.bodies[K2][0].tx.fee), '1200000000000');
+  assert.equal(lc(s.bodies[K1][0].tx.relayer), lc(RELAYER), 'the second proof names the second relay');
+  assert.equal(String(s.bodies[K1][0].tx.fee), '1000000000000', 'and its fee');
+  assert.equal(s.proofs, 2, 'one proof for each relay');
+  assert.ok(steps.includes('trying another relay'), steps.join(' | '));
+  // the spend was built again for the second fee, not carried over: what the circuit is given balances for each relay's own fee
+  assert.equal(s.inputs.length, 2);
+  assert.equal(BigInt(s.inputs[0].publicAmount), publicAmount(-(10n ** 15n), 1_200_000_000_000n), 'the first proof: the amount out, less the first fee');
+  assert.equal(BigInt(s.inputs[1].publicAmount), publicAmount(-(10n ** 15n), 1_000_000_000_000n), 'the second: the same amount, less the second fee');
+  assert.notEqual(String(s.inputs[0].extDataHash), String(s.inputs[1].extDataHash), 'and it commits to the second relay and its fee');
+});
+
+await check('a relay rate limiting this connection, or one whose fee went up, hands the spend on in the same way', async () => {
+  for (const [status, body] of [[429, { error: 'rate limited' }], [400, { error: 'fee too low: it costs more', needFee: '3000000000000' }]]) {
+    const s = nearTwo(72);
+    refuse(s, status, body);
+    await s.ready();
+    let h;
+    await withRandom(0.99, () => quickly(async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); }));
+    assert.match(h, /^0x[0-9a-f]{64}$/, String(status));
+    assert.equal(sentTo(s).at(-1), K1 + '/relay', String(status));
+    assert.equal(lc(s.bodies[K1][0].tx.relayer), lc(RELAYER), String(status));
+  }
+});
+
+await check('a relay that refuses with no other relay at or under the fee shown: the spend ends as it did with one relay, and nothing goes elsewhere', async () => {
+  const s = nearTwo(73);
+  refuse(s, 503, { error: 'the keeper is at capacity; try again later' });
+  await s.ready();
+  // the fee shown covers k2 (1.2e12) but not k (1.0e12 is under it too): make k the dearer, so that it is over the ceiling
+  s.quote = () => [200, { chainId: 8453, pool: POOLF, relayer: RELAYER, fee: '1250000000000' }];
+  await withRandom(0.0, () => quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', maxFee: 1_200_000_000_000n }), /at capacity/)));
+  assert.deepEqual(sentTo(s), [K2 + '/relay'], 'k was never asked to send: its fee is over the one shown');
+});
+
+await check('a relay whose fee went up, with the other relay over the fee shown: the spend says what the fee is now, as it did with one relay', async () => {
+  const s = twoRelays(74, { fee1: '1300000000000', fee2: '1000000000000' });     // k is over the 1.1e12 shown, k2 is under it
+  s.hosts[K2].relay = (n, b) => { s.bodies[K2].push(b); return [400, { error: 'fee too low', needFee: '9000000000000' }]; };
+  await s.ready();
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay', maxFee: 1_100_000_000_000n }), (e) => e.feeMoved === 9_000_000_000_000n));
+  assert.deepEqual(sentTo(s), [K2 + '/relay'], 'k was not asked to send: its fee is over the one shown');
+});
+
+await check('an answer that does not say whether the relay sent it is not handed to another relay: the spend ends saying it may have gone', async () => {
+  const s = nearTwo(75);
+  refuse(s, 502, {});                         // a gateway with no word from the relay behind it
+  await s.ready();
+  await withRandom(0.99, () => quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), (e) => e.maybeSent === true)));
+  assert.ok(sentTo(s).every((c) => c === K2 + '/relay'), 'only the relay that may have sent it was asked: ' + sentTo(s).join(' '));
+});
+
+await check('a spend through a relay keeps its queue slot, proof and send at that relay: the reservation is asked of it and given up at it', async () => {
+  const s = nearTwo(76);
+  s.hosts[K2].reserve = () => slotOf(s.pool);
+  refuse(s, 503, { error: 'the keeper is at capacity; try again later' });
+  await s.ready();
+  await withRandom(0.99, () => quickly(async () => { await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); }));
+  const at = (path) => s.calls.filter((c) => c.endsWith(path));
+  assert.deepEqual(at('/reserve'), [K2 + '/reserve', K1 + '/reserve'], 'a slot asked of each relay, in turn, not of one for the other');
+  assert.deepEqual(at('/cancel'), [K2 + '/cancel'], 'the refused relay\'s slot was given up at that relay');
+  assert.equal(s.bodies[K2][0].reservation, 'a'.repeat(24), 'the send to k2 names k2\'s slot');
+});
+
+await check('with a single relay nothing changes: no quote is asked of any other, and a refusal is final as it was', async () => {
+  const s = spender(77);
+  s.quote = () => [200, { chainId: 8453, pool: POOLF, relayer: RELAYER, fee: '1000000000000' }];
+  s.relay = () => [503, { error: 'the keeper is at capacity; try again later' }];
+  s.make();
+  await s.ready();
+  await quickly(() => assert.rejects(s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }), /at capacity/));
+  assert.ok(s.calls.every((c) => c.startsWith(K1)), 'only the one relay was ever asked');
+  assert.equal(s.proofs, 1);
+});
+
+await check('history is read from another relay when the first has none to give, and a spend still goes through the relay it was priced at', async () => {
+  const keys = evmPoolKeys(zk, new Uint8Array(32).fill(78));
+  const pool = fakePool();
+  pool.sweep(keys, 1, 4000n); pool.tip += 5;
+  const good = feedOf(pool), asked = [];
+  const fetchImpl = async (url, init) => {
+    asked.push(new URL(url).origin);
+    return url.startsWith(K1) ? { ok: false, status: 500, headers: new Map(), json: async () => ({ error: 'down' }) } : good(url, init);
+  };
+  const seen = [];
+  const w = makeEvmPoolWallet({ zk, keys, prove: null, store: null, keeper: K1, fetchImpl, chain: { chainId: 8453, pool: POOLF, router: ROUTERF, rpc: nodeOf(pool, seen), deployBlock: 1, confirmations: 0, relayer: RELAYER, keepers: [{ url: K2URL, relayer: RELAYER2 }] } });
+  const s = await w.sync();
+  assert.equal(s.balance, 4000n, 'the note was found');
+  assert.equal(seen.length, 0, 'from the feed of the second relay, with no chain logs read');
+  assert.equal(asked[0], K1, 'the first relay was asked first'); assert.ok(asked.includes(K2));
 });
 
 console.log(`\n${n} checks passed`);

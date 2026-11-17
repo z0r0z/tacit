@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-DyQpymzZ9E5kq/CUgXWQqeBHHTLA2yivs6TaxCvUCS8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-NxzEtNwL53LdQO/ONBPQdgQxprgaieiBFZB+Ko8YoUM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -805,7 +805,7 @@ import { signBoxSync as signBox, boxSigOk as boxRecordOk } from '/box-record.js?
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 // preload-later:begin
-for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=581ebb3b","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
+for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=bfd8c78d","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-relays.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
 // preload-later:end
 
 const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5';
@@ -1022,7 +1022,7 @@ function sayLive(el, view) {
 
 const mods = lazy(async () => {
   const [zkm, wm, gw, pm, pos] = await Promise.all([
-    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=581ebb3b'), import('/evm-pool-gateway.js'),
+    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=bfd8c78d'), import('/evm-pool-gateway.js'),
     import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
   ]);
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
@@ -1469,7 +1469,7 @@ const PSW = { w: null, n: 0, wait: new Map() };
 function pswDrop() { PSW.w?.terminate(); PSW.w = null; for (const f of PSW.wait.values()) f({ ok: false }); PSW.wait.clear(); }
 function pswWorker() {
   if (PSW.w) return PSW.w;
-  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=3133c8e5', { type: 'module' }); } catch { return null; }
+  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=88918aa9', { type: 'module' }); } catch { return null; }
   PSW.w.onmessage = (e) => PSW.wait.get(e.data?.id)?.(e.data);
   PSW.w.onerror = pswDrop;
   return PSW.w;
@@ -1497,7 +1497,7 @@ async function syncInWorker(c, back = false) {
     });
     hush();
     w.postMessage({ id, priv: hexToBytes(S.key.priv), pool: POOL, router: ROUTER, entries, watch: linkIndex(), back, partial: !st.whole,
-      chain: { chainId: c.chainId, keeper: chainKeeper(c), rpc: c.rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk } });
+      chain: { chainId: c.chainId, keeper: chainKeeper(c), keepers: c.keepers, rpc: c.rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk } });
   });
 }
 async function walletOn(c) {
@@ -1513,7 +1513,7 @@ async function walletOn(c) {
   const store = { open: true, get: kv.get, set: (k, v) => { if (store.open) kv.set(k, v); } };
   st.W = m.makeEvmPoolWallet({
     zk: m.zk, keys: S.keys, keeper: chainKeeper(c), store, feed: !S.chainOnly, prove, fetchImpl: timedFetch, partial: true,
-    chain: { chainId: c.chainId, pool: POOL, router: ROUTER, rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk },
+    chain: { chainId: c.chainId, pool: POOL, router: ROUTER, rpc, deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk, keepers: c.keepers },
   });
   st.store = store;
   st.W.connect(signerFor(c));
@@ -1542,7 +1542,7 @@ function backfillChain(c) {
     syncChain(c, true).then(() => historyOf(c, true));
   });
 }
-const sealing = lazy(() => import('/evm-pool-wallet.js?cb=581ebb3b'));
+const sealing = lazy(() => import('/evm-pool-wallet.js?cb=bfd8c78d'));
 // `whole`: a state that held the whole history is read whole again, in the worker, before a wallet is made from it (syncInWorker, walletOn), and the
 // balance it showed stays on screen, as older history being read, until then; without it the new state begins at a catch-up point.
 async function freshWallet(c, whole = false) {
@@ -1573,12 +1573,25 @@ async function watchLinkBoxes() {
 }
 const timedFetch = (url, init = {}) => keeperFetch(url, { ...init, signal: init.signal || AbortSignal.timeout?.(/\/relay$/.test(String(url)) ? 180e3 : 30e3) });
 Object.defineProperty(timedFetch, 'sealed', { get: routeOn });   // on the private route a wallet sends without a reservation
+// The relays a chain lists, the one it has always named first. A read that one cannot answer (unreachable, a server error, rate limiting) is asked of the next;
+// an answer that refuses the request itself is final.
+const relayBases = (c) => [...new Set([chainKeeper(c), ...(c.keepers || []).map((k) => String(k.url).replace(/\/+$/, ''))].filter(Boolean))];
 async function keeperJson(c, path) {
+  let first = null;
+  for (const base of relayBases(c)) {
+    try { return await keeperJsonAt(base, path); } catch (e) {
+      first ||= e;
+      if (e?.status && e.status < 500 && e.status !== 429) throw e;
+    }
+  }
+  throw first || new Error('No relay is set for this chain.');
+}
+async function keeperJsonAt(base, path) {
   for (let i = 0; ; i++) {
     const stop = new AbortController();
     let quiet = setTimeout(() => stop.abort(), 20e3);
     try {
-      const r = await keeperFetch(chainKeeper(c) + path, { signal: stop.signal });
+      const r = await keeperFetch(base + path, { signal: stop.signal });
       if (r.status === 429 && i < 3) {
         r.body?.cancel().catch(() => {});
         clearTimeout(quiet);
@@ -1851,7 +1864,7 @@ async function giftWallet(seed, c) {
   const m = await mods();
   return m.makeEvmPoolWallet({
     zk: m.zk, keys: m.evmPoolKeys(m.zk, seed), keeper: chainKeeper(c), store: null, prove, fetchImpl: timedFetch, partial: true,
-    chain: { chainId: c.chainId, pool: POOL, router: ROUTER, rpc: await rpcOn(c), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk },
+    chain: { chainId: c.chainId, pool: POOL, router: ROUTER, rpc: await rpcOn(c), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk, keepers: c.keepers },
   });
 }
 // A link's wallet begins at the pool's newest catch-up point, so a note made after it shows at once; one from before it (an older link) is found
