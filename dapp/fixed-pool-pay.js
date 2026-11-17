@@ -17,9 +17,9 @@
 // secrets come from signing the nonce again.
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32, parseNoteString } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, newSession, parseEther, formatEther } from '/fixed-pool-flow.js?cb=bdc6932a';
+import { makeFlow, newSession, parseEther, formatEther } from '/fixed-pool-flow.js?cb=d2fc3577';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
-import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=ecab2a0c';
+import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=b8ddfbc9';
 export { MAX_FEE_PERCENT };
 import { depositAddressOfName, signBox } from '/fixed-pool-box.js?cb=8abc44f0';
 import { callIntent, call as intentCall } from '/evm-pool-gateway.js';
@@ -447,16 +447,22 @@ export function attach(env) {
     if (st.confirming || (asking && !asking.hidden)) { st.dirty = true; return; }
     const how = notesHost.querySelector('details.lg-how');
     if (how) st.howOpen = how.open;
+    const spentBox = notesHost.querySelector('details.lg-spent');
+    if (spentBox) st.spentOpen = spentBox.open;
     const account = env.account();
-    const rows = st.notes.map((n, i) => {
-      const pool = poolOf(n.pool), gone = st.spent.get(n.nh);
-      return `<div class="kv"><span>${pool ? formatEther(pool.denomination) : '?'} ETH <span class="mute">· note ${n.nonce}${gone ? ' · spent' : ''}</span></span>
-        <b>${gone ? '' : `<button class="link" type="button" data-move="${i}">Move into Tacit</button> <button class="link" type="button" data-out="${i}">Withdraw</button>`}</b></div>${gone ? '' : seenLine(n)}`;
-    }).join('');
+    // The notes still in their pools are listed by number; the ones taken out are folded into one line, so a wallet's history does not grow the card.
+    const all = st.notes.map((n, i) => ({ n, i })).sort((a, b) => a.n.nonce - b.n.nonce);
+    const live = all.filter(({ n }) => !st.spent.get(n.nh)), done = all.filter(({ n }) => st.spent.get(n.nh));
+    const sizeOf = (n) => { const pool = poolOf(n.pool); return pool ? formatEther(pool.denomination) : '?'; };
+    const rows = live.map(({ n, i }) => `<div class="kv"><span>${sizeOf(n)} ETH <span class="mute">· note ${n.nonce}</span></span>
+        <b><button class="link" type="button" data-move="${i}">Move into Tacit</button> <button class="link" type="button" data-out="${i}">Withdraw</button></b></div>${seenLine(n)}`).join('');
+    const spentRows = done.length ? `<details class="lg-spent"${st.spentOpen ? ' open' : ''}><summary class="note mute" style="cursor:pointer;margin:8px 0 0">${done.length} spent ${done.length === 1 ? 'note' : 'notes'}</summary>
+        ${done.map(({ n }) => `<div class="kv"><span>${sizeOf(n)} ETH <span class="mute">· note ${n.nonce}</span></span><b class="mute">spent</b></div>`).join('')}</details>` : '';
+    const list = !st.notes.length ? '<p class="note">None found in this browser. Find looks for notes made with this wallet; Paste adds one from anywhere.</p>' : `${rows || '<p class="note">No unspent notes.</p>'}${spentRows}`;
     notesHost.innerHTML = `<div class="blk" style="margin-top:22px;padding-top:14px;border-top:1px solid var(--hair)">
       ${howItWorks(st.howOpen)}
       <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lg-find">${account ? 'Find' : 'Connect wallet'}</button> · <button class="link" type="button" id="lg-paste">Paste a note</button></span></div>
-      ${rows || '<p class="note">None found in this browser. Find looks for notes made with this wallet; Paste adds one from anywhere.</p>'}
+      ${list}
       <div id="lg-ask" hidden></div>
       ${st.notes.length ? `      <div class="lbl"><span>Gas</span><span><label>Paid from <select id="lg-gas" aria-label="Where a note's gas is paid from"><option value="note"${st.gas === 'note' ? ' selected' : ''}>the note</option><option value="wallet"${st.gas === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>
       <p class="note">${st.gas === 'wallet' ? 'Your wallet sends the withdrawal and pays its gas, so it shows as the sender.' : `Gas comes out of the note (${MAX_FEE_PERCENT}% at most), so your wallet needs no ETH.`} <a href="https://github.com/ethereum/kohaku" target="_blank" rel="noopener noreferrer">Kohaku</a> can withdraw these notes too.</p>` : ''}

@@ -380,10 +380,21 @@ export async function prepareSponsoredWithdrawal({
     return { op, fee };
   };
 
-  let gas = { ...BASELINE };
+  // The fixed limits, with the fee and proof that go with them: for a bundler that cannot say what the operation needs. They are never below the
+  // limits an estimate has already raised them to.
+  const atFallback = async (now, op, gasEstimation) => {
+    const fb = fallbackGas(now, op);
+    assertGasLimitsWithinBounds(fb, BASELINE, op);
+    const again = await build(fb);
+    assertGasLimitsWithinBounds(fb, BASELINE, again.op);
+    if (fallbackGas(fb, again.op).preVerificationGas > fb.preVerificationGas) throw new Error('The payload changed size while it was prepared.');
+    return { ...again, gasEstimation, price, sender: again.op.sender };
+  };
+  let gas = { ...BASELINE }, last = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     assertGasLimitsWithinBounds(gas, BASELINE);
     const built = await build(gas);
+    last = built;
     assertGasLimitsWithinBounds(gas, BASELINE, built.op);
     onStep({ step: 'estimate' });
     let estimated;
@@ -392,13 +403,7 @@ export async function prepareSponsoredWithdrawal({
     } catch (e) {
       const reason = estimationUnavailableReason(e, built.op);
       if (!reason) throw new Error(`The bundler would not take the withdrawal: ${e.details || e.message}. Nothing was sent.`);
-      // rebuild at the fallback limits, with the fee and proof that go with them
-      const fb = fallbackGas(gas, built.op);
-      assertGasLimitsWithinBounds(fb, BASELINE, built.op);
-      const again = await build(fb);
-      assertGasLimitsWithinBounds(fb, BASELINE, again.op);
-      if (fallbackGas(fb, again.op).preVerificationGas > fb.preVerificationGas) throw new Error('The payload changed size while it was prepared.');
-      return { ...again, gasEstimation: { status: 'fallback', reason, message: e.details || e.message }, price, sender: again.op.sender };
+      return atFallback(gas, built.op, { status: 'fallback', reason, message: e.details || e.message });
     }
     if (estimated.preVerificationGas <= 0n || estimated.verificationGasLimit <= 0n || GAS_FIELDS.some((f) => estimated[f] < 0n)) throw new Error('The bundler returned invalid gas estimates.');
     const next = { ...gas };
@@ -412,7 +417,8 @@ export async function prepareSponsoredWithdrawal({
     assertGasLimitsWithinBounds(next, BASELINE, built.op);
     gas = next;
   }
-  throw new Error('The bundler\'s gas estimates did not settle after 3 tries. Nothing was sent; try later.');
+  // Three estimates in a row still asked for more: none of them says what the operation needs.
+  return atFallback(gas, last.op, { status: 'fallback', reason: 'estimates-not-settling' });
 }
 
 // Sends the operation and waits for it to be mined. A lost reply to the send does not mean it was refused: the

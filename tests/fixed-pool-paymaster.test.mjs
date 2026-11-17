@@ -323,6 +323,18 @@ await test('the estimate: a lone bundler that answers without the paymaster limi
   eq(r.gasEstimation.status, 'fallback'); eq(r.gasEstimation.reason, 'bundler-internal');
   if (BigInt(r.op.paymasterVerificationGasLimit) < 450_000n) throw new Error('the paymaster verification limit fell below the baseline');
 });
+// An estimator that answers with every limit it was sent, the paymaster's included, never settles: each answer is buffered by a fifth and asks for more.
+const echoedFull = (params) => ({ callGasLimit: '0x0', verificationGasLimit: params[0].verificationGasLimit, preVerificationGas: params[0].preVerificationGas, paymasterVerificationGasLimit: params[0].paymasterVerificationGasLimit, paymasterPostOpGasLimit: params[0].paymasterPostOpGasLimit });
+await test('the estimate: estimates that never settle end in the fallback limits, not a refusal, and the limits are not below what the estimates had raised them to', async () => {
+  const { set } = setOf({ [PIM]: { pimlico_getUserOperationGasPrice: PRICE, eth_estimateUserOperationGas: echoedFull } }, [URLS[0]]);
+  const r = await prep(set);
+  eq(r.gasEstimation.status, 'fallback'); eq(r.gasEstimation.reason, 'estimates-not-settling');
+  eq(r.proved.length, 4, 'a proof for each of the three tries and one for the limits it ended at');
+  const raised = (GAS.paymasterVerificationGasLimit * 12n / 10n) * 12n / 10n * 12n / 10n;   // three rounds of the buffer on the baseline
+  if (BigInt(r.op.paymasterVerificationGasLimit) < raised) throw new Error(`the paymaster verification limit ${r.op.paymasterVerificationGasLimit} is below what the estimates asked for (${raised})`);
+  if (BigInt(r.op.paymasterVerificationGasLimit) < 650_000n || BigInt(r.op.verificationGasLimit) < 150_000n) throw new Error('the fixed limits were not applied');
+  eq(r.proved[3], P.minimumViableFee({ ...GAS, verificationGasLimit: BigInt(r.op.verificationGasLimit), paymasterVerificationGasLimit: BigInt(r.op.paymasterVerificationGasLimit), preVerificationGas: BigInt(r.op.preVerificationGas), paymasterPostOpGasLimit: BigInt(r.op.paymasterPostOpGasLimit) }, 400_000_000n), 'the last proof carries the fee for the limits in the operation');
+});
 await test('the estimate: an answer with the paymaster limits is used from whichever bundler gives it, and an operation with no paymaster is not held to them', async () => {
   const { set } = setOf({ [PIM]: { pimlico_getUserOperationGasPrice: PRICE, eth_estimateUserOperationGas: QUIRK }, [CAN]: { eth_estimateUserOperationGas: est() } });
   eq((await prep(set)).gasEstimation.status, 'estimated');

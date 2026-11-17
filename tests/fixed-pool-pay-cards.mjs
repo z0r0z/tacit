@@ -293,8 +293,31 @@ await test('Move into Tacit: proved in a worker, the fee shown and pressed, one 
   assert.ok(op.paymasterData.toLowerCase().includes(BOX.slice(2)), 'pays the deposit address');
   assert.ok(op.eip7702Auth && op.eip7702Auth.chainId === '0x1');
 });
-await test('a note that has been moved shows spent and offers nothing', async () => {
-  await page.waitForFunction(() => /· spent/.test(document.querySelector('#notes').textContent));
+await test('notes taken out fold into one closed line with nothing to do on them; the unspent ones are listed by number, and the line keeps its state', async () => {
+  const key = 'tacit-fixed-notes:1:0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
+  await page.waitForFunction(() => /\d+ spent notes?/.test(document.querySelector('#notes details.lg-spent summary')?.textContent || ''));
+  const box = () => page.locator('#notes details.lg-spent');
+  assert.equal(await box().evaluate((el) => el.open), false, 'closed at first');
+  assert.match((await box().locator('summary').innerText()).trim(), /^\d+ spent notes?$/);
+  assert.equal(await page.locator('#notes [data-move], #notes [data-out]').count(), 0, 'nothing to do on a spent note');
+  assert.match(await page.locator('#notes').innerText(), /No unspent notes/);
+  assert.equal(await page.locator('#notes #lg-gas').count(), 1, 'the gas choice stays: a pasted note is taken out with it too');
+  await box().locator('summary').click();
+  await page.evaluate(() => { window.__repaint(); });
+  assert.equal(await box().evaluate((el) => el.open), true, 'stays open when the card is drawn again');
+  const nums = [...(await box().innerText()).matchAll(/note (\d+)/g)].map((m) => Number(m[1]));
+  assert.deepEqual(nums, [...nums].sort((a, b) => a - b), 'by number');
+  await box().locator('summary').click();
+  // one taken out, one still in its pool: the one in the pool keeps its actions, and the other is the one folded line
+  const kept = JSON.parse(await page.evaluate((k) => localStorage.getItem(k), key));
+  const spentN = await page.evaluate(() => window.__spentN);
+  await page.evaluate(([nh]) => { window.__spentAll = false; window.__order = [nh]; window.__spentN = 1; window.__repaint(); }, [kept[0].nh.toLowerCase()]);
+  await page.waitForFunction(() => document.querySelectorAll('#notes [data-move]').length === 1);
+  assert.match((await box().locator('summary').innerText()).trim(), /^1 spent note$/);
+  assert.equal(await page.locator('#notes [data-out]').count(), 1);
+  assert.doesNotMatch(await page.locator('#notes').innerText(), /No unspent notes/);
+  await page.evaluate(([n]) => { window.__order = null; window.__spentAll = true; window.__spentN = n; window.__repaint(); }, [spentN]);
+  await page.waitForFunction(() => document.querySelectorAll('#notes [data-move]').length === 0);
 });
 await test('Find brings the notes back from the wallet alone: both are listed again, and only the numbers not signed for in this visit are asked for', async () => {
   const key = 'tacit-fixed-notes:1:0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
