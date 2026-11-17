@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-pcy/hiqR152PBpLiFIgbXosT003ucc5NJ2j/BCaRCmQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-4dhanE2Diws+BkWaCs0l//yZqtKji4IvjKpxDpPQynM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -2835,10 +2835,20 @@ const done = (c, h, text) => { say($('#status'), html`<span class="ok">${text}</
 // confirms: a transaction that has waited a while is asked about now and then (activity.js lookReplaced, loaded when first wanted), and once a mined one has taken its nonce, the
 // same call is the receipt of the speed-up, and anything else means it never ran, which this page treats as a payment that did not go through ('reverted').
 const TRACK = new Map();
+// What a look learned of a payment's transaction (its sender and nonce) is kept with the paid request in this browser, so that a speed-up can still be followed after the page was closed
+// and opened again: the record's `seen` is put back here when the request is restored.
+const trackKey = (c, h) => `${c.chainId}:${String(h).toLowerCase()}`;
+const trackFrom = (c, h, seen) => { if (seen && h) TRACK.set(trackKey(c, h), { last: 0, seen, found: null }); };
+function keepSeen(k, seen) {
+  const all = paidReqs();
+  let hit = false;
+  for (const x of Object.values(all)) if (x?.h && `${x.chain}:${String(x.h).toLowerCase()}` === k) { x.seen = seen; hit = true; }
+  if (hit) writeJson(PAID_REQ, all);
+}
 const receiptOf = async (c, h, self = false) => {
-  const read = await (self ? rpcApart(c) : rpcOn(c)), k = `${c.chainId}:${String(h).toLowerCase()}`;
+  const read = await (self ? rpcApart(c) : rpcOn(c)), k = trackKey(c, h);
   let st = TRACK.get(k);
-  if (!st) TRACK.set(k, st = { last: Date.now(), seen: null, found: null });
+  if (!st) TRACK.set(k, st = { last: 0, seen: null, found: null });
   if (st.found && !st.found.same) return 'reverted';
   const r = await read('eth_getTransactionReceipt', [st.found ? st.found.hash : h]);
   if (r) return r.status === '0x1' || r.status === 1 ? 'ok' : 'reverted';
@@ -2846,7 +2856,7 @@ const receiptOf = async (c, h, self = false) => {
     st.last = Date.now();
     const A = await import('/activity.js').catch(() => null);
     const v = A?.lookReplaced ? await A.lookReplaced({ read, hash: h, seen: st.seen }).catch(() => ({})) : {};
-    if (v.seen) st.seen = v.seen;
+    if (v.seen) { st.seen = v.seen; keepSeen(k, v.seen); }
     if (v.found) st.found = v.found;
   }
   return null;
@@ -3982,10 +3992,11 @@ const REQ = { v: null };
 const HANDED = { v: null };
 const PAID_REQ = 'tacit-pay-paid-req-v1', PAID_DAYS = 30;
 const paidReqs = () => Object.fromEntries(Object.entries(readJson(PAID_REQ) || {}).filter(([, x]) => Date.now() - (x?.at || 0) < PAID_DAYS * 86400e3));
+const seenOfPaid = (r, was) => TRACK.get(trackKey(r.paid.c, r.paid.h))?.seen || (was?.h === r.paid.h ? was.seen : null) || null;
 const rememberPaid = (r, landed = false) => {
   if (!r?.src || !r.paid) return;
   const all = paidReqs(), was = all[r.src];
-  writeJson(PAID_REQ, { ...all, [r.src]: { h: r.paid.h, chain: r.paid.c.chainId, a: r.paid.a.toString(), at: was?.h === r.paid.h ? was.at : Date.now(), ...(r.paid.self ? { self: true } : {}), ...(landed ? { mined: true } : { pending: true }) } });
+  writeJson(PAID_REQ, { ...all, [r.src]: { h: r.paid.h, chain: r.paid.c.chainId, a: r.paid.a.toString(), at: was?.h === r.paid.h ? was.at : Date.now(), ...(r.paid.self ? { self: true } : {}), ...(seenOfPaid(r, was) ? { seen: seenOfPaid(r, was) } : {}), ...(landed ? { mined: true } : { pending: true }) } });
 };
 const forgetPaid = (r) => { const all = paidReqs(); delete all[r?.src]; writeJson(PAID_REQ, all); };
 // Kept before a payment of the request goes out, with no hash yet: a tab closed while the relay or the wallet holds it reopens the link as one
@@ -5103,7 +5114,7 @@ function applyHash() {
       const was = paidReqs()[h], wc = was && chainOf(was.chain);
       // a record with no hash: a payment of it began in this browser and the page closed before it was out (beginPaid)
       if (wc) { try { Object.assign(REQ.v, { paid: { h: was.h || null, c: wc, a: BigInt(was.a), self: !!was.self }, state: !was.h ? 'started' : was.mined ? 'before' : 'pending', paidAt: was.at, restored: true }); } catch {} }
-      if (REQ.v.paid?.h && !was.mined) watchPaid(REQ.v);
+      if (REQ.v.paid?.h && !was.mined) { trackFrom(REQ.v.paid.c, REQ.v.paid.h, was.seen); watchPaid(REQ.v); }
       if (REQ.v.paid) delete DRAFT['f-to'];
       else { DRAFT['f-to'] = bp; if (amount) DRAFT['f-amt'] = tok ? plainOf(amount, tok.dec) : plain(amount); else delete DRAFT['f-amt']; }
     }

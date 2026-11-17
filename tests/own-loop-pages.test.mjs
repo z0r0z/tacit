@@ -57,7 +57,8 @@ test('splitter: where activity.js cannot load it is the plain wait it was', asyn
 
 // ── the Pay page: the status of a payment's transaction ──
 const paySrc = scale(cut(src('pay/eth/index.html'), 'const TRACK = new Map();', '\nconst mined = ', 'the Pay page\'s receiptOf'), [['15_000', '10']]);
-const payPage = (reads, act = ACT) => new Function('rpcApart', 'rpcOn', 'ACT', `${paySrc.replace(IMPORT, 'import(ACT)')}\nreturn receiptOf;`)(async () => reads.apart, async () => reads.on, act);
+const payWorld = (reads, act = ACT, store = {}) => new Function('rpcApart', 'rpcOn', 'ACT', 'paidReqs', 'writeJson', 'PAID_REQ', `${paySrc.replace(IMPORT, 'import(ACT)')}\nreturn { receiptOf, trackFrom, keepSeen, trackKey };`)(async () => reads.apart, async () => reads.on, act, () => JSON.parse(JSON.stringify(store.paid || {})), (k, v) => { store.paid = v; }, 'paid');
+const payPage = (reads, act = ACT) => payWorld(reads, act).receiptOf;
 const chainOf = { chainId: 1 };
 test('pay: a payment a speed-up landed reads as paid, and a request is not paid again', async () => {
   const c = pending(), receiptOf = payPage({ on: c.read, apart: c.read });
@@ -213,3 +214,17 @@ test('rewards page: one still held is waited for, one nobody holds is let go aft
   assert.equal((await (await earlierTurn({ c, trace: false })).run()).status, 'confirmed', 'its own receipt still confirms it');
 });
 
+
+test('pay: what a payment\'s transaction was learned to be is kept with the paid request, and put back when the page is opened again', async () => {
+  const c = pending(), store = { paid: { 'req1': { h: orig.hash, chain: 1, a: '5', at: Date.now() }, other: { h: '0x' + '09'.repeat(32), chain: 1, a: '1', at: Date.now() } } };
+  const w = payWorld({ on: c.read, apart: c.read }, ACT, store);
+  assert.equal(await w.receiptOf(chainOf, orig.hash), null);
+  await sleep(15); await w.receiptOf(chainOf, orig.hash);
+  assert.equal(store.paid.req1.seen?.nonce, '0', 'written to the request\'s record the look that learned it'); assert.equal(store.paid.other.seen, undefined, 'and to no other');
+  // a new page: nothing in memory, the record restored: the speed-up lands while it was closed
+  c.mempool.delete(orig.hash); c.mine(fast, 990);
+  const again = payWorld({ on: c.read, apart: c.read }, ACT, store);
+  again.trackFrom(chainOf, orig.hash, store.paid.req1.seen);
+  assert.equal(await again.receiptOf(chainOf, orig.hash), null, 'the look that finds it takes a moment'); await sleep(15);
+  assert.equal(await again.receiptOf(chainOf, orig.hash), 'ok', 'found from what was kept, with no look at it while it waited');
+});
