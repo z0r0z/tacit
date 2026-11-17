@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-NiU46ewzuprhP5ZUzuOIEWQlzW0NBHW+ZZFUtxhRLYg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-6RJnSo9G1rN8Rm7fZqvvlyuf2zm2WIdKt6yMiL2uB1k=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -70,9 +70,9 @@
 <link rel="modulepreload" href="/bridge-in.js?cb=4cd75cac">
 <link rel="modulepreload" href="/bridge-tick.js?cb=42d78071">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
-<link rel="modulepreload" href="/activity.js?cb=d93291ee">
+<link rel="modulepreload" href="/activity.js?cb=6d4fe1bf">
 <link rel="modulepreload" href="/pool-hint.js?cb=a5413c70">
-<link rel="modulepreload" href="/swap/card.js?cb=933d9f24">
+<link rel="modulepreload" href="/swap/card.js?cb=025b9e73">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -2624,7 +2624,7 @@ import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEE
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll, proofWait as brProofWait, whyText as brWhy, splitTag as brSplitTag, waitFor as brWaitFor, splitFee as brSplitFeeOf } from '/bridge-in.js?cb=4cd75cac';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=42d78071';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
-import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead, fastItem, lookReplaced, landedHash, traceTx, guessSeen, REPLACED_TEXT } from '/activity.js?cb=d93291ee';
+import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeOffers, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead, fastItem, lookReplaced, landedHash, traceTx, guessSeen, REPLACED_TEXT } from '/activity.js?cb=6d4fe1bf';
 if (window.__tacitAway) await new Promise(() => {});
 document.querySelector('link[rel="stylesheet"][href^="/swap/card.css"]')?.setAttribute('media', 'all');
 
@@ -3155,6 +3155,7 @@ function receipt(hash, chainId = 1, note = {}) {
 }
 
 const NOTIFY_KEY = 'tacit-lite-notify-v1';
+const OFFERS = makeOffers();
 const JRN = makeJournal({ pub: () => S.key?.pubHex ?? null, onTrim: () => RUNS.forEach(lastEnd), onStatus: (it, prev) => actStatus(it, prev), onChange: () => paintAct() });
 const ACT = JRN.state;
 const clearedBy = (x, at) => ended(x) && (x.end || x.at) <= at;
@@ -3344,6 +3345,7 @@ function actStatus(it, prev) {
   if (it.kind === 'job' && it.status === 'settled' && SESS.has(it.id) && !OWN_JOB.test(it.id.slice(4))) PACE.learn(it);
   if (it.kind === 'job' && ['failed', 'unknown'].includes(it.status) && SESS.has(it.id)) setTimeout(() => recheckJob(it.id), 180e3);
   if (ended(it)) { runsPrune(); const r = it.kind === 'job' && JOBS.get(it.id.slice(4))?.run; if (r) batchLine(r); }
+  if (it.kind === 'job') offerLanded(OFFERS.landed(it), it);
 }
 
 const VJ_KEY = 'tacit-voucher-jobs-v1';
@@ -3761,7 +3763,17 @@ function offerSelf(spec, e) {
     : spec.exit ? 'Still in the relay’s queue. It goes through if the relay reaches it within its hour; after that it expires and nothing is spent. Follow it in Activity, or send it yourself now.'
     : `Still in the relay’s queue. It goes through on its own${spec.carry ? `: once Activity shows it done, ${spec.carry}` : '; follow it in Activity'}. Or send it yourself.`;
   say(spec.status(), spec.open ? html`${msg}${selfOffer(spec)}` : html`<span class="err">${msg}</span>${selfOffer(spec)}`);
+  OFFERS.track(spec, spec.run?.jobs);
   return Object.assign(new Error(msg), { offered: true, said: true });
+}
+// The relay sent a job that an offer to send it yourself stood in for (see makeOffers): the offer's line says how it ended, and what it changed is read again.
+function offerLanded(hit, it) {
+  if (!hit) return;
+  const { spec } = hit, el = spec.status();
+  if (!hit.done) { say(el, html`<span class="err">${spec.label} did not go through: ${linked(failText(it))}</span>${selfOffer(spec)}`); return; }
+  delete SELFDO[spec.id];
+  if (spec.landed) spec.landed(it); else say(el, html`<span class="ok">${spec.then || 'Done.'}</span> ${it.hash ? txLink(it.hash) : ''}`);
+  Promise.allSettled([scanPrivate(true), spec.after ? spec.after() : null]).then(() => rerender(spec.sheet));
 }
 function offerAway(spec, e) {
   const run = spec.run;
@@ -3790,6 +3802,7 @@ async function selfDo(run, spec) {
   if (on) run.nest = on;
   run.take(...(spec.keys || []));
   let own = false;
+  spec.selfBusy = true;
   try {
     own = spec.open ? false : spec.own ?? (ownOn() && (await ownCan(spec.types)));
     await payingAccount();
@@ -3812,6 +3825,7 @@ async function selfDo(run, spec) {
     if (on) actPut(on, { status: 'settled', hash: r?.txHash || undefined, selfErr: '', sent: true, end: Date.now() });
     else toast(r?.already ? `${spec.label}: it had already gone through` : `${spec.label}: done`);
     if (!on) say(status(), html`<span class="ok">${r?.already ? 'It had already gone through.' : spec.then || 'Done.'}</span> ${r?.txHash ? txLink(r.txHash) : ''}`);
+    OFFERS.drop(spec);
     await Promise.allSettled([scanPrivate(true), spec.after ? spec.after() : null]);
     rerender(spec.sheet);
   } catch (e) {
@@ -3820,7 +3834,7 @@ async function selfDo(run, spec) {
     else if (!own && !spec.open && relayCantProve(e)) offerProveSelf(spec, e);
     else run.fail(status(), e);
   }
-  finally { if (on) { SELF.delete(on); paintAct(); } }
+  finally { delete spec.selfBusy; if (on) { SELF.delete(on); paintAct(); } }
 }
 document.addEventListener('click', (e) => {
   const c = e.target.closest?.('[data-selfcopy]');
@@ -4039,6 +4053,7 @@ document.addEventListener('click', (e) => {
   const spec = b && KEEP[b.dataset.keepline];
   if (!spec) return;
   delete KEEP[b.dataset.keepline];
+  OFFERS.drop(spec);
   busy(b, async () => {
     const run = spec.run;
     run.keep = true; RUNS.add(run);
@@ -10076,11 +10091,11 @@ const samePos = (pos) => (FARM.positions || []).find((x) => x.receiptLeaf === po
 const stepOf = (tell, k, n) => (n > 1 ? (m) => tell(`Step ${k} of ${n} · ${m}`) : tell);
 const isLp = (p) => (n) => String(n.asset).toLowerCase() === String(p.lpAsset).toLowerCase();
 const statusLine = (status) => () => (status?.id && document.getElementById(status.id)) || status;
-async function stepHarvest(run, pos, tell, status) {
+async function stepHarvest(run, pos, tell, status, landed = null) {
   takePosition(run, pos);
   tell('The relay is proving your harvest…');
   const t = await getUx(), args = { walletPriv: walletPriv(), position: pos }, label = 'Harvest farm rewards';
-  await proveOr({ run, types: ['farmharvest'], held: true, offer: status ? undefined : false, label, sheet: 'farm', status: statusLine(status), tell, wait: () => run.wait(label, 15 * 60e3),
+  await proveOr({ run, types: ['farmharvest'], held: true, offer: status ? undefined : false, label, sheet: 'farm', status: statusLine(status), tell, wait: () => run.wait(label, 15 * 60e3), landed,
     after: () => loadFarms(true, { private: true }), then: 'Harvested to a wTAC note. Turn it into TAC when you like.',
     go: (x) => x.t.farmHarvest({ ...args, selfSettle: x.selfSettle, waitOpts: x.waitOpts }),
     relayed: () => t.farmHarvest({ ...args, waitOpts: run.wait(label, 15 * 60e3) }) });
@@ -15776,7 +15791,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=933d9f24').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=025b9e73').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {
@@ -16118,6 +16133,7 @@ function hxPosRows() {
   }
   return out;
 }
+const harvestedSay = (el) => say(el, html`<span class="ok">Harvested to a wTAC note,</span> one for one with TAC. <button class="link" type="button" data-pturn>Turn it into TAC</button>`);
 function hxPosPaint() {
   const el = $('#hx-pos'), list = $('#hx-pos-l');
   if (!el || !list) return;
@@ -16185,8 +16201,9 @@ function hxPosPaint() {
           toast('Rewards turned into TAC'); say(at(), html`<span class="ok">Your rewards are TAC in ${your()}.</span>`);
           await refreshFarm();
         } else if (b.dataset.pharv != null) {
-          await stepHarvest(run, r.pos, tell, at());
-          say(at(), html`<span class="ok">Harvested to a wTAC note,</span> one for one with TAC. <button class="link" type="button" data-pturn>Turn it into TAC</button>`); toast('Harvested');
+          // (if the relay was slow and the page offered to send it from the account, the job landing later says the same on this line: `landed`)
+          await stepHarvest(run, r.pos, tell, at(), () => { harvestedSay(at()); hxPosPaint(); });
+          harvestedSay(at()); toast('Harvested');
         } else {
           const out = await exitPosition(run, r.p, r.pos, tell, at());
           if (out === 'out') { toast('Out of the farm'); say(at(), html`<span class="ok">Out: your liquidity is private ${pairName(r.p.pair)} notes again${run.harvested ? ', the rewards wTAC notes' : ''}.</span>`); }
