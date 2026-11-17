@@ -403,7 +403,7 @@ test('points: each proof the relay takes from a community machine counts for its
 });
 
 test('points config: env sets the points and a count a day, 0 points pays nothing, no count or 0 is no count, nonsense keeps the default', () => {
-  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3, drawPct: 0, drawNew: 15, drawSeats: 3 });
+  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3, drawPct: 0, drawNew: 15, drawSeats: 3, drawFreshMs: 6000 });
   assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10', POINTS_BOARD_BTC_PER_PROOF: '800' }), { pointsPerProof: 50, proofsPerMinerDay: 10, ...btc(800) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0', POINTS_BOARD_BTC_PER_PROOF: '0' }), { pointsPerProof: 0, proofsPerMinerDay: Infinity, ...btc(0) });
@@ -414,6 +414,7 @@ test('points config: env sets the points and a count a day, 0 points pays nothin
   assert.deepEqual([proverBoardConfig({ PROVER_BOARD_BEST_PCT: '0' }).bestPct, proverBoardConfig({ PROVER_BOARD_BEST_PCT: '100' }).bestPct, proverBoardConfig({ PROVER_BOARD_BEST_PCT: '101' }).bestPct], [0, 100, 50], 'batches by record: 0 to 100, past it the default');
   assert.deepEqual([proverBoardConfig({ PROVER_BOARD_BEST_OF: '1' }).bestOf, proverBoardConfig({ PROVER_BOARD_BEST_OF: '0' }).bestOf], [1, 3], 'at least one machine');
   assert.deepEqual(['5', '0', 'few', '500'].map((v) => proverBoardConfig({ PROVER_BOARD_BLOCK_DRAW_SEATS: v }).drawSeats), [5, 3, 3, 50], 'the newcomers\' seats: at least one, nonsense keeps the default, no more than fifty');
+  assert.deepEqual(['3000', '0', '500', 'soon', '40000', '999999'].map((v) => proverBoardConfig({ PROVER_BOARD_BLOCK_DRAW_FRESH_MS: v }).drawFreshMs), [3000, 6000, 6000, 6000, 30_000, 6000], 'how recently a machine must have asked to be drawn: a second at least, nonsense or out of range keeps the default, never past the seen window');
 });
 
 test('community first pick: a fresh public job waits for a ready community machine before Tacit\'s worker takes it, private work never waits', async () => {
@@ -1145,6 +1146,7 @@ test('draw: places with no record take turns: only the longest waiting hold a ti
   const { st, b } = drawBoard({ drawNew: 90, drawSeats: 3 }), block = blockOn(b);
   const fast = gpu('a0'), news = ['a1', 'b2', 'c3', 'd4', 'e5', 'f6'].map((h) => gpu(h));
   for (const w of [fast, ...news]) { await askBlock(b, w); t += 1000; }          // the board sees them in this order
+  for (const w of [fast, ...news]) await askBlock(b, w);                          // and all are asking now
   const ws = await st.getWorkers();
   for (const w of [fast, ...news]) ws[w.name].proved = 1;
   Object.assign(ws[fast.name], { blocks: 5, blockSecs: 4 });
@@ -1164,7 +1166,7 @@ test('draw: places with no record take turns: only the longest waiting hold a ti
   for (let i = 0; i < 30; i++) {
     t += 1000; const j = await block();
     let got = null;
-    for (const w of [fast, ...news]) { if (await askBlock(b, w)) { got = w; break; } }
+    for (const w of [fast, ...news]) { if (await askBlock(b, w) && !got) got = w; }
     assert.ok(got, 'a block is drawn for someone');
     await b.cancel({ jobId: j.jobId });
     if (got === fast) continue;
@@ -1259,4 +1261,40 @@ test('draw: odds follow the whole wait, and a record from before it was kept wei
   assert.match(sz.text, /Tacit chain blocks: 3 taken, usually 10 s each\./, 'an older record is said as before');
   assert.doesNotMatch(sz.text, /none taken yet/);
   assert.ok(Math.abs(sx.oddsPct / sy.oddsPct - 3) < 0.1, `10 s of waiting against 30 s: three to one (${sx.oddsPct} / ${sy.oddsPct})`);
+});
+
+test('draw: only a machine that asked for work a moment ago is drawn, so the block is not held for one busy elsewhere or between slow asks', async () => {
+  t = 39_000_000;
+  const { st, b } = drawBoard(), block = blockOn(b);
+  const near = gpu('d1'), far = gpu('e2');
+  await ready(st, b, [near, far]);
+  const ws = await st.getWorkers();
+  for (const w of [near, far]) Object.assign(ws[w.name], { blocks: 3, blockSecs: 10, blockFelt: 10 });
+  await st.putWorkers(ws);
+  assert.ok(Math.abs((await b.standing(addrOf(far))).oddsPct - 50) < 0.5, 'asking together, they share the draw');
+  t += 7000;                                                      // far has not asked for 7 s (a proof under way, or a slow ask); near asks again
+  await askBlock(b, near);
+  const sf = await b.standing(addrOf(far)), sn = await b.standing(addrOf(near));
+  assert.equal(sf.inDraw, false);
+  assert.match(sf.why, /last asked for work 7 s ago.*only among machines that asked in the last 6 s/);
+  assert.deepEqual([sn.inDraw, sn.oddsPct], [true, 100], 'near holds the whole draw');
+  for (let i = 0; i < 30; i++) {                                  // thirty blocks, and far, silent for those seconds, is drawn for none of them
+    t += 1;
+    const j = await block();
+    assert.equal((await askBlock(b, near))?.jobId, j.jobId, `block ${i}: drawn for the machine that is asking`);
+    await b.cancel({ jobId: j.jobId });
+  }
+});
+
+test('draw: the freshness the draw asks for follows the setting, and when no one is fresh the asker is, so a block is never left undrawn', async () => {
+  t = 40_000_000;
+  const { st, b } = drawBoard({ drawFreshMs: 20_000 });
+  const x = gpu('d1'), y = gpu('e2');
+  await ready(st, b, [x, y]);
+  t += 7000; await askBlock(b, x);
+  assert.equal((await b.standing(addrOf(y))).inDraw, true, 'asked 7 s ago, inside a 20 s setting');
+  t += 25_000; await askBlock(b, x);
+  assert.equal((await b.standing(addrOf(y))).inDraw, false, 'asked 25 s ago, outside it');
+  const blk = blockOn(b), j = await blk();
+  assert.equal((await askBlock(b, x)).jobId, j.jobId, 'the machine that asks is fresh by asking, so it can be drawn');
 });
