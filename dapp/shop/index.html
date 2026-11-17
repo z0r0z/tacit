@@ -23,7 +23,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /shop/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/shop/app.js?cb=11332a0a">
+<link rel="modulepreload" href="/shop/app.js?cb=6cc7f841">
 <link rel="modulepreload" href="/trade/connect.js?cb=b758e60b">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
@@ -158,7 +158,6 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .row .btn.ghost { width: auto; min-width: 96px; margin: 0; padding: 8px 14px; }
 @media (max-width: 560px) { .row { flex-direction: column; align-items: stretch; gap: 8px; } .buy { justify-content: space-between; } }
 .to { display: grid; gap: 6px; margin: 16px 0 0; font-size: 12.5px; }
-.to input { width: 100%; min-height: 44px; padding: 8px 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; font: 13px/1.4 var(--mono); }
 .linkbtn { background: none; border: 0; padding: 0; cursor: pointer; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; font-size: inherit; }
 #after h2 { margin-bottom: 6px; }
 #after code, .note code { overflow-wrap: anywhere; }
@@ -171,8 +170,20 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .filters input { -webkit-appearance: none; appearance: none; width: 100%; min-height: 44px; padding: 8px 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; font: 13px/1.4 var(--mono); }
 .price { text-align: right; }
 .usd { display: block; font-style: normal; font-size: 11.5px; color: var(--mute); }
-.to select { width: 100%; min-height: 44px; padding: 8px 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; font: 13px/1.4 var(--mono); }
-.to textarea { width: 100%; min-height: 96px; padding: 10px 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; font: 12px/1.4 var(--mono); resize: vertical; overflow-wrap: anywhere; }
+/* the fields: one look for the pickers, the inputs and the box for bytecode. A picker's arrow is drawn here (a corner of a box, in the muted ink) so it sits where it should in both themes. */
+.to select, .to input, .to textarea { width: 100%; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; font: 13px/1.4 var(--mono); transition: border-color .15s, box-shadow .15s; }
+.to select { -webkit-appearance: none; appearance: none; min-height: 48px; padding: 10px 46px 10px 14px; cursor: pointer; text-overflow: ellipsis; }
+.to input { min-height: 48px; padding: 10px 14px; }
+.to textarea { min-height: 112px; padding: 12px 14px; font-size: 12px; resize: vertical; overflow-wrap: anywhere; }
+.to select:focus-visible, .to input:focus-visible, .to textarea:focus-visible { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 14%, transparent); }
+@media (hover: hover) { .to select:hover, .to input:hover, .to textarea:hover { border-color: var(--mute); } .to select:focus-visible:hover, .to input:focus-visible:hover, .to textarea:focus-visible:hover { border-color: var(--ink); } }
+.to ::placeholder { color: color-mix(in srgb, var(--mute) 80%, transparent); }
+.sel { position: relative; display: block; }
+.sel::after { content: ''; position: absolute; right: 19px; top: 50%; width: 7px; height: 7px; border-right: 1.5px solid var(--mute); border-bottom: 1.5px solid var(--mute); transform: translateY(-75%) rotate(45deg); pointer-events: none; }
+/* the form at the bottom: two pickers side by side where there is room, everything else the whole width, and a button that is only as wide as its word on a wide screen */
+.useform { display: grid; grid-template-columns: 1fr; column-gap: 16px; }
+.useform .wide { grid-column: 1 / -1; }
+@media (min-width: 760px) { .useform { grid-template-columns: 1fr 1fr; } .useform .btn { width: auto; min-width: 220px; justify-self: start; } }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -386,6 +397,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/shop/app.js?cb=11332a0a"></script>
+<script type="module" src="/shop/app.js?cb=6cc7f841"></script>
 </body>
 </html>
