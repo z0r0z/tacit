@@ -14,6 +14,17 @@ It reads Ethereum over public RPC, trying `ethereum-rpc.publicnode.com`, `eth.dr
 turn, and pins every read to one block so the table is a single coherent snapshot. About sixty-five calls, a few
 seconds.
 
+To ask one node of your own instead, pass it with `--rpc` (or set `RPC`):
+
+```sh
+node tools/verify-live.mjs --rpc http://127.0.0.1:8545
+```
+
+That node alone answers every read. If it fails or refuses a call the run stops with its message, and the public list
+is not tried in its place. A full node you run counts as your own source of truth. A light client, such as
+Nethermind's, checks what it serves against Ethereum's consensus from a finalized checkpoint you give it, so no RPC
+provider has to be believed for the table to mean what it says.
+
 ## What it checks
 
 **Deployed code is the code in this checkout.** It fetches the pool's runtime bytecode and compares it, byte
@@ -68,7 +79,8 @@ pool-minted, at a `1e10` unit scale and linked to it; `canonicalTokenFor` resolv
 asset is registered under the local EVM id of TAC, tacBTC or tacUSD, which would pay out the same token at another
 scale. The supply is checked against the 21,000,000 etched on Bitcoin, and wTAC's TAC balance against its supply.
 The etch itself (zero mint authority, a supply commitment that opens to 21,000,000) is checked from Bitcoin and IPFS
-by [tacit.finance/verify.html](https://tacit.finance/verify.html).
+by [tacit.finance/verify.html](https://tacit.finance/verify.html), which can read Ethereum from a node on your own
+computer (`127.0.0.1:8545`) instead of two public nodes when you tick the box for it.
 
 **Risk parameters, printed plainly.** `cdpRatioBps`, `liqRatioBps`, `escrowRatioBps`, `maxStaleness`,
 `maxDeviationBps`, `stabilityFeePerSecond`, `escrowMaintenanceBps`, `insuranceReserve`, `outstandingCusd`,
@@ -104,7 +116,7 @@ the protocol's risk appetite, only to make the setting visible.
   state against it, so a wrong manifest agreeing with a wrong deployment would pass. The pool address is the
   anchor; confirm it independently before trusting the rest.
 - **Not that the RPC is telling the truth.** It trusts whichever public endpoint answers. Re-run it against a
-  different endpoint, or your own node, if that matters to you.
+  different endpoint, or against your own node with `--rpc`, if that matters to you.
 - **Not the Tacit chain.** TacitBlocks (`0x00000000000a9147ffd8d41d152d730ca5f84e6c`) is a separate contract with
   its own block program; see [`TACIT-BLOCKS.md`](./TACIT-BLOCKS.md).
 
