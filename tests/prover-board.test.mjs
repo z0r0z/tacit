@@ -1200,3 +1200,59 @@ test('draw: with no place holding a record the newcomers in their seats share ev
   assert.deepEqual(rows.map((r) => r.inDraw), [true, true, false, false]);
   assert.ok(rows.slice(0, 2).every((r) => Math.abs(r.oddsPct - 50) < 0.5), 'two seats share the whole draw');
 });
+
+test('draw: a machine\'s usual time is the whole wait, so one slow to ask records more than its proving time and the standing says so', async () => {
+  t = 35_000_000;
+  const { st, b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1');
+  await ready(st, b, [x]);
+  const j = await block();
+  t += 8000;                                                     // x asks for the block 8 s after it was posted...
+  assert.ok(await askBlock(b, x));
+  t += 10_000;                                                   // ...and proves it in 10 s
+  await answer(b, x, j.jobId);
+  const row = (await b.summary()).workers.find((w) => w.name === x.name);
+  assert.deepEqual([row.blocks, row.blockSecs, row.blockFelt], [1, 10, 18], 'ten seconds of proving, eighteen of waiting');
+  const s = await b.standing(addrOf(x));
+  assert.equal(s.blockFelt, 18);
+  assert.match(s.text, /usually 18 s from the block being posted to this machine's proof arriving \(10 s of that proving it\)/);
+  assert.match(s.text, /About 8 s of that is the block waiting/);
+});
+
+test('draw: a racer is counted from when the block was open to it, and a machine drawn but not there has the wait counted against it', async () => {
+  t = 36_000_000;
+  const { st, b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1'), y = gpu('e2');
+  await ready(st, b, [x, y]);
+  const ws = await st.getWorkers();
+  for (const w of [x, y]) Object.assign(ws[w.name], { blocks: 3, blockSecs: 10, blockFelt: 10 });
+  await st.putWorkers(ws);
+  const t0 = t, j = await block();
+  const gx = await askBlock(b, x), gy = await askBlock(b, y);
+  const [drawn, other] = gx ? [x, y] : [y, x];
+  t += PROVER_BOARD.drawMinMs * 3 + 1;                           // the drawn machine lets its lease run out
+  await askBlock(b, drawn);
+  assert.ok(await askBlock(b, other), 'the race opens to the other');
+  t += 4000;
+  await answer(b, other, j.jobId);
+  const rows = Object.fromEntries((await b.summary()).workers.map((w) => [w.name, w]));
+  const waited = (t - t0) / 1000;
+  assert.ok(Math.abs(rows[other.name].blockFelt - (0.7 * 10 + 0.3 * 4)) < 0.2, `the racer is counted from the opening: 4 s, not ${waited} s (${rows[other.name].blockFelt})`);
+  assert.ok(Math.abs(rows[drawn.name].blockFelt - (0.7 * 10 + 0.3 * waited)) < 0.2, `the machine drawn first has the whole ${waited} s counted (${rows[drawn.name].blockFelt})`);
+  assert.equal(rows[drawn.name].blockSecs, 10, 'its proving time is untouched: only the wait');
+});
+
+test('draw: odds follow the whole wait, and a record from before it was kept weighs by its proving time', async () => {
+  t = 37_000_000;
+  const { st, b } = drawBoard();
+  const x = gpu('d1'), y = gpu('e2'), z = gpu('f3');
+  await ready(st, b, [x, y, z]);
+  const ws = await st.getWorkers();
+  Object.assign(ws[x.name], { blocks: 3, blockSecs: 10, blockFelt: 10 });
+  Object.assign(ws[y.name], { blocks: 3, blockSecs: 10, blockFelt: 30 });   // the same GPU, slow to ask
+  Object.assign(ws[z.name], { blocks: 3, blockSecs: 10 });                  // an older record: no wait kept
+  await st.putWorkers(ws);
+  const [sx, sy, sz] = await Promise.all([x, y, z].map((w) => b.standing(addrOf(w))));
+  assert.ok(Math.abs(sx.oddsPct - sz.oddsPct) < 0.2, 'an older record weighs as its proving time');
+  assert.ok(Math.abs(sx.oddsPct / sy.oddsPct - 3) < 0.1, `10 s of waiting against 30 s: three to one (${sx.oddsPct} / ${sy.oddsPct})`);
+});
