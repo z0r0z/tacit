@@ -880,7 +880,7 @@ function shareLink() {
   const mk = moveOf(), amt = String(S.amt || '').trim();
   if (!H.copy || !/^\d{0,12}(?:\.\d{1,18})?$/.test(amt) || !(Number(amt) > 0)) return null;
   if (mk) return `${location.origin}/#card=shield:${mk.replace('>', ':')}&amt=${amt}`;
-  return kindOf(S.pay, S.get) && !S.btc ? `${location.origin}/?${params()}` : null;
+  return kindOf(S.pay, S.get) && !S.btc ? `${location.origin}${/^\/spx\//.test(location.pathname) ? '/spx/' : '/'}?${params()}` : null;
 }
 const shareSync = () => {
   const b = $('#copy'), u = shareLink();
