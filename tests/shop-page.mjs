@@ -12,7 +12,7 @@ import { readFileSync, existsSync, statSync, mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { marketAddress } from '../worker/src/salt-pool.js';
 import { encodeList } from '../tools/vanity-shop-list.mjs';
-import { foldShelf, TOPICS, FROM_BLOCK } from '../dapp/shop/shelf.js';
+import { foldShelf, TOPICS, FROM_BLOCK, forwarderRuntime, zerosOf } from '../dapp/shop/shelf.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
@@ -52,6 +52,7 @@ const rpcA = async (method, params = []) => {
 };
 const SHOP = '0x00000000000785882df83d4cC6ED45c21eB1176C', MARKET = '0x000000000000b361194cfe6312EE3210d53C15AA', TACADDR = '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279';
 const OPS = '0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2', E18 = 10n ** 18n;
+const POOL = '0x0155358241411dB868BA714aE7c83A27087e3D6E', CHAINLINK_ETH_USD = '0x5f4ec3df9cbd43714fe2740f5e3616155c5b8419', ETH_USD = 2000n;     // the price of ETH is set here, so the dollars on the page are known
 const word = (v) => BigInt(v).toString(16).padStart(64, '0'), aw = (a) => a.slice(2).toLowerCase().padStart(64, '0');
 const read = async (to, data) => BigInt(await rpcA('eth_call', [{ to, data }, 'latest']));
 const tacBal = (a) => read(TACADDR, '0x70a08231' + aw(a));
@@ -60,8 +61,8 @@ const ownerOf = async (id) => { try { return '0x' + (await rpcA('eth_call', [{ t
 const setTac = (who, amount) => rpcA('anvil_setStorageAt', [TACADDR, cast('keccak', '0x' + who.slice(2).toLowerCase() + '0000000000000000' + '87a211a2'), '0x' + word(amount)]);
 
 // a transaction from an impersonated account, mined at once (a forked anvil can leave one pending with automine on)
-async function sendAs(from, to, data) {
-  const h = await rpcA('eth_sendTransaction', [{ from, to, data, gas: '0x4c4b40' }]);
+async function sendAs(from, to, data, value = 0n) {
+  const h = await rpcA('eth_sendTransaction', [{ from, to, data, gas: '0x4c4b40', ...(value ? { value: '0x' + value.toString(16) } : {}) }]);
   for (let i = 0; i < 60; i++) {
     await rpcA('evm_mine', []).catch(() => {});
     const r = await rpcA('eth_getTransactionReceipt', [h]);
@@ -96,7 +97,7 @@ async function stubWallet(ctx, w) {
     if (method === 'eth_sendTransaction') {
       if (log.refuseSends) throw Object.assign(new Error('User rejected the request.'), { code: 4001 });
       log.sends.push(params[0]);
-      const h = await rpcA('eth_sendTransaction', [{ ...params[0], gas: '0x3d0900' }]);
+      const h = await rpcA('eth_sendTransaction', [{ ...params[0], gas: '0xb71b00' }]);
       (async () => { for (let i = 0; i < 40; i++) { await sleep(2000); if (await rpcA('eth_getTransactionReceipt', [h]).catch(() => null)) return; await rpcA('evm_mine', []).catch(() => {}); } })();
       return h;
     }
@@ -119,6 +120,12 @@ async function openPage(viewport, wallet = null) {
     if (req.method() !== 'POST' || !/"jsonrpc"/.test(body)) { stray.push(req.url()); return route.fulfill({ status: 404, headers: cors, body: '' }); }
     try {
       if (flags.failLogs && /"eth_getLogs"/.test(body)) return route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(body).id, error: { code: -32005, message: 'query timeout exceeded' } }) });
+      const asked = JSON.parse(body), feed = (q) => q.method === 'eth_call' && String(q.params?.[0]?.to).toLowerCase() === CHAINLINK_ETH_USD && q.params[0].data === '0xfeaf968c';
+      if (Array.isArray(asked) ? asked.some(feed) : feed(asked)) {
+        const now = Math.floor(Date.now() / 1000), w = (v) => BigInt(v).toString(16).padStart(64, '0');
+        const answer = async (q) => (feed(q) ? { jsonrpc: '2.0', id: q.id, result: '0x' + w(1) + w(ETH_USD * 10n ** 8n) + w(now) + w(now) + w(1) } : await (await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(q) })).json());
+        return route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(Array.isArray(asked) ? await Promise.all(asked.map(answer)) : await answer(asked)) });
+      }
       const r = await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
       await route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: await r.text() });
     } catch (e) { await route.fulfill({ status: 502, headers: cors, body: JSON.stringify({ error: e.message }) }).catch(() => {}); }
@@ -188,12 +195,37 @@ try {
   const p = r2.page, W = r2.walletLog;
   await until(p, () => document.querySelectorAll('#shelf .row').length >= 4, null, 180000);
   let list = await rows(p);
-  ok(list.length === 4 && list.map((x) => x.id).join() === [A, C, B, D].map((x) => x.id).join(), `the shelf has the four, the rarest first and the cheaper first among equals (${list.map((x) => x.meta.split(' ')[0]).join(', ')} bits)`);
+  ok(list.length === 4 && list.map((x) => x.id).join() === [A, C, B, D].map((x) => x.id).join(), `the shelf has the four, the rarest first and the cheaper first among equals (${list.map((x) => x.meta).join(', ')})`);
   ok(list.every((x, i) => x.addr === [A, C, B, D][i].address && x.shown === x.addr && x.shown.startsWith(x.zeros)), 'each address is shown whole, as the market gives it, with its zeros set apart');
-  ok(list[0].zeros.length >= 3 && list[0].meta.startsWith(`${A.bits} zero bits`) && /nonce 5$/.test(list[0].meta), `a row says its zero bits and nonce (${list[0].meta})`);
-  ok(list.map((x) => x.price).join() === '250 TAC,25 TAC,40 TAC,5 TAC', `and its price in TAC (${list.map((x) => x.price).join(', ')})`);
+  ok(list.every((x, i) => x.meta === `${zerosOf([A, C, B, D][i].bits)} ${zerosOf([A, C, B, D][i].bits) === 1 ? 'zero' : 'zeros'}`) && !list.some((x) => /bits|nonce/.test(x.meta)), `a row says its zeros in plain words, with no bits or nonce (${list.map((x) => x.meta).join(', ')})`);
+  await until(p, () => !!document.querySelector('#shelf .usd'), null, 120000);
+  list = await rows(p);
+  ok(list.map((x) => x.price.split('≈')[0].trim()).join() === '250 TAC,25 TAC,40 TAC,5 TAC', `and its price in TAC (${list.map((x) => x.price).join(', ')})`);
+  const sqrtP = BigInt(await rpcA('eth_call', [{ to: POOL, data: '0x2af1f249' }, 'latest'])) , tacUsd = Number(ETH_USD) / ((Number(sqrtP) / 1e18) ** 2);
+  const dollars = list.map((x) => Number((x.price.match(/≈ \$([\d,]+(?:\.\d+)?)/) || [])[1]?.replace(/,/g, '')));
+  ok(dollars.every((d, i) => Math.abs(d - [250, 25, 40, 5][i] * tacUsd) <= Math.max(0.01, [250, 25, 40, 5][i] * tacUsd * 0.005)), `each price carries its dollars at TAC's price on the pool and ETH's at $2,000 (TAC $${tacUsd.toFixed(4)}: ${list.map((x) => x.price.split('≈ ')[1]).join(', ')})`);
   ok(list.every((x) => x.label === 'Connect to buy' && !x.disabled), 'with no wallet connected, each button connects one');
   ok(/For sale · 4/.test(await text(p, '#shelf > .eyebrow')), 'the count of what is for sale is said');
+  {
+    const tiers = [...new Set([A, B, C, D].map((x) => zerosOf(x.bits)))].sort((a, b) => a - b), word = (z) => `${z} ${z === 1 ? 'zero' : 'zeros'}`;
+    const chips = await p.$$eval('.zc', (a) => a.map((b) => `${b.textContent}:${b.getAttribute('aria-pressed')}`));
+    ok(chips.join() === ['All:true', ...tiers.map((z) => `${word(z)}:false`)].join(), `the list can be narrowed by zeros: ${chips.join(', ')}`);
+    await p.click(`.zc[data-zeros="${zerosOf(B.bits)}"]`);
+    list = await rows(p);
+    ok(list.map((x) => x.id).join() === [C, B].map((x) => x.id).join() && /For sale · 2 of 4/.test(await text(p, '#shelf > .eyebrow')) && (await p.$eval(`.zc[data-zeros="${zerosOf(B.bits)}"]`, (b) => b.getAttribute('aria-pressed'))) === 'true', 'a count of zeros keeps just those, in the same order, and the count says how many of how many');
+    await p.click('.zc[data-zeros=""]');
+    ok((await rows(p)).length === 4, 'All shows them all again');
+    const mid = A.address.slice(20, 26);
+    await p.fill('#find', mid);
+    list = await rows(p);
+    ok(list.length === 1 && list[0].id === A.id && /For sale · 1 of 4/.test(await text(p, '#shelf > .eyebrow')) && (await p.evaluate(() => document.activeElement?.id)) === 'find', 'typing part of an address finds it, and the field keeps the cursor through the redraw');
+    await p.fill('#find', '0X' + mid.toUpperCase());
+    ok((await rows(p)).map((x) => x.id).join() === A.id, 'case and a 0x do not matter');
+    await p.fill('#find', 'zz');
+    ok((await rows(p)).length === 0 && /No address matches that/.test(await text(p, '#shelf')) && !!(await p.$('#clear')), 'what is not hex finds nothing, and says so, with a way back');
+    await p.click('#clear');
+    ok((await rows(p)).length === 4 && (await p.$eval('#find', (i) => i.value)) === '', 'Show them all clears both');
+  }
 
   await p.click(`[data-buy="${D.id}"]`);
   await until(p, () => document.querySelector('[data-buy]')?.textContent.trim() === 'Buy', null, 60000);
@@ -205,8 +237,7 @@ try {
   await setTac(buyer.account, 10n * E18);
   await clickBuy(p, A);
   await noteHas(p, /You hold 10 TAC\. This one costs 250\./);
-  ok(W.signAttempts === 0 && W.sends.length === 0, 'with too little TAC the page says what the wallet holds and what the address costs, and asks for nothing');
-  ok((await p.$eval('#note a', (a) => a.getAttribute('href'))) === '/?from=ETH&to=TAC', 'and that note links to buying TAC, on the front page\'s swap with ETH to TAC chosen');
+  ok(W.signAttempts === 0 && W.sends.length === 0 && (await p.$eval('#note a', (a) => a.getAttribute('href'))) === '/?from=ETH&to=TAC' && /Buy TAC/.test(await text(p, '#note')), 'with too little TAC the page says what the wallet holds and what the address costs, with a Buy TAC link to the swap, and asks for nothing');
   await setTac(buyer.account, 1000n * E18);
   for (const bad of [SHOP, TACADDR, MARKET, 'hello', '0x1234']) {
     await p.fill('#to', bad);
@@ -219,15 +250,18 @@ try {
   const opsBefore = await tacBal(OPS);
   await p.fill('#to', recip.account);
   await clickBuy(p, A);
-  await until(p, () => /It is yours/.test(document.querySelector('#shelf .done')?.textContent || ''), null, 240000);
+  await until(p, () => /It is yours/.test(document.querySelector('#after')?.textContent || ''), null, 240000);
   const t = W.typed[0], m = t.message;
   ok(W.signs === 1 && W.sends.length === 1 && W.sends[0].to.toLowerCase() === SHOP.toLowerCase() && W.sends[0].data.startsWith('0xb6367954'), 'with no allowance the page asks for one signature and sends one transaction: buyWithPermit to the shop');
   ok(t.domain.name === 'Tacit Token' && t.domain.version === '1' && t.domain.chainId === 1 && t.domain.verifyingContract.toLowerCase() === TACADDR.toLowerCase()
     && m.owner.toLowerCase() === buyer.account.toLowerCase() && m.spender.toLowerCase() === SHOP.toLowerCase() && m.value === String(250n * E18), 'the permit is TAC\'s own, for the shop, for the price and not a unit more');
   ok((await ownerOf(A.id)).toLowerCase() === recip.account.toLowerCase(), 'the market\'s token is the recipient\'s, not the buyer\'s');
   ok(await tacBal(buyer.account) === 750n * E18 && await tacBal(OPS) - opsBefore === 250n * E18 && await tacBal(SHOP) === 0n && await allowance(buyer.account, SHOP) === 0n, 'the price moved from the buyer to the treasury, the shop holds nothing, and no allowance is left');
-  const doneText = await text(p, '#shelf .done');
-  ok(doneText.includes(A.address) && doneText.toLowerCase().includes(recip.account.toLowerCase()) && /Deploy with it/.test(doneText), 'the page says what was bought and where its token is');
+  const doneText = await text(p, '#after');
+  ok(doneText.includes(A.address) && doneText.toLowerCase().includes(recip.account.toLowerCase()) && doneText.includes(BigInt(A.id).toString()) && /not the wallet connected now/.test(doneText) && (await p.$('#use-it')) === null, 'the page says what was bought, where its token is and the token\'s number, and offers no deploy when the token went to another address');
+  await p.click('#copy-id');
+  await until(p, () => /Copied|Select it/.test(document.querySelector('#copy-id')?.textContent || ''), null, 15000);
+  ok(true, 'Copy answers when it is pressed');
   await until(p, () => document.querySelectorAll('#shelf .row').length === 3, null, 120000);
   ok(!(await rows(p)).some((x) => x.id === A.id) && /For sale · 3/.test(await text(p, '#shelf > .eyebrow')), 'and the address is off the shelf');
   await until(p, () => /750 TAC/.test(document.querySelector('#shelf .who')?.textContent || ''), null, 60000);
@@ -237,7 +271,7 @@ try {
   await sendAs(buyer.account, TACADDR, '0x095ea7b3' + aw(SHOP) + word(25n * E18));
   await p.fill('#to', '');
   await clickBuy(p, C);
-  await until(p, () => /It is yours/.test(document.querySelector('#shelf .done')?.textContent || '') && document.querySelectorAll('#shelf .row').length === 2, null, 240000);
+  await until(p, () => /It is yours/.test(document.querySelector('#after')?.textContent || '') && document.querySelectorAll('#shelf .row').length === 2, null, 240000);
   ok(W.signs === 1 && W.sends.length === 2 && W.sends[1].data.startsWith('0xb645f70b'), 'with the allowance in place the page asks for no signature and sends buy');
   ok((await ownerOf(C.id)).toLowerCase() === buyer.account.toLowerCase() && await tacBal(buyer.account) === 725n * E18, 'the token is the buyer\'s own when no other address is named');
 
@@ -248,7 +282,7 @@ try {
   await noteHas(p, /Its price changed/);
   await until(p, () => document.querySelectorAll('#shelf .row').length === 3, null, 120000);
   list = await rows(p);
-  ok(list.find((x) => x.id === B.id).price === '55 TAC' && list.some((x) => x.id === F.id) && W.sends.length === 2, 'a price the shop changed is refused as it was shown, and the list is read again with the new price and what was added');
+  ok(list.find((x) => x.id === B.id).price.split('≈')[0].trim() === '55 TAC' && list.some((x) => x.id === F.id) && W.sends.length === 2, 'a price the shop changed is refused as it was shown, and the list is read again with the new price and what was added');
   await unlistCall([B]);
   await clickBuy(p, B);
   await noteHas(p, /That one is gone/);
@@ -263,11 +297,14 @@ try {
   ok(W.signs === signsBefore + 1 && W.sends.length === 2 && await tacBal(buyer.account) === 725n * E18 && (await ownerOf(F.id)) === null && !!(await p.$(`[data-buy="${F.id}"]`)), 'a wallet that says no at the send ends it: nothing was taken, and the address is still for sale');
   W.refuseSends = false; W.noPermit = true;
   await clickBuy(p, F);
-  await until(p, () => /It is yours/.test(document.querySelector('#shelf .done')?.textContent || ''), null, 240000);
+  await until(p, () => /It is yours/.test(document.querySelector('#after')?.textContent || ''), null, 240000);
   ok(W.sends.length === 4 && W.sends[2].to.toLowerCase() === TACADDR.toLowerCase() && W.sends[2].data.startsWith('0x095ea7b3') && W.sends[3].to.toLowerCase() === SHOP.toLowerCase() && W.sends[3].data.startsWith('0xb645f70b'),
     'a wallet that cannot sign a permit approves the price first and then buys, with no signature');
   ok((await ownerOf(F.id)).toLowerCase() === buyer.account.toLowerCase() && await tacBal(buyer.account) === 718n * E18 && await allowance(buyer.account, SHOP) === 0n, 'and the price is paid and the allowance is used up');
   W.noPermit = false;
+  ok(!!(await p.$('#use-it')), 'a token that went to the connected wallet comes with a button to deploy to it');
+  await p.click('#use-it');
+  ok((await p.$eval('#use-token', (e) => e.value)) === F.id, 'which picks that token in the section at the bottom');
 
   // ---- the one that goes while the wallet is being asked: the page's own check of the purchase says so, and nothing is sent
   const sends = W.sends.length;
@@ -276,6 +313,62 @@ try {
   await noteHas(p, /just sold or taken down\. Nothing was sent/);
   await gone(p, D);
   ok(W.sends.length === sends && await tacBal(buyer.account) === 718n * E18 && (await ownerOf(D.id)) === null, 'an address lost while the permit was being signed is caught by the check before the send: nothing was sent');
+
+  // ---- the section at the bottom: the contract that passes ETH on, custom bytecode, and what is refused
+  {
+    const recv2 = await fundedWallet(1n * E18, 0n), payer = await fundedWallet(5n * E18, 0n), sendsBefore = W.sends.length;
+    const tokenOpts = () => p.$$eval('#use-token option', (a) => a.map((o) => o.textContent));
+    await until(p, () => document.querySelectorAll('#use-token option').length >= 3, null, 60000);
+    let opts = await tokenOpts();
+    ok(opts.some((o) => o.includes(C.address)) && opts.some((o) => o.includes(F.address)) && !opts.some((o) => o.includes(A.address)), `it lists the addresses the wallet holds from the shop, and not the one that went to another wallet (${opts.length - 1} and the field for an id)`);
+    await p.selectOption('#use-token', C.id);
+    ok((await p.$eval('#use-kind', (e) => e.value)) === 'forward' && /ETH sent to the address goes straight on[\s\S]*cannot be changed[\s\S]*tokens sent to it would be stuck/.test(await text(p, '#use')), 'passing ETH on is what it offers first, with what it cannot do said plainly');
+    for (const [bad, re] of [[C.address, /itself/], ['0x' + '0'.repeat(40), /empty address/], [SHOP, /shop, the market or TAC/], ['nonsense', /Name the address/]]) {
+      await p.fill('#use-to', bad);
+      await p.click('#use-go');
+      await until(p, (s) => new RegExp(s).test(document.querySelector('#use-note')?.textContent || ''), re.source, 60000);
+    }
+    ok(W.sends.length === sendsBefore, 'an address it cannot pass ETH on to is refused, itself, the empty one, the shop and what is no address, with nothing sent');
+    await p.fill('#use-to', recv2.account);
+    await p.click('#use-go');
+    await until(p, () => /Deployed at/.test(document.querySelector('#use')?.textContent || ''), null, 240000);
+    const last = W.sends[W.sends.length - 1];
+    ok(W.sends.length === sendsBefore + 1 && last.to.toLowerCase() === MARKET.toLowerCase() && last.data.startsWith('0x61ff715f'), 'one transaction, to the market: deploy');
+    ok((await rpcA('eth_getCode', [C.address, 'latest'])) === forwarderRuntime(recv2.account) && (await ownerOf(C.id)) === null, 'the address now holds the 35-byte forwarder with the receiver inside, and the token is used up');
+    const before = BigInt(await rpcA('eth_getBalance', [recv2.account, 'latest']));
+    await sendAs(payer.account, C.address, '0x', 2n * E18);
+    ok(BigInt(await rpcA('eth_getBalance', [recv2.account, 'latest'])) - before === 2n * E18 && BigInt(await rpcA('eth_getBalance', [C.address, 'latest'])) === 0n, '2 ETH sent to that address arrives at the receiver, and it keeps none');
+    ok(/ETH sent to it now goes on to/.test(await text(p, '#use')) && new RegExp(recv2.account, 'i').test(await text(p, '#use')), 'the page says where ETH sent to it goes now');
+    // reload: the wallet's addresses come from the shop's sales and the market, so the used one is gone and the unused one is there
+    await p.reload();
+    await until(p, () => !!document.querySelector('#use-token') || !!document.querySelector('#use-connect'), null, 120000);
+    if (await p.$('#use-connect')) { await p.click('#use-connect'); await until(p, () => !!document.querySelector('#use-token'), null, 60000); }
+    await until(p, () => document.querySelectorAll('#use-token option').length >= 2, null, 120000);
+    opts = await tokenOpts();
+    ok(opts.some((o) => o.includes(F.address)) && !opts.some((o) => o.includes(C.address)) && !opts.some((o) => o.includes(A.address)), 'after a reload it still lists the address not yet used, and not the used one');
+    // custom bytecode, picked by token id
+    await p.selectOption('#use-kind', 'custom');
+    await p.fill('#use-init', 'xyz');
+    await p.click('#use-go');
+    await until(p, () => /creation bytecode/.test(document.querySelector('#use-note')?.textContent || ''), null, 60000);
+    await p.fill('#use-init', '0x60006000fd');
+    await p.click('#use-go');
+    await until(p, () => /does not deploy[\s\S]*Nothing was sent/.test(document.querySelector('#use-note')?.textContent || ''), null, 120000);
+    ok(W.sends.length === sendsBefore + 1, 'bytecode that is not hex, and bytecode that fails when it runs (the page tries it first), are refused with nothing sent');
+    await p.selectOption('#use-token', 'other');
+    await p.fill('#use-id', BigInt(A.id).toString());
+    await p.fill('#use-init', '0x60016000f3');
+    await p.click('#use-go');
+    await until(p, () => /does not hold that token/.test(document.querySelector('#use-note')?.textContent || ''), null, 120000);
+    await p.fill('#use-id', 'not an id');
+    await p.click('#use-go');
+    await until(p, () => /Enter the token id/.test(document.querySelector('#use-note')?.textContent || ''), null, 60000);
+    ok(W.sends.length === sendsBefore + 1, 'a token held by another wallet, and a token id that is no number, are refused with nothing sent');
+    await p.fill('#use-id', BigInt(F.id).toString());
+    await p.click('#use-go');
+    await until(p, () => /Deployed at/.test(document.querySelector('#use')?.textContent || ''), null, 240000);
+    ok((await rpcA('eth_getCode', [F.address, 'latest'])) === '0x00' && (await ownerOf(F.id)) === null && W.sends.length === sendsBefore + 2, 'pasted bytecode, for a token entered by its number, deploys exactly that code at its address');
+  }
 
   // ---- a change of account in the wallet
   const other = await fundedWallet(1n * E18, 500n * E18);
@@ -294,8 +387,8 @@ try {
   r3 = await openPage({ width: 390, height: 800 }, null);
   await until(r3.page, () => document.querySelectorAll('#shelf .row').length >= 2, null, 180000);
   const fit = await r3.page.evaluate(() => ({ page: document.documentElement.scrollWidth <= window.innerWidth + 1, rows: [...document.querySelectorAll('#shelf .row')].every((r) => r.getBoundingClientRect().right <= window.innerWidth + 1 && r.getBoundingClientRect().left >= -1),
-    code: [...document.querySelectorAll('#shelf .row code')].every((c) => c.getBoundingClientRect().right <= window.innerWidth) }));
-  ok(fit.page && fit.rows && fit.code, `on a phone the page does not scroll sideways and each address stays on the screen (${JSON.stringify(fit)})`);
+    code: [...document.querySelectorAll('#shelf .row code')].every((c) => c.getBoundingClientRect().right <= window.innerWidth), use: (() => { const u = document.querySelector('#use')?.getBoundingClientRect(); return !!u && u.width > 0 && u.right <= window.innerWidth + 1; })() }));
+  ok(fit.page && fit.rows && fit.code && fit.use, `on a phone the page does not scroll sideways and each address stays on the screen (${JSON.stringify(fit)})`);
   if (SHOTS) await r3.page.screenshot({ path: join(SHOTS, 'vanity-phone.png'), fullPage: true });
   ok(r3.errors.length === 0 && r3.blocked.length === 0, `and the phone page has no errors either (${[...r3.errors, ...r3.blocked].join(' | ').slice(0, 300)})`);
   await r3.browser.close(); r3 = null;
@@ -303,7 +396,7 @@ try {
   ok(stray.length === 0, `the page asked nothing of anyone but Ethereum nodes (${stray.slice(0, 3).join(', ')})`);
 } catch (e) {
   fails++; console.log('FAIL   ' + (e?.stack || e));
-  for (const r of [r1, r2, r3]) if (r) { try { console.log('  page note:', await note(r.page)); if (SHOTS) await r.page.screenshot({ path: join(SHOTS, 'vanity-failure.png'), fullPage: true }); } catch { /* the page is gone */ } }
+  for (const r of [r1, r2, r3]) if (r) { try { console.log('  page note:', await note(r.page), '| use note:', await text(r.page, '#use-note'), '| use:', (await text(r.page, '#use')).slice(0, 300)); if (SHOTS) await r.page.screenshot({ path: join(SHOTS, 'vanity-failure.png'), fullPage: true }); } catch { /* the page is gone */ } }
 } finally {
   for (const r of [r1, r2, r3]) await r?.browser.close().catch(() => {});
   anvil.kill('SIGKILL'); server?.close();

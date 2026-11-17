@@ -23,7 +23,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /shop/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/shop/app.js?cb=7f4eec49">
+<link rel="modulepreload" href="/shop/app.js?cb=1c094c06">
 <link rel="modulepreload" href="/trade/connect.js?cb=b758e60b">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=5d19a733">
@@ -35,7 +35,8 @@
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
-<link rel="modulepreload" href="/shop/shelf.js?cb=30055da6">
+<link rel="modulepreload" href="/trade/farm-read.js?cb=fb6ec72f">
+<link rel="modulepreload" href="/shop/shelf.js?cb=905905b3">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -157,10 +158,19 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .to { display: grid; gap: 6px; margin: 16px 0 0; font-size: 12.5px; }
 .to input { width: 100%; min-height: 44px; padding: 8px 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; font: 13px/1.4 var(--mono); }
 .linkbtn { background: none; border: 0; padding: 0; cursor: pointer; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; font-size: inherit; }
-.done { margin: 0 0 18px; padding-bottom: 16px; border-bottom: 1px solid var(--hair); }
-.done h2 { margin-bottom: 6px; }
-.done code, .note code { overflow-wrap: anywhere; }
+#after h2 { margin-bottom: 6px; }
+#after code, .note code { overflow-wrap: anywhere; }
 .mono { margin: 4px 0 0; }
+.filters { display: grid; gap: 10px; margin: 0 0 6px; }
+.zcs { display: flex; flex-wrap: wrap; gap: 6px; }
+.zc { min-height: 36px; padding: 6px 12px; background: transparent; border: 1px solid var(--hair-2); border-radius: 999px; font-size: 12.5px; cursor: pointer; }
+.zc[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+@media (hover: hover) { .zc:hover:not([aria-pressed="true"]) { border-color: var(--ink); } }
+.filters input { -webkit-appearance: none; appearance: none; width: 100%; min-height: 44px; padding: 8px 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; font: 13px/1.4 var(--mono); }
+.price { text-align: right; }
+.usd { display: block; font-style: normal; font-size: 11.5px; color: var(--mute); }
+.to select { width: 100%; min-height: 44px; padding: 8px 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; font: 13px/1.4 var(--mono); }
+.to textarea { width: 100%; min-height: 96px; padding: 10px 12px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 12px; font: 12px/1.4 var(--mono); resize: vertical; overflow-wrap: anywhere; }
 </style>
 <!-- chrome:head:begin inline -->
 <style>
@@ -346,12 +356,14 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <main>
     <section class="hero" aria-labelledby="h">
       <h1 id="h"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><span>tacit <em>shop</em></span></h1>
-      <p class="sub">Addresses that start with zeros, for TAC. Each is a token: burn it to deploy any contract to that address on Ethereum.</p>
+      <p class="sub">Addresses that start with zeros, for TAC. Each comes as a token you can use, once, to deploy any contract to that address on Ethereum.</p>
       <noscript><p class="note">This page needs JavaScript.</p></noscript>
     </section>
 
+    <section class="panel shop" id="after" aria-live="polite" hidden></section>
     <section class="panel shop" id="shelf" aria-live="polite"></section>
     <p class="note">The shop's contract is <a href="https://etherscan.io/address/0x00000000000785882df83d4CC6ED45c21eB1176C#code" target="_blank" rel="noopener noreferrer">verified on Etherscan</a>. A buy pays the price in TAC and nothing else.</p>
+    <section class="panel shop" id="use" aria-labelledby="h-use"></section>
   </main>
 
   <!-- chrome:foot:begin -->
@@ -372,6 +384,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/shop/app.js?cb=7f4eec49"></script>
+<script type="module" src="/shop/app.js?cb=1c094c06"></script>
 </body>
 </html>

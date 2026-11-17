@@ -16,6 +16,9 @@ const SELECTORS = {
   buyWithPermit: '0xb6367954',   // buyWithPermit(uint256 id, address to, uint8 nonce, uint256 maxPrice, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
   listings: '0xde74e57b',        // listings(uint256 id) -> (uint128 price, uint8 nonce)
   approve: '0x095ea7b3', balanceOf: '0x70a08231', allowance: '0xdd62ed3e', nonces: '0x7ecebe00',
+  ownerOf: '0x6352211e',         // the market's ownerOf(uint256 id): reverts for a token that does not exist or was used
+  addressOf: '0x11a800bc',       // the market's addressOf(uint256 id) -> the address the token stands for
+  deploy: '0x61ff715f',          // the market's deploy(uint256 id, bytes initcode) -> address: burns the token, deploys the code at the address it stands for
 };
 
 const strip = (h) => String(h).replace(/^0x/i, '').toLowerCase();
@@ -105,3 +108,80 @@ export const refusalWords = (data) => REFUSALS[String(data || '').slice(0, 10).t
 
 // What the shop would refuse for a recipient, said before anything is signed: nothing, itself, the market and TAC (a token sent there could never be moved).
 export const badRecipient = (to) => { const a = isAddress(to) ? String(to).toLowerCase() : ''; return !a || a === SHOP || a === MARKET || a === TAC; };
+
+// ---- what the page shows around the list
+// An address's leading zero digits, from its zero bits: the count a buyer and the market speak of.
+export const zerosOf = (bits) => Math.floor(bits / 4);
+export const zerosText = (n) => `${n} ${n === 1 ? 'zero' : 'zeros'}`;
+// Dollars as text: cents under a hundred, whole dollars from there.
+export const usdText = (n) => (n >= 100 ? `$${Math.round(n).toLocaleString('en-US')}` : `$${n.toFixed(2)}`);
+// TAC's price in dollars from ETH's price in dollars and TAC's in ETH (null when either is missing), and what a listing's TAC comes to at it (null without one).
+export const tacUsdFrom = ({ ethUsd, tacEth }) => (ethUsd > 0 && tacEth > 0 ? ethUsd * tacEth : null);
+export const priceUsd = (wei, tacUsd) => (tacUsd > 0 ? (Number(BigInt(wei)) / 1e18) * tacUsd : null);
+// The zero counts on the shelf, fewest first: the filter's choices.
+export const zeroTiers = (shelf) => [...new Set(shelf.map((x) => zerosOf(x.bits)))].sort((a, b) => a - b);
+// The part of the shelf a filter keeps: `zeros` a zero count (null for any), `q` text to find in the address, as hex digits with or without the 0x; anything else finds nothing.
+export function filterShelf(shelf, { zeros = null, q = '' } = {}) {
+  const t = String(q ?? '').replace(/\s+/g, '').replace(/^0x/i, '').toLowerCase();
+  if (t !== '' && !/^[0-9a-f]+$/.test(t)) return [];
+  return shelf.filter((x) => (zeros === null || zerosOf(x.bits) === zeros) && (t === '' || strip(x.vanity).includes(t)));
+}
+
+// ---- a bought token
+// The token's id as the plain number Etherscan and the market's functions take, and the token's page.
+export const tokenNumber = (id) => BigInt(id).toString();
+export const tokenUrl = (id) => `https://etherscan.io/nft/${MARKET}/${tokenNumber(id)}`;
+export const ownerOfData = (id) => SELECTORS.ownerOf + strip(id);
+export const addressOfData = (id) => SELECTORS.addressOf + strip(id);
+// A token id as a person types it, a decimal number or 0x and hex, -> the 32-byte id as '0x' and 64 hex digits (null when it is neither or is too big)
+export function parseTokenId(text) {
+  const t = String(text ?? '').trim().replace(/[\s_,]/g, '');
+  const n = /^0x[0-9a-f]+$/i.test(t) ? BigInt(t) : /^\d+$/.test(t) ? BigInt(t) : null;
+  return n !== null && n < 2n ** 256n ? '0x' + n.toString(16).padStart(64, '0') : null;
+}
+// The ids this shop sold to `who` (the Sold event's `to`), newest first, from the shop's logs. Whether one is still held is for the market to say (ownerOf).
+export function soldTo(logs, who) {
+  const w = strip(who || '');
+  if (!/^[0-9a-f]{40}$/.test(w)) return [];
+  const at = (l) => num(l.blockNumber) * 1e6 + num(l.logIndex);
+  const seen = new Set();
+  return (Array.isArray(logs) ? logs : []).filter((l) => l && l.topics?.[0] === TOPICS.sold && isId(l.topics[1]) && strip(l.topics[2] || '').slice(-40) === w && Number.isFinite(at(l)))
+    .sort((a, b) => at(b) - at(a)).map((l) => '0x' + strip(l.topics[1])).filter((id) => !seen.has(id) && seen.add(id));
+}
+
+// The simplest contract there is for an address that only passes ETH on, and the code that deploys it. Its runtime sends its whole balance to one fixed address on every call and
+// reverts when that send fails, so nothing is ever left in it:
+//   5f 5f 5f 5f  PUSH0 x4 (no call data, no return data)   47  SELFBALANCE   73 <the address>  PUSH20   5a  GAS   f1  CALL
+//   60 22 57  PUSH1 34, JUMPI (a send that worked jumps over the revert)   5f 5f fd  PUSH0 PUSH0 REVERT   5b  JUMPDEST (the end of the code stops it)
+// 35 bytes. The creation code (60 23 80 60 09 5f 39 5f f3) copies those 35 bytes to memory and returns them. It takes no ETH of its own, answers any call, and has no way to
+// change the address or to send anything but ETH: tokens sent to it stay in it.
+export const forwarderRuntime = (to) => `0x5f5f5f5f4773${strip(to)}5af16022575f5ffd5b`;
+export const forwarderInit = (to) => `0x60238060095f395ff3${forwarderRuntime(to).slice(2)}`;
+// What stops an address from being the one ETH is passed on to, said before anything is signed: not an address, nothing (the empty address burns it), the bought address itself,
+// and the shop, the market and TAC (contracts that would turn the ETH away). null when it is fine.
+export function forwardRefusal(to, vanity) {
+  if (!isAddress(to)) return 'Name the address to pass ETH on to.';
+  const a = String(to).toLowerCase();
+  if (/^0x0{40}$/.test(a)) return 'That is the empty address: whatever arrived would be lost.';
+  if (vanity && a === String(vanity).toLowerCase()) return 'It cannot pass ETH on to itself.';
+  if (badRecipient(a)) return 'It cannot pass ETH on to the shop, the market or TAC.';
+  return null;
+}
+// deploy(uint256 id, bytes initcode)
+export function deployData(id, initcode) {
+  const code = strip(initcode), pad = (64 - (code.length % 64)) % 64;
+  return SELECTORS.deploy + strip(id) + word(64) + word(code.length / 2) + code + '0'.repeat(pad);
+}
+// the address a call returned (the last 20 bytes of its first word)
+export const decodeAddress = (hex) => { const h = strip(hex || ''); return h.length >= 64 ? '0x' + h.slice(24, 64) : null; };
+// Creation bytecode as typed or pasted: spaces and a 0x dropped, hex digits only, whole bytes, no more than the 49,152 the EVM takes. -> '0x…', or null
+export function initcodeOf(text) {
+  const t = String(text ?? '').replace(/\s+/g, '').replace(/^0x/i, '').toLowerCase();
+  return /^[0-9a-f]+$/.test(t) && t.length % 2 === 0 && t.length / 2 <= 49152 ? '0x' + t : null;
+}
+// What a refusal of the deploy means, by the error's selector: the market's own.
+const DEPLOY_REFUSALS = {
+  '0x30116425': 'That code does not deploy: it fails when it runs.',      // DeploymentFailed()
+  '0x4b6e7f18': 'The wallet connected now does not hold this token.',     // NotOwnerNorApproved()
+};
+export const deployRefusal = (data) => DEPLOY_REFUSALS[String(data || '').slice(0, 10).toLowerCase()] || null;
