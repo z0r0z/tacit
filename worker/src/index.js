@@ -4497,9 +4497,11 @@ export function queueSender(ip) {
   const v4 = /^(\d+)\.(\d+)\.(\d+)\.\d+$/.exec(a);
   return (v4 ? `${v4[1]}.${v4[2]}.${v4[3]}.0/24` : a).slice(0, 64);
 }
+// What a job keeps of its sender: the same grouping, as a keyed hash instead of the network itself (a mint's own key is not an address and stays).
+export const senderKey = (env, s) => (!s || /^armed:/.test(s) ? s : 'n:' + ipBucket(env, s));
 async function handleConfidentialSubmit(req, env, cors) {
   const q = confSettler(env);
-  const sender = queueSender(req.headers.get('CF-Connecting-IP'));
+  const sender = senderKey(env, queueSender(req.headers.get('CF-Connecting-IP')));
   if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }

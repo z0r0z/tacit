@@ -14,6 +14,17 @@ assert.strictEqual(ipBucket({}, '203.0.113.7'), ipBucket({}, '203.0.113.7'), 'wi
 for (const s of ['anon', '*', 'all']) assert.strictEqual(ipBucket(env, s), s, 'sentinels pass through');
 console.log('  ok - keyed, stable, per-source, sentinels pass through');
 
+// a queued job's sender keeps the /24 grouping but not the network
+{
+  const { queueSender, senderKey } = await import('../worker/src/index.js');
+  const k = (ip) => senderKey(env, queueSender(ip));
+  assert.strictEqual(k('203.0.113.17'), k('203.0.113.201'), 'one /24 is still one sender');
+  assert.notStrictEqual(k('203.0.113.17'), k('203.0.114.17'), 'another /24 is another');
+  assert.ok(!k('203.0.113.17').includes('203.0.113') && /^n:[0-9a-f]{24}$/.test(k('203.0.113.17')), 'the network is not in the key');
+  assert.strictEqual(senderKey(env, 'armed:0123456789abcdef'), 'armed:0123456789abcdef', 'a mint keeps its own key');
+  assert.strictEqual(senderKey(env, null), null, 'no address, no sender');
+  console.log('  ok - a job keeps a hashed sender, same grouping');
+}
 // no store key in the worker is built from a raw address
 for (const f of ['../worker/src/index.js', '../worker/src/governance.js']) {
   const bad = readFileSync(new URL(f, import.meta.url), 'utf8').split('\n')
