@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-g3zuZ7BqpoBhGOqkNFZwLPzVEhas518sXHyEH9rfDfQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yiNdm8QHW3fOlEHTk2EivfhS+Z+j5Hovpy9VHeOdSfA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Pay BTC, TAC and ETH privately from one key and one tacit1 address. Every payment is made on your device.">
@@ -24,6 +24,7 @@
 <!-- preload:begin -->
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prf-wallet.js">
+<link rel="modulepreload" href="/tacit-chain-root.js">
 <link rel="modulepreload" href="/tacit-wallet-known.js?cb=ec5b5193">
 <link rel="modulepreload" href="/evm-wallet.js?cb=ed67f38d">
 <link rel="modulepreload" href="/identity-message.js">
@@ -745,6 +746,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
             <a href="/trade/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16"/><path d="M7.5 15l3.500-4.500 3 2.500L19 7"/></svg>Trade</a>
             <a href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
             <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
+            <a href="/shop/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 4h11L21 9l-9 11L3 9z"/><path d="M3 9h18"/><path d="M9.5 4L8 9l4 11 4-11-1.5-5"/></svg>Shop</a>
             <a href="/prove/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Prove</a>
             <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
             <a href="/weld/stats/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/></svg>Stats</a>
@@ -1146,7 +1148,7 @@ const mainnetBtc = (a) => { if (!/^(bc1|[13])/i.test(String(a || ''))) throw new
 const tPriv = () => { const h = bytesToHex(T.wallet.priv); T.wallet.priv.fill(0); T.wallet.priv = null; return h; };
 
 let UNI = null, LANE = null;
-const loadUnified = lazy(async () => { const [u, l] = await Promise.all([import('/tacit-unified.js?cb=c268c3d8'), import('/tacit-chain-lane.js?cb=258bf4f8').catch(() => null)]); LANE = l; return (UNI = u); });
+const loadUnified = lazy(async () => { const [u, l] = await Promise.all([import('/tacit-unified.js?cb=c268c3d8'), import('/tacit-chain-lane.js?cb=25b2f372').catch(() => null)]); LANE = l; return (UNI = u); });
 // The address names the key's chain lane as well (as on /tac/), so a payer on the Tacit chain finds the key and every page shows the one address
 const addressFor = (privHex) => { try { if (UNI) { let lane; try { lane = LANE?.chainLane(privHex); } catch {} return UNI.unifiedAddress(privHex, lane).address; } } catch {} return tacitAddress(privHex); };
 const rememberKey = (key) => { const { priv, tacit, ...pub } = key; writeJson(PAY_ID, key.mode === 'key' ? null : { ...pub, ...(tacit ? { tacit } : {}) }); };

@@ -4,9 +4,15 @@
 import { sha256, hmac, hexToBytes } from './vendor/tacit-deps.min.js';
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from './vendor/tacit-poseidon.min.js';
 import { makeChainWallet } from './tacit-chain-wallet.js';
+export { keepRoot, keptRoot, dropRoot } from './tacit-chain-root.js';
 
 const te = new TextEncoder();
 export const chainSeed = (priv) => hmac(sha256, priv, te.encode('tacit-chain-seed-v1'));
+
+// A PQ ID: chain keys from a root that no published key leads to (a passkey's own output, prf-wallet.js prfChainRoot). The keys above come from the
+// Tacit key, whose public key is in the Tacit address, so whoever can solve that key (a quantum computer) could open their memos; these it cannot.
+export const rootSeed = (root) => hmac(sha256, root, te.encode('tacit-chain-seed-v2'));
+// (the root is kept on this device sealed under the Tacit key: tacit-chain-root.js)
 
 const NO_CHAIN = '0x' + '00'.repeat(32);
 const POSEIDON = { 2: poseidon2, 3: poseidon3, 4: poseidon4, 5: poseidon5 };

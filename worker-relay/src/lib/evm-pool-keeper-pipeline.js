@@ -10,7 +10,9 @@
 //
 // A slot not fulfilled in time is cut with everything behind it, and those wallets reserve again. A requester whose
 // unused slot cost others their place (it lapsed or was given up with slots behind it) may not reserve again for
-// pauseMs; a wallet in that position sends unreserved, against the queue's tail. The queue is
+// pauseMs; a wallet in that position sends unreserved, against the queue's tail. A slot sent and not landed within staleMs is cut
+// the same way (the chain's send path has sent its transaction again by then, see resend there), so a spend whose transaction was
+// dropped is free to be sent again. The queue is
 // dropped whole when the chain's head stops leading into it (another sender's insertion landed first, or a sent
 // transaction reverted); what follows reverts cheaply on StaleRoot.
 //
@@ -29,7 +31,7 @@ const bytesOf = (h) => Uint8Array.from(Buffer.from(String(h).replace(/^0x/, ''),
 const stale = (m) => new PipelineError(409, m, { stale: true });
 
 export function makePipeline({
-  chain, verify, assetField, baseTree, maxDepth = 32, maxPerOwner = 2, reserveMs = 90_000, staleMs = 300_000, pauseMs = 600_000,
+  chain, verify, assetField, baseTree, maxDepth = 32, maxPerOwner = 2, reserveMs = 90_000, staleMs = 200_000, pauseMs = 600_000,
   now = () => Date.now(), log = () => {},
 }) {
   // { id, start, oldRoot, newRoot, outLeaf: [a, b], nfs, owner, state: 'reserved' | 'ready' | 'sent', at, tx?, send?,

@@ -9,7 +9,7 @@
 //     the wallet's own node), and the gas limits are the keychain's baseline, raised to the bundler's estimate
 //     plus a fifth, and never past its ceilings,
 //   - the proof names the paymaster as relayer, so it is good for that operation only.
-// The bundler is the public one the keychain uses. Nothing here is signed by, or sent from, the user's wallet.
+// The bundlers are public ones (Pimlico's, the keychain's own, then Candide's: see PAYMASTERS and bundlerSet). Nothing here is signed by, or sent from, the user's wallet.
 
 import { keccak_256, secp, concatBytes, hexToBytes, bytesToHex } from './vendor/tacit-deps.min.js';
 
@@ -24,17 +24,22 @@ export const ENTRY_POINT = '0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108';
 // The standard EntryPoint v0.8 account for an EIP-7702 sender (eth-infinitism's Simple7702Account).
 export const SIMPLE_7702 = '0xe6Cae83BdE06E4c305530e199D7217f42808555B';
 
-// The paymasters and the pools each takes (the keychain's list for these chains; ours are a subset). The bundler
-// is the public one, which asks for no key.
+// The paymasters and the pools each takes (the keychain's list for these chains; ours are a subset). The bundlers
+// are public ones, which ask for no key: Pimlico's first (the keychain's own), then Candide's, which takes the same
+// operation (EntryPoint v0.8, an EIP-7702 sender, this paymaster) and is used when the first cannot be reached or
+// cannot answer. Each host is allowed by the page's connect-src. `bundler` is the first.
+const bundlersOf = (chainId) => Object.freeze([`https://public.pimlico.io/v2/${chainId}/rpc`, `https://api.candide.dev/public/v3/${chainId}`]);
 export const PAYMASTERS = Object.freeze({
   1: Object.freeze({
     paymaster: '0xB0FfCdC890E969579D348F519a9C3920C2DD04a5',
-    bundler: 'https://public.pimlico.io/v2/1/rpc',
+    bundlers: bundlersOf(1),
+    bundler: bundlersOf(1)[0],
     pools: ['0x12D66f87A04A9E220743712cE6d9bB1B5616B8Fc', '0x47CE0C6eD5B0Ce3d3A51fdb1C52DC66a7c3c2936', '0x910Cbd523D972eb0a6f4cAe4618aD62622b39DbF', '0xA160cdAB225685dA1d56aa342Ad8841c3b53f291'],
   }),
   11155111: Object.freeze({
     paymaster: '0x835ce2da8ad0d1f5d5a8462a58594006514c39b0',
-    bundler: 'https://public.pimlico.io/v2/11155111/rpc',
+    bundlers: bundlersOf(11155111),
+    bundler: bundlersOf(11155111)[0],
     pools: ['0x8C4A04d872a6C1BE37964A21ba3a138525dFF50b', '0x8cc930096B4Df705A007c4A039BDFA1320Ed2508', '0x8D10d506D29Fc62ABb8A290B99F66dB27Fc43585'],
   }),
 });
@@ -93,6 +98,24 @@ export async function readGasFeeReference(provider) {
   if (block?.baseFeePerGas == null) throw new Error('Failed to read the latest block base fee');
   const tip = await provider.request({ method: 'eth_maxPriorityFeePerGas', params: [] }).then(hostQuantity).catch(() => 0n);
   return { baseFeePerGas: hostQuantity(block.baseFeePerGas), maxPriorityFeePerGas: tip };
+}
+
+const MIN_TIP = 1_000_000n;   // 0.001 gwei: a bundler that asks for some tip is given a token one
+
+// A gas price from the wallet's own node, for when no bundler can quote one (Pimlico's quote call is the usual source; Candide's bundler has
+// none): twice the coming block's base fee, which several full blocks do not outrun, plus the highest median tip of the last ten blocks. It is
+// a ceiling like the quote: the operation pays the price in force, and what the fee in the proof does not use goes back to the recipient.
+export async function readFallbackGasPrice(provider) {
+  const h = await provider.request({ method: 'eth_feeHistory', params: ['0xa', 'latest', [50]] });
+  if (!Array.isArray(h?.reward) || !h.reward.length || h.reward.length > 10 || !Array.isArray(h.baseFeePerGas) || h.baseFeePerGas.length !== h.reward.length + 1) throw new Error('Invalid host fee history');
+  let tip = 0n;
+  for (const row of h.reward) {
+    if (!Array.isArray(row) || row.length !== 1) throw new Error('Invalid host fee history');
+    const r = hostQuantity(row[0]);
+    if (r > tip) tip = r;
+  }
+  if (tip < MIN_TIP) tip = MIN_TIP;
+  return { maxFeePerGas: hostQuantity(h.baseFeePerGas.at(-1)) * 2n + tip, maxPriorityFeePerGas: tip };
 }
 
 // The fee comes out of the note, so a bundler that quotes far over the node's own view is refused.
@@ -229,6 +252,48 @@ export function bundlerClient(url, fetchImpl = globalThis.fetch.bind(globalThis)
   };
 }
 
+// The bundlers an operation can go to, in order, as one client. A bundler that cannot be reached, cannot quote a price (Candide has no quote
+// call), or says nothing about the operation (see estimationUnavailableReason) is passed over for the next; a refusal of the operation is
+// final when the first bundler asked gives it, as with one bundler. Past the last, the first error is the answer, and a refusal by a later
+// bundler never replaces it, so a single bundler behaves exactly as bundlerClient does. An operation is sent to the first that takes it,
+// which is then asked first about it: its receipt is looked for there (an unknown operation there is an unknown one: the receipt is read from
+// the chain's logs, so another bundler would say the same), and before any send every bundler is asked. The same operation may sit in two
+// bundlers after a send whose reply was lost; the EntryPoint runs it once, and only one inclusion can pay the paymaster.
+const READS = new Set(['eth_getUserOperationReceipt', 'eth_getUserOperationByHash']);
+export function bundlerSet(urls, fetchImpl) {
+  const clients = urls.map((u) => bundlerClient(u, fetchImpl));
+  let took = null;   // the index of the bundler that took the operation
+  const passable = (method, params, e) => {
+    if (READS.has(method)) return true;
+    if (method === 'eth_estimateUserOperationGas') return !!estimationUnavailableReason(e, params?.[0]);
+    if (e?.kind === 'network') return true;
+    if (e?.kind === 'http') return RETRYABLE_STATUS.has(e.status);
+    return method === 'pimlico_getUserOperationGasPrice' && e?.kind === 'rpc' && (e.code === -32601 || /unsupported method|method not found/i.test(String(e.details ?? e.message)));
+  };
+  return {
+    url: urls[0],
+    urls,
+    async request(method, params) {
+      const order = clients.map((_, i) => i);
+      if (took !== null) order.unshift(...order.splice(took, 1));
+      let first = null, unknown = false;
+      for (const i of order) {
+        let r;
+        try { r = await clients[i].request(method, params); } catch (e) {
+          if (first === null) { first = e; if (!passable(method, params, e)) throw e; }
+          continue;
+        }
+        if (method === 'eth_sendUserOperation') took = i;
+        if (r == null && READS.has(method)) { unknown = true; if (i === took) return r; continue; }
+        return r;
+      }
+      if (unknown) return null;
+      if (first !== null) throw first;
+      return null;
+    },
+  };
+}
+
 // 'transport-unavailable' or 'bundler-internal' for a failure that says nothing about the operation, undefined for
 // one that does (a refusal of it).
 export function estimationUnavailableReason(error, op) {
@@ -265,14 +330,24 @@ const parseGas = (r) => ({
 // (the paymaster) and takes `fee`: { proof, root, nullifierHash } already checked against what was asked.
 // Gas limits and the fee in the proof depend on each other, so a change in the limits makes a new proof.
 export async function prepareSponsoredWithdrawal({
-  chainId, pool, denomination, recipient, prove, bundler, reference, key = secp.utils.randomPrivateKey(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), onStep = () => {},
+  chainId, pool, denomination, recipient, prove, bundler, reference, nodePrice = null, key = secp.utils.randomPrivateKey(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), onStep = () => {},
   maxFeePercent = MAX_FEE_PERCENT, priceTries = 12, priceEvery = 10_000,
 }) {
   const cfg = paymasterFor(chainId, pool);
+  // The bundler's quote; when none can give one (all are down, or only ones with no quote call answer), `nodePrice()`: the wallet's own node's price.
+  // Either is held to the same bounds against the node's view.
   const readPrice = async () => {
-    const standard = (await bundler.request('pimlico_getUserOperationGasPrice', []))?.standard;
-    if (!standard) throw new Error('The bundler gave no gas price.');
-    const p = { maxFeePerGas: BigInt(standard.maxFeePerGas), maxPriorityFeePerGas: BigInt(standard.maxPriorityFeePerGas) };
+    let p;
+    try {
+      const standard = (await bundler.request('pimlico_getUserOperationGasPrice', []))?.standard;
+      if (!standard) throw Object.assign(new Error('The bundler gave no gas price.'), { kind: 'no-price' });
+      p = { maxFeePerGas: BigInt(standard.maxFeePerGas), maxPriorityFeePerGas: BigInt(standard.maxPriorityFeePerGas) };
+    } catch (e) {
+      const unavailable = e?.kind === 'network' || e?.kind === 'no-price' || (e?.kind === 'http' && RETRYABLE_STATUS.has(e.status))
+        || (e?.kind === 'rpc' && (e.code === -32601 || /unsupported method|method not found/i.test(String(e.details ?? e.message))));
+      if (!nodePrice || !unavailable) throw e;
+      p = await nodePrice();
+    }
     assertGasPriceWithinBounds(p, reference);
     return p;
   };

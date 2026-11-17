@@ -263,5 +263,46 @@ await test('a chain with no pools has nothing to find', async () => {
   eq(found.length, 0);
 });
 
+console.log('the split as one transaction with one sender (depositWith)');
+const landAll = (w, notes) => { for (const n of notes) w.pools.get(n.pool.address.toLowerCase()).seen.add(commitmentBytes32(n.secrets.commitment).slice(2)); };
+const memStore = () => { const m = new Map(); return { get: (k) => m.get(k) ?? null, set: (k, v) => m.set(k, v) }; };
+await test('every note is signed for, one sender is called with all of them, and the notes it landed are returned with the hash', async () => {
+  const w = world(); const f = flow(w);
+  let got = null;
+  const out = await f.depositWith(planFor('0.3'), async (notes) => { got = notes; landAll(w, notes); return '0xabc'; });
+  eq(w.log.signs, 4, 'one signature a note, and one to find the next free number'); eq(got.length, 3, 'the sender got all three'); eq(w.log.sends.length, 0, 'the flow sent nothing itself');
+  eq(out.hash, '0xabc'); eq(out.sent, 'one transaction'); eq(out.notes.length, 3);
+  eq(out.notes.every((n) => typeof n.text === 'string' && n.text.length > 10), true, 'each note has its text');
+});
+await test('the next deposit starts after the notes that landed', async () => {
+  const w = world(); const f = flow(w, 11155111, { store: memStore() });
+  await f.depositWith(planFor('0.2'), async (notes) => { landAll(w, notes); return '0x1'; });
+  const notes = await f.prepareNotes(planFor('0.1'));
+  eq(notes[0].nonce, 2, 'numbers 0 and 1 are used');
+});
+await test('a sender that throws with nothing landed is an error that kept nothing, and the numbers are free again', async () => {
+  const w = world(); const f = flow(w, 11155111, { store: memStore() });
+  const e = await rejects(f.depositWith(planFor('0.2'), async () => { throw new Error('User rejected the request.'); }), /rejected/);
+  eq(e.done.length, 0, 'nothing was placed'); eq(e.notes.length, 2);
+  const again = await f.prepareNotes(planFor('0.1'));
+  eq(again[0].nonce, 0, 'the first number is still free');
+});
+await test('a sender that throws after the transaction landed is not a failure: the notes are in their pools', async () => {
+  const w = world(); const f = flow(w);
+  const out = await f.depositWith(planFor('0.2'), async (notes) => { landAll(w, notes); throw new Error('the wallet lost its wait'); });
+  eq(out.notes.length, 2); eq(out.hash, null, 'its hash is not known');
+});
+await test('a sender that returns a hash with a note still missing says the note is not in the pool yet, and names the notes', async () => {
+  const w = world(); const f = flow(w);
+  const e = await rejects(f.depositWith(planFor('0.2'), async (notes) => { landAll(w, notes.slice(0, 1)); return '0x2'; }), /not in the pool yet/);
+  eq(e.done.length, 2, 'the notes are named so the caller can keep them');
+});
+await test('sendOne sends one call as a transaction from the account and returns its hash', async () => {
+  const w = world(); const f = flow(w);
+  const [n] = await f.prepareNotes(planFor('0.1'));
+  const r = await f.sendOne(n.call);
+  eq(w.log.sends.length, 1); eq(w.log.sends[0].from, ACCOUNT); eq(typeof r.hash, 'string');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

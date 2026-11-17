@@ -403,7 +403,7 @@ test('points: each proof the relay takes from a community machine counts for its
 });
 
 test('points config: env sets the points and a count a day, 0 points pays nothing, no count or 0 is no count, nonsense keeps the default', () => {
-  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3, drawPct: 0, drawNew: 15 });
+  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3, drawPct: 0, drawNew: 15, drawSeats: 3 });
   assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10', POINTS_BOARD_BTC_PER_PROOF: '800' }), { pointsPerProof: 50, proofsPerMinerDay: 10, ...btc(800) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0', POINTS_BOARD_BTC_PER_PROOF: '0' }), { pointsPerProof: 0, proofsPerMinerDay: Infinity, ...btc(0) });
@@ -413,6 +413,7 @@ test('points config: env sets the points and a count a day, 0 points pays nothin
   assert.deepEqual(proverBoardConfig({ PROVER_BOARD_FIRST_MS: 'soon' }).communityFirstMs, { confidential: 20_000, 'tacit-block': 120_000 }, 'nonsense keeps the default');
   assert.deepEqual([proverBoardConfig({ PROVER_BOARD_BEST_PCT: '0' }).bestPct, proverBoardConfig({ PROVER_BOARD_BEST_PCT: '100' }).bestPct, proverBoardConfig({ PROVER_BOARD_BEST_PCT: '101' }).bestPct], [0, 100, 50], 'batches by record: 0 to 100, past it the default');
   assert.deepEqual([proverBoardConfig({ PROVER_BOARD_BEST_OF: '1' }).bestOf, proverBoardConfig({ PROVER_BOARD_BEST_OF: '0' }).bestOf], [1, 3], 'at least one machine');
+  assert.deepEqual(['5', '0', 'few', '500'].map((v) => proverBoardConfig({ PROVER_BOARD_BLOCK_DRAW_SEATS: v }).drawSeats), [5, 3, 3, 50], 'the newcomers\' seats: at least one, nonsense keeps the default, no more than fifty');
 });
 
 test('community first pick: a fresh public job waits for a ready community machine before Tacit\'s worker takes it, private work never waits', async () => {
@@ -1127,7 +1128,7 @@ test('draw: a machine whose latest claim names fewer programs still holds its ti
 
 test('standing: odds under one in a hundred are said as less than one, not rounded up to one', async () => {
   t = 32_000_000;
-  const { st, b } = drawBoard();
+  const { st, b } = drawBoard({ drawSeats: 30 });                // a seat for each of the thirty, as before turns
   const fast = gpu('a1');
   const fresh = Array.from({ length: 30 }, (_, i) => gpu(i.toString(16).padStart(2, '0'), `place-n${i}`));   // thirty distinct machines at thirty places
   await ready(st, b, [fast, ...fresh]);
@@ -1137,4 +1138,125 @@ test('standing: odds under one in a hundred are said as less than one, not round
   assert.match(s.text, /less than 1 in 100 of the blocks/);
   assert.doesNotMatch(s.text, /about 1 in 100|about less/);
   assert.match((await b.standing(addrOf(fast))).text, /about \d+ in 100 of the blocks drawn this minute/, 'a whole number of hundredths keeps its "about"');
+});
+
+test('draw: places with no record take turns: only the longest waiting hold a ticket, a drawn one goes to the back of the line, and one that stops asking gives its seat on', async () => {
+  t = 33_000_000;
+  const { st, b } = drawBoard({ drawNew: 90, drawSeats: 3 }), block = blockOn(b);
+  const fast = gpu('a0'), news = ['a1', 'b2', 'c3', 'd4', 'e5', 'f6'].map((h) => gpu(h));
+  for (const w of [fast, ...news]) { await askBlock(b, w); t += 1000; }          // the board sees them in this order
+  const ws = await st.getWorkers();
+  for (const w of [fast, ...news]) ws[w.name].proved = 1;
+  Object.assign(ws[fast.name], { blocks: 5, blockSecs: 4 });
+  await st.putWorkers(ws);
+  const row = (w) => b.standing(addrOf(w));
+  let rows = await Promise.all(news.map(row));
+  assert.deepEqual(rows.map((r) => r.inDraw), [true, true, true, false, false, false], 'the three that waited longest hold the tickets');
+  assert.deepEqual(rows.slice(3).map((r) => [r.line.position, r.line.ahead, r.line.of]), [[4, 1, 6], [5, 2, 6], [6, 3, 6]], 'the rest are told their place in line');
+  assert.match(rows[3].why, /number 4 in line, so 1 machine must be drawn before it holds a ticket/);
+  assert.match(rows[5].why, /number 6 in line, so 3 machines must be drawn/);
+  assert.ok(rows.slice(0, 3).every((r) => Math.abs(r.oddsPct - 30) < 0.5), `each seat holds a third of 90 in 100 (${rows.slice(0, 3).map((r) => r.oddsPct)})`);
+  assert.deepEqual([rows[0].line.position, rows[0].line.ahead], [1, 0], 'a machine holding a ticket is at the front of the line');
+  assert.equal((await row(fast)).line, null, 'a machine with a record is in no line');
+  // each block drawn for a newcomer sends that newcomer to the back, and the next in line takes a seat
+  const drawn = Object.fromEntries(news.map((w) => [w.name, 0]));
+  let backs = 0;
+  for (let i = 0; i < 30; i++) {
+    t += 1000; const j = await block();
+    let got = null;
+    for (const w of [fast, ...news]) { if (await askBlock(b, w)) { got = w; break; } }
+    assert.ok(got, 'a block is drawn for someone');
+    await b.cancel({ jobId: j.jobId });
+    if (got === fast) continue;
+    drawn[got.name]++;
+    const r = await row(got);
+    if (r.line && r.line.position === r.line.of) backs++;
+    // the machines holding tickets are, again, the first three in the line
+    const now3 = await Promise.all(news.map(row));
+    assert.equal(now3.filter((x) => x.inDraw).length, 3, 'three seats');
+    assert.deepEqual(now3.filter((x) => !x.inDraw).map((x) => x.line.position).sort(), [4, 5, 6], 'the other three queue behind them, in order');
+  }
+  const counts = Object.values(drawn), total = counts.reduce((s, v) => s + v, 0);
+  assert.ok(total >= 20, `most of the thirty went to newcomers (${total})`);
+  assert.equal(backs, total, 'every drawn newcomer went to the back of the line');
+  assert.ok(Math.min(...counts) >= 2 && Math.max(...counts) - Math.min(...counts) <= 3, `the turns went round all six, in order (${counts})`);
+  // a seated machine that stops asking gives its seat to the next in line
+  rows = await Promise.all(news.map(row));
+  const gone = news[rows.findIndex((r) => r.inDraw)];
+  t += PROVER_BOARD.turnSeenMs + 1000;
+  for (const w of [fast, ...news.filter((w) => w !== gone)]) await askBlock(b, w);
+  const after = await Promise.all(news.map(row));
+  assert.equal(after[news.indexOf(gone)].inDraw, false); assert.match(after[news.indexOf(gone)].why, /not asking for work right now/);
+  assert.equal(after.filter((r) => r.inDraw).length, 3, 'its seat went to the next in line');
+});
+
+test('draw: with no place holding a record the newcomers in their seats share every block, and the rest wait their turn', async () => {
+  t = 34_000_000;
+  const { st, b } = drawBoard({ drawSeats: 2 });
+  const news = ['a1', 'b2', 'c3', 'd4'].map((h) => gpu(h));
+  for (const w of news) { await askBlock(b, w); t += 1000; }
+  await ready(st, b, news);
+  const rows = await Promise.all(news.map((w) => b.standing(addrOf(w))));
+  assert.deepEqual(rows.map((r) => r.inDraw), [true, true, false, false]);
+  assert.ok(rows.slice(0, 2).every((r) => Math.abs(r.oddsPct - 50) < 0.5), 'two seats share the whole draw');
+});
+
+test('draw: a machine\'s usual time is the whole wait, so one slow to ask records more than its proving time and the standing says so', async () => {
+  t = 35_000_000;
+  const { st, b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1');
+  await ready(st, b, [x]);
+  const j = await block();
+  t += 8000;                                                     // x asks for the block 8 s after it was posted...
+  assert.ok(await askBlock(b, x));
+  t += 10_000;                                                   // ...and proves it in 10 s
+  await answer(b, x, j.jobId);
+  const row = (await b.summary()).workers.find((w) => w.name === x.name);
+  assert.deepEqual([row.blocks, row.blockSecs, row.blockFelt], [1, 10, 18], 'ten seconds of proving, eighteen of waiting');
+  const s = await b.standing(addrOf(x));
+  assert.equal(s.blockFelt, 18);
+  assert.match(s.text, /usually 18 s from the block being posted to this machine's proof arriving \(10 s of that proving it\)/);
+  assert.match(s.text, /About 8 s of that is the block waiting/);
+  assert.doesNotMatch(s.text, /none taken yet/, 'a machine with a record is not told it has taken none');
+  assert.equal(((s.text.match(/Tacit chain blocks:/g)) || []).length, 1, 'and its block line is said once');
+});
+
+test('draw: a racer is counted from when the block was open to it, and a machine drawn but not there has the wait counted against it', async () => {
+  t = 36_000_000;
+  const { st, b } = drawBoard(), block = blockOn(b);
+  const x = gpu('d1'), y = gpu('e2');
+  await ready(st, b, [x, y]);
+  const ws = await st.getWorkers();
+  for (const w of [x, y]) Object.assign(ws[w.name], { blocks: 3, blockSecs: 10, blockFelt: 10 });
+  await st.putWorkers(ws);
+  const t0 = t, j = await block();
+  const gx = await askBlock(b, x), gy = await askBlock(b, y);
+  const [drawn, other] = gx ? [x, y] : [y, x];
+  t += PROVER_BOARD.drawMinMs * 3 + 1;                           // the drawn machine lets its lease run out
+  await askBlock(b, drawn);
+  assert.ok(await askBlock(b, other), 'the race opens to the other');
+  t += 4000;
+  await answer(b, other, j.jobId);
+  const rows = Object.fromEntries((await b.summary()).workers.map((w) => [w.name, w]));
+  const waited = (t - t0) / 1000;
+  assert.ok(Math.abs(rows[other.name].blockFelt - (0.7 * 10 + 0.3 * 4)) < 0.2, `the racer is counted from the opening: 4 s, not ${waited} s (${rows[other.name].blockFelt})`);
+  assert.ok(Math.abs(rows[drawn.name].blockFelt - (0.7 * 10 + 0.3 * waited)) < 0.2, `the machine drawn first has the whole ${waited} s counted (${rows[drawn.name].blockFelt})`);
+  assert.equal(rows[drawn.name].blockSecs, 10, 'its proving time is untouched: only the wait');
+});
+
+test('draw: odds follow the whole wait, and a record from before it was kept weighs by its proving time', async () => {
+  t = 37_000_000;
+  const { st, b } = drawBoard();
+  const x = gpu('d1'), y = gpu('e2'), z = gpu('f3');
+  await ready(st, b, [x, y, z]);
+  const ws = await st.getWorkers();
+  Object.assign(ws[x.name], { blocks: 3, blockSecs: 10, blockFelt: 10 });
+  Object.assign(ws[y.name], { blocks: 3, blockSecs: 10, blockFelt: 30 });   // the same GPU, slow to ask
+  Object.assign(ws[z.name], { blocks: 3, blockSecs: 10 });                  // an older record: no wait kept
+  await st.putWorkers(ws);
+  const [sx, sy, sz] = await Promise.all([x, y, z].map((w) => b.standing(addrOf(w))));
+  assert.ok(Math.abs(sx.oddsPct - sz.oddsPct) < 0.2, 'an older record weighs as its proving time');
+  assert.match(sz.text, /Tacit chain blocks: 3 taken, usually 10 s each\./, 'an older record is said as before');
+  assert.doesNotMatch(sz.text, /none taken yet/);
+  assert.ok(Math.abs(sx.oddsPct / sy.oddsPct - 3) < 0.1, `10 s of waiting against 30 s: three to one (${sx.oddsPct} / ${sy.oddsPct})`);
 });

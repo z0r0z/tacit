@@ -22,6 +22,8 @@ import { poseidon2, poseidon3, poseidon4, poseidon5 } from '../dapp/vendor/tacit
 import { makeChainClient } from '../dapp/tacit-chain-client.js';
 import { makeChainWallet, assetField, worthOf } from '../dapp/tacit-chain-wallet.js';
 import { makeTacitAddress } from '../dapp/tacit-address.js';
+import { keepRoot } from '../dapp/tacit-chain-lane.js';
+import { rootToPhrase } from '../dapp/tacit-chain-phrase.js';
 import { ETH_NODES } from '../dapp/eth-nodes.js';
 import { fmtTac, sharePrice } from '../dapp/chain/ui.js';
 
@@ -239,15 +241,16 @@ const text = (page, sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g,
 const rowsOf = (page, sel) => page.$$eval(`${sel} .kv`, (rs) => Object.fromEntries(rs.map((r) => [r.firstElementChild.textContent.trim(), r.lastElementChild.textContent.replace(/\s+/g, ' ').trim()])));
 const NODE_HOSTS = new Set(ETH_NODES.map((u) => new URL(u).host));
 
-async function visit({ viewport = { width: 1280, height: 900 }, colorScheme = 'light', touch = false } = {}) {
+async function visit({ viewport = { width: 1280, height: 900 }, colorScheme = 'light', touch = false, seed = {}, host = WEB } = {}) {
   const ctx = await browser.newContext({ viewport, colorScheme, ...(touch ? { hasTouch: true, isMobile: true } : {}) });
   const asked = [], bad = [];
-  await ctx.addInitScript(({ dev, pk, kept, hk, hops }) => {
+  await ctx.addInitScript(({ dev, pk, kept, hk, hops, seed }) => {
+    for (const [k, v] of Object.entries(seed)) localStorage.setItem(k, v);
     localStorage.setItem('tacit-chain-dev', JSON.stringify(dev));
     const now = Date.now();
     localStorage.setItem(pk, JSON.stringify(kept.map((e) => ({ ...e, at: now - e.at, ...(e.pay ? { pay: { until: now + e.pay.until } } : {}), ...(e.forced ? { forced: { ...e.forced, at: now - e.forced.at } } : {}) }))));
     localStorage.setItem(hk, JSON.stringify(hops.map((h) => ({ ...h, at: now - h.at }))));
-  }, { dev: { blocks: BLOCKS, leader: `${WEB}/tacit-chain-leader` }, pk: pendingKey, hk: hopsKey,
+  }, { dev: { blocks: BLOCKS, leader: `${host}/tacit-chain-leader` }, pk: pendingKey, hk: hopsKey, seed,
     // (times as offsets from the page's now, which the script adds)
     kept: kept(0).map((e) => ({ ...e, at: -e.at, ...(e.pay ? { pay: { until: e.pay.until } } : {}), ...(e.forced ? { forced: { ...e.forced, at: -e.forced.at } } : {}) })),
     hops: hopsWaiting(0).map((h) => ({ ...h, at: -h.at })) });
@@ -268,7 +271,7 @@ async function visit({ viewport = { width: 1280, height: 900 }, colorScheme = 'l
   page.on('request', (r) => asked.push(r.url()));
   page.on('pageerror', (e) => bad.push(`page error: ${e.message}`));
   page.on('console', (m) => { if (/Content Security Policy/i.test(m.text())) bad.push(`console: ${m.text()} ${m.location()?.url || ''}`); });
-  await page.goto(`${WEB}/tac/`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${host}/tac/`, { waitUntil: 'domcontentloaded' });
   const tag = `${viewport.width}-${colorScheme}`;
   return { page, ctx, asked, bad, shot: async (name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `chain-${name}-${tag}.png`), fullPage: true }); } };
 }
@@ -276,7 +279,8 @@ const noSideways = (page) => page.evaluate(() => document.documentElement.scroll
 // the key pasted in the front page's wallet sheet, which TAC's page shares
 async function signIn(page) {
   await page.click('#tcd-go');
-  await page.waitForSelector('#sheet-wallet[open] [data-in="paste"]', { timeout: 10000 });
+  await page.waitForSelector('#sheet-wallet[open] [data-in="paste"]', { state: 'attached', timeout: 10000 });
+  await page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
   await page.click('#sheet-wallet [data-in="paste"]');
   await page.fill('#ws-hex', KEY);
   await page.click('#sheet-wallet [data-in="key"]');
@@ -418,9 +422,125 @@ try {
     for (let i = 0; i < 40 && directory.size === 0; i++) await new Promise((r) => setTimeout(r, 500));
     ok(directory.size === 1, 'the address is in the leader\'s directory, published as the key opened');
     ok(leaderAsked.includes('GET /fee') && leaderAsked.some((x) => x.startsWith('GET /notes')), 'the leader was asked for its terms and its notes');
+    await page.waitForFunction(() => /Generate PQ ID/.test(document.querySelector('#tcd-pq')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
+    const pqOffer = await text(page, '#tcd-pq');
+    ok(/Experimental/i.test(pqOffer) && /Generate PQ ID/.test(pqOffer) && /Tacit address stays the same/.test(pqOffer) && /may change as post-quantum research/.test(pqOffer),
+      `under the address a PQ ID is offered, marked experimental (${pqOffer.slice(0, 90)}…)`);
     await shot('signed-in');
     ok(bad.length === 0, `no errors or CSP violations (${bad.join(' | ')})`);
     await ctx.close();
+  }
+  // a PQ ID kept on this device, as Generate PQ ID leaves it: the Tacit address is the same, chain lane and all, the panel says it is on, and the
+  // chain address published as the key opens is the PQ ID's
+  if (PRESS !== 'only') {
+    const vault = new Map();
+    keepRoot(KEY, new Uint8Array(32).fill(0x77), 'cred-pq', { getItem: (k) => vault.get(k) ?? null, setItem: (k, v) => vault.set(k, v), removeItem: (k) => vault.delete(k) });
+    directory.clear();
+    const { page, ctx, bad, shot } = await visit({ seed: Object.fromEntries(vault) });
+    await signIn(page);
+    await page.click('#tcd-t-receive');
+    await page.waitForFunction(`/^tacit1/.test(${TACIT_ROW})`, null, { timeout: 30000 }).catch(() => {});
+    const addr = await page.evaluate(TACIT_ROW).catch(() => '');
+    let same = false;
+    try { same = Buffer.from(makeTacitAddress({ secp }).decodeTacitAddress(addr).lanes.chain.hash).equals(Buffer.from(lane)); } catch { /* not an address */ }
+    ok(same, `with a PQ ID the Tacit address is the same, chain lane and all (${addr.slice(0, 18)}…)`);
+    await page.waitForFunction(() => /On/.test(document.querySelector('#tcd-pq .tpq-on')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
+    const pqOn = await text(page, '#tcd-pq');
+    ok(/sealed to keys no published key leads to/.test(pqOn), `the panel says the PQ ID is on (${pqOn.slice(0, 90)}…)`);
+    for (let i = 0; i < 40 && directory.size === 0; i++) await new Promise((r) => setTimeout(r, 500));
+    ok(directory.size === 1 && !directory.has(strip(hx(lane))), 'the chain address published as the key opens is the PQ ID\'s, not the lane\'s');
+    // its backup phrase, from the root this device keeps: the 24 words of that root, and "Done" only once they are written down
+    await page.click('#tpq-show');
+    await page.waitForSelector('#tcd-pq .tpq-words li', { timeout: 10000 }).catch(() => {});
+    const shown = await page.$$eval('#tcd-pq .tpq-words li', (ls) => ls.map((l) => l.lastChild.textContent.trim()).join(' '));
+    ok(shown === rootToPhrase(new Uint8Array(32).fill(0x77)), `"Back up your PQ ID" shows the root's 24 words (${shown.split(' ').slice(0, 3).join(' ')}…)`);
+    const doneOff = await page.$eval('#tpq-done', (b) => b.disabled).catch(() => null);
+    await page.check('#tpq-saved');
+    const doneOn = await page.$eval('#tpq-done', (b) => !b.disabled).catch(() => null);
+    ok(doneOff === true && doneOn === true, '"Done" waits for the words to be written down');
+    await page.click('#tpq-done');
+    await page.waitForFunction(() => /Show backup phrase/.test(document.querySelector('#tcd-pq')?.textContent || ''), null, { timeout: 5000 }).catch(() => {});
+    ok(/Show backup phrase/.test(await text(page, '#tcd-pq')), 'once backed up, the phrase is a link away');
+    await shot('pq-on');
+    ok(bad.length === 0, `no errors or CSP violations (${bad.join(' | ')})`);
+    await ctx.close();
+  }
+  // a new device with nothing kept: the PQ ID restored from its backup phrase, a wrong word refused with a reason, the Tacit address the same
+  if (PRESS !== 'only') {
+    directory.clear();
+    const { page, ctx, bad } = await visit();
+    await signIn(page);
+    await page.click('#tcd-t-receive');
+    await page.waitForSelector('#tpq-restore-open', { timeout: 20000 }).catch(() => {});
+    await page.click('#tpq-restore-open');
+    const phrase = rootToPhrase(new Uint8Array(32).fill(0x77));
+    await page.fill('#tpq-phrase', phrase.replace(/ \w+$/, ' zoo'));
+    await page.click('#tpq-restore');
+    await page.waitForFunction(() => /check does not match|not a backup phrase word/.test(document.querySelector('#tcd-pq')?.textContent || ''), null, { timeout: 10000 }).catch(() => {});
+    ok(/check does not match/.test(await text(page, '#tcd-pq')) && (await page.$eval('#tpq-phrase', (t) => t.value).catch(() => '')).startsWith(phrase.split(' ')[0]), 'a wrong word is refused with a reason, the typed words kept');
+    await page.fill('#tpq-phrase', phrase);
+    await page.click('#tpq-restore');
+    await page.waitForFunction(() => /On/.test(document.querySelector('#tcd-pq .tpq-on')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+    ok(/sealed to keys no published key leads to/.test(await text(page, '#tcd-pq')), 'the right phrase restores the PQ ID');
+    const addr = await page.evaluate(TACIT_ROW).catch(() => '');
+    let same = false;
+    try { same = Buffer.from(makeTacitAddress({ secp }).decodeTacitAddress(addr).lanes.chain.hash).equals(Buffer.from(lane)); } catch { /* not an address */ }
+    ok(same, 'and the Tacit address is the same');
+    ok(bad.length === 0, `no errors or CSP violations (${bad.join(' | ')})`);
+    await ctx.close();
+  }
+  // Passkey wallets through the browser's own WebAuthn, on a virtual authenticator with PRF (a passkey needs a secure origin: localhost). A new
+  // passkey wallet makes its PQ ID from its own passkey: the phrase, then on. With the sign-in switch on, a passkey that is backed up brings its PQ
+  // ID with the sign-in itself; one kept on a single device does not.
+  if (PRESS !== 'only') {
+    const LOCAL = WEB.replace('127.0.0.1', 'localhost');
+    const passkeyVisit = async ({ backedUp = true, auto = false } = {}) => {
+      const v = await visit({ host: LOCAL, seed: auto ? { 'tacit-pq-signin': '1' } : {} });
+      const cdp = await v.ctx.newCDPSession(v.page);
+      await cdp.send('WebAuthn.enable', { enableUI: false });
+      await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', ctap2Version: 'ctap2_1', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true, hasPrf: true, defaultBackupEligibility: backedUp, defaultBackupState: backedUp } });
+      await v.page.click('#tcd-go');
+      await v.page.waitForSelector('#sheet-wallet[open] [data-in="new"]', { state: 'attached', timeout: 10000 });
+      await v.page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
+      await v.page.click('#sheet-wallet [data-in="new"]');
+      await v.page.waitForFunction(() => /tacit1/.test(document.querySelector('#wallet-label')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+      await v.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+      const signedIn = /tacit1/.test(await text(v.page, '#wallet-label'));
+      const kept = () => v.page.evaluate(() => Object.keys(localStorage).some((k) => k.startsWith('tacit-chain-root-v1:')));
+      return { ...v, signedIn, kept };
+    };
+    {
+      const { page, ctx, bad, signedIn, kept } = await passkeyVisit();
+      ok(signedIn, 'a new passkey wallet opens through the browser\'s WebAuthn (virtual authenticator with PRF)');
+      ok(!(await kept()), 'with the sign-in switch off, its sign-in keeps no PQ ID root');
+      await page.click('#tcd-t-receive');
+      await page.waitForSelector('#tpq-go', { timeout: 20000 }).catch(() => {});
+      await page.click('#tpq-go');
+      await page.waitForFunction(() => document.querySelectorAll('#tcd-pq .tpq-words li').length === 24, null, { timeout: 20000 }).catch(() => {});
+      const n = await page.$$eval('#tcd-pq .tpq-words li', (ls) => ls.length);
+      ok(n === 24 && !(await kept()), 'Generate PQ ID asks its passkey and shows 24 words, and nothing is kept until they are written down');
+      await page.check('#tpq-saved');
+      await page.click('#tpq-on');
+      await page.waitForFunction(() => /On/.test(document.querySelector('#tcd-pq .tpq-on')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+      ok(/sealed to keys no published key leads to/.test(await text(page, '#tcd-pq')) && (await kept()), 'turned on: the PQ ID is on and its root kept on this device');
+      ok(bad.length === 0, `no errors or CSP violations (${bad.join(' | ')})`);
+      await ctx.close();
+    }
+    {
+      const { page, ctx, bad, signedIn, kept } = await passkeyVisit({ auto: true });
+      ok(signedIn && (await kept()), 'switch on, a backed-up passkey: the sign-in itself keeps the PQ ID root (one ceremony, two salts)');
+      await page.click('#tcd-t-receive');
+      await page.waitForFunction(() => /On/.test(document.querySelector('#tcd-pq .tpq-on')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+      ok(/Back up your PQ ID/.test(await text(page, '#tcd-pq')), 'and the panel says it is on, with its backup phrase still to write down');
+      ok(bad.length === 0, `no errors or CSP violations (${bad.join(' | ')})`);
+      await ctx.close();
+    }
+    {
+      const { ctx, bad, signedIn, kept } = await passkeyVisit({ auto: true, backedUp: false });
+      ok(signedIn && !(await kept()), 'switch on, a passkey kept on one device: the sign-in opens the wallet and keeps no root');
+      ok(bad.length === 0, `no errors or CSP violations (${bad.join(' | ')})`);
+      await ctx.close();
+    }
   }
   // a phone and a desk, light and dark: nothing sideways. On the phone the card comes under the chain's newest blocks and over its path, its amount
   // on the first screen. These accounts hold no ETH: the leader sends a shield in for its fee, with nothing else to choose

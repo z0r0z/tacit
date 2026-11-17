@@ -21,13 +21,13 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=283e81f2">
+<link rel="modulepreload" href="/prove/app.js?cb=702fdef8">
 <link rel="modulepreload" href="/community-prove.js?cb=e2a65259">
 <link rel="modulepreload" href="/prove/view.js?cb=f0f73815">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
-<link rel="modulepreload" href="/prove/tabmine.js?cb=a9294239">
-<link rel="modulepreload" href="/prove/saltcore.js?cb=87770f39">
+<link rel="modulepreload" href="/prove/tabmine.js?cb=ab8f8e8f">
+<link rel="modulepreload" href="/prove/saltcore.js?cb=4167306b">
 <link rel="modulepreload" href="/prove/review.js?cb=23bfbd4a">
 <link rel="modulepreload" href="/prove/chain.js?cb=e4dfccf1">
 <!-- preload:end -->
@@ -846,6 +846,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
             <a href="/trade/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16"/><path d="M7.5 15l3.500-4.500 3 2.500L19 7"/></svg>Trade</a>
             <a href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
             <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
+            <a href="/shop/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 4h11L21 9l-9 11L3 9z"/><path d="M3 9h18"/><path d="M9.5 4L8 9l4 11 4-11-1.5-5"/></svg>Shop</a>
             <a href="/prove/" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Prove</a>
             <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
             <a href="/weld/stats/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/></svg>Stats</a>
@@ -953,6 +954,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <p class="eyebrow"><span>Between proofs</span></p>
         <h3 id="h-salt">Mine contract addresses<span id="salt-pay"></span></h3>
         <p class="hint" id="salt-day">While it waits, your node searches for the addresses Tacit's next contracts deploy to, the ones starting with the most zeros. A proof always comes first.</p>
+        <p class="hint" id="salt-sell">The latest version also finds addresses for <a href="/shop/">the shop</a>, where anyone can buy one with TAC.</p>
         <button class="btn" id="tab-go" type="button" hidden></button>
         <p class="hint" id="tab-say" aria-live="polite" hidden></p>
         <div class="rows num" id="tab-rows" hidden>
@@ -967,7 +969,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <ol id="salt-best" class="bank"></ol>
         <p class="eyebrow" id="salt-bank-h" hidden></p>
         <ol id="salt-bank" class="bank scroll" tabindex="0" aria-label="Addresses banked for deploys"></ol>
-        <p class="hint" id="salt-shop">Deployed to one of these addresses: the vanity-address shop, at <a href="https://etherscan.io/address/0x00000000000785882df83d4CC6ED45c21eB1176C#code" target="_blank" rel="noopener noreferrer">0x00000000000785882df83d4C…176C</a>. Source verified.</p>
+        <p class="hint" id="salt-shop">Deployed to one of these addresses: <a href="/shop/">the shop</a>, at <a href="https://etherscan.io/address/0x00000000000785882df83d4CC6ED45c21eB1176C#code" target="_blank" rel="noopener noreferrer">0x00000000000785882df83d4C…176C</a>. Source verified.</p>
       </section>
       </div>
       <div class="col">
@@ -1121,6 +1123,6 @@ node tools/community-runner.mjs mirror   # no key: keeps the board public on Nos
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=283e81f2"></script>
+<script type="module" src="/prove/app.js?cb=702fdef8"></script>
 </body>
 </html>

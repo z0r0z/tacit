@@ -203,6 +203,10 @@ export function loadKeeperConfig(env = process.env) {
     // A submission endpoint that does not answer in this long (ms) is given up on (one retry after a network error); the private ones are
     // sent to at once, so a hung one does not hold a relay up.
     sendTimeoutMs: int(env, 'EVM_POOL_KEEPER_SEND_TIMEOUT_MS', 8000),
+    // A send with no receipt after this many seconds is sent again, unchanged (the same hash), to the private endpoints and the read nodes,
+    // up to resendTries times (0 seconds = never): an endpoint may take a transaction and never mine it.
+    resendSecs: int(env, 'EVM_POOL_KEEPER_RESEND_SECS', 40),
+    resendTries: int(env, 'EVM_POOL_KEEPER_RESEND_TRIES', 3),
     // The proofs of every pool share one queue; a pool with a priority of 1 goes ahead of the others by a minute of their waiting.
     proofPriority: int(env, 'EVM_POOL_KEEPER_PROOF_PRIORITY', 0),
     // How long a /quote answer is shared by everyone who asks (ms).

@@ -2,10 +2,12 @@
 // laptop's GPU walks more salts than twenty of its cores. A lane is a vec2<u32> (low word, high word). The shader's source is written out by grinderWgsl below,
 // as the WebAssembly module is in saltcore.js: there is no compiled file. The shader notes each counter whose address starts with the zero bytes asked for; each
 // note is then checked the plain way (saltcore.js saltAddress) before it counts.
-import { templates, saltOf, saltAddress } from '/prove/saltcore.js?cb=87770f39';
+import { templates, saltOf, saltAddress, marketTemplates, marketBest, NONCES, ownerOf } from '/prove/saltcore.js?cb=4167306b';
 
 // the shader's source (WGSL)
-export function grinderWgsl({ notes = 255 } = {}) {
+// `market`: the vanity market's salts, whose address is two hashes and a few more away (saltcore.js): the proxy once, then one hash for each of the first NONCES nonces, a
+// counter noted once, for the first nonce whose address starts with the zero bytes asked for.
+export function grinderWgsl({ notes = 255, market = false } = {}) {
   const rot = Array.from({ length: 25 }, () => 0); { let x = 1, y = 0; for (let t = 0; t < 24; t++) { rot[x + 5 * y] = ((t + 1) * (t + 2) / 2) % 64; const ny = (2 * x + 3 * y) % 5; x = y; y = ny; } }
   const rc = []; { let lfsr = 1; for (let r = 0; r < 24; r++) { let lo = 0, hi = 0; for (let j = 0; j < 7; j++) { const bit = (1 << j) - 1; if (lfsr & 1) { if (bit < 32) lo ^= 1 << bit; else hi ^= 1 << (bit - 32); } lfsr = ((lfsr << 1) ^ (lfsr & 0x80 ? 0x71 : 0)) & 0xff; } rc.push(`vec2<u32>(${lo >>> 0}u, ${hi >>> 0}u)`); } }
   const rotl = (v, n) => (n === 0 ? v : n === 32 ? `${v}.yx` : n < 32 ? `vec2<u32>((${v}.x << ${n}u) | (${v}.y >> ${32 - n}u), (${v}.y << ${n}u) | (${v}.x >> ${32 - n}u))` : `vec2<u32>((${v}.y << ${n - 32}u) | (${v}.x >> ${64 - n}u), (${v}.x << ${n - 32}u) | (${v}.y >> ${64 - n}u))`);
@@ -26,6 +28,21 @@ export function grinderWgsl({ notes = 255 } = {}) {
   const P = (k) => `P.w[${k >> 2}][${k & 3}]`, T1 = (i) => P(i), T2 = (i) => P(16 + i);
   L.push('struct Params { w: array<vec4<u32>, 11> }', '@group(0) @binding(0) var<uniform> P: Params;');
   L.push(`struct Notes { count: atomic<u32>, at: array<u32, ${notes}> }`, '@group(0) @binding(1) var<storage, read_write> O: Notes;');
+  if (market) {
+    // the parameters: message 1's eleven lanes (words 0..21: 0xff, the market, the id, the proxy's init hash, the padding byte), then the first counter, the mask and the row width
+    L.push('@compute @workgroup_size(64)', 'fn main(@builtin(global_invocation_id) id: vec3<u32>) {');
+    L.push(`  let n = ${P(40)} + id.x + id.y * ${P(42)};`, '  var s = array<vec2<u32>, 25>();');
+    // hash 1 is the proxy: the counter is bytes 49..52 of the message, bits 8..39 of lane 6
+    for (let l = 0; l < 11; l++) L.push(l === 6 ? `  s[6] = vec2<u32>(${P(12)} | (n << 8u), ${P(13)} | (n >> 24u));` : `  s[${l}] = vec2<u32>(${P(2 * l)}, ${P(2 * l + 1)});`);
+    L.push('  s[16] = vec2<u32>(0u, 0x80000000u);', '  keccakf(&s);');
+    L.push('  let p3 = s[1].y; let p4 = s[2].x; let p5 = s[2].y; let p6 = s[3].x; let p7 = s[3].y;');
+    L.push('  var hit = false;', `  for (var k = 0u; k < ${NONCES}u; k++) {`, '    s = array<vec2<u32>, 25>();',
+      '    s[0] = vec2<u32>(0x94d6u | (p3 << 16u), (p3 >> 16u) | (p4 << 16u));', '    s[1] = vec2<u32>((p4 >> 16u) | (p5 << 16u), (p5 >> 16u) | (p6 << 16u));',
+      '    s[2] = vec2<u32>((p6 >> 16u) | (p7 << 16u), (p7 >> 16u) | ((k + 1u) << 16u) | 0x01000000u);', '    s[16] = vec2<u32>(0u, 0x80000000u);', '    keccakf(&s);',
+      `    if ((s[1].y & ${P(41)}) == 0u) { hit = true; break; }`, '  }');
+    L.push(`  if (hit) { let i = atomicAdd(&O.count, 1u); if (i < ${notes}u) { O.at[i] = n; } }`, '}');
+    return L.join('\n');
+  }
   L.push('@compute @workgroup_size(64)', 'fn main(@builtin(global_invocation_id) id: vec3<u32>) {');
   L.push(`  let n = ${P(40)} + id.x + id.y * ${P(42)};`, '  var s = array<vec2<u32>, 25>();');
   // guarded = keccak(12 zero bytes ‖ deployer ‖ salt): the counter is word 15
@@ -50,20 +67,23 @@ export function grinderWgsl({ notes = 255 } = {}) {
 const NOTES = 255, ROW = 256;   // counters noted in one dispatch at most; workgroups in a row (64 counters each)
 // A grinder like saltcore.js's, on the GPU. -> null where there is no WebGPU or no adapter. grind(count, minBits) is async, walks about `count` salts (whole rows of
 // 16,384) and resolves to the shares; at() says how far it has walked. After the device is lost grind rejects, and the thread goes back to the cores.
-export async function makeGpuGrinder({ day, prefix, gpu = globalThis.navigator?.gpu }) {
+export async function makeGpuGrinder({ day, prefix, terms, gpu = globalThis.navigator?.gpu }) {
   if (!gpu) return null;
+  const market = terms?.kind === 'market', owner = ownerOf(terms);
   const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' }); if (!adapter) return null;
   const device = await adapter.requestDevice();
   let lost = null; device.lost.then((i) => { lost = i?.message || 'the GPU device was lost'; });
-  const pipeline = await device.createComputePipelineAsync({ layout: 'auto', compute: { module: device.createShaderModule({ code: grinderWgsl({ notes: NOTES }) }), entryPoint: 'main' } });
+  const pipeline = await device.createComputePipelineAsync({ layout: 'auto', compute: { module: device.createShaderModule({ code: grinderWgsl({ notes: NOTES, market }) }), entryPoint: 'main' } });
   const size = 4 * (NOTES + 1);
   const params = device.createBuffer({ size: 176, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const notes = device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
   const read = device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
   const bind = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: params } }, { binding: 1, resource: { buffer: notes } }] });
-  const { m1, m2 } = templates(day, prefix), P = new Uint32Array(44), zero = new Uint32Array(1);
+  const P = new Uint32Array(44), zero = new Uint32Array(1);
   let dispatches = 0, noted = 0;   // how many dispatches it has run and how many counters the shader noted in them: a mask too wide shows as far too many notes
-  P.set(new Uint32Array(m1.buffer.slice(0)), 0); P.set(new Uint32Array(m2.buffer.slice(0)), 16); P[42] = ROW * 64;
+  if (market) P.set(new Uint32Array(marketTemplates(day, prefix, terms).m1.buffer.slice(0)), 0);
+  else { const { m1, m2 } = templates(day, prefix); P.set(new Uint32Array(m1.buffer.slice(0)), 0); P.set(new Uint32Array(m2.buffer.slice(0)), 16); }
+  P[42] = ROW * 64;
   // the counters base .. base + rows * 16384 - 1, in one dispatch -> the counters it noted, or null if it noted more than it could hold
   async function run(base, rows, mask) {
     if (lost) throw new Error(lost);
@@ -90,7 +110,11 @@ export async function makeGpuGrinder({ day, prefix, gpu = globalThis.navigator?.
     const rows = Math.max(1, Math.min(65535, Math.round(count / (ROW * 64))));
     const at = await walk((n + 1) | 0, rows, mask >>> 0);
     n = (n + rows * ROW * 64) | 0;
-    return at.map((c) => ({ n: c | 0, bits: saltAddress(saltOf(day, prefix, c | 0)).bits })).filter((f) => f.bits >= minBits).sort((a, b) => (a.n >>> 0) - (b.n >>> 0));
+    // each noted counter is checked the plain way: a market salt's best nonce is worked out here, so the share carries the nonce its address was found at
+    const checked = market
+      ? at.map((c) => { const b = marketBest(saltOf(day, prefix, c | 0, owner), terms.market); return { n: c | 0, bits: b.bits, nonce: b.nonce }; })
+      : at.map((c) => ({ n: c | 0, bits: saltAddress(saltOf(day, prefix, c | 0)).bits }));
+    return checked.filter((f) => f.bits >= minBits).sort((a, b) => (a.n >>> 0) - (b.n >>> 0));
   }
-  return { grind, saltOf: (c) => saltOf(day, prefix, c), day, at: () => n, gpu: true, maxChunk: 65535 * ROW * 64, stats: () => ({ dispatches, noted }), close: () => { try { device.destroy(); } catch { /* gone already */ } } };
+  return { grind, saltOf: (c) => saltOf(day, prefix, c, owner), day, terms, at: () => n, gpu: true, maxChunk: 65535 * ROW * 64, stats: () => ({ dispatches, noted }), close: () => { try { device.destroy(); } catch { /* gone already */ } } };
 }

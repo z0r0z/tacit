@@ -17,9 +17,9 @@
 // secrets come from signing the nonce again.
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32, parseNoteString } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=7f4f9327';
+import { makeFlow, parseEther, formatEther } from '/fixed-pool-flow.js?cb=410dfdc7';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
-import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=40893745';
+import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=7d522a74';
 export { MAX_FEE_PERCENT };
 import { depositAddressOfName, signBox } from '/fixed-pool-box.js?cb=8abc44f0';
 import { callIntent, call as intentCall } from '/evm-pool-gateway.js';
@@ -55,6 +55,118 @@ export async function poolSize(read, pool, now = Date.now()) {
   return v;
 }
 export const sizeWords = (denomination, s) => `${formatEther(denomination)} ETH pool: ${s.deposits.toLocaleString('en-US')} deposits so far, ${s.held.toLocaleString('en-US')} ${s.held === 1 ? 'note' : 'notes'} in it now.`;
+// When a note went in and how many deposits came after it. The pool logs a deposit with its leaf number and its time. A node will not give a long range, so
+// the log is looked for newest first, back as far as a month; a note that is not there went in longer ago. A piece is just under 10,000 blocks, which every free
+// node that serves logs takes (eth-nodes.js has their limits; the page's node client skips one known to refuse a request and moves on to the next), and a piece
+// that is refused anyway is asked in halves. A first miss is not believed (a node a block or two behind has not got a fresh deposit yet): ten minutes later the
+// blocks around that first look are read again, and a miss there too is believed. What is found is kept for good, as it never changes.
+const DEPOSIT_TOPIC = '0x' + Array.from(keccak_256(new TextEncoder().encode('Deposit(bytes32,uint32,uint256)')), (b) => b.toString(16).padStart(2, '0')).join('');
+const SEEN_KEY = (chainId) => `tacit-fixed-seen:${chainId}`;
+export const LOOKBACK_BLOCKS = 216_000;   // about 30 days
+const LOG_PIECE = 9_999;
+const MISS_AGAIN_S = 600;
+const MISS_RECHECK_BLOCKS = 200;          // a node can be behind by a few blocks, not by hundreds
+export const LOW_SINCE = 20;              // fewer deposits than this after a note: it is early to take it out
+export async function findDeposit({ read, pool, commitment, tip, lookback = LOOKBACK_BLOCKS, piece = LOG_PIECE }) {
+  const r = await read();
+  const want = commitment.toLowerCase(), floor = Math.max(pool.deployBlock, tip - lookback);
+  const hit = (logs) => (Array.isArray(logs) ? logs : []).find((l) => l?.topics?.[1]?.toLowerCase() === want && typeof l.data === 'string' && l.data.length >= 130);
+  const ask = async (a, b) => {   // blocks a to b, both in; a refused piece is asked in halves, the newer first, and the older not at all once the newer has it
+    try { return await r('eth_getLogs', [{ address: pool.address, topics: [DEPOSIT_TOPIC, want], fromBlock: '0x' + a.toString(16), toBlock: '0x' + b.toString(16) }]); } catch (e) {
+      if (b - a < 1000) throw e;
+      const mid = a + Math.floor((b - a) / 2), up = await ask(mid + 1, b);
+      return hit(up) ? up : [...(Array.isArray(up) ? up : []), ...await ask(a, mid)];
+    }
+  };
+  for (let to = tip; to >= floor; to -= piece) {
+    const log = hit(await ask(Math.max(to - piece + 1, floor), to));
+    if (log) return { i: Number(BigInt('0x' + log.data.slice(2, 66))), t: Number(BigInt('0x' + log.data.slice(66, 130))) };
+  }
+  return null;
+}
+const SEEN_JOBS = new Map();
+const readSeen = (store, chainId) => { try { const v = JSON.parse(store.get(SEEN_KEY(chainId)) || '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; } };
+const keepSeen = (store, chainId, c, v) => { try { const all = readSeen(store, chainId); all[c] = v; store.set(SEEN_KEY(chainId), JSON.stringify(all)); } catch { /* looked for again next time */ } };
+// { i, t }: its leaf number and the time it went in; { old: true }: not in the last month; null: not known yet (looking, or a first miss not yet believed)
+export function noteSeen({ read, store, chainId, pool, commitment, now = () => Date.now() / 1000 }) {
+  const c = commitment.toLowerCase(), have = readSeen(store, chainId)[c];
+  if (have && (have.old || (Number.isFinite(have.i) && Number.isFinite(have.t)))) return Promise.resolve(have);
+  if (have?.miss && now() - have.miss < MISS_AGAIN_S) return Promise.resolve(null);
+  if (SEEN_JOBS.has(c)) return SEEN_JOBS.get(c);
+  const job = (async () => {
+    const tip = Number(BigInt(await (await read())('eth_blockNumber', [])));
+    // the second look reads only the blocks around the first (the tip then, less a margin, up to the tip now); with no tip kept it reads the whole month again
+    const lookback = have?.miss && Number.isFinite(have.tip) ? Math.max(0, tip - have.tip) + MISS_RECHECK_BLOCKS : LOOKBACK_BLOCKS;
+    const found = await findDeposit({ read, pool, commitment: c, tip, lookback });
+    if (found) { keepSeen(store, chainId, c, found); return found; }
+    if (have?.miss) { keepSeen(store, chainId, c, { old: true }); return { old: true }; }
+    keepSeen(store, chainId, c, { miss: Math.floor(now()), tip });
+    return null;
+  })().finally(() => SEEN_JOBS.delete(c));
+  SEEN_JOBS.set(c, job);
+  return job;
+}
+const count = (n, word) => `${n.toLocaleString('en-US')} ${word}${n === 1 ? '' : 's'}`;
+export function ageWords(sec) {
+  if (sec < 120) return 'just now';
+  if (sec < 5400) return `${Math.round(sec / 60)} minutes ago`;
+  if (sec < 129600) return `${count(Math.round(sec / 3600), 'hour')} ago`;
+  return `${count(Math.round(sec / 86400), 'day')} ago`;
+}
+// The line under a note: when it went in and how many deposits came after it (from the pool's count, `size`); `low` when it is early to take it out. With the
+// count unread, early means under an hour.
+export function seenInfo(seen, size, nowSec = Date.now() / 1000) {
+  if (!seen) return null;
+  if (seen.old) return { text: 'Deposited over a month ago', low: false, old: true };
+  if (!Number.isFinite(seen.i) || !Number.isFinite(seen.t)) return null;
+  const age = Math.max(0, nowSec - seen.t);
+  const since = size && Number.isFinite(size.deposits) ? Math.max(0, size.deposits - 1 - seen.i) : null;
+  const low = since != null ? since < LOW_SINCE : age < 3600;
+  return { text: `Deposited ${ageWords(age)}${since != null ? ` · ${count(since, 'deposit')} since` : ''}`, low, since, age, t: seen.t, nudge: since != null ? 'Few deposits have come after it. The more do, the better it blends in.' : 'It went in less than an hour ago. Waiting longer hides it better.' };
+}
+// Under the Withdraw tab's count of notes: the newest of them
+export function newestSeen(entries) {
+  let best = null;
+  for (const x of entries) if (x?.seen && Number.isFinite(x.seen.t) && (!best || x.seen.t > best.t)) best = x.seen;
+  return best ? { text: `Newest note: ${best.text.replace(/^Deposited/, 'deposited')}.${best.low ? ' ' + best.nudge : ''}`, low: best.low } : null;
+}
+// For a withdrawal taking these notes: a sentence if any is early to take out, else ''
+export function exitWarning(entries) {
+  const lows = entries.map((x) => x?.seen).filter((s) => s?.low);
+  if (!lows.length) return '';
+  const counted = lows.filter((s) => s.since != null);
+  if (counted.length) {
+    const n = Math.min(...counted.map((s) => s.since));
+    return `Part of this went in recently: the newest note has ${n === 0 ? 'no deposits' : `only ${count(n, 'deposit')}`} after it. Waiting for more makes it blend in better.`;
+  }
+  return 'Part of this went in less than an hour ago. Waiting longer hides it better.';
+}
+// The split deposit's forwarder (contracts/src/TacitSplitDeposit.sol), where there is one: a large deposit is then ONE transaction, the notes and the Tacit part
+// together, all of it or none, for every wallet. Ethereum's is deployed (0x0000000000049541f6582aB13C0b3a8dC35165Ae, verified on Etherscan, Sourcify and Blockscout)
+// and has been through a mainnet canary: one wallet transaction put two notes and a Tacit deposit in, and all of it came back out. Where there is none (another
+// chain), or the one named does not answer as it should, the deposit goes as it did (the notes, then the rest). `tacit-split-depositor:<chain>` in the browser's
+// storage names another to test with (the canary sets it).
+// The check below is a sanity check, not a proof of the code: the address must hold code and answer as this contract does (the Tacit pool it sends to and
+// the size of each pool the notes go to), so a wrong chain or a contract that is not it is passed over, and the deposit goes the old way.
+export const SPLIT_DEPOSITORS = { 1: '0x0000000000049541f6582aB13C0b3a8dC35165Ae' };
+const SPLIT_KEY = (chainId) => `tacit-split-depositor:${chainId}`;
+const isAddress = (a) => typeof a === 'string' && /^0x[0-9a-fA-F]{40}$/.test(a);
+const sel4 = (sig) => '0x' + Array.from(keccak_256(new TextEncoder().encode(sig)).slice(0, 4), (b) => b.toString(16).padStart(2, '0')).join('');
+export async function splitForwarder({ read, store, chainId, tacitPool, pools }) {
+  let addr = SPLIT_DEPOSITORS[chainId];
+  try { const o = store?.get(SPLIT_KEY(chainId)); if (isAddress(o)) addr = o; } catch { /* the constant stands */ }
+  if (!isAddress(addr) || !isAddress(tacitPool)) return null;
+  const r = await read();
+  const code = await r('eth_getCode', [addr, 'latest']);
+  if (typeof code !== 'string' || code === '0x') return null;
+  const wired = await r('eth_call', [{ to: addr, data: sel4('TACIT_POOL()') }, 'latest']);
+  if (!hexWord(wired) || ('0x' + wired.slice(-40)).toLowerCase() !== tacitPool.toLowerCase()) return null;
+  for (const p of pools) {
+    const d = await r('eth_call', [{ to: addr, data: sel4('denominationOf(address)') + p.address.toLowerCase().replace(/^0x/, '').padStart(64, '0') }, 'latest']);
+    if (!hexWord(d) || BigInt(d) !== BigInt(p.denomination)) return null;
+  }
+  return addr;
+}
 const MIN_KEY = (chainId) => `tacit-fixed-min:${chainId}`;
 const GAS_KEY = (chainId) => `tacit-fixed-gas:${chainId}`;
 const readGas = (store, chainId) => { try { return store.get(GAS_KEY(chainId)) === 'wallet' ? 'wallet' : 'note'; } catch { return 'note'; } };
@@ -128,7 +240,7 @@ export function attach(env) {
   const flowFor = () => makeFlow({ provider, account: env.account(), chainId, store: env.store, poll: 3000, timeout: 10 * 60 * 1000 });
   const reader = makeFlow({ provider, account: null, chainId, poll: 3000 });
   const saved = (() => { try { const v = env.store.get(MIN_KEY(chainId)); return v == null ? null : BigInt(v); } catch { return null; } })();
-  const st = { smallest: SMALLEST.some((x) => x.wei === saved) ? saved : DEFAULT_MIN_DENOMINATION, notes: [], spent: new Map(), open: null, confirm: null, target: null, gas: readGas(env.store, chainId) };
+  const st = { smallest: SMALLEST.some((x) => x.wei === saved) ? saved : DEFAULT_MIN_DENOMINATION, notes: [], spent: new Map(), seen: new Map(), open: null, confirm: null, target: null, gas: readGas(env.store, chainId) };
   const setSmallest = (v) => { st.smallest = v; try { env.store.set(MIN_KEY(chainId), v.toString()); } catch { /* a convenience */ } };
   const looksLikeName = (x) => /^[^\s]+\.(g?wei|eth)$/i.test(x);
   // empty: the user's own deposit address; a name: the deposit address it publishes, checked against its own key; else an address
@@ -205,6 +317,11 @@ export function attach(env) {
     await env.ensureChain(c);
     const bal = BigInt(await (await env.read())('eth_getBalance', [env.account(), 'latest']));
     if (bal < p.wei) throw new Error(`Your wallet holds ${formatEther(bal)} ETH on ${c.full}, less than the ${formatEther(p.wei)} ETH to deposit.`);
+    // Where the split's forwarder is deployed and answers as it should, the notes and the rest go in ONE transaction. A single note with nothing left over
+    // is a plain deposit either way, so it keeps the old path.
+    const fwd = (p.remainder > 0n || p.noteCount >= 2) && env.tacitPool
+      ? await splitForwarder({ read: env.read, store: env.store, chainId, tacitPool: env.tacitPool, pools: p.notes }).catch(() => null) : null;
+    if (fwd) return depositAtomic(p, noteTotal, step, c, fwd);
     let out;
     try {
       out = await flowFor().deposit(p, {
@@ -235,6 +352,32 @@ export function attach(env) {
     return { text: `${placed}, and ${formatEther(p.remainder)} ETH went into your private balance.`, h };
   }
 
+  // The split as ONE transaction through the forwarder `fwd`: the notes are prepared and signed for as ever, then the page proves the Tacit part and sends the one
+  // call (with nothing left over, this sends it): every note and the rest land together or none does, so there is no half-done state to explain.
+  async function depositAtomic(p, noteTotal, step, c, fwd) {
+    let out;
+    try {
+      out = await flowFor().depositWith(p, async (notes) => {
+        const split = { forwarder: fwd, pools: notes.map((n) => n.pool), commitments: notes.map((n) => commitmentBytes32(n.secrets.commitment)) };
+        if (p.remainder > 0n) return env.depositRest(p.remainder, step, c, split);
+        step('confirm the deposit in your wallet');
+        return (await flowFor().sendOne(await env.splitCall(fwd, null, split))).hash;
+      }, { onStep: (s) => step(s.step === 'find' ? 'looking for the next free note number' : s.step === 'sign' ? `sign for note ${s.i + 1} of ${s.of}` : 'getting the deposit ready') });
+    } catch (e) {
+      if (e?.done?.length) {   // the deposit was sent and its notes are not in the pool yet: they are the wallet's, so they are kept
+        writeNotes(env.store, chainId, env.account(), [...readNotes(env.store, chainId, env.account()), ...e.done.map(metaOf)]);
+        loadNotes();
+        throw e;
+      }
+      throw new Error(`None of it was deposited. ${env.errText(e)} If your wallet sent it after all, Find shows the notes once it is mined.`);
+    }
+    writeNotes(env.store, chainId, env.account(), [...readNotes(env.store, chainId, env.account()), ...out.notes.map(metaOf)]);
+    loadNotes();
+    const placed = `${out.notes.length === 1 ? 'The note is' : 'The notes are'} in the large ${out.notes.length === 1 ? 'pool' : 'pools'} (${formatEther(noteTotal)} ETH)`;
+    if (p.remainder === 0n) return { text: `${placed}, in one transaction.`, h: null };
+    return { text: `${placed}, and ${formatEther(p.remainder)} ETH went into your private balance, all in one transaction.`, h: out.hash };
+  }
+
   // ---- card two: the notes ----
   const poolOf = (addr) => FIXED_POOLS[chainId]?.find((x) => x.address.toLowerCase() === addr.toLowerCase());
   async function loadNotes() {
@@ -246,7 +389,31 @@ export function attach(env) {
       if (!pool || n.nh == null) continue;
       reader.spent(pool, BigInt(n.nh)).then((v) => { st.spent.set(n.nh, v); if (v) SPENT.add(n.nh); if (notesHost.isConnected) paintNotes(); }, () => {});
     }
+    fillSeen();
   }
+  // When each note went in and how many deposits came after it, one note at a time (the lookups are node calls); a note that cannot be read has no line.
+  let seenBusy = false, seenAgain = false;
+  async function fillSeen() {
+    if (seenBusy) { seenAgain = true; return; }
+    seenBusy = true;
+    try {
+      do {
+        seenAgain = false;
+        let changed = false;
+        for (const n of [...st.notes]) {
+          const pool = poolOf(n.pool);
+          if (!pool || !n.c || st.spent.get(n.nh)) continue;
+          try {
+            const seen = await noteSeen({ read: env.read, store: env.store, chainId, pool, commitment: n.c });
+            const info = seenInfo(seen, await poolSize(env.read, pool).catch(() => null));
+            if (info && st.seen.get(n.c)?.text !== info.text) { st.seen.set(n.c, info); changed = true; }
+          } catch { /* no line for this note */ }
+        }
+        if (changed && notesHost.isConnected) paintNotes();
+      } while (seenAgain);
+    } finally { seenBusy = false; }
+  }
+  const seenLine = (n) => { const s = st.seen.get(n.c); return s ? `<p class="note ${s.low ? 'warn' : 'mute'}">${esc(s.text)}${s.low ? '. ' + esc(s.nudge) : ''}</p>` : ''; };
   function paintNotes() {
     // while the fee panel is open the card is not redrawn: its Send and Cancel buttons live in it, and a late read or the gas choice would take them away
     if (st.confirming) { st.dirty = true; return; }
@@ -254,7 +421,7 @@ export function attach(env) {
     const rows = st.notes.map((n, i) => {
       const pool = poolOf(n.pool), gone = st.spent.get(n.nh);
       return `<div class="kv"><span>${pool ? formatEther(pool.denomination) : '?'} ETH <span class="mute">· note ${n.nonce}${gone ? ' · spent' : ''}</span></span>
-        <b>${gone ? '' : `<button class="link" type="button" data-move="${i}">Move into Tacit</button> <button class="link" type="button" data-out="${i}">Withdraw</button>`}</b></div>`;
+        <b>${gone ? '' : `<button class="link" type="button" data-move="${i}">Move into Tacit</button> <button class="link" type="button" data-out="${i}">Withdraw</button>`}</b></div>${gone ? '' : seenLine(n)}`;
     }).join('');
     notesHost.innerHTML = `<div class="blk" style="margin-top:22px;padding-top:14px;border-top:1px solid var(--hair)">
       ${HOW_IT_WORKS}
@@ -397,6 +564,7 @@ export function attachWithdraw(env) {
       <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lw-find">${account ? 'Look for notes' : 'Connect wallet'}</button></span></div>
       ${st.list.length
         ? `<div class="kv"><span>${st.list.length} whole ${st.list.length === 1 ? 'note' : 'notes'}</span><b>${formatEther(total)} ETH</b></div>
+           ${(() => { const s = newestSeen(st.list); return s ? `<p class="note ${s.low ? 'warn' : 'mute'}">${esc(s.text)}</p>` : ''; })()}
            <p class="note">Withdrawals use these first, then your private balance. ${st.gas === 'wallet' ? 'Your wallet sends each note and pays its gas, so it shows as the sender.' : `Gas comes out of the notes, at most ${MAX_FEE_PERCENT}% of each.`}</p>
            <div class="lbl"><span>Gas</span><span><label>Paid from <select id="lw-gas" aria-label="Where the notes' gas is paid from"><option value="note"${st.gas === 'note' ? ' selected' : ''}>the notes</option><option value="wallet"${st.gas === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>`
         : '<p class="note">None known in this browser. Look for notes asks your wallet to sign each number it tries.</p>'}
@@ -419,6 +587,22 @@ export function attachWithdraw(env) {
         st.list = st.list.filter((y) => y !== x); paint(); publish();
       }, () => {});
     }
+    fillSeen(gen);
+  }
+  // When each note went in and how many deposits came after it, one note at a time; the form's receipt warns about a note that is early to take out
+  async function fillSeen(gen) {
+    let changed = false;
+    for (const x of [...st.list]) {
+      const pool = poolOf(x.meta.pool);
+      if (!pool || !x.meta.c) continue;
+      try {
+        const seen = await noteSeen({ read: env.read, store: env.store, chainId, pool, commitment: x.meta.c });
+        const info = seenInfo(seen, await poolSize(env.read, pool).catch(() => null));
+        if (info && x.seen?.text !== info.text) { x.seen = info; changed = true; }
+      } catch { /* no line for this note */ }
+      if (gen !== st.gen) return;
+    }
+    if (changed && host.isConnected) { paint(); publish(); }
   }
   function find(btn) {
     return env.act(btn, async (step, c) => {

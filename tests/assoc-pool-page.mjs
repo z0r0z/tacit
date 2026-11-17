@@ -189,6 +189,7 @@ try {
   await p.goto(`http://127.0.0.1:${WEB}/pay/eth/?pool=1`);
   const id = (await p.$('#g-open')) ? 'ws' : 'g';
   if (id === 'ws') await p.click('#g-open');
+  await p.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
   await p.click(`#${id}-in [data-in="paste"]`);
   await p.fill(`#${id}-hex`, tacitHex);
   await p.click(`#${id}-in [data-in="key"]`);
@@ -254,6 +255,7 @@ try {
   await p.waitForSelector('#tabs:not([hidden])', { timeout: 60e3 }).catch(async () => {
     const id2 = (await p.$('#g-open')) ? 'ws' : 'g';
     if (id2 === 'ws') await p.click('#g-open');
+    await p.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));
     await p.click(`#${id2}-in [data-in="paste"]`); await p.fill(`#${id2}-hex`, tacitHex); await p.click(`#${id2}-in [data-in="key"]`);
     await p.waitForSelector('#tabs:not([hidden])', { timeout: 60e3 });
   });

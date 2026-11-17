@@ -59,7 +59,7 @@ try {
     ok(sheet, 'signed out, /#portfolio opens the Wallet sheet to sign in');
     ok(await noHash(page), `and #portfolio is cleared from the address (it reads ${JSON.stringify(await hashIs(page))})`);
     if (sheet) {
-      await page.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; }));   // the other ways to sign in are folded under one line
+      await page.$eval('#ws-in .more-in', (d) => { d.open = true; });           // 'Paste a key' sits under 'Other ways to sign in'
       await page.click('#ws-in [data-in="paste"]');
       await page.fill('#ws-hex', KEY);
       await page.click('#ws-in [data-in="key"]');

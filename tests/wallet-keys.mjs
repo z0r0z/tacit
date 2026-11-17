@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // What the Wallet sheet and the Bitcoin tab's Receive show of the open key (dapp/index.html), in a real browser under the page's own CSP, with a pasted key and a
 // Bitcoin address that holds 0.0025 BTC and 0.00007 arriving (the page's only answers; every other host is refused):
-//   · the Tacit address is on a card of its own under the balances: its two ends at first, the whole 276 characters after Show all, and Copy puts
+//   · the Tacit address is on a card of its own under the balances: its two ends at first, the whole 328 characters after Show all, and Copy puts
 //     the whole one on the clipboard; it is not listed a second time below;
 //   · the public key: the key's compressed secp256k1 point, in full, and Copy puts it on the clipboard;
 //   · the Bitcoin address: the key's own bc1q…, the same one Receive shows; the Ethereum address: the key's own 0x, the one Add ETH shows;
@@ -18,6 +18,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { secp } from '../dapp/vendor/tacit-deps.min.js';
 import { unifiedAddress } from '../dapp/tacit-unified.js';
+import { chainLane } from '../dapp/tacit-chain-lane.js';
 import { qrSvg } from '../dapp/qr.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
@@ -37,7 +38,7 @@ const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails+
 
 const KEY = '11'.repeat(31) + '22';
 const PUB = Buffer.from(secp.getPublicKey(Uint8Array.from(Buffer.from(KEY, 'hex')), true)).toString('hex');
-const TACIT = unifiedAddress(KEY).address;
+const TACIT = unifiedAddress(KEY, chainLane(KEY)).address;          // the page names the key's chain lane in it too
 const CORS = { 'access-control-allow-origin': '*', 'content-type': 'application/json' };
 let utxoReads = 0, lastRead = 0;
 const UTXOS = [{ txid: 'aa'.repeat(32), vout: 0, value: 250000, status: { confirmed: true, block_height: 900000, block_time: 1700000000 } }, { txid: 'bb'.repeat(32), vout: 1, value: 7000, status: { confirmed: false } }];
@@ -57,6 +58,7 @@ try {
   await page.waitForSelector('#wallet', { timeout: 30000 });
   await page.click('#wallet');
   await page.waitForSelector('#ws-in', { timeout: 15000 });
+  await page.$eval('#ws-in .more-in', (d) => { d.open = true; });           // 'Paste a key' sits under 'Other ways to sign in'
   await page.click('#ws-in [data-in="paste"]');
   await page.fill('#ws-hex', KEY);
   await page.click('#ws-in [data-in="key"]');
@@ -72,7 +74,7 @@ try {
 
   // the Tacit address, on the card at the top: its ends, then the whole of it
   const hero = '#w-tacit';
-  ok(TACIT.length === 276, 'the unified Tacit address is the 276-character one');
+  ok(TACIT.length === 328, 'the unified Tacit address, with its chain lane, is the 328-character one');
   const ends = await text(`${hero} .ends`);
   ok(ends.startsWith(TACIT.slice(0, 14)) && ends.endsWith(TACIT.slice(-12)) && ends.length < 60, `the Tacit address shows its two ends first: ${ends}`);
   ok(!(await page.isVisible(`${hero} .full`)), 'and not the whole until it is asked for');

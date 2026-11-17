@@ -34,8 +34,8 @@ const src = between('const V1_MOVE_GAS', 'async function hxSendPoolOutGo') + '\n
 const PER_GAS = 271_000_000n, PLAIN_GAS = 450_000n;
 const feeFor = (gas) => PER_GAS * BigInt(gas ?? PLAIN_GAS);
 
-function make({ bal = 10n ** 18n, onSend = null } = {}) {
-  const log = { quotes: [], sends: [], said: [], redraw: 0 };
+function make({ bal = 10n ** 18n, onSend = null, h = '0xhash' } = {}) {
+  const log = { quotes: [], sends: [], said: [], redraw: 0, links: 0 };
   const DEV = { chain: { chainId: 1, keeper: 'k' }, quote: null, gq: {}, bal, self: false, W: null };
   const W = {
     quote: async (gas) => { log.quotes.push(gas ?? null); return { fee: String(feeFor(gas)), gas: String(gas ?? PLAIN_GAS) }; },
@@ -55,9 +55,9 @@ function make({ bal = 10n ** 18n, onSend = null } = {}) {
       log.sends.push({ dest, gas, maxFee });
       if (onSend) onSend(q);
       if (maxFee != null && BigInt(q.fee) > maxFee) throw Object.assign(new Error('The relay fee went up since it was shown. Check the new fee and try again.'), { feeMoved: BigInt(q.fee) });
-      return { h: '0xhash', done: 'Moved.' };
+      return { h, done: 'Moved.' };
     },
-    waitTx: async () => {}, txLink: () => '', PB: { at: {} }, hxWalletBals: () => {}, payBals: async () => {}, txFail: (_, __, e) => { throw e; },
+    waitTx: async () => {}, txLink: () => { log.links++; return '[link]'; }, PB: { at: {} }, hxWalletBals: () => {}, payBals: async () => {}, txFail: (_, __, e) => { throw e; },
     waitRanOut: () => false, keeperTrouble: () => false, errText: (e) => String(e.message || e),
     fmt: (v, d, dp) => (Number(v) / 10 ** d).toFixed(dp),
   };
@@ -88,6 +88,14 @@ await test('the press reads the quote at the move\'s gas and goes through', asyn
   ok(t.log.sends.length === 1 && t.log.sends[0].maxFee === (feeFor(700_000) * 5n) / 4n, `cap ${t.log.sends[0]?.maxFee}`);
   ok(/Moved\./.test(t.log.said.at(-1)), `said ${t.log.said.at(-1)}`);
   ok(!t.log.said.some((x) => /fee/.test(x)), `a fee message appeared: ${t.log.said}`);
+  ok(t.log.links === 1 && /\[link\]/.test(t.log.said.at(-1)), 'the transaction was not linked');
+});
+
+await test('a move that landed with no hash to show (its answer was lost) says it is done, with no link', async () => {
+  const t = make({ h: null });
+  await t.press('v1');
+  ok(/Moved\./.test(t.log.said.at(-1)), `said ${t.log.said.at(-1)}`);
+  ok(t.log.links === 0 && !/\[link\]|undefined|null/.test(t.log.said.at(-1)), `said ${t.log.said.at(-1)}, links ${t.log.links}`);
 });
 
 await test('a press that is told the fee moved says what it was and now is, and the next press goes through', async () => {
@@ -125,6 +133,91 @@ await test('the card\'s fee row shows the relay fee, or that the wallet sends it
   ok(row(t.hxMoveRows(h, 'self'))[0] === 'Sent from', JSON.stringify(row(t.hxMoveRows(h, 'self'))));
   ok(t.hxMoveRows(h, null) === h && row(h)[1] === 'shown next', 'an unread fee changed the card');
   ok(t.hxMoveRows(h, feeFor(700_000)).rc.length === 3, 'a row was added or lost');
+});
+
+// The fee row when the relay's fee could not be read: a failed read is kept 5 s (a good one 60 s), and the card asks again, a bounded number of times.
+const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9';
+function feeReader(answers) {
+  const log = { fetched: 0 }, clock = { now: 1_000_000 };
+  const scope = {
+    HXD: {}, Date: { now: () => clock.now }, AbortSignal,
+    fetch: async () => { const a = answers[Math.min(log.fetched++, answers.length - 1)]; if (a === 'down') throw new TypeError('Failed to fetch'); return a; },
+  };
+  const f = new Function('scope', `with (scope) { ${between('function hxDevFee', 'const hxDevKeep')}\nreturn { hxDevFee }; }`)(new Proxy(scope, { has: (t, k) => typeof k === 'string' && k in t }));
+  const p = { slug: 1, keeper: 'https://k.test', pool: POOL };
+  return { ask: () => f.hxDevFee(p), log, at: (s) => { clock.now = 1_000_000 + s * 1000; } };
+}
+const quote = (fee) => ({ ok: true, json: async () => ({ pool: POOL, fee: String(fee) }) });
+
+await test('a fee read that failed is asked again after 5 s, a good one is kept for 60 s', async () => {
+  const r = feeReader(['down', quote(190_000_000_000_000n)]);
+  ok(await r.ask() === null && r.log.fetched === 1, 'the failed read');
+  r.at(3); ok(await r.ask() === null && r.log.fetched === 1, 'asked again within 5 s');
+  r.at(6); ok(await r.ask() === 190_000_000_000_000n && r.log.fetched === 2, `not asked again after 5 s (fetched ${r.log.fetched})`);
+  r.at(40); ok(await r.ask() === 190_000_000_000_000n && r.log.fetched === 2, 'a good read was asked again inside 60 s');
+  r.at(70); await r.ask(); ok(r.log.fetched === 3, 'a good read was kept past 60 s');
+});
+
+await test('a relay answer that is an error, or names another pool, counts as a failed read and is asked again after 5 s', async () => {
+  const r = feeReader([{ ok: false, json: async () => ({}) }, { ok: true, json: async () => ({ pool: '0x' + '9'.repeat(40), fee: '5' }) }, quote(7n)]);
+  ok(await r.ask() === null, 'an error answer');
+  r.at(6); ok(await r.ask() === null && r.log.fetched === 2, 'another pool\'s answer');
+  r.at(12); ok(await r.ask() === 7n && r.log.fetched === 3, 'the good answer');
+});
+
+function retrier({ mode = 'ppv1' } = {}) {
+  const log = { timers: [], cleared: 0, asked: 0 };
+  const scope = {
+    HX: { mode }, hxQuoteSoon: (now) => { log.asked++; log.now = now; },
+    setTimeout: (f, ms) => { const id = log.timers.length + 1; log.timers.push({ f, ms, id, live: true }); return id; },
+    clearTimeout: (id) => { log.cleared++; const t = log.timers.find((x) => x.id === id); if (t) t.live = false; },
+  };
+  const f = new Function('scope', `with (scope) { ${between('const HXF = {', 'function hxHandoff')}\nreturn { hxFeeRetry, HXF }; }`)(new Proxy(scope, { has: (t, k) => typeof k === 'string' && k in t }));
+  const fire = () => { const t = [...log.timers].reverse().find((x) => x.live); if (!t) return false; t.live = false; t.f(); return true; };
+  return { ...f, log, fire, hx: scope.HX };
+}
+
+await test('an unread fee is asked for again in six seconds, and that asks the card to quote at once', () => {
+  const t = retrier();
+  t.hxFeeRetry(false, '1000000');
+  ok(t.log.timers.length === 1 && t.log.timers[0].ms === 6000, JSON.stringify(t.log.timers.map((x) => x.ms)));
+  ok(t.fire() && t.log.asked === 1 && t.log.now === true, 'the card was not asked to quote');
+});
+
+await test('a fee that was read asks for nothing, and cancels a pending ask', () => {
+  const t = retrier();
+  t.hxFeeRetry(false, '1000000');
+  t.hxFeeRetry(true, '1000000');
+  ok(!t.fire() && t.log.asked === 0, 'asked after the fee was read');
+});
+
+await test('it asks six times for one amount, then stops, and a new amount starts again', () => {
+  const t = retrier();
+  for (let i = 0; i < 9; i++) { t.hxFeeRetry(false, '1000000'); t.fire(); }
+  ok(t.log.asked === 6, `asked ${t.log.asked} times for one amount`);
+  t.hxFeeRetry(false, '2000000');
+  ok(t.fire() && t.log.asked === 7, 'a new amount did not start again');
+});
+
+await test('a fee read for an older ask does not leave two timers running', () => {
+  const t = retrier();
+  t.hxFeeRetry(false, '1000000');
+  t.hxFeeRetry(false, '1000000');
+  ok(t.log.timers.filter((x) => x.live).length === 1, 'two timers are live');
+});
+
+await test('once the card has left the move into tETH, the ask is not made', () => {
+  const t = retrier();
+  t.hxFeeRetry(false, '1000000');
+  t.hx.mode = 'swap';
+  ok(t.fire() && t.log.asked === 0, 'asked for a card that is no longer there');
+});
+
+await test('the card\'s move branch reads the fee, asks again only for the quote that is current, and never for a missing wallet', () => {
+  const branch = between("if (m === 'ppv1' && units) {", '{ const h = hxHandoff(m, units)');
+  ok(/hxDevFee\(hxPp\(\)\)/.test(branch), 'does not read the fee');
+  ok(/if \(my === HX\.seq\) hxFeeRetry\(!!fee \|\| !S\.key, String\(units\)\)/.test(branch), 'the retry is not tied to the current quote');
+  ok(/return done\(hxMoveRows\(hxHandoff\(m, units\), fee\)\)/.test(branch), 'the row is not painted with the fee');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

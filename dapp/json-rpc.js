@@ -8,12 +8,14 @@ import { pace } from './rpc-pace.js';
 // `rpc.node` is the URL that answered last.
 export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { timeoutMs = 25_000 } = {}) {
   const list = Array.isArray(urls) ? urls : [urls];
-  let id = 0, first = 0;
+  let id = 0, first = 0, head = list[0];
+  // the list can change under it (eth-nodes.js ETH_NODES, when the reader turns their own node on or off): a new first node is where it starts again
+  const begin = () => { if (list[0] !== head) { head = list[0]; first = 0; } return first; };
   const timedOut = (e) => e?.name === 'TimeoutError' || e?.name === 'AbortError';
   // `{ found: true }` for a record that is known to exist (a transaction in a deep block): a node that answers null for it does
   // not have it (one that keeps recent history only does), so the next is asked, and null comes back only when none has it.
   const single = async (method, params = [], { found = false } = {}) => {
-    const all = [], start = first; let none = false;
+    const all = [], start = begin(); let none = false;
     // a node known to refuse this read (eth-nodes.js) is not asked while there is another to ask, and is when it is all there is
     const turn = list.map((_, k) => (start + k) % list.length), refused = (i) => refuses(list[i], method, params), fine = turn.filter((i) => !refused(i));
     for (const at of fine.length ? fine : turn) {
@@ -43,7 +45,7 @@ export function jsonRpc(urls, fetchImpl = globalThis.fetch.bind(globalThis), { t
   // as failed. Throws when no node takes it, and the caller asks one at a time.
   const noBatch = new Set();
   single.batch = async (calls) => {
-    const all = [], start = first;
+    const all = [], start = begin();
     for (let k = 0; k < list.length; k++) {
       const at = (start + k) % list.length, url = list[at];
       if (noBatch.has(url)) continue;

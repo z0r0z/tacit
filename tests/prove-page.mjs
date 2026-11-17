@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { extname, join, normalize } from 'node:path';
-import { saltAddress as poolSaltAddress } from '../worker/src/salt-pool.js';
+import { saltAddress as poolSaltAddress, marketAddress as poolMarketAddress } from '../worker/src/salt-pool.js';
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -50,7 +50,7 @@ const CHARGER = () => { const b = new EventTarget(); b.charging = true; window._
 const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 // `more`: the node's other numbers and the checkpoint sit behind summaries, so the scenarios that read them open those first.
 // `busy`: a day whose proofs earned more points (50,000 in the pool, 10,000 on the board) than the day's 300 TAC covers at 0.01 TAC a point.
-async function open(browser, local, { phone = false, idle = false, busy = false, ua = null, hash = '', init = null, noBank = false, more = true, minBits = 26, apiDown = false, crowd = 0, reviewPaid = true } = {}) {
+async function open(browser, local, { phone = false, idle = false, busy = false, ua = null, hash = '', init = null, noBank = false, more = true, minBits = 26, apiDown = false, crowd = 0, reviewPaid = true, market = false } = {}) {
   const ctx = await browser.newContext(phone ? { viewport: { width: 390, height: 800 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } : { viewport: { width: 1100, height: 900 }, ...(ua ? { userAgent: ua } : {}) });
   const page = await ctx.newPage();
   // The public Nostr relays are the outside world: a page under test must never post its stand-in jobs to them or read other people's, so
@@ -96,7 +96,7 @@ async function open(browser, local, { phone = false, idle = false, busy = false,
     if (u.pathname === '/pool/snapshot') return json(route, { v: 1, cid: 'bafkreia4g6iad4ec3634pd5lsfcqsmenqcc5oyn3mm2kwezybpwv6iltom', to: 26352486, checkpoint: { eth: { block: 26352486, hash: '0x' + 'e9'.repeat(32) }, tacit: { height: 9441, hash: '0xec803dcef9a1a4c0f64a919b491a226ce22e9d30be225c76a148b0a22b62eb41' }, bitcoin: { relayTip: 974739, reflection: { height: 974721 } }, ethereum: { finalizedSlot: 13450016 } } });
     // the salt pool takes the tab miner's shares: each send is kept, and answered as the pool answers (every salt counted)
     if (u.pathname === '/prover/salt/share' && route.request().method() === 'POST') { const b = JSON.parse(route.request().postData() || '{}'); shares.push(b); const n = (b.salts || []).length, total = shares.reduce((a, x) => a + x.salts.length, 0); return json(route, { ok: true, accepted: n, weight: n, rejected: [], today: { shares: total, weight: total * 4000, best: null } }); }
-    if (u.pathname === '/prover/salt') return json(route, { recent: SALT_FINDS(), pointsPerDay: busy ? 0 : 1500, minBits, today: { miners: 2, shares: 30, weight: 400000 }, top: [{ miner: ADDR, shares: 20, weight: 2200 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }, ...Array.from({ length: crowd }, (_, k) => ({ miner: '0x' + (k + 1).toString(16).padStart(40, '0'), at: Date.now() - 45_000 }))], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
+    if (u.pathname === '/prover/salt') return json(route, { recent: SALT_FINDS(), pointsPerDay: busy ? 0 : 1500, minBits, ...(market ? { schemes: ['market', 'createx'], shop: '0x' + 'aa'.repeat(20), market: '0x000000000000b361194cfe6312ee3210d53c15aa', nonceMax: 254 } : {}), today: { miners: 2, shares: 30, weight: 400000 }, top: [{ miner: ADDR, shares: 20, weight: 2200 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }, ...Array.from({ length: crowd }, (_, k) => ({ miner: '0x' + (k + 1).toString(16).padStart(40, '0'), at: Date.now() - 45_000 }))], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
     if (u.pathname === '/prover/salt/bank') return noBank ? json(route, {}, 500) : json(route, { bank: SALT_BANK().map((b) => ({ ...b, salt: '0x' + '00'.repeat(32) })) });
     return json(route, {}, 404);
   });
@@ -237,9 +237,13 @@ try {
       check(Math.max(...r.rows) < 40, 'a feed row is one line', JSON.stringify(r.rows));
     }
     {
-      // the vanity shop's deployment is noted in the salts card, with a link to its verified source
-      const n = await page.evaluate(() => { const p = document.querySelector('[data-card="salts"] #salt-shop'), a = p?.querySelector('a'); return p ? { text: p.textContent, href: a?.href, target: a?.target, rel: a?.rel, shown: p.getBoundingClientRect().height > 0 } : null; });
-      check(n && n.shown && n.href === 'https://etherscan.io/address/0x00000000000785882df83d4CC6ED45c21eB1176C#code' && n.target === '_blank' && /noopener/.test(n.rel) && /vanity-address shop/.test(n.text) && n.text.includes('0x00000000000785882df83d4C…176C'), 'the salts card notes the vanity shop as deployed, with a link to its verified contract', JSON.stringify(n));
+      // the shop's deployment is noted in the salts card: the shop named plainly and linked to its page, and the contract linked to its verified source
+      const n = await page.evaluate(() => { const p = document.querySelector('[data-card="salts"] #salt-shop'), as = [...(p?.querySelectorAll('a') || [])]; return p ? { text: p.textContent, links: as.map((a) => ({ href: a.getAttribute('href'), target: a.target, rel: a.rel, text: a.textContent })), shown: p.getBoundingClientRect().height > 0 } : null; });
+      const [shop, code] = n?.links || [];
+      check(n && n.shown && n.links.length === 2 && shop.href === '/shop/' && shop.text === 'the shop' && !shop.target && code.href === 'https://etherscan.io/address/0x00000000000785882df83d4CC6ED45c21eB1176C#code' && code.target === '_blank' && /noopener/.test(code.rel) && code.text === '0x00000000000785882df83d4C…176C' && !/vanity/i.test(n.text), 'the salts card names the shop plainly and links to its page, and to its verified contract', JSON.stringify(n));
+      // and says up near the top that the latest version finds addresses for it, in the same card as the mining
+      const s = await page.evaluate(() => { const p = document.querySelector('[data-card="salts"] #salt-sell'), a = p?.querySelector('a'), day = document.querySelector('[data-card="salts"] #salt-day'); return p ? { text: p.textContent, href: a?.getAttribute('href'), target: a?.target, shown: p.getBoundingClientRect().height > 0, belowIntro: !!day && !!(day.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING), above: p.getBoundingClientRect().top < (document.querySelector('[data-card="salts"] #salt-bank')?.getBoundingClientRect().top ?? Infinity) } : null; });
+      check(s && s.shown && s.belowIntro && s.above && s.href === '/shop/' && !s.target && /latest version/.test(s.text) && /buy one with TAC/.test(s.text) && !/vanity/i.test(s.text), 'the mining section says the latest version finds addresses for the shop, where anyone can buy one with TAC, and links to it', JSON.stringify(s));
     }
     const saltRows = await page.locator('#feed li.salt').allInnerTexts();
     check(saltRows.filter((x) => x.includes('≈ +9.83 TAC')).length === 1 && saltRows.filter((x) => x.includes('< 0.01 TAC')).length === 1, 'a salt shows its part of the day\'s salt pot so far: a 44-bit find 9.83 TAC, a 32-bit one under a cent', saltRows.join(' / '));
@@ -776,6 +780,26 @@ try {
     await shot(page, 'prove-review');
     await ctx.close();
   }
+  // the pool asks for the vanity market's salts (its summary names them first): the tab grinds those, and sends each as `0x<id>:<nonce>` for the pool's own check to count
+  {
+    const { page, ctx, errors, shares } = await open(browser, { v: null }, { more: false, minBits: 16, init: CHARGER, market: true });
+    await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
+    await page.fill('#addr', ADDR);
+    await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Mine in this tab');
+    await page.click('#tab-go');
+    await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Stop mining in this tab');
+    const t0 = Date.now(); while (!shares.length && Date.now() - t0 < 120000) await page.waitForTimeout(500);
+    const sent = shares[0] || { salts: [] };
+    const parts = sent.salts.map((x) => x.split(':')), bits = parts.map(([id, n]) => poolMarketAddress(id, Number(n)).bits), today = Math.floor(Date.now() / 86400000) % 65536;
+    check(shares.length >= 1 && sent.miner === ADDR && sent.salts.length >= 1 && sent.salts.length <= 64, 'told the pool wants market salts, the tab sends its shares for the address', JSON.stringify({ n: shares.length, miner: sent.miner, salts: sent.salts.length }));
+    check(sent.salts.every((x) => /^0x[0-9a-f]{64}:[0-7]$/.test(x)) && parts.every(([id]) => id.slice(2, 42) === 'aa'.repeat(20) && id.slice(42, 44) === '00' && [today, (today + 65535) % 65536].includes(parseInt(id.slice(44, 48), 16))), 'each one is `0x<id>:<nonce>`, an id of the shop for today', JSON.stringify(sent.salts.slice(0, 2)));
+    check(bits.every((b) => b >= 16) && bits.every((b, i) => i === 0 || b <= bits[i - 1]), 'with the zero bits the pool\'s own derivation gives at that nonce, the best first', JSON.stringify(bits.slice(0, 8)));
+    check(!sent.salts.some((x) => x.startsWith('0x68575b07')), 'and none of the deployer\'s CreateX salts');
+    await page.click('#tab-go');
+    await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Mine in this tab');
+    check(!errors.length, 'market mining: no page errors (the threads and the WebAssembly are allowed by the page\'s policy)', errors.join(' | '));
+    await ctx.close();
+  }
   // the GPU, in a browser started with WebGPU on (skipped on a machine that has none for it): the shader against the WebAssembly grinder, then the page
   {
     const gpuBrowser = await chromium.launch({ args: ['--enable-unsafe-webgpu', '--enable-features=WebGPU', '--use-angle=metal'] });
@@ -801,8 +825,14 @@ try {
           const p2 = crypto.getRandomValues(new Uint8Array(5)), g2 = await G.makeGpuGrinder({ day, prefix: p2 }), g3 = await G.makeGpuGrinder({ day, prefix: p2 });
           const wide = (await g2.grind(1 << 25, 16)).filter((f) => f.bits >= 24), narrow = await g3.grind(1 << 25, 24), narrowNoted = g3.stats().noted, wideNoted = g2.stats().noted;
           let low = false; try { await g.grind(1 << 14, 8); } catch { low = true; }
+          // the market's salts: the proxy hash and then one per nonce in the shader, against the same in the module
+          const mt = C.termsFrom({ schemes: ['market'], shop: '0x' + 'aa'.repeat(20), market: '0x000000000000b361194cfe6312ee3210d53c15aa' });
+          const gm = await G.makeGpuGrinder({ day, prefix, terms: mt }), wm = C.makeWasmGrinder({ day, prefix, terms: mt });
+          const ma = await gm.grind(1 << 20, 16), wma = wm.grind(1 << 20, 16), mb = await gm.grind(1 << 19, 16), wmb = wm.grind(1 << 19, 16), mc = await gm.grind(1 << 20, 20), wmc = wm.grind(1 << 20, 20);
+          const mk = { first: same(ma, wma), n: ma.length, nonces: ma.filter((f) => f.nonce > 0).length, second: same(mb, wmb), third: same(mc, wmc), n3: mc.length, at: gm.at() === wm.at(), kind: gm.terms?.kind, leads: gm.saltOf(5)[0] === 0xaa };
+          gm.close();
           g.close(); g2.close(); g3.close();
-          return { first: same(a, wa), n1: a.length, second: same(b, wb), third: same(c, wc), n3: c.length, narrowNoted, wideNoted, at, big: big.length, bigHead: same(bigHead, head), sorted, allBits: big.every((f) => f.bits >= 16), mps: +(((1 << 25) / ms) / 1000).toFixed(1), masks: same(wide, narrow), n24: narrow.length, low };
+          return { market: mk, first: same(a, wa), n1: a.length, second: same(b, wb), third: same(c, wc), n3: c.length, narrowNoted, wideNoted, at, big: big.length, bigHead: same(bigHead, head), sorted, allBits: big.every((f) => f.bits >= 16), mps: +(((1 << 25) / ms) / 1000).toFixed(1), masks: same(wide, narrow), n24: narrow.length, low };
         });
         check(r.first && r.n1 > 4, 'the GPU finds exactly the shares the WebAssembly grinder finds over the same million salts', JSON.stringify(r));
         check(r.second && r.at, 'and goes on from where it stopped, as far as the other', JSON.stringify(r));
@@ -811,6 +841,8 @@ try {
         check(r.masks, `the pool's own share size (three zero bytes and more) finds what the wider search finds (${r.n24} of 24 bits)`, JSON.stringify(r));
         check(r.narrowNoted < 40 && r.wideNoted > 300, `and the shader passes on only what has those zero bytes (${r.narrowNoted} notes, against ${r.wideNoted} at two bytes)`, JSON.stringify(r));
         check(r.low, 'a share size under 16 bits is left to the cores');
+        check(r.market.first && r.market.n > 4 && r.market.nonces > 0 && r.market.kind === 'market' && r.market.leads, 'the GPU finds exactly the market shares the WebAssembly grinder finds over the same million ids, each at its best nonce', JSON.stringify(r.market));
+        check(r.market.second && r.market.at && r.market.third && r.market.n3 < r.market.n, 'and goes on from where it stopped, and at 20 bits reports exactly the shares of that size', JSON.stringify(r.market));
         // the page: the GPU is offered and used, its shares are sent, and it can be turned off and up
         await page.fill('#addr', ADDR);
         await page.waitForFunction(() => document.querySelector('#tab-go').textContent === 'Mine in this tab');

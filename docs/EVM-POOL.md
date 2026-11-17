@@ -1124,6 +1124,8 @@ The page reads the pool's logs for the whole chain and finds your notes on your 
 **Can I use my own node?**
 Yes: under Endpoints, enter one node URL per chain (your own node, or a private RPC); two, separated by a space, must agree. The reads that say what you are doing then go only to it: the names you pay (read on Ethereum, so set one there too), swap routes, withdrawal addresses, your deposit addresses and the pool's checks. Only the pool's history, the same for every reader, falls back to the public nodes, and only when your node does not serve it. Under Endpoints you can set your own relay too.
 
+On the front page, the Wallet sheet has an Ethereum node row. Turn on "use my own node" and the page asks a node or light client on this computer, at `127.0.0.1:8545`, first for its Ethereum reads, and a public node only when it does not answer in a moment. It is used while it is up and within six blocks of the public nodes, which the page checks every half minute: a node that stops or falls behind is set aside, and the setting stays on. Log history over more than 512 blocks and state at older blocks still come from the public nodes. The browser has to be allowed to reach your computer, and the node has to allow the page's origin (CORS).
+
 ### Deposit addresses and payment links
 
 **What is a deposit address?**

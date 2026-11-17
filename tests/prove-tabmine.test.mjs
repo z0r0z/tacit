@@ -10,7 +10,7 @@ export async function resolve(spec, ctx, next) {
 }`));
 import { randomBytes } from 'node:crypto';
 import { keccak_256 } from '@noble/hashes/sha3';
-import { saltAddress as poolAddress, makeSaltPool, SALT_POOL } from '../worker/src/salt-pool.js';
+import { saltAddress as poolAddress, marketAddress as poolMarketAddress, makeSaltPool, SALT_POOL } from '../worker/src/salt-pool.js';
 const C = await import('/prove/saltcore.js');
 const T = await import('/prove/tabmine.js');
 const G = await import('/prove/saltgpu.js');
@@ -41,7 +41,7 @@ const day = C.utcDay(), prefix = Uint8Array.from(randomBytes(5));
   check('the word-by-word grinder finds exactly what hashing each salt the plain way finds', JSON.stringify(found) === JSON.stringify(plain) && found.length > 20);
   check('it goes on from where it stopped', js.at() === 60000 && js.grind(1, 0)[0].n === 60001);
   const bytes = C.grinderWasm();
-  check('the WebAssembly module is valid and small', WebAssembly.validate(bytes) && bytes.length < 4000);
+  check('the WebAssembly module is valid and small (it holds the CreateX grinder and the market\'s)', WebAssembly.validate(bytes) && bytes.length < 6000);
   const w = C.makeWasmGrinder({ day, prefix }), wf = w.grind(60000, 10);
   check('the WebAssembly grinder finds the same shares as the JavaScript one', JSON.stringify(wf) === JSON.stringify(plain) && w.wasm === true && w.at() === 60000);
   const w16 = C.makeWasmGrinder({ day, prefix: Uint8Array.from(randomBytes(5)) }), f16 = w16.grind(1_200_000, 16);
@@ -54,6 +54,49 @@ const day = C.utcDay(), prefix = Uint8Array.from(randomBytes(5));
   check('the best grinder here is the WebAssembly one', C.bestGrinder({ day, prefix }).wasm === true);
   const other = C.makeWasmGrinder({ day: day - 1, prefix }).grind(60000, 10);
   check('another day walks other salts', JSON.stringify(other) !== JSON.stringify(plain));
+}
+// ---- the vanity market's salts: the pool's marketAddress is the reference (itself checked against the market's own answers in tests/salt-pool.test.mjs)
+const SHOP = 'aa'.repeat(20), MKT = C.MARKET, bytesOf = (h) => Uint8Array.from(Buffer.from(h, 'hex'));
+const mterms = C.termsFrom({ schemes: ['market', 'createx'], shop: '0x' + SHOP, market: '0x' + MKT });
+{
+  check('the pool names market salts only when its first scheme is market and it gives the shop and the market', mterms.kind === 'market' && mterms.shop === SHOP && mterms.market === MKT
+    && C.termsFrom({ schemes: ['createx', 'market'], shop: '0x' + SHOP, market: '0x' + MKT }).kind === 'createx' && C.termsFrom({ schemes: ['market'], market: '0x' + MKT }).kind === 'createx'
+    && C.termsFrom({ schemes: ['market'], shop: '0x12', market: '0x' + MKT }).kind === 'createx' && C.termsFrom({}).kind === 'createx' && C.termsFrom(null).kind === 'createx'
+    && C.termsFrom({ schemes: ['market'], shop: '0x' + SHOP.toUpperCase(), market: '0x' + MKT.toUpperCase() }).shop === SHOP);
+  check('terms are told apart by kind, shop and market', C.termsKey(mterms) !== C.termsKey(C.CREATEX_TERMS) && C.termsKey(C.CREATEX_TERMS) === 'createx' && C.termsKey(mterms) === C.termsKey(C.termsFrom({ schemes: ['market'], shop: '0x' + SHOP, market: '0x' + MKT })));
+  // VanityMarket.computeAddress(id, 0..7) on mainnet for 0x68575b07…cdef01 (the same answers the miners' Rust tests hold)
+  const id1 = bytesOf('68575b073de49a94e3e3acf6f3a0d6e3b66267c70051200123456789abcdef01');
+  const chain = ['62fef3591b14074dde1dd2e1ddf1ec03a149a9af', '204d0c8327f70a3f2ec772ee2e45bceee6c876f2', 'cd458f61f97f335ace31401f1fc5e0a6fa0ae75c', '6b3949315dbcd71972dba79bcaaf174dbd068bd6',
+    '4bffe1ad0b6511680cff68fd0ccd63d6fceb0159', 'f91a79421a3475a58bd897c922a4e1c713ab14d8', '1ae1f3363f8dddbb6aeebf4e6cb48cdee3f492bf', '5dbda460edd27aa7a005b7e5d3bebb986c0e6909'];
+  check('an id\'s addresses at its first eight nonces are the ones the market computes on chain', C.NONCES === 8 && JSON.stringify(C.marketAddresses(id1).map((a) => C.toHex(a.address))) === JSON.stringify(chain));
+  let bad = 0;
+  for (let i = 0; i < 60; i++) { const id = C.saltOf(day, prefix, (Math.random() * 2 ** 32) | 0, bytesOf(SHOP)); C.marketAddresses(id).forEach((a) => { const p = poolMarketAddress(hexOf(id), a.nonce); if (hexOf(a.address) !== p.address || a.bits !== p.bits) bad++; }); }
+  check('and the pool\'s own derivation agrees on 60 random ids at every nonce', bad === 0);
+  const best = C.marketBest(id1);
+  check('the best nonce is the one with most zero bits, the lowest among equals', best.bits === Math.max(...C.marketAddresses(id1).map((a) => a.bits)) && best.nonce === C.marketAddresses(id1).findIndex((a) => a.bits === best.bits));
+}
+{
+  const ob = bytesOf(SHOP), ownerSalt = (n) => C.saltOf(day, prefix, n, ob);
+  check('a market salt leads with the shop, a zero byte, the day, five bytes of the grinder\'s and its counter', C.toHex(ownerSalt(0x0a0b0c0d)) === SHOP + '00' + day.toString(16).padStart(4, '0') + C.toHex(prefix) + '0d0c0b0a');
+  const js = C.makeGrinder({ day, prefix, terms: mterms }), found = js.grind(40000, 10);
+  let plain = []; for (let n = 1; n <= 40000; n++) { const b = C.marketBest(ownerSalt(n)); if (b.bits >= 10) plain.push({ n, bits: b.bits, nonce: b.nonce }); }
+  check('the word-by-word market grinder finds exactly what hashing each salt the plain way finds, with each best nonce', JSON.stringify(found) === JSON.stringify(plain) && found.length > 60 && found.some((f) => f.nonce > 0));
+  check('and the pool counts each at the address and zero bits the grinder said', found.slice(0, 40).every((f) => { const p = poolMarketAddress(hexOf(js.saltOf(f.n)), f.nonce); return p.bits === f.bits; }));
+  check('it goes on from where it stopped', js.at() === 40000 && js.grind(1, 0)[0].n === 40001);
+  const bytes = C.grinderWasm();
+  check('the module exports both grinders', (() => { const e = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports; return typeof e.grind === 'function' && typeof e.grindMarket === 'function'; })());
+  const w = C.makeWasmGrinder({ day, prefix, terms: mterms }), wf = w.grind(40000, 10);
+  check('the WebAssembly market grinder finds the same shares, nonces included', JSON.stringify(wf) === JSON.stringify(plain) && w.wasm === true && w.at() === 40000 && w.terms.kind === 'market');
+  const w2 = C.makeWasmGrinder({ day, prefix: Uint8Array.from(randomBytes(5)), terms: mterms }), j2 = C.makeGrinder({ day, prefix: w2.saltOf(0).subarray(23, 28), terms: mterms });
+  check('a share size that is not a whole number of bytes (12, 20 bits) is filtered exactly', JSON.stringify(w2.grind(120000, 12)) === JSON.stringify(j2.grind(120000, 12)) && JSON.stringify(C.makeWasmGrinder({ day, prefix, terms: mterms }).grind(150000, 16)) === JSON.stringify(C.makeGrinder({ day, prefix, terms: mterms }).grind(150000, 16)));
+  const many = C.makeWasmGrinder({ day, prefix: Uint8Array.from(randomBytes(5)), terms: mterms }).grind(60_000, 8);
+  check('when one call notes more than its notes hold, none is lost and the count walked is right', many.length > 400 && new Set(many.map((f) => f.n)).size === many.length);
+  check('the best grinder for market terms is the WebAssembly one, and for none it is still CreateX\'s', C.bestGrinder({ day, prefix, terms: mterms }).terms?.kind === 'market' && C.bestGrinder({ day, prefix }).terms === undefined);
+  check('another shop walks other salts (and none of them is the deployer\'s)', JSON.stringify(C.makeMarketGrinder({ day, prefix, terms: C.termsFrom({ schemes: ['market'], shop: '0x' + 'bb'.repeat(20), market: '0x' + MKT }) }).grind(40000, 10)) !== JSON.stringify(found) && C.toHex(ownerSalt(1)).startsWith(SHOP) && !C.toHex(ownerSalt(1)).startsWith(C.DEPLOYER));
+  // the pool counts what these grinders find, as `0x<id>:<nonce>`, once per id
+  const now = Date.now(), kv = new Map(), pool = makeSaltPool({ kv: { get: async (k) => (kv.has(k) ? kv.get(k) : null), put: async (k, v) => { kv.set(k, v); } }, cfg: { ...SALT_POOL, minBits: 10, bankBits: 12, sendEveryMs: 0, schemes: ['market', 'createx'], shop: '0x' + SHOP }, now: () => now });
+  const out = await pool.submit({ miner: '0x' + '11'.repeat(20), salts: wf.slice(0, 40).map((f) => `${hexOf(w.saltOf(f.n))}:${f.nonce}`), client: 'tab' });
+  check('the pool counts the market grinder\'s shares, at their nonces', out.body.accepted === Math.min(40, wf.length) && out.body.rejected.length === 0, JSON.stringify(out.body.rejected?.[0]));
 }
 // ---- what waits to be sent
 {
@@ -333,6 +376,65 @@ function rig({ reply = () => ({ status: 200, body: { ok: true, accepted: 0, reje
   check(`two real threads found shares (${waiting}) and the pool's own code counted every one for the address`, waiting >= 6 && st.accepted === Math.min(64, waiting) && st.today.shares === st.accepted && st.today.weight >= st.accepted && st.error === null);
   const rec = JSON.parse(kv.get(`sl:m:${Math.floor(clock / 86400000)}:${ADDR.toLowerCase()}`));
   check('and the pool\'s record for the address says so, with this page as the miner', rec.shares === st.accepted && JSON.parse(kv.get('sl:live'))[ADDR.toLowerCase()].sw === 'tacit-prove-tab/1');
+  m.stop(); await flush();
+  check('the threads stopped', loops.every((l) => l.running() === false));
+}
+// ---- the vanity market's salts in a tab: the thread follows the pool's terms, the miner spells a share with its nonce, and the pool's own code counts what real threads find
+{
+  const posts = [], made = []; let waiting = null;
+  const grinderOf = (o) => { const g = { day: o.day, prefix: o.prefix, terms: o.terms, wasm: true, grind: (count, minBits) => [{ n: 7, bits: minBits + 1, ...(o.terms?.kind === 'market' ? { nonce: 3 } : {}) }], saltOf: (n) => C.saltOf(o.day, o.prefix, n, o.terms?.kind === 'market' ? bytesOf(o.terms.shop) : undefined) }; made.push(g); return g; };
+  const rest = () => new Promise((r) => { waiting = r; }), step = async () => { const r = waiting; waiting = null; r(); await flush(); };
+  const loop = T.makeGrindLoop({ post: (m) => posts.push(m), random: (n) => new Uint8Array(n).fill(9), now: () => 0, today: () => 100, rest, grinderOf });
+  loop.message({ type: 'start', minBits: 20 }); await flush();
+  check('with no terms a thread grinds CreateX\'s salts: no nonce on a share', made[0].terms.kind === 'createx' && posts[0].shares[0].nonce === undefined && posts[0].shares[0].salt.startsWith('0x' + C.DEPLOYER));
+  const sameKey = { kind: 'market', shop: SHOP, market: MKT };
+  loop.message({ terms: sameKey }); await step();
+  check('told the pool wants market salts, it grinds them from its next chunk, on a new run of salts, and a share carries its nonce', made.length === 2 && made[1].terms.kind === 'market' && made[1].terms.shop === SHOP && posts[1].shares[0].nonce === 3 && posts[1].shares[0].salt.startsWith('0x' + SHOP));
+  loop.message({ terms: { ...sameKey } }); await step();
+  check('the same terms again start nothing new', made.length === 2);
+  loop.message({ terms: { kind: 'market', shop: 'zz', market: MKT } }); await step();
+  check('terms that do not name a shop and a market go back to CreateX\'s', made.length === 3 && made[2].terms.kind === 'createx' && posts[posts.length - 1].shares[0].nonce === undefined);
+  loop.message({ terms: { kind: 'market', shop: SHOP, market: MKT } }); loop.message({ terms: null }); loop.message({ terms: 'market' }); await step();
+  check('a message that is not terms changes nothing', made.length === 4 && made[3].terms.kind === 'market');
+  loop.message({ type: 'stop' }); waiting?.(); await flush();
+  check('a share is spelled for the pool as the salt, and for a market salt with :nonce', T.spell({ salt: '0xab', bits: 30 }) === '0xab' && T.spell({ salt: '0xab', bits: 30, nonce: 5 }) === '0xab:5' && T.spell({ salt: '0xab', bits: 30, nonce: 0 }) === '0xab:0');
+}
+{
+  const r = rig(); const mt = C.termsFrom({ schemes: ['market'], shop: '0x' + SHOP, market: '0x' + MKT });
+  r.m.start({ miner: ADDR, threads: 2, minBits: 26, terms: mt });
+  check('a miner started with terms tells each thread', r.workers.every((w) => w.sent[0].terms.kind === 'market' && w.sent[0].terms.shop === SHOP) && r.m.state().kind === 'market');
+  const d0 = C.dayOfSalt(r.share(30).salt);   // the rig's own clock is the pool's "today"
+  const ms = (bits, nonce) => ({ salt: hexOf(C.saltOf(d0, prefix, Math.floor(Math.random() * 1e9), bytesOf(SHOP))), bits, nonce });
+  const a = ms(30, 2), b = ms(27, 0);
+  r.work(r.workers[0], 1000, [a, b]); await r.fire();
+  check('a market share goes to the pool as `0x<id>:<nonce>`, nonce 0 too', r.calls.length === 1 && JSON.stringify(r.calls[0].body.salts) === JSON.stringify([`${a.salt}:2`, `${b.salt}:0`]));
+  const n1 = r.workers.reduce((n, w) => n + w.sent.length, 0);
+  r.m.setTerms(mt);
+  check('the same terms again tell nobody', r.workers.reduce((n, w) => n + w.sent.length, 0) === n1);
+  r.work(r.workers[0], 1000, [ms(29, 1)]);
+  check('a share found is waiting to go', r.m.state().waiting === 1);
+  r.m.setTerms(C.CREATEX_TERMS);
+  check('when the pool goes back to CreateX\'s, every thread is told, what was found of the market kind is let go, and the state says so', r.workers.every((w) => w.sent[w.sent.length - 1].terms.kind === 'createx') && r.m.state().waiting === 0 && r.m.state().kind === 'createx');
+  const cx = rig(); cx.m.start({ miner: ADDR, threads: 1, minBits: 26 });
+  check('a miner started with no terms is a CreateX miner', cx.workers[0].sent[0].terms.kind === 'createx' && cx.m.state().kind === 'createx');
+}
+{
+  // real threads on the market's salts, and the pool's own code (market kind) counting every share they send
+  const kv = new Map(), cfg = { ...SALT_POOL, minBits: 16, house: [], schemes: ['market', 'createx'], shop: '0x' + SHOP }; let clock = Date.now();
+  const pool = makeSaltPool({ kv: { get: async (k) => (kv.has(k) ? kv.get(k) : null), put: async (k, v) => { kv.set(k, v); } }, cfg, now: () => clock });
+  let sentBody = null;
+  const fetchImpl = async (url, init) => { const b = JSON.parse(init.body); sentBody = b; const r = await pool.submit({ miner: b.miner, salts: b.salts, client: 'ip1', software: b.client }); return { status: r.status, ok: r.status === 200, json: async () => r.body }; };
+  const timers = []; const loops = [];
+  const makeWorker = () => { const w = { onmessage: null, terminate() { loop.message({ type: 'stop' }); } }; let rr = null; const loop = T.makeGrindLoop({ post: (m) => w.onmessage?.({ data: m }), rest: () => new Promise((r) => { rr = r; setTimeout(r, 0); }) }); w.postMessage = (m) => loop.message(m); loops.push(loop); return w; };
+  const m = T.makeTabMiner({ api: '', makeWorker, fetchImpl, now: () => clock, timers: { set: (f, ms) => { const t = { f, ms, on: true }; timers.push(t); return t; }, clear: (t) => { if (t) t.on = false; } }, jitter: () => 0 });
+  m.start({ miner: ADDR, threads: 2, minBits: 16, terms: C.termsFrom({ schemes: ['market', 'createx'], shop: '0x' + SHOP, market: '0x' + MKT }) });
+  const t0 = Date.now(); while (m.state().waiting < 6 && Date.now() - t0 < 30000) await new Promise((r) => setTimeout(r, 20));
+  const waiting = m.state().waiting;
+  clock += 21000; const t = timers.filter((x) => x.on).pop(); t.on = false; await t.f();
+  const st = m.state();
+  check(`two real threads found market shares (${waiting}) and the pool's own code counted every one for the address`, waiting >= 6 && st.accepted === Math.min(64, waiting) && st.today.shares === st.accepted && sentBody.salts.every((x) => /^0x[0-9a-f]{64}:[0-7]$/.test(x)) && sentBody.salts.every((x) => x.startsWith('0x' + SHOP)));
+  const bankKey = JSON.parse(kv.get('sl:bank:market') || '[]');
+  check('none was refused, and the market\'s own bank is the one the pool keeps them in', st.error === null && Array.isArray(bankKey) && kv.get('sl:bank') === undefined);
   m.stop(); await flush();
   check('the threads stopped', loops.every((l) => l.running() === false));
 }

@@ -32,6 +32,8 @@
 /vault    /vault/    301
 /tasks    /tasks/    301
 /discord    /discord/    301
+/shop      /shop/      301
+/vanity    /shop/      301
 /face    /face/    301
 /fast       /fast/       301
 /chain      /chain/      301

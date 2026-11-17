@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-60gTQuyRPlRYhDojuT4qduKVfTE+ZUatlHz8hmlUlIY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Fx7VoVtNF7ZXIWTYoqa3QOtIcY28OfGw6zSL0UOIeF0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
+<link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
 <meta property="og:type" content="website">
@@ -24,6 +26,7 @@
 <!-- preload:begin -->
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prf-wallet.js">
+<link rel="modulepreload" href="/tacit-chain-root.js">
 <link rel="modulepreload" href="/tacit-wallet-known.js?cb=ec5b5193">
 <link rel="modulepreload" href="/evm-wallet.js?cb=ed67f38d">
 <link rel="modulepreload" href="/identity-message.js">
@@ -195,23 +198,33 @@ body.in .hero p, body.in .facts, body.in .hero .more { display: none; }
 /* Empty until its first reading is drawn: it holds the height it settles at, so the cards below do not move. */
 #bal:empty { min-height: 79px; }
 @media (max-width: 430px) { #bal:empty { min-height: 99px; } }
+/* the chain row holds the height its tabs settle at (a name and the figure line under it; phones pad them more), whether the figures are in yet or not */
 #chains:empty { min-height: 69px; }
+@media (max-width: 640px) { #chains:empty { min-height: 73px; } }
 #chains button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; }
+#chains.tight .ip { display: none; }
 /* the asset row (the chain's ETH and its token pools): the coin beside its name, the balance under */
 #assets button { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 2px 6px; }
 #assets button small { flex-basis: 100%; text-align: center; }
 #assets .tk { flex: none; }
-#poolstat:empty { min-height: 36px; }
-@media (max-width: 430px) { #poolstat:empty { min-height: 54px; } }
-@media (max-width: 359px) { #chains:empty { min-height: 83px; } }
+/* the pool line holds the room its figures take (two lines, three on a phone) whether they are in yet or not, so they arriving, in one piece or two, moves nothing under it */
+#poolstat { min-height: 36px; }
+@media (max-width: 430px) { #poolstat { min-height: 54px; } }
+#poolstat .pl-short { display: none; }
+#poolstat.tight .pl-long { display: none; }
+#poolstat.tight .pl-short { display: inline; }
 /* Three chains fit one row at every width: up to 400 px they keep to narrower sides, so a balance under a name still fits. */
 @media (max-width: 400px) { #chains button { padding-left: 4px; padding-right: 4px; } }
 #form:empty { min-height: 457px; }
 @media (max-width: 430px) { #form:empty { min-height: 495px; } }
 @media (max-width: 390px) { #form:empty { min-height: 534px; } }
+/* The cards under the form, the links and the footer stay out of sight until the page has made its first render. They sit below the room the form reserves, which that render closes (about
+   540px), and on a tall screen they would be seen to jump up into view. They show after 2.5 s at the latest, if the page never gets that far. */
+html:not(.up) :is(main > .card:not(.app), .sf-x, footer.sf) { visibility: hidden; animation: up-late 0s 2.5s forwards; }
+@keyframes up-late { to { visibility: visible; } }
 .bal .v { font: 500 30px/1.1 var(--mono); letter-spacing: -.02em; }
 .bal .u { color: var(--mute); font-size: 12.5px; }
-.poolstat { margin: -6px 0 16px; font-size: 12px; line-height: 1.5; color: var(--mute); min-height: 3em; }
+.poolstat { margin: -6px 0 16px; font-size: 12px; line-height: 1.5; color: var(--mute); }
 .poolstat[hidden] { display: none; }
 .req { padding: 16px; margin: 0 0 18px; background: var(--field); border: 1px solid var(--ink); border-radius: 16px; }
 .req .lbl { margin-top: 0; }
@@ -754,6 +767,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
             <a href="/trade/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16"/><path d="M7.5 15l3.500-4.500 3 2.500L19 7"/></svg>Trade</a>
             <a href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
             <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
+            <a href="/shop/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 4h11L21 9l-9 11L3 9z"/><path d="M3 9h18"/><path d="M9.5 4L8 9l4 11 4-11-1.5-5"/></svg>Shop</a>
             <a href="/prove/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Prove</a>
             <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
             <a href="/weld/stats/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/></svg>Stats</a>
@@ -891,7 +905,7 @@ import { signBoxSync as signBox, boxSigOk as boxRecordOk } from '/box-record.js?
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 // preload-later:begin
-for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=b9e4f4dc","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
+for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=ad0cd797","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
 // preload-later:end
 
 const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5';
@@ -1108,13 +1122,13 @@ function sayLive(el, view) {
 
 const mods = lazy(async () => {
   const [zkm, wm, gw, pm, pos] = await Promise.all([
-    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=b9e4f4dc'), import('/evm-pool-gateway.js'),
+    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=ad0cd797'), import('/evm-pool-gateway.js'),
     import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
   ]);
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
   return {
     zk: zkm.makeEvmPoolZk({ poseidon: (xs) => PO[xs.length](xs) }), poolAsset: zkm.poolAsset, extDataHash: zkm.extDataHash,
-    evmPoolKeys: wm.evmPoolKeys, makeEvmPoolWallet: wm.makeEvmPoolWallet, routerDeposit: wm.routerDeposit, jsonRpc: wm.jsonRpc, feedStart: wm.feedStart, openNote: wm.openNote, openNotes: wm.openNotes, logFailure: wm.logFailure, sealNote: wm.sealNote, recipientOf: wm.recipientOf, paymentKey: wm.paymentKey, PAYMENT_ATTEMPTS: wm.PAYMENT_ATTEMPTS, verifyPayment: wm.verifyPayment,
+    evmPoolKeys: wm.evmPoolKeys, makeEvmPoolWallet: wm.makeEvmPoolWallet, routerDeposit: wm.routerDeposit, splitDepositCall: wm.splitDepositCall, jsonRpc: wm.jsonRpc, feedStart: wm.feedStart, openNote: wm.openNote, openNotes: wm.openNotes, logFailure: wm.logFailure, sealNote: wm.sealNote, recipientOf: wm.recipientOf, paymentKey: wm.paymentKey, PAYMENT_ATTEMPTS: wm.PAYMENT_ATTEMPTS, verifyPayment: wm.verifyPayment,
     receiveKeys: gw.receiveKeys, receiveBoxAddress: gw.receiveBoxAddress, RECEIVE_FEE_BPS: gw.RECEIVE_FEE_BPS, vkHash: pm.vkHash,
   };
 });
@@ -1555,7 +1569,7 @@ const PSW = { w: null, n: 0, wait: new Map() };
 function pswDrop() { PSW.w?.terminate(); PSW.w = null; for (const f of PSW.wait.values()) f({ ok: false }); PSW.wait.clear(); }
 function pswWorker() {
   if (PSW.w) return PSW.w;
-  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=7a6af8a5', { type: 'module' }); } catch { return null; }
+  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=44c673e0', { type: 'module' }); } catch { return null; }
   PSW.w.onmessage = (e) => PSW.wait.get(e.data?.id)?.(e.data);
   PSW.w.onerror = pswDrop;
   return PSW.w;
@@ -1628,7 +1642,7 @@ function backfillChain(c) {
     syncChain(c, true).then(() => historyOf(c, true));
   });
 }
-const sealing = lazy(() => import('/evm-pool-wallet.js?cb=b9e4f4dc'));
+const sealing = lazy(() => import('/evm-pool-wallet.js?cb=ad0cd797'));
 // `whole`: a state that held the whole history is read whole again, in the worker, before a wallet is made from it (syncInWorker, walletOn), and the
 // balance it showed stays on screen, as older history being read, until then; without it the new state begins at a catch-up point.
 async function freshWallet(c, whole = false) {
@@ -2600,12 +2614,21 @@ function paintChains() {
   el.hidden = shown.length < 2;
   keepFocus(el, () => mountOnce(el, html`${shown.map((c) => {
     const st = CH[c.chainId], q = PUB[c.chainId];
-    const v = !S.key ? (q?.locked != null ? `${fmt(q.locked, 18, 3)} in pool` : '') : st.bal != null ? `${ethDown(st.bal)} ETH` : st.last != null ? html`<span class="stale">${ethDown(st.last)} ETH</span>` : st.err ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
-    return html`<button type="button" role="tab" id="chain-${c.chainId}" data-chain="${c.chainId}" aria-selected="${c === S.chain ? 'true' : 'false'}" tabindex="${c === S.chain ? '0' : '-1'}" ${S.busy ? 'disabled' : ''} ${!S.key && q?.locked != null ? html`aria-label="${c.name}, ${fmt(q.locked, 18, 3)} ETH in the pool"` : ''}>${cicon(c)}${c.name}${v ? html`<small>${v}</small>` : ''}</button>`;
+    const v = !S.key ? (q?.locked != null ? html`${fmt(q.locked, 18, 3)}<span class="ip"> in pool</span>` : '') : st.bal != null ? `${ethDown(st.bal)} ETH` : st.last != null ? html`<span class="stale">${ethDown(st.last)} ETH</span>` : st.err ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
+    return html`<button type="button" role="tab" id="chain-${c.chainId}" data-chain="${c.chainId}" aria-selected="${c === S.chain ? 'true' : 'false'}" tabindex="${c === S.chain ? '0' : '-1'}" ${S.busy ? 'disabled' : ''} ${!S.key && q?.locked != null ? html`aria-label="${c.name}, ${fmt(q.locked, 18, 3)} ETH in the pool"` : ''}>${cicon(c)}${c.name}<small>${v || '\u00a0'}</small></button>`;
   })}`));
   $$('#chains [data-chain]').forEach((b) => b.onclick = () => { if (!S.busy) switchChain(chainOf(b.dataset.chain)); });
+  fitChains(el);
   paintAssets();
 }
+// A figure line that would wrap (three tabs on a narrow phone) loses its " in pool" for the row, in the same turn it is set and so before it is drawn: the row keeps one height, and the
+// tab's label for a screen reader and the pool line under the row still say what the figure is.
+function fitChains(el = $('#chains')) {
+  if (!el) return;
+  el.classList.toggle('tight', false);
+  el.classList.toggle('tight', [...el.querySelectorAll('small')].some((sm) => sm.offsetHeight > 1.5 * parseFloat(getComputedStyle(sm).lineHeight)));
+}
+window.addEventListener('resize', () => fitChains());
 function switchChain(c, tab = null) {
   if (!c) return;
   S.chain = c; writeJson(CHAIN_PREF, c.chainId);
@@ -2622,15 +2645,27 @@ function poolLine(c) {
   const q = PUB[c.chainId];
   const t = TALLY[c.chainId];
   const n = (x) => Number(x).toLocaleString('en-US');
-  return q?.locked != null ? html`<div>${t?.in ? html`The pool on ${cname(c)} holds <b>${fmt(q.locked, 18, 3)} ETH</b> in ${n(q.notes)} notes · <b>${fmt(t.in, 18, 2)} ETH</b> transacted in ${n(t.deposits)} deposits.` : html`The pool on ${cname(c)} holds ${fmt(q.locked, 18, 3)} ETH in ${n(q.notes)} notes.`}</div>` : '';
+  // the lead has two forms, the sentence and a short one for when the sentence would take a line more than the room the line holds (fitPoolStat)
+  const lead = html`<span class="pl-long">The pool on ${cname(c, true)} holds</span><span class="pl-short">${cname(c, true)} pool:</span> `;
+  return q?.locked != null ? html`<div>${t?.in ? html`${lead}<b>${fmt(q.locked, 18, 3)} ETH</b> in ${n(q.notes)} notes · <b>${fmt(t.in, 18, 2)} ETH</b> transacted in ${n(t.deposits)} deposits.` : html`${lead}${fmt(q.locked, 18, 3)} ETH in ${n(q.notes)} notes.`}</div>` : '';
 }
+// The line takes the short lead when its sentence would run past the room it holds (a 320px phone with figures of four digits), in the same turn the figures are set and so before it is drawn:
+// it keeps its room, and nothing under it moves.
+function fitPoolStat(el = $('#poolstat')) {
+  if (!el) return;
+  el.classList.toggle('tight', false);
+  el.classList.toggle('tight', !el.hidden && el.offsetHeight > parseFloat(getComputedStyle(el).minHeight) + 1);
+}
+window.addEventListener('resize', () => fitPoolStat());
 function paintPoolStat() {
   const el = $('#poolstat');
   if (!el) return;
-  if (S.tok) { el.hidden = linkOnly(); return mountOnce(el, tokPoolLine(S.tok)); }
-  const c = S.chain, q = PUB[c.chainId], line = poolLine(c), total = S.key ? totalLine() : '';
-  el.hidden = linkOnly() || (!line && !total && !!(q && q.at));
+  if (S.tok) { el.hidden = linkOnly(); el.classList.toggle('tight', false); return mountOnce(el, tokPoolLine(S.tok)); }
+  const c = S.chain, line = poolLine(c), total = S.key ? totalLine() : '';
+  // it holds the room the figures take (#poolstat's min-height): a read that fails leaves that room as it was, not closed under the form
+  el.hidden = linkOnly();
   mountOnce(el, html`${total}${line}`);
+  fitPoolStat(el);
 }
 function totalLine() {
   const known = CHAINS.filter((x) => CH[x.chainId].bal != null);
@@ -2961,10 +2996,13 @@ function poolDeposit(f, seg) {
 
 // The large-pool cards: loaded when asked for, given what the page owns. A failure leaves the deposit form as it was.
 // What is left of a split deposit after the whole notes: the form's ordinary deposit into the private balance.
-async function depositRest(c, a, step) {
+// `split` ({ forwarder, pools, commitments }): the rest goes in the split's one transaction with the notes (TacitSplitDeposit), as the call the wallet sends in place of
+// the pool's own; the wallet still proves the deposit, checks the pool's head and proves again if it moved.
+async function depositRest(c, a, step, split = null) {
   const W = await walletOn(c);
   await signerFor(c).ready();
-  const h = await W.deposit({ amount: a, onStep: step });
+  const m = split ? await mods() : null;
+  const h = await W.deposit({ amount: a, onStep: step, selfCall: split ? (tx) => m.splitDepositCall(split.forwarder, tx, split) : null });
   ptsExpect(c, a);
   justDid(c, { kind: 'dep', v: a, from: lc(S.wallet), tx: h });
   return h;
@@ -2974,7 +3012,7 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=8d66696d');
+    const m = await import('/fixed-pool-pay.js?cb=07472b94');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2982,7 +3020,7 @@ async function largeWithdraw(c, onNotes) {
       connect: () => connectWallet(), ensureChain: () => ensureChain(c.chainId),
       act, toast, errText, say: (t) => say($('#status'), html`<span class="ok">${t}</span>`), onNotes,
     });
-    return { ctl, planExit: m.planExit, feePercent: Number(m.MAX_FEE_PERCENT) };
+    return { ctl, planExit: m.planExit, exitWarning: m.exitWarning, feePercent: Number(m.MAX_FEE_PERCENT) };
   } catch (e) { console.warn('large-pool withdraw:', e); return null; }
 }
 // The way in under the Withdraw form: whole notes made from the private balance. The page lends the private balance, the relay's fee for a gas
@@ -2991,7 +3029,7 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=8d66696d');
+    const m = await import('/fixed-pool-pay.js?cb=07472b94');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
@@ -3014,13 +3052,14 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=8d66696d');
+    const m = await import('/fixed-pool-pay.js?cb=07472b94');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
       account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c), names: () => getNames(),
       connect: () => connectWallet(), ensureChain: () => ensureChain(c.chainId),
-      onPlan: hooks.onPlan, depositRest: (a, step, cc) => depositRest(cc, a, step), parseAmount: (x) => parseUnits(x),
+      onPlan: hooks.onPlan, depositRest: (a, step, cc, split) => depositRest(cc, a, step, split), parseAmount: (x) => parseUnits(x),
+      tacitPool: POOL, splitCall: async (fwd, tx, split) => (await mods()).splitDepositCall(fwd, tx, split),
       act, toast, errText,
       say: (t) => say($('#status'), html`<span class="ok">${t}</span>`),
       done: (cc, h, t) => done(cc, h, t),
@@ -3034,7 +3073,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=8d66696d');
+    const m = await import('/fixed-pool-pay.js?cb=07472b94');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -3192,7 +3231,7 @@ const legacyAddress = () => TADDR.encodeTacitAddress(addressBase());
 // What the page shows and offers to copy: the address with the key's chain lane as well (as on /tac/), so a payer on the Tacit chain finds the key and every page
 // shows the one address. Links and the page's own "is this mine" checks keep the plain address. Until the lane module is in (it is awaited at sign-in), the plain one.
 let LANE = null;
-const loadLane = lazy(() => import('/tacit-chain-lane.js?cb=258bf4f8').then((m) => (LANE = m), () => null));
+const loadLane = lazy(() => import('/tacit-chain-lane.js?cb=25b2f372').then((m) => (LANE = m), () => null));
 const SHOWN_ADDR = { pub: null, addr: null };
 function shownAddress() {
   if (!LANE || !S.key) return unifiedAddress();
@@ -3733,7 +3772,7 @@ function formWithdraw(f) {
   $$('[data-dest]', f).forEach((b) => b.onclick = () => { S.dest = b.dataset.dest; renderForm(); if (S.dest !== 'addr') bridgeQuote(S.dest); });
   const to = $('#f-wto'), amt = $('#f-wamt'), go = $('#f-go'), rc = $('#f-rcpt');
   // whole notes in the large pools: an amount of a whole note or more takes these first, the rest comes from the private balance
-  let wd = null, wdPlan = null, wdList = [], wdFeePct = MAX_NOTE_FEE_PERCENT;
+  let wd = null, wdPlan = null, wdWarn = null, wdList = [], wdFeePct = MAX_NOTE_FEE_PERCENT;
   const notesFor = (a) => (!l2 && wdPlan && wdList.length && a ? wdPlan(a, wdList.map((x) => x.den)) : null);
   $('#f-me')?.addEventListener('click', () => { to.value = S.wallet; to.dispatchEvent(new Event('input')); });
   const feeNow = () => (l2 ? (BRIDGE_Q.fee[S.dest] ?? null) : relayFee(tab));
@@ -3778,6 +3817,7 @@ function formWithdraw(f) {
         ${kvRow('Their gas', byWallet ? 'from your wallet, one transaction for each note: it shows as the sender' : `paid from the notes, at most ${wdFeePct}% of each`)}
         ${rest > 0n ? kvRow('From your private balance', `${fmt(rest, 18, 6)} ETH`) : ''}
         ${kvRow('Arrives', html`${byWallet ? '' : 'at least '}${fmt(a - noteFee, 18, 6)} ETH on ${cname(c)}`)}
+        ${(() => { const w = wdWarn ? wdWarn(px.picks.map((i) => wdList[i])) : ''; return w ? html`<p class="note warn">${w}</p>` : ''; })()}
         ${rest > 0n ? feeRow(fee, selfN) : ''}
         ${rest > 0n ? mergeRow(fee, planN?.merges, selfN) : ''}
         ${changeN != null ? keptRow(changeN, fee) : ''}
@@ -3851,7 +3891,7 @@ function formWithdraw(f) {
   }, { bridge: l2 ? S.dest : null }); };
   if (l2 && BRIDGE_Q.fee?.[S.dest] == null) bridgeQuote(S.dest);
   if (wdOn) {
-    largeWithdraw(c, (list) => { wdList = list; FORM.check?.(); }).then((x) => { if (x) { wd = x.ctl; wdPlan = x.planExit; wdFeePct = x.feePercent || wdFeePct; FORM.check?.(); } });
+    largeWithdraw(c, (list) => { wdList = list; FORM.check?.(); }).then((x) => { if (x) { wd = x.ctl; wdPlan = x.planExit; wdWarn = x.exitWarning; wdFeePct = x.feePercent || wdFeePct; FORM.check?.(); } });
     largeIntake(c);
   }
 }
@@ -4034,7 +4074,7 @@ const forgetPaid = (r) => { const all = paidReqs(); delete all[r?.src]; writeJso
 // Kept before a payment of the request goes out, with no hash yet: a tab closed while the relay or the wallet holds it reopens the link as one
 // that may be paid, not as unpaid. The hash replaces it once the payment is out; a send that ends saying nothing went drops it.
 const beginPaid = (r, c, a, self) => rememberPaid({ ...r, paid: { h: null, c, a, self } });
-const sentMaybe = (e) => !!e?.said && !/nothing was sent/i.test(e?.message || '');
+const sentMaybe = (e) => !!e?.said && !e.unmined && !/nothing was sent/i.test(e?.message || '');   // (unmined: the relay's transaction never landed and the notes are unspent)
 // A pay link opened while a payment ran (applyHash, held): its chain, token and the Send tab are taken up once the payment ends, as the open would have.
 const takeUpHeld = () => { const r = REQ.v, c = S.chain; if (r?.held && !S.busy && location.hash.slice(1) === r.src) { r.held = false; applyHash(); if (S.chain !== c) { syncChain(S.chain); tokSyncOn(S.chain); } } };
 function watchPaid(r) {
@@ -4709,7 +4749,7 @@ function tokSigner(t) {
   s.batch = (calls, sent) => sendBatch(t.chain, calls, sent);
   return s;
 }
-const ROUTE_MOD = lazy(() => import('/swap/route.js?cb=44449874'));
+const ROUTE_MOD = lazy(() => import('/swap/route.js?cb=4a3ba95a'));
 const readOn = (c) => async (to, data) => (await rpcOn(c))('eth_call', [{ to, data }, 'latest']);
 const tokenBalanceOf = async (t, who) => BigInt(await readOn(t.chain)(t.token, '0x70a08231' + strip(who).toLowerCase().padStart(64, '0')));
 // USDT on Ethereum changes an allowance only through zero
@@ -5184,6 +5224,7 @@ window.addEventListener('hashchange', () => { applyHash(); renderApp(); if (GIFT
 
 applyHash();
 paintWallet(); renderApp(); paintDevice(); paintRecover(); paintPoints();
+document.documentElement.classList.add('up');             // the first render is made: what sits below the form may show (see html:not(.up))
 restoreWallet();
 evm.onElsewhere(restoreWallet);
 if (GIFT.v || REQ.v) requestAnimationFrame(() => $(GIFT.v ? '#gift' : '#req').scrollIntoView({ block: 'start' }));
