@@ -13,11 +13,12 @@ import { aprText, readPrecision, readSpot, readStake, privateFarms, poolWorthEth
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=e70f2612';
+import { quoteEthToToken } from '/swap/route.js?cb=4a3ba95a';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=97ccc43e';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=22d45837';
 
 try { sessionStorage.removeItem('tacit-farm-back-v1'); } catch { /* the front page's way back to a farm: this page is where it goes, so it is spent */ }
-const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
+const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992';
 const E10 = 10n ** 10n, HINT = 10n ** 17n;                                      // a tenth of an ETH: the deposit a tile's entry cost is said for
 const QUICK = ['0.05', '0.1', '0.5'];
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -473,7 +474,8 @@ const quoteOf = async (f, wei) => {
   await Promise.race([readMarket(f.pool), new Promise((r) => setTimeout(r, 7000))]).catch(() => {});        // the market check is part of the quote: a coin priced from the public pools is read first
   return zapQuote({ pool: f.pool, wei, reserves: () => readReserves(call, POOL, f.pool.poolId), gasPrice: () => rpc('eth_gasPrice', []).then(BigInt),
     balance: async () => (W.account ? BigInt(await rpc('eth_getBalance', [W.account, 'latest'])) : null), market: marketFor(f.pool), tacEth: tacEth(), live: f.live,
-    asset: (res) => rowFor(f, res) });
+    asset: (res) => rowFor(f, res),
+    outside: (token) => (x) => quoteEthToToken({ ethCall: (to, data, block = 'latest', o = {}) => rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: o.value } : {}) }, block]), to: ROUTER, tokenOut: token, amount: x, slippageBps: 50, deadline: BigInt(Math.floor(Date.now() / 1000) + 1800) }) });
 };
 async function requote() {
   const my = ++Z.seq, f = Z.f, text = amtIn.value.trim(), wei = parseUnits(text);
