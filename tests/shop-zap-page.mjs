@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // The shop page paying with ETH (dapp/shop/app.js with contracts/src/ShopZap.sol) in a real browser, against an anvil fork of mainnet with the live pool, zRouter, TAC, vanity market and
-// shop. With no zap named in the page there is no ETH offer; with one deployed on the fork and named, a wallet that holds ETH and no TAC buys an address in ONE transaction (the swap into
-// TAC through the live pool, and the purchase), keeps nothing of the swap but the TAC dust over the price, and is not offered the way when its ETH would not cover it.
+// shop. With no zap named in the page there is no ETH offer; with the zap named in shelf.js (deployed on mainnet, so on the fork too) a wallet that holds ETH and no TAC buys an address in
+// ONE transaction (the swap into TAC through the live pool, and the purchase), keeps nothing of the swap but the TAC dust over the price, and is not offered the way when its ETH would not cover it.
+// The repo's source is also deployed on the fork the way the live one was (an address bought from the shop, the market's deploy, a wei at its deploy address first), and the live one is
+// checked to hold exactly that code. While shelf.js names no zap, the page is run against that deployment instead.
 //
 //   FORK=https://ethereum-rpc.publicnode.com PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/shop-zap-page.mjs      (Node 22; needs anvil, cast and forge)
 import { createRequire } from 'node:module';
@@ -12,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join, extname } from 'node:path';
 import { marketAddress } from '../worker/src/salt-pool.js';
 import { encodeList } from '../tools/vanity-shop-list.mjs';
-import { foldShelf, TOPICS, FROM_BLOCK, deployData } from '../dapp/shop/shelf.js';
+import { foldShelf, TOPICS, FROM_BLOCK, deployData, ZAP as SHIPPED } from '../dapp/shop/shelf.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const REPO = new URL('..', import.meta.url).pathname, DAPP = join(REPO, 'dapp/');
@@ -22,9 +24,13 @@ const anvil = spawn('anvil', ['--port', String(PORT), '--fork-url', FORK, '--cha
 process.on('exit', () => anvil.kill('SIGKILL'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rpcA = async (method, params = []) => {
-  const j = await (await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json();
-  if (j.error) throw Object.assign(new Error(`${method}: ${j.error.message}`), { rpc: j.error });
-  return j.result;
+  for (let attempt = 0; ; attempt++) {
+    const j = await (await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json();
+    // the public node answers "archive" now and then to a range it serves a moment later (one of its backends keeps no old logs); asked again, it answers
+    if (j.error && attempt < 8 && /Archive requests require a personal token/.test(JSON.stringify(j.error))) { await sleep(1500); continue; }
+    if (j.error) throw Object.assign(new Error(`${method}: ${j.error.message}`), { rpc: j.error });
+    return j.result;
+  }
 };
 for (let i = 0; ; i++) { try { await rpcA('eth_chainId'); break; } catch { if (i > 120) throw new Error('anvil did not start'); await sleep(500); } }
 const cast = (...a) => execFileSync('cast', a, { encoding: 'utf8' }).trim();
@@ -66,10 +72,11 @@ const art = JSON.parse(readFileSync(join(proj, 'out/ShopZap.sol/ShopZap.json'), 
 // the creation code with the three addresses the contract is built with on the end: what a buyer pastes into the shop page's own form
 const initcode = art.bytecode.object + aw(ZROUTER) + aw(TACADDR) + aw(SHOP);
 console.log(`  ShopZap creation code: ${(initcode.length - 2) / 2} bytes, keccak256 ${cast('keccak', initcode)}; runtime: ${(art.deployedBytecode.object.length - 2) / 2} bytes, keccak256 ${cast('keccak', art.deployedBytecode.object)} (the three addresses are filled in on deployment)`);
-let ZAP = null;
+let ZAP = null;   // the repo's source, deployed on the fork by this run
+let USE = null;   // the zap the page is given when a run says so: the one shelf.js names, else ZAP
 const setTac = (who, amount) => rpcA('anvil_setStorageAt', [TACADDR, cast('keccak', '0x' + who.slice(2).toLowerCase() + '0000000000000000' + '87a211a2'), '0x' + word(amount)]);
 
-// the page's files, from the repo; the zap named in shelf.js only when a run says so
+// the page's files, from the repo; shelf.js names a zap only when a run says so
 const flags = { zap: false };
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' };
 const server = http.createServer((req, res) => {
@@ -78,7 +85,7 @@ const server = http.createServer((req, res) => {
   if (existsSync(f) && statSync(f).isDirectory()) f = p.endsWith('/') ? join(f, 'index.html') : join(DAPP, 'index.html');
   if (!existsSync(f)) { res.writeHead(404); return res.end('not found'); }
   let body = readFileSync(f);
-  if (flags.zap && p === '/shop/shelf.js') body = Buffer.from(String(body).replace('export const ZAP = null;', `export const ZAP = '${ZAP}';`));
+  if (p === '/shop/shelf.js') body = Buffer.from(String(body).replace(/export const ZAP = [^;]*;/, `export const ZAP = ${flags.zap ? `'${USE}'` : 'null'};`));
   res.writeHead(200, { 'content-type': TYPES[extname(f)] || 'application/octet-stream' });
   res.end(body);
 }).listen(WEB);
@@ -128,7 +135,7 @@ let cursor = 900;
 function findId(nonce) { for (;;) { const id = idFor(cursor++), { address, bits } = marketAddress(id, nonce, { market: MARKET }); if (bits >= 6) return { id, nonce, address, bits }; } }
 const listAs = (items) => sendAs(OPS, SHOP, encodeList(items.map((x) => ({ id: x.id, price: x.price, nonce: x.nonce }))));
 
-let r1, r2, r3;
+let r1, r2, r3, r4;
 try {
   await rpcA('anvil_setBalance', [OPS, hex(50n * E18)]); await rpcA('anvil_impersonateAccount', [OPS]);
   const head = Number(BigInt(await rpcA('eth_blockNumber')));
@@ -161,7 +168,10 @@ try {
       catch (e) { refused[name] = JSON.stringify(e.rpc || e.message).includes(cast('sig', 'BadRecipient()')); }
     }
     ok(refused['the zap itself'] && refused['the router'], `a purchase that would send the token to the zap itself or to the router is refused on the deployed code (${JSON.stringify(refused)})`);
+    // the zap named in shelf.js is what the repo's source deploys: the same creation code and the same three addresses leave the same runtime code
+    if (SHIPPED) ok((await rpcA('eth_getCode', [SHIPPED, 'latest'])) === code, `the zap named in shelf.js (${SHIPPED}) holds exactly the code the repo's source deploys`);
   }
+  USE = SHIPPED || ZAP;
   const H = { ...findId(2), price: 30n * E18 };
   await listAs([H]);
   const treasury0 = await tacBal(OPS);
@@ -188,18 +198,23 @@ try {
   await until(p, () => !!document.querySelector('[data-zap]'), null, 180000);
   const offer = await text(p, '#note');
   const quoted = Number((offer.match(/Pay about ([\d.]+) ETH/) || [])[1]);
-  ok(/You hold 0 TAC\. This one costs 30\./.test(offer) && /Pay about [\d.]+ ETH/.test(offer) && /in one transaction/.test(offer) && quoted > 0 && W.sends.length === 0, `a wallet with ETH and no TAC is offered to pay with ETH, with the amount (${offer.slice(0, 150)})`);
+  ok(/You hold 0 TAC\. This one costs 30\./.test(offer) && /Pay about [\d.]+ ETH/.test(offer) && /One transaction/.test(offer) && quoted > 0 && W.sends.length === 0, `a wallet with ETH and no TAC is offered to pay with ETH, with the amount (${offer.slice(0, 150)})`);
+  const shape = await p.evaluate((id) => {
+    const note = document.querySelector('#note');
+    return { under: note?.previousElementSibling?.dataset.id === id, ethMark: !!note?.querySelector('button[data-zap] svg use[href="#tk-eth"]'), asError: !!note?.classList.contains('err'), marks: document.querySelectorAll('.row .price svg use[href="#tk-tac"]').length, rows: document.querySelectorAll('.row').length };
+  }, H.id);
+  ok(shape.under && shape.ethMark && !shape.asError && shape.rows > 0 && shape.marks === shape.rows, `the offer is under the row that was pressed, a button with the ETH mark and not in the colour of an error, and every price wears the TAC mark (${JSON.stringify(shape)})`);
   const eth0 = await ethBal(eth1.account);
   await p.click('[data-zap]');
   await until(p, () => /It is yours/.test(document.querySelector('#after')?.textContent || ''), null, 240000);
   const tx = W.sends[0], valueEth = Number(BigInt(tx.value)) / 1e18;
-  ok(W.sends.length === 1 && W.signAttempts === 0 && tx.to.toLowerCase() === ZAP.toLowerCase() && tx.data.startsWith('0x01d351d9'), 'one transaction, to the zap: buyWithEth, and no signature asked for');
+  ok(W.sends.length === 1 && W.signAttempts === 0 && tx.to.toLowerCase() === USE.toLowerCase() && tx.data.startsWith('0x01d351d9'), 'one transaction, to the zap: buyWithEth, and no signature asked for');
   ok(Math.abs(valueEth - quoted) <= Math.max(quoted * 0.05, 0.00006), `it sends about the ETH the page said (${valueEth} against ${quoted})`);
   ok((await ownerOf(H.id))?.toLowerCase() === eth1.account.toLowerCase(), 'the token is the buyer\'s');
   ok(await tacBal(OPS) - treasury0 === 30n * E18, 'the shop was paid exactly its price in TAC, which the swap bought in the same transaction');
   const dust = await tacBal(eth1.account);
   ok(dust >= 0n && dust < (30n * E18 * 25n) / 1000n, `what the swap paid beyond the price comes back as TAC, under 2.5% of it: the margin is 1.5% and the quote is brought to within half a percent of it (${Number(dust) / 1e18} TAC)`);
-  ok((await ethBal(ZAP)) === 0n && (await tacBal(ZAP)) === 0n && (await read(TACADDR, '0xdd62ed3e' + aw(ZAP) + aw(SHOP))) === 0n, 'the zap keeps no ETH, no TAC and no allowance');
+  ok((await ethBal(USE)) === 0n && (await tacBal(USE)) === 0n && (await read(TACADDR, '0xdd62ed3e' + aw(USE) + aw(SHOP))) === 0n, 'the zap keeps no ETH, no TAC and no allowance');
   ok(eth0 - (await ethBal(eth1.account)) >= BigInt(tx.value) - 1n * E18 / 1000n && eth0 - (await ethBal(eth1.account)) < BigInt(tx.value) + E18 / 100n, 'the buyer paid the ETH it sent (less any the router gave back) and the gas, nothing more');
   ok(/Deploy to it/.test(await text(p, '#after')), 'and the address is offered for use at once');
   ok(r2.errors.length === 0 && r2.blocked.length === 0, `no page errors and nothing blocked by the page's policy (${[...r2.errors, ...r2.blocked].join(' | ').slice(0, 300)})`);
@@ -217,12 +232,45 @@ try {
   await until(r3.page, () => /You hold 0 TAC/.test(document.querySelector('#note')?.textContent || ''), null, 120000);
   ok(!(await r3.page.$('[data-zap]')) && r3.walletLog.sends.length === 0, 'a wallet whose ETH would not cover the price is not offered the ETH way');
   await r3.browser.close(); r3 = null;
+  // ---- a long shelf, as the live one is (sixty rows): what a press says is under the row that was pressed, in view without scrolling to it; and when that row has been taken down
+  // meanwhile, the note is at the foot of the list and the page is taken there
+  const many = [];
+  for (let k = 0; k < 14; k++) many.push({ ...findId(k % 3), price: BigInt(14 + k) * E18 });
+  await listAs(many);
+  r4 = await openPage(await fundedWallet(5n * E18));
+  const q = r4.page;
+  await until(q, () => document.querySelectorAll('[data-buy]').length >= 14, null, 180000);
+  const ids = await q.$$eval('[data-buy]', (bs) => bs.map((b) => b.dataset.buy));
+  const noteInView = () => q.evaluate(() => { const n = document.querySelector('#note'), r = n?.getBoundingClientRect(); return !!r && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight; });
+  const mid = ids[Math.floor(ids.length / 2)];
+  await q.click(`[data-buy="${mid}"]`);
+  await until(q, () => document.querySelector('[data-buy]')?.textContent.trim() === 'Buy', null, 60000);
+  await q.click(`[data-buy="${mid}"]`);
+  await until(q, () => !!document.querySelector('[data-zap]'), null, 180000);
+  const under = await q.evaluate((id) => document.querySelector('#note')?.previousElementSibling?.dataset.id === id, mid);
+  ok(under && ids.length >= 14 && await noteInView(), `on a shelf of ${ids.length} rows the offer is under the row that was pressed and in view, with no scrolling to it`);
+  const away = ids.find((id) => id !== mid);
+  await sendAs(OPS, SHOP, cast('calldata', 'unlist(uint256[])', `[${away}]`));
+  await q.evaluate(() => window.scrollTo(0, 0));
+  await q.click(`[data-buy="${away}"]`);
+  await until(q, () => /That one is gone/.test(document.querySelector('#note')?.textContent || ''), null, 120000);
+  await until(q, () => { const n = document.querySelector('#note'), r = n?.getBoundingClientRect(); return !!r && n.tagName === 'DIV' && r.top >= 0 && r.bottom <= innerHeight; }, null, 30000);
+  ok(await noteInView(), 'a row taken down while the page was open: the press says it is gone, the note is at the foot of the list, and the page is taken to it');
+  // a purchase made from far down the list ends with the result in view, not at the top of a page the buyer has scrolled away from
+  await q.click(`[data-buy="${mid}"]`);
+  await until(q, () => !!document.querySelector('[data-zap]'), null, 180000);
+  await q.click('[data-zap]');
+  await until(q, () => /It is yours/.test(document.querySelector('#after')?.textContent || ''), null, 240000);
+  await until(q, () => { const r = document.querySelector('#after')?.getBoundingClientRect(); return !!r && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight; }, null, 30000);
+  ok(await q.evaluate(() => { const r = document.querySelector('#after').getBoundingClientRect(); return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight; }), 'a purchase made from far down a long list ends with "It is yours" in view');
+  ok(r4.errors.length === 0 && r4.blocked.length === 0, `no page errors on the long shelf (${[...r4.errors, ...r4.blocked].join(' | ').slice(0, 300)})`);
+  await r4.browser.close(); r4 = null;
   ok(stray.length === 0, `the page asked nothing of anyone but Ethereum nodes (${stray.slice(0, 3).join(', ')})`);
 } catch (e) {
   fails++; console.log('FAIL   ' + (e?.stack || e));
-  for (const r of [r1, r2, r3]) if (r) { try { console.log('  page note:', await text(r.page, '#note')); } catch { /* the page is gone */ } }
+  for (const r of [r1, r2, r3, r4]) if (r) { try { console.log('  page note:', await text(r.page, '#note')); } catch { /* the page is gone */ } }
 } finally {
-  for (const r of [r1, r2, r3]) await r?.browser.close().catch(() => {});
+  for (const r of [r1, r2, r3, r4]) await r?.browser.close().catch(() => {});
   anvil.kill('SIGKILL'); server.close();
 }
 console.log(fails ? `\n${fails} FAILED, ${n} ok` : `\nall ${n} ok`);

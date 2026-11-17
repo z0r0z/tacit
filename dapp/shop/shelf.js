@@ -194,9 +194,10 @@ export const deployFailed = (data) => String(data || '').slice(0, 10).toLowerCas
 export const ETH_AT_DEPLOY_ADDRESS = 'Someone has sent ETH to the address this one is deployed from, and a constructor that does not take ETH fails when it has some. Make the constructor payable and try again.';
 
 // ---- paying with ETH
-// The deployed ShopZap (contracts/src/ShopZap.sol): it swaps the ETH sent to it into TAC through zRouter and buys the address with that TAC in the same transaction. null until it
-// is deployed (contracts/script/DeployShopZap.s.sol prints the address): the page offers to pay with ETH only when this address holds code.
-export const ZAP = null;
+// The deployed ShopZap (contracts/src/ShopZap.sol): it swaps the ETH sent to it into TAC through zRouter and buys the address with that TAC in the same transaction. It sits at an address
+// bought from this shop, put there by the market's deploy with the creation code the shop page's own form takes (its source is verified on Etherscan and Sourcify). The page offers to
+// pay with ETH only when this address holds code.
+export const ZAP = '0x000000000110d317ed602ca7ef10a72bd72bd56f';
 // A little over the price is asked of the swap, so that a small move of the pool before the transaction lands does not stop it; what is over comes back as TAC.
 export const ZAP_MARGIN_BPS = 150n;
 // buyWithEth(swapData, id, to, nonce, maxPrice, deadline)
