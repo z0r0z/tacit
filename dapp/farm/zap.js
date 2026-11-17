@@ -12,7 +12,7 @@ export const PUBLIC_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
 export const CETH = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 export const ZQUOTER = '0x000000bd2DB80567c23E353ca95a251c573cBf9B';
 // What the one transaction takes at most (it swaps, adds, shields and verifies a proof), half again for the fee line and the balance check.
-export const ZAP_GAS = 850000n;
+export const ZAP_GAS = 950000n;
 const SLACK = 50n;                                    // the ETH legs may cost up to 1/50 more than quoted by the time the proof is made
 const lc = (s) => String(s || '').toLowerCase(), strip = (h) => String(h).replace(/^0x/, '');
 const wordAt = (hex, i) => BigInt('0x' + (strip(hex).slice(i * 64, (i + 1) * 64) || '0'));

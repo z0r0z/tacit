@@ -127,7 +127,7 @@ try {
   const rc = await rpcA('eth_getTransactionReceipt', [out.hash]), gasUsed = BigInt(rc.gasUsed), paid = before - await balanceOf(FROM), gasCost = gasUsed * BigInt(rc.effectiveGasPrice);
   ok(rc.status === '0x1' && sent.length === 1 && lc(sent[0].to) === lc(ROUTER) && sent[0].data.startsWith('0xc4294fac'), `one transaction, to the router’s zap (${gasUsed} gas)`);
   // (the verifier here is a stand-in that costs nothing: the live one's check of a proof is about 270,000 gas more)
-  console.log('  info gas', gasUsed); ok(true, `inside the gas the page reckons its fee and its balance check with (${gasUsed} here and the proof’s verification on top, of ${ZAP_GAS})`);
+  console.log('  info gas', gasUsed); ok(gasUsed + 300000n <= ZAP_GAS, `inside the gas the page reckons its fee and its balance check with (${gasUsed} here and the proof’s verification on top, of ${ZAP_GAS})`);
   ok(await depositStatus(ready.built.depositId) === 2n, 'the share deposit goes 0 → 2: minted, shielded and settled into the private note in that transaction');
   ok(JSON.stringify(rc.logs).toLowerCase().includes(strip(ready.built.leaf).toLowerCase()), 'the share note’s leaf is inserted');
   ok(out.value <= WEI + WEI / 50n && paid - gasCost <= out.value && paid - gasCost > out.value * 99n / 100n, `the wallet paid the planned ${Number(out.value) / 1e18} ETH and its gas, no more (${Number(paid - gasCost) / 1e18} ETH went in of 0.05 entered)`);
