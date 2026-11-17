@@ -41,12 +41,27 @@ await check('a listed relay must end in /evm-pool/keeper, the path the private r
   assert.deepEqual(relaysOf({ keepers: [{ url: 'https://two.example/1/evm-pool/keeper/', relayer: A }], pinned: true }).map((e) => e.url), ['https://two.example/1/evm-pool/keeper'], 'with a slash after it, and under a chain\'s id');
   assert.deepEqual(relaysOf({ keeper: 'https://old.example', relayer: A }).map((e) => e.url), ['https://old.example'], 'the keeper a chain has always named is not held to it: it is the one the wallet already knew');
 });
-await check('a pin that is not an address is no pin; a trailing slash is not a different relay; the same relay listed twice is one (the first entry wins)', () => {
+await check('a pin that is not an address is no pin; a trailing slash is not a different relay; the same URL and address listed twice is one (the first entry wins)', () => {
   assert.deepEqual(relaysOf({ keepers: [{ url: U2, relayer: 'nope' }], pinned: true }), []);
-  const two = relaysOf({ keeper: U1 + '/', relayer: A, keepers: [{ url: U1, relayer: B, weight: 9 }, { url: 'https://TWO.example/evm-pool/keeper', relayer: C }, { url: U2, relayer: B }], pinned: true });
-  assert.equal(two[0].url, U1); assert.equal(two[0].relayer, A, 'the keeper the chain named, with its pin, not the list\'s second word on it');
-  assert.equal(two.length, 2, 'U1 once; U2 once (the capital letters in a host are no other relay)');
-  assert.equal(two[1].relayer, C, 'the first entry for it wins');
+  const two = relaysOf({ keeper: U1 + '/', relayer: A, keepers: [{ url: U1, relayer: A, weight: 9 }, { url: 'https://TWO.example/evm-pool/keeper', relayer: C }, { url: U2, relayer: C.toUpperCase().replace('0X', '0x'), weight: 7 }], pinned: true });
+  assert.deepEqual(two.map((e) => e.url), [U1, 'https://TWO.example/evm-pool/keeper'], 'U1 once; the other once, though its host is spelled with capitals the second time');
+  assert.equal(two[0].weight, 1, 'the keeper the chain named, not the list\'s second word on it');
+});
+await check('two addresses at one URL are both kept: an entry made by someone else for a URL cannot push the real relay off the list', () => {
+  // B lists A's host ahead of A, with the weight of five; the server at that URL names A, so only A's entry will ever be used, but both are quoted
+  const list = relaysOf({ keepers: [{ url: U2, relayer: B, weight: 5 }, { url: U2, relayer: A, weight: 1 }], pinned: true });
+  assert.deepEqual(list.map((e) => e.relayer), [B, A]);
+  assert.equal(relaysOf({ keepers: [{ url: U2, relayer: B }, { url: U2, relayer: B.toUpperCase().replace('0X', '0x') }], pinned: true }).length, 1, 'the same address twice is one');
+  assert.equal(relaysOf({ keeper: U2, relayer: A, keepers: [{ url: U2, relayer: B }], pinned: true }).length, 2, 'and one listed against the chain\'s own keeper');
+});
+await check('on a real origin a listed relay\'s host must be a public name: no IP address, localhost or local network name; off one, anything goes', () => {
+  const hosts = ['localhost', 'localhost:8443', '127.0.0.1', '10.0.0.5:8443', '192.168.1.20', '169.254.169.254', '0x7f000001', 'printer.local', 'router.lan', 'svc.internal', 'host.home.arpa', 'nodot', '1.2', 'a.b.localhost', 'a.1'];
+  for (const h of hosts) assert.deepEqual(relaysOf({ keepers: [{ url: `https://${h}/evm-pool/keeper`, relayer: A }], pinned: true }), [], h);
+  for (const h of ['relay.example', 'relay-1.example.org:8443', 'a.b.c.example.com', 'RELAY.Example', 'x_y.example']) {
+    assert.equal(relaysOf({ keepers: [{ url: `https://${h}/evm-pool/keeper`, relayer: A }], pinned: true }).length, 1, h);
+  }
+  assert.equal(relaysOf({ keepers: [{ url: 'https://127.0.0.1/evm-pool/keeper', relayer: A }], pinned: false }).length, 1, 'a local page or a test may use a local relay');
+  assert.deepEqual(relaysOf({ keeper: 'https://localhost:8787', relayer: A }).map((e) => e.url), ['https://localhost:8787'], 'and the chain\'s own keeper is not held to it');
 });
 await check('a weight is a positive finite number, else 1', () => {
   const w = (x) => relaysOf({ keepers: [{ url: U2, relayer: B, weight: x }], pinned: true })[0].weight;

@@ -14,12 +14,19 @@ const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 // A relay's base URL ends where the relay software serves: `/evm-pool/keeper`. The private route (dapp/private-route.js) knows a relay by that path and
 // refuses to send one directly while it is on, so a listed URL without it would be fetched past the route.
 const KEEPER_PATH = /\/evm-pool\/keeper$/;
+// A host a page on a real origin should reach for a listed relay: a DNS name with a dot, not an address and not a local one. (A name can still point
+// anywhere; the page's content-security policy is what fences that.)
+const LOCAL_TLD = /\.(?:local|localhost|internal|intranet|lan|home|corp|private|invalid|arpa)$/;
+function publicHost(url) {
+  const host = url.replace(/^https:\/\//, '').split('/')[0].replace(/:\d+$/, '').toLowerCase();
+  return /^[a-z0-9_-]+(?:\.[a-z0-9_-]+)+$/.test(host) && !/\.\d+$/.test(host) && !LOCAL_TLD.test(host);
+}
 const LOCAL = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/;
 
 // The entries a wallet works with, from a chain's `keepers` list and its single `keeper` (the one a chain config has always named), with `relayer`
 // the address pinned for that one (which is kept as it is, pinned or not). `pinned`: on a real origin every other relay must name the address it is to be
-// paid at; off one (a test, a local page) a relay may go without. A listed relay that is not a plain https URL ending in `/evm-pool/keeper`, or lacks its
-// pin where one is wanted, is left out, not guessed at.
+// paid at, and a host that is a public name; off one (a test, a local page) a relay may go without, and a local host is fine. A listed relay that is not a
+// plain https URL ending in `/evm-pool/keeper`, or lacks its pin where one is wanted, is left out, not guessed at.
 export function relaysOf({ keeper = null, keepers = null, relayer = null, pinned = true } = {}) {
   const out = [], seen = new Set();
   const add = (url, addr, weight, listed) => {
@@ -27,11 +34,15 @@ export function relaysOf({ keeper = null, keepers = null, relayer = null, pinned
     const u = url.replace(/\/+$/, '');
     if (!/^https:\/\/[\w.-]+(?::\d+)?(?:\/[\w./-]*)?$/.test(u) && !LOCAL.test(u)) return;
     if (listed && !KEEPER_PATH.test(u)) return;
-    if (seen.has(u.toLowerCase())) return;
+    if (listed && pinned && !publicHost(u)) return;
     const a = typeof addr === 'string' && ADDRESS.test(addr) ? addr : null;
     if (listed && pinned && !a) return;
+    // One entry for each URL and address. Two addresses at one URL are both kept: which of them the server at that URL is shows in its quote, which must
+    // name the entry's own address, so an entry made by someone else for a URL cannot push the real relay off the list.
+    const key = `${u.toLowerCase()}|${(a ?? '').toLowerCase()}`;
+    if (seen.has(key)) return;
     const w = Number(weight);
-    seen.add(u.toLowerCase());
+    seen.add(key);
     out.push({ url: u, relayer: a, weight: Number.isFinite(w) && w > 0 ? w : 1 });
   };
   if (keeper) add(keeper, relayer, 1, false);
