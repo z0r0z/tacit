@@ -316,7 +316,7 @@ export function start() {
         ctx.font = `11px ${MONO}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = `rgba(${rgb},${strong})`;
         at.forEach((g, i) => ctx.fillText(LIGHT[g], (i % T.cols) * T.w + T.w / 2, Math.floor(i / T.cols) * T.h + T.h / 2));
         const url = c.toDataURL(), img = new Image();
-        img.onload = () => document.documentElement.style.setProperty('--cipher', `url(${url})`);
+        img.onload = () => { if (!over) document.documentElement.style.setProperty('--cipher', `url(${url})`); };      // (not once stopped: the tile can decode after)
         img.src = url;
       };
       draw();

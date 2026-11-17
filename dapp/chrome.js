@@ -166,13 +166,19 @@
     if (p.startsWith('/farm/')) return ['defi', 'farm'];
     if (p.startsWith('/fast/')) return ['chains', 'fast'];
     if (p.startsWith('/vault/')) return ['borrow', h === '#btc' ? 'btc' : 'tac'];
-    if (p.startsWith('/rewards/')) return ['rewards', ''];
+    if (p.startsWith('/rewards/')) return /^#farms?$/.test(h) ? null : ['rewards', ''];      // the farms there (linked from tETH, cBTC, the vault, the farm) are the whole page's
     return null;
   };
   const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
   // the view's own address: false when it is another page's (that page is loading in this one's place), and the address made the view's own when
   // it named a view the section lacks or none (/#/defi is /#/defi/swap), without a step in the history
-  const home = (a) => {
+  const home = (a, nav) => {
+    // TAC's page cut to a view reads its form from the address's part after #: one that came without it (a bookmark of the address the page had
+    // rewritten, back or forward to it) gets the view's own, before the page reads it. Only on arriving: the page's own changes of address are its own.
+    if (nav && a && !front() && !location.hash && /^\/tac\/?$/.test(location.pathname)) {
+      const own = new URL(SEC[a[0]][2].find((v) => v[0] === a[1])[2], location.href).hash;
+      if (own) history.replaceState(history.state, '', location.pathname + location.search + own);
+    }
     if (!a || a[0] === 'menu' || !front()) return true;
     const href = SEC[a[0]][2].find((v) => v[0] === a[1])[2], u = new URL(href, location.href), v = u.searchParams.get('v');
     if (u.pathname !== '/' || (v && new URLSearchParams(location.search).get('v') !== v)) { location.replace(href); return false; }
@@ -180,9 +186,9 @@
     return true;
   };
   let head = null, shown = '';
-  const sync = () => {
+  const sync = (nav = false) => {
     const a = at();
-    if (!home(a)) return;
+    if (!home(a, nav)) return;
     const key = a ? a.join('/') : '';
     if (key === shown) return;
     shown = key;
@@ -198,7 +204,7 @@
     if (!head) { head = document.createElement('div'); head.className = 'sh'; head.id = 'sec-head'; }
     if (a[0] === 'menu') {
       const row = (href, name, line) => `<li><a href="${esc(href)}"><b>${esc(name)}</b>${line ? `<small>${esc(line)}</small>` : ''}<i aria-hidden="true">→</i></a></li>`;
-      const rest = [...document.querySelectorAll('.sm-p a:not(.pr)')].map((l) => row(l.getAttribute('href'), l.textContent.trim(), ''));
+      const rest = [...document.querySelectorAll('.sm-p a:not(.pr)')].map((l) => row(l.getAttribute('href'), [...l.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim(), ''));      // the name, not a count appended to it
       head.innerHTML = `<h1 tabindex="-1">More</h1><ul class="sh-more">${row('/vault/', 'Borrow', 'against BTC or TAC')}${row('/rewards/', 'Rewards', 'airdrop, points, leaderboard')}${rest.join('')}</ul>`;
     } else {
       const [name, line, views] = SEC[a[0]];
@@ -206,8 +212,8 @@
     }
     if (head.parentNode !== main || main.firstElementChild !== head) main.prepend(head);
   };
-  sync();
-  addEventListener('hashchange', sync); addEventListener('popstate', sync);
+  sync(true);
+  addEventListener('hashchange', () => sync(true)); addEventListener('popstate', () => sync(true));
   // the front page and TAC's page change the address without leaving the document
   for (const k of ['pushState', 'replaceState']) { const was = history[k]; history[k] = function (...args) { const r = was.apply(this, args); queueMicrotask(sync); return r; }; }
 })();

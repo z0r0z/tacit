@@ -341,6 +341,7 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 
 /* a very narrow header keeps the mark and the name; the page's label, and the Activity and total chips' room, go first */
 @container top (max-width: 340px) { header.top .brand i { display: none; } }
+@container top (max-width: 539px) { header.top .brand i { display: none; } header.top .sn { flex-shrink: 0; } }      /* a phone: the page's label gives way to the switch, and the chip shortens before the buttons beside it would run under it */
 
 /* the account chip (and, on the front page, Activity and the total): a quiet outline on the page's own ground, not a block; the dot says whether a wallet is open */
 header.top .chip {
@@ -384,6 +385,11 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
   .bn a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
   footer.sf { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
   #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
+  /* what a page pins to the foot of the window stands on the bar (57 px: its padding and a 44 px row), not under it: the buy bar of cBTC, tETH and
+     TAC's market (.stick), and the card's button row, sticky at the foot of a long card */
+  .stick:not([hidden]) { bottom: calc(57px + env(safe-area-inset-bottom)); }
+  body:has(.stick) footer.sf { margin-bottom: calc(137px + env(safe-area-inset-bottom)); }
+  .swc .act { bottom: calc(57px + env(safe-area-inset-bottom)); }
 }
 
 /* a section's head (chrome.js): its name and line, centred, and its views as a row of tabs with the one shown raised */
@@ -407,7 +413,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 :where(:root:not([data-skin="classic"])) .sh-t a { border-radius: 8px; }
 :where(:root:not([data-skin="classic"])) .sh-t a[aria-current="page"] { background: var(--raise, var(--card)); }
 /* each page of its own, as the view of its section: its own heading gives way to the section's, and what belongs to the other view is out of the way */
-html[data-sec="borrow/btc"] :is(.hero, #app, #soon, #how), html[data-sec="borrow/tac"] :is(.hero, .btc-side, #pools, #soon) { display: none !important; }
+html[data-sec="borrow/btc"] :is(.hero, #app, #soon, #how), html[data-sec="borrow/tac"] :is(.hero, .btc-side, #soon) { display: none !important; }
 html[data-sec="chains/fast"] .hero { display: none !important; }
 html[data-sec="rewards/"] :is(#find-h, #farms-h, #farms, #pf-row, nav.uses) { display: none !important; }
 
@@ -504,7 +510,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
 <script src="/skin.js?cb=efbd19be" async></script>
-<script src="/chrome.js?cb=b08b61ce" defer></script>
+<script src="/chrome.js?cb=440b9d26" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>

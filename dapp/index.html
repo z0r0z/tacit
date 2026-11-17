@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-3unFDr+MBtuhrjpTmHYgcvpITb8bFNUai7kQTmOvPUQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-vIudxtDIQKv6ps8p6SsIbXK+0kAqmWtVEzKGN6suTrU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1217,15 +1217,16 @@ html[data-view="portfolio"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi, #sheet-ta
 /* ── a section's view of this page (chrome.js marks <html data-sec>): the card held to one thing, its own tabs and the landing around it out of the way;
    or TAC's page cut to the one part the view is, in one column; or the More page, with nothing of the landing ── */
 html[data-sec]:not([data-page="tac"]) :is(.hero > :not(#hx), #dash, #how, #tac, .pg, .sx.pi, #hx .hx-h) { display: none !important; }
-html[data-sec="chains/bridge"] #hx .hx-more, html[data-sec="menu"] .hero { display: none !important; }
+html[data-sec="chains/bridge"] #hx .hx-more, html[data-sec="menu/"] .hero { display: none !important; }
 html[data-sec]:not([data-page="tac"]) .hero { padding-top: 0; }
 html[data-sec][data-page="tac"] .tpg { display: block; padding-top: 0; }
 html[data-sec][data-page="tac"] .tpg > * { max-width: 460px; margin-left: auto; margin-right: auto; position: static; }
-html[data-sec="payments/request"] :is(.tpg > :not(#tpg-side), #tcd-seg, #tcd-tabs), html[data-sec="payments/links"] :is(.tpg > :not(#tpg-side), #tcd-seg, #tcd-head) { display: none !important; }
-html[data-sec="defi/stake"] :is(.tpg > :not(#tpg-side):not(#tpg-earn), #tcd-seg, #tcd-t-send, #tcd-t-receive) { display: none !important; }
+/* every view keeps #tpg-act, where a button that opens the swap card puts it; "Manage your TAC" (#tpg-notes) is the Notes view's alone */
+html[data-sec="payments/request"] :is(.tpg > :not(#tpg-side, #tpg-act), #tpg-notes, #tcd-seg, #tcd-tabs), html[data-sec="payments/links"] :is(.tpg > :not(#tpg-side, #tpg-act), #tpg-notes, #tcd-seg, #tcd-head) { display: none !important; }
+html[data-sec="defi/stake"] :is(.tpg > :not(#tpg-side, #tpg-act, #tpg-earn, #tpg-top), #tpg-notes, #tcd-seg, #tcd-t-send, #tcd-t-receive) { display: none !important; }   /* "All your TAC" (#tpg-top) stays: an interrupted deposit is finished there */
 html[data-sec="defi/stake"] #tpg-earn { margin-top: 36px; border-top: 0; padding-top: 0; }
 html[data-sec="defi/stake"] .tcd-tabs { grid-template-columns: 1fr 1fr; }
-html[data-sec="chains/notes"] :is(.tpg > :not(#tpg-where, #tpg-notes, #tpg-side), #tpg-side > :not(#tpg-notes), #tac-bal, #tpg-where > summary, #tpg-br > summary) { display: none !important; }   /* the notes card sits in the side column (#tpg-side): the column stays, the rest of it goes */
+html[data-sec="chains/notes"] :is(.tpg > :not(#tpg-where, #tpg-notes, #tpg-side, #tpg-act), #tpg-side > :not(#tpg-notes), #tac-bal, #tpg-where > summary, #tpg-br > summary) { display: none !important; }   /* the notes card sits in the side column (#tpg-side): the column stays, the rest of it goes */
 html[data-sec="chains/notes"] .tpg > * { max-width: 720px; }
 html[data-sec="chains/notes"] #tpg-where { border: 0; }
 .ppg { padding: 28px 0 8px; }
@@ -2207,6 +2208,7 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 
 /* a very narrow header keeps the mark and the name; the page's label, and the Activity and total chips' room, go first */
 @container top (max-width: 340px) { header.top .brand i { display: none; } }
+@container top (max-width: 539px) { header.top .brand i { display: none; } header.top .sn { flex-shrink: 0; } }      /* a phone: the page's label gives way to the switch, and the chip shortens before the buttons beside it would run under it */
 
 /* the account chip (and, on the front page, Activity and the total): a quiet outline on the page's own ground, not a block; the dot says whether a wallet is open */
 header.top .chip {
@@ -2250,6 +2252,11 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
   .bn a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
   footer.sf { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
   #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
+  /* what a page pins to the foot of the window stands on the bar (57 px: its padding and a 44 px row), not under it: the buy bar of cBTC, tETH and
+     TAC's market (.stick), and the card's button row, sticky at the foot of a long card */
+  .stick:not([hidden]) { bottom: calc(57px + env(safe-area-inset-bottom)); }
+  body:has(.stick) footer.sf { margin-bottom: calc(137px + env(safe-area-inset-bottom)); }
+  .swc .act { bottom: calc(57px + env(safe-area-inset-bottom)); }
 }
 
 /* a section's head (chrome.js): its name and line, centred, and its views as a row of tabs with the one shown raised */
@@ -2273,7 +2280,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 :where(:root:not([data-skin="classic"])) .sh-t a { border-radius: 8px; }
 :where(:root:not([data-skin="classic"])) .sh-t a[aria-current="page"] { background: var(--raise, var(--card)); }
 /* each page of its own, as the view of its section: its own heading gives way to the section's, and what belongs to the other view is out of the way */
-html[data-sec="borrow/btc"] :is(.hero, #app, #soon, #how), html[data-sec="borrow/tac"] :is(.hero, .btc-side, #pools, #soon) { display: none !important; }
+html[data-sec="borrow/btc"] :is(.hero, #app, #soon, #how), html[data-sec="borrow/tac"] :is(.hero, .btc-side, #soon) { display: none !important; }
 html[data-sec="chains/fast"] .hero { display: none !important; }
 html[data-sec="rewards/"] :is(#find-h, #farms-h, #farms, #pf-row, nav.uses) { display: none !important; }
 
@@ -2370,7 +2377,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
 <script src="/skin.js?cb=efbd19be" async></script>
-<script src="/chrome.js?cb=b08b61ce" defer></script>
+<script src="/chrome.js?cb=440b9d26" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -5361,9 +5368,22 @@ function paintPfPage() {
 const SEC_TITLE = { payments: 'payments', defi: 'defi', chains: 'chains', menu: 'more' };
 function viewTitle() {
   const sec = (document.documentElement.dataset.sec || '').split('/')[0];
-  document.title = `tacit ${SEC_TITLE[sec] || (PFP.on ? 'portfolio' : TACP.on ? 'TAC' : 'defi')}`;
+  document.title = `tacit ${SEC_TITLE[sec] || (PFP.on ? 'portfolio' : TACP.on ? 'TAC' : document.documentElement.dataset.page === 'spx' ? 'SPX' : 'defi')}`;
 }
-document.addEventListener('tacit:sec', () => viewTitle());
+// A section's view of the front page (/#/section/view): the card held to the one thing the view is. chrome.js reads the address and marks the view on
+// <html data-sec>, then tells this page with `tacit:sec`; the card follows the mark once it names this very address. route() asks on every change of
+// address and the event answers when chrome.js marks later than route() runs (as when TAC's page hands over: its pushState marks in a microtask).
+// The Notes view of TAC's page opens its bridge, which the view shows without the summaries that would open it.
+function secView() {
+  const sec = document.documentElement.dataset.sec || '';
+  if (sec === 'chains/notes') { const w = $('#tpg-where'), br = $('#tpg-br'); if (w && !w.open) w.open = true; if (br && !br.open) br.open = true; }
+  if (!sec || `#/${sec.replace(/\/$/, '')}` !== location.hash) return false;
+  SECV.hash = location.hash;
+  const spec = { 'payments/send': `send:${HX.send}`, 'defi/swap': 'swap', 'chains/move': 'shield', 'chains/bridge': 'bridge' }[sec];
+  if (spec) hxPreset(spec, '');
+  return true;
+}
+document.addEventListener('tacit:sec', () => { viewTitle(); if (SECV.hash !== location.hash) secView(); });
 function pfPageSet(on) {
   if (PFP.on === on) { if (on) paintPfPage(); return; }
   PFP.on = on;
@@ -5636,7 +5656,7 @@ function syncLink() {
 // to open a wallet) and the wallet sheet asks for one over it; it fills once one is open. `at` names a group to show first.
 const PF = { want: 0 };
 function openPortfolio(at = null) {
-  if (TACP.on) return tacPageLeave('#portfolio');      // from TAC's page: back to the front page, which opens it
+  if (TACP.on) return tacPageLeave('#portfolio', location.hash === '#portfolio');      // from TAC's page: back to the front page, which opens it
   if (dashId() && !DASH.groups) paintDash();
   for (const o of $$('dialog.sheet[open]:not(.layer)')) o.close();
   const was = PFP.on;
@@ -9487,10 +9507,10 @@ function tacPageOpen(part = null) {
   }
   syncLink();
 }
-function tacPageLeave(hash = '') {
+function tacPageLeave(hash = '', replace = false) {
   const q = new URLSearchParams(location.search); q.delete('v');      // ?v= is TAC's page cut to a section's view (chrome.js); the front page has none
   const qs = q.toString();
-  history.pushState(null, '', '/' + (qs ? '?' + qs : '') + hash);
+  history[replace ? 'replaceState' : 'pushState'](null, '', '/' + (qs ? '?' + qs : '') + hash);
   tacPageSet(false);
   window.scrollTo(0, 0);
   if (hash) route();
@@ -9531,7 +9551,12 @@ document.addEventListener('click', (e) => {
   }
   tacPageLeave(u.hash);
 });
-window.addEventListener('popstate', () => { const on = TPG_PATH.test(location.pathname); if (on !== TACP.on) { tacPageSet(on); window.scrollTo(0, 0); } });
+// Back or forward to an entry with another path or query (the front page and TAC's page, one of its views and another) fires no hashchange, so
+// the address is routed here once the browser has had its chance to fire one (route() notes when it last ran)
+window.addEventListener('popstate', () => {
+  const on = TPG_PATH.test(location.pathname); if (on !== TACP.on) { tacPageSet(on); window.scrollTo(0, 0); }
+  const t = performance.now(); setTimeout(() => { if (!(route.at >= t)) route(); }, 0);
+});
 
 function tpgAct(kind, title = '') {
   const box = $('#tpg-act'), body = $('#tpg-act-b'), hx = $('#hx');
@@ -13810,6 +13835,7 @@ const HX_MEET = new Set();
 function hxPreset(spec, amt, inCard = false, route = null, lp = false) {
   const [tab, a, b, r] = spec.split(':');
   if (SPXP && (tab === 'borrow' || (tab === 'swap' && !spxPooled()))) return;
+  if (PFP.on) { pfPageSet(false); if (location.hash === '#portfolio') history.replaceState(null, '', location.pathname + location.search); }      // the card is under the Portfolio page: it goes
   const met = /^x[wp]0x[0-9a-f]{40}$/.test(a || '') ? xtAddr(a) : null;
   if (met && !HX_MEET.has(met) && xtOf(met)?.registered == null) {
     HX_MEET.add(met);
@@ -16888,22 +16914,21 @@ function chlRead() {
 setInterval(() => { if (!document.hidden) chlRead(); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastTick > 60e3) tick(); });
 const route = () => {
+  route.at = performance.now();
   HX.routed = true; LINK_READ = true;
   const h = location.hash.slice(1), pay = h.match(/^(sp|st)=([0-9a-fA-F]{64})/);
   if (PFP.on && h !== 'portfolio' && (!h || h.startsWith('/'))) pfPageSet(false);      // the address has left /#portfolio (the logo, back, or another section)
   // a section's view of this page, /#/section/view: the card held to the one thing the view is. chrome.js is the one reader of the address for a
   // section (it draws the section's head and tabs, puts a view the section lacks right, and sends one another page shows there) and marks the view
   // on <html data-sec> before this runs, so the card follows that mark, never an address of its own reading
-  const sec = h.startsWith('/') ? document.documentElement.dataset.sec || '' : '';
-  SECV.hash = sec ? location.hash : '';
   if (h.startsWith('/')) {
     for (const o of $$('dialog.sheet[open]:not(.layer)')) o.close();
-    const spec = { 'payments/send': `send:${HX.send}`, 'defi/swap': 'swap', 'chains/move': 'shield', 'chains/bridge': 'bridge' }[sec];
-    if (spec) hxPreset(spec, '');
+    if (SECV.hash !== location.hash) secView();      // (secView, above: what chrome.js has marked; its event does it if it marks after this)
     viewTitle();
     window.scrollTo(0, 0);
     return;
   }
+  SECV.hash = '';
   if (TACP.on && h && tpgHash(h)) return;
   const snd = h.match(/^card=send(?::([a-z][a-z0-9]*))?((?:&(?:to|amt)=[^&]*){0,2})$/);
   if (snd) {
