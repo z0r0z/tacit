@@ -34,6 +34,7 @@
 // ============================================================================
 
 import { sha256 } from '@noble/hashes/sha256';
+import { ipBucket } from './ip-bucket.js';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { TAC as PRECISION_TAC, FARM, POOL } from '../../dapp/trade/farm-read.js';
 import { readPrecisionTacStake } from '../../dapp/discord/holdings.js';
@@ -506,7 +507,7 @@ export function buildGovernance(deps) {
     // per-IP daily cap (reuses the pin counter shape)
     const ip = req.headers.get('CF-Connecting-IP') || 'anon';
     const day = new Date().toISOString().slice(0, 10);
-    const kvKey = `pin:${day}:${ip}`;
+    const kvKey = `pin:${day}:${ipBucket(env, ip)}`;
     const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
     const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
     if (prior >= dailyLimit) return jsonResponse({ error: 'daily limit reached' }, 429, cors);

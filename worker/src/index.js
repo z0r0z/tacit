@@ -84,6 +84,7 @@ import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
 import { ripemd160 } from '@noble/hashes/ripemd160';
 import { hmac } from '@noble/hashes/hmac';
+import { ipBucket } from './ip-bucket.js';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { bech32, bech32m } from '@scure/base';
@@ -2421,7 +2422,7 @@ async function handleReflectionBurndep(req, env, url, cors) {
   // what a client stores in a day is bounded: a registration that adds bytes takes them from the client's day, an identical one takes none
   if (existing !== serialized && ip !== 'anon') {
     const cap = Number(env.BURNDEP_DAILY_BYTES) > 0 ? Number(env.BURNDEP_DAILY_BYTES) : 32 * 1024 * 1024;
-    const dayKey = `burndep:bytes:${new Date().toISOString().slice(0, 10)}:${ip}`;
+    const dayKey = `burndep:bytes:${new Date().toISOString().slice(0, 10)}:${ipBucket(env, ip)}`;
     const room = await withKvKeyLock(dayKey, async () => {
       const used = Number(await env.REGISTRY_KV.get(dayKey)) || 0;
       if (used + serialized.length > cap) return false;
@@ -3693,13 +3694,6 @@ function withKvKeyLock(key, fn) {
   return run;
 }
 
-// A client's address as a rate-limit key. The limiters need to tell one source from another, not to know who it is, so the key
-// is a keyed hash: it cannot be turned back into an address (a bare hash of an IPv4 address can, by trying them all), and nothing
-// that reads the store learns who asked. The key is IP_HASH_SALT when set; otherwise a salt made when this process starts, which
-// also means a restart forgets who was limited, a fair price. Sentinels that are not addresses pass through.
-const _ipSalt = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
-const ipBucket = (env, ip) => (!ip || ip === 'anon' || ip === '*' || ip === 'all' ? ip
-  : bytesToHex(hmac(sha256, new TextEncoder().encode(String(env.IP_HASH_SALT || _ipSalt)), new TextEncoder().encode(String(ip)))).slice(0, 24));
 const DUMP_RL_BURST = 30;
 const DUMP_RL_REFILL_MS = 10000; // one token back every 10s (~360/hr sustained per source)
 async function dumpRateLimit(env, ip) {
@@ -4674,7 +4668,7 @@ async function handleConfidentialSubmit(req, env, cors) {
     // Spend only on a job we actually accepted and will prove — a dedupe hit costs us nothing.
     if (!r.deduped) {
       if (onBoard) await spendDailyBudget(env, 'prove:board').catch(() => {});
-      else if (submitMode === 'prove' && !paidProve) { await spendProveBudget(env).catch(() => {}); await spendDailyBudget(env, `prove:${clientIp}`).catch(() => {}); }
+      else if (submitMode === 'prove' && !paidProve) { await spendProveBudget(env).catch(() => {}); await spendDailyBudget(env, `prove:${ipBucket(env, clientIp)}`).catch(() => {}); }
       else if (feeless || postedFree) { for (const name of charge.names) await spendDailyBudget(env, name).catch(() => {}); }
     }
     return jsonResponse({ ok: true, ...r, ...(relay ? { relay: relay.state } : {}) }, 200, { ...cors, 'Cache-Control': 'no-store' });
@@ -10169,7 +10163,7 @@ async function handlePin(req, env, cors) {
   }
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const kvKey = `pin:${day}:${ip}`;
+  const kvKey = `pin:${day}:${ipBucket(env, ip)}`;
   // one request at a time per client and day, so parallel requests each see the count the one before them left
   return withKvKeyLock(kvKey, async () => {
   const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
@@ -10755,7 +10749,7 @@ async function handleCeremonyInit(req, env, cors) {
   }
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const kvKey = `pin:${day}:${ip}`;
+  const kvKey = `pin:${day}:${ipBucket(env, ip)}`;
   const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
   const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
   if (prior >= dailyLimit) return jsonResponse({ error: 'daily upload limit reached' }, 429, cors);
@@ -11122,7 +11116,7 @@ async function handleCeremonyReserve(req, env, circuitHash, cors) {
   if (!myEntry) {
     const ip = req.headers.get('CF-Connecting-IP') || 'anon';
     const day = new Date().toISOString().slice(0, 10);
-    const joinKey = `ceremony:join:${day}:${ip}`;
+    const joinKey = `ceremony:join:${day}:${ipBucket(env, ip)}`;
     const prior = safeInt(await env.UPLOAD_KV.get(joinKey), 0, { min: 0 });
     if (prior >= 20) {
       return jsonResponse({ error: 'rate limited (20 fresh queue joins/day per IP)' }, 429, cors);
@@ -11226,7 +11220,7 @@ async function handleCeremonyUploadToken(req, env, circuitHash, cors) {
   if (!env.PINATA_JWT) return jsonResponse({ error: 'server not configured (PINATA_JWT missing)' }, 500, cors);
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const rlKey = `ceremony:${day}:${ip}`;
+  const rlKey = `ceremony:${day}:${ipBucket(env, ip)}`;
   const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
   if (!state) return jsonResponse({ error: 'ceremony chain not initialized' }, 404, cors);
   if (state.finalized) return jsonResponse({ error: 'ceremony has been finalized; chain is locked' }, 409, cors);
@@ -11627,7 +11621,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   // affects how the diversity story reads in attestations.
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const rlKey = `ceremony:${day}:${ip}`;
+  const rlKey = `ceremony:${day}:${ipBucket(env, ip)}`;
   const prior = safeInt(await env.UPLOAD_KV.get(rlKey), 0, { min: 0 });
   if (prior >= 500) return jsonResponse({ error: 'rate limited (500/day per IP)' }, 429, cors);
 
@@ -12607,7 +12601,7 @@ async function handlePinMixerVk(req, env, cors) {
 
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const kvKey = `pin:${day}:${ip}`;
+  const kvKey = `pin:${day}:${ipBucket(env, ip)}`;
   // one request at a time per client and day, so parallel requests each see the count the one before them left
   return withKvKeyLock(kvKey, async () => {
   const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
@@ -12676,7 +12670,7 @@ async function handlePinAmmVk(req, env, cors) {
 
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const kvKey = `pin:${day}:${ip}`;
+  const kvKey = `pin:${day}:${ipBucket(env, ip)}`;
   // one request at a time per client and day, so parallel requests each see the count the one before them left
   return withKvKeyLock(kvKey, async () => {
   const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
@@ -12738,7 +12732,7 @@ async function handlePinJson(req, env, cors) {
 
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const kvKey = `pin:${day}:${ip}`;
+  const kvKey = `pin:${day}:${ipBucket(env, ip)}`;
   // one request at a time per client and day, so parallel requests each see the count the one before them left
   return withKvKeyLock(kvKey, async () => {
   const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
@@ -12841,7 +12835,7 @@ async function handlePinAirdropSnapshot(req, env, cors) {
 
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const kvKey = `pin:${day}:${ip}`;
+  const kvKey = `pin:${day}:${ipBucket(env, ip)}`;
   // one request at a time per client and day, so parallel requests each see the count the one before them left
   return withKvKeyLock(kvKey, async () => {
   const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
@@ -13702,7 +13696,7 @@ async function handleDrip(req, env, cors) {
 
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const ipKey = `drip:ip:${day}:${ip}`;
+  const ipKey = `drip:ip:${day}:${ipBucket(env, ip)}`;
   const addrKey = `drip:addr:${day}:${recipient}`;
   const ipLimit = safeInt(env.FAUCET_IP_LIMIT, 1, { min: 0 });
   const addrLimit = safeInt(env.FAUCET_ADDR_LIMIT, 1, { min: 0 });
@@ -16640,7 +16634,7 @@ async function handleAssetHint(req, env, network, cors, ctx) {
   // mempool), so abuse is bounded — but we still don't want unbounded work.
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const kvKey = `hint:${day}:${ip}`;
+  const kvKey = `hint:${day}:${ipBucket(env, ip)}`;
   const limit = safeInt(env.HINT_LIMIT, 200, { min: 0 });
   const prior = safeInt(await env.REGISTRY_KV.get(kvKey), 0, { min: 0 });
   if (prior >= limit) return jsonResponse({ error: 'daily hint limit reached' }, 429, cors);
@@ -22866,7 +22860,7 @@ const AIRDROP_LIST_HARD_CAP = 900;  // total per response; bound size + subreque
 async function _orderbookWriteRateLimit(req, env, pubHex, kind, opts = {}) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const ipKey = `ob-write-rl:ip:${day}:${kind}:${ip}`;
+  const ipKey = `ob-write-rl:ip:${day}:${kind}:${ipBucket(env, ip)}`;
   const ipLimit = safeInt(env.ORDERBOOK_WRITE_IP_DAILY, opts.ipDefault ?? 150, { min: 1 });
   const ipPrior = safeInt(await env.REGISTRY_KV.get(ipKey), 0, { min: 0 });
   if (ipPrior >= ipLimit) return { ok: false, reason: `${kind} IP daily limit (${ipLimit}/day)` };
@@ -22888,7 +22882,7 @@ async function _orderbookWriteRateLimit(req, env, pubHex, kind, opts = {}) {
 async function _airdropRateLimit(req, env, tacitPubHex, rootHex) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const ipKey = `airdrop-rl:ip:${day}:${ip}`;
+  const ipKey = `airdrop-rl:ip:${day}:${ipBucket(env, ip)}`;
   const ipLimit = safeInt(env.AIRDROP_DAILY_LIMIT, 200, { min: 1 });
   const ipPrior = safeInt(await env.REGISTRY_KV.get(ipKey), 0, { min: 0 });
   if (ipPrior >= ipLimit) return { ok: false, reason: `IP daily limit (${ipLimit}/day)` };
@@ -22898,7 +22892,7 @@ async function _airdropRateLimit(req, env, tacitPubHex, rootHex) {
   let ipRootKey = null;
   let ipRootPrior = 0;
   if (rootHex) {
-    ipRootKey = `airdrop-rl:root-ip:${day}:${rootHex}:${ip}`;
+    ipRootKey = `airdrop-rl:root-ip:${day}:${rootHex}:${ipBucket(env, ip)}`;
     const ipRootLimit = safeInt(env.AIRDROP_DAILY_LIMIT_ROOT_IP, 50, { min: 1 });
     ipRootPrior = safeInt(await env.REGISTRY_KV.get(ipRootKey), 0, { min: 0 });
     if (ipRootPrior >= ipRootLimit) return { ok: false, reason: `per-drop IP limit (${ipRootLimit}/day)` };
@@ -23277,7 +23271,7 @@ function dropAnnounceCancelMsg(network, rootHex, issuerPubHex) {
 async function _dropAnnounceRateLimit(req, env, issuerPubHex) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const ipKey = `drop-announce-rl:ip:${day}:${ip}`;
+  const ipKey = `drop-announce-rl:ip:${day}:${ipBucket(env, ip)}`;
   const pkKey = `drop-announce-rl:pk:${day}:${issuerPubHex}`;
   const ipLimit = safeInt(env.DROPS_DAILY_LIMIT_IP, 50, { min: 1 });
   const pkLimit = safeInt(env.DROPS_DAILY_LIMIT_PUBKEY, 10, { min: 1 });
@@ -29031,7 +29025,7 @@ async function _routeFetch(req, env, ctx) {
       }
       const ip = req.headers.get('CF-Connecting-IP') || 'anon';
       const day = new Date().toISOString().slice(0, 10);
-      const kvKey = `swaphint:${day}:${ip}`;
+      const kvKey = `swaphint:${day}:${ipBucket(env, ip)}`;
       const limit = safeInt(env.HINT_LIMIT, 200, { min: 0 });
       const prior = safeInt(await env.REGISTRY_KV.get(kvKey), 0, { min: 0 });
       if (prior >= limit) return jsonResponse({ error: 'daily hint limit reached' }, 429, cors);
@@ -30357,7 +30351,7 @@ async function _routeFetch(req, env, ctx) {
       // per-IP limit keeps hint fetches within the worker's subrequest budget.
       const ip = req.headers.get('CF-Connecting-IP') || 'anon';
       const day = new Date().toISOString().slice(0, 10);
-      const hintKey = `hint:${day}:${ip}`;
+      const hintKey = `hint:${day}:${ipBucket(env, ip)}`;
       const hintLimit = safeInt(env.HINT_LIMIT, 200, { min: 0 });
       const hintPrior = safeInt(await env.REGISTRY_KV.get(hintKey), 0, { min: 0 });
       if (hintPrior >= hintLimit) return jsonResponse({ error: 'daily hint limit reached' }, 429, cors);
@@ -31974,7 +31968,7 @@ async function _routeFetch(req, env, ctx) {
       // Same per-IP daily cap as /assets/hint and /drops-hint.
       const ip = req.headers.get('CF-Connecting-IP') || 'anon';
       const day = new Date().toISOString().slice(0, 10);
-      const hintKey = `hint:${day}:${ip}`;
+      const hintKey = `hint:${day}:${ipBucket(env, ip)}`;
       const hintLimit = safeInt(env.HINT_LIMIT, 200, { min: 0 });
       const hintPrior = safeInt(await env.REGISTRY_KV.get(hintKey), 0, { min: 0 });
       if (hintPrior >= hintLimit) return jsonResponse({ error: 'daily hint limit reached' }, 429, cors);
