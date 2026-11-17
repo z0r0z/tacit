@@ -7,6 +7,8 @@
 //   · the read answers, the tally a second behind: the line shows the pool's figures and then the tally's, and in every frame from the form's first the form is at one height;
 //   · the chain row holds one height from the form's first frame: its tabs carry their figure line from the first (a blank one while there is no figure) and the empty row holds the height
 //     they settle at, on a phone and at a desktop, whether the pool reads answer, come late or fail;
+//   · with all three tabs (?chains=all) on a narrow phone the figure line would wrap to two lines: a tab whose figure would wrap drops its " in pool" (its label for a screen reader keeps it),
+//     so the row holds one height at 320, 360, 375 and 390px, and at a desktop keeps the whole line;
 //   · the read answers: the line shows the pool's figures;
 //   · Robinhood Chain's line, with big figures, on a 360 or 375px phone: it names the chain as its tab does (Robinhood), so it keeps to three lines like the others, not four.
 //
@@ -44,7 +46,7 @@ const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers
 const answer = (m, chain = 1, big = false) => (m.method === 'eth_chainId' ? '0x' + chain.toString(16) : m.method === 'eth_getBalance' ? '0x' + (big ? 12345678900000000000000n : 123456789000000000000n).toString(16) : m.method === 'eth_call' ? '0x' + (big ? 123456 : 4321).toString(16).padStart(64, '0') : m.method === 'eth_blockNumber' ? '0x1900000' : null);
 
 const browser = await chromium.launch();
-async function open({ width, connected, reads, tally = 0, chain = 1, big = false }) {
+async function open({ width, connected, reads, tally = 0, chain = 1, big = false, all = false }) {
   const ctx = await browser.newContext({ viewport: { width, height: 844 }, colorScheme: 'light' });
   if (connected) await ctx.addInitScript(WALLET);
   if (chain !== 1) await ctx.addInitScript((c) => { try { localStorage.setItem('tacit-pay-chain-v1', JSON.stringify(c)); } catch { } }, chain);       // the chain the page was last on
@@ -76,7 +78,7 @@ async function open({ width, connected, reads, tally = 0, chain = 1, big = false
   page.on('pageerror', (e) => pageErrors.push(String(e.message || e)));
   let ended; const readEnded = new Promise((res) => { ended = res; });
   page.on('console', (m) => { if (/^pool on Ethereum:/.test(m.text())) ended(); });          // the page says so when its read of the pool fails
-  await page.goto(`http://127.0.0.1:${WEB}${connected ? '/pay/' : '/pay/eth/'}`);
+  await page.goto(`http://127.0.0.1:${WEB}${connected ? '/pay/' : '/pay/eth/' + (all ? '?chains=all' : '')}`);
   return { ctx, page, pageErrors, readEnded };
 }
 const top = (page, sel) => page.evaluate((s) => { const e = document.querySelector(s); return e ? Math.round(e.getBoundingClientRect().top * 10) / 10 : null; }, sel);
@@ -139,6 +141,40 @@ try {
     const tabs = await page.$$eval('#chains button', (bs) => bs.map((b) => b.querySelector('small') ? b.querySelector('small').textContent.replace(/\u00a0/g, '·').trim() : 'no figure line'));
     ok(tabs.length === 2 && tabs.every((t) => t !== 'no figure line'), `${label}: every tab has its figure line, from the first (${tabs.join(' | ')})`);
     ok(rows.length === 1 && rows[0] >= 69 && tops.length === 1, `${label}: the chain row held one height (${rows.join('px, ')}px) and the form one place (${tops.join('px, ')}px), over ${live.length} frames`);
+    await ctx.close();
+  }
+
+  // all three tabs: at 360px and under the Ethereum tab's "14.859 in pool" would wrap and take the row from 73px to 87px; it drops " in pool" instead (a 320 or 360px tab has 73 or 87px, the
+  // line needs 90 and a half), and at 375px up it keeps it
+  for (const [width, tight] of [[320, true], [360, true], [375, null], [390, null], [1280, false]]) {          // (null: it depends on the figure's digits, and either is one line)
+    const { ctx, page } = await open({ width, connected: false, reads: true, tally: 800, all: true });
+    await page.waitForFunction(() => /\d in pool|\d$/.test(document.querySelector('#chains button small')?.textContent.trim() || ''), null, { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(1500);
+    const frames = (await page.evaluate(() => window.__frames)), live = frames.slice(frames.findIndex((f) => f.form));
+    const rows = [...new Set(frames.filter((f) => f.c > 0).map((f) => f.c))], tops = [...new Set(live.map((f) => f.top))];
+    const what = await page.evaluate(() => {
+      const tabs = [...document.querySelectorAll('#chains button')], ip = document.querySelector('#chains .ip'), first = tabs[0];
+      return { n: tabs.length, lines: tabs.map((b) => Math.round(b.querySelector('small').getBoundingClientRect().height)), ip: ip ? getComputedStyle(ip).display : 'none', label: first?.getAttribute('aria-label') || '', text: first?.querySelector('small')?.textContent.trim() };
+    });
+    ok(what.n === 3 && what.lines.every((h) => h <= 16), `${width}px: three tabs, each figure line on one line (${what.lines.join('px, ')}px)`);
+    ok((tight === null || (what.ip === 'none') === tight) && /in the pool/.test(what.label), `${width}px: the tab ${what.ip === 'none' ? 'drops' : 'keeps'} " in pool" (shows "${what.text}"), and its label still says "in the pool"`);
+    // (at 320px the pool line under the row reaches a fourth line with these figures and the form moves with it: that line's own business, left as the notes say, so the form is not held to a place there)
+    ok(rows.length === 1 && (width === 320 || tops.length === 1), `${width}px: the chain row held one height (${rows.join('px, ')}px)${width === 320 ? '' : ` and the form one place (${tops.join('px, ')}px)`}, over ${live.length} frames`);
+    await ctx.close();
+  }
+
+  // the row fits again when the window changes (a phone turned, a window dragged): narrow drops " in pool", wide brings it back
+  {
+    const { ctx, page } = await open({ width: 1280, connected: false, reads: true, tally: 0, all: true });
+    await page.waitForFunction(() => /\d in pool/.test(document.querySelector('#chains button small')?.textContent.trim() || ''), null, { timeout: 30000 }).catch(() => {});
+    const shown = () => page.evaluate(() => { const ip = document.querySelector('#chains .ip'); return { ip: ip ? getComputedStyle(ip).display : 'none', row: Math.round(document.querySelector('#chains').getBoundingClientRect().height) }; });
+    const wide = await shown();
+    await page.setViewportSize({ width: 320, height: 844 }); await page.waitForTimeout(400);
+    const narrow = await shown();
+    await page.setViewportSize({ width: 1280, height: 844 }); await page.waitForTimeout(400);
+    const back = await shown();
+    ok(wide.ip !== 'none' && narrow.ip === 'none' && back.ip !== 'none', `the row fits again as the window changes: " in pool" shown at 1280px (${wide.ip}), dropped at 320px (${narrow.ip}), shown again at 1280px (${back.ip})`);
+    ok(narrow.row === 73 && back.row === wide.row, `and at 320px the row is 73px (${narrow.row}px), and back at 1280px it is as it was (${back.row}px, from ${wide.row}px)`);
     await ctx.close();
   }
 
