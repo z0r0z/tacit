@@ -884,7 +884,7 @@ function shareLink() {
 }
 const shareSync = () => {
   const b = $('#copy'), u = shareLink();
-  if (b) b.hidden = !u || !!FLOW;
+  if (b) b.hidden = !u || (!!FLOW && !(FLOW === 'shield' && kindOf(S.pay, S.get) === 'zap'));      // the Shield tab hides it, except on the SPX page's ETH buy
   if (!b || !history.replaceState || FLOW) return;
   try {
     const at = location.pathname + location.search + location.hash, cur = new URL(location.href);
