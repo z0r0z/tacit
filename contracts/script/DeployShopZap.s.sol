@@ -13,6 +13,8 @@ interface IShopWires {
 ///           forge script script/DeployShopZap.s.sol --rpc-url $RPC --sender $DEPLOYER                            (simulate: prints the address it would have and the page setting)
 ///           forge script script/DeployShopZap.s.sol --rpc-url $RPC --broadcast --private-key $KEY                (deploy)
 ///         ZAP_ZROUTER, ZAP_TAC and ZAP_SHOP are zRouter, TAC and the VanityShop on mainnet. The run refuses a shop whose TAC is another token.
+///         To put it at an address bought from the shop instead, the shop page's form for a contract of one's own takes its creation code with these three addresses on the end
+///         (abi-encoded, after the code); the constructor is payable, so ETH sent to the address the market deploys from beforehand cannot stop that deploy.
 contract DeployShopZap is Script {
     address constant ZROUTER = 0x000000000000FB114709235f1ccBFfb925F600e4;
     address constant TAC = 0xA1313eb9f3A445606D9583bcAc3ebeB56a858279;
