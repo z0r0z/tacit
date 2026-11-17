@@ -5,7 +5,8 @@
 // connected arrives as /pay/ -> /pay/eth/, one with none arrives on it; every host but the page's own is refused (the read fails) or, in the last checks, answers.
 //   · the read fails: the pool line stays in the page at the room it held, and the form is where it was before the read ended (a phone and a desktop, connected and not);
 //   · the read answers, the tally a second behind: the line shows the pool's figures and then the tally's, and in every frame from the form's first the form is at one height;
-//   · the read answers: the line shows the pool's figures.
+//   · the read answers: the line shows the pool's figures;
+//   · Robinhood Chain's line, with big figures, on a 360 or 375px phone: it names the chain as its tab does (Robinhood), so it keeps to three lines like the others, not four.
 //
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/pay-eth-poolstat.mjs
 import { createRequire } from 'node:module';
@@ -35,15 +36,16 @@ const WALLET = `(() => { localStorage.setItem('stub-allowed-main', '1'); localSt
   const detail = Object.freeze({ info: Object.freeze({ uuid: 'main', name: 'Test Wallet', icon: '', rdns: 'test.wallet' }), provider });
   const say = () => window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail }));
   window.addEventListener('eip6963:requestProvider', say); say(); })();`;
-const NODES = /^https:\/\/(ethereum-rpc\.publicnode\.com|rpc\.mevblocker\.io|mainnet\.rpc\.buidlguidl\.com|eth\.drpc\.org|1\.rpc\.thirdweb\.com|eth-mainnet\.public\.blastapi\.io|ethereum-json-rpc\.stakely\.io|1rpc\.io|eth-mainnet\.nodereal\.io)/;
+const NODES = /^https:\/\/(rpc\.mainnet\.chain\.robinhood\.com|robinhood-rpc\.publicnode\.com|robinhood\.drpc\.org|ethereum-rpc\.publicnode\.com|rpc\.mevblocker\.io|mainnet\.rpc\.buidlguidl\.com|eth\.drpc\.org|1\.rpc\.thirdweb\.com|eth-mainnet\.public\.blastapi\.io|ethereum-json-rpc\.stakely\.io|1rpc\.io|eth-mainnet\.nodereal\.io)/;
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'content-type': 'application/json' };
-// the pool holds 123.456789 ETH in 4,321 notes
-const answer = (m) => (m.method === 'eth_chainId' ? '0x1' : m.method === 'eth_getBalance' ? '0x' + (123456789000000000000n).toString(16) : m.method === 'eth_call' ? '0x' + (4321).toString(16).padStart(64, '0') : m.method === 'eth_blockNumber' ? '0x1900000' : null);
+// the pool holds 123.456789 ETH in 4,321 notes (12,345.6789 ETH in 123,456 notes, with `big`), on chain `chain`
+const answer = (m, chain = 1, big = false) => (m.method === 'eth_chainId' ? '0x' + chain.toString(16) : m.method === 'eth_getBalance' ? '0x' + (big ? 12345678900000000000000n : 123456789000000000000n).toString(16) : m.method === 'eth_call' ? '0x' + (big ? 123456 : 4321).toString(16).padStart(64, '0') : m.method === 'eth_blockNumber' ? '0x1900000' : null);
 
 const browser = await chromium.launch();
-async function open({ width, connected, reads, tally = 0 }) {
+async function open({ width, connected, reads, tally = 0, chain = 1, big = false }) {
   const ctx = await browser.newContext({ viewport: { width, height: 844 }, colorScheme: 'light' });
   if (connected) await ctx.addInitScript(WALLET);
+  if (chain !== 1) await ctx.addInitScript((c) => { try { localStorage.setItem('tacit-pay-chain-v1', JSON.stringify(c)); } catch { } }, chain);       // the chain the page was last on
   await ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, (r) => r.abort());
   await ctx.routeWebSocket(/^wss?:\/\/(?!127\.0\.0\.1|localhost)/, (ws) => ws.close());
   await ctx.route('http://127.0.0.1:47815/**', (r) => r.abort('connectionrefused'));
@@ -51,12 +53,12 @@ async function open({ width, connected, reads, tally = 0 }) {
     const q = r.request();
     if (q.method() !== 'POST') return r.fulfill({ status: 204, headers: CORS });
     let j = {}; try { j = JSON.parse(q.postData() || '{}'); } catch { }
-    const one = (m) => { const v = answer(m); return v == null ? { jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'unsupported' } } : { jsonrpc: '2.0', id: m.id, result: v }; };
+    const one = (m) => { const v = answer(m, chain, big); return v == null ? { jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'unsupported' } } : { jsonrpc: '2.0', id: m.id, result: v }; };
     return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify(Array.isArray(j) ? j.map(one) : one(j)) });
   });
   if (tally) await ctx.route(/^https:\/\/api\.tacit\.finance\/stats/, async (r) => {            // what the pool has carried, `tally` ms after the pool's own figures
     await new Promise((res) => setTimeout(res, tally));
-    return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify({ dev: [{ chain: 1, dep: { $n: (1234560000000000000000n).toString() }, nd: 987 }] }) });
+    return r.fulfill({ status: 200, headers: CORS, body: JSON.stringify({ dev: [1, 8453, 4663].map((c) => ({ chain: c, dep: { $n: (big ? 123456780000000000000000n : 1234560000000000000000n).toString() }, nd: big ? 98765 : 987 })) }) });
   });
   await ctx.addInitScript(() => {                                                    // every frame: where the form is, how tall the pool line is, whether the form and the figures are in
     window.__frames = [];
@@ -107,6 +109,18 @@ try {
     ok(stages.includes(1) && stages.includes(2), `${label}: the figures arrived in two pieces (the pool's, then the tally's; stages seen ${stages.join(', ')})`);
     ok(tops.length === 1, `${label}: the form held one height through the form's first frame to the last (${tops.join('px, ')}px, over ${live.length} frames)`);
     ok(low >= reserve, `${label}: the pool line never fell below its room (${low}px, at least ${reserve}px)`);
+    await ctx.close();
+  }
+
+  // Robinhood Chain's line with big figures on a narrow phone: three lines, the room it holds, through the figures arriving in two pieces
+  for (const width of [360, 375]) {
+    const { ctx, page } = await open({ width, connected: false, reads: true, tally: 800, chain: 4663, big: true });
+    await page.waitForFunction(() => /transacted in/.test(document.querySelector('#poolstat')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(500);
+    const frames = (await page.evaluate(() => window.__frames)), live = frames.slice(frames.findIndex((f) => f.form));
+    const heights = [...new Set(live.map((f) => f.h))], text = (await page.textContent('#poolstat')).replace(/\s+/g, ' ').trim();
+    ok(/^The pool on Robinhood holds 12,345\.679 ETH in 123,456 notes · 123,456\.78 ETH transacted in 98,765 deposits\.$/.test(text), `${width}px: Robinhood's line names the chain as its tab does (${text.slice(0, 48)}…)`);
+    ok(heights.length === 1 && heights[0] === 54, `${width}px: the line keeps to three lines through the figures arriving, never a fourth (heights ${heights.join('px, ')}px over ${live.length} frames)`);
     await ctx.close();
   }
 
