@@ -162,6 +162,40 @@ export function zapSplitPlan({ eth, ra, rb, total, feeBps = 30n, ammIn, extIn, e
   };
 }
 
+// Entering a pool with the swap half bought OUTSIDE (a deep market) instead of inside the pool, so the pool's own price is not moved: the deposit then goes
+// in at the pool's ratio. `quote(wei)` is the outside swap's answer, { amountLimit, callData } (what it surely brings, and the call that pays the router).
+// The swap is sized so the token it surely brings and the ETH left make the pool's ratio; the legs are then the exact ones (see exactLegs), and the router
+// refunds what the swap brings above the floor. Returns null when there is no quote, no exact legs, or the deposit is too small.
+export async function zapPlanExt({ eth, ra, rb, total, unitA = 10n ** 10n, unitB = 10n ** 10n, quote }) {
+  ra = BigInt(ra); rb = BigInt(rb); total = BigInt(total);
+  const W = BigInt(eth), uA = BigInt(unitA), uB = BigInt(unitB), probe = (W / 2n / uA) * uA;
+  if (probe < uA || !(ra > 0n && rb > 0n && total > 0n)) return null;
+  const q0 = await quote(probe);
+  if (!q0 || !(BigInt(q0.amountLimit) > 0n)) return null;
+  const pn = rb * uB, pd = ra * uA;
+  const X = (((W * pn * probe) / (pn * probe + BigInt(q0.amountLimit) * pd)) / uA) * uA;
+  if (X < uA || X >= W) return null;
+  const q = await quote(X);
+  if (!q || !(BigInt(q.amountLimit) > 0n)) return null;
+  const legs = exactLegs((W - X) / uA, BigInt(q.amountLimit) / uB, ra, rb, total);
+  if (!legs) return null;
+  const value = X + legs.a * uA;
+  return { ext: true, swapIn: X, ethLeg: legs.a * uA, bLeg: legs.b * uB, shares: legs.s, value, left: W - value, out: BigInt(q.amountOut ?? q.amountLimit), floor: BigInt(q.amountLimit), callData: q.callData, q,
+    impact: 0, shareOfPool: Number(legs.s) / Number(total + legs.s) };
+}
+// The same plan for exactly `shares` (the count a proof was made for) at the reserves now and a fresh quote of the same swap: the least legs that mint
+// exactly that many (each floors to it), or null when the pool has moved so that none do, or the swap would no longer bring the token leg.
+export function zapPlanExtFor({ shares, prev, q, ra, rb, total, unitA = 10n ** 10n, unitB = 10n ** 10n, maxEth = null }) {
+  ra = BigInt(ra); rb = BigInt(rb); total = BigInt(total);
+  const S = BigInt(shares), uA = BigInt(unitA), uB = BigInt(unitB);
+  if (S < 1n || !q || !(ra > 0n && rb > 0n && total > 0n)) return null;
+  const a = ceil(S * ra, total), b = ceil(S * rb, total);
+  if ((a * total) / ra !== S || (b * total) / rb !== S) return null;
+  const value = prev.swapIn + a * uA;
+  if (b * uB > BigInt(q.amountLimit) || (maxEth != null && value > BigInt(maxEth))) return null;
+  return { ...prev, ethLeg: a * uA, bLeg: b * uB, shares: S, value, left: prev.value + prev.left - value, floor: BigInt(q.amountLimit), callData: q.callData, q };
+}
+
 export function zapCalldata({ plan, router, amm, tokenB, assetA, assetB, feeBps = 30, deadline, commit, swapData = null }) {
   return '0xf9d1fa01' + addr(tokenB) + word(feeBps) + word(plan.ethLeg) + word(plan.bLeg) + word(plan.shares) + word(deadline) + b32(commit) + word(8 * 32)
     + bytes(zapSwap({ plan, router, amm, tokenB, assetA, assetB, feeBps, deadline, swapData }));
