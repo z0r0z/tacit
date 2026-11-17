@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-+brxrh5aWGQRcoOo9ZufrMdM6KAJGqF5Px6kEXfOO24=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-fcpyFNcJ63zfc+VAxc8zZJJVUxpc22OaAZ/nP1RES7o=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
+<link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <title>tacit pay · ETH</title>
 <meta name="description" content="Private ETH payments on Ethereum, Base and Robinhood Chain, proved on your device and recovered from your key.">
 <meta property="og:type" content="website">
@@ -215,6 +217,10 @@ body.in .hero p, body.in .facts, body.in .hero .more { display: none; }
 #form:empty { min-height: 457px; }
 @media (max-width: 430px) { #form:empty { min-height: 495px; } }
 @media (max-width: 390px) { #form:empty { min-height: 534px; } }
+/* The cards under the form, the links and the footer stay out of sight until the page has made its first render. They sit below the room the form reserves, which that render closes (about
+   540px), and on a tall screen they would be seen to jump up into view. They show after 2.5 s at the latest, if the page never gets that far. */
+html:not(.up) :is(main > .card:not(.app), .sf-x, footer.sf) { visibility: hidden; animation: up-late 0s 2.5s forwards; }
+@keyframes up-late { to { visibility: visible; } }
 .bal .v { font: 500 30px/1.1 var(--mono); letter-spacing: -.02em; }
 .bal .u { color: var(--mute); font-size: 12.5px; }
 .poolstat { margin: -6px 0 16px; font-size: 12px; line-height: 1.5; color: var(--mute); }
@@ -2910,7 +2916,7 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=a43ba5c1');
+    const m = await import('/fixed-pool-pay.js?cb=9e59af68');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2927,7 +2933,7 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=a43ba5c1');
+    const m = await import('/fixed-pool-pay.js?cb=9e59af68');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
@@ -2950,7 +2956,7 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=a43ba5c1');
+    const m = await import('/fixed-pool-pay.js?cb=9e59af68');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -2971,7 +2977,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=a43ba5c1');
+    const m = await import('/fixed-pool-pay.js?cb=9e59af68');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -3129,7 +3135,7 @@ const legacyAddress = () => TADDR.encodeTacitAddress(addressBase());
 // What the page shows and offers to copy: the address with the key's chain lane as well (as on /tac/), so a payer on the Tacit chain finds the key and every page
 // shows the one address. Links and the page's own "is this mine" checks keep the plain address. Until the lane module is in (it is awaited at sign-in), the plain one.
 let LANE = null;
-const loadLane = lazy(() => import('/tacit-chain-lane.js?cb=258bf4f8').then((m) => (LANE = m), () => null));
+const loadLane = lazy(() => import('/tacit-chain-lane.js?cb=12be7fad').then((m) => (LANE = m), () => null));
 const SHOWN_ADDR = { pub: null, addr: null };
 function shownAddress() {
   if (!LANE || !S.key) return unifiedAddress();
@@ -5122,6 +5128,7 @@ window.addEventListener('hashchange', () => { applyHash(); renderApp(); if (GIFT
 
 applyHash();
 paintWallet(); renderApp(); paintDevice(); paintRecover(); paintPoints();
+document.documentElement.classList.add('up');             // the first render is made: what sits below the form may show (see html:not(.up))
 restoreWallet();
 evm.onElsewhere(restoreWallet);
 if (GIFT.v || REQ.v) requestAnimationFrame(() => $(GIFT.v ? '#gift' : '#req').scrollIntoView({ block: 'start' }));

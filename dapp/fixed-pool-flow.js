@@ -10,7 +10,7 @@ import {
   FIXED_POOLS, noteTypedData, canonicalRS, deriveSecrets, depositCall, commitmentBytes32, noteString, parseNoteString,
 } from '/fixed-pool-notes.js?cb=ab06e6d2';
 import { fixedPoolLeaves } from '/fixed-pool-sync.js?cb=cd4a3f3a';
-import { PAYMASTERS, paymasterFor, bundlerClient, readGasFeeReference, prepareSponsoredWithdrawal, sendSponsoredOperation } from '/fixed-pool-paymaster.js?cb=40893745';
+import { PAYMASTERS, paymasterFor, bundlerSet, readGasFeeReference, readFallbackGasPrice, prepareSponsoredWithdrawal, sendSponsoredOperation } from '/fixed-pool-paymaster.js?cb=7d522a74';
 
 const enc = new TextEncoder();
 const selector = (sig) => '0x' + bytesToHex(keccak_256(enc.encode(sig)).slice(0, 4));
@@ -346,10 +346,10 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
       noteText, recipient, prover, onStep, leaves, cache,
       beforeRead: (p) => paymasterFor(chainId, p.address), // a pool the paymaster does not take stops here
     });
-    const client = bundler || bundlerClient(cfg.bundler, fetchImpl);
+    const client = bundler || bundlerSet(cfg.bundlers, fetchImpl);
     const reference = await readGasFeeReference(provider);
     const prepared = await prepareSponsoredWithdrawal({
-      chainId, pool: pool.address, denomination: pool.denomination, recipient, bundler: client, reference, onStep, maxFeePercent,
+      chainId, pool: pool.address, denomination: pool.denomination, recipient, bundler: client, reference, nodePrice: () => readFallbackGasPrice(provider), onStep, maxFeePercent,
       prove: async (fee) => {
         const out = await prover.prove({ chainId, pool: pool.address, preimageHex, recipient, relayer: cfg.paymaster, fee: String(fee) });
         checkWithdrawCall(out, { pool, recipient, root, nullifierHash: note.nullifierHash, relayer: cfg.paymaster, fee });

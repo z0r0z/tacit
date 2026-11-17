@@ -3,6 +3,9 @@ import { secp, sha256, bytesToHex } from './vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();
 const PRF_SALT = sha256(enc.encode('tacit-prf-v1'));
+// The Tacit chain's root is a passkey's output for another salt. The authenticator computes each output from a secret it never shows, so the
+// Tacit key (a passkey wallet's output for the first salt, whose public key is in every Tacit address) says nothing about the root.
+const CHAIN_SALT = sha256(enc.encode('tacit-chain-root-v1'));
 const PRF_MAP_KEY = 'tacit-prf-v1';
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -38,6 +41,24 @@ export function savePrfMap(m) {
 export function clearPrfMap() { localStorage.removeItem(PRF_MAP_KEY); }
 
 export async function prfRegister(label, { signal } = {}) {
+  const { credentialId, raw } = await prfCreate(label, PRF_SALT, { signal });
+  return keyOf(credentialId, raw);
+}
+
+// The Tacit chain's root from a passkey: credentialId names one (null lets the person pick any of theirs). → { credentialId, root (32 bytes) }
+export async function prfChainRoot({ credentialId = null, signal } = {}) {
+  const { gotId, raw } = await prfEval(credentialId, { signal, salt: CHAIN_SALT });
+  if (!raw) throw new Error('This passkey cannot make a key (it has no PRF).');
+  return { credentialId: gotId, root: new Uint8Array(raw) };
+}
+
+// A new passkey made to hold the Tacit chain's root, for a wallet opened another way (an Ethereum or Bitcoin wallet, or a key kept here).
+export async function prfRegisterChainRoot(label, { signal } = {}) {
+  const { credentialId, raw } = await prfCreate(label, CHAIN_SALT, { signal });
+  return { credentialId, root: new Uint8Array(raw) };
+}
+
+async function prfCreate(label, salt, { signal } = {}) {
   const name = (label || '').trim();
   if (!name) throw new Error('label required');
   const rpId = window.location.hostname;
@@ -50,15 +71,15 @@ export async function prfRegister(label, { signal } = {}) {
     authenticatorSelection: { authenticatorAttachment: 'platform', residentKey: 'required', userVerification: 'required' },
     timeout: 60000,
     attestation: 'none',
-    extensions: { prf: { eval: { first: PRF_SALT } } },
+    extensions: { prf: { eval: { first: salt } } },
   };
   const cred = await navigator.credentials.create({ publicKey, ...(signal ? { signal } : {}) });
   if (!cred) throw new Error('creation cancelled');
   const credentialId = toB64(cred.rawId);
   const prfOut = cred.getClientExtensionResults()?.prf;
-  const raw = prfOut?.results?.first || (prfOut?.enabled === false ? null : (await prfEval(credentialId, { signal })).raw);
+  const raw = prfOut?.results?.first || (prfOut?.enabled === false ? null : (await prfEval(credentialId, { signal, salt })).raw);
   if (!raw) throw new Error('PRF not supported by this authenticator');
-  return keyOf(credentialId, raw);
+  return { credentialId, raw };
 }
 
 function keyOf(credentialId, raw) {
@@ -87,10 +108,10 @@ export async function prfLogin({ credentialId, signal }) {
   return keyOf(gotId, raw);
 }
 
-async function prfEval(credentialId, { signal } = {}) {
+async function prfEval(credentialId, { signal, salt = PRF_SALT } = {}) {
   const rpId = window.location.hostname;
   const rawId = credentialId ? fromB64(credentialId) : undefined;
-  const prfExtension = { prf: { eval: { first: PRF_SALT } } };
+  const prfExtension = { prf: { eval: { first: salt } } };
   const publicKey = rawId
     ? {
         challenge: crypto.getRandomValues(new Uint8Array(32)),

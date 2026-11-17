@@ -388,6 +388,26 @@ await (async () => {
     try { await prfRegister('   '); } catch { threwBlank = true; }
     test('register rejects empty / whitespace label before touching authenticator', () => threwEmpty && threwBlank);
   });
+
+  // ---- the Tacit chain's root: the same passkey's output for its own salt ----
+  // An authenticator answers HMAC(its secret, salt) for whatever salt it is asked, as hmac-secret does: the root and the Tacit key are two
+  // outputs of one passkey, and neither follows from the other.
+  const { prfChainRoot, prfRegisterChainRoot } = await import('../dapp/prf-wallet.js');
+  const { hmac } = await import('@noble/hashes/hmac');
+  const { sha256 } = await import('@noble/hashes/sha256');
+  const SECRET = new Uint8Array(32).fill(0x5c), salts = [];
+  const answer = (o) => { const salt = new Uint8Array(o.publicKey.extensions.prf.eval.first); salts.push(bytesToHex(salt)); return makeFakeCred({ rawIdStr: 'cred-pq', prfShape: { results: { first: hmac(sha256, SECRET, salt) } } }); };
+  await withMockedCredentials({ create: async (o) => answer(o), get: async (o) => answer(o) }, async () => {
+    const key = await prfLogin({ credentialId: strToB64Url('cred-pq') });
+    const a = await prfChainRoot({ credentialId: strToB64Url('cred-pq') });
+    const b = await prfChainRoot({});
+    const made = await prfRegisterChainRoot('Tacit PQ ID');
+    const enc = new TextEncoder();
+    test('the chain root is asked under its own salt, not the Tacit key\'s', () => salts[0] === bytesToHex(sha256(enc.encode('tacit-prf-v1'))) && salts[1] === bytesToHex(sha256(enc.encode('tacit-chain-root-v1'))));
+    test('the same passkey gives the same root, picked or named', () => a.root.length === 32 && bytesToHex(a.root) === bytesToHex(b.root) && a.credentialId === strToB64Url('cred-pq'));
+    test('a passkey made for the root gives it at creation', () => bytesToHex(made.root) === bytesToHex(a.root));
+    test('the root is not the Tacit key', () => bytesToHex(a.root) !== bytesToHex(key.priv));
+  });
 })();
 
 console.log(`\n${pass} passed, ${fail} failed.`);

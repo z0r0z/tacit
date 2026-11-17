@@ -22,6 +22,7 @@ import { poseidon2, poseidon3, poseidon4, poseidon5 } from '../dapp/vendor/tacit
 import { makeChainClient } from '../dapp/tacit-chain-client.js';
 import { makeChainWallet, assetField, worthOf } from '../dapp/tacit-chain-wallet.js';
 import { makeTacitAddress } from '../dapp/tacit-address.js';
+import { keepRoot } from '../dapp/tacit-chain-lane.js';
 import { ETH_NODES } from '../dapp/eth-nodes.js';
 import { fmtTac, sharePrice } from '../dapp/chain/ui.js';
 
@@ -239,15 +240,16 @@ const text = (page, sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g,
 const rowsOf = (page, sel) => page.$$eval(`${sel} .kv`, (rs) => Object.fromEntries(rs.map((r) => [r.firstElementChild.textContent.trim(), r.lastElementChild.textContent.replace(/\s+/g, ' ').trim()])));
 const NODE_HOSTS = new Set(ETH_NODES.map((u) => new URL(u).host));
 
-async function visit({ viewport = { width: 1280, height: 900 }, colorScheme = 'light', touch = false } = {}) {
+async function visit({ viewport = { width: 1280, height: 900 }, colorScheme = 'light', touch = false, seed = {} } = {}) {
   const ctx = await browser.newContext({ viewport, colorScheme, ...(touch ? { hasTouch: true, isMobile: true } : {}) });
   const asked = [], bad = [];
-  await ctx.addInitScript(({ dev, pk, kept, hk, hops }) => {
+  await ctx.addInitScript(({ dev, pk, kept, hk, hops, seed }) => {
+    for (const [k, v] of Object.entries(seed)) localStorage.setItem(k, v);
     localStorage.setItem('tacit-chain-dev', JSON.stringify(dev));
     const now = Date.now();
     localStorage.setItem(pk, JSON.stringify(kept.map((e) => ({ ...e, at: now - e.at, ...(e.pay ? { pay: { until: now + e.pay.until } } : {}), ...(e.forced ? { forced: { ...e.forced, at: now - e.forced.at } } : {}) }))));
     localStorage.setItem(hk, JSON.stringify(hops.map((h) => ({ ...h, at: now - h.at }))));
-  }, { dev: { blocks: BLOCKS, leader: `${WEB}/tacit-chain-leader` }, pk: pendingKey, hk: hopsKey,
+  }, { dev: { blocks: BLOCKS, leader: `${WEB}/tacit-chain-leader` }, pk: pendingKey, hk: hopsKey, seed,
     // (times as offsets from the page's now, which the script adds)
     kept: kept(0).map((e) => ({ ...e, at: -e.at, ...(e.pay ? { pay: { until: e.pay.until } } : {}), ...(e.forced ? { forced: { ...e.forced, at: -e.forced.at } } : {}) })),
     hops: hopsWaiting(0).map((h) => ({ ...h, at: -h.at })) });
@@ -419,7 +421,34 @@ try {
     for (let i = 0; i < 40 && directory.size === 0; i++) await new Promise((r) => setTimeout(r, 500));
     ok(directory.size === 1, 'the address is in the leader\'s directory, published as the key opened');
     ok(leaderAsked.includes('GET /fee') && leaderAsked.some((x) => x.startsWith('GET /notes')), 'the leader was asked for its terms and its notes');
+    await page.waitForFunction(() => /Generate PQ ID/.test(document.querySelector('#tcd-pq')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
+    const pqOffer = await text(page, '#tcd-pq');
+    ok(/Experimental/i.test(pqOffer) && /Generate PQ ID/.test(pqOffer) && /Tacit address stays the same/.test(pqOffer) && /may change as post-quantum research/.test(pqOffer),
+      `under the address a PQ ID is offered, marked experimental (${pqOffer.slice(0, 90)}…)`);
     await shot('signed-in');
+    ok(bad.length === 0, `no errors or CSP violations (${bad.join(' | ')})`);
+    await ctx.close();
+  }
+  // a PQ ID kept on this device, as Generate PQ ID leaves it: the Tacit address is the same, chain lane and all, the panel says it is on, and the
+  // chain address published as the key opens is the PQ ID's
+  if (PRESS !== 'only') {
+    const vault = new Map();
+    keepRoot(KEY, new Uint8Array(32).fill(0x77), 'cred-pq', { getItem: (k) => vault.get(k) ?? null, setItem: (k, v) => vault.set(k, v), removeItem: (k) => vault.delete(k) });
+    directory.clear();
+    const { page, ctx, bad, shot } = await visit({ seed: Object.fromEntries(vault) });
+    await signIn(page);
+    await page.click('#tcd-t-receive');
+    await page.waitForFunction(`/^tacit1/.test(${TACIT_ROW})`, null, { timeout: 30000 }).catch(() => {});
+    const addr = await page.evaluate(TACIT_ROW).catch(() => '');
+    let same = false;
+    try { same = Buffer.from(makeTacitAddress({ secp }).decodeTacitAddress(addr).lanes.chain.hash).equals(Buffer.from(lane)); } catch { /* not an address */ }
+    ok(same, `with a PQ ID the Tacit address is the same, chain lane and all (${addr.slice(0, 18)}…)`);
+    await page.waitForFunction(() => /On/.test(document.querySelector('#tcd-pq .tpq-on')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
+    const pqOn = await text(page, '#tcd-pq');
+    ok(/sealed to keys no published key leads to/.test(pqOn), `the panel says the PQ ID is on (${pqOn.slice(0, 90)}…)`);
+    for (let i = 0; i < 40 && directory.size === 0; i++) await new Promise((r) => setTimeout(r, 500));
+    ok(directory.size === 1 && !directory.has(strip(hx(lane))), 'the chain address published as the key opens is the PQ ID\'s, not the lane\'s');
+    await shot('pq-on');
     ok(bad.length === 0, `no errors or CSP violations (${bad.join(' | ')})`);
     await ctx.close();
   }

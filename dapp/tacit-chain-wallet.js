@@ -227,7 +227,9 @@ export function makeChainWallet({ poseidon, prover, chain, asset, network = 'mai
         const got = await leader.path(n.index);
         root = BigInt(got.root); path = got.path;
       }
-      const own = Z.ownedKeys(k.zk, n.s);
+      // (a note may name its own keys, n.k: each input is proven and signed under its own, so a note held under older keys can be spent beside
+      // the wallet's, its change going to the wallet's address)
+      const own = Z.ownedKeys((n.k || k).zk, n.s);
       if (Z.leafOf(assetF, n.value, own.npk, own.rho) !== BigInt(n.leaf)) throw new Error('tacit-chain-wallet: a note is not this wallet\'s');
       witnessIn.push({ v: BigInt(n.value), rho: own.rho, nk: own.nk, Ak: own.Ak, index: BigInt(n.index), path: path.map(BigInt), sig: Z.sign(own.sk, bh) });
     }
