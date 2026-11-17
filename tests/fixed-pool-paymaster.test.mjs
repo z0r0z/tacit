@@ -227,5 +227,121 @@ await test('an operation that never shows is reported as maybe still coming', as
   await rejects(P.sendSponsoredOperation({ op: OP, chainId: 11155111, bundler: b, sleep: async () => {}, timeout: 0 }), /may still go through/);
 });
 
+console.log('a second bundler');
+// Each host answers from its own handlers (a value is the result, a function is called with the params); 'down' fails the fetch, rpcErr / httpErr answer as a bundler does.
+const rpcErr = (code, message) => ({ __rpc: { code, message } });
+const httpErr = (status) => ({ __status: status });
+const hostFetch = (hosts) => {
+  const calls = [];
+  const f = async (url, init) => {
+    const { method, params, id } = JSON.parse(init.body), host = new URL(url).host;
+    calls.push(`${host.split('.')[1]} ${method}`);
+    let h = hosts[host]?.[method];
+    if (h === undefined) h = rpcErr(-32600, `Unsupported method - ${method} not supported`);
+    if (h === 'down') throw new Error('fetch failed');
+    if (typeof h === 'function') h = h(params);
+    if (h?.__status) return { ok: false, status: h.__status, json: async () => { throw new Error('not json'); } };
+    if (h?.__rpc) return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id, error: h.__rpc }) };
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id, result: h }) };
+  };
+  f.calls = calls;
+  return f;
+};
+const PIM = 'public.pimlico.io', CAN = 'api.candide.dev';
+const URLS = ['https://public.pimlico.io/v2/11155111/rpc', 'https://api.candide.dev/public/v3/11155111'];
+const setOf = (hosts, urls = URLS) => { const fetchImpl = hostFetch(hosts); return { set: P.bundlerSet(urls, fetchImpl), calls: fetchImpl.calls }; };
+
+await test('every chain with a paymaster names Pimlico first and Candide second, the first is `bundler`, and the Pay page lets the browser reach both', async () => {
+  const page = (await import('node:fs')).readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8');
+  const connect = /connect-src([^;]*)/.exec(page)[1].split(/\s+/);
+  for (const [chainId, c] of Object.entries(P.PAYMASTERS)) {
+    eq(c.bundlers.length, 2, `chain ${chainId}`);
+    eq(c.bundlers[0], `https://public.pimlico.io/v2/${chainId}/rpc`); eq(c.bundlers[1], `https://api.candide.dev/public/v3/${chainId}`);
+    eq(c.bundler, c.bundlers[0], 'the first');
+    for (const u of c.bundlers) if (!connect.includes(new URL(u).origin)) throw new Error(`${new URL(u).origin} is not in connect-src`);
+  }
+});
+await test('one bundler: an error comes back as the plain client gives it', async () => {
+  const { set } = setOf({ [PIM]: { eth_estimateUserOperationGas: rpcErr(-32500, 'AA33 reverted') } }, [URLS[0]]);
+  const e = await set.request('eth_estimateUserOperationGas', [{}, P.ENTRY_POINT]).catch((x) => x);
+  eq(e.kind, 'rpc'); eq(e.details, 'AA33 reverted');
+  const { set: down } = setOf({ [PIM]: { eth_sendUserOperation: 'down' } }, [URLS[0]]);
+  eq((await down.request('eth_sendUserOperation', [{}, P.ENTRY_POINT]).catch((x) => x)).kind, 'network');
+});
+await test('the price: the first bundler\'s quote is used when it answers, and the second is never asked', async () => {
+  const { set, calls } = setOf({ [PIM]: { pimlico_getUserOperationGasPrice: PRICE, eth_estimateUserOperationGas: est() } });
+  const r = await prep(set);
+  eq(calls.some((c) => c.startsWith('candide')), false); eq(BigInt(r.op.maxFeePerGas), 400_000_000n);
+});
+await test('the price: with the first bundler down and the second giving no quote, the node\'s own price is used, within the same bounds', async () => {
+  const { set, calls } = setOf({ [PIM]: { pimlico_getUserOperationGasPrice: 'down', eth_estimateUserOperationGas: 'down' }, [CAN]: { eth_estimateUserOperationGas: est() } });
+  const r = await prep(set, { nodePrice: async () => ({ maxFeePerGas: 450_000_000n, maxPriorityFeePerGas: 20_000_000n }) });
+  eq(BigInt(r.op.maxFeePerGas), 450_000_000n, 'the node price in the operation'); eq(BigInt(r.op.maxPriorityFeePerGas), 20_000_000n);
+  eq(r.proved[0], P.minimumViableFee(GAS, 450_000_000n)); eq(r.gasEstimation.status, 'estimated', 'and the second bundler\'s estimate was used');
+  eq(calls.includes('candide pimlico_getUserOperationGasPrice'), true, 'the second was asked for a quote first');
+  await rejects(prep(setOf({ [PIM]: { pimlico_getUserOperationGasPrice: 'down' } }).set, { nodePrice: async () => ({ maxFeePerGas: 90_000_000_000n, maxPriorityFeePerGas: 1n }) }), /over what the wallet/);
+});
+await test('the price: with no node price given, a bundler that cannot quote is an error as before; a quote over the bounds is not replaced by the node\'s', async () => {
+  await rejects(prep(setOf({ [PIM]: { pimlico_getUserOperationGasPrice: 'down' } }).set), /could not be reached/);
+  const over = { standard: { maxFeePerGas: '0x' + (90_000_000_000n).toString(16), maxPriorityFeePerGas: '0x1' } };
+  let asked = 0;
+  await rejects(prep(setOf({ [PIM]: { pimlico_getUserOperationGasPrice: over } }).set, { nodePrice: async () => { asked++; return { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n }; } }), /over what the wallet/);
+  eq(asked, 0, 'the node price was not asked for');
+});
+await test('the estimate: a first bundler that cannot be reached passes it to the second; a refusal by the first is final and the second is not asked', async () => {
+  const { set } = setOf({ [PIM]: { pimlico_getUserOperationGasPrice: PRICE, eth_estimateUserOperationGas: httpErr(503) }, [CAN]: { eth_estimateUserOperationGas: est() } });
+  eq((await prep(set)).gasEstimation.status, 'estimated');
+  const refused = setOf({ [PIM]: { pimlico_getUserOperationGasPrice: PRICE, eth_estimateUserOperationGas: rpcErr(-32500, 'AA33 reverted') }, [CAN]: { eth_estimateUserOperationGas: est() } });
+  await rejects(prep(refused.set), /would not take the withdrawal: AA33 reverted/);
+  eq(refused.calls.includes('candide eth_estimateUserOperationGas'), false);
+});
+await test('the estimate: the first bundler\'s "cannot tell" followed by the second\'s refusal is still the first\'s answer: the fallback limits, not a refusal', async () => {
+  const internal = rpcErr(-32603, 'Unknown error, could not parse simulate validation result');
+  const { set } = setOf({ [PIM]: { pimlico_getUserOperationGasPrice: PRICE, eth_estimateUserOperationGas: internal }, [CAN]: { eth_estimateUserOperationGas: rpcErr(-32500, 'AA33 reverted: Cannot find your merkle root') } });
+  const r = await prep(set);
+  eq(r.gasEstimation.status, 'fallback'); eq(r.gasEstimation.reason, 'bundler-internal');
+});
+await test('the send: a first bundler that cannot be reached passes it to the second, which is then the one asked for the receipt (an unknown there is final)', async () => {
+  let polls = 0;
+  const { set, calls } = setOf({ [PIM]: { eth_sendUserOperation: 'down', eth_getUserOperationReceipt: okReceipt }, [CAN]: { eth_sendUserOperation: '0x1', eth_getUserOperationReceipt: () => (polls++ < 2 ? null : okReceipt) } });
+  const r = await P.sendSponsoredOperation({ op: OP, chainId: 11155111, bundler: set, sleep: async () => {}, poll: 1 });
+  eq(r.txHash, '0x' + 'ab'.repeat(32));
+  eq(calls.filter((c) => c === 'candide eth_getUserOperationReceipt').length, 3);
+  eq(calls.filter((c) => c === 'pimlico eth_getUserOperationReceipt').length, 0, 'the first was not asked for it');
+});
+await test('the send: a refusal by the first bundler says nothing was sent, and the second is not asked', async () => {
+  const { set, calls } = setOf({ [PIM]: { eth_sendUserOperation: rpcErr(-32500, 'AA33 reverted') }, [CAN]: { eth_sendUserOperation: '0x1' } });
+  await rejects(P.sendSponsoredOperation({ op: OP, chainId: 11155111, bundler: set, sleep: async () => {}, poll: 1 }), /did not accept the withdrawal: AA33 reverted. Nothing was sent/);
+  eq(calls.includes('candide eth_sendUserOperation'), false);
+});
+await test('the send: the first cannot be reached and the second says it already has it: the operation is known, and waited for', async () => {
+  const { set } = setOf({ [PIM]: { eth_sendUserOperation: 'down', eth_getUserOperationByHash: 'down', eth_getUserOperationReceipt: null }, [CAN]: { eth_sendUserOperation: rpcErr(-32500, 'already known'), eth_getUserOperationByHash: { sender: '0x1' }, eth_getUserOperationReceipt: okReceipt } });
+  const r = await P.sendSponsoredOperation({ op: OP, chainId: 11155111, bundler: set, sleep: async () => {}, poll: 1 });
+  eq(r.txHash, '0x' + 'ab'.repeat(32));
+});
+await test('the send: neither can be reached, and the first\'s error is the one said (it may still go through)', async () => {
+  const { set } = setOf({ [PIM]: { eth_sendUserOperation: 'down', eth_getUserOperationByHash: 'down' }, [CAN]: { eth_sendUserOperation: 'down', eth_getUserOperationByHash: 'down' } });
+  await rejects(P.sendSponsoredOperation({ op: OP, chainId: 11155111, bundler: set, sleep: async () => {}, poll: 1 }), /Could not tell whether the bundler took the withdrawal/);
+});
+await test('before any send, a receipt is looked for at both: the first that has it answers, and none having it is unknown', async () => {
+  const has = setOf({ [PIM]: { eth_getUserOperationReceipt: null }, [CAN]: { eth_getUserOperationReceipt: okReceipt } });
+  eq((await has.set.request('eth_getUserOperationReceipt', ['0x1'])).success, true);
+  const none = setOf({ [PIM]: { eth_getUserOperationReceipt: null }, [CAN]: { eth_getUserOperationReceipt: null } });
+  eq(await none.set.request('eth_getUserOperationReceipt', ['0x1']), null);
+  const broken = setOf({ [PIM]: { eth_getUserOperationReceipt: 'down' }, [CAN]: { eth_getUserOperationReceipt: null } });
+  eq(await broken.set.request('eth_getUserOperationReceipt', ['0x1']), null);
+});
+await test('the node\'s own price: twice the coming block\'s base fee plus the highest median tip, a token tip when the tips are zero, a malformed history refused', async () => {
+  const hist = (base, rewards) => ({ request: async ({ method, params }) => { eq(method, 'eth_feeHistory'); eq(JSON.stringify(params), '["0xa","latest",[50]]'); return { baseFeePerGas: base, reward: rewards }; } });
+  const g = (n) => '0x' + BigInt(n).toString(16);
+  const p = await P.readFallbackGasPrice(hist([g(160_000_000), g(162_000_000), g(170_000_000)], [[g(10_000_000)], [g(150_000_000)]]));
+  eq(p.maxFeePerGas, 2n * 170_000_000n + 150_000_000n); eq(p.maxPriorityFeePerGas, 150_000_000n);
+  const zero = await P.readFallbackGasPrice(hist([g(100), g(100)], [[g(0)]]));
+  eq(zero.maxPriorityFeePerGas, 1_000_000n); eq(zero.maxFeePerGas, 200n + 1_000_000n);
+  await rejects(P.readFallbackGasPrice(hist([g(1)], [[g(0)]])), /Invalid host fee history/);
+  await rejects(P.readFallbackGasPrice(hist([g(1), g(1)], [[g(0), g(1)]])), /Invalid host fee history/);
+  await rejects(P.readFallbackGasPrice({ request: async () => null }), /Invalid host fee history/);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
