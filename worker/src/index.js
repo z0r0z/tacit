@@ -3693,12 +3693,19 @@ function withKvKeyLock(key, fn) {
   return run;
 }
 
+// A client's address as a rate-limit key. The limiters need to tell one source from another, not to know who it is, so the key
+// is a keyed hash: it cannot be turned back into an address (a bare hash of an IPv4 address can, by trying them all), and nothing
+// that reads the store learns who asked. The key is IP_HASH_SALT when set; otherwise a salt made when this process starts, which
+// also means a restart forgets who was limited, a fair price. Sentinels that are not addresses pass through.
+const _ipSalt = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+const ipBucket = (env, ip) => (!ip || ip === 'anon' || ip === '*' || ip === 'all' ? ip
+  : bytesToHex(hmac(sha256, new TextEncoder().encode(String(env.IP_HASH_SALT || _ipSalt)), new TextEncoder().encode(String(ip)))).slice(0, 24));
 const DUMP_RL_BURST = 30;
 const DUMP_RL_REFILL_MS = 10000; // one token back every 10s (~360/hr sustained per source)
 async function dumpRateLimit(env, ip) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv || !ip || ip === 'anon') return { ok: true };
-  const key = 'cps:dumprl:' + ip;
+  const key = 'cps:dumprl:' + ipBucket(env, ip);
   return withKvKeyLock(key, async () => {
     const now = Date.now();
     let b; try { b = JSON.parse((await kv.get(key)) || 'null'); } catch { b = null; }
@@ -3719,7 +3726,7 @@ async function dumpRateLimit(env, ip) {
 async function proveRateLimit(env, ip, bucket = 'prove', burst = PROVE_RL_BURST, refillMs = PROVE_RL_REFILL_MS) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv || !ip || ip === 'anon') return { ok: true };
-  const key = `cps:rl:${bucket}:${ip}`;
+  const key = `cps:rl:${bucket}:${ipBucket(env, ip)}`;
   return withKvKeyLock(key, async () => {
     const now = Date.now();
     let b; try { b = JSON.parse((await kv.get(key)) || 'null'); } catch { b = null; }
@@ -3846,7 +3853,7 @@ const proveBudget = (env) => dailyBudget(env, 'prove', Number(env.PROVE_MODE_DAI
 const spendProveBudget = (env) => spendDailyBudget(env, 'prove');
 // One client's share of the day's relay-paid proofs, by its address as the proxy reports it; 'anon' (no address) is bounded by the
 // global cap alone.
-const proveClientBudget = (env, ip) => (!ip || ip === 'anon' ? Promise.resolve({ ok: true, used: 0, cap: 0 }) : dailyBudget(env, `prove:${ip}`, Number(env.PROVE_MODE_CLIENT_DAILY_CAP || 20)));
+const proveClientBudget = (env, ip) => (!ip || ip === 'anon' ? Promise.resolve({ ok: true, used: 0, cap: 0 }) : dailyBudget(env, `prove:${ipBucket(env, ip)}`, Number(env.PROVE_MODE_CLIENT_DAILY_CAP || 20)));
 // Relayed ops that carry NO fee at all (fee-less by design: wrap, cbtcmint …, or a zero-fee bridgemint) are a deliberate
 // subsidy, and the per-IP bucket bounds one source, not many. Same two rules as the prove budget: spent only on
 // an ACCEPTED, non-deduped job (junk can't drain it), and refusal says what to do instead.

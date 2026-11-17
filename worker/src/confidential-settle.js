@@ -11,6 +11,9 @@
 
 // A claimed-but-unfinished job is reclaimable after this (prover crash). It outlasts the relay's own per-job limit
 // (SETTLE_JOB_TIMEOUT_SECS, 15 min), so a slow proof is never handed to a second prover while the first still runs.
+// Error text is republished to anyone who asks for a job's status, so no address or blob of calldata rides in it (the relay scrubs
+// its own, this covers a relay that does not). A transaction hash stays: those are published on purpose.
+const scrubPublic = (s) => String(s ?? '').replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '<url>').replace(/0x[0-9a-fA-F]{65,}/g, '<hex>').replace(/0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g, '<addr>');
 const CLAIM_TTL_MS = 16 * 60 * 1000;
 // The open board: a job proved and waiting for any sender. A relay that takes one to send has this long before it
 // goes back on the board. A relayed job stays until its own deadline (its holder asked the relay to send it, and the relay
@@ -81,6 +84,7 @@ function normalizeExit(e) {
 }
 
 // Promise-chain mutex: each fn starts after the previous one settles, whether it resolved or threw.
+export { scrubPublic };
 export function makeLock() {
   let tail = Promise.resolve();
   return (fn) => {
@@ -378,6 +382,9 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
 
   // A settled job has no further use for its op (the user's witness) or a sealed input's ciphertext: its id, memos and transaction stay.
   const forgetWitness = (j) => { delete j.op; if (j.sealed) j.sealed = { worker: j.sealed.worker }; };
+  // An exit's recipe names where the holder's funds go (finalRecipient, the calls). The relay keeps it only until it has reported the
+  // activation, one way or the other; after that the job needs to know that it had an exit, not what the exit was.
+  const forgetExit = (j) => { if (j.exit) j.exit = { forgotten: true }; };
 
   // A settle sent outside the relay (by the holder's own account, or another relayer from the board) closes its job once
   // verify(job, txHash) has seen it on chain. Only a job whose public values are known can be checked: open, sending, or
@@ -551,8 +558,8 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // recorded activation tx is final, while a recorded error can still be followed by a tx.
   function recordActivation(j, activateTx, activateError) {
     if (j.status !== 'settled' || !j.exit || j.activateTx) return false;
-    if (activateTx && TX_RE.test(String(activateTx))) { j.activateTx = String(activateTx).toLowerCase(); j.activateError = null; return true; }
-    if (activateError) { j.activateError = String(activateError).slice(0, 300); return true; }
+    if (activateTx && TX_RE.test(String(activateTx))) { j.activateTx = String(activateTx).toLowerCase(); j.activateError = null; forgetExit(j); return true; }
+    if (activateError) { j.activateError = scrubPublic(activateError).slice(0, 300); forgetExit(j); return true; }
     return false;
   }
   const ackView = (j) => ({ ok: true, status: j.status, txHash: j.txHash, publicValues: j.publicValues, proof: j.proof, activateTx: j.activateTx || null });
@@ -613,7 +620,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     // given one more try a few minutes later, when the job still has what it needs to prove: a hiccup then costs the holder a wait,
     // not a press. A failure that names the op (it cannot execute, its root is stale, its fee is short) is final, and so is the second.
     if (error && !j.retried && RELAY_SIDE_FAILURE(String(error)) && (j.op || (j.sealed && j.sealed.ct))) {
-      Object.assign(j, { status: 'pending', claimedAt: 0, error: null, retried: true, retryAfter: clock() + RETRY_DELAY_MS, lastError: String(error).slice(0, 300) });
+      Object.assign(j, { status: 'pending', claimedAt: 0, error: null, retried: true, retryAfter: clock() + RETRY_DELAY_MS, lastError: scrubPublic(error).slice(0, 300) });
       await storage.putJob(jobId, j);
       const pend = await storage.getPending();
       if (!pend.includes(jobId)) { pend.push(jobId); await storage.putPending(pend); }
@@ -621,7 +628,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     }
     let owed = null;
     if (error) {
-      j.status = 'failed'; j.error = String(error);
+      j.status = 'failed'; j.error = scrubPublic(error);
       if (j.charge && refund && NOT_THE_HOLDERS(String(error))) { owed = j.charge; j.charge = null; }
       // A settle can be given up on and still be included: a private endpoint keeps re-submitting an
       // accepted bundle long after the relay stops waiting. Keeping the hashes on the job is what makes
@@ -675,7 +682,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       const pend = await storage.getPending();
       if (!pend.includes(jobId)) { pend.push(jobId); await storage.putPending(pend); }
     } else if (error) {
-      j.status = 'failed'; j.error = String(error);
+      j.status = 'failed'; j.error = scrubPublic(error);
       if (Array.isArray(broadcastHashes) && broadcastHashes.length) j.broadcastHashes = broadcastHashes.slice(0, 8).map((h) => String(h));
       await storage.putJob(jobId, j);
       await dropOpen();
@@ -785,6 +792,9 @@ const JOB_TTL_SECS = 30 * 86400;
 // A job that ended failed is looked at for a day or two (its holder reads why, the operator may put it back on the queue, a late ack may promote it), and keeps its op
 // for that time only.
 const FAILED_JOB_TTL_SECS = 3 * 86400;
+// A settled exit that still holds its recipe (the activation was never reported) keeps it for a day, not a month.
+const SETTLED_EXIT_TTL_SECS = 86400;
+const jobTtl = (job) => (job && job.status === 'failed' ? FAILED_JOB_TTL_SECS : job && job.status === 'settled' && job.exit && job.exit.finalRecipient ? SETTLED_EXIT_TTL_SECS : JOB_TTL_SECS);
 export function buildConfidentialSettler(env, { hash, feeGate, priceFee, verifyPosted, expiryOf, refund, checkOp = null }) {
   const KV = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (KV && !kvLocks.has(KV)) kvLocks.set(KV, makeLock());
@@ -793,7 +803,7 @@ export function buildConfidentialSettler(env, { hash, feeGate, priceFee, verifyP
     getPending: async () => { const s = await KV.get('cps:pending'); return s ? JSON.parse(s) : []; },
     putPending: async (ids) => KV.put('cps:pending', JSON.stringify(ids)),
     getJob: async (id) => { const s = await KV.get('cps:job:' + id); return s ? JSON.parse(s) : null; },
-    putJob: async (id, job) => KV.put('cps:job:' + id, JSON.stringify(job), { expirationTtl: job && job.status === 'failed' ? FAILED_JOB_TTL_SECS : JOB_TTL_SECS }),
+    putJob: async (id, job) => KV.put('cps:job:' + id, JSON.stringify(job), { expirationTtl: jobTtl(job) }),
     getOpen: async () => { const s = await KV.get('cps:open'); return s ? JSON.parse(s) : []; },
     putOpen: async (ids) => KV.put('cps:open', JSON.stringify(ids)),
   };
