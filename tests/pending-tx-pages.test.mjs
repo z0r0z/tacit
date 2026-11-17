@@ -36,7 +36,7 @@ const probed = (c) => until(() => c.calls.includes('eth_getTransactionByHash'));
 async function stuck() {
   const c = chain(); c.send(orig);
   const wallet = makeWallet({ rpc: c.read });
-  const fast_ = (o = {}) => ({ read: c.read, probeMs: 10, every: 5, timeoutMs: 250, ...o });
+  const fast_ = (o = {}) => ({ read: c.read, probeMs: 5, every: 5, timeoutMs: 1200, ...o });
   const err = await wallet.receipt(orig.hash, fast_()).then(() => null, (e) => e);
   assert.match(err.message, /Sent, not confirmed yet/); assert.equal(err.seen?.nonce, '0', 'the error the wait threw carries what it learned');
   // the page's own wallet: its wait is the real one, shortened for the test; its trace is the real trace over the same chain
@@ -118,7 +118,7 @@ test('rewards: a claim a speed-up landed is confirmed under the hash that landed
 // replacement learned nothing of the transaction and could tell nothing)
 function sent() {
   const c = chain(); c.send(orig);
-  const wallet = makeWallet({ rpc: c.read }), o = { read: c.read, probeMs: 10, every: 5, timeoutMs: 250 };
+  const wallet = makeWallet({ rpc: c.read }), o = { read: c.read, probeMs: 5, every: 5, timeoutMs: 1200 };
   return { c, page: { receipt: (h) => wallet.receipt(h, o), trace: (h, seen, x) => wallet.trace(h, seen, { read: c.read, ...x }) } };
 }
 function card({ wallet, rpc }) {
@@ -219,7 +219,7 @@ test('front page: the swap card\'s wallet throws a cancel as the others do, and 
 // ── the trade page, whole: a press whose wait gave up, a speed-up in the wallet, and the next press ──
 test('trade: the press that gave up keeps what it learned, and the next press books the speed-up instead of trading again', async () => {
   const c = chain(), real = makeWallet({ rpc: c.read }), S = { pending: null }, said = [], booked = [], sentTx = [];
-  const wallet = { sendTx: async (t) => { sentTx.push(t); c.send(orig); return orig.hash; }, receipt: (h) => real.receipt(h, { read: c.read, probeMs: 10, every: 5, timeoutMs: 250 }), trace: (h, seen, o) => real.trace(h, seen, { read: c.read, ...o }) };
+  const wallet = { sendTx: async (t) => { sentTx.push(t); c.send(orig); return orig.hash; }, receipt: (h) => real.receipt(h, { read: c.read, probeMs: 5, every: 5, timeoutMs: 1200 }), trace: (h, seen, o) => real.trace(h, seen, { read: c.read, ...o }) };
   const body = `${sendSrc}\n${tradeSrc}\nreturn { sendAndReport, checkPending };`;
   const { sendAndReport, checkPending } = new Function('S', 'say', 'txLink', 'landed', 'wallet', 'rpc', 'clearTicket', 'readBalances', 'renderBalance', body)(
     S, (t) => said.push(String(t)), (h) => `[${h.slice(0, 6)}]`, async (rc, p) => { booked.push({ status: rc.status, hash: p.hash }); }, wallet, c.read, () => {}, async () => {}, () => {});
@@ -229,3 +229,16 @@ test('trade: the press that gave up keeps what it learned, and the next press bo
   assert.equal(await checkPending(), false, 'the next press sends nothing'); assert.deepEqual(booked, [{ status: '0x1', hash: fast.hash }]); assert.equal(sentTx.length, 1, 'one transaction was ever sent');
 });
 
+
+// ── the swap card: the signer it hands its saved plans ──
+test('swap card: the signer the plans use traces through the wallet, and answers with a promise where the wallet cannot trace', async () => {
+  const text = src('swap/card.js');
+  const body = cut(text, 'const pageSigner = {', '\nlet proverAsked = 0;', 'the card\'s signer');
+  const make = (wallet) => new Function('W', 'H', 'wallet', 'lc', 'signTyped', `${body}\nreturn pageSigner;`)({ account: '0xme' }, {}, wallet, (x) => String(x).toLowerCase(), async () => '0xsig');
+  const asked = [];
+  const traced = make({ trace: async (h, seen) => { asked.push([h, seen]); return { landed: { transactionHash: '0x2' } }; }, receipt: async () => ({}) });
+  assert.deepEqual(await traced.trace('0x1', { nonce: '3' }), { landed: { transactionHash: '0x2' } }); assert.deepEqual(asked, [['0x1', { nonce: '3' }]]);
+  const plain = make({ receipt: async () => ({}) });
+  const none = plain.trace('0x1');
+  assert.ok(none instanceof Promise, 'a promise, so a caller can ask with .catch and carry on'); assert.equal(await none, undefined);
+});

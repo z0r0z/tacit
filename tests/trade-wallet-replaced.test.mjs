@@ -3,7 +3,7 @@
 // an error for a cancel) and must stay what it was for everything else.
 //   node tests/trade-wallet-replaced.test.mjs
 import assert from 'node:assert/strict';
-import { chain } from './fake-eth-chain.mjs';
+import { chain, whenLooked } from './fake-eth-chain.mjs';
 
 const ET = new EventTarget();
 globalThis.addEventListener = ET.addEventListener.bind(ET); globalThis.removeEventListener = ET.removeEventListener.bind(ET); globalThis.dispatchEvent = ET.dispatchEvent.bind(ET);
@@ -14,7 +14,7 @@ await import('../dapp/activity.js');                                       // (w
 const me = '0x' + 'aa'.repeat(20), pool = '0x' + 'bb'.repeat(20), later = (ms, f) => new Promise((r) => setTimeout(() => { f(); r(); }, ms));
 const call = { to: pool, value: 5, input: '0x1234abcd' + '00'.repeat(200) };
 const orig = { hash: '0x' + '01'.repeat(32), from: me, nonce: 0, ...call }, fast = { hash: '0x' + '02'.repeat(32), from: me, nonce: 0, ...call };
-const fresh = () => { const c = chain(); const w = makeWallet({ rpc: c.read }); return { c, wait: (o = {}) => w.receipt(orig.hash, { read: c.read, probeMs: 10, every: 5, timeoutMs: 600, ...o }) }; };
+const fresh = () => { const c = chain(); const w = makeWallet({ rpc: c.read }); return { c, wait: (o = {}) => w.receipt(orig.hash, { read: c.read, probeMs: 10, every: 5, timeoutMs: 2000, ...o }) }; };
 
 // mined by itself, quickly: its own receipt, and nothing asked beyond receipts
 {
@@ -31,7 +31,7 @@ const fresh = () => { const c = chain(); const w = makeWallet({ rpc: c.read }); 
 // sped up: the same call at a higher fee takes the nonce; the wait gives that receipt (the lookup is the page's own: loaded from activity.js the first time it is wanted)
 {
   const { c, wait } = fresh(); c.send(orig);
-  later(40, () => { c.mempool.delete(orig.hash); c.mine(fast, 990); });
+  whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine(fast, 990); });
   const r = await wait();
   assert.equal(r.transactionHash, fast.hash, 'the receipt of what took its place'); assert.equal(r.status, '0x1');
 }
@@ -39,19 +39,19 @@ const fresh = () => { const c = chain(); const w = makeWallet({ rpc: c.read }); 
 {
   const A = await import('../dapp/activity.js');
   const { c, wait } = fresh(); c.send(orig);
-  later(40, () => { c.mempool.delete(orig.hash); c.mine(fast, 990); });
+  whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine(fast, 990); });
   assert.equal((await wait({ look: A.lookReplaced })).transactionHash, fast.hash);
 }
 // cancelled (a zero-value send to itself at the nonce): the first never ran, and that is said
 {
   const { c, wait } = fresh(); c.send(orig); const cancel = { hash: '0x' + '03'.repeat(32), from: me, nonce: 0, to: me, value: 0, input: '0x' };
-  later(40, () => { c.mempool.delete(orig.hash); c.mine(cancel, 995); });
+  whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine(cancel, 995); });
   await assert.rejects(wait(), (e) => e.replaced === true && e.hash === cancel.hash && /replaced in your wallet/.test(e.message), 'a cancel is not a success');
 }
 // a replacement that reverted is a revert, as any receipt is (the caller reads its status)
 {
   const { c, wait } = fresh(); c.send(orig);
-  later(40, () => { c.mempool.delete(orig.hash); c.mine({ ...fast, status: '0x0' }, 990); });
+  whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine({ ...fast, status: '0x0' }, 990); });
   assert.equal((await wait()).status, '0x0');
 }
 // never mined and never replaced: the wait ends as it always did

@@ -9,7 +9,7 @@ const ET = new EventTarget();
 globalThis.addEventListener = ET.addEventListener.bind(ET); globalThis.removeEventListener = ET.removeEventListener.bind(ET); globalThis.dispatchEvent = ET.dispatchEvent.bind(ET);
 const A = await import('../dapp/activity.js');
 
-import { chain } from './fake-eth-chain.mjs';
+import { chain, whenLooked } from './fake-eth-chain.mjs';
 const me = '0x' + 'aa'.repeat(20), pool = '0x' + 'bb'.repeat(20), other = '0x' + 'cc'.repeat(20);
 const call = { to: pool, value: 5, input: '0x1234abcd' + '00'.repeat(500) };
 const orig = { hash: '0x' + '01'.repeat(32), from: me, nonce: 0, ...call };
@@ -109,15 +109,15 @@ for (const [what, rep] of [['a cancel', { to: me, value: 0, input: '0x' }], ['an
 // ── a page's own wait for a receipt ──
 {
   const later = (ms, f) => new Promise((r) => setTimeout(() => { f(); r(); }, ms));
-  const wait = (c, o = {}) => A.waitMined({ read: c.read, hash: orig.hash, probeMs: 10, every: 5, timeoutMs: 400, ...o });
+  const wait = (c, o = {}) => A.waitMined({ read: c.read, hash: orig.hash, probeMs: 10, every: 5, timeoutMs: 2000, ...o });
   const fast = { hash: '0x' + '0f'.repeat(32), from: me, nonce: 0, ...call }, cancel = { hash: '0x' + '0e'.repeat(32), from: me, nonce: 0, to: me, value: 0, input: '0x' };
   let c = chain(); c.send(orig); later(8, () => c.mine(orig, 999));
   const r1 = await wait(c, { probeMs: 1000 }); assert.equal(r1.rc.transactionHash, orig.hash); assert.ok(c.calls.every((m) => m === 'eth_getTransactionReceipt'), 'a transaction that lands soon costs nothing beyond its receipt');
-  c = chain(); c.send(orig); later(50, () => { c.mempool.delete(orig.hash); c.mine(fast, 990); });
+  c = chain(); c.send(orig); whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine(fast, 990); });
   assert.equal((await wait(c)).rc.transactionHash, fast.hash, 'a speed-up: the receipt of what took its place');
-  c = chain(); c.send(orig); later(50, () => { c.mempool.delete(orig.hash); c.mine(cancel, 990); });
+  c = chain(); c.send(orig); whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine(cancel, 990); });
   assert.deepEqual(await wait(c), { replaced: cancel.hash }, 'a cancel: it never ran');
-  c = chain(); c.send(orig); later(50, () => { c.mempool.delete(orig.hash); c.mine({ ...fast, status: '0x0' }, 990); });
+  c = chain(); c.send(orig); whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine({ ...fast, status: '0x0' }, 990); });
   assert.equal((await wait(c)).rc.status, '0x0', 'a revert is a receipt: the caller reads its status');
   c = chain(); c.send(orig);
   const t = await wait(c, { timeoutMs: 120 }); assert.equal(t.timeout, true); assert.equal(t.seen?.nonce, '0', 'the time runs out with what the wait learned, for traceTx');

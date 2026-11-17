@@ -25,7 +25,7 @@ const orig = { hash: '0x' + '01'.repeat(32), from: me, nonce: 0, ...call }, fast
 // A lock with a bond sent a minute ago that is still pending in the journal (what the wait learned of it kept in the entry when it has been given up on).
 async function world({ trace = true } = {}) {
   const c = chain(); c.send(orig);
-  const real = makeWallet({ rpc: c.read }), o = { read: c.read, probeMs: 10, every: 5, timeoutMs: 200 };
+  const real = makeWallet({ rpc: c.read }), o = { read: c.read, probeMs: 5, every: 5, timeoutMs: 1200 };
   const seen = (await real.receipt(orig.hash, o).catch((e) => e)).seen;
   mem.clear();                                                              // (the journal lives in localStorage, written a moment after a put: each test starts with none)
   const J = makeJournal({});

@@ -26,3 +26,10 @@ export function chain() {
   };
   return c;
 }
+
+// Runs `f` once a wait has looked at a transaction while it was held, a moment after: a test's speed-up then never comes before the look it depends on, however busy the machine is
+// (a fixed delay did, now and then, and the wait then learned nothing of the transaction and ran out). Gives up after `give` ms, so a wait that never looks lets the process end.
+export function whenLooked(c, f, { after = 5, give = 4000 } = {}) {
+  const t = setInterval(() => { if (c.calls.includes('eth_getTransactionByHash')) { clearInterval(t); clearTimeout(g); setTimeout(f, after); } }, 2), g = setTimeout(() => clearInterval(t), give);
+}
+
