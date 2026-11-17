@@ -82,14 +82,31 @@ await check('a quote well above the lowest is never drawn first, however the dra
   for (const r of [0, 0.3, 0.5, 0.99999]) assert.equal(orderQuotes(qs, () => r)[0].e.url, 'https://cheap.example');
   assert.deepEqual(urls(orderQuotes(qs, () => 0)), ['https://cheap.example', 'https://mid.example', 'https://dear.example']);
 });
-await check('quotes within the margin of the lowest are drawn from by weight: the draw falls where the weights say', () => {
-  const lo = 1000, edge = 1000 + Number(NEAR_PCT) * 10;       // exactly at the margin: still near
-  const qs = [quote(lo, 1, 'a'), quote(edge, 3, 'b')];
+await check('quotes within the margin of the lowest are drawn from by weight, the dearer one scaled down by its price: the draw falls where the odds say', () => {
+  const lo = 1000, edge = 1000 + Number(NEAR_PCT) * 10;       // exactly at the margin: still near, at 64% of the cheapest's odds (1 / 1.25 squared)
+  const qs = [quote(lo, 1, 'a'), quote(edge, 3, 'b')];        // odds 1 : 3 x 0.64 = 1 : 1.92, so a is drawn below 1 / 2.92 = 0.3425
   assert.equal(orderQuotes(qs, () => 0.0)[0].e.url, 'https://a.example');
-  assert.equal(orderQuotes(qs, () => 0.24)[0].e.url, 'https://a.example');
-  assert.equal(orderQuotes(qs, () => 0.26)[0].e.url, 'https://b.example');
+  assert.equal(orderQuotes(qs, () => 0.34)[0].e.url, 'https://a.example');
+  assert.equal(orderQuotes(qs, () => 0.35)[0].e.url, 'https://b.example');
   assert.equal(orderQuotes(qs, () => 0.9999)[0].e.url, 'https://b.example');
   assert.deepEqual(urls(orderQuotes(qs, () => 0.9)), ['https://b.example', 'https://a.example'], 'the one not drawn follows');
+});
+await check('at equal weight a relay priced above the lowest is drawn less, in proportion to its price squared, and an equal price is an equal draw', () => {
+  const qs = [quote(1000, 1, 'a'), quote(1250, 1, 'b')];      // a: 1, b: 0.64 -> a is drawn below 1 / 1.64 = 0.6098
+  assert.equal(orderQuotes(qs, () => 0.6097)[0].e.url, 'https://a.example');
+  assert.equal(orderQuotes(qs, () => 0.6099)[0].e.url, 'https://b.example');
+  let a = 0, seed = 7;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+  for (let i = 0; i < 20000; i++) if (orderQuotes(qs, rnd)[0].e.url === 'https://a.example') a++;
+  assert.ok(Math.abs(a / 20000 - 0.6098) < 0.02, `a drew ${a / 20000}`);
+  const same = [quote(500, 1, 'c'), quote(500, 1, 'd')];
+  assert.equal(orderQuotes(same, () => 0.49)[0].e.url, 'https://c.example');
+  assert.equal(orderQuotes(same, () => 0.51)[0].e.url, 'https://d.example');
+});
+await check('quotes of no fee are drawn as equals, not divided by zero', () => {
+  const qs = [quote(0, 1, 'a'), quote(0, 1, 'b')];
+  assert.equal(orderQuotes(qs, () => 0.49)[0].e.url, 'https://a.example');
+  assert.equal(orderQuotes(qs, () => 0.51)[0].e.url, 'https://b.example');
 });
 await check('one fee unit over the margin is out of the draw', () => {
   const qs = [quote(1000, 1, 'a'), quote(1251, 1000, 'b')];       // 25.1% over, with a thousand times the weight

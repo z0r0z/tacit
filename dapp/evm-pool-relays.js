@@ -4,8 +4,9 @@
 // ships with, so a host that is not the one listed cannot send a fee anywhere else. `weight` is how likely the relay is among those priced alike
 // (1 when absent): a registry of staked or proven relays sets it, and nothing here cares where a weight came from.
 //
-// A spend asks every relay for a quote and takes among the cheapest: the relays within NEAR_PCT of the lowest fee are drawn from by weight, so a
-// busy relay is not the only one used and a cheap one is not the only one tried. The rest follow in order of fee, for a spend that has to go elsewhere.
+// A spend asks every relay for a quote and takes among the cheapest: the relays within NEAR_PCT of the lowest fee are drawn from by weight, and a
+// relay priced above the lowest has its odds scaled by (lowest / its fee) squared, so price wins most of the time, a busy relay is not the only one used,
+// and a cheap one is not the only one tried. The rest follow in order of fee, for a spend that has to go elsewhere.
 
 export const QUOTE_MS = 6_000;      // a relay that has not quoted by then is left out of this spend
 export const NEAR_PCT = 25n;        // how far above the lowest fee a quote may be and still be drawn from
@@ -58,8 +59,14 @@ export function orderQuotes(quotes, random = Math.random) {
   const byFee = [...quotes].sort((a, b) => (feeOf(a) < feeOf(b) ? -1 : feeOf(a) > feeOf(b) ? 1 : 0));
   const low = feeOf(byFee[0]);
   const near = byFee.filter((x) => feeOf(x) * 100n <= low * (100n + NEAR_PCT));
-  const total = near.reduce((t, x) => t + x.e.weight, 0);
+  // a relay's odds: its weight, less as it is dearer than the cheapest (at NEAR_PCT above, 64% of the cheapest's odds)
+  const odds = (x) => {
+    const f = feeOf(x);
+    const r = f === 0n ? 1 : Number((low * 1_000_000n) / f) / 1e6;
+    return x.e.weight * r * r;
+  };
+  const total = near.reduce((t, x) => t + odds(x), 0);
   let draw = random() * total, pick = near[near.length - 1];
-  for (const x of near) { draw -= x.e.weight; if (draw < 0) { pick = x; break; } }
+  for (const x of near) { draw -= odds(x); if (draw < 0) { pick = x; break; } }
   return [pick, ...byFee.filter((x) => x !== pick)];
 }
