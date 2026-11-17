@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { SHOP, MARKET, TAC, ROUTER, TOPICS, foldShelf, sortShelf, zeroBits, addressParts, tacText, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, decodeListing, decodeWord, refusalWords, badRecipient, isAddress, isId,
-  zerosOf, zerosText, usdText, tacUsdFrom, priceUsd, zeroTiers, filterShelf, tokenNumber, tokenUrl, ownerOfData, addressOfData, parseTokenId, soldTo, forwarderRuntime, forwarderInit, forwardRefusal, deployData, decodeAddress, initcodeOf, deployRefusal, deployFailed, ETH_AT_DEPLOY_ADDRESS, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, ethText } from '../dapp/shop/shelf.js';
+  zerosOf, zerosText, usdText, tacUsdFrom, priceUsd, zeroTiers, filterShelf, tokenNumber, tokenUrl, ownerOfData, addressOfData, parseTokenId, soldTo, forwarderRuntime, forwarderInit, forwardRefusal, deployData, decodeAddress, initcodeOf, deployRefusal, deployFailed, ETH_AT_DEPLOY_ADDRESS, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, pickVenue, ethText } from '../dapp/shop/shelf.js';
 
 const W = 10n ** 18n, w32 = (n) => BigInt(n).toString(16).padStart(64, '0');
 const id = (n) => '0x' + SHOP.slice(2) + '00' + '5125' + n.toString(16).padStart(18, '0');
@@ -204,4 +204,22 @@ test('paying with ETH: the call to the zap against cast, the next amount of ETH 
   assert.equal(retryAmountIn(10n ** 15n, 28n * W, 20n * W), 1400000000000001n, 'scaled to what is wanted, and a wei over');
   assert.ok(retryAmountIn(1000n, 7n, 3n) * 3n >= 7000n, 'never short');
   assert.equal(ethText(12345678901234567n), '0.0123'); assert.equal(ethText(123456789012345n), '0.00012'); assert.equal(ethText(2500000000000000000n), '2.500'); assert.equal(ethText(0n), '0'); assert.equal(ethText(999999999999999999n), '1.000');
+});
+
+test('which pool prices the swap into TAC: Precision unless the Tacit AMM pays over a percent more, the one that answered when only one did, nothing when neither paid', () => {
+  const P = (out) => ({ venue: 'precision', amountOut: BigInt(out) }), T = (out) => ({ venue: 'tacit-amm', amountOut: BigInt(out) });
+  const v = (...a) => pickVenue(...a)?.venue ?? null;
+  assert.equal(v(P(1000), T(1000)), 'precision');
+  assert.equal(v(P(1000), T(900)), 'precision');
+  assert.equal(v(P(1000), T(1010)), 'precision', 'exactly a percent more is not over a percent');
+  assert.equal(v(P(1000), T(1011)), 'tacit-amm', 'over a percent more is');
+  assert.equal(v(P(1000), T(2000)), 'tacit-amm');
+  // one that gave no price (or none that is positive) is left out
+  assert.equal(v(null, T(5)), 'tacit-amm'); assert.equal(v(P(5), null), 'precision');
+  assert.equal(v(P(0), T(5)), 'tacit-amm'); assert.equal(v(P(5), T(0)), 'precision');
+  assert.equal(pickVenue(null, null), null); assert.equal(pickVenue(P(0), T(0)), null); assert.equal(pickVenue(undefined, undefined), null);
+  // a pool whose call was refused when it was read is not asked for again
+  assert.equal(v(P(1000), T(900), ['precision']), 'tacit-amm');
+  assert.equal(v(P(900), T(1000), ['tacit-amm']), 'precision');
+  assert.equal(pickVenue(P(1000), T(900), ['precision', 'tacit-amm']), null);
 });

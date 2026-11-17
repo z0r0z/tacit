@@ -200,6 +200,14 @@ export const ETH_AT_DEPLOY_ADDRESS = 'Someone has sent ETH to the address this o
 export const ZAP = '0x000000000110d317ed602ca7ef10a72bd72bd56f';
 // A little over the price is asked of the swap, so that a small move of the pool before the transaction lands does not stop it; what is over comes back as TAC.
 export const ZAP_MARGIN_BPS = 150n;
+// Which of our two pools prices the swap into TAC, by the rule the front page's swap uses for ETH to TAC (evm-trade-venues.js route): the Precision pool unless the Tacit AMM pays over
+// one percent more; whichever answered when only one did; null when neither paid. `skip` names venues that were tried and refused.
+export function pickVenue(precision, tacit, skip = []) {
+  const usable = (q) => (q && q.amountOut > 0n && !skip.includes(q.venue) ? q : null);
+  const p = usable(precision), t = usable(tacit);
+  if (!p || !t) return p || t;
+  return p.amountOut * 100n >= t.amountOut * 99n ? p : t;
+}
 // buyWithEth(swapData, id, to, nonce, maxPrice, deadline)
 export function buyWithEthData({ swapData, id, to, nonce, maxPrice, deadline }) {
   const sw = strip(swapData);

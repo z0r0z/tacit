@@ -15,6 +15,7 @@ import { join, extname } from 'node:path';
 import { marketAddress } from '../worker/src/salt-pool.js';
 import { encodeList } from '../tools/vanity-shop-list.mjs';
 import { foldShelf, TOPICS, FROM_BLOCK, deployData, ZAP as SHIPPED } from '../dapp/shop/shelf.js';
+import { PRECISION_LENS, PRECISION_ROUTE, TACIT_AMM } from '../dapp/evm-trade-venues.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const REPO = new URL('..', import.meta.url).pathname, DAPP = join(REPO, 'dapp/');
@@ -78,6 +79,15 @@ const setTac = (who, amount) => rpcA('anvil_setStorageAt', [TACADDR, cast('kecca
 
 // the page's files, from the repo; shelf.js names a zap only when a run says so
 const flags = { zap: false };
+// calls the page's reads are refused, as a node refuses a revert, so that the other pool has to be used: the Precision pool's quote, or the whole purchase when its swap goes through Precision
+const rules = { noPrecisionQuote: false, precisionSwapReverts: false };
+const lower = (a) => a.slice(2).toLowerCase();
+const refused = (q) => {
+  if (q?.method !== 'eth_call') return false;
+  const c = q.params?.[0] || {}, to = String(c.to || '').toLowerCase(), data = String(c.data || '').toLowerCase();
+  if (rules.noPrecisionQuote && (to === PRECISION_LENS.toLowerCase() || data.includes(lower(PRECISION_LENS)))) return true;
+  return rules.precisionSwapReverts && USE && to === String(USE).toLowerCase() && data.includes(lower(PRECISION_ROUTE));
+};
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' };
 const server = http.createServer((req, res) => {
   const p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
@@ -119,6 +129,8 @@ async function openPage(wallet) {
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     const body = req.postData() || '';
     if (req.method() !== 'POST' || !/"jsonrpc"/.test(body)) { stray.push(req.url()); return route.fulfill({ status: 404, headers: cors, body: '' }); }
+    let one = null; try { one = JSON.parse(body); } catch { /* not JSON: it goes to the fork as it is */ }
+    if (one && !Array.isArray(one) && refused(one)) return route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify({ jsonrpc: '2.0', id: one.id, error: { code: 3, message: 'execution reverted', data: '0x' } }) });
     try { const r = await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body }); await route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: await r.text() }); }
     catch (e) { await route.fulfill({ status: 502, headers: cors, body: JSON.stringify({ error: e.message }) }).catch(() => {}); }
   });
@@ -135,7 +147,7 @@ let cursor = 900;
 function findId(nonce) { for (;;) { const id = idFor(cursor++), { address, bits } = marketAddress(id, nonce, { market: MARKET }); if (bits >= 6) return { id, nonce, address, bits }; } }
 const listAs = (items) => sendAs(OPS, SHOP, encodeList(items.map((x) => ({ id: x.id, price: x.price, nonce: x.nonce }))));
 
-let r1, r2, r3, r4;
+let r1, r2, r3, r4, r5;
 try {
   await rpcA('anvil_setBalance', [OPS, hex(50n * E18)]); await rpcA('anvil_impersonateAccount', [OPS]);
   const head = Number(BigInt(await rpcA('eth_blockNumber')));
@@ -265,12 +277,38 @@ try {
   ok(await q.evaluate(() => { const r = document.querySelector('#after').getBoundingClientRect(); return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight; }), 'a purchase made from far down a long list ends with "It is yours" in view');
   ok(r4.errors.length === 0 && r4.blocked.length === 0, `no page errors on the long shelf (${[...r4.errors, ...r4.blocked].join(' | ').slice(0, 300)})`);
   await r4.browser.close(); r4 = null;
+
+  // ---- the other pool: when the Precision pool gives no price, and when the swap through it would not go through, the purchase is made through the Tacit AMM
+  const fresh = many.filter((x) => x.id.toLowerCase() !== mid.toLowerCase() && x.id.toLowerCase() !== away.toLowerCase());
+  const viaTacit = async (label, set, row) => {
+    Object.assign(rules, { noPrecisionQuote: false, precisionSwapReverts: false }, set);
+    const buyer = await fundedWallet(5n * E18);
+    r5 = await openPage(buyer);
+    const g = r5.page, W5 = r5.walletLog;
+    await until(g, (id) => !!document.querySelector(`[data-buy="${id}"]`), row.id, 180000);
+    await g.click(`[data-buy="${row.id}"]`);
+    await until(g, (id) => document.querySelector(`[data-buy="${id}"]`)?.textContent.trim() === 'Buy', row.id, 60000);
+    const treasury = await tacBal(OPS);
+    await g.click(`[data-buy="${row.id}"]`);
+    await until(g, () => !!document.querySelector('[data-zap]'), null, 180000);
+    await g.click('[data-zap]');
+    await until(g, () => /It is yours/.test(document.querySelector('#after')?.textContent || ''), null, 240000);
+    const tx = W5.sends[0], has = (a) => tx.data.toLowerCase().includes(lower(a));
+    ok(W5.sends.length === 1 && has(TACIT_AMM) && !has(PRECISION_ROUTE), `${label}: one transaction, and its swap goes through the Tacit AMM and not the Precision pool`);
+    ok((await ownerOf(row.id))?.toLowerCase() === buyer.account.toLowerCase() && (await tacBal(OPS)) - treasury === row.price, `${label}: the token is the buyer's and the shop was paid exactly its price`);
+    ok((await ethBal(USE)) === 0n && (await tacBal(USE)) === 0n, `${label}: the zap keeps nothing`);
+    ok(r5.errors.length === 0 && r5.blocked.length === 0, `${label}: no page errors (${[...r5.errors, ...r5.blocked].join(' | ').slice(0, 200)})`);
+    await r5.browser.close(); r5 = null;
+    Object.assign(rules, { noPrecisionQuote: false, precisionSwapReverts: false });
+  };
+  await viaTacit('the Precision pool gives no price', { noPrecisionQuote: true }, fresh[0]);
+  await viaTacit('the swap through the Precision pool would not go through', { precisionSwapReverts: true }, fresh[1]);
   ok(stray.length === 0, `the page asked nothing of anyone but Ethereum nodes (${stray.slice(0, 3).join(', ')})`);
 } catch (e) {
   fails++; console.log('FAIL   ' + (e?.stack || e));
-  for (const r of [r1, r2, r3, r4]) if (r) { try { console.log('  page note:', await text(r.page, '#note')); } catch { /* the page is gone */ } }
+  for (const r of [r1, r2, r3, r4, r5]) if (r) { try { console.log('  page note:', await text(r.page, '#note')); } catch { /* the page is gone */ } }
 } finally {
-  for (const r of [r1, r2, r3, r4]) await r?.browser.close().catch(() => {});
+  for (const r of [r1, r2, r3, r4, r5]) await r?.browser.close().catch(() => {});
   anvil.kill('SIGKILL'); server.close();
 }
 console.log(fails ? `\n${fails} FAILED, ${n} ok` : `\nall ${n} ok`);
