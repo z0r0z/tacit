@@ -40,11 +40,20 @@ ok(/You hold private tETH \/ SPX liquidity, in the farm/.test(t) && /TAC streams
 ok(!(await p.evaluate(() => document.documentElement.dataset.page)), 'on the front page itself, not the SPX page');
 // a token with no pool, asked for by its address (the link the buy card offers): the start card says what goes in, and a token the pool has never held is added with it
 const link = (addr) => p.evaluate((x) => { const l = document.createElement('a'); l.href = '#'; l.dataset.hx = `earn:ether:${x}`; l.dataset.amt = '0.01'; document.body.append(l); l.click(); l.remove(); }, addr);
-await link('0x1f9840a85d5af5bf1d1762f925bdaddc4201f984');      // UNI
-const u = await waitFor(/Start the tETH \/ UNI pool/);
-ok(/tETH \/ UNI\s+no pool yet/.test(u) && /Puts in [\d.]+ ETH and [\d.]+ UNI/.test(u), 'a token with no pool, linked by address, offers to start it and says what goes in');
-ok(/Pool new: it holds only your deposit/.test(u), 'it warns that a new pool holds only the deposit');
-ok(/First UNI is added to the pool, once for everyone/.test(u) || /Starts the tETH \/ UNI pool/.test(u), 'a token the pool does not hold yet is added with the start');
+await link('0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9');      // AAVE
+const u = await waitFor(/tETH \/ AAVE/);
+const started = /Start the tETH \/ AAVE pool/.test(await waitFor(/Start the tETH \/ AAVE pool|Add as private LP/));
+const card = await tile();
+ok(/tETH \/ AAVE/.test(card) && /Puts in [\d.]+ ETH and [\d.]+ AAVE/.test(card), 'a token linked by address shows its tETH row and what goes in');
+ok(!started || (/no pool yet/.test(card) && /Pool new: it holds only your deposit/.test(card)), 'when it has no pool, the card offers to start it and warns that a new pool holds only the deposit');
+// a payer who holds the token starts the pool from both sides, with no swap (the contracts' composition is proved on a fork: tests/pool-start-both-fork.mjs)
+{
+  const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), body = fn.slice(fn.indexOf('async function xtBothUse('), fn.indexOf("// Liquidity added to a token's tETH pool"));
+  ok(/foundingPlan\(\{ swapIn: x, amountOut: q\.amountOut, amountLimit: q\.amountOut/.test(body) && /held >= plan\.bLeg/.test(body), 'the both-sides plan is the market rate of the ETH entered, and only offered when the payer holds the token leg');
+  ok(/addLiquidityPublicETHWithPermit2Calldata/.test(body) && /shieldSharesCalldata\(\{ poolId, shares: plan\.shares, commit: built\.commit \}\)/.test(body) && /to: plan\.owner/.test(body), 'it founds the pool with the payer as the share holder, then shields exactly the planned shares');
+  ok(/sendBatch\(\[\.\.\.\(r\.registered !== true \? \[t\.registerTokenCall\(r\.addr\)\] : \[\]\), \{ to: router, data, value: plan\.ethLeg \}, \{ to: t\.cfg\.pool, data: shield, value: 0n \}\]/.test(body), 'a wallet that batches sends the registration, the add and the shield as one confirmation');
+  ok(/const both = await xtBothUse\(r, wei\)\.catch\(\(\) => null\); hash = both \? await xtStartBoth/.test(fn), 'the start press uses it when the payer holds the token');
+}
 await b.close(); server.close();
 console.log(`\n${n} ok, ${fails} failed`);
 if (bad.length) { console.log('PAGE ERRORS:\n' + bad.join('\n')); fails++; }
