@@ -1095,7 +1095,8 @@ function treqPaint() {
     const v = html`<div class="treq-paid">${tickSvg()}<p class="treq-k" id="treq-h">Paid</p>
       <p class="treq-amt num">${fmt(got, 8, 8)}<small>TAC</small></p>
       <p class="treq-usd">${gotUsd ? `≈ ${gotUsd} · ` : ''}private, on the Tacit chain</p>
-      <p class="treq-land ${ctx.TREQ.landed ? 'ok' : ''}" id="treq-land">${ctx.TREQ.landed ? 'Settled on Ethereum ✓' : 'Settling on Ethereum, about a minute…'}</p>
+      <p class="treq-land ${ctx.TREQ.landed ? 'ok' : ''}" id="treq-land">${ctx.TREQ.landed ? 'Settled on Ethereum ✓' : 'Received. Settling on Ethereum, usually under a minute…'}</p>
+      <div class="treq-flow ${ctx.TREQ.landed ? 'done' : ''}" id="treq-flow" role="progressbar" aria-label="Settling on Ethereum" aria-valuetext="${ctx.TREQ.landed ? 'Settled on Ethereum' : 'Received, settling on Ethereum'}"><div class="stp"><span class="on">Received</span><span class="${ctx.TREQ.landed ? 'on' : 'now'}">In a block</span><span class="${ctx.TREQ.landed ? 'on' : ''}">On Ethereum</span></div><div class="bar"><i></i></div></div>
       ${head}
       <div class="treq-acts"><button class="btn" type="button" data-treq-new>New request</button><button class="btn ghost" type="button" data-treq-close>Done</button></div></div>`;
     if (el.__h !== v.s) { el.__h = v.s; mount(el, v); }
@@ -1151,7 +1152,7 @@ async function treqWatch(my) {
     await sleep(5000);
     if (my !== ctx.TREQ.n) return;
     await chainScan(true).catch(() => {});
-    if (c.has(ctx.TREQ.paid.key)) { ctx.TREQ.landed = true; const l = $('#treq-land'); if (l) { l.classList.add('ok'); l.textContent = 'Settled on Ethereum ✓'; } rerender('tac'); }
+    if (c.has(ctx.TREQ.paid.key)) { ctx.TREQ.landed = true; const l = $('#treq-land'); if (l) { l.classList.add('ok'); l.textContent = 'Settled on Ethereum ✓'; } const f = $('#treq-flow'); if (f) { f.classList.add('done'); f.setAttribute('aria-valuetext', 'Settled on Ethereum'); f.querySelectorAll('.stp span').forEach((x) => { x.className = 'on'; }); } rerender('tac'); }
   }
 }
 document.addEventListener('click', (e) => {
