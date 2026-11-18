@@ -152,4 +152,12 @@ await check('every host the route can use is in the CSP of every page that can c
   assert.ok(SHIPPED.nostr.length >= 3 && SHIPPED.nostr.every((u) => /^wss:\/\//.test(u)), 'at least three wss relays');
 });
 
+await check('the prove page reads each forwarder\'s health, so its CSP names them, and it has the card', () => {
+  const html = readFileSync(new URL('../dapp/prove/index.html', import.meta.url), 'utf8');
+  const connect = (/http-equiv="Content-Security-Policy"[^>]*?connect-src([^;]*)/s.exec(html)?.[1] || '').split(/\s+/);
+  for (const host of SHIPPED.forwarders) assert.ok(connect.includes(host), `prove/index.html does not allow ${host}`);
+  assert.match(html, /id="fwd-box"/);
+  assert.match(html, /community-runner\.mjs forward/);
+});
+
 console.log(`\n${n} checks passed`);

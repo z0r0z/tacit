@@ -855,6 +855,21 @@ addEventListener('storage', (e) => { if (e.storageArea === localStorage && e.key
 // The node's jobs as tabs: #tab=relay or #tab=bitcoin opens one (a link from a waiting lock carries need= and why= beside it), and the
 // other jobs' reads start the first time one of their tabs opens. Each card has its own link too, /prove/#<its data-card>: that opens
 // its tab, brings it into view and marks it for a moment; each card's Link copies that address.
+
+// The forwarders the pay page sends private requests through, and whether each answers now (a read of its /health), with the commands to run and check one.
+let fwdLoaded = false;
+async function loadForwarders() {
+  if (fwdLoaded) return;
+  fwdLoaded = true;
+  const { ROUTE } = await import('/private-route.js?cb=1643eb64');
+  const box = $('#fwd-box');
+  const cmd = $('#fwd-cmd');
+  if (cmd) cmd.textContent = `FORWARD_URL=https://your.host node tools/community-runner.mjs forward\nnode tools/private-route-check.mjs --service ${ROUTE.keeper} --gateway ${ROUTE.gateway} --forwarder https://your.host`;
+  const read = async (f) => { const t0 = performance.now(); try { const r = await fetch(`${f}/health`, { cache: 'no-store', signal: AbortSignal.timeout(5000) }); return r.ok ? `${Math.round(performance.now() - t0)} ms` : `HTTP ${r.status}`; } catch { return 'no answer'; } };
+  const rows = await Promise.all(ROUTE.forwarders.map(async (f) => `<div class="kv"><span>${new URL(f).host}</span><b>${await read(f)}</b></div>`));
+  box.innerHTML = rows.join('') + `<div class="kv"><span>Nostr relays, when none answers</span><b>${(ROUTE.nostr || []).length}</b></div>`;
+}
+
 const TABS = ['prove', 'relay', 'bitcoin'];
 const CARDS = new Map([...document.querySelectorAll('[data-card]')].map((el) => [el.dataset.card, el]));
 const cardOf = () => (CARDS.has(location.hash.slice(1)) ? location.hash.slice(1) : null);
@@ -866,6 +881,7 @@ function showTab(name, { write = true } = {}) {
     $(`#tb-${n}`).tabIndex = n === t ? 0 : -1;
   }
   if (t !== 'prove') loadOps().then((m) => m.startOps()).catch(() => {});
+  if (t === 'relay') loadForwarders().catch(() => {});
   if (write) {
     const h = new URLSearchParams(cardOf() ? '' : location.hash.slice(1));
     if (t === 'prove') h.delete('tab'); else h.set('tab', t);
