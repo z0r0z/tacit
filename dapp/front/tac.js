@@ -176,7 +176,7 @@ function renderBridgeIn(el) {
         <div class="rcpt" id="br-allp" hidden></div>` : ''}`}
     <div class="rcpt" id="br-rcpt" hidden></div>
     ${BR_TO_ON ? html`<div id="br-towrap" hidden>
-      <div class="amt text"><input id="br-to" placeholder="Send it to someone else: their Tacit address or name" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Send it to someone else"></div>
+      <div class="amt text"><input id="br-to" placeholder="Send it to someone else: their Tacit address or name" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Send it to someone else"></div>
       <div class="status" role="status" id="br-tos"></div></div>` : ''}
     <label class="pick" id="br-ackrow" hidden><input type="checkbox" id="br-ack"><span id="br-acktext">I understand a bridge can’t be undone once its burn confirms on Bitcoin.</span></label>
     <button class="btn" type="button" id="br-go" disabled>Bridge to Ethereum</button>
@@ -184,9 +184,9 @@ function renderBridgeIn(el) {
     <p class="note">A bridge from Bitcoin needs no Ethereum gas: the relay sends the Ethereum side. The Bitcoin fee is paid in sats from your Bitcoin address. <button class="link" type="button" id="br-addrs">Your addresses and what each is for</button></p>
     <details class="lockmore"><summary>A bridge you started is not listed</summary>
       <p class="note">One started on another device, or in the classic app, is rebuilt from its burn or move transaction and this key.</p>
-      <div class="amt text"><input id="br-txid" placeholder="Burn or move transaction id" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Burn or move transaction id"></div>
-      <div class="amt text" id="br-amtrow" hidden><input id="br-ramt" inputmode="decimal" placeholder="TAC amount" autocomplete="off" aria-label="TAC amount of that bridge"></div>
-      ${BR_TO_ON ? html`<div class="amt text"><input id="br-fto" placeholder="Sent to someone else? Their address" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Address that bridge paid"></div>` : ''}
+      <div class="amt text"><input id="br-txid" placeholder="Burn or move transaction id" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Burn or move transaction id"></div>
+      <div class="amt text" id="br-amtrow" hidden><input id="br-ramt" inputmode="decimal" placeholder="TAC amount" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="TAC amount of that bridge"></div>
+      ${BR_TO_ON ? html`<div class="amt text"><input id="br-fto" placeholder="Sent to someone else? Their address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Address that bridge paid"></div>` : ''}
       <button class="btn ghost" type="button" id="br-find">Find it</button>
       <div class="status" role="status" id="br-fstatus"></div>
     </details>`);
@@ -619,7 +619,7 @@ function renderTacBal(el) {
     ${tacPlacesView(places)}
     ${spendable('tac') && TACW.pub ? html`<div class="callout"><span>${fmt(spendable('tac') * E10, 18, 2)} TAC to ${your()}.${tacFeeNote()}</span><button class="btn ghost" type="button" id="tac-pub">Withdraw all</button></div>
       <div class="lbl"><span>Send it to</span><span>${your()} unless you enter an address</span></div>
-      <div class="amt text"><input id="tac-pub-to" placeholder="0x… (optional)" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Where the public TAC goes"></div>` : ''}
+      <div class="amt text"><input id="tac-pub-to" placeholder="0x… (optional)" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Where the public TAC goes"></div>` : ''}
     <p class="tpg-ways"><button class="link" type="button" data-th="forms" aria-expanded="${String(TACW.forms)}">${TACW.forms ? 'Fewer ways' : 'More ways'}</button></p>
     <div id="tac-forms"><div id="tac-shield"></div><div id="tac-send"></div></div>
     <div class="status" role="status" id="tac-bal-status"></div>`);
@@ -819,7 +819,7 @@ function tcoPaint() {
     ${l.note ? html`<p class="tco-note"><span>Their note</span>“${l.note}”</p>` : ''}
     ${l.amt ? html`<p class="tco-amt num">${fmt(units, 8, 8)}<small>TAC</small></p><p class="tco-usd">${usd ? `≈ ${usd}` : html`&nbsp;`}</p>` : ''}`);
   const inEl = $('#tco-in');
-  if (!l.amt && !$('#tco-amt')) { inEl.__h = null; mount(inEl, html`<div class="amt tco-amtin"><input id="tco-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="How much to pay, in TAC"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div><p class="tco-usd" id="tco-usd"></p>`); $('#tco-amt').oninput = () => tcoPaint(); }
+  if (!l.amt && !$('#tco-amt')) { inEl.__h = null; mount(inEl, html`<div class="amt tco-amtin"><input id="tco-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="How much to pay, in TAC"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div><p class="tco-usd" id="tco-usd"></p>`); $('#tco-amt').oninput = () => tcoPaint(); }
   else if (l.amt && inEl.firstChild) mount(inEl, html``);
   if ($('#tco-usd')) $('#tco-usd').textContent = usd ? `≈ ${usd}` : '';
   const held = k && chainOn() ? chainHeld() : null, q = ctx.TCO.q && ctx.TCO.qKey === tcoQk(rc, units) ? ctx.TCO.q : null;
@@ -1220,7 +1220,7 @@ function tcardAll(k, side) {
   return html`<p class="tcd-all"><b class="num">${t(all)}</b> private in all: ${rest.map(([key, what, go], i) => html`${i ? ' · ' : ''}<span class="num">${t(p[key])}</span> ${what}${go ? html` ${go}` : ''}`)}</p>`;
 }
 const tcdAmt = () => html`<div class="lbl"><label for="tcd-amt">Amount</label><span class="tcd-have num" id="tcd-have"></span><button type="button" id="tcd-max">Max</button></div>
-  <div class="amt"><input id="tcd-amt" inputmode="decimal" placeholder="0.00" autocomplete="off"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>`;
+  <div class="amt"><input id="tcd-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>`;
 const tcdRow = (k, v) => html`<div><dt>${k}</dt><dd>${v}</dd></div>`;
 const tcdRows = (...rows) => html`<dl class="tcd-rows">${rows.filter(Boolean)}</dl>`;
 const tcdHave = (text) => { const el = $('#tcd-have'); if (el && el.textContent !== text) el.textContent = text; };
@@ -1258,8 +1258,8 @@ function tcardForm() {
   if (tab === 'receive') {
     if (!key) return html`${line}<button class="btn tcd-go" type="button" data-signin>Sign in to see your address</button>`;
     return html`${line}<div class="lbl"><label for="tcd-link-amt">Ask for</label><span>or leave it to them</span></div>
-      <div class="amt"><input id="tcd-link-amt" inputmode="decimal" placeholder="Any amount" autocomplete="off"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
-      <div class="tcd-linkin"><input id="tcd-link-for" maxlength="80" placeholder="What for (optional)" aria-label="What it is for, optional: the payer sees it" autocomplete="off"><input id="tcd-link-name" placeholder="your name (.wei), optional" aria-label="A name of yours for the link, optional" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
+      <div class="amt"><input id="tcd-link-amt" inputmode="decimal" placeholder="Any amount" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
+      <div class="tcd-linkin"><input id="tcd-link-for" maxlength="80" placeholder="What for (optional)" aria-label="What it is for, optional: the payer sees it" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other"><input id="tcd-link-name" placeholder="your name (.wei), optional" aria-label="A name of yours for the link, optional" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off"></div>
       <button class="btn tcd-go" type="button" id="tcd-req-go">Show the code to pay</button>
       <div id="tcd-linkrow"></div>
       ${navigator.share ? html`<button class="btn ghost tcd-go" type="button" id="tcd-share">Share your pay link</button>` : ''}
@@ -1272,7 +1272,7 @@ function tcardForm() {
     ${tab === 'withdraw' ? html`<div class="tcd-dest" role="radiogroup" aria-label="Where it goes">${TCD_DEST.map(([k, t]) => html`<button type="button" role="radio" aria-checked="${String(ctx.TCARD.dest === k)}" tabindex="${ctx.TCARD.dest === k ? 0 : -1}" data-tcd-dest="${k}">${t}</button>`)}</div>` : ''}
     ${tcdAmt()}
     ${tab === 'send' ? html`<div class="lbl"><label for="tcd-to">To</label><span>tacit1…, 0x… or a name</span></div>
-      <div class="amt text"><input id="tcd-to" placeholder="Their name.wei or tacit1… address" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off"></div>` : ''}
+      <div class="amt text"><input id="tcd-to" name="tacit-recipient" placeholder="Their name.wei or tacit1… address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off"></div>` : ''}
     <div class="note tcd-q" id="tcd-q" data-tab="${tab}" aria-live="polite"></div>
     <button class="btn tcd-go" type="button" id="tcd-go">${go}</button>
     ${tab === 'withdraw' && ctx.TCARD.dest === 'wallet' && key ? html`<p class="tcd-way"><button class="link" type="button" data-tcd-tab="send">Another address? Send it there</button></p>` : ''}
@@ -1843,7 +1843,7 @@ function tacShield(el, status, acctBal, walletBal) {
   if (!src) { mount(el, html`${swap}`); wireSwap(); return; }
   mount(el, html`
     <div class="lbl"><span>Shield TAC</span><button type="button" id="tsh-max">TAC in ${from} ${fmt(balance, 18, 2)}</button></div>
-    <div class="amt"><input id="tsh-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="TAC to make private"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
+    <div class="amt"><input id="tsh-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="TAC to make private"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
     <div class="rcpt" id="tsh-rcpt" hidden></div>
     <button class="btn" type="button" id="tsh-go" disabled>Shield</button>
     <p class="note">One transaction from ${from}${src === 'wallet' ? ', with a signed permit' : ''}; ${ownNow(['wrap']) ? `it is proved ${devOn() ? 'on this computer' : 'with your own credit'} first, so nothing waits in the pool` : 'Tacit’s relay does the privacy work after'}. It stays private until you send it or make it public again.</p>${swap}`);
@@ -2011,7 +2011,7 @@ async function tnConfirm(list, picked) {
   } else if (kind === 'split') {
     const n = picked[0], amt = BigInt(n.amount);
     mount(cf, html`<h3>Split ${brTac(amt)}</h3>
-      <div class="amt"><input id="tn-amt" inputmode="decimal" autocomplete="off" placeholder="TAC to split off" aria-label="TAC to split off"><span class="u">TAC</span></div>
+      <div class="amt"><input id="tn-amt" inputmode="decimal" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" placeholder="TAC to split off" aria-label="TAC to split off"><span class="u">TAC</span></div>
       ${kv('Keeps', '—', 'tn-keep')}
       ${kv('Bitcoin fee', 'Checking…', 'tn-fee')}
       ${kv('Then', 'Both notes can be bridged once Bitcoin’s proof has seen them, usually a few hours')}
