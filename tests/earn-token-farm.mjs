@@ -92,6 +92,12 @@ ok(!started || (/no pool yet/.test(card) && /Pool new: it holds only your deposi
   ok(/if \(way === 'own'\) \{ try \{ t\.releaseShareIndex/.test(body), 'choosing to prove on the device frees the share index and sends nothing');
   ok(/\/confidential\/relay`\)/.test(body) && /tacit-proof-slow-v1/.test(body) && /opts\.onUpdate = \(u\) =>/.test(body), 'the notice carries the relay\'s own queue gauge and the job\'s status trail, and keeps them for tracing');
 }
+// the Privacy row's count is read again while the page is open (it said "0 deposits" for a token just deposited, until the page was reloaded)
+{
+  const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), body = fn.slice(fn.indexOf('const ANON = {'), fn.indexOf('var TACP = {'));
+  ok(/Date\.now\(\) - ANON\.at > 60e3/.test(body) && /\.finally\(\(\) => \{ ANON\.p = null; ANON\.at = Date\.now\(\); \}\)/.test(body), 'the deposit count is asked again once a minute, and a failed read waits the minute');
+  ok(/const changed = JSON\.stringify\(j\.assets\) !== JSON\.stringify\(ANON\.v\?\.assets\)/.test(body) && /if \(changed\)/.test(body), 'the card and tile are painted again only when a count has changed');
+}
 await b.close(); server.close();
 console.log(`\n${n} ok, ${fails} failed`);
 if (bad.length) { console.log('PAGE ERRORS:\n' + bad.join('\n')); fails++; }

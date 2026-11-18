@@ -132,7 +132,7 @@ const TL = { rows: SPX_SEED ? [SPX_SEED] : [], at: 0, p: null };
 const SKIP = new Set(['0xae7ab96520de3a18e5e111b5eaab095312d7fe84']);
 const LOGO = SPX_SEED ? { [SPX_SEED.addr]: `/swap/logos/${SPX_SEED.addr}.webp` } : {};
 const okLogo = (l) => (typeof l === 'string' && /^data:image\/(svg\+xml|png);base64,[A-Za-z0-9+/=]+$/.test(l) && l.length < 40000 ? l : null);
-function takeList(rows, uni = []) {
+function takeList(rows, uni = [], extra = []) {
   const out = [], have = new Set();
   for (const o of rows || []) {
     const a = lc(o?.a || ''), logo = okLogo(o?.l);
@@ -147,6 +147,13 @@ function takeList(rows, uni = []) {
     if (o.l === 1) LOGO[a] ||= `/swap/logos/${a}.webp`;
     out.push({ sym: String(o.s || '?').slice(0, 12), name: String(o.n || '').slice(0, 40), addr: a, dec: o.d, uni: true }); have.add(a);
   }
+  for (const o of extra || []) {     // the rows added by hand (extra-tokens.js): listed, searchable, with a logo of their own
+    const a = lc(o?.a || ''), logo = okLogo(o?.l);
+    if (!/^0x[0-9a-f]{40}$/.test(a) || SKIP.has(a) || !Number.isInteger(o.d) || o.d > 36) continue;
+    if (logo) LOGO[a] = logo;
+    if (have.has(a)) continue;
+    out.push({ sym: String(o.s || '?').slice(0, 12), name: String(o.n || '').slice(0, 40), addr: a, dec: o.d, extra: true }); have.add(a);
+  }
   if (SPX_SEED && !have.has(SPX_SEED.addr)) out.push(SPX_SEED);
   TL.rows = out;
 }
@@ -160,19 +167,19 @@ async function checkAmmRoute() {
   fit('pay'); paint();
   if (S.q && `${S.pay}>${S.get}:${kindOf(S.pay, S.get)}` !== was) requote(true);
 }
-const listFiles = () => Promise.all([import('/swap/tokens.js?cb=73f33d2c'), import('/swap/uni-tokens.js?cb=866feaad')]);
+const listFiles = () => Promise.all([import('/swap/tokens.js?cb=73f33d2c'), import('/swap/uni-tokens.js?cb=866feaad'), import('/swap/extra-tokens.js?cb=3b5f1eba')]);
 function loadList() {
   if (TL.at) return Promise.resolve();
   return (TL.p ||= (async () => {
-    const [{ LIST }, { UNI }] = await listFiles();
-    takeList(LIST, UNI); TL.at = Date.now();
+    const [{ LIST }, { UNI }, { EXTRA }] = await listFiles();
+    takeList(LIST, UNI, EXTRA); TL.at = Date.now();
     paintSides(); if (W.account) readBalances(false).then(paintSides);
   })().catch(() => {}).finally(() => { TL.p = null; }));
 }
 // A token's logo from the token list, with no card mounted: the card mounts with the Swap tab, so a page that draws a token before then (a visit that begins on
 // Send, Request or Bridge) asks here, once, and gets the lookup.
 let LOGOS = null;
-export const tokenLogos = () => (LOGOS ||= listFiles().then(([{ LIST }, { UNI }]) => { if (!TL.at) takeList(LIST, UNI); return (a) => LOGO[lc(String(a || ''))] || null; }).catch((e) => { LOGOS = null; throw e; }));
+export const tokenLogos = () => (LOGOS ||= listFiles().then(([{ LIST }, { UNI }, { EXTRA }]) => { if (!TL.at) takeList(LIST, UNI, EXTRA); return (a) => LOGO[lc(String(a || ''))] || null; }).catch((e) => { LOGOS = null; throw e; }));
 const pooled = (k) => !!SERVED[k];
 const tacitPooled = (k) => isEth(k) || tacitKey(k) || pooled(k);
 let LISTED = { rows: null, custom: null, list: [], by: new Map() };
