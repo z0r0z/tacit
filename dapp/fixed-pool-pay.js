@@ -165,7 +165,7 @@ export function newestSeen(entries) {
   let best = null;
   // notes made in one transaction share a time: the one with the fewest deposits after it is the newest
   for (const x of entries) if (x?.seen && Number.isFinite(x.seen.t) && (!best || x.seen.t > best.t || (x.seen.t === best.t && (x.seen.since ?? Infinity) < (best.since ?? Infinity)))) best = x.seen;
-  return best ? { text: `Newest note: ${best.text.replace(/^Deposited/, 'deposited')}.${best.low ? ' ' + best.nudge : ''}`, low: best.low } : null;
+  return best ? { text: `Newest note: ${best.text.replace(/^Deposited/, 'deposited')}.`, nudge: best.low ? best.nudge : '', low: best.low } : null;
 }
 // For a withdrawal taking these notes: a sentence if any is early to take out, else ''
 export function exitWarning(entries) {
@@ -644,7 +644,7 @@ export function attachWithdraw(env) {
       <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lw-find">${account ? 'Look for notes' : 'Connect wallet'}</button></span></div>
       ${st.list.length
         ? `<div class="kv"><span>${st.list.length} whole ${st.list.length === 1 ? 'note' : 'notes'}</span><b>${formatEther(total)} ETH</b></div>
-           ${(() => { const s = newestSeen(st.list); return s ? `<p class="note ${s.low ? 'warn' : 'mute'}">${esc(s.text)}</p>` : ''; })()}
+           ${(() => { const s = newestSeen(st.list); return s ? `<p class="note mute">${esc(s.text)}</p>` : ''; })()}
            <p class="note">Withdrawals use these first, then your private balance. ${st.gas === 'wallet' ? 'Your wallet sends each note and pays its gas, so it shows as the sender.' : `Gas comes out of the notes, at most ${MAX_FEE_PERCENT}% of each.`}</p>
            <div class="lbl"><span>Gas</span><span><label>Paid from <select id="lw-gas" aria-label="Where the notes' gas is paid from"><option value="note"${st.gas === 'note' ? ' selected' : ''}>the notes</option><option value="wallet"${st.gas === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>`
         : '<p class="note">None known in this browser. Look for notes asks your wallet to sign each number it tries.</p>'}
