@@ -3,7 +3,7 @@
 // ("Buy and shield"), the flow the /spx/ page has for SPX alone. Browser, no wallet, the quote read over the public RPCs.
 //   - ETH is the default (the plain shield, to private ETH) and the To coin is a button
 //   - the picker lists ETH and tokens, not TAC, WETH or a private-only coin, and searches
-//   - picking PEPE prices ETH -> private PEPE ("swap, then shield"), the button says what it is, a link to share is not offered
+//   - picking PEPE prices ETH -> private PEPE ("swap, then shield"), the button says what it is, a link to share is offered
 //   - picking ETH again is the plain shield; Withdraw's To coin is not a button; paying with a token (DAI) goes back to shielding it as it is
 //
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/shield-buy-any.mjs
@@ -78,7 +78,7 @@ const tp = await waitFor(/Privacy 3 deposits in 30 days · low/, 20000);ok(/Priv
 const hint = await waitFor(/Pool none for tETH \/ PEPE yet · start one/, 25000);
 // the hint shows only while the token has no tETH pool, which is live state (a pool for it can be started at any time): then the card says so and offers the start; with a pool it offers neither
 ok(/Pool none for tETH \/ PEPE yet · start one/.test(hint) || !/Pool none for/.test(hint), 'the buy offers to start a tETH pool when the token has none, and says nothing of it when it has');
-ok(!(await p.evaluate(() => { const c = document.querySelector('#copy'); return !!c && !c.hidden; })), 'no share link is offered for it (a link opens the Swap tab)');
+ok(await p.evaluate(() => { const c = document.querySelector('#copy'); return !!c && !c.hidden; }), 'a link to share is offered for it (the buy has its own link: tests/shield-buy-link.mjs)');
 const go = await p.evaluate(() => document.querySelector('#go')?.innerText);
 ok(/Connect wallet/.test(go), 'with no wallet the button asks to connect');
 await p.click('#get-coin');

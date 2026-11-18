@@ -943,11 +943,18 @@ function shareLink() {
   const mk = moveOf(), amt = String(S.amt || '').trim();
   if (!H.copy || !/^\d{0,12}(?:\.\d{1,18})?$/.test(amt) || !(Number(amt) > 0)) return null;
   if (mk) return `${location.origin}/#card=shield:${mk.replace('>', ':')}&amt=${amt}`;
+  if (FLOW === 'shield' && kindOf(S.pay, S.get) === 'zap' && !H.moves?.zapTo?.()) return `${location.origin}/#card=shield:ether:${lc(S.get)}&amt=${amt}`;      // ETH buys the token and shields it
   return kindOf(S.pay, S.get) && !S.btc ? `${location.origin}${/^\/spx\//.test(location.pathname) ? '/spx/' : '/'}?${params()}` : null;
 }
 const shareSync = () => {
   const b = $('#copy'), u = shareLink();
-  if (b) b.hidden = !u || (!!FLOW && !(FLOW === 'shield' && kindOf(S.pay, S.get) === 'zap' && H.moves?.zapTo?.()));      // the Shield tab hides it, except on the SPX page's ETH buy (a link opens the Swap tab, not this buy)
+  if (b) b.hidden = !u || (!!FLOW && !(FLOW === 'shield' && kindOf(S.pay, S.get) === 'zap'));      // the Shield tab hides it, except for the ETH buy (its link opens that buy)
+  // the ETH buy's link is also the address bar's, kept while the buy is on the card and taken off when it is not
+  try {
+    const zh = u && FLOW === 'shield' && kindOf(S.pay, S.get) === 'zap' && !H.moves?.zapTo?.() ? new URL(u).hash : '';
+    if (zh) { if (location.hash !== zh) history.replaceState(null, '', location.pathname + location.search + zh); }
+    else if (FLOW && /^#card=shield:ether:0x/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
+  } catch { }
   if (!b || !history.replaceState || FLOW) return;
   try {
     const at = location.pathname + location.search + location.hash, cur = new URL(location.href);
@@ -2792,6 +2799,20 @@ function load(p, { fresh = true } = {}) {
     const a = p.get('amt'); if (a && parseUnits(a, t.dec)) S.amt = fitAmt(a);
     paint(); readBalances().then(paintSides); if (S.amt) requote(true);
   }).catch(() => {});
+  // a token a link names by its address in To (the Shield tab's ETH buy: #card=shield:ether:<address>): the list may not be loaded yet, and an address it does not hold is read from the chain,
+  // as a From address is above. The link is then applied again, if the card has not been touched meanwhile.
+  const toA = p.get('to');
+  if (/^0x[0-9a-fA-F]{40}$/.test(toA || '') && !tokenOf(lc(toA))) (async () => {
+    const same = () => ASKED?.p === p && !S.busy && `${S.pay}>${S.get}:${S.amt}:${S.inP}${S.outP}` === mine;
+    await loadList().catch(() => {});
+    if (!same()) return;
+    if (!tokenOf(lc(toA))) {
+      const tk = await R.readToken({ ethCall, keccak256: keccak_256, address: lc(toA) }).catch(() => null);
+      if (!tk || !same()) return;
+      S.custom = [{ addr: lc(toA), sym: tk.sym, name: tk.name, dec: tk.dec, permit: tk.permit, icon: null, custom: true }, ...S.custom.filter((x) => x.addr !== lc(toA))].slice(0, 20);
+    }
+    load(p, { fresh: true });
+  })();
   if ([S.pay, S.get].some((k) => { const t = tokenOf(k); return t && !SPRITE.has(t.icon) && !LOGO[k]; })) loadList();
   if (S.inP || S.outP) { warmPrivate(); farmsSoon(); privUp(); }
   if (hidden()) laterUp();
