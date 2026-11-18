@@ -10,7 +10,7 @@ import {
   FIXED_POOLS, noteTypedData, canonicalRS, deriveSecrets, depositCall, commitmentBytes32, noteString, parseNoteString,
 } from '/fixed-pool-notes.js?cb=ab06e6d2';
 import { fixedPoolLeaves } from '/fixed-pool-sync.js?cb=cd4a3f3a';
-import { PAYMASTERS, paymasterFor, bundlerSet, readGasFeeReference, readFallbackGasPrice, prepareSponsoredWithdrawal, sendSponsoredOperation } from '/fixed-pool-paymaster.js?cb=b8ddfbc9';
+import { PAYMASTERS, paymasterFor, bundlerSet, readGasFeeReference, readFallbackGasPrice, prepareSponsoredWithdrawal, sendSponsoredOperation } from '/fixed-pool-paymaster.js?cb=414482bd';
 
 const enc = new TextEncoder();
 const selector = (sig) => '0x' + bytesToHex(keccak_256(enc.encode(sig)).slice(0, 4));
