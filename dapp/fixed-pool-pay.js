@@ -27,6 +27,12 @@ import { keccak_256 } from './vendor/tacit-deps.min.js';
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+// Two small marks beside the names they stand for: inline SVG with no text in it (the name is always written next to the mark) and nothing fetched.
+// Kohaku's koi is its own artwork (ethereum/kohaku, docs/public/kohaku_icon.svg) with fewer points; Tornado Cash's mark is the project's
+// own logo_without_text.svg (tornadocash/assets) in the text colour. Each is kept with its name in a no-wrap span so a line never ends on the mark.
+const MARK = (box, body) => `<svg width="14" height="14" viewBox="0 0 ${box} ${box}" aria-hidden="true" focusable="false" style="vertical-align:-3px;margin-right:4px">${body}</svg>`;
+const KOHAKU_MARK = MARK(100, '<path fill="#F9F6E9" d="M51 81l5-6 4-4 10-1 8-6-2-13-4-4-12-2-4 3 7 6 0 6-7 1-9-5-4-4-5 2-6 5-10 1 6 2-1 4-9-4-6-1-3-5 0-9 7-15 9-11 13-6 11-9 8-4 9 2-3 5 0 6 16 10 8 16 3 14-5 15 1 2-1 12-5 11-7 2 1-3-1-13-10 2-6-1-3 0z"/><path fill="#D01C15" d="M71 100l-1-2 2-3 0-2-1-10-5 1-11-1-5 1-1 0 0-1 2-6 5-5 6-3 10-2 5-3 0-3-2 1-1 0-2-3-1-3 1-6-1-1-3-2-10 0 4 4 3 4 0 4-2 2-5 1-5-1-4-2-7-4-7 4-7 2 4 3-1 2-3 1-4-1-5-2-8-2-3-2-1-3 1-12 2-6 3-7 5-6 9-8 5-3 6-2 5-5 5-4 4-2 5-1 8 0 2 2 0 2-3 5 0 3 10 6 7 7 6 10 3 11 1 9-2 7-2 6 0 12-1 7-3 5-3 4-4 2zm4-5l5-4 3-6 1-6 0-6-6 12 2-11 6-10 1-10-3-6-4-4-2-7-2-1-6-1-4-2-4-4-2-6-2-1-2 0-2 1 0 5-1 3-3 2-4 0-6-1-4-4-5-2-2-2 0-3-9 8 4 0 3 3 2 3-1 4-2 3-7 6-4 1-3-3-2 10 0 1 3 2 6 2 8 3-7-5 7-1 6-2 5-3 3-4 1-4-1-3-1-4-3-2 4 1 3 3 0-1 1-1 6-1 7 0 6 1-4 3-2 3 5-1 10 2 5 5 2 5 1 5-1 4-2 6-4 3-4 2-4 1 6-4 4-4-4 3-9 1-6 4-3 4 3 0 7 1 4 0 4-2 4-3-1 6zm-15-36l2-1-1-2-1-3-3-2-3-1-4 0 7 5-6-2-5-1 2 3 8 4zm0-45l1-5 2-4-3-1-4 0-5 2-4 3-4 4 2 0 6-4 6-1-8 4 3 1 4-1 1 0-3 1z"/><path fill="#032839" d="M71 100l-1-2 2-3 0-2-1-10-5 1-11-1-5 1-1 0 0-1 2-6 5-5 6-3 10-2 5-3 0-3-2 1-1 0-2-3-1-3 1-6-1-1-3-2-10 0 4 4 3 4 0 4-2 2-5 1-5-1-4-2-7-4-7 4-7 2 4 3-1 2-3 1-4-1-5-2-8-2-3-2-1-3 1-12 2-6 3-7 5-6 9-8 5-3 6-2 5-5 5-4 4-2 5-1 8 0 2 2 0 2-3 5 0 3 10 6 7 7 6 10 3 11 1 9-2 7-2 6 0 12-1 7-3 5-3 4-4 2zm4-5l5-4 3-6 1-6 0-6-6 12 2-11 5-10 2-8 0-11-2-6-2-5-4-6-5-5-5-3-7-3-10-2-7 0-7 1-6 3-9 7-4 4-4 5-3 10-2 11 0 1 3 2 6 2 8 3-7-5 7-1 6-2 5-3 3-4 1-4-2-6-3-3 4 1 3 3 1 5 0 4 12-5 10 0 7 2 4 4 2 6 1 7-3 6-3 4-9 3 6-4 4-4-4 2-10 3-6 3-2 4 3 0 7 1 4 0 4-2 4-3-1 6zm-49-44l-2-1 1-3 2-1 2 0 0 3-2 1zm34 8l2-1-1-2-1-3-3-2-3-1-4 0 7 5-6-2-5-1 2 3 8 4zm17-2l0-2-2-4-1 5 1 2zm-17-43l1-5 2-4-3-1-4 0-5 2-4 3-4 4 2 0 6-4 6-1-8 4 3 1 4-1 1 0-3 1z"/>');
+const TORNADO = `<span style="white-space:nowrap">${MARK(39.9, '<path d="M40,19.4A17.3,17.3,0,0,0,22.8,2.8,17.1,17.1,0,0,0,8.6,10.4,11.3,11.3,0,0,1,19.3,0,17.1,17.1,0,0,0,2.8,17.1a16.8,16.8,0,0,0,7.7,14.2A11.3,11.3,0,0,1,0,20.6a17.1,17.1,0,0,0,31.3,9A11.4,11.4,0,0,1,20.6,39.9,17.1,17.1,0,0,0,37.1,22.8,17.3,17.3,0,0,0,29.5,8.6,11.8,11.8,0,0,1,40,19.4ZM20,27.2a7.4,7.4,0,0,1-5.2-2.1,7.1,7.1,0,0,1-2-5.1A7.2,7.2,0,1,1,20,27.2Z" fill="currentColor"/>')}Tornado Cash</span>`;
 const WALLET_METHODS = new Set(['eth_signTypedData_v4', 'eth_sendTransaction', 'wallet_sendCalls', 'wallet_getCallsStatus', 'wallet_getCapabilities']);
 // The smallest note a person gets by default: 0.1 ETH, the smallest Tornado Cash pool, so a small deposit still gets a note in a pool with a crowd. Each note is a deposit of about a million gas, so
 // when the network fee would be over 2% of a note's size the default moves up to the size where it is not (a person's own choice, kept in the browser, always wins).
@@ -58,7 +64,7 @@ const depositStep = (s, atomic) => {
 // What the cards do, in plain words: why a large amount is split, what a note is, how it comes out, and why to wait. Shown at the top of the notes card,
 // which is on the Deposit tab for ETH on Ethereum whatever is typed, closed until it is opened.
 const howItWorks = (open) => `<details class="lg-how" style="margin:0 0 12px"${open ? ' open' : ''}><summary style="cursor:pointer">How it works</summary>
-  <p class="note">Tacit takes any amount. For more cover while its pool is young, 0.1 ETH or more is split into whole notes (0.1, 1, 10 or 100 ETH) in Tornado Cash's pools, where every deposit is the same size. The rest goes to your Tacit balance. The smallest note is 0.1 ETH, or larger when fees pass 2%.</p>
+  <p class="note">Tacit takes any amount. For more cover while its pool is young, 0.1 ETH or more is split into whole notes (0.1, 1, 10 or 100 ETH) in ${TORNADO}'s pools, where every deposit is the same size. The rest goes to your Tacit balance. The smallest note is 0.1 ETH, or larger when fees pass 2%.</p>
   <p class="note">Your notes come from your wallet's signature, so there is nothing to save. <b>Find</b> brings them back on any device.</p>
   <p class="note">Take a note out to any address, or into your Tacit balance. Wait a while first: the more deposits after yours, the better it blends in.</p>
 </details>`;
@@ -338,7 +344,7 @@ export function attach(env) {
     const notes = p.notes.map((n) => `<b>${n.count} × ${formatEther(n.denomination)} ETH</b>`).join(' ');
     const sizes = p.notes.map((n) => { const v = cachedSize(n); return `<p class="note mute" data-size="${esc(n.address)}"${v ? '' : ' hidden'}>${v ? esc(sizeWords(n.denomination, v)) : ''}</p>`; }).join('');
     host.innerHTML = frame(`<div class="lg-parts" role="group" aria-label="How the deposit is split">
-        <div class="lg-part">${notes} <span>whole ${p.noteCount === 1 ? 'note' : 'notes'} · Tornado Cash</span></div>
+        <div class="lg-part">${notes} <span>whole ${p.noteCount === 1 ? 'note' : 'notes'} · ${TORNADO}</span></div>
         ${p.remainder === 0n ? '' : `<div class="lg-part"><b>${esc(formatEther(p.remainder))} ETH</b> <span>your private balance</span></div>`}
       </div>${sizes}${autoMin.g != null ? `<p class="note mute">Network fee ${feeWords(depositGas(p.noteCount, p.remainder > 0n) * autoMin.g)} at the current price, paid by your wallet.</p>` : ''}
       <p class="note">Your wallet asks for a few signatures first (nothing is sent), then to confirm the deposit. Whole notes earn no TAC points.</p>`);
@@ -488,7 +494,7 @@ export function attach(env) {
       ${list}
       <div id="lg-ask" hidden></div>
       ${st.notes.length ? `      <div class="lbl"><span>Gas</span><span><label>Paid from <select id="lg-gas" aria-label="Where a note's gas is paid from"><option value="note"${st.gas === 'note' ? ' selected' : ''}>the note</option><option value="wallet"${st.gas === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>
-      <p class="note">${st.gas === 'wallet' ? 'Your wallet sends the withdrawal and pays its gas, so it shows as the sender.' : `Gas comes out of the note (${MAX_FEE_PERCENT}% at most), so your wallet needs no ETH.`} <a href="https://github.com/ethereum/kohaku" target="_blank" rel="noopener noreferrer">Kohaku</a> can withdraw these notes too.</p>` : ''}
+      <p class="note">${st.gas === 'wallet' ? 'Your wallet sends the withdrawal and pays its gas, so it shows as the sender.' : `Gas comes out of the note (${MAX_FEE_PERCENT}% at most), so your wallet needs no ETH.`} <a href="https://ethereum.org/apps/kohaku/" target="_blank" rel="noopener noreferrer" style="white-space:nowrap">${KOHAKU_MARK}Kohaku</a> can withdraw these notes too.</p>` : ''}
     </div>`;
     notesHost.querySelector('#lg-find').onclick = () => { closeAsk(); return account ? find(notesHost.querySelector('#lg-find')) : env.connect().then(loadNotes, (e) => env.toast(env.errText(e), true)); };
     notesHost.querySelector('#lg-paste').onclick = askPaste;
