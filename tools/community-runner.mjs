@@ -10,6 +10,10 @@
 //            the API's waiting proofs to the relays (dapp/community-ops.js)
 //   all      the three, each on its own cadence (the default)
 //   mirror   (opt-in, not in `all`, needs no key) only copy the API's waiting proofs to the Nostr relays, so the board stays public
+//   forward  (opt-in, not in `all`, needs no key and no ETH) carry other people's private requests to Tacit's EVM pool keepers: a forwarder for the
+//            private route (docs/EVM-POOL.md). It sees the sender's address and the size and time of each sealed envelope, never what is in one;
+//            it holds no key, forwards nothing of the sender's and keeps nothing. It needs a public HTTPS address (a VPS, or a machine behind a
+//            tunnel you run): PORT=10000 FORWARD_URL=https://your.host node tools/community-runner.mjs forward. Send that URL to Tacit to be listed.
 //   board    (opt-in, not in `all`, needs no key) race Tacit's own prover for the prover board's public jobs: ops whose program input holds
 //            no one's secret (a wrap, a staged deposit's swap or payment). Each is proved with tacit-prover beside it; the first proof the
 //            relay checks and takes is the one used, and its maker's address is credited on the board (MINER=0x…, default the key's
@@ -369,7 +373,40 @@ export function makeRunner(cfg, { log = (...a) => console.log(`[runner ${new Dat
   return { from, start, passes: { headers, attest, settles, board, mirror } };
 }
 
+// `forward`: a forwarder for the private route, run beside the other modes' machine or alone. No key, no chain: it carries sealed envelopes.
+async function forwardMain() {
+  const { makeForwarder } = await import('../worker-relay/src/lib/evm-pool-forwarder.js');
+  const { gatewaysOf } = await import('../worker-relay/src/evm-pool-forwarder.js');
+  const { createServer } = await import('node:http');
+  const log = (...a) => console.log(`[forward ${new Date().toISOString()}]`, ...a);
+  const KEEPERS = 'https://tacit-evm-pool-keepers.onrender.com';
+  const gateways = gatewaysOf(process.env.FORWARDER_GATEWAYS || JSON.stringify({ k: `${KEEPERS}/sealed` }));
+  const port = Number(process.env.PORT || 10000), ratePerMin = Number(process.env.FORWARDER_RATE_PER_MIN || 60);
+  createServer(makeForwarder({ gateways, ratePerMin })).listen(port);
+  log(`listening on :${port}, carrying ${Object.keys(gateways).join(', ')} (${ratePerMin} requests a minute per sender); it keeps nothing and holds no key`);
+  const pub = (process.env.FORWARD_URL || '').trim().replace(/\/+$/, '');
+  if (!pub) { log('set FORWARD_URL=https://<your public address> and I will check it end to end'); return new Promise(() => {}); }
+  if (!/^https:\/\//.test(pub)) { console.error('FORWARD_URL must be https: a page will not use a plain-http forwarder'); process.exit(2); }
+  // Does a sealed read reach the keeper through this public address? The check a person listing it would run.
+  const check = async () => {
+    try {
+      const info = await (await fetch(`${KEEPERS}/1/evm-pool/keeper/info`, { signal: AbortSignal.timeout(15000) })).json();
+      const gateway = info?.sealed?.key;
+      if (!gateway) throw new Error('the keepers do not publish a gateway key');
+      const { makeSealedFetch } = await import('../dapp/sealed-request.js');
+      const f = await makeSealedFetch({ keeper: KEEPERS, chainId: 'k', gateway, forwarders: [pub] });
+      const r = await f(`${KEEPERS}/1/evm-pool/keeper/head`);
+      const cors = (await fetch(`${pub}/health`, { signal: AbortSignal.timeout(10000) })).headers.get('access-control-allow-origin');
+      log(r.status === 200 && cors ? `ok: a sealed read came back through ${pub} (CORS ${cors}). Send this address to Tacit to be listed.` : `not yet: the read answered ${r.status}, CORS ${cors || 'missing'}`);
+    } catch (e) { log(`not reachable through ${pub} yet: ${e.message}`); }
+  };
+  await check();
+  setInterval(check, 15 * 60e3).unref?.();
+  return new Promise(() => {});
+}
+
 async function main() {
+  if (process.argv.slice(2).find((a) => !a.startsWith('-'))?.toLowerCase() === 'forward') return forwardMain();
   let cfg;
   try { cfg = readConfig(); } catch (e) { console.error(e.message); process.exit(2); }
   const runner = makeRunner(cfg);
