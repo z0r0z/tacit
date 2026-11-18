@@ -1061,11 +1061,14 @@ function tcoPaidPaint() {
       <p class="tco-amt num">${fmt(p.units, 8, 8)}<small>TAC</small></p>
       <p class="tco-to">to <b>${p.who}</b>${p.secs <= 20 ? html` · in <span class="num">${p.secs.toFixed(1)}</span> seconds` : ''}</p>
       <ol class="tco-tl">${p.how === 'signed' ? html`<li class="done">Made private with one signature</li>` : p.how === 'sent' ? html`<li class="done">Made private from your wallet</li>` : p.how === 'moved' ? html`<li class="done">Moved from the DeFi pool</li>` : ''}<li class="done">Proved on this device</li><li class="done">With the Tacit chain, private</li><li id="tco-land"></li></ol>
+      <div class="treq-flow tco-flow" id="tco-flow" role="progressbar" aria-label="Settling on Ethereum"><div class="bar"><i></i></div></div>
       <button class="btn ghost tco-go" type="button" data-tco-done>Done</button></div>`);
   }
+  const fl = $('#tco-flow');
+  if (fl) { fl.classList.toggle('done', p.landed); fl.hidden = p.err; fl.setAttribute('aria-valuetext', p.landed ? 'Settled on Ethereum' : 'Settling on Ethereum'); }
   const li = $('#tco-land');
   li.className = p.landed ? 'done' : p.err ? 'err' : 'now';
-  mount(li, p.landed ? html`Settled on Ethereum${p.height != null ? html`, in block <b class="num">${p.height}</b>` : ''}` : p.err ? 'Not settled yet: it is kept here and goes on by itself' : 'Settling on Ethereum, about a minute…');
+  mount(li, p.landed ? html`Settled on Ethereum${p.height != null ? html`, in block <b class="num">${p.height}</b>` : ''}` : p.err ? 'Not settled yet: it is kept here and goes on by itself' : 'Settling on Ethereum, usually under a minute…');
 }
 const tickSvg = () => html`<svg class="tick" viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24"/><path d="M15 27.5l7.5 7.5L38 19"/></svg>`;
 function treqOpen() {
