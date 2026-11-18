@@ -29,5 +29,8 @@ the fee and recipient are bound inside the proof. This page says what each relay
 
 ## What the private route does not cover
 
-The hosting provider records the network address and path of each request it serves. The route keeps a person's address from the EVM pool relay and its
-host; it does not reach the chain nodes the page reads balances through, or the points lookup, which sees a connected Ethereum wallet's address.
+- **Chain reads** from the pay page go to the relay's `/rpc` through the route, so the public node that answers sees the relay's request, not the wallet's.
+  A read the relay does not carry (a method off its list, a log range over 5,000 blocks), or any read while no road is open, goes straight to the public node
+  the page names, which then sees the reader's address and the addresses it asks about.
+- The hosting provider records the network address and path of each request it serves.
+- The points lookup sees a connected Ethereum wallet's address.
