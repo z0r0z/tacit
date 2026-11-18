@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// The Shield tab's ETH buy (ETH -> a token, bought and shielded in one go) has its own link: #card=shield:ether:<token address>&amt=<ETH>.
+// The Shield tab's ETH buy (ETH -> a token, bought and shielded in one go) has its own link: #shield/eth/<token>?amt=<ETH> (the token a listed symbol, or its address; the older
+// #card=shield:ether:<address>&amt=<ETH> form is read too: tests/readable-links.mjs).
 //   - opening it puts the card on the Shield tab, ETH to that token, the amount filled, priced as a buy ("swap, then shield")
 //   - the card shows a copy button, and the address bar carries the same link while the buy is on the card (it follows the amount and the token)
 //   - the button copies exactly that link, and opening the copied link again lands on the same card
@@ -40,14 +41,14 @@ const waitFor = async (p, re, ms = 45000) => { const t0 = Date.now(); let t = ''
 const copyShown = (p) => p.evaluate(() => { const c = document.querySelector('#copy'); return !!c && !c.hidden && c.offsetParent !== null; });
 
 const p = await fresh();
-await p.goto(`${BASE}/#card=shield:ether:${IMD}&amt=0.001`, { waitUntil: 'load' });
+await p.goto(`${BASE}/#shield/eth/imd?amt=0.001`, { waitUntil: 'load' });
 await p.waitForSelector('#hx .go', { timeout: 40000 });
 let t = await waitFor(p, /swap, then shield/i);
 ok(/To DeFi pool/.test(t) && /IMD/.test(t) && /private IMD/.test(t) && /swap, then shield/i.test(t), 'the link opens the Shield tab on ETH to IMD, priced as a buy: "swap, then shield"');
 ok((await p.evaluate(() => document.querySelector('#amt')?.value)) === '0.001', 'the amount from the link, 0.001 ETH, is filled in');
 ok(await copyShown(p), 'the card shows a copy button');
 await p.waitForTimeout(1500);
-const want = `#card=shield:ether:${IMD}&amt=0.001`;
+const want = '#shield/eth/imd?amt=0.001';
 ok((await p.evaluate(() => location.hash)) === want, `the address bar carries the link (${await p.evaluate(() => location.hash)})`);
 
 // the button copies that link
@@ -59,7 +60,7 @@ ok(copied === `${BASE}/${want}`, `the button copies exactly the link (${copied.s
 // the amount and the token move the link
 await p.fill('#amt', '0.0025');
 await p.waitForTimeout(1500);
-ok((await p.evaluate(() => location.hash)) === `#card=shield:ether:${IMD}&amt=0.0025`, 'a new amount is in the address bar');
+ok((await p.evaluate(() => location.hash)) === '#shield/eth/imd?amt=0.0025', 'a new amount is in the address bar');
 await p.click('#get-coin');
 await p.waitForSelector('#pk:not([hidden]) .pk-r', { state: 'attached', timeout: 15000 });
 await p.fill('#pk-q', 'pepe');
@@ -67,11 +68,11 @@ await p.waitForTimeout(800);
 await p.click('#pk .pk-r:not([hidden])');
 await waitFor(p, /private PEPE/);
 await p.waitForTimeout(1500);
-ok((await p.evaluate(() => location.hash)) === `#card=shield:ether:${PEPE}&amt=0.0025`, 'another token is in the address bar');
+ok((await p.evaluate(() => location.hash)) === '#shield/eth/pepe?amt=0.0025', 'another token is in the address bar, by its symbol');
 
 // the copied link opens the same card
 const q = await fresh();
-await q.goto(copied.replace(IMD, IMD).replace(/&amt=.*/, '&amt=0.001'), { waitUntil: 'load' });
+await q.goto(copied.replace(/amt=.*/, 'amt=0.001'), { waitUntil: 'load' });
 await q.waitForSelector('#hx .go', { timeout: 40000 });
 t = await waitFor(q, /private IMD/);
 ok(/private IMD/.test(t) && (await q.evaluate(() => document.querySelector('#amt')?.value)) === '0.001', 'opening the copied link lands on the same card');
@@ -82,7 +83,7 @@ await p.waitForSelector('#pk:not([hidden]) .pk-r', { state: 'attached', timeout:
 await p.click('#pk .pk-r[data-k="0x0000000000000000000000000000000000000000"]');
 await waitFor(p, /To DeFi pool [\d.]+ ETH/);
 await p.waitForTimeout(1500);
-ok(!(await p.evaluate(() => location.hash)).startsWith('#card=shield:ether:0x') && !(await copyShown(p)), 'with ETH picked again (the plain shield) the link is off the address bar and the button is hidden');
+ok(!/^#(card=shield:ether|shield\/eth\/)/.test(await p.evaluate(() => location.hash)) && !(await copyShown(p)), 'with ETH picked again (the plain shield) the link is off the address bar and the button is hidden');
 
 await b.close(); server.close();
 console.log(`\n${n} ok, ${fails} failed`);

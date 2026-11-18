@@ -196,6 +196,11 @@ const BALQ = new Set();
 const sidePriv = (k) => (k === S.pay ? S.inP : k === S.get ? S.outP : false);
 const tokenOf = (k, priv = sidePriv(k)) => { const t = k === 'teth' ? TETH : listedAt(k); return t?.psym && priv ? { ...t, sym: t.psym } : t; };
 const nameIs = (t, x) => lc(t.sym) === x || (t.psym && lc(t.psym) === x);
+// What a link calls a token: its lower-case symbol when only one listed token carries it (and it is plain), else its address (readable links, #shield/eth/imd).
+const linkIdOf = (k) => {
+  const a = lc(String(k || '')), t = tokenOf(a);
+  return t && !t.custom && /^[A-Za-z0-9._-]{1,12}$/.test(t.sym || '') && listed().filter((q) => nameIs(q, lc(t.sym))).length === 1 ? lc(t.sym) : a;
+};
 const isEth = (k) => k === lc(R.ZERO);
 const tacitKey = (k) => R.tacitToken(k);
 const POOLID = (k) => (k === 'teth' ? CETH_ID : R.POOL_ID[Object.keys(R.POOL_ID).find((a) => lc(a) === k)]);
@@ -943,7 +948,7 @@ function shareLink() {
   const mk = moveOf(), amt = String(S.amt || '').trim();
   if (!H.copy || !/^\d{0,12}(?:\.\d{1,18})?$/.test(amt) || !(Number(amt) > 0)) return null;
   if (mk) return `${location.origin}/#card=shield:${mk.replace('>', ':')}&amt=${amt}`;
-  if (FLOW === 'shield' && kindOf(S.pay, S.get) === 'zap' && !H.moves?.zapTo?.()) return `${location.origin}/#card=shield:ether:${lc(S.get)}&amt=${amt}`;      // ETH buys the token and shields it
+  if (FLOW === 'shield' && kindOf(S.pay, S.get) === 'zap' && !H.moves?.zapTo?.()) return `${location.origin}/#shield/eth/${linkIdOf(S.get)}?amt=${amt}`;      // ETH buys the token and shields it
   return kindOf(S.pay, S.get) && !S.btc ? `${location.origin}${/^\/spx\//.test(location.pathname) ? '/spx/' : '/'}?${params()}` : null;
 }
 const shareSync = () => {
@@ -953,7 +958,7 @@ const shareSync = () => {
   try {
     const zh = u && FLOW === 'shield' && kindOf(S.pay, S.get) === 'zap' && !H.moves?.zapTo?.() ? new URL(u).hash : '';
     if (zh) { if (location.hash !== zh) history.replaceState(null, '', location.pathname + location.search + zh); }
-    else if (FLOW && /^#card=shield:ether:0x/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
+    else if (FLOW && /^#(card=shield:ether:0x|shield\/eth\/)/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
   } catch { }
   if (!b || !history.replaceState || FLOW) return;
   try {
@@ -3103,6 +3108,16 @@ export function mountSwapCard(root, host = {}) {
     permitOf: (k) => R.readToken({ ethCall, keccak256: keccak_256, address: String(k || '').toLowerCase() }).then((t) => (t?.permit ? { name: t.name, version: t.permit } : null), () => null),
     // whole tokens one ETH buys, from the card's own USD prices (ETH, wstETH, WBTC, the dollars, TAC); null for a token it does not price
     marketRate: (k) => { const key = String(k || '').toLowerCase(), t = tokenOf(key); if (!t) return null; const e = usdOf('teth', 10n ** 18n), u = usdOf(key, 10n ** BigInt(t.dec)); return e && u ? e / u : null; },
+    // A token a link names (readable links: #shield/eth/imd): its address, from an address or a listed symbol that only one token carries (waiting for the list); null otherwise.
+    findToken: async (v) => {
+      const x = String(v || '').trim();
+      if (/^0x[0-9a-fA-F]{40}$/.test(x)) return lc(x);
+      await loadList().catch(() => {});
+      const hits = listed().filter((q) => nameIs(q, linkName(x)));
+      return hits.length === 1 ? hits[0].addr : null;
+    },
+    // What a link calls a token: its lower-case symbol when only one listed token carries it (and it is plain), else its address.
+    linkId: (k) => linkIdOf(k),
     tokenInfo: (k) => { const key = String(k || '').toLowerCase(), t = tokenOf(key); return t ? { sym: t.sym, dec: t.dec, name: t.name || '', logo: LOGO[t.addr] || null } : null; },
     get busy() { return S.busy; },
   };
