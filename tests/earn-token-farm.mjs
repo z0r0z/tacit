@@ -46,6 +46,30 @@ const started = /Start the tETH \/ AAVE pool/.test(await waitFor(/Start the tETH
 const card = await tile();
 ok(/tETH \/ AAVE/.test(card) && /Puts in [\d.]+ ETH and [\d.]+ AAVE/.test(card), 'a token linked by address shows its tETH row and what goes in');
 ok(!started || (/no pool yet/.test(card) && /Pool new: it holds only your deposit/.test(card)), 'when it has no pool, the card offers to start it and warns that a new pool holds only the deposit');
+// deep links with custom inputs (a farm by its number, LP only, a token by its address) and the TAC farm's zap sourcing TAC from the public pool when that is better
+{
+  const open = async (hash, wait) => {
+    const pg = await (await b.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
+    pg.on('pageerror', (e) => bad.push('script error: ' + e.message));
+    await pg.goto(BASE + '/' + hash, { waitUntil: 'load' });
+    await pg.waitForSelector('#hx .go', { timeout: 40000 });
+    const t0 = Date.now(); let t = '';
+    while (Date.now() - t0 < 45000) { t = await pg.evaluate(() => (document.querySelector('#hx')?.innerText || '').replace(/\s+/g, ' ')); if (wait.test(t)) break; await pg.waitForTimeout(600); }
+    const amt = await pg.evaluate(() => document.querySelector('#hx-amt, #amt')?.value);
+    await pg.close();
+    return { t, amt };
+  };
+  let r = await open('#card=earn:ether:p0&amt=0.05', /tETH \/ TAC/);
+  ok(/Earn/.test(r.t) && /tETH \/ TAC/.test(r.t) && r.amt === '0.05' && /Zap into the farm/.test(r.t), 'a link to the TAC farm (earn:ether:p0) with an amount opens the Earn tab on it, amount filled, as a zap into the farm');
+  r = await open('#card=earn:ether:p0&amt=0.05&lp=1', /Add as private LP/);
+  ok(/tETH \/ TAC/.test(r.t) && /Add as private LP/.test(r.t) && !/Zap into the farm/.test(r.t), 'with &lp=1 it opens as liquidity alone');
+  r = await open('#card=earn:ether:0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9&amt=0.01', /tETH \/ AAVE/);
+  ok(/tETH \/ AAVE/.test(r.t) && r.amt === '0.01', 'a link naming a token by its address opens that token\'s row with the amount');
+  r = await open('#card=earn:ether:p0&amt=3', /Where \d+% in this pool/);
+  ok(/Where \d+% in this pool, the rest in the Precision pool/.test(r.t), 'a large TAC zap (3 ETH) is split: part of the TAC is bought in the public Precision pool, the rest in this one, still one transaction');
+  r = await open('#card=earn:ether:p0&amt=0.05', /Zap into the farm/);
+  ok(!/Where \d+% in this pool/.test(r.t), 'a small one is not split: the pool\'s own price is better than the cost of a second venue');
+}
 // a payer who holds the token starts the pool from both sides, with no swap (the contracts' composition is proved on a fork: tests/pool-start-both-fork.mjs)
 {
   const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), body = fn.slice(fn.indexOf('async function xtBothUse('), fn.indexOf("// Liquidity added to a token's tETH pool"));
