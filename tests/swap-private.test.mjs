@@ -510,3 +510,50 @@ test('what a note must hold for a size is read once and then answered at once', 
   pv.stageNeed(10000000n); await new Promise((r) => setTimeout(r, 20));
   assert.strictEqual(pv.stageNeed(10000000n), null, 'a size that cannot be priced is null, not undefined');
 });
+
+// ── sent from the person's own account (swapSelf): a swap too small for the relay's fee ──
+const selfPv = async (ux, o = {}) => (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => ux, pick: () => null, selfSettle: () => async () => ({ txHash: '0xself' }), ...o });
+const runSelf = (pv, p, steps = []) => pv.swapSelf(p, { wallet, from: '0xme', say: (k) => steps.push(k) });
+
+test('sent from your own account: the relay proves it, no relay fee, the page settles it', async () => {
+  const { M, ux } = setup({ notes: [note('0xfit', 1200)] });
+  const pv = await selfPv(ux);
+  assert.ok(pv.canSelf);
+  await runSelf(pv, plan({ fee: 10n }));
+  assert.strictEqual(M.routes.length, 1);
+  assert.strictEqual(M.routes[0].fee, 0n, 'no relay fee, whatever the plan carried');
+  assert.strictEqual(typeof M.routes[0].selfSettle, 'function', 'the page sends the settle');
+  assert.strictEqual(M.routes[0].waitOpts.viaRelay, true, 'the relay still makes the proof');
+});
+
+test('sent from your own account: notes combined first are cut at no fee, and the cut is settled by the page too', async () => {
+  const { M, ux } = setup({ notes: [note('0xa', 600), note('0xb', 600)] }), steps = [];
+  await runSelf(await selfPv(ux), plan({ fee: 10n }), steps);
+  assert.strictEqual(M.cuts.length, 1);
+  assert.strictEqual(M.cuts[0].fee, 0n, 'the cut carries no relay fee');
+  assert.strictEqual(typeof M.cuts[0].selfSettle, 'function', 'and is settled by the page');
+  assert.strictEqual(M.routes[0].fee, 0n);
+  assert.strictEqual(M.routes[0].inNote.leaf, '0xcut');
+  assert.ok(steps.includes('combine'));
+});
+
+test('sent from your own account, once: the next swap is the relay’s again, with its fee', async () => {
+  const { M, ux } = setup({ notes: [note('0xfit', 1200), note('0xfit2', 1300)] });
+  const pv = await selfPv(ux);
+  await runSelf(pv, plan({ fee: 10n }));
+  await run(pv, plan({ fee: 10n }));
+  assert.strictEqual(M.routes.length, 2);
+  assert.strictEqual(M.routes[1].fee, 10n, 'the relay’s fee again');
+  assert.ok(!M.routes[1].selfSettle, 'and the relay sends it');
+});
+
+test('sent from your own account needs a settle sender, and is for a swap that stays in the private balance', async () => {
+  const a = setup({ notes: [note('0xfit', 1200)] });
+  const none = (await import('../dapp/swap/private.js')).makePrivate({ getUx: async () => a.ux, pick: () => null });
+  assert.ok(!none.canSelf);
+  await assert.rejects(runSelf(none, plan()), (e) => e.notNow === true);
+  const b = setup({ notes: [note('0xfit', 1200)] }), pv = await selfPv(b.ux);
+  await assert.rejects(runSelf(pv, plan({ wallet: true })), /private balance/);
+  await assert.rejects(runSelf(pv, plan({ sendTo: { pubHex: '02ab' } })), /private balance/);
+  assert.strictEqual(b.M.routes.length + b.M.wraps.length + b.M.sent.length, 0, 'nothing was sent');
+});

@@ -707,6 +707,8 @@ async function marketGap(inK, outK, spent, out) {
   const eth = (k, u) => (k === 'teth' ? Number(u) / 1e8 : Number(u) / 10 ** pdOf(k) / rate), vin = eth(inK, spent), vout = eth(outK, out);
   return vin > 0 && vout > 0 ? { gap: vout / vin - 1, rate } : null;
 }
+// Sending a private swap from one's own account is for a swap from the private balance that stays in it (the card's 'private' kind, no address to send it on to).
+const selfPossible = () => !!H.key?.selfSettle && kindOf(S.pay, S.get) === 'private' && !S.toTacit && !isEth(S.pay) && S.inP;
 async function privQuote(units, from, sym) {
   const wallet = from === 'eth' && !S.inP, tipP = wallet ? tipFor(units) : null;
   if (wallet && S.get === 'teth') return { rows: [{ k: 'private', name: 'Made private', note: '', out: units * E10, best: true, priv: true }], fee: null, tip: await tipP };
@@ -714,8 +716,9 @@ async function privQuote(units, from, sym) {
   idsOf(t);
   const id = (k) => (k === 'cbtc' ? String(t.pool.CBTC_ZK_ASSET_ID) : String(t.assetByTicker[POOL_TK[k]]?.assetId || '')).toLowerCase();
   const stops = from === 'eth' || to === 'eth' ? [to] : ['eth', to];
-  const f0 = await opFee(t, POOL_TK[from], 'route'), fee = stops.length > 1 ? twoDigits((f0 * 14n) / 10n) : f0;
-  if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, pdOf(from), 6)} ${esc(sym)}: the relay’s fee is ${fmtUnits(fee, pdOf(from), 6)}.`, tiny: true };
+  // A swap from the private balance can be sent from the person's own account (S.self): the relay proves and charges no fee, the network fee is theirs. Offered when the fee is the problem.
+  const selfOk = selfPossible(), f0 = S.self && selfOk ? 0n : await opFee(t, POOL_TK[from], 'route'), fee = stops.length > 1 ? twoDigits((f0 * 14n) / 10n) : f0;
+  if (units <= fee * 2n) return { rows: [], why: `Swap more than ${fmtUnits(fee * 2n, pdOf(from), 6)} ${esc(sym)}: the relay’s fee is ${fmtUnits(fee, pdOf(from), 6)}.`, whyHtml: selfOk ? ' Or <button class="link" type="button" id="pv-self-on">send it from your own account</button>: no relay fee, and the network fee is yours.' : '', tiny: true };
   // through tETH, as every pair goes; and, for a token the pool holds by registration (SPX), the pool that holds both coins when it gives more (one hop, one fee)
   const hub = await (async () => {
     let cur = id(from), amt = units - fee, at = from;
@@ -933,7 +936,7 @@ const fitSize = (el) => { const n = (el.value || el.textContent || '').length; e
 function feeLines(q, r) {
   const coin = isEth(S.pay) || S.pay === 'teth' || r.pin ? 'teth' : S.pay;
   const parts = [];
-  if (q.fee != null) parts.push(['Relay fee', `${fmtUnits(q.fee, pdOf(coin), 6)} ${tokenOf(coin, true).sym}`, usdOf(coin, q.fee * scOf(coin))]);
+  if (q.fee != null && !(S.self && q.fee === 0n)) parts.push(['Relay fee', `${fmtUnits(q.fee, pdOf(coin), 6)} ${tokenOf(coin, true).sym}`, usdOf(coin, q.fee * scOf(coin))]);
   if (q.xfee != null) parts.push(['Exit fee', `${fmtUnits(q.xfee, 8, 6)} tETH`, usdOf('teth', q.xfee * E10)]);
   if (q.tip != null) parts.push(['Deposit tip', `${fmtUnits(q.tip, 18, 6)} ETH`, usdOf(lc(R.ZERO), q.tip)]);
   if (!parts.length) return [];
@@ -1044,6 +1047,10 @@ function quotePaint() {
     if (r.zap && FLOW === 'shield' && H.moves?.noPool?.(S.get)) lines.push(['Pool', htmlVal(`none for tETH / ${esc(get.sym)} yet · <a href="#" data-hx="earn:ether:${esc(S.get)}">start one</a>`), '', `The Tacit pool trades no tETH / ${get.sym} pair yet, so a private swap of it has no route. Starting one takes ETH alone: half buys the ${get.sym}, both go in.`]);
     if (m == null && (r.agg || r.sv || r.zap) && !tacSide) lines.push(['Against the market', 'not checked', '', 'There is no reference price for this pair here, so a thin pool could give a poor rate. Compare the routes before sending, and use a small amount first.']);
     if (r.priv) lines.push(...feeLines(q, r));
+    if (r.priv && selfPossible()) {
+      if (S.self) lines.push(['Settle', htmlVal('from your account: no relay fee, the network fee is yours · <button class="link" type="button" id="pv-self-off">Use the relay</button>'), '', 'The relay proves it, free, and your account sends the settle itself. You pay the network fee (a few cents at today\u2019s gas) instead of the relay\u2019s fee.']);
+      else if (q.fee != null && Number(q.fee * scOf(isEth(S.pay) ? 'teth' : S.pay)) / Number(q.wei) >= 0.05) lines.push(['Settle', htmlVal('the relay\u2019s fee is a big share of this · <button class="link" type="button" id="pv-self-on">send it from your own account</button>'), 'warn', 'Skip the relay\u2019s fee: the relay proves it, free, and your account sends the settle. You pay the network fee (a few cents at today\u2019s gas) instead.']);
+    }
     { const a = r.priv && aheadArgs(q), ra = r.priv && !a && routeAheadArgs(q), st = a ? PV?.aheadOf?.(a) : ra ? PV?.routeAheadOf?.(ra) : null;
       if (st) lines.push(['Proof', st === 'ready' ? (a ? 'made: one transaction' : 'made: the relay only sends it') : 'being made, about a minute', st === 'ready' ? 'ok' : '']); }
     { const nudge = r.priv && privRow(q, r); if (nudge) lines.push(nudge); }
@@ -1173,7 +1180,7 @@ function button(q, r, kind, gate) {
 function lineFor(q, r, kind) {
   if (!kind) return S.inP && S.outP && S.pay === S.get ? 'Pick another coin to get.' : S.inP && tacitKey(S.get) && !S.outP ? `To take it out as ${esc(tokenOf(S.get).sym)}, <a href="/">use the Tacit app</a>.` : !S.inP && S.outP && tacitKey(S.pay) ? `To make ${esc(tokenOf(S.pay).sym)} private, <a href="/">use the Tacit app</a>.` : 'No route for this pair.';
   if (q?.err && !q.busy) return `<span class="err">${esc(q.err)}</span>`;
-  if (!q?.busy && S.amt && (q?.none || !r) && q?.why) return esc(q.why);
+  if (!q?.busy && S.amt && (q?.none || !r) && q?.why) return esc(q.why) + (q.whyHtml || '');      // (whyHtml is the card's own markup, a button, never text from outside)
   return '';
 }
 function privRow(q, r) {
@@ -2283,7 +2290,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=29c4519e').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=b22eb8c0').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;
@@ -2473,7 +2480,7 @@ async function privateGo(r, kind = 'private', here = false) {
     const plan = { wallet: fromWallet, wei: units * E10, units, asset: IDS[k0], ticker: POOL_TK[k0], fee: q.fee ?? 0n,
       path: S.get === 'teth' && fromWallet ? [] : (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })),
       minOut: poolFloor(r.out / scOf(S.get), slip), label: `Swap ${what} for ${get.sym} privately`, sendTo: toTacit, outTicker: POOL_TK[PK[S.get]] };
-    const res = await (here ? pv.swapHere(plan, { wallet, from: W.account, say: step }) : pv.swap(plan, { wallet, from: W.account, say: step }));
+    const res = await (here ? pv.swapHere(plan, { wallet, from: W.account, say: step }) : S.self && selfPossible() && pv.canSelf ? pv.swapSelf(plan, { wallet, from: W.account, say: step }) : pv.swap(plan, { wallet, from: W.account, say: step }));
     if (!popped) { popped = true; reward(earned); }
     const got = res.made != null ? `${tidy(plain(res.made, 8))} tETH` : `${tidy(amtFmt(res.out * scOf(S.get), get.dec))} ${get.sym}`;
     if (res.txHash) remember(res.txHash, res.made != null ? `Made ${what} private` : `Swapped ${what} for ${got} privately`);
@@ -3025,6 +3032,8 @@ function wire() {
     if (e.target.closest('[data-farm-it]')) H.farmIt?.(S.lastBuy);
     if (e.target.closest('#pv-open')) openPrivate().catch(() => {});
     if (e.target.closest('#pv-sign')) H.key?.openKey?.().catch(() => {});
+    if (e.target.closest('#pv-self-on') && !S.busy) { S.self = true; S.q = null; S.note = ''; paint(); requote(true); return; }
+    if (e.target.closest('#pv-self-off') && !S.busy) { S.self = false; S.q = null; paint(); requote(true); return; }
     if (e.target.closest('#pv-here') && S.hereR && !S.busy) { S.note = ''; privateGo(S.hereR, 'private', true).catch(() => {}); return; }
     if (e.target.closest('#pv-read')) { PV?.read(true).then(paint, () => paint()); return; }
     const xr = e.target.closest('[data-exit-run], [data-exit-back]');

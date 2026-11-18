@@ -217,7 +217,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     await read(true);
     const has = of(asset).notes.find((n) => BigInt(n.value) === units);
     if (has) return has;
-    const t = await getUx(), fee = HERE ? 0n : BigInt(await t.quoteOpFee(ticker, 'transfer')), need = units + fee, up = [...of(asset).notes].sort(byValue);
+    const t = await getUx(), fee = FREE() ? 0n : BigInt(await t.quoteOpFee(ticker, 'transfer')), need = units + fee, up = [...of(asset).notes].sort(byValue);
     let picked = up.filter((n) => BigInt(n.value) >= need).slice(0, 1), sum = picked.length ? BigInt(picked[0].value) : 0n;
     for (const n of picked.length ? [] : [...up].reverse()) { if (sum >= need || picked.length === 16) break; picked.push(n); sum += BigInt(n.value); }
     if (sum < need) throw Object.assign(new Error('short'), { code: 'short', most: sum > fee ? sum - fee : 0n, fee });
@@ -339,12 +339,15 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
 
   let SELF = false;
   let HERE = false;
+  // The person chose to send the settle from their own account (swapSelf): the relay only proves, and charges no fee, so a swap too small for the relay's fee can still be made.
+  let SELFREQ = false;
+  const FREE = () => HERE || SELFREQ;
   const relayOnly = () => (HERE ? {} : { viaRelay: true });
   const selfFor = (t, label) => (SELF && selfSettle ? selfSettle(t, { label }) : null);
   async function relayOpen() {
     if (HERE) { SELF = true; return; }
     const rs = await relayState();
-    SELF = rs?.state === 'held' && !!selfSettle;
+    SELF = (rs?.state === 'held' || SELFREQ) && !!selfSettle;
     if (relayStopped(rs) || (rs?.state === 'held' && !selfSettle)) throw notNow();
   }
   const notNow = () => Object.assign(new Error('This private swap can’t start right now, so nothing was sent. Try again in a few minutes.'), { notNow: true });
@@ -357,7 +360,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   };
   async function route({ note, units, path, fee, minOut, ticker, label, say }) {
     const t = await getUx();
-    if (HERE) fee = 0n;
+    if (FREE()) fee = 0n;
     const priced = async (f) => {
       const q = await t.quoteRoute({ asset0: note.asset, amountIn: units, path, fee: f });
       if (!q || q.amountOut < minOut) throw Object.assign(new Error('The price moved past what was quoted, so the swap was not sent.'), { moved: true });
@@ -545,7 +548,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       if (!plan.path?.length) return sendOn({ plan, made: { made: plan.units, txHash: hash }, before, say, direct: note });
     } else {
       await price(plan.asset, plan.units, plan.path, plan.fee, plan.minOut);
-      const fast = !plan.sendTo && !HERE && await stagedSwap(plan, say).catch((e) => { if (e?.pending) throw e; return null; });
+      const fast = !plan.sendTo && !FREE() && await stagedSwap(plan, say).catch((e) => { if (e?.pending) throw e; return null; });
       if (fast) return fast;
       note = await coveringNote({ asset: plan.asset, units: plan.units, ticker: plan.ticker, say });
     }
@@ -559,6 +562,14 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       throw e;
     }
     return plan.sendTo ? sendOn({ plan, made, before, say }) : made;
+  }
+
+  // From the private balance, settled from the person's own account: the relay proves (free) and charges no fee, the page sends the settle, the network fee is theirs.
+  async function swapSelf(plan, o) {
+    if (!selfSettle) throw notNow();
+    if (plan.wallet || plan.sendTo) throw new Error('Sending it yourself is for a swap from your private balance that stays in it.');
+    SELFREQ = true;
+    try { return await swap({ ...plan, fee: 0n }, o); } finally { SELFREQ = false; SELF = false; }
   }
 
   async function swapHere(plan, o) {
@@ -647,6 +658,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   return {
     open, lock, reset, read, swap, swapOut, exitCalls, of, most, keyHex, sendPrivate, ahead, aheadOf, routeAhead, routeAheadOf, keep, tierOf, stagedSizes, stageNeed, stageSizes, stageWhole, deviceStaging, isStaging,
     swapHere, get canHere() { return !!here && !!selfSettle; },
+    swapSelf, get canSelf() { return !!selfSettle; },
     relayOpen, priceOk: (asset, units, path, fee, minOut) => (path?.length ? price(asset, units, path, fee, minOut) : Promise.resolve(null)),
     get unlocked() { return key.unlocked; },
     get held() { return held; },
