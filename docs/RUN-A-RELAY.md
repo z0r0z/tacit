@@ -1,5 +1,8 @@
 # Running a relay
 
+(This is the DeFi pool's settle relay. For the relays that submit private ETH spends from the Pay page, and are listed in the relay registry,
+see [RUN-A-PAY-RELAY.md](./RUN-A-PAY-RELAY.md).)
+
 A relay takes a private action from a page, proves it, and sends the proof to the pool. Anyone can run one.
 `ConfidentialPool.settle` is open to any account, and the pool pays every fee bound in the proof to the
 account that sends it (`msg.sender`). A relay never holds user funds or spending keys. It can decline a job,

@@ -29,10 +29,13 @@ const LOCAL = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/;
 // paid at, and a host that is a public name; off one (a test, a local page) a relay may go without, and a local host is fine. A listed relay that is not a
 // plain https URL ending in `/evm-pool/keeper`, or lacks its pin where one is wanted, is left out, not guessed at.
 export function relaysOf({ keeper = null, keepers = null, relayer = null, pinned = true } = {}) {
-  const out = [], seen = new Set();
+  const out = [], seen = new Set(), own = new Set();
   const add = (url, addr, weight, listed) => {
     if (typeof url !== 'string') return;
     const u = url.replace(/\/+$/, '');
+    // the relay a config ships with is the one at its URL: a list that names the same URL (the relay itself, listed for others to find, or someone else's
+    // entry for it) adds nothing, and must not pin it to an address of the list's choosing
+    if (listed && own.has(u.toLowerCase())) return;
     if (!/^https:\/\/[\w.-]+(?::\d+)?(?:\/[\w./-]*)?$/.test(u) && !LOCAL.test(u)) return;
     if (listed && !KEEPER_PATH.test(u)) return;
     if (listed && pinned && !publicHost(u)) return;
@@ -44,6 +47,7 @@ export function relaysOf({ keeper = null, keepers = null, relayer = null, pinned
     if (seen.has(key)) return;
     const w = Number(weight);
     seen.add(key);
+    if (!listed) own.add(u.toLowerCase());
     out.push({ url: u, relayer: a, weight: Number.isFinite(w) && w > 0 ? w : 1 });
   };
   if (keeper) add(keeper, relayer, 1, false);

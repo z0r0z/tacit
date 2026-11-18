@@ -692,6 +692,14 @@ must be a public name (no IP address, `localhost` or local-network name). Two ad
 names one of them in its quote, and only the entry pinned to that address is ever used, so an entry made by someone else for a relay's
 URL cannot take the relay's place.
 
+**Relays anyone lists.** The relay registry (`0x00000000000299F48Fb844626ab96c6A20059a01` on Ethereum, `contracts/src/RelayRegistry.sol`) lists the relays
+people have staked TAC to run, for any chain id. The Pay page (`/pay/eth/`) reads the list for the chain in use through a node other than its wallet's,
+keeps the entries a wallet would use, draws a few at random next to the relay it ships with (five are asked in all), and the wallet quotes each: a relay
+is used only if its quote names the address it was listed under, and a spend goes through one of the cheapest, the dearer drawn less often. A relay that
+has not answered a second or so after the first has is left out of that spend, so one that never answers delays nothing for long. The page's content
+security policy lets it call any https host, which is what lets a relay listed tomorrow work without a new page. The page that lives on chain as `anon.wei`
+does not read the registry. How to run and list a relay: [RUN-A-PAY-RELAY.md](./RUN-A-PAY-RELAY.md).
+
 **What the relay sees.** Your IP address; the transaction it is asked to send (all of which becomes public); at
 `/reserve`, the new leaves and the nullifiers being spent; at `/receive`, the chain, note key and fee cap of each box
 it is asked to watch; and at `/events`, the block a history read begins in: the start of a range of blocks after an absence, not the wallet's

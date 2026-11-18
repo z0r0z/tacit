@@ -21,6 +21,7 @@ const { evmPoolKeys } = await import('../dapp/evm-pool-wallet.js');
 const { signBox } = await import('../dapp/fixed-pool-box.js');
 const { FIXED_POOLS } = await import('../dapp/fixed-pool-notes.js');
 const { receiveBoxAddress, RECEIVE_FEE_BPS, EVM_POOL_ROUTER } = await import('../dapp/evm-pool-gateway.js');
+const { encodeList } = await import('./helpers/relay-registry-list.mjs');
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -44,6 +45,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch();
 let pass = 0, fail = 0;
 const test = async (label, fn) => {
+  if (process.env.ONLY && !label.includes(process.env.ONLY)) return;      // ONLY=<part of a test's name> runs just those
   try { await fn(); console.log(`  PASS  ${label}`); pass++; }
   catch (e) { console.log(`  FAIL  ${label}: ${e.message}`); fail++; }
 };
@@ -83,7 +85,14 @@ const POOL_DEN = new Map(FIXED_POOLS[1].map((p) => [p.address.toLowerCase(), p.d
 const SELS = { den: bytesToHex(keccak_256(new TextEncoder().encode('denomination()')).slice(0, 4)), com: bytesToHex(keccak_256(new TextEncoder().encode('commitments(bytes32)')).slice(0, 4)), next: bytesToHex(keccak_256(new TextEncoder().encode('nextIndex()')).slice(0, 4)) };
 // how many deposits each pool has had and how many notes are in it now (the line under a row of notes in the split)
 const POOL_SIZE = new Map([[10n ** 17n, [76863n, 6502n]], [10n ** 18n, [97860n, 4221n]], [10n * 10n ** 18n, [79970n, 2409n]], [100n * 10n ** 18n, [50287n, 2810n]]]);
+// registry: the relay registry's list, when a test gives one (the page reads it through a node, like any chain data)
+const REGISTRY = '0x00000000000299f48fb844626ab96c6a20059a01';
+let REGISTRY_ENTRIES = null;
 const rpcAnswer = (method, params = [], landed = new Set(), depositLogs = []) => {
+  if (method === 'eth_call' && REGISTRY_ENTRIES && String(params[0]?.to).toLowerCase() === REGISTRY && String(params[0]?.data).startsWith('0xd4d25113')) {
+    const start = Number(BigInt('0x' + params[0].data.slice(10 + 64, 10 + 128)));
+    return encodeList(REGISTRY_ENTRIES.slice(start, start + 100), Math.min(REGISTRY_ENTRIES.length, start + 100));
+  }
   switch (method) {
     // a note's deposit, as the pool logged it: [{ c, index, time }] by commitment (the pool's 1 ETH pool, 29,999,000)
     case 'eth_getLogs': {
@@ -165,7 +174,8 @@ export function attachWithdraw(env) {
   } };
 }`;
 const POOL1 = FIXED_POOLS[1][1].address;
-async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, keeperCap = null, notes = null, payWrap = false, fixedNotes = null, depositLogs = [] } = {}) {
+async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, keeperCap = null, notes = null, payWrap = false, fixedNotes = null, depositLogs = [], registry = null } = {}) {
+  REGISTRY_ENTRIES = registry;
   const ctx = await browser.newContext({ viewport: { width: 560, height: 1100 } });
   const page = await ctx.newPage();
   const problems = [], sent = [], told = [], landed = new Set();
@@ -191,6 +201,9 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
     await page.route(/\/confidential-names\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: NAMES_STUB }));
   }
   page.on('pageerror', (e) => problems.push('pageerror ' + e.message));
+  if (process.env.DEBUG_PAGE) page.on('console', (m) => console.log('   [page]', m.type(), m.text().slice(0, 300)));
+  if (process.env.DEBUG_PAGE === '2') page.on('request', (r) => console.log('   [req]', r.method(), r.url().slice(0, 130), r.method() === 'POST' ? (r.postData() || '').slice(0, 90) : ''));
+  if (process.env.DEBUG_PAGE) page.on('response', (r) => { if (r.status() >= 400) console.log('   [http]', r.status(), r.url().slice(0, 160)); });
   page.on('console', (m) => { if (/Content Security Policy|Refused to/i.test(m.text())) problems.push('csp ' + m.text()); });
   await page.exposeFunction('__sign', async (msgHex) => {
     const msg = hexToBytes(msgHex.replace(/^0x/, ''));
@@ -708,6 +721,35 @@ await test('the cards are on with no flag in the address and nothing stored, the
   await page.goto(base + '/pay/eth/?fixed=1');
   await unlock(page);
   await page.waitForSelector('#lg-notes', { state: 'attached', timeout: 30000 });
+  await ctx.close();
+});
+console.log('Relay registry');
+await test('the page reads the relay registry for the chain in use and lists what it finds next to its own relay; a relay anywhere on https is reachable under the page\'s policy', async () => {
+  const R2 = '0x' + 'b2'.repeat(20), own = 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper';
+  const { ctx, page, problems } = await open({ registry: [
+    { relayer: R2, stake: 1000n * 10n ** 18n, url: 'https://relay2.example/1/evm-pool/keeper' },
+    { relayer: '0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0', stake: 1000n * 10n ** 18n, url: own },
+  ] });
+  const reads = [];
+  page.on('request', (r) => { if (r.method() === 'POST' && (r.postData() || '').includes('0xd4d25113')) reads.push(r.postDataJSON()); });
+  await unlock(page);
+  const calls = () => reads.flat().map((b) => b?.params?.[0]).filter((c) => c && String(c.data).startsWith('0xd4d25113'));
+  const LIST_1 = '0xd4d25113' + '1'.padStart(64, '0') + '0'.repeat(64) + (100).toString(16).padStart(64, '0');
+  for (let i = 0; i < 60 && !calls().some((c) => c.data === LIST_1); i++) await page.waitForTimeout(500);
+  assert.ok(calls().some((c) => c.data === LIST_1), 'the page asked the registry for Ethereum\'s relays: list(1, 0, 100)');
+  assert.ok(calls().every((c) => c.to.toLowerCase() === REGISTRY), 'always the registry on Ethereum, whichever chain\'s relays it asks for');
+  // a relay on a host the page never named is reachable: the policy lets the page call any https host
+  const status = await page.evaluate(async () => { try { return (await fetch('https://relay2.example/1/evm-pool/keeper/quote')).status; } catch (e) { return 'blocked: ' + e.message; } });
+  assert.ok(Number.isInteger(status), 'the request left the page (an answer of any kind, even the stand-in\'s 404): ' + status);
+  assert.deepEqual(problems, [], 'and the policy did not refuse it');
+  await ctx.close();
+});
+await test('a registry that cannot be read leaves the page working with its own relay', async () => {
+  const { ctx, page, problems } = await open({ registry: [] });
+  await unlock(page);
+  await page.fill('#f-damt', '0.5');
+  await page.waitForFunction(() => /Deposit/.test(document.querySelector('#f-go')?.textContent || ''), null, { timeout: 30000 });
+  assert.deepEqual(problems, []);
   await ctx.close();
 });
 await browser.close();

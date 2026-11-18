@@ -52,7 +52,8 @@ await check('two addresses at one URL are both kept: an entry made by someone el
   const list = relaysOf({ keepers: [{ url: U2, relayer: B, weight: 5 }, { url: U2, relayer: A, weight: 1 }], pinned: true });
   assert.deepEqual(list.map((e) => e.relayer), [B, A]);
   assert.equal(relaysOf({ keepers: [{ url: U2, relayer: B }, { url: U2, relayer: B.toUpperCase().replace('0X', '0x') }], pinned: true }).length, 1, 'the same address twice is one');
-  assert.equal(relaysOf({ keeper: U2, relayer: A, keepers: [{ url: U2, relayer: B }], pinned: true }).length, 2, 'and one listed against the chain\'s own keeper');
+  // the chain's own keeper is the relay at its URL: an entry listed for that URL adds nothing, so it neither doubles the keeper nor pins it elsewhere
+  assert.deepEqual(relaysOf({ keeper: U2, relayer: A, keepers: [{ url: U2, relayer: B }], pinned: true }).map((e) => e.relayer), [A], 'one listed against the chain\'s own keeper is dropped');
 });
 await check('on a real origin a listed relay\'s host must be a public name: no IP address, localhost or local network name; off one, anything goes', () => {
   const hosts = ['localhost', 'localhost:8443', '127.0.0.1', '10.0.0.5:8443', '192.168.1.20', '169.254.169.254', '0x7f000001', 'printer.local', 'router.lan', 'svc.internal', 'host.home.arpa', 'nodot', '1.2', 'a.b.localhost', 'a.1'];
