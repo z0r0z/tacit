@@ -15,9 +15,10 @@
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=51f5d28b"></script>
 <script type="module" src="/px-strip.js?cb=d4520508" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=2ee3c6c7" as="style">
-<link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/swap/card.css?cb=e2404831" as="style">
+<link rel="preload" href="/fonts/newsreader-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/newsreader-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
 <script defer src="/front-route.js?cb=4ced4067"></script>
@@ -94,34 +95,37 @@
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2'); }
-@font-face { font-family: 'Instrument Serif'; font-weight: 400; font-display: swap; src: url('/fonts/instrument-serif-400-latin.woff2') format('woff2'); }
-@font-face { font-family: 'Instrument Serif'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/instrument-serif-400i-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Newsreader'; font-weight: 400; font-display: swap; src: url('/fonts/newsreader-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Newsreader'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/newsreader-400i-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Schibsted Grotesk'; font-weight: 400 600; font-display: swap; src: url('/fonts/schibsted-grotesk-latin.woff2') format('woff2'); }
 
 :root {
-  --paper: #E8E0CC;
-  --card: #F2EBD4;
-  --field: #FAF6EA;
+  --paper: #E6E6E4;
+  --card: #F1F1EF;
+  --field: #E9E9E7;
+  --raise: #FFFFFF;
   --soft: color-mix(in srgb, #fff 40%, var(--card));
-  --ink: #1A1A1A;
-  --mute: #625C4F;
-  --faint: #807A68;
-  --hair: rgba(26,26,26,.12);
-  --hair-2: rgba(26,26,26,.28);
+  --ink: #17181B;
+  --mute: #5C5D62;
+  --faint: #636468;
+  --hair: rgba(23,24,27,.10);
+  --hair-2: rgba(23,24,27,.24);
   --orange: #f7931a;
   --ok: #0a7234;
   --warn: #9a4a00;
   --err: #b8341d;
-  --scrim: rgba(26,26,26,.36);
-  --lift: 0 22px 44px -28px rgba(26,26,26,.45);
+  --scrim: rgba(23,24,27,.36);
+  --lift: 0 22px 44px -28px rgba(23,24,27,.45);
   --sheet-shadow: 0 40px 90px -40px rgba(0,0,0,.6);
-  --skel: rgba(26,26,26,.08);
-  --skel-hi: rgba(26,26,26,.02);
-  --bar: #8F8979;
+  --skel: rgba(23,24,27,.08);
+  --skel-hi: rgba(23,24,27,.02);
+  --bar: #8B8C91;
   --blue: #627eea;
   --green: #16a34a;
-  --float: 0 1px 2px rgba(26,26,26,.05), 0 26px 50px -34px rgba(26,26,26,.38);
+  --float: 0 1px 2px rgba(23,24,27,.05), 0 30px 70px -50px rgba(23,24,27,.45);
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  --serif: 'Instrument Serif', 'Instrument Serif Fallback', 'Instrument Serif Fallback T', 'Instrument Serif Fallback N', Georgia, serif;
+  --serif: 'Newsreader', 'Newsreader Fallback', 'Newsreader Fallback T', Georgia, serif;
+  --sans: 'Schibsted Grotesk', 'Schibsted Grotesk Fallback', system-ui, sans-serif;
   --tap: 44px;
   /* motion: --ease settles fast (the sheets' rise); --spring overshoots a little, for what answers a pointer */
   --ease: cubic-bezier(.2, .8, .2, 1);
@@ -130,34 +134,42 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #15130E;
-    --card: #1F1C15;
-    --field: #191711;
+    --paper: #131417;
+    --card: #1A1B1F;
+    --field: #15161A;
+    --raise: #2A2B31;
     --soft: color-mix(in srgb, var(--ink) 4.5%, var(--card));
-    --ink: #EDE5CF;
-    --mute: #A39B85;
-    --faint: #8A8470;
-    --hair: rgba(237,229,207,.12);
-    --hair-2: rgba(237,229,207,.28);
+    --ink: #E4E4E1;
+    --mute: #9A9BA1;
+    --faint: #86878D;
+    --hair: rgba(228,228,225,.09);
+    --hair-2: rgba(228,228,225,.22);
     --ok: #8fcf9a;
     --warn: #f7931a;
     --err: #f08a6c;
     --scrim: rgba(0,0,0,.6);
     --lift: 0 22px 44px -28px rgba(0,0,0,.9);
-    --skel: rgba(237,229,207,.07);
-    --skel-hi: rgba(237,229,207,.15);
-    --bar: #6F6958;
-    --float: 0 0 0 1px rgba(237,229,207,.04), 0 34px 70px -30px rgba(0,0,0,.95);
+    --skel: rgba(228,228,225,.07);
+    --skel-hi: rgba(228,228,225,.15);
+    --bar: #66676D;
+    --float: 0 0 0 1px rgba(228,228,225,.04), 0 40px 90px -50px #000;
     color-scheme: dark;
   }
 }
+
+/* the SPX page (made from this one, with a look of its own) keeps its own face where this page names the grotesk, and takes none of the look at the foot of this sheet */
+html[data-page="spx"] { --sans: var(--mono); }
+html[data-page="spx"] .hx:has(#hx-body:empty), html[data-page="spx"] .hx:has(#hx-body > .hx-sk) { min-height: 571px; }   /* and the heights its card was held at before */
+@media (max-width: 640px) { html[data-page="spx"] .hx:has(#hx-body:empty), html[data-page="spx"] .hx:has(#hx-body > .hx-sk) { min-height: 562px; } }
+@media (max-width: 370px) { html[data-page="spx"] .hx:has(#hx-body:empty), html[data-page="spx"] .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
+@media (max-width: 356px) { html[data-page="spx"] .hx:has(#hx-body:empty), html[data-page="spx"] .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
+@media (max-width: 334px) { html[data-page="spx"] .hx:has(#hx-body:empty), html[data-page="spx"] .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 html, body { margin: 0; background: var(--paper); color: var(--ink); }
 body {
-  font: 14px/1.6 var(--mono); letter-spacing: -.01em; overflow-x: hidden;
-  background-image: radial-gradient(ellipse 54rem 30rem at 50% 26rem, color-mix(in srgb, var(--card) 70%, transparent), transparent 72%); background-repeat: no-repeat;
+  font: 14px/1.6 var(--sans); letter-spacing: -.01em; overflow-x: hidden;
   padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
 }
 a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
@@ -418,11 +430,9 @@ main:focus { outline: none; }
 .hx { position: relative; width: 100%; max-width: 480px; min-width: 0; margin: 0 auto; background: var(--card); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent); border-radius: 22px; box-shadow: var(--float), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent); }
 /* The card is filled by script, so until it is, it holds the height its Swap tab settles at (measured at each width, with the way the card opens: ETH to private tETH, which
    has the "Private in" block): what is below it does not move when it appears. tests/front-tile-height.mjs measures it again. */
-.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 571px; }
-@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 562px; } }
-@media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
-@media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
-@media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
+.hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 580px; }
+@media (max-width: 640px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
+@media (max-width: 338px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 602px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -1962,9 +1972,80 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .sk { background: var(--skel); }
 }
+/* ───────────────────────────── the look: the hero and the card's frame ─────────────────────────────
+   Graphite, built around privacy. One light thing on a screen: the button. What is chosen is a raised grey plate, not a
+   highlight. Words are in the grotesk, figures in the mono, the headline in the serif with its second word in quiet italics.
+   The rules here restyle the ones above (the tab strip's sliding line is put away, not removed: the strip is a plate now). */
+html:not([data-page="spx"]) {
+  & .hero h1 { font: 400 clamp(44px, 12vw, 68px)/1.02 var(--serif); letter-spacing: -.025em; }
+  & .hero h1 em { color: var(--mute); }
+  & .hero .sub { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
+  & .hero .sub b { font: 400 .88em var(--mono); color: var(--ink); }
+  & .hero-t { margin-bottom: 26px; }
+  & .hx { border-radius: 20px; border-color: var(--hair); background: linear-gradient(180deg, color-mix(in srgb, var(--card) 93%, #fff) 0, var(--card) 140px); }
+  /* the tabs: one plate, the chosen tab raised on it */
+  & .hx-h { margin: 12px 12px 4px; padding: 3px; border: 0; border-radius: 12px; background: var(--field); }
+  & .hx-h::after { display: none; }
+  & .hx-h button { padding: 10px 0; border-radius: 9px; font: 500 14px/1 var(--sans); letter-spacing: 0; transition: background-color .2s, color .2s; }
+  & .hx-h button[aria-selected="true"] { background: var(--raise); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  & .hx-sk .t { height: 40px; margin: 0 -4px 6px; }
+  & .hx-path { font-family: var(--sans); font-size: 12.5px; }
+  /* a choice of two in the card (Send or Request, Farm or LP only, from the wallet or from Bitcoin): the tab strip's plate, smaller */
+  & .hx-mode { background: var(--field); border-radius: 10px; }
+  & .hx-mode button { border-radius: 8px; font: 500 13px var(--sans); }
+  & .hx-mode button[aria-checked="true"] { background: var(--raise); }
+  /* Bridge and Borrow: two words with a rule under the chosen one, not a second row of plates */
+  & .hx-more { display: flex; gap: 18px; margin: 6px 4px 12px; padding: 0; background: none; border-bottom: 1px solid var(--hair); border-radius: 0; }
+  & .hx-more button { flex: none; margin-bottom: -1px; padding: 8px 2px 10px; border-bottom: 2px solid transparent; border-radius: 0; font: 500 14px var(--sans); }
+  & .hx-more button[aria-selected="true"] { background: none; box-shadow: none; border-bottom-color: var(--ink); }
+  /* a bridge's steps: a rail that runs from one chain's colour to the other's, a ring at each step between its ends */
+  & .hx-brs { margin: 18px 4px 4px; font: 400 12px/1.35 var(--sans); }
+  & .hx-brs li { padding-top: 22px; }
+  & .hx-brs li::before, & .hx-brs li::after { left: 14px; top: 6px; height: 2px; border-radius: 2px; }
+  & .hx-brs li::before { background: linear-gradient(90deg, color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)), color-mix(in srgb, var(--from) calc(67% - var(--i, 0) * 33%), var(--to))); opacity: .55; }
+  & .hx-brs .dot { box-sizing: border-box; width: 14px; height: 14px; background: var(--card); border: 2px solid color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)); }
+  & .hx-brs li:first-child .dot { background: var(--from); }
+  & .hx-brs li:last-child .dot { background: var(--to); border-color: var(--to); }
+  /* the two ways on from a bridge, as chips */
+  & #hx-brl { gap: 8px; margin-top: 14px; }
+  & .hx #hx-brl a { padding: 7px 13px; border: 1px solid var(--hair); border-radius: 999px; font: 400 12.5px var(--sans); text-decoration: none; }
+  @media (hover: hover) { & .hx #hx-brl a:hover { border-color: var(--hair-2); } }
+  & .hx .lede-s, & .hx .hx-hv, & .hx-lead { font-family: var(--sans); }
+  /* the page under the card: every section it had, quieter, so the card stays the page's subject. Less air between sections, smaller headings, the
+     line under a heading in the grotesk, the asset tabs and figures in the card's own hands (grotesk for names, mono for numbers), the coin smaller */
+  & .sx { padding-top: 88px; }
+  & .sx-h { margin-bottom: 32px; }
+  & .sx-h h2 { font-size: clamp(28px, 3.4vw, 38px); }
+  & .sx-h p { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
+  & .tc .sx-h { margin-bottom: 20px; }
+  & .tc-stage { height: 112px; margin-bottom: 8px; }
+  & .tc-tilt { scale: .42; }
+  & .tc-shadow { bottom: 6px; width: 92px; }
+  & .tc-as { margin-bottom: 22px; }
+  & .tc-as button { font: 500 14px/1 var(--sans); letter-spacing: 0; }
+  & .tc-facts dd { font: 400 26px/1.15 var(--mono); letter-spacing: -.03em; }
+  @media (min-width: 641px) { & .tc-facts { gap: 14px 48px; } }
+  @media (max-width: 640px) { & .tc-facts dd { font-size: clamp(13px, 4.1vw, 17px); } }   /* three figures to a row on a phone: the mono is wider than the serif was, so it is set to fit its column */
+  & .tc-links { margin-top: 26px; }
+  & .tc-links .btn { border-radius: 12px; }
+  /* the glyph layer (glyphs.js). The field is fixed behind the whole page (chrome.css), which is why the page's ground is on <html> and <body> is clear; the stamp
+     lies behind its side's own words; and a rule of glyphs thins out to dots between the headline and the card. */
+  & body { background: transparent; }
+  & .hx canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .3; pointer-events: none; }
+  /* the wallet sheet's ways to sign in: a key struck across them in glyphs (glyphs.js), seen through the rows, and behind each way's mark a breath of its colour */
+  & #sheet-wallet .sheet-in { position: relative; isolation: isolate; }
+  & #sheet-wallet canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: .34; pointer-events: none; transition: opacity .15s ease; }
+  & #sheet-wallet .sheet-in:not(:has(#ws-in)) canvas.gx-stamp { display: none; }
+  & #ws-in .opt { --tone: transparent; background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), color-mix(in srgb, var(--field) 58%, transparent); }
+  & #ws-in .opt:has(use[href="#tk-eth"]) { --tone: #627EEA; }
+  & #ws-in .opt:has(use[href="#tk-btc"]), & #ws-in .opt:has(use[href="#i-key"]) { --tone: #F7931A; }
+  @media (prefers-reduced-motion: reduce) { & #sheet-wallet canvas.gx-stamp { transition: none; } }
+  & .hero-t::after { content: '!$&=$$@!!=+$|!!|+%//$&=*!|;:+/-;:,..........................................................'; display: block; width: min(456px, 100%); margin: 24px auto 0;
+    overflow: hidden; white-space: nowrap; font: 400 9px/1 var(--mono); letter-spacing: 2.5px; color: var(--faint); opacity: .7; }
+}
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=2ee3c6c7" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=e2404831" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -1979,7 +2060,7 @@ header.top .top-r { position: relative; display: flex; align-items: center; gap:
 .sn > a, .sn summary {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: none;
   height: 40px; min-width: 40px; padding: 0 9px; border-radius: 12px; color: var(--mute);
-  font: 500 12.5px/1 var(--mono); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  font: 400 14px/1 var(--sans, var(--mono)); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
   transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 .sn summary::-webkit-details-marker { display: none; }
@@ -2018,15 +2099,15 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 /* the account chip (and, on the front page, Activity and the total): a quiet outline on the page's own ground, not a block; the dot says whether a wallet is open */
 header.top .chip {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: 0 1 auto; min-width: 0; height: 40px; margin: 0; padding: 0 16px 0 13px;
-  color: var(--ink); background: transparent; border: 1px solid var(--hair-2, var(--hair-strong, var(--hair))); border-radius: 999px;
-  font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  color: var(--ink); background: var(--card, transparent); border: 1px solid var(--hair-2, var(--hair-strong, var(--hair))); border-radius: 10px;
+  font: 500 14px/1 var(--sans, var(--mono)); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
 header.top .chip .dot.on { background: var(--ok); }
 header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); }
-header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; }
+header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); background: transparent; border-color: transparent; }
 header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
 @media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
 header.top .chip:active { transform: scale(.97); }
@@ -2053,7 +2134,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
-.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
+.sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 14px/1 var(--sans, var(--mono)); text-decoration: none; }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
 .sm-p a[aria-current="page"] { background: var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
@@ -2061,6 +2142,13 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
 @media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
+/* the glyph layer (glyphs.js). The field is fixed behind a page, so it is there wherever the page is scrolled to. It is behind everything, so a
+   page's ground has to be on <html> for it to be seen: <body> keeps its own pattern and gives up only its colour. The menu's panel has Tacit's mark struck
+   across its foot. Neither is there on a page the script leaves alone, or when the script does not load. */
+canvas.gx-field { position: fixed; top: 0; left: 0; z-index: -1; max-width: 100%; pointer-events: none; }
+:root:has(> body > canvas.gx-field) { background-color: var(--paper, var(--bg)); }
+:root:has(> body > canvas.gx-field) > body { background-color: transparent; }
+.sm-p canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .24; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .sm-p { animation: none; } .sn > a, .sn summary, header.top .chip { transition: none; } }
 
 /* a page with little on it still reaches the bottom of the window, so its footer is not left floating under a few lines (a page that sets a height for its own <main> keeps it) */
@@ -2069,7 +2157,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 /* the footer: where it is said to be, then the places outside the app. In a wide footer the protocol's own (paper, build, security, source, contract, stats) are words and the
    places that have a mark of their own are that mark; in a narrow one every place is an icon that says its name on hover and to a screen reader (they narrow a little on a small
    phone before they would run off the page) */
-footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
+footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 13px/1.4 var(--sans, var(--mono)); }
 footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
 footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); text-decoration: none; transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
 footer.sf nav a:active { transform: scale(.92); }
@@ -2086,11 +2174,36 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @media (max-width: 480px) { footer.sf nav { margin: 0 0 0 -11px; } }
 
 /* what only one page has to point at (papers, the pool on each chain): a quiet line above the footer */
-.sf-x { display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; margin-top: 48px; color: var(--mute); font: 400 12px/1.4 var(--mono); }
+.sf-x { display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; margin-top: 48px; color: var(--mute); font: 400 13px/1.4 var(--sans, var(--mono)); }
 .sf-x + footer.sf { margin-top: 12px; }
 .sf-x span { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
 .sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
 @media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
+
+/* The graphite palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
+   its head, so the one block recolours them all and a page's own styles are untouched. The values are the front page's (index.html keeps them with the rest of its
+   tokens). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and are left out: the SPX page, by
+   its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the build gives it. */
+:root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
+  --paper: #E6E6E4; --bg: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --ink: #17181B; --mute: #5C5D62;
+  --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24); --hair-strong: rgba(23,24,27,.24); --skel: rgba(23,24,27,.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
+    --paper: #131417; --bg: #131417; --card: #1A1B1F; --field: #15161A; --ink: #E4E4E1; --mute: #9A9BA1;
+    --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22); --hair-strong: rgba(228,228,225,.22); --skel: rgba(228,228,225,.07);
+  }
+}
+
+/* The grotesk the header, the menu and the footer are set in, for every page that wears them (the front page names it in its own head as well, for its first paint), and a
+   local face scaled to its width and line metrics that shows until it arrives; the same for Newsreader, the front page's serif. Measured against each font's own advances. */
+@font-face { font-family: 'Schibsted Grotesk'; font-weight: 400 600; font-display: swap; src: url('/fonts/schibsted-grotesk-latin.woff2') format('woff2'); }
+:root { --sans: 'Schibsted Grotesk', 'Schibsted Grotesk Fallback', system-ui, sans-serif; }
+@font-face { font-family: 'Schibsted Grotesk Fallback'; src: local('Arial'), local('Helvetica'), local('Liberation Sans'), local('Arimo'); size-adjust: 103.5%; ascent-override: 94.7%; descent-override: 25.1%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback'; src: local('Georgia'); size-adjust: 96.1%; ascent-override: 77%; descent-override: 27.1%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback'; font-style: italic; src: local('Georgia Italic'), local('Georgia-Italic'); size-adjust: 89.1%; ascent-override: 83.1%; descent-override: 29.2%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback T'; src: local('Times New Roman'), local('TimesNewRomanPSMT'), local('Liberation Serif'), local('Tinos'); size-adjust: 105%; ascent-override: 70.5%; descent-override: 24.8%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 98.9%; ascent-override: 74.8%; descent-override: 26.3%; line-gap-override: 0%; }
 
 /* A serif scaled to Instrument Serif's width and line metrics (Georgia, Times or Noto Serif, whichever the device has) shows until the font arrives, so the swap moves nothing */
 @font-face { font-family: 'Instrument Serif Fallback'; src: local('Georgia'); size-adjust: 75.8%; ascent-override: 130.6%; descent-override: 40.9%; line-gap-override: 0%; }
@@ -2100,7 +2213,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=3cafe52f" defer></script>
+<script src="/chrome.js?cb=f5a9e53a" defer></script>
 <!-- chrome:head:end -->
 <link rel="preload" href="/fonts/orbitron-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/space-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
