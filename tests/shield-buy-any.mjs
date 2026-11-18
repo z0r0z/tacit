@@ -32,6 +32,11 @@ const NOISE = /CORS policy|ERR_FAILED|Failed to load resource/;
 const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }), p = await ctx.newPage(), bad = [];
 p.on('pageerror', (e) => bad.push('script error: ' + e.message));
 p.on('console', (m) => { if (m.type() === 'error' && !NOISE.test(m.text())) bad.push('console: ' + m.text().slice(0, 160)); if (/Content Security Policy/.test(m.text())) bad.push('CSP: ' + m.text().slice(0, 160)); });
+{
+  // a swap's output is rarely a whole number of the pool's units for an 18-decimal token: the shield rounds it down (AAVE canary: 'amount not aligned to unitScale')
+  const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), body = fn.slice(fn.indexOf('async function xtShieldRaw('), fn.indexOf('async function xtZapShield(') > 0 ? fn.indexOf('// The deposit of the one-transaction buy') : undefined);
+  ok(/if \(r\.scale > 1n\) wei -= wei % r\.scale;/.test(body), 'the shield of a bought token rounds the amount down to the pool\'s unit scale');
+}
 await p.goto(BASE + '/', { waitUntil: 'load' });
 await p.waitForSelector('#hx .go', { timeout: 40000 });
 const tile = () => p.evaluate(() => (document.querySelector('#hx')?.innerText || '').replace(/\s+/g, ' '));
