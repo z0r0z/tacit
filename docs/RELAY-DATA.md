@@ -8,8 +8,8 @@ the fee and recipient are bound inside the proof. This page says what each relay
 - **Transfers and withdrawals are proved in the person's browser.** The relay receives the finished transaction: what the chain will show anyway (recipient,
   amount, fee, nullifiers), and never the note secrets or keys.
 - **Deposits go straight from the person's wallet by default**, proved on the device, and the relay is not involved. A person who chooses the optional
-  deposit address (a receive box) lets the relay hold the box's receive key so it can sweep what arrives. It keeps that key while it watches the box, and
-  drops a box thirty days after the watch lapses. A deposit the relay makes on a person's behalf is held as its note's contents until the deposit ends, and
+  deposit address (a receive box) lets the relay hold the box's receive key so it can sweep what arrives. It keeps that key while it watches the box,
+  and keeps watching, more slowly, after the watch lapses until the box is dropped to make room. A deposit the relay makes on a person's behalf is held as its note's contents until the deposit ends, and
   the record of it is deleted a week after.
 - **Requests go through the private route.** The pay page seals each request to the relay's key and sends it through a forwarder or, if no forwarder
   answers, through public Nostr relays, so the relay sees a forwarder's or a Nostr relay's address and the request, not the sender's address. A request
