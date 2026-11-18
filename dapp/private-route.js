@@ -8,8 +8,8 @@
 export const ROUTE = {
   keeper: 'https://tacit-evm-pool-keepers.onrender.com',   // the service whose pools (/<id>/evm-pool/keeper) the route carries
   id: 'k',                                                  // what the forwarders call that service
-  gateway: '',                                              // its gateway key, 33 bytes of hex (node worker-relay/src/sealed-keygen.js)
-  forwarders: [],                                           // each forwarder's address
+  gateway: '03dcc0e9c8f2f3f283831159600a0f1db2f615003a4d939999ff0e911894265a70',   // its gateway key, 33 bytes of hex (node worker-relay/src/sealed-keygen.js), key id 5c246719
+  forwarders: ['https://tacit-evm-pool-forwarder.onrender.com'],   // each forwarder's address
 };
 
 const FLAG = 'tacit-private-route-v1';

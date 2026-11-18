@@ -44,6 +44,14 @@ globalThis.fetch = async (url, init = {}) => {
 };
 const get = async (url, init) => (await keeperFetch(url, init)).json();
 
+await check('the page ships with its gateway key and a forwarder, and the route stays off until the person turns it on', async () => {
+  assert.match(ROUTE.gateway, /^0[23][0-9a-f]{64}$/, 'a 33-byte gateway key is pinned');
+  assert.ok(ROUTE.forwarders.length >= 1 && ROUTE.forwarders.every((u) => /^https:\/\//.test(u)), 'at least one https forwarder');
+  assert.equal(available(), true);
+  assert.equal(enabled(), false, 'opt-in: off until a person turns it on');
+});
+Object.assign(ROUTE, { gateway: '', forwarders: [] });   // the cases below start from a page with no route configured
+
 await check('the route is off until the page names a gateway and a forwarder and the person turns it on, and off it is fetch', async () => {
   assert.equal(available(), false);
   assert.equal(enabled(), false);
