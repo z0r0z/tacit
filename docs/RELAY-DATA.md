@@ -32,10 +32,31 @@ the fee and recipient are bound inside the proof. This page says what each relay
   API directly, so the relay keeps working; the API then sees the sender's address.
 - Public reads made when a page loads (statistics, recent activity, the leaderboard) go to the API directly.
 
+## Large pools (Tornado Cash notes)
+
+A deposit of 0.1 ETH or more is split into whole notes for the Tornado Cash ETH pools (0.1, 1, 10 and 100 ETH) and the rest goes into the Tacit pool, in one
+transaction. The smallest note is 0.1 ETH, or larger when the network fee for a note would pass 2% of its size; the person can change it. The page offers ETH on
+Ethereum only; other chains and tokens open with `?chains=all`.
+
+- **Deposits** are one transaction from the person's own wallet to a depositor contract that has no owner, no setter, no upgrade and holds no balance. No relay is involved.
+- **Notes** are derived from the wallet's signatures. Nothing about a note is stored with, or sent to, a service of ours; *Find* recovers them from the wallet.
+- **A withdrawal is proved in the browser** and sent as a gas-free ERC-4337 operation: its sender is a throwaway account that never holds anything, and the pool
+  pays the recipient and a fee, bound inside the proof, to the wallet keychain's paymaster, which pays the gas. The paymaster and the bundlers (Pimlico's, then
+  Candide's) are not ours. The page sends the bundler's calls through the private route to the wallet-read gateway, so the bundler sees the gateway, not the
+  person. The gateway sees the operation (the recipient, the fee and the proof, which the chain shows once it is mined) and not the sender's address. If no road is open,
+  or a bundler throttles the gateway, the page sends the call to the bundler directly, and the bundler then sees the person's address. The person can instead send the
+  withdrawal from their own wallet.
+- **A pool's deposit history** is read from a published cache of its logs (`saga.0000000000.org`), fetched directly by the page, so that host sees the reader's address and
+  which pool is read, not the wallet or any note. Each file is checked against the cache's digests, and the tree built from them must land on a root the pool
+  knows before anything is proved. If the host does not answer, the page reads the pool's logs from the chain, which takes much longer.
+- **Waiting.** The page says how long a note has been in its pool and how many deposits came after it, and says so once when a withdrawal would take a note that went in recently.
+
 ## What the private route does not cover
 
-- **Chain reads** from the pay page go to the relay's `/rpc` through the route, so the public node that answers sees the relay's request, not the wallet's.
-  A read the relay does not carry (a method off its list, a log range over 5,000 blocks), or any read while no road is open, goes straight to the public node
-  the page names, which then sees the reader's address and the addresses it asks about.
+- **Chain reads** of a wallet's own side (its balance, the simulation of a deposit, a transaction's receipt, a name it looks up) go through the route to a wallet-read
+  gateway, a service of its own with its own key, so the relay never sees them and the gateway never sees the relay's. The reads of a receive box go to the relay's `/rpc`
+  through the route. The public node that answers sees the gateway's or the relay's request, not the wallet's. A read the service does not carry (a method off its
+  list, a log range over 5,000 blocks on the relay and 20,000 on the gateway), or any read while no road is open, goes straight to the public node the page names,
+  which then sees the reader's address and the addresses it asks about.
 - The hosting provider records the network address and path of each request it serves.
 - The points lookup sees a connected Ethereum wallet's address.
