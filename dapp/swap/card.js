@@ -5,8 +5,8 @@ import { declinedWords } from '/wallet-prompts.js';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=9c8b4133';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js';
-import * as R from '/swap/route.js?cb=7c0d8f3b';
-import * as A from '/swap/aggregate.js?cb=d14ff664';
+import * as R from '/swap/route.js?cb=efdb1794';
+import * as A from '/swap/aggregate.js?cb=495de990';
 import * as SV from '/swap/solvers.js?cb=669b2617';
 import { linkName, linkSides } from '/swap/link.js?cb=00bf0557';
 import { routeLine } from '/swap/route-name.js?cb=2a0317f3';
@@ -46,6 +46,18 @@ export const ethCall = (to, data, block = 'latest', o = {}) => (o.gas ? heavy : 
 export const batch = async (calls) => V.decAggregate3(await ethCall(MULTICALL3, V.encAggregate3(calls)), calls.length);
 const venues = makeEvmTradeVenues({ ethCall, keccak256: keccak_256 });
 const standIn = () => '0x' + Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, '0')).join('');
+// ETH -> token for a buy: zQuoter's single best route when the route check takes it. For some tokens the best price is a Curve route through a pool the check does not know (CRV, once its
+// best venue changed), and that used to be reported as "no route". Then the aggregator's candidates are asked: it takes such a pool only after the swap itself is simulated paying its floor.
+// An RPC that fails still throws, as before: only a route the check refused is looked for again.
+async function buyQuote(o) {
+  const q = await R.quoteEthToToken({ ethCall, ...o });
+  if (q) return q;
+  try {
+    const amt = BigInt(o.amount), b = await A.bestRoute({ ethCall, to: o.to, refundTo: o.to, tokenIn: R.ZERO, tokenOut: o.tokenOut, amountIn: amt, slippageBps: o.slippageBps ?? 50, deadline: o.deadline });
+    if (!b || !(b.out > 0n) || !(b.min > 0n) || BigInt(b.value) !== amt) return null;
+    return { source: null, feeBps: 0n, amountIn: amt, amountOut: b.out, amountLimit: b.min, callData: b.callData, msgValue: BigInt(b.value), name: b.name, to: o.to, tokenOut: o.tokenOut, deadline: o.deadline, curvePools: b.curvePools || [] };
+  } catch { return null; }
+}
 const within = (p, ms, why) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(why)), ms))]);
 const PN = makePointsNote({ read: () => (H.today ? H.today() : fetch('https://api.tacit.finance/leaderboard?day=today&limit=1', { signal: AbortSignal.timeout(8000) }).then((r) => (r.ok ? r.json() : null))) });
 const noteOf = (x, q) => [x.note, ptsTag(rowPts(x, q))].filter(Boolean).join(/class="splitbar"/.test(x.note || '') ? '' : ' · ');
@@ -636,7 +648,7 @@ async function quote(my, wei) {
     return done({ rows: [], why: 'No route trades this pair deeply enough right now.' });
   }
   if (kind === 'zap') {
-    const who = account || PREVIEW, zq = await within(R.quoteEthToToken({ ethCall, to: who, tokenOut: S.get, amount: wei, slippageBps: S.slip, deadline: chainDeadline(1200) }), 20e3, 'zQuoter did not answer in time. Try again.');
+    const who = account || PREVIEW, zq = await within(buyQuote({ to: who, tokenOut: S.get, amount: wei, slippageBps: S.slip, deadline: chainDeadline(1200) }), 20e3, 'zQuoter did not answer in time. Try again.');
     if (!zq) return done({ rows: [], why: `No pool trades ETH for ${esc(get.sym)} deeply enough right now.` });
     return done({ rows: [{ k: 'zap', name: `${zq.name} → private ${esc(get.sym)}`, note: '', out: zq.amountOut, min: zq.amountLimit, zap: zq, gas: GAS.split, best: true, at: now() }] });
   }
@@ -668,7 +680,7 @@ async function outsideRate(k) {
   if (had && Date.now() - had.at < 60e3) return had.rate;
   let rate = null;
   try {
-    const q = o ? await within(R.quoteEthToToken({ ethCall, to: R.CONF_ROUTER, tokenOut: k, amount: 10n ** 16n, slippageBps: 50, deadline: chainDeadline(1800) }), 8e3, 'the market price did not answer') : null;
+    const q = o ? await within(buyQuote({ to: R.CONF_ROUTER, tokenOut: k, amount: 10n ** 16n, slippageBps: 50, deadline: chainDeadline(1800) }), 8e3, 'the market price did not answer') : null;
     if (q?.amountOut > 0n) rate = Number(q.amountOut) / 10 ** o.tdec / 0.01;
   } catch { }
   OUTR.set(k, { at: Date.now(), rate });
@@ -742,7 +754,7 @@ async function quoteOut(units, pay, get) {
   const wei = net * E10, via = from === 'eth' ? '' : 'Tacit pool → ';
   const base = { fee, xfee, xmin, pools, tUnits };
   if (eth) return { ...base, rows: [{ k: 'pout', name: `${via}out of the pool`, out: wei, min: wei, wei, best: true, priv: true, pout: true }] };
-  const sale = await within(R.quoteEthToToken({ ethCall, to: S.to || '0x0000000000000000000000000000000000000001', tokenOut: S.get, amount: wei, slippageBps: S.slip, deadline: chainDeadline(1800) }), 20e3, 'zQuoter did not answer in time. Try again.');
+  const sale = await within(buyQuote({ to: S.to || '0x0000000000000000000000000000000000000001', tokenOut: S.get, amount: wei, slippageBps: S.slip, deadline: chainDeadline(1800) }), 20e3, 'zQuoter did not answer in time. Try again.');
   if (!sale) return { rows: [], why: `No pool trades ETH for ${esc(get.sym)} deeply enough.` };
   const venue = `${sale.name}${sale.feeBps ? ` ${Number(sale.feeBps) / 100}%` : ''}`;
   return { ...base, rows: [{ k: 'pout', name: `${via}${venue}`, sale: venue, out: sale.amountOut, min: sale.amountLimit, wei, best: true, priv: true, pout: true }] };
@@ -1262,7 +1274,7 @@ async function zapOne(P) {
     if (!S.chainT) return false;
     const dl = chainDeadline(1200);
     say('Reading the price again…');
-    const q = await within(R.quoteEthToToken({ ethCall, to: R.CONF_ROUTER, tokenOut: P.get, amount: P.wei, slippageBps: P.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time.');
+    const q = await within(buyQuote({ to: R.CONF_ROUTER, tokenOut: P.get, amount: P.wei, slippageBps: P.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time.');
     if (!q) return false;
     if (q.amountOut < P.floor) { say('The price moved below the least you accept. Nothing was sent; the quote above is the new one.', '', true); S.busy = false; requote(true); return true; }
     plan = R.zapShieldPlan({ quote: q, tokenOut: P.get, wei: P.wei, scale: coin.scale, deadline: dl });
@@ -1435,7 +1447,7 @@ async function prepare(P, from) {
     if (!q || q.out < P.floor || q.min < (P.r.min ?? P.floor)) return moved();
     tx = await aggTx(q, from);
   } else if (P.kind === 'zap') {
-    const q = await within(R.quoteEthToToken({ ethCall, to: from, tokenOut: P.get, amount: P.wei, slippageBps: P.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
+    const q = await within(buyQuote({ to: from, tokenOut: P.get, amount: P.wei, slippageBps: P.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
     if (!q || q.amountOut < P.floor) return moved();
     tx = { to: R.ZROUTER, data: q.callData, value: q.msgValue };
   } else throw new Error('Nothing to do for this pair.');
@@ -1586,7 +1598,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=bad576e7').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=cd725063').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
 const laterPair = (kind, pay = S.pay, get = S.get) => laterPay(pay)
   && (isEth(pay) ? kind === 'agg' || (kind === 'tac' && get === lc(R.TAC)) : (kind === 'agg' && get !== lc(R.WETH)) || kind === 'any' || kind === 'out' || kind === 'tac');
@@ -2427,7 +2439,7 @@ async function privateGo(r, kind = 'private', here = false) {
         path: k0 === 'eth' ? [] : (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })),
         minOut: poolFloor(q.tUnits, slip), label: `Swap ${what} for ${get.sym} to ${who(to)}`,
         out: { token: eth ? null : tokenOut, to, minFee: q.xmin, min: r.min, wei: r.wei,
-          quote: (wei) => R.quoteEthToToken({ ethCall, to, tokenOut, amount: wei, slippageBps: slip, deadline: chainDeadline(1800) }) } };
+          quote: (wei) => buyQuote({ to, tokenOut, amount: wei, slippageBps: slip, deadline: chainDeadline(1800) }) } };
       let res;
       try { res = await pv.swapOut(plan, { say: step }); }
       catch (e) { if (e?.stuck) { e.stuck = { ...e.stuck, what: `About ${tidy(amtFmt(r.wei, 18))} ETH`, sym: get.sym, at: now() }; saveExit(e.stuck); } throw e; }
@@ -3055,7 +3067,7 @@ export function mountSwapCard(root, host = {}) {
     clear: () => { clearTimeout(qTimer); S.seq++; S.amt = ''; S.q = null; S.mq = null; changed(); paint(); const mk = moveOf(); if (mk) H.moves?.cleared?.(mk); },
     closePicker: () => pkClose?.({ quiet: true }),
     pickerBals,
-    quoteEthToToken: (o) => R.quoteEthToToken({ ethCall, ...o }),
+    quoteEthToToken: (o) => buyQuote(o),
     listReady: () => loadList(),
     // ETH's price in dollars as the card holds it (null until it is read)
     ethUsd: () => S.px?.ethUsd ?? null,

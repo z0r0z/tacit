@@ -178,7 +178,7 @@ export function zapShieldPlan({ quote, tokenOut, wei, scale = 1n, deadline = quo
   const wrapAmount = zapWrapAmount(quote.amountLimit, scale);
   if (wrapAmount <= 0n) return { why: 'the swap pays less than the pool takes of this token' };
   if (BigInt(quote.msgValue) !== BigInt(wei)) return { why: 'the swap spends another amount of ETH' };
-  const why = checkRoute(quote.callData, { to: CONF_ROUTER, tokenIn: ZERO, tokenOut, exactOut: false, amount: wei, maxIn: wei, minOut: wrapAmount, deadline });
+  const why = checkRoute(quote.callData, { to: CONF_ROUTER, tokenIn: ZERO, tokenOut, exactOut: false, amount: wei, maxIn: wei, minOut: wrapAmount, deadline, curvePools: quote.curvePools || [] });      // (a Curve pool the aggregator proved by simulation travels with its quote)
   if (why) return { why };
   const paid = BigInt(quote.amountOut);
   return { wrapAmount, value: BigInt(wei), zrSwapData: quote.callData, to: CONF_ROUTER, rest: paid > wrapAmount ? paid - wrapAmount : 0n };
