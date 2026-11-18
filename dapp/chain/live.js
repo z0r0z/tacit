@@ -306,7 +306,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     }).join('');
   }
   const POOL_H = 56, POOL_MOST = 6000;
-  function pool(state) {
+  function pool(state, anon) {
     const fig = el('pool');
     if (!fig) return;
     const n = Number.isSafeInteger(state?.leaves) && state.leaves > 0 ? state.leaves : null;
@@ -315,7 +315,9 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     POOL.n = n;
     fig.hidden = false;
     const cv = fig.firstElementChild, cap = fig.lastElementChild, spent = Number.isSafeInteger(state.nullifiers) && state.nullifiers >= 0 ? state.nullifiers : null;
-    const text = `<b class="num">${int(n)}</b> notes made${spent != null ? `, <b class="num">${int(spent)}</b> spent` : ''}. All look alike: only their owners know which are spent.`;
+    // still unspent is made minus spent; the last day's growth is from the cached read (GET /tacit-chain/anonymity), and the line stands without it
+    const left = spent != null && spent <= n ? n - spent : null, d1 = anon?.d1 && Number.isSafeInteger(anon.d1.notes) && anon.d1.notes >= 0 && anon.d1.secs >= 20 * 3600 ? anon.d1 : null;
+    const text = `<b class="num">${int(n)}</b> notes made${spent != null ? `, <b class="num">${int(spent)}</b> spent` : ''}${left != null ? `, <b class="num">${int(left)}</b> still unspent` : ''}. All look alike: only their owners know which are spent.${d1 ? ` <b class="num">${int(d1.notes)}</b> new in the last day.` : ''}`;
     if (cap.__h !== text) { cap.__h = text; cap.innerHTML = text; }
     cv.setAttribute('aria-label', `${int(n)} notes in the pool, drawn as dots that all look alike`);
     const per = Math.ceil(n / POOL_MOST), dots = Math.ceil(n / per), w = cv.clientWidth, cs = getComputedStyle(cv), key = `${n}|${POOL.lit}|${w}|${cs.color}`;
@@ -419,7 +421,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     let wk = null, dy = null;
     part(() => { wk = pace(hist, R.chain, WEEK, true); dy = pace(hist, R.chain, 1); });
     part(() => { put('stats', stats(R, wk)); countUp(); });
-    part(() => pool(R.state));
+    part(() => pool(R.state, R.anon));
     part(() => put('chart', chart(R.blocks === undefined && !hist.length ? undefined : hist)));
     part(() => { put('yield', yields(R, wk, dy)); put('earned', earned(wk)); });
     part(() => { if (hero) { const h = heroLine(wk); if (hero.__h !== h) { hero.__h = h; hero.innerHTML = h; } } });
@@ -454,7 +456,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     busy = true;
     const src = {
       state: () => getJson(cfg.leader + '/state'), fee: () => getJson(cfg.leader + '/fee'),
-      blocks: () => getJson(API + '/prover/blocks'), board: () => getJson(API + '/prover/board'), chain: () => onchain(),
+      blocks: () => getJson(API + '/prover/blocks'), anon: () => getJson(API + '/tacit-chain/anonymity'), board: () => getJson(API + '/prover/board'), chain: () => onchain(),
       ...(cfg.dev ? {} : { lead: () => leadRead() }),
     };
     try {

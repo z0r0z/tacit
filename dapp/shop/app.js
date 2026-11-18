@@ -1,4 +1,4 @@
-import { makeConnect } from '/trade/connect.js?cb=683de273';
+import { makeConnect } from '/trade/connect.js?cb=41394526';
 import { esc } from '/trade/sheet.js?cb=d857446c';
 import { $, rpc } from '/trade/util.js?cb=9c8b4133';
 import { readSpot, readPrecision } from '/trade/farm-read.js?cb=fb6ec72f';

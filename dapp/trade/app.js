@@ -11,7 +11,7 @@ import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1
 import { mountDepth } from '/trade/depth.js?cb=4f87419e';
 import { precisionPool, tacitPool, poolBook, perLevel, roundDown, CHART_STEPS } from '/trade/pools.js?cb=8f983ea2';
 import { readBook, planBuy as planBoardBuy, planSell as planBoardSell, refine as refineBoards, buildFill as buildBoardFill, BOARD_NAMES } from '/zboards.js?cb=e8d21aec';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=683de273';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=41394526';
 import { takeEarly, hedgedRpc, nodeHealth, shareReads } from '/trade/rpc.js';
 import { mountFarm } from '/trade/farm.js?cb=017e9b13';
 import { grp, sig, group, satsFmt, day as dayFmt, warm as warmFormatters } from '/trade/fmt.js?cb=172824e5';
