@@ -247,7 +247,7 @@ const opensAt = (rec) => { const t = rec.lockAt || rec.confirmedAt; return t && 
 function returnLine(opens, now) {
   if (opens == null) return 'Your TAC is safe. The lock comes back to your address when its timelock ends, about a day after it confirmed.';
   const left = opens - now;
-  if (left <= 0) return 'Your TAC is safe. Its lock is due back now, and is sent to your address from here while the app is open.';
+  if (left <= 0) return 'Your TAC is safe. Its lock is due back now. Open Tacit signed in with the same wallet and it is sent back to your address.';
   const h = left / 3600;
   const when = h >= 1.5 ? `in about ${Math.round(h)} hours` : h >= 0.75 ? 'in about an hour' : 'within the hour';
   return `Your TAC is safe. The lock comes back to your address ${when}: open the app then and it is sent back.`;
@@ -270,7 +270,7 @@ export function describe(rec, clock = null) {
   return {
     id: rec.id, phase: rec.phase, title, detail,
     at, steps: STEPS, ended, returned: back, amount: rec.amount, receive: back ? '0' : rec.evmAmount, created: rec.created,
-    lockTxid: rec.lock?.txid || null, error: waitingOnTimelock ? null : (rec.lastError || null), recovered: !!rec.recovered,
+    lockTxid: rec.lock?.txid || null, updated: rec.updated || null, error: waitingOnTimelock ? null : (rec.lastError || null), recovered: !!rec.recovered,
     opens: back && !ended ? opensAt(rec) : null,           // when the lock is due back (seconds), for a bridge that did not go through
   };
 }

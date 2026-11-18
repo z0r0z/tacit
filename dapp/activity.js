@@ -23,8 +23,8 @@ export const listed = (items) => items.filter((x) => !x.in);
 
 // The Activity item for a fast bridge record (fastbridge-client.js describe(): the fast route keeps the records in this browser and says where each stands). One for
 // each that is under way, or that ended in the last day; a bridge that came back to Bitcoin is a failed one (returned, not done). null for an old ended one.
-export function fastItem(r, { fmt = (v) => String(v), now = Date.now() / 1000, pub = null } = {}) {
-  if (!r || !r.id || (r.ended && now - r.created > 86400)) return null;
+export function fastItem(r, { fmt = (v) => String(v), now = Date.now() / 1000, pub = null, keep = false } = {}) {
+  if (!r || !r.id || (r.ended && !keep && now - (r.updated || r.created) > 86400)) return null;
   const status = !r.ended ? 'pending' : r.returned ? 'failed' : 'settled';
   return {
     id: `fast:${r.id}`,
