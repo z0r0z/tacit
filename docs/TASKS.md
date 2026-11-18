@@ -35,7 +35,7 @@ kept between the step's share of the job's floor and its share of the job's cap 
      `keccak256(salt)` alone): the same log, with that salt, for an address that is the same on every chain and fixed by the init code;
    - a point posted to the catch-up registry (`"kind": "post"`): the registry's own `Posted` event for a count of at least the
      step's `minSize`, so an early, trivial point is not the step.
-   - a step read by hand (`"kind": "review"`): the sender's transaction to itself, naming a Bitcoin transaction in its data, once its hash is on the step's `approved` list. For work whose chain transactions are sent by someone else, such as a fast bridge swap (`worker-relay/scripts/tasks-fast-bridge.mjs`).
+   - a step read by hand (`"kind": "review"`): the sender's transaction to itself, naming a Bitcoin transaction in its data, once its hash is on the step's `approved` list. For work whose chain transactions are sent by someone else, such as a fast bridge swap (`worker-relay/scripts/tasks-fast-bridge.mjs`). The data is always 32 bytes; a step whose `input` says `{ "pattern": …, "text": true }` asks for a short id from another site instead, written as its ASCII bytes padded with zeros (`dapp/tasks/review.js`), for work done off chain such as filing a listing request.
 3. The reward is fixed then, for the account that **sent** the transaction (`tx.from`; nobody can name another account).
    It is recorded as a pending claim, once per step.
 4. Each cycle a pending claim becomes a ledger adjustment (`task:<job>:<step>`), when
@@ -93,6 +93,8 @@ job by id and leaves the others):
 
 `worker-relay/scripts/tasks-usdt-bridge.mjs` builds the `usdt-bridge-test` job: four read-by-hand steps (`kind: review`, as the fast bridge job's), each paying a fixed sum (`--tac`, 250 by default) once to the tester whose round trip of USDT to Bitcoin and back was checked. A tester claims with the Bitcoin transaction that brought the USDT back; the page sends the account a transaction to itself naming it, and the step lists that hash after review (`--tester` to `--tester4`: a push and a deploy of the points service). `worker-relay/scripts/tasks-usdt-settle.mjs` follows each claim to its burn and, with `--apply`, approves it once the pool has minted the USDT again. A job's `hint` is the page's line under the button.
 
+`worker-relay/scripts/tasks-coingecko.mjs` builds the `coingecko-listing` job: one read-by-hand step (`kind: review`) paying a fixed sum (`--tac`, 100 by default) once to whoever files Tacit's CoinGecko listing request. The filer claims with the Request ID CoinGecko emails them (the step's `input` is text, and the job's `reviewVia` is where the page tells them to post the claim: the brief on GitHub), and the step lists that transaction after review (`--filer`: a push and a deploy of the points service, then naming the claim to `POST /tasks/claim`): the request exists, it was filed from the project's verification post, and the project's account replied to that post with the id. `dapp/tasks/review.js` reads the id back from the claim's data (`reviewText`).
+
 `worker-relay/scripts/tasks-gen4.mjs` builds the `anon-wei-4` job (the page's chunks on Ethereum, the catch-up registry on three chains,
 the first points on two) from the page build's `out/` and the registry's init code and open salt; it reads each step's gas from the
 chain's own node with `eth_estimateGas` (nothing is sent). The page fetches a point from the chain's keeper when it is sent
@@ -118,6 +120,7 @@ A change to the contracts changes the addresses: rebuild the files, run the test
 ## Tests
 
     node worker-relay/tests/points-tasks.test.mjs                       rewards, matching, guards, store, the service
+    node worker-relay/tests/tasks-review.test.mjs                       what a reviewed step's claim names (a Bitcoin transaction id or an id as text), and the CoinGecko job's files
     node worker-relay/tests/tasks-page-state.test.mjs                   the page's reading of what is done, counted request by request (Chrome)
     anvil --fork-url <archive mainnet rpc> --fork-block-number 26201023 --port 8546 --chain-id 1   (before the TAC vaults were deployed)
     FORK_RPC=http://127.0.0.1:8546 node worker-relay/tests/points-tasks-fork.test.mjs   the TAC vaults job's 21 steps, claimed and credited
