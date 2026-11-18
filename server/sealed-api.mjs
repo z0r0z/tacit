@@ -20,6 +20,7 @@ export const API_CARRIED = [
   ['POST', /^\/prover\/pool\/hold$/],
 ];
 const TOKEN = /^[0-9a-f]{12}$/;
+const NOSTR_ROAD = '127.0.0.9';   // what evm-pool-keeper-nostr.js reports as the address of every envelope it carries
 const json = (res, code, body) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
 
 // The address a token stands for: in the first 64 bits, which is what the API counts an IPv6 caller by.
@@ -34,7 +35,10 @@ export function makeApiSealed({ env = {}, secret, forwarders = [], ratePerMin = 
   const fromListed = (outer) => listed.has(clientIpFrom(outer, env));
   const innerHeaders = (outer) => {
     const token = String(outer.headers['x-tacit-sender'] || '');
-    const ip = fromListed(outer) && TOKEN.test(token) ? senderAddress(token) : clientIpFrom(outer, env);
+    // An envelope that came by the Nostr road (worker-relay/src/lib/evm-pool-keeper-nostr.js) has no sender at all: it is counted under an address made for it alone, and the road's own
+    // limits (a proof of work on each request, one allowance for the road) bind it.
+    const road = outer.socket?.remoteAddress === NOSTR_ROAD;
+    const ip = road ? senderAddress(randomBytes(6).toString('hex')) : fromListed(outer) && TOKEN.test(token) ? senderAddress(token) : clientIpFrom(outer, env);
     return { 'x-tacit-proxy-key': env.PROXY_TRUST_KEY || process.env.PROXY_TRUST_KEY, 'x-tacit-forwarded-ip': ip };
   };
   // The API's handler answers by piping a response into a stream; the gateway collects an answer through writeHead/write/end. This is the stream between them.

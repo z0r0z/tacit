@@ -364,6 +364,7 @@ export function createTacitServer({ workerModule, env, driver, ctxFactory, seale
     }
   };
   const srv = http.createServer((nodeReq, nodeRes) => (sealed && sealed(nodeReq, nodeRes, handle) ? undefined : handle(nodeReq, nodeRes)));
+  srv.handle = handle;   // for a road that is not this server's own socket (a Nostr relay, server/index.mjs)
   return srv;
 }
 

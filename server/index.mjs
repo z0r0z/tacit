@@ -67,6 +67,18 @@ const sealed = process.env.RELAY_API_GATEWAY_KEY
   : null;
 if (sealed) console.log('[tacit-api] the private route for the relay API is on at POST /sealed');
 const server = createTacitServer({ workerModule, env, driver, ctxFactory, sealed });
+// The same gateway over public Nostr relays, for when no forwarder answers a page (docs/PRIVATE-ROUTE-NOSTR.md): off until RELAY_API_NOSTR_RELAYS names them (wss://…,wss://…).
+if (sealed && process.env.RELAY_API_NOSTR_RELAYS) {
+  const relays = process.env.RELAY_API_NOSTR_RELAYS.split(',').map((x) => x.trim()).filter((x) => /^wss:\/\//.test(x));
+  try {
+    if (typeof WebSocket !== 'function') throw new Error('this Node has no WebSocket');
+    const { gatewayKeys } = await import('../dapp/sealed-request.js');
+    const { bytesToHex } = await import('../dapp/vendor/tacit-deps.min.js');
+    const { makeNostrRoad } = await import('../worker-relay/src/lib/evm-pool-keeper-nostr.js');
+    makeNostrRoad({ take: (rq, rs) => sealed(rq, rs, server.handle), kidHex: bytesToHex(gatewayKeys(process.env.RELAY_API_GATEWAY_KEY).kid), relays, WS: WebSocket, minBits: Number(process.env.RELAY_API_NOSTR_BITS || 12), log: (m) => console.log(`[tacit-api] ${m}`) }).start();
+    console.log(`[tacit-api] the private route for the relay API is on over Nostr: ${relays.length} relays`);
+  } catch (e) { console.log(`[tacit-api] the Nostr road did not start: ${String(e?.message || e).slice(0, 120)}`); }
+}
 const cron = process.env.CRON_DISABLED === '1'
   ? null
   : startCron({ workerModule, env, driver, ctxFactory });
