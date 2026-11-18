@@ -221,8 +221,8 @@ function kindOf(pay, get, inP = S.inP, outP = S.outP) {
   if (arguments.length < 3 && (S.at.pay || S.at.get)) return null;
   if (inP && outP) return inPool(pay) && inPool(get) && pay !== get ? 'private' : null;
   if (outP) {
-    // the SPX page: ETH buys the token on the open market and shields it (the swap, then the deposit), whether or not a pool trades it privately
-    if (FLOW === 'shield' && isEth(pay) && get !== 'teth' && H.moves?.zapTo?.() === get) return 'zap';
+    // the Shield tab, paid in ETH: ETH buys the token on the open market and shields it (the swap, then the deposit), whether or not a pool trades it privately
+    if (FLOW === 'shield' && isEth(pay) && get !== 'teth' && zapAble(get)) return 'zap';
     if (!inPool(get)) return null;
     if (isEth(pay)) return 'private';
     return isListed(pay) && !tacitKey(pay) && pay !== lc(R.WETH) && FLOW !== 'shield' ? 'pin' : null;
@@ -244,6 +244,16 @@ const getPriv = () => S.outP || hidden();
 
 const moving = () => !!H.moves;
 // a coin the host lists on the Get side only (the SPX page's TAC: it can be bought there, not sold) cannot be paid with, so the flip does not turn it into the Pay side
+// Paying ETH in the Shield tab, any token the pool can hold in its own form can be bought on the open market and shielded in one go: the token the SPX page names
+// up front, or any listed token the visitor picks on the To side (ZAP). A page that lists only some coins (H.moves.only) keeps to them.
+let ZAP = null;
+const zapAble = (k) => {
+  if (!k || isEth(k) || k === 'teth') return false;
+  if (H.moves?.zapTo?.() === k) return true;
+  const o = H.moves?.only?.(FLOW, 'get');
+  return FLOW === 'shield' && ownForm(k) && (!o || o.has(k));
+};
+const toPick = () => FLOW === 'shield' && moving() && isEth(S.pay) && atOf('pay') === 'wallet';
 const payOk = (k) => { const o = H.moves?.only?.(FLOW, 'pay'); return !o || o.has(k); };
 const atOf = (side) => S.at[side] || ((side === 'pay' ? S.inP : S.outP) ? 'defi' : 'wallet');
 const isPrivAt = (at) => at === 'defi' || at === 'pay' || at === 'chain';
@@ -287,7 +297,7 @@ const placed = () => moving() && !!(S.at.pay || S.at.get || moveOf());
 const LADDER = { wallet: 0, btc: 0, pay: 1, defi: 1, chain: 2 };
 let FLOW = null;
 function flowGet(k, at) {
-  if (FLOW === 'shield' && at === 'wallet' && isEth(k)) { const z = H.moves?.zapTo?.(); if (z && tokenOf(z)) return [z, 'defi']; }
+  if (FLOW === 'shield' && at === 'wallet' && isEth(k)) { const z = ZAP && zapAble(ZAP) && tokenOf(ZAP) ? ZAP : H.moves?.zapTo?.(); if (z && tokenOf(z)) return [z, 'defi']; }
   if (FLOW === 'withdraw') {
     if (at === 'chain' && atOf('get') === 'defi' && pairOk(k, at, k, 'defi')) return [k, 'defi'];
     const w = coinAt(k, 'wallet'); return isPrivAt(at) && pairOk(k, at, w, 'wallet') ? [w, 'wallet'] : null;
@@ -834,6 +844,7 @@ function paintMode() {
 const shownAt = (k, at) => { const t = tokenOf(k, at === 'defi'); return at === 'chain' && t ? { ...t, pvt: true } : at === 'pay' && t ? (isEth(k) ? { ...t, icon: 'peth' } : { ...t, pvt: true }) : at === 'defi' && t && (k === lc(R.TAC) || ownForm(k)) ? { ...t, pvt: true } : t; };
 let PAYWARM = 0;
 function paintSides() {
+  ROOT.classList.toggle('buy', toPick());      // the To coin opens a picker when ETH can buy and shield a token
   let pay = shownAt(S.pay, atOf('pay')), get = shownAt(S.get, atOf('get'));
   if (FLOW === 'shield' && get && pay) get = { ...get, sym: S.get === 'teth' ? 'ETH' : isEth(S.pay) ? get.sym : pay.sym };
   if (FLOW === 'withdraw' && get && pay) pay = { ...pay, sym: get.sym };
@@ -917,7 +928,7 @@ function shareLink() {
 }
 const shareSync = () => {
   const b = $('#copy'), u = shareLink();
-  if (b) b.hidden = !u || (!!FLOW && !(FLOW === 'shield' && kindOf(S.pay, S.get) === 'zap'));      // the Shield tab hides it, except on the SPX page's ETH buy
+  if (b) b.hidden = !u || (!!FLOW && !(FLOW === 'shield' && kindOf(S.pay, S.get) === 'zap' && H.moves?.zapTo?.()));      // the Shield tab hides it, except on the SPX page's ETH buy (a link opens the Swap tab, not this buy)
   if (!b || !history.replaceState || FLOW) return;
   try {
     const at = location.pathname + location.search + location.hash, cur = new URL(location.href);
@@ -2538,7 +2549,7 @@ function openPicker(side, again = false) {
   const ONLY = H.moves?.only?.(FLOW, side) ?? null;
   const groups = [['Wallet', top, 'wallet', 'wallet'], ['Private', [...POOL_COINS.map((k) => `@defi:${k}`), ...ownHeld().map((k) => `@defi:${k}`), ...(moving() ? placeCoins(side, 'pay').map((k) => `@pay:${k}`) : []), ...placeCoins(side, 'chain').map((k) => `@chain:${k}`)], 'private', 'defi'],
     ...(moving() ? [['Bitcoin', placeCoins(side, 'btc').map((k) => `@btc:${k}`), 'bitcoin', 'btc']] : []),
-    ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).map((g) => (ONLY ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return (!m || m[1] === 'defi') && ONLY.has(m ? m[2] : key); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
+    ['More tokens', rest, 'wallet', 'more']].map((g) => (FLOW ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return side === 'get' && toPick() ? !m && (isEth(key) || ownForm(key)) : !!flowGet(m ? m[2] : key, m ? m[1] : 'wallet'); }), g[2], g[3]] : g)).map((g) => (ONLY ? [g[0], g[1].filter((key) => { const m = ATK.exec(key); return (!m || m[1] === 'defi') && ONLY.has(m ? m[2] : key); }), g[2], g[3]] : g)).filter(([, ks]) => ks.length);
   const kinds = ['wallet', 'private', 'bitcoin'].filter((kd) => groups.some((g) => g[2] === kd));
   const first = KIND[PKAT || at];
   let kind = again && kinds.includes(PKKIND) ? PKKIND : kinds.includes(first) ? first : kinds[0];
@@ -2549,7 +2560,7 @@ function openPicker(side, again = false) {
   const row = (key) => {
     const m = ATK.exec(key), a = m ? m[1] : 'wallet', k = m ? m[2] : key, t = shownAt(k, a);
     if (!t) return null;
-    const ok = !moving() || (side === 'pay' ? goes('pay', k, a) : pairOk(S.pay, atOf('pay'), k, a));
+    const ok = !moving() || (side === 'pay' ? goes('pay', k, a) : toPick() || pairOk(S.pay, atOf('pay'), k, a));
     const twin = moving() && (k === 'teth' || k === lc(R.TAC) || isEth(k));
     const sub = a === 'defi' ? `${esc(SUB[k] || '')}${twin ? `<span class="pk-tw">${SUB[k] ? ' · ' : ''}swap, farm, borrow</span>` : ''}`
       : a === 'pay' ? `${isEth(k) ? 'private ETH' : k === USDC_K || k === USDT_K ? 'a private dollar' : 'private TAC'} · pay anyone on ${isEth(k) && chains > 1 ? chainMarks(cs) : 'Ethereum'}`
@@ -2660,6 +2671,12 @@ function choose(side, k) {
   const m = moving() && ATK.exec(k);
   if (FLOW) {
     const at = m ? m[1] : 'wallet', real = m ? m[2] : k, was = S.pay;
+    if (side === 'get' && toPick()) {        // Shield, paying ETH: the token to buy and shield (ETH itself is the plain shield)
+      if (!isEth(real) && !ownForm(real)) return;
+      ZAP = isEth(real) ? null : real; flowFit(); clearTo();
+      S.note = ''; S.q = null; S.mq = null; S.pick = null; S.hold = false; changed(); paint(); requote(true);
+      return;
+    }
     if (side !== 'pay' || !flowGet(real, at)) return;
     setAt('pay', at); S.pay = real; flowFit(); clearTo();
     if (!sameCoin(was, real)) S.amt = '';
@@ -2723,7 +2740,8 @@ function applyParams(p) {
   const side = (k, priv) => (priv ? (isEth(k) ? 'teth' : k) : k === 'teth' ? lc(R.ZERO) : k);
   if (f) S.pay = side(f, S.inP); else if (S.inP) S.pay = 'teth';
   if (t) S.get = side(t, S.outP); else if (S.outP) S.get = S.pay === 'teth' ? lc(R.TAC) : 'teth';
-  if (S.outP && t && !inPool(S.get) && !(FLOW === 'shield' && isEth(S.pay) && H.moves?.zapTo?.() === S.get)) {      // (the SPX page's ETH buy stays private)
+  if (FLOW === 'shield' && S.outP && !S.inP && t && isEth(S.pay) && zapAble(S.get) && !H.moves?.zapTo?.()) ZAP = S.get;
+  if (S.outP && t && !inPool(S.get) && !(FLOW === 'shield' && isEth(S.pay) && zapAble(S.get))) {      // (an ETH buy in the Shield tab stays private)
     const r = outRoute(S.get); if (r) { S.outP = false; if (r === 'later') LATER.on = true; } }
   // a listed token a link names for the Shield tab, paid from the wallet: its own private form in the DeFi pool (an unlisted one is read first and lands the same, below)
   if (FLOW === 'shield' && f && !t && S.outP && !S.inP && ownForm(S.pay) && flowFit()) { /* its own form */ } else if (!kindOf(S.pay, S.get)) fit(t ? 'get' : 'pay');
@@ -2761,7 +2779,7 @@ function load(p, { fresh = true } = {}) {
   return true;
 }
 
-function setFlowNow(f) { FLOW = f; ROOT.classList.toggle('flow', !!f); ROOT.dataset.flow = f || ''; }
+function setFlowNow(f) { FLOW = f; if (f !== 'shield') ZAP = null; ROOT.classList.toggle('flow', !!f); ROOT.dataset.flow = f || ''; }
 let FLOW_WANT, flowWait = 0;
 function setFlow(f) {
   f = f === 'shield' || f === 'withdraw' ? f : null;
@@ -2868,9 +2886,9 @@ function wire() {
   ROOT.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault(); });
   $('#pay-coin').addEventListener('click', () => { PKAT = null; openPicker('pay'); });
   for (const id of ['#pay-coin', '#get-coin', '#amt']) for (const ev of ['pointerenter', 'focus', 'touchstart']) $(id).addEventListener(ev, () => { loadList(); }, { once: true, passive: true });
-  $('#get-coin').addEventListener('click', () => { if (FLOW) return; PKAT = null; openPicker('get'); });
+  $('#get-coin').addEventListener('click', () => { if (FLOW && !toPick()) return; PKAT = null; openPicker('get'); });
   for (const s of ['pay', 'get']) {
-    const open = () => { if (!moving() || S.busy || (FLOW && s === 'get')) return; PKAT = atOf(s); openPicker(s); };
+    const open = () => { if (!moving() || S.busy || (FLOW && s === 'get' && !toPick())) return; PKAT = atOf(s); openPicker(s); };
     $(`#${s}-at`).addEventListener('click', open);
     $(`#${s}-at`).addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
   }
