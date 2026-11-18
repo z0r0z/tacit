@@ -803,6 +803,7 @@ import { keeperIdOf, KEEPERS as POOL_KEEPERS } from '/evm-pool-tokens.js?cb=16e0
 import { keeperFetch, rpcFetch, walletRpcFetch, bundlerFetch, poolHistory, available as routeAvailable, enabled as routeOn, listRelays } from '/private-route.js?cb=b8835ba3';
 globalThis.__tacitBundlerFetch ||= bundlerFetch();
 import { signBoxSync as signBox, boxSigOk as boxRecordOk } from '/box-record.js?cb=c66c8473';
+import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ad0c42e2';
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 // preload-later:begin
@@ -1151,6 +1152,7 @@ const warm = () => { if (!navigator.connection?.saveData) prover().catch(() => {
 const warmIfSaved = () => { if (PROVER.cached) (globalThis.requestIdleCallback || setTimeout)(warm); };
 
 const S = { key: null, keys: null, wallet: null, provider: null, chain: chainOf(readJson(CHAIN_PREF)) || CHAINS[0], tab: 'deposit', depMode: 'wallet', dest: 'addr', busy: 0, chainOnly: false };
+const KEPT = { on: !!tabKeyRead(), opening: false };
 // The pool mode of Deposit is off until switched on: open the page once with ?pool=1 (?pool=0 turns it off again).
 const POOL_ON = (() => {
   try { const q = new URLSearchParams(location.search).get('pool'); if (q === '1') kv.set('tacit-assoc-pool', 'on'); else if (q === '0') kv.set('tacit-assoc-pool', 'off'); } catch {}
@@ -1225,7 +1227,8 @@ function tacitTurn(fn) {
 const mainnetBtc = (a) => { if (!/^(bc1|[13])/i.test(String(a || ''))) throw new Error('Your Bitcoin wallet is on a test network. Switch it to mainnet.'); };
 const tPriv = () => { const h = bytesToHex(T.wallet.priv); T.wallet.priv.fill(0); T.wallet.priv = null; return h; };
 
-async function setKey(k) {
+// `quiet`: the key this tab already held, opened again (tab-key.js): nothing is said, and how it was first opened stays as it was recorded
+async function setKey(k, { quiet = false } = {}) {
   const pubHex = String(k.pubHex || pubOf(k.priv)).replace(/^0x/, '').toLowerCase();
   if (pubOf(k.priv) !== pubHex) throw new Error('That wallet opened a different key than expected. Nothing was changed.');
   const [m] = await Promise.all([mods(), loadLane()]);
@@ -1233,13 +1236,14 @@ async function setKey(k) {
   forget();
   S.key = { ...k, pubHex, bp: keys.address };
   S.keys = keys;
+  tabKeyWrite({ ...k, pubHex });
   const seen = readJson(BAL_SEEN)?.[pubHex] || {};
   for (const c of CHAINS) CH[c.chainId].last = seen[c.chainId] != null ? BigInt(seen[c.chainId]) : null;
   warmIfSaved();
   const { priv, ...pub } = S.key;
-  if (k.mode === 'key') writeJson(PAY_ID, null); else writeJson(PAY_ID, pub);
+  if (!quiet) { if (k.mode === 'key') writeJson(PAY_ID, null); else writeJson(PAY_ID, pub); }
   paintWallet(); renderApp(); paintRecover(); paintPoints();
-  toast(`Opened ${short(UNIFIED_LIVE ? shownAddress() : keys.address, 8)}`);
+  if (!quiet) toast(`Opened ${short(UNIFIED_LIVE ? shownAddress() : keys.address, 8)}`);
   syncAll(true);
   historyAll();
   for (const c of CHAINS) boxScan(c);
@@ -1257,7 +1261,7 @@ function forget() {
   for (const k of Object.keys(TK)) Object.assign(TK[k], tkBlank());
   for (const st of Object.values(CH)) { clearTimeout(st.histTimer); Object.assign(st, { W: null, for: null, bal: null, notes: [], quote: null, waiting: null, err: null, syncing: null, at: 0, fails: 0, fill: null, hist: null, histing: null, histNext: null, histErr: null, histFails: 0, histTimer: null, histStart: 0, last: null, waitBoxes: [], quoteErr: null, deferred: false, unread: false, whole: false }); }
 }
-function lock() { forget(); evm.deselectProvider(); paintWallet(); renderApp(); paintRecover(); }
+function lock() { forget(); tabKeyClear(); evm.deselectProvider(); paintWallet(); renderApp(); paintRecover(); }
 function lockForWallet(msg) {
   if (S.busy) { S.lockDue = msg || true; return; }
   lock(); if (msg) toast(msg);
@@ -2533,7 +2537,7 @@ const ethIcon = html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/>
 function paintWallet() {
   document.body.classList.toggle('in', !!S.key);
   $('#wallet-dot').className = 'dot' + (S.key ? ' on' : S.wallet ? ' live' : '');
-  mount($('#wallet-label'), S.key ? chipView(UNIFIED_LIVE ? shownAddress() : S.key.bp) : html`${S.wallet ? short(S.wallet) : knownWallet() ? 'Open wallet' : 'Sign in'}`);
+  mount($('#wallet-label'), S.key ? chipView(UNIFIED_LIVE ? shownAddress() : S.key.bp) : KEPT.on ? html`Opening…` : html`${S.wallet ? short(S.wallet) : knownWallet() ? 'Open wallet' : 'Sign in'}`);
   if ($('#sheet-wallet').open) renderWalletSheet();
 }
 const PUB = {};
@@ -2657,6 +2661,7 @@ function renderForm() {
   keepFocus(f, () => {
     FORM.check = null; FORM.needsW = false; FORM.waitShown = undefined; FORM.needsLink = false; FORM.needsGift = false; FORM.relayShown = undefined; FORM.linkK = undefined; FORM.paidShown = undefined;
     if (!S.key) {
+      if (KEPT.on) return mount(f, html`<p class="gate-p">Opening your wallet…</p>`);
       if (linkOnly()) { mount(f, html`<p class="gate-p">Have a Tacit wallet? <button class="link" type="button" id="g-open">Open it</button> to keep this private.</p>`); $('#g-open').onclick = openWalletSheet; return; }
       mount(f, html`<p class="gate-p">Connect your wallet to open your private ETH. One key holds it, and nothing else needs backing up.</p>${signIn('g')}`);
       return wireSignIn(f, 'g');
@@ -4474,7 +4479,7 @@ function renderWalletSheet() {
     ${routeAvailable() ? html`<p class="more">Your address is hidden from the relay: every request to it goes through a forwarder. The nodes you read the chain through still see it.</p>` : ''}
     <div id="w-up"></div>
     ${kept ? html`<p class="more"><button class="link" type="button" id="w-backup">Copy key to back up</button></p>` : ''}
-    <p class="note">${kept ? 'This key is kept in this browser only, so clearing the browser’s data loses it. Copy it somewhere private: anyone who has it controls these funds, and pasting it back opens them again.' : k.mode === 'key' ? 'You pasted this key and it is not saved here, so closing the tab forgets it. Keep your own copy somewhere private: anyone who has it controls these funds.' : 'Your wallet or passkey is the only way back to these funds: keep it safe.'} The key stays in this tab; payments to your addresses reach you here and everywhere on tacit.finance.</p>`);
+    <p class="note">${kept ? 'This key is kept in this browser only, so clearing the browser’s data loses it. Copy it somewhere private: anyone who has it controls these funds, and pasting it back opens them again.' : k.mode === 'key' ? 'You pasted this key and it is not saved here, so closing the tab forgets it. Keep your own copy somewhere private: anyone who has it controls these funds.' : 'Your wallet or passkey is the only way back to these funds: keep it safe.'} The key stays in this tab, and locks after 30 minutes without use; payments to your addresses reach you here and everywhere on tacit.finance.</p>`);
   $('#w-copy').onclick = () => copy(UNIFIED_LIVE ? shownAddress() : k.bp, 'Address copied');
   $('#w-backup')?.addEventListener('click', () => navigator.clipboard.writeText(k.priv).then(() => toast('Key copied. Keep it somewhere private.'), () => toast('Could not copy the key: the browser refused clipboard access.', true)));
   nameUpgrade().then((plan) => { const el = $('#w-up'); if (plan && el?.isConnected) { mount(el, upgradeView(plan)); wireUpgrade(el, plan, () => mount(el, html``)); } });
@@ -5193,10 +5198,27 @@ document.addEventListener('keydown', (e) => {
 });
 window.addEventListener('hashchange', () => { applyHash(); renderApp(); if (GIFT.v) $('#gift').scrollIntoView({ block: 'start', behavior: 'smooth' }); else if (REQ.v) $('#req').scrollIntoView({ block: 'start', behavior: 'smooth' }); });
 
+// The key this tab opened on another page of the site (tab-key.js) opens here with no sign-in: one that needs no wallet at once, an Ethereum wallet's once that wallet answers,
+// with no prompt, as the account that opened it (any other answer, or none, lets it go). After 30 minutes without use it is locked, as the sign-in sheets say.
+function tabKeyOpen(walletRead) {
+  if (S.key || KEPT.opening) return;
+  let k = tabKeyRead();
+  if (k?.mode === 'eth') {
+    if (!walletRead) return;
+    if (!S.wallet || S.wallet !== lc(k.address)) { tabKeyClear(); k = null; }
+  }
+  const end = () => { KEPT.opening = false; if (KEPT.on) { KEPT.on = false; if (!S.key) { paintWallet(); renderForm(); } } };
+  if (!k) return end();
+  KEPT.opening = true;
+  setKey(k, { quiet: true }).catch(() => tabKeyClear()).finally(end);
+}
 applyHash();
+tabKeyWatch({ onIdle: (why) => { if (S.key) lockForWallet(why); }, busy: () => paying() || SIGNING.on });
+tabKeyOpen(false);
 paintWallet(); renderApp(); paintDevice(); paintRecover(); paintPoints();
 document.documentElement.classList.add('up');             // the first render is made: what sits below the form may show (see html:not(.up))
-restoreWallet();
+restoreWallet().then(() => tabKeyOpen(true), () => tabKeyOpen(true));
+setTimeout(() => { if (KEPT.on && !KEPT.opening) { KEPT.on = false; paintWallet(); renderForm(); } }, 1500);
 evm.onElsewhere(restoreWallet);
 if (GIFT.v || REQ.v) requestAnimationFrame(() => $(GIFT.v ? '#gift' : '#req').scrollIntoView({ block: 'start' }));
 mods().catch(() => {});
