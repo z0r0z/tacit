@@ -364,7 +364,7 @@ async function main() {
   // The private route for the whole service (docs/EVM-POOL.md "Private route"): one gateway key in the base environment and one POST /sealed
   // that carries any pool's routes, so a wallet's burst of reads for every pool is one envelope.
   const sealed = process.env.EVM_POOL_KEEPER_GATEWAY_KEY ? makeServiceGateway({
-    secret: process.env.EVM_POOL_KEEPER_GATEWAY_KEY, serve, json, log, accounts: keeperAccounts,
+    secret: process.env.EVM_POOL_KEEPER_GATEWAY_KEY, isolate: true, serve, json, log, accounts: keeperAccounts,
     forwarders: String(process.env.EVM_POOL_KEEPER_FORWARDERS || '').split(',').map((a) => a.trim()).filter(Boolean),
     ratePerMin: Number(process.env.EVM_POOL_KEEPER_RATE_PER_MIN || 20),
   }) : null;

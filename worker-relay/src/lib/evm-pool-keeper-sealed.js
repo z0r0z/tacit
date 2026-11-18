@@ -151,7 +151,11 @@ export function makeSealedGateway({ secret, handle, prefix, now = () => Math.flo
 // GET /sealed/key answers { docs: [...] }: the gateway key, signed for by each of `accounts` (the service's keepers' own keys, read when asked, as
 // a keeper starts after this does), so a wallet that knows only a relayer's address, from the relay registry, can seal to this gateway and be sure
 // it is the relayer's (dapp/relay-gateway-doc.js). Anyone may read it; it holds nothing private.
-export function makeServiceGateway({ secret, serve, json, forwarders = [], ratePerMin = 20, log = () => {}, now, accounts = [] }) {
+// `isolate`: what the keeper counts a request against is the address it came from, and behind a forwarder that is the forwarder's, so every person behind it
+// would share one small allowance. With `isolate` an envelope from a listed forwarder is counted under an address made for it alone: the forwarder already limits
+// each person it carries (FORWARDER_RATE_PER_MIN), and this gateway limits the forwarder's envelopes (below), so the keeper's own limits then bind a caller, not a crowd.
+// An address that is not a listed forwarder keeps its own.
+export function makeServiceGateway({ secret, serve, json, forwarders = [], ratePerMin = 20, log = () => {}, now, accounts = [], isolate = false }) {
   let gateway;
   try { gateway = makeSealedGateway({ secret, handle: serve, prefix: '', idPrefixed: true, ...(now ? { now } : {}) }); } catch (e) { throw new Error(`EVM_POOL_KEEPER_GATEWAY_KEY: ${e.message}`); }
   const v4 = (k) => String(k).replace(/^::ffff:/, '');
@@ -177,6 +181,7 @@ export function makeServiceGateway({ secret, serve, json, forwarders = [], rateP
     if (path !== '/sealed') return false;
     if (req.method !== 'POST') { json(res, 404, { error: 'not found' }); return true; }
     if (!allowed(req)) { res.setHeader('Retry-After', '10'); json(res, 429, { error: 'rate limited' }); return true; }
+    if (isolate && listed.has(v4(clientKey(req)))) { const b = crypto.getRandomValues(new Uint8Array(3)); req.headers = { ...req.headers, 'cf-connecting-ip': `10.${b[0]}.${b[1]}.${b[2]}` }; delete req.headers['x-forwarded-for']; }
     gateway.handle(req, res, (code, body) => json(res, code, body)).catch((e) => {
       log(`private route: ${safeErr(e)}`);
       if (!res.headersSent) json(res, 500, { error: 'internal error' }); else res.end();
