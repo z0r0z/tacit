@@ -13,17 +13,20 @@ import { join, extname } from 'node:path';
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
-const IMD = '0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7', IMDUSD = '0x61aAF8a992A3143e2B0C9cB0030b9fE702854a25';
+const IMD = '0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7', IMDUSD = '0x61aAF8a992A3143e2B0C9cB0030b9fE702854a25', INFER = '0x53D0eA0A685220718dC6A0a6E4617194C6f37921';
 
 // ── the file ──
 const { EXTRA } = await import(join(DAPP, 'swap/extra-tokens.js'));
 const by = Object.fromEntries(EXTRA.map((t) => [t.s, t]));
 ok(by.IMD?.a === IMD.toLowerCase() && by.IMD.d === 18 && /Identity\.md/.test(by.IMD.n) && /frenpet/i.test(by.IMD.n), 'IMD: its address, 18 decimals, named Identity.md and frenpet');
 ok(by.imdUSD?.a === IMDUSD.toLowerCase() && by.imdUSD.d === 18, 'imdUSD: its address and 18 decimals');
+ok(by.INFER?.a === INFER.toLowerCase() && by.INFER.d === 18 && /Inference/.test(by.INFER.n) && by.INFER.n.length <= 40, 'INFER: its address, 18 decimals, named Inference (the card keeps 40 characters of a name)');
+ok(EXTRA.length === 3 && !!by.IMD && !!by.imdUSD && !!by.INFER, 'all three rows are there: IMD, imdUSD and INFER');
 for (const [sym, t] of Object.entries(by)) {
   const m = /^data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)$/.exec(t.l || ''), svg = m ? Buffer.from(m[1], 'base64').toString('utf8') : '';
   ok(!!m && t.l.length < 40000, `${sym}: the logo is a base64 SVG data URL (the card takes only those under 40,000 characters)`);
-  ok(/<rect[^>]*width="128"[^>]*height="128"[^>]*fill="#000"/.test(svg) && /<text[^>]*fill="#fff"[^>]*font-family="[^"]*Helvetica/.test(svg) && new RegExp(`>${sym}</text>`).test(svg), `${sym}: white Helvetica text "${sym}" on a black background, nothing else drawn`);
+  if (sym === 'INFER') ok(/viewBox="0 0 400 400"/.test(svg) && /<rect[^>]*fill="#f6f4ef"/.test(svg) && /fill="#161f2f"/.test(svg) && !/<text/.test(svg) && svg.length < 1000, 'INFER: the project\'s I-beam mark, drawn lean from shapes (no text, under 1,000 characters)');
+  else ok(/<rect[^>]*width="128"[^>]*height="128"[^>]*fill="#000"/.test(svg) && /<text[^>]*fill="#fff"[^>]*font-family="[^"]*Helvetica/.test(svg) && new RegExp(`>${sym}</text>`).test(svg), `${sym}: white Helvetica text "${sym}" on a black background, nothing else drawn`);
   ok(!/<(script|image|use|foreignObject)\b|on\w+=|href=/.test(svg), `${sym}: the SVG holds no script, link or embedded image`);
 }
 const card = readFileSync(join(DAPP, 'swap/card.js'), 'utf8'), want = (await import('node:crypto')).createHash('sha256').update(readFileSync(join(DAPP, 'swap/extra-tokens.js'))).digest('hex').slice(0, 8);
@@ -64,7 +67,11 @@ for (const [where, open] of [['the Shield tab\'s To picker', async () => { await
   ok(both.every((x) => x && /^data:image\/svg\+xml;base64,/.test(x.img) && !x.letter), `${where}: each is drawn with its own SVG logo, not a letter`);
   ok((await search('imdusd')).some((x) => x.k === IMDUSD.toLowerCase()), `${where}: 'imdusd' finds imdUSD`);
   ok((await search('frenpet')).some((x) => x.k === IMD.toLowerCase()), `${where}: 'frenpet' finds IMD`);
-  for (const [name, a] of [['IMD', IMD], ['imdUSD', IMDUSD]]) {
+  r = await search('infer');
+  const inf = r.find((x) => x.k === INFER.toLowerCase());
+  ok(!!inf && /^data:image\/svg\+xml;base64,/.test(inf.img) && !inf.letter, `${where}: 'infer' finds INFER, drawn with its own SVG logo`);
+  ok((await search('inference')).some((x) => x.k === INFER.toLowerCase()), `${where}: 'inference' finds INFER by its name`);
+  for (const [name, a] of [['IMD', IMD], ['imdUSD', IMDUSD], ['INFER', INFER]]) {
     for (const form of [a, a.toLowerCase()]) {
       r = await search(form);
       ok(r.length === 1 && r[0].k === a.toLowerCase() && !r[0].add, `${where}: the address ${form === a ? '(checksummed)' : '(lower case)'} of ${name} finds its row as a listed token, with no "Add" step`);

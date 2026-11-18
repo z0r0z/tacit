@@ -167,7 +167,7 @@ async function checkAmmRoute() {
   fit('pay'); paint();
   if (S.q && `${S.pay}>${S.get}:${kindOf(S.pay, S.get)}` !== was) requote(true);
 }
-const listFiles = () => Promise.all([import('/swap/tokens.js?cb=73f33d2c'), import('/swap/uni-tokens.js?cb=866feaad'), import('/swap/extra-tokens.js?cb=a00468c9')]);
+const listFiles = () => Promise.all([import('/swap/tokens.js?cb=73f33d2c'), import('/swap/uni-tokens.js?cb=866feaad'), import('/swap/extra-tokens.js?cb=733edd29')]);
 function loadList() {
   if (TL.at) return Promise.resolve();
   return (TL.p ||= (async () => {
