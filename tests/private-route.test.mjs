@@ -182,7 +182,7 @@ await check('every module that talks to the relay takes the route\'s fetch, and 
   assert.match(read('relay-route.js'), /globalThis\.__tacitRelayFetch \|\|= apiFetch\(\)/);
   for (const pg of ['prove/index.html', 'relay/index.html']) {
     const csp = (/http-equiv="Content-Security-Policy"[^>]*?connect-src([^;]*)/s.exec(read(pg))?.[1] || '').split(/\s+/);
-    for (const host of SHIPPED.forwarders) assert.ok(csp.includes(host), `${pg} allows ${host}`);
+    for (const host of [...SHIPPED.forwarders, ...SHIPPED.nostr]) assert.ok(csp.includes(host), `${pg} allows ${host}`);
   }
 });
 
