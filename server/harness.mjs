@@ -285,11 +285,13 @@ const memTraceBytes = (() => {
   return Number.isFinite(mb) && mb > 0 ? mb * 1024 * 1024 : 0;
 })();
 
-export function createTacitServer({ workerModule, env, driver, ctxFactory }) {
-  // Named so the handler can read `srv.memGuard`, which the caller attaches
+// `sealed(nodeReq, nodeRes, handle)`: a gateway in front of the handler (server/sealed-api.mjs). It takes the requests meant for it and returns true, and it runs
+// the requests it carries through `handle`, the handler below, as if they had come in on their own.
+export function createTacitServer({ workerModule, env, driver, ctxFactory, sealed = null }) {
+  // `srv` is named so the handler can read `srv.memGuard`, which the caller attaches
   // after construction — the guard needs the shutdown routine, which needs
   // the server, so one of the two has to be wired up late.
-  const srv = http.createServer(async (nodeReq, nodeRes) => {
+  const handle = async (nodeReq, nodeRes) => {
     try {
       if (nodeReq.url === '/healthz') {
         await driver.get('REGISTRY_KV', '__health__'); // cheap PK probe; throws if storage is down
@@ -360,7 +362,8 @@ export function createTacitServer({ workerModule, env, driver, ctxFactory }) {
       if (!nodeRes.headersSent) nodeRes.writeHead(500, { 'Content-Type': 'application/json' });
       if (!nodeRes.writableEnded) nodeRes.end(JSON.stringify({ error: 'internal error' }));
     }
-  });
+  };
+  const srv = http.createServer((nodeReq, nodeRes) => (sealed && sealed(nodeReq, nodeRes, handle) ? undefined : handle(nodeReq, nodeRes)));
   return srv;
 }
 

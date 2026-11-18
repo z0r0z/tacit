@@ -65,7 +65,9 @@ function run(handle, inner, timeoutMs) {
 // { key, handle(req, res, send) }: `handle` is the keeper's own request handler, `prefix` the path its routes live under, `send`
 // the handler's way of answering with JSON. `idPrefixed` is for a gateway in front of several keepers: the paths it carries name
 // the keeper (/<id>/evm-pool/keeper/…), and it hands them to `handle` as they are.
-export function makeSealedGateway({ secret, handle, prefix, now = () => Math.floor(Date.now() / 1000), timeoutMs = 200_000, maxSeen = MAX_SEEN, idPrefixed = false }) {
+// `carried`: the [method, path pattern] pairs this gateway carries (the relay's by default). `innerHeaders(outerRequest)`: the headers an inner request gets in place of
+// the outer request's address headers: for a service that must count each caller without being told who it is.
+export function makeSealedGateway({ secret, handle, prefix, now = () => Math.floor(Date.now() / 1000), timeoutMs = 200_000, maxSeen = MAX_SEEN, idPrefixed = false, carried: carriedList = CARRIED, innerHeaders = null }) {
   const keys = gatewayKeys(secret);
   const seen = new Map();   // one-time key and nonce → until when the gateway remembers it
   // A request seen before is refused. The memory is bounded: when full it drops what has expired and then its oldest tenth, and does not
@@ -100,7 +102,7 @@ export function makeSealedGateway({ secret, handle, prefix, now = () => Math.flo
         if (path.length > 512) return false;
         let route = path.split('?')[0];
         if (idPrefixed) { if (!KEEPER_PATH.test(route)) return false; route = route.replace(KEEPER_PATH, ''); }
-        return CARRIED.some(([m, re]) => m === method && re.test(route));
+        return carriedList.some(([m, re]) => m === method && re.test(route));
       };
       // One request, run through the handler as if from the envelope's sender → { status, headers, body }.
       const runOne = ({ method, path, body }) => {
@@ -111,7 +113,8 @@ export function makeSealedGateway({ secret, handle, prefix, now = () => Math.flo
         inner.url = `${prefix}${path}`;
         inner.socket = req.socket;
         inner.headers = { ...(json ? { 'content-type': 'application/json', 'content-length': String(json.length) } : {}) };
-        for (const h of FORWARDED) if (req.headers[h] !== undefined) inner.headers[h] = req.headers[h];
+        if (innerHeaders) Object.assign(inner.headers, innerHeaders(req));
+        else for (const h of FORWARDED) if (req.headers[h] !== undefined) inner.headers[h] = req.headers[h];
         return run(handle, inner, timeoutMs);
       };
       const pack = async (out) => {
@@ -155,9 +158,9 @@ export function makeSealedGateway({ secret, handle, prefix, now = () => Math.flo
 // would share one small allowance. With `isolate` an envelope from a listed forwarder is counted under an address made for it alone: the forwarder already limits
 // each person it carries (FORWARDER_RATE_PER_MIN), and this gateway limits the forwarder's envelopes (below), so the keeper's own limits then bind a caller, not a crowd.
 // An address that is not a listed forwarder keeps its own.
-export function makeServiceGateway({ secret, serve, json, forwarders = [], ratePerMin = 20, log = () => {}, now, accounts = [], isolate = false }) {
+export function makeServiceGateway({ secret, serve, json, forwarders = [], ratePerMin = 20, log = () => {}, now, accounts = [], isolate = false, idPrefixed = true, carried, innerHeaders }) {
   let gateway;
-  try { gateway = makeSealedGateway({ secret, handle: serve, prefix: '', idPrefixed: true, ...(now ? { now } : {}) }); } catch (e) { throw new Error(`EVM_POOL_KEEPER_GATEWAY_KEY: ${e.message}`); }
+  try { gateway = makeSealedGateway({ secret, handle: serve, prefix: '', idPrefixed, ...(carried ? { carried } : {}), ...(innerHeaders ? { innerHeaders } : {}), ...(now ? { now } : {}) }); } catch (e) { throw new Error(`EVM_POOL_KEEPER_GATEWAY_KEY: ${e.message}`); }
   const v4 = (k) => String(k).replace(/^::ffff:/, '');
   const listed = new Set(forwarders.map((a) => v4(ipKey(a))));
   const burst = Math.max(1, Math.min(30, ratePerMin * 3));

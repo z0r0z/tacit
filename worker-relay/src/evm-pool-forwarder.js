@@ -35,7 +35,7 @@ function main() {
   const ratePerMin = Number(process.env.FORWARDER_RATE_PER_MIN || 60);
   const reader = process.env.FORWARDER_RPC_URL ? makeRegistryReader({ rpcUrl: process.env.FORWARDER_RPC_URL, ...(process.env.FORWARDER_REGISTRY ? { registry: process.env.FORWARDER_REGISTRY } : {}) }) : null;
   const community = reader ? { find: reader.find, request: safeRequest } : null;
-  createServer(makeForwarder({ gateways, ratePerMin, community })).listen(port, () => log(`listening on ${port}: chains ${Object.keys(gateways).join(', ')}${community ? '; relays the registry lists are carried too' : ''}`));
+  createServer(makeForwarder({ gateways, ratePerMin, community, senderSecret: process.env.FORWARDER_SENDER_SECRET || null, senderIds: String(process.env.FORWARDER_SENDER_IDS || '').split(',').map((x) => x.trim()).filter(Boolean) })).listen(port, () => log(`listening on ${port}: chains ${Object.keys(gateways).join(', ')}${community ? '; relays the registry lists are carried too' : ''}`));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

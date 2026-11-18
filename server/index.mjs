@@ -61,7 +61,12 @@ const workerModule = (await import('../worker/src/index.js')).default;
 
 const env = buildEnv(driver);
 const ctxFactory = createCtxFactory();
-const server = createTacitServer({ workerModule, env, driver, ctxFactory });
+// The private route for the relay's API (server/sealed-api.mjs), off until RELAY_API_GATEWAY_KEY is set; RELAY_API_FORWARDERS names the forwarders whose caller tokens it believes.
+const sealed = process.env.RELAY_API_GATEWAY_KEY
+  ? (await import('./sealed-api.mjs')).makeApiSealed({ env, secret: process.env.RELAY_API_GATEWAY_KEY, forwarders: String(process.env.RELAY_API_FORWARDERS || '').split(','), log: (m) => console.log(`[tacit-api] ${m}`) })
+  : null;
+if (sealed) console.log('[tacit-api] the private route for the relay API is on at POST /sealed');
+const server = createTacitServer({ workerModule, env, driver, ctxFactory, sealed });
 const cron = process.env.CRON_DISABLED === '1'
   ? null
   : startCron({ workerModule, env, driver, ctxFactory });
