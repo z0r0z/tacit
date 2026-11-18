@@ -1,5 +1,5 @@
-// A page's side of the private route (dapp/private-route.js): off it is fetch; on, a request to the relay's service goes through a forwarder as a
-// sealed envelope and is never sent directly, whatever fails; and every keeper request of the pay page goes through it.
+// A page's side of the private route (dapp/private-route.js): a request to the relay's service always goes through a forwarder as a sealed
+// envelope and is never sent directly, whatever fails; and every keeper request of the pay page goes through it.
 //   node tests/private-route.test.mjs
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -19,7 +19,8 @@ assert.match(source, /import\('\/sealed-request\.js\?cb=[A-Za-z0-9_-]+'\)/, 'it 
 const dir = mkdtempSync(join(tmpdir(), 'private-route-'));
 writeFileSync(join(dir, 'private-route.mjs'), source.replace(/\/sealed-request\.js\?cb=[A-Za-z0-9_-]+/, sealedUrl));
 const route = await import(pathToFileURL(join(dir, 'private-route.mjs')).href);
-const { ROUTE, available, enabled, unavailable, turn, reset, keeperFetch } = route;
+const { ROUTE, available, enabled, keeperFetch } = route;
+assert.equal(route.turn, undefined, 'there is no setting that turns the route off');
 
 const secret = newGatewayKey(), keys = gatewayKeys(secret);
 const PUB = Buffer.from(keys.pub).toString('hex');
@@ -45,39 +46,27 @@ globalThis.fetch = async (url, init = {}) => {
 };
 const get = async (url, init) => (await keeperFetch(url, init)).json();
 
-await check('the page ships with its gateway key and a forwarder, and the route is on unless a person turns it off', async () => {
+await check('the page ships with its gateway key and forwarders, and the route is always on', async () => {
   assert.match(ROUTE.gateway, /^0[23][0-9a-f]{64}$/, 'a 33-byte gateway key is pinned');
-  assert.ok(ROUTE.forwarders.length >= 1 && ROUTE.forwarders.every((u) => /^https:\/\//.test(u)), 'at least one https forwarder');
+  assert.ok(ROUTE.forwarders.length >= 1 && ROUTE.forwarders.every((u) => /^https:\/\//.test(u)), 'https forwarders');
   assert.equal(available(), true);
-  assert.equal(enabled(), true, 'on by default');
-  assert.equal(unavailable(), false);
+  assert.equal(enabled(), true);
 });
-Object.assign(ROUTE, { gateway: '', forwarders: [] });   // the cases below start from a page with no route configured
+const SHIPPED = { gateway: ROUTE.gateway, forwarders: [...ROUTE.forwarders] };
+Object.assign(ROUTE, { gateway: '', forwarders: [] });   // a page with no route configured is a plain fetch
 
-await check('the route is off until the page names a gateway and a forwarder and the person turns it on, and off it is fetch', async () => {
+await check('a page that names no gateway or forwarder fetches as it always did', async () => {
   assert.equal(available(), false);
-  assert.equal(enabled(), false);
-  turn(true);
-  assert.equal(enabled(), false, 'the person\'s choice is not enough without a forwarder to carry it');
-  turn(false);
-  Object.assign(ROUTE, { gateway: PUB, forwarders: ['https://f1.test', 'https://f2.test'] });
-  assert.equal(available(), true);
-  reset();
-  assert.equal(enabled(), true, 'a forwarder and no choice is the default: on');
-  turn(false);
-  assert.equal(store.get('tacit-private-route-v1'), '0', 'an explicit off is kept');
   assert.equal(enabled(), false);
   calls.length = 0;
   assert.deepEqual(await get(`${KEEPER}/1/evm-pool/keeper/head`), { via: 'direct', url: `${KEEPER}/1/evm-pool/keeper/head` });
-  assert.deepEqual(calls, [`${KEEPER}/1/evm-pool/keeper/head`]);
-  assert.equal(keeperFetch.sealed, false, 'a wallet on a direct fetch asks for a reservation');
+  assert.equal(keeperFetch.sealed, false);
 });
+Object.assign(ROUTE, { gateway: PUB, forwarders: ['https://f1.test', 'https://f2.test'] });
 
-await check('on, a request to the relay\'s service is a sealed envelope to a forwarder and never a direct request', async () => {
-  turn(true);
+await check('a request to the relay\'s service is a sealed envelope to a forwarder and never a direct request', async () => {
   assert.equal(enabled(), true);
   assert.equal(keeperFetch.sealed, true, 'a wallet on the route sends without a reservation');
-  assert.equal(store.get('tacit-private-route-v1'), '1', 'the choice is kept');
   calls.length = 0;
   assert.deepEqual(await get(`${KEEPER}/8453-x833589fcd6/evm-pool/keeper/quote`), { via: 'route', path: '/8453-x833589fcd6/evm-pool/keeper/quote' });
   const post = await keeperFetch(`${KEEPER}/1/evm-pool/keeper/receive`, { method: 'POST', body: JSON.stringify({ chainId: 1, npk: '7' }) });
@@ -94,7 +83,7 @@ await check('a burst of reads made on the route shares envelopes, and each calle
   assert.ok(calls.length <= 3, `${calls.length} envelopes for ${paths.length} reads`);
 });
 
-await check('when no forwarder answers a request fails, and is not sent to the relay instead', async () => {
+await check('when no forwarder answers a request fails, and is never sent to the relay instead', async () => {
   forwarderUp = false;
   calls.length = 0;
   await assert.rejects(keeperFetch(`${KEEPER}/1/evm-pool/keeper/head`), /refused/);
@@ -105,7 +94,15 @@ await check('when no forwarder answers a request fails, and is not sent to the r
   assert.equal((await get(`${KEEPER}/1/evm-pool/keeper/head`)).via, 'route', 'and it works again when a forwarder does');
 });
 
-await check('another relay is refused while the route is on, and what is not a relay is fetched as it was', async () => {
+await check('one forwarder down is not an outage: the next one carries the request', async () => {
+  const real = globalThis.fetch; calls.length = 0;
+  globalThis.fetch = async (url, init) => { if (String(url).startsWith('https://f1.test')) { calls.push(String(url)); throw new Error('f1 refused'); } return real(url, init); };
+  assert.equal((await get(`${KEEPER}/1/evm-pool/keeper/head`)).via, 'route');
+  assert.ok(!calls.some((u) => u.startsWith(KEEPER)), 'not sent to the relay');
+  globalThis.fetch = real;
+});
+
+await check('another relay is refused, and what is not a relay is fetched as it was', async () => {
   calls.length = 0;
   await assert.rejects(keeperFetch('https://another.example/1/evm-pool/keeper/head'), /does not reach this relay/);
   await assert.rejects(keeperFetch('https://another.example/evm-pool/keeper'), /does not reach this relay/);
@@ -114,55 +111,12 @@ await check('another relay is refused while the route is on, and what is not a r
   assert.deepEqual(calls, ['https://api.tacit.finance/stats?network=mainnet']);
 });
 
-await check('turning it off is a plain fetch again, and a browser that keeps nothing keeps the choice for the visit', async () => {
-  turn(false);
-  assert.equal(store.get('tacit-private-route-v1'), '0');
-  assert.equal(enabled(), false);
-  calls.length = 0;
-  assert.equal((await get(`${KEEPER}/1/evm-pool/keeper/head`)).via, 'direct');
-  const real = globalThis.localStorage;
-  globalThis.localStorage = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); }, removeItem() { throw new Error('denied'); } };
-  turn(true);
-  assert.equal(enabled(), true, 'kept in memory for the visit');
-  turn(false);
-  assert.equal(enabled(), false);
-  globalThis.localStorage = real;
-});
-
-await check('a route nobody chose is probed once and used when a forwarder answers', async () => {
-  reset(); forwarderUp = true; calls.length = 0;
-  assert.equal(store.has('tacit-private-route-v1'), false, 'no choice made');
-  assert.equal(enabled(), true);
-  assert.equal((await get(`${KEEPER}/1/evm-pool/keeper/head`)).via, 'route');
-  await get(`${KEEPER}/1/evm-pool/keeper/quote`);
-  assert.equal(calls.filter((u) => /\/health$/.test(u)).length, 2, 'both forwarders probed, once');
-  assert.ok(!calls.some((u) => u.startsWith(KEEPER)), 'nothing went to the relay itself');
-  assert.equal(unavailable(), false);
-});
-
-await check('a route nobody chose connects directly when no forwarder answers, for that visit, and says so; a chosen one never does', async () => {
-  reset(); forwarderUp = false; calls.length = 0;
-  assert.equal((await get(`${KEEPER}/1/evm-pool/keeper/head`)).via, 'direct', 'the relay keeps working');
-  assert.equal(unavailable(), true, 'and the page can say so');
-  assert.equal(enabled(), false);
-  assert.equal(store.has('tacit-private-route-v1'), false, 'no choice is stored by a fallback');
-  forwarderUp = true;
-  assert.equal((await get(`${KEEPER}/1/evm-pool/keeper/head`)).via, 'direct', 'the visit stays direct once it fell back');
-  reset();
-  assert.equal((await get(`${KEEPER}/1/evm-pool/keeper/head`)).via, 'route', 'a new visit tries again');
-  // a person who turned it on is never sent around it
-  turn(true); forwarderUp = false; calls.length = 0;
-  await assert.rejects(keeperFetch(`${KEEPER}/1/evm-pool/keeper/head`), /refused/);
-  assert.ok(!calls.some((u) => u.startsWith(KEEPER)), 'not one request went to the relay');
-  forwarderUp = true; reset();
-});
-
 // The pay page: every request it makes to a relay goes through keeperFetch.
 const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8');
 await check('the pay page sends every request to a relay through keeperFetch, and its wallets ask it whether they are on the route', () => {
   const direct = page.split('\n').map((line, i) => [i + 1, line]).filter(([, line]) => /(^|[^\w.])fetch\(/.test(line) && /chainKeeper\(|\.keeper\b|POOL_KEEPERS|onrender\.com\/\$\{|evm-pool\/keeper/.test(line));
   assert.deepEqual(direct, [], `a relay request that does not go through keeperFetch: ${direct.map(([i]) => i)}`);
-  assert.match(page, /import \{ keeperFetch, available as routeAvailable, enabled as routeOn, unavailable as routeDown, turn as routeTurn \} from '\/private-route\.js\?cb=[A-Za-z0-9_-]+';/);
+  assert.match(page, /import \{ keeperFetch, available as routeAvailable, enabled as routeOn \} from '\/private-route\.js\?cb=[A-Za-z0-9_-]+';/);
   assert.match(page, /const timedFetch = \(url, init = \{\}\) => keeperFetch\(url,/);
   assert.match(page, /Object\.defineProperty\(timedFetch, 'sealed', \{ get: routeOn \}\)/);
   const wallets = [...page.matchAll(/makeEvmPoolWallet\(/g)].map((m) => {
@@ -177,12 +131,14 @@ await check('the pay page sends every request to a relay through keeperFetch, an
   }
 });
 
-await check('the pay page shows the switch only when the route is available, says what it hides, and keeps it on only if the route answers', () => {
-  assert.match(page, /\$\{routeAvailable\(\) \? html`<label class="kv chk"><span>Hide my address from the relay<\/span><input type="checkbox" id="w-route"/);
-  assert.match(page, /The nodes you read the chain through still see it\./);
-  assert.match(page, /The private route did not answer, so this visit connects to the relay directly\./);
-  assert.match(page, /routeTurn\(true\);\s*\n\s*\/\/ on only if the route answers/);
-  assert.match(page, /catch \(err\) \{ routeTurn\(false\); toast\(`The private route did not answer, so it is off\./);
+await check('the pay page offers no way to turn the route off, and says what it hides', () => {
+  assert.doesNotMatch(page, /id="w-route"/, 'no switch');
+  assert.doesNotMatch(page, /routeTurn/, 'nothing turns it off');
+  assert.match(page, /Your address is hidden from the relay: every request to it goes through a forwarder\. The nodes you read the chain through still see it\./);
+});
+
+await check('what the page pins is what the keeper serves', () => {
+  assert.match(SHIPPED.gateway, /^03dcc0e9c8f2f3f2/, 'the key id 5c246719 pinned on the keepers service');
 });
 
 console.log(`\n${n} checks passed`);
