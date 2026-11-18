@@ -200,6 +200,12 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
     await page.addInitScript((n) => { window.__names = n; }, names);
     await page.route(/\/confidential-names\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: NAMES_STUB }));
   }
+  // The private route has its own tests (tests/private-route*.test.mjs, worker-relay/tests/relay-community-route.test.mjs). The flows here are the form's, and this
+  // stand-in answers a keeper's quote directly, so the page gets the route's module with the route off: its relay requests go straight to the stand-in.
+  const ROUTE_ON = 'export const available = () => !!(ROUTE.gateway && ROUTE.forwarders.length);';
+  const routeSrc = readFileSync(join(DAPP, 'private-route.js'), 'utf8');
+  assert.ok(routeSrc.includes(ROUTE_ON), 'the route module still defines available() the way this stand-in expects');
+  await page.route(/\/private-route\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: routeSrc.replace(ROUTE_ON, 'export const available = () => false;') }));
   page.on('pageerror', (e) => problems.push('pageerror ' + e.message));
   if (process.env.DEBUG_PAGE) page.on('console', (m) => console.log('   [page]', m.type(), m.text().slice(0, 300)));
   if (process.env.DEBUG_PAGE === '2') page.on('request', (r) => console.log('   [req]', r.method(), r.url().slice(0, 130), r.method() === 'POST' ? (r.postData() || '').slice(0, 90) : ''));

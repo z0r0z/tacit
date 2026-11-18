@@ -808,6 +808,16 @@ asks (the points lookups at `api.tacit.finance` send the connected Ethereum wall
 in one line. The forwarders the page names are run by the project today, so they hide a person from the relay and its host but not from the people who
 run the forwarders; each independent forwarder added to `ROUTE.forwarders` narrows that, and the Nostr relays are independent already.
 
+**Relays from the registry.** A relay anyone has listed in the relay registry is reached the same way, sealed to its own key. The relay (the multi-keeper
+service, with `EVM_POOL_KEEPER_GATEWAY_KEY`) serves `GET /sealed/key`: its gateway key, signed for by its relayer key (`dapp/relay-gateway-doc.js`). A page that
+has read the registry asks a forwarder for it (`GET /r/<chainId>/<relayer>/key`), checks the signature against the address the registry lists, and posts each
+sealed request to `POST /r/<chainId>/<relayer>`; the forwarder finds that relayer in the registry (it reads it through `FORWARDER_RPC_URL`, a minute at a time),
+and hands the envelope to the relay's own `/sealed`. So the relay sees a forwarder, never the person, and a forwarder that swapped the key could not sign for
+the relayer. The forwarder calls only the `/sealed` and `/sealed/key` of a registry entry's https origin, never a url a caller gives; the name must be public and
+resolve only to public addresses (resolved once, and the connection goes to the address that was checked), no port, no redirect, an answer cut off at a size
+and a time (`worker-relay/src/lib/safe-https.js`). A relay without a gateway key is not reached: there is no direct request. A listed relay does not take part
+in the Nostr road.
+
 **Turning it on.** Each step can be left standing; nothing a person sees changes until the last.
 1. Deploy the keepers with this code. The route is off without a key: `GET /<id>/evm-pool/keeper/info` has no `sealed`, `POST /sealed` is a 404.
 2. `node worker-relay/src/sealed-keygen.js` makes a key. The secret goes in the keeper's `EVM_POOL_KEEPER_GATEWAY_KEY` (`…_<chainId>` for one
@@ -818,6 +828,7 @@ run the forwarders; each independent forwarder added to `ROUTE.forwarders` narro
 3. Run a forwarder somewhere that is not the keeper's host, and, for the route to hide anyone from the keeper's operator, not run by the
    operator: `FORWARDER_GATEWAYS='{"k":"https://<the service>/sealed"}' node worker-relay/src/evm-pool-forwarder.js` (an id is a chain's, a pool's, or a
    service's; a single keeper's is `{"1":"https://…/1/evm-pool/keeper/sealed"}`). It holds no key, forwards no header of the caller's and keeps nothing.
+   `FORWARDER_RPC_URL=<an Ethereum node>` also makes it carry the relays the registry lists (`/r/…`, above); without it those routes are a 404.
 4. `node tools/private-route-check.mjs --service https://<the service> --gateway <public key> --forwarder https://<a forwarder>` (once for each
    forwarder, or with `--forwarder` repeated) checks it from outside: the key a pool holds is the key to pin, a page's origin may call the forwarder,
    a burst of reads comes back sealed and equal to the direct answers, and what the route does not carry is refused. It must pass before a page is pointed at it.

@@ -1,4 +1,5 @@
-// Lists a relay in the relay registry (contracts/src/RelayRegistry.sol, on Ethereum): approves the stake, then registers the relay's url under its own key.
+// Lists a relay in the relay registry (contracts/src/RelayRegistry.sol, on Ethereum): one transaction, in which the relay's key permits the stake and registers the
+// relay's url (registerWithPermit; --two-step approves first and registers after instead).
 // Run it from the relay's own key: the registry lists whoever sends the call, so no one can list an address that is not theirs, and the relay's quote must
 // name that same address or wallets will not use the entry.
 //
@@ -13,6 +14,11 @@
 //   --rpc      an Ethereum node (default https://ethereum-rpc.publicnode.com)
 //   --registry the registry (default 0x00000000000299F48Fb844626ab96c6A20059a01)
 //   --amount   the stake in whole TAC (default: the registry's minimum)
+//   --two-step approve the stake in one transaction and list in another, instead of the one-transaction permit
+//   --no-private-route  list a relay that has no private route key (wallets reach a relay only through the private route, so such a relay gets no jobs)
+//
+// The relay must also serve its private route key (GET <origin>/sealed/key, from a keeper started with EVM_POOL_KEEPER_GATEWAY_KEY, docs/RUN-A-PAY-RELAY.md): wallets
+// seal every request to it, through a forwarder, so the relay never sees their addresses; this refuses to list a relay that does not.
 //
 // The key is read inside this process and never printed. The relay's key needs the stake in TAC (the registry takes it from the key that lists) and a little
 // ETH for two transactions.
@@ -21,6 +27,8 @@ import { readFileSync } from 'node:fs';
 import { createPublicClient, createWalletClient, http, parseAbi, parseUnits, formatUnits, formatEther, keccak256, encodeAbiParameters, parseGwei } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { mainnet } from 'viem/chains';
+import { signPermit } from './lib/permit.mjs';
+import { verifyDoc } from '../../dapp/relay-gateway-doc.js';
 
 const arg = (name, dflt = undefined) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : dflt; };
 const SEND = process.argv.includes('--send');
@@ -43,6 +51,7 @@ must(!eq(OWNER, account.address), '--owner is the relay\'s own key: the stake sh
 const abi = parseAbi([
   'function minStake() view returns (uint256)', 'function idOf(bytes32) view returns (uint256)',
   'function register(uint64 chainId, string url, address owner_, uint256 amount) returns (uint256)',
+  'function registerWithPermit(uint64 chainId, string url, address owner_, uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s) returns (uint256)',
   'function relays(uint256) view returns (address relayer, uint64 chainId, uint32 pos, address owner, uint64 exitAt, uint256 stake)',
   'error BadUrl()', 'error BadChain()', 'error BadOwner()', 'error BelowMinimum()', 'error AlreadyListed()', 'error TokenTookAFee()',
   'error TransferFromFailed()',
@@ -62,6 +71,12 @@ const quote = await (await fetch(`${URL_}/quote`, { signal: AbortSignal.timeout(
 must(quote && BigInt(quote.chainId) === CHAIN && eq(quote.relayer, account.address),
   `${URL_}/quote does not answer with chain ${CHAIN} and relayer ${account.address} (it says ${quote ? `chain ${quote.chainId}, relayer ${quote.relayer}` : 'nothing'}): start the relay with this key first`);
 log(`the relay at ${URL_} quotes this key's address (fee ${quote.fee} wei)`);
+// and it must serve the key the private route seals to, vouched for by this key
+const origin = new URL(URL_).origin;
+const keyDocs = await (await fetch(`${origin}/sealed/key`, { signal: AbortSignal.timeout(15_000) })).json().catch(() => null);
+const gateway = (Array.isArray(keyDocs?.docs) ? keyDocs.docs : []).map((d) => verifyDoc(d, account.address)).find(Boolean);
+if (gateway) log(`${origin}/sealed/key shows a private route key signed for by this key (${gateway.slice(0, 12)}…)`);
+else must(process.argv.includes('--no-private-route'), `${origin}/sealed/key shows no private route key signed for by ${account.address}: wallets reach a relay only through the private route, so this relay would get no jobs. Start the relay with EVM_POOL_KEEPER_GATEWAY_KEY (docs/RUN-A-PAY-RELAY.md), or add --no-private-route to list it anyway.`);
 
 const key = keccak256(encodeAbiParameters([{ type: 'uint64' }, { type: 'address' }], [CHAIN, account.address]));
 const already = await pub.readContract({ address: REGISTRY, abi, functionName: 'idOf', args: [key] });
@@ -78,8 +93,15 @@ const tip = parseGwei('0.1'), maxFee = block.baseFeePerGas * 2n + tip;
 must(eth > 500_000n * maxFee * 3n, 'the key needs a little ETH for two transactions');
 must(maxFee < parseGwei('20'), 'gas is dear right now: try again later');
 if (tac < amount) { log(`\nthe key holds ${formatUnits(tac, 18)} TAC and the stake is ${formatUnits(amount, 18)}. ${SEND ? 'NOT SENDING.' : 'Every other check passed; nothing sent.'}`); process.exit(SEND ? 1 : 0); }
-if (allowance >= amount) await pub.simulateContract({ account, address: REGISTRY, abi, functionName: 'register', args: [CHAIN, URL_, OWNER, amount] });
-if (!SEND) { log('\nevery check passed; nothing sent. Add --send to list the relay.'); process.exit(0); }
+const TWO_STEP = process.argv.includes('--two-step');
+const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+// one transaction: the key permits the registry to take the stake and lists the relay in the same call
+const permit = allowance >= amount || TWO_STEP ? null : await signPermit({ account, client: pub, token: TAC, spender: REGISTRY, value: amount, deadline });
+const listing = permit
+  ? { functionName: 'registerWithPermit', args: [CHAIN, URL_, OWNER, amount, permit.deadline, permit.v, permit.r, permit.s] }
+  : { functionName: 'register', args: [CHAIN, URL_, OWNER, amount] };
+if (allowance >= amount || permit) await pub.simulateContract({ account, address: REGISTRY, abi, ...listing });
+if (!SEND) { log(`\nevery check passed; nothing sent. Add --send to list the relay (${permit ? 'one transaction, with a permit' : allowance >= amount ? 'one transaction, the stake is approved already' : 'two transactions'}).`); process.exit(0); }
 
 const wallet = createWalletClient({ account, chain: mainnet, transport: http(RPC) });
 const send = async (label, req) => {
@@ -88,13 +110,13 @@ const send = async (label, req) => {
   log(`${label}: ${r.status} in block ${r.blockNumber} (${hash})`);
   must(r.status === 'success', `${label} reverted`);
 };
-if (allowance < amount) {
+if (!permit && allowance < amount) {
   await send('approve', { address: TAC, abi: tokenAbi, functionName: 'approve', args: [REGISTRY, amount] });
   // a node can still answer from the block before the approval: wait until it shows, or the check below reads a stale allowance and refuses
   for (let i = 0; i < 30 && (await pub.readContract({ address: TAC, abi: tokenAbi, functionName: 'allowance', args: [account.address, REGISTRY] })) < amount; i++) await sleep(2000);
 }
-await pub.simulateContract({ account, address: REGISTRY, abi, functionName: 'register', args: [CHAIN, URL_, OWNER, amount] });
-await send('register', { address: REGISTRY, abi, functionName: 'register', args: [CHAIN, URL_, OWNER, amount] });
+await pub.simulateContract({ account, address: REGISTRY, abi, ...listing });
+await send(permit ? 'permit and register' : 'register', { address: REGISTRY, abi, ...listing });
 
 const id = await pub.readContract({ address: REGISTRY, abi, functionName: 'idOf', args: [key] });
 const e = await pub.readContract({ address: REGISTRY, abi, functionName: 'relays', args: [id] });

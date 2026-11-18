@@ -197,6 +197,7 @@ async function main() {
   const zk = await loadZk();
   const provers = new Map(); // one per distinct (wasm, zkey, vk), shared by the pools that use it
   const keepers = new Map();
+  const keeperAccounts = [];      // each keeper's own account, read by GET /sealed/key when it vouches for the gateway key
   const pools = new Map();    // chainId:pool → id, so two keepers never watch one pool
   const running = [];
   const chainPool = isChainPool;
@@ -214,6 +215,7 @@ async function main() {
     const account = privateKeyToAccount(cfg.keeperKey.startsWith('0x') ? cfg.keeperKey : `0x${cfg.keeperKey}`);
     checkKeeperSigner(cfg, account.address);
     cfg.keeperAddress = account.address;
+    keeperAccounts.push(account);
     const chain = await makeKeeperChain({ cfg, account, log: clog });
     if (chain.chainId !== chainId) throw new Error(`keeper ${id}: its node is on chain ${chain.chainId}, not ${chainId}`);
     // a pool served on request spends at most a day's allowance of gas: a send past it is refused before it is signed
@@ -362,7 +364,7 @@ async function main() {
   // The private route for the whole service (docs/EVM-POOL.md "Private route"): one gateway key in the base environment and one POST /sealed
   // that carries any pool's routes, so a wallet's burst of reads for every pool is one envelope.
   const sealed = process.env.EVM_POOL_KEEPER_GATEWAY_KEY ? makeServiceGateway({
-    secret: process.env.EVM_POOL_KEEPER_GATEWAY_KEY, serve, json, log,
+    secret: process.env.EVM_POOL_KEEPER_GATEWAY_KEY, serve, json, log, accounts: keeperAccounts,
     forwarders: String(process.env.EVM_POOL_KEEPER_FORWARDERS || '').split(',').map((a) => a.trim()).filter(Boolean),
     ratePerMin: Number(process.env.EVM_POOL_KEEPER_RATE_PER_MIN || 20),
   }) : null;

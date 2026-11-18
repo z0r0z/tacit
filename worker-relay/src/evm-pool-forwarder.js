@@ -4,11 +4,15 @@
 // FORWARDER_GATEWAYS  JSON, { "<chainId>": "<the keeper's /sealed URL>" }, e.g. { "1": "https://…/1/evm-pool/keeper/sealed" }
 // PORT                default 10000
 // FORWARDER_RATE_PER_MIN  default 60 per caller address
+// FORWARDER_RPC_URL   an Ethereum node: with it the forwarder also carries POST /r/<chainId>/<relayer> to the relays the relay registry lists (FORWARDER_REGISTRY
+//                     names another registry); without it those routes answer 404
 // Disabled (exits 0) while FORWARDER_GATEWAYS is unset.
 
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { makeForwarder } from './lib/evm-pool-forwarder.js';
+import { makeRegistryReader } from './lib/relay-registry-reader.js';
+import { safeRequest } from './lib/safe-https.js';
 
 const log = (...a) => console.log(`[evm-pool-forwarder ${new Date().toISOString()}]`, ...a);
 
@@ -29,7 +33,9 @@ function main() {
   const gateways = gatewaysOf(process.env.FORWARDER_GATEWAYS);
   const port = Number(process.env.PORT || 10000);
   const ratePerMin = Number(process.env.FORWARDER_RATE_PER_MIN || 60);
-  createServer(makeForwarder({ gateways, ratePerMin })).listen(port, () => log(`listening on ${port}: chains ${Object.keys(gateways).join(', ')}`));
+  const reader = process.env.FORWARDER_RPC_URL ? makeRegistryReader({ rpcUrl: process.env.FORWARDER_RPC_URL, ...(process.env.FORWARDER_REGISTRY ? { registry: process.env.FORWARDER_REGISTRY } : {}) }) : null;
+  const community = reader ? { find: reader.find, request: safeRequest } : null;
+  createServer(makeForwarder({ gateways, ratePerMin, community })).listen(port, () => log(`listening on ${port}: chains ${Object.keys(gateways).join(', ')}${community ? '; relays the registry lists are carried too' : ''}`));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

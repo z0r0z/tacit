@@ -13,6 +13,7 @@ import { bytesToHex } from '../../../dapp/vendor/tacit-deps.min.js';
 import { makeTokenBucket, ipKey, clientKey } from './token-bucket.js';
 import { safeErr } from './safe-err.js';
 import { gatewayKeys, openRequest, SealedError, MAX_REQUEST, MAX_REPLY } from '../../../dapp/sealed-request.js';
+import { makeDoc } from '../../../dapp/relay-gateway-doc.js';
 
 const gzipped = promisify(gzip);
 
@@ -146,7 +147,11 @@ export function makeSealedGateway({ secret, handle, prefix, now = () => Math.flo
 // dozen pools is one envelope. An envelope is counted against its sender before it is opened, as a keeper counts its own reads (an
 // address in `forwarders` may send ten times as much); each request inside it is counted by the keeper it names, as if the sender
 // had made it alone.
-export function makeServiceGateway({ secret, serve, json, forwarders = [], ratePerMin = 20, log = () => {}, now }) {
+//
+// GET /sealed/key answers { docs: [...] }: the gateway key, signed for by each of `accounts` (the service's keepers' own keys, read when asked, as
+// a keeper starts after this does), so a wallet that knows only a relayer's address, from the relay registry, can seal to this gateway and be sure
+// it is the relayer's (dapp/relay-gateway-doc.js). Anyone may read it; it holds nothing private.
+export function makeServiceGateway({ secret, serve, json, forwarders = [], ratePerMin = 20, log = () => {}, now, accounts = [] }) {
   let gateway;
   try { gateway = makeSealedGateway({ secret, handle: serve, prefix: '', idPrefixed: true, ...(now ? { now } : {}) }); } catch (e) { throw new Error(`EVM_POOL_KEEPER_GATEWAY_KEY: ${e.message}`); }
   const v4 = (k) => String(k).replace(/^::ffff:/, '');
@@ -154,8 +159,22 @@ export function makeServiceGateway({ secret, serve, json, forwarders = [], rateP
   const burst = Math.max(1, Math.min(30, ratePerMin * 3));
   const one = makeTokenBucket({ perMin: ratePerMin * 6, burst }), many = makeTokenBucket({ perMin: ratePerMin * 60, burst: burst * 10 });
   const allowed = (req) => { const key = clientKey(req); return listed.has(v4(key)) ? many(key) : one(key); };
+  const docs = new Map();
+  const docsOf = async () => {
+    for (const a of accounts) {
+      const k = String(a.address).toLowerCase();
+      if (!docs.has(k)) docs.set(k, await makeDoc({ relayer: a.address, key: gateway.key.key, sign: (hash) => a.sign({ hash: `0x${bytesToHex(hash)}` }) }));
+    }
+    return [...docs.values()];
+  };
   const take = (req, res) => {
-    if ((req.url || '').split('?')[0] !== '/sealed') return false;
+    const path = (req.url || '').split('?')[0];
+    if (path === '/sealed/key' && req.method === 'GET') {
+      if (!allowed(req)) { res.setHeader('Retry-After', '10'); json(res, 429, { error: 'rate limited' }); return true; }
+      docsOf().then((d) => json(res, 200, { docs: d }), (e) => { log(`private route key: ${safeErr(e)}`); json(res, 500, { error: 'internal error' }); });
+      return true;
+    }
+    if (path !== '/sealed') return false;
     if (req.method !== 'POST') { json(res, 404, { error: 'not found' }); return true; }
     if (!allowed(req)) { res.setHeader('Retry-After', '10'); json(res, 429, { error: 'rate limited' }); return true; }
     gateway.handle(req, res, (code, body) => json(res, code, body)).catch((e) => {
