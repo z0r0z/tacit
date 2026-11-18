@@ -15,7 +15,7 @@
 //            it holds no key, forwards nothing of the sender's and keeps nothing. It needs a public HTTPS address (a VPS, or a machine behind a
 //            tunnel you run): PORT=10000 FORWARD_URL=https://your.host node tools/community-runner.mjs forward. Send that URL to Tacit to be listed.
 //   relay    (opt-in, not in `all`) run a Pay relay from this machine, one command: worker-relay/scripts/pay-relay.mjs (its key, its funds, a tunnel, its place in the relay registry):
-//            node tools/community-runner.mjs relay --owner 0x… --tunnel (docs/RUN-A-PAY-RELAY.md)
+//            node tools/community-runner.mjs relay --tunnel (docs/RUN-A-PAY-RELAY.md)
 //   relay-check  (opt-in, not in `all`, needs no key) check a Pay relay you run the way a wallet reaches it: its quote, its private route key, its place in the relay registry,
 //            and a sealed quote through Tacit's forwarders: node tools/community-runner.mjs relay-check https://relay.example/1/evm-pool/keeper (docs/RUN-A-PAY-RELAY.md)
 //   board    (opt-in, not in `all`, needs no key) race Tacit's own prover for the prover board's public jobs: ops whose program input holds

@@ -3,13 +3,15 @@
 // relay, opens a public address for it, lists it in the relay registry, and keeps the listed address current.
 //
 //   cd worker-relay && npm ci
-//   node scripts/pay-relay.mjs --owner 0x<the address that holds the stake and gets it back>
+//   node scripts/pay-relay.mjs --tunnel
 //
-//   --owner     who holds the stake (required): a fresh address of your own, or your wallet's
+//   --owner     who holds the stake and gets it back, if you want it to be an address of yours (default: a fresh address it makes, its key kept in --dir as owner.key;
+//               an owner is public on chain, so a wallet that is known as yours ties the relay to you)
 //   --url       the relay's public https address, if you have one (a server with a name); otherwise --tunnel
 //   --tunnel    open one with cloudflared (installed, `brew install cloudflared`): wallets reach it by the tunnel's name, and the tunnel's provider, not the wallets, sees your connection
 //   --dir       where it keeps its keys and store (default ~/.tacit-relay); the keys are files that only you can read
 //   --port      the port the relay listens on (default 10000)
+//   --rpc       the Ethereum node it reads and sends through: your own, or a provider's (default: free public nodes)
 //   --seed      where a new relay reads the pool's history from: the project's relay, through the private route (the default), another relay's feed (a url ending /evm-pool/keeper),
 //               or none. Free public nodes do not serve history that old, so a relay with no feed cannot start; the feed is checked against the chain's own root, nothing is taken on trust
 //   --dry-run   say what it would do, and touch nothing
@@ -37,6 +39,8 @@ const TAC = '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279';
 const MIN_ETH = 5n * 10n ** 15n;
 
 export const loadDefaults = () => JSON.parse(readFileSync(join(WORKER, 'pay-relay-defaults.json'), 'utf8'));
+// --rpc: the Ethereum node this relay reads and sends through (your own, or a provider's), in place of the free public ones
+export const withRpc = (defaults, rpc) => (rpc ? { ...defaults, EVM_POOL_RPC_URL_1: rpc, EVM_POOL_RPC_URLS_FALLBACK_1: rpc } : defaults);
 
 // the keys, made once and kept as files only the user can read
 export function ensureSecrets(dir) {
@@ -50,6 +54,15 @@ export function ensureSecrets(dir) {
   const key = keep('relay.key', () => generatePrivateKey());
   const gateway = keep('gateway.key', () => newGatewayKey());
   return { key, gateway, address: privateKeyToAccount(key).address };
+}
+
+// who holds the stake when no --owner is named: a fresh address, its key kept beside the relay's. An owner is public on chain, so a fresh one keeps the relay from being tied
+// to a wallet someone knows; its key is what takes the stake back (startExit, then finishExit)
+export function ensureOwner(dir) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const p = join(dir, 'owner.key');
+  if (!existsSync(p)) { writeFileSync(p, generatePrivateKey() + '\n', { mode: 0o600 }); chmodSync(p, 0o600); }
+  return privateKeyToAccount(readFileSync(p, 'utf8').trim()).address;
 }
 
 // the settings the relay service starts with: the public ones, this relay's own two keys, and where it keeps its store
@@ -90,26 +103,36 @@ const ERC20 = parseAbi(['function balanceOf(address) view returns (uint256)']);
 
 async function main() {
   const dir = opt('dir', join(homedir(), '.tacit-relay')), port = Number(opt('port', '10000'));
-  const owner = opt('owner'), dry = flag('dry-run'), local = flag('local');
-  if (!local && !/^0x[0-9a-fA-F]{40}$/.test(owner || '')) { console.error('--owner 0x… is needed: the address that holds the stake and gets it back (a fresh address of your own is best)'); return 2; }
+  const owner = opt('owner'), dry = flag('dry-run'), local = flag('local'), rpc = opt('rpc');
+  const defs = () => withRpc(loadDefaults(), rpc);
+  if (owner && !/^0x[0-9a-fA-F]{40}$/.test(owner)) { console.error('--owner has to be an address: 0x and 40 hex digits'); return 2; }
   if (!local && !dry && !opt('url') && !flag('tunnel')) { console.error('say how wallets reach it: --url https://<your public name>, or --tunnel (cloudflared)'); return 2; }
   if (dry) {
     const addr = existsSync(join(dir, 'relay.key')) ? privateKeyToAccount(readFileSync(join(dir, 'relay.key'), 'utf8').trim()).address : '(made when you run it)';
-    console.log(`DRY RUN: nothing is made, started or sent.\n  keys: ${dir} (a relay key and a gateway key, readable only by you)\n  relay address: ${addr}\n  it would ask for 1,000 TAC and 0.01 ETH to be sent to that address\n  it would start the relay on port ${port}, open ${opt('url') ? opt('url') : 'a cloudflared tunnel'}, list it with ${owner || '--owner'} as the stake owner, and keep the address current`);
+    console.log(`DRY RUN: nothing is made, started or sent.\n  keys: ${dir} (a relay key and a gateway key, readable only by you)\n  relay address: ${addr}\n  it would ask for 1,000 TAC and 0.01 ETH to be sent to that address\n  it would start the relay on port ${port}, open ${opt('url') ? opt('url') : 'a cloudflared tunnel'}, list it with ${owner || `a fresh address it makes (its key is kept in ${dir})`} as the stake owner, and keep the address current`);
     return 0;
   }
   if (!existsSync(join(WORKER, 'node_modules'))) { console.error(`run "npm ci" in ${WORKER} first`); return 2; }
+  // the tunnel program is checked now, not after the funds have been sent and the relay has started
+  if (flag('tunnel') && !opt('url') && spawnSync('cloudflared', ['--version'], { stdio: 'ignore' }).status !== 0) { console.error('--tunnel needs cloudflared, and it is not installed: `brew install cloudflared` (other systems: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/), or give --url https://<your public name>'); return 2; }
   const { key, gateway, address } = ensureSecrets(dir);
   log(`relay address ${address} (keys are in ${dir})`);
-  const client = createPublicClient({ chain: mainnet, transport: http(loadDefaults().EVM_POOL_RPC_URL_1) });
+  const stakeOwner = owner || (local ? null : ensureOwner(dir));
+  if (!local) log(owner ? `stake owner ${owner}` : `stake owner ${stakeOwner}: a fresh address, with its key in ${join(dir, 'owner.key')}. Keep a copy: that key takes the stake back. (--owner 0x… names your own wallet instead; an owner is public on chain.)`);
+  const client = createPublicClient({ chain: mainnet, transport: http(defs().EVM_POOL_RPC_URL_1) });
   const minStake = await client.readContract({ address: RELAY_REGISTRY, abi: REG, functionName: 'minStake' });
   const needTac = minStake + 10n ** 18n;
 
+  // this relay's entry in the registry (0 when it has none): a relay that is already in has its stake there, so a restart asks for gas only
+  const entryIdNow = () => client.readContract({ address: RELAY_REGISTRY, abi: REG, functionName: 'idOf', args: [keccak256(encodeAbiParameters([{ type: 'uint64' }, { type: 'address' }], [1n, address]))] });
   if (!local) {
     for (;;) {
-      const [tac, eth] = await Promise.all([client.readContract({ address: TAC, abi: ERC20, functionName: 'balanceOf', args: [address] }), client.getBalance({ address })]);
-      if (tac >= needTac && eth >= MIN_ETH) { log(`funded: ${formatUnits(tac, 18)} TAC, ${formatEther(eth)} ETH`); break; }
-      log(`waiting for funds at ${address}: has ${formatUnits(tac, 18)} TAC and ${formatEther(eth)} ETH, needs ${formatUnits(needTac, 18)} TAC and ${formatEther(MIN_ETH)} ETH. Send them from anywhere (out of a private balance, nothing links it to you); tacit.finance/to/${address}/${formatUnits(needTac, 18)} is a pay link for the TAC.`);
+      const [tac, eth, id] = await Promise.all([client.readContract({ address: TAC, abi: ERC20, functionName: 'balanceOf', args: [address] }), client.getBalance({ address }), entryIdNow()]);
+      const stakeNeeded = id === 0n;
+      if ((!stakeNeeded || tac >= needTac) && eth >= MIN_ETH) { log(stakeNeeded ? `funded: ${formatUnits(tac, 18)} TAC, ${formatEther(eth)} ETH` : `already in the registry (entry ${id}), ${formatEther(eth)} ETH for gas`); break; }
+      log(stakeNeeded
+        ? `waiting for funds at ${address}: has ${formatUnits(tac, 18)} TAC and ${formatEther(eth)} ETH, needs ${formatUnits(needTac, 18)} TAC and ${formatEther(MIN_ETH)} ETH. Send them from anywhere (out of a private balance, nothing links it to you); tacit.finance/to/${address}/${formatUnits(needTac, 18)} is a pay link for the TAC.`
+        : `waiting for gas at ${address}: has ${formatEther(eth)} ETH, needs ${formatEther(MIN_ETH)} ETH (this relay is already in the registry, so its stake is not asked for again)`);
       await sleep(30_000);
     }
   }
@@ -117,7 +140,7 @@ async function main() {
   // the relay
   const seed = opt('seed') === 'none' ? null : (opt('seed') || `${ROUTE.keeper}/1/evm-pool/keeper`);
   let reset = staleStore(join(dir, 'keeper-1.db'));
-  const envNow = () => ({ ...process.env, ...relayEnv({ defaults: loadDefaults(), key, gateway, port, dir, seed, reset }) });
+  const envNow = () => ({ ...process.env, ...relayEnv({ defaults: defs(), key, gateway, port, dir, seed, reset }) });
   const out = createWriteStream(join(dir, 'relay.log'), { flags: 'a', mode: 0o600 });
   let child = null, stopping = false;
   const start = () => {
@@ -130,6 +153,8 @@ async function main() {
   const stop = () => { stopping = true; child?.kill(); tunnel?.kill(); process.exit(0); };
   let tunnel = null;
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
+  // however this program ends (an error included), the relay and the tunnel it started end with it: none is left running with no one watching
+  process.on('exit', () => { stopping = true; child?.kill(); tunnel?.kill(); });
   log(`starting the relay (its log is ${join(dir, 'relay.log')})`);
   for (let i = 0; ; i++) {
     try { const h = await (await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(4000) })).json(); if (h.ready) break; } catch { /* not up yet */ }
@@ -155,21 +180,27 @@ async function main() {
 
   // the registry
   const account = privateKeyToAccount(key);
-  const wallet = createWalletClient({ account, chain: mainnet, transport: http(loadDefaults().EVM_POOL_RPC_URL_1) });
+  const wallet = createWalletClient({ account, chain: mainnet, transport: http(defs().EVM_POOL_RPC_URL_1) });
   async function sync(target) {
     const entries = await readRegistry({ call: (to, data) => client.call({ to, data }).then((r) => r.data), chainId: 1 });
     const listed = entries.find((e) => e.relayer.toLowerCase() === address.toLowerCase()) ?? null;
     const action = urlAction({ listed, url: target });
     if (action === 'ok') return log(`listed at ${target}`);
+    const id = await entryIdNow();
+    // in the registry but not on its list (its stake is under a raised minimum, or it is leaving): listing it again would fail, the owner puts it right
+    if (action === 'register' && id !== 0n) return log(`the registry has this relay (entry ${id}) but does not list it: its stake is under the minimum, or it is leaving. Its owner can top it up on the Pay relays card at tacit.finance/prove/#pay-relays`);
     if (action === 'register') {
       log('listing the relay (one transaction)…');
-      const r = spawnSync(process.execPath, [join(HERE, 'register-relay.mjs'), '--url', target, '--owner', owner, '--send'], { env: { ...process.env, RELAY_KEY: key }, encoding: 'utf8' });
+      const r = spawnSync(process.execPath, [join(HERE, 'register-relay.mjs'), '--url', target, '--owner', stakeOwner, '--send', ...(rpc ? ['--rpc', rpc] : [])], { env: { ...process.env, RELAY_KEY: key }, encoding: 'utf8' });
       log((r.stdout + r.stderr).trim().split('\n').slice(-3).join(' | '));
       if (r.status !== 0) throw new Error('listing did not go through: see above');
     } else {
       log(`the address changed: ${listed.url} → ${target}`);
-      const id = await client.readContract({ address: RELAY_REGISTRY, abi: REG, functionName: 'idOf', args: [keccak256(encodeAbiParameters([{ type: 'uint64' }, { type: 'address' }], [1n, address]))] });
-      const hash = await wallet.writeContract({ address: RELAY_REGISTRY, abi: REG, functionName: 'setUrl', args: [id, target], maxFeePerGas: parseGwei('5'), maxPriorityFeePerGas: parseGwei('0.1') });
+      // the fee follows the chain (twice the base fee, a small tip), as the listing's does; a fixed cap would leave the transaction waiting, and with it the relay's own next spend
+      const tip = parseGwei('0.1'), { baseFeePerGas } = await client.getBlock();
+      const hash = await wallet.writeContract({ address: RELAY_REGISTRY, abi: REG, functionName: 'setUrl', args: [id, target], maxFeePerGas: baseFeePerGas * 2n + tip, maxPriorityFeePerGas: tip });
+      const rc = await client.waitForTransactionReceipt({ hash, timeout: 10 * 60_000 });
+      if (rc.status !== 'success') throw new Error(`the address update did not go through (${hash})`);
       log(`address updated (${hash})`);
     }
   }
