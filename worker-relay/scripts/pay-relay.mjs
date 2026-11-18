@@ -37,6 +37,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const WORKER = join(HERE, '..');
 const TAC = '0xA1313eb9f3A445606D9583bcAc3ebeB56a858279';
 const MIN_ETH = 5n * 10n ** 15n;
+const ETH_OUT = 'on tacit.finance/pay/eth/ sign in, open Withdraw and paste this address: it pays a private balance out to it';
 
 export const loadDefaults = () => JSON.parse(readFileSync(join(WORKER, 'pay-relay-defaults.json'), 'utf8'));
 // --rpc: the Ethereum node this relay reads and sends through (your own, or a provider's), in place of the free public ones
@@ -87,6 +88,17 @@ export const staleStore = (path, now = Date.now(), maxAgeMs = 20 * 60_000) => { 
 // the public name cloudflared prints
 export const parseTunnelUrl = (line) => /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(String(line))?.[0] ?? null;
 
+// A tunnel's name is not found in the DNS for the first seconds after it is made, and a listing sent before that fails (and one that is sent for a name nobody can reach
+// sends wallets to nothing): the address is listed only once it answers from here
+export async function waitReachable(base, { ms = 180_000, every = 4_000, fetchImpl = globalThis.fetch, wait = (t) => new Promise((r) => setTimeout(r, t)) } = {}) {
+  const end = Date.now() + ms;
+  for (;;) {
+    try { const r = await fetchImpl(`${String(base).replace(/\/+$/, '')}/quote`, { signal: AbortSignal.timeout?.(8_000) }); if (r.ok) return; } catch { /* the name is not found yet, or nothing answers yet */ }
+    if (Date.now() >= end) throw new Error(`${base} does not answer from this machine after ${Math.round(ms / 60_000)} minutes: check that the relay is running and that nothing blocks the tunnel`);
+    await wait(every);
+  }
+}
+
 // what the registry needs done for this relay at this address
 export function urlAction({ listed, url }) {
   if (!listed) return 'register';
@@ -131,8 +143,8 @@ async function main() {
       const stakeNeeded = id === 0n;
       if ((!stakeNeeded || tac >= needTac) && eth >= MIN_ETH) { log(stakeNeeded ? `funded: ${formatUnits(tac, 18)} TAC, ${formatEther(eth)} ETH` : `already in the registry (entry ${id}), ${formatEther(eth)} ETH for gas`); break; }
       log(stakeNeeded
-        ? `waiting for funds at ${address}: has ${formatUnits(tac, 18)} TAC and ${formatEther(eth)} ETH, needs ${formatUnits(needTac, 18)} TAC and ${formatEther(MIN_ETH)} ETH. Send them from anywhere (out of a private balance, nothing links it to you); tacit.finance/to/${address}/${formatUnits(needTac, 18)} is a pay link for the TAC.`
-        : `waiting for gas at ${address}: has ${formatEther(eth)} ETH, needs ${formatEther(MIN_ETH)} ETH (this relay is already in the registry, so its stake is not asked for again)`);
+        ? `waiting for funds at ${address}: has ${formatUnits(tac, 18)} TAC and ${formatEther(eth)} ETH, needs ${formatUnits(needTac, 18)} TAC and ${formatEther(MIN_ETH)} ETH. Send them from anywhere; out of a private balance, nothing on chain links the relay to you.${tac < needTac ? ` For the TAC, tacit.finance/to/${address}/${formatUnits(needTac, 18)} is a pay link.` : ''}${eth < MIN_ETH ? ` For the ETH, ${ETH_OUT}.` : ''}`
+        : `waiting for gas at ${address}: has ${formatEther(eth)} ETH, needs ${formatEther(MIN_ETH)} ETH (this relay is already in the registry, so its stake is not asked for again). For the ETH, ${ETH_OUT}.`);
       await sleep(30_000);
     }
   }
@@ -186,14 +198,17 @@ async function main() {
     const listed = entries.find((e) => e.relayer.toLowerCase() === address.toLowerCase()) ?? null;
     const action = urlAction({ listed, url: target });
     if (action === 'ok') return log(`listed at ${target}`);
+    log('waiting for the public address to answer before it is listed…');
+    await waitReachable(target);
     const id = await entryIdNow();
     // in the registry but not on its list (its stake is under a raised minimum, or it is leaving): listing it again would fail, the owner puts it right
     if (action === 'register' && id !== 0n) return log(`the registry has this relay (entry ${id}) but does not list it: its stake is under the minimum, or it is leaving. Its owner can top it up on the Pay relays card at tacit.finance/prove/#pay-relays`);
     if (action === 'register') {
       log('listing the relay (one transaction)…');
       const r = spawnSync(process.execPath, [join(HERE, 'register-relay.mjs'), '--url', target, '--owner', stakeOwner, '--send', ...(rpc ? ['--rpc', rpc] : [])], { env: { ...process.env, RELAY_KEY: key }, encoding: 'utf8' });
-      log((r.stdout + r.stderr).trim().split('\n').slice(-3).join(' | '));
-      if (r.status !== 0) throw new Error('listing did not go through: see above');
+      const said = (r.stdout + r.stderr).trim();
+      if (r.status !== 0) { console.error(said); throw new Error('listing did not go through: see above'); }      // all of what it said, not its last lines: the reason is near the top
+      log(said.split('\n').slice(-3).join(' | '));
     } else {
       log(`the address changed: ${listed.url} → ${target}`);
       // the fee follows the chain (twice the base fee, a small tip), as the listing's does; a fixed cap would leave the transaction waiting, and with it the relay's own next spend

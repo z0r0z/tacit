@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, statSync, existsSync, readdirSync, rmSync } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { ensureSecrets, ensureOwner, withRpc, relayEnv, parseTunnelUrl, urlAction, loadDefaults, staleStore } from '../scripts/pay-relay.mjs';
+import { ensureSecrets, ensureOwner, withRpc, relayEnv, parseTunnelUrl, urlAction, loadDefaults, staleStore, waitReachable } from '../scripts/pay-relay.mjs';
 import { utimesSync, writeFileSync } from 'node:fs';
 
 let n = 0;
@@ -103,6 +103,14 @@ await check('--rpc puts one node in place of the free public ones, for the relay
   assert.equal(w.EVM_POOL_RPC_URL_1, 'http://127.0.0.1:8545'); assert.equal(w.EVM_POOL_RPC_URLS_FALLBACK_1, 'http://127.0.0.1:8545');
   assert.equal(w.EVM_POOL_ADDR, d.EVM_POOL_ADDR, 'nothing else changes');
   assert.equal(d.EVM_POOL_RPC_URL_1.startsWith('https://'), true, 'the defaults file itself is not touched');
+});
+await check('a new tunnel name is listed only once it answers: not found, then an error status, then an answer; and one that never answers stops with what to check', async () => {
+  const seen = [];
+  const answers = [() => { throw Object.assign(new Error('fetch failed'), { cause: { code: 'ENOTFOUND' } }); }, () => ({ ok: false, status: 404 }), () => ({ ok: true, status: 200 })];
+  await waitReachable('https://a-b-c.example.net/1/evm-pool/keeper/', { fetchImpl: async (u) => { seen.push(u); return answers[Math.min(seen.length - 1, 2)](); }, wait: async () => {}, every: 1 });
+  assert.equal(seen.length, 3, 'it asked until it was answered');
+  assert.ok(seen.every((u) => u === 'https://a-b-c.example.net/1/evm-pool/keeper/quote'), 'always the quote, with no double slash');
+  await assert.rejects(waitReachable('https://gone.example.net/1/evm-pool/keeper', { ms: 30, every: 5, fetchImpl: async () => { throw new Error('nope'); } }), /does not answer from this machine.*check that the relay is running/s);
 });
 await check('--tunnel without cloudflared stops at once, before any key is made or any funds are asked for', () => {
   const dir = join(tmpdir(), 'payrelay-never-5');

@@ -22,6 +22,13 @@ Run it again whenever you like (after a reboot, say). It finds its place in the 
 gets a new one each time it starts) it changes the listed address to match and waits for that to land. `--rpc <your node>` reads and sends through your own Ethereum node instead of the
 free public ones.
 
+A new tunnel name is not found in the DNS at once: in testing it took about a minute and a half to answer, and the launcher lists an address only once it answers from your machine. So
+after a tunnel drops, the listed address is out of date for that long (wallets pass over a relay that does not answer, and nothing is lost but fees). A relay that is meant to stay up
+should have an address that does not change: `--url https://<a name of yours>`, from a server, or from a named tunnel of your own.
+
+Funding, as the command prints it: for the TAC, `tacit.finance/to/<the relay's address>/1001` is a pay link (a payment request, paid in public TAC out of your Tacit account); for the ETH,
+sign in on tacit.finance/pay/eth/, open Withdraw and paste the address, which pays a private balance out to it, so nothing links the relay to you.
+
 The stake's owner is public on chain (the registry shows it), so a wallet that is known as yours would tie the relay to you; that is why the owner is a fresh address by default. Its
 key is `owner.key` beside the relay's: keep a copy, because it is what takes the stake back (import it into a wallet and connect that wallet on the Pay relays card). To hold the stake
 in a wallet of your own instead, add `--owner 0x…`.
