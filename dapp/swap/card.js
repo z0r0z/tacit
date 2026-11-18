@@ -3043,7 +3043,7 @@ export function mountSwapCard(root, host = {}) {
     keyChanged: () => { PV?.reset(); paint(); privUp(); },
     farms: () => (S.farms ? Promise.resolve(S.farms) : readFarms().then(() => S.farms)),
     readBalances: () => readBalances().then(paintSides),
-    refresh: () => { if (moveOf() || S.at.pay || S.at.get) { paintMode(); paintSides(); if ((exiting() || (FLOW === 'shield' && S.q?.kind === 'zap')) && S.q) paintQuote(); } else paintMode(); },
+    refresh: () => { const zapQ = FLOW === 'shield' && S.q?.kind === 'zap'; if (moveOf() || S.at.pay || S.at.get) { paintMode(); paintSides(); if ((exiting() && S.q) || zapQ) paintQuote(); } else { paintMode(); if (zapQ) paintQuote(); } },
     requote: () => { if (!S.busy && (moveOf() || exiting())) requote(true); },
     focus: () => $('#amt').focus({ preventScroll: true }),
     working: (on) => {
