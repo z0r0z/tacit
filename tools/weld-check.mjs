@@ -7055,6 +7055,10 @@ await step('stats', async () => {
     ok(/^TAC transacted \| 100TAC \| 1 deposit/.test(await card('TAC transacted')), `stats: TAC transacted (${await card('TAC transacted')})`);
     // The way back out sits beside it: present as a card (its history may still be being read, then it says so).
     ok(/^TAC made public \| 75TAC \| 3 mints · 2 accounts/.test(await card('TAC made public')), `stats: TAC made public counts the token's mints to accounts, from its Transfer logs (${await card('TAC made public')})`);
+    // The ERC-20 and what is private make up the fixed 21,000,000, each shown to the whole TAC.
+    const [pub, prv] = [await card('TAC ERC-20'), await card('Private TAC')];
+    const whole = (t) => Number(((t.match(/^[^|]+\| ([\d,]+)TAC/) || [])[1] || 'NaN').replace(/,/g, ''));
+    ok(Math.abs(whole(pub) + whole(prv) - 21000000) <= 1 && /^Private TAC \| .* \| \d+\.\d% of the fixed 21,000,000 .*supply proof/.test(prv), `stats: private TAC is the fixed 21,000,000 less the ERC-20's supply (${pub} | ${prv})`);
     await r.page.locator('#g-tac').scrollIntoViewIfNeeded(); await shot(r.page, 'stats-tac-desk');
     await r.page.setViewportSize({ width: 390, height: 900 }); await r.page.locator('#g-tac').scrollIntoViewIfNeeded(); await shot(r.page, 'stats-tac-phone');
     await r.page.setViewportSize({ width: 1280, height: 1100 });

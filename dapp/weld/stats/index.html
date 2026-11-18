@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module (its sha256 pinned in script-src by build/build.mjs) and the reading it imports. It reads
      public data only: no wallet, no key; it keeps the last reading, and the chain data behind it, to read on from. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-jNpPUVmHwXKnWv0Wjbij6LwYaK0EGtqeV3eqz/HHJ+I='; connect-src https://api.tacit.finance https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://eth.drpc.org https://mainnet.base.org https://base-rpc.publicnode.com https://base.gateway.tenderly.co https://rpc.mainnet.chain.robinhood.com https://eth.blockscout.com https://base.blockscout.com https://api.routescan.io https://mempool.space https://blockstream.info https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-GU1cd1TvoxvB4Nf51XQd7hbA9TTwYSjg3aR3fKC2GsU='; connect-src https://api.tacit.finance https://mainnet.gateway.tenderly.co https://ethereum-rpc.publicnode.com https://eth.drpc.org https://mainnet.base.org https://base-rpc.publicnode.com https://base.gateway.tenderly.co https://rpc.mainnet.chain.robinhood.com https://eth.blockscout.com https://base.blockscout.com https://api.routescan.io https://mempool.space https://blockstream.info https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://1rpc.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
@@ -101,8 +101,7 @@ h2 { font: italic 400 30px/1.1 var(--serif); margin: 0; display: flex; align-ite
 h2 .tk { width: 26px; height: 26px; }
 
 .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.cards.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }   /* TAC in, out and the rest on one row, as the other groups are */
-.cards.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cards.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }   /* three to a row: the vaults, and TAC's six in two rows */
 .card { background: var(--card); border: 1px solid var(--hair); border-radius: 16px; padding: 14px 16px 13px; min-width: 0; }
 .card .k { font-size: 12px; color: var(--mute); display: flex; align-items: center; gap: 7px; }
 .card .v { font: 400 30px/1.15 var(--serif); margin: 6px 0 4px; overflow-wrap: anywhere; }
@@ -114,12 +113,12 @@ h2 .tk { width: 26px; height: 26px; }
 /* Each group keeps the height its cards have once they are read (taller as the screen is narrower, the cards being wider than the text they hold),
    and the two charts that arrive last keep theirs, so nothing under them moves while the figures come in */
 .cards { min-height: var(--ch); }
-[data-cards="eth"] { --ch: 134px; } [data-cards="btc"] { --ch: 134px; } [data-cards="tac"] { --ch: 169px; } [data-cards="pts"] { --ch: 131px; } [data-cards="link"] { --ch: 169px; } [data-cards="vlt"] { --ch: 134px; }
-@media (max-width: 999px) { [data-cards="eth"] { --ch: 153px; } [data-cards="tac"] { --ch: 189px; } [data-cards="link"] { --ch: 189px; } }
-@media (max-width: 760px) { [data-cards="eth"] { --ch: 249px; } [data-cards="btc"] { --ch: 230px; } [data-cards="tac"] { --ch: 345px; } [data-cards="pts"] { --ch: 225px; } [data-cards="vlt"] { --ch: 228px; } [data-cards="link"] { --ch: 285px; } }
-@media (max-width: 600px) { [data-cards="eth"] { --ch: 270px; } [data-cards="btc"] { --ch: 249px; } [data-cards="tac"] { --ch: 383px; } [data-cards="pts"] { --ch: 244px; } [data-cards="vlt"] { --ch: 228px; } [data-cards="link"] { --ch: 304px; } }
+[data-cards="eth"] { --ch: 134px; } [data-cards="btc"] { --ch: 134px; } [data-cards="tac"] { --ch: 275px; } [data-cards="pts"] { --ch: 131px; } [data-cards="link"] { --ch: 169px; } [data-cards="vlt"] { --ch: 134px; }
+@media (max-width: 999px) { [data-cards="eth"] { --ch: 153px; } [data-cards="tac"] { --ch: 313px; } [data-cards="link"] { --ch: 189px; } }
+@media (max-width: 760px) { [data-cards="eth"] { --ch: 249px; } [data-cards="btc"] { --ch: 230px; } [data-cards="tac"] { --ch: 383px; } [data-cards="pts"] { --ch: 225px; } [data-cards="vlt"] { --ch: 228px; } [data-cards="link"] { --ch: 285px; } }
+@media (max-width: 600px) { [data-cards="eth"] { --ch: 270px; } [data-cards="btc"] { --ch: 249px; } [data-cards="tac"] { --ch: 421px; } [data-cards="pts"] { --ch: 244px; } [data-cards="vlt"] { --ch: 228px; } [data-cards="link"] { --ch: 304px; } }
 @media (max-width: 440px) { [data-cards="eth"] { --ch: 290px; } }
-@media (max-width: 400px) { [data-cards="eth"] { --ch: 320px; } [data-cards="btc"] { --ch: 288px; } [data-cards="tac"] { --ch: 411px; } [data-cards="pts"] { --ch: 256px; } [data-cards="vlt"] { --ch: 266px; } [data-cards="link"] { --ch: 362px; } }
+@media (max-width: 400px) { [data-cards="eth"] { --ch: 320px; } [data-cards="btc"] { --ch: 288px; } [data-cards="tac"] { --ch: 517px; } [data-cards="pts"] { --ch: 256px; } [data-cards="vlt"] { --ch: 266px; } [data-cards="link"] { --ch: 362px; } }
 #f-eth { min-height: 265px; } #f-dev { min-height: 246px; }
 @media (max-width: 440px) { #f-eth { min-height: 290px; } }
 
@@ -154,8 +153,8 @@ details.how dd { margin: 0; color: var(--mute); }
 
 
 @media (max-width: 760px) {
-  .cards, .cards.five, .cards.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .cards.five > :last-child, .cards.three > :last-child { grid-column: 1 / -1; }   /* the odd card of five takes the last row to itself */
+  .cards, .cards.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cards.three > :last-child:nth-child(odd) { grid-column: 1 / -1; }   /* an odd last card takes the last row to itself */
   .card .v { font-size: 26px; }
   .row { grid-template-columns: 1fr; gap: 4px; }
   details.how dl { grid-template-columns: 1fr; gap: 2px 0; }
@@ -392,7 +391,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
   <section class="grp" id="g-tac">
     <h2><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</h2>
-    <div class="cards five" data-cards="tac"></div>
+    <div class="cards three" data-cards="tac"></div>
   </section>
 
   <section class="grp" id="g-pts">
@@ -428,6 +427,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <dt>cUSD borrowed</dt><dd>Totals from the CdpMinted, CdpClosed and CdpLiquidated events. Open is the engine’s outstanding debt.</dd>
       <dt>Borrowed against TAC</dt><dd>Each vault’s total debt: TACD from the dollar vault, TACE from the ether vault. TAC deposited is the TAC the two vaults hold. Read from the vaults on each visit.</dd>
       <dt>TAC ERC-20</dt><dd>Its supply. The pool mints it when TAC is made public and burns it when TAC is made private, so private TAC is not in it.</dd>
+      <dt>Private TAC</dt><dd>The fixed 21,000,000 TAC less the ERC-20’s supply: the TAC held on Bitcoin and inside the pools, where amounts are hidden, so how it divides between them is not public. The 21,000,000 is checked from the Bitcoin etch by the supply script linked on the card.</dd>
       <dt>TAC made public</dt><dd>TAC the pool has minted to an account: paid out of a private note by a withdrawal, or from its own reserve when someone buys TAC on its public market. Left out: relay fee mints, and the treasury the protocol bridged at the start (to the ops multisig and the airdrop contract).</dd>
       <dt>Between the chains</dt><dd>What passed between Bitcoin and Ethereum, drawn when it happened: proofs of Bitcoin landing on Ethereum, bridge burns recorded and minted, cross-outs to Bitcoin, TAC made public and private, ETH deposits and settles. A counter with no time of its own is drawn when it moved, to the nearest reading. Counts and times only.</dd>
       <dt>Airdrop claimed</dt><dd>The airdrop’s Claimed events.</dd>
@@ -517,7 +517,7 @@ function paint(group, cards) { $(`[data-cards="${group}"]`).innerHTML = cards.ma
 const PLACE = {
   eth: [{ k: 'Transacted', icon: 'tk-eth' }, { k: 'Withdrawn', icon: 'tk-eth' }, { k: 'Private now', icon: 'tk-teth' }, { k: 'Wallets' }],
   btc: [{ k: 'BTC locked', icon: 'tk-btc' }, { k: 'cBTC minted', icon: 'tk-cbtc' }, { k: 'Bonds' }, { k: 'cUSD borrowed', icon: 'tk-cusd' }],
-  tac: [{ k: 'TAC ERC-20', icon: 'tk-tac' }, { k: 'TAC transacted' }, { k: 'TAC made public' }, { k: 'Airdrop claimed' }, { k: 'Others transacted' }],
+  tac: [{ k: 'TAC ERC-20', icon: 'tk-tac' }, { k: 'Private TAC', icon: 'tk-tac' }, { k: 'TAC transacted' }, { k: 'TAC made public' }, { k: 'Airdrop claimed' }, { k: 'Others transacted' }],
   pts: [{ k: 'Participants' }, { k: 'Points' }, { k: 'TAC allocated' }, { k: 'TAC claimed' }],
   link: [{ k: 'Bitcoin headers', icon: 'tk-btc' }, { k: 'Proven to' }, { k: 'Settles' }, { k: 'Cross-chain' }],
 };
@@ -639,10 +639,14 @@ function showBtc(r) {
   ]);
 }
 
+// TAC's whole supply: the Bitcoin etch cannot mint more and opens to exactly 21,000,000 (scripts/verify-tac-supply-standalone.mjs checks it from the etch).
+const FIXED_SUPPLY = 21_000_000n * 10n ** 18n;
 function showTac(r) {
   const other = r.others.length ? r.others.map((o) => `${o.m?.symbol || 'other'} ${fmt(o.v, o.m?.decimals ?? 18, 4)}`).join(' · ') : 'none yet';
+  const priv = FIXED_SUPPLY > BigInt(r.supply) ? FIXED_SUPPLY - BigInt(r.supply) : 0n;
   paint('tac', [
     { k: 'TAC ERC-20', icon: 'tk-tac', v: fmt(r.supply, 18, 0), u: 'TAC', m: `${mark(1)} public · <a href="https://etherscan.io/token/${A.tac}" target="_blank" rel="noopener">ERC-20 ↗</a> · <a href="https://etherscan.io/token/${A.tac}#balances" target="_blank" rel="noopener">holders ↗</a>` },
+    { k: 'Private TAC', icon: 'tk-tac', v: fmt(priv, 18, 0), u: 'TAC', m: `${(Number(priv * 1000n / FIXED_SUPPLY) / 10).toFixed(1)}% of the fixed 21,000,000 · on Bitcoin and in the pools · <a href="https://github.com/src-company/tacit/blob/main/scripts/verify-tac-supply-standalone.mjs" target="_blank" rel="noopener">supply proof ↗</a>` },
     { k: 'TAC transacted', v: fmt(r.tacIn.v, 18, 2), u: 'TAC', m: `${int(r.tacIn.n)} deposit${r.tacIn.n === 1 ? '' : 's'}` },
     // The way back out. Absent (not zero) while its history is still being read on across readings.
     r.tacOut ? { k: 'TAC made public', v: fmt(r.tacOut.v, 18, 2), u: 'TAC', m: `${int(r.tacOut.n)} mint${r.tacOut.n === 1 ? '' : 's'} · ${int(r.tacOut.who)} account${r.tacOut.who === 1 ? '' : 's'}` }
