@@ -19,4 +19,18 @@ assert.strictEqual(s.get(A(3)), undefined, 'an expired box is gone');
 assert.ok(s.get(A(2)), 'a completed deposit with a leftover to settle is kept');
 assert.ok(s.get(A(4)), 'a watched receive box is kept');
 assert.ok(s.get(A(5)), 'a recent finished box is kept');
-console.log('  ok - finished boxes older than the limit are dropped; live ones and unsettled leftovers stay\n1 passed');
+console.log('  ok - finished boxes older than the limit are dropped; live ones and unsettled leftovers stay');
+
+// a receive box is dropped a set time after its watch lapsed, not before, and a box still watched stays
+{
+  const r = openKeeperStore(':memory:');
+  const mk = (box, deadline) => r.addIntent({ box, kind: 'receive', intent: { box, npk: '0x' + 'bb'.repeat(32) }, hint: null, reward: 0n, token: '0x' + '0'.repeat(40), deadline, now: T0 });
+  mk(A(10), T0 + DAY);              // watch lapses at T0 + 1 day
+  mk(A(11), T0 + 40 * DAY);         // still watched well past the check below
+  assert.strictEqual(r.pruneTerminal(T0 + 20 * DAY, 7 * DAY, 30 * DAY), 0, 'lapsed only 19 days ago: kept');
+  assert.strictEqual(r.pruneTerminal(T0 + 32 * DAY, 7 * DAY, 30 * DAY), 1, 'lapsed 31 days ago: dropped');
+  assert.strictEqual(r.get(A(10)), undefined); assert.ok(r.get(A(11)), 'a box still watched stays');
+  assert.strictEqual(r.pruneTerminal(T0 + 32 * DAY, 7 * DAY), 0, 'with no receive limit given, receive boxes are never pruned');
+  console.log('  ok - a receive box goes thirty days after its watch lapses; one still watched stays');
+}
+console.log('2 passed');

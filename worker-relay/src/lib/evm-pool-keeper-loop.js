@@ -467,7 +467,7 @@ export function createKeeper({
       }
     }
     await sweepSurplusBoxes(now()).catch((e) => log(`surplus: ${safeErr(e)}`));
-    try { if (store.pruneTerminal && now() - prunedAt >= 3600) { prunedAt = now(); store.pruneTerminal(now(), cfg.terminalKeepSecs ?? 7 * 86400); } } catch (e) { log(`prune: ${safeErr(e)}`); }
+    try { if (store.pruneTerminal && now() - prunedAt >= 3600) { prunedAt = now(); store.pruneTerminal(now(), cfg.terminalKeepSecs ?? 7 * 86400, cfg.receiveKeepSecs ?? 30 * 86400); } } catch (e) { log(`prune: ${safeErr(e)}`); }
     return rows.length;
   }
 
