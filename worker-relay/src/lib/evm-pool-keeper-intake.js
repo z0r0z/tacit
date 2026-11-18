@@ -30,6 +30,7 @@ import { revertName as defaultRevertName } from './evm-pool-keeper-chain.js';
 import { safeErr } from './safe-err.js';
 import { ipKey, clientKey } from './token-bucket.js';
 import { makeSealedGateway } from './evm-pool-keeper-sealed.js';
+import { makeRpcPassthrough, MAX_BODY as RPC_BODY } from './evm-pool-keeper-rpc.js';
 
 const POST_ABI = parseAbi(['function post(uint256 size, uint256 blockNumber, bytes32[32] filled)']);
 const VMAX = 1n << 120n;
@@ -305,6 +306,7 @@ export function createIntakeHandler({
   // Reads a wallet makes around every spend (head, quote, events) have their own, larger allowance.
   const readLimited = allowance(cfg.ratePerMin * 6, Math.max(1, Math.min(30, cfg.ratePerMin * 3)));
   let gateway = null;   // the private route's, made on first use
+  let rpcPass = null;   // the chain reads it carries (evm-pool-keeper-rpc.js), made on first use
   // /head is cached for a second, and until the queue changes, so many wallets polling it cost a few reads. Those that ask while
   // a read is under way share it.
   let headCache = null, headRead = null;
@@ -662,6 +664,12 @@ export function createIntakeHandler({
         if (!cfg.relay) return send(404, { error: 'relaying is off' });
         if (!limited(clientKey(req))) throw new IntakeError(429, 'rate limited');
         return send(200, await relay(await readJson(req, cfg.maxBody)));
+      }
+      if (p === `${PREFIX}/rpc` && req.method === 'POST') {
+        if (!chain.rpcRequest) return send(404, { error: 'no chain reads here' });
+        if (!readLimited(clientKey(req))) throw new IntakeError(429, 'rate limited');
+        const out = await (rpcPass ||= makeRpcPassthrough({ request: chain.rpcRequest, chainId: chain.chainId })).handle(await readJson(req, RPC_BODY), clientKey(req));
+        return send(out.status, out.body);
       }
       if (p === `${PREFIX}/receive` && req.method === 'POST') {
         if (!limited(clientKey(req))) throw new IntakeError(429, 'rate limited');

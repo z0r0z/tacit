@@ -21,7 +21,7 @@ const gzipped = promisify(gzip);
 const CARRIED = [
   ['GET', /^\/(info|head|quote|events|point|totals)$/],
   ['GET', /^\/status\/0x[0-9a-fA-F]{40}$/],
-  ['POST', /^\/(relay|receive|deposit|wrap)$/],
+  ['POST', /^\/(relay|receive|deposit|wrap|rpc)$/],
 ];
 // A gateway in front of several keepers (the multi-keeper service) carries paths that name the keeper: /<id>/evm-pool/keeper/events.
 const KEEPER_PATH = /^(?:\/\d+(?:-x[0-9a-f]+)?)?\/evm-pool\/keeper(?=\/)/;
