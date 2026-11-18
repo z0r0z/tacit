@@ -788,6 +788,16 @@ await test('the Tornado Cash mark and the Kohaku mark and link show in the notes
   await ctx.close();
 });
 
+await test('Withdraw: an address still being typed says what an address is, and it is no error', async () => {
+  const { ctx, page } = await open({ search: '', min: null });
+  await unlock(page);
+  await page.click('#tab-withdraw');
+  await page.fill('#f-wto', '0x123'); await page.fill('#f-wamt', '0.1');
+  await page.waitForFunction(() => /An address is 0x and 40 more characters\./.test(document.querySelector('#form')?.textContent || ''), null, { timeout: 30000 });
+  assert.equal(await page.locator('#form p.note.err').count(), 0, 'not an error');
+  await ctx.close();
+});
+
 await test('the smallest note starts at 0.1 ETH, so 0.15 ETH is a 0.1 ETH note and 0.05 ETH for Tacit, and the explainer names every pool size', async () => {
   const { ctx, page } = await open({ search: '', min: null });
   await unlock(page);
