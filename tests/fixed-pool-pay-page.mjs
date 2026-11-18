@@ -292,8 +292,8 @@ await test('?fixed=0 turns the flag off again, even where it was on', async () =
   assert.deepEqual(problems, []);
   await ctx.close();
 });
-await test('with the flag on another chain (Base) the deposit form is untouched', async () => {
-  const { ctx, page, problems } = await open({ search: '?fixed=1', chain: 8453 });
+await test('with the flag on another chain (Base, opened with ?chains=all) the deposit form is untouched', async () => {
+  const { ctx, page, problems } = await open({ search: '?fixed=1&chains=all', chain: 8453 });
   await unlock(page);
   await page.fill('#f-damt', '2.5');
   assert.equal(await page.locator('#lg-split').count(), 0);
@@ -760,6 +760,34 @@ await test('a registry that cannot be read leaves the page working with its own 
   assert.deepEqual(problems, []);
   await ctx.close();
 });
+await test('ETH only: a saved Base choice is ignored, no chain strip and no token row are drawn, and ?chains=all brings them back', async () => {
+  const one = await open({ search: '', chain: 8453, min: null });
+  await unlock(one.page);
+  await one.page.waitForSelector('#f-damt');
+  assert.equal(await one.page.locator('#chains').isVisible(), false, 'no chain strip');
+  assert.equal(await one.page.locator('#assets').isVisible(), false, 'no token row');
+  assert.match(await one.page.locator('#chain-1').getAttribute('aria-selected').catch(() => 'true'), /true/, 'on Ethereum');
+  assert.equal(await one.page.locator('#chain-8453').count(), 0, 'Base is not built');
+  await one.ctx.close();
+  const all = await open({ search: '?chains=all', chain: 1, min: null });
+  await unlock(all.page);
+  await all.page.waitForSelector('#f-damt');
+  assert.equal(await all.page.locator('#chain-8453').count(), 1, 'Base is back with ?chains=all');
+  await all.ctx.close();
+});
+
+await test('the Tornado Cash mark and the Kohaku mark and link show in the notes block with no notes and no amount typed', async () => {
+  const { ctx, page } = await open({ search: '', min: null });
+  await unlock(page);
+  await page.waitForSelector('#lg-notes', { state: 'attached' });
+  const block = page.locator('#lg-notes');
+  assert.match(await block.innerText(), /Tornado Cash notes\. Kohaku can withdraw them too\./);
+  assert.equal(await block.locator('p', { hasText: 'can withdraw them too' }).locator('svg').count(), 2, 'two marks in the line');
+  assert.equal(await block.locator('a[href="https://ethereum.org/apps/kohaku/"][target="_blank"]').count(), 1, 'the Kohaku link');
+  assert.equal(await block.locator('a[href*="tornado"]').count(), 0, 'no link on the Tornado mark');
+  await ctx.close();
+});
+
 await test('the smallest note starts at 0.1 ETH, so 0.15 ETH is a 0.1 ETH note and 0.05 ETH for Tacit, and the explainer names every pool size', async () => {
   const { ctx, page } = await open({ search: '', min: null });
   await unlock(page);
