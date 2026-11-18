@@ -21,6 +21,7 @@ DRY_RUN=1 ONCE=1 node tools/community-runner.mjs           # what it would send 
 RUNNER_KEY=0x… node tools/community-runner.mjs             # all three modes, each on its own loop
 RUNNER_KEY=0x… node tools/community-runner.mjs settles     # one mode: headers, attest or settles
 node tools/community-runner.mjs mirror                       # keep the board public on Nostr; no key, no gas
+FORWARD_URL=https://your.host node tools/community-runner.mjs forward   # carry private requests; no key, no gas (needs a public https address)
 ```
 
 Use a fresh key that holds only ETH for gas. The board pays its fees to the sending account, and an account with
@@ -111,6 +112,21 @@ two places, and either one alone is enough:
 
 Copies the API's open jobs to the Nostr relays, as *settles* does on each pass, and sends nothing. It needs no key
 and no gas, so anyone can keep the board public. Up to four jobs a minute, each posted once an hour.
+
+### forward (opt-in, not part of `all`)
+
+A forwarder for the EVM pool's private route (docs/EVM-POOL.md, "Private route"). A wallet seals each request to a keeper's gateway key and sends
+it to a forwarder; the forwarder hands it to the keeper's `POST /sealed` and returns the sealed answer. It sees the sender's address and the size and
+time of each envelope, never what is in one; it holds no key, forwards nothing of the sender's and keeps nothing. It needs no key and no ETH.
+
+- **Needs:** a public **https** address that reaches this machine: a VPS, or a machine behind a tunnel you run. A home connection with no way in cannot
+  carry one. `PORT` (default 10000) is where it listens; put TLS in front of it.
+- **Run:** `PORT=10000 FORWARD_URL=https://your.host node tools/community-runner.mjs forward`. With `FORWARD_URL` set it sends a sealed read to the keepers
+  through that address, now and every fifteen minutes, and says whether it came back (and whether the browser's CORS check will pass).
+- **Join the list:** a page lists the forwarders it uses, so send the address to Tacit. A forwarder run by the keepers' own operator hides nothing from it,
+  which is why the list should be independent operators.
+- **Limits:** 60 requests a minute per sender (`FORWARDER_RATE_PER_MIN`). The keeper counts everything behind one forwarder as that forwarder's, so a
+  forwarder that carries many people should be named in the keepers' `EVM_POOL_KEEPER_FORWARDERS`.
 
 ### board (opt-in, not part of `all`)
 

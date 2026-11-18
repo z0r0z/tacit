@@ -1080,7 +1080,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <pre class="cmd"><code>git clone https://github.com/src-company/tacit
 cd tacit &amp;&amp; npm ci --omit=dev
 RUNNER_KEY=0x… node tools/community-runner.mjs
-node tools/community-runner.mjs mirror   # no key: keeps the board public on Nostr</code></pre>
+node tools/community-runner.mjs mirror   # no key: keeps the board public on Nostr
+FORWARD_URL=https://your.host node tools/community-runner.mjs forward   # no key: carries private requests (needs a public https address)</code></pre>
       <p class="plan"><a href="https://github.com/src-company/tacit/blob/main/docs/COMMUNITY-OPS.md" target="_blank" rel="noopener noreferrer">Modes and costs</a></p>
     </div>
   </section>
