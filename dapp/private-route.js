@@ -18,7 +18,7 @@ export const available = () => !!(ROUTE.gateway && ROUTE.forwarders.length);
 export const enabled = available;
 
 let made = null;
-const sealed = () => (made ||= import('/sealed-request.js?cb=f9a2dc78').then((m) => m.makeSealedFetch({ keeper: ROUTE.keeper, chainId: ROUTE.id, gateway: ROUTE.gateway, forwarders: ROUTE.forwarders }))
+const sealed = () => (made ||= import('/sealed-request.js?cb=dff5097a').then((m) => m.makeSealedFetch({ keeper: ROUTE.keeper, chainId: ROUTE.id, gateway: ROUTE.gateway, forwarders: ROUTE.forwarders }))
   .catch((e) => { made = null; throw e; }));
 
 // fetch for a keeper's URLs. Off, it is fetch. On, a request to the route's service goes through a forwarder, and a request to any other

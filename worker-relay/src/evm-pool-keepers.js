@@ -376,6 +376,19 @@ async function main() {
   })
     .listen(port, () => log(`listening on ${port}: keepers ${running.join(', ')} (unprefixed routes are ${running[0]}'s)${sealed ? '; the private route is on at POST /sealed' : ''}`));
 
+  // The private route over Nostr (docs/PRIVATE-ROUTE-NOSTR.md), off until EVM_POOL_KEEPER_NOSTR_RELAYS names the relays (wss://…,wss://…): the keeper
+  // hears sealed requests on them and answers there, through the same gateway POST /sealed reaches.
+  if (sealed && process.env.EVM_POOL_KEEPER_NOSTR_RELAYS) {
+    const relays = process.env.EVM_POOL_KEEPER_NOSTR_RELAYS.split(',').map((x) => x.trim()).filter((x) => /^wss:\/\//.test(x));
+    try {
+      const { WebSocket } = await import('ws');
+      const { makeNostrRoad } = await import('./lib/evm-pool-keeper-nostr.js');
+      const road = makeNostrRoad({ take: sealed, kidHex: sealed.key.kid, relays, WS: WebSocket, log, minBits: Number(process.env.EVM_POOL_KEEPER_NOSTR_BITS || 12) }).start();
+      log(`private route over Nostr: ${relays.length} relays, key id ${sealed.key.kid}`);
+      setInterval(() => { const s = road.stats(); if (s.heard) log(`nostr road: heard ${s.heard}, answered ${s.answered}, dropped ${s.dropped}, too large ${s.tooBig}, on ${s.relays.length}/${relays.length} relays`); }, 600_000).unref();
+    } catch (e) { log(`private route over Nostr did not start: ${safeErr(e)}`); }
+  }
+
   for (const id of running) runKeeper(keepers.get(id));
 
   // Token pools anyone opens (dapp/evm-pool-tokens.js), found on chain and served as they appear: EVM_POOL_TOKEN_POOLS_<chainId>=<first block>
