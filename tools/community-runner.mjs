@@ -14,6 +14,8 @@
 //            private route (docs/EVM-POOL.md). It sees the sender's address and the size and time of each sealed envelope, never what is in one;
 //            it holds no key, forwards nothing of the sender's and keeps nothing. It needs a public HTTPS address (a VPS, or a machine behind a
 //            tunnel you run): PORT=10000 FORWARD_URL=https://your.host node tools/community-runner.mjs forward. Send that URL to Tacit to be listed.
+//   relay    (opt-in, not in `all`) run a Pay relay from this machine, one command: worker-relay/scripts/pay-relay.mjs (its key, its funds, a tunnel, its place in the relay registry):
+//            node tools/community-runner.mjs relay --owner 0x… --tunnel (docs/RUN-A-PAY-RELAY.md)
 //   relay-check  (opt-in, not in `all`, needs no key) check a Pay relay you run the way a wallet reaches it: its quote, its private route key, its place in the relay registry,
 //            and a sealed quote through Tacit's forwarders: node tools/community-runner.mjs relay-check https://relay.example/1/evm-pool/keeper (docs/RUN-A-PAY-RELAY.md)
 //   board    (opt-in, not in `all`, needs no key) race Tacit's own prover for the prover board's public jobs: ops whose program input holds
@@ -409,6 +411,11 @@ async function forwardMain() {
 
 async function main() {
   if (process.argv.slice(2).find((a) => !a.startsWith('-'))?.toLowerCase() === 'forward') return forwardMain();
+  if (process.argv.slice(2).find((a) => !a.startsWith('-'))?.toLowerCase() === 'relay') {
+    const { spawnSync } = await import('node:child_process');
+    const rest = process.argv.slice(2).filter((a, i, all) => !(i === all.findIndex((x) => !x.startsWith('-'))));
+    return process.exit(spawnSync(process.execPath, [new URL('../worker-relay/scripts/pay-relay.mjs', import.meta.url).pathname, ...rest], { stdio: 'inherit' }).status ?? 1);
+  }
   if (process.argv.slice(2).find((a) => !a.startsWith('-'))?.toLowerCase() === 'relay-check') return process.exit(await (await import('./relay-check.mjs')).main());
   let cfg;
   try { cfg = readConfig(); } catch (e) { console.error(e.message); process.exit(2); }

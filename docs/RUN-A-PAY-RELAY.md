@@ -4,6 +4,25 @@ A Pay relay submits a user's private ETH spend (a send or a withdrawal from the 
 and no funded address. Anyone can run one and list it in the relay registry; the Pay page reads the registry and offers a wallet the relays it finds.
 (The DeFi pool's settle relay is another service: [RUN-A-RELAY.md](./RUN-A-RELAY.md).)
 
+## The short way: one command, from a laptop or a server
+
+```
+git clone https://github.com/src-company/tacit && cd tacit/worker-relay && npm ci
+node scripts/pay-relay.mjs --owner 0x<the address that holds the stake and gets it back> --tunnel
+```
+
+It makes the relay's own key (a file only you can read, in `~/.tacit-relay`), prints that key's address and waits for 1,000 TAC and 0.01 ETH to arrive there, starts the
+relay, opens a public address for it and lists it in the registry, then keeps the listed address current if it changes. `--tunnel` uses `cloudflared` (`brew install
+cloudflared`), so a laptop needs no server and no open port; with a server that has a name, give `--url https://<the name>` instead. From a checkout of the repository the same
+command is `node tools/community-runner.mjs relay --owner 0x… --tunnel`.
+
+A new relay needs the pool's history, and free public nodes do not serve history that old, so the launcher reads it from the project's relay through the private route (the relay that
+answers sees a forwarder, not your machine). What it reads is checked against the chain's own root, so nothing is taken on trust; `--seed <a relay's url>` reads it from another relay
+instead, and a machine that sleeps for hours is read again from the feed when it wakes.
+
+Send the funds from wherever you like: out of a private balance, nothing on chain links the relay to you, and the stake's owner can be a fresh address. A relay earns while it is on
+and wallets pass over it while it is off, so a laptop that sleeps loses nothing but the fees. The sections below say what each part does, for running it by hand.
+
 ## What a relay is, and is not
 
 - A spend's proof names the relayer and the fee. The pool pays that address and no one else, so a relay cannot redirect funds or raise its fee after the
@@ -20,7 +39,7 @@ and no funded address. Anyone can run one and list it in the relay registry; the
 | | |
 | --- | --- |
 | A server | any host that runs Docker, with a public name and https. `worker-relay/Dockerfile.evm-pool-keeper` is the image. |
-| An Ethereum node | `EVM_POOL_RPC_URL`: your own, or a provider's |
+| An Ethereum node | `EVM_POOL_RPC_URL`: your own, or a provider's. A free public node cannot serve the pool's old history: start a new relay from a feed with `EVM_POOL_SEED_FEED_1=<a relay's url>` (the launcher does) |
 | A key of its own | a new key, used for nothing else: two services signing from one key race each other for its nonce. It needs ETH for gas. |
 | TAC | at least the registry's minimum stake in that key, for the moment you list (1,000 TAC to start; `minStake()` on the registry says what it is now) |
 | A second address | the `owner` of the stake: your own wallet, not the server's key |
