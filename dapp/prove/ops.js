@@ -648,7 +648,7 @@ let payStarted = false;
 export function startPay() {
   if (payStarted) return;
   payStarted = true;
-  Promise.all([import('/prove/pay-relays.js?cb=822e8e4c'), import('/private-route.js?cb=3981285c')])
+  Promise.all([import('/prove/pay-relays.js?cb=822e8e4c'), import('/private-route.js?cb=6e18fbe2')])
     .then(([m, r]) => m.startPayRelays({ $, esc, short, toast, rpc, send, waitReceipt, landed, txLink, S, connect, busy }, { forwarders: r.ROUTE.forwarders }))
     .catch(() => { payStarted = false; });
 }

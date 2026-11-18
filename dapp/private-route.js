@@ -11,6 +11,8 @@ export const ROUTE = {
   gateway: '03dcc0e9c8f2f3f283831159600a0f1db2f615003a4d939999ff0e911894265a70',   // its gateway key, 33 bytes of hex (node worker-relay/src/sealed-keygen.js), key id 5c246719
   forwarders: ['https://tacit-evm-pool-forwarder.onrender.com', 'https://tacit-evm-pool-forwarder-2.onrender.com'],   // each forwarder's address
   nostr: ['wss://relay.primal.net', 'wss://nos.lol', 'wss://offchain.pub'],   // public Nostr relays that carry a request when no forwarder answers (docs/PRIVATE-ROUTE-NOSTR.md); empty: not used
+  // the gateway for a wallet's own chain reads (worker-relay/src/evm-pool-rpc-gateway.js): a different service and key from the relay's, so the relay never sees them
+  rpc: { url: 'https://tacit-evm-pool-rpc.onrender.com', id: 'r', gateway: '033b728ecb1b4ff06af1eaf111c0efe54e2cccedcb8febc458842f1f45cd79073a' },
 };
 
 // Always on while the page names a gateway key and a forwarder: there is no setting to turn it off and no direct fallback. A request to the
@@ -66,16 +68,16 @@ Object.defineProperty(keeperFetch, 'sealed', { get: enabled });
 // may go direct: a chain read is public data, and a page that stopped reading the chain whenever the route did would be of no use. A route that fails is left alone for
 // a minute, so the page does not wait on it for every read. A refusal of a particular call (403: not a carried method, too wide a range) falls back for that call only.
 const RPC_PAUSE_MS = 60_000, RPC_WAIT_MS = 6000;
-let rpcSkipUntil = 0;
 const isLocal = (u) => { try { const h = new URL(u).hostname; return h === 'localhost' || h === '[::1]' || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h); } catch { return true; } };
-export function rpcFetch(keeperBase, { fetchImpl = (u, i) => fetch(u, i), now = () => Date.now() } = {}) {
+export function rpcFetch(keeperBase, { fetchImpl = (u, i) => fetch(u, i), now = () => Date.now(), send = (u, i) => keeperFetch(u, i), ready = () => true } = {}) {
+  let rpcSkipUntil = 0;   // a route that fails is left alone for a minute, for this reader only
   return async (url, init = {}) => {
     const direct = () => fetchImpl(url, init);
-    if (!keeperBase || !enabled() || String(init.method || 'GET').toUpperCase() !== 'POST' || isLocal(url) || now() < rpcSkipUntil) return direct();
+    if (!keeperBase || !enabled() || !ready() || String(init.method || 'GET').toUpperCase() !== 'POST' || isLocal(url) || now() < rpcSkipUntil) return direct();
     try {
       let timer;
       const r = await Promise.race([
-        keeperFetch(`${String(keeperBase).replace(/\/+$/, '')}/rpc`, { method: 'POST', body: init.body, signal: init.signal }),
+        send(`${String(keeperBase).replace(/\/+$/, '')}/rpc`, { method: 'POST', body: init.body, signal: init.signal }),
         new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('the route did not answer a chain read')), RPC_WAIT_MS); }),
       ]).finally(() => clearTimeout(timer));
       if (r.status === 200) return r;
@@ -88,3 +90,13 @@ export function rpcFetch(keeperBase, { fetchImpl = (u, i) => fetch(u, i), now = 
   };
 }
 
+// A wallet's own reads (the connected account's balance, the simulation of its deposit, a transaction's receipt, a name it looks up) go to a gateway of their
+// own, sealed to its own key and carried by the same forwarders, and not to the relay: the relay sees a wallet's private side, this sees its public side, and no
+// one service sees both. Anything it cannot carry goes to the node the reader named, as rpcFetch does.
+let walletMade = null;
+const walletSealed = () => (walletMade ||= sealedModule().then((m) => m.makeSealedFetch({ keeper: ROUTE.rpc.url, chainId: ROUTE.rpc.id, gateway: ROUTE.rpc.gateway, forwarders: ROUTE.forwarders }))
+  .catch((e) => { walletMade = null; throw e; }));
+export function walletRpcFetch(chainId, opts = {}) {
+  const base = ROUTE.rpc?.url ? `${ROUTE.rpc.url}/${chainId}/evm-pool/keeper` : null;
+  return rpcFetch(base, { ...opts, ready: () => !!ROUTE.rpc?.gateway, send: (u, i) => walletSealed().then((f) => f(u, i)) });
+}

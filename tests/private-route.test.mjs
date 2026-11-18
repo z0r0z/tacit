@@ -52,7 +52,7 @@ await check('the page ships with its gateway key and forwarders, and the route i
   assert.equal(available(), true);
   assert.equal(enabled(), true);
 });
-const SHIPPED = { keeper: ROUTE.keeper, gateway: ROUTE.gateway, forwarders: [...ROUTE.forwarders], nostr: [...(ROUTE.nostr || [])] };
+const SHIPPED = { keeper: ROUTE.keeper, gateway: ROUTE.gateway, forwarders: [...ROUTE.forwarders], nostr: [...(ROUTE.nostr || [])], rpc: { ...(ROUTE.rpc || {}) } };
 Object.assign(ROUTE, { gateway: '', forwarders: [] });   // a page with no route configured is a plain fetch
 
 await check('a page that names no gateway or forwarder fetches as it always did', async () => {
@@ -116,7 +116,7 @@ const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url)
 await check('the pay page sends every request to a relay through keeperFetch, and its wallets ask it whether they are on the route', () => {
   const direct = page.split('\n').map((line, i) => [i + 1, line]).filter(([, line]) => /(^|[^\w.])fetch\(/.test(line) && /chainKeeper\(|\.keeper\b|POOL_KEEPERS|onrender\.com\/\$\{|evm-pool\/keeper/.test(line));
   assert.deepEqual(direct, [], `a relay request that does not go through keeperFetch: ${direct.map(([i]) => i)}`);
-  assert.match(page, /import \{ keeperFetch(?:, rpcFetch)?, available as routeAvailable, enabled as routeOn(?:, listRelays)? \} from '\/private-route\.js\?cb=[A-Za-z0-9_-]+';/);
+  assert.match(page, /import \{ keeperFetch(?:, rpcFetch)?(?:, walletRpcFetch)?, available as routeAvailable, enabled as routeOn(?:, listRelays)? \} from '\/private-route\.js\?cb=[A-Za-z0-9_-]+';/);
   assert.match(page, /const timedFetch = \(url, init = \{\}\) => keeperFetch\(url,/);
   assert.match(page, /Object\.defineProperty\(timedFetch, 'sealed', \{ get: routeOn \}\)/);
   const wallets = [...page.matchAll(/makeEvmPoolWallet\(/g)].map((m) => {
@@ -158,6 +158,15 @@ await check('the prove page reads each forwarder\'s health, so its CSP names the
   for (const host of SHIPPED.forwarders) assert.ok(connect.includes(host), `prove/index.html does not allow ${host}`);
   assert.match(html, /id="fwd-box"/);
   assert.match(html, /community-runner\.mjs forward/);
+});
+
+await check('the pay page reads the wallet\'s side through the wallet-read gateway and the relay registry straight from a node', () => {
+  const page2 = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8');
+  assert.match(page2, /const rpcApart = async \(c\) => \{[^}]*jsonRpc\(\[\.\.\.c\.rpc\]\.reverse\(\), walletRpcFetch\(c\.chainId\)\)/, 'rpcApart goes to the wallet-read gateway');
+  assert.match(page2, /const rpcRegistry = async \(c\) => \{[^}]*jsonRpc\(\[\.\.\.c\.rpc\]\.reverse\(\)\)/, 'the registry reader has no route');
+  assert.match(page2, /openRelays\(\{[\s\S]{0,80}rpc = await rpcRegistry\(CHAINS\[0\]\)|rpc = await rpcRegistry\(CHAINS\[0\]\)/, 'the registry is read by rpcRegistry');
+  assert.ok(!/rpc = await rpcApart\(CHAINS\[0\]\);\s*\n\s*const real/.test(page2), 'and not by the wallet reader');
+  assert.match(SHIPPED.rpc.gateway, /^0[23][0-9a-f]{64}$/); assert.notEqual(SHIPPED.rpc.gateway, SHIPPED.gateway, 'its own key, not the relay\'s');
 });
 
 console.log(`\n${n} checks passed`);
