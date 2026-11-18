@@ -427,7 +427,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <p class="lead">Every proof is paid in PROVE, Succinct’s prover token, from one prover account. About 0.4 PROVE pays for one proof. PROVE sent there is used within a few minutes, or at the next half-hourly top-up when under 2 PROVE.</p>
         <div class="seg" role="group" aria-label="Pay with"><button type="button" data-pay="prove" aria-pressed="true">Send PROVE</button><button type="button" data-pay="eth" aria-pressed="false">Pay with ETH</button></div>
         <div class="lbl2"><label for="pv-amt" id="pv-lbl">PROVE to send</label><span><span id="pv-bal"></span> <button class="linkbtn" id="pv-max" type="button" hidden>Max</button></span></div>
-        <div class="amt"><input id="pv-amt" inputmode="decimal" placeholder="0.0" autocomplete="off" aria-describedby="pv-quote"><span class="u" id="pv-unit">PROVE</span></div>
+        <div class="amt"><input id="pv-amt" inputmode="decimal" placeholder="0.0" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-describedby="pv-quote"><span class="u" id="pv-unit">PROVE</span></div>
         <div class="rows" id="pv-quote"></div>
         <button class="btn" id="pv-go" type="button">Connect wallet</button>
         <div class="status" id="pv-status" role="status"></div>

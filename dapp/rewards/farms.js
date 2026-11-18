@@ -309,13 +309,13 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
       // the page's own card: its farm, the first side's amount, the second at the pool's ratio, one press
       const mx = tm && D.notesOk ? maxJoin(pool, tm) : 0n;
       return `<div class="lbl"><span>${esc(tm?.tkA || 'tETH')}, private</span>${mx > 0n ? `<button class="linkbtn" type="button" data-pf="max" title="The most both sides cover, from your private balance">Max ${esc(units8(mx))}</button>` : ''}</div>
-        <div class="amt"><input id="pf-a" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${esc(tm?.tkA || 'tETH')} to put in" value="${esc(f.a || '')}"${D.busy ? ' disabled' : ''}><span class="u">${esc(tm?.tkA || 'tETH')}</span></div>
+        <div class="amt"><input id="pf-a" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${esc(tm?.tkA || 'tETH')} to put in" value="${esc(f.a || '')}"${D.busy ? ' disabled' : ''}><span class="u">${esc(tm?.tkA || 'tETH')}</span></div>
         <div class="fm-rcpt" id="pf-info">${joinInfo(pool, tm, a) || '<p class="note">The second side is worked out at the pool’s ratio.</p>'}</div>
         <button class="btn" type="button" data-pf="join"${D.busy || !tm || short ? ' disabled' : ''}>${D.busy === 'join' ? 'Adding…' : `Add both and farm`}</button>`;
     }
     return `<details class="pf-join"${f.open || f.a ? ' open' : ''}><summary>Join a private farm</summary>
       <dl class="kv"><div><dt>Farm</dt><dd><select id="pf-pool" aria-label="Farm to join"${D.busy ? ' disabled' : ''}>${fs.map((p) => `<option value="${esc(String(p.pid))}"${String(p.pid) === pid ? ' selected' : ''}>${esc(name(p))}</option>`).join('')}</select></dd></div>
-      <div><dt>${esc(tm?.tkA || 'First side')}</dt><dd><input id="pf-a" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${esc(tm?.tkA || 'First side')} to put in" value="${esc(f.a || '')}"${D.busy ? ' disabled' : ''}></dd></div></dl>
+      <div><dt>${esc(tm?.tkA || 'First side')}</dt><dd><input id="pf-a" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${esc(tm?.tkA || 'First side')} to put in" value="${esc(f.a || '')}"${D.busy ? ' disabled' : ''}></dd></div></dl>
       <div id="pf-info">${joinInfo(pool, tm, a)}</div>
       <div class="acts"><button type="button" data-pf="join"${D.busy || !tm || short ? ' disabled' : ''}>${D.busy === 'join' ? 'Adding…' : 'Add and farm'}</button><a href="/#farm/private-${esc(pid)}">With one side only</a></div>
     </details>`;

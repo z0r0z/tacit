@@ -362,7 +362,7 @@ function paintStation() {
 // ── the TAC/ETH farm: the Precision farm's form, with amounts a press away under its ETH field ──
 let pubP = null, pubUi = null;
 function mountPublic() {
-  return pubP ||= Promise.all([import('/trade/farm.js?cb=017e9b13'), import('/evm-trade-venues.js?cb=196b14fb')]).then(([{ mountFarm }, E]) => {
+  return pubP ||= Promise.all([import('/trade/farm.js?cb=431619ca'), import('/evm-trade-venues.js?cb=196b14fb')]).then(([{ mountFarm }, E]) => {
     const ethCall = (to, data, block = 'latest', o = {}) => rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: `0x${BigInt(o.value).toString(16)}` } : {}) }, block]);
     const batch = async (calls) => E._internal.decAggregate3(await ethCall(E.MULTICALL3, E._internal.encAggregate3(calls)), calls.length);
     const host = $('#farm-host');
@@ -542,7 +542,7 @@ function paintQuote() {
   // a pool this thin takes a real swap at this size: the other way in swaps nothing, and the links say where the other coin comes from
   const skip = q.cost >= 5 && bothOk(f) ? `<p class="note">Skip the swap: <button class="linkbtn" type="button" data-alt="both">add the ${esc(f.name.split(' / ')[0] || 'tETH')} and ${esc(other)} you already hold</button>${GET[other] ? `, or get ${esc(other)} first.</p>${getRow(other)}` : '.</p>'}` : '';
   // with no market price to check against (its read failed), the pool's own price is all there is: said, and held to a tick
-  const ack = q.cost >= 30 ? `<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this deposit to the pool’s price.</span><input id="pz-ack" inputmode="numeric" autocomplete="off" aria-label="Type ${n} to accept" value="${Z.ack === key ? n : ''}"></label>`
+  const ack = q.cost >= 30 ? `<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this deposit to the pool’s price.</span><input id="pz-ack" inputmode="numeric" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Type ${n} to accept" value="${Z.ack === key ? n : ''}"></label>`
     : q.cost >= 15 ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>I accept losing about ${n}% of this deposit to the pool’s price.</span></label>`
     : !q.checked ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>The market’s price for ${esc(other)} could not be read, so this pool’s price is not checked against it. I accept that.</span></label>` : '';
   rcpt.innerHTML = (f.live ? row('Earns about', `${tacTxt(q.day)} TAC a day${dayUsd ? ` · ${dayUsd}` : ''}`) + row('APR', q.apr == null ? '—' : aprText(q.apr)) : '')
@@ -792,7 +792,7 @@ $('#pz-loose').addEventListener('click', async (e) => {
 
 // the key's positions in the private farms: the rewards page's panel, on this page's key
 function mountMine() {
-  return mineP ||= import('/rewards/farms.js?cb=adaa38f2').then((m) => {
+  return mineP ||= import('/rewards/farms.js?cb=12158990').then((m) => {
     mineUi = m.mountFarms($('#pf-mine'), { pick: pickProvider, session: key, wallet, W, connect: () => connect.connect(), program: () => S.prog,
       names: () => new Map(S.priv.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = S.priv.find((x) => String(x.pid) === String(pid))?.icons; return icons ? pairIcons(icons) : ''; },
       onRead: (list) => { S.mine = new Map(list.map((p) => [Number(p.pid), p])); paint(); },

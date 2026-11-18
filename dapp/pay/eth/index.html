@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yWlKyvz0zVWlZ4u0YBwgPi0JPPOK7POLQB9X0ngVpqM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-IOFxOzi2B7utjlk5ly1xJScazqe7sluXvj6m/LLmi6g=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -2743,7 +2743,7 @@ const clearDraft = (...ids) => { for (const id of ids) { delete DRAFT[id]; const
 const dropAmounts = () => { delete DRAFT['f-amt']; delete DRAFT['f-ramt']; const r = REQ.v; if (r && !r.paid && r.amount && r.tok === S.tok) DRAFT['f-amt'] = r.tok ? plainOf(r.amount, r.tok.dec) : plain(r.amount); };
 const amountField = (id, label, extra = '') => html`
   <div class="lbl"><span>${label}</span>${extra}</div>
-  <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${label}"><span class="u">${ethIcon}ETH</span></div>`;
+  <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${label}"><span class="u">${ethIcon}ETH</span></div>`;
 // an address in a row the reader checks: short, with every character still in the page (find, copy) and a tap to open it
 const viewAddr = (a, n = 4) => new Raw(addrView(a, n, /^tacit1/.test(a) ? 10 + n : n + 2));
 const kvRow = (k, v, cls = '') => html`<div class="kv"><span>${k}</span><b class="num ${cls}">${v}</b></div>`;
@@ -2987,7 +2987,7 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=842845f6');
+    const m = await import('/fixed-pool-pay.js?cb=54a0cb17');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -3004,7 +3004,7 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=842845f6');
+    const m = await import('/fixed-pool-pay.js?cb=54a0cb17');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
@@ -3027,7 +3027,7 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=842845f6');
+    const m = await import('/fixed-pool-pay.js?cb=54a0cb17');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -3048,7 +3048,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=842845f6');
+    const m = await import('/fixed-pool-pay.js?cb=54a0cb17');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -3118,7 +3118,7 @@ function formDeposit(f) {
       ${amountField('f-damt', 'Amount', S.wallet ? html`<button type="button" id="f-max" disabled title="Reading your wallet’s balance on ${c.full}">Wallet <span id="f-wb" class="num"><span class="sk" style="--w:5ch"></span></span> ETH</button>` : html`<button type="button" id="f-conn">Connect wallet</button>`)}
       <details class="else"${DRAFT['f-dto'] ? ' open' : ''}><summary class="more" style="cursor:pointer">Deposit to someone else</summary>
         <div class="lbl"><span>To</span><span>a name or an address</span></div>
-        <div class="amt text"><input id="f-dto" placeholder="A name or an address" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Deposit to"></div>
+        <div class="amt text"><input id="f-dto" placeholder="A name or an address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Deposit to"></div>
       </details>
       ${LARGE_ON && c.chainId === 1 ? html`<div id="lg-split"></div>` : ''}
       <div class="rcpt" id="f-rcpt" role="status" hidden></div>
@@ -3327,8 +3327,8 @@ function formSend(f) {
   mount(f, html`
     ${ppl.length ? html`<div class="people">${ppl.map((p) => html`<span class="pchip"><button type="button" data-person="${p.to}">${p.name}</button><button type="button" data-unperson="${p.to}" aria-label="Forget ${p.name}">×</button></span>`)}</div>` : ''}
     <div class="lbl"><span>To</span><button type="button" id="f-bylink">No address? Pay by link</button></div>
-    <div class="amt text"><input id="f-to" placeholder="Address or name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient"><button class="link" type="button" id="f-paste">paste</button></div>
-    <div class="save" id="f-save" hidden><input id="f-pname" maxlength="24" placeholder="Save as… a name only you see" autocomplete="off" aria-label="A name for this recipient"><button class="link" type="button" id="f-psave">save</button></div>
+    <div class="amt text"><input id="f-to" placeholder="Address or name" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Recipient"><button class="link" type="button" id="f-paste">paste</button></div>
+    <div class="save" id="f-save" hidden><input id="f-pname" maxlength="24" placeholder="Save as… a name only you see" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="A name for this recipient"><button class="link" type="button" id="f-psave">save</button></div>
     ${amountField('f-amt', 'Amount', html`<button type="button" id="f-max">Max</button>`)}
     ${routeSeg(tab, quoteFee(c))}
     <div class="rcpt" id="f-rcpt" role="status" hidden></div>
@@ -3495,7 +3495,7 @@ function formLink(f) {
     <p class="note lead">Whoever opens the link takes the ETH to any wallet, with no network fee, or keeps it private.</p>
     ${amountField('f-gamt', 'They get', html`<button type="button" id="f-max">Max</button>`)}
     <div class="lbl"><span>What it’s for (optional)</span></div>
-    <div class="amt text"><input id="f-gfor" maxlength="60" placeholder="Dinner, rent, a gift…" autocomplete="off" aria-label="What it is for"></div>
+    <div class="amt text"><input id="f-gfor" maxlength="60" placeholder="Dinner, rent, a gift…" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="What it is for"></div>
     ${routeSeg(tab, quoteFee(c))}
     <div class="rcpt" id="f-rcpt" role="status" hidden></div>
     <button class="btn" type="button" id="f-go" aria-describedby="f-rcpt" disabled>Create payment link</button>
@@ -3737,7 +3737,7 @@ function formWithdraw(f) {
       ${chainShown(CHAINS[2]) ? html`<button type="button" role="tab" id="dest-4663" data-dest="4663" aria-selected="${l2?.chainId === 4663 ? 'true' : 'false'}" tabindex="${l2?.chainId === 4663 ? '0' : '-1'}" aria-label="Your Robinhood Chain balance" title="Your Robinhood Chain balance">${cname(CHAINS[2], true)}</button>` : ''}
     </div>` : ''}
     ${l2 ? '' : html`<div class="lbl"><span>To</span>${S.wallet ? html`<button type="button" id="f-me">My wallet</button>` : ''}</div>
-      <div class="amt text"><input id="f-wto" placeholder="0x… a fresh address" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient address"></div>`}
+      <div class="amt text"><input id="f-wto" placeholder="0x… a fresh address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Recipient address"></div>`}
     ${amountField('f-wamt', 'Amount', html`<button type="button" id="f-max">Max</button>`)}
     ${l2 ? '' : routeSeg(tab, quoteFee(c))}
     <div class="rcpt" id="f-rcpt" role="status" hidden></div>
@@ -3960,9 +3960,9 @@ function formReceive(f) {
     <div class="blk"><div class="lbl"><span>Get paid</span><span>anyone can pay, from any wallet</span></div>
       ${amountField('f-ramt', 'Amount (optional)')}
       <div class="lbl"><span>What it’s for (optional)</span></div>
-      <div class="amt text"><input id="f-rfor" maxlength="60" placeholder="Dinner, rent, invoice 42…" autocomplete="off" aria-label="What it is for"></div>
+      <div class="amt text"><input id="f-rfor" maxlength="60" placeholder="Dinner, rent, invoice 42…" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="What it is for"></div>
       <div class="lbl"><span>Your name in the link (optional)</span><span>keeps it short</span></div>
-      <div class="amt text"><input id="f-rname" placeholder="you.wei" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Your name in the link"></div>
+      <div class="amt text"><input id="f-rname" placeholder="you.wei" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Your name in the link"></div>
       <p class="note" id="f-rnote" role="status" hidden></p>
       <div class="qrbox" id="f-qr"${paid ? html` style="opacity:.35"` : ''}></div>
       ${paid ? html`<p class="note ${paid.state === 'in' ? 'ok' : ''}" role="status">${paid.state === 'in' ? '' : html`<span class="spin" aria-hidden="true"></span>`}Paid${paid.v != null ? ` · ${eth(paid.v)} ETH` : ''} on ${cname(paid.c)} · ${paid.state === 'in' ? 'in your private balance' : waits ? 'waiting at its address: take it in under Deposit → From an exchange' : 'moving into your private balance'}</p>
@@ -4119,7 +4119,7 @@ function drawReq() {
     <div class="req-m">to <b class="nw">${viewAddr(r.bp, 8)}</b>${isNameReq(r) ? html` → ${r.rbp ? html`<b class="nw">${viewAddr(r.rbp, 8)}</b>` : 'looking it up…'}` : ''} on ${cname(r.paid?.c || c)}${r.note ? html` · “${r.note}”` : ''}</div>
     ${isNameReq(r) && !r.rid ? '' : html`<div class="req-m">ID <b class="num nw">${r.rid || addressId(r.bp)}</b> · they see the same ID under their Tacit address</div>`}
     ${own ? html`<p class="note">This is your own request. Share its link or QR code from Receive.</p>` : r.paid ? '' : html`
-      ${!r.amount ? html`<div class="amt act"><input id="req-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount"><span class="u">${ethIcon}ETH</span></div>` : ''}
+      ${!r.amount ? html`<div class="amt act"><input id="req-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount"><span class="u">${ethIcon}ETH</span></div>` : ''}
       ${held || r.state === 'confirm' || r.state === 'proving' ? '' : html`<div class="row2">${privFirst || used ? html`<button class="btn" type="button" id="req-priv"${used ? html` style="grid-column:1 / -1"` : ''}>Pay privately</button>` : ''}${walletBtn}${privFirst || used ? '' : html`<button class="btn ghost" type="button" id="req-priv">Pay privately</button>`}</div>`}
       ${used ? html`<p class="note warn">${BOX_USED}</p>` : ''}
       <p class="note">${r.n && r.ns ? 'From a wallet: your address and the amount show on chain, as a payment to their deposit address.' : 'From a wallet: your address and the amount show on chain; who you paid does not. Proved on this device first (a one-time download).'} It earns you TAC points. Privately, from your own private ETH: nothing on chain links you to them.</p>`}`);
@@ -4544,7 +4544,7 @@ function drawGift() {
     : fee != null && b <= fee ? html`<p class="note err">This link holds ${exact(b)} ETH, less than the relay’s fee of ${fmt(fee, 18, 6)} ETH, so it cannot be taken. Its sender can take it back.</p>`
     : html`
       <div class="lbl"><span>Take it to your wallet</span>${S.wallet ? html`<button type="button" id="gift-me">My wallet</button>` : ''}</div>
-      <div class="amt text act"><input id="gift-to" placeholder="0x… any address of yours" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Your address" ${GIFT.busy ? 'disabled' : ''}></div>
+      <div class="amt text act"><input id="gift-to" placeholder="0x… any address of yours" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Your address" ${GIFT.busy ? 'disabled' : ''}></div>
       <p class="note err" id="gift-sum" role="alert" hidden>${SUM_MSG}</p>
       <button class="btn" type="button" id="gift-take" disabled>Take it</button>
       <p class="note">${fee != null ? `No network fee to pay: the relay’s fee of ${fmt(fee, 18, 6)} ETH came with the link.` : 'Waiting for the relay…'} Proved on this device first.</p>
@@ -4604,7 +4604,7 @@ function drawProof() {
   mount($('#proof-body'), html`
     <div class="lbl"><span>Payment proof</span><button class="link" type="button" id="pf-x">dismiss</button></div>
     <div class="req-m">A private payment on ${cname(p.chain)} in ${txLink(p.chain, p.tx)}. Enter who it was for to check it.</div>
-    <div class="amt text act"><input id="pf-to" placeholder="Address or name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient"><button class="link" type="button" id="pf-go">check</button></div>`);
+    <div class="amt text act"><input id="pf-to" placeholder="Address or name" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Recipient"><button class="link" type="button" id="pf-go">check</button></div>`);
   if (typed) $('#pf-to').value = typed;
   $('#pf-x').onclick = () => { leaveBar(p.src); PROOF.v = null; PROOF.res = null; paintProof(); };
   const go = () => checkProof($('#pf-to').value.trim());
@@ -4873,7 +4873,7 @@ async function tokAct(btn, fn) {
 }
 const tokAmountField = (id, label, t, extra = '') => html`
   <div class="lbl"><span>${label}</span>${extra}</div>
-  <div class="amt"><input id="${id}" inputmode="decimal" data-dec="${t.dec ?? 18}" placeholder="0.00" autocomplete="off" aria-label="${label}"><span class="u">${tokIcon(t)}${t.sym}</span></div>`;
+  <div class="amt"><input id="${id}" inputmode="decimal" data-dec="${t.dec ?? 18}" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${label}"><span class="u">${tokIcon(t)}${t.sym}</span></div>`;
 // A spend goes through the relay, its fee in the token out of the private balance, or from the wallet (no relay fee, the wallet seen as sender).
 const tokRelay = (t) => !TK[t.id].self && !!t.keeper;
 const tokFee = (t) => { const q = TK[t.id].quote; return !tokRelay(t) ? 0n : q?.fee != null && q.fee !== '' ? BigInt(q.fee) : null; };
@@ -4945,7 +4945,7 @@ function tokDeposit(f, t) {
 }
 function tokSend(f, t) {
   mount(f, html`<div class="lbl"><span>To</span></div>
-    <div class="amt text"><input id="f-to" placeholder="tacit1…, name.wei or bp1…" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient"></div>
+    <div class="amt text"><input id="f-to" placeholder="tacit1…, name.wei or bp1…" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient"></div>
     ${tokAmountField('f-amt', 'Amount', t, html`<button type="button" id="f-max" hidden></button>`)}
     <div class="rcpt" id="f-rcpt" role="status" hidden></div>
     <button class="btn" type="button" id="f-go" disabled>Send privately</button>
@@ -4985,7 +4985,7 @@ function tokSend(f, t) {
 }
 function tokWithdraw(f, t) {
   mount(f, html`<div class="lbl"><span>To</span>${S.wallet ? html`<button type="button" id="f-me">My wallet</button>` : ''}</div>
-    <div class="amt text"><input id="f-to" placeholder="0x…" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>
+    <div class="amt text"><input id="f-to" placeholder="0x…" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>
     ${tokAmountField('f-amt', 'Amount', t, html`<button type="button" id="f-max" hidden></button>`)}
     <div class="rcpt" id="f-rcpt" role="status" hidden></div>
     <button class="btn" type="button" id="f-go" disabled>Withdraw</button>
@@ -5056,7 +5056,7 @@ function drawTokReq(r) {
     <div class="req-m">to <b class="nw">${viewAddr(r.bp, 8)}</b>${isNameReq(r) ? html` → ${r.rbp ? html`<b class="nw">${viewAddr(r.rbp, 8)}</b>` : 'looking it up…'}` : ''} in ${t.sym} on ${cname(t.chain)}${r.note ? html` · “${r.note}”` : ''}</div>
     ${isNameReq(r) && !r.rid ? '' : html`<div class="req-m">ID <b class="num nw">${r.rid || addressId(r.bp)}</b> · they see the same ID under their Tacit address</div>`}
     ${own ? html`<p class="note">This is your own request. Share its link or QR code from Receive.</p>` : r.paid ? '' : html`
-      ${!r.amount ? html`<div class="amt act"><input id="req-amt" inputmode="decimal" data-dec="${t.dec ?? 18}" placeholder="0.00" autocomplete="off" aria-label="Amount"><span class="u">${tokIcon(t)}${t.sym}</span></div>` : ''}
+      ${!r.amount ? html`<div class="amt act"><input id="req-amt" inputmode="decimal" data-dec="${t.dec ?? 18}" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount"><span class="u">${tokIcon(t)}${t.sym}</span></div>` : ''}
       ${held || r.state === 'proving' ? '' : html`<div class="row2"><button class="btn${privFirst ? '' : ' ghost'}" type="button" id="req-priv">Pay privately</button><button class="btn${privFirst ? ' ghost' : ''}" type="button" id="req-wallet">Pay from a wallet</button></div>`}
       <p class="note">Privately, from your own private ${t.sym}: nothing on chain links you to them. From a wallet: your address and the amount show on chain; who you paid does not. Proved on this device first.</p>`}`);
   sayLive($('#req-status'), own ? '' : r.paid ? html`${{

@@ -176,19 +176,19 @@ function createMarket(host, ctx) {
             <p class="bm-mode-note" data-k="mode-note"></p>
             <label class="bm-field bm-field-price" data-show="limit">
               <span class="bm-label">Price <em>sats per ${T}</em></span>
-              <span class="bm-inputrow"><input data-k="limit-price" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="Limit price in sats per ${T}"></span>
+              <span class="bm-inputrow"><input data-k="limit-price" inputmode="decimal" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" placeholder="0" aria-label="Limit price in sats per ${T}"></span>
               <span class="bm-pricechips" data-k="pricechips"></span>
             </label>
             <label class="bm-field">
               <span class="bm-label" data-k="amount-label">Amount</span>
               <span class="bm-inputrow">
-                <input data-k="amount" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="Amount">
+                <input data-k="amount" inputmode="decimal" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" placeholder="0" aria-label="Amount">
                 <button type="button" class="bm-unit" data-k="unit" data-act="unit"></button>
               </span>
             </label>
             <label class="bm-field" data-show="limit">
               <span class="bm-label">Total <em>sats</em></span>
-              <span class="bm-inputrow"><input data-k="total" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Total in sats"><span class="bm-unit bm-unit-static">${ctx.icons?.btc || ''}sats</span></span>
+              <span class="bm-inputrow"><input data-k="total" inputmode="numeric" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" placeholder="0" aria-label="Total in sats"><span class="bm-unit bm-unit-static">${ctx.icons?.btc || ''}sats</span></span>
             </label>
             <div class="bm-chips" data-k="chips"></div>
             <div class="bm-bal" data-k="bal"></div>

@@ -549,7 +549,7 @@ export function attach(env) {
     ask.innerHTML = `<div class="lbl"><span>Note</span><span></span></div>
       <div class="amt text"><textarea id="lg-note" rows="3" placeholder="tornado-eth-…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Note" style="width:100%;font:inherit;resize:vertical"></textarea></div>
       <div class="lbl"><span>Send to</span><span>empty: your own deposit address</span></div>
-      <div class="amt text"><input id="lg-pto" placeholder="Empty: your deposit address. Or an address, or a name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Send to"></div>
+      <div class="amt text"><input id="lg-pto" placeholder="Empty: your deposit address. Or an address, or a name" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Send to"></div>
       <p class="note">The note stays in this page. Nothing here is signed by your wallet.</p>
       <div style="display:flex;gap:8px"><button class="btn" type="button" id="lg-pgo" style="margin-top:6px">Withdraw</button><button class="btn ghost" type="button" id="lg-pno" style="margin-top:6px">Cancel</button></div>`;
     ask.querySelector('#lg-pno').onclick = closeAsk;
@@ -567,7 +567,7 @@ export function attach(env) {
     const ask = notesHost.querySelector('#lg-ask');
     ask.hidden = false;
     ask.innerHTML = `<div class="lbl"><span>Withdraw to</span><span></span></div>
-      <div class="amt text"><input id="lg-to" placeholder="0x… or a name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Withdraw to"></div>
+      <div class="amt text"><input id="lg-to" placeholder="0x… or a name" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Withdraw to"></div>
       <div style="display:flex;gap:8px"><button class="btn" type="button" id="lg-out" style="margin-top:6px">Withdraw</button><button class="btn ghost" type="button" id="lg-no" style="margin-top:6px">Cancel</button></div>`;
     ask.querySelector('#lg-no').onclick = closeAsk;
     const go = ask.querySelector('#lg-out');
@@ -743,7 +743,7 @@ export function attachIntake(env) {
     host.innerHTML = `<details class="blk" style="margin-top:18px;padding-top:12px;border-top:1px solid var(--hair)"${st.open ? ' open' : ''}>
       <summary style="cursor:pointer">Make whole notes from your private balance</summary>
       <div class="lbl" style="margin-top:10px"><span>Into whole notes</span><span><label>Sent by <select id="li-via" aria-label="Who sends it"><option value="relay"${st.via === 'relay' ? ' selected' : ''}>the relay</option><option value="wallet"${st.via === 'wallet' ? ' selected' : ''}>my wallet</option></select></label></span></div>
-      <div class="amt text"><input id="li-amt" inputmode="decimal" placeholder="ETH to move into notes" autocomplete="off" aria-label="ETH to move into notes" value="${esc(st.amount)}"></div>
+      <div class="amt text"><input id="li-amt" inputmode="decimal" placeholder="ETH to move into notes" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="ETH to move into notes" value="${esc(st.amount)}"></div>
       ${body}
       ${st.feeErr && st.via === 'wallet' ? `<p class="note">The relay cannot send this one (${esc(st.feeErr.replace(/^[A-Z](?![A-Z])/, (c) => c.toLowerCase()))}), so your wallet does.</p>` : ''}
       <p class="note">Leave notes in the pool a while: the longer they sit, the better they blend in.</p>

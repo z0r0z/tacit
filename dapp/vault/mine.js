@@ -338,7 +338,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
       <div class="lbl"><span>cBTC to put up</span></div>
       <div class="sel">${tk('cbtc')}<select id="bm-note" aria-label="cBTC note to put up"${off()}>${notes.map((x) => `<option value="${esc(noteId(x))}"${x === n ? ' selected' : ''}>${esc(btcTxt(x.value))} cBTC</option>`).join('')}</select></div>
       <div class="lbl"><span>cUSD to borrow</span></div>
-      <div class="amt"><input id="bm-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="cUSD to borrow" value="${esc(f.amt || '')}"${off()}><span class="u">${tk('cusd')}cUSD</span></div>
+      <div class="amt"><input id="bm-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="cUSD to borrow" value="${esc(f.amt || '')}"${off()}><span class="u">${tk('cusd')}cUSD</span></div>
       ${chips.length ? `<div class="lbl"><span>Collateral ratio</span></div><div class="chips bm-chips" role="group" aria-label="Collateral ratio">${chips.map(([r, v]) => `<button type="button" data-mine="ratio" data-v="${v}" aria-label="Borrow ${v} cUSD, a ${r}% collateral ratio"${off()}>${r}%</button>`).join('')}</div>` : ''}
       <p class="hint bm-health" id="bm-health">${healthHtml(n, f.amt)}</p>
       ${max ? `<p class="hint">Up to ${esc(max.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))} cUSD at the ${esc(String(e.ratio))}% floor.${e.liq ? ` A loan can be liquidated below ${esc(String(e.liq))}%.` : ''}</p>` : ''}
@@ -356,7 +356,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
       <div class="bm-addr"><code>${esc(d.addr)}</code></div>
       ${D.form.qr ? `<div class="bm-qr" data-addr="${esc(d.addr)}"></div>` : ''}
       <div class="lbl"><span>BTC to lock</span>${most >= 10000n ? `<button class="linkbtn" type="button" data-mine="lockmax" data-v="${esc(plain(most, 8))}"${off()}>Up to ${esc(plain(most, 8))} · Max</button>` : ''}</div>
-      <div class="amt"><input id="bm-lock" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="BTC to lock" value="${esc(D.form.lock || '')}"${off()}><span class="u">${tk('btc')}BTC</span></div>
+      <div class="amt"><input id="bm-lock" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="BTC to lock" value="${esc(D.form.lock || '')}"${off()}><span class="u">${tk('btc')}BTC</span></div>
       <div class="rows">
         <div class="kv"><span>Bond</span><b class="num" id="bm-bond">${esc(bondLine())}</b></div>
         <div class="kv"><span>At the address</span><b class="num">${esc(btcTxt(d.sats))} BTC${d.pending > 0n ? `<small>${esc(btcTxt(d.pending))} on its way</small>` : ''}</b></div>

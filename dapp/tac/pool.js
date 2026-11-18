@@ -712,7 +712,7 @@ export function makeTacPool(ctx) {
   };
 
   const amtRow = (id, label, maxId) => html`<div class="lbl"><label for="${id}">${label}</label><button type="button" id="${maxId}">Max</button></div>
-    <div class="amt"><input id="${id}" inputmode="decimal" autocomplete="off" placeholder="0.00"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
+    <div class="amt"><input id="${id}" inputmode="decimal" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" placeholder="0.00"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
     <div class="tp-sats" id="${id.replace('-amt', '-sats')}"></div>`;
   function view() {
     return html`<div class="seg sub" role="tablist" aria-label="TAC in the Bitcoin pool">${TABS.map(([k, t]) => html`<button type="button" role="tab" id="tp-t-${k}" aria-controls="tp-p-${k}" aria-selected="false" tabindex="-1" data-tp="${k}">${t}</button>`)}</div>
@@ -732,7 +732,7 @@ export function makeTacPool(ctx) {
 
     <div id="tp-p-send" role="tabpanel" aria-labelledby="tp-t-send" hidden>
       <div class="lbl"><label for="tp-send-to">To</label></div>
-      <div class="amt text"><input id="tp-send-to" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="tacit1… or bp1…"></div>
+      <div class="amt text"><input id="tp-send-to" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" placeholder="tacit1… or bp1…"></div>
       ${amtRow('tp-send-amt', 'Amount', 'tp-send-max')}
       <div id="tp-send-comb" hidden></div>
       <button class="btn" type="button" id="tp-send-go">Send privately</button>
@@ -741,7 +741,7 @@ export function makeTacPool(ctx) {
       <p class="note">Anyone with the link can take it. Add a PIN if you share it in the open.</p>
       ${amtRow('tp-claim-amt', 'Amount', 'tp-claim-max')}
       <div class="lbl"><label for="tp-claim-pin">PIN, shared separately</label></div>
-      <div class="amt text"><input id="tp-claim-pin" autocomplete="off" inputmode="numeric" placeholder="none"></div>
+      <div class="amt text"><input id="tp-claim-pin" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" inputmode="numeric" placeholder="none"></div>
       <button class="btn ghost" type="button" id="tp-claim-go">Create a claim link</button>
       <div class="status" id="tp-st-claim-make" role="status"></div>
       <div id="tp-links" hidden>

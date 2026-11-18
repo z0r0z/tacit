@@ -47,7 +47,7 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
   host.innerHTML = `
     <div class="f" id="b-pay">
       <div class="fh"><span>From</span><span class="where"><svg class="tk xs" aria-hidden="true"><use href="#c-btc"/></svg>Bitcoin</span></div>
-      <div class="fm"><input class="amt" id="b-amt" inputmode="decimal" placeholder="0" autocomplete="off" spellcheck="false" aria-label="Amount to pay"><span class="coin" id="b-pay-coin"></span></div>
+      <div class="fm"><input class="amt" id="b-amt" inputmode="decimal" placeholder="0" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" aria-label="Amount to pay"><span class="coin" id="b-pay-coin"></span></div>
       <div class="ff"><span id="b-bal" class="num"></span><span class="quick" id="b-quick"></span></div>
     </div>
     <div class="mid"><button class="flip" id="b-flip" type="button" aria-label="Swap the two sides"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3v17m0 0-4-4m4 4 4-4M16 21V4m0 0-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>

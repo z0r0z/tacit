@@ -293,7 +293,7 @@ render.wallet = () => {
   wireSub(el, 'wal', (m) => { WAL.mode = m; keep($('#sheet-wallet'), render.wallet); });
   const f = $('#ac-form'), status = $('#ac-status');
   const amountField = (extra = '') => html`<div class="lbl"><span>Amount</span>${extra}</div>
-    <div class="amt"><input id="ac-mv" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH"><span class="u">${eth}ETH</span></div>`;
+    <div class="amt"><input id="ac-mv" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="ETH"><span class="u">${eth}ETH</span></div>`;
   if (WAL.mode === 'add') {
     mount(f, html`
       <div class="kv"><span>Address</span><b class="mono">${viewAddr(a.address, 10)}</b><button class="link" type="button" data-copy="${a.address}">copy</button></div>
@@ -307,9 +307,9 @@ render.wallet = () => {
       ${segSub('wala', WAL.asset, [['eth', 'ETH'], ['tac', 'TAC']])}
       ${tac ? '' : segSub('walc', String(chain), DEVICE_CHAINS.map((x) => [String(x.chainId), chainTab(x.chainId, x.name)]))}
       <div class="lbl"><span>To</span>${S.wallet ? html`<button type="button" id="ac-me">My wallet</button>` : ''}</div>
-      <div class="amt text"><input id="ac-to" placeholder="0x…" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>
+      <div class="amt text"><input id="ac-to" placeholder="0x…" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>
       ${tac ? html`<div class="lbl"><span>Amount</span><button type="button" id="ac-max">Max</button></div>
-        <div class="amt"><input id="ac-mv" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="TAC"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>`
+        <div class="amt"><input id="ac-mv" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="TAC"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>`
         : amountField(html`<button type="button" id="ac-max">Max</button>`)}
       <button class="btn" type="button" id="ac-go">Send from key address</button>`);
     wireSub(f, 'wala', (v) => { WAL.asset = v; WAL.all = false; keep($('#sheet-wallet'), render.wallet); });
@@ -400,7 +400,7 @@ function renderProve() {
       <li class="${credit == null || short_ ? 'step now' : 'step done'}"><span class="n">2</span><div><h3>Add PROVE</h3>
         ${segSub('sps', src, [['prove', 'PROVE from wallet'], ['eth', 'ETH from wallet'], ...(SP.held > 0n ? [['acct', 'PROVE in key address']] : [])])}
         <div class="lbl"><span>${src === 'eth' ? 'ETH to pay' : 'PROVE to add'}</span><button type="button" id="sp-max"><span id="sp-hold"></span></button></div>
-        <div class="amt"><input id="sp-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${unit} to ${src === 'eth' ? 'pay' : 'add'}"><span class="u">${unit}</span></div>
+        <div class="amt"><input id="sp-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${unit} to ${src === 'eth' ? 'pay' : 'add'}"><span class="u">${unit}</span></div>
         ${src === 'eth' ? sizeRow() : ''}
         <div class="rcpt" id="sp-rcpt" hidden></div>
         <button class="btn" type="button" id="sp-go" ${src !== 'acct' && !S.wallet ? '' : 'disabled'}>${src !== 'acct' && !S.wallet ? 'Connect wallet' : 'Add PROVE'}</button>
@@ -698,7 +698,7 @@ function v1Wrap(el, status) {
   mount(el, html`
     <div id="w-fund"></div>
     <div class="lbl"><span>Amount</span><button type="button" id="w-max">${payName()} <span id="w-bal"><span class="sk" style="--w:5ch"></span></span> ETH</button></div>
-    <div class="amt"><input id="w-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH to wrap"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
+    <div class="amt"><input id="w-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="ETH to wrap"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
     <div class="rcpt" id="w-rcpt" aria-live="polite" hidden></div>
     <button class="btn" type="button" id="w-go" disabled>Shield ETH</button>
     <p class="note">${ownNow(['wrap']) ? html`One transaction from ${your()} once it is proved ${devOn() ? 'on this computer' : 'with your own credit'}, so nothing waits in the pool meanwhile and there is no relay tip.` : html`One transaction from ${your()}. A small fee in it pays Tacit’s relay to do the privacy work.`}</p>
@@ -756,9 +756,9 @@ function v1Send(el, status) {
   const held = spendable('eth');
   mount(el, html`
     <div class="lbl"><span>To</span></div>
-    <div class="amt text"><input id="s-to" placeholder="tacit1… or name.wei" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient"></div>
+    <div class="amt text"><input id="s-to" placeholder="tacit1… or name.wei" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient"></div>
     <div class="lbl"><span>Amount</span><button type="button" id="s-max"${maxAria(`Private ${fmt(spendable('eth'), 8, 6)} tETH, use all`)}>${heldLabel('eth', 8, 6, 'tETH')}</button></div>
-    <div class="amt"><input id="s-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="tETH to send"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</span></div>
+    <div class="amt"><input id="s-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="tETH to send"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</span></div>
     <div class="rcpt" id="s-rcpt" aria-live="polite" hidden></div>
     <button class="btn" type="button" id="s-go" disabled>Send privately</button>
     <p class="note">The recipient claims it in their Tacit wallet; the claim’s relay fee comes out of the payment. If nobody claims it within 90 days, you can take it back.</p>`);
@@ -837,7 +837,7 @@ function v1Swap(el, status) {
     <div class="swp">
       <div class="lbl"><span>You pay</span><button type="button" id="sw-max">${heldLabel(from, 8, dp, unit)}</button></div>
       ${segSub('swf', from, SWAP_ASSETS.map(chip))}
-      <div class="amt"><input id="sw-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${unit} to swap"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-${icon}"/></svg>${unit}</span></div>
+      <div class="amt"><input id="sw-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${unit} to swap"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-${icon}"/></svg>${unit}</span></div>
       ${P.scan && !held && from === 'eth' && tethComing() ? (comingPoll('eth'), html`<div class="callout" data-coming><span>${COMING_TETH} The swap is ready once it lands.</span></div>`) : P.scan && !held ? html`<p class="note">No private ${unit} yet. ${from === 'eth' ? html`<button type="button" class="link" id="sw-first">Shield ETH first</button>` : html`<button type="button" class="link" id="sw-first">Pay with tETH</button>`}</p>` : ''}
       <button type="button" class="flip" id="sw-flip" aria-label="Pay with ${unitTo} instead"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3v17m0 0-4-4m4 4 4-4M16 21V4m0 0-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <div class="lbl"><span>You get</span><span>${heldLabel(to, 8, dpTo, unitTo)}</span></div>
@@ -931,9 +931,9 @@ function v1Out(el, status) {
   const held = spendable('eth');
   mount(el, html`
     <div class="lbl"><span>To</span><span><button type="button" id="o-dev">On this device</button> · <button type="button" id="o-me">${mine()}</button></span></div>
-    <div class="amt text"><input id="o-to" placeholder="0x… (a fresh address keeps it unlinked)" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>
+    <div class="amt text"><input id="o-to" placeholder="0x… (a fresh address keeps it unlinked)" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>
     <div class="lbl"><span>Amount</span><button type="button" id="o-max"${maxAria(`Private ${fmt(spendable('eth'), 8, 6)} tETH, use all`)}>${heldLabel('eth', 8, 6, 'tETH')}</button></div>
-    <div class="amt"><input id="o-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="tETH to withdraw"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</span></div>
+    <div class="amt"><input id="o-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="tETH to withdraw"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</span></div>
     <div class="rcpt" id="o-rcpt" aria-live="polite" hidden></div>
     <button class="btn" type="button" id="o-go" disabled>Withdraw ETH</button>`);
   const to = $('#o-to'), amt = $('#o-amt'), go = $('#o-go'), rc = $('#o-rcpt');
@@ -1082,7 +1082,7 @@ render.usdt = () => {
   const bal = US.bal, from = your();
   mount(f, html`
     <div class="lbl"><span>Shield USDT</span><button type="button" id="us-max">USDT in ${from} ${bal != null ? fmt(bal, 6, 2) : '…'}</button></div>
-    <div class="amt"><input id="us-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="USDT to make private"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-usdt"/></svg>USDT</span></div>
+    <div class="amt"><input id="us-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="USDT to make private"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-usdt"/></svg>USDT</span></div>
     <div class="rcpt" id="us-rcpt" hidden></div>
     <button class="btn" type="button" id="us-go" disabled>Shield</button>
     <p class="note">From ${from}, through Permit2: you approve exactly this amount and sign once. ${ownNow(['wrap']) ? `It is proved ${devOn() ? 'on this computer' : 'with your own credit'} first, so nothing waits in the pool.` : 'Tacit’s relay does the privacy work after.'} Private USDT can then be sent, swapped, bridged to Bitcoin or withdrawn.</p>`);
@@ -1240,7 +1240,7 @@ function renderDevice(el) {
   const warm = () => prover(provingNote).then(() => { if (!running('eth') && /^Getting the proving key/.test(status.textContent)) say(status, ''); }).catch(() => {});
   const amountField = (id, label, extra = '') => html`
     <div class="lbl"><span>${label}</span>${extra}</div>
-    <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${label}"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>`;
+    <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${label}"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>`;
   const walletRoute = () => DEV.self && !(DEV.mode === 'out' && c.chainId === 1 && DEV.dest !== 'addr' && DEV.dest !== 'v1');
   const destGas = () => (DEV.mode === 'out' && c.chainId === 1 && DEV.dest !== 'addr' ? (DEV.dest === 'v1' ? 700_000 : DEV.dest === '8453' ? 1_300_000 : 700_000) : null);
   const quoteNow = () => (walletRoute() ? null : destGas() ? DEV.gq[destGas()] : DEV.quote);
@@ -1289,7 +1289,7 @@ function renderDevice(el) {
   if (DEV.mode === 'deposit') {
     mount(f, html`<div id="d-fund"></div>${amountField('d-amt', 'Amount', html`<button type="button" id="d-max">${payName()} <span id="d-wb"><span class="sk" style="--w:5ch"></span></span> ETH</button>`)}
       <div class="lbl"><span>To</span><span>yourself, unless you name someone</span></div>
-      <div class="amt text"><input id="d-dto" placeholder="Yourself · or bp1…, tacit1… or name.wei" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Deposit to"></div>
+      <div class="amt text"><input id="d-dto" placeholder="Yourself · or bp1…, tacit1… or name.wei" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Deposit to"></div>
       <div class="rcpt" id="d-rcpt" hidden></div>
       <button class="btn" type="button" id="d-go" disabled>Deposit privately</button>
       <p class="note">Proved on this device, then sent from ${your()}: you pay the network fee and no relay fee. The deposit shows on chain; whose private balance it lands in does not.</p>
@@ -1361,7 +1361,7 @@ function renderDevice(el) {
     const dest = c.chainId === 1 ? DEV.dest : 'addr', l2 = DEVICE_CHAINS.find((x) => String(x.chainId) === dest);
     mount(f, html`${c.chainId === 1 ? segSub('dest', dest, [['addr', 'Address'], ['v1', 'Tacit pool'], ...DEVICE_CHAINS.filter((x) => x.chainId !== 1).map((x) => [String(x.chainId), chainTab(x.chainId, x.name)])]) : ''}
       ${dest === 'addr' ? html`<div class="lbl"><span>To</span><button type="button" id="d-me">${mine()}</button></div>
-        <div class="amt text"><input id="d-to" placeholder="0x… (a fresh address keeps it unlinked)" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>` : ''}
+        <div class="amt text"><input id="d-to" placeholder="0x… (a fresh address keeps it unlinked)" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>` : ''}
       ${amountField('d-amt', 'Amount', maxPriv)}
       <div class="rcpt" id="d-rcpt" hidden></div>
       <button class="btn" type="button" id="d-go" disabled>${dest === 'addr' ? 'Withdraw' : dest === 'v1' ? 'Move to the Tacit pool' : `Move to ${chainFull(l2.chainId)}`}</button>
@@ -1504,7 +1504,7 @@ function renderTokenPool(el) {
   const warm = () => prover(provingNote).then(() => { if (!running('eth') && /^Getting the proving key/.test(status.textContent)) say(status, ''); }).catch(() => {});
   const amountField = (id, label, extra = '') => html`
     <div class="lbl"><span>${label}</span>${extra}</div>
-    <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${label}"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#${t.icon}"/></svg>${t.sym}</span></div>`;
+    <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${label}"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#${t.icon}"/></svg>${t.sym}</span></div>`;
   const viaRelay = () => !!t.keeper && !TK.self;
   const quoteNow = () => (viaRelay() ? TK.quote : null);
   const relayFee = () => BigInt(quoteNow()?.fee || 0);
@@ -1557,7 +1557,7 @@ function renderTokenPool(el) {
   if (DEV.mode === 'deposit') {
     mount(f, html`<div id="d-fund"></div>${amountField('d-amt', 'Amount', html`<button type="button" id="d-max">${payName()} <span id="d-wb"><span class="sk" style="--w:5ch"></span></span> ${t.sym}</button>`)}
       <div class="lbl"><span>To</span><span>yourself, unless you name someone</span></div>
-      <div class="amt text"><input id="d-dto" placeholder="Yourself · or tacit1…, name.wei or bp1…" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Deposit to"></div>
+      <div class="amt text"><input id="d-dto" placeholder="Yourself · or tacit1…, name.wei or bp1…" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Deposit to"></div>
       <div class="rcpt" id="d-rcpt" hidden></div>
       <button class="btn" type="button" id="d-go" disabled>Deposit privately</button>
       <p class="note">Proved on this device and sent from ${your()}, which pays the network fee. A signature approves the ${t.sym} where it can, so no separate approval is sent. The deposit shows on chain; whose private balance it lands in does not.</p>`);
@@ -1617,7 +1617,7 @@ function renderTokenPool(el) {
     });
   } else if (DEV.mode === 'send') {
     mount(f, html`<div class="lbl"><span>To</span></div>
-      <div class="amt text"><input id="d-to" placeholder="tacit1…, name.wei or bp1…" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient"></div>
+      <div class="amt text"><input id="d-to" placeholder="tacit1…, name.wei or bp1…" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient"></div>
       ${amountField('d-amt', 'Amount', maxPriv)}
       <div class="rcpt" id="d-rcpt" hidden></div>
       <button class="btn" type="button" id="d-go" disabled>Send privately</button>
@@ -1657,7 +1657,7 @@ function renderTokenPool(el) {
     });
   } else if (DEV.mode === 'out') {
     mount(f, html`<div class="lbl"><span>To</span><button type="button" id="d-me">${mine()}</button></div>
-      <div class="amt text"><input id="d-to" placeholder="0x…" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>
+      <div class="amt text"><input id="d-to" placeholder="0x…" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient address"></div>
       ${amountField('d-amt', 'Amount', maxPriv)}
       <div class="rcpt" id="d-rcpt" hidden></div>
       <button class="btn" type="button" id="d-go" disabled>Withdraw</button>
@@ -1758,9 +1758,9 @@ function btcSendForm(f, status, b) {
   mount(f, html`
     ${held.length ? segSub('btca', BTC.asset, [['btc', 'BTC'], ...held.map((a) => [a.id, a.ticker])]) : ''}
     <div class="lbl"><span>To</span></div>
-    <div class="amt text"><input id="bt-to" placeholder="${token ? 'tacit1…, tcs1… or a name' : 'tacit1…, sp1…, bc1… or a name'}" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient"></div>
+    <div class="amt text"><input id="bt-to" placeholder="${token ? 'tacit1…, tcs1… or a name' : 'tacit1…, sp1…, bc1… or a name'}" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient"></div>
     <div class="lbl"><span>Amount</span>${token ? html`<button type="button" id="bt-max">${fmt(token.balance, dec, 8)} ${unit}</button>` : b ? html`<span>${fmt(b.sats + b.silent, 8, 8)} BTC</span>` : ''}</div>
-    <div class="amt"><input id="bt-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount"><span class="u">${token ? unit : html`<svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC`}</span></div>
+    <div class="amt"><input id="bt-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount"><span class="u">${token ? unit : html`<svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC`}</span></div>
     <div class="rcpt" id="bt-rcpt" hidden></div>
     <button class="btn" type="button" id="bt-go" disabled>Send ${unit}</button>
     ${BTC.share ? html`<div class="callout"><span>${BTC.share.kind === 'st' ? 'A shielded payment hides who received it.' : 'A silent payment leaves no reusable address on chain.'} Send them this link so their wallet finds it.</span><button class="btn ghost" type="button" data-copy="${BTC.share.url}">Copy link</button></div>` : ''}`);
@@ -1830,7 +1830,7 @@ function btcNotes(f, status, b) {
       return html`<div class="blk" data-bnasset="${a.id}">
         <div class="lbl"><span>${a.ticker}</span><span>${fmt(a.balance, a.decimals, 8)} in ${a.notes.length} note${a.notes.length === 1 ? '' : 's'}</span></div>
         ${a.notes.map((n) => noteLi(a, n))}
-        <div class="amt"><input id="bn-amt-${a.id}" data-bnamt="${a.id}" inputmode="decimal" placeholder="Amount to split off" autocomplete="off" aria-label="Amount to split off from the picked ${a.ticker} note"><span class="u">${a.ticker}</span></div>
+        <div class="amt"><input id="bn-amt-${a.id}" data-bnamt="${a.id}" inputmode="decimal" placeholder="Amount to split off" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount to split off from the picked ${a.ticker} note"><span class="u">${a.ticker}</span></div>
         <div class="brr-a"><button class="btn ghost" type="button" data-bnsplit="${a.id}" ${pick ? '' : 'disabled'}>Split</button>${ready.length > 1 ? html`<button class="btn ghost" type="button" data-bncombine="${a.id}">Combine ${Math.min(ready.length, NOTES_MAX)} notes</button>` : ''}${BTC_NOTE_ASSETS.some((x) => x.id === a.id && x.runtime) ? html`<button class="btn ghost" type="button" data-btcmarket-id="${a.id}">Buy or sell for sats</button>` : ''}</div>
       </div>`;
     }) : html`<p class="note">${b?.got >= 2 ? 'No notes at this key’s Bitcoin address yet.' : 'Reading your notes…'}</p>`}
@@ -1882,7 +1882,7 @@ function btcReceive(f, status, b) {
     ${keyRow('Public key', S.key.pubHex, 'Public key', 'The key both addresses are made from, for a Send box that asks for a key.')}
     ${keyRow('Silent payments', BTC.sp, 'Silent payment address', 'From any wallet that sends silent payments (BIP‑352).', { fold: 90, id: true })}
     <div class="lbl sep"><span>Got a payment link?</span></div>
-    <div class="amt text"><input id="bt-chk" placeholder="Payment link or transaction id" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Payment link"><button class="link" type="button" id="bt-chk-go">Check</button></div>
+    <div class="amt text"><input id="bt-chk" placeholder="Payment link or transaction id" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Payment link"><button class="link" type="button" id="bt-chk-go">Check</button></div>
     <p class="note">Silent and shielded payments are found from the link their sender shares. Shielded TAC is also found by a scan. <button class="link" type="button" id="bt-scan">Scan now</button></p>`);
   const pub = S.key.pubHex;
   if (!BTC.sp) withKey((t) => t.walletSilentPaymentAddress()).then((sp) => { if (S.key?.pubHex !== pub) return; BTC.sp = sp; if (f.isConnected) rerender('btc'); }).catch(() => {});
@@ -1982,7 +1982,7 @@ function leaderboard(connected) {
     ${PTS.day ? segSub('plv', day ? 'day' : 'all', [['all', 'All time'], ['day', 'Today']]) : ''}
     ${lb.length ? html`<ol class="ptl lb">${idx.map((i, k) => html`${k && i - idx[k - 1] > 1 ? html`<li class="gap" aria-hidden="true">⋯</li>` : ''}${line(lb[i], i)}`)}</ol>
     ${lb.length > idx.length ? html`<details class="lockmore ptlog"><summary>The whole board</summary>
-      <div class="amt text"><input id="pl-q" placeholder="Find an address" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Find an address in the board"></div>
+      <div class="amt text"><input id="pl-q" placeholder="Find an address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Find an address in the board"></div>
       <ol class="ptl lb" id="pl-all">${lb.map(line)}</ol><p class="note" id="pl-none" hidden>No address on the board matches.</p></details>` : ''}`
       : html`<p class="note">Nobody has points ${day ? 'yet today' : 'yet'}.</p>`}
     <p class="note">${day ? 'Each address’s share of today’s pot, as it stands. ' : ''}Read ${ago(PTS.at)}. <button class="link" type="button" data-retry="points">Refresh</button></p>`;
@@ -2101,7 +2101,7 @@ render.pts = () => {
   const look = () => {
     const L = PTS.look;
     return html`<div class="lbl"><span>Look up an address</span></div>
-      <form class="amt text" id="pl-look-f"><input id="pl-look" placeholder="0x…" value="${PTS.draft ?? L?.addr ?? ''}" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="An address to look up" aria-invalid="${L?.err ? 'true' : 'false'}"><span class="u"><button class="link" type="submit" ${L?.busy ? 'disabled' : ''}>${L?.busy ? 'Reading…' : 'Look up'}</button></span></form>
+      <form class="amt text" id="pl-look-f"><input id="pl-look" placeholder="0x…" value="${PTS.draft ?? L?.addr ?? ''}" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="An address to look up" aria-invalid="${L?.err ? 'true' : 'false'}"><span class="u"><button class="link" type="submit" ${L?.busy ? 'disabled' : ''}>${L?.busy ? 'Reading…' : 'Look up'}</button></span></form>
       ${L?.err ? html`<p class="note err" role="alert">${L.err}</p>` : L?.busy ? html`<div class="pt"><div class="bal"><div><div class="v"><span class="sk" style="--w:5ch"></span></div><div class="u">points · ${viewAddr(L.addr)}</div></div></div></div>` : L?.row ? card(L.row, -1, true) : ''}`;
   };
   mount(el, html`
@@ -2190,7 +2190,7 @@ async function weiPrice(label) {
 function weiForm(f, status) {
   if (!S.key) { mount(f, html`<p class="note">Open your Tacit wallet to register a name people can pay privately.</p>`); return; }
   mount(f, html`
-    <div class="amt text"><input id="wei-name" placeholder="yourname" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Name" value="${WEI.label}"><span class="u">.wei</span></div>
+    <div class="amt text"><input id="wei-name" placeholder="yourname" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Name" value="${WEI.label}"><span class="u">.wei</span></div>
     <div class="rcpt" id="wei-rcpt" hidden></div>
     <button class="btn" type="button" id="wei-go" disabled>Register</button>
     <p class="note">The name, the account that registers it and the Tacit address it publishes are all public, and linked to each other.</p>`);
@@ -2363,7 +2363,7 @@ function lpSendForm(box, x) {
   if (LPS.pid !== p.pid) Object.assign(LPS, { pid: p.pid, to: '', part: 'all' });
   let who = null, part = LPS.part, seq = 0;
   mount(box, html`
-    <div class="amt text"><input class="lps-to" placeholder="tacit1… or name.wei" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient"></div>
+    <div class="amt text"><input class="lps-to" placeholder="tacit1… or name.wei" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Recipient"></div>
     <div class="seg sub lps-part" role="radiogroup" aria-label="How much">${[['q', 'A quarter'], ['h', 'Half'], ['all', 'All']].map(([k, t]) => html`<button type="button" role="radio" data-lpp="${k}" aria-checked="${String(k === part)}">${t}</button>`)}</div>
     <div class="rcpt lps-rc" hidden></div>
     <button class="btn" type="button" disabled>Send privately</button>`);
@@ -2544,7 +2544,7 @@ function renderPrecision(el) {
       <div class="lbl"><span>Withdraw</span></div>
       ${segSub('pfp', FARM.outPct, [['25', '25%'], ['50', '50%'], ['100', 'All'], ['custom', 'Custom']])}
       ${FARM.outPct === 'custom' ? html`
-        <div class="amt"><input id="pf-wamt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount to withdraw, in ETH"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
+        <div class="amt"><input id="pf-wamt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount to withdraw, in ETH"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
         <p class="note">Counted in ETH at the pool’s price. Your stake is worth about ${fmt(stakeWorth, 18, 5)} ETH.</p>` : ''}
       ${segSub('pfr', FARM.outAs, [['both', 'ETH + TAC'], ['eth', 'As ETH'], ['tac', 'As TAC']])}
       <div class="rcpt" id="pf-out-rcpt" hidden></div>
@@ -2557,10 +2557,10 @@ function renderPrecision(el) {
     <div id="pf-fund"></div>
     ${withEth ? html`
       <div class="lbl"><span>ETH</span><button type="button" id="pf-max">${payName()} ${x.bal == null ? '—' : fmt(x.bal, 18, 4)} ETH</button></div>
-      <div class="amt"><input id="pf-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH to deposit"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>` : ''}
+      <div class="amt"><input id="pf-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="ETH to deposit"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>` : ''}
     ${withTac ? html`
       <div class="lbl"><span>TAC</span><button type="button" id="pf-tmax">${payName()} ${fmt(x.tac, 18, 2)} TAC</button></div>
-      <div class="amt"><input id="pf-tac" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="TAC to deposit"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>` : ''}
+      <div class="amt"><input id="pf-tac" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="TAC to deposit"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>` : ''}
     <div class="rcpt" id="pf-rcpt" hidden></div>
     <div id="pf-ack"></div>
     <button class="btn" type="button" id="pf-go" disabled>${{ eth: 'Farm with ETH', tac: 'Farm with TAC', pair: 'Farm with ETH + TAC' }[mode]}</button>
@@ -2867,7 +2867,7 @@ function farmZap(el, p, status, has, top) {
     <p class="note how">One transaction from ${your()}: about half is swapped to ${other}, both go in, and your share is farmed privately. <button class="link" type="button" data-join-get="private">Shield ETH first instead</button></p>
     <div id="sz-fund-${pid}"></div>
     <div class="lbl"><span>ETH</span><span id="sz-bal-${pid}"></span></div>
-    <div class="amt"><input id="sz-a-${pid}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH to zap into the farm"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
+    <div class="amt"><input id="sz-a-${pid}" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="ETH to zap into the farm"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
     ${S.key ? html`<div class="seg" id="sz-sizes-${pid}" role="group" aria-label="Sizes kept ready"></div>` : ''}
     <div class="rcpt" id="sz-rcpt-${pid}" hidden></div>
     <div id="sz-ack-${pid}"></div>
@@ -2965,7 +2965,7 @@ function farmJoin(el, p, status, has) {
     : `About half is swapped to ${unit[kO]} inside the pool, then both go into the farm: two steps when one note covers it, about a minute.`;
   const field = (k, id) => html`
     <div class="lbl"><span>${unit[k]}</span><span>Private ${fmt(spendable(k), 8, dp[k])} ${unit[k]}${inUse(k, 8, dp[k], unit[k])}</span></div>
-    <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${unit[k]} to add"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#${icon[k]}"/></svg>${unit[k]}</span></div>`;
+    <div class="amt"><input id="${id}" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${unit[k]} to add"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#${icon[k]}"/></svg>${unit[k]}</span></div>`;
   mount(el, html`${comingNote}
     <div class="lbl"><span>${has ? 'Add more' : 'Add and farm'}</span>${single || both ? html`<button type="button" id="sj-max-${pid}">Max</button>` : ''}</div>
     ${seg}
@@ -3173,7 +3173,7 @@ render.borrow = () => {
             <div class="kv"><span>Address</span><b class="mono">${viewAddr(st.addr, 8)}</b><button class="link" type="button" data-copy="${st.addr}">copy</button><button class="link" type="button" id="bw-qr-t" aria-expanded="${String(LOCK.qr === st.addr)}">${LOCK.qr === st.addr ? 'hide QR' : 'QR'}</button></div>
             ${LOCK.qr === st.addr ? html`<div class="keyqr" id="bw-qr"></div>` : ''}
             <div class="kv"><span>Balance</span><b>${st.sats == null ? '—' : html`${fmt(st.sats, 8, 8)} BTC${st.pendingSats ? html` <span class="mute">(${fmt(st.pendingSats, 8, 8)} unconfirmed)</span>` : ''}`}</b></div>
-            <div class="amt act"><input id="bw-amt" inputmode="decimal" placeholder="0.001" autocomplete="off" aria-label="BTC to lock"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</span></div>
+            <div class="amt act"><input id="bw-amt" inputmode="decimal" placeholder="0.001" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="BTC to lock"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</span></div>
             <div class="row2"><button class="btn ghost" type="button" id="bw-fund">Send from Bitcoin wallet</button><button class="btn" type="button" id="bw-lock">Lock BTC</button></div>
             <div class="status" role="status" id="bw-s1"></div>
             ${st.lockWaiting ? html`<p class="note err">A lock of yours is not all on Bitcoin yet. It is sent again on its own, every half minute while this is open.</p>` : ''}
@@ -3201,10 +3201,10 @@ render.borrow = () => {
       <div class="lbl"><span>Borrow cUSD</span>${heldSats > 0n && pubSats > 0n
         ? html`<span><button type="button" data-bh-src="priv" aria-pressed="${src === 'priv'}">Private ${fmt(heldSats, 8, 8)} cBTC</button> · <button type="button" data-bh-src="pub" aria-pressed="${src === 'pub'}">${fmt(pubSats, 8, 8)} tacBTC</button></span>`
         : html`<span>${src === 'pub' ? html`${fmt(pubSats, 8, 8)} tacBTC in ${your()}` : html`Private ${fmt(heldSats, 8, 8)} cBTC`}</span>`}</div>
-      <div class="amt act"><input id="bw-debt" inputmode="decimal" placeholder="${st.px ? plain(usdOf(dflt) / 2n / 10n ** 6n * 10n ** 6n, 8) : '0'}" autocomplete="off" aria-label="cUSD to borrow"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</span></div>
+      <div class="amt act"><input id="bw-debt" inputmode="decimal" placeholder="${st.px ? plain(usdOf(dflt) / 2n / 10n ** 6n * 10n ** 6n, 8) : '0'}" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="cUSD to borrow"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</span></div>
       <div class="seg sub" role="group" aria-label="Collateral ratio">${[250, 200, 175].map((r) => html`<button type="button" data-bh-ratio="${r}">${r}%</button>`)}</div>
       <div class="rcpt" id="bw-rcpt" hidden></div>
-      <details class="lockmore"><summary>Put up a different amount</summary><div class="amt"><input id="bh-coll" inputmode="decimal" placeholder="${plain(dflt, 8)}" autocomplete="off" aria-label="${src === 'pub' ? 'tacBTC' : 'cBTC'} to put up"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-${src === 'pub' ? 'tacbtc' : 'cbtc'}"/></svg>${src === 'pub' ? 'tacBTC' : 'cBTC'}</span></div></details>
+      <details class="lockmore"><summary>Put up a different amount</summary><div class="amt"><input id="bh-coll" inputmode="decimal" placeholder="${plain(dflt, 8)}" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${src === 'pub' ? 'tacBTC' : 'cBTC'} to put up"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-${src === 'pub' ? 'tacbtc' : 'cbtc'}"/></svg>${src === 'pub' ? 'tacBTC' : 'cBTC'}</span></div></details>
       ${src === 'priv' ? html`<label class="pick"><input type="checkbox" id="bw-pts"><span>Send the loan from ${your()} to earn points. It pays the network fee and is linked to the loan.</span></label>` : ''}
       <button class="btn" type="button" id="bw-borrow">Borrow cUSD</button>` : ''}
     ${st.loans === null ? html`<p class="note err">Your loans could not be read. <button class="link" type="button" data-retry="loan">Try again</button></p>` : ''}
@@ -3260,7 +3260,7 @@ render.borrow = () => {
           ${s3 && !s4 && st.loanErr ? html`<p class="note err">Your loans could not be read. <button class="link" type="button" data-retry="loan">Try again</button></p>` : ''}
           ${holdOn && s3 ? html`<p class="note">Borrow and repay under Borrow cUSD, above.</p>` : ''}
           ${s3 && !s4 && !st.loanErr && !holdOn ? html`
-            <div class="amt act"><input id="bw-debt" inputmode="decimal" placeholder="${st.usd ? plain(st.usd / 2n / 10n ** 6n * 10n ** 6n, 8) : '0'}" autocomplete="off" aria-label="cUSD to borrow"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</span></div>
+            <div class="amt act"><input id="bw-debt" inputmode="decimal" placeholder="${st.usd ? plain(st.usd / 2n / 10n ** 6n * 10n ** 6n, 8) : '0'}" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="cUSD to borrow"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</span></div>
             <div class="rcpt" id="bw-rcpt" hidden></div>
             <label class="pick"><input type="checkbox" id="bw-pts"><span>Send the loan from ${your()} to earn points. It pays the network fee and is linked to the loan.</span></label>
             <button class="btn" type="button" id="bw-borrow">Borrow cUSD</button>` : ''}

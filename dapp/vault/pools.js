@@ -286,9 +286,9 @@ export function makePools({ el, cfg, esc, rpc, ethCall, batch, wallet, W, synthO
         <details class="pl-add" id="pl-add"${showAdd ? ' open' : ''}><summary>Add liquidity</summary>
         <div id="pl-in">
         <div class="lbl"><span>${esc(sym)}</span><button class="linkbtn" id="pl-bs" type="button"></button></div>
-        <div class="amt"><input id="pl-s" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${esc(sym)} to add"><span class="u">${ico(sym.toLowerCase())}${esc(sym)}</span></div>
+        <div class="amt"><input id="pl-s" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${esc(sym)} to add"><span class="u">${ico(sym.toLowerCase())}${esc(sym)}</span></div>
         <div class="lbl"><span>${esc(qs)}</span><button class="linkbtn" id="pl-bq" type="button"></button></div>
-        <div class="amt"><input id="pl-q" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="${esc(qs)} to add"><span class="u">${ico(qs.toLowerCase())}${esc(qs)}</span></div>
+        <div class="amt"><input id="pl-q" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="${esc(qs)} to add"><span class="u">${ico(qs.toLowerCase())}${esc(qs)}</span></div>
         </div>
         <p class="hint" id="pl-hint"></p>
         <button class="btn" id="pl-go" type="button"></button>

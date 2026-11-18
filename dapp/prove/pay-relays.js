@@ -77,9 +77,9 @@ export function startPayRelays(ctx, { forwarders = [], fetchImpl = globalThis.fe
     if (!owned.length) { mineBox.innerHTML = `<p class="plan">No relay is listed with ${esc(short(S.address))} as its owner.</p>`; return; }
     mineBox.innerHTML = '<h3 class="plan">Yours</h3>' + owned.map((e) => `<div class="relay" data-id="${e.id}">
       <div class="kv"><span>${who(e.relayer)}</span><b>${esc(tacText(e.stake))} TAC · ${esc(e.state === 'leaving' ? `leaving, ready ${day(e.exitAt)}` : STATE_TEXT[e.state])}</b></div>
-      ${e.exitAt === 0 ? `<label class="fld"><span>Add stake (TAC)</span><input data-k="amount" type="text" inputmode="decimal" autocomplete="off" placeholder="${esc(tacText(model.min))}"></label>
+      ${e.exitAt === 0 ? `<label class="fld"><span>Add stake (TAC)</span><input data-k="amount" type="text" inputmode="decimal" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" placeholder="${esc(tacText(model.min))}"></label>
       <button class="btn ghost" data-act="topup" type="button">Add stake</button>
-      <label class="fld"><span>Relay address</span><input data-k="url" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(e.url)}"></label>
+      <label class="fld"><span>Relay address</span><input data-k="url" type="text" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" value="${esc(e.url)}"></label>
       <button class="btn ghost" data-act="url" type="button">Change address</button>` : ''}
       ${e.state === 'ready' ? '<button class="btn" data-act="finish" type="button">Take the stake out</button>'
         : e.exitAt === 0 ? `<button class="btn ghost" data-act="exit" type="button">Leave: take it off the list and start the ${Math.round(model.delay / 86400)}-day wait</button>`

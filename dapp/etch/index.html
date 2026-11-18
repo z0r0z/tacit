@@ -453,7 +453,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
                 <details class="more" id="more">
                   <summary>Name, logo and more</summary>
                   <div class="mb">
-                    <label class="fld"><span>Name</span><input type="text" id="nm" maxlength="64" placeholder="Optional" autocomplete="off"></label>
+                    <label class="fld"><span>Name</span><input type="text" id="nm" maxlength="64" placeholder="Optional" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other"></label>
                     <div class="fld"><span>Logo</span>
                       <div class="logo-row">
                         <span id="lg-mark" class="tk letter" hidden></span>
@@ -463,7 +463,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
                       </div>
                     </div>
                     <label class="fld"><span>Description</span><textarea id="ds" maxlength="500" rows="2" placeholder="Optional"></textarea></label>
-                    <label class="fld"><span>Link</span><input type="text" id="ln" placeholder="https://" autocomplete="off" spellcheck="false"></label>
+                    <label class="fld"><span>Link</span><input type="text" id="ln" placeholder="https://" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false"></label>
                     <label class="chk" id="pub-row"><input type="checkbox" id="pub" checked><span>Publish the supply<small>Anyone can check the total against the chain.</small></span></label>
                     <label class="chk" id="mint-row"><input type="checkbox" id="mint"><span>Mintable<small>You can issue more later. Fixed once etched.</small></span></label>
                     <label class="chk" id="reg-row" hidden><input type="checkbox" id="reg"><span>Register it with the Tacit pool<small>Optional: whoever shields it first registers it otherwise. One more call, sent together with the first when your wallet takes batches.</small></span></label>
@@ -483,7 +483,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
               <button type="button" role="radio" aria-checked="true" data-fchain="btc"><svg class="tk" aria-hidden="true"><use href="#c-btc"/></svg>Bitcoin</button>
               <button type="button" role="radio" aria-checked="false" data-fchain="eth"><svg class="tk" aria-hidden="true"><use href="#c-eth"/></svg>Ethereum</button>
             </div>
-            <div class="srch"><input id="find" type="search" placeholder="Ticker, name or asset ID" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Search assets"></div>
+            <div class="srch"><input id="find" type="search" placeholder="Ticker, name or asset ID" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Search assets"></div>
             <div class="cnt num" id="cnt" role="status"></div>
             <ul class="al" id="list"></ul>
             <button class="btn ghost" id="more-r" type="button" hidden>Show more</button>

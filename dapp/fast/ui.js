@@ -25,7 +25,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     <div class="fx-back" id="fx-back" hidden></div>
     <div id="fx-form" hidden>
       <p class="eyebrow"><span>You bridge</span><span class="who num" id="fx-bal"></span></p>
-      <div class="fx-amt"><input id="fx-amt" inputmode="decimal" placeholder="0" autocomplete="off" spellcheck="false" aria-label="TAC to bridge"><span>TAC</span><button class="linkbtn" id="fx-max" type="button" hidden>Max</button></div>
+      <div class="fx-amt"><input id="fx-amt" inputmode="decimal" placeholder="0" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" aria-label="TAC to bridge"><span>TAC</span><button class="linkbtn" id="fx-max" type="button" hidden>Max</button></div>
       <div class="fx-out" id="fx-out" hidden>
         <p class="eyebrow"><span>You receive, private</span><span class="who">in your Tacit wallet</span></p>
         <div class="fx-big"><output class="num" id="fx-big" for="fx-amt">0</output><span>TAC</span></div>

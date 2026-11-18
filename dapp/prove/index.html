@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=96629148">
+<link rel="modulepreload" href="/prove/app.js?cb=02c58798">
 <link rel="modulepreload" href="/relay-route.js?cb=0152b0db">
 <link rel="modulepreload" href="/private-route.js?cb=272cd9d3">
 <link rel="modulepreload" href="/community-prove.js?cb=e2a65259">
@@ -813,7 +813,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
       <section class="panel" id="desk" aria-live="polite" data-card="node">
         <p class="eyebrow"><span>Your node</span><span class="me" id="me"></span></p>
-        <label class="fld" for="addr"><span>Pays to</span><input id="addr" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x… the address TAC is paid to" maxlength="64" aria-describedby="addr-bad"><p class="bad" id="addr-bad" role="alert"></p></label>
+        <label class="fld" for="addr"><span>Pays to</span><input id="addr" type="text" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" placeholder="0x… the address TAC is paid to" maxlength="64" aria-describedby="addr-bad"><p class="bad" id="addr-bad" role="alert"></p></label>
         <div class="state" id="state" data-s="none"><span class="dot" aria-hidden="true"></span><h2 id="title">Looking for tacit-prover…</h2><span class="win num" id="win" aria-live="polite"></span></div>
         <p class="status err" id="blocked" hidden>This browser is stopping the page from reaching tacit-prover on this computer. Allow local network access for tacit.finance in the site settings (the icon left of the address), then reload.</p>
         <div class="forge" id="forge" hidden><ol><li></li><li></li><li></li><li></li></ol><p class="num" id="stage"></p></div>
@@ -1044,6 +1044,6 @@ node scripts/pay-relay.mjs --tunnel</code></pre><button class="btn ghost" id="pa
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=96629148"></script>
+<script type="module" src="/prove/app.js?cb=02c58798"></script>
 </body>
 </html>

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-o45pxzxnyusMUB0XM0AnpV0jQssP+2XVZ0LdUVmpOV4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-uYdJ0GXy4dLl6Wdv/cx5ZWz+4f1LtPyPgvoYwD9flJg=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://tacit-api.onrender.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://cloudflare-eth.com https://rpc.flashbots.net https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit pay</title>
 <meta name="description" content="Pay BTC, TAC and ETH privately from one key and one tacit1 address. Every payment is made on your device.">
@@ -1608,9 +1608,9 @@ function btcSend(f) {
   mount(f, html`
     ${btcEmpty() ? html`<div class="callout"><span>Add BTC to your Bitcoin address: <b class="num">${b.addr}</b>. What arrives there is public.</span><button class="btn ghost sm" type="button" data-copy="${b.addr}" data-done="Address copied">Copy</button></div>` : ''}
     <div class="lbl"><span>To</span><span>tacit1, sp1, bc1 or a name</span></div>
-    <div class="amt text"><input id="f-to" placeholder="Address or name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient"><button class="link" type="button" id="f-paste">paste</button></div>
+    <div class="amt text"><input id="f-to" placeholder="Address or name" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Recipient"><button class="link" type="button" id="f-paste">paste</button></div>
     <div class="lbl"><span>Amount</span>${!b ? '' : btcAvail(b) ? html`<button type="button" id="f-max" class="num" aria-label="Fill in all ${fmt(b.sats + b.silent, 8, 8)} BTC, less its Bitcoin fee">${fmt(b.sats + b.silent, 8, 8)} BTC</button>` : html`<span class="num">${fmt(b.sats + b.silent, 8, 8)} BTC</span>`}</div>
-    <div class="amt"><input id="f-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</span></div>
+    <div class="amt"><input id="f-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</span></div>
     <div class="rcpt" id="f-rcpt" role="status" hidden></div>
     <button class="btn" type="button" id="f-go" aria-describedby="f-rcpt" disabled>Send BTC</button>
     ${BTC.share ? shareView(BTC.share) : ''}
@@ -1808,10 +1808,10 @@ function btcReceive(f) {
       ${row('Silent payments', 'BIP‑352', BTC.sp, 'From any wallet that sends silent payments. Tacit apps’ payments show here on their own; for another wallet, open its sender’s link or paste the transaction id below.')}
       ${row('Bitcoin address', 'public', b?.addr, 'What arrives here is public; it funds your sends.')}
       <div class="blk"><div class="lbl"><span>Add BTC from your Bitcoin wallet</span><span>Xverse, Leather or UniSat</span></div>
-        <div class="amt"><input id="f-famt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="BTC to add"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</span></div>
+        <div class="amt"><input id="f-famt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="BTC to add"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-btc"/></svg>BTC</span></div>
         <div class="foot-a"><button class="btn ghost sm" type="button" id="f-fund">Add BTC</button></div></div>
       <div class="blk"><div class="lbl"><span>Got a payment link?</span><span>or a transaction id</span></div>
-        <div class="amt text"><input id="f-chk" placeholder="Payment link or transaction id" autocomplete="off" spellcheck="false" aria-label="Payment link"><button class="link" type="button" id="f-chk-go">check</button></div></div>`)}`);
+        <div class="amt text"><input id="f-chk" placeholder="Payment link or transaction id" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" aria-label="Payment link"><button class="link" type="button" id="f-chk-go">check</button></div></div>`)}`);
   wireShare(f);
   wireMore(f);
   wireAddrQr(f, 'btc');
@@ -2123,9 +2123,9 @@ function tacSend(f) {
   mount(f, html`
     ${none ? toReceive(html`No shielded TAC yet. Receive some at your address. TAC on Ethereum <a href="/#card=send:tac">is sent from the Tacit pool</a>.`) : ''}
     <div class="lbl"><span>To</span><span>Tacit or pool address, or a name</span></div>
-    <div class="amt text"><input id="f-to" placeholder="Address or name" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Recipient"><button class="link" type="button" id="f-paste">paste</button></div>
+    <div class="amt text"><input id="f-to" placeholder="Address or name" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Recipient"><button class="link" type="button" id="f-paste">paste</button></div>
     <div class="lbl"><span>Amount</span>${ok ? html`<button type="button" id="f-max" aria-label="Fill in the most: ${fmt(most, 8, 4)} TAC">${fmt(most, 8, 4)} TAC</button>` : ''}</div>
-    <div class="amt"><input id="f-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
+    <div class="amt"><input id="f-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
     <div class="rcpt" id="f-rcpt" role="status" hidden></div>
     <button class="btn" type="button" id="f-go" aria-describedby="f-rcpt" disabled>Send TAC privately</button>
     ${TAC.share ? shareView(TAC.share) : ''}
@@ -2363,7 +2363,7 @@ function tacMove(f) {
         : html`<p class="note">${!btcHeld() ? (BTC.err ? 'Could not read your Bitcoin address. Refresh to try again.' : 'Reading your Bitcoin address…') : stealthOnly ? 'Your TAC at the Bitcoin address came by shielded transfer; spend it from the classic app to shield it.' : 'No TAC at your Bitcoin address to shield.'}</p>`}</div>
     <div class="blk"><div class="lbl"><span>Withdraw</span><span>from pool to Bitcoin address</span></div>
       <div class="lbl"><span>Amount</span>${ok && TAC.top2 > 0n ? html`<button type="button" id="f-xmax" class="num" aria-label="Fill in the most: ${fmt(TAC.top2, 8, 4)} TAC">${fmt(TAC.top2, 8, 4)} TAC</button>` : ''}</div>
-      <div class="amt"><input id="f-xamt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount to withdraw"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
+      <div class="amt"><input id="f-xamt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount to withdraw"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
       <div class="kv" id="f-xfee" hidden><span>Bitcoin fee</span><b class="num"></b></div>
       <button class="btn ghost" type="button" id="f-exit" ${ok && TAC.pw && TAC.pool > 0n ? '' : 'disabled'}>Withdraw</button>
       <p class="note">Your Bitcoin address shows as where it goes; the amount and which notes paid it do not.</p></div>`);
@@ -2594,9 +2594,9 @@ const sameOwner = (a, b) => {
   try { const x = decodeTacitAddress(lc(a)).lanes.btc, y = decodeTacitAddress(lc(b)).lanes.btc; return hx(x.spendPub) === hx(y.spendPub) && hx(x.scanPub) === hx(y.scanPub); } catch { return false; }
 };
 const askView = (mode) => html`<div class="blk">
-    <div class="amt"><input id="f-qamt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount to ask for (optional)"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-${mode}"/></svg>${mode === 'tac' ? 'TAC' : 'BTC'}</span></div>
-    <div class="amt text"><input id="f-qfor" maxlength="60" placeholder="What it is for (optional)" autocomplete="off" aria-label="What it is for"></div>
-    <div class="amt text"><input id="f-qname" placeholder="Your .wei name (optional)" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Your name"></div>
+    <div class="amt"><input id="f-qamt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount to ask for (optional)"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-${mode}"/></svg>${mode === 'tac' ? 'TAC' : 'BTC'}</span></div>
+    <div class="amt text"><input id="f-qfor" maxlength="60" placeholder="What it is for (optional)" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="What it is for"></div>
+    <div class="amt text"><input id="f-qname" placeholder="Your .wei name (optional)" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Your name"></div>
     <p class="note err" id="f-qerr" role="alert" hidden></p>
     <div class="qrbox" id="f-qqr"></div>
     <div class="row2"><button class="btn" type="button" id="f-qcopy">Copy payment link</button><button class="btn ghost" type="button" id="f-qshare">Share</button></div>

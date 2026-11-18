@@ -24,7 +24,7 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload-roots: /teth/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/teth/app.js?cb=2df19ff3">
+<link rel="modulepreload" href="/teth/app.js?cb=de6eb6a7">
 <link rel="modulepreload" href="/relay-route.js?cb=0152b0db">
 <link rel="modulepreload" href="/private-route.js?cb=272cd9d3">
 <link rel="modulepreload" href="/trade/chart.js?cb=c0b1d232">
@@ -770,7 +770,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <div id="waiting"></div>
       <div id="get">
         <div class="lbl"><span>You pay</span><button class="linkbtn" id="in-bal" type="button" hidden></button></div>
-        <div class="amt"><input id="amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH to make private"><span class="u" id="in-unit"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
+        <div class="amt"><input id="amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="ETH to make private"><span class="u" id="in-unit"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
         <div class="chips" id="chips" role="group" aria-label="Quick amounts"></div>
         <div class="flipline"><span class="arrow" aria-hidden="true">↓</span></div>
         <div class="lbl"><span>You get, private</span><span class="mute" id="out-usd"></span></div>
@@ -849,6 +849,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/teth/app.js?cb=2df19ff3"></script>
+<script type="module" src="/teth/app.js?cb=de6eb6a7"></script>
 </body>
 </html>

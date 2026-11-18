@@ -866,7 +866,7 @@ function openProverSheet() {
     <h3 class="ps-h">Add PROVE</h3>
     <div class="seg" id="ps-mode" role="group" aria-label="Add from"><button type="button" data-ps-mode="prove" aria-pressed="true">PROVE in your wallet</button><button type="button" data-ps-mode="eth" aria-pressed="false">Pay with ETH</button></div>
     <div class="lbl"><span id="ps-lbl">PROVE to add</span><button class="linkbtn" type="button" id="ps-bal" hidden></button></div>
-    <div class="amt"><input id="ps-amt" inputmode="decimal" autocomplete="off" aria-label="Amount to add" value="${esc(O.f.amt)}"><span class="u" id="ps-unit">PROVE</span></div>
+    <div class="amt"><input id="ps-amt" inputmode="decimal" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount to add" value="${esc(O.f.amt)}"><span class="u" id="ps-unit">PROVE</span></div>
     <p class="ps-size" id="ps-size" hidden></p>
     <div id="ps-quote"></div>
     <button class="btn" type="button" id="ps-go">Add PROVE</button>
@@ -1059,7 +1059,7 @@ function renderUse() {
   const onBtc = mine && h.value != null ? bridgedHeld(key.key.pubHex) : null;
   if (onBtc) $('#held').insertAdjacentHTML('beforeend', `<div class="held"><span><b class="num">${esc(fmtUnits(BigInt(onBtc.v) * E10, 18, 8))}</b> <span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-teth"/></svg>tETH on Bitcoin${onBtc.n > 1 ? `, in ${esc(String(onBtc.n))} notes` : ''}</span></span><a class="linkbtn" href="/#private/bitcoin/back">Bring back</a></div>`);
   // the amount box is built once, so a repaint (every minute) keeps its focus and caret; only the links under it are drawn again
-  if (!$('#use-amt')) $('#uses').innerHTML = `<div class="lbl"><span>Amount</span><span class="mute">optional</span></div><div class="amt"><input id="use-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="tETH to use" value="${esc(S.useAmt)}"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</span></div>`
+  if (!$('#use-amt')) $('#uses').innerHTML = `<div class="lbl"><span>Amount</span><span class="mute">optional</span></div><div class="amt"><input id="use-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="tETH to use" value="${esc(S.useAmt)}"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-teth"/></svg>tETH</span></div>`
     + '<div id="use-rows"></div>';
   $('#use-rows').innerHTML = useRowsHtml();
   $('#use-note').textContent = 'These open on the front page. Swap and Back to ETH carry your amount. Use the same wallet or passkey there.';
