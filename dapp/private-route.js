@@ -115,7 +115,8 @@ export function bundlerFetch({ fetchImpl = (u, i) => fetch(u, i), now = () => Da
     try {
       const f = await walletSealed();
       const r = await f(`${ROUTE.rpc.url}/${hit[0][1]}/evm-pool/keeper/bundler-${hit[1]}`, init);
-      if (r.status === 404 || r.status === 403 || r.status === 502) throw new Error('the route did not carry the bundler call');
+      // a gateway that was refused or throttled by the bundler (every caller leaves from its one address) or that could not carry the call: the person's own address is not throttled with it, so this goes straight to the bundler
+      if (r.status === 404 || r.status === 403 || r.status === 429 || r.status >= 500) throw new Error('the route did not carry the bundler call');
       return r;
     } catch (e) {
       if (init.signal?.aborted) throw e;

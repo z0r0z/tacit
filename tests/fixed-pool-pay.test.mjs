@@ -278,6 +278,10 @@ await test('the Withdraw tab\'s line is for the newest note', () => {
   const l = [{ seen: seenInfo({ i: 10, t: now - 86400 * 3 }, { deposits: 5000 }, now) }, { seen: seenInfo({ i: 4995, t: now - 7200 }, { deposits: 5000 }, now) }, {}];
   const n = newestSeen(l);
   eq(n.text.startsWith('Newest note: deposited 2 hours ago · 4 deposits since.'), true, n.text); eq(n.low, true);
+  { // three notes of one transaction share a time: the newest is the one with the fewest deposits after it
+    const same = [0, 1, 2].map((k) => ({ seen: seenInfo({ i: 100 + k, t: now - 3 * 3600 }, { deposits: 106 }, now) }));
+    eq(newestSeen(same).text.includes('· 3 deposits since'), true, newestSeen(same).text);
+  }
   eq(newestSeen([{}, { seen: seenInfo({ old: true }, null, now) }]), null, 'an old note has no time to compare');
   eq(newestSeen([]), null);
 });

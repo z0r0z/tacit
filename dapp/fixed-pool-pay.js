@@ -163,7 +163,8 @@ export function seenInfo(seen, size, nowSec = Date.now() / 1000) {
 // Under the Withdraw tab's count of notes: the newest of them
 export function newestSeen(entries) {
   let best = null;
-  for (const x of entries) if (x?.seen && Number.isFinite(x.seen.t) && (!best || x.seen.t > best.t)) best = x.seen;
+  // notes made in one transaction share a time: the one with the fewest deposits after it is the newest
+  for (const x of entries) if (x?.seen && Number.isFinite(x.seen.t) && (!best || x.seen.t > best.t || (x.seen.t === best.t && (x.seen.since ?? Infinity) < (best.since ?? Infinity)))) best = x.seen;
   return best ? { text: `Newest note: ${best.text.replace(/^Deposited/, 'deposited')}.${best.low ? ' ' + best.nudge : ''}`, low: best.low } : null;
 }
 // For a withdrawal taking these notes: a sentence if any is early to take out, else ''
@@ -574,7 +575,7 @@ export function attach(env) {
   function moveInto(btn, n) {
     return env.act(btn, async (step, c) => {
       // the private balance's own deposit address, which opens it if it is not open yet
-      return exitNote(step, c, n, '', (out) => `${formatEther(out.receive)} ETH is on its way to your deposit address; it joins your private balance within minutes.`);
+      return exitNote(step, c, n, '', (out) => `${roundWei(out.receive, 5, false)} ETH is on its way to your deposit address; it joins your private balance within minutes.`);
     });
   }
   function askPaste() {
@@ -594,7 +595,7 @@ export function attach(env) {
       const problem = to ? addressProblem(to) : null;
       if (problem) return env.toast(problem, true);
       closeAsk();
-      env.act(go, (step, c) => exitNote(step, c, { text }, to, (out, t) => (to ? `${formatEther(out.receive)} ETH is on its way to ${t.label}.` : `${formatEther(out.receive)} ETH is on its way to your deposit address; it joins your private balance within minutes.`)));
+      env.act(go, (step, c) => exitNote(step, c, { text }, to, (out, t) => (to ? `${roundWei(out.receive, 5, false)} ETH is on its way to ${t.label}.` : `${roundWei(out.receive, 5, false)} ETH is on its way to your deposit address; it joins your private balance within minutes.`)));
     };
   }
   function askAddress(n) {
@@ -609,7 +610,7 @@ export function attach(env) {
       const to = ask.querySelector('#lg-to').value.trim(), problem = addressProblem(to);
       if (problem) return env.toast(problem, true);
       closeAsk();
-      env.act(go, (step, c) => exitNote(step, c, n, to, (out, t) => `${formatEther(out.receive)} ETH is on its way to ${t.label}.`));
+      env.act(go, (step, c) => exitNote(step, c, n, to, (out, t) => `${roundWei(out.receive, 5, false)} ETH is on its way to ${t.label}.`));
     };
   }
 
@@ -716,7 +717,7 @@ export function attachWithdraw(env) {
       } catch (e) {
         const out = outs.reduce((t, o) => t + o.receive, 0n);
         const why = e?.cancelled ? 'The fee came to more than the notes\' ceiling, so it was not sent.' : env.errText(e);
-        throw Object.assign(new Error(outs.length ? `${outs.length} of ${notes.length} notes went out to ${short(to)} (${formatEther(out)} ETH). Note ${k + 1} did not: ${why}` : why), { done: outs });
+        throw Object.assign(new Error(outs.length ? `${outs.length} of ${notes.length} notes went out to ${short(to)} (${roundWei(out, 5, false)} ETH). Note ${k + 1} did not: ${why}` : why), { done: outs });
       }
     }
     } finally { prover.close(); }

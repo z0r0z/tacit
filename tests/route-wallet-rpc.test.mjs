@@ -34,7 +34,7 @@ const relayServe = async (req, res) => { const out = await relayPass.handle(JSON
 const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 const relayTake = makeServiceGateway({ secret: relayKey, serve: relayServe, json, forwarders: ['198.51.100.7'] });
 const walletGw = makeRpcGateway({ secret: rpcKey, nodes: nodesOf('{"1":["https://upstream.test"]}'), forwarders: ['198.51.100.7'],
-  fetchImpl: async (url, init) => { const b = JSON.parse(init.body); seen.walletCalls.push(b.method); return new Response(JSON.stringify({ jsonrpc: '2.0', id: b.id, result: b.method === 'eth_getBalance' ? '0x10' : '0x1000' })); } });
+  fetchImpl: async (url, init) => { const b = JSON.parse(init.body); seen.walletCalls.push(b.method); if (seen.throttled) return new Response('{"error":"rate limited"}', { status: 429 }); return new Response(JSON.stringify({ jsonrpc: '2.0', id: b.id, result: b.method === 'eth_getBalance' ? '0x10' : '0x1000' })); } });
 
 let walletUp = true, relayUp = true;
 const synth = (init, run) => {
@@ -121,6 +121,17 @@ await check('a fixed pool\'s bundler call goes to the wallet-read gateway, and s
   const before = seen.envelopes.r;
   await bf(PIM, { method: 'POST', body });
   assert.equal(seen.envelopes.r, before, 'the road is left alone for a minute'); walletUp = true;
+});
+
+await check('a bundler that throttles the gateway (429) is a road that failed: the call goes straight to the bundler, and the road is left alone for a minute', async () => {
+  reset(); const direct = []; seen.throttled = true;
+  const bf = bundlerFetch({ now: () => clock, fetchImpl: async (u) => { direct.push(String(u)); return new Response('{"jsonrpc":"2.0","id":1,"result":"0xdirect"}'); } });
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_estimateUserOperationGas', params: [{}, '0x' + '22'.repeat(20)] });
+  const r = await bf('https://public.pimlico.io/v2/1/rpc', { method: 'POST', body });
+  assert.equal((await r.json()).result, '0xdirect'); assert.deepEqual(direct, ['https://public.pimlico.io/v2/1/rpc']);
+  const before = seen.envelopes.r;
+  await bf('https://public.pimlico.io/v2/1/rpc', { method: 'POST', body });
+  assert.equal(seen.envelopes.r, before, 'not tried again for a minute'); seen.throttled = false;
 });
 
 globalThis.fetch = realFetch;
