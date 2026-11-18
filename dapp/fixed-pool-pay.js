@@ -40,6 +40,8 @@ const CARD_MIN = 10n ** 17n, NOTE_GAS = 1_000_000n, FEE_SHARE_DIV = 50n;
 let autoMin = { v: CARD_MIN, at: 0, g: null };
 // What a deposit costs in gas, from the deposits made on mainnet: about 0.8 million for each note, and for the rest of the amount (the Tacit deposit in the same transaction) 0.48 million, else 0.1.
 export const depositGas = (noteCount, hasRemainder) => BigInt(noteCount) * 800_000n + (hasRemainder ? 480_000n : 100_000n);
+// An amount for a sentence, to a few digits: rounded up for a limit (what is spent at most) and down for a floor (what is received at least), so the sentence stays true.
+const roundWei = (wei, sig, up) => { if (wei <= 0n) return '0'; const drop = BigInt(Math.max(0, wei.toString().length - sig)), unit = 10n ** drop; return formatEther(up ? ((wei + unit - 1n) / unit) * unit : (wei / unit) * unit); };
 const feeWords = (wei) => { const x = Number(formatEther(wei)); return x < 0.0001 ? 'under 0.0001 ETH' : `about ${parseFloat(x.toPrecision(2))} ETH`; };
 async function autoSmallest(read, now = Date.now()) {
   if (now - autoMin.at < 60_000) return autoMin.v;
@@ -216,7 +218,7 @@ export function planExit(amount, dens) {
   return { picks, total };
 }
 
-const exitWords = (s) => (s.step === 'read' ? (s.of ? `reading the pool's deposits (${s.done} of ${s.of})` : 'reading the pool\'s deposits') : s.step === 'tree' ? `building the tree from ${s.count} deposits` : s.step === 'prove' ? 'proving' : s.step === 'estimate' ? 'asking the bundler about the gas' : s.step === 'price' ? 'gas is high right now, waiting for a calmer price' : s.step === 'quote' ? 'check the fee below' : s.step === 'reprice' ? 'the gas price moved, making it again at the new price' : s.step === 'wait' ? 'waiting for the withdrawal to be mined' : 'working');
+const exitWords = (s) => (s.step === 'read' ? (s.of ? `reading the pool's deposits (${s.done} of ${s.of})` : 'reading the pool\'s deposits') : s.step === 'tree' ? `building the tree from ${s.count} deposits` : s.step === 'prove' ? 'proving' : s.step === 'estimate' ? 'asking the bundler about the gas' : s.step === 'price' ? 'gas is high right now, waiting for a calmer price' : s.step === 'quote' ? 'check the fee, then press Send' : s.step === 'reprice' ? 'the gas price moved, making it again at the new price' : s.step === 'wait' ? 'waiting for the withdrawal to be mined' : 'working');
 // One note out, its gas paid from the note: proved in a worker, `confirm` asked once the fee is fixed and before anything is sent.
 // `prover` and `cache` are for a run of notes: one prover and one cache for the run, so a pool's deposits are read and its tree built once (the caller closes the prover).
 async function sponsoredExit({ flow, text, to, step, confirm, workerUrl, prover: given = null, cache = null }) {
@@ -527,13 +529,15 @@ export function attach(env) {
   function confirmFee({ fee, receive, denomination }) {
     return new Promise((resolve) => {
       const ask = notesHost.querySelector('#lg-ask');
-      const pct = Number((fee * 10000n) / denomination) / 100;
+      const feeUp = BigInt(parseEther(roundWei(fee, 2, true)));
+      const pct = Number((feeUp * 10000n + denomination - 1n) / denomination) / 100;
       ask.hidden = false;
+      const what = `<p class="note"><b>${esc(st.what || 'This note')}</b> · ${formatEther(denomination)} ETH</p>`;
       const where = st.target ? `<p class="note">To ${esc(st.target.label)}: <code>${esc(st.target.to)}</code></p>` : '';
       const cost = fee === 0n
         ? `Your wallet sends this and pays the gas, so it shows as the sender. The address gets the whole ${formatEther(receive)} ETH.`
-        : `Gas is paid from the note: up to ${formatEther(fee)} ETH (${pct.toFixed(2)}% of it), and what is not used comes back to the address. The address gets at least ${formatEther(receive)} ETH.`;
-      ask.innerHTML = `${where}<p class="note">${cost}</p>
+        : `Gas is paid from the note: up to ${roundWei(fee, 2, true)} ETH (${pct.toFixed(2)}% of it), and what is not used comes back to the address. The address gets at least ${roundWei(receive, 4, false)} ETH.`;
+      ask.innerHTML = `${what}${where}<p class="note">${cost}</p>
         <div style="display:flex;gap:8px"><button class="btn" type="button" id="lg-send" style="margin-top:6px">Send</button><button class="btn ghost" type="button" id="lg-cancel" style="margin-top:6px">Cancel</button></div>`;
       st.confirming = true;
       const done = (ok) => { clearTimeout(t); ask.hidden = true; ask.innerHTML = ''; st.confirming = false; resolve(ok); if (st.dirty) { st.dirty = false; paintNotes(); } };
@@ -556,6 +560,7 @@ export function attach(env) {
     const target = await resolveTarget(raw);
     const to = target.to;
     st.target = target;
+    st.what = n.nonce != null ? `Note ${n.nonce}` : 'The pasted note';
     try {
       const out = await (fromWallet ? walletExit : sponsoredExit)({ flow, text, to, step, confirm: confirmFee, workerUrl: env.workerUrl });
       if (n.nh) st.spent.set(n.nh, !!out.spent);
