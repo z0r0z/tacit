@@ -16,7 +16,8 @@ export function relayCanProve(st) {
 // a job taken by another relay carries its address (`<id>@<relay>`), so what follows it (its status, its landing) goes back there.
 export const RELAY_AT = '@';
 export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, checkEmittedMemos, saveMismatchedMemos } = {}) {
-  const f = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+  // A page may name a fetch for the relay's API (the private route's, dapp/relay-route.js); with none, the plain fetch.
+  const f = fetchImpl || (typeof fetch !== 'undefined' ? (u, i) => (globalThis.__tacitRelayFetch || fetch)(u, i) : null);
   if (!f) throw new Error('confidential-relay: no fetch available');
   const trim = (b) => String(b || '').replace(/\/$/, '');
   const root = trim(base);

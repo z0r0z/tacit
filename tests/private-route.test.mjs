@@ -171,4 +171,19 @@ await check('the pay page reads the wallet\'s side through the wallet-read gatew
   assert.equal(SHIPPED.api.url, 'https://api.tacit.finance');
 });
 
+await check('every module that talks to the relay takes the route\'s fetch, and every page that calls the relay sets it and names the forwarders', () => {
+  const read = (f) => readFileSync(new URL(`../dapp/${f}`, import.meta.url), 'utf8');
+  for (const [f, min] of [['confidential-pool-ux.js', 1], ['confidential-relay.js', 1], ['confidential-bridge-mint.js', 3], ['community-ops.js', 1], ['activity.js', 2], ['prove/app.js', 1], ['index.html', 3]]) {
+    const hits = (read(f).match(/__tacitRelayFetch/g) || []).length;
+    assert.ok(hits >= min, `${f} takes the route's fetch (${hits} of at least ${min})`);
+  }
+  for (const f of ['index.html', 'tacit.js']) assert.match(read(f), /__tacitRelayFetch \|\|= m\.apiFetch\(\)/, `${f} sets the hook`);
+  for (const f of ['prove/app.js', 'relay/app.js']) assert.match(read(f), /import '\/relay-route\.js\?cb=[0-9a-f]+';/, `${f} loads the hook module`);
+  assert.match(read('relay-route.js'), /globalThis\.__tacitRelayFetch \|\|= apiFetch\(\)/);
+  for (const pg of ['prove/index.html', 'relay/index.html']) {
+    const csp = (/http-equiv="Content-Security-Policy"[^>]*?connect-src([^;]*)/s.exec(read(pg))?.[1] || '').split(/\s+/);
+    for (const host of SHIPPED.forwarders) assert.ok(csp.includes(host), `${pg} allows ${host}`);
+  }
+});
+
 console.log(`\n${n} checks passed`);

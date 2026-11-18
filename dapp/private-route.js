@@ -109,7 +109,10 @@ export function walletRpcFetch(chainId, opts = {}) {
 // A job submitted twice is one job (its id is a hash of what it holds), so a request the road dropped after the API had it is safe to send again.
 const API_PATHS = [['GET', /^\/confidential\/(status|quote|relay|open|index|armed)$/], ['POST', /^\/confidential\/(submit|landed|arm)$/], ['POST', /^\/prover\/pool\/hold$/]];
 let apiMade = null;
-const apiSealed = () => (apiMade ||= sealedModule().then((m) => m.makeSealedFetch({ keeper: ROUTE.api.url, chainId: ROUTE.api.id, gateway: ROUTE.api.gateway, forwarders: ROUTE.forwarders }))
+const apiSealed = () => (apiMade ||= Promise.all([
+  sealedModule(),
+  ROUTE.nostr?.length && typeof WebSocket === 'function' ? import('/route-nostr.js?cb=9e86a4e2').catch(() => null) : null,
+]).then(([m, rn]) => m.makeSealedFetch({ keeper: ROUTE.api.url, chainId: ROUTE.api.id, gateway: ROUTE.api.gateway, forwarders: ROUTE.forwarders, nostr: rn ? rn.makeNostrCarrier({ relays: ROUTE.nostr }) : null }))
   .catch((e) => { apiMade = null; throw e; }));
 export function apiFetch({ fetchImpl = (u, i) => fetch(u, i), now = () => Date.now() } = {}) {
   let skipUntil = 0;

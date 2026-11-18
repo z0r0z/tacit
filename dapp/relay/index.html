@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com">
 <meta name="color-scheme" content="light dark">
 <title>tacit relay</title>
 <meta name="description" content="What the relay earns, what it spends keeping settles and the bridge running, and the tenth of its fee income that buys TAC. Send a settle it has proved, or pay for its proofs.">
@@ -14,7 +14,9 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /relay/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/relay/app.js?cb=58506022">
+<link rel="modulepreload" href="/relay/app.js?cb=0804dc0d">
+<link rel="modulepreload" href="/relay-route.js?cb=80d7281f">
+<link rel="modulepreload" href="/private-route.js?cb=a6bfb621">
 <link rel="modulepreload" href="/trade/connect.js?cb=06b41e2f">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
@@ -26,8 +28,8 @@
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
-<link rel="modulepreload" href="/relay/open.js?cb=95658ab6">
-<link rel="modulepreload" href="/confidential-relay.js?cb=fc0e58c1">
+<link rel="modulepreload" href="/relay/open.js?cb=bdaa732e">
+<link rel="modulepreload" href="/confidential-relay.js?cb=3c9f93c1">
 <link rel="modulepreload" href="/confidential-deployments.js?cb=fa423929">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/confidential-deployments.generated.js">
@@ -453,6 +455,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/relay/app.js?cb=58506022"></script>
+<script type="module" src="/relay/app.js?cb=0804dc0d"></script>
 </body>
 </html>
