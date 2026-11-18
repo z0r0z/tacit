@@ -837,7 +837,7 @@ async function copy() {
 // connect again or a relay account (whose settles are sent or seen home from any tab) has it once the page has settled; a wallet connected
 // in another tab loads it here too.
 let opsLoad = null, opsReady = false;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=a98c488b').then((m) => { opsReady = true; return m; }));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=96b0b60c').then((m) => { opsReady = true; return m; }));
 $('#wallet').title = 'Connect an Ethereum wallet to pay the network fee';
 $('#wallet').addEventListener('click', async (e) => {
   if (opsReady) return;                                            // loaded: ops.js has its own handler on the chip
@@ -881,7 +881,7 @@ function showTab(name, { write = true } = {}) {
     $(`#tb-${n}`).tabIndex = n === t ? 0 : -1;
   }
   if (t !== 'prove') loadOps().then((m) => m.startOps()).catch(() => {});
-  if (t === 'relay') loadForwarders().catch(() => {});
+  if (t === 'relay') { loadForwarders().catch(() => {}); loadOps().then((m) => m.startPay()).catch(() => {}); }
   if (write) {
     const h = new URLSearchParams(cardOf() ? '' : location.hash.slice(1));
     if (t === 'prove') h.delete('tab'); else h.set('tab', t);

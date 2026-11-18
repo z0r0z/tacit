@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=af2d4ca1">
+<link rel="modulepreload" href="/prove/app.js?cb=6dcad841">
 <link rel="modulepreload" href="/community-prove.js?cb=e2a65259">
 <link rel="modulepreload" href="/prove/view.js?cb=f0f73815">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -304,6 +304,8 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .fld input[aria-invalid="true"] { border-color: var(--err); }
 .fld .bad { color: var(--err); font-size: 12px; margin: 0; }
 .fld .bad:empty { display: none; }
+.relay { display: grid; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--hair); }
+.relay .btn { margin-top: 0; }
 .state { display: flex; align-items: center; gap: 12px; margin: 20px 0 0; }
 .state .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--hair-2); }
 .state[data-s="waiting"] .dot, .state.tab .dot { background: var(--ok); animation: pulse 2.4s ease-in-out infinite; }
@@ -957,6 +959,18 @@ node tools/private-route-check.mjs --service https://tacit-evm-pool-keepers.onre
       <p class="plan">Send the address to Tacit to be listed. <a href="https://github.com/src-company/tacit/blob/main/docs/COMMUNITY-OPS.md" target="_blank" rel="noopener noreferrer">How it works</a></p>
     </div>
   </section>
+  <section class="grp" id="g-pay" aria-labelledby="h-pay" data-card="pay-relays">
+    <h2 id="h-pay"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Pay relays</h2>
+    <div class="panel">
+      <p class="lede">Relays that send private ETH spends from the pay page, for a fee. Anyone can list one by staking TAC; a wallet takes the cheapest it can reach, and reaches each one through the private route, so a relay never sees who is asking.</p>
+      <div class="plan num" id="pay-box"><p><span class="sk" style="--w:22ch"></span></p></div>
+      <div id="pay-mine" hidden></div>
+      <p class="status" id="pay-status" role="status"></p>
+      <pre class="cmd"><code>cd worker-relay &amp;&amp; npm ci
+RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/1/evm-pool/keeper --owner 0x… --send</code></pre>
+      <p class="plan"><a href="https://github.com/src-company/tacit/blob/main/docs/RUN-A-PAY-RELAY.md" target="_blank" rel="noopener noreferrer">Run and list a relay</a> · <a href="https://etherscan.io/address/0x00000000000299F48Fb844626ab96c6A20059a01#code" target="_blank" rel="noopener noreferrer">The registry</a></p>
+    </div>
+  </section>
     </div>
 
     <div class="tab ops" id="t-bitcoin" role="tabpanel" aria-labelledby="tb-bitcoin" hidden>
@@ -1025,6 +1039,6 @@ node tools/private-route-check.mjs --service https://tacit-evm-pool-keepers.onre
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=af2d4ca1"></script>
+<script type="module" src="/prove/app.js?cb=6dcad841"></script>
 </body>
 </html>

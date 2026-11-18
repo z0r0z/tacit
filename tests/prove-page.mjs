@@ -61,7 +61,7 @@ async function open(browser, local, { phone = false, idle = false, busy = false,
     else if (d[0] === 'EVENT') ws.send(JSON.stringify(['OK', d[1]?.id, true, '']));
   }));
   if (init) await page.addInitScript(init);
-  const errors = [], posts = [], codeReads = [], deskPosts = [], shares = [], deskReads = [];
+  const errors = [], posts = [], codeReads = [], deskPosts = [], shares = [], deskReads = [], registryReads = [];
   page.on('pageerror', (e) => errors.push(e.message));
   // a public Nostr relay that is down (the Relay tab reads several) is the outside world, not the page
   page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|ERR_|WebSocket connection to 'wss:\/\//.test(m.text())) errors.push(m.text()); });
@@ -105,6 +105,13 @@ async function open(browser, local, { phone = false, idle = false, busy = false,
     const req = route.request();
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'POST', 'access-control-allow-headers': 'content-type' } });
     let b = null; try { b = JSON.parse(req.postData() || 'null'); } catch {}
+    // the relay registry's own answers (read from Ethereum: tests/fixtures/relay-registry-ui.json), for the Pay relays card
+    if (b && !Array.isArray(b) && b.method === 'eth_call' && String(b.params?.[0]?.to).toLowerCase() === '0x00000000000299f48fb844626ab96c6a20059a01') {
+      const d = String(b.params[0].data), R = JSON.parse(readFileSync(new URL('./fixtures/relay-registry-ui.json', import.meta.url), 'utf8')).real;
+      const result = d.startsWith('0x06661abd') ? R.count : d.startsWith('0xe1137f19') ? R.relays1 : d.startsWith('0xcf5ad6e6') ? R.urlOf1 : d.startsWith('0x375b3c0a') ? R.minStake : d.startsWith('0x3222012f') ? R.unstakeDelay : '0x';
+      registryReads.push(d.slice(0, 10));
+      return json(route, { jsonrpc: '2.0', id: b.id, result });
+    }
     if (!Array.isArray(b) || !b.length || !b.every((x) => x.method === 'eth_getCode')) return route.fallback();
     codeReads.push(b.length);
     return json(route, b.map((x) => ({ jsonrpc: '2.0', id: x.id, result: String(x.params[0]).toLowerCase() === DEPLOYED ? '0x60806040' : '0x' })));
@@ -121,7 +128,7 @@ async function open(browser, local, { phone = false, idle = false, busy = false,
   await page.route('https://tacit-points.onrender.com/**', (route) => json(route, { enabled: true, endSec: Math.floor(Date.now() / 1000) + 86400 * 10, terms: { dailyWei: '300000000000000000000', capWeiPerPoint: '10000000000000000' }, account: { creditedWei: '6000000000000000000' }, pocket: { totalWei: '7500000000000000000000', creditedWei: '291270000000000000000', remainingWei: '7208730000000000000000' } }));
   await page.goto(`${ORIGIN}/prove/${hash}`);
   if (more) await page.evaluate(() => document.querySelectorAll('#desk .more, .more.cp').forEach((d) => { d.open = true; }));
-  return { page, ctx, errors, posts, codeReads, deskPosts, shares, deskReads };
+  return { page, ctx, errors, posts, codeReads, deskPosts, shares, deskReads, registryReads };
 }
 const text = (page, s) => page.locator(s).innerText();
 // the page's grinding threads, once their number is what is expected (the browser reports a thread started or ended a moment after the page asks)
@@ -490,6 +497,26 @@ try {
     check(new URL(page.url()).hash === '' && await page.locator('#t-prove').isVisible(), 'back on Prove the address has no tab');
     check(await page.locator('#wallet').isVisible(), 'the wallet chip is in the header');
     check(errors.length === 0, 'no page errors', errors.join(' | '));
+    await ctx.close();
+  }
+  // the Pay relays card: the registry's relays read from the chain, with what it takes to list one, and a way to connect a wallet to manage one
+  {
+    const { page, ctx, errors, registryReads } = await open(browser, { v: null });
+    await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
+    await page.click('#tb-relay');
+    await page.waitForFunction(() => /tacit-evm-pool-keepers\.onrender\.com/.test(document.querySelector('#pay-box')?.textContent || ''), null, { timeout: 20000 });
+    const box = await page.locator('#pay-box').innerText();
+    check(/1,000 TAC · listed/.test(box) && /0x7c9f…43d0/i.test(box), 'the Pay relays card lists the relay the registry holds, with its stake and that it is listed', box.slice(0, 200));
+    check(/1,000 TAC, 7-day wait to leave/.test(box), 'and says what it takes to list one');
+    check(/Connect your wallet to manage a relay you listed/.test(await page.locator('#pay-mine').innerText()), 'with no wallet connected it offers to connect one');
+    check(registryReads.includes('0x06661abd') && registryReads.includes('0xe1137f19') && registryReads.includes('0xcf5ad6e6'), 'it read the count, the entry and its address from the registry', registryReads.join());
+    check(await page.locator('#g-pay [data-card], #g-pay').first().isVisible() && (await page.locator('#g-pay a[href*="RUN-A-PAY-RELAY"]').count()) === 1, 'the card links the guide to run and list a relay');
+    check(errors.length === 0, 'no page errors or policy refusals on the card', errors.join(' | '));
+    await ctx.close();
+  }
+  {
+    const { page, ctx, errors } = await open(browser, { v: null });
+    await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
     for (const [from, tab, extra] of [['#need=970200&why=lock', 'bitcoin', 'need=970200&why=lock'], ['#g-board', 'relay', ''], ['', 'bitcoin', '']]) {
       await page.goto(`${ORIGIN}/weld/keeper/${from}`);
       await page.waitForURL(/\/prove\//, { timeout: 8000 });

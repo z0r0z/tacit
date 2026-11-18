@@ -78,6 +78,15 @@ chain id.
 
 The registry is at `0x00000000000299F48Fb844626ab96c6A20059a01` on Ethereum, verified on Etherscan. `list(chainId, start, max)` shows who is listed.
 
+## 4. Check it
+
+```
+node tools/community-runner.mjs relay-check https://relay.example/1/evm-pool/keeper
+```
+
+Four checks, the way a wallet reaches the relay: it quotes with an address, it shows a private route key signed for by that address, the registry lists it at this
+address, and a sealed quote comes back through Tacit's forwarders. It says which one fails and what to do. It needs no key.
+
 ## What the page does with it
 
 The Pay page reads the list for the chain in use (through a node other than the one its wallet uses), keeps the entries a wallet would use (an https URL
@@ -88,7 +97,9 @@ Nothing else about a relay is trusted, and the page does not rank relays: price 
 
 ## Keeping it
 
-The owner address manages the entry from any wallet, on the registry's Etherscan page (Write Contract):
+The owner address manages the entry from the Pay relays card on the Relay tab of [tacit.finance/prove](https://tacit.finance/prove/#pay-relays): connect the wallet
+that owns it and the card shows your relays with the controls below (a top up approves the TAC first, so it is two confirmations; leaving asks twice). The same calls
+are on the registry's Etherscan page (Write Contract):
 
 - `topUp(id, amount)` adds stake (anyone may add to an entry)
 - `setUrl(id, url)` moves the relay to another host (the owner or the relay's key)

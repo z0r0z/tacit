@@ -643,6 +643,16 @@ evm.onElsewhere(restoreWallet);                                  // a wallet con
 const inView = () => !document.hidden && [...document.querySelectorAll('.tab.ops')].some((t) => !t.hidden);
 const readAll = () => { refresh().catch(() => {}); refreshProof().catch(() => {}); refreshBoard().catch(() => {}); };
 let started = false;
+// The Pay relays card (prove/pay-relays.js): the registry's relays, and an owner's controls for the wallet connected here. Started when the Relay tab opens.
+let payStarted = false;
+export function startPay() {
+  if (payStarted) return;
+  payStarted = true;
+  Promise.all([import('/prove/pay-relays.js?cb=822e8e4c'), import('/private-route.js?cb=3981285c')])
+    .then(([m, r]) => m.startPayRelays({ $, esc, short, toast, rpc, send, waitReceipt, landed, txLink, S, connect, busy }, { forwarders: r.ROUTE.forwarders }))
+    .catch(() => { payStarted = false; });
+}
+
 export function startOps() {
   if (started) return;
   started = true;

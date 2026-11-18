@@ -129,6 +129,13 @@ time of each envelope, never what is in one; it holds no key, forwards nothing o
 - **Limits:** 60 requests a minute per sender (`FORWARDER_RATE_PER_MIN`). The keeper counts everything behind one forwarder as that forwarder's, so a
   forwarder that carries many people should be named in the keepers' `EVM_POOL_KEEPER_FORWARDERS`.
 
+### relay-check (opt-in, not part of `all`)
+
+`node tools/community-runner.mjs relay-check https://relay.example/1/evm-pool/keeper` checks a Pay relay you run, the way a wallet reaches it: its quote names an
+address, it shows a private route key signed for by that address, the relay registry lists it there, and a sealed quote comes back through Tacit's forwarders. It
+needs no key and no ETH, says which step fails and what to do about it, and exits 1 if any does. How to run and list a relay: [RUN-A-PAY-RELAY.md](./RUN-A-PAY-RELAY.md).
+A forwarder that also carries the relays the registry lists runs with `FORWARDER_RPC_URL` set (docs/EVM-POOL.md, "Relays from the registry").
+
 ### board (opt-in, not part of `all`)
 
 Race Tacit's own prover for the prover board's public jobs. These are plain wraps, whose program input holds no one's secret and tells a prover nothing the chain does not already show: the settle consumes one deposit and inserts that depositor's own note in the same transaction, for an amount the underlying transfer reveals. Ops that pay someone else are not raced, even though their inputs hold no secret either: an input carries the commitment and owner behind each leaf the pool publishes only as a hash, so whoever proves one would learn which inserted leaf is the recipient's and could follow it to the moment it is spent. Those are proved on a machine trusted with a witness, or by the payer ([Prove it yourself](#prove-for-the-wrap-pool)). `board` claims one at a time (`POST /prover/community/claim` with your address), proves it with `tacit-prover` beside it and hands the proof back. Claiming takes the job from no one: Tacit's worker goes on with it, the relay checks each proof that comes back as it checks its own (a simulated settle) and uses the first that passes. A proof that does not pass costs nothing but a mark on the board's summary against the address.
