@@ -13,6 +13,8 @@ export const ROUTE = {
   nostr: ['wss://relay.primal.net', 'wss://nos.lol', 'wss://offchain.pub'],   // public Nostr relays that carry a request when no forwarder answers (docs/PRIVATE-ROUTE-NOSTR.md); empty: not used
   // the gateway for a wallet's own chain reads (worker-relay/src/evm-pool-rpc-gateway.js): a different service and key from the relay's, so the relay never sees them
   rpc: { url: 'https://tacit-evm-pool-rpc.onrender.com', id: 'r', gateway: '033b728ecb1b4ff06af1eaf111c0efe54e2cccedcb8febc458842f1f45cd79073a' },
+  // the gateway for the relay's API (server/sealed-api.mjs): what a page asks of the relay (its quote, status, a job's submission) goes through a forwarder, so the API sees the forwarder's address
+  api: { url: 'https://api.tacit.finance', id: 'a', gateway: '02e3ba0385d0b26d62b00ca895c8ab97ca1daa9cf7bd94b3770d244f72301b398c' },
 };
 
 // Always on while the page names a gateway key and a forwarder: there is no setting to turn it off and no direct fallback. A request to the
@@ -99,4 +101,36 @@ const walletSealed = () => (walletMade ||= sealedModule().then((m) => m.makeSeal
 export function walletRpcFetch(chainId, opts = {}) {
   const base = ROUTE.rpc?.url ? `${ROUTE.rpc.url}/${chainId}/evm-pool/keeper` : null;
   return rpcFetch(base, { ...opts, ready: () => !!ROUTE.rpc?.gateway, send: (u, i) => walletSealed().then((f) => f(u, i)) });
+}
+
+// What a page asks of the relay's API, through the route: the same paths server/sealed-api.mjs carries. A request for one of them goes to a forwarder, sealed to the API's gateway key, and
+// the API answers it as it would a direct one (an answer of its own, an error included, is the answer). Only a road that fails (no forwarder answers) sends it straight to the API, as
+// before: the relay is what a person's money moves through, and a page that stopped using it whenever a forwarder did would be of no use. A road that fails is left alone for a minute.
+// A job submitted twice is one job (its id is a hash of what it holds), so a request the road dropped after the API had it is safe to send again.
+const API_PATHS = [['GET', /^\/confidential\/(status|quote|relay|open|index|armed)$/], ['POST', /^\/confidential\/(submit|landed|arm)$/], ['POST', /^\/prover\/pool\/hold$/]];
+let apiMade = null;
+const apiSealed = () => (apiMade ||= sealedModule().then((m) => m.makeSealedFetch({ keeper: ROUTE.api.url, chainId: ROUTE.api.id, gateway: ROUTE.api.gateway, forwarders: ROUTE.forwarders }))
+  .catch((e) => { apiMade = null; throw e; }));
+export function apiFetch({ fetchImpl = (u, i) => fetch(u, i), now = () => Date.now() } = {}) {
+  let skipUntil = 0;
+  return async (url, init = {}) => {
+    const direct = () => fetchImpl(url, init);
+    const u = String(url), base = ROUTE.api?.url;
+    if (!base || !ROUTE.api.gateway || !enabled() || !u.startsWith(`${base}/`) || now() < skipUntil) return direct();
+    const method = String(init.method || 'GET').toUpperCase(), path = u.slice(base.length).split('?')[0];
+    if (!API_PATHS.some(([m, re]) => m === method && re.test(path))) return direct();
+    try {
+      let timer;
+      const go = apiSealed().then((f) => f(u, init));
+      // a read is not waited on for long; a submission is, by the caller's own deadline
+      const r = method === 'GET'
+        ? await Promise.race([go, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('the route did not answer a read of the relay')), RPC_WAIT_MS * 2); })]).finally(() => clearTimeout(timer))
+        : await go;
+      return r;
+    } catch (e) {
+      if (init.signal?.aborted) throw e;
+      skipUntil = now() + RPC_PAUSE_MS;
+    }
+    return direct();
+  };
 }

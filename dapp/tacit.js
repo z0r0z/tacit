@@ -104,6 +104,9 @@ import * as ammEnvelopeMod from './amm-envelope.js';
 import * as ammReplayMod from './amm-replay.js';
 import { makeFarmRecovery } from './amm-farm-recovery.js';
 import { identityMessage } from './identity-message.js';
+// The relay's API goes through the private route when a forwarder answers it (dapp/private-route.js apiFetch). The pool client and the pages' own reads of the relay take their fetch from here at each
+// call, so a call made before this has loaded is a plain fetch, as it always was. A browser or a page without the route leaves it unset.
+import('./private-route.js').then((m) => { globalThis.__tacitRelayFetch ||= m.apiFetch(); }, () => {});
 
 if (typeof window !== 'undefined' && window.top !== window.self) throw new Error('tacit: refusing to run inside a frame');
 

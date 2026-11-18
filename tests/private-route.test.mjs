@@ -52,7 +52,7 @@ await check('the page ships with its gateway key and forwarders, and the route i
   assert.equal(available(), true);
   assert.equal(enabled(), true);
 });
-const SHIPPED = { keeper: ROUTE.keeper, gateway: ROUTE.gateway, forwarders: [...ROUTE.forwarders], nostr: [...(ROUTE.nostr || [])], rpc: { ...(ROUTE.rpc || {}) } };
+const SHIPPED = { keeper: ROUTE.keeper, gateway: ROUTE.gateway, forwarders: [...ROUTE.forwarders], nostr: [...(ROUTE.nostr || [])], rpc: { ...(ROUTE.rpc || {}) }, api: { ...(ROUTE.api || {}) } };
 Object.assign(ROUTE, { gateway: '', forwarders: [] });   // a page with no route configured is a plain fetch
 
 await check('a page that names no gateway or forwarder fetches as it always did', async () => {
@@ -167,6 +167,8 @@ await check('the pay page reads the wallet\'s side through the wallet-read gatew
   assert.match(page2, /openRelays\(\{[\s\S]{0,80}rpc = await rpcRegistry\(CHAINS\[0\]\)|rpc = await rpcRegistry\(CHAINS\[0\]\)/, 'the registry is read by rpcRegistry');
   assert.ok(!/rpc = await rpcApart\(CHAINS\[0\]\);\s*\n\s*const real/.test(page2), 'and not by the wallet reader');
   assert.match(SHIPPED.rpc.gateway, /^0[23][0-9a-f]{64}$/); assert.notEqual(SHIPPED.rpc.gateway, SHIPPED.gateway, 'its own key, not the relay\'s');
+  assert.match(SHIPPED.api.gateway, /^0[23][0-9a-f]{64}$/); assert.ok(![SHIPPED.gateway, SHIPPED.rpc.gateway].includes(SHIPPED.api.gateway), 'the relay API\'s gateway has its own key');
+  assert.equal(SHIPPED.api.url, 'https://api.tacit.finance');
 });
 
 console.log(`\n${n} checks passed`);
