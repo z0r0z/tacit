@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-A8qMBXdv+GhPspSPGWjNX4cSxJ3/HIBJYOIji8kMjb0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0dXk3h5m3SaQKqLrB0lt1NHNrsQvwP29YtQfi1BkAps=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -72,7 +72,7 @@
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=6d4fe1bf">
 <link rel="modulepreload" href="/pool-hint.js?cb=a5413c70">
-<link rel="modulepreload" href="/swap/card.js?cb=c1f0116f">
+<link rel="modulepreload" href="/swap/card.js?cb=7cde045c">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -7561,11 +7561,25 @@ async function xtShieldRaw(addr, wei) {
 // The deposit of the one-transaction buy (xtZapShield): ONE transaction from the wallet to the router, with the ETH, the swap's calldata (which pays the router) and this key's note.
 // It is run as a call first, from the wallet, exactly as it will be sent: a router that refuses it as it stands (the swap cannot pay its least now, the pool will not take the
 // token) sends nothing, and the card buys the long way instead (`zapFallback`). Anything the swap pays above the note, and any ETH it leaves, goes back to the wallet in it.
-async function xtZapDeposit(t, priv, r, plan, status, index, label) {
+async function xtZapDeposit(t, priv, r, plan, status, index, label, run) {
   const owner = S.wallet, router = t.cfg.router, off = () => Object.assign(new Error('The one-transaction buy cannot be made here.'), { zapFallback: true });
   if (!owner || String(plan.to).toLowerCase() !== String(router).toLowerCase()) throw off();
   const w = t.buildWrap({ walletPriv: priv, amountWei: plan.wrapAmount.toString(), ticker: r.ticker, index });
   const data = t.router.zapETHToShieldedNoteCalldata({ tokenOut: r.addr, wrapAmount: plan.wrapAmount, commit: w.commit, zrSwapData: plan.zrSwapData });
+  // a token the pool does not hold yet is added first: with a wallet that sends calls together, as one confirmation with the buy (the buy cannot be run as a call before the
+  // registration exists, and the batch lands whole or not at all); otherwise as its own first confirmation
+  if (r.registered !== true) {
+    if (await canBatch()) {
+      say(status, `Confirm in your wallet: ${r.sym} added to the pool and the one transaction that buys it and puts it in the pool, together…`);
+      try {
+        const txHash = await sendBatch([t.registerTokenCall(r.addr), { to: router, data, value: plan.value }], label);
+        const f = await t.externalAsset(r.addr); if (f.registered) { r.registered = true; xtFrom(r, f.row); }
+        return { ...w, txHash, batched: true };
+      }
+      catch (e) { if (!e?.noBatch) throw e; }
+    }
+    await xtRegister(run, t, r, 'wallet', status);
+  }
   try { await rpc('eth_call', [{ from: owner, to: router, data, value: '0x' + plan.value.toString(16) }, 'latest']); } catch { throw off(); }
   say(status, `Confirm in your wallet: one transaction buys the ${r.sym} and puts it in the pool…`);
   return { ...w, txHash: await sendTx({ to: router, data, value: plan.value, via: 'wallet', label }) };
@@ -7579,7 +7593,7 @@ async function xtZapShield(addr, plan) {
   const r = xtEnsure(addr);
   await (r?.p || r);
   const go = SWC.el?.querySelector('#go'), st = hxMoveSlot();
-  if (!r || r.registered !== true || !S.key || !S.wallet || !go || go.getAttribute('aria-busy') === 'true' || ownNow(['wrap'])) return false;
+  if (!r || r.registered == null || r.err || !S.key || !S.wallet || !go || go.getAttribute('aria-busy') === 'true' || ownNow(['wrap'])) return false;
   if (!(plan?.wrapAmount > 0n) || !(plan.value > 0n) || plan.wrapAmount % r.scale !== 0n) return false;
   say(st, '');
   const label = `Buy and shield ${fmt(plan.wrapAmount, r.dec, 6)} ${r.sym}`;
@@ -7588,7 +7602,7 @@ async function xtZapShield(addr, plan) {
     PROVE_AT.el = st;
     try {
       res = await xtWrapNow({ run, r, wei: plan.wrapAmount, src: 'wallet', status: st, line: () => st, clear: () => SWC.card?.clear?.(), after: hxMoveAfter, label,
-        deposit: (t, priv, index) => xtZapDeposit(t, priv, r, plan, st, index, label),
+        deposit: (t, priv, index) => xtZapDeposit(t, priv, r, plan, st, index, label, run),
         reverted: 'It did not go through: most likely the price moved past your slippage, so the swap was undone and nothing was bought. Only the network fee was spent. Press again for a fresh price.' });
     }
     catch (e) { run.fail(st, e); } finally { PROVE_AT.el = null; }
@@ -13476,6 +13490,9 @@ const hxMoves = {
   zapTo: () => (SPXP ? SPX_A : null),
   shield: (addr, raw) => xtShieldRaw(addr, raw),
   zapShield: (addr, plan) => xtZapShield(addr, plan),
+  // the coin an ETH buy shields, in the pool or not yet (the pool adds it with the buy): read once, or null when the pool cannot be asked
+  zapCoin: async (k) => { const r = xtEnsure(k); if (!r) return null; await (r.p || r); return r.registered == null || r.err ? null : { ticker: r.ticker, id: r.id, tdec: r.tdec, scale: String(r.scale), sym: r.sym }; },
+  zapCoinNow: (k) => { const r = XT.by.get(String(k).toLowerCase()); return r && r.registered != null && !r.err ? { ticker: r.ticker, id: r.id, tdec: r.tdec, scale: String(r.scale), sym: r.sym } : null; },
   poolCoin: (k) => { const r = xtOf(k); return r && r.registered === true ? { ticker: r.ticker, id: r.id, tdec: r.tdec, scale: String(r.scale), sym: r.sym } : null; },
   get chain() { return HX.chain; },
   setChain: (id) => { if (DEVICE_CHAINS.some((c) => c.chainId === id)) { HX.chain = id; hxRemember(); } },
@@ -15817,7 +15834,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=c1f0116f').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=7cde045c').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

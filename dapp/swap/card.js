@@ -1244,7 +1244,7 @@ async function go() {
 }
 // What the one-transaction buy puts in the pool and what comes back to the wallet, as the quote shows it (null when the page would do the buy in two steps).
 const zapOneOf = (r) => {
-  const coin = r?.zap && H.moves?.zapShield ? H.moves.poolCoin?.(S.get) : null, wrap = coin ? R.zapWrapAmount(r.zap.amountLimit, coin.scale) : 0n;
+  const coin = r?.zap && H.moves?.zapShield ? H.moves.poolCoin?.(S.get) || H.moves.zapCoinNow?.(S.get) : null, wrap = coin ? R.zapWrapAmount(r.zap.amountLimit, coin.scale) : 0n;
   return wrap > 0n ? { wrap, back: r.zap.amountOut > wrap ? r.zap.amountOut - wrap : 0n } : null;
 };
 // The buy as ONE transaction, when the page can make the note: the swap is read again with the ROUTER as its recipient, and the page builds the note, runs the exact call as a call,
@@ -1252,7 +1252,7 @@ const zapOneOf = (r) => {
 // that, and any ETH it left, back to the wallet. true: the press is taken (sent, declined, or stopped with its reason said). false: nothing was sent or asked of the wallet and the
 // two steps go on from here (no swap to the router, a call the router would refuse, a key or a token the page cannot use for it).
 async function zapOne(P) {
-  const coin = H.moves.poolCoin?.(P.get);
+  const coin = H.moves.poolCoin?.(P.get) || await H.moves.zapCoin?.(P.get);
   if (!coin) return false;
   let plan;
   try {
