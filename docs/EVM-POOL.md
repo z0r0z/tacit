@@ -802,10 +802,13 @@ show its address.
 
 **What the route hides.** The pay page (`dapp/private-route.js`) sends every request it makes to a relay through a forwarder or, when no forwarder
 answers, through public Nostr relays (docs/PRIVATE-ROUTE-NOSTR.md). There is no setting to turn it off and no direct fallback: a request that no
-road can carry fails. It hides the person's address from the relay and from whatever hosts it. It does not hide it from the chain nodes the page
-reads through (they see the wallet's receive-box addresses, some seventy balance reads a minute for a signed-in tab), or from any other service a page
-asks (the points lookups at `api.tacit.finance` send the connected Ethereum wallet's address, when one is connected). The wallet sheet says the first
-in one line. The forwarders the page names are run by the project today, so they hide a person from the relay and its host but not from the people who
+road can carry fails. It hides the person's address from the relay and from whatever hosts it. The page's chain reads go to the keeper's
+`POST /<id>/evm-pool/keeper/rpc` through the route (`src/lib/evm-pool-keeper-rpc.js`): reads only, from a fixed list of methods, a batch of at most 32, a log
+range of at most 5,000 blocks, no state overrides, and a budget of calls a minute for each sender; a refused call is a 403. The public node that answers
+sees the keeper's request, not the wallet's. A read the keeper does not carry, or any read while no road is open, goes to the node the page names
+(`rpcFetch` in `dapp/private-route.js`; a failing route is left alone for a minute), and that node sees the wallet's receive-box addresses, some seventy
+balance reads a minute for a signed-in tab. The route does not hide a wallet from any other service a page asks (the points lookups at `api.tacit.finance`
+send the connected Ethereum wallet's address, when one is connected). The wallet sheet says the first in one line. The forwarders the page names are run by the project today, so they hide a person from the relay and its host but not from the people who
 run the forwarders; each independent forwarder added to `ROUTE.forwarders` narrows that, and the Nostr relays are independent already.
 
 **Relays from the registry.** A relay anyone has listed in the relay registry is reached the same way, sealed to its own key. The relay (the multi-keeper
