@@ -19,7 +19,7 @@ export const available = () => !!(ROUTE.gateway && ROUTE.forwarders.length);
 export const enabled = available;
 
 let made = null;
-const sealedModule = () => import('/sealed-request.js?cb=b9c11168');
+const sealedModule = () => import('/sealed-request.js?cb=3f065b4d');
 // The sealed fetch, with Nostr behind the forwarders when the page names relays and this browser has a WebSocket. The Nostr carrier loads only here, so a
 // page that never needs it never fetches it.
 const sealed = () => (made ||= Promise.all([
@@ -60,3 +60,31 @@ export function listRelays(chainId, list) {
 }
 // A wallet reads this to send without a reservation, which the route does not carry.
 Object.defineProperty(keeperFetch, 'sealed', { get: enabled });
+
+// A fetch for a JSON-RPC reader's nodes (dapp/json-rpc.js): each read goes to the keeper's /rpc through the route, so the node that answers sees the keeper's
+// request and the keeper sees a forwarder, not the wallet; and only a read the route cannot carry goes to the node the reader named. That is the one place a request
+// may go direct: a chain read is public data, and a page that stopped reading the chain whenever the route did would be of no use. A route that fails is left alone for
+// a minute, so the page does not wait on it for every read. A refusal of a particular call (403: not a carried method, too wide a range) falls back for that call only.
+const RPC_PAUSE_MS = 60_000, RPC_WAIT_MS = 6000;
+let rpcSkipUntil = 0;
+const isLocal = (u) => { try { const h = new URL(u).hostname; return h === 'localhost' || h === '[::1]' || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h); } catch { return true; } };
+export function rpcFetch(keeperBase, { fetchImpl = (u, i) => fetch(u, i), now = () => Date.now() } = {}) {
+  return async (url, init = {}) => {
+    const direct = () => fetchImpl(url, init);
+    if (!keeperBase || !enabled() || String(init.method || 'GET').toUpperCase() !== 'POST' || isLocal(url) || now() < rpcSkipUntil) return direct();
+    try {
+      let timer;
+      const r = await Promise.race([
+        keeperFetch(`${String(keeperBase).replace(/\/+$/, '')}/rpc`, { method: 'POST', body: init.body, signal: init.signal }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('the route did not answer a chain read')), RPC_WAIT_MS); }),
+      ]).finally(() => clearTimeout(timer));
+      if (r.status === 200) return r;
+      if (r.status >= 500 || r.status === 429) rpcSkipUntil = now() + RPC_PAUSE_MS;
+    } catch (e) {
+      if (init.signal?.aborted) throw e;
+      rpcSkipUntil = now() + RPC_PAUSE_MS;
+    }
+    return direct();
+  };
+}
+

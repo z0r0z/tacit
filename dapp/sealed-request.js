@@ -293,7 +293,9 @@ export function makeSealedFetch({ keeper, chainId, gateway, forwarders = [], nos
         init.signal.addEventListener('abort', quit, { once: true });
         item.off = () => init.signal.removeEventListener('abort', quit);
       }
-      if (method !== 'GET' || batchMs <= 0) { send([item]); return; }
+      // a read goes in a shared envelope; so does a chain read (POST …/rpc), which is a read made with a body; any other POST goes alone
+      const readLike = method === 'GET' || /\/evm-pool\/keeper\/rpc$/.test(req.path.split('?')[0]);
+      if (!readLike || batchMs <= 0) { send([item]); return; }
       if (!queue.length && !reading) { read([item]); return; }
       queue.push(item);
       if (queue.length >= cap) flush();

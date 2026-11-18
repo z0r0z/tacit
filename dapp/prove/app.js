@@ -861,7 +861,7 @@ let fwdLoaded = false;
 async function loadForwarders() {
   if (fwdLoaded) return;
   fwdLoaded = true;
-  const { ROUTE } = await import('/private-route.js?cb=1ab1b3b1');
+  const { ROUTE } = await import('/private-route.js?cb=3981285c');
   const box = $('#fwd-box');
   const cmd = $('#fwd-cmd');
   if (cmd) cmd.textContent = `FORWARD_URL=https://your.host node tools/community-runner.mjs forward\nnode tools/private-route-check.mjs --service ${ROUTE.keeper} --gateway ${ROUTE.gateway} --forwarder https://your.host`;
