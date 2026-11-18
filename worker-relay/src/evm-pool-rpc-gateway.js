@@ -14,6 +14,9 @@ import { createServer } from 'node:http';
 import { makeServiceGateway } from './lib/evm-pool-keeper-sealed.js';
 import { makeRpcPassthrough, MAX_BODY } from './lib/evm-pool-keeper-rpc.js';
 
+// The public nodes this reads from have limits of their own, so a log read may span more here than on a relay's paid node: a day of a busy token is about 7,200 blocks.
+const MAX_LOG_RANGE = 20_000;
+
 const log = (...a) => console.log(`[evm-pool-rpc-gateway ${new Date().toISOString()}]`, ...a);
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Cache-Control': 'no-store' };
 const JSON_TYPE = { 'Content-Type': 'application/json', ...CORS };
@@ -32,7 +35,7 @@ export function nodesOf(raw) {
 }
 
 // A JSON-RPC request over a list of nodes: each is tried in turn, starting at the one that answered last, and a node's own error (a revert, a bad parameter) is
-// the answer, not a reason to ask the next. → request(method, params)
+// the answer, not a reason to ask the next (a log read is the exception: the nodes differ in the range they take). → request(method, params)
 export function makeNodeRequest(urls, { fetchImpl = globalThis.fetch.bind(globalThis), timeoutMs = 8000 } = {}) {
   let first = 0, id = 0;
   return async (method, params = []) => {
@@ -43,7 +46,7 @@ export function makeNodeRequest(urls, { fetchImpl = globalThis.fetch.bind(global
         const r = await fetchImpl(urls[at], { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }), signal: AbortSignal.timeout(timeoutMs) });
         if (!r.ok) { last = new Error(`HTTP ${r.status}`); continue; }
         const j = await r.json();
-        if (j.error) throw Object.assign(new Error(j.error.message || 'rpc error'), { code: j.error.code, data: j.error.data, rpc: true });
+        if (j.error) throw Object.assign(new Error(j.error.message || 'rpc error'), { code: j.error.code, data: j.error.data, rpc: method !== 'eth_getLogs' });   // a log range one node refuses is another's to answer
         first = at;
         return j.result === undefined ? null : j.result;
       } catch (e) {
@@ -68,7 +71,7 @@ export function makeRpcGateway({ secret, nodes, forwarders = [], fetchImpl, rate
   const passes = new Map();
   const passFor = (chainId) => {
     if (!nodes.has(chainId)) return null;
-    if (!passes.has(chainId)) passes.set(chainId, makeRpcPassthrough({ request: makeNodeRequest(nodes.get(chainId), { fetchImpl }), chainId }));
+    if (!passes.has(chainId)) passes.set(chainId, makeRpcPassthrough({ request: makeNodeRequest(nodes.get(chainId), { fetchImpl }), chainId, maxLogRange: MAX_LOG_RANGE }));
     return passes.get(chainId);
   };
   const json = (res, code, body) => { res.writeHead(code, JSON_TYPE); res.end(JSON.stringify(body)); };

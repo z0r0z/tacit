@@ -69,6 +69,21 @@ await check('a wallet read goes through the sealed route to the public node of i
   assert.deepEqual(nodeHits.map((h) => h[0]), ['https://eth.test', 'https://base.test']);
 });
 
+await check('a day of logs is carried here (the nodes are public), and a node that refuses a range does not end the read', async () => {
+  const seenUrls = [];
+  const g = makeRpcGateway({ secret, nodes: nodesOf('{"1":["https://narrow.test","https://wide.test"]}'), forwarders: ['198.51.100.7'],
+    fetchImpl: async (url, init) => { seenUrls.push(url); const b = JSON.parse(init.body); if (b.method === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: b.id, result: '0x100000' })); return url.includes('narrow') ? new Response(JSON.stringify({ jsonrpc: '2.0', id: b.id, error: { code: -32005, message: 'range too large' } })) : new Response(JSON.stringify({ jsonrpc: '2.0', id: b.id, result: [] })); } });
+  const via = async (url, init) => { const bytes = Buffer.from(init.body); const req = Readable.from([bytes]); req.method = 'POST'; req.url = '/sealed'; req.headers = { 'content-length': String(bytes.length) }; req.socket = { remoteAddress: '198.51.100.7' };
+    return new Promise((resolve) => { const chunks = []; g.handler(req, { headersSent: false, setHeader() {}, writeHead() {}, write(d) { chunks.push(Buffer.from(d)); }, end(d) { if (d) chunks.push(Buffer.from(d)); resolve(new Response(Buffer.concat(chunks), { status: 200 })); } }); }); };
+  const f = await makeSealedFetch({ keeper: GW, chainId: 'r', gateway: Buffer.from(gatewayKeys(secret).pub).toString('hex'), forwarders: ['https://f1.test'], fetchImpl: via });
+  const head = 0x100000, hex = (x) => '0x' + x.toString(16);
+  const day = await f(`${GW}/1/evm-pool/keeper/rpc`, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getLogs', params: [{ address: '0x' + 'aa'.repeat(20), topics: [], fromBlock: hex(head - 7200), toBlock: 'latest' }] }) });
+  assert.equal(day.status, 200); assert.deepEqual((await day.json()).result, [], 'the second node answered');
+  assert.ok(seenUrls.includes('https://narrow.test') && seenUrls.includes('https://wide.test'));
+  const wide = await f(`${GW}/1/evm-pool/keeper/rpc`, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_getLogs', params: [{ fromBlock: hex(1), toBlock: 'latest' }] }) });
+  assert.equal(wide.status, 403, 'but not the whole chain');
+});
+
 await check('only reads are carried, and only for a chain it has', async () => {
   const f = await sealed(); nodeHits.length = 0;
   assert.equal((await rpcCall(f, 1, { jsonrpc: '2.0', id: 1, method: 'eth_sendRawTransaction', params: ['0x00'] })).status, 403);

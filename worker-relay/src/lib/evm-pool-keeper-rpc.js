@@ -24,7 +24,7 @@ const HEX = /^0x[0-9a-fA-F]+$/;
 const refuse = (status, error) => ({ status, body: { error } });
 
 // request(method, params) → the node's result, or throws; `now` for tests.
-export function makeRpcPassthrough({ request, chainId, callsPerMin = 6000, burst = 600, now = () => Date.now() }) {
+export function makeRpcPassthrough({ request, chainId, callsPerMin = 6000, burst = 600, maxLogRange = MAX_LOG_RANGE, now = () => Date.now() }) {
   const cache = new Map();           // method|params → { at, value } for the chain's head, and the chain id for good
   const budget = new Map();          // sender → { tokens, at }
   const take = (key, n) => {
@@ -67,7 +67,7 @@ export function makeRpcPassthrough({ request, chainId, callsPerMin = 6000, burst
       if (HEX.test(String(f.toBlock ?? ''))) to = BigInt(f.toBlock);
       else if (f.toBlock == null || f.toBlock === 'latest') to = BigInt(await cached('eth_blockNumber', []));
       else return 'eth_getLogs needs a numeric toBlock or latest';
-      if (to < from || to - from > BigInt(MAX_LOG_RANGE)) return `eth_getLogs covers at most ${MAX_LOG_RANGE} blocks`;
+      if (to < from || to - from > BigInt(maxLogRange)) return `eth_getLogs covers at most ${maxLogRange} blocks`;
     }
     return null;
   }
