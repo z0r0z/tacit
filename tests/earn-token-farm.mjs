@@ -54,6 +54,13 @@ ok(!started || (/no pool yet/.test(card) && /Pool new: it holds only your deposi
   ok(/sendBatch\(\[\.\.\.\(r\.registered !== true \? \[t\.registerTokenCall\(r\.addr\)\] : \[\]\), \{ to: router, data, value: plan\.ethLeg \}, \{ to: t\.cfg\.pool, data: shield, value: 0n \}\]/.test(body), 'a wallet that batches sends the registration, the add and the shield as one confirmation');
   ok(/const both = await xtBothUse\(r, wei\)\.catch\(\(\) => null\); hash = both \? await xtStartBoth/.test(fn), 'the start press uses it when the payer holds the token');
 }
+// a key that holds the private tETH and the private token starts the pool from those notes: nothing public about the amounts
+{
+  const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), body = fn.slice(fn.indexOf('async function xtPrivBothUse('), fn.indexOf("// Liquidity added to a token's tETH pool"));
+  ok(/spendable\('eth'\) >= ethUnits && spendable\(`xp\$\{r\.addr\}`\) >= tokUnits/.test(body), 'the private start is only offered when both private balances cover their leg');
+  ok(/noteFor\(run, t, priv, plan\.ethUnits/.test(body) && /noteFor\(run, t, priv, plan\.tokUnits/.test(body) && /t\.lpAdd\(\{ walletPriv: priv, aNote: nE, bNote: nT, feeBps: POOL_START_FEE, selfSettle/.test(body), 'it cuts a note of each size and adds them as the first liquidity (the module creates the pool)');
+  ok(/if \(HX\.from === 'eth'\) \{ const pb = await xtPrivBothUse\(r, wei\)/.test(fn) && /src === 'eth' && !lpOnly\) out\.push\(\.\.\.xtEarnRows\(\)\.filter\(\(x\) => x\.k\.startsWith\('xs:'\)/.test(fn), 'private tETH, as the Earn source, lists the starts its private coins can fund, and the press uses the private start');
+}
 await b.close(); server.close();
 console.log(`\n${n} ok, ${fails} failed`);
 if (bad.length) { console.log('PAGE ERRORS:\n' + bad.join('\n')); fails++; }
