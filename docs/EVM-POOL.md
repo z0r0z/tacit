@@ -692,6 +692,14 @@ must be a public name (no IP address, `localhost` or local-network name). Two ad
 names one of them in its quote, and only the entry pinned to that address is ever used, so an entry made by someone else for a relay's
 URL cannot take the relay's place.
 
+**Relays anyone lists.** The relay registry (`0x00000000000299F48Fb844626ab96c6A20059a01` on Ethereum, `contracts/src/RelayRegistry.sol`) lists the relays
+people have staked TAC to run, for any chain id. The Pay page (`/pay/eth/`) reads the list for the chain in use through a node other than its wallet's,
+keeps the entries a wallet would use, draws a few at random next to the relay it ships with (five are asked in all), and the wallet quotes each: a relay
+is used only if its quote names the address it was listed under, and a spend goes through one of the cheapest, the dearer drawn less often. A relay that
+has not answered a second or so after the first has is left out of that spend, so one that never answers delays nothing for long. A listed relay is reached
+through the private route (below), so the page's content security policy stays closed to its host and a relay listed tomorrow works without a new page. The page
+that lives on chain as `anon.wei` does not read the registry. How to run and list a relay: [RUN-A-PAY-RELAY.md](./RUN-A-PAY-RELAY.md).
+
 **What the relay sees.** Your IP address; the transaction it is asked to send (all of which becomes public); at
 `/reserve`, the new leaves and the nullifiers being spent; at `/receive`, the chain, note key and fee cap of each box
 it is asked to watch; and at `/events`, the block a history read begins in: the start of a range of blocks after an absence, not the wallet's
@@ -792,13 +800,23 @@ so whoever gets it can read the envelopes they recorded: keep it to the keeper's
 (a new key id) and update the pages. A wallet that cannot reach any forwarder fails; it never falls back to a direct request, which would
 show its address.
 
-**What a page's switch hides.** A page that offers the route (`dapp/private-route.js`; the pay page's wallet sheet: "Hide my address from the relay")
-sends every request it makes to a relay through a forwarder, from its first request of a visit once a person has turned it on, and fails a
-request when no forwarder answers rather than send it directly. It hides the person's address from the relay and from whatever hosts it. It does
-not hide it from the chain nodes the page reads through (they see the wallet's receive-box addresses, some seventy balance reads a minute for a
-signed-in tab), or from any other service a page asks (the points lookups at `api.tacit.finance` send the connected Ethereum wallet's address, when one is
-connected). The page says the first in one line under the switch. `ROUTE.forwarders` is empty in `dapp/private-route.js`
-today, so no page offers the switch.
+**What the route hides.** The pay page (`dapp/private-route.js`) sends every request it makes to a relay through a forwarder or, when no forwarder
+answers, through public Nostr relays (docs/PRIVATE-ROUTE-NOSTR.md). There is no setting to turn it off and no direct fallback: a request that no
+road can carry fails. It hides the person's address from the relay and from whatever hosts it. It does not hide it from the chain nodes the page
+reads through (they see the wallet's receive-box addresses, some seventy balance reads a minute for a signed-in tab), or from any other service a page
+asks (the points lookups at `api.tacit.finance` send the connected Ethereum wallet's address, when one is connected). The wallet sheet says the first
+in one line. The forwarders the page names are run by the project today, so they hide a person from the relay and its host but not from the people who
+run the forwarders; each independent forwarder added to `ROUTE.forwarders` narrows that, and the Nostr relays are independent already.
+
+**Relays from the registry.** A relay anyone has listed in the relay registry is reached the same way, sealed to its own key. The relay (the multi-keeper
+service, with `EVM_POOL_KEEPER_GATEWAY_KEY`) serves `GET /sealed/key`: its gateway key, signed for by its relayer key (`dapp/relay-gateway-doc.js`). A page that
+has read the registry asks a forwarder for it (`GET /r/<chainId>/<relayer>/key`), checks the signature against the address the registry lists, and posts each
+sealed request to `POST /r/<chainId>/<relayer>`; the forwarder finds that relayer in the registry (it reads it through `FORWARDER_RPC_URL`, a minute at a time),
+and hands the envelope to the relay's own `/sealed`. So the relay sees a forwarder, never the person, and a forwarder that swapped the key could not sign for
+the relayer. The forwarder calls only the `/sealed` and `/sealed/key` of a registry entry's https origin, never a url a caller gives; the name must be public and
+resolve only to public addresses (resolved once, and the connection goes to the address that was checked), no port, no redirect, an answer cut off at a size
+and a time (`worker-relay/src/lib/safe-https.js`). A relay without a gateway key is not reached: there is no direct request. A listed relay does not take part
+in the Nostr road.
 
 **Turning it on.** Each step can be left standing; nothing a person sees changes until the last.
 1. Deploy the keepers with this code. The route is off without a key: `GET /<id>/evm-pool/keeper/info` has no `sealed`, `POST /sealed` is a 404.
@@ -810,15 +828,16 @@ today, so no page offers the switch.
 3. Run a forwarder somewhere that is not the keeper's host, and, for the route to hide anyone from the keeper's operator, not run by the
    operator: `FORWARDER_GATEWAYS='{"k":"https://<the service>/sealed"}' node worker-relay/src/evm-pool-forwarder.js` (an id is a chain's, a pool's, or a
    service's; a single keeper's is `{"1":"https://…/1/evm-pool/keeper/sealed"}`). It holds no key, forwards no header of the caller's and keeps nothing.
+   `FORWARDER_RPC_URL=<an Ethereum node>` also makes it carry the relays the registry lists (`/r/…`, above); without it those routes are a 404.
 4. `node tools/private-route-check.mjs --service https://<the service> --gateway <public key> --forwarder https://<a forwarder>` (once for each
    forwarder, or with `--forwarder` repeated) checks it from outside: the key a pool holds is the key to pin, a page's origin may call the forwarder,
    a burst of reads comes back sealed and equal to the direct answers, and what the route does not carry is refused. It must pass before a page is pointed at it.
-5. In `dapp/private-route.js` set `ROUTE.gateway` and `ROUTE.forwarders`, add each forwarder's origin to the pay page's `connect-src`, run
-   `node build/build.mjs` and push. The wallet sheet then offers the switch, off until a person turns it on; turning it on tries the route once and
-   stays off if it does not answer.
-6. To take it away from everyone, empty `ROUTE.forwarders` and push. A page without a forwarder neither offers nor uses the route, so nobody who
-   had turned it on is left unable to reach the relay; clearing the key from the service does the same for a page that still names it, with an
-   error until the page is updated.
+5. In `dapp/private-route.js` set `ROUTE.gateway` and `ROUTE.forwarders` (and `ROUTE.nostr`, the relays that carry a request when no forwarder
+   answers), add each origin to the `connect-src` of every page that can carry the route (`tests/private-route.test.mjs` fails when one is missing),
+   run `node build/build.mjs` and push. The route is then on for everyone who opens the page. List a forwarder that carries many people in the
+   keepers' `EVM_POOL_KEEPER_FORWARDERS`, or the keeper counts everyone behind it as one sender.
+6. To take it away from everyone, empty `ROUTE.forwarders` and push. A page without a forwarder does not use the route and sends its requests
+   directly; clearing the key from the service makes a page that still names it fail with an error until the page is updated.
 
 ## Keys and recovery
 

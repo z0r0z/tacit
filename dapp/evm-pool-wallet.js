@@ -19,6 +19,7 @@ import { makeBtcShieldedPool } from './btc-shielded-pool.js';
 import { poolAsset, extDataHash } from './evm-pool-zk.js';
 import { sharedSecrets } from './evm-pool-scan.js';
 import { relaysOf, orderQuotes, QUOTE_MS } from './evm-pool-relays.js';
+import { collectQuotes } from './evm-pool-open-relays.js';
 export { jsonRpc } from './json-rpc.js';
 import { depositIntent, receiveKeys, receivedNote, receiveBoxAddress, sweepWitness, callIntent, callEscrowAddress, callIntentJson, callIntentAbi, CALL_INTENT_SIG, calldata, selector, bridgeEthCall, L2_BRIDGES, RECEIVE_FEE_BPS, RECEIVE_INDEX } from './evm-pool-gateway.js';
 
@@ -1248,7 +1249,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     }
     const path = gas ? `/quote?gas=${gas}` : '/quote';
     if (relays.length < 2) return withinFee(await keeperGet(path), maxFee);
-    const asked = (await Promise.all(relays.map(async (e) => { const q = await quoteAt(e, path); return q && { e, q }; }))).filter(Boolean);
+    const asked = await collectQuotes(relays, (e) => quoteAt(e, path));      // the fastest relays' quotes, not the slowest relay's wait
     if (!asked.length) return withinFee(await keeperGet(path, 4, relays[0]), maxFee);      // none answered: the first relay's own answer, or its error
     const cheap = asked.filter((x) => maxFee == null || BigInt(x.q.fee) <= BigInt(maxFee));
     if (!cheap.length) throw feeWentUp(asked.map((x) => BigInt(x.q.fee)).reduce((a, b) => (a < b ? a : b)));

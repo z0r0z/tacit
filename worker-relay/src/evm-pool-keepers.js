@@ -197,6 +197,7 @@ async function main() {
   const zk = await loadZk();
   const provers = new Map(); // one per distinct (wasm, zkey, vk), shared by the pools that use it
   const keepers = new Map();
+  const keeperAccounts = [];      // each keeper's own account, read by GET /sealed/key when it vouches for the gateway key
   const pools = new Map();    // chainId:pool → id, so two keepers never watch one pool
   const running = [];
   const chainPool = isChainPool;
@@ -214,6 +215,7 @@ async function main() {
     const account = privateKeyToAccount(cfg.keeperKey.startsWith('0x') ? cfg.keeperKey : `0x${cfg.keeperKey}`);
     checkKeeperSigner(cfg, account.address);
     cfg.keeperAddress = account.address;
+    keeperAccounts.push(account);
     const chain = await makeKeeperChain({ cfg, account, log: clog });
     if (chain.chainId !== chainId) throw new Error(`keeper ${id}: its node is on chain ${chain.chainId}, not ${chainId}`);
     // a pool served on request spends at most a day's allowance of gas: a send past it is refused before it is signed
@@ -362,7 +364,7 @@ async function main() {
   // The private route for the whole service (docs/EVM-POOL.md "Private route"): one gateway key in the base environment and one POST /sealed
   // that carries any pool's routes, so a wallet's burst of reads for every pool is one envelope.
   const sealed = process.env.EVM_POOL_KEEPER_GATEWAY_KEY ? makeServiceGateway({
-    secret: process.env.EVM_POOL_KEEPER_GATEWAY_KEY, serve, json, log,
+    secret: process.env.EVM_POOL_KEEPER_GATEWAY_KEY, serve, json, log, accounts: keeperAccounts,
     forwarders: String(process.env.EVM_POOL_KEEPER_FORWARDERS || '').split(',').map((a) => a.trim()).filter(Boolean),
     ratePerMin: Number(process.env.EVM_POOL_KEEPER_RATE_PER_MIN || 20),
   }) : null;
@@ -375,6 +377,19 @@ async function main() {
     try { Promise.resolve(sealed?.(req, res) ? undefined : serve(req, res)).catch(failed(res)); } catch (e) { failed(res)(e); }
   })
     .listen(port, () => log(`listening on ${port}: keepers ${running.join(', ')} (unprefixed routes are ${running[0]}'s)${sealed ? '; the private route is on at POST /sealed' : ''}`));
+
+  // The private route over Nostr (docs/PRIVATE-ROUTE-NOSTR.md), off until EVM_POOL_KEEPER_NOSTR_RELAYS names the relays (wss://…,wss://…): the keeper
+  // hears sealed requests on them and answers there, through the same gateway POST /sealed reaches.
+  if (sealed && process.env.EVM_POOL_KEEPER_NOSTR_RELAYS) {
+    const relays = process.env.EVM_POOL_KEEPER_NOSTR_RELAYS.split(',').map((x) => x.trim()).filter((x) => /^wss:\/\//.test(x));
+    try {
+      const { WebSocket } = await import('ws');
+      const { makeNostrRoad } = await import('./lib/evm-pool-keeper-nostr.js');
+      const road = makeNostrRoad({ take: sealed, kidHex: sealed.key.kid, relays, WS: WebSocket, log, minBits: Number(process.env.EVM_POOL_KEEPER_NOSTR_BITS || 12) }).start();
+      log(`private route over Nostr: ${relays.length} relays, key id ${sealed.key.kid}`);
+      setInterval(() => { const s = road.stats(); if (s.heard) log(`nostr road: heard ${s.heard}, answered ${s.answered}, dropped ${s.dropped}, too large ${s.tooBig}, on ${s.relays.length}/${relays.length} relays`); }, 600_000).unref();
+    } catch (e) { log(`private route over Nostr did not start: ${safeErr(e)}`); }
+  }
 
   for (const id of running) runKeeper(keepers.get(id));
 

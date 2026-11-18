@@ -200,9 +200,11 @@ const shuffled = (xs) => {
 // always goes alone and at once: a /relay can wait minutes for its turn, and must not hold the reads up. `batchMs: 0` sends
 // every request alone.
 // `fetch.sealed` is true: the wallet then sends without a reservation, which the private route does not carry.
-export function makeSealedFetch({ keeper, chainId, gateway, forwarders, fetchImpl = globalThis.fetch?.bind(globalThis), now, batchMs = 200, maxBatch = 16 }) {
+// pathOf(forwarder) is where an envelope is posted: the forwarder's /f/<chainId> unless a caller says otherwise (a relay the registry lists is reached at
+// /r/<chainId>/<relayer>, dapp/route-community.js).
+export function makeSealedFetch({ keeper, chainId, gateway, forwarders = [], nostr = null, fetchImpl = globalThis.fetch?.bind(globalThis), now, batchMs = 200, maxBatch = 16, pathOf = null }) {
   const base = String(keeper).replace(/\/+$/, '');
-  if (!forwarders?.length) fail('the private route needs a forwarder');
+  if (!forwarders?.length && !nostr) fail('the private route needs a forwarder');
   pointOf(hexToBytes(String(gateway).replace(/^0x/, '')));
   const cap = Math.max(1, Math.min(maxBatch, MAX_BATCH));
 
@@ -213,7 +215,7 @@ export function makeSealedFetch({ keeper, chainId, gateway, forwarders, fetchImp
       const sealed = await sealRequest(gateway, reqs.length === 1 ? reqs[0] : reqs, { now });
       let r;
       try {
-        r = await fetchImpl(`${String(fw).replace(/\/+$/, '')}/f/${chainId}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: sealed.bytes, signal });
+        r = await fetchImpl(pathOf ? pathOf(String(fw).replace(/\/+$/, '')) : `${String(fw).replace(/\/+$/, '')}/f/${chainId}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: sealed.bytes, signal });
       } catch (e) { last = e; continue; }
       if (r.status !== 200) {
         last = new SealedError(`a forwarder answered ${r.status}`);
@@ -222,6 +224,15 @@ export function makeSealedFetch({ keeper, chainId, gateway, forwarders, fetchImp
       }
       try {
         const out = await sealed.open(new Uint8Array(await r.arrayBuffer()));
+        return reqs.length === 1 ? [out] : out;
+      } catch (e) { last = e; }
+    }
+    // Every forwarder failed: the same request, sealed afresh, through public Nostr relays (dapp/route-nostr.js), which see the caller's address and
+    // a blob, not what is in it. Still never a direct request.
+    if (nostr) {
+      try {
+        const sealed = await sealRequest(gateway, reqs.length === 1 ? reqs[0] : reqs, { now });
+        const out = await sealed.open(await nostr.carry(sealed.bytes, { signal }));
         return reqs.length === 1 ? [out] : out;
       } catch (e) { last = e; }
     }

@@ -1334,6 +1334,22 @@ await check('two relays: one that cannot be reached for its quote is left out, a
   assert.equal(String(s.bodies[K1][0].tx.fee), '2000000000000');
 });
 
+await check('two relays: one that never answers its quote holds the spend for the grace, not for its timeout, and the spend goes through the one that did', async () => {
+  const s = twoRelays(81);
+  s.hosts[K2].quote = () => new Promise(() => {});      // a relay that takes the request and never answers (the cheaper one)
+  await s.ready();
+  const t0 = Date.now();
+  let h;
+  await Promise.race([
+    (async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); })(),
+    new Promise((_, no) => setTimeout(() => no(new Error('the spend waited on the relay that never answers')), 20000)),
+  ]);
+  assert.match(h, /^0x[0-9a-f]{64}$/);
+  assert.ok(Date.now() - t0 < 10000, `took ${Date.now() - t0} ms`);
+  assert.deepEqual(sentTo(s), [K1 + '/relay']);
+  assert.equal(lc(s.bodies[K1][0].tx.relayer), lc(RELAYER));
+});
+
 await check('two relays: a quote that names an address other than the one the relay is pinned to is refused, not signed for', async () => {
   const s = twoRelays(63);
   s.hosts[K2].quote = () => [200, { chainId: 8453, pool: POOLF, relayer: '0x' + '99'.repeat(20), fee: '1000' }];     // cheap, but not the pinned address

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-6cPr1RFocaXvtFKncs1EpZAWg7WEpIWEn6WvuAQ7Ddw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-0se0Kp58vzaX+PUiQx/AoVB6xEPSKarUQ7G2vIqN2yc=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -42,7 +42,7 @@
 <link rel="modulepreload" href="/json-rpc.js">
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/evm-pool-tokens.js?cb=16e0e196">
-<link rel="modulepreload" href="/private-route.js?cb=5828f368">
+<link rel="modulepreload" href="/private-route.js?cb=1ab1b3b1">
 <!-- preload:end -->
 <!-- The first reads go to these four: their connections open while the modules load. -->
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
@@ -944,12 +944,12 @@ import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView } from '/address-view.js?cb=58dd4914';
 import { qrSvg as qrMarkup } from '/qr.js?cb=7ca24213';
 import { keeperIdOf, KEEPERS as POOL_KEEPERS } from '/evm-pool-tokens.js?cb=16e0e196';
-import { keeperFetch, available as routeAvailable, enabled as routeOn } from '/private-route.js?cb=5828f368';
+import { keeperFetch, available as routeAvailable, enabled as routeOn, listRelays } from '/private-route.js?cb=1ab1b3b1';
 import { signBoxSync as signBox, boxSigOk as boxRecordOk } from '/box-record.js?cb=c66c8473';
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 // preload-later:begin
-for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=d90c3236","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-relays.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
+for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=1ac76020","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-relays.js","/evm-pool-open-relays.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
 // preload-later:end
 
 const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5';
@@ -1166,7 +1166,7 @@ function sayLive(el, view) {
 
 const mods = lazy(async () => {
   const [zkm, wm, gw, pm, pos] = await Promise.all([
-    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=d90c3236'), import('/evm-pool-gateway.js'),
+    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=1ac76020'), import('/evm-pool-gateway.js'),
     import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
   ]);
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
@@ -1181,6 +1181,24 @@ const rpcs = new Map();
 const rpcOn = async (c) => { if (!rpcs.has(c.chainId)) rpcs.set(c.chainId, (await rpcLib()).jsonRpc(c.rpc)); return rpcs.get(c.chainId); };
 const apart = new Map();
 const rpcApart = async (c) => { if (!apart.has(c.chainId)) apart.set(c.chainId, (await rpcLib()).jsonRpc([...c.rpc].reverse())); return apart.get(c.chainId); };
+// The relays anyone has listed in the relay registry (on Ethereum) for a chain, listed next to the one this page ships with: read once a visit, through a
+// node other than the wallet's own, a few drawn at random (dapp/evm-pool-open-relays.js). A registry that does not answer in time leaves the page with its own
+// relay; a wallet is built after this, so it has them (c.keepers), and each relay it asks has to name the address it was listed under.
+const OPEN_RELAYS = new Map();
+const openRelaysFor = (c) => {
+  if (!OPEN_RELAYS.has(c.chainId)) OPEN_RELAYS.set(c.chainId, (async () => {
+    try {
+      const o = await import('/evm-pool-open-relays.js?cb=b2194719'), rpc = await rpcApart(CHAINS[0]);
+      const real = !!location.hostname && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+      c.keepers = await Promise.race([
+        o.openRelays({ call: (to, data) => rpc('eth_call', [{ to, data }, 'latest']), chainId: c.chainId, own: chainKeeper(c), pinned: real }),
+        new Promise((resolve) => setTimeout(() => resolve([]), 4000)),
+      ]);
+      listRelays(c.chainId, c.keepers);      // the private route reaches them too, sealed to each one's own key (dapp/route-community.js)
+    } catch { c.keepers = c.keepers || []; }
+  })());
+  return OPEN_RELAYS.get(c.chainId);
+};
 // The chain's time, from its latest block, carried forward on this device's clock from the moment it was read: a deadline counted from it holds
 // on chain whatever the device's clock says. → () => unix seconds
 async function chainClock(c) {
@@ -1619,7 +1637,7 @@ const PSW = { w: null, n: 0, wait: new Map() };
 function pswDrop() { PSW.w?.terminate(); PSW.w = null; for (const f of PSW.wait.values()) f({ ok: false }); PSW.wait.clear(); }
 function pswWorker() {
   if (PSW.w) return PSW.w;
-  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=cb9e95c8', { type: 'module' }); } catch { return null; }
+  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=ef56ae27', { type: 'module' }); } catch { return null; }
   PSW.w.onmessage = (e) => PSW.wait.get(e.data?.id)?.(e.data);
   PSW.w.onerror = pswDrop;
   return PSW.w;
@@ -1634,6 +1652,7 @@ const workerOk = () => !S.chainOnly && !routeOn() && typeof Worker === 'function
 async function syncInWorker(c, back = false) {
   const pub = S.key?.pubHex, st = CH[c.chainId], gen = st.gen;
   if (!pub || !workerOk() || (!back && !(await farBehind(c))) || S.key?.pubHex !== pub) return false;
+  await openRelaysFor(c);
   const w = pswWorker();
   if (!w) return false;
   const id = ++PSW.n, pre = `tacit-evm-pool-v1:${c.chainId}:${lc(POOL)}:`, entries = {};
@@ -1659,6 +1678,7 @@ async function walletOn(c) {
   st.whole = false;
   if (S.key?.pubHex !== pub) throw Object.assign(new Error('The wallet was closed.'), { said: true });
   const m = await mods(), rpc = await rpcOn(c);
+  await openRelaysFor(c);
   if (st.W && st.for === S.key.pubHex) return st.W;
   const store = { open: true, get: kv.get, set: (k, v) => { if (store.open) kv.set(k, v); } };
   st.W = m.makeEvmPoolWallet({
@@ -1692,7 +1712,7 @@ function backfillChain(c) {
     syncChain(c, true).then(() => historyOf(c, true));
   });
 }
-const sealing = lazy(() => import('/evm-pool-wallet.js?cb=d90c3236'));
+const sealing = lazy(() => import('/evm-pool-wallet.js?cb=1ac76020'));
 // `whole`: a state that held the whole history is read whole again, in the worker, before a wallet is made from it (syncInWorker, walletOn), and the
 // balance it showed stays on screen, as older history being read, until then; without it the new state begins at a catch-up point.
 async function freshWallet(c, whole = false) {
@@ -2012,6 +2032,7 @@ function giftIndex(c) {
 const giftLink = (seed, c, note) => { const q = new URLSearchParams({ gift: bytesToHex(seed), chain: c.key }); if (note) q.set('for', note); return `${location.origin}/pay/eth/#${q.toString()}`; };
 async function giftWallet(seed, c) {
   const m = await mods();
+  await openRelaysFor(c);
   return m.makeEvmPoolWallet({
     zk: m.zk, keys: m.evmPoolKeys(m.zk, seed), keeper: chainKeeper(c), store: null, prove, fetchImpl: timedFetch, partial: true,
     chain: { chainId: c.chainId, pool: POOL, router: ROUTER, rpc: await rpcOn(c), deployBlock: c.deployBlock, confirmations: c.confirmations, logChunk: c.logChunk, keepers: c.keepers },

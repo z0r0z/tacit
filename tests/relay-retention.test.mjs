@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // What the relay keeps and republishes about who a job paid: the exit recipe is dropped once its activation is reported,
 // error text carries no address or calldata, and a rate-limit key is not an address.
-// Run: node tests/relay-neutrality.test.mjs
+// Run: node tests/relay-retention.test.mjs
 import assert from 'node:assert';
 import { keccak_256 } from '../node_modules/@noble/hashes/sha3.js';
 import { makeConfidentialSettler, scrubPublic } from '../worker/src/confidential-settle.js';

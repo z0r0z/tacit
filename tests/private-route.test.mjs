@@ -52,7 +52,7 @@ await check('the page ships with its gateway key and forwarders, and the route i
   assert.equal(available(), true);
   assert.equal(enabled(), true);
 });
-const SHIPPED = { gateway: ROUTE.gateway, forwarders: [...ROUTE.forwarders] };
+const SHIPPED = { keeper: ROUTE.keeper, gateway: ROUTE.gateway, forwarders: [...ROUTE.forwarders], nostr: [...(ROUTE.nostr || [])] };
 Object.assign(ROUTE, { gateway: '', forwarders: [] });   // a page with no route configured is a plain fetch
 
 await check('a page that names no gateway or forwarder fetches as it always did', async () => {
@@ -116,7 +116,7 @@ const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url)
 await check('the pay page sends every request to a relay through keeperFetch, and its wallets ask it whether they are on the route', () => {
   const direct = page.split('\n').map((line, i) => [i + 1, line]).filter(([, line]) => /(^|[^\w.])fetch\(/.test(line) && /chainKeeper\(|\.keeper\b|POOL_KEEPERS|onrender\.com\/\$\{|evm-pool\/keeper/.test(line));
   assert.deepEqual(direct, [], `a relay request that does not go through keeperFetch: ${direct.map(([i]) => i)}`);
-  assert.match(page, /import \{ keeperFetch, available as routeAvailable, enabled as routeOn \} from '\/private-route\.js\?cb=[A-Za-z0-9_-]+';/);
+  assert.match(page, /import \{ keeperFetch, available as routeAvailable, enabled as routeOn(?:, listRelays)? \} from '\/private-route\.js\?cb=[A-Za-z0-9_-]+';/);
   assert.match(page, /const timedFetch = \(url, init = \{\}\) => keeperFetch\(url,/);
   assert.match(page, /Object\.defineProperty\(timedFetch, 'sealed', \{ get: routeOn \}\)/);
   const wallets = [...page.matchAll(/makeEvmPoolWallet\(/g)].map((m) => {
@@ -139,6 +139,25 @@ await check('the pay page offers no way to turn the route off, and says what it 
 
 await check('what the page pins is what the keeper serves', () => {
   assert.match(SHIPPED.gateway, /^03dcc0e9c8f2f3f2/, 'the key id 5c246719 pinned on the keepers service');
+});
+
+await check('every host the route can use is in the CSP of every page that can carry it', () => {
+  const pages = ['index.html', 'spx/index.html', 'tac/index.html', 'sats/index.html', 'pay/eth/index.html'];
+  for (const pg of pages) {
+    const html = readFileSync(new URL(`../dapp/${pg}`, import.meta.url), 'utf8');
+    const connect = (/http-equiv="Content-Security-Policy"[^>]*?connect-src([^;]*)/s.exec(html)?.[1] || '').split(/\s+/);
+    assert.ok(connect.length > 5, `${pg} has a connect-src in its CSP meta tag`);
+    for (const host of [SHIPPED.keeper, ...SHIPPED.forwarders, ...SHIPPED.nostr]) assert.ok(connect.includes(host), `${pg} does not allow ${host}`);
+  }
+  assert.ok(SHIPPED.nostr.length >= 3 && SHIPPED.nostr.every((u) => /^wss:\/\//.test(u)), 'at least three wss relays');
+});
+
+await check('the prove page reads each forwarder\'s health, so its CSP names them, and it has the card', () => {
+  const html = readFileSync(new URL('../dapp/prove/index.html', import.meta.url), 'utf8');
+  const connect = (/http-equiv="Content-Security-Policy"[^>]*?connect-src([^;]*)/s.exec(html)?.[1] || '').split(/\s+/);
+  for (const host of SHIPPED.forwarders) assert.ok(connect.includes(host), `prove/index.html does not allow ${host}`);
+  assert.match(html, /id="fwd-box"/);
+  assert.match(html, /community-runner\.mjs forward/);
 });
 
 console.log(`\n${n} checks passed`);
