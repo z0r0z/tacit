@@ -681,12 +681,16 @@ more than the wallet allows:
 `/evm-pool/keeper`; the one `keeper` a config names stays the first). Each relay is pinned to its own `relayer`, which its quote must
 name, and on a real origin a listed relay without one is not used. For each relayed spend the wallet asks every relay for a quote
 (six seconds each), drops any it would not sign for, and uses one of the cheapest: the relays within a quarter of the lowest fee
-are drawn from by `weight` (1 when absent), so no one relay is the only one asked. The spend's queue slot, proof and send all go
+are drawn from by `weight` (1 when absent) times the square of the lowest fee over its own (a relay a quarter above the lowest has 64% of
+its odds), so price decides most draws and no one relay is the only one asked. The spend's queue slot, proof and send all go
 to that relay. When it refuses before sending anything (it is full, it rate limits this connection, or its fee is above what the
 spend was proved with), the spend is built again for the next relay's quote, within the fee shown, with that relay's address and
 fee in the proof; an answer that does not say whether a relay sent the spend is never handed to another. History (`/events`) is
 read from whichever relay answers. With one relay everything is as it was. A relay is listed in a page's config with its URL and
-address, and its origin in the page's `connect-src`; `dapp/evm-pool-relays.js` has the rules.
+address, and its origin in the page's `connect-src`; `dapp/evm-pool-relays.js` has the rules. On a real origin a listed relay's host
+must be a public name (no IP address, `localhost` or local-network name). Two addresses may be listed at one URL: the server there
+names one of them in its quote, and only the entry pinned to that address is ever used, so an entry made by someone else for a relay's
+URL cannot take the relay's place.
 
 **What the relay sees.** Your IP address; the transaction it is asked to send (all of which becomes public); at
 `/reserve`, the new leaves and the nullifiers being spent; at `/receive`, the chain, note key and fee cap of each box

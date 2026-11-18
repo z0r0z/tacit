@@ -86,6 +86,12 @@ export function openKeeperStore(dbPath) {
     due: (now, limit) => st.due.all(now, limit).map(row),
     dueReceive: (now, limit) => st.dueReceive.all(now, limit).map(row),
     surplusDue: (now, limit) => st.surplus.all(now, limit).map(row),
+    // A box that reached a terminal state keeps its row (the wallet asks its status for a while); after `maxAgeSecs` it goes, so the keeper does not
+    // hold who watched or deposited indefinitely. A completed deposit with a leftover still to settle stays until it is settled.
+    pruneTerminal(now, maxAgeSecs) {
+      const marks = TERMINAL.map(() => '?').join(',');
+      return db.prepare(`DELETE FROM intents WHERE status IN (${marks}) AND updated < ? AND NOT (kind = 'deposit' AND status = 'completed' AND COALESCE(note, '') NOT IN ('swept', 'dust', 'refused'))`).run(...TERMINAL, now - maxAgeSecs).changes;
+    },
     // A receive box last left with a note (skipped, failed) is looked at again now: a restart is a new look, not the end of a wait that grew.
     wakeNoted: (now) => st.wakeNoted.run(now, now).changes,
     nextDue: () => { const t = st.nextDue.get().t; return t == null ? null : Number(t); },

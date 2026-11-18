@@ -787,8 +787,8 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
 // The worker builds a settler per request, so the queue lock lives per KV namespace, not per settler.
 const kvLocks = new WeakMap();
 const kvSenders = new WeakMap();
-// A job record lives thirty days from its last write: far past the day an open job can wait and the hours a settle takes, and it is gone after.
-const JOB_TTL_SECS = 30 * 86400;
+// A job record lives three days from its last write: past the day an open job can wait and the hours a settle takes (a page follows its job for minutes, and checks the chain itself after), and it is gone after.
+const JOB_TTL_SECS = 3 * 86400;
 // A job that ended failed is looked at for a day or two (its holder reads why, the operator may put it back on the queue, a late ack may promote it), and keeps its op
 // for that time only.
 const FAILED_JOB_TTL_SECS = 3 * 86400;

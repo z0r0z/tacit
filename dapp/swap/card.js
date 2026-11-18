@@ -5,8 +5,8 @@ import { declinedWords } from '/wallet-prompts.js';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=1d2cd8d3';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js';
-import * as R from '/swap/route.js?cb=4a3ba95a';
-import * as A from '/swap/aggregate.js?cb=dc2c8428';
+import * as R from '/swap/route.js?cb=7c0d8f3b';
+import * as A from '/swap/aggregate.js?cb=d14ff664';
 import * as SV from '/swap/solvers.js?cb=669b2617';
 import { linkName, linkSides } from '/swap/link.js?cb=00bf0557';
 import { routeLine } from '/swap/route-name.js?cb=2a0317f3';
@@ -651,6 +651,28 @@ async function bestTier(t, cur, next, amountIn) {
   if (ask === TIERS && !got.includes(undefined) && got.some(Boolean)) TIERS_OF.set(`${cur}>${next}`, { at: Date.now(), tiers: TIERS.filter((_, i) => got[i]) });
   return got.filter((r) => r && r.amountOut > 0n).reduce((a, c) => (!a || c.amountOut > a.amountOut ? c : a), null);
 }
+// What the open market pays for a coin with no price of its own here (SPX), in coins per ETH: a small trade quoted by zQuoter's best route, kept a minute (a failed read too, so the quote is not held up by it).
+const OUTR = new Map();
+async function outsideRate(k) {
+  const had = OUTR.get(k), o = ownPool(k);
+  if (had && Date.now() - had.at < 60e3) return had.rate;
+  let rate = null;
+  try {
+    const q = o ? await within(R.quoteEthToToken({ ethCall, to: R.CONF_ROUTER, tokenOut: k, amount: 10n ** 16n, slippageBps: 50, deadline: chainDeadline(1800) }), 8e3, 'the market price did not answer') : null;
+    if (q?.amountOut > 0n) rate = Number(q.amountOut) / 10 ** o.tdec / 0.01;
+  } catch { }
+  OUTR.set(k, { at: Date.now(), rate });
+  return rate;
+}
+// A swap's value against the market, when one side is tETH and the other a coin priced from the open market: what comes out over what went in, both in ETH (-0.1 is ten percent under).
+async function marketGap(inK, outK, spent, out) {
+  const ext = [inK, outK].find((k) => k !== 'teth' && ownPool(k));
+  if (!ext || ![inK, outK].includes('teth')) return null;
+  const rate = await outsideRate(ext);
+  if (!(rate > 0)) return null;
+  const eth = (k, u) => (k === 'teth' ? Number(u) / 1e8 : Number(u) / 10 ** pdOf(k) / rate), vin = eth(inK, spent), vout = eth(outK, out);
+  return vin > 0 && vout > 0 ? { gap: vout / vin - 1, rate } : null;
+}
 async function privQuote(units, from, sym) {
   const wallet = from === 'eth' && !S.inP, tipP = wallet ? tipFor(units) : null;
   if (wallet && S.get === 'teth') return { rows: [{ k: 'private', name: 'Made private', note: '', out: units * E10, best: true, priv: true }], fee: null, tip: await tipP };
@@ -683,7 +705,9 @@ async function privQuote(units, from, sym) {
     }
   }
   if (!use) return stops.length === 1 && from === 'eth' && ownPool(to) ? { rows: [], why: `No pool trades tETH for ${esc(PSYM[to] || 'it')} yet.`, start: to } : { rows: [], why: 'The Tacit pool has no price for this pair right now.' };
-  return { rows: [{ k: 'private', name: 'Tacit pool', note: '', out: use.amt * scOf(S.get), best: true, priv: true }], fee: use.fee, feeTick: from, pools: use.pools, tip: tipP ? await tipP : null };
+  // what the pools say of it: the price the swap moves them by, and against the market where there is a price for the coin
+  const spent = units - use.fee, hit = R.poolImpact?.(use.pools, spent), mkt = await marketGap(from === 'eth' ? 'teth' : S.pay, S.get, spent, use.amt).catch(() => null);
+  return { rows: [{ k: 'private', name: 'Tacit pool', note: '', out: use.amt * scOf(S.get), best: true, priv: true }], fee: use.fee, feeTick: from, pools: use.pools, impact: hit?.impact ?? null, mkt, tip: tipP ? await tipP : null };
 }
 const ACT_GAS = 450000n;
 async function quoteOut(units, pay, get) {
@@ -755,9 +779,18 @@ const spentOf = (q, r) => (r?.via ? r.via.spend : r?.pin ? q.wei : r?.any ? r.an
 function vsMarket(q = S.q, r = picked(q)) {
   if (!q || !r) return null;
   const vin = usdOf(S.pay, spentOf(q, r)) ?? (r.any ? usdOf(lc(R.ZERO), r.any.weth) : null), vout = usdOf(S.get, r.val ?? r.out);
-  return vin && vout ? vout / vin - 1 : null;
+  return vin && vout ? vout / vin - 1 : (r.priv && q.mkt?.gap != null ? q.mkt.gap : null);
 }
-const BAD = -0.03, GATE = -0.1;
+const BAD = -0.03, GATE = -0.1, IMPACT_WARN = 0.03;
+const pctText = (f) => `${(f * 100).toFixed(f >= 0.1 ? 1 : 2)}%`;
+const CKEY = (pk) => ({ eth: 'teth', tac: lc(R.TAC), cusd: lc(R.CUSD), cbtc: lc(R.CBTC) }[pk] ?? pk);       // a pool's key for a coin, back to the card's
+// What the pools a swap crosses hold, as the quote saw them (pool units), and about what that is worth where a side has a price here (a pool is worth twice a side).
+function poolText(pools) {
+  return pools.map((p) => {
+    const ka = CKEY(p.a), kb = CKEY(p.b), va = usdOf(ka, BigInt(p.ra) * scOf(ka)), vb = usdOf(kb, BigInt(p.rb) * scOf(kb)), worth = va != null && vb != null ? va + vb : va != null || vb != null ? 2 * (va ?? vb) : null;
+    return `${tidy(amtFmt(p.ra, 8))} ${PSYM[p.a]} · ${tidy(amtFmt(p.rb, 8))} ${PSYM[p.b]}${worth != null ? ` · about ${usd(worth)}` : ''}`;
+  }).join(' and ');
+}
 
 function paint() {
   paintMode(); paintSides(); paintQuote(); paintRecent(); paintNudge(); syncLane();
@@ -958,6 +991,11 @@ function quotePaint() {
       if (gain >= 0.001) lines.push(['Over best pool', `+${(gain * 100).toFixed(2)}%`, 'ok', r.agg.quotes[0].name]);
     }
     const tacSide = S.pay === lc(R.TAC) || S.get === lc(R.TAC);
+    // a swap through the private pools: how far it moves their price (from their reserves), and what they hold; a TAC pair says its price impact below, from the market
+    if (r.priv && q.pools?.length) {
+      if (q.impact != null && !tacSide) lines.push(['Price impact', pctText(q.impact), q.impact >= IMPACT_WARN ? 'warn' : '', `How far this swap moves the pool's price, its fee included. ${q.pools.length > 1 ? 'The pools hold' : 'The pool holds'} what is shown under Pool, so a bigger swap moves ${q.pools.length > 1 ? 'them' : 'it'} more.`]);
+      lines.push([q.pools.length > 1 ? 'Pools' : 'Pool', poolText(q.pools), '', 'What the pool holds now. A swap trades against it alone: the deeper it is, the less one swap moves its price.']);
+    }
     if (m != null && tacSide) lines.push(['Price impact', `${(Math.max(0, -m) * 100).toFixed(2)}%`, m <= GATE ? 'warn' : '']);
     else if (m != null && (!(r.agg || r.pin) || Math.abs(m) >= 0.01)) lines.push(['Against the market', m <= BAD ? `${(Math.abs(m) * 100).toFixed(1)}% below` : m >= 0.02 ? `${(m * 100).toFixed(1)}% above` : `${m >= 0 ? '+' : '−'}${(Math.abs(m) * 100).toFixed(2)}%`, m <= BAD ? 'warn' : m >= 0.02 ? 'ok' : '']);
     if (m == null && (r.agg || r.sv || r.zap) && !tacSide) lines.push(['Against the market', 'not checked', '', 'There is no reference price for this pair here, so a thin pool could give a poor rate. Compare the routes before sending, and use a small amount first.']);
@@ -989,19 +1027,21 @@ function quotePaint() {
   rc.hidden = !lines.length;
   rc.innerHTML = lines.map(([k, v, c, t, href, act]) => `<div${t ? ` title="${esc(t)}"` : ''}><dt>${k === 'TAC points' ? TAC_MARK : ''}${esc(k)}</dt><dd class="${c || ''}">${href ? `<a href="${esc(href)}">${esc(v)}</a>` : act ? `<button type="button" class="flip-px" data-${act} aria-label="${esc(v)}. Turn it around">${esc(v)}</button>` : cell(v)}</dd></div>`).join('');
   paintLater(q, r, kind);
-  const gate = r && !q.busy && m != null && m <= GATE;
-  if (gate) { S.gapNow = Math.abs(m); if (S.ack && S.gapNow > (S.ackGap ?? 0) + 0.02) S.ack = false; }
+  const imp = r && !q.busy && r.priv && q.pools?.length && !(S.pay === lc(R.TAC) || S.get === lc(R.TAC)) ? q.impact : null, moves = imp != null && imp >= -GATE && imp >= -(m ?? 0);
+  const gate = r && !q.busy && ((m != null && m <= GATE) || (imp != null && imp >= -GATE));
+  const gapShown = moves ? imp : Math.abs(m ?? 0);
+  if (gate) { S.gapNow = gapShown; if (S.ack && S.gapNow > (S.ackGap ?? 0) + 0.02) S.ack = false; }
   if (busy) { } else if (gate) {
     const pub = r.priv ? '.' : ', then make it public.';
     const alt = S.get === lc(R.CUSD) ? ` <a href="/vault/#btc">Borrow cUSD at $1</a>${pub}` : S.get === lc(R.CBTC) ? ` <a href="/vault/#btc">Mint cBTC 1:1</a>${pub}` : '';
-    if (!ackbox.querySelector('input') || ackbox.dataset.k !== `${S.pay}>${S.get}`) {
-      ackbox.dataset.k = `${S.pay}>${S.get}`;
-      const tac = S.pay === lc(R.TAC) || S.get === lc(R.TAC);
+    if (!ackbox.querySelector('input') || ackbox.dataset.k !== `${S.pay}>${S.get}${moves ? ':m' : ''}`) {
+      ackbox.dataset.k = `${S.pay}>${S.get}${moves ? ':m' : ''}`;
+      const tac = S.pay === lc(R.TAC) || S.get === lc(R.TAC) || moves;
       ackbox.innerHTML = tac
-        ? `<label class="ack"><input type="checkbox" id="ack"><span>Moves the price <b>${(Math.abs(m) * 100).toFixed(0)}%</b>. Swap anyway</span></label>`
-        : `<label class="ack"><input type="checkbox" id="ack"><span><b>${(Math.abs(m) * 100).toFixed(0)}% under</b> market.${alt} Swap anyway</span></label>`;
+        ? `<label class="ack"><input type="checkbox" id="ack"><span>Moves the price <b>${(gapShown * 100).toFixed(0)}%</b>. Swap anyway</span></label>`
+        : `<label class="ack"><input type="checkbox" id="ack"><span><b>${(gapShown * 100).toFixed(0)}% under</b> market.${alt} Swap anyway</span></label>`;
       $('#ack').checked = S.ack;
-    } else { ackbox.querySelector('input').checked = S.ack; ackbox.querySelector('b').textContent = `${(Math.abs(m) * 100).toFixed(0)}%${S.pay === lc(R.TAC) || S.get === lc(R.TAC) ? '' : ' under'}`; }
+    } else { ackbox.querySelector('input').checked = S.ack; ackbox.querySelector('b').textContent = `${(gapShown * 100).toFixed(0)}%${S.pay === lc(R.TAC) || S.get === lc(R.TAC) || moves ? '' : ' under'}`; }
   } else { ackbox.innerHTML = ''; ackbox.dataset.k = ''; }
   const [label, can, cls, deposit] = button(q, r, kind, gate);
   go.textContent = label; go.disabled = !can; go.className = `go${cls ? ` ${cls}` : ''}`;
@@ -1533,7 +1573,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=e2208c2d').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=6314fa51').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
 const laterPair = (kind, pay = S.pay, get = S.get) => laterPay(pay)
   && (isEth(pay) ? kind === 'agg' || (kind === 'tac' && get === lc(R.TAC)) : (kind === 'agg' && get !== lc(R.WETH)) || kind === 'any' || kind === 'out' || kind === 'tac');
@@ -2199,7 +2239,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=7a31aea2').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=8c9f100f').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;

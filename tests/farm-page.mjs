@@ -20,7 +20,8 @@ import http from 'node:http';
 import { readFileSync, existsSync, statSync, mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 
-const { privateFarms, aprText } = await import('../dapp/trade/farm-read.js');
+const { privateFarms, aprText, poolWorthEth } = await import('../dapp/trade/farm-read.js');
+const { usd } = await import('../dapp/trade/util.js');
 const { campaignRate, campaignApr } = await import('../dapp/trade/lp-campaign.js');
 const { zapMath, marketOf } = await import('../dapp/farm/zap.js');
 const { zapPlanFor } = await import('../dapp/lp-zap.js');
@@ -317,7 +318,7 @@ try {
     const [pub, p0, p1, p2, te, td] = await Promise.all(['tac-eth', 'teth-tac', 'teth-cusd', 'teth-cbtc', 'tace-eth', 'tacd-usdc'].map((i) => tile(page, i)));
     ok(campaignRate(c).perUsd === 0.05, 'the campaign pays its cap at these depths');
     ok(pub.kind === 'Public pool' && pub.day === `${Math.round(PER_DAY)} TAC a day` && pub.href === '#tac-eth' && pub.sel === 'Select', `the public farm: ${pub.name}, ${pub.kind}, ${pub.apr}, ${pub.day}`);
-    ok([p0, p1, p2].every((x, i) => x.apr === aprText(priv[i].apr) && x.kind === 'Private pool' && x.day === `${Math.round(priv[i].perDay)} TAC a day`), `the private farms: ${[p0, p1, p2].map((x) => `${x.name} ${x.apr}, ${x.day}`).join('; ')}`);
+    ok([p0, p1, p2].every((x, i) => x.apr === aprText(priv[i].apr) && x.kind === `Private pool · ${usd(poolWorthEth(prog.pools.find((q) => q.pid === priv[i].pid), TAC_ETH, PX) * ETH_USD)}` && x.day === `${Math.round(priv[i].perDay)} TAC a day`), `the private farms (each tile says what its pool holds, in dollars): ${[p0, p1, p2].map((x) => `${x.name} ${x.apr}, ${x.day}`).join('; ')}`);
     ok(costs[1] >= 14 && costs[1] < 16 && p1.cost === `0.1 ETH entry −${pctTxt(costs[1])}` && !p0.cost && !pub.cost, `a pool priced away from the market says what the way in costs (${p1.cost}; the arithmetic ${costs[1].toFixed(2)}%), and a pool at the market's price does not`);
     ok(costs[2] < 5 && !p2.cost, `a small pool under 5% says nothing (tETH / cBTC ${costs[2].toFixed(2)}%)`);
     const tags = { 'tac-eth': pub.tag, 'teth-tac': p0.tag, 'teth-cusd': p1.tag, 'teth-cbtc': p2.tag };
@@ -888,10 +889,25 @@ try {
       const m = zapMath({ res, wei: 2n * 10n ** 15n, market: rate, unitB: 1n, decimals: 8 }), rc = await text(page, '#pz-rcpt');
       ok(m.checked && m.against > 5 && new RegExp(`Against the market${pctTxt(m.against)} of this deposit`).test(rc) && /price for SPX is \d+% above the market’s/.test(rc), `checked against SPX’s public market: the pool’s price is over it, and that is said (${m.against.toFixed(2)}%): ${rc.slice(0, 200)}`);
       ok(!/could not be read/.test(rc) && await page.evaluate(() => !document.querySelector('#pz-ack')), 'with the market read there is no “could not be read” tick');
+      ok(/Your share\d+(\.\d+)?% of the pool/.test(rc), `the quote says what share of the pool the deposit would be: ${rc.match(/Your share[^A-Z]*/)?.[0]}`);
       ok(st.spxReads >= 1, `the price came from the public pools (${st.spxReads} read)`);
       const mm = zapMath({ res, wei: 10n ** 17n, market: rate, unitB: 1n, decimals: 8 });
       ok(mm && await until(page, (s) => document.querySelector('#d-teth-spx .cost')?.textContent === s, `0.1 ETH entry −${pctTxt(mm.cost)}`), `its tile says what a tenth of an ETH gives up, against the market (${mm?.cost.toFixed(1)}%: ${(await tile(page, 'teth-spx'))?.cost})`);
       clean(r, 'a tETH / SPX quote');
+      await r.browser.close();
+    }
+    {
+      // a standalone farm's stream is its own: its end date, and where what funds it runs out first, not the launch farms'
+      const own = FINISH - 10 * 86400, funded = 4 * 86400;
+      const sp2 = program({ extra: SPX_POOLS.map((q) => (q.pid === 1001 ? { ...q, epoch: { active: true, periodFinish: own, fundedRunwaySeconds: funded } } : q)) });
+      const r = await openPage({ hash: '#teth-spx', prog: sp2, fake: true }), { page } = r;
+      await until(page, () => /Stream ends/.test(document.querySelector('#pz-stats')?.textContent || ''));
+      const day = (t) => new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(t * 1000)), st = await text(page, '#pz-stats');
+      ok(st.includes(`Stream ends${day(own)}`) && !st.includes(day(FINISH)), `the SPX farm ends on its own date, not the launch farms’ (${st})`);
+      ok(st.includes(`funded until ${day(Math.floor(Date.now() / 1000) + funded)}`), 'and says where what funds it runs out first');
+      const t = await tile(page, 'teth-spx');
+      ok(/^Private pool · \$\d/.test(t?.kind || ''), `its tile says what the pool holds (${t?.kind})`);
+      clean(r, 'the SPX stream');
       await r.browser.close();
     }
     {

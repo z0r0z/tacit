@@ -282,6 +282,26 @@ export function makeFollow({ journal, jobStatus, receipt, receiptOnce, trace = n
   return { job, tx, btc, going };
 }
 
+// The offers a page makes when the relay is slow ("it is taking longer than usual: send it yourself") each stand in for relay jobs. The page stops waiting when it makes one, but the
+// relay keeps the jobs, and the journal follows them: when one lands, the offer is stale and its line has to say so, or the page keeps a "send it yourself" button up for something
+// that went through. `landed` names the offer a job's landing finishes: { spec, done: true } when the job went through, { spec, done: false } when it failed (the offer stands), and
+// null when nothing is offered for it, when the offer is being sent from the account instead (`spec.selfBusy`: that flow says its own end), or when its line is gone.
+export function makeOffers({ ok = (s) => s === 'settled' || s === 'confirmed' } = {}) {
+  const by = new Map();
+  const drop = (spec) => { for (const [id, s] of by) if (s === spec) by.delete(id); };
+  return {
+    track(spec, ids) { for (const id of ids || []) by.set(id, spec); },
+    drop,
+    has: (id) => by.has(id),
+    landed(it) {
+      const spec = by.get(it?.id);
+      if (!spec || spec.selfBusy || !spec.status?.()) return null;
+      if (ok(it.status)) { drop(spec); return { spec, done: true }; }
+      return it.status === 'failed' ? { spec, done: false } : null;
+    },
+  };
+}
+
 export const PACE_KEY = 'tacit-pace-v1';
 const PACE0 = { queue: 8, 'prove:board': 60, 'prove:network': 100, prove: 70, send: 18, tx: 15 };
 const laneOf = (lane) => (/^network/.test(String(lane || '')) ? 'network' : lane === 'board' ? 'board' : null);

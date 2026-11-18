@@ -15,7 +15,7 @@ const me = '0x' + 'aa'.repeat(20), to = '0x' + 'bb'.repeat(20);
 const call = { to, value: 0, input: '0xdeadbeef' + '00'.repeat(80) };
 const orig = { hash: '0x' + '01'.repeat(32), from: me, nonce: 0, ...call }, fast = { hash: '0x' + '02'.repeat(32), from: me, nonce: 0, ...call }, cancel = { hash: '0x' + '03'.repeat(32), from: me, nonce: 0, to: me, value: 0, input: '0x' };
 const helper = cutHelper(text('gas-relay')).replaceAll('15000', '10');
-const wait = (c, tries = 400) => new Function('sleep', `${helper}\nreturn waitMined;`)(sleep)(c.read, orig.hash, tries, 5);
+const wait = (c, tries = 400, guess = null) => new Function('sleep', `${helper}\nreturn waitMined;`)(sleep)(c.read, orig.hash, tries, 5, guess);
 const pending = () => { const c = chain(); c.send(orig); return c; };
 
 test('every admin page carries the same wait', () => {
@@ -33,4 +33,14 @@ test('a speed-up is the transaction that was waited for; a cancel never ran; a r
   c = pending(); c.mine(orig, 999); c.calls.length = 0;
   assert.equal((await wait(c)).rc.transactionHash, orig.hash); assert.deepEqual(c.calls, ['eth_getTransactionReceipt'], 'a transaction that lands at once costs nothing more');
   assert.deepEqual(await wait(pending(), 20), { timeout: true });
+});
+
+test('a transaction no node holds (a wallet on a private mempool): the speed-up is followed from what the page asked the wallet to send', async () => {
+  const guess = (over = {}) => ({ from: me, nonce: 0n, to, value: 0, input: call.input, ...over });
+  let c = chain(); setTimeout(() => c.mine(fast, 990), 30);
+  assert.equal((await wait(c, 3000, guess())).rc.transactionHash, fast.hash, 'the same call at the guessed nonce');
+  c = chain(); setTimeout(() => c.mine(cancel, 990), 30);
+  assert.deepEqual(await wait(c, 120, guess()), { timeout: true }, 'another call at the guessed nonce proves nothing: no "replaced" from a guess');
+  c = chain(); c.send(orig); whenLooked(c, () => { c.mempool.delete(orig.hash); c.mine(cancel, 990); });
+  assert.deepEqual(await wait(c, 3000, guess({ nonce: 9n })), { replaced: cancel.hash }, 'a node that does hold it replaces the guess with what it says');
 });

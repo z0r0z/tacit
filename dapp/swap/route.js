@@ -37,6 +37,23 @@ export const TOKENS = [
   { sym: 'wstETH', name: 'Lido wrapped staked ether', addr: '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0', dec: 18, icon: 'wsteth', permit: '1' },
   { sym: 'WBTC', name: 'Wrapped bitcoin', addr: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', dec: 8, icon: 'btc', permit: null },
 ];
+// What a swap through one or more pools gives up to the pools' own prices, from their reserves: `pools` run in the order the swap crosses them, each { feeBps, ra, rb } with ra the reserve of
+// the coin paid in and rb of the coin paid out (pool units), and `units` is what goes into the first. { impact, out }: impact is the share of the swap's value the price move and the fees take
+// (0.01 is one percent; fees included, so even a tiny swap shows the fee), out what comes out of the last. Null when a pool is empty or the swap would buy nothing.
+export function poolImpact(pools, units) {
+  let amt = BigInt(units), keep = 1;
+  if (!Array.isArray(pools) || !pools.length) return null;
+  for (const p of pools) {
+    const ra = BigInt(p.ra), rb = BigInt(p.rb), fee = BigInt(p.feeBps ?? 30);
+    if (amt <= 0n || ra <= 0n || rb <= 0n) return null;
+    const g = amt * (10000n - fee), out = (rb * g) / (ra * 10000n + g);
+    if (out <= 0n) return null;
+    keep *= (Number(out) / Number(amt)) / (Number(rb) / Number(ra));
+    amt = out;
+  }
+  return { impact: Math.max(0, 1 - keep), out: amt };
+}
+
 export const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 export const tacitToken = (a) => [TAC, CUSD, CBTC].some((t) => same(t, a));
 

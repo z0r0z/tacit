@@ -1296,7 +1296,7 @@ await check('notes under the dust floor are not kept, whoever pays them; with no
 // ── several relays ──
 // Two relays, k.test (the chain's own keeper, pinned to RELAYER) and k2.test (listed, pinned to RELAYER2), each with a fee to quote.
 const RELAYER2 = '0x' + 'b2'.repeat(20), K1 = 'https://k.test', K2 = 'https://k2.test', K2URL = K2 + '/evm-pool/keeper';   // K1, K2: the origins the stub tells apart
-function twoRelays(seed, { fee1 = '2000000000000', fee2 = '1000000000000', weights = {} } = {}) {
+function twoRelays(seed, { fee1 = '2000000000000', fee2 = '1000000000000', weights = {}, keepers = null } = {}) {
   const s = spender(seed);
   s.bodies = { [K1]: [], [K2]: [] };
   s.quote = () => [200, { chainId: 8453, pool: POOLF, relayer: RELAYER, fee: fee1 }];
@@ -1305,7 +1305,7 @@ function twoRelays(seed, { fee1 = '2000000000000', fee2 = '1000000000000', weigh
     quote: () => [200, { chainId: 8453, pool: POOLF, relayer: RELAYER2, fee: fee2 }],
     relay: (n, body) => { s.bodies[K2].push(body); return [200, { txHash: s.spend().tx }]; },
   };
-  s.make({ keepers: [{ url: K2URL, relayer: RELAYER2, weight: weights[K2] }] });
+  s.make({ keepers: keepers ?? [{ url: K2URL, relayer: RELAYER2, weight: weights[K2] }] });
   return s;
 }
 const sentTo = (s) => s.calls.filter((c) => c.endsWith('/relay'));
@@ -1350,6 +1350,17 @@ await check('two relays: a quote for another chain or pool is refused the same w
     await quickly(async () => { await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); });
     assert.deepEqual(sentTo(s), [K1 + '/relay'], JSON.stringify(bad));
   }
+});
+
+await check('two entries at one URL: only the one whose address the server names is used, so an entry made for the real relay\'s URL cannot take its place', async () => {
+  const SQUATTER = '0x' + '99'.repeat(20);
+  // the squatter's entry comes first and weighs fifty to one; the server at the URL names RELAYER2, which only the second entry is pinned to
+  const s = twoRelays(80, { keepers: [{ url: K2URL, relayer: SQUATTER, weight: 50 }, { url: K2URL, relayer: RELAYER2 }] });
+  await s.ready();
+  await withRandom(0.0, () => quickly(async () => { await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); }));
+  assert.deepEqual(sentTo(s), [K2 + '/relay'], 'through the relay that is cheaper, by the entry that matches it');
+  assert.equal(lc(s.bodies[K2][0].tx.relayer), lc(RELAYER2));
+  assert.equal(s.calls.filter((c) => c === K2 + '/quote').length, 2, 'both entries were quoted: neither was dropped for sharing a URL');
 });
 
 await check('two relays: with none answering, the first relay\'s own error is what is said, and nothing is proved', async () => {

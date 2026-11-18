@@ -41,12 +41,27 @@ await check('a listed relay must end in /evm-pool/keeper, the path the private r
   assert.deepEqual(relaysOf({ keepers: [{ url: 'https://two.example/1/evm-pool/keeper/', relayer: A }], pinned: true }).map((e) => e.url), ['https://two.example/1/evm-pool/keeper'], 'with a slash after it, and under a chain\'s id');
   assert.deepEqual(relaysOf({ keeper: 'https://old.example', relayer: A }).map((e) => e.url), ['https://old.example'], 'the keeper a chain has always named is not held to it: it is the one the wallet already knew');
 });
-await check('a pin that is not an address is no pin; a trailing slash is not a different relay; the same relay listed twice is one (the first entry wins)', () => {
+await check('a pin that is not an address is no pin; a trailing slash is not a different relay; the same URL and address listed twice is one (the first entry wins)', () => {
   assert.deepEqual(relaysOf({ keepers: [{ url: U2, relayer: 'nope' }], pinned: true }), []);
-  const two = relaysOf({ keeper: U1 + '/', relayer: A, keepers: [{ url: U1, relayer: B, weight: 9 }, { url: 'https://TWO.example/evm-pool/keeper', relayer: C }, { url: U2, relayer: B }], pinned: true });
-  assert.equal(two[0].url, U1); assert.equal(two[0].relayer, A, 'the keeper the chain named, with its pin, not the list\'s second word on it');
-  assert.equal(two.length, 2, 'U1 once; U2 once (the capital letters in a host are no other relay)');
-  assert.equal(two[1].relayer, C, 'the first entry for it wins');
+  const two = relaysOf({ keeper: U1 + '/', relayer: A, keepers: [{ url: U1, relayer: A, weight: 9 }, { url: 'https://TWO.example/evm-pool/keeper', relayer: C }, { url: U2, relayer: C.toUpperCase().replace('0X', '0x'), weight: 7 }], pinned: true });
+  assert.deepEqual(two.map((e) => e.url), [U1, 'https://TWO.example/evm-pool/keeper'], 'U1 once; the other once, though its host is spelled with capitals the second time');
+  assert.equal(two[0].weight, 1, 'the keeper the chain named, not the list\'s second word on it');
+});
+await check('two addresses at one URL are both kept: an entry made by someone else for a URL cannot push the real relay off the list', () => {
+  // B lists A's host ahead of A, with the weight of five; the server at that URL names A, so only A's entry will ever be used, but both are quoted
+  const list = relaysOf({ keepers: [{ url: U2, relayer: B, weight: 5 }, { url: U2, relayer: A, weight: 1 }], pinned: true });
+  assert.deepEqual(list.map((e) => e.relayer), [B, A]);
+  assert.equal(relaysOf({ keepers: [{ url: U2, relayer: B }, { url: U2, relayer: B.toUpperCase().replace('0X', '0x') }], pinned: true }).length, 1, 'the same address twice is one');
+  assert.equal(relaysOf({ keeper: U2, relayer: A, keepers: [{ url: U2, relayer: B }], pinned: true }).length, 2, 'and one listed against the chain\'s own keeper');
+});
+await check('on a real origin a listed relay\'s host must be a public name: no IP address, localhost or local network name; off one, anything goes', () => {
+  const hosts = ['localhost', 'localhost:8443', '127.0.0.1', '10.0.0.5:8443', '192.168.1.20', '169.254.169.254', '0x7f000001', 'printer.local', 'router.lan', 'svc.internal', 'host.home.arpa', 'nodot', '1.2', 'a.b.localhost', 'a.1'];
+  for (const h of hosts) assert.deepEqual(relaysOf({ keepers: [{ url: `https://${h}/evm-pool/keeper`, relayer: A }], pinned: true }), [], h);
+  for (const h of ['relay.example', 'relay-1.example.org:8443', 'a.b.c.example.com', 'RELAY.Example', 'x_y.example']) {
+    assert.equal(relaysOf({ keepers: [{ url: `https://${h}/evm-pool/keeper`, relayer: A }], pinned: true }).length, 1, h);
+  }
+  assert.equal(relaysOf({ keepers: [{ url: 'https://127.0.0.1/evm-pool/keeper', relayer: A }], pinned: false }).length, 1, 'a local page or a test may use a local relay');
+  assert.deepEqual(relaysOf({ keeper: 'https://localhost:8787', relayer: A }).map((e) => e.url), ['https://localhost:8787'], 'and the chain\'s own keeper is not held to it');
 });
 await check('a weight is a positive finite number, else 1', () => {
   const w = (x) => relaysOf({ keepers: [{ url: U2, relayer: B, weight: x }], pinned: true })[0].weight;
@@ -67,14 +82,31 @@ await check('a quote well above the lowest is never drawn first, however the dra
   for (const r of [0, 0.3, 0.5, 0.99999]) assert.equal(orderQuotes(qs, () => r)[0].e.url, 'https://cheap.example');
   assert.deepEqual(urls(orderQuotes(qs, () => 0)), ['https://cheap.example', 'https://mid.example', 'https://dear.example']);
 });
-await check('quotes within the margin of the lowest are drawn from by weight: the draw falls where the weights say', () => {
-  const lo = 1000, edge = 1000 + Number(NEAR_PCT) * 10;       // exactly at the margin: still near
-  const qs = [quote(lo, 1, 'a'), quote(edge, 3, 'b')];
+await check('quotes within the margin of the lowest are drawn from by weight, the dearer one scaled down by its price: the draw falls where the odds say', () => {
+  const lo = 1000, edge = 1000 + Number(NEAR_PCT) * 10;       // exactly at the margin: still near, at 64% of the cheapest's odds (1 / 1.25 squared)
+  const qs = [quote(lo, 1, 'a'), quote(edge, 3, 'b')];        // odds 1 : 3 x 0.64 = 1 : 1.92, so a is drawn below 1 / 2.92 = 0.3425
   assert.equal(orderQuotes(qs, () => 0.0)[0].e.url, 'https://a.example');
-  assert.equal(orderQuotes(qs, () => 0.24)[0].e.url, 'https://a.example');
-  assert.equal(orderQuotes(qs, () => 0.26)[0].e.url, 'https://b.example');
+  assert.equal(orderQuotes(qs, () => 0.34)[0].e.url, 'https://a.example');
+  assert.equal(orderQuotes(qs, () => 0.35)[0].e.url, 'https://b.example');
   assert.equal(orderQuotes(qs, () => 0.9999)[0].e.url, 'https://b.example');
   assert.deepEqual(urls(orderQuotes(qs, () => 0.9)), ['https://b.example', 'https://a.example'], 'the one not drawn follows');
+});
+await check('at equal weight a relay priced above the lowest is drawn less, in proportion to its price squared, and an equal price is an equal draw', () => {
+  const qs = [quote(1000, 1, 'a'), quote(1250, 1, 'b')];      // a: 1, b: 0.64 -> a is drawn below 1 / 1.64 = 0.6098
+  assert.equal(orderQuotes(qs, () => 0.6097)[0].e.url, 'https://a.example');
+  assert.equal(orderQuotes(qs, () => 0.6099)[0].e.url, 'https://b.example');
+  let a = 0, seed = 7;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+  for (let i = 0; i < 20000; i++) if (orderQuotes(qs, rnd)[0].e.url === 'https://a.example') a++;
+  assert.ok(Math.abs(a / 20000 - 0.6098) < 0.02, `a drew ${a / 20000}`);
+  const same = [quote(500, 1, 'c'), quote(500, 1, 'd')];
+  assert.equal(orderQuotes(same, () => 0.49)[0].e.url, 'https://c.example');
+  assert.equal(orderQuotes(same, () => 0.51)[0].e.url, 'https://d.example');
+});
+await check('quotes of no fee are drawn as equals, not divided by zero', () => {
+  const qs = [quote(0, 1, 'a'), quote(0, 1, 'b')];
+  assert.equal(orderQuotes(qs, () => 0.49)[0].e.url, 'https://a.example');
+  assert.equal(orderQuotes(qs, () => 0.51)[0].e.url, 'https://b.example');
 });
 await check('one fee unit over the margin is out of the draw', () => {
   const qs = [quote(1000, 1, 'a'), quote(1251, 1000, 'b')];       // 25.1% over, with a thousand times the weight

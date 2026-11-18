@@ -122,6 +122,17 @@ try {
   ok(ready.shares === q.plan.shares && await depositStatus(ready.built.depositId) === 0n && await balanceOf(FROM) === before && sent.length === 0, 'with the proof in hand nothing has left the wallet and no deposit exists');
   ok(t.wrapProofFits(ready.built, ready.proven), 'the proof is for this share note: its leaf and its deposit');
 
+  // the pool moves while the share is proved (the proof takes minutes, and the pool is other people's too): somebody trades MOVE_WEI of ETH in through the pool's own AMM
+  const MOVE = BigInt(process.env.MOVE_WEI ?? 10n ** 15n);
+  if (MOVE > 0n) {
+    const TRADER = '0x00000000000000000000000000000000000Ba5E1', dl = Math.floor(Date.now() / 1000) + 1200;
+    await rpcA('anvil_impersonateAccount', [TRADER]); await rpcA('anvil_setBalance', [TRADER, hex(10n ** 18n)]);
+    const tradeData = '0xcfdf9dcc' + strip(q.res.assetA).padStart(64, '0') + strip(q.res.assetB).padStart(64, '0') + W(q.res.feeBps ?? 30) + W(MOVE) + W(0) + W(dl) + strip(TRADER).padStart(64, '0');
+    const th = await rpcA('eth_sendTransaction', [{ from: TRADER, to: '0x00000000E36C7EC997CC59dcDA9E03673B448119', data: tradeData, value: hex(MOVE), gas: hex(600000) }]);
+    const trc = await wallet.receipt(th), after = await readReserves(call, POOL, pool.poolId);
+    ok(trc.status === '0x1' && after.reserveA !== q.res.reserveA, `the pool moved while the share was proved: a trade of ${Number(MOVE) / 1e18} ETH took its tETH from ${q.res.reserveA} to ${after.reserveA} units`);
+  }
+
   // step 2: the one transaction
   const out = await zapSend({ t, rpc, wallet, from: FROM, pool, ready, say: (k) => says.push(k) });
   const rc = await rpcA('eth_getTransactionReceipt', [out.hash]), gasUsed = BigInt(rc.gasUsed), paid = before - await balanceOf(FROM), gasCost = gasUsed * BigInt(rc.effectiveGasPrice);
