@@ -75,6 +75,8 @@ await p.fill('#amt', '0.01');
 const t = await waitFor(/swap, then shield/i, 40000);
 ok(/PEPE/.test(t) && /private PEPE/.test(t) && /swap, then shield/i.test(t), 'picking PEPE prices ETH into private PEPE: swap, then shield');
 const tp = await waitFor(/Privacy 3 deposits in 30 days · low/, 20000);ok(/Privacy 3 deposits in 30 days · low/.test(tp) && asked === 1, 'the PEPE buy says how crowded its private side is: 3 deposits in 30 days, low (the endpoint is asked once)');
+const hint = await waitFor(/Pool none for tETH \/ PEPE yet · start one/, 25000);
+ok(/Pool none for tETH \/ PEPE yet · start one/.test(hint), 'the buy says the token has no tETH pool yet, and offers to start one');
 ok(!(await p.evaluate(() => { const c = document.querySelector('#copy'); return !!c && !c.hidden; })), 'no share link is offered for it (a link opens the Swap tab)');
 const go = await p.evaluate(() => document.querySelector('#go')?.innerText);
 ok(/Connect wallet/.test(go), 'with no wallet the button asks to connect');

@@ -1010,6 +1010,7 @@ function quotePaint() {
     if (m != null && tacSide) lines.push(['Price impact', `${(Math.max(0, -m) * 100).toFixed(2)}%`, m <= GATE ? 'warn' : '']);
     else if (m != null && (!(r.agg || r.pin) || Math.abs(m) >= 0.01)) lines.push(['Against the market', m <= BAD ? `${(Math.abs(m) * 100).toFixed(1)}% below` : m >= 0.02 ? `${(m * 100).toFixed(1)}% above` : `${m >= 0 ? '+' : '−'}${(Math.abs(m) * 100).toFixed(2)}%`, m <= BAD ? 'warn' : m >= 0.02 ? 'ok' : '']);
     if (r.zap && FLOW === 'shield') { const pr = H.moves?.anonRow?.(S.get); if (pr) lines.push(pr); }
+    if (r.zap && FLOW === 'shield' && H.moves?.noPool?.(S.get)) lines.push(['Pool', htmlVal(`none for tETH / ${esc(get.sym)} yet · <a href="#" data-hx="earn:ether:${esc(S.get)}">start one</a>`), '', `The Tacit pool trades no tETH / ${get.sym} pair yet, so a private swap of it has no route. Starting one takes ETH alone: half buys the ${get.sym}, both go in.`]);
     if (m == null && (r.agg || r.sv || r.zap) && !tacSide) lines.push(['Against the market', 'not checked', '', 'There is no reference price for this pair here, so a thin pool could give a poor rate. Compare the routes before sending, and use a small amount first.']);
     if (r.priv) lines.push(...feeLines(q, r));
     { const a = r.priv && aheadArgs(q), ra = r.priv && !a && routeAheadArgs(q), st = a ? PV?.aheadOf?.(a) : ra ? PV?.routeAheadOf?.(ra) : null;

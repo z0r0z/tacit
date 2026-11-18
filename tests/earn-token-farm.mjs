@@ -38,6 +38,13 @@ ok(/tETH \/ SPX\s+private/.test(t), 'the front page offers the tETH / SPX farm t
 ok(/Zap into the farm/.test(t) && /on the open market, then both go in|swapped in the pool, then both go in/.test(t), 'it is a zap into the farm, and says where the token leg comes from');
 ok(/You hold private tETH \/ SPX liquidity, in the farm/.test(t) && /TAC streams to it/.test(t), 'the share goes in the farm and its stream is shown');
 ok(!(await p.evaluate(() => document.documentElement.dataset.page)), 'on the front page itself, not the SPX page');
+// a token with no pool, asked for by its address (the link the buy card offers): the start card says what goes in, and a token the pool has never held is added with it
+const link = (addr) => p.evaluate((x) => { const l = document.createElement('a'); l.href = '#'; l.dataset.hx = `earn:ether:${x}`; l.dataset.amt = '0.01'; document.body.append(l); l.click(); l.remove(); }, addr);
+await link('0x1f9840a85d5af5bf1d1762f925bdaddc4201f984');      // UNI
+const u = await waitFor(/Start the tETH \/ UNI pool/);
+ok(/tETH \/ UNI\s+no pool yet/.test(u) && /Puts in [\d.]+ ETH and [\d.]+ UNI/.test(u), 'a token with no pool, linked by address, offers to start it and says what goes in');
+ok(/Pool new: it holds only your deposit/.test(u), 'it warns that a new pool holds only the deposit');
+ok(/First UNI is added to the pool, once for everyone/.test(u) || /Starts the tETH \/ UNI pool/.test(u), 'a token the pool does not hold yet is added with the start');
 await b.close(); server.close();
 console.log(`\n${n} ok, ${fails} failed`);
 if (bad.length) { console.log('PAGE ERRORS:\n' + bad.join('\n')); fails++; }
