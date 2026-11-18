@@ -504,10 +504,11 @@ try {
     const { page, ctx, errors, registryReads } = await open(browser, { v: null });
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Set up this computer');
     await page.click('#tb-relay');
-    await page.waitForFunction(() => /tacit-evm-pool-keepers\.onrender\.com/.test(document.querySelector('#pay-box')?.textContent || ''), null, { timeout: 20000 });
+    await page.waitForFunction(() => /1,000 TAC · listed/.test(document.querySelector('#pay-box')?.textContent || ''), null, { timeout: 20000 });
     const box = await page.locator('#pay-box').innerText();
     check(/1,000 TAC · listed/.test(box) && /0x7c9f…43d0/i.test(box), 'the Pay relays card lists the relay the registry holds, with its stake and that it is listed', box.slice(0, 200));
     check(/1,000 TAC, 7-day wait to leave/.test(box), 'and says what it takes to list one');
+    check(!/onrender|https?:|\.com/.test(box) && (await page.locator('#pay-box img.inv').count()) >= 1, 'each relay is drawn by its mark and short address, with no host shown');
     check(/Connect your wallet to manage a relay you listed/.test(await page.locator('#pay-mine').innerText()), 'with no wallet connected it offers to connect one');
     check(registryReads.includes('0x06661abd') && registryReads.includes('0xe1137f19') && registryReads.includes('0xcf5ad6e6'), 'it read the count, the entry and its address from the registry', registryReads.join());
     check(await page.locator('#g-pay [data-card], #g-pay').first().isVisible() && (await page.locator('#g-pay a[href*="RUN-A-PAY-RELAY"]').count()) === 1, 'the card links the guide to run and list a relay');

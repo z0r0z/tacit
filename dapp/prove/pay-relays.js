@@ -6,14 +6,21 @@
 
 import { calls, readEntries, stateOf, mine, urlProblem, tacText, parseTac, RELAY_REGISTRY } from '/relay-registry-ui.js';
 import { verifyDoc } from '/relay-gateway-doc.js';
+import { invaderSvg } from '/prove/invader.js';
 
 const GAS = { approve: 70_000n, topUp: 160_000n, startExit: 110_000n, finishExit: 130_000n, setUrl: 170_000n };
 const STATE_TEXT = { listed: 'listed', below: 'under the minimum: not shown to wallets', leaving: 'leaving', ready: 'ready to take out' };
+// each relay is drawn by its mark (the same zOrgz invader the provers get, picked by its address) and its short address
+const faces = new Map();
+const face = (a) => {
+  if (!faces.has(a)) faces.set(a, `data:image/svg+xml;base64,${btoa(invaderSvg(a, 64))}`);
+  return `<img class="inv" src="${faces.get(a)}" width="22" height="22" alt="">`;
+};
 const day = (s) => new Date(s * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
 export function startPayRelays(ctx, { forwarders = [], fetchImpl = globalThis.fetch?.bind(globalThis), now = () => Math.floor(Date.now() / 1000) } = {}) {
   const { $, esc, short, toast, rpc, send, waitReceipt, landed, txLink, S, connect, busy } = ctx;
-  const box = $('#pay-box'), mineBox = $('#pay-mine'), status = $('#pay-status');
+  const box = $('#pay-box'), mineBox = $('#pay-mine'), status = $('#pay-status'), cmd = $('#pay-cmd');
   if (!box || !mineBox) return null;
   const raw = (to, data) => rpc('eth_call', [{ to, data }, 'latest']);       // what readEntries calls
   const call = (c) => raw(c.to, c.data);                                      // one of calls.*
@@ -45,24 +52,27 @@ export function startPayRelays(ctx, { forwarders = [], fetchImpl = globalThis.fe
     await Promise.all(Array.from({ length: Math.min(4, rows.length) }, async () => { while (i < rows.length) { const r = rows[i++]; if (r.state === 'listed') { r.route = await routeOf(r); paint(); } } }));
   }
 
-  const host = (u) => { try { return new URL(u).host; } catch { return u || 'no address'; } };
+  const who = (a) => `<span class="who">${face(a)}${esc(short(a))}</span>`;
   function paint() {
     if (!model) return;
     const { rows } = model;
     box.innerHTML = rows.length
-      ? rows.map((e) => `<div class="kv"><span>${esc(host(e.url))} · ${esc(short(e.relayer))}</span><b>${esc(tacText(e.stake))} TAC · ${esc(e.state === 'leaving' ? `leaving, ready ${day(e.exitAt)}` : STATE_TEXT[e.state])}${e.state === 'listed' ? `<small>${e.route === 'yes' ? 'reached through the private route' : e.route === 'no' ? 'no private route key: wallets cannot use it' : 'private route: checking…'}</small>` : ''}</b></div>`).join('')
+      ? rows.map((e) => `<div class="kv"><span>${who(e.relayer)}</span><b>${esc(tacText(e.stake))} TAC · ${esc(e.state === 'leaving' ? `leaving, ready ${day(e.exitAt)}` : STATE_TEXT[e.state])}${e.state === 'listed' ? `<small>${e.route === 'yes' ? 'reached through the private route' : e.route === 'no' ? 'no private route key: wallets cannot use it' : 'private route: checking…'}</small>` : ''}</b></div>`).join('')
       : '<p class="plan">No relay is listed yet.</p>';
     box.insertAdjacentHTML?.('beforeend', `<div class="kv"><span>To list one</span><b>${esc(tacText(model.min))} TAC, ${Math.round(model.delay / 86400)}-day wait to leave</b></div>`);
     paintMine();
   }
 
+  // the command to run one, with the connected wallet as the owner of the stake
+  const paintCmd = () => { if (cmd) cmd.textContent = `git clone https://github.com/src-company/tacit && cd tacit/worker-relay && npm ci\nnode scripts/pay-relay.mjs --owner ${S.address || '0x…'} --tunnel`; };
   function paintMine() {
+    paintCmd();
     if (!S.address) { mineBox.hidden = false; mineBox.innerHTML = '<button class="btn ghost" id="pay-connect" type="button">Connect your wallet to manage a relay you listed</button>'; return; }
     const owned = mine(model.rows, S.address);
     mineBox.hidden = false;
     if (!owned.length) { mineBox.innerHTML = `<p class="plan">No relay is listed with ${esc(short(S.address))} as its owner.</p>`; return; }
     mineBox.innerHTML = '<h3 class="plan">Yours</h3>' + owned.map((e) => `<div class="relay" data-id="${e.id}">
-      <div class="kv"><span>${esc(host(e.url))}</span><b>${esc(tacText(e.stake))} TAC · ${esc(e.state === 'leaving' ? `leaving, ready ${day(e.exitAt)}` : STATE_TEXT[e.state])}</b></div>
+      <div class="kv"><span>${who(e.relayer)}</span><b>${esc(tacText(e.stake))} TAC · ${esc(e.state === 'leaving' ? `leaving, ready ${day(e.exitAt)}` : STATE_TEXT[e.state])}</b></div>
       ${e.exitAt === 0 ? `<label class="fld"><span>Add stake (TAC)</span><input data-k="amount" type="text" inputmode="decimal" autocomplete="off" placeholder="${esc(tacText(model.min))}"></label>
       <button class="btn ghost" data-act="topup" type="button">Add stake</button>
       <label class="fld"><span>Relay address</span><input data-k="url" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(e.url)}"></label>

@@ -28,13 +28,13 @@ const encodeString = (s) => { const b = Buffer.from(s).toString('hex'); return '
 
 // the page: elements the card draws into, and the wallet, reads and sends it is given
 class El {
-  constructor() { this.innerHTML = ''; this.hidden = true; this.listeners = {}; this.fields = new Map(); }
+  constructor() { this.innerHTML = ''; this.textContent = ''; this.hidden = true; this.listeners = {}; this.fields = new Map(); }
   addEventListener(t, f) { this.listeners[t] = f; }
   insertAdjacentHTML(_, h) { this.innerHTML += h; }
   querySelector(sel) { const m = /\.relay\[data-id="(\d+)"\] \[data-k="(\w+)"\]/.exec(sel); return m ? { value: this.fields.get(`${m[1]}:${m[2]}`) ?? '' } : null; }
 }
 async function page({ entries, account = ME, allowance = 0n, balance = 10_000n * E18, minStake = 1000n * E18, forwarders = [], docs = {}, failRead = false, receipt = '0x1' } = {}) {
-  const els = { '#pay-box': new El(), '#pay-mine': new El(), '#pay-status': new El() };
+  const els = { '#pay-box': new El(), '#pay-mine': new El(), '#pay-status': new El(), '#pay-cmd': new El() };
   const S = { address: account };
   const sent = [], errors = [], toasts = [];
   const state = { entries: entries.map((e) => ({ ...e })), allowance, balance };
@@ -82,8 +82,10 @@ const base = (over = {}) => [
 await check('the roster: each listed relay with its host, stake and state, and what it takes to list one', async () => {
   const p = await page({ entries: base({ exitAt: 2_000_000_000 + 3600 }) });
   const t = p.els['#pay-box'].innerHTML;
-  assert.match(t, /one\.example/); assert.match(t, /1,000 TAC · leaving, ready/); assert.match(t, /two\.example/); assert.match(t, /5,000 TAC · listed/);
-  assert.match(t, /three\.example[\s\S]*500 TAC · under the minimum: not shown to wallets/);
+  assert.match(t, /0x1111…1111/); assert.match(t, /1,000 TAC · leaving, ready/); assert.match(t, /0x2222…2222/); assert.match(t, /5,000 TAC · listed/);
+  assert.match(t, /0x3333…3333[\s\S]*500 TAC · under the minimum: not shown to wallets/);
+  assert.equal((t.match(/<img class="inv" src="data:image\/svg\+xml;base64,/g) || []).length, 3, 'each relay is drawn by its mark');
+  assert.doesNotMatch(t, /example|https?:|onrender|\.com/, 'no host is shown');
   assert.match(t, /1,000 TAC, 7-day wait to leave/);
 });
 await check('a relay whose private route key a forwarder shows, signed by it, is marked reachable; one with no key is marked unusable', async () => {
@@ -95,13 +97,15 @@ await check('a relay whose private route key a forwarder shows, signed by it, is
   const p = await page({ entries, forwarders: ['https://f1.test'], docs: { [addr.toLowerCase()]: doc } });
   await new Promise((r) => setTimeout(r, 30));
   const t = p.els['#pay-box'].innerHTML;
-  assert.match(t, /good\.example[\s\S]*reached through the private route/);
-  assert.match(t, /nokey\.example[\s\S]*no private route key: wallets cannot use it/);
+  assert.match(t, new RegExp(`${addr.slice(0, 6)}…${addr.slice(-4)}[\\s\\S]*reached through the private route`));
+  assert.match(t, /0x2222…2222[\s\S]*no private route key: wallets cannot use it/);
 });
 await check('no wallet: a button to connect; connected, only the relays that wallet owns, each with its controls', async () => {
   const p = await page({ entries: base(), account: null });
   assert.match(p.els['#pay-mine'].innerHTML, /Connect your wallet to manage a relay you listed/);
+  assert.match(p.els['#pay-cmd'].textContent, /pay-relay\.mjs --owner 0x… --tunnel/, 'no wallet: the command has a place for the owner');
   p.S.address = ME; p.card.paint();
+  assert.match(p.els['#pay-cmd'].textContent, new RegExp(`pay-relay\\.mjs --owner ${ME} --tunnel`), 'the connected wallet is the owner in the command');
   const m = p.els['#pay-mine'].innerHTML;
   assert.match(m, /data-id="1"/); assert.doesNotMatch(m, /data-id="2"/); assert.doesNotMatch(m, /data-id="3"/);
   for (const a of ['topup', 'url', 'exit']) assert.ok(m.includes(`data-act="${a}"`), a);

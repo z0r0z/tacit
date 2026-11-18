@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=2643ee5a">
+<link rel="modulepreload" href="/prove/app.js?cb=af1ca43b">
 <link rel="modulepreload" href="/community-prove.js?cb=e2a65259">
 <link rel="modulepreload" href="/prove/view.js?cb=f0f73815">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -966,8 +966,9 @@ node tools/private-route-check.mjs --service https://tacit-evm-pool-keepers.onre
       <div class="plan num" id="pay-box"><p><span class="sk" style="--w:22ch"></span></p></div>
       <div id="pay-mine" hidden></div>
       <p class="status" id="pay-status" role="status"></p>
-      <pre class="cmd"><code>cd worker-relay &amp;&amp; npm ci
-RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/1/evm-pool/keeper --owner 0x… --send</code></pre>
+      <p class="lede">Run one from your laptop. The command makes the relay its own key, says where to send the stake and a little ETH (send them from a private balance and nothing links the relay to you), starts the relay, opens a tunnel so you need no server, and lists it. A relay earns while it is on, and wallets pass over it while it is off.</p>
+      <pre class="cmd"><code id="pay-cmd">git clone https://github.com/src-company/tacit &amp;&amp; cd tacit/worker-relay &amp;&amp; npm ci
+node scripts/pay-relay.mjs --owner 0x… --tunnel</code></pre>
       <p class="plan"><a href="https://github.com/src-company/tacit/blob/main/docs/RUN-A-PAY-RELAY.md" target="_blank" rel="noopener noreferrer">Run and list a relay</a> · <a href="https://etherscan.io/address/0x00000000000299F48Fb844626ab96c6A20059a01#code" target="_blank" rel="noopener noreferrer">The registry</a></p>
     </div>
   </section>
@@ -1039,6 +1040,6 @@ RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/1/ev
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=2643ee5a"></script>
+<script type="module" src="/prove/app.js?cb=af1ca43b"></script>
 </body>
 </html>
