@@ -25,7 +25,12 @@ the fee and recipient are bound inside the proof. This page says what each relay
 - **What it keeps:** the witness is deleted when a job settles or its proof is returned; an exit's destination is deleted once the exit has been reported
   done; a job's record is deleted three days after its last change; a client's network is stored only as a keyed hash, used to limit and queue fairly.
 - **What it reports:** job status and error text carry no address and no calldata.
-- This relay is not behind the private route: its host records the network address and path of each request.
+- **A page's requests to this relay go through the private route.** A quote, a status, the list of open jobs, a job's submission and its landing are sealed to the API's own
+  gateway key and carried by a forwarder, so the API and its host see the forwarder's address, not the sender's. The API counts callers for its rate limits and to share its queue
+  fairly between senders; a forwarder gives it a token for each caller, a keyed hash of the caller's network and the UTC day, and the API counts the request under an address made from
+  that token. The same network is one sender for a day, nothing in the token is an address, and the next day's does not match. If no forwarder answers, the page sends the request to the
+  API directly, so the relay keeps working; the API then sees the sender's address.
+- Public reads made when a page loads (statistics, recent activity, the leaderboard) go to the API directly.
 
 ## What the private route does not cover
 
