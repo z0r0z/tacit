@@ -696,9 +696,9 @@ URL cannot take the relay's place.
 people have staked TAC to run, for any chain id. The Pay page (`/pay/eth/`) reads the list for the chain in use through a node other than its wallet's,
 keeps the entries a wallet would use, draws a few at random next to the relay it ships with (five are asked in all), and the wallet quotes each: a relay
 is used only if its quote names the address it was listed under, and a spend goes through one of the cheapest, the dearer drawn less often. A relay that
-has not answered a second or so after the first has is left out of that spend, so one that never answers delays nothing for long. The page's content
-security policy lets it call any https host, which is what lets a relay listed tomorrow work without a new page. The page that lives on chain as `anon.wei`
-does not read the registry. How to run and list a relay: [RUN-A-PAY-RELAY.md](./RUN-A-PAY-RELAY.md).
+has not answered a second or so after the first has is left out of that spend, so one that never answers delays nothing for long. A listed relay is reached
+through the private route (below), so the page's content security policy stays closed to its host and a relay listed tomorrow works without a new page. The page
+that lives on chain as `anon.wei` does not read the registry. How to run and list a relay: [RUN-A-PAY-RELAY.md](./RUN-A-PAY-RELAY.md).
 
 **What the relay sees.** Your IP address; the transaction it is asked to send (all of which becomes public); at
 `/reserve`, the new leaves and the nullifiers being spent; at `/receive`, the chain, note key and fee cap of each box

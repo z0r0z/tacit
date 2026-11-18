@@ -730,7 +730,7 @@ await test('the cards are on with no flag in the address and nothing stored, the
   await ctx.close();
 });
 console.log('Relay registry');
-await test('the page reads the relay registry for the chain in use and lists what it finds next to its own relay; a relay anywhere on https is reachable under the page\'s policy', async () => {
+await test('the page reads the relay registry for the chain in use and lists what it finds next to its own relay; a relay is reached through the private route, never directly, so the policy does not open to its host', async () => {
   const R2 = '0x' + 'b2'.repeat(20), own = 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper';
   const { ctx, page, problems } = await open({ registry: [
     { relayer: R2, stake: 1000n * 10n ** 18n, url: 'https://relay2.example/1/evm-pool/keeper' },
@@ -744,10 +744,9 @@ await test('the page reads the relay registry for the chain in use and lists wha
   for (let i = 0; i < 60 && !calls().some((c) => c.data === LIST_1); i++) await page.waitForTimeout(500);
   assert.ok(calls().some((c) => c.data === LIST_1), 'the page asked the registry for Ethereum\'s relays: list(1, 0, 100)');
   assert.ok(calls().every((c) => c.to.toLowerCase() === REGISTRY), 'always the registry on Ethereum, whichever chain\'s relays it asks for');
-  // a relay on a host the page never named is reachable: the policy lets the page call any https host
+  // a relay is reached through the private route's forwarders (already in the policy), so the page may not call its host itself
   const status = await page.evaluate(async () => { try { return (await fetch('https://relay2.example/1/evm-pool/keeper/quote')).status; } catch (e) { return 'blocked: ' + e.message; } });
-  assert.ok(Number.isInteger(status), 'the request left the page (an answer of any kind, even the stand-in\'s 404): ' + status);
-  assert.deepEqual(problems, [], 'and the policy did not refuse it');
+  assert.match(String(status), /^blocked/, 'a direct request to a relay\'s host is refused by the policy: ' + status);
   await ctx.close();
 });
 await test('a registry that cannot be read leaves the page working with its own relay', async () => {

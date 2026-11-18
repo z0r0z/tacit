@@ -182,12 +182,12 @@ await check('an answer after the grace is not added to what was returned', async
 });
 
 console.log('the page');
-await check('the Pay page reads the registry for each chain, lists what it finds next to its own relay, and may call a relay anywhere on https', () => {
+await check('the Pay page reads the registry for each chain and lists what it finds next to its own relay, and its policy does not open to the host of a relay (the private route carries it)', () => {
   const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8');
   assert.ok(/evm-pool-open-relays\.js/.test(page), 'the page imports the reader');
   assert.ok(/openRelays\(/.test(page), 'and uses it');
   const connect = /connect-src([^;"]*)/.exec(page)[1].split(/\s+/).filter(Boolean);
-  assert.ok(connect.includes('https:'), 'a registered relay is on any https host: the policy has to let the page call it');
+  assert.ok(!connect.includes('https:') && !connect.includes('*'), 'a registered relay is reached through the private route\'s forwarders: the policy stays closed to its host');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
