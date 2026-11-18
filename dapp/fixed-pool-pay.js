@@ -28,7 +28,20 @@ import { keccak_256 } from './vendor/tacit-deps.min.js';
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const WALLET_METHODS = new Set(['eth_signTypedData_v4', 'eth_sendTransaction', 'wallet_sendCalls', 'wallet_getCallsStatus', 'wallet_getCapabilities']);
-const SMALLEST = [{ wei: DEFAULT_MIN_DENOMINATION, label: '1 ETH' }, { wei: 10n ** 17n, label: '0.1 ETH' }, { wei: 0n, label: 'Off' }];
+// The smallest note a person gets by default: 0.1 ETH, the smallest Tornado Cash pool, so a small deposit still gets a note in a pool with a crowd. Each note is a deposit of about a million gas, so
+// when the network fee would be over 2% of a note's size the default moves up to the size where it is not (a person's own choice, kept in the browser, always wins).
+const CARD_MIN = 10n ** 17n, NOTE_GAS = 1_000_000n, FEE_SHARE_DIV = 50n;
+let autoMin = { v: CARD_MIN, at: 0 };
+async function autoSmallest(read, now = Date.now()) {
+  if (now - autoMin.at < 60_000) return autoMin.v;
+  try {
+    const g = BigInt(await (await read())('eth_gasPrice', []));
+    const pick = [10n ** 17n, 10n ** 18n, 10n ** 19n].find((d) => NOTE_GAS * g * FEE_SHARE_DIV <= d) ?? 10n ** 19n;
+    autoMin = { v: pick, at: now };
+  } catch { autoMin = { v: autoMin.v, at: now - 50_000 }; }   // keep what it was; ask again in ten seconds
+  return autoMin.v;
+}
+const SMALLEST = [{ wei: 10n ** 17n, label: '0.1 ETH' }, { wei: DEFAULT_MIN_DENOMINATION, label: '1 ETH' }, { wei: 10n ** 19n, label: '10 ETH' }, { wei: 0n, label: 'Off' }];
 // What the page says while a deposit's notes are made. A signature is only named where the wallet will be asked: one already given is not asked again.
 const depositStep = (s, atomic) => {
   switch (s.step) {
@@ -42,7 +55,7 @@ const depositStep = (s, atomic) => {
 // What the cards do, in plain words: why a large amount is split, what a note is, how it comes out, and why to wait. Shown at the top of the notes card,
 // which is on the Deposit tab for ETH on Ethereum whatever is typed, closed until it is opened.
 const howItWorks = (open) => `<details class="lg-how" style="margin:0 0 12px"${open ? ' open' : ''}><summary style="cursor:pointer">How it works</summary>
-  <p class="note">Big amounts go through Tornado Cash. Deposit 1 ETH or more and it is split into whole notes (1, 10 or 100 ETH) that go into Tornado Cash pools, where every deposit is the same size, so yours blends in with the others. Whatever is left over goes into your Tacit private balance. One press does both.</p>
+  <p class="note">Tacit takes any amount. For more cover while its pool is young, 0.1 ETH or more is split into whole notes (0.1, 1, 10 or 100 ETH) in Tornado Cash's pools, where every deposit is the same size. The rest goes to your Tacit balance. The smallest note is 0.1 ETH, or larger when fees pass 2%.</p>
   <p class="note">Your notes come from your wallet's signature, so there is nothing to save. <b>Find</b> brings them back on any device.</p>
   <p class="note">Take a note out to any address, or into your Tacit balance. Wait a while first: the more deposits after yours, the better it blends in.</p>
 </details>`;
@@ -265,8 +278,8 @@ export function attach(env) {
   const flowFor = flowMaker(env, chainId, provider);
   const reader = makeFlow({ provider, account: null, chainId, poll: 3000 });
   const saved = (() => { try { const v = env.store.get(MIN_KEY(chainId)); return v == null ? null : BigInt(v); } catch { return null; } })();
-  const st = { smallest: SMALLEST.some((x) => x.wei === saved) ? saved : DEFAULT_MIN_DENOMINATION, notes: [], spent: new Map(), seen: new Map(), open: null, confirm: null, target: null, gas: readGas(env.store, chainId) };
-  const setSmallest = (v) => { st.smallest = v; try { env.store.set(MIN_KEY(chainId), v.toString()); } catch { /* a convenience */ } };
+  const st = { smallest: SMALLEST.some((x) => x.wei === saved) ? saved : autoMin.v, notes: [], spent: new Map(), seen: new Map(), open: null, confirm: null, target: null, gas: readGas(env.store, chainId) };
+  const setSmallest = (v) => { st.smallest = v; st.chosen = true; try { env.store.set(MIN_KEY(chainId), v.toString()); } catch { /* a convenience */ } };
   const looksLikeName = (x) => /^[^\s]+\.(g?wei|eth)$/i.test(x);
   // empty: the user's own deposit address; a name: the deposit address it publishes, checked against its own key; else an address
   async function resolveTarget(raw) {
@@ -580,6 +593,7 @@ export function attach(env) {
   }
 
   env.amountInput.addEventListener('input', paintSplit);
+  if (saved == null || !SMALLEST.some((x) => x.wei === saved)) autoSmallest(env.read).then((v) => { if (v !== st.smallest && !st.chosen) { st.smallest = v; paintSplit(); } });
   paintSplit();
   loadNotes();
   return { repaint() { paintSplit(); loadNotes(); } };
@@ -709,7 +723,8 @@ export function attachIntake(env) {
   const provider = composeProvider({ read: env.read, wallet: env.walletProvider });
   const flowFor = flowMaker(env, chainId, provider);
   const st = { via: 'relay', amount: '', fee: null, feeErr: null, busy: false, open: false };
-  const smallest = () => { try { const v = BigInt(env.store.get(MIN_KEY(chainId))); return v > 0n ? v : DEFAULT_MIN_DENOMINATION; } catch { return DEFAULT_MIN_DENOMINATION; } };
+  autoSmallest(env.read);
+  const smallest = () => { try { const v = BigInt(env.store.get(MIN_KEY(chainId))); return v > 0n ? v : autoMin.v; } catch { return autoMin.v; } };
   const planOf = () => {
     const wei = (env.parseAmount ? env.parseAmount(st.amount) : parseEther(st.amount));
     if (!wei) return null;

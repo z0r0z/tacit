@@ -118,7 +118,7 @@ const rpcAnswer = (method, params = [], landed = new Set(), depositLogs = []) =>
       if (den != null) return '0x' + (den * POOL_SIZE.get(den)[1]).toString(16);
       return String(params[0]).toLowerCase() === ADDR.toLowerCase() ? '0x' + (100n * 10n ** 18n).toString(16) : '0x0';   // the test wallet holds 100 ETH
     }
-    case 'eth_gasPrice': return '0x0';
+    case 'eth_gasPrice': return GAS_PRICE;
     case 'eth_getTransactionReceipt': return { status: '0x1', blockNumber: '0x1c9c380', logs: [] };
     case 'eth_getBlockByNumber': return { number: '0x1c9c380', timestamp: '0x6a000000', baseFeePerGas: '0x5f5e100', transactions: [] };
     default: return '0x';
@@ -174,8 +174,9 @@ export function attachWithdraw(env) {
   } };
 }`;
 const POOL1 = FIXED_POOLS[1][1].address;
-async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, keeperCap = null, notes = null, payWrap = false, fixedNotes = null, depositLogs = [], registry = null } = {}) {
-  REGISTRY_ENTRIES = registry;
+let GAS_PRICE = '0x0';
+async function open({ search = '', flagged = null, chain = 1, names = null, keeper = null, keeperCap = null, notes = null, payWrap = false, fixedNotes = null, depositLogs = [], registry = null, min = '1000000000000000000', gasPrice = '0x0' } = {}) {
+  REGISTRY_ENTRIES = registry; GAS_PRICE = gasPrice;
   const ctx = await browser.newContext({ viewport: { width: 560, height: 1100 } });
   const page = await ctx.newPage();
   const problems = [], sent = [], told = [], landed = new Set();
@@ -216,6 +217,7 @@ async function open({ search = '', flagged = null, chain = 1, names = null, keep
     const sig = await secp.signAsync(keccak_256(concatBytes(new TextEncoder().encode(`\x19Ethereum Signed Message:\n${msg.length}`), msg)), KEY);
     return '0x' + bytesToHex(sig.toCompactRawBytes()) + (sig.recovery + 27).toString(16);
   });
+  if (min != null) await page.addInitScript((m) => { try { localStorage.setItem('tacit-fixed-min:1', m); } catch {} }, min);   // the tests below were written for a 1 ETH smallest note; the ones for the default pass min: null
   await page.addInitScript(WALLET_SCRIPT, ADDR);
   await page.addInitScript(([c, f]) => { try { localStorage.setItem('tacit-pay-chain-v1', JSON.stringify(c)); if (f != null) localStorage.setItem('tacit-fixed-pools', f); } catch {} }, [chain, flagged]);
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -757,6 +759,31 @@ await test('a registry that cannot be read leaves the page working with its own 
   assert.deepEqual(problems, []);
   await ctx.close();
 });
+await test('the smallest note starts at 0.1 ETH, so 0.15 ETH is a 0.1 ETH note and 0.05 ETH for Tacit, and the explainer names every pool size', async () => {
+  const { ctx, page } = await open({ search: '', min: null });
+  await unlock(page);
+  await page.waitForSelector('#lg-split', { state: 'attached' });
+  await page.fill('#f-damt', '0.15');
+  await page.waitForFunction(() => /1 × 0\.1 ETH/.test(document.querySelector('#lg-split')?.textContent || ''), null, { timeout: 30000 });
+  const text = await page.locator('#lg-split').innerText();
+  assert.match(text, /1 × 0\.1 ETH\s+whole note · Tornado Cash/); assert.match(text, /0\.05 ETH\s+your private balance/);
+  assert.equal(await page.locator('#lg-min').inputValue(), String(10n ** 17n));
+  assert.match(await page.evaluate(() => document.body.textContent), /0\.1, 1, 10 or 100 ETH/);
+  await ctx.close();
+});
+
+await test('when network fees would be over 2% of a 0.1 ETH note, the default moves up to 1 ETH, and a person\'s own choice wins', async () => {
+  const { ctx, page } = await open({ search: '', min: null, gasPrice: '0x' + (20n * 10n ** 9n).toString(16) });
+  await unlock(page);
+  await page.waitForSelector('#lg-split', { state: 'attached' });
+  await page.fill('#f-damt', '1.3');
+  await page.waitForFunction(() => document.querySelector('#lg-min')?.value === '1000000000000000000' && /1 × 1 ETH/.test(document.querySelector('#lg-split')?.textContent || ''), null, { timeout: 30000 });
+  await page.selectOption('#lg-min', { label: '0.1 ETH' });
+  await page.waitForFunction(() => document.querySelector('#lg-min').value === '100000000000000000');
+  assert.equal(await page.evaluate(() => localStorage.getItem('tacit-fixed-min:1')), String(10n ** 17n));
+  await ctx.close();
+});
+
 await browser.close();
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);

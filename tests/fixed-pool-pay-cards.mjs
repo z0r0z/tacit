@@ -207,6 +207,7 @@ function stubBundler(page, sent) {
 console.log('Pay deposit cards');
 const ctx = await browser.newContext({ viewport: { width: 540, height: 1000 } });
 const page = await ctx.newPage();
+await page.addInitScript(() => { try { localStorage.setItem('tacit-fixed-min:1', '1000000000000000000'); } catch {} });   // these were written for a 1 ETH smallest note
 const problems = [];
 page.on('pageerror', (e) => problems.push('pageerror ' + e.message));
 page.on('console', (m) => { if (m.type() === 'error') problems.push('console ' + m.text() + ' ' + (m.location()?.url || '')); });
