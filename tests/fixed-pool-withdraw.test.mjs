@@ -256,6 +256,40 @@ await test('confirm yes sends it', async () => {
   const out = await flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerFor(log), confirm: async () => true });
   eq(out.sent, true); eq(log.filter((m) => m === 'eth_sendUserOperation').length, 1);
 });
+// a bundler whose minimum priority fee moves past the operation while the person reads the fee: the first `refuse` sends are refused for it; each quote after a refusal is dearer by `rise`
+const bundlerMoving = (log, { refuse = 1, rise = 0n } = {}) => {
+  let refused = 0, quotes = 0;
+  return {
+    async request(method, params) {
+      log.push(method);
+      if (method === 'pimlico_getUserOperationGasPrice') { const up = BigInt(Math.min(quotes++, 1)) * rise; return { standard: { maxFeePerGas: '0x' + (400_000_000n + up).toString(16), maxPriorityFeePerGas: '0x' + (100_000_000n + up / 4n).toString(16) } }; }
+      if (method === 'eth_estimateUserOperationGas') return { callGasLimit: '0x0', verificationGasLimit: '0x9c40', preVerificationGas: '0xea60', paymasterVerificationGasLimit: '0x55730', paymasterPostOpGasLimit: '0x7530' };
+      if (method === 'eth_sendUserOperation') {
+        if (refused < refuse) { refused++; throw Object.assign(new Error('rpc'), { kind: 'rpc', code: -32602, details: 'maxPriorityFeePerGas must be at least 82899262 (current maxPriorityFeePerGas: 70660787) - use pimlico_getUserOperationGasPrice to get the current gas price.' }); }
+        log.sent = params[0]; return '0x1';
+      }
+      if (method === 'eth_getUserOperationReceipt') return { success: true, receipt: { transactionHash: '0x' + 'ee'.repeat(32) } };
+      throw new Error('unexpected ' + method);
+    },
+  };
+};
+await test('a price that moved while the fee was read is made again at the new price and sent, without asking again when the fee is no higher', async () => {
+  const w = sponsoredWorld(); const log = []; const asked = []; const steps = [];
+  const out = await flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerMoving(log), confirm: async (q) => { asked.push(q.fee); return true; }, onStep: (s) => steps.push(s.step) });
+  eq(out.sent, true); eq(log.filter((m) => m === 'eth_sendUserOperation').length, 2, 'refused once, sent once'); eq(asked.length, 1, 'asked once');
+  eq(steps.includes('reprice'), true); eq(w.log.sends.length, 0, 'nothing from the wallet');
+});
+await test('when the new price makes the fee higher than the one approved, it is asked about again, and no sends no second time', async () => {
+  const w = sponsoredWorld(); const log = []; const asked = []; let answers = [true, false];
+  const e = await rejects(flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerMoving(log, { rise: 200_000_000n }), confirm: async (q) => { asked.push(q.fee); return answers.shift(); } }), /Cancelled. Nothing was sent/);
+  eq(asked.length, 2, 'asked again'); eq(asked[1] > asked[0], true, 'the second fee is higher'); eq(e.cancelled, true);
+  eq(log.filter((m) => m === 'eth_sendUserOperation').length, 1, 'only the first was sent, and refused');
+});
+await test('a price that keeps moving stops after three tries with nothing sent', async () => {
+  const w = sponsoredWorld(); const log = [];
+  await rejects(flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerMoving(log, { refuse: 99 }), confirm: async () => true }), /did not accept the withdrawal: maxPriorityFeePerGas must be at least.*Nothing was sent/s);
+  eq(log.filter((m) => m === 'eth_sendUserOperation').length, 3); eq(w.log.sends.length, 0);
+});
 await test('a note on a chain without a paymaster is refused before anything is read', async () => {
   const w = world({ chainIdOnWallet: 8453 });
   await rejects(flowOf(w).withdrawSponsored({ noteText: noteString({ denomination: POOL.denomination, chainId: 8453, preimage: new Uint8Array(62) }), recipient: RECIPIENT, prover, leaves }), /not available on this network/);

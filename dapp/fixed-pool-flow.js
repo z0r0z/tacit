@@ -360,23 +360,36 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
       beforeRead: (p) => paymasterFor(chainId, p.address), // a pool the paymaster does not take stops here
     });
     const client = bundler || bundlerSet(cfg.bundlers, fetchImpl);
-    const reference = await readGasFeeReference(provider);
-    const prepared = await prepareSponsoredWithdrawal({
-      chainId, pool: pool.address, denomination: pool.denomination, recipient, bundler: client, reference, nodePrice: () => readFallbackGasPrice(provider), onStep, maxFeePercent,
+    // The operation is made at the bundler's price of the moment, and the proof is bound to the fee that price gives. A price that moves while the person reads the fee (the bundler's quote
+    // swings by a sixth in seconds) makes the bundler refuse the operation, with nothing sent: it is then made again at the new price from the tree already built (one new proof), and sent
+    // without asking again when its fee is within what was approved; a higher fee is asked about again.
+    const prepare = async () => prepareSponsoredWithdrawal({
+      chainId, pool: pool.address, denomination: pool.denomination, recipient, bundler: client, reference: await readGasFeeReference(provider), nodePrice: () => readFallbackGasPrice(provider), onStep, maxFeePercent,
       prove: async (fee) => {
         const out = await prover.prove({ chainId, pool: pool.address, preimageHex, recipient, relayer: cfg.paymaster, fee: String(fee) });
         checkWithdrawCall(out, { pool, recipient, root, nullifierHash: note.nullifierHash, relayer: cfg.paymaster, fee });
         return out;
       },
     });
-    const receive = pool.denomination - prepared.fee;
-    onStep({ step: 'quote', fee: prepared.fee, receive });
-    if (!send) return { op: prepared.op, fee: prepared.fee, receive, sent: false, gasEstimation: prepared.gasEstimation };
-    if (confirm && !(await confirm({ fee: prepared.fee, receive, denomination: pool.denomination }))) {
-      throw Object.assign(new Error('Cancelled. Nothing was sent.'), { cancelled: true });
+    let prepared = await prepare(), approved = null;
+    for (let again = 0; ; again++) {
+      const receive = pool.denomination - prepared.fee;
+      const ask = !!confirm && (approved == null || prepared.fee > approved);
+      if (!send || ask || again === 0) onStep({ step: 'quote', fee: prepared.fee, receive });
+      if (!send) return { op: prepared.op, fee: prepared.fee, receive, sent: false, gasEstimation: prepared.gasEstimation };
+      if (ask) {
+        if (!(await confirm({ fee: prepared.fee, receive, denomination: pool.denomination }))) throw Object.assign(new Error('Cancelled. Nothing was sent.'), { cancelled: true });
+        approved = prepared.fee;
+      }
+      try {
+        const done = await sendSponsoredOperation({ op: prepared.op, chainId, bundler: client, onStep, poll });
+        return { op: prepared.op, fee: prepared.fee, receive, sent: true, hash: done.txHash, userOpHash: done.hash, spent: await settled(pool, note), gasEstimation: prepared.gasEstimation };
+      } catch (e) {
+        if (!e?.priceMoved || again >= 2) throw e;
+        onStep({ step: 'reprice' });
+        prepared = await prepare();
+      }
     }
-    const done = await sendSponsoredOperation({ op: prepared.op, chainId, bundler: client, onStep, poll });
-    return { op: prepared.op, fee: prepared.fee, receive, sent: true, hash: done.txHash, userOpHash: done.hash, spent: await settled(pool, note), gasEstimation: prepared.gasEstimation };
   }
 
   // The note text for a deposit this wallet made: the secrets come from signing its nonce again, so only (nonce, pool) is kept.

@@ -430,7 +430,8 @@ export async function sendSponsoredOperation({ op, chainId, bundler, poll = 2000
   } catch (e) {
     const known = /already known/i.test(e?.details ?? '') || (await bundler.request('eth_getUserOperationByHash', [hash]).then((r) => r !== null, () => false));
     if (!known) {
-      if (e?.kind === 'rpc') throw new Error(`The bundler did not accept the withdrawal: ${e.details || e.message}. Nothing was sent.`);
+      // a price the bundler has moved past since the operation was made is told apart, so the caller can make it again at the new price
+      if (e?.kind === 'rpc') throw Object.assign(new Error(`The bundler did not accept the withdrawal: ${e.details || e.message}. Nothing was sent.`), { priceMoved: /(maxPriorityFeePerGas|maxFeePerGas) must be at least|underpriced/i.test(String(e.details || e.message)) });
       throw new Error(`Could not tell whether the bundler took the withdrawal (${e.message}). It may still go through; check the pool before trying again.`);
     }
   }

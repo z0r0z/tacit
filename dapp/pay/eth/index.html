@@ -2834,7 +2834,7 @@ async function act(btn, fn, { bridge = null } = {}) {
   paintChains(); renderTabs(); paintBal(); paintReq(); paintDue(); paintDevice();
   $$('#form button, #form input').forEach((x) => { x.disabled = true; });
   let t0 = 0, label = '', note = '', timer = null;
-  const show = () => sayLive(status, html`<span class="spin" aria-hidden="true"></span>${label}${note ? html` <span class="mute">· ${note}</span>` : ''}<span class="mute num" aria-hidden="true" data-tick>${t0 ? ` ${((performance.now() - t0) / 1000).toFixed(1)} s` : ''}${note ? ` ${Math.floor((PROVER.got / Math.max(1, PROVER.total)) * 100)}%` : ''}</span> <span class="mute">${KEEP_OPEN}</span>`);
+  const show = () => sayLive(status, html`<span class="spin" aria-hidden="true"></span>${label}<span class="mute num" aria-hidden="true" data-tick>${t0 ? ` ${((performance.now() - t0) / 1000).toFixed(1)} s` : ''}${note ? ` · ${note} ${Math.floor((PROVER.got / Math.max(1, PROVER.total)) * 100)}%` : ''}</span> <span class="mute">${KEEP_OPEN}</span>`);
   const step = (m) => {
     label = stepWords(m);
     t0 = /^proving/.test(m) ? performance.now() : 0;

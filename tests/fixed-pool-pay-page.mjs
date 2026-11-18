@@ -577,7 +577,7 @@ await test('Notes: each shows when it went in and how many deposits came after i
   await page.waitForFunction(() => /Deposited 10 minutes ago · 4 deposits since/.test(document.querySelector('#lg-notes')?.textContent || ''), null, { timeout: 60000 });
   const card = await page.locator('#lg-notes').innerText();
   assert.match(card, /Deposited 5 hours ago · 7 deposits since/);
-  assert.match(card, /Few deposits have come after it/, 'both are early');
+  assert.match(card, /Few deposits have come after them/, 'both are early, said once');
   assert.equal(await page.locator('#lg-notes p.note.warn').count(), 2, 'a warning line for each note');
   await page.evaluate(() => { window.__fakeExit = true; });
   await page.click('#tab-withdraw');

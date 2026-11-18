@@ -31,14 +31,17 @@ const WALLET_METHODS = new Set(['eth_signTypedData_v4', 'eth_sendTransaction', '
 // The smallest note a person gets by default: 0.1 ETH, the smallest Tornado Cash pool, so a small deposit still gets a note in a pool with a crowd. Each note is a deposit of about a million gas, so
 // when the network fee would be over 2% of a note's size the default moves up to the size where it is not (a person's own choice, kept in the browser, always wins).
 const CARD_MIN = 10n ** 17n, NOTE_GAS = 1_000_000n, FEE_SHARE_DIV = 50n;
-let autoMin = { v: CARD_MIN, at: 0 };
+let autoMin = { v: CARD_MIN, at: 0, g: null };
+// What a deposit costs in gas, from the deposits made on mainnet: about 0.8 million for each note, and for the rest of the amount (the Tacit deposit in the same transaction) 0.48 million, else 0.1.
+export const depositGas = (noteCount, hasRemainder) => BigInt(noteCount) * 800_000n + (hasRemainder ? 480_000n : 100_000n);
+const feeWords = (wei) => { const x = Number(formatEther(wei)); return x < 0.0001 ? 'under 0.0001 ETH' : `about ${parseFloat(x.toPrecision(2))} ETH`; };
 async function autoSmallest(read, now = Date.now()) {
   if (now - autoMin.at < 60_000) return autoMin.v;
   try {
     const g = BigInt(await (await read())('eth_gasPrice', []));
     const pick = [10n ** 17n, 10n ** 18n, 10n ** 19n].find((d) => NOTE_GAS * g * FEE_SHARE_DIV <= d) ?? 10n ** 19n;
-    autoMin = { v: pick, at: now };
-  } catch { autoMin = { v: autoMin.v, at: now - 50_000 }; }   // keep what it was; ask again in ten seconds
+    autoMin = { v: pick, at: now, g };
+  } catch { autoMin = { ...autoMin, at: now - 50_000 }; }   // keep what it was; ask again in ten seconds
   return autoMin.v;
 }
 const SMALLEST = [{ wei: 10n ** 17n, label: '0.1 ETH' }, { wei: DEFAULT_MIN_DENOMINATION, label: '1 ETH' }, { wei: 10n ** 19n, label: '10 ETH' }, { wei: 0n, label: 'Off' }];
@@ -207,7 +210,7 @@ export function planExit(amount, dens) {
   return { picks, total };
 }
 
-const exitWords = (s) => (s.step === 'read' ? (s.of ? `reading the pool's deposits (${s.done} of ${s.of})` : 'reading the pool\'s deposits') : s.step === 'tree' ? `building the tree from ${s.count} deposits` : s.step === 'prove' ? 'proving' : s.step === 'estimate' ? 'asking the bundler about the gas' : s.step === 'price' ? 'gas is high right now, waiting for a calmer price' : s.step === 'quote' ? 'check the fee below' : s.step === 'wait' ? 'waiting for the withdrawal to be mined' : 'working');
+const exitWords = (s) => (s.step === 'read' ? (s.of ? `reading the pool's deposits (${s.done} of ${s.of})` : 'reading the pool\'s deposits') : s.step === 'tree' ? `building the tree from ${s.count} deposits` : s.step === 'prove' ? 'proving' : s.step === 'estimate' ? 'asking the bundler about the gas' : s.step === 'price' ? 'gas is high right now, waiting for a calmer price' : s.step === 'quote' ? 'check the fee below' : s.step === 'reprice' ? 'the gas price moved, making it again at the new price' : s.step === 'wait' ? 'waiting for the withdrawal to be mined' : 'working');
 // One note out, its gas paid from the note: proved in a worker, `confirm` asked once the fee is fixed and before anything is sent.
 // `prover` and `cache` are for a run of notes: one prover and one cache for the run, so a pool's deposits are read and its tree built once (the caller closes the prover).
 async function sponsoredExit({ flow, text, to, step, confirm, workerUrl, prover: given = null, cache = null }) {
@@ -337,7 +340,7 @@ export function attach(env) {
     host.innerHTML = frame(`<div class="lg-parts" role="group" aria-label="How the deposit is split">
         <div class="lg-part">${notes} <span>whole ${p.noteCount === 1 ? 'note' : 'notes'} · Tornado Cash</span></div>
         ${p.remainder === 0n ? '' : `<div class="lg-part"><b>${esc(formatEther(p.remainder))} ETH</b> <span>your private balance</span></div>`}
-      </div>${sizes}
+      </div>${sizes}${autoMin.g != null ? `<p class="note mute">Network fee ${feeWords(depositGas(p.noteCount, p.remainder > 0n) * autoMin.g)} at the current price, paid by your wallet.</p>` : ''}
       <p class="note">Your wallet asks for a few signatures first (nothing is sent), then to confirm the deposit. Whole notes earn no TAC points.</p>`);
     host.querySelector('#lg-min').onchange = (e) => { setSmallest(BigInt(e.target.value)); paintSplit(); };
     fillSizes(p);
@@ -452,7 +455,14 @@ export function attach(env) {
       } while (seenAgain);
     } finally { seenBusy = false; }
   }
-  const seenLine = (n) => { const s = st.seen.get(n.c); return s ? `<p class="note ${s.low ? 'warn' : 'mute'}">${esc(s.text)}${s.low ? '. ' + esc(s.nudge) : ''}</p>` : ''; };
+  // each note says when it went in and how many deposits came after it; the advice for the ones that are early to take out is said once under the list, not under every note
+  const seenLine = (n) => { const s = st.seen.get(n.c); return s ? `<p class="note mute">${esc(s.text)}</p>` : ''; };
+  const earlyNudge = (live) => {
+    const low = live.map(({ n }) => st.seen.get(n.c)).filter((s) => s?.low);
+    if (!low.length) return '';
+    if (low.length === 1) return `<p class="note warn">${esc(low[0].nudge)}</p>`;
+    return `<p class="note warn">${low.every((s) => s.since == null) ? 'They went in less than an hour ago. Waiting longer hides them better.' : 'Few deposits have come after them. The more do, the better they blend in.'}</p>`;
+  };
   function paintNotes() {
     // while a form or the fee panel is open the card is not redrawn: what is typed in the form and the panel's Send and Cancel buttons would go with a late
     // read or the gas choice; the card is drawn when the panel closes
@@ -471,7 +481,7 @@ export function attach(env) {
         <b><button class="link" type="button" data-move="${i}">Move into Tacit</button> <button class="link" type="button" data-out="${i}">Withdraw</button></b></div>${seenLine(n)}`).join('');
     const spentRows = done.length ? `<details class="lg-spent"${st.spentOpen ? ' open' : ''}><summary class="note mute" style="cursor:pointer;margin:8px 0 0">${done.length} spent ${done.length === 1 ? 'note' : 'notes'}</summary>
         ${done.map(({ n }) => `<div class="kv"><span>${sizeOf(n)} ETH <span class="mute">· note ${n.nonce}</span></span><b class="mute">spent</b></div>`).join('')}</details>` : '';
-    const list = !st.notes.length ? '<p class="note">None found in this browser. Find looks for notes made with this wallet; Paste adds one from anywhere.</p>' : `${rows || '<p class="note">No unspent notes.</p>'}${spentRows}`;
+    const list = !st.notes.length ? '<p class="note">None found in this browser. Find looks for notes made with this wallet; Paste adds one from anywhere.</p>' : `${rows || '<p class="note">No unspent notes.</p>'}${earlyNudge(live)}${spentRows}`;
     notesHost.innerHTML = `<div class="blk" style="margin-top:22px;padding-top:14px;border-top:1px solid var(--hair)">
       ${howItWorks(st.howOpen)}
       <div class="lbl"><span>Notes in the large pools</span><span><button class="link" type="button" id="lg-find">${account ? 'Find' : 'Connect wallet'}</button> · <button class="link" type="button" id="lg-paste">Paste a note</button></span></div>
@@ -593,7 +603,8 @@ export function attach(env) {
   }
 
   env.amountInput.addEventListener('input', paintSplit);
-  if (saved == null || !SMALLEST.some((x) => x.wei === saved)) autoSmallest(env.read).then((v) => { if (v !== st.smallest && !st.chosen) { st.smallest = v; paintSplit(); } });
+  const unsaved = saved == null || !SMALLEST.some((x) => x.wei === saved);
+  autoSmallest(env.read).then((v) => { if (unsaved && !st.chosen) st.smallest = v; paintSplit(); });
   paintSplit();
   loadNotes();
   return { repaint() { paintSplit(); loadNotes(); } };
