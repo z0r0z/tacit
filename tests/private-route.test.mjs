@@ -149,6 +149,11 @@ await check('every host the route can use is in the CSP of every page that can c
     assert.ok(connect.length > 5, `${pg} has a connect-src in its CSP meta tag`);
     for (const host of [SHIPPED.keeper, ...SHIPPED.forwarders, ...SHIPPED.nostr]) assert.ok(connect.includes(host), `${pg} does not allow ${host}`);
   }
+  for (const pg of ['teth/index.html', 'splitter/index.html']) {   // pages that carry only the relay API's reads
+    const html = readFileSync(new URL(`../dapp/${pg}`, import.meta.url), 'utf8');
+    const connect = (/http-equiv="Content-Security-Policy"[^>]*?connect-src([^;]*)/s.exec(html)?.[1] || '').split(/\s+/);
+    for (const host of [...SHIPPED.forwarders, ...SHIPPED.nostr, 'https://api.tacit.finance']) assert.ok(connect.includes(host), `${pg} does not allow ${host}`);
+  }
   assert.ok(SHIPPED.nostr.length >= 3 && SHIPPED.nostr.every((u) => /^wss:\/\//.test(u)), 'at least three wss relays');
 });
 

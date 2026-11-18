@@ -19,7 +19,7 @@ export const short = (a, n = 4) => (!a ? '' : a.length > 2 * n + 4 ? `${a.slice(
 const shared = shareReads(hedgedRpc);
 export const rpc = (method, params, hosts = RPCS, opts) => shared(hosts, method, params, opts);
 export const ethCall = (to, data, block = 'latest') => rpc('eth_call', [{ to, data }, block]);
-export const api = (path) => fetch(`${API}${path}`, { signal: AbortSignal.timeout(15e3) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+export const api = (path) => (path.startsWith('/confidential/') ? (globalThis.__tacitRelayFetch || fetch) : fetch)(`${API}${path}`, { signal: AbortSignal.timeout(15e3) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 
 export { grp, sig };
 export const usd = (x) => (x == null || !Number.isFinite(x) ? '—' : x >= 1000 ? `$${grp(x, 0)}` : x >= 1 ? `$${x.toFixed(2)}` : `$${x.toPrecision(3)}`);

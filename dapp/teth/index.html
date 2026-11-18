@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://rpc.mainnet.succinct.xyz wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://www.tacitscan.io https://ipfs.filebase.io https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://127.0.0.1:47815 https://api.tacit.finance https://rpc.mainnet.succinct.xyz wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://tacit-api.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://api.coinbase.com https://api.kraken.com https://api.coingecko.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://www.tacitscan.io https://ipfs.filebase.io https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com">
 <meta name="color-scheme" content="light dark">
 <title>tacit tETH</title>
 <meta name="description" content="tETH is private ETH, one for one. Hold, send, swap, farm or bridge it without the chain showing whose it is.">
@@ -24,42 +24,44 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload-roots: /teth/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/teth/app.js?cb=2b5fef4c">
+<link rel="modulepreload" href="/teth/app.js?cb=7507983d">
+<link rel="modulepreload" href="/relay-route.js?cb=80d7281f">
+<link rel="modulepreload" href="/private-route.js?cb=a6bfb621">
 <link rel="modulepreload" href="/trade/chart.js?cb=c0b1d232">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
-<link rel="modulepreload" href="/trade/connect.js?cb=06b41e2f">
+<link rel="modulepreload" href="/trade/connect.js?cb=41394526">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/wallet-prompts.js">
 <link rel="modulepreload" href="/trade/sheet.js?cb=d857446c">
-<link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
+<link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/rpc-pace.js">
-<link rel="modulepreload" href="/trade/key.js?cb=67d4d4de">
+<link rel="modulepreload" href="/trade/key.js?cb=04a214c9">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/prf-wallet.js">
 <link rel="modulepreload" href="/tacit-chain-root.js">
 <link rel="modulepreload" href="/tacit-wallet-known.js?cb=ec5b5193">
 <link rel="modulepreload" href="/evm-wallet.js?cb=ed67f38d">
 <link rel="modulepreload" href="/identity-message.js">
-<link rel="modulepreload" href="/trade/sign-in.js?cb=d31a80e0">
+<link rel="modulepreload" href="/trade/sign-in.js?cb=7e9e64d2">
 <link rel="modulepreload" href="/sign-wait.js?cb=ab42ced1">
 <link rel="modulepreload" href="/tab-key.js?cb=ad0c42e2">
-<link rel="modulepreload" href="/teth/read.js?cb=c02d8bf6">
+<link rel="modulepreload" href="/teth/read.js?cb=1fc456f6">
 <link rel="modulepreload" href="/evm-trade-venues.js?cb=196b14fb">
 <link rel="modulepreload" href="/zrouter-guard.js">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=fb6ec72f">
-<link rel="modulepreload" href="/teth/wrap.js?cb=cace1489">
+<link rel="modulepreload" href="/teth/wrap.js?cb=7c3cdef5">
 <link rel="modulepreload" href="/trade/poolux.js?cb=59d125e5">
-<link rel="modulepreload" href="/teth/prover.js?cb=d9e1968c">
+<link rel="modulepreload" href="/teth/prover.js?cb=f9644c86">
 <link rel="modulepreload" href="/relay/abi.js?cb=190ea12d">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
 <link rel="modulepreload" href="/trade/depth.js?cb=4f87419e">
 <link rel="modulepreload" href="/trade/book.js?cb=577d1f94">
 <link rel="modulepreload" href="/trade/tape.js?cb=a0713849">
-<link rel="modulepreload" href="/teth/market.js?cb=1d290dec">
+<link rel="modulepreload" href="/teth/market.js?cb=15c6868a">
 <link rel="modulepreload" href="/btc-book.js?cb=f7962f33">
 <!-- preload:end -->
 <!-- style:shared:begin -->
@@ -847,6 +849,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/teth/app.js?cb=2b5fef4c"></script>
+<script type="module" src="/teth/app.js?cb=7507983d"></script>
 </body>
 </html>

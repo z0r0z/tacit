@@ -5,14 +5,14 @@
 // transactions, and it is done on tacit.finance's Borrow sheet, which each button here opens; this page sizes the bond for an amount before it does.
 import { sha256 } from '/vendor/tacit-deps.min.js';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
-import { makeConnect } from '/trade/connect.js?cb=06b41e2f';
+import { makeConnect } from '/trade/connect.js?cb=41394526';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
-import { makeKeySession, signInSheet, pickWalletSheet } from '/trade/key.js?cb=67d4d4de';
+import { makeKeySession, signInSheet, pickWalletSheet } from '/trade/key.js?cb=04a214c9';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=91d0cb59';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
-import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=c02d8bf6';
-import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=ac332664';
-import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=1d2cd8d3';
+import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=1fc456f6';
+import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=a947983f';
+import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=9c8b4133';
 
 const SCAN = 'https://etherscan.io/', MEMPOOL = 'https://mempool.space/';
 const PRESETS = [['0.001 BTC', '0.001'], ['0.01 BTC', '0.01'], ['0.1 BTC', '0.1']];

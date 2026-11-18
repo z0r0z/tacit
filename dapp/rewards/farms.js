@@ -8,12 +8,12 @@
 // `joinAt` is an element the join with both sides is drawn in instead (the farm page's own card, on the farm `choose` names), with what
 // it says as it runs; `onAct(name, ok)` is told when an action ends. `more(tk, { pid, alone })` is the page's own words for getting a coin the
 // key holds none of (links, as HTML; `alone` names the other coin when the key holds that one), drawn in that card when a side is missing.
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=67d4d4de';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=04a214c9';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { makeRunner } from '/activity.js';
 import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond, coinNames, poolMoved, openProofMoved } from '/farm-ops.js?cb=c5192cc4';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { esc, wordAt, parseUnits, rpc } from '/trade/util.js?cb=1d2cd8d3';
+import { esc, wordAt, parseUnits, rpc } from '/trade/util.js?cb=9c8b4133';
 
 const API = 'https://api.tacit.finance';
 const day = (sec) => new Date(sec * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });

@@ -1,3 +1,4 @@
+import '/relay-route.js?cb=80d7281f';
 // The tip splitter page: what an EthSplitter holds, who it pays and in what proportion, a button that sends the balance on, a form the owner
 // uses to change the list, and a form that deploys a new one. Reads go to Ethereum's public nodes, one after another; sends go through the
 // injected wallet. Nothing is kept except the address of the splitter being looked at (and the arguments of the one deployed here, for
@@ -151,7 +152,7 @@ async function loadExtras() {
   if (!S.addr || !S.shares) return;
   const at = S.addr;
   const [quote, logs] = await Promise.all([
-    fetch(`${API}/confidential/quote?asset=cETH`, { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then((r) => r.json()).then((j) => j.tipSplitter || j.recommendedTipRecipient || null).catch(() => null),
+    (globalThis.__tacitRelayFetch || fetch)(`${API}/confidential/quote?asset=cETH`, { cache: 'no-store', signal: AbortSignal.timeout(10000) }).then((r) => r.json()).then((j) => j.tipSplitter || j.recommendedTipRecipient || null).catch(() => null),
     // the last two weeks (100,000 blocks) as the two spans of 50,000 the widest public node serves, through the nodes that serve logs
     Promise.all([[S.block - 99999, S.block - 50000], [S.block - 49999, S.block]].filter(([, t]) => t >= 0).map(([f, t]) => rpc('eth_getLogs', [{ address: at, topics: [TOPIC.distributed], fromBlock: '0x' + Math.max(0, f).toString(16), toBlock: '0x' + t.toString(16) }], ETH_LOG_NODES)))
       .then((parts) => parts.flat()).catch(() => null),
