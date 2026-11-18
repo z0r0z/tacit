@@ -3,7 +3,7 @@
 // made the legs miss the count, and the page said "press again", and made another proof). Reserves are a live snapshot of tETH / SPX.
 //   node tests/lp-zap-ext.test.mjs
 import assert from 'node:assert/strict';
-import { zapPlan, zapPlanFor, zapPlanExt, zapPlanExtFor } from '../dapp/lp-zap.js';
+import { zapPlan, zapPlanFor, zapPlanExt, zapPlanExtFor, addRoute } from '../dapp/lp-zap.js';
 
 let n = 0;
 const ok = (c, s) => { assert.ok(c, s); n++; };
@@ -63,5 +63,32 @@ for (const [name, p] of [['a trade of 0.0002 ETH in', swapped(20000n)], ['a trad
   const inp = zapPlan({ eth: W, ra: ra0, rb: rb0, total: t0, feeBps: F, unitA: A, unitB: 1n });
   const p = swapped(100000n);
   ok(zapPlanFor({ shares: inp.shares, ra: p.ra, rb: p.rb, total: p.t, feeBps: F, unitA: A, unitB: 1n, maxEth, settles: true }), 'the in-pool plan survives a trade of 0.001 ETH (as before)');
+}
+// which way an add buys the token's half (addRoute): the thin tETH / IMD pool as it was live on 2026-11-18 (0.00222749 ETH, 1.2754 IMD, an 18-decimal token: pool unit 1e10),
+// 0.0005 ETH in at 0.19 gwei. The market's plan saved less than its extra gas, so the old rule (more shares per ETH by more than the gas) chose the swap inside the pool,
+// which moved the pool's price 6.6% off the market. The rule now takes the market's plan whenever the swap inside would move the pool by more than 2%.
+{
+  const U = 10n ** 10n, raT = 222749n, rbT = 127540718n, tT = 5330062n, imdRate = 573n, gas = 140000n * 190000000n;
+  const q = async (w) => ({ amountOut: w * imdRate, amountLimit: (w * imdRate * 995n) / 1000n, callData: '0x' + 'cd'.repeat(8) + w.toString(16) });
+  const eth = 5n * 10n ** 14n;
+  const inPool = zapPlan({ eth, ra: raT, rb: rbT, total: tT, feeBps: F, unitA: U, unitB: U });
+  const extT = await zapPlanExt({ eth, ra: raT, rb: rbT, total: tT, unitA: U, unitB: U, quote: q });
+  ok(inPool && extT, 'both plans exist for 0.0005 ETH in the thin pool');
+  ok(inPool.impact > 0.02, `the swap inside would move the thin pool by ${(inPool.impact * 100).toFixed(1)}% (over 2%)`);
+  const per = (x) => Number(x.shares) / Number(x.value), gain = (per(extT) - per(inPool)) / per(inPool) * Number(eth);
+  ok(!(gain > Number(gas) * 1.5), `the market's saving (${gain.toFixed(0)} wei) is under its extra gas (${Number(gas) * 1.5}): the old rule chose the pool`);
+  ok(addRoute({ inPool, ext: extT, wei: eth, gasWei: gas }) === 'ext', 'the new rule takes the market\'s plan');
+  ok(addRoute({ inPool, ext: null, wei: eth, gasWei: gas }) === 'pool', 'with no market plan it is the pool');
+  ok(addRoute({ inPool: null, ext: extT, wei: eth, gasWei: gas }) === 'ext', 'with no plan inside it is the market');
+  // a deep pool and a small add: the swap moves it little and the market's saving is under its gas: the pool
+  const deepIn = zapPlan({ eth: 10n ** 15n, ra: ra0, rb: rb0, total: t0, feeBps: F, unitA: A, unitB: 1n });
+  const deepExt = await zapPlanExt({ eth: 10n ** 15n, ra: ra0, rb: rb0, total: t0, unitA: A, unitB: 1n, quote });
+  ok(deepIn.impact < 0.02 && addRoute({ inPool: deepIn, ext: deepExt, wei: 10n ** 15n, gasWei: 140000n * 5n * 10n ** 9n }) === 'pool', 'a deep pool and a small add stay inside the pool');
+  // boundaries, on made-up plans
+  const mk = (shares, impact = 0) => ({ shares, value: 100n, impact });
+  ok(addRoute({ inPool: mk(100n, 0.02), ext: mk(100n), wei: 10n ** 18n, gasWei: 1n }) === 'pool', 'an impact of exactly 2% is not over it');
+  ok(addRoute({ inPool: mk(100n, 0.0201), ext: mk(100n), wei: 10n ** 18n, gasWei: 1n }) === 'ext', 'just over 2% takes the market');
+  ok(addRoute({ inPool: mk(100n), ext: mk(120n), wei: 10n ** 18n, gasWei: 1n }) === 'ext', 'a big saving over a trivial gas cost takes the market');
+  ok(addRoute({ inPool: mk(100n), ext: mk(120n), wei: 10n ** 18n, gasWei: 10n ** 18n }) === 'pool', 'the same saving under a huge gas cost stays in the pool');
 }
 console.log(`lp-zap-ext: ${n} checks passed`);

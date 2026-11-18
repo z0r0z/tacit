@@ -5,7 +5,7 @@
 // Whatever stops it after the transaction leaves a private share note in the key's balance, which `bondShare` farms later.
 // The front page's Earn card has more ways in (a proof kept ready, a swap split with the Precision pool, your own prover, LP only);
 // this is the one path a page with a wallet and a key needs. Everything it calls is the pool module's (confidential-pool-ux.js).
-import { zapPlan, zapPlanFor, zapPlanExt, zapPlanExtFor, zapSettleCalldata } from '/lp-zap.js?cb=a14dd27e';
+import { zapPlan, zapPlanFor, zapPlanExt, zapPlanExtFor, addRoute, zapSettleCalldata } from '/lp-zap.js?cb=041bcb7f';
 import { relayedOrOwn } from '/farm-ops.js?cb=c5192cc4';
 
 export const PUBLIC_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
@@ -88,8 +88,7 @@ async function outsidePlan({ res, wei, m, unitB, decimals, market, gp, token, ou
   const quote = token && outside ? outside(token) : null;
   const ext = quote ? await zapPlanExt({ eth: wei, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, unitB, quote }).catch(() => null) : null;
   if (!ext) return null;
-  const per = (p) => Number(p.shares) / Number(p.value);
-  if (m && !((per(ext) - per(m.plan)) / per(m.plan) * Number(wei) > Number(EXT_GAS * gp) * 1.5)) return null;
+  if (m && addRoute({ inPool: m.plan, ext, wei, gasWei: EXT_GAS * gp }) !== 'ext') return null;
   const dep = Number(wei) / 1e18, against = market ? Math.max(0, (Number(ext.ethLeg) / 1e18 - (Number(ext.bLeg) / 10 ** decimals) * market) / dep * 100) : 0;
   return { plan: ext, impact: 0, against, cost: against, checked: market != null, outside: quote };
 }
