@@ -96,6 +96,7 @@ import { buildConfidentialSettler, FREE_POSTED_TYPES } from './confidential-sett
 import { pvDeadline, pvFees, settleCalldata as openSettleCalldata, carriesPublicValues, checkPostedShape } from './confidential-open.js';
 import { passesFloor, feeAssetOf, floorInFeeUnits, totalFee, decodePoolState, ammUsdPerUnitBest, AMM_PRICE_DEFAULTS, FEELESS_TYPES } from './relay-quote.js';
 import { makeConfidentialIndex } from './confidential-index.js';
+import { makePoolAnonymity } from './pool-anonymity.js';
 import { buildFlow, appendSeries, flowPoint } from './flow-feed.js';
 import { ethStatsBody, pageStatsBody } from './stats-views.js';
 import { preauthSalesBookBody } from './book-views.js';
@@ -4842,6 +4843,26 @@ async function handleConfidentialIndex(req, env, url, cors) {
   try { await idx.fresh(); } catch (e) { refreshError = String((e && e.message) || e).slice(0, 200); }
   const out = await idx.read({ from: url.searchParams.get('from'), limit: url.searchParams.get('limit') });
   return jsonResponse(refreshError ? { ...out, refreshError } : out, 200, { ...cors, 'Cache-Control': 'public, max-age=5' });
+}
+
+// GET /pool/anonymity — deposits per asset in the pool over the last 30 and 7 days and all time (worker/src/pool-anonymity.js), read from the
+// public event index above: a suggestion of how crowded an asset's private side is, shown beside Shield. Cached a minute; public data, no auth.
+let _poolAnon = null;
+function poolAnon(env) {
+  const idx = confIndex(env), d = _CONFIDENTIAL_DEPLOYMENTS?.mainnet, kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  if (!idx || !d || !kv) return null;
+  if (!_poolAnon) {
+    const names = {};
+    for (const a of d.assets || []) if (a.assetId && a.ticker) names[String(a.assetId).toLowerCase()] = a.ticker;
+    _poolAnon = makePoolAnonymity({ index: idx, storage: { get: (k) => kv.get(k), put: (k, v) => kv.put(k, v) }, pool: d.pool, names });
+  }
+  return _poolAnon;
+}
+async function handlePoolAnonymity(env, cors) {
+  const a = poolAnon(env);
+  if (!a) return jsonResponse({ error: 'not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  try { return jsonResponse(await a.summary(), 200, { ...cors, 'Cache-Control': 'public, max-age=60' }); }
+  catch (e) { return jsonResponse({ error: String((e && e.message) || e).slice(0, 160) }, 503, { ...cors, 'Cache-Control': 'no-store' }); }
 }
 
 // Bearer-token gate for the debug endpoints (/scan, /rescan). Either of those
@@ -28772,6 +28793,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/confidential/landed' && req.method === 'POST') return handleConfidentialLanded(req, env, cors);
     if (url.pathname === '/confidential/quote' && req.method === 'GET') return handleConfidentialQuote(req, env, url, cors);
     if (url.pathname === '/confidential/index' && req.method === 'GET') return handleConfidentialIndex(req, env, url, cors);
+    if (url.pathname === '/pool/anonymity' && req.method === 'GET') return handlePoolAnonymity(env, cors);
     if (url.pathname === '/confidential/relay' && req.method === 'GET') return handleConfidentialRelay(env, cors);
 
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);

@@ -1009,6 +1009,7 @@ function quotePaint() {
     }
     if (m != null && tacSide) lines.push(['Price impact', `${(Math.max(0, -m) * 100).toFixed(2)}%`, m <= GATE ? 'warn' : '']);
     else if (m != null && (!(r.agg || r.pin) || Math.abs(m) >= 0.01)) lines.push(['Against the market', m <= BAD ? `${(Math.abs(m) * 100).toFixed(1)}% below` : m >= 0.02 ? `${(m * 100).toFixed(1)}% above` : `${m >= 0 ? '+' : '−'}${(Math.abs(m) * 100).toFixed(2)}%`, m <= BAD ? 'warn' : m >= 0.02 ? 'ok' : '']);
+    if (r.zap && FLOW === 'shield') { const pr = H.moves?.anonRow?.(S.get); if (pr) lines.push(pr); }
     if (m == null && (r.agg || r.sv || r.zap) && !tacSide) lines.push(['Against the market', 'not checked', '', 'There is no reference price for this pair here, so a thin pool could give a poor rate. Compare the routes before sending, and use a small amount first.']);
     if (r.priv) lines.push(...feeLines(q, r));
     { const a = r.priv && aheadArgs(q), ra = r.priv && !a && routeAheadArgs(q), st = a ? PV?.aheadOf?.(a) : ra ? PV?.routeAheadOf?.(ra) : null;
@@ -3042,7 +3043,7 @@ export function mountSwapCard(root, host = {}) {
     keyChanged: () => { PV?.reset(); paint(); privUp(); },
     farms: () => (S.farms ? Promise.resolve(S.farms) : readFarms().then(() => S.farms)),
     readBalances: () => readBalances().then(paintSides),
-    refresh: () => { if (moveOf() || S.at.pay || S.at.get) { paintMode(); paintSides(); if (exiting() && S.q) paintQuote(); } else paintMode(); },
+    refresh: () => { if (moveOf() || S.at.pay || S.at.get) { paintMode(); paintSides(); if ((exiting() || (FLOW === 'shield' && S.q?.kind === 'zap')) && S.q) paintQuote(); } else paintMode(); },
     requote: () => { if (!S.busy && (moveOf() || exiting())) requote(true); },
     focus: () => $('#amt').focus({ preventScroll: true }),
     working: (on) => {

@@ -11,6 +11,7 @@ import { createRequire } from 'node:module';
 import http from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { createHash } from 'node:crypto';
 
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
 let n = 0, fails = 0;
@@ -43,6 +44,12 @@ p.on('console', (m) => { if (m.type() === 'error' && !NOISE.test(m.text())) bad.
   ok(/if \(r\.registered !== true\) \{\s+if \(await canBatch\(\)\)/.test(dep) && /sendBatch\(\[t\.registerTokenCall\(r\.addr\), \{ to: router, data, value: plan\.value \}\]/.test(dep) && /await xtRegister\(run, t, r, 'wallet', status\);/.test(dep), 'the one-transaction buy registers a new token with the buy (batched) or just before it');
   ok(/r\.registered == null \|\| r\.err/.test(fn.slice(fn.indexOf('async function xtZapShield('), fn.indexOf('async function hxXOutGo('))), 'it is offered for a token the pool has not got yet, not only a registered one');
 }
+// the Privacy row: the page asks GET /pool/anonymity (mocked here: the real API answers tacit.finance only) and says how many deposits of the asset the pool took in 30 days
+const PEPE = '0x6982508145454ce325ddbe47a25d4ec3d2311933';
+const aid = (a) => { const b = Buffer.alloc(46); b.write('tacit-evm-token-v1'); b.writeBigUInt64BE(1n, 18); Buffer.from(a.slice(2), 'hex').copy(b, 26); return '0x' + createHash('sha256').update(b).digest('hex'); };
+let asked = 0;
+await p.route('https://api.tacit.finance/pool/anonymity', (r) => { asked++; r.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
+  body: JSON.stringify({ asOf: 1, synced: true, windowDays: 30, dayBlocks: 7200, assets: { ['0x' + 'ee'.repeat(32)]: { total: 900, d30: 250, d7: 60, ticker: 'cETH' }, [aid(PEPE)]: { total: 4, d30: 3, d7: 1 } } }) }); });
 await p.goto(BASE + '/', { waitUntil: 'load' });
 await p.waitForSelector('#hx .go', { timeout: 40000 });
 const tile = () => p.evaluate(() => (document.querySelector('#hx')?.innerText || '').replace(/\s+/g, ' '));
@@ -67,6 +74,7 @@ await p.click('#pk .pk-r:not([hidden])');
 await p.fill('#amt', '0.01');
 const t = await waitFor(/swap, then shield/i, 40000);
 ok(/PEPE/.test(t) && /private PEPE/.test(t) && /swap, then shield/i.test(t), 'picking PEPE prices ETH into private PEPE: swap, then shield');
+const tp = await waitFor(/Privacy 3 deposits in 30 days · low/, 20000);ok(/Privacy 3 deposits in 30 days · low/.test(tp) && asked === 1, 'the PEPE buy says how crowded its private side is: 3 deposits in 30 days, low (the endpoint is asked once)');
 ok(!(await p.evaluate(() => { const c = document.querySelector('#copy'); return !!c && !c.hidden; })), 'no share link is offered for it (a link opens the Swap tab)');
 const go = await p.evaluate(() => document.querySelector('#go')?.innerText);
 ok(/Connect wallet/.test(go), 'with no wallet the button asks to connect');
@@ -74,6 +82,7 @@ await p.click('#get-coin');
 await p.waitForSelector('#pk:not([hidden]) .pk-r', { timeout: 10000 });
 await p.click('#pk .pk-r[data-k="0x0000000000000000000000000000000000000000"]');
 await waitFor(/To DeFi pool [\d.]+ ETH/);
+ok(/Privacy 250 deposits in 30 days · strong/.test(await waitFor(/Privacy 250 deposits/, 20000)), 'the plain ETH shield says it too: 250 deposits in 30 days, strong');
 ok(/To DeFi pool [\d.]+ ETH/.test(await tile()) && !/PEPE/.test(await tile()), 'picking ETH again is the plain shield (private ETH)');
 await p.click('#get-coin');
 await p.waitForSelector('#pk:not([hidden]) .pk-r', { timeout: 10000 });
