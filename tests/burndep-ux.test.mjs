@@ -764,6 +764,90 @@ let rec;
   try { await makeUx({ ...world, fetchImpl: byId }, makeMemStorage()).recoverFromTxid(id, WALLET_PRIV); } catch (e) { backErr = String(e.message); }
   ok(/nothing is left to finish for that move/.test(String(backErr)), 'a move that was moved back says there is nothing left to finish');
 }
+// ==== a move recorded before its burn landed, whose burn then went out from another device, does not stay at "Burn it" ====
+{
+  const world = makeWorld();
+  const ux1 = makeUx(world, makeMemStorage());
+  let r = await ux1.start({ note: { txid: NOTE_TXID, vout: NOTE_VOUT, sats: NOTE_SATS, amount: NOTE_AMOUNT, blinding: NOTE_BLINDING }, walletPriv: WALLET_PRIV, fundingUtxo: { txid: FUND_TXID_1, vout: 0, value: 30_000 }, feeRate: BASE_RATE });
+  r = await ux1.advance(r.walletPub, r.id);
+  world.setMigrateConfirmed(true);
+  r = await ux1.advance(r.walletPub, r.id);
+  r = await ux1.advance(r.walletPub, r.id);
+  world.setBurnHomeOnChain(r.burnHome.txid, r.burnHome.spk);
+  r = await ux1.advance(r.walletPub, r.id, { walletPriv: WALLET_PRIV, go: true });
+  const id = r.migrate.revealTxid, burnTxid = r.burn.txid, moved = r;
+  world.setChainHex(id, r.migrate.revealHex);
+  const moveTx = {
+    txid: id, status: { confirmed: true, block_height: 800 },
+    vin: [{ txid: r.migrate.commitTxid, vout: 0, prevout: { scriptpubkey_type: 'v1_p2tr', value: 2_000 }, witness: ['00'.repeat(64), 'aa'.repeat(700), 'c0'.repeat(33)] },
+      { txid: NOTE_TXID, vout: NOTE_VOUT, prevout: { scriptpubkey_type: 'v0_p2wpkh', value: NOTE_SATS } }],
+    vout: [{ scriptpubkey_type: 'v1_p2tr', value: 546, scriptpubkey: r.burnHome.spk }, { scriptpubkey_type: 'v0_p2wpkh', value: 4_000 }],
+  };
+  let next = { spent: false }, minted = false;
+  const fetchImpl = async (url, opts) => {
+    const u = new URL(url);
+    if (u.pathname === `/chain/tx/${id}/outspend/0`) return { ok: true, status: 200, json: async () => next };
+    if (u.pathname === '/reflection/burndep/status' && stripHex(u.searchParams.get('txid') || '') === stripHex(burnTxid)) {
+      const base = await (await world.fetchImpl(url, opts)).json();
+      const withExtra = { ...base, status: 'folded', burnBlockHeight: 900, note: { txid: withHex(id), vout: 0 }, assetId: ASSET };
+      return { ok: true, status: 200, json: async () => withExtra, text: async () => JSON.stringify(withExtra) };
+    }
+    return world.fetchImpl(url, opts);
+  };
+  const stuck = async (extra = {}) => {
+    const storage = makeMemStorage();
+    const fresh = makeUx({ ...world, fetchImpl }, storage, { nullifierSpent: async () => minted, ...extra });
+    next = { spent: false };
+    const got = (await fresh.discover({ walletPriv: WALLET_PRIV, txs: [moveTx] })).found[0];
+    ok(got && got.stage === 'migrate-confirmed', 'sanity: discovery ran before the burn landed and saved the move at migrate-confirmed');
+    return { fresh, got };
+  };
+  const spentBy = { spent: true, txid: burnTxid, status: { confirmed: true } };
+
+  { // nothing spent it: still the holder's turn
+    const { fresh, got } = await stuck();
+    const v = await fresh.verify(got.walletPub, got.id);
+    ok(v.stage === 'migrate-confirmed' && !v.spentBy, 'a move nothing has spent is left as it was');
+  }
+  { // the mint already landed on Ethereum: no key needed
+    const { fresh, got } = await stuck();
+    minted = true; next = spentBy;
+    const v = await fresh.verify(got.walletPub, got.id);
+    ok(v.stage === 'minted' && v.mintedAt, 'a move whose nullifier is already spent on Ethereum is marked minted by the page check, with no key');
+    minted = false;
+  }
+  { // a confirmed spender and no key: noted, so the next pass with the key follows it
+    const { fresh, got } = await stuck();
+    next = spentBy;
+    const a = await fresh.advance(got.walletPub, got.id);
+    ok(a.stage === 'migrate-confirmed' && a.spentBy === burnTxid, 'a move whose output a confirmed transaction spent is noted without the key');
+    const again = await fresh.advance(got.walletPub, got.id);
+    ok(again.spentBy === burnTxid, 'and noting it twice changes nothing');
+  }
+  { // with the key the spender is followed to the burn's real stage
+    const { fresh, got } = await stuck();
+    next = spentBy;
+    world.setBurnHomeOnChain(id, moved.burnHome.spk);
+    const v = await fresh.advance(got.walletPub, got.id, { walletPriv: WALLET_PRIV });
+    ok(v.stage === 'folded' && v.burn.txid === burnTxid && v.source.txid === NOTE_TXID, 'with the key the burn that spent it is followed, and the row leaves "Burn it"');
+    ok(fresh.list(got.walletPub).length === 1, 'and it is the same bridge, not a second one');
+  }
+  { // verify() on a traced record follows the burn as well
+    const { fresh, got } = await stuck();
+    world.setBurnHomeOnChain(id, moved.burnHome.spk);
+    const t = await fresh.advance(got.walletPub, got.id);
+    ok(t.stage === 'traced', 'sanity: the stuck move reached traced');
+    next = spentBy;
+    const v = await fresh.verify(got.walletPub, got.id, { walletPriv: WALLET_PRIV });
+    ok(v.stage === 'folded' && v.burn.txid === burnTxid, 'a traced move whose burn landed elsewhere is followed by the page check');
+  }
+  { // an unconfirmed spender is not acted on
+    const { fresh, got } = await stuck();
+    next = { spent: true, txid: burnTxid, status: { confirmed: false } };
+    const v = await fresh.advance(got.walletPub, got.id, { walletPriv: WALLET_PRIV });
+    ok(!v.spentBy && (v.stage === 'migrate-confirmed' || v.stage === 'traced') && !v.burn, 'a spender that has not confirmed is not followed yet');
+  }
+}
 // ==== hop-limit refusal (post-migrate: the burn-home is always one hop deeper than its source) ====
 {
   const world = makeWorld();

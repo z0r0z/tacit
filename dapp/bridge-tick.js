@@ -23,7 +23,8 @@ export async function stepIn({ ux, pub, withKey, priv, planOf = () => null, aliv
         if (after.stage === 'burn-signed') after = await ux.advance(pub, rec.id).catch(() => ux.list(pub).find((r) => r.id === rec.id) || after);
         if (IN_BURN_SENT.includes(after.stage)) on.burnSent?.(after);
         else if (after.feeWait && !rec.feeWait) moved = true;
-      } else after = due ? await ux.advance(pub, rec.id, { walletPriv: priv() })
+      } else if (rec.spentBy && (rec.stage === 'traced' || rec.stage === 'migrate-confirmed')) after = await withKey(() => ux.verify(pub, rec.id, { walletPriv: priv() }), pub);
+      else after = due ? await ux.advance(pub, rec.id, { walletPriv: priv() })
         : ready || rec.stage === 'traced' ? await ux.verify(pub, rec.id) : await ux.advance(pub, rec.id);
       if (after?.stage !== rec.stage) moved = true;
       if (after?.stage === 'minted') on.minted?.(after);

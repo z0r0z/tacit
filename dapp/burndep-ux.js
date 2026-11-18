@@ -692,7 +692,9 @@ export function makeBurnDepositUx(deps) {
       }
       return putRecord({ ...rec, stage: 'migrate-confirmed', migrateConfirmedAt: now(), migrateHeight: st.burnBlockHeight });
     },
-    'migrate-confirmed': async (rec) => {
+    'migrate-confirmed': async (rec, { walletPriv } = {}) => {
+      const gone = await movedOn(rec, walletPriv);
+      if (gone !== rec) return gone;
       const tracked = await isLive(rec.burnHome.txid, 0, { fresh: true });
       if (tracked === true) return putRecord({ ...rec, stage: 'stopped', stoppedAt: now(), stoppedWhy: 'tracked' });
       if (tracked === null) return rec;
@@ -702,6 +704,8 @@ export function makeBurnDepositUx(deps) {
       return putRecord({ ...rec, stage: 'traced', bundle, hops: traced.hops, homeChecked: true });
     },
     traced: async (rec, { walletPriv, maxFeeRate, go = false }) => {
+      const gone = await movedOn(rec, walletPriv);
+      if (gone !== rec) return gone;
       const tracked = await isLive(rec.burnHome.txid, 0, { fresh: true });
       if (tracked === true) return putRecord({ ...rec, stage: 'stopped', stoppedAt: now(), stoppedWhy: 'tracked' });
       if (tracked === null) return rec;
@@ -931,6 +935,24 @@ export function makeBurnDepositUx(deps) {
     const nu = (rec.envelope && rec.envelope.nullifier) || (rec.dest && rec.dest.nullifier);
     if (!nullifierSpent || !nu) return null;
     try { return (await nullifierSpent(nu)) ? putRecord({ ...rec, stage: 'minted', mintedAt: now(), lastError: null, errorCount: 0 }) : null; } catch { return null; }
+  }
+
+  // A move whose burn was sent from another device: the move's output 0 is spent by the burn (or the mint already landed).
+  // It needs no key to see that; the key finishes the rebuild from the spender.
+  async function movedOn(rec, walletPriv = null) {
+    if (!rec || (rec.stage !== 'migrate-confirmed' && rec.stage !== 'traced') || !rec.burnHome || rec.burn) return rec;
+    const out = await fetchChainJson(`/tx/${stripHex(rec.burnHome.txid)}/outspend/0`).catch(() => null);
+    if (!out || out.spent !== true || !out.txid || !out.status || !out.status.confirmed) return rec;
+    if (nullifierSpent) {
+      const nu = pool.nullifier(kit.burnDepositLeaf(withHex(tacAssetId), rec.burnHome.cx, rec.burnHome.cy, withHex(revHex(rec.burnHome.txid)), 0));
+      try { if (await nullifierSpent(nu)) return putRecord({ ...rec, stage: 'minted', mintedAt: now(), lastError: null, errorCount: 0 }); } catch {}
+    }
+    if (!walletPriv) return rec.spentBy === lc(stripHex(out.txid)) ? rec : putRecord({ ...rec, spentBy: lc(stripHex(out.txid)) });
+    const got = await recoverFromTxid(out.txid, walletPriv, { amount: rec.source.amount }).catch((e) => {
+      if (/does not classify as a burn-deposit|different asset/.test(String((e && e.message) || e))) return null;
+      throw e;
+    });
+    return got || rec;
   }
 
   function pickDestOwner(walletPriv, assetId = tacAssetId) {
@@ -1304,9 +1326,13 @@ export function makeBurnDepositUx(deps) {
     return putRecord({ ...rec, stage: r.status === 'sent' ? 'recovered' : 'recovering', recover: { status: r.status, txid: r.txid || null, at: now() } });
   }
 
-  async function verify(walletPub, id) {
+  async function verify(walletPub, id, { walletPriv = null } = {}) {
     const rec = getRecord(walletPub, id);
     if (!rec) return null;
+    if (rec.stage === 'traced' || rec.stage === 'migrate-confirmed') {
+      const gone = await movedOn(rec, walletPriv);
+      if (gone !== rec) return gone;
+    }
     if ((rec.stage === 'traced' && !rec.homeChecked) || rec.stage === 'migrate-confirmed') {
       const live = await isLive(rec.burnHome.txid, 0, { fresh: true });
       if (live === true) return putRecord({ ...rec, stage: 'stopped', stoppedAt: now(), stoppedWhy: 'tracked' });
