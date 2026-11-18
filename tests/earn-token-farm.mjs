@@ -61,6 +61,13 @@ ok(!started || (/no pool yet/.test(card) && /Pool new: it holds only your deposi
   ok(/noteFor\(run, t, priv, plan\.ethUnits/.test(body) && /noteFor\(run, t, priv, plan\.tokUnits/.test(body) && /t\.lpAdd\(\{ walletPriv: priv, aNote: nE, bNote: nT, feeBps: POOL_START_FEE, selfSettle/.test(body), 'it cuts a note of each size and adds them as the first liquidity (the module creates the pool)');
   ok(/if \(HX\.from === 'eth'\) \{ const pb = await xtPrivBothUse\(r, wei\)/.test(fn) && /src === 'eth' && !lpOnly\) out\.push\(\.\.\.xtEarnRows\(\)\.filter\(\(x\) => x\.k\.startsWith\('xs:'\)/.test(fn), 'private tETH, as the Earn source, lists the starts its private coins can fund, and the press uses the private start');
 }
+// a share proof slow to come back says so after 90 seconds and offers the own-device choice, as the farm zap does; the wait itself is unchanged
+{
+  const fn = readFileSync(join(DAPP, 'index.html'), 'utf8'), body = fn.slice(fn.indexOf('async function xtShareProof('), fn.indexOf('// One transaction from the wallet: the ETH\'s swap half'));
+  ok(/sleep\(90e3\)\.then\(async \(\) => \{\s+if \(over\) return null;/.test(body) && /inflight: proving, down: false/.test(body) && /const proven = await proving;/.test(body), 'a share proof slow past 90 seconds offers to keep waiting or prove on this device, and is still awaited the same way');
+  ok(/if \(way === 'own'\) \{ try \{ t\.releaseShareIndex/.test(body), 'choosing to prove on the device frees the share index and sends nothing');
+  ok(/\/confidential\/relay`\)/.test(body) && /tacit-proof-slow-v1/.test(body) && /opts\.onUpdate = \(u\) =>/.test(body), 'the notice carries the relay\'s own queue gauge and the job\'s status trail, and keeps them for tracing');
+}
 await b.close(); server.close();
 console.log(`\n${n} ok, ${fails} failed`);
 if (bad.length) { console.log('PAGE ERRORS:\n' + bad.join('\n')); fails++; }

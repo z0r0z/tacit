@@ -3,7 +3,7 @@
 // ("Buy and shield"), the flow the /spx/ page has for SPX alone. Browser, no wallet, the quote read over the public RPCs.
 //   - ETH is the default (the plain shield, to private ETH) and the To coin is a button
 //   - the picker lists ETH and tokens, not TAC, WETH or a private-only coin, and searches
-//   - picking CRV prices ETH -> private CRV ("swap, then shield"), the button says what it is, a link to share is not offered
+//   - picking PEPE prices ETH -> private PEPE ("swap, then shield"), the button says what it is, a link to share is not offered
 //   - picking ETH again is the plain shield; Withdraw's To coin is not a button; paying with a token (DAI) goes back to shielding it as it is
 //
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/shield-buy-any.mjs
@@ -45,11 +45,11 @@ p.on('console', (m) => { if (m.type() === 'error' && !NOISE.test(m.text())) bad.
   ok(/r\.registered == null \|\| r\.err/.test(fn.slice(fn.indexOf('async function xtZapShield('), fn.indexOf('async function hxXOutGo('))), 'it is offered for a token the pool has not got yet, not only a registered one');
 }
 // the Privacy row: the page asks GET /pool/anonymity (mocked here: the real API answers tacit.finance only) and says how many deposits of the asset the pool took in 30 days
-const CRV = '0xd533a949740bb3306d119cc777fa900ba034cd52';
+const PEPE = '0x6982508145454ce325ddbe47a25d4ec3d2311933';
 const aid = (a) => { const b = Buffer.alloc(46); b.write('tacit-evm-token-v1'); b.writeBigUInt64BE(1n, 18); Buffer.from(a.slice(2), 'hex').copy(b, 26); return '0x' + createHash('sha256').update(b).digest('hex'); };
 let asked = 0;
 await p.route('https://api.tacit.finance/pool/anonymity', (r) => { asked++; r.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
-  body: JSON.stringify({ asOf: 1, synced: true, windowDays: 30, dayBlocks: 7200, assets: { ['0x' + 'ee'.repeat(32)]: { total: 900, d30: 250, d7: 60, ticker: 'cETH' }, [aid(CRV)]: { total: 4, d30: 3, d7: 1 } } }) }); });
+  body: JSON.stringify({ asOf: 1, synced: true, windowDays: 30, dayBlocks: 7200, assets: { ['0x' + 'ee'.repeat(32)]: { total: 900, d30: 250, d7: 60, ticker: 'cETH' }, [aid(PEPE)]: { total: 4, d30: 3, d7: 1 } } }) }); });
 await p.goto(BASE + '/', { waitUntil: 'load' });
 await p.waitForSelector('#hx .go', { timeout: 40000 });
 const tile = () => p.evaluate(() => (document.querySelector('#hx')?.innerText || '').replace(/\s+/g, ' '));
@@ -66,17 +66,18 @@ await p.waitForSelector('#pk:not([hidden]) .pk-r', { timeout: 10000 });
 const all = await rows(), keys = all.map((r) => r.k);
 ok(keys.includes('0x0000000000000000000000000000000000000000') && all.length > 20, `the picker lists ETH and tokens (${all.length})`);
 ok(!keys.some((k) => /^0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2$/i.test(k)) && !keys.some((k) => /^@/.test(k)), 'WETH and the private-only coins are not offered');
-await p.fill('#pk-q', 'crv');
+await p.fill('#pk-q', 'pepe');
 await p.waitForTimeout(600);
 const found = await rows();
-ok(found.length > 0 && /CRV/.test(found[0].t), 'it searches');
+ok(found.length > 0 && /PEPE/.test(found[0].t), 'it searches');
 await p.click('#pk .pk-r:not([hidden])');
 await p.fill('#amt', '0.01');
 const t = await waitFor(/swap, then shield/i, 40000);
-ok(/CRV/.test(t) && /private CRV/.test(t) && /swap, then shield/i.test(t), 'picking CRV prices ETH into private CRV: swap, then shield');
-const tp = await waitFor(/Privacy 3 deposits in 30 days · low/, 20000);ok(/Privacy 3 deposits in 30 days · low/.test(tp) && asked === 1, 'the CRV buy says how crowded its private side is: 3 deposits in 30 days, low (the endpoint is asked once)');
-const hint = await waitFor(/Pool none for tETH \/ CRV yet · start one/, 25000);
-ok(/Pool none for tETH \/ CRV yet · start one/.test(hint), 'the buy says the token has no tETH pool yet, and offers to start one');
+ok(/PEPE/.test(t) && /private PEPE/.test(t) && /swap, then shield/i.test(t), 'picking PEPE prices ETH into private PEPE: swap, then shield');
+const tp = await waitFor(/Privacy 3 deposits in 30 days · low/, 20000);ok(/Privacy 3 deposits in 30 days · low/.test(tp) && asked === 1, 'the PEPE buy says how crowded its private side is: 3 deposits in 30 days, low (the endpoint is asked once)');
+const hint = await waitFor(/Pool none for tETH \/ PEPE yet · start one/, 25000);
+// the hint shows only while the token has no tETH pool, which is live state (a pool for it can be started at any time): then the card says so and offers the start; with a pool it offers neither
+ok(/Pool none for tETH \/ PEPE yet · start one/.test(hint) || !/Pool none for/.test(hint), 'the buy offers to start a tETH pool when the token has none, and says nothing of it when it has');
 ok(!(await p.evaluate(() => { const c = document.querySelector('#copy'); return !!c && !c.hidden; })), 'no share link is offered for it (a link opens the Swap tab)');
 const go = await p.evaluate(() => document.querySelector('#go')?.innerText);
 ok(/Connect wallet/.test(go), 'with no wallet the button asks to connect');
@@ -85,10 +86,10 @@ await p.waitForSelector('#pk:not([hidden]) .pk-r', { timeout: 10000 });
 await p.click('#pk .pk-r[data-k="0x0000000000000000000000000000000000000000"]');
 await waitFor(/To DeFi pool [\d.]+ ETH/);
 ok(/Privacy 250 deposits in 30 days · strong/.test(await waitFor(/Privacy 250 deposits/, 20000)), 'the plain ETH shield says it too: 250 deposits in 30 days, strong');
-ok(/To DeFi pool [\d.]+ ETH/.test(await tile()) && !/CRV/.test(await tile()), 'picking ETH again is the plain shield (private ETH)');
+ok(/To DeFi pool [\d.]+ ETH/.test(await tile()) && !/PEPE/.test(await tile()), 'picking ETH again is the plain shield (private ETH)');
 await p.click('#get-coin');
 await p.waitForSelector('#pk:not([hidden]) .pk-r', { timeout: 10000 });
-await p.fill('#pk-q', 'crv');
+await p.fill('#pk-q', 'pepe');
 await p.click('#pk .pk-r:not([hidden])');
 await p.waitForTimeout(800);
 await tab('Swap');
@@ -101,7 +102,7 @@ ok(await clickable(), 'back on Shield the To coin is still a button');
 await p.click('#flip');
 await waitFor(/Withdraw/i, 15000);
 await p.waitForTimeout(800);
-ok(!(await clickable()) && !/CRV/.test(await tile()), 'Withdraw: the To coin is not a button and the chosen token is forgotten');
+ok(!(await clickable()) && !/PEPE/.test(await tile()), 'Withdraw: the To coin is not a button and the chosen token is forgotten');
 await p.click('#flip');
 await p.waitForTimeout(1200);
 // paying with a token you hold goes back to shielding it as it is
