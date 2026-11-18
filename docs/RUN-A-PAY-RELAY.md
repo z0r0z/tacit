@@ -7,20 +7,33 @@ and no funded address. Anyone can run one and list it in the relay registry; the
 ## The short way: one command, from a laptop or a server
 
 ```
-git clone https://github.com/src-company/tacit && cd tacit/worker-relay && npm ci
-node scripts/pay-relay.mjs --owner 0x<the address that holds the stake and gets it back> --tunnel
+git clone https://github.com/src-company/tacit
+cd tacit/worker-relay && npm ci
+node scripts/pay-relay.mjs --tunnel
 ```
 
-It makes the relay's own key (a file only you can read, in `~/.tacit-relay`), prints that key's address and waits for 1,000 TAC and 0.01 ETH to arrive there, starts the
-relay, opens a public address for it and lists it in the registry, then keeps the listed address current if it changes. `--tunnel` uses `cloudflared` (`brew install
-cloudflared`), so a laptop needs no server and no open port; with a server that has a name, give `--url https://<the name>` instead. From a checkout of the repository the same
-command is `node tools/community-runner.mjs relay --owner 0x… --tunnel`.
+It needs Node 20 or newer, git, and `cloudflared` for the tunnel (`brew install cloudflared`; the command stops at once, before anything is made, if it is missing).
+
+It makes two keys (files only you can read, in `~/.tacit-relay`): the relay's own, and a fresh address to hold the stake. It prints the relay key's address and waits for 1,000 TAC
+and 0.01 ETH to arrive there, starts the relay, opens a public address for it and lists it in the registry. `--tunnel` uses `cloudflared`, so a laptop needs no server and no open
+port; with a server that has a name, give `--url https://<the name>` instead. From a checkout of the repository the same command is `node tools/community-runner.mjs relay --tunnel`.
+
+Run it again whenever you like (after a reboot, say). It finds its place in the registry and asks for gas only, never for the stake again, and if the tunnel's name has changed (a tunnel
+gets a new one each time it starts) it changes the listed address to match and waits for that to land. `--rpc <your node>` reads and sends through your own Ethereum node instead of the
+free public ones.
+
+The stake's owner is public on chain (the registry shows it), so a wallet that is known as yours would tie the relay to you; that is why the owner is a fresh address by default. Its
+key is `owner.key` beside the relay's: keep a copy, because it is what takes the stake back (import it into a wallet and connect that wallet on the Pay relays card). To hold the stake
+in a wallet of your own instead, add `--owner 0x…`.
+
+A machine that already runs a prover can run a relay beside it. A relay's own proving is small (the deposits it completes, on one thread); a wallet proves its own spend on its own
+device, so a relay sells reach, uptime and gas, not proving power.
 
 A new relay needs the pool's history, and free public nodes do not serve history that old, so the launcher reads it from the project's relay through the private route (the relay that
 answers sees a forwarder, not your machine). What it reads is checked against the chain's own root, so nothing is taken on trust; `--seed <a relay's url>` reads it from another relay
 instead, and a machine that sleeps for hours is read again from the feed when it wakes.
 
-Send the funds from wherever you like: out of a private balance, nothing on chain links the relay to you, and the stake's owner can be a fresh address. A relay earns while it is on
+Send the funds from wherever you like: out of a private balance, nothing on chain links the relay to you. A relay earns while it is on
 and wallets pass over it while it is off, so a laptop that sleeps loses nothing but the fees. The sections below say what each part does, for running it by hand.
 
 ## What a relay is, and is not
@@ -42,7 +55,7 @@ and wallets pass over it while it is off, so a laptop that sleeps loses nothing 
 | An Ethereum node | `EVM_POOL_RPC_URL`: your own, or a provider's. A free public node cannot serve the pool's old history: start a new relay from a feed with `EVM_POOL_SEED_FEED_1=<a relay's url>` (the launcher does) |
 | A key of its own | a new key, used for nothing else: two services signing from one key race each other for its nonce. It needs ETH for gas. |
 | TAC | at least the registry's minimum stake in that key, for the moment you list (1,000 TAC to start; `minStake()` on the registry says what it is now) |
-| A second address | the `owner` of the stake: your own wallet, not the server's key |
+| A second address | the `owner` of the stake: an address of yours that is not the server's key. The owner is public on chain, so a fresh address keeps the relay from being tied to a wallet that is known as yours |
 
 ## 1. Run the relay
 
@@ -86,8 +99,8 @@ relay priced close to the gas cost is used most. A relay that has not answered a
 
 ```
 cd worker-relay && npm ci
-RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/evm-pool/keeper --owner 0x<your wallet>            # every check, nothing sent
-RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/evm-pool/keeper --owner 0x<your wallet> --send     # list the relay
+RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/evm-pool/keeper --owner 0x<an address of yours>            # every check, nothing sent
+RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/evm-pool/keeper --owner 0x<an address of yours> --send     # list the relay
 ```
 
 It is one transaction: the relay's key permits the registry to take the stake and lists the relay in the same call (`--two-step` approves first and lists after).

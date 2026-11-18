@@ -63,10 +63,14 @@ export function startPayRelays(ctx, { forwarders = [], fetchImpl = globalThis.fe
     paintMine();
   }
 
-  // the command to run one, with the connected wallet as the owner of the stake
-  const paintCmd = () => { if (cmd) cmd.textContent = `git clone https://github.com/src-company/tacit && cd tacit/worker-relay && npm ci\nnode scripts/pay-relay.mjs --owner ${S.address || '0x…'} --tunnel`; };
+  // the command to run one: no owner named, so the command makes a fresh address to hold the stake (an owner is public on chain: a connected wallet is not made it)
+  const COMMAND = 'git clone https://github.com/src-company/tacit\ncd tacit/worker-relay && npm ci\nnode scripts/pay-relay.mjs --tunnel';
+  if (cmd) cmd.textContent = COMMAND;
+  const copyBtn = $('#pay-copy');
+  copyBtn?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(COMMAND); copyBtn.textContent = 'Copied'; setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500); } catch { /* the block can be selected by hand */ }
+  });
   function paintMine() {
-    paintCmd();
     if (!S.address) { mineBox.hidden = false; mineBox.innerHTML = '<button class="btn ghost" id="pay-connect" type="button">Connect your wallet to manage a relay you listed</button>'; return; }
     const owned = mine(model.rows, S.address);
     mineBox.hidden = false;

@@ -21,7 +21,7 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=b76a5e4e">
+<link rel="modulepreload" href="/prove/app.js?cb=4dbcdef0">
 <link rel="modulepreload" href="/relay-route.js?cb=80d7281f">
 <link rel="modulepreload" href="/private-route.js?cb=a6bfb621">
 <link rel="modulepreload" href="/community-prove.js?cb=e2a65259">
@@ -425,6 +425,7 @@ pre.cmd code::before { content: '$ '; color: var(--mute); -webkit-user-select: n
 .ops .callout a { color: var(--ink); }
 .ops .callout .btn { margin-top: 8px; }
 .ops pre.cmd { margin: 12px 0 0; font: 12px/1.7 var(--mono); border-color: var(--hair); overflow-x: auto; white-space: pre; }
+.ops pre.cmd.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ops .tscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .ops table.batches { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 10px; }
 .ops table.batches th, .ops table.batches td { text-align: right; padding: 5px 0 5px 10px; border-bottom: 1px solid var(--hair); font-weight: 400; white-space: nowrap; }
@@ -964,13 +965,14 @@ node tools/private-route-check.mjs --service https://tacit-evm-pool-keepers.onre
   <section class="grp" id="g-pay" aria-labelledby="h-pay" data-card="pay-relays">
     <h2 id="h-pay"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Pay relays</h2>
     <div class="panel">
-      <p class="lede">Relays that send private ETH spends from the pay page, for a fee. Anyone can list one by staking TAC; a wallet takes the cheapest it can reach, and reaches each one through the private route, so a relay never sees who is asking.</p>
+      <p class="lede">Relays that send private ETH spends from the pay page, for a fee. Anyone can list one by staking TAC; wallets favor the cheapest they can reach, and reach each one through the private route, so a relay never sees who is asking.</p>
       <div class="plan num" id="pay-box"><p><span class="sk" style="--w:22ch"></span></p></div>
       <div id="pay-mine" hidden></div>
       <p class="status" id="pay-status" role="status"></p>
-      <p class="lede">Run one from your laptop. The command makes the relay its own key, says where to send the stake and a little ETH (send them from a private balance and nothing links the relay to you), starts the relay, opens a tunnel so you need no server, and lists it. A relay earns while it is on, and wallets pass over it while it is off.</p>
-      <pre class="cmd"><code id="pay-cmd">git clone https://github.com/src-company/tacit &amp;&amp; cd tacit/worker-relay &amp;&amp; npm ci
-node scripts/pay-relay.mjs --owner 0x… --tunnel</code></pre>
+      <p class="lede">Run one from your laptop. It needs Node 20 or newer, git, and cloudflared for the tunnel (brew install cloudflared). The command makes the relay its own key and a fresh address to hold the stake, says where to send the stake and a little ETH (send them from a private balance and nothing links the relay to you), starts the relay, opens a tunnel so you need no server, and lists it. A relay earns while it is on, and wallets pass over it while it is off. A machine that already runs a prover can run one too.</p>
+      <div class="pair"><pre class="cmd wrap"><code id="pay-cmd">git clone https://github.com/src-company/tacit
+cd tacit/worker-relay &amp;&amp; npm ci
+node scripts/pay-relay.mjs --tunnel</code></pre><button class="btn ghost" id="pay-copy" type="button">Copy</button></div>
       <p class="plan"><a href="https://github.com/src-company/tacit/blob/main/docs/RUN-A-PAY-RELAY.md" target="_blank" rel="noopener noreferrer">Run and list a relay</a> · <a href="https://etherscan.io/address/0x00000000000299F48Fb844626ab96c6A20059a01#code" target="_blank" rel="noopener noreferrer">The registry</a></p>
     </div>
   </section>
@@ -1042,6 +1044,6 @@ node scripts/pay-relay.mjs --owner 0x… --tunnel</code></pre>
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=b76a5e4e"></script>
+<script type="module" src="/prove/app.js?cb=4dbcdef0"></script>
 </body>
 </html>

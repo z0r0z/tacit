@@ -103,9 +103,10 @@ await check('a relay whose private route key a forwarder shows, signed by it, is
 await check('no wallet: a button to connect; connected, only the relays that wallet owns, each with its controls', async () => {
   const p = await page({ entries: base(), account: null });
   assert.match(p.els['#pay-mine'].innerHTML, /Connect your wallet to manage a relay you listed/);
-  assert.match(p.els['#pay-cmd'].textContent, /pay-relay\.mjs --owner 0x… --tunnel/, 'no wallet: the command has a place for the owner');
+  assert.equal(p.els['#pay-cmd'].textContent, 'git clone https://github.com/src-company/tacit\ncd tacit/worker-relay && npm ci\nnode scripts/pay-relay.mjs --tunnel', 'the command, one step to a line');
+  assert.doesNotMatch(p.els['#pay-cmd'].textContent, /--owner/, 'no owner named: the command makes a fresh address for the stake, an owner being public on chain');
   p.S.address = ME; p.card.paint();
-  assert.match(p.els['#pay-cmd'].textContent, new RegExp(`pay-relay\\.mjs --owner ${ME} --tunnel`), 'the connected wallet is the owner in the command');
+  assert.doesNotMatch(p.els['#pay-cmd'].textContent, new RegExp(ME), 'a connected wallet is never put in the command');
   const m = p.els['#pay-mine'].innerHTML;
   assert.match(m, /data-id="1"/); assert.doesNotMatch(m, /data-id="2"/); assert.doesNotMatch(m, /data-id="3"/);
   for (const a of ['topup', 'url', 'exit']) assert.ok(m.includes(`data-act="${a}"`), a);

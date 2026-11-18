@@ -512,6 +512,13 @@ try {
     check(/Connect your wallet to manage a relay you listed/.test(await page.locator('#pay-mine').innerText()), 'with no wallet connected it offers to connect one');
     check(registryReads.includes('0x06661abd') && registryReads.includes('0xe1137f19') && registryReads.includes('0xcf5ad6e6'), 'it read the count, the entry and its address from the registry', registryReads.join());
     check(await page.locator('#g-pay [data-card], #g-pay').first().isVisible() && (await page.locator('#g-pay a[href*="RUN-A-PAY-RELAY"]').count()) === 1, 'the card links the guide to run and list a relay');
+    const cmd = await page.locator('#pay-cmd').innerText();
+    check(cmd === 'git clone https://github.com/src-company/tacit\ncd tacit/worker-relay && npm ci\nnode scripts/pay-relay.mjs --tunnel', 'the card shows the command, one step to a line, with no owner in it (the command makes a fresh address to hold the stake)', cmd);
+    check((await page.locator('#pay-copy').innerText()) === 'Copy' && /cloudflared/.test(await page.locator('#g-pay').innerText()), 'it has a Copy button and says what the command needs (cloudflared for the tunnel)');
+    for (const w of [1100, 390]) {
+      await page.setViewportSize({ width: w, height: 900 });
+      check(await page.locator('#pay-cmd').evaluate((el) => { const p = el.parentElement; return p.scrollWidth <= p.clientWidth + 1; }), `the command is whole on screen at ${w}px wide: it wraps, nothing is cut off`);
+    }
     check(errors.length === 0, 'no page errors or policy refusals on the card', errors.join(' | '));
     await ctx.close();
   }
