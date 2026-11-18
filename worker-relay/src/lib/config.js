@@ -891,6 +891,10 @@ export const CFG = {
   pointsTasksFloorWei: BigInt(opt('POINTS_TASKS_FLOOR_WEI', '150000000000000000000')),
   pointsTasksCapWei: BigInt(opt('POINTS_TASKS_CAP_WEI', '2500000000000000000000')),
   pointsTasksReserveDays: num('POINTS_TASKS_RESERVE_DAYS', 2),
+  // The key that approves a reviewed task step at run time (POST /tasks/approve, `Authorization: Bearer <key>`): at least 32 characters, or the
+  // route does not exist. It approves a transaction for a step and nothing more: the account credited is the one that sent it, the sum is the
+  // step's, and the tasks budget and the funding reserve still hold.
+  pointsTasksAdminSecret: opt('POINTS_TASKS_ADMIN_SECRET', ''),
   // The nodes the tasks service reads a job's steps from on other chains than Ethereum (a comma list is tried in order), and how long a
   // block there must have aged before a step in it is final: a chain with quick blocks is not final in twelve of them.
   pointsTasksRpc: {

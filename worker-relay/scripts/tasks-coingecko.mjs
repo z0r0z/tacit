@@ -7,7 +7,9 @@
 // The work is done on CoinGecko's site, so no transaction names who did it. The filer sends themselves a transaction naming the request's
 // id (what CoinGecko emails them, like CL12345, as its ASCII bytes padded to 32; dapp/tasks/review.js), which the page does, and the step
 // lists that hash after review: the request exists, it was filed from the project's verification post, and the project's account replied
-// to that post with the id. Listing a hash takes a push and a deploy of the points service, then naming the claim to POST /tasks/claim.
+// to that post with the id. The service only credits an id that looks like CoinGecko's (`evidence`). Approving a claim is one call to
+// POST /tasks/approve (worker-relay/scripts/tasks-approve.mjs): no push, no deploy, and the service names the claim itself; `--filer` still
+// lists a hash in the job file, which takes a push and a deploy.
 // The step pays once, a fixed sum, to the wallet that claimed. 100 TAC (about $19 at TAC's $0.19 on 18 November 2026): about fifteen
 // minutes of someone's time on a free account, nothing to pay, so a small sum for the bother. It does not depend on CoinGecko approving.
 import { fileURLToPath } from 'node:url';
@@ -24,7 +26,8 @@ const before = readJobs(SERVICE_OUT).find((j) => j.id === JOB);
 const approved = (id, name) => { const had = before?.steps.find((s) => s.id === id)?.approved ?? [], h = arg(name); return h && !had.includes(h) ? [...had, h] : had; };
 const opensAt = Number(arg('opens', before?.opensAt ?? Math.floor(Date.now() / 1000)));
 const pay = Number(arg('tac', 100));
-const step = { id: '01-filer', kind: 'review', to: NOBODY, gas: 22000, approved: approved('01-filer', 'filer'), minWei: TAC(pay), maxWei: TAC(pay) };
+const ID = '^CL[0-9]{3,}$';           // what CoinGecko's request ids look like (CL, then digits)
+const step = { id: '01-filer', kind: 'review', to: NOBODY, gas: 22000, approved: approved('01-filer', 'filer'), minWei: TAC(pay), maxWei: TAC(pay), evidence: { text: true, pattern: ID } };
 
 writeJobs(SERVICE_OUT, { id: JOB, chainId: 1, opensAt, steps: [step] });
 writeJobs(PAGE_OUT, {
@@ -35,7 +38,7 @@ writeJobs(PAGE_OUT, {
     ...step, label: 'Filer', detail: 'Files the request on CoinGecko from the team’s verification post.',
     action: { label: 'Open the brief', href: BRIEF },
     ask: 'The Request ID CoinGecko emailed you (like CL12345). It is paid to the wallet you claim from.',
-    input: { placeholder: 'CoinGecko Request ID', pattern: '^[A-Za-z0-9-]{3,32}$', text: true, error: 'That is not a CoinGecko Request ID.' },
+    input: { placeholder: 'CoinGecko Request ID', pattern: ID, text: true, error: 'That is not a CoinGecko Request ID (it looks like CL12345).' },
   }],
   about: [
     { h: 'What it is', p: 'TAC is not on CoinGecko yet. Their request form needs a logged-in account, a captcha and the terms accepted by a person, so we ask the community to file it. The team has already published the verification post CoinGecko requires, and replies to it with your Request ID.' },

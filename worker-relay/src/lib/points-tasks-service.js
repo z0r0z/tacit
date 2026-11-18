@@ -14,6 +14,7 @@
 // deps: store, cfg, jobs (checked job files), client (a viem public client), quote(amountInWei) -> [{ venue, amountIn, amountOut }]
 // (lib/tac-quote.js),
 // fundingInputs() -> { heldWei, claimedWei, nextDay } | null, budgetFor(day), graceSecs, nowSec, log.
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { fundingStatus } from './points-funding.js';
 import { makeTokenBucket } from './token-bucket.js';
 import { deepest } from './tac-quote.js';
@@ -24,6 +25,16 @@ const ETH = WAD;
 const PRICE_SIZE = WAD / 100n;             // the TAC bought with 0.01 ETH sets the price
 const KEEP_QUOTES_SECS = 30 * 86400;
 const HASH = /^0x[0-9a-fA-F]{64}$/;
+
+// Whether an `Authorization: Bearer …` header carries the tasks admin key (POINTS_TASKS_ADMIN_SECRET). A key under 32 characters is no key,
+// so a short or empty setting never opens the route. Both sides are hashed first, so the comparison takes the same time whatever the guess.
+export function adminKeyOk(header, secret) {
+  if (typeof secret !== 'string' || secret.length < 32) return false;
+  const m = /^Bearer (\S+)$/.exec(String(header ?? ''));
+  if (!m) return false;
+  const digest = (s) => createHash('sha256').update(s).digest();
+  return timingSafeEqual(digest(m[1]), digest(secret));
+}
 
 export function createTasks({ store, cfg, jobs, client, clients = {}, quote, fundingInputs, budgetFor, graceSecs, nowSec = () => Math.floor(Date.now() / 1000), log = () => {} }) {
   const enabled = cfg.budgetWei > 0n && cfg.endSec > 0 && jobs.length > 0;
@@ -73,6 +84,17 @@ export function createTasks({ store, cfg, jobs, client, clients = {}, quote, fun
 
   const priceWindow = (t) => store.taskQuotes(t - 21600 - 7200, t + 7200);
 
+  // ── approvals made at run time ──
+
+  // A reviewed step lists the transactions read and approved. The job file's list changes with a push and a deploy; an approval made
+  // through `approve` is kept in the store (a row of its meta table) and read with the file's, so a step is approved without either.
+  const APPROVALS = 'tasks.approvals';
+  const approvals = () => { try { const v = JSON.parse(store.getMeta?.(APPROVALS) ?? '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } };
+  const extraOf = (all, job, step) => (step.kind === 'review' && Array.isArray(all[`${job.id}/${step.id}`]) ? all[`${job.id}/${step.id}`].filter((h) => HASH.test(h)) : []);
+  const approvedJob = (job, all) => (job.steps.some((s) => extraOf(all, job, s).length)
+    ? { ...job, steps: job.steps.map((s) => (extraOf(all, job, s).length ? { ...s, approved: [...new Set([...s.approved, ...extraOf(all, job, s)])] } : s)) }
+    : job);
+
   // ── claims ──
 
   // What a transaction completed, as the reply to its claim: each step with its reward, and what became of it.
@@ -99,7 +121,9 @@ export function createTasks({ store, cfg, jobs, client, clients = {}, quote, fun
     const steps = [];
     // The transaction must be on the chain the claim names: a hash is read there, and a step of a job on another chain is not it.
     if (!(await chainIsOwn(chain))) return { txHash: hash, status: 'unknown chain', steps: [] };
-    for (const job of jobs) {
+    const approved = approvals();
+    for (const listed of jobs) {
+      const job = approvedJob(listed, approved);
       const done = stepsCompleted(job, tx, receipt, chain);
       if (!done.length) continue;
       const jg = jobGas(job);
@@ -142,6 +166,37 @@ export function createTasks({ store, cfg, jobs, client, clients = {}, quote, fun
     return reply(200, { results });
   }
 
+  // body: { job, step, txHash, chainId? }. Whoever calls this has read the work (the caller is checked by the route, not here): the
+  // transaction is approved for that reviewed step and named at once. The account credited is still the one that sent the transaction,
+  // the claim is still the step's fixed sum, and a step pays once, so an approval can be made again but a second claimant gets nothing.
+  async function approve(body, { client: who = 'admin' } = {}) {
+    if (!enabled) return reply(404, { error: 'not enabled' });
+    const job = jobs.find((j) => j.id === body?.job), step = job?.steps.find((s) => s.id === body?.step);
+    if (!step || step.kind !== 'review') return reply(400, { error: 'job and step: a reviewed step of a listed job' });
+    if (!HASH.test(body.txHash ?? '')) return reply(400, { error: 'txHash: a transaction hash' });
+    const chain = body.chainId == null ? stepChain(job, step) : Number(body.chainId);
+    if (!Number.isInteger(chain) || !byChain[chain]) return reply(400, { error: 'chainId: a chain the jobs are on' });
+    if (!allow(who, 1)) return reply(429, { error: 'slow down' });
+    if (store.taskClaim(claimId(job, step))) return reply(409, { error: 'that step is already claimed' });
+    const hash = body.txHash.toLowerCase(), key = `${job.id}/${step.id}`, all = approvals();
+    all[key] = [...new Set([...(Array.isArray(all[key]) ? all[key] : []), hash])];
+    store.setMeta(APPROVALS, JSON.stringify(all));
+    log(`task approval ${key}: ${hash}`);
+    const result = await claimOne(hash, chain).catch((err) => ({ txHash: hash, status: 'unavailable', steps: [], error: String(err?.message || err) }));
+    return reply(200, { approved: true, result });
+  }
+
+  // An approved transaction that could not be named yet (still confirming, no price yet) is named on a later cycle, so an approval is one call.
+  async function settleApproved() {
+    const all = approvals(), heads = new Map();
+    for (const job of jobs) for (const step of job.steps) {
+      if (store.taskClaim(claimId(job, step))) continue;
+      for (const hash of extraOf(all, job, step)) {
+        try { await claimOne(hash, stepChain(job, step), heads); } catch (err) { log(`approved task claim ${hash} failed:`, err?.message || err); }
+      }
+    }
+  }
+
   // ── crediting ──
 
   async function applyPending() {
@@ -167,6 +222,7 @@ export function createTasks({ store, cfg, jobs, client, clients = {}, quote, fun
   async function cycle() {
     if (!enabled) return;
     try { await sample(); } catch (err) { log('task quote failed:', err?.message || err); }
+    try { await settleApproved(); } catch (err) { log('task approvals failed:', err?.message || err); }
     try { await applyPending(); } catch (err) { log('task credits failed:', err?.message || err); }
   }
 
@@ -202,5 +258,5 @@ export function createTasks({ store, cfg, jobs, client, clients = {}, quote, fun
     };
   }
 
-  return { enabled, cycle, claim, view, sample };
+  return { enabled, cycle, claim, approve, view, sample };
 }

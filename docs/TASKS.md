@@ -93,7 +93,7 @@ job by id and leaves the others):
 
 `worker-relay/scripts/tasks-usdt-bridge.mjs` builds the `usdt-bridge-test` job: four read-by-hand steps (`kind: review`, as the fast bridge job's), each paying a fixed sum (`--tac`, 250 by default) once to the tester whose round trip of USDT to Bitcoin and back was checked. A tester claims with the Bitcoin transaction that brought the USDT back; the page sends the account a transaction to itself naming it, and the step lists that hash after review (`--tester` to `--tester4`: a push and a deploy of the points service). `worker-relay/scripts/tasks-usdt-settle.mjs` follows each claim to its burn and, with `--apply`, approves it once the pool has minted the USDT again. A job's `hint` is the page's line under the button.
 
-`worker-relay/scripts/tasks-coingecko.mjs` builds the `coingecko-listing` job: one read-by-hand step (`kind: review`) paying a fixed sum (`--tac`, 100 by default) once to whoever files Tacit's CoinGecko listing request. The filer claims with the Request ID CoinGecko emails them (the step's `input` is text, and the job's `reviewVia` is where the page tells them to post the claim: the brief on GitHub), and the step lists that transaction after review (`--filer`: a push and a deploy of the points service, then naming the claim to `POST /tasks/claim`): the request exists, it was filed from the project's verification post, and the project's account replied to that post with the id. `dapp/tasks/review.js` reads the id back from the claim's data (`reviewText`).
+`worker-relay/scripts/tasks-coingecko.mjs` builds the `coingecko-listing` job: one read-by-hand step (`kind: review`) paying a fixed sum (`--tac`, 100 by default) once to whoever files Tacit's CoinGecko listing request. The filer claims with the Request ID CoinGecko emails them (the step's `input` is text, and the job's `reviewVia` is where the page tells them to post the claim: the brief on GitHub), and the step is approved after review (see *Approving a reviewed step*): the request exists, it was filed from the project's verification post, and the project's account replied to that post with the id. The step's `evidence` is the shape of CoinGecko's ids (`^CL[0-9]{3,}$`), which the service checks in the claim's data. `dapp/tasks/review.js` reads the id back from the claim's data (`reviewText`).
 
 `worker-relay/scripts/tasks-gen4.mjs` builds the `anon-wei-4` job (the page's chunks on Ethereum, the catch-up registry on three chains,
 the first points on two) from the page build's `out/` and the registry's init code and open salt; it reads each step's gas from the
@@ -117,10 +117,32 @@ immutables, every constructor setting, and a deposit and a withdrawal with real 
 
 A change to the contracts changes the addresses: rebuild the files, run the tests and `npm run build`.
 
+## Approving a reviewed step
+
+A reviewed step pays once its claim has been read by a person. There are two ways to say it was.
+
+**At run time (no push, no deploy).** `POST /tasks/approve` with `Authorization: Bearer <key>` and `{ "job", "step", "txHash" }` approves that transaction for that
+step and names the claim at once; the next cycle credits it. An approval that cannot be named yet (the transaction is still confirming, or the price has no sample)
+is kept in the store (the meta key `tasks.approvals`) and named on a later cycle, so it is one call. The key is `POINTS_TASKS_ADMIN_SECRET` on `tacit-points`:
+a secret of at least 32 characters, set in the Render dashboard (`sync: false` in `render.yaml`, like the budget). Unset or shorter, the route does not exist (404);
+a wrong or missing key is refused (401) before the body is read. The call approves a transaction for a step and nothing else: the account credited is still the one
+that sent it, the sum is the step's, the claim still has to read as the step asks (a transaction from the account to itself, twelve blocks deep, with 32 bytes of the shape
+the step's `evidence` names), a step pays once (a second approval gets 409), and the tasks budget and the funding reserve still hold.
+
+    node worker-relay/scripts/tasks-approve.mjs --job coingecko-listing --step 01-filer --tx 0x…           read the claim, change nothing
+    node worker-relay/scripts/tasks-approve.mjs --job coingecko-listing --step 01-filer --tx 0x… --apply   approve it
+
+The script reads the claim from Ethereum first and refuses to approve one that does not qualify; the key comes from `TASKS_ADMIN_SECRET` or the keychain item
+`tacit-tasks-admin-secret`. What it cannot read is the work itself, which is why a person still decides.
+
+**In the job file.** A step's `approved` list names the hashes (`--tester…`, `--bridger…`, `--filer`): a push and a deploy of the points service, then the claim is named
+to `POST /tasks/claim`. A hash listed there is claimed as it always was.
+
 ## Tests
 
     node worker-relay/tests/points-tasks.test.mjs                       rewards, matching, guards, store, the service
     node worker-relay/tests/tasks-review.test.mjs                       what a reviewed step's claim names (a Bitcoin transaction id or an id as text), and the CoinGecko job's files
+    node worker-relay/tests/tasks-approve.test.mjs                      the admin key, a step's evidence, and approving a claim at run time
     node worker-relay/tests/tasks-page-state.test.mjs                   the page's reading of what is done, counted request by request (Chrome)
     anvil --fork-url <archive mainnet rpc> --fork-block-number 26201023 --port 8546 --chain-id 1   (before the TAC vaults were deployed)
     FORK_RPC=http://127.0.0.1:8546 node worker-relay/tests/points-tasks-fork.test.mjs   the TAC vaults job's 21 steps, claimed and credited

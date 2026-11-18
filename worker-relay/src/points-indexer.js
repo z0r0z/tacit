@@ -25,7 +25,7 @@ import { createHolding } from './lib/holding-service.js';
 import { parseBuckets } from './lib/holding-epoch.js';
 import { loadHash } from './lib/poseidon-hash.js';
 import { readJson } from './lib/http-json.js';
-import { createTasks } from './lib/points-tasks-service.js';
+import { createTasks, adminKeyOk } from './lib/points-tasks-service.js';
 import { createLp } from './lib/points-lp-service.js';
 import { createTokPool } from './lib/points-tokpool-service.js';
 import { parseTokPools } from './lib/points-tokpool.js';
@@ -1801,6 +1801,16 @@ function startHttp(store, evmState) {
       if (url.pathname === '/tasks/claim') {
         if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ error: 'POST the transaction hashes' })); return; }
         const r = tasks ? await tasks.claim(await readJson(req), { client: clientKey(req) }) : { status: 404, body: { error: 'not enabled' } };
+        res.statusCode = r.status; if (r.status === 429) res.setHeader('Retry-After', '30'); res.end(JSON.stringify(r.body));
+        return;
+      }
+      if (url.pathname === '/tasks/approve') {
+        if (req.method !== 'POST') { res.statusCode = 405; res.end(JSON.stringify({ error: 'POST the approval' })); return; }
+        // Not there at all without a key of at least 32 characters; with one, a wrong or missing key is refused before the body is read.
+        const key = CFG.pointsTasksAdminSecret;
+        const r = !tasks || !key || key.length < 32 ? { status: 404, body: { error: 'not enabled' } }
+          : !adminKeyOk(req.headers.authorization, key) ? { status: 401, body: { error: 'unauthorized' } }
+          : await tasks.approve(await readJson(req), { client: clientKey(req) });
         res.statusCode = r.status; if (r.status === 429) res.setHeader('Retry-After', '30'); res.end(JSON.stringify(r.body));
         return;
       }

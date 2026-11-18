@@ -468,6 +468,9 @@ services:
         sync: false
       - key: POINTS_TASKS_END_SEC
         sync: false
+      # The key for POST /tasks/approve (docs/TASKS.md), a secret of at least 32 characters: dashboard only, for the same reason.
+      - key: POINTS_TASKS_ADMIN_SECRET
+        sync: false
       # The liquidity campaign (lib/points-lp.js): the same rule, so that a push touching this file cannot write over them. All dashboard only;
       # it is off until the schedule, the pools, the pocket and the end are all set.
       - key: POINTS_LP_SCHEDULE

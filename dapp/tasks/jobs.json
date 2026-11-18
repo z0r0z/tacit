@@ -956,6 +956,10 @@
           "approved": [],
           "minWei": "100000000000000000000",
           "maxWei": "100000000000000000000",
+          "evidence": {
+            "text": true,
+            "pattern": "^CL[0-9]{3,}$"
+          },
           "label": "Filer",
           "detail": "Files the request on CoinGecko from the team’s verification post.",
           "action": {
@@ -965,9 +969,9 @@
           "ask": "The Request ID CoinGecko emailed you (like CL12345). It is paid to the wallet you claim from.",
           "input": {
             "placeholder": "CoinGecko Request ID",
-            "pattern": "^[A-Za-z0-9-]{3,32}$",
+            "pattern": "^CL[0-9]{3,}$",
             "text": true,
-            "error": "That is not a CoinGecko Request ID."
+            "error": "That is not a CoinGecko Request ID (it looks like CL12345)."
           }
         }
       ],
