@@ -10,6 +10,7 @@ export const ROUTE = {
   id: 'k',                                                  // what the forwarders call that service
   gateway: '03dcc0e9c8f2f3f283831159600a0f1db2f615003a4d939999ff0e911894265a70',   // its gateway key, 33 bytes of hex (node worker-relay/src/sealed-keygen.js), key id 5c246719
   forwarders: ['https://tacit-evm-pool-forwarder.onrender.com', 'https://tacit-evm-pool-forwarder-2.onrender.com'],   // each forwarder's address
+  nostr: ['wss://relay.primal.net', 'wss://nos.lol', 'wss://offchain.pub'],   // public Nostr relays that carry a request when no forwarder answers (docs/PRIVATE-ROUTE-NOSTR.md); empty: not used
 };
 
 // Always on while the page names a gateway key and a forwarder: there is no setting to turn it off and no direct fallback. A request to the
@@ -18,7 +19,12 @@ export const available = () => !!(ROUTE.gateway && ROUTE.forwarders.length);
 export const enabled = available;
 
 let made = null;
-const sealed = () => (made ||= import('/sealed-request.js?cb=dff5097a').then((m) => m.makeSealedFetch({ keeper: ROUTE.keeper, chainId: ROUTE.id, gateway: ROUTE.gateway, forwarders: ROUTE.forwarders }))
+// The sealed fetch, with Nostr behind the forwarders when the page names relays and this browser has a WebSocket. The Nostr carrier loads only here, so a
+// page that never needs it never fetches it.
+const sealed = () => (made ||= Promise.all([
+  import('/sealed-request.js?cb=dff5097a'),
+  ROUTE.nostr?.length && typeof WebSocket === 'function' ? import('/route-nostr.js?cb=9e86a4e2').catch(() => null) : null,
+]).then(([m, rn]) => m.makeSealedFetch({ keeper: ROUTE.keeper, chainId: ROUTE.id, gateway: ROUTE.gateway, forwarders: ROUTE.forwarders, nostr: rn ? rn.makeNostrCarrier({ relays: ROUTE.nostr }) : null }))
   .catch((e) => { made = null; throw e; }));
 
 // fetch for a keeper's URLs. Off, it is fetch. On, a request to the route's service goes through a forwarder, and a request to any other

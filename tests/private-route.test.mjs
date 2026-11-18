@@ -52,7 +52,7 @@ await check('the page ships with its gateway key and forwarders, and the route i
   assert.equal(available(), true);
   assert.equal(enabled(), true);
 });
-const SHIPPED = { gateway: ROUTE.gateway, forwarders: [...ROUTE.forwarders] };
+const SHIPPED = { keeper: ROUTE.keeper, gateway: ROUTE.gateway, forwarders: [...ROUTE.forwarders], nostr: [...(ROUTE.nostr || [])] };
 Object.assign(ROUTE, { gateway: '', forwarders: [] });   // a page with no route configured is a plain fetch
 
 await check('a page that names no gateway or forwarder fetches as it always did', async () => {
@@ -139,6 +139,17 @@ await check('the pay page offers no way to turn the route off, and says what it 
 
 await check('what the page pins is what the keeper serves', () => {
   assert.match(SHIPPED.gateway, /^03dcc0e9c8f2f3f2/, 'the key id 5c246719 pinned on the keepers service');
+});
+
+await check('every host the route can use is in the CSP of every page that can carry it', () => {
+  const pages = ['index.html', 'spx/index.html', 'tac/index.html', 'sats/index.html', 'pay/eth/index.html'];
+  for (const pg of pages) {
+    const html = readFileSync(new URL(`../dapp/${pg}`, import.meta.url), 'utf8');
+    const connect = (/http-equiv="Content-Security-Policy"[^>]*?connect-src([^;]*)/s.exec(html)?.[1] || '').split(/\s+/);
+    assert.ok(connect.length > 5, `${pg} has a connect-src in its CSP meta tag`);
+    for (const host of [SHIPPED.keeper, ...SHIPPED.forwarders, ...SHIPPED.nostr]) assert.ok(connect.includes(host), `${pg} does not allow ${host}`);
+  }
+  assert.ok(SHIPPED.nostr.length >= 3 && SHIPPED.nostr.every((u) => /^wss:\/\//.test(u)), 'at least three wss relays');
 });
 
 console.log(`\n${n} checks passed`);
