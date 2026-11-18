@@ -263,6 +263,18 @@ async function withMockedCredentials({ create, get }, fn) {
 }
 
 await (async () => {
+  // ---- registration must not demand a built-in authenticator: a USB/NFC security key has to be able to make the passkey ----
+  let seen = null;
+  await withMockedCredentials({
+    create: async (o) => { seen = o.publicKey; return makeFakeCred({ rawIdStr: 'key-1', prfShape: { results: { first: FIXED_PRF } } }); },
+  }, async () => {
+    await prfRegister('yubi');
+    test('register does not restrict authenticatorAttachment (security keys allowed)', () => !!seen && !('authenticatorAttachment' in seen.authenticatorSelection));
+    test('register still requires a discoverable credential with user verification', () => seen.authenticatorSelection.residentKey === 'required' && seen.authenticatorSelection.userVerification === 'required');
+  });
+})();
+
+await (async () => {
   // ---- determinism: register then login produce the same priv ----
   let registered;
   await withMockedCredentials({

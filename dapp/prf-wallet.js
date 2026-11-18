@@ -111,7 +111,8 @@ async function prfCreate(label, salt, { signal, second = null } = {}) {
     rp: { name: 'Tacit', id: rpId },
     user: { id: userId, name, displayName: name },
     pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
-    authenticatorSelection: { authenticatorAttachment: 'platform', residentKey: 'required', userVerification: 'required' },
+    // No authenticatorAttachment: 'platform' would shut out USB/NFC security keys (YubiKey etc.); left unset, the browser offers this device, a phone, or a security key.
+    authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
     timeout: 60000,
     attestation: 'none',
     extensions: { prf: { eval: { first: salt, ...(s ? { second: s } : {}) } } },
