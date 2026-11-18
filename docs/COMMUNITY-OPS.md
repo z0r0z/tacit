@@ -123,6 +123,7 @@ time of each envelope, never what is in one; it holds no key, forwards nothing o
   carry one. `PORT` (default 10000) is where it listens; put TLS in front of it.
 - **Run:** `PORT=10000 FORWARD_URL=https://your.host node tools/community-runner.mjs forward`. With `FORWARD_URL` set it sends a sealed read to the keepers
   through that address, now and every fifteen minutes, and says whether it came back (and whether the browser's CORS check will pass).
+- **Check it from outside:** `node tools/private-route-check.mjs --service https://tacit-evm-pool-keepers.onrender.com --gateway <the public key `GET /1/evm-pool/keeper/info` shows as `sealed.key`> --forwarder https://your.host` runs the checks a listing needs: health, the browser's CORS preflight, a burst of sealed reads that match the direct answers, and what the route refuses.
 - **Join the list:** a page lists the forwarders it uses, so send the address to Tacit. A forwarder run by the keepers' own operator hides nothing from it,
   which is why the list should be independent operators.
 - **Limits:** 60 requests a minute per sender (`FORWARDER_RATE_PER_MIN`). The keeper counts everything behind one forwarder as that forwarder's, so a

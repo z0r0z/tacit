@@ -792,13 +792,13 @@ so whoever gets it can read the envelopes they recorded: keep it to the keeper's
 (a new key id) and update the pages. A wallet that cannot reach any forwarder fails; it never falls back to a direct request, which would
 show its address.
 
-**What a page's switch hides.** A page that offers the route (`dapp/private-route.js`; the pay page's wallet sheet: "Hide my address from the relay")
-sends every request it makes to a relay through a forwarder, from its first request of a visit once a person has turned it on, and fails a
-request when no forwarder answers rather than send it directly. It hides the person's address from the relay and from whatever hosts it. It does
-not hide it from the chain nodes the page reads through (they see the wallet's receive-box addresses, some seventy balance reads a minute for a
-signed-in tab), or from any other service a page asks (the points lookups at `api.tacit.finance` send the connected Ethereum wallet's address, when one is
-connected). The page says the first in one line under the switch. `ROUTE.forwarders` is empty in `dapp/private-route.js`
-today, so no page offers the switch.
+**What the route hides.** The pay page (`dapp/private-route.js`) sends every request it makes to a relay through a forwarder or, when no forwarder
+answers, through public Nostr relays (docs/PRIVATE-ROUTE-NOSTR.md). There is no setting to turn it off and no direct fallback: a request that no
+road can carry fails. It hides the person's address from the relay and from whatever hosts it. It does not hide it from the chain nodes the page
+reads through (they see the wallet's receive-box addresses, some seventy balance reads a minute for a signed-in tab), or from any other service a page
+asks (the points lookups at `api.tacit.finance` send the connected Ethereum wallet's address, when one is connected). The wallet sheet says the first
+in one line. The forwarders the page names are run by the project today, so they hide a person from the relay and its host but not from the people who
+run the forwarders; each independent forwarder added to `ROUTE.forwarders` narrows that, and the Nostr relays are independent already.
 
 **Turning it on.** Each step can be left standing; nothing a person sees changes until the last.
 1. Deploy the keepers with this code. The route is off without a key: `GET /<id>/evm-pool/keeper/info` has no `sealed`, `POST /sealed` is a 404.
@@ -813,12 +813,12 @@ today, so no page offers the switch.
 4. `node tools/private-route-check.mjs --service https://<the service> --gateway <public key> --forwarder https://<a forwarder>` (once for each
    forwarder, or with `--forwarder` repeated) checks it from outside: the key a pool holds is the key to pin, a page's origin may call the forwarder,
    a burst of reads comes back sealed and equal to the direct answers, and what the route does not carry is refused. It must pass before a page is pointed at it.
-5. In `dapp/private-route.js` set `ROUTE.gateway` and `ROUTE.forwarders`, add each forwarder's origin to the pay page's `connect-src`, run
-   `node build/build.mjs` and push. The wallet sheet then offers the switch, off until a person turns it on; turning it on tries the route once and
-   stays off if it does not answer.
-6. To take it away from everyone, empty `ROUTE.forwarders` and push. A page without a forwarder neither offers nor uses the route, so nobody who
-   had turned it on is left unable to reach the relay; clearing the key from the service does the same for a page that still names it, with an
-   error until the page is updated.
+5. In `dapp/private-route.js` set `ROUTE.gateway` and `ROUTE.forwarders` (and `ROUTE.nostr`, the relays that carry a request when no forwarder
+   answers), add each origin to the `connect-src` of every page that can carry the route (`tests/private-route.test.mjs` fails when one is missing),
+   run `node build/build.mjs` and push. The route is then on for everyone who opens the page. List a forwarder that carries many people in the
+   keepers' `EVM_POOL_KEEPER_FORWARDERS`, or the keeper counts everyone behind it as one sender.
+6. To take it away from everyone, empty `ROUTE.forwarders` and push. A page without a forwarder does not use the route and sends its requests
+   directly; clearing the key from the service makes a page that still names it fail with an error until the page is updated.
 
 ## Keys and recovery
 
