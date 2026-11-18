@@ -103,6 +103,28 @@ export function walletRpcFetch(chainId, opts = {}) {
   return rpcFetch(base, { ...opts, ready: () => !!ROUTE.rpc?.gateway, send: (u, i) => walletSealed().then((f) => f(u, i)) });
 }
 
+// A fixed pool's withdrawal goes to a public ERC-4337 bundler (fixed-pool-paymaster.js), which would see the person's address and the recipient. Through the route the wallet-read gateway sends
+// it, and the bundler sees the gateway. A road that fails sends it straight to the bundler, as before: the withdrawal must still be possible. A user operation sent twice is one (the EntryPoint
+// runs it once), which the flow already relies on when a reply is lost.
+const BUNDLER_URL = [[/^https:\/\/public\.pimlico\.io\/v2\/(\d{1,10})\/rpc$/, 'pimlico'], [/^https:\/\/api\.candide\.dev\/public\/v3\/(\d{1,10})$/, 'candide']];
+export function bundlerFetch({ fetchImpl = (u, i) => fetch(u, i), now = () => Date.now() } = {}) {
+  let skipUntil = 0;
+  return async (url, init = {}) => {
+    const hit = BUNDLER_URL.map(([re, name]) => [re.exec(String(url)), name]).find(([m]) => m);
+    if (!hit || !ROUTE.rpc?.gateway || !enabled() || now() < skipUntil || String(init.method || 'GET').toUpperCase() !== 'POST') return fetchImpl(url, init);
+    try {
+      const f = await walletSealed();
+      const r = await f(`${ROUTE.rpc.url}/${hit[0][1]}/evm-pool/keeper/bundler-${hit[1]}`, init);
+      if (r.status === 404 || r.status === 403 || r.status === 502) throw new Error('the route did not carry the bundler call');
+      return r;
+    } catch (e) {
+      if (init.signal?.aborted) throw e;
+      skipUntil = now() + RPC_PAUSE_MS;
+    }
+    return fetchImpl(url, init);
+  };
+}
+
 // What a page asks of the relay's API, through the route: the same paths server/sealed-api.mjs carries. A request for one of them goes to a forwarder, sealed to the API's gateway key, and
 // the API answers it as it would a direct one (an answer of its own, an error included, is the answer). Only a road that fails (no forwarder answers) sends it straight to the API, as
 // before: the relay is what a person's money moves through, and a page that stopped using it whenever a forwarder did would be of no use. A road that fails is left alone for a minute.

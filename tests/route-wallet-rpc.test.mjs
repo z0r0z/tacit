@@ -19,7 +19,7 @@ const sealedUrl = pathToFileURL(new URL('../dapp/sealed-request.js', import.meta
 const source = readFileSync(new URL('../dapp/private-route.js', import.meta.url), 'utf8').replace(/\/sealed-request\.js\?cb=[A-Za-z0-9_-]+/, sealedUrl);
 const dir = mkdtempSync(join(tmpdir(), 'route-wallet-rpc-'));
 writeFileSync(join(dir, 'private-route.mjs'), source);
-const { ROUTE, rpcFetch, walletRpcFetch } = await import(pathToFileURL(join(dir, 'private-route.mjs')).href);
+const { ROUTE, rpcFetch, walletRpcFetch, bundlerFetch } = await import(pathToFileURL(join(dir, 'private-route.mjs')).href);
 
 // two gateways, two keys: the relay's and the wallet-read one
 const relayKey = newGatewayKey(), rpcKey = newGatewayKey();
@@ -103,6 +103,24 @@ await check('with no wallet-read gateway named, the reader is as it was', async 
   reset(); const saved = ROUTE.rpc; ROUTE.rpc = null;
   assert.equal(await jsonRpc([NODE], walletRpcFetch(1, { now: () => clock }))('eth_getBalance', ['0xaa', 'latest']), '0xd1');
   assert.equal(seen.envelopes.r, 0); ROUTE.rpc = saved;
+});
+
+await check('a fixed pool\'s bundler call goes to the wallet-read gateway, and straight to the bundler only when the road fails', async () => {
+  reset(); const direct = [];
+  const bf = bundlerFetch({ now: () => clock, fetchImpl: async (u) => { direct.push(String(u)); return new Response('{"jsonrpc":"2.0","id":1,"result":"0xdirect"}'); } });
+  const PIM = 'https://public.pimlico.io/v2/1/rpc', body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_sendUserOperation', params: [{}, '0x' + '22'.repeat(20)] });
+  const r = await bf(PIM, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+  assert.equal(r.status, 200);
+  assert.deepEqual(seen.walletCalls, ['eth_sendUserOperation']); assert.equal(seen.envelopes.r, 1); assert.deepEqual(direct, [], 'nothing went to the bundler directly');
+  assert.deepEqual(seen.relayCalls, [], 'and the relay saw nothing');
+  await bf('https://example.test/v2/1/rpc', { method: 'POST', body });
+  assert.deepEqual(direct, ['https://example.test/v2/1/rpc'], 'a url that is not a known bundler is not carried');
+  walletUp = false; direct.length = 0;
+  assert.equal((await (await bf('https://api.candide.dev/public/v3/1', { method: 'POST', body })).json()).result, '0xdirect');
+  assert.deepEqual(direct, ['https://api.candide.dev/public/v3/1'], 'a road that fails sends it straight, as before');
+  const before = seen.envelopes.r;
+  await bf(PIM, { method: 'POST', body });
+  assert.equal(seen.envelopes.r, before, 'the road is left alone for a minute'); walletUp = true;
 });
 
 globalThis.fetch = realFetch;

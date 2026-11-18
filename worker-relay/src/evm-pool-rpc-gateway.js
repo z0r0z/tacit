@@ -17,6 +17,16 @@ import { makeRpcPassthrough, MAX_BODY } from './lib/evm-pool-keeper-rpc.js';
 // The public nodes this reads from have limits of their own, so a log read may span more here than on a relay's paid node: a day of a busy token is about 7,200 blocks.
 const MAX_LOG_RANGE = 20_000;
 
+// The ERC-4337 bundlers a wallet sends a fixed pool's gasless withdrawal to (dapp/fixed-pool-paymaster.js bundlersOf): sent from here, the bundler sees this service, not the person.
+// The hosts are fixed (this is not a proxy to any url) and only the bundler's own methods are carried.
+export const BUNDLERS = Object.freeze({
+  pimlico: (chainId) => `https://public.pimlico.io/v2/${chainId}/rpc`,
+  candide: (chainId) => `https://api.candide.dev/public/v3/${chainId}`,
+});
+export const BUNDLER_METHODS = new Set(['eth_sendUserOperation', 'eth_estimateUserOperationGas', 'eth_getUserOperationByHash', 'eth_getUserOperationReceipt', 'pimlico_getUserOperationGasPrice', 'eth_supportedEntryPoints', 'eth_chainId']);
+const CARRIED = [['POST', /^\/(rpc|bundler-pimlico|bundler-candide)$/]];
+const MAX_BUNDLER_REPLY = 256 * 1024;
+
 const log = (...a) => console.log(`[evm-pool-rpc-gateway ${new Date().toISOString()}]`, ...a);
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Cache-Control': 'no-store' };
 const JSON_TYPE = { 'Content-Type': 'application/json', ...CORS };
@@ -77,7 +87,19 @@ export function makeRpcGateway({ secret, nodes, forwarders = [], fetchImpl, rate
   const json = (res, code, body) => { res.writeHead(code, JSON_TYPE); res.end(JSON.stringify(body)); };
   // what a request that came through the sealed route reaches: /<chainId>/evm-pool/keeper/rpc (the path shape the gateway carries), nothing else
   const serve = async (req, res) => {
-    const m = /^\/(\d{1,10})\/evm-pool\/keeper\/rpc$/.exec((req.url || '').split('?')[0]);
+    const url = (req.url || '').split('?')[0];
+    const b = /^\/(\d{1,10})\/evm-pool\/keeper\/bundler-(pimlico|candide)$/.exec(url);
+    if (b && req.method === 'POST') {
+      if (!nodes.has(Number(b[1]))) return json(res, 404, { error: 'no such chain' });
+      let call;
+      try { call = JSON.parse(String(await readBody(req, MAX_BODY))); } catch { return json(res, 400, { error: 'not JSON' }); }
+      if (!call || typeof call !== 'object' || Array.isArray(call) || !BUNDLER_METHODS.has(call.method)) return json(res, 403, { error: 'that call is not carried' });
+      let up;
+      try { up = await (fetchImpl || globalThis.fetch)(BUNDLERS[b[2]](Number(b[1])), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(call), signal: AbortSignal.timeout(20_000) }); } catch { return json(res, 502, { error: 'the bundler could not be reached' }); }
+      const text = (await up.text()).slice(0, MAX_BUNDLER_REPLY);
+      res.writeHead(up.status, JSON_TYPE); return res.end(text);
+    }
+    const m = /^\/(\d{1,10})\/evm-pool\/keeper\/rpc$/.exec(url);
     if (!m || req.method !== 'POST') return json(res, 404, { error: 'not found' });
     const pass = passFor(Number(m[1]));
     if (!pass) return json(res, 404, { error: 'no such chain' });
@@ -86,7 +108,7 @@ export function makeRpcGateway({ secret, nodes, forwarders = [], fetchImpl, rate
     const out = await pass.handle(body, req.headers['x-forwarded-for'] || 'sender');
     return json(res, out.status, out.body);
   };
-  const take = makeServiceGateway({ secret, serve, json, forwarders, ratePerMin, log });
+  const take = makeServiceGateway({ secret, serve, json, forwarders, ratePerMin, log, carried: CARRIED });
   return {
     key: take.key,
     handler: (req, res) => {

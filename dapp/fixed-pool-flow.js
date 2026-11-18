@@ -73,7 +73,7 @@ export function checkWithdrawCall(out, { pool, recipient, root, nullifierHash, r
 // several flows for the same wallet passes them one session, so a note number is signed for once and the wallet is checked once, not before every action.
 export const newSession = () => ({ sigs: new Map(), checked: false });
 
-export function makeFlow({ provider, account, chainId, store = null, poll = 1500, timeout = 10 * 60 * 1000, fetchImpl = globalThis.fetch?.bind(globalThis), session = newSession() }) {
+export function makeFlow({ provider, account, chainId, store = null, poll = 1500, timeout = 10 * 60 * 1000, fetchImpl = (u, i) => (globalThis.__tacitBundlerFetch || globalThis.fetch)(u, i), session = newSession() }) {
   const pools = FIXED_POOLS[chainId] || [];
   const sigs = session.sigs;
 

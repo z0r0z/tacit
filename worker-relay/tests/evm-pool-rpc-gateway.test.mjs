@@ -91,6 +91,20 @@ await check('only reads are carried, and only for a chain it has', async () => {
   assert.deepEqual(nodeHits, [], 'nothing reached a node');
 });
 
+await check('a bundler call goes to the fixed bundler of its chain, only its own methods, and no other host', async () => {
+  const f = await sealed(); nodeHits.length = 0;
+  const send = (name, chain, body) => f(`${GW}/${chain}/evm-pool/keeper/bundler-${name}`, { method: 'POST', body: JSON.stringify(body) });
+  const r = await send('pimlico', 1, { jsonrpc: '2.0', id: 1, method: 'eth_sendUserOperation', params: [{ sender: '0x' + '11'.repeat(20) }, '0x' + '22'.repeat(20)] });
+  assert.equal(r.status, 200);
+  const c = await send('candide', 1, { jsonrpc: '2.0', id: 2, method: 'eth_getUserOperationReceipt', params: ['0x01'] });
+  assert.equal(c.status, 200);
+  assert.deepEqual(nodeHits.map((h) => h[0]), ['https://public.pimlico.io/v2/1/rpc', 'https://api.candide.dev/public/v3/1']);
+  assert.equal((await send('pimlico', 1, { jsonrpc: '2.0', id: 3, method: 'eth_sendRawTransaction', params: ['0x00'] })).status, 403, 'not a bundler method');
+  assert.equal((await send('pimlico', 999, { jsonrpc: '2.0', id: 4, method: 'eth_chainId', params: [] })).status, 404, 'a chain it has no node for');
+  assert.equal((await f(`${GW}/1/evm-pool/keeper/bundler-evil`, { method: 'POST', body: '{}' })).status, 403, 'no other bundler name is carried');
+  assert.equal(nodeHits.length, 2, 'only the two good calls went out');
+});
+
 await check('a request sealed to the relay\'s key, or any other, is not opened here, and the gateway key is public', async () => {
   const other = gatewayKeys(newGatewayKey());
   const f = await sealed(Buffer.from(other.pub).toString('hex'));
