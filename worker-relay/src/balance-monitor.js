@@ -8,6 +8,7 @@
 //   * a wallet can no longer do its job (critical): the settle wallet cannot pay for the next settle, so relayed jobs
 //     wait in the queue, or the relay wallet cannot keep an attest back and still send headers, so the Bitcoin headers
 //     and attests stop; a settle wallet with under N days of runway, or any wallet under the buffer (warnings)
+//   * a Bitcoin keeper wallet (pool relayer, bridge relay) short of sats or coins — lib/btc-keeper-coins.js
 //   * reflection lag (relay tip - attested Bitcoin height) > N blocks
 //   * the API's Bitcoin block scan trailing the chain tip (BTC_SCAN_LAG_WARN_BLOCKS / _CRITICAL_BLOCKS) — lib/scan-lag.js
 //   * reflection snapshot size > warn threshold — the one cumulative resource
@@ -41,6 +42,7 @@ import { blockSecOf, feedLagSec, feedLagLevel } from './lib/feed-lag.js';
 import { settleFundsNeed, treasuryFloors } from './lib/settle-fees.js';
 import { poolBooks } from './lib/evm-pool-solvency.js';
 import { readTacSupply } from './lib/tac-supply.js';
+import { keeperCoinsVerdict, BTC_KEEPERS_MAINNET } from './lib/btc-keeper-coins.js';
 import { scanLagVerdict } from './lib/scan-lag.js';
 import { boardVerdict, runpodVerdict, vastVerdict } from './lib/board-health.js';
 import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, readReflectionDigest, HEADER_RELAY, RELAY_ABI, POOL } from './lib/chain.js';
@@ -512,6 +514,24 @@ async function checkCrossOutFold() {
 
 // The API's Bitcoin block scan, read as wallets read it (the scanned_height an answer from it carries), against the
 // chain tip from public explorers.
+// Mainnet only: the Bitcoin-side keeper wallets (pool relayer, bridge relay) hold enough sats in a usable shape.
+async function checkBtcKeepers() {
+  if (CFG.network !== 'mainnet') return;
+  const bases = String(CFG.btcEsplora).split(',').map((b) => b.trim().replace(/\/$/, '')).filter(Boolean);
+  for (const k of BTC_KEEPERS_MAINNET) {
+    let utxos = null;
+    for (const base of bases) {
+      try {
+        const r = await fetch(`${base}/address/${k.address}/utxo`, { signal: AbortSignal.timeout(10_000) });
+        if (r.ok) { utxos = await r.json(); break; }
+      } catch { /* next explorer */ }
+    }
+    const v = keeperCoinsVerdict(k.kind, utxos);
+    if (v.level === 'ok' || v.level === 'unknown') { log(`bitcoin keeper ${k.name}: ${v.why}`); continue; }
+    await alert(v.level, `Bitcoin ${k.name} (${k.address}): ${v.why}`, { address: k.address });
+  }
+}
+
 async function checkBitcoinScan() {
   let scanned = null, tip = null;
   try {
@@ -704,7 +724,7 @@ async function checkVast() {
 
 async function main() {
   log(`monitor run — worker=${CFG.workerBase} relay=${relayWallet ? relayWallet.account.address : '(no key on this service — watching by address)'}`);
-  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkVast(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkProverBoard(), checkTacitChain()]);
+  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkVast(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkBtcKeepers(), checkProverBoard(), checkTacitChain()]);
   for (const r of results) if (r.status === 'rejected') log('check threw:', r.reason?.message || r.reason);
   log(`monitor done — ${criticals} critical${criticals === 1 ? '' : 's'}`);
   // Exit non-zero so the cron run is marked failed even with no webhook configured. A check that THREW is
