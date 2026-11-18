@@ -105,6 +105,14 @@ await check('a bundler call goes to the fixed bundler of its chain, only its own
   assert.equal(nodeHits.length, 2, 'only the two good calls went out');
 });
 
+await check('many callers behind one forwarder do not share one allowance: 25 envelopes of 32 calls (800 calls, over one caller\'s burst) all get through', async () => {
+  const f = await sealed(); nodeHits.length = 0;
+  const batch = Array.from({ length: 32 }, (_, i) => ({ jsonrpc: '2.0', id: i, method: 'eth_getBalance', params: ['0x' + 'aa'.repeat(20), 'latest'] }));
+  const statuses = [];
+  for (let k = 0; k < 25; k++) statuses.push((await rpcCall(f, 1, batch)).status);
+  assert.deepEqual([...new Set(statuses)], [200], `statuses: ${statuses.join(',')}`);
+});
+
 await check('a request sealed to the relay\'s key, or any other, is not opened here, and the gateway key is public', async () => {
   const other = gatewayKeys(newGatewayKey());
   const f = await sealed(Buffer.from(other.pub).toString('hex'));

@@ -5,7 +5,8 @@
 //
 // RPC_GATEWAY_KEY    the gateway key: 32 bytes of hex (node worker-relay/src/sealed-keygen.js); the public half is what a page pins
 // RPC_GATEWAY_NODES  JSON, { "<chainId>": ["<node url>", …] }: the public nodes it reads from, tried in order, the one that answered last first
-// RPC_GATEWAY_FORWARDERS  addresses of the forwarders that carry many callers (they may send ten times as much)
+// RPC_GATEWAY_FORWARDERS  addresses of the forwarders that carry many callers (they may send sixty times as much)
+// RPC_GATEWAY_RATE_PER_MIN  what one address may send a minute, times six (a listed forwarder, times sixty); default 60
 // PORT               default 10000
 //   POST /sealed             a sealed request: the calls inside are POST /<chainId>/evm-pool/keeper/rpc, a JSON-RPC call or batch (evm-pool-keeper-rpc.js)
 //   GET  /sealed/key         the gateway key
@@ -77,7 +78,7 @@ function readBody(req, max) {
   });
 }
 
-export function makeRpcGateway({ secret, nodes, forwarders = [], fetchImpl, ratePerMin = 20 }) {
+export function makeRpcGateway({ secret, nodes, forwarders = [], fetchImpl, ratePerMin = 60 }) {
   const passes = new Map();
   const passFor = (chainId) => {
     if (!nodes.has(chainId)) return null;
@@ -105,10 +106,11 @@ export function makeRpcGateway({ secret, nodes, forwarders = [], fetchImpl, rate
     if (!pass) return json(res, 404, { error: 'no such chain' });
     let body;
     try { body = JSON.parse(String(await readBody(req, MAX_BODY))); } catch { return json(res, 400, { error: 'not JSON' }); }
-    const out = await pass.handle(body, req.headers['x-forwarded-for'] || 'sender');
+    // behind a forwarder (isolate, below) each envelope has an address of its own: the forwarder limits each person it carries, and the sealed gateway limits the forwarder, so a crowd does not share one allowance
+    const out = await pass.handle(body, req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || 'sender');
     return json(res, out.status, out.body);
   };
-  const take = makeServiceGateway({ secret, serve, json, forwarders, ratePerMin, log, carried: CARRIED });
+  const take = makeServiceGateway({ secret, serve, json, forwarders, ratePerMin, log, carried: CARRIED, isolate: true });
   return {
     key: take.key,
     handler: (req, res) => {
@@ -127,7 +129,7 @@ function main() {
   const nodes = nodesOf(process.env.RPC_GATEWAY_NODES || '{}');
   if (!nodes.size) throw new Error('RPC_GATEWAY_NODES names no chain');
   const forwarders = String(process.env.RPC_GATEWAY_FORWARDERS || '').split(',').map((x) => x.trim()).filter(Boolean);
-  const gw = makeRpcGateway({ secret: process.env.RPC_GATEWAY_KEY, nodes, forwarders });
+  const gw = makeRpcGateway({ secret: process.env.RPC_GATEWAY_KEY, nodes, forwarders, ratePerMin: Number(process.env.RPC_GATEWAY_RATE_PER_MIN) || 60 });
   const port = Number(process.env.PORT || 10000);
   createServer((req, res) => { Promise.resolve(gw.handler(req, res)).catch((e) => { log('request failed:', String(e?.message || e).slice(0, 120)); try { if (!res.headersSent) { res.writeHead(500, JSON_TYPE); res.end('{"error":"internal error"}'); } } catch { /* gone */ } }); }).listen(port, () => log(`listening on ${port}: chains ${[...nodes.keys()].join(', ')}, key id ${gw.key.kid}`));
 }
