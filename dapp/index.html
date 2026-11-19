@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-yr7zj+EaW0fGfjKdKI79dkWZlFPoRFMb/jRLFDVnHaY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-JwePUglvfCkihM2+oGSf2b4rnz720VZkgIFXMlF+8iQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -6978,13 +6978,15 @@ const xtSends = () => [...XT.by.values()].filter((r) => r.keep && r.registered =
   .concat([...XT.by.values()].filter((r) => r.bridge && (SPXP ? r.addr === SPX_A : (BTC.held || []).some((a) => a.id === r.bridge.hex) || xtTaprootHeld(r))).map((r) => [`xb${r.addr}`, r.sym, xtIco(r), Math.min(6, r.tdec)]));
 // A token bridged to Bitcoin sits at the key's Taproot address, which the address read (BTC.held) does not cover, so it was listed under Bitcoin only once moved to the Bitcoin address. It
 // is listed as soon as the key is known to hold some there: by its bridged-notes read, or the last one kept. (Selecting it says what to do: the Bitcoin wallet's Notes moves it, then a Send spends it.)
-function xtTaprootHeld(r) {
+function xtTaprootAmt(r) {
   const a = r.bridge && XA[r.bridge.key], pub = S.key?.pubHex;
-  if (!a || !pub) return false;
-  if (hxTaproot(r).n > 0) return true;
-  const c = xbHeld(pub, a);
-  return !!c && c.n > 0;
+  if (!a || !pub) return 0n;
+  const XB = xbOf(a);
+  if (XB.pub === pub && XB.notes) return hxTaproot(r).v;                      // this visit has read them: what it found is the answer, a moved note is no longer here
+  const c = xbCacheGet(pub, a);                                             // else the last read kept, unless the Bitcoin address already holds some (a stale line after a move)
+  return c && c.n > 0 && !((BTC.held || []).some((h) => h.id === r.bridge.hex && h.balance > 0n)) ? BigInt(c.v) : 0n;
 }
+const xtTaprootHeld = (r) => xtTaprootAmt(r) > 0n;
 // The tokens this key has crossed to Bitcoin are read for what they hold there when the Send list opens: a token sitting at Taproot has nothing in the address read, so no row would ask for it. The list is drawn again if that adds one.
 function xtCrossedRead() {
   const pub = S.key?.pubHex;
@@ -14238,10 +14240,9 @@ function hxSubOf(id, k) {
   if (id === 'hx-from' && HX.tab === 'bridge') return k === 'ether' ? 'to Bitcoin, as tETH' : HX_BR[k] === 'btc' ? 'to Bitcoin' : 'to Ethereum, private';
   if (id === 'hx-sa' && hxIsLp(k)) return 'LP shares, a part or all of them';
   if (id === 'hx-sa' && /^xb0x/.test(k)) {      // a token bridged to Bitcoin is at the key's Taproot address, which the balance on the right (the Bitcoin address) does not count
-    const bx = hxBtcX(k), a = bx?.bridge && S.key ? XA[bx.bridge.key] : null, tp = a ? hxTaproot(bx) : null, c = a ? xbHeld(S.key.pubHex, a) : null, v = tp?.n ? tp.v : c?.n ? c.v : 0n;
+    const bx = hxBtcX(k), v = bx ? xtTaprootAmt(bx) : 0n;
     return v > 0n ? `${fmt(v, bx.tdec, 4)} bridged, at your Taproot address · move it in Notes to send` : 'on Bitcoin, to any tacit1 address';
   }
-  if (id === 'hx-sa' && k === 'rtac') return 'farm rewards, one for one TAC';
   if (id === 'hx-sa') return { ether: 'Ether', wtac: 'Tacit’s token', wusdc: 'a dollar', wusdt: 'a dollar', eth: 'ETH, made private · swap, farm, borrow', tac: 'Tacit’s token · swap, farm, borrow', cusd: 'a dollar borrowed against cBTC', cbtc: 'bitcoin, 1:1 with BTC', pp: 'private ETH · pay anyone on ', ctac: 'private TAC · on the Tacit chain', ptac: 'private TAC · pay anyone on Ethereum', usdc: 'a private dollar · pay anyone on Ethereum', usdt: 'a private dollar · pay anyone on Ethereum', tacb: 'at your Bitcoin address', btc: 'a silent payment' }[k] || '';
   if (HX.tab === 'borrow') return k === 'btc' ? 'locked for cUSD or cBTC' : k === 'cbtc' ? 'held, put up for cUSD' : 'in a vault, for TACD or TACE';
   return { ether: 'zapped in, one transaction', wtac: 'public ERC-20', eth: 'ETH, made private', tac: 'Tacit’s token' }[k] || '';

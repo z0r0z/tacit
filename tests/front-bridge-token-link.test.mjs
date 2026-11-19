@@ -75,5 +75,11 @@ test('a token\'s portfolio rows (the held row and the Bitcoin-notes row) open it
   ok(/href: `#card=bridge:xb\$\{a\.key\.slice\(1\)\}`/.test(page) && /CHAIN_ASSETS\[c\] === x\)\.slice\(1\)/.test(page), 'the rows do not name the token\'s card');
 });
 
+test('a token moved to the Bitcoin address stops saying it is at Taproot: a read of this visit is trusted, and a kept one is not when the address already holds some', () => {
+  ok(/function xtTaprootAmt\(r\)/.test(page) && /if \(XB\.pub === pub && XB\.notes\) return hxTaproot\(r\)\.v;/.test(page), 'no live-read rule');
+  ok(/!\(\(BTC\.held \|\| \[\]\)\.some\(\(h\) => h\.id === r\.bridge\.hex && h\.balance > 0n\)\)/.test(page), 'a stale kept read still wins over the address balance');
+  ok(/const bx = hxBtcX\(k\), v = bx \? xtTaprootAmt\(bx\) : 0n;/.test(page), 'the Send picker line does not use it');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
