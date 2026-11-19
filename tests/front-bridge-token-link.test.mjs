@@ -91,5 +91,10 @@ test('the Send list reads the crossed tokens when Send is drawn, and never draws
   ok(/if \(card\?\.__pkClose\) card\.__pkBals\?\.\(\); else if \(xbs\(\) !== was\) paintHx\(\);/.test(page), 'the read repaints the card under an open picker');
 });
 
+test('a bridged token sent to a key that has never met it is found by its asset id after the Bitcoin read, so its row shows', () => {
+  ok(/const unnamed = held\.filter\(\(x\) => !x\.known && !XT\.ids\.has\(`0x\$\{x\.id\}`\)\)\.map\(\(x\) => `0x\$\{x\.id\}`\);/.test(page), 'loadBtc does not look up unnamed assets');
+  ok(/xtFind\(u, unnamed\)\)\.then\(\(\) => \{ if \(!live\(\)\) return; for \(const r of XT\.by\.values\(\)\) if \(r\.keep && r\.registered === true\) xtBridge\(r\);/.test(page), 'a found token is not bridged and drawn');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
