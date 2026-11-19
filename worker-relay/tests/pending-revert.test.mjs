@@ -89,3 +89,18 @@ await test('nothing stuck, or no time to hold, asks nothing', async () => {
 });
 
 console.log(`${n} passed`);
+
+// A rate limit is neither a revert nor a fault of the transaction (isRateLimited).
+const { isRateLimited, isPendingRevert: pending2 } = await import('../src/lib/landed-elsewhere.js');
+await test('MEV Blocker\'s "Request rate limited" (under the same generic message) is told apart from a pending-block revert', () => {
+  const limited = Object.assign(new Error('Missing or invalid parameters.\nDouble check you have provided the correct parameters.\n\nURL: https://rpc.mevblocker.io/fullprivacy'),
+    { name: 'InvalidParamsRpcError', shortMessage: 'Missing or invalid parameters.', details: 'Request rate limited | RPC Request failed.' });
+  assert.equal(isRateLimited(limited), true);
+  assert.equal(pending2(limited), false, 'a rate limit read as a revert');
+  assert.equal(isRateLimited(mevblocker()), false, 'a revert read as a rate limit');
+  assert.equal(isRateLimited(Object.assign(new Error('x'), { status: 429 })), true);
+  assert.equal(isRateLimited(Object.assign(new Error('x'), { cause: { details: 'Rate limit exceeded' } })), true);
+  assert.equal(isRateLimited(Object.assign(new Error('Request exceeds defined limit.'), { details: 'Rate limit exceeded' })), true);
+  for (const other of [new Error('HTTP request failed.'), Object.assign(new Error('nonce too low'), { details: 'nonce too low' }), null, undefined]) assert.equal(isRateLimited(other), false);
+});
+console.log(`${n} passed (with rate limits)`);

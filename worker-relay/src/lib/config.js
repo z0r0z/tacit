@@ -204,7 +204,10 @@ export const CFG = {
   // its fee to whoever sends it, so an endpoint that shows the calldata to searchers invites a copy landed
   // first for the fee, and ours then reverts: each known endpoint is used in its mode that shares only the
   // hash and never lands a reverting transaction (privateSettleUrl).
-  settleRpcUrls: opt('SETTLE_RPC_URLS', 'https://rpc.flashbots.net/fast?hint=hash,https://rpc.mevblocker.io/fullprivacy')
+  // Five independent private routes, each offered every settle at once: Flashbots Protect in fast mode (every builder it knows), MEV Blocker, and three builders directly
+  // (Beaverbuild, Titan, Lightspeed). One rate-limiting us (MEV Blocker does, from a shared egress address) or accepting a transaction it then does not include (Flashbots
+  // Protect, in its default mode, did) leaves the others. Each was checked to take a signed transaction (2026-11-19, from an account holding nothing).
+  settleRpcUrls: opt('SETTLE_RPC_URLS', 'https://rpc.flashbots.net/fast?hint=hash,https://rpc.mevblocker.io/fullprivacy,https://rpc.beaverbuild.org,https://rpc.titanbuilder.xyz,https://rpc.lightspeedbuilder.info')
     .split(',').map((u) => u.trim()).filter(Boolean).map(privateSettleUrl),
   // Public submission, tried only after every private endpoint refused. Off unless SETTLE_ALLOW_PUBLIC=1: in
   // the public mempool the settle is copied for its fee, and our own transaction lands as a revert.

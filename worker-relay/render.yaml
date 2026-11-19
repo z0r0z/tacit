@@ -239,7 +239,12 @@ services:
       # Ordered PRIVATE submission endpoints. A settle pays its bound fee to msg.sender, so it is kept out of
       # the public mempool; several endpoints mean one refusing a valid tx does not discard a paid proof.
       - key: SETTLE_RPC_URLS
-        value: "https://rpc.flashbots.net,https://rpc.mevblocker.io"
+        value: "https://rpc.flashbots.net/fast?hint=hash,https://rpc.mevblocker.io/fullprivacy,https://rpc.beaverbuild.org,https://rpc.titanbuilder.xyz,https://rpc.lightspeedbuilder.info"
+      # Rounds of a few blocks, not a minute: with five routes a settle that is going to be included is, within two or three blocks.
+      - key: SETTLE_RECEIPT_WAIT_MS
+        value: "24000"
+      - key: SETTLE_LATE_WAIT_MS
+        value: "60000"
       # Last resort after every private endpoint refuses: the user's op still settles, though the bound fee
       # may go to another submitter. 0 keeps submission private-only.
       - key: SETTLE_ALLOW_PUBLIC

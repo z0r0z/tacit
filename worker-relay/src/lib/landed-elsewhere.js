@@ -63,6 +63,16 @@ export function isPendingRevert(e) {
   return false;
 }
 
+// An endpoint turning the relay away for asking too often (MEV Blocker answers "Missing or invalid parameters." with the detail "Request rate limited" for the egress address
+// every Render service shares). Nothing is wrong with the transaction; asking again at once only makes it worse, and the other endpoints carry it meanwhile.
+export const RATE_LIMITED = /rate.?limit|too many requests|\b429\b/i;
+export function isRateLimited(e) {
+  for (let x = e, d = 0; x && d < 8; x = x.cause, d++) {
+    if (x.status === 429 || RATE_LIMITED.test(String(x.details || '')) || RATE_LIMITED.test(String(x.shortMessage || '')) || RATE_LIMITED.test(String(x.message || ''))) return true;
+  }
+  return false;
+}
+
 // What an endpoint's refusal says, for the log: viem's one-line message and the node's own detail (the part the one-line message leaves
 // out), with the signed transaction and any other long hex cut short.
 export function errDetail(e, max = 300) {

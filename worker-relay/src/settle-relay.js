@@ -31,7 +31,7 @@ import { abi as GAS_ABI, executeCall } from './lib/gas-calls.js';
 import { notExecuted } from './lib/stdin-prover.js';
 import { assertMemosMatchProof } from './lib/memo-root.js';
 import { consumedInput, consumedAck, unlandedDeposits, spentInputsOf, noteNullifier } from './lib/spent-precheck.js';
-import { findCarrier, isRevert, isPendingRevert, errDetail, holdPendingRevert } from './lib/landed-elsewhere.js';
+import { findCarrier, isRevert, isPendingRevert, isRateLimited, errDetail, holdPendingRevert } from './lib/landed-elsewhere.js';
 import { cbtcMintBlocker } from './lib/cbtc-mint-precheck.js';
 import { cdpBlocker } from './lib/cdp-precheck.js';
 import { bridgeMintBlocker } from './lib/bridge-mint-precheck.js';
@@ -97,7 +97,12 @@ const tipFloor = makeTipFloor({ startWei: TIP_MIN_TOTAL_WEI, minWei: BigInt(proc
 const stageReport = (ids) => (stage) => { for (const jobId of ids) confidentialStage({ jobId, stage }).catch(() => {}); };
 const TIP_CAP_WEI = SETTLE_TIP_CAP_WEI;               // 2 gwei
 const SUBMIT_ROUNDS = Math.max(1, parseInt(process.env.SETTLE_SUBMIT_ROUNDS || '3', 10));
-const RECEIPT_WAIT_MS = Math.max(30_000, parseInt(process.env.SETTLE_RECEIPT_WAIT_MS || '90000', 10));
+const RECEIPT_WAIT_MS = Math.max(12_000, parseInt(process.env.SETTLE_RECEIPT_WAIT_MS || '90000', 10));   // a block is 12 s; each round is a few blocks
+// A rate-limited endpoint is asked once more after this pause (plus up to as much again), and only while no endpoint has taken the transaction.
+const RATE_LIMIT_BACKOFF_MS = Math.max(0, parseInt(process.env.SETTLE_RATE_LIMIT_BACKOFF_MS || '2500', 10));
+// From this round on (1-based; the last by default) the public mempool is offered the transaction too, even when a private endpoint took it, if SETTLE_ALLOW_PUBLIC=1:
+// the private routes have each had their rounds. A copy landing first costs the relay its fee and nothing else: the op is done (landed by another sender, below).
+const PUBLIC_FROM_ROUND = Math.max(1, parseInt(process.env.SETTLE_PUBLIC_FROM_ROUND || String(Math.max(1, parseInt(process.env.SETTLE_SUBMIT_ROUNDS || '3', 10))), 10));
 // One more wait, after the rounds, for a settle some endpoint accepted that has not been included yet: three settles were acked failed and
 // landed 1, 51 and 89 seconds later. 0 skips it.
 const LATE_WAIT_MS = Math.max(0, parseInt(process.env.SETTLE_LATE_WAIT_MS || '120000', 10));
@@ -372,6 +377,7 @@ async function submitCall(base, label, { gasLimit = null, landed = null } = {}) 
         if (NONCE_TAKEN.test(String(e && e.message))) return 'taken';
         if (isRevert(e)) return 'revert';
         if (isPendingRevert(e)) return 'pending';
+        if (isRateLimited(e)) return 'limited';
         return 'err';
       }
     };
@@ -379,6 +385,15 @@ async function submitCall(base, label, { gasLimit = null, landed = null } = {}) 
     const priv = order.filter((x) => !/PUBLIC/.test(x.url)), pub = order.filter((x) => /PUBLIC/.test(x.url));
     const outs = await Promise.all(priv.map(sendVia));
     if (outs.includes('taken')) taken = true;
+    // An endpoint that rate-limited us is asked once more after a short pause, but only while nothing has taken the transaction: with another endpoint carrying it, the
+    // next round does the asking and a burst of requests does not help.
+    if (!txHash && !taken && RATE_LIMIT_BACKOFF_MS > 0 && outs.includes('limited')) {
+      log(`${label} rate limited by ${priv.filter((_, i) => outs[i] === 'limited').length} endpoint(s) and not taken by another: asking again in ${Math.round(RATE_LIMIT_BACKOFF_MS / 1000)}s`);
+      await sleep((RATE_LIMIT_BACKOFF_MS + Math.floor(Math.random() * RATE_LIMIT_BACKOFF_MS)) / 1000);   // this file's sleep takes seconds
+      const again = priv.filter((_, i) => outs[i] === 'limited');
+      const r2 = await Promise.all(again.map(sendVia));
+      if (r2.includes('taken')) taken = true;
+    }
     // An endpoint that simulates against the pending block says this settle reverts there. Another endpoint taking it changes nothing
     // (Flashbots Protect accepts it and does not include it while it would revert), and a higher tip or the next round's wait does not either:
     // offer it again every few seconds, to the endpoints that refused, until the pending block lets it through.
@@ -393,7 +408,7 @@ async function submitCall(base, label, { gasLimit = null, landed = null } = {}) 
     }
     // An endpoint's revert is only a verdict once the public node agrees; one lagging a block says nothing.
     if (!txHash && outs.includes('revert')) { const dead = await wouldRevert(); if (dead) return settledOrDead(dead); }
-    if (!txHash && !taken) {
+    if (!taken && pub.length && (!txHash || round + 1 >= PUBLIC_FROM_ROUND)) {
       for (const ep of pub) {
         const o = await sendVia(ep);
         if (o === 'ok') break;
