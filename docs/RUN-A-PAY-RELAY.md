@@ -43,6 +43,25 @@ instead, and a machine that sleeps for hours is read again from the feed when it
 Send the funds from wherever you like: out of a private balance, nothing on chain links the relay to you. A relay earns while it is on
 and wallets pass over it while it is off, so a laptop that sleeps loses nothing but the fees. The sections below say what each part does, for running it by hand.
 
+### As a Tor hidden service
+
+```
+brew install tor        # or your system's package: tor is the only addition
+node scripts/pay-relay.mjs --onion
+```
+
+`--onion` takes the place of `--tunnel`. The command starts `tor` with a hidden service pointing at the relay, waits for its name, and lists
+`https://<56 characters>.onion/1/evm-pool/keeper` (the registry takes that form as it is). People on Tor Browser then reach the relay without it ever seeing their address, and
+nobody learns where your machine is. Unlike a tunnel, the onion name does not change when you restart: it is kept in `~/.tacit-relay/onion`, so the listing stays right.
+Keep that folder. The name is the key's, and a copy of the folder on another machine is the same relay address.
+
+A page lists onion relays only when it is on Tor: served from an `.onion` address, or opened once with `?tor=1` on its link (kept in the browser; `?tor=0` turns it off). A page
+that is not on Tor never draws one, so an onion relay costs ordinary users nothing. Tor Browser reaches `http://` onion addresses from an `https` page; other browsers block that,
+so an onion relay serves people on Tor Browser. For everyone else, run a second relay with `--tunnel` or `--url`. Tor does not hide what is on chain, or which chain nodes a page reads through.
+
+Tor takes a minute or two to publish a new service, and wallets pass over it until then. The relay itself is the same program as before; `--onion` and `--tunnel` can be tried one after the other
+on one set of keys.
+
 ## What a relay is, and is not
 
 - A spend's proof names the relayer and the fee. The pool pays that address and no one else, so a relay cannot redirect funds or raise its fee after the

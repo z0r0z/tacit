@@ -9,6 +9,8 @@
 //               an owner is public on chain, so a wallet that is known as yours ties the relay to you)
 //   --url       the relay's public https address, if you have one (a server with a name); otherwise --tunnel
 //   --tunnel    open one with cloudflared (installed, `brew install cloudflared`): wallets reach it by the tunnel's name, and the tunnel's provider, not the wallets, sees your connection
+//   --onion     reach it as a Tor hidden service instead (`tor` installed, `brew install tor`): wallets on Tor reach it by an .onion name, nobody sees a wallet's address,
+//               and the machine's own address stays hidden. Listed as https://<id>.onion/1/evm-pool/keeper (the registry takes that form); the name is kept in --dir/onion
 //   --dir       where it keeps its keys and store (default ~/.tacit-relay); the keys are files that only you can read
 //   --port      the port the relay listens on (default 10000)
 //   --rpc       the Ethereum node it reads and sends through: your own, or a provider's (default: free public nodes)
@@ -86,6 +88,10 @@ export function relayEnv({ defaults, key, gateway, port, dir, seed = null, reset
 export const staleStore = (path, now = Date.now(), maxAgeMs = 20 * 60_000) => { try { return now - statSync(path).mtimeMs > maxAgeMs; } catch { return false; } };
 
 // the public name cloudflared prints
+// A Tor hidden service for the relay: the torrc that makes one at `dir`/onion, and the name tor writes when it has made it (a v3 name: 56 characters and .onion).
+export const torrcFor = (dir, port, socks = 0) => `DataDirectory ${join(dir, 'tor')}\nSocksPort ${socks}\nHiddenServiceDir ${join(dir, 'onion')}\nHiddenServiceVersion 3\nHiddenServicePort 80 127.0.0.1:${port}\n`;
+export const parseOnionHost = (text) => /^([a-z2-7]{56})\.onion\s*$/.exec(String(text))?.[1] ?? null;
+export const isOnionUrl = (u) => /^https?:\/\/[a-z2-7]{56}\.onion(?:\/|$)/.test(String(u));
 export const parseTunnelUrl = (line) => /https:\/\/[a-z0-9-]+\.trycloudflare\.com/.exec(String(line))?.[0] ?? null;
 
 // A tunnel's name is not found in the DNS for the first seconds after it is made, and a listing sent before that fails (and one that is sent for a name nobody can reach
@@ -118,15 +124,16 @@ async function main() {
   const owner = opt('owner'), dry = flag('dry-run'), local = flag('local'), rpc = opt('rpc');
   const defs = () => withRpc(loadDefaults(), rpc);
   if (owner && !/^0x[0-9a-fA-F]{40}$/.test(owner)) { console.error('--owner has to be an address: 0x and 40 hex digits'); return 2; }
-  if (!local && !dry && !opt('url') && !flag('tunnel')) { console.error('say how wallets reach it: --url https://<your public name>, or --tunnel (cloudflared)'); return 2; }
+  if (!local && !dry && !opt('url') && !flag('tunnel') && !flag('onion')) { console.error('say how wallets reach it: --url https://<your public name>, --tunnel (cloudflared) or --onion (tor)'); return 2; }
   if (dry) {
     const addr = existsSync(join(dir, 'relay.key')) ? privateKeyToAccount(readFileSync(join(dir, 'relay.key'), 'utf8').trim()).address : '(made when you run it)';
-    console.log(`DRY RUN: nothing is made, started or sent.\n  keys: ${dir} (a relay key and a gateway key, readable only by you)\n  relay address: ${addr}\n  it would ask for 1,000 TAC and 0.01 ETH to be sent to that address\n  it would start the relay on port ${port}, open ${opt('url') ? opt('url') : 'a cloudflared tunnel'}, list it with ${owner || `a fresh address it makes (its key is kept in ${dir})`} as the stake owner, and keep the address current`);
+    console.log(`DRY RUN: nothing is made, started or sent.\n  keys: ${dir} (a relay key and a gateway key, readable only by you)\n  relay address: ${addr}\n  it would ask for 1,000 TAC and 0.01 ETH to be sent to that address\n  it would start the relay on port ${port}, open ${opt('url') ? opt('url') : flag('onion') ? 'a Tor hidden service' : 'a cloudflared tunnel'}, list it with ${owner || `a fresh address it makes (its key is kept in ${dir})`} as the stake owner, and keep the address current`);
     return 0;
   }
   if (!existsSync(join(WORKER, 'node_modules'))) { console.error(`run "npm ci" in ${WORKER} first`); return 2; }
   // the tunnel program is checked now, not after the funds have been sent and the relay has started
   if (flag('tunnel') && !opt('url') && spawnSync('cloudflared', ['--version'], { stdio: 'ignore' }).status !== 0) { console.error('--tunnel needs cloudflared, and it is not installed: `brew install cloudflared` (other systems: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/), or give --url https://<your public name>'); return 2; }
+  if (flag('onion') && !opt('url') && spawnSync('tor', ['--version'], { stdio: 'ignore' }).status !== 0) { console.error('--onion needs tor, and it is not installed: `brew install tor` (other systems: https://support.torproject.org/little-t-tor/)'); return 2; }
   const { key, gateway, address } = ensureSecrets(dir);
   log(`relay address ${address} (keys are in ${dir})`);
   const stakeOwner = owner || (local ? null : ensureOwner(dir));
@@ -186,7 +193,22 @@ async function main() {
     t.on('exit', () => { if (!stopping && said) { log('the tunnel closed; opening another'); setTimeout(() => openTunnel().then((u) => { url = u; log(`public address: ${relayUrl()}`); return sync(relayUrl()); }).catch((e) => log(e.message)), 5000); } });
     setTimeout(() => { if (!said) reject(new Error('the tunnel gave no address in 60 s')); }, 60_000);
   });
-  if (!url) url = await openTunnel();
+  // --onion: tor makes the hidden service; the name is in its hostname file once it has bootstrapped
+  const openOnion = () => new Promise((resolve, reject) => {
+    for (const d of ['tor', 'onion']) mkdirSync(join(dir, d), { recursive: true, mode: 0o700 });
+    for (const d of ['tor', 'onion']) chmodSync(join(dir, d), 0o700);
+    const rc = join(dir, 'torrc');
+    writeFileSync(rc, torrcFor(dir, port), { mode: 0o600 });
+    const t = spawn('tor', ['-f', rc], { stdio: ['ignore', 'pipe', 'ignore'] });
+    t.on('error', () => reject(new Error('tor is not installed: brew install tor (or give --url)')));
+    let booted = false, said = false, buf = '';
+    const done = () => { if (said || !booted) return; let host = null; try { host = parseOnionHost(readFileSync(join(dir, 'onion', 'hostname'), 'utf8')); } catch { /* not written yet */ } if (host) { said = true; tunnel = t; resolve(`https://${host}.onion`); } };
+    t.stdout.on('data', (d) => { buf += d; if (/Bootstrapped 100%/.test(buf)) { booted = true; buf = ''; done(); } });
+    t.on('exit', () => { if (!stopping && said) log('tor stopped: restart this program to bring the onion address back'); });
+    const poll = setInterval(() => { done(); if (said) clearInterval(poll); }, 2000);
+    setTimeout(() => { clearInterval(poll); if (!said) { t.kill(); reject(new Error('tor gave no onion address in 3 minutes')); } }, 180_000);
+  });
+  if (!url) url = flag('onion') ? await openOnion() : await openTunnel();
   const relayUrl = () => `${url.replace(/\/+$/, '')}/1/evm-pool/keeper`;
   log(`public address: ${relayUrl()}`);
 
@@ -198,8 +220,10 @@ async function main() {
     const listed = entries.find((e) => e.relayer.toLowerCase() === address.toLowerCase()) ?? null;
     const action = urlAction({ listed, url: target });
     if (action === 'ok') return log(`listed at ${target}`);
-    log('waiting for the public address to answer before it is listed…');
-    await waitReachable(target);
+    // an onion address is not reached from here in the way a name is (this machine is the service's own host, and a tor client asking its own service often gets no answer), so it is
+    // listed once tor has published it; wallets on Tor pass over it until it answers
+    if (isOnionUrl(target)) log('the onion address is listed once tor has published it (a minute or two); wallets on Tor pass over it until it answers');
+    else { log('waiting for the public address to answer before it is listed…'); await waitReachable(target); }
     const id = await entryIdNow();
     // in the registry but not on its list (its stake is under a raised minimum, or it is leaving): listing it again would fail, the owner puts it right
     if (action === 'register' && id !== 0n) return log(`the registry has this relay (entry ${id}) but does not list it: its stake is under the minimum, or it is leaving. Its owner can top it up on the Pay relays card at tacit.finance/prove/#pay-relays`);

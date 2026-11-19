@@ -26,10 +26,16 @@ function publicHost(url) {
 // encrypts the traffic, so a page on Tor asks it as plain http; a page that is not on Tor leaves these out, since it cannot reach them.
 export const isOnion = (url) => /^https?:\/\/[a-z2-7]{16,56}\.onion(?::\d+)?(?:\/|$)/i.test(String(url));
 export const onionHttp = (url) => String(url).replace(/^https:/i, 'http:');
-// Whether this page reaches the web through Tor: served from an onion address, or switched on in this browser (localStorage 'tacit-tor' = '1').
+// Whether this page reaches the web through Tor: served from an onion address, or switched on in this browser: a link with `?tor=1` turns it on and keeps it (localStorage
+// 'tacit-tor' = '1'), `?tor=0` turns it off. A page cannot tell that it is in Tor Browser, so a person who is says so once.
 export function onTor() {
   try {
     if (/\.onion$/i.test(globalThis.location?.hostname || '')) return true;
+    const q = new URLSearchParams(globalThis.location?.search || '').get('tor');
+    if (q === '1' || q === '0') {
+      try { if (q === '1') globalThis.localStorage?.setItem('tacit-tor', '1'); else globalThis.localStorage?.removeItem('tacit-tor'); } catch { /* storage blocked: the link still decides for this page */ }
+      return q === '1';
+    }
     return globalThis.localStorage?.getItem('tacit-tor') === '1';
   } catch { return false; }
 }

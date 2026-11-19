@@ -974,6 +974,7 @@ node tools/private-route-check.mjs --service https://tacit-evm-pool-keepers.onre
       <div class="pair"><pre class="cmd wrap"><code id="pay-cmd">git clone https://github.com/src-company/tacit
 cd tacit/worker-relay &amp;&amp; npm ci
 node scripts/pay-relay.mjs --tunnel</code></pre><button class="btn ghost" id="pay-copy" type="button">Copy</button></div>
+      <p class="plan">Prefer Tor? Put <code>--onion</code> where <code>--tunnel</code> is (needs <code>tor</code>: brew install tor). The relay then has an .onion address: people on Tor Browser reach it without it ever seeing their address, and your machine's address stays hidden too. Add <code>?tor=1</code> to a page's link once to make it list onion relays.</p>
       <p class="plan"><a href="https://github.com/src-company/tacit/blob/main/docs/RUN-A-PAY-RELAY.md" target="_blank" rel="noopener noreferrer">Run and list a relay</a> · <a href="https://etherscan.io/address/0x00000000000299F48Fb844626ab96c6A20059a01#code" target="_blank" rel="noopener noreferrer">The registry</a></p>
     </div>
   </section>

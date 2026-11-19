@@ -37,6 +37,20 @@ await check('onTor: an onion host, or the switch; nothing else', () => {
     set({ hostname: 'tacit.finance' }, { getItem: () => { throw new Error('blocked'); } }); assert.equal(onTor(), false);
   } finally { set(was.location, was.localStorage); }
 });
+await check('onTor: a link with ?tor=1 turns it on and keeps it, ?tor=0 turns it off, even when storage is blocked', () => {
+  const was = { location: globalThis.location, localStorage: globalThis.localStorage };
+  const mem = new Map(); const ls = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v), removeItem: (k) => mem.delete(k) };
+  const set = (search, store) => { Object.defineProperty(globalThis, 'location', { value: { hostname: 'tacit.finance', search }, configurable: true }); Object.defineProperty(globalThis, 'localStorage', { value: store, configurable: true }); };
+  try {
+    set('?tor=1', ls); assert.equal(onTor(), true); assert.equal(mem.get('tacit-tor'), '1');
+    set('', ls); assert.equal(onTor(), true, 'kept for the next page');
+    set('?tor=0', ls); assert.equal(onTor(), false); assert.equal(mem.has('tacit-tor'), false);
+    set('', ls); assert.equal(onTor(), false);
+    const blocked = { getItem: () => { throw new Error('x'); }, setItem: () => { throw new Error('x'); }, removeItem: () => { throw new Error('x'); } };
+    set('?tor=1', blocked); assert.equal(onTor(), true, 'the link still decides for this page');
+    set('?tor=x', ls); assert.equal(onTor(), false, 'only 1 and 0');
+  } finally { Object.defineProperty(globalThis, 'location', { value: was.location, configurable: true }); Object.defineProperty(globalThis, 'localStorage', { value: was.localStorage, configurable: true }); }
+});
 await check('keeperFetch: an onion relay is asked as http, directly, on Tor; refused off it; clear relays are unchanged', async () => {
   const seen = [];
   globalThis.fetch = async (u) => { seen.push(String(u)); return { ok: true }; };

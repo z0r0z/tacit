@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, statSync, existsSync, readdirSync, rmSync } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { ensureSecrets, ensureOwner, withRpc, relayEnv, parseTunnelUrl, urlAction, loadDefaults, staleStore, waitReachable } from '../scripts/pay-relay.mjs';
+import { ensureSecrets, ensureOwner, withRpc, relayEnv, parseTunnelUrl, urlAction, loadDefaults, staleStore, waitReachable, torrcFor, parseOnionHost, isOnionUrl } from '../scripts/pay-relay.mjs';
 import { utimesSync, writeFileSync } from 'node:fs';
 
 let n = 0;
@@ -123,5 +123,21 @@ await check('the community runner\'s relay mode is the same command: its dry run
   const r = spawnSync(process.execPath, [runner, 'relay', '--dry-run', '--owner', OWNER, '--tunnel', '--dir', join(tmpdir(), 'payrelay-never-2')], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /DRY RUN: nothing is made, started or sent/); assert.match(r.stdout, new RegExp(OWNER));
   assert.equal(existsSync(join(tmpdir(), 'payrelay-never-2')), false);
+});
+await check('--onion: the torrc points a v3 hidden service at the relay and keeps its name in the relay folder; the name is read only when it is whole', () => {
+  const rc = torrcFor('/k', 10000);
+  assert.match(rc, /HiddenServiceDir \/k\/onion\n/); assert.match(rc, /HiddenServiceVersion 3/); assert.match(rc, /HiddenServicePort 80 127\.0\.0\.1:10000\n/); assert.match(rc, /SocksPort 0\n/);
+  const id = 'p53lf57qovyuvwsc6xnrppddxpr23otqjjd5ojq2yw6jz7qehbeoxyad';
+  assert.equal(parseOnionHost(`${id}.onion\n`), id);
+  for (const bad of ['', `${id}.onion.evil.example`, `${id.slice(1)}.onion`, 'x.onion', `${id.toUpperCase()}.onion`]) assert.equal(parseOnionHost(bad), null, bad);
+  assert.ok(isOnionUrl(`https://${id}.onion`) && isOnionUrl(`https://${id}.onion/1/evm-pool/keeper`));
+  assert.ok(!isOnionUrl('https://x.trycloudflare.com') && !isOnionUrl(`https://${id}.onion.ly`));
+});
+await check('--onion is a way to be reached like --tunnel and --url: the dry run names it, and a run with none of the three still says how', () => {
+  const dir = join(tmpdir(), 'payrelay-never-3');
+  const r = spawnSync(process.execPath, [SCRIPT, '--dry-run', '--owner', OWNER, '--onion', '--dir', dir], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /a Tor hidden service/); assert.equal(existsSync(dir), false);
+  const none = spawnSync(process.execPath, [SCRIPT, '--dir', dir], { encoding: 'utf8' });
+  assert.equal(none.status, 2); assert.match(none.stderr, /--onion \(tor\)/);
 });
 console.log(`\n${n} passed`);
