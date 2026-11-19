@@ -1,4 +1,4 @@
-import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol, NO_LIMITS } from '/bridge/runtime.js?cb=b48f01b8';
+import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol, NO_LIMITS } from '/bridge/runtime.js?cb=643fbc26';
 import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=d2e81a08';
 import { bodyType } from '/rpc-body.js';
 import { isAddr, norm, shortAddr, tokenHash, parseTokenHash, readToken, tokenRoute, safeSymbol } from '/bridge/token-pick.js?cb=72a4ae9a';

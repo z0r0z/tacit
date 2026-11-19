@@ -37,8 +37,8 @@ const ADDR = /^0x[0-9a-f]{40}$/, HEX64 = /^[0-9a-f]{64}$/;
 // A token with no logo of its own is a colour of its address under its first two letters.
 export const markColor = (id) => { let h = 7; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return `hsl(${h % 360} 38% 48%)`; };
 export const runtimeIcon = (addr) => `tk-x${addr}`;
-// A logo is a path on this site; anything else is not drawn.
-const ownLogo = (v) => (/^\/(?!\/)/.test(String(v || '')) ? String(v) : '');
+// A logo is a path on this site, or an image carried in the token list itself (a base64 SVG or PNG: an image in a symbol runs nothing); anything else is not drawn.
+const ownLogo = (v) => (/^\/(?!\/)/.test(String(v || '')) || (/^data:image\/(svg\+xml|png);base64,[A-Za-z0-9+/=]+$/.test(String(v || '')) && String(v).length < 40000) ? String(v) : '');
 
 // The sprite <symbol> for a token's mark: its logo clipped to a circle, or the letter mark.
 export function runtimeSymbol(doc, { addr, logo, sym }) {

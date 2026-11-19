@@ -66,5 +66,14 @@ test('a token held at Taproot is listed under Bitcoin in Send (xtTaprootHeld) an
   ok(/'tk btc'/.test(page) && /\.coin \.tk\.btc, \.pk-r \.tk\.btc \{ border-radius: 50%; outline: 1\.5px solid var\(--orange\)/.test(page), 'the Bitcoin ring');
 });
 
+test('the Send picker says where a token held at Taproot is, since the balance on the right counts the Bitcoin address only', () => {
+  ok(/id === 'hx-sa' && \/\^xb0x\/\.test\(k\)/.test(page) && /bridged, at your Taproot address · move it in Notes to send/.test(page), 'no Taproot line in hxSubOf');
+});
+
+test('a token\'s portfolio rows (the held row and the Bitcoin-notes row) open its card, not the TAC page', () => {
+  ok(!/href: '#bridge'/.test(page), 'a row still links to #bridge, which the front page sends to /tac/');
+  ok(/href: `#card=bridge:xb\$\{a\.key\.slice\(1\)\}`/.test(page) && /CHAIN_ASSETS\[c\] === x\)\.slice\(1\)/.test(page), 'the rows do not name the token\'s card');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
