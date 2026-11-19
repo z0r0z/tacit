@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-/5Bz/r1kEFHCwf5NLnY/+sAtEotXSGyHbfNcHaDlDvM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-pfnb4wKCgEFbj1u01CZ9WPM/OgV+xaklkP8uAkThbBQ=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -6040,7 +6040,10 @@ function cutAhead(k, amount, fee) {
       .then((a) => { if (CA.k === key) CA.a = a; return a; }, () => { if (CA.k === key) CA.k = null; return null; });
   }, 1500);
 }
-async function noteFor(run, t, priv, amount, fits, status, k = 'eth') {
+// "Step 1 of 2 · " ahead of a line of a send that must first cut a note of the exact size (a split, then the lock: two things the sender waits for, each a proof and a settle); a send with the
+// note already in hand is one step and says none. The recipient's claim comes after, in their own wallet.
+const sendStep = (split, i) => (split ? `Step ${i} of 2 · ` : '');
+async function noteFor(run, t, priv, amount, fits, status, k = 'eth', stepNote = '') {
   if (!P.scan) await scanPrivate();
   if (!P.scan) throw new Error('Your private balance is still loading. Try again in a moment.');
   await scanIfNew().catch(() => {});
@@ -6057,7 +6060,7 @@ async function noteFor(run, t, priv, amount, fits, status, k = 'eth') {
   }
   run.take(...picked.map(kNote));
   const doing = `${picked.length > 1 ? `Combining ${picked.length} notes` : 'Splitting a note'} to ${fmt(amount, dec, 6)} ${unit} first`;
-  run.say(status, `${doing}…`);
+  run.say(status, `${stepNote}${doing}…`);
   const cut = (f, o) => t.transfer({ walletPriv: priv, notes: picked, recipientPubHex: t.identity(priv).pubHex, amount, fee: f, ...o });
   const stepWait = () => run.wait({ step: picked.length > 1 ? 'Combine notes' : 'Split a note', doing }, 15 * 60e3);
   const line = () => (status.id && document.getElementById(status.id)) || status;
@@ -6104,9 +6107,10 @@ async function stealthSendNow({ run, k, label, w, raw, units, field, status, lin
     share: `I sent you ${fmt(units, xtDec(k), 6)} ${shownAs(POOL_TK[k])} privately on Tacit. Sign in at https://tacit.finance with your Tacit wallet to claim it.` });
   await pinned(w, () => resolveToM(raw, null, true), field);
   const t = await getUx(), priv = walletPriv();
-  const note = await noteFor(run, t, priv, units, (n) => BigInt(n.value) === units, status, k);
+  const split = !!P.scan?.[k]?.notes && !freeNotes(P.scan[k].notes).some((n) => BigInt(n.value) === units);   // no note of exactly this size: a split comes first
+  const note = await noteFor(run, t, priv, units, (n) => BigInt(n.value) === units, status, k, sendStep(split, 1));
   await pinned(w, () => resolveToM(raw, null, true), field);
-  run.say(status, 'Locking it to a one-time address only they can open…');
+  run.say(status, `${sendStep(split, 2)}Locking it to a one-time address only they can open…`);
   const sendArgs = { t, priv, note, who: w, units, ticker: POOL_TK[k] };
   const r = await proveOr({ run, types: ['stealthlock'], label, sheet, ...(proveAfter ? { after: proveAfter } : {}), status: line,
     go: (x) => lockSend({ ...sendArgs, selfSettle: x.selfSettle, waitOpts: x.waitOpts }),

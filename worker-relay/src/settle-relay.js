@@ -1046,7 +1046,9 @@ async function openCycle() {
   if (!job?.jobId) return false;
   openReadAt = 0;
   const { jobId, type } = job;
-  log(`job ${jobId} type=${type} — sending its proof from the open board${job.posted ? ' (posted by its holder)' : ''}`);
+  // how long it sat on the board before this loop took it (what a send waits on: the loop's board poll and whatever else it was doing), so a slow pickup shows in the log
+  const onBoard = pick.openSince ? Math.max(0, Math.round((Date.now() - Number(pick.openSince)) / 1000)) : null;
+  log(`job ${jobId} type=${type} — sending its proof from the open board${job.posted ? ' (posted by its holder)' : ''}${onBoard != null ? `, ${onBoard} s on the board` : ''}`);
   await beat(`sending ${jobId} ${type}`);
   let txHash;
   try {
