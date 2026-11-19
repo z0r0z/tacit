@@ -170,7 +170,8 @@ const test = async (label, fn) => {
 };
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `paycards-${name}.png`), fullPage: true }); };
 
-// a chunk cache for the 1 ETH pool on Ethereum holding six deposits, `commitment` among them
+// a chunk cache for the 1 ETH pool on Ethereum holding six deposits, `commitment` among them (`cacheHits` counts what the page asks of it)
+const cacheHits = { n: 0 };
 function chunkCache(page, commitments) {
   const topic = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Deposit(bytes32,uint32,uint256)')));
   const hex = (n) => n.toString(16).padStart(64, '0');
@@ -179,6 +180,7 @@ function chunkCache(page, commitments) {
   const manifest = { availableProtocols: { 'tornado-cash-1-eth-1': { trackedAddresses: [ONE.address.toLowerCase()], trackedEventTopics: [topic], chunks: [], hotHead: { fromBlock: '0x0', toBlock: '0x384', file: 'hot.jsonl.gz', size: '0x1', digest: { type: 'sha256', data: '0x' + createHash('sha256').update(raw).digest('hex') } } } } };
   return page.route('https://saga.0000000000.org/**', (route) => {
     const url = route.request().url();
+    cacheHits.n++;
     const headers = { 'access-control-allow-origin': '*' };
     if (url.endsWith('/index.json')) return route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify(manifest) });
     if (url.endsWith('/hot.jsonl.gz')) return route.fulfill({ status: 200, headers, contentType: 'application/gzip', body: gzipSync(raw) });
@@ -275,8 +277,16 @@ await test('connecting, then depositing the whole notes: signed and sent for eac
 await test('Move into Tacit: proved in a worker, the fee shown and pressed, one operation to the bundler, paying the user\'s own deposit address', async () => {
   const kept = JSON.parse(await page.evaluate(() => localStorage.getItem(`tacit-fixed-notes:1:${'0x2c7536e3605d9c16a7a3d7b1898e529396a65c23'}`)));
   await chunkCache(page, kept[0].c);
+  // pointing at the note's action builds its pool's tree ahead: the cache is read now, before any press, and not again by the press
+  cacheHits.n = 0;
+  await page.hover('[data-move="0"]');
+  let last = -1;
+  for (let i = 0; i < 60; i++) { await page.waitForTimeout(500); if (cacheHits.n > 0 && cacheHits.n === last) break; last = cacheHits.n; }
+  const warmed = cacheHits.n;
+  assert.ok(warmed > 0, 'the pool was read ahead, on pointing at the note');
   await page.click('[data-move="0"]');
   await page.waitForSelector('#lg-ask:not([hidden]) #lg-send', { timeout: 240000 });
+  assert.equal(cacheHits.n, warmed, 'the press did not read the pool again');
   assert.equal(sent.length, 0, 'nothing is sent before the press');
   // a redraw of the card while the panel is open (a late read of the pool, the gas choice) must not take its buttons away
   await page.evaluate(() => { window.__repaint(); });

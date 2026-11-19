@@ -17,7 +17,7 @@
 // secrets come from signing the nonce again.
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32, parseNoteString } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, newSession, parseEther, formatEther } from '/fixed-pool-flow.js?cb=133fd677';
+import { makeFlow, newSession, parseEther, formatEther } from '/fixed-pool-flow.js?cb=d3b2946b';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=414482bd';
 export { MAX_FEE_PERCENT };
@@ -235,6 +235,30 @@ async function walletExit({ flow, text, to, step, confirm, workerUrl, prover: gi
   const prover = given || workerProver(workerUrl);
   try { return await flow.withdraw({ noteText: text, recipient: to, prover, confirm, cache, onStep: (s) => step(s.step === 'send' ? 'confirm in your wallet' : exitWords(s)) }); } finally { if (!given) prover.close(); }
 }
+// One prover and one cache for the page: the tree of a pool the person holds a note in is built ahead of a withdrawal (`warmPools`, when they open Withdraw, point at a note's action
+// or have just looked for their notes) and kept, so the withdrawal starts at the proof. The prover holds one tree at a time, so a withdrawal waits for a warm that is running,
+// and a warm does not start while a withdrawal runs. A withdrawal that fails (other than by the person's cancel) drops the prover, which is made again; the leaves stay in the cache.
+const SHARED = { prover: null, cache: { pools: new Map(), loaded: null, inflight: new Map(), busy: false }, warmedAt: new Map() };
+const sharedProver = (url) => (SHARED.prover ||= workerProver(url));
+function dropProver() { try { SHARED.prover?.close(); } catch { /* gone */ } SHARED.prover = null; SHARED.cache.loaded = null; }
+async function withShared(url, fn, waiting = () => {}) {
+  if (SHARED.cache.inflight.size) { try { waiting(); } catch { /* a label */ } await Promise.allSettled([...SHARED.cache.inflight.values()]); }
+  SHARED.cache.busy = true;
+  try { return await fn({ prover: sharedProver(url), cache: SHARED.cache }); }
+  catch (e) { if (!e?.cancelled) dropProver(); throw e; }
+  finally { SHARED.cache.busy = false; }
+}
+function warmPools(env, flow, addresses) {
+  if (!env.workerUrl || (typeof document !== 'undefined' && document.hidden)) return;
+  for (const a of new Set(addresses.map((x) => String(x).toLowerCase()))) {
+    if (Date.now() - (SHARED.warmedAt.get(a) || 0) < 120_000) continue;
+    const pool = flow.pools.find((q) => q.address.toLowerCase() === a);
+    if (!pool) continue;
+    SHARED.warmedAt.set(a, Date.now());
+    flow.warmPool({ pool, prover: sharedProver(env.workerUrl), cache: SHARED.cache }).then((r) => { if (r == null) SHARED.warmedAt.delete(a); }, () => SHARED.warmedAt.delete(a));
+  }
+}
+
 // Notes found by signing numbers again (Find) and which of them are spent are shared by the cards, so a note that was seen spent is not asked about again.
 const SPENT = new Set();
 
@@ -291,7 +315,7 @@ export function attach(env) {
   const chainId = env.chain.chainId;
   const provider = composeProvider({ read: env.read, wallet: env.walletProvider });
   const flowFor = flowMaker(env, chainId, provider);
-  const reader = makeFlow({ provider, account: null, chainId, poll: 3000 });
+  const reader = makeFlow({ provider, account: null, chainId, poll: 3000, history: env.history?.(chainId) });
   const saved = (() => { try { const v = env.store.get(MIN_KEY(chainId)); return v == null ? null : BigInt(v); } catch { return null; } })();
   const st = { smallest: SMALLEST.some((x) => x.wei === saved) ? saved : autoMin.v, notes: [], spent: new Map(), seen: new Map(), open: null, confirm: null, target: null, gas: readGas(env.store, chainId) };
   const setSmallest = (v) => { st.smallest = v; st.chosen = true; try { env.store.set(MIN_KEY(chainId), v.toString()); } catch { /* a convenience */ } };
@@ -509,6 +533,11 @@ export function attach(env) {
     if (gasSel) gasSel.onchange = (e) => { st.gas = e.target.value === 'wallet' ? 'wallet' : 'note'; saveGas(env.store, chainId, st.gas); paintNotes(); };
     notesHost.querySelectorAll('[data-move]').forEach((b) => { b.onclick = () => moveInto(b, st.notes[Number(b.dataset.move)]); });
     notesHost.querySelectorAll('[data-out]').forEach((b) => { b.onclick = () => askAddress(st.notes[Number(b.dataset.out)]); });
+    // pointing at, tabbing to or touching a note's action is the sign of a coming withdrawal: that pool's tree is built meanwhile (once, whatever the number of times it is touched)
+    notesHost.querySelectorAll('[data-move],[data-out]').forEach((b) => {
+      const warm = () => { const n = st.notes[Number(b.dataset.move ?? b.dataset.out)]; if (n) warmPools(env, reader, [n.pool]); };
+      for (const ev of ['pointerenter', 'focus', 'touchstart']) b.addEventListener(ev, warm, { passive: true });
+    });
   }
 
   // Closes the form under the notes; a redraw held back while it was open is made now.
@@ -526,6 +555,7 @@ export function attach(env) {
       for (const f of found) st.spent.set(commitmentBytes32(f.secrets.nullifierHash), f.spent);
       env.say(found.length ? `${found.length} found.` : 'No deposits found for this wallet.');
       loadNotes();
+      warmPools(env, reader, found.filter((f) => !f.spent).map((f) => f.pool.address ?? f.pool));   // looking for notes is the sign of a coming withdrawal
     });
   }
 
@@ -567,7 +597,7 @@ export function attach(env) {
     st.target = target;
     st.what = n.nonce != null ? `Note ${n.nonce}` : 'The pasted note';
     try {
-      const out = await (fromWallet ? walletExit : sponsoredExit)({ flow, text, to, step, confirm: confirmFee, workerUrl: env.workerUrl });
+      const out = await withShared(env.workerUrl, (sh) => (fromWallet ? walletExit : sponsoredExit)({ flow, text, to, step, confirm: confirmFee, workerUrl: env.workerUrl, prover: sh.prover, cache: sh.cache }), () => step(exitWords({ step: 'read' })));
       if (n.nh) st.spent.set(n.nh, !!out.spent);
       if (out.spent) env.done(c, out.hash, doneText(out, target)); else env.say('Sent; the pool has not shown it yet.');
     } catch (e) {
@@ -637,7 +667,7 @@ export function attachWithdraw(env) {
   const chainId = env.chain.chainId;
   const provider = composeProvider({ read: env.read, wallet: env.walletProvider });
   const flowFor = flowMaker(env, chainId, provider);
-  const reader = makeFlow({ provider, account: null, chainId, poll: 3000 });
+  const reader = makeFlow({ provider, account: null, chainId, poll: 3000, history: env.history?.(chainId) });
   const st = { list: [], gen: 0, gas: readGas(env.store, chainId) };
   const poolOf = (addr) => FIXED_POOLS[chainId]?.find((x) => x.address.toLowerCase() === addr.toLowerCase());
   const publish = () => env.onNotes?.(st.list);
@@ -663,6 +693,7 @@ export function attachWithdraw(env) {
     const stored = account ? readNotes(env.store, chainId, account) : [];
     st.list = stored.map((meta) => ({ meta, den: poolOf(meta.pool)?.denomination ?? 0n })).filter((x) => x.den > 0n && !(x.meta.nh != null && SPENT.has(x.meta.nh)));
     paint(); publish();
+    if (st.list.length) warmPools(env, reader, st.list.map((x) => x.meta.pool));   // the person is on Withdraw with notes: their pools' trees are built meanwhile
     for (const x of [...st.list]) {
       const pool = poolOf(x.meta.pool);
       if (x.meta.nh == null) continue;
@@ -706,11 +737,11 @@ export function attachWithdraw(env) {
     if (!fromWallet && !PAYMASTERS[chainId]) throw new Error('Paying the gas from a note is not available on this network. Choose your wallet for the gas.');
     if (!env.account()) throw new Error('Connect your wallet first.');
     await env.ensureChain(c);
-    // one prover and one cache for the whole run, the notes of a pool together: each pool's deposits are read and its tree built once, not once a note
-    const flow = flowFor(), outs = [], prover = workerProver(env.workerUrl), cache = { pools: new Map(), loaded: null };
+    // the page's prover and cache for the whole run, the notes of a pool together: each pool's deposits are read and its tree built once (or ahead, by `warmPools`), not once a note
+    const flow = flowFor(), outs = [];
     const ordered = [...notes].sort((x, y) => String((x.meta ?? x).pool).toLowerCase().localeCompare(String((y.meta ?? y).pool).toLowerCase()));
     notes = ordered;
-    try {
+    await withShared(env.workerUrl, async ({ prover, cache }) => {
     for (let k = 0; k < notes.length; k++) {
       const n = notes[k].meta ?? notes[k];
       const tag = (m) => step(notes.length > 1 ? `note ${k + 1} of ${notes.length}: ${m}` : m);
@@ -725,7 +756,7 @@ export function attachWithdraw(env) {
         throw Object.assign(new Error(outs.length ? `${outs.length} of ${notes.length} notes went out to ${short(to)} (${roundWei(out, 5, false)} ETH). Note ${k + 1} did not: ${why}` : why), { done: outs });
       }
     }
-    } finally { prover.close(); }
+    }, () => step(exitWords({ step: 'read' })));
     load();
     return outs;
   }

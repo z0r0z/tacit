@@ -338,7 +338,7 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     // pool is read again only if it no longer knows that root or the note is not among the deposits read (a busy pool moved on, a note was made
     // since). The proved call is still checked against this root before anything is sent, so a tree left in the prover by mistake cannot spend.
     // A pool whose tree is being built ahead of this (warmPool) is waited for, not read twice.
-    if (cache?.inflight?.has(pool.address)) await cache.inflight.get(pool.address).catch(() => {});
+    if (cache?.inflight?.has(pool.address)) { onStep({ step: 'read' }); await cache.inflight.get(pool.address).catch(() => {}); }
     let src = cache?.pools.get(pool.address) ?? null, reused = false;
     if (src && has(src.bytes, src.count) && (await knownRoot(pool, src.root))) reused = true; else src = null;
     let root;
