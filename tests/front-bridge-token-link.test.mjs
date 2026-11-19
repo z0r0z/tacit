@@ -61,7 +61,7 @@ test('a token\'s bridge links (Activity, notices, bring-back) open its card, whi
 });
 
 test('a token held at Taproot is listed under Bitcoin in Send (xtTaprootHeld) and read when Send opens (xtCrossedRead)', () => {
-  ok(/\|\| xtTaprootHeld\(r\)\)\)\.map\(\(r\) => \[`xb\$\{r\.addr\}`/.test(page), 'xtSends does not ask xtTaprootHeld');
+  ok(/\|\| xtTaprootHeld\(r\) \|\| /.test(page) && /\.map\(\(r\) => \[`xb\$\{r\.addr\}`/.test(page), 'xtSends does not ask xtTaprootHeld');
   ok(/if \(S\.key && HX\.tab === 'send'\) xtCrossedRead\(\);/.test(page), 'hxWarmBals does not start the read');
   ok(/'tk btc'/.test(page) && /\.coin \.tk\.btc, \.pk-r \.tk\.btc \{ border-radius: 50%; outline: 1\.5px solid var\(--orange\)/.test(page), 'the Bitcoin ring');
 });
