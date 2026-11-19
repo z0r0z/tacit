@@ -46,9 +46,13 @@ Ethereum only; other chains and tokens open with `?chains=all`.
   person. The gateway sees the operation (the recipient, the fee and the proof, which the chain shows once it is mined) and not the sender's address. If no road is open,
   or a bundler throttles the gateway, the page sends the call to the bundler directly, and the bundler then sees the person's address. The person can instead send the
   withdrawal from their own wallet.
-- **A pool's deposit history** is read from a published cache of its logs (`saga.0000000000.org`), fetched directly by the page, so that host sees the reader's address and
-  which pool is read, not the wallet or any note. Each file is checked against the cache's digests, and the tree built from them must land on a root the pool
-  knows before anything is proved. If the host does not answer, the page reads the pool's logs from the chain, which takes much longer.
+- **A pool's deposit history** is kept by the wallet-read gateway, which reads it from the chain's logs and serves it to the page through the private route in pages of leaves, so no outside host
+  sees which pool a person reads or when. When the gateway starts it takes the history from a published cache of the pools' logs (`saga.0000000000.org`, a host none of us runs) once, as a seed, and
+  then keeps it current from the chain. The leaves are public chain data, and the page does not trust them: the tree built from them must land on a root the pool knows before anything is proved, and
+  a history that does not is read again from the chain alone. If the gateway cannot answer, the page falls back to reading that published cache directly (which then sees the reader's address and which
+  pool is read), and then to the pool's logs from the chain, which takes much longer.
+- **Ahead of a withdrawal** the page builds the tree of a pool the person holds a note in when they open Withdraw, point at a note's action or look for their notes, from the same history, so the
+  withdrawal starts at the proof.
 - **Waiting.** The page says how long a note has been in its pool and how many deposits came after it, and says so once when a withdrawal would take a note that went in recently.
 
 ## What the private route does not cover
