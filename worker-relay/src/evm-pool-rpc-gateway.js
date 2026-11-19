@@ -7,13 +7,16 @@
 // RPC_GATEWAY_NODES  JSON, { "<chainId>": ["<node url>", …] }: the public nodes it reads from, tried in order, the one that answered last first
 // RPC_GATEWAY_FORWARDERS  addresses of the forwarders that carry many callers (they may send sixty times as much)
 // RPC_GATEWAY_RATE_PER_MIN  what one address may send a minute, times six (a listed forwarder, times sixty); default 60
+// RPC_GATEWAY_HISTORY_SEED  where a pool's deposit history is first read from, once, when the server starts (default: the published cache the page used to read; empty: from the chain only)
 // PORT               default 10000
-//   POST /sealed             a sealed request: the calls inside are POST /<chainId>/evm-pool/keeper/rpc, a JSON-RPC call or batch (evm-pool-keeper-rpc.js)
+//   POST /sealed             a sealed request: the calls inside are POST /<chainId>/evm-pool/keeper/rpc, a JSON-RPC call or batch (evm-pool-keeper-rpc.js),
+//                            POST …/bundler-pimlico|candide, a bundler's call, and GET …/history?pool=&from=&n=, a page of a fixed pool's deposit history (lib/fixed-pool-history.js)
 //   GET  /sealed/key         the gateway key
 //   GET  /health
 import { createServer } from 'node:http';
 import { makeServiceGateway } from './lib/evm-pool-keeper-sealed.js';
 import { makeRpcPassthrough, MAX_BODY } from './lib/evm-pool-keeper-rpc.js';
+import { makePoolHistory, POOLS as HISTORY_POOLS, PAGE as HISTORY_PAGE } from './lib/fixed-pool-history.js';
 
 // The public nodes this reads from have limits of their own, so a log read may span more here than on a relay's paid node: a day of a busy token is about 7,200 blocks.
 const MAX_LOG_RANGE = 20_000;
@@ -25,7 +28,7 @@ export const BUNDLERS = Object.freeze({
   candide: (chainId) => `https://api.candide.dev/public/v3/${chainId}`,
 });
 export const BUNDLER_METHODS = new Set(['eth_sendUserOperation', 'eth_estimateUserOperationGas', 'eth_getUserOperationByHash', 'eth_getUserOperationReceipt', 'pimlico_getUserOperationGasPrice', 'eth_supportedEntryPoints', 'eth_chainId']);
-const CARRIED = [['POST', /^\/(rpc|bundler-pimlico|bundler-candide)$/]];
+const CARRIED = [['POST', /^\/(rpc|bundler-pimlico|bundler-candide)$/], ['GET', /^\/history$/]];
 const MAX_BUNDLER_REPLY = 256 * 1024;
 
 const log = (...a) => console.log(`[evm-pool-rpc-gateway ${new Date().toISOString()}]`, ...a);
@@ -78,8 +81,15 @@ function readBody(req, max) {
   });
 }
 
-export function makeRpcGateway({ secret, nodes, forwarders = [], fetchImpl, ratePerMin = 60 }) {
+export function makeRpcGateway({ secret, nodes, forwarders = [], fetchImpl, ratePerMin = 60, historyFetch, historySeed, historyOpts = {} }) {
   const passes = new Map();
+  // a fixed pool's deposit history for a chain that has pools and a node: kept here, read from the chain's logs (seeded once from `historySeed`)
+  const histories = new Map();
+  const historyOf = (chainId) => {
+    if (!HISTORY_POOLS[chainId] || !nodes.has(chainId)) return null;
+    if (!histories.has(chainId)) histories.set(chainId, makePoolHistory({ chainId, request: makeNodeRequest(nodes.get(chainId), { fetchImpl }), ...(historyFetch ? { seedFetch: historyFetch } : {}), ...(historySeed !== undefined ? { seedBase: historySeed } : {}), log, ...historyOpts }));
+    return histories.get(chainId);
+  };
   const passFor = (chainId) => {
     if (!nodes.has(chainId)) return null;
     if (!passes.has(chainId)) passes.set(chainId, makeRpcPassthrough({ request: makeNodeRequest(nodes.get(chainId), { fetchImpl }), chainId, maxLogRange: MAX_LOG_RANGE }));
@@ -100,6 +110,17 @@ export function makeRpcGateway({ secret, nodes, forwarders = [], fetchImpl, rate
       const text = (await up.text()).slice(0, MAX_BUNDLER_REPLY);
       res.writeHead(up.status, JSON_TYPE); return res.end(text);
     }
+    const hm = /^\/(\d{1,10})\/evm-pool\/keeper\/history$/.exec(url);
+    if (hm && req.method === 'GET') {
+      const hist = historyOf(Number(hm[1]));
+      if (!hist) return json(res, 404, { error: 'no history on this chain' });
+      const q = new URL(req.url, 'http://gateway').searchParams, pool = String(q.get('pool') || '');
+      if (!/^0x[0-9a-fA-F]{40}$/.test(pool) || !hist.has(pool)) return json(res, 404, { error: 'not a pool' });
+      const from = Number(q.get('from') ?? 0), n = Number(q.get('n') ?? HISTORY_PAGE);
+      if (!Number.isInteger(from) || !Number.isInteger(n) || from < 0 || n < 1) return json(res, 400, { error: 'bad range' });
+      const out = await hist.page(pool, from, n);
+      return out ? json(res, 200, out) : json(res, 503, { error: 'the history is being read' });
+    }
     const m = /^\/(\d{1,10})\/evm-pool\/keeper\/rpc$/.exec(url);
     if (!m || req.method !== 'POST') return json(res, 404, { error: 'not found' });
     const pass = passFor(Number(m[1]));
@@ -113,6 +134,8 @@ export function makeRpcGateway({ secret, nodes, forwarders = [], fetchImpl, rate
   const take = makeServiceGateway({ secret, serve, json, forwarders, ratePerMin, log, carried: CARRIED, isolate: true });
   return {
     key: take.key,
+    // each pool's history read once, one after another, so the first page asked for does not wait for it
+    warm: async () => { for (const id of nodes.keys()) await historyOf(id)?.warm(); },
     handler: (req, res) => {
       const path = (req.url || '').split('?')[0];
       if (req.method === 'OPTIONS') { res.writeHead(204, CORS); return res.end(); }
@@ -129,9 +152,11 @@ function main() {
   const nodes = nodesOf(process.env.RPC_GATEWAY_NODES || '{}');
   if (!nodes.size) throw new Error('RPC_GATEWAY_NODES names no chain');
   const forwarders = String(process.env.RPC_GATEWAY_FORWARDERS || '').split(',').map((x) => x.trim()).filter(Boolean);
-  const gw = makeRpcGateway({ secret: process.env.RPC_GATEWAY_KEY, nodes, forwarders, ratePerMin: Number(process.env.RPC_GATEWAY_RATE_PER_MIN) || 60 });
+  const seed = process.env.RPC_GATEWAY_HISTORY_SEED;
+  const gw = makeRpcGateway({ secret: process.env.RPC_GATEWAY_KEY, nodes, forwarders, ratePerMin: Number(process.env.RPC_GATEWAY_RATE_PER_MIN) || 60, ...(seed !== undefined ? { historySeed: seed === '' ? null : seed } : {}) });
   const port = Number(process.env.PORT || 10000);
   createServer((req, res) => { Promise.resolve(gw.handler(req, res)).catch((e) => { log('request failed:', String(e?.message || e).slice(0, 120)); try { if (!res.headersSent) { res.writeHead(500, JSON_TYPE); res.end('{"error":"internal error"}'); } } catch { /* gone */ } }); }).listen(port, () => log(`listening on ${port}: chains ${[...nodes.keys()].join(', ')}, key id ${gw.key.kid}`));
+  gw.warm().then(() => log('the fixed pools\' histories are read'), (e) => log(`reading the fixed pools' histories: ${String(e?.message || e).slice(0, 80)}`));
 }
 
 import { pathToFileURL } from 'node:url';

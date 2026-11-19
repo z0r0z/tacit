@@ -14,7 +14,7 @@ export async function resolve(spec, ctx, next) {
 
 import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-const { readChunkCache, readTail, fixedPoolLeaves } = await import('../dapp/fixed-pool-sync.js');
+const { readChunkCache, readTail, fixedPoolLeaves, readHistory, HISTORY_PAGE } = await import('../dapp/fixed-pool-sync.js');
 import { keccak_256, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
 
 let pass = 0, fail = 0;
@@ -139,6 +139,46 @@ await test('no cache for the chain: the node alone', async () => {
   const n = node(all);
   const r = await fixedPoolLeaves({ chainId: 8453, pool: POOL, getLogs: n.getLogs.bind(n), blockNumber: async () => 1200 });
   eq(r.count, 3);
+});
+
+console.log('the gateway\'s history');
+// a history of `total` leaves served as the gateway serves it: pages of at most HISTORY_PAGE, with the total and where it ends on each
+const leafBytes = (i) => Buffer.from(commit(i).slice(2), 'hex');
+const historyOf = (total, { upTo = 1100, bad = null } = {}) => async ({ from, n: want }) => {
+  const count = Math.max(0, Math.min(want, HISTORY_PAGE, total - from)), buf = Buffer.concat(Array.from({ length: count }, (_, k) => leafBytes(from + k)));
+  return { total, upTo, from, n: count + (bad === 'size' ? 1 : 0), leaves: buf.toString('base64') };
+};
+await test('a history of more than one page is read page by page into the deposits, with where it ends', async () => {
+  const total = HISTORY_PAGE + 5, steps = [];
+  const r = await readHistory({ history: historyOf(total), pool: POOL, onProgress: (p) => steps.push(p.done + '/' + p.of) });
+  eq(r.deposits.length, total); eq(r.upTo, 1100); eq(r.deposits[HISTORY_PAGE + 2].index, HISTORY_PAGE + 2); eq(r.deposits[HISTORY_PAGE + 2].commitment, commit(HISTORY_PAGE + 2));
+  eq(steps.join(','), '1/2,2/2');
+});
+await test('a page that is the wrong size, a missing page and a history that is not ready are refused', async () => {
+  await rejects(readHistory({ history: historyOf(5, { bad: 'size' }), pool: POOL }), /wrong/);
+  await rejects(readHistory({ history: async () => null, pool: POOL }), /not ready/);
+  let calls = 0;
+  await rejects(readHistory({ history: async (q) => (calls++ ? null : historyOf(HISTORY_PAGE + 5)(q)), pool: POOL }), /missing/);
+});
+await test('the read takes the gateway\'s history first and does not ask the published cache or the chain for what it holds; the node gives only the last stretch', async () => {
+  const n = node([logOf(5, 1150)]);
+  const r = await fixedPoolLeaves({ chainId: 11155111, pool: POOL, getLogs: n.getLogs.bind(n), blockNumber: async () => 1200, base: 'http://c', fetchImpl: async () => { throw new Error('the cache was asked'); }, history: historyOf(5) });
+  eq(r.count, 6); eq(leafHex(r, 4), commit(4).slice(2)); eq(leafHex(r, 5), commit(5).slice(2));
+  eq(n.calls[0][0], 1100, 'the node was asked from where the history ends');
+});
+await test('a history that is not ready, or fails, leaves the published cache to give it, and then the chain', async () => {
+  const n = node([logOf(5, 1150)]);
+  const viaCache = await fixedPoolLeaves({ chainId: 11155111, pool: POOL, getLogs: n.getLogs.bind(n), blockNumber: async () => 1200, base: 'http://c', fetchImpl: cache({ lines: fiveLines() }), history: async () => null });
+  eq(viaCache.count, 6);
+  const all = [0, 1, 2, 3].map((i) => logOf(i, 1000 + i)), n2 = node(all);
+  const viaChain = await fixedPoolLeaves({ chainId: 11155111, pool: POOL, getLogs: n2.getLogs.bind(n2), blockNumber: async () => 1200, base: null, history: async () => { throw new Error('down'); } });
+  eq(viaChain.count, 4);
+});
+await test('a history with a hole is an error marked as not to be trusted (the flow then reads from the chain)', async () => {
+  const n = node([logOf(7, 1150)]);
+  let err = null;
+  try { await fixedPoolLeaves({ chainId: 11155111, pool: POOL, getLogs: n.getLogs.bind(n), blockNumber: async () => 1200, base: null, history: historyOf(5) }); } catch (e) { err = e; }
+  eq(/leaf 5 is missing/.test(err?.message || ''), true, 'the error'); eq(err.untrusted, true, 'marked');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

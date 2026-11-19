@@ -838,7 +838,7 @@ async function copy() {
 // connect again or a relay account (whose settles are sent or seen home from any tab) has it once the page has settled; a wallet connected
 // in another tab loads it here too.
 let opsLoad = null, opsReady = false;
-const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=285181ff').then((m) => { opsReady = true; return m; }));
+const loadOps = () => (opsLoad ||= import('/prove/ops.js?cb=598208b3').then((m) => { opsReady = true; return m; }));
 $('#wallet').title = 'Connect an Ethereum wallet to pay the network fee';
 $('#wallet').addEventListener('click', async (e) => {
   if (opsReady) return;                                            // loaded: ops.js has its own handler on the chip
@@ -862,7 +862,7 @@ let fwdLoaded = false;
 async function loadForwarders() {
   if (fwdLoaded) return;
   fwdLoaded = true;
-  const { ROUTE } = await import('/private-route.js?cb=1e610158');
+  const { ROUTE } = await import('/private-route.js?cb=b8835ba3');
   const box = $('#fwd-box');
   const cmd = $('#fwd-cmd');
   if (cmd) cmd.textContent = `FORWARD_URL=https://your.host node tools/community-runner.mjs forward\nnode tools/private-route-check.mjs --service ${ROUTE.keeper} --gateway ${ROUTE.gateway} --forwarder https://your.host`;

@@ -17,7 +17,7 @@
 // secrets come from signing the nonce again.
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32, parseNoteString } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, newSession, parseEther, formatEther } from '/fixed-pool-flow.js?cb=f1c44cfa';
+import { makeFlow, newSession, parseEther, formatEther } from '/fixed-pool-flow.js?cb=133fd677';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=414482bd';
 export { MAX_FEE_PERCENT };
@@ -271,7 +271,7 @@ function sessionFor(wallet, chainId, account) {
   if (!byKey.has(k)) byKey.set(k, newSession());
   return byKey.get(k);
 }
-const flowMaker = (env, chainId, provider) => () => makeFlow({ provider, account: env.account(), chainId, store: env.store, poll: 3000, timeout: 10 * 60 * 1000, session: sessionFor(env.walletProvider(), chainId, env.account()) });
+const flowMaker = (env, chainId, provider) => () => makeFlow({ provider, account: env.account(), chainId, history: env.history?.(chainId), store: env.store, poll: 3000, timeout: 10 * 60 * 1000, session: sessionFor(env.walletProvider(), chainId, env.account()) });
 
 const keyOf = (chainId, account) => `tacit-fixed-notes:${chainId}:${String(account).toLowerCase()}`;
 export function readNotes(store, chainId, account) {

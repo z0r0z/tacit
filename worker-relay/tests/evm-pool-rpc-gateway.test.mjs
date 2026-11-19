@@ -113,6 +113,32 @@ await check('many callers behind one forwarder do not share one allowance: 25 en
   assert.deepEqual([...new Set(statuses)], [200], `statuses: ${statuses.join(',')}`);
 });
 
+await check('a fixed pool\'s deposit history is served in pages through the route, read from the chain\'s logs, and only for a pool of the page', async () => {
+  const POOL = '0x12D66f87A04A9E220743712cE6d9bB1B5616B8Fc', TOPIC = '0x' + (await import('../../dapp/vendor/tacit-deps.min.js')).bytesToHex((await import('../../dapp/vendor/tacit-deps.min.js')).keccak_256(new TextEncoder().encode('Deposit(bytes32,uint32,uint256)')));
+  const h64 = (n) => n.toString(16).padStart(64, '0'), commit = (i) => '0x' + h64(BigInt(i + 1) * 7919n);
+  const g = makeRpcGateway({ secret, nodes: nodesOf('{"1":["https://eth.test"]}'), forwarders: ['198.51.100.7'], historySeed: null, historyOpts: { confirmations: 0 },
+    fetchImpl: async (url, init) => {
+      const b = JSON.parse(init.body);
+      if (b.method === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: b.id, result: '0x' + (9117100).toString(16) }));
+      if (b.method === 'eth_getLogs') { const f = b.params[0], a = Number(BigInt(f.fromBlock)), z = Number(BigInt(f.toBlock)); const logs = [0, 1, 2, 3].map((i) => ({ i, block: 9116980 + 10 * i })).filter((x) => x.block >= a && x.block <= z && f.address.toLowerCase() === POOL.toLowerCase()).map((x) => ({ address: POOL.toLowerCase(), topics: [TOPIC, commit(x.i)], data: '0x' + h64(BigInt(x.i)) + h64(1n), blockNumber: '0x' + x.block.toString(16), logIndex: '0x0' })); return new Response(JSON.stringify({ jsonrpc: '2.0', id: b.id, result: logs })); }
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: b.id, result: '0x1' }));
+    } });
+  const via = async (url, init) => { const bytes = Buffer.from(init.body); const req = Readable.from([bytes]); req.method = 'POST'; req.url = '/sealed'; req.headers = { 'content-length': String(bytes.length) }; req.socket = { remoteAddress: '198.51.100.7' };
+    return new Promise((resolve) => { const chunks = []; g.handler(req, { headersSent: false, setHeader() {}, writeHead() {}, write(d) { chunks.push(Buffer.from(d)); }, end(d) { if (d) chunks.push(Buffer.from(d)); resolve(new Response(Buffer.concat(chunks), { status: 200 })); } }); }); };
+  const f = await makeSealedFetch({ keeper: GW, chainId: 'r', gateway: Buffer.from(gatewayKeys(secret).pub).toString('hex'), forwarders: ['https://f1.test'], fetchImpl: via });
+  const ask = (q) => f(`${GW}/1/evm-pool/keeper/history?${q}`);
+  const r = await ask(`pool=${POOL}&from=1&n=2`);
+  assert.equal(r.status, 200);
+  const j = await r.json();
+  assert.equal(j.total, 4); assert.equal(j.from, 1); assert.equal(j.n, 2);
+  const leaves = Buffer.from(j.leaves, 'base64');
+  assert.equal(leaves.length, 64); assert.equal('0x' + leaves.subarray(0, 32).toString('hex'), commit(1)); assert.equal('0x' + leaves.subarray(32).toString('hex'), commit(2));
+  assert.equal((await ask(`pool=0x${'11'.repeat(20)}&from=0&n=2`)).status, 404, 'not a pool of the page');
+  assert.equal((await ask(`pool=${POOL}&from=-1&n=2`)).status, 400, 'a bad range');
+  assert.equal((await f(`${GW}/8453/evm-pool/keeper/history?pool=${POOL}&from=0&n=2`)).status, 404, 'a chain with no pools here');
+  assert.equal((await f(`${GW}/1/evm-pool/keeper/history`, { method: 'POST', body: '{}' })).status, 403, 'only a read of the history is carried');
+});
+
 await check('a request sealed to the relay\'s key, or any other, is not opened here, and the gateway key is public', async () => {
   const other = gatewayKeys(newGatewayKey());
   const f = await sealed(Buffer.from(other.pub).toString('hex'));
@@ -124,8 +150,8 @@ await check('a request sealed to the relay\'s key, or any other, is not opened h
 await check('the image\'s files start the gateway', async () => {
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const out = mkdtempSync(join(tmpdir(), 'rpc-gw-image-'));
-  const files = ['dapp/package.json', 'dapp/sealed-request.js', 'dapp/relay-gateway-doc.js', 'dapp/vendor/tacit-deps.min.js', 'worker-relay/package.json', 'worker-relay/src/evm-pool-rpc-gateway.js',
-    'worker-relay/src/lib/evm-pool-keeper-sealed.js', 'worker-relay/src/lib/evm-pool-keeper-rpc.js', 'worker-relay/src/lib/token-bucket.js', 'worker-relay/src/lib/safe-err.js'];
+  const files = ['dapp/package.json', 'dapp/sealed-request.js', 'dapp/relay-gateway-doc.js', 'dapp/fixed-pool-sync.js', 'dapp/vendor/tacit-deps.min.js', 'worker-relay/package.json', 'worker-relay/src/evm-pool-rpc-gateway.js',
+    'worker-relay/src/lib/evm-pool-keeper-sealed.js', 'worker-relay/src/lib/evm-pool-keeper-rpc.js', 'worker-relay/src/lib/fixed-pool-history.js', 'worker-relay/src/lib/token-bucket.js', 'worker-relay/src/lib/safe-err.js'];
   const docker = (await import('node:fs')).readFileSync(join(root, 'worker-relay/Dockerfile.evm-pool-rpc-gateway'), 'utf8');
   for (const f of files) { mkdirSync(dirname(join(out, f)), { recursive: true }); copyFileSync(join(root, f), join(out, f)); assert.ok(docker.includes(f.split('/').pop()), `the Dockerfile copies ${f}`); }
   const m = await import(pathToFileURL(join(out, 'worker-relay/src/evm-pool-rpc-gateway.js')).href);

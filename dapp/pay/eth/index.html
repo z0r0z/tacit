@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-J3xIG6iySORbV/S9LrUtgruBPQsc7q7EdrcglQXnSUY=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kXl10J/ajjpaWOEq5Lar7DEugl+xwIPGE/Vn/EwKDnA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://saga.0000000000.org https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -42,7 +42,7 @@
 <link rel="modulepreload" href="/json-rpc.js">
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/evm-pool-tokens.js?cb=16e0e196">
-<link rel="modulepreload" href="/private-route.js?cb=1e610158">
+<link rel="modulepreload" href="/private-route.js?cb=b8835ba3">
 <!-- preload:end -->
 <!-- The first reads go to these four: their connections open while the modules load. -->
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
@@ -800,7 +800,7 @@ import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView } from '/address-view.js?cb=58dd4914';
 import { qrSvg as qrMarkup } from '/qr.js?cb=7ca24213';
 import { keeperIdOf, KEEPERS as POOL_KEEPERS } from '/evm-pool-tokens.js?cb=16e0e196';
-import { keeperFetch, rpcFetch, walletRpcFetch, bundlerFetch, available as routeAvailable, enabled as routeOn, listRelays } from '/private-route.js?cb=1e610158';
+import { keeperFetch, rpcFetch, walletRpcFetch, bundlerFetch, poolHistory, available as routeAvailable, enabled as routeOn, listRelays } from '/private-route.js?cb=b8835ba3';
 globalThis.__tacitBundlerFetch ||= bundlerFetch();
 import { signBoxSync as signBox, boxSigOk as boxRecordOk } from '/box-record.js?cb=c66c8473';
 
@@ -2988,11 +2988,11 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=22be6f12');
+    const m = await import('/fixed-pool-pay.js?cb=afaff4f3');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
-      account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c),
+      account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c), history: poolHistory,
       connect: () => connectWallet(), ensureChain: () => ensureChain(c.chainId),
       act, toast, errText, say: (t) => say($('#status'), html`<span class="ok">${t}</span>`), onNotes,
     });
@@ -3005,11 +3005,11 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=22be6f12');
+    const m = await import('/fixed-pool-pay.js?cb=afaff4f3');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
-      account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c),
+      account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c), history: poolHistory,
       connect: () => connectWallet(), ensureChain: () => ensureChain(c.chainId),
       act, toast, errText, say: (t) => say($('#status'), html`<span class="ok">${t}</span>`),
       balance: () => cur().bal, parseAmount: (x) => parseUnits(x),
@@ -3028,11 +3028,11 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=22be6f12');
+    const m = await import('/fixed-pool-pay.js?cb=afaff4f3');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
-      account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c), names: () => getNames(),
+      account: () => S.wallet, walletProvider: () => S.provider, read: () => rpcApart(c), history: poolHistory, names: () => getNames(),
       connect: () => connectWallet(), ensureChain: () => ensureChain(c.chainId),
       onPlan: hooks.onPlan, depositRest: (a, step, cc, split) => depositRest(cc, a, step, split), parseAmount: (x) => parseUnits(x),
       tacitPool: POOL, splitCall: async (fwd, tx, split) => (await mods()).splitDepositCall(fwd, tx, split),
@@ -3049,7 +3049,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=22be6f12');
+    const m = await import('/fixed-pool-pay.js?cb=afaff4f3');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,

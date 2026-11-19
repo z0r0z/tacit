@@ -367,5 +367,50 @@ await test('a tree left in the prover for another pool cannot spend: a proof aga
   eq(w.log.sends.length, 0, 'nothing was sent'); cp.close();
 });
 
+console.log('where the deposits come from');
+// a flow whose page gives it a history; the pool's count is answered when asked
+const flowWith = (w, history, count = null) => {
+  if (count != null) { const base = w.provider.request; w.provider.request = async (r) => (r.method === 'eth_call' && r.params[0].data.startsWith('0x' + sel('nextIndex()')) ? '0x' + count.toString(16).padStart(64, '0') : base(r)); }
+  return makeFlow({ provider: w.provider, account: ACCOUNT, chainId: w.chainId, poll: 1, timeout: 2000, history });
+};
+await test('the history the page gives is handed to the read of the pool', async () => {
+  const n1 = mkNote(P0, 1), bytes = bytesFor([n1.sx.commitment], 'h1'), w = world({ knownRoots: new Set([rootOf(bytes)]) }), hist = async () => null; let seen;
+  const cp = countingProver();
+  await flowWith(w, hist).withdraw({ noteText: n1.text, recipient: RECIPIENT, prover: cp, send: false, leaves: async (o) => { seen = o; return { bytes: bytes.slice(), count: bytes.length / 32 }; } });
+  eq(seen.history, hist, 'the history'); cp.close();
+});
+await test('a tree that is not on a root the pool knows is read again from the chain alone (no history, no cache), and the second read is the one used', async () => {
+  const n1 = mkNote(P0, 1), good = bytesFor([n1.sx.commitment], 'h2'), bad = good.slice(); bad[3 * 32 + 1] ^= 1;   // a filler leaf changed (the note's own is intact): another root
+  const w = world({ knownRoots: new Set([rootOf(good)]) }), calls = [], steps = []; const cp = countingProver();
+  const out = await flowWith(w, async () => null).withdraw({ noteText: n1.text, recipient: RECIPIENT, prover: cp, send: false, onStep: (s) => steps.push(s), leaves: async (o) => { calls.push({ history: o.history, base: o.base }); return { bytes: (calls.length === 1 ? bad : good).slice(), count: good.length / 32 }; } });
+  eq(calls.length, 2, 'read twice'); eq(calls[1].history, null, 'no history the second time'); eq(calls[1].base, null, 'no cache the second time');
+  eq(out.sent, false); eq(steps.some((s) => s.fromChain), true, 'the page is told it reads from the chain'); cp.close();
+});
+await test('a read with fewer deposits than the pool counts that lacks the note is read again from the chain; one that has them all and lacks the note is the person\'s error, with no second read', async () => {
+  const n1 = mkNote(P0, 1), n2 = mkNote(P0, 2), full = bytesFor([n1.sx.commitment, n2.sx.commitment], 'h3'), short = full.slice(0, 32 * (full.length / 32 - 1));
+  const w = world({ knownRoots: new Set([rootOf(full), rootOf(short)]) }); let reads = 0; const cp = countingProver();
+  const lv = async () => { reads++; const b = reads === 1 ? short : full; return { bytes: b.slice(), count: b.length / 32 }; };
+  await flowWith(w, null, full.length / 32).withdraw({ noteText: n2.text, recipient: RECIPIENT, prover: cp, send: false, leaves: lv });
+  eq(reads, 2, 'the short read was made again');
+  const w2 = world({ knownRoots: new Set([rootOf(short)]) }); let reads2 = 0;
+  await rejects(flowWith(w2, null, short.length / 32).withdraw({ noteText: n2.text, recipient: RECIPIENT, prover: cp, send: false, leaves: async () => { reads2++; return { bytes: short.slice(), count: short.length / 32 }; } }), /not among the pool/);
+  eq(reads2, 1, 'a complete read that lacks the note is not repeated'); cp.close();
+});
+await test('a pool warmed ahead is not read again by the withdrawal; a warm still running is joined, not repeated; a warm does not start while a withdrawal runs', async () => {
+  const n1 = mkNote(P0, 1), bytes = bytesFor([n1.sx.commitment], 'h4'), w = world({ knownRoots: new Set([rootOf(bytes)]) }); let reads = 0; const cp = countingProver();
+  const lv = async () => { reads++; await new Promise((r) => setTimeout(r, 30)); return { bytes: bytes.slice(), count: bytes.length / 32 }; };
+  const cache = { pools: new Map(), loaded: null, inflight: new Map(), busy: false }, f = flowOf(w);
+  const warm = f.warmPool({ pool: P0, prover: cp, cache, leaves: lv });
+  const joined = f.warmPool({ pool: P0, prover: cp, cache, leaves: lv });                 // the same pool while it is being built
+  const out = await f.withdraw({ noteText: n1.text, recipient: RECIPIENT, prover: cp, send: false, leaves: lv, cache });   // joins it
+  await Promise.all([warm, joined]);
+  eq(reads, 1, 'one read for the warm, the second warm and the withdrawal'); eq(cp.log.loads, 1, 'one tree'); eq(out.sent, false);
+  await f.withdraw({ noteText: n1.text, recipient: RECIPIENT, prover: cp, send: false, leaves: lv, cache });
+  eq(reads, 1, 'a later withdrawal reads nothing');
+  cache.pools.clear(); cache.busy = true;
+  eq(await f.warmPool({ pool: P0, prover: cp, cache, leaves: lv }), null, 'nothing starts while a withdrawal runs'); eq(reads, 1);
+  cp.close();
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

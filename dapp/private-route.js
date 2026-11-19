@@ -126,6 +126,22 @@ export function bundlerFetch({ fetchImpl = (u, i) => fetch(u, i), now = () => Da
   };
 }
 
+// A fixed pool's deposit history through the route (dapp/fixed-pool-sync.js): the wallet-read gateway keeps it from the chain's logs and serves it in pages, so no outside host sees which
+// pool a person reads or when. A page not ready yet (503) gives null, which sends the read to the next source; a road that fails does the same and is left alone for a minute.
+export function poolHistory(chainId, { now = () => Date.now() } = {}) {
+  let skipUntil = 0;
+  return async ({ pool, from, n }) => {
+    if (!ROUTE.rpc?.gateway || !enabled() || now() < skipUntil) return null;
+    try {
+      const f = await walletSealed();
+      const r = await f(`${ROUTE.rpc.url}/${chainId}/evm-pool/keeper/history?pool=${pool}&from=${from}&n=${n}`);
+      if (r.status === 503) return null;
+      if (!r.ok) { skipUntil = now() + RPC_PAUSE_MS; return null; }
+      return await r.json();
+    } catch { skipUntil = now() + RPC_PAUSE_MS; return null; }
+  };
+}
+
 // What a page asks of the relay's API, through the route: the same paths server/sealed-api.mjs carries. A request for one of them goes to a forwarder, sealed to the API's gateway key, and
 // the API answers it as it would a direct one (an answer of its own, an error included, is the answer). Only a road that fails (no forwarder answers) sends it straight to the API, as
 // before: the relay is what a person's money moves through, and a page that stopped using it whenever a forwarder did would be of no use. A road that fails is left alone for a minute.
