@@ -1,7 +1,8 @@
 // A fixed pool's deposits, in leaf order, for building its tree.
 //
 // History comes first from the wallet-read gateway through the private route (`history`: pages of leaves it keeps from the chain's logs, so no outside host sees which pool is read),
-// then, if that does not answer, from a published chunk cache (gzip files of logs, each with a sha256 in a manifest; the file is checked against it), then from the chain alone.
+// then, if that does not answer, from the chain alone. A published chunk cache (gzip files of logs, each with a sha256 in a manifest; the file is checked against it) is read only where a `base`
+// is given: the gateway seeds its history from one once, when it starts, and the page does not read it (the host is none of ours, and would see which pool is read, and when).
 // The last stretch, from where the history ends to the chain's tip, comes from the wallet's own node. Nothing read here is trusted: the tree built from it has to land on a root the pool
 // knows, and the caller checks that before it proves anything (and reads again from the chain if it does not).
 
@@ -102,12 +103,12 @@ export async function readHistory({ history, pool, onProgress = () => {} }) {
 }
 
 // All the pool's commitments, 32 bytes each in leaf order, and how many. Throws if the leaf numbers are not 0..n-1.
-export async function fixedPoolLeaves({ chainId, pool, getLogs, blockNumber, base = CHUNK_CACHES[chainId], history = null, fetchImpl, onProgress }) {
+export async function fixedPoolLeaves({ chainId, pool, getLogs, blockNumber, base = null, history = null, fetchImpl, onProgress }) {
   const denomination = (Number(pool.denomination / 10n ** 15n) / 1000).toString();
   let deposits = [], upTo = pool.deployBlock;
   if (history) {
     try { ({ deposits, upTo } = await readHistory({ history, pool, onProgress })); }
-    catch { deposits = []; upTo = pool.deployBlock; }   // not ready, or not there: the published cache is next
+    catch { deposits = []; upTo = pool.deployBlock; }   // not ready, or not there: the chain gives it (or `base`, where one is given)
   }
   if (!deposits.length && base) {
     try {

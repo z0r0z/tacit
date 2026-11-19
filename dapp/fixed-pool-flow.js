@@ -9,7 +9,7 @@ import { keccak_256, bytesToHex } from './vendor/tacit-deps.min.js';
 import {
   FIXED_POOLS, noteTypedData, canonicalRS, deriveSecrets, depositCall, commitmentBytes32, noteString, parseNoteString,
 } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { fixedPoolLeaves } from '/fixed-pool-sync.js?cb=46506fd9';
+import { fixedPoolLeaves } from '/fixed-pool-sync.js?cb=611dcd33';
 import { PAYMASTERS, paymasterFor, bundlerSet, readGasFeeReference, readFallbackGasPrice, prepareSponsoredWithdrawal, sendSponsoredOperation } from '/fixed-pool-paymaster.js?cb=414482bd';
 
 const enc = new TextEncoder();

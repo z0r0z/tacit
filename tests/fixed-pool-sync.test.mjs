@@ -181,5 +181,11 @@ await test('a history with a hole is an error marked as not to be trusted (the f
   eq(/leaf 5 is missing/.test(err?.message || ''), true, 'the error'); eq(err.untrusted, true, 'marked');
 });
 
+await test('by default the read does not ask any published cache: the node alone gives what the history does not', async () => {
+  const n = node([0, 1, 2].map((i) => logOf(i, 1000 + i)));
+  const r = await fixedPoolLeaves({ chainId: 1, pool: POOL, getLogs: n.getLogs.bind(n), blockNumber: async () => 1200, fetchImpl: async () => { throw new Error('a cache was asked'); } });
+  eq(r.count, 3);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

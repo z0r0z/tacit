@@ -17,7 +17,7 @@
 // secrets come from signing the nonce again.
 
 import { planSplit, FIXED_POOLS, DEFAULT_MIN_DENOMINATION, DEFAULT_MAX_NOTES, commitmentBytes32, parseNoteString } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { makeFlow, newSession, parseEther, formatEther } from '/fixed-pool-flow.js?cb=d3b2946b';
+import { makeFlow, newSession, parseEther, formatEther } from '/fixed-pool-flow.js?cb=ac60156a';
 import { workerProver } from '/fixed-pool-prover.js?cb=307cfddc';
 import { PAYMASTERS, MAX_FEE_PERCENT } from '/fixed-pool-paymaster.js?cb=414482bd';
 export { MAX_FEE_PERCENT };

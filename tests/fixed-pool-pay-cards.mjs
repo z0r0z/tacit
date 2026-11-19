@@ -88,6 +88,16 @@ const env = {
   host: document.getElementById('host'), notesHost: document.getElementById('notes'), amountInput: document.getElementById('amt'),
   chain: { chainId: 1, full: 'Ethereum' }, store: { get: (k) => localStorage.getItem(k), set: (k, v) => localStorage.setItem(k, v) }, workerUrl: '/fixed-pool-worker.js?cb=00000000',
   account: () => account, walletProvider: () => (account ? wallet : null), read,
+  // the gateway's history, as the page gets it through the route: pages of the leaves the test put in window.__hist (null when none)
+  history: () => async ({ pool, from, n }) => {
+    const h = window.__hist;
+    if (!h || String(pool).toLowerCase() !== h.pool) return null;
+    window.__log.historyHits = (window.__log.historyHits || 0) + 1;
+    const part = h.leaves.slice(from, from + n), bytes = new Uint8Array(part.length * 32);
+    part.forEach((c, i) => { for (let k = 0; k < 32; k++) bytes[i * 32 + k] = parseInt(c.slice(k * 2, k * 2 + 2), 16); });
+    let bin = ''; for (const b of bytes) bin += String.fromCharCode(b);
+    return { total: h.leaves.length, upTo: h.upTo, from, n: part.length, leaves: btoa(bin) };
+  },
   connect: async () => { window.__log.accountRequests++; account = '${WALLET}'; handle.repaint(); window.__wd?.repaint(); window.__in?.repaint(); return account; },
   // the page's own button: it shows the plan the card hands over, connects first, and runs it in its busy wrapper, which finishes with the text
   onPlan: (p) => {
@@ -170,22 +180,13 @@ const test = async (label, fn) => {
 };
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: join(SHOTS, `paycards-${name}.png`), fullPage: true }); };
 
-// a chunk cache for the 1 ETH pool on Ethereum holding six deposits, `commitment` among them (`cacheHits` counts what the page asks of it)
-const cacheHits = { n: 0 };
-function chunkCache(page, commitments) {
-  const topic = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Deposit(bytes32,uint32,uint256)')));
+// the gateway's history of the 1 ETH pool on Ethereum holding six deposits, `commitments` among them, as the page's `history` serves it (the page's `window.__log.historyHits` counts what it asks)
+async function chunkCache(page, commitments) {
   const hex = (n) => n.toString(16).padStart(64, '0');
-  const leaves = [1, 2, 3].map((i) => '0x' + hex(BigInt(i) * 104729n)).concat([].concat(commitments), [5, 6].map((i) => '0x' + hex(BigInt(i) * 104729n)));
-  const raw = Buffer.from(leaves.map((c, i) => JSON.stringify({ contractAddress: ONE.address.toLowerCase(), eventTopic: topic, topics: [topic, c], data: '0x' + hex(BigInt(i)) + hex(1n), blockNumber: '0x' + (100 + i).toString(16), logIndex: '0x0' })).join('\n') + '\n');
-  const manifest = { availableProtocols: { 'tornado-cash-1-eth-1': { trackedAddresses: [ONE.address.toLowerCase()], trackedEventTopics: [topic], chunks: [], hotHead: { fromBlock: '0x0', toBlock: '0x384', file: 'hot.jsonl.gz', size: '0x1', digest: { type: 'sha256', data: '0x' + createHash('sha256').update(raw).digest('hex') } } } } };
-  return page.route('https://saga.0000000000.org/**', (route) => {
-    const url = route.request().url();
-    cacheHits.n++;
-    const headers = { 'access-control-allow-origin': '*' };
-    if (url.endsWith('/index.json')) return route.fulfill({ status: 200, headers, contentType: 'application/json', body: JSON.stringify(manifest) });
-    if (url.endsWith('/hot.jsonl.gz')) return route.fulfill({ status: 200, headers, contentType: 'application/gzip', body: gzipSync(raw) });
-    return route.fulfill({ status: 404, headers, body: 'no' });
-  });
+  const leaves = [1, 2, 3].map((i) => hex(BigInt(i) * 104729n)).concat([].concat(commitments).map((c) => c.replace(/^0x/, '')), [5, 6].map((i) => hex(BigInt(i) * 104729n)));
+  const args = [ONE.address.toLowerCase(), leaves, 900];
+  await page.addInitScript(([pool, ls, upTo]) => { window.__hist = { pool, leaves: ls, upTo }; }, args);   // kept over a reload, the latest one last
+  await page.evaluate(([pool, ls, upTo]) => { window.__hist = { pool, leaves: ls, upTo }; }, args);
 }
 const bundlerMode = { failAt: null };   // the operation sent when this many have been sent is refused
 function stubBundler(page, sent) {
@@ -278,15 +279,16 @@ await test('Move into Tacit: proved in a worker, the fee shown and pressed, one 
   const kept = JSON.parse(await page.evaluate(() => localStorage.getItem(`tacit-fixed-notes:1:${'0x2c7536e3605d9c16a7a3d7b1898e529396a65c23'}`)));
   await chunkCache(page, kept[0].c);
   // pointing at the note's action builds its pool's tree ahead: the cache is read now, before any press, and not again by the press
-  cacheHits.n = 0;
+  const hits = () => page.evaluate(() => window.__log.historyHits || 0);
+  await page.evaluate(() => { window.__log.historyHits = 0; });
   await page.hover('[data-move="0"]');
   let last = -1;
-  for (let i = 0; i < 60; i++) { await page.waitForTimeout(500); if (cacheHits.n > 0 && cacheHits.n === last) break; last = cacheHits.n; }
-  const warmed = cacheHits.n;
+  for (let i = 0; i < 60; i++) { await page.waitForTimeout(500); const h = await hits(); if (h > 0 && h === last) break; last = h; }
+  const warmed = await hits();
   assert.ok(warmed > 0, 'the pool was read ahead, on pointing at the note');
   await page.click('[data-move="0"]');
   await page.waitForSelector('#lg-ask:not([hidden]) #lg-send', { timeout: 240000 });
-  assert.equal(cacheHits.n, warmed, 'the press did not read the pool again');
+  assert.equal(await hits(), warmed, 'the press did not read the pool again');
   assert.equal(sent.length, 0, 'nothing is sent before the press');
   // a redraw of the card while the panel is open (a late read of the pool, the gas choice) must not take its buttons away
   await page.evaluate(() => { window.__repaint(); });

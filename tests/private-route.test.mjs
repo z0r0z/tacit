@@ -202,4 +202,9 @@ await check('the pay page gives each fixed-pool flow the route\'s pool history, 
   assert.match(readFileSync(new URL('../dapp/fixed-pool-pay.js', import.meta.url), 'utf8'), /history: env\.history\?\.\(chainId\)/);
 });
 
+await check('the pay page\'s policy does not allow the published history host, so the page cannot contact it', () => {
+  const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(/http-equiv="Content-Security-Policy"[^>]*>/s.exec(page)?.[0] || '', /saga\.0000000000\.org/);
+});
+
 console.log(`\n${n} checks passed`);
