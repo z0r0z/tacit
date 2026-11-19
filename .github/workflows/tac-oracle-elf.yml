@@ -1,0 +1,44 @@
+name: Vault oracle program build
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [tac-oracle-elf]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install sp1up
+        run: |
+          curl -L https://sp1.succinct.xyz | bash
+          echo "$HOME/.sp1/bin" >> $GITHUB_PATH
+
+      - name: Install cargo-prove toolchain
+        run: |
+          sp1up
+          cargo prove --version
+
+      - name: Build the program in Docker
+        working-directory: contracts/sp1/tac-oracle/program
+        run: cargo prove build --docker --tag v6.2.2 2>&1 | tail -20
+
+      - name: Hash and key
+        working-directory: contracts/sp1/tac-oracle/program
+        run: |
+          ELF=$(find elf target -type f -name tac_oracle -newer Cargo.toml 2>/dev/null | head -1)
+          echo "elf: $ELF"
+          cp "$ELF" "$RUNNER_TEMP/tac_oracle"
+          sha256sum "$RUNNER_TEMP/tac_oracle"
+          cargo prove vkey --elf "$RUNNER_TEMP/tac_oracle"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tac_oracle
+          path: ${{ runner.temp }}/tac_oracle
+          retention-days: 30
