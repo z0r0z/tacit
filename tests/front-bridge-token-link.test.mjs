@@ -81,5 +81,15 @@ test('a token moved to the Bitcoin address stops saying it is at Taproot: a read
   ok(/const bx = hxBtcX\(k\), v = bx \? xtTaprootAmt\(bx\) : 0n;/.test(page), 'the Send picker line does not use it');
 });
 
+test('a moved note is counted once: the bridged read already lists the notes at the key\'s own address (every token but TAC), so the bridge tab and the portfolio do not add the address read', () => {
+  ok(/xh && xa !== XA\.tac \? xh\.v : \(a\?\.balance \?\? 0n\) \+ \(xh\?\.v \?\? 0n\)/.test(page), 'the bridge tab adds both reads');
+  ok(/q\.runtime && q\.id === '0x' \+ a\.id && xbHeld\(k, q\)\?\.n\)\) continue;/.test(page), 'the portfolio lists a bridged token twice');
+});
+
+test('the Send list reads the crossed tokens when Send is drawn, and never draws over an open picker', () => {
+  ok(/if \(pub\) xtCrossedRead\(\);/.test(page), 'not started with the Send tab');
+  ok(/if \(card\?\.__pkClose\) card\.__pkBals\?\.\(\); else if \(xbs\(\) !== was\) paintHx\(\);/.test(page), 'the read repaints the card under an open picker');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
