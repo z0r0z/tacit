@@ -73,6 +73,23 @@ export function isRateLimited(e) {
   return false;
 }
 
+// Which routes a settle may be offered to. A route that simulates the transaction and drops it when it would revert (Flashbots Protect, MEV Blocker) cannot waste the relay's gas;
+// a builder reached directly includes a reverting transaction like any other and takes its fee. The open board is public (any account may send a proof posted there and is paid its
+// fee), so another sender's copy of the same settle often lands first, and the revert is then ours to pay: 2026-11-19 a transfer settle landed one block after another sender's copy,
+// reverted, and cost 0.00004 ETH. So the protected routes are asked first, and the others only when no protected route objected, nothing ahead of the settle in the pending block
+// reverts it, and no other sender is expected to race it. A transaction that is not safe for them goes on through the protected routes alone.
+export function splitRoutes(routes, isProtected) {
+  return { prot: routes.filter((r) => isProtected(r.url)), loose: routes.filter((r) => !isProtected(r.url)) };
+}
+export function looseAllowed({ competitive = false, forceProtected = false, protectedAnswers = [], pendingReverts = false, hasLoose = true } = {}) {
+  if (!hasLoose) return { ok: false, why: 'none' };
+  if (competitive) return { ok: false, why: 'it is on the open board, where another sender may land it first' };
+  if (forceProtected) return { ok: false, why: 'it reverts in the pending block' };
+  if (protectedAnswers.some((o) => o === 'pending' || o === 'revert' || o === 'taken')) return { ok: false, why: 'a revert-protected route says it would revert' };
+  if (pendingReverts) return { ok: false, why: 'it reverts in the pending block' };
+  return { ok: true, why: null };
+}
+
 // What an endpoint's refusal says, for the log: viem's one-line message and the node's own detail (the part the one-line message leaves
 // out), with the signed transaction and any other long hex cut short.
 export function errDetail(e, max = 300) {

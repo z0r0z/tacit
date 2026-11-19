@@ -31,7 +31,7 @@ import { abi as GAS_ABI, executeCall } from './lib/gas-calls.js';
 import { notExecuted } from './lib/stdin-prover.js';
 import { assertMemosMatchProof } from './lib/memo-root.js';
 import { consumedInput, consumedAck, unlandedDeposits, spentInputsOf, noteNullifier } from './lib/spent-precheck.js';
-import { findCarrier, isRevert, isPendingRevert, isRateLimited, errDetail, holdPendingRevert } from './lib/landed-elsewhere.js';
+import { findCarrier, isRevert, isPendingRevert, isRateLimited, errDetail, holdPendingRevert, splitRoutes, looseAllowed } from './lib/landed-elsewhere.js';
 import { cbtcMintBlocker } from './lib/cbtc-mint-precheck.js';
 import { cdpBlocker } from './lib/cdp-precheck.js';
 import { bridgeMintBlocker } from './lib/bridge-mint-precheck.js';
@@ -107,6 +107,12 @@ const PUBLIC_FROM_ROUND = Math.max(1, parseInt(process.env.SETTLE_PUBLIC_FROM_RO
 // landed 1, 51 and 89 seconds later. 0 skips it.
 const LATE_WAIT_MS = Math.max(0, parseInt(process.env.SETTLE_LATE_WAIT_MS || '120000', 10));
 const INCLUSION_POLL_MS = 4_000;
+// The routes that simulate a transaction and drop it when it would revert, so it cannot cost the relay gas (lib/landed-elsewhere.js splitRoutes): asked first, and the only
+// ones used for a settle that is on the open board. The builders reached directly are not on this list.
+const PROTECTED_HOSTS = new Set(String(process.env.SETTLE_PROTECTED_HOSTS || 'rpc.flashbots.net,rpc.mevblocker.io').split(',').map((s) => s.trim()).filter(Boolean));
+const isProtected = (url) => { try { return PROTECTED_HOSTS.has(new URL(url).hostname); } catch { return false; } };
+// How long a settle that would revert in the pending block (another sender's copy ahead of it) is held back, not sent, to see that copy land.
+const PRESEND_HOLD_MS = Math.max(0, parseInt(process.env.SETTLE_PRESEND_HOLD_MS || '30000', 10));
 // How long a settle that an endpoint refuses because it reverts in the PENDING block is offered again, every PENDING_POLL_MS, before the
 // rounds below take over (lib/landed-elsewhere.js holdPendingRevert). 0 turns it off.
 const PENDING_HOLD_MS = Math.max(0, parseInt(process.env.SETTLE_PENDING_HOLD_MS || '90000', 10));
@@ -188,7 +194,7 @@ async function liveGasGwei() {
 // handled work. Anything that isn't batchable falls through to the single-job path untouched.
 // Build, price and submit a settle. Shared by the single and batched paths so both get identical fee
 // pricing and the same endpoint fall-through. Returns the tx hash; throws if every endpoint refused.
-async function submitSettle(proof, memos, label) {
+async function submitSettle(proof, memos, label, { competitive = false } = {}) {
   // The memos shipped with the settle must be the ones the proof commits to; the pool rejects any other set, so
   // a divergence is caught here before a settle is paid for.
   assertMemosMatchProof(proof.publicValues, memos);
@@ -196,7 +202,7 @@ async function submitSettle(proof, memos, label) {
   // values is this job's result even when another sender landed it first.
   const fromBlock = (await publicClient.getBlockNumber()) - LANDED_MARGIN_BLOCKS;
   const landed = () => findCarrier({ client: publicClient, pool: POOL, needles: [proof.publicValues], fromBlock });
-  return submitCall({ address: POOL, abi: POOL_ABI, functionName: 'settle', args: [proof.publicValues, proof.proof, memos] }, label, { landed });
+  return submitCall({ address: POOL, abi: POOL_ABI, functionName: 'settle', args: [proof.publicValues, proof.proof, memos] }, label, { landed, competitive });
 }
 
 // Wait for a broadcast to land — or for it to become impossible to land.
@@ -240,7 +246,7 @@ export async function awaitInclusion({
 // already fixed and simulated at. `landed` (optional) names a transaction by another sender that already did this
 // call's work; it is asked whenever the call turns out to have nothing left to do, and its answer is returned as
 // the result.
-async function submitCall(base, label, { gasLimit = null, landed = null } = {}) {
+async function submitCall(base, label, { gasLimit = null, landed = null, competitive = false } = {}) {
   // Price + estimate on the PUBLIC client, never the private endpoint. Left to itself viem derives the fee
   // cap (and nonce/gas) through the settle transport, and a cap taken from a lagging view of the base fee
   // gets the tx rejected outright as unincludable. Base fee can also climb between pricing and inclusion, so
@@ -303,6 +309,12 @@ async function submitCall(base, label, { gasLimit = null, landed = null } = {}) 
       return e;
     }
   };
+  // The same simulation against the PENDING block: true when something ahead of this settle there (usually another sender's copy of it) makes it revert. A node that cannot
+  // answer for the pending block says nothing, which is no.
+  const wouldRevertPending = async () => {
+    try { await publicClient.call({ account: settleWallet.account, to: base.address, data, blockTag: 'pending', ...(base.value ? { value: base.value } : {}) }); return false; }
+    catch (e) { return isRevert(e); }
+  };
   // One of our own broadcasts that landed: its hash, or a thrown revert. Null while none has a receipt.
   const ownReceipt = async () => {
     for (const h of seen) {
@@ -356,6 +368,16 @@ async function submitCall(base, label, { gasLimit = null, landed = null } = {}) 
     }
     const dead = await wouldRevert();
     if (dead) return settledOrDead(dead);
+    // Not sent while something ahead of it in the pending block makes it revert: wait to see that copy land (the op is then done, landed by another sender, at no cost to us),
+    // and if it never does, go on through the revert-protected routes alone.
+    let forceProtected = false;
+    if (PRESEND_HOLD_MS > 0 && await wouldRevertPending()) {
+      log(`${label} would revert in the pending block (something ahead of it, usually another sender's copy): not sent yet, watching for it to land for up to ${PRESEND_HOLD_MS / 1000}s`);
+      const w = await holdPendingRevert({ stuck: [1], holdMs: PRESEND_HOLD_MS, pollMs: 3_000, dead: wouldRevert, resend: async () => ((await wouldRevertPending()) ? [1] : []) });
+      if (w.state === 'dead') return settledOrDead(w.value);
+      forceProtected = w.state !== 'accepted';
+      log(forceProtected ? `${label} still reverts in the pending block after ${PRESEND_HOLD_MS / 1000}s: sending through the revert-protected routes only` : `${label} the pending block lets it through now: sending`);
+    }
     const tx = { ...call, nonce, maxFeePerGas: capNow(), maxPriorityFeePerGas: tip };
     // Marked only now: a call refused by the simulation above was never put on the wire, so it must not hold the
     // prover top-up behind a nonce that nothing will ever consume.
@@ -384,8 +406,16 @@ async function submitCall(base, label, { gasLimit = null, landed = null } = {}) 
       }
     };
     const order = endpointsFor(round);
-    const priv = order.filter((x) => !/PUBLIC/.test(x.url)), pub = order.filter((x) => /PUBLIC/.test(x.url));
-    const outs = await Promise.all(priv.map(sendVia));
+    const allPriv = order.filter((x) => !/PUBLIC/.test(x.url)), pub = order.filter((x) => /PUBLIC/.test(x.url));
+    // The revert-protected routes first; the others (builders reached directly, which include a reverting transaction and take its fee) only if none of those objected, nothing
+    // ahead of it in the pending block reverts it, and it is not on the open board.
+    const { prot, loose } = splitRoutes(allPriv, isProtected);
+    const outsP = await Promise.all(prot.map(sendVia));
+    const gate = looseAllowed({ competitive, forceProtected, protectedAnswers: outsP, hasLoose: loose.length > 0, pendingReverts: loose.length > 0 && !competitive && !forceProtected && await wouldRevertPending() });
+    if (loose.length && !gate.ok) log(`${label} not offered to the ${loose.length} route(s) that include a reverting transaction: ${gate.why}`);
+    const priv = [...prot, ...(gate.ok ? loose : [])];
+    const outsL = gate.ok ? await Promise.all(loose.map(sendVia)) : [];
+    const outs = [...outsP, ...outsL];
     if (outs.includes('taken')) taken = true;
     // An endpoint that rate-limited us is asked once more after a short pause, but only while nothing has taken the transaction: with another endpoint carrying it, the
     // next round does the asking and a burst of requests does not help.
@@ -410,7 +440,7 @@ async function submitCall(base, label, { gasLimit = null, landed = null } = {}) 
     }
     // An endpoint's revert is only a verdict once the public node agrees; one lagging a block says nothing.
     if (!txHash && outs.includes('revert')) { const dead = await wouldRevert(); if (dead) return settledOrDead(dead); }
-    if (!taken && pub.length && (!txHash || round + 1 >= PUBLIC_FROM_ROUND)) {
+    if (!taken && pub.length && !competitive && !forceProtected && (!txHash || round + 1 >= PUBLIC_FROM_ROUND)) {
       for (const ep of pub) {
         const o = await sendVia(ep);
         if (o === 'ok') break;
@@ -1020,7 +1050,7 @@ async function openCycle() {
   await beat(`sending ${jobId} ${type}`);
   let txHash;
   try {
-    txHash = await submitSettle({ publicValues: job.publicValues, proof: job.proof }, job.memos || [], `job ${jobId}`);
+    txHash = await submitSettle({ publicValues: job.publicValues, proof: job.proof }, job.memos || [], `job ${jobId}`, { competitive: true });   // on the open board: another sender may land it first
   } catch (e) {
     log(`job ${jobId} open settle failed: ${e.message}`);
     // A proof pinned to a root that moved is proved again from the witness the API holds; one that cannot be sent at all

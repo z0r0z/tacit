@@ -57,7 +57,7 @@ test('a rate limit is its own answer, retried once after a pause and only while 
 
 test('rounds are a few blocks (down to 12 s), and the public mempool joins the last round even when a private route took it', () => {
   assert.match(relay, /Math\.max\(12_000, parseInt\(process\.env\.SETTLE_RECEIPT_WAIT_MS \|\| '90000', 10\)\)/);
-  assert.match(relay, /if \(!taken && pub\.length && \(!txHash \|\| round \+ 1 >= PUBLIC_FROM_ROUND\)\) \{/);
+  assert.match(relay, /if \(!taken && pub\.length && !competitive && !forceProtected && \(!txHash \|\| round \+ 1 >= PUBLIC_FROM_ROUND\)\) \{/);
   assert.match(relay, /const PUBLIC_FROM_ROUND = Math\.max\(1, parseInt\(process\.env\.SETTLE_PUBLIC_FROM_ROUND \|\| String\(Math\.max\(1, parseInt\(process\.env\.SETTLE_SUBMIT_ROUNDS \|\| '3', 10\)\)\), 10\)\);/);
   assert.match(config, /settleAllowPublic: opt\('SETTLE_ALLOW_PUBLIC', '0'\) === '1'/, 'the public mempool stays off unless asked for');
 });
@@ -68,6 +68,35 @@ test('only a real transaction hash is kept from a route\'s answer (a builder may
   const real = (h) => typeof h === 'string' && /^0x[0-9a-fA-F]{64}$/.test(h);
   for (const bad of [null, undefined, {}, [], '0x', '0x1234', 'null', 42]) assert.equal(real(bad), false, String(bad));
   assert.equal(real('0x' + 'ab'.repeat(32)), true);
+});
+
+test('a settle is simulated against the pending block before it is sent, and held back while something ahead of it reverts it', () => {
+  assert.match(relay, /const wouldRevertPending = async \(\) => \{\s*try \{ await publicClient\.call\(\{ account: settleWallet\.account, to: base\.address, data, blockTag: 'pending'/);
+  assert.match(relay, /if \(PRESEND_HOLD_MS > 0 && await wouldRevertPending\(\)\) \{/);
+  assert.match(relay, /if \(w\.state === 'dead'\) return settledOrDead\(w\.value\);/, 'another sender\'s copy landing finishes the op');
+  assert.match(relay, /forceProtected = w\.state !== 'accepted';/);
+  // the simulation comes before the transaction is built and before any route sees it
+  assert.ok(relay.indexOf('if (PRESEND_HOLD_MS > 0 && await wouldRevertPending())') < relay.indexOf('const tx = { ...call, nonce, maxFeePerGas: capNow()'), 'the pending simulation must precede the send');
+});
+
+test('the revert-protected routes are asked first, and the unprotected ones only after they have answered', () => {
+  assert.match(relay, /const PROTECTED_HOSTS = new Set\(String\(process\.env\.SETTLE_PROTECTED_HOSTS \|\| 'rpc\.flashbots\.net,rpc\.mevblocker\.io'\)/);
+  const a = relay.indexOf('const outsP = await Promise.all(prot.map(sendVia));'), b = relay.indexOf('const outsL = gate.ok ? await Promise.all(loose.map(sendVia)) : [];');
+  assert.ok(a > 0 && b > a, 'the protected routes must be sent before the others');
+  assert.ok(relay.indexOf('const gate = looseAllowed(') > a && relay.indexOf('const gate = looseAllowed(') < b, 'the decision is made between the two');
+  assert.match(relay, /const priv = \[\.\.\.prot, \.\.\.\(gate\.ok \? loose : \[\]\)\];/, 'the later steps look only at the routes actually used');
+});
+
+test('a settle on the open board is marked competitive, and nothing else is', () => {
+  const calls = relay.split('\n').filter((l) => /submitSettle\(/.test(l) && !/^async function|^\s*\/\//.test(l.trim()));
+  const open = calls.filter((l) => /competitive: true/.test(l));
+  assert.equal(open.length, 1, `only the open-board send is competitive: ${open.length}`);
+  assert.match(open[0], /job\.publicValues/, 'and it is the one that sends the open board\'s proof');
+  assert.match(relay, /async function submitSettle\(proof, memos, label, \{ competitive = false \} = \{\}\)/);
+});
+
+test('the public mempool is off for a settle that is not safe for the unprotected routes', () => {
+  assert.match(relay, /if \(!taken && pub\.length && !competitive && !forceProtected && \(!txHash \|\| round \+ 1 >= PUBLIC_FROM_ROUND\)\) \{/);
 });
 
 console.log(`${n} passed`);

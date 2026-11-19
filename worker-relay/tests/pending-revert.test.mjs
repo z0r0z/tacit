@@ -104,3 +104,27 @@ await test('MEV Blocker\'s "Request rate limited" (under the same generic messag
   for (const other of [new Error('HTTP request failed.'), Object.assign(new Error('nonce too low'), { details: 'nonce too low' }), null, undefined]) assert.equal(isRateLimited(other), false);
 });
 console.log(`${n} passed (with rate limits)`);
+
+// Which routes a settle may be offered to (splitRoutes, looseAllowed): the revert-protected ones first, the others only when it is safe.
+const { splitRoutes, looseAllowed } = await import('../src/lib/landed-elsewhere.js');
+const R = (h) => ({ url: `https://${h}/`, wallet: {} });
+const prot = (u) => /flashbots|mevblocker/.test(u);
+await test('routes split into the revert-protected and the ones that include a reverting transaction', () => {
+  const s = splitRoutes([R('rpc.flashbots.net'), R('rpc.mevblocker.io'), R('rpc.beaverbuild.org'), R('rpc.titanbuilder.xyz')], prot);
+  assert.deepEqual(s.prot.map((r) => new URL(r.url).host), ['rpc.flashbots.net', 'rpc.mevblocker.io']);
+  assert.deepEqual(s.loose.map((r) => new URL(r.url).host), ['rpc.beaverbuild.org', 'rpc.titanbuilder.xyz']);
+  assert.deepEqual(splitRoutes([], prot), { prot: [], loose: [] });
+});
+await test('the unprotected routes are used only when the settle is safe for them', () => {
+  assert.equal(looseAllowed({ protectedAnswers: ['ok', 'ok'] }).ok, true, 'a clean settle goes to all of them');
+  assert.equal(looseAllowed({ protectedAnswers: ['ok', 'limited'] }).ok, true, 'a rate limit is no verdict on the transaction');
+  assert.equal(looseAllowed({ protectedAnswers: ['ok', 'err'] }).ok, true, 'a route that failed is no verdict on the transaction');
+  for (const bad of ['pending', 'revert', 'taken']) assert.equal(looseAllowed({ protectedAnswers: ['ok', bad] }).ok, false, `a protected route said ${bad}`);
+  const c = looseAllowed({ competitive: true, protectedAnswers: ['ok'] });
+  assert.equal(c.ok, false); assert.match(c.why, /open board/, 'a settle on the open board races other senders: never the unprotected routes');
+  assert.equal(looseAllowed({ forceProtected: true }).ok, false, 'it still reverts in the pending block after the hold');
+  assert.equal(looseAllowed({ pendingReverts: true }).ok, false, 'something ahead of it in the pending block');
+  assert.equal(looseAllowed({ hasLoose: false }).ok, false, 'nothing to offer it to');
+  assert.equal(looseAllowed().ok, true, 'by default (nothing against it) the unprotected routes are used');
+});
+console.log(`${n} passed (with route safety)`);
