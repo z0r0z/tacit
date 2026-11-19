@@ -5,6 +5,8 @@
 // Every request to a keeper goes through a forwarder, whoever makes it, and none is sent directly: a forwarder that does not answer is tried
 // against the next one, and when none answers the request fails rather than show the address it hides.
 
+import { isOnion, onionHttp, onTor } from './evm-pool-relays.js';
+
 export const ROUTE = {
   keeper: 'https://tacit-evm-pool-keepers.onrender.com',   // the service whose pools (/<id>/evm-pool/keeper) the route carries
   id: 'k',                                                  // what the forwarders call that service
@@ -35,6 +37,9 @@ const sealed = () => (made ||= Promise.all([
 // fetch for a keeper's URLs. Off, it is fetch. On, a request to the route's service goes through a forwarder, and a request to any other
 // keeper is refused, not sent.
 export function keeperFetch(url, init) {
+  // A relay at an onion address is reached over Tor itself, as plain http (Tor encrypts it): no forwarder can carry it, and none is needed, for the relay sees
+  // only Tor. A page that is not on Tor does not ask.
+  if (isOnion(url)) return onTor() ? fetch(onionHttp(url), init) : Promise.reject(new Error('This relay is on Tor, and this page is not.'));
   if (!enabled()) return fetch(url, init);
   const u = String(url);
   if (u.startsWith(`${ROUTE.keeper}/`)) return sealed().then((f) => f(u, init));
@@ -57,7 +62,7 @@ export function listRelays(chainId, list) {
   if (!enabled()) return;
   for (const k of list || []) {
     const url = String(k?.url ?? '').replace(/\/+$/, '');
-    if (!/^https:\/\/[\w.-]+(?:\/[\w./-]*)?\/evm-pool\/keeper$/.test(url) || !/^0x[0-9a-fA-F]{40}$/.test(String(k?.relayer))) continue;
+    if (isOnion(url) || !/^https:\/\/[\w.-]+(?:\/[\w./-]*)?\/evm-pool\/keeper$/.test(url) || !/^0x[0-9a-fA-F]{40}$/.test(String(k?.relayer))) continue;
     if (!RELAYS.some((r) => r.url === url && r.chainId === Number(chainId))) RELAYS.push({ chainId: Number(chainId), url, relayer: k.relayer });
   }
   if (RELAYS.length) community().then((c) => c.warm()).catch(() => {});

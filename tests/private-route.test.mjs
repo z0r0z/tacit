@@ -17,7 +17,8 @@ const sealedUrl = pathToFileURL(new URL('../dapp/sealed-request.js', import.meta
 const source = readFileSync(new URL('../dapp/private-route.js', import.meta.url), 'utf8');
 assert.match(source, /import\('\/sealed-request\.js\?cb=[A-Za-z0-9_-]+'\)/, 'it loads the sealed fetch on demand, by the page\'s own URL');
 const dir = mkdtempSync(join(tmpdir(), 'private-route-'));
-writeFileSync(join(dir, 'private-route.mjs'), source.replace(/\/sealed-request\.js\?cb=[A-Za-z0-9_-]+/, sealedUrl));
+const relaysUrl = pathToFileURL(new URL('../dapp/evm-pool-relays.js', import.meta.url).pathname).href;
+writeFileSync(join(dir, 'private-route.mjs'), source.replace(/\/sealed-request\.js\?cb=[A-Za-z0-9_-]+/, sealedUrl).replace("'./evm-pool-relays.js'", `'${relaysUrl}'`));
 const route = await import(pathToFileURL(join(dir, 'private-route.mjs')).href);
 const { ROUTE, available, enabled, keeperFetch } = route;
 assert.equal(route.turn, undefined, 'there is no setting that turns the route off');
