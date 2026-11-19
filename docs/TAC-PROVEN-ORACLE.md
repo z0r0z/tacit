@@ -57,7 +57,7 @@ block is out, so a prover that posts within `GRACE` blocks keeps borrowing open 
 `GRACE` to `GRACE + 50` blocks. With a proof about three minutes after an interval ends, `GRACE = 30` (six minutes)
 leaves room for a slow node or a busy block.
 
-Recording a proof for every interval costs about 0.25M gas each; between proofs, borrowing rests on borrowers
+Recording a proof for every interval costs about 0.3M gas each; between proofs, borrowing rests on borrowers
 recording the pair.
 
 Going back: `queueOracle(0x000000cE…1271)` and `executeOracle()` three days later. Without a covering proof the proven
