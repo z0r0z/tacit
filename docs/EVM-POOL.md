@@ -842,6 +842,26 @@ in the Nostr road.
 6. To take it away from everyone, empty `ROUTE.forwarders` and push. A page without a forwarder does not use the route and sends its requests
    directly; clearing the key from the service makes a page that still names it fail with an error until the page is updated.
 
+### A relay at a Tor onion address
+
+A relay can also be reached as a Tor hidden service, so the person's address never reaches it and the relay's own location stays hidden.
+
+- **Listing.** Register `https://<id>.onion/evm-pool/keeper` (`<id>` is the 56-character v3 onion name, no `.onion` twice). The registry takes it as it is: it checks only the `https://` prefix, the characters and the `/evm-pool/keeper` ending.
+- **A page on Tor** (served from a `.onion` host, or `localStorage['tacit-tor'] = '1'`) lists these relays like any other, pinned to the relayer address its quote must name, and asks them directly as `http://` (Tor carries and encrypts it). The private route's forwarders are not used: they cannot reach an onion address, and the relay sees only Tor.
+- **A page not on Tor** leaves them out of its list, and a request to one is refused before anything is sent.
+- **Running one.** Run the keeper where you run it, not on a host that logs requests, and put `tor` beside it:
+
+  ```
+  # /etc/tor/torrc
+  HiddenServiceDir /var/lib/tor/tacit-relay/
+  HiddenServiceVersion 3
+  HiddenServicePort 80 127.0.0.1:10000      # the keeper's PORT
+  ```
+
+  After a restart, the name is in `/var/lib/tor/tacit-relay/hostname`. The keeper already answers cross-origin requests (`Access-Control-Allow-Origin: *`, GET and POST). Check from Tor Browser: `fetch('http://<id>.onion/evm-pool/keeper/info')` on any page.
+- **The page's own address.** Whether a normal `https://` page may call an `http://` onion address depends on the browser (Tor Browser may allow it; others block it as mixed content), so a relay that is to be used by people on other browsers should be listed alongside a clearnet relay, or the dapp served from an onion mirror too.
+- **What it hides.** The person's address from the relay, and the relay's address from the person. Not the chain nodes a page reads through, and not the amounts and timing on chain.
+
 ## Keys and recovery
 
 The Tacit identity key is a hash of an Ethereum wallet's signature over one fixed message (`dapp/identity-message.js`),
