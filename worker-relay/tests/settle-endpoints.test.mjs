@@ -62,4 +62,12 @@ test('rounds are a few blocks (down to 12 s), and the public mempool joins the l
   assert.match(config, /settleAllowPublic: opt\('SETTLE_ALLOW_PUBLIC', '0'\) === '1'/, 'the public mempool stays off unless asked for');
 });
 
+test('only a real transaction hash is kept from a route\'s answer (a builder may answer null or an object)', () => {
+  assert.match(relay, /const real = typeof h === 'string' && \/\^0x\[0-9a-fA-F\]\{64\}\$\/\.test\(h\);/);
+  assert.match(relay, /if \(real\) \{ if \(!seen\.includes\(h\)\) seen\.push\(h\); txHash \|\|= h; \}/);
+  const real = (h) => typeof h === 'string' && /^0x[0-9a-fA-F]{64}$/.test(h);
+  for (const bad of [null, undefined, {}, [], '0x', '0x1234', 'null', 42]) assert.equal(real(bad), false, String(bad));
+  assert.equal(real('0x' + 'ab'.repeat(32)), true);
+});
+
 console.log(`${n} passed`);

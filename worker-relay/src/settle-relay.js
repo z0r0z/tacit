@@ -365,9 +365,11 @@ async function submitCall(base, label, { gasLimit = null, landed = null } = {}) 
     const sendVia = async ({ url, wallet }) => {
       try {
         const h = await wallet.writeContract(tx);
-        if (!seen.includes(h)) seen.push(h);
-        txHash ||= h;
-        log(`${label} submitted via ${url} (round ${round + 1}, tip ${tip} wei) ${h}`);
+        // A builder's RPC may answer an accepted transaction with something that is not its hash (Titan: null, Lightspeed: an object, seen 2026-11-19). It took it, and
+        // the hash is the same one the other routes return: only a real one is kept to look for the receipt, and only a real one is ever reported.
+        const real = typeof h === 'string' && /^0x[0-9a-fA-F]{64}$/.test(h);
+        if (real) { if (!seen.includes(h)) seen.push(h); txHash ||= h; }
+        log(`${label} submitted via ${url} (round ${round + 1}, tip ${tip} wei) ${real ? h : '(accepted; it did not answer with a transaction hash)'}`);
         if (/PUBLIC/.test(url)) log(`${label} WARNING: settling over the PUBLIC mempool — the bound fee is exposed to a searcher`);
         return 'ok';
       } catch (e) {
