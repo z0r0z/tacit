@@ -1,0 +1,5 @@
+{
+  "_comment": "The committed vault-oracle program and the verification key a TacProvenOracle is deployed with (PROGRAM_VKEY). The ELF is built in SP1's Docker image by CI (.github/workflows/tac-oracle-elf.yml) and by build-program.sh; a program change rebuilds both in the same commit, and an oracle deployed with an older key keeps accepting only the older program's proofs.",
+  "elf_sha256": "3aa7a108aa257b2717c849afded2804f7ca36bc32615e284d8e7d26be1e1daa4",
+  "program_vkey": "0x00a80a91f18c8fe571603e39957eb27194c2bfac027b1c894d399f513204e0fb"
+}
