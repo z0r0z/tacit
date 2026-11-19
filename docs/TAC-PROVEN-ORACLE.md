@@ -16,7 +16,7 @@ TacVaultRouter stay as they are: the oracle keeps the venue oracles' `record` se
 
 | | pair oracle | proven oracle |
 |---|---|---|
-| prices for the whole 8-hour window after a gap | about 91M gas, 96 records, about 8 transactions | about 0.25M gas, one transaction |
+| prices for the whole 8-hour window after a gap | about 91M gas, 96 records, about 8 transactions | about 0.3M gas, one transaction (0.35M for the first record) |
 | borrow / withdraw / liquidate / bid | 630k / 443k / 955k / 2.46M | 132k / 104k / 87k / 140k |
 
 ## Parts
@@ -32,7 +32,9 @@ TacVaultRouter stay as they are: the oracle keeps the venue oracles' `record` se
 
 ## Steps
 
-1. Build the program: `contracts/sp1/tac-oracle/build-program.sh`. Commit `elf/tac_oracle` and `elf-vkey-pin.json`.
+1. The program: `elf/tac_oracle` and `elf-vkey-pin.json` are committed. CI (`tac-oracle-elf.yml`) rebuilds it in SP1's
+   Docker image and fails if the rebuild, the committed ELF and the pin differ; `build-program.sh` does the same
+   locally. A program change rebuilds both in one commit and needs a new oracle.
 2. On a GPU box (24 GB), `host/prove-on-box.sh <tac-oracle dir> <ELF>` builds the host with CUDA and the SP1 6.2.4
    stack (from `host/Cargo.box.lock`), reads a fresh input and proves it; by hand:
    ```
