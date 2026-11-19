@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5qMPAAuAX7zbxVWH3cuy3G/R79nnfIcA4KJDC7zBOJM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-RInmhbMkDcJgbvWmqN8UHfS781kaC4OhmubwDEY0zlM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -73,7 +73,7 @@
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=63e2fe10">
 <link rel="modulepreload" href="/pool-hint.js?cb=a5413c70">
-<link rel="modulepreload" href="/swap/card.js?cb=5b379841">
+<link rel="modulepreload" href="/swap/card.js?cb=008a4bef">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -5899,7 +5899,9 @@ async function readWrapTip(wei) {
   if (full * 10000n > wei * 500n) throw new Error('The relay asked for more than 5% of this deposit as its tip, so nothing will be sent. A larger deposit pays a smaller share.');
   return { j, own, tip, full, to };
 }
-async function wrapNow({ run, x, via = payer(), status, line, anchor, sheet = 'eth', clear, moved, after }) {
+async function wrapNow({ run, x, via = payer(), status, line, anchor, sheet = 'eth', clear, moved, after: paint }) {
+  // the sends below start a private scan without waiting for it: repaint now, and again once it has read the new note
+  const after = () => { paint(); const s = P.scanning; if (s) s.then(() => paint(), () => {}); };
   if (Date.now() - x.at > 60e3) {
     const fresh = await readWrapTip(x.wei).catch(() => null);
     if (fresh && fresh.tip * 2n > x.tip * 3n) { say(status, 'The relay’s tip moved while this was open. It is shown again: check it and press once more.'); moved(); return; }
@@ -9782,7 +9784,7 @@ async function sendVouchers({ run, t, via, list, status, sheet, pop = null, tip 
   for (const x of list) v.drop(pub, x.depositId);
   refillSoon();
   tell(html`<span class="ok">Done.</span> ${txLink(hash)}`); toast(`${run.to.label}: done`);
-  if (!token && sheet === 'eth') noteLanded(list.reduce((a, x) => a + BigInt(x.amount), 0n));
+  if (!token) noteLanded(list.reduce((a, x) => a + BigInt(x.amount), 0n));
   run.release?.();
   scanPrivate(true).catch(() => {}).then(() => rerender(sheet));
   return hash;
@@ -9815,7 +9817,7 @@ async function proveFirstWrap({ run, t, priv, via, wei, status, sheet, ticker = 
     tell(html`Sent ${txLink(hash)}. Waiting for it to land…`);
     await waitTx(hash);
     tell(html`<span class="ok">Done.</span> ${txLink(hash)}`); toast(`${run.to.label}: done`);
-    if (!token && sheet === 'eth') noteLanded(BigInt(r.built.amount));
+    if (!token) noteLanded(BigInt(r.built.amount));
     run.release?.();
     scanPrivate(true).catch(() => {}).then(() => rerender(sheet));
     return hash;
@@ -14713,7 +14715,7 @@ function hxMoveSlot() {
   SWC.el?.querySelector('#mv-st')?.replaceChildren(HX.mz);
   return HX.mz;
 }
-const hxMoveAfter = () => { SWC.card?.readBalances?.(); hxBalPaint(); dashSoon(); try { hxNextPaint(true); } catch { } };
+const hxMoveAfter = () => { SWC.card?.readBalances?.(); SWC.card?.privateChanged?.(); hxBalPaint(); dashSoon(); try { hxNextPaint(true); } catch { } };
 function hxNextPaint(done = false) {
   const act = SWC.el?.querySelector('.act');
   act?.querySelector('.hx-next')?.remove();
@@ -16070,7 +16072,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=5b379841').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=008a4bef').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

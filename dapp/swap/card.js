@@ -2372,6 +2372,13 @@ function privUp() {
   if (!H.key?.session?.unlocked || !(S.inP || S.outP)) return;
   pvLoad().then(async (pv) => { idsOf(await getUx()); await pv.read(); }).then(paint, paint);
 }
+let privGen = 0;
+function privAgain() {
+  if (!PV || !H.key?.session?.unlocked) return;
+  const was = privBal('teth'), mine = ++privGen;
+  const go = (n) => PV.read(true).then(() => { if (mine !== privGen) return; paint(); if (was != null && privBal('teth') === was && n < 4) setTimeout(() => go(n + 1), n * 8e3); }, () => {});
+  go(1);
+}
 async function openPrivate() {
   const pv = await pvLoad();
   try { await pv.open(); } catch (e) { if (!e?.unlockCancelled) say(esc(e?.message || String(e)), 'err'); return; }
@@ -3096,6 +3103,8 @@ export function mountSwapCard(root, host = {}) {
     setLane: (on) => setBtc(!!on),
     walletChanged,
     keyChanged: () => { PV?.reset(); paint(); privUp(); },
+    // private funds just moved (a shield landed, a take-out went): read the private balance again, and a few more times while it has not changed yet
+    privateChanged: () => privAgain(),
     farms: () => (S.farms ? Promise.resolve(S.farms) : readFarms().then(() => S.farms)),
     readBalances: () => readBalances().then(paintSides),
     refresh: () => { const zapQ = FLOW === 'shield' && S.q?.kind === 'zap'; if (moveOf() || S.at.pay || S.at.get) { paintMode(); paintSides(); if ((exiting() && S.q) || zapQ) paintQuote(); } else { paintMode(); if (zapQ) paintQuote(); } },
