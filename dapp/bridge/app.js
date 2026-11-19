@@ -317,6 +317,7 @@ function rowHtml(r) {
     : mine && r.dir === 'out' && r.stage === 'covered' && nx.due === 'Send to Bitcoin' ? '<span class="mb-self">Goes on by itself</span>'
     : nx.due
     ? `<a class="mb-due" href="${r.href}">${esc(nx.due)} <span aria-hidden="true">→</span></a>`
+    : r.done && r.dir === 'out' && !r.paid ? `<a class="mb-open" href="/#bitcoin/notes" title="It arrived at your Taproot address. Move it to your Bitcoin address to send it on Bitcoin.">Send or move it <span aria-hidden="true">→</span></a>`
     : r.done || r.back ? '' : nx.self ? '<span class="mb-self">Goes on by itself</span>'
     : `<a class="mb-open" href="${r.href}">Open to move it on <span aria-hidden="true">→</span></a>`;
   const links = [

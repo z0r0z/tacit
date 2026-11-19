@@ -1823,12 +1823,14 @@ function btcNotes(f, status, b) {
   const toks = (b?.held || []).filter((a) => BTC_TOKENS[a.id] && a.notes?.length);
   const bridged = mine ? BNOTES.bridged || [] : [];
   const satsFor = (need) => !b || b.got < 1 || b.sats >= need;
+  const bnMark = (id) => { const x = assetById(id); return x?.runtime ? x.icon : ({ TAC: 'tk-tac', tETH: 'tk-teth', cBTC: 'tk-cbtc', cUSD: 'tk-cusd', cUSDT: 'tk-usdt' })[x?.ticker] || null; };
+  const bnIco = (id) => { const m = bnMark(id); return m ? html`<svg class="tk" aria-hidden="true"><use href="#${m}"/></svg>` : ''; };
   const noteLi = (a, n) => html`<label class="pick"><input type="radio" name="bn-${a.id.slice(0, 8)}" value="${noteKey(n)}" data-bnpick="${a.id}" ${BNOTES.pick[a.id] === noteKey(n) ? 'checked' : ''}><span><b class="num">${fmt(n.amount, a.decimals, 8)} ${a.ticker}</b> · <a href="${MEMPOOL}/tx/${n.txid}" target="_blank" rel="noopener">${short(n.txid, 6)} ↗</a>${n.confirmed ? '' : ' · waiting for its confirmation'}</span></label>`;
   mount(f, html`
     ${toks.length ? toks.map((a) => {
       const ready = a.notes.filter((n) => n.confirmed), pick = a.notes.find((n) => noteKey(n) === BNOTES.pick[a.id]);
       return html`<div class="blk" data-bnasset="${a.id}">
-        <div class="lbl"><span>${a.ticker}</span><span>${fmt(a.balance, a.decimals, 8)} in ${a.notes.length} note${a.notes.length === 1 ? '' : 's'}</span></div>
+        <div class="lbl"><span class="bn-t">${bnIco(a.id)}${a.ticker}</span><span>${fmt(a.balance, a.decimals, 8)} in ${a.notes.length} note${a.notes.length === 1 ? '' : 's'}</span></div>
         ${a.notes.map((n) => noteLi(a, n))}
         <div class="amt"><input id="bn-amt-${a.id}" data-bnamt="${a.id}" inputmode="decimal" placeholder="Amount to split off" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount to split off from the picked ${a.ticker} note"><span class="u">${a.ticker}</span></div>
         <div class="brr-a"><button class="btn ghost" type="button" data-bnsplit="${a.id}" ${pick ? '' : 'disabled'}>Split</button>${ready.length > 1 ? html`<button class="btn ghost" type="button" data-bncombine="${a.id}">Combine ${Math.min(ready.length, NOTES_MAX)} notes</button>` : ''}${BTC_NOTE_ASSETS.some((x) => x.id === a.id && x.runtime) ? html`<button class="btn ghost" type="button" data-btcmarket-id="${a.id}">Buy or sell for sats</button>` : ''}</div>
@@ -1836,7 +1838,7 @@ function btcNotes(f, status, b) {
     }) : html`<p class="note">${b?.got >= 2 ? 'No notes at this key’s Bitcoin address yet.' : 'Reading your notes…'}</p>`}
     ${bridged.length ? html`<div class="blk"><div class="lbl sep"><span>Bridged to Bitcoin</span></div>
       <p class="note">These sit at your Taproot address. Move one to your Bitcoin address to send, split, combine or trade it.${satsFor(MOVE_SATS) ? '' : ` A move needs about ${Number(MOVE_SATS).toLocaleString('en-US')} sats there for its fees.`}</p>
-      ${bridged.map((n) => { const tk = BTC_TOKENS[n.aid]; return html`<div class="kv"><span>${n.amount == null ? `${tk}, amount not readable yet` : `${fmt(BigInt(n.amount), assetById(n.aid)?.dec ?? 8, 8)} ${tk}`}${n.confirmed ? '' : ' · waiting for its confirmation'}</span><button class="btn ghost" type="button" data-bnmove="${n.txid}" data-bnaid="${n.aid}" ${n.confirmed && n.amount != null ? '' : 'disabled'}>Move</button></div>`; })}</div>`
+      ${bridged.map((n) => { const tk = BTC_TOKENS[n.aid]; return html`<div class="kv bn-row">${bnIco(n.aid)}<span>${n.amount == null ? `${tk}, amount not readable yet` : `${fmt(BigInt(n.amount), assetById(n.aid)?.dec ?? 8, 8)} ${tk}`}${n.confirmed ? '' : ' · waiting for its confirmation'}</span><button class="btn ghost" type="button" data-bnmove="${n.txid}" data-bnaid="${n.aid}" ${n.confirmed && n.amount != null ? '' : 'disabled'}>Move</button></div>`; })}</div>`
       : mine && BNOTES.err ? html`<p class="note">Could not read the notes bridged to Bitcoin. <button class="link" type="button" id="bn-re">Try again</button></p>` : ''}
     ${toks.length && !satsFor(ASSET_SEND_SATS) ? html`<p class="note warn">Splitting or combining needs about ${Number(ASSET_SEND_SATS).toLocaleString('en-US')} sats at your Bitcoin address for its fees. Add some from Receive.</p>` : ''}`);
   $$('[data-bnpick]', f).forEach((x) => x.onchange = () => { BNOTES.pick[x.dataset.bnpick] = x.value; rerender('btc'); });
