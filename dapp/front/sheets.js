@@ -1840,7 +1840,7 @@ function btcNotes(f, status, b) {
       <p class="note">These sit at your Taproot address. Move one to your Bitcoin address to send, split, combine or trade it.${satsFor(MOVE_SATS) ? '' : ` A move needs about ${Number(MOVE_SATS).toLocaleString('en-US')} sats there for its fees.`}</p>
       ${bridged.map((n) => { const tk = BTC_TOKENS[n.aid]; return html`<div class="kv bn-row">${bnIco(n.aid)}<span>${n.amount == null ? `${tk}, amount not readable yet` : `${fmt(BigInt(n.amount), assetById(n.aid)?.dec ?? 8, 8)} ${tk}`}${n.confirmed ? '' : ' · waiting for its confirmation'}</span><button class="btn ghost" type="button" data-bnmove="${n.txid}" data-bnaid="${n.aid}" ${n.confirmed && n.amount != null ? '' : 'disabled'}>Move</button></div>`; })}</div>`
       : mine && BNOTES.err ? html`<p class="note">Could not read the notes bridged to Bitcoin. <button class="link" type="button" id="bn-re">Try again</button></p>` : ''}
-    ${toks.length && !satsFor(ASSET_SEND_SATS) ? html`<p class="note warn">Splitting or combining needs about ${Number(ASSET_SEND_SATS).toLocaleString('en-US')} sats at your Bitcoin address for its fees. Add some from Receive.</p>` : ''}`);
+    ${toks.length && !satsFor(ASSET_SEND_SATS) ? html`<p class="note warn">Sending, splitting or combining these needs about ${Number(ASSET_SEND_SATS).toLocaleString('en-US')} sats at your Bitcoin address for its fee. Add some from Receive.</p>` : ''}`);
   $$('[data-bnpick]', f).forEach((x) => x.onchange = () => { BNOTES.pick[x.dataset.bnpick] = x.value; rerender('btc'); });
   const re = $('#bn-re', f);
   if (re) re.onclick = () => busy(re, () => loadBridgedHere(true).then(() => rerender('btc')));
