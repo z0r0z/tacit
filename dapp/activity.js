@@ -310,13 +310,15 @@ export function makePace({ storage = globalThis.localStorage } = {}) {
   try { P = { ...PACE0, ...JSON.parse(storage?.getItem(PACE_KEY) || '{}') }; } catch { }
   const proveOf = (lane) => P[`prove:${laneOf(lane)}`] ?? P.prove;
   const sum = (stages, now) => {
-    let spent = 0, left = 0, live = false;
+    let spent = 0, left = 0, live = false, late = false;
     for (const [e, start, stop] of stages) {
       if (stop) { spent += Math.max(0, (stop - (start || stop)) / 1000); continue; }
-      if (!live && start) { live = true; const ran = Math.max(0, (now - start) / 1000); spent += ran; left += Math.max(e * 0.15, e - ran); continue; }
+      // a stage that has run well past its usual time keeps a sliver of time left (the bar never reaches its end), which read as "a few seconds"
+      // for as long as it took: `late` lets the card say it is taking longer than usual instead
+      if (!live && start) { live = true; const ran = Math.max(0, (now - start) / 1000); spent += ran; left += Math.max(e * 0.15, e - ran); late = ran > e * 1.5; continue; }
       left += e;
     }
-    return { spent, left };
+    return { spent, left, late };
   };
   function job(it, now = Date.now()) {
     const ts = it.ts || {}, prove = proveOf(it.lane), pAt = ts.proving, sAt = ts.proven || ts.sending || ts.open;
@@ -324,7 +326,7 @@ export function makePace({ storage = globalThis.localStorage } = {}) {
   }
   const tx = (it, now = Date.now()) => sum([[P.tx, it.at, it.end]], now);
   const ahead = (lane = null) => P.queue + proveOf(lane) + P.send;
-  const of = ({ spent, left }) => ({ spent, left, pct: Math.min(97, Math.max(3, Math.round((spent / Math.max(1, spent + left)) * 100))) });
+  const of = ({ spent, left, late = false }) => ({ spent, left, late: !!late, pct: Math.min(97, Math.max(3, Math.round((spent / Math.max(1, spent + left)) * 100))) });
   function learn(it) {
     const ts = it.ts || {}, pAt = ts.proving, sAt = ts.proven || ts.sending || ts.open, put = (k, ms) => { const v = ms / 1000; if (v > 0 && v < 1800) P[k] = Math.round((P[k] ?? v) * 0.7 + v * 0.3); };
     if (it.kind !== 'job' || it.status !== 'settled' || !sAt || !it.end) return;

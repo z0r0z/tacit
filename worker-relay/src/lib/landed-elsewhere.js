@@ -49,3 +49,43 @@ export function isRevert(e) {
   }
   return false;
 }
+
+// A private endpoint that simulates a transaction against the PENDING block and refuses one that would revert there (MEV Blocker:
+// "Missing or invalid parameters", its detail "Failed in pending block with: Reverted"). It is a verdict on the transaction as it
+// stands against the pending block, not a fault of the endpoint, and the other endpoint's acceptance means nothing: Flashbots Protect
+// takes the same transaction and never includes it while it would revert. The settle's own simulation runs against the latest block,
+// which can pass while the pending block does not, so this is told apart from a refusal (and from isRevert, a latest-block revert).
+export const PENDING_REVERT = /failed in pending block with:?\s*reverted/i;
+export function isPendingRevert(e) {
+  for (let x = e, d = 0; x && d < 8; x = x.cause, d++) {
+    if (PENDING_REVERT.test(String(x.details || '')) || PENDING_REVERT.test(String(x.shortMessage || '')) || PENDING_REVERT.test(String(x.message || ''))) return true;
+  }
+  return false;
+}
+
+// What an endpoint's refusal says, for the log: viem's one-line message and the node's own detail (the part the one-line message leaves
+// out), with the signed transaction and any other long hex cut short.
+export function errDetail(e, max = 300) {
+  const parts = [];
+  for (let x = e, d = 0; x && d < 4; x = x.cause, d++) for (const t of [x.shortMessage, x.details]) if (t && !parts.includes(String(t))) parts.push(String(t));
+  if (!parts.length) parts.push(String(e && e.message));
+  return parts.join(' | ').replace(/0x[0-9a-fA-F]{80,}/g, (m) => `${m.slice(0, 12)}…(${(m.length - 2) / 2} bytes)`).replace(/\s+/g, ' ').slice(0, max);
+}
+
+// A transaction an endpoint refused because it reverts in the pending block is asked again soon, not a whole receipt wait later: the
+// pending block moves every few seconds (a transaction ahead of ours lands, or leaves), and the refusal clears with it. Every `pollMs`:
+// `dead()` is asked first (the settle now reverts against the latest block too: nothing sent could succeed, and the caller's answer is
+// returned), then `resend(endpoints)` offers the same transaction again to the endpoints still refusing and says which still do.
+//   -> { state: 'accepted' } | { state: 'dead', value } | { state: 'timeout', left }
+export async function holdPendingRevert({ stuck, resend, dead, holdMs, pollMs = 4_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now }) {
+  const until = now() + holdMs;
+  let left = stuck;
+  while (left.length && now() < until) {
+    await sleep(pollMs);
+    const v = await dead();
+    if (v) return { state: 'dead', value: v };
+    left = await resend(left);
+  }
+  return left.length ? { state: 'timeout', left } : { state: 'accepted' };
+}
+

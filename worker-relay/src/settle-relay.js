@@ -31,7 +31,7 @@ import { abi as GAS_ABI, executeCall } from './lib/gas-calls.js';
 import { notExecuted } from './lib/stdin-prover.js';
 import { assertMemosMatchProof } from './lib/memo-root.js';
 import { consumedInput, consumedAck, unlandedDeposits, spentInputsOf, noteNullifier } from './lib/spent-precheck.js';
-import { findCarrier, isRevert } from './lib/landed-elsewhere.js';
+import { findCarrier, isRevert, isPendingRevert, errDetail, holdPendingRevert } from './lib/landed-elsewhere.js';
 import { cbtcMintBlocker } from './lib/cbtc-mint-precheck.js';
 import { cdpBlocker } from './lib/cdp-precheck.js';
 import { bridgeMintBlocker } from './lib/bridge-mint-precheck.js';
@@ -99,6 +99,10 @@ const RECEIPT_WAIT_MS = Math.max(30_000, parseInt(process.env.SETTLE_RECEIPT_WAI
 // landed 1, 51 and 89 seconds later. 0 skips it.
 const LATE_WAIT_MS = Math.max(0, parseInt(process.env.SETTLE_LATE_WAIT_MS || '120000', 10));
 const INCLUSION_POLL_MS = 4_000;
+// How long a settle that an endpoint refuses because it reverts in the PENDING block is offered again, every PENDING_POLL_MS, before the
+// rounds below take over (lib/landed-elsewhere.js holdPendingRevert). 0 turns it off.
+const PENDING_HOLD_MS = Math.max(0, parseInt(process.env.SETTLE_PENDING_HOLD_MS || '90000', 10));
+const PENDING_POLL_MS = 4_000;
 // How far before a settle's first broadcast to look for another landing of the same proof: covers a second relay
 // that claimed the same job and proved it in parallel.
 const LANDED_MARGIN_BLOCKS = 32n;
@@ -361,9 +365,10 @@ async function submitCall(base, label, { gasLimit = null, landed = null } = {}) 
       } catch (e) {
         if (/already known|known transaction|already imported/i.test(String(e && e.message))) return 'ok';   // the same transaction, already there
         lastErr = e;
-        log(`${label} submit via ${url} failed: ${String(e.message).slice(0, 160)}`);
+        log(`${label} submit via ${url} failed: ${errDetail(e)}`);
         if (NONCE_TAKEN.test(String(e && e.message))) return 'taken';
         if (isRevert(e)) return 'revert';
+        if (isPendingRevert(e)) return 'pending';
         return 'err';
       }
     };
@@ -371,6 +376,18 @@ async function submitCall(base, label, { gasLimit = null, landed = null } = {}) 
     const priv = order.filter((x) => !/PUBLIC/.test(x.url)), pub = order.filter((x) => /PUBLIC/.test(x.url));
     const outs = await Promise.all(priv.map(sendVia));
     if (outs.includes('taken')) taken = true;
+    // An endpoint that simulates against the pending block says this settle reverts there. Another endpoint taking it changes nothing
+    // (Flashbots Protect accepts it and does not include it while it would revert), and a higher tip or the next round's wait does not either:
+    // offer it again every few seconds, to the endpoints that refused, until the pending block lets it through.
+    if (outs.includes('pending') && !taken && PENDING_HOLD_MS > 0) {
+      log(`${label} reverts in the pending block (an endpoint says so): offering it again every ${PENDING_POLL_MS / 1000}s for up to ${PENDING_HOLD_MS / 1000}s`);
+      const held = await holdPendingRevert({
+        stuck: priv.filter((_, i) => outs[i] === 'pending'), holdMs: PENDING_HOLD_MS, pollMs: PENDING_POLL_MS, dead: wouldRevert,
+        resend: async (eps) => { const r = await Promise.all(eps.map(sendVia)); if (r.includes('taken')) taken = true; return eps.filter((_, i) => r[i] === 'pending'); },
+      });
+      if (held.state === 'dead') return settledOrDead(held.value);
+      log(held.state === 'accepted' ? `${label} accepted once the pending block let it through` : `${label} still reverts in the pending block after ${PENDING_HOLD_MS / 1000}s: going on with the rounds`);
+    }
     // An endpoint's revert is only a verdict once the public node agrees; one lagging a block says nothing.
     if (!txHash && outs.includes('revert')) { const dead = await wouldRevert(); if (dead) return settledOrDead(dead); }
     if (!txHash && !taken) {
