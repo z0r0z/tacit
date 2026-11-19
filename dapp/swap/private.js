@@ -36,6 +36,15 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   const busy = new Map();
   const free = (n) => !(Date.now() - (busy.get(lc(n.leaf)) || 0) < IN_USE_MS);
   const run = () => (wait ? { wait } : runner ||= makeRunner({ api: API, base: async () => API, pub: () => key.key?.pubHex || null }));
+  // A timeline of the last private swap or send, to see where the time goes: when each step began and how long since the one before. Kept in this page only (never sent
+  // anywhere): copy(tacitTimeline()) in the console shows it. 2026-11-19: a tETH to cUSD swap took 3 minutes, 50 s of it between the split landing and the swap being posted,
+  // and the code alone did not say where.
+  const TL = [];
+  const mark = (what) => { const t = Date.now(); TL.push({ at: t, since: TL.length ? t - TL[TL.length - 1].at : 0, what }); if (TL.length > 60) TL.shift(); try { console.debug('[tacit timeline]', `+${TL[TL.length - 1].since} ms`, what); } catch { } };
+  const timeline = () => TL.map((x) => ({ time: new Date(x.at).toISOString().slice(11, 23), sinceMs: x.since, step: x.what }));
+  if (typeof window !== 'undefined') window.tacitTimeline = timeline;
+  // the page's wait object, with the moment its job is posted marked
+  const marked = (w, label) => { if (!w || typeof w !== 'object') return w; const j = w.onJob; w.onJob = (id, ...r) => { try { mark(`${label}: job posted ${String(id).slice(0, 12)}`); } catch { } return typeof j === 'function' ? j(id, ...r) : undefined; }; return w; };
 
   function reset() { held = null; heldP = null; busy.clear(); }
   function lock() { if (!session) key.lock(); forgetUx(); reset(); }
@@ -222,19 +231,22 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     for (const n of picked.length ? [] : [...up].reverse()) { if (sum >= need || picked.length === 16) break; picked.push(n); sum += BigInt(n.value); }
     if (sum < need) throw Object.assign(new Error('short'), { code: 'short', most: sum > fee ? sum - fee : 0n, fee });
     say(picked.length > 1 ? 'combine' : 'split');
+    mark(`${picked.length > 1 ? `combining ${picked.length} notes` : 'splitting a note'} to ${units}`);
     const before = new Set(of(asset).notes.map((n) => lc(n.leaf)));
     const cut = (f) => t.transfer({ walletPriv: key.priv(), notes: picked, recipientPubHex: t.identity(key.priv()).pubHex, amount: units, fee: f, selfSettle: selfFor(t, picked.length > 1 ? 'Combine notes' : 'Split a note'),
-      waitOpts: { ...run().wait(picked.length > 1 ? 'Combine notes' : 'Split a note', 15 * 60e3), intervalMs: 4000, ...relayOnly() } });
+      waitOpts: { ...marked(run().wait(picked.length > 1 ? 'Combine notes' : 'Split a note', 15 * 60e3), 'cut'), intervalMs: 4000, ...relayOnly() } });
     try {
       try { await cut(fee); }
       catch (e) { const f2 = t.ladderFee(fee * 2n); if (floorMiss(e) && sum >= units + f2) await cut(f2); else throw e; }
     } catch (e) { if (pending(e)) for (const n of picked) busy.set(lc(n.leaf), Date.now()); throw e; }
     for (const n of picked) busy.set(lc(n.leaf), Date.now());
-    for (let i = 0; i < 10; i++) {
+    mark('cut settled: looking for its note');
+    // a read is 2-5 s, so a long pause between reads was most of the wait: the same ceiling (about 50 s), asked more often
+    for (let i = 0; i < 25; i++) {
       await read(true).catch(() => null);
       const n = of(asset).notes.find((x) => BigInt(x.value) === units && !before.has(lc(x.leaf)));
-      if (n) return n;
-      await sleep(5000);
+      if (n) { mark(`its note shows (read ${i + 1})`); return n; }
+      await sleep(1500);
     }
     throw Object.assign(new Error('Your note was cut to size, but it is not showing yet. Press again in a minute to swap it.'), { said: true });
   }
@@ -360,6 +372,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   };
   async function route({ note, units, path, fee, minOut, ticker, label, say }) {
     const t = await getUx();
+    mark('route: begins');
     if (FREE()) fee = 0n;
     const priced = async (f) => {
       const q = await t.quoteRoute({ asset0: note.asset, amountIn: units, path, fee: f });
@@ -367,8 +380,9 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       return q;
     };
     let q = await priced(fee);
+    mark('route: priced');
     const send0 = (f) => t.route({ walletPriv: key.priv(), inNote: note, amountIn: units, path, minOut, fee: f, selfSettle: selfFor(t, label),
-      waitOpts: { ...run().wait(label, 15 * 60e3), intervalMs: 4000, ...relayOnly() } });
+      waitOpts: { ...marked(run().wait(label, 15 * 60e3), 'route'), intervalMs: 4000, ...relayOnly() } });
     const send = async (f) => {
       for (let left = HERE ? 2 : 0; ; left--) {
         try { return await send0(f); }
@@ -410,11 +424,11 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     return lc(a);
   }
   async function newNote(asset, before, min) {
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 25; i++) {
       await read(true).catch(() => null);
       const n = of(asset).notes.find((x) => !before.has(lc(x.leaf)) && BigInt(x.value) >= min);
-      if (n) return n;
-      await sleep(5000);
+      if (n) { mark(`the new note shows (read ${i + 1})`); return n; }
+      await sleep(1500);
     }
     return null;
   }
@@ -489,6 +503,8 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   }
 
   async function swap(plan, { wallet, from, say = () => {} }) {
+    TL.length = 0;
+    mark(`swap begins (${plan.wallet ? 'from the wallet' : 'inside the pool'})`);
     await open();
     const own = !!(await getUx()).relay.ownProving?.();
     let relayDown = HERE;
@@ -551,6 +567,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       const fast = !plan.sendTo && !FREE() && await stagedSwap(plan, say).catch((e) => { if (e?.pending) throw e; return null; });
       if (fast) return fast;
       note = await coveringNote({ asset: plan.asset, units: plan.units, ticker: plan.ticker, say });
+      mark('a note to spend is in hand');
     }
     const outAsset = plan.path?.length ? plan.path[plan.path.length - 1].assetNext : plan.asset;
     before = new Set((held?.byAsset?.[lc(outAsset)]?.notes || []).map((n) => lc(n.leaf)));
@@ -656,7 +673,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   }
 
   return {
-    open, lock, reset, read, swap, swapOut, exitCalls, of, most, keyHex, sendPrivate, ahead, aheadOf, routeAhead, routeAheadOf, keep, tierOf, stagedSizes, stageNeed, stageSizes, stageWhole, deviceStaging, isStaging,
+    open, lock, reset, read, timeline, swap, swapOut, exitCalls, of, most, keyHex, sendPrivate, ahead, aheadOf, routeAhead, routeAheadOf, keep, tierOf, stagedSizes, stageNeed, stageSizes, stageWhole, deviceStaging, isStaging,
     swapHere, get canHere() { return !!here && !!selfSettle; },
     swapSelf, get canSelf() { return !!selfSettle; },
     relayOpen, priceOk: (asset, units, path, fee, minOut) => (path?.length ? price(asset, units, path, fee, minOut) : Promise.resolve(null)),
