@@ -96,5 +96,11 @@ test('a bridged token sent to a key that has never met it is found by its asset 
   ok(/xtFind\(u, unnamed\)\)\.then\(\(\) => \{ if \(!live\(\)\) return; for \(const r of XT\.by\.values\(\)\) if \(r\.keep && r\.registered === true\) xtBridge\(r\);/.test(page), 'a found token is not bridged and drawn');
 });
 
+test('after a Bitcoin send the balance shows what is left (the change is not in the read until it confirms), and the selected token stays in the list', () => {
+  ok(/const BTC_LEFT = new Map\(\);/.test(page) && /BTC_LEFT\.set\(`\$\{pub\}:\$\{token\.id\}`, \{ left: avail - v, at: Date\.now\(\) \}\)/.test(page), 'the send does not keep what is left');
+  ok(/return \[left > bal \? left : bal, /.test(page), 'the balance ignores it');
+  ok(/HX\.send === `xb\$\{r\.addr\}`\)\)\)\.map/.test(page), 'a selected token drops out of the list (the button then says tETH)');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-a+Bz41qXHD5DAC8KSjcNfTrxYbPOpKFlasi7e/yoiXU=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-8eNw6sGAkxPLviJmlPuJc/iA4m9W1J9AJqdvYBNxm6M=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -6986,7 +6986,7 @@ function xtUsdSoon(r) {
   })().catch(() => {}).finally(() => { r.usdBusy = false; });
 }
 const xtSends = () => [...XT.by.values()].filter((r) => r.keep && r.registered === true && !(r.rowed ?? r.builtin)).map((r) => [`xp${r.addr}`, r.sym, xtIco(r), Math.min(6, r.tdec)])
-  .concat([...XT.by.values()].filter((r) => r.bridge && (SPXP ? r.addr === SPX_A : (BTC.held || []).some((a) => a.id === r.bridge.hex) || xtTaprootHeld(r))).map((r) => [`xb${r.addr}`, r.sym, xtIco(r), Math.min(6, r.tdec)]));
+  .concat([...XT.by.values()].filter((r) => r.bridge && (SPXP ? r.addr === SPX_A : (BTC.held || []).some((a) => a.id === r.bridge.hex) || xtTaprootHeld(r) || (HX.tab === 'send' && HX.send === `xb${r.addr}`))).map((r) => [`xb${r.addr}`, r.sym, xtIco(r), Math.min(6, r.tdec)]));
 // A token bridged to Bitcoin sits at the key's Taproot address, which the address read (BTC.held) does not cover, so it was listed under Bitcoin only once moved to the Bitcoin address. It
 // is listed as soon as the key is known to hold some there: by its bridged-notes read, or the last one kept. (Selecting it says what to do: the Bitcoin wallet's Notes moves it, then a Send spends it.)
 function xtTaprootAmt(r) {
@@ -12527,6 +12527,10 @@ const hxIco = (ic, cls = 'tk') => (/^[LI]:/.test(String(ic)) ? icoHtml(ic, cls) 
 const hxIcoCls = (k) => (HX.tab === 'send' && (k === 'tac' || k in HX_DEVK) ? 'tk pvt' : (HX.tab === 'send' && (k === 'tacb' || /^xb0x/.test(k))) || (HX.tab === 'bridge' && HX_BR_ONBTC[k]) ? 'tk btc' : 'tk');
 // A token bridged from the pool is on Bitcoin under its own key (xb0x…). What a Send spends of it is its notes at the key's own Bitcoin address (the bridge puts them at
 // the Taproot address, and the Bitcoin wallet's Notes moves them here); tacit.js sends them by the bound transfer, which the reflection folds and the bridge burns home.
+// What a Bitcoin send leaves of a token, kept for half an hour: its change note is not in the address read until Bitcoin confirms it (the spent one is gone at once), so the
+// balance read 0 right after a send. The balance shows the larger of this and the read.
+const BTC_LEFT = new Map();
+const btcLeft = (pub, id) => { const e = BTC_LEFT.get(`${pub}:${id}`); return e && Date.now() - e.at < 30 * 60e3 ? e.left : 0n; };
 const hxBtcX = (k) => { const m = /^xb(0x[0-9a-f]{40})$/.exec(String(k)); return m ? XT.by.get(m[1]) || null : null; };
 const hxBtcTok = (k) => (k === 'tacb' ? (BTC.held || []).find((a) => a.id === TAC_BTC_ID) || null : hxBtcX(k)?.bridge ? (BTC.held || []).find((a) => a.id === hxBtcX(k).bridge.hex) || null : null);
 // what a token held at the Bitcoin address has in notes still waiting for their confirmation (the change of a send just made): not in the balance yet
@@ -13252,6 +13256,7 @@ async function hxSendBtcGo(k, raw) {
       const token = tac || bx ? hxBtcTok(k) : null;
       if (BTC.pub !== pub || BTC.got < (tac || bx ? 2 : 3)) return pre('Your Bitcoin balance could not be read. Try again in a moment.');
       if (tac && !token) return pre('You hold no TAC on Bitcoin.');
+      if ((tac || bx) && !token && btcLeft(pub, bx ? bx.bridge.hex : TAC_BTC_ID) > 0n) return pre('The change from your last send is on its way back to your Bitcoin address. Send again once the balance shows it, in a minute or so.');
       if (bx && !token) { await loadBridged(true, XA[bx.bridge.key]).catch(() => {}); return pre(hxTaproot(bx).n ? `Your ${bx.sym} bridged to Bitcoin sits at your Taproot address. Move it to your Bitcoin address first, from the Bitcoin wallet’s Notes, then send it.` : `You hold no ${bx.sym} at your Bitcoin address.`); }
       const dec = token ? token.decimals : 8, unit = token ? token.ticker : 'BTC', v = parseUnits(HX.amt, dec), avail = token ? token.balance : BTC.sats + BTC.silent;
       if (!v) return pre('Enter an amount.');
@@ -13266,6 +13271,7 @@ async function hxSendBtcGo(k, raw) {
         return say(st, seen ? `${r.name} points somewhere else now. Check it and press again.` : `Check where ${r.name} points, then press again.`);
       }
       const txid = await btcSendNow({ r, raw, v, token, dec, unit, pub, field, status: st });
+      if (token && avail > v) BTC_LEFT.set(`${pub}:${token.id}`, { left: avail - v, at: Date.now() });
       hxSendClear();
       toast(`Sent ${fmt(v, dec, 8)} ${unit}`);
       await loadBtc(true).catch(() => {});
@@ -14161,7 +14167,9 @@ function hxHeldOf(k, cid) {
     // the TAC at the key's Bitcoin address, which is what the send spends (hxSendBtcGo)
     if (BTC.pub !== pub || !(BTC.got >= 2)) return null;
     const bx = hxBtcX(k), a = bx ? hxBtcTok(k) : (BTC.held || []).find((x) => x.id === TAC_BTC_ID);
-    return [a?.balance ?? 0n, a?.decimals ?? (bx ? bx.tdec : 8), bx ? bx.sym : 'TAC'];
+    const left = btcLeft(pub, bx ? bx.bridge.hex : TAC_BTC_ID), bal = a?.balance ?? 0n;
+    if (left > 0n && bal >= left) BTC_LEFT.delete(`${pub}:${bx ? bx.bridge.hex : TAC_BTC_ID}`);
+    return [left > bal ? left : bal, a?.decimals ?? (bx ? bx.tdec : 8), bx ? bx.sym : 'TAC'];
   }
   const onBtc = HX.tab === 'bridge' && HX_BR_ONBTC[k];
   if (onBtc) {
