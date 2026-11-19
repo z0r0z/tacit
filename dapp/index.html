@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-128oNXJTc8PstBIid7KqaNFEkBXxiXE6opOIb4WUnMs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-/gk9XJ84bjvgdzmpH4EKCGNhDyl37q8s2QJPA1Zk8JM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -72,7 +72,7 @@
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/activity.js?cb=f692784e">
 <link rel="modulepreload" href="/pool-hint.js?cb=a5413c70">
-<link rel="modulepreload" href="/swap/card.js?cb=03caf0ca">
+<link rel="modulepreload" href="/swap/card.js?cb=7a912122">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
@@ -477,6 +477,25 @@ main:focus { outline: none; }
 .hx-pl b { font: 500 13px var(--mono); }
 .hx-pl .hx-earn { color: var(--mute); margin-left: -4px; }
 .hx-pl .link { margin-left: auto; padding: 0; font-size: 12px; }
+/* a bridged token's market on Bitcoin (trade/bound.js): bids, the bid form, the rows of offers */
+html:not([data-page="spx"]) .bound-mkt section + section { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--hair); }
+html:not([data-page="spx"]) .bound-mkt h3 { margin: 0 0 12px; font: 500 15px/1.2 var(--mono); color: var(--ink); }
+html:not([data-page="spx"]) .bound-mkt .note { margin: 12px 0 0; color: var(--mute); font-size: 12.5px; line-height: 1.6; }
+html:not([data-page="spx"]) .bound-mkt .rows { display: grid; gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
+html:not([data-page="spx"]) .bound-mkt .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px 14px; background: var(--field); border: 1px solid var(--hair); border-radius: 14px; }
+html:not([data-page="spx"]) .bound-mkt .row .btn { width: auto; min-height: 38px; margin: 0 0 0 auto; padding: 6px 16px; }
+html:not([data-page="spx"]) .bound-mkt .bb-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+html:not([data-page="spx"]) .bound-mkt .bb-f { display: grid; gap: 6px; min-width: 0; font-size: 12px; color: var(--mute); }
+html:not([data-page="spx"]) .bound-mkt .bb-f em { font-style: normal; opacity: .75; }
+html:not([data-page="spx"]) .bound-mkt .bb-wide, html:not([data-page="spx"]) .bound-mkt .bb-go { grid-column: 1 / -1; }
+html:not([data-page="spx"]) .bound-mkt .bb-f input { box-sizing: border-box; width: 100%; height: 48px; padding: 0 14px; background: var(--field); border: 1px solid var(--hair); border-radius: 14px; color: var(--ink); font: 500 16px var(--mono); outline: none; transition: border-color .15s; }
+html:not([data-page="spx"]) .bound-mkt .bb-f input:focus { border-color: var(--mute); }
+html:not([data-page="spx"]) .bound-mkt .bb-f input::placeholder { color: var(--mute); opacity: .55; }
+html:not([data-page="spx"]) .bound-mkt .bb-go { min-height: 50px; margin-top: 2px; }
+html:not([data-page="spx"]) .bound-mkt .bb-opt { display: flex; align-items: flex-start; gap: 12px; margin-top: 14px; padding: 12px 14px; border: 1px solid var(--hair); border-radius: 14px; font-size: 12.5px; line-height: 1.55; color: var(--mute); cursor: pointer; }
+html:not([data-page="spx"]) .bound-mkt .bb-opt input { flex: none; width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--ink); }
+html:not([data-page="spx"]) .bound-mkt .bb-opt b { display: block; margin-bottom: 2px; font-weight: 500; color: var(--ink); }
+@media (max-width: 520px) { html:not([data-page="spx"]) .bound-mkt .bb-form { grid-template-columns: 1fr; } }
 .hx-pl.hx-tp { align-items: flex-start; }
 .hx-pl.hx-tp .link { white-space: nowrap; flex: none; }
 .hx-pl .link + .link { margin-left: 10px; }
@@ -16070,7 +16089,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=03caf0ca').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=7a912122').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {
@@ -16684,7 +16703,7 @@ async function hxBtcMarket(addr) {
   const r = xtOf(addr), b = r && xtBridge(r);
   if (!b) return;
   try {
-    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=d3982444')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
+    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=954774a7')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
     await BTC_MKT.get(b.hex).open();
   } catch (e) { toast(`The ${b.name} market on Bitcoin did not open: ${errText(e)}`, true); }
 }
