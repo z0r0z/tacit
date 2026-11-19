@@ -49,10 +49,14 @@ export async function unsealWith({ secp, priv, sealed } = {}) {
   return new Uint8Array(await subtle().subtle.decrypt({ name: 'AES-GCM', iv: from64(sealed.iv), additionalData: te.encode(SEALED_DOMAIN) }, k, from64(sealed.ct)));
 }
 
-// A worker on the board to seal to: one with a key, seen in the last half minute, `prefer` (a name or a prefix) first.
-export function pickWorker(summary, { prefer = 'tacit-', maxQuietSeconds = 30 } = {}) {
+// A worker on the board to seal to: one with a key, seen in the last half minute. A worker asks for work every second, so one not seen for more than `freshSeconds` is
+// busy or restarting its GPU server (about a minute): a sealed job is addressed to one worker and waits for it, so a worker polling now is chosen over one that is not,
+// and among those polling now `prefer` (a name or a prefix) goes first. With one worker nothing changes; with two, a restart of one sends the jobs to the other.
+export function pickWorker(summary, { prefer = 'tacit-', maxQuietSeconds = 30, freshSeconds = 5 } = {}) {
   const live = (summary && Array.isArray(summary.workers) ? summary.workers : [])
     .filter((w) => typeof w.pubkey === 'string' && /^0x0[23][0-9a-f]{64}$/i.test(w.pubkey) && Number(w.lastSeenSeconds) <= maxQuietSeconds);
   if (!live.length) return null;
-  return live.find((w) => w.name === prefer) || live.find((w) => String(w.name).startsWith(prefer)) || live[0];
+  const polling = (w) => (Number(w.lastSeenSeconds) <= freshSeconds ? 0 : 1);
+  const liking = (w) => (w.name === prefer ? 0 : String(w.name).startsWith(prefer) ? 1 : 2);
+  return [...live].sort((a, b) => polling(a) - polling(b) || liking(a) - liking(b) || Number(a.lastSeenSeconds) - Number(b.lastSeenSeconds))[0];
 }

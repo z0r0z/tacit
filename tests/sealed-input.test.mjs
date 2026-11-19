@@ -44,3 +44,14 @@ test('pickWorker: a live keyed worker, the preferred name or prefix first', () =
   assert.equal(pickWorker({ workers: [{ name: 'tacit-old', pubkey: workerPub, lastSeenSeconds: 900 }] }), null);
   assert.equal(pickWorker(null), null);
 });
+
+test('pickWorker: a worker polling now is chosen over one that has gone quiet (restarting its GPU server), whatever its name', () => {
+  const two = (a, b) => ({ workers: [{ name: 'tacit-a5000', pubkey: workerPub, lastSeenSeconds: a }, { name: 'tacit-b5000', pubkey: workerPub, lastSeenSeconds: b }] });
+  assert.equal(pickWorker(two(1, 2)).name, 'tacit-a5000', 'both polling: the first of equal preference, as before');
+  assert.equal(pickWorker(two(20, 1)).name, 'tacit-b5000', 'the first has been quiet 20 s (a restart): the second takes it');
+  assert.equal(pickWorker(two(2, 25)).name, 'tacit-a5000', 'and the other way round');
+  assert.equal(pickWorker(two(12, 25)).name, 'tacit-a5000', 'neither polling: the one seen most recently');
+  assert.equal(pickWorker(two(40, 25)).name, 'tacit-b5000', 'one past the half minute is not live at all');
+  assert.equal(pickWorker({ workers: [{ name: 'tacit-a5000', pubkey: workerPub, lastSeenSeconds: 20 }] }).name, 'tacit-a5000', 'a single worker, quiet but live, is still the answer: nothing else to seal to');
+  assert.equal(pickWorker({ workers: [{ name: 'alice', pubkey: workerPub, lastSeenSeconds: 1 }, { name: 'tacit-a5000', pubkey: workerPub, lastSeenSeconds: 20 }] }).name, 'alice', 'a polling worker beats a preferred one that is restarting');
+});
