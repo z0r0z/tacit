@@ -222,11 +222,13 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
   async function waitForSettle(jobId, { intervalMs = 2000, timeoutMs = 5 * 60 * 1000, openGraceMs = 20_000, onUpdate, sleep } = {}) {
     const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     const deadline = Date.now() + timeoutMs;
-    let last = null, openAt = 0, nearAt = 0;
+    let last = null, lastStage, openAt = 0, nearAt = 0;
     const pollState = {};
     for (;;) {
       const st = await pollStatus(jobId, pollState, { wait, intervalMs });
-      if (st.status !== last) { last = st.status; announce(st); if (onUpdate) onUpdate(st); }
+      // a change of the board's word for the job ('queued', 'starting', 'claimed': st.stage) is passed on too, without announcing the status again
+      const staged = st.stage !== lastStage; lastStage = st.stage;
+      if (st.status !== last) { last = st.status; announce(st); if (onUpdate) onUpdate(st); } else if (staged && onUpdate) onUpdate(st);
       if (st.status === 'settled') return st;
       if (st.status === 'failed') throw failedError('settle', st);
       if (st.status === 'unknown') throw new Error('relay lost the job (worker restart / KV miss)');
@@ -278,11 +280,13 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
     const queued = queuedTimeoutMs != null;
     let deadline = Date.now() + (queued ? queuedTimeoutMs : timeoutMs);
     let taken = !queued;
-    let last = null;
+    let last = null, lastStage;
     const pollState = {};
     for (;;) {
       const st = await pollStatus(jobId, pollState, { wait, intervalMs });
-      if (st.status !== last) { last = st.status; announce(st); if (onUpdate) onUpdate(st); }
+      // a change of the board's word for the job ('queued', 'starting', 'claimed': st.stage) is passed on too, without announcing the status again
+      const staged = st.stage !== lastStage; lastStage = st.stage;
+      if (st.status !== last) { last = st.status; announce(st); if (onUpdate) onUpdate(st); } else if (staged && onUpdate) onUpdate(st);
       if (st.status === 'proven') return st;
       if (st.status === 'settled') return st;
       if (st.status === 'failed') throw failedError('prove', st);

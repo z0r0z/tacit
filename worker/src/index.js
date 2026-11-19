@@ -4781,6 +4781,17 @@ async function handleConfidentialAck(req, env, cors) {
     open: body.open === true, requeue: body.requeue === true, release: body.release === true });
   return jsonResponse(r, 200, cors);
 }
+// POST /confidential/stage {jobId, stage} — the relay's word on where a job it is proving stands at the prover board (confidential-settle.js stageJob). A route of
+// its own, not a field of /confidential/ack: an API that does not have it answers 404, where an ack body it does not know could be read as a settle.
+async function handleConfidentialStage(req, env, cors) {
+  const q = confSettler(env);
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, cors);
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  if (!/^0x[0-9a-f]{64}$/i.test(String(body.jobId || ''))) return jsonResponse({ ok: false, error: 'jobId required' }, 400, cors);
+  return jsonResponse(await q.stageJob(String(body.jobId).toLowerCase(), String(body.stage || '')), 200, cors);
+}
 let _openCache = null;
 // GET /confidential/open?limit= — public. The board: relayed jobs proved and waiting for a sender, and proofs posted for
 // any sender. Each carries what settle() needs; whoever sends one is paid the fee its proof binds.
@@ -28833,6 +28844,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/confidential/wake' && req.method === 'GET') return handleConfidentialWake(req, env, cors);
     if (url.pathname === '/confidential/ledger' && req.method === 'GET') return handleConfidentialLedger(req, env, cors);
     if (url.pathname === '/confidential/ack' && req.method === 'POST') return handleConfidentialAck(req, env, cors);
+    if (url.pathname === '/confidential/stage' && req.method === 'POST') return handleConfidentialStage(req, env, cors);
     if (url.pathname === '/confidential/arm' && req.method === 'POST') return handleConfidentialArm(req, env, cors);
     if (url.pathname === '/confidential/armed' && req.method === 'GET') return handleConfidentialArmed(req, env, url, cors);
     if (url.pathname === '/confidential/refresh' && req.method === 'POST') return handleConfidentialRefresh(req, env, cors);

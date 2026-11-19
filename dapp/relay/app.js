@@ -6,7 +6,7 @@
 // sending PROVE, or ETH swapped to PROVE, to the prover account (#prove, prove.js). Only the visitor's own balances are read for those.
 import '/relay-route.js?cb=8c95a563';
 import { makeConnect } from '/trade/connect.js?cb=41394526';
-import { mountOpen } from '/relay/open.js?cb=21e0a01c';
+import { mountOpen } from '/relay/open.js?cb=9d633b06';
 import { mountProve } from '/relay/prove.js?cb=824a9a4e';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 

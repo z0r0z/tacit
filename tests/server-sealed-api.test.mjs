@@ -66,7 +66,7 @@ await check('a submission is carried with its body, and what the relay\'s own se
   seen.length = 0;
   const sub = await ask({ method: 'POST', path: '/confidential/submit', body: { type: 'swap', op: {} } }, { token: '333333333333' });
   assert.equal(sub.status, 200); assert.equal(seen[0].path, '/confidential/submit');
-  for (const [m, p] of [['GET', '/confidential/job'], ['POST', '/confidential/ack'], ['POST', '/confidential/refresh'], ['GET', '/confidential/queue'], ['GET', '/stats'], ['GET', '/prover/pool/stats'], ['POST', '/confidential/requeue']]) {
+  for (const [m, p] of [['GET', '/confidential/job'], ['POST', '/confidential/ack'], ['POST', '/confidential/refresh'], ['GET', '/confidential/queue'], ['GET', '/stats'], ['GET', '/prover/pool/stats'], ['POST', '/confidential/requeue'], ['POST', '/confidential/stage']]) {
     const r = await ask({ method: m, path: p, ...(m === 'POST' ? { body: {} } : {}) }, { token: '333333333333' });
     assert.equal(r.status, 403, `${m} ${p}`);
   }
@@ -83,7 +83,7 @@ await check('a request that is not sealed goes to the handler as it always did, 
 
 await check('the carried list is a page\'s side of the relay, and nothing with a box token', () => {
   const text = API_CARRIED.map(([m, re]) => `${m} ${re.source}`).join(' ');
-  for (const bad of ['ack', 'job', 'queue', 'refresh', 'requeue', 'wake', 'ledger']) assert.ok(!new RegExp(`confidential\\\\/[^ ]*\\b${bad}\\b`).test(text.replace(/\(status\|quote\|relay\|open\|index\|armed\)/, '')), `${bad} is not carried`);
+  for (const bad of ['ack', 'job', 'queue', 'refresh', 'requeue', 'wake', 'ledger', 'stage']) assert.ok(!new RegExp(`confidential\\\\/[^ ]*\\b${bad}\\b`).test(text.replace(/\(status\|quote\|relay\|open\|index\|armed\)/, '')), `${bad} is not carried`);
 });
 
 srv.close();

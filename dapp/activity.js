@@ -234,7 +234,7 @@ export function makeFollow({ journal, jobStatus, receipt, receiptOnce, trace = n
         if (it.status === 'pending' && age > 60e3) onSlow(it);
         if (!live(id)) {
           const st = await jobStatus(id.slice(4)).catch(() => null);
-          if (st?.status && (st.status !== 'unknown' || age > 120e3)) journal.put(id, { status: st.status, hash: st.txHash || undefined, err: st.error || undefined, ahead: st.ahead ?? undefined });
+          if (st?.status && (st.status !== 'unknown' || age > 120e3)) journal.put(id, { status: st.status, hash: st.txHash || undefined, err: st.error || undefined, ahead: st.ahead ?? undefined, board: st.stage ?? undefined });
         }
         await sleep(age < 180e3 ? 5000 : age < 1800e3 ? 15000 : 60000);
       }

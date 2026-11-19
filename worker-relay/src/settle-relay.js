@@ -21,10 +21,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { CFG, ADDR, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
-import { confidentialJob, confidentialWake, confidentialBatch, confidentialAck, confidentialRefresh, confidentialActivateAck, confidentialOpenList, confidentialOpenJob, gasOrders, gasClear, confidentialQueue, heartbeat, heartbeatIdle, setHeartbeatLedger, relayBooks, quoteAsset } from './lib/worker-client.js';
+import { confidentialJob, confidentialWake, confidentialBatch, confidentialAck, confidentialStage, confidentialRefresh, confidentialActivateAck, confidentialOpenList, confidentialOpenJob, gasOrders, gasClear, confidentialQueue, heartbeat, heartbeatIdle, setHeartbeatLedger, relayBooks, quoteAsset } from './lib/worker-client.js';
 import { makeBatchWindow } from './lib/batch-window.js';
 import { makeJobPicker } from './lib/job-picker.js';
-import { proveSettle, proveMixed, proveSealed, proveStdin, boardAlive } from './lib/prover.js';
+import { proveSettle, proveMixed, proveSealed, proveStdin, boardAlive, withStageReport } from './lib/prover.js';
 import { quoteTacForEth, deepest } from './lib/tac-quote.js';
 import { makeGasSolver } from './lib/gas-solver.js';
 import { abi as GAS_ABI, executeCall } from './lib/gas-calls.js';
@@ -92,6 +92,9 @@ const TIP_MIN_TOTAL_WEI = SETTLE_TIP_MIN_TOTAL_WEI;   // 0.00002 ETH, lib/settle
 // settle sent to every private endpoint at once, 25 of 26 land in the first round at the full floor (2026-10-17), so most of the floor
 // is paid for nothing; the funds the wallet must hold are still reckoned at the full figure.
 const tipFloor = makeTipFloor({ startWei: TIP_MIN_TOTAL_WEI, minWei: BigInt(process.env.SETTLE_TIP_MIN_TOTAL_LOW_WEI || '4000000000000'), maxWei: TIP_MIN_TOTAL_WEI });
+// What the board lane says of a proof it is waiting on, passed on to the API for each job the proof is for (worker/src/confidential-settle.js stageJob), so the holder's page
+// can say "waiting for a prover" and "a prover is getting ready" in place of one bar. Never waited on: a word that fails to arrive costs the page its detail, not the job.
+const stageReport = (ids) => (stage) => { for (const jobId of ids) confidentialStage({ jobId, stage }).catch(() => {}); };
 const TIP_CAP_WEI = SETTLE_TIP_CAP_WEI;               // 2 gwei
 const SUBMIT_ROUNDS = Math.max(1, parseInt(process.env.SETTLE_SUBMIT_ROUNDS || '3', 10));
 const RECEIPT_WAIT_MS = Math.max(30_000, parseInt(process.env.SETTLE_RECEIPT_WAIT_MS || '90000', 10));
@@ -606,7 +609,7 @@ async function settleOne(j) {
   // fails faster than that (every member of a batch the chain refuses comes through here) would pass without one.
   await beat(`proving ${j.jobId} ${j.type}`);
   try {
-    const proof = await beating(`proving ${j.jobId} ${j.type}`, () => proveSettle({ type: j.type, op: j.op, memos: j.memos || [], timeoutMs: CFG.settleJobTimeoutSecs * 1000 }))
+    const proof = await beating(`proving ${j.jobId} ${j.type}`, () => withStageReport(stageReport([j.jobId]), () => proveSettle({ type: j.type, op: j.op, memos: j.memos || [], timeoutMs: CFG.settleJobTimeoutSecs * 1000 })))
       .catch(async (e) => { await pauseOn(e); throw e; });
     const txHash = await submitSettle(proof, j.memos || [], `job ${j.jobId}`);
     await confidentialAck({ jobId: j.jobId, txHash, lane: proof.lane });
@@ -724,7 +727,7 @@ async function batchCycle() {
     const memos = jobs.flatMap((j) => (Array.isArray(j.memos) ? j.memos : []));
     let proof;
     try {
-      proof = await beating(`proving a batch of ${jobs.length}`, () => proveSettle({ type: 'batchtransfer', op, memos, timeoutMs: CFG.settleJobTimeoutSecs * 1000 }));
+      proof = await beating(`proving a batch of ${jobs.length}`, () => withStageReport(stageReport(jobs.map((x) => x.jobId)), () => proveSettle({ type: 'batchtransfer', op, memos, timeoutMs: CFG.settleJobTimeoutSecs * 1000 })));
     } catch (e) {
       // A batch proof covers every member, so one member that cannot prove fails it; settle each member alone
       // instead, so only that member fails. A batch the prover account could not pay for pauses proving, and its members
@@ -759,7 +762,7 @@ async function settleMixed(jobs) {
   log(`batching ${jobs.length} ops (${jobs.map((j) => j.type).join(', ')}) into one settle: ${ids.map((i) => i.slice(0, 10)).join(' ')}`);
   let proof;
   try {
-    proof = await beating(`proving a batch of ${jobs.length}`, () => proveMixed({ items: jobs.map((j) => ({ type: j.type, op: j.op, memos: j.memos || [] })), timeoutMs: CFG.settleJobTimeoutSecs * 1000 }));
+    proof = await beating(`proving a batch of ${jobs.length}`, () => withStageReport(stageReport(jobs.map((x) => x.jobId)), () => proveMixed({ items: jobs.map((j) => ({ type: j.type, op: j.op, memos: j.memos || [] })), timeoutMs: CFG.settleJobTimeoutSecs * 1000 })));
   } catch (e) {
     if (notExecuted(e)) {
       mixedRestUntil = Date.now() + MIXED_REST_MS;
@@ -811,7 +814,7 @@ async function settleSealed(job, memos) {
   await beat(`proving ${jobId} ${type} (sealed)`);
   let proof;
   try {
-    proof = await beating(`proving ${jobId} ${type} (sealed)`, () => proveSealed({ type, sealed: job.sealed, memos, timeoutMs: CFG.settleJobTimeoutSecs * 1000 }));
+    proof = await beating(`proving ${jobId} ${type} (sealed)`, () => withStageReport(stageReport([jobId]), () => proveSealed({ type, sealed: job.sealed, memos, timeoutMs: CFG.settleJobTimeoutSecs * 1000 })));
   } catch (e) {
     log(`job ${jobId} sealed prove failed: ${e.message}`);
     noteProveFailure();
@@ -1125,7 +1128,7 @@ async function cycle() {
     log(`job ${jobId} type=${type} preproven — settling supplied proof (no relay prove)`);
   } else {
     try {
-      proof = await beating(`proving ${jobId} ${type}`, () => proveSettle({ type, op: job.op, memos, timeoutMs: CFG.settleJobTimeoutSecs * 1000 }));
+      proof = await beating(`proving ${jobId} ${type}`, () => withStageReport(stageReport([jobId]), () => proveSettle({ type, op: job.op, memos, timeoutMs: CFG.settleJobTimeoutSecs * 1000 })));
     } catch (e) {
       log(`job ${jobId} prove failed/timeout: ${e.message}`);
       noteProveFailure();

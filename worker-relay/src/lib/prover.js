@@ -6,6 +6,7 @@
 // binaries and unset SP1_PROVER.
 
 import { spawn, execFile } from 'node:child_process';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { STALE_PROOF_SELECTORS } from './open-board.js';
 import { readSettleCheck } from './settle-check.js';
 import { readFile, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -455,11 +456,15 @@ export async function proverCredit({ timeoutMs = 30_000 } = {}) {
 
 // Tacit's prover board, tried before the network when PROVER_BOARD=1 (lib/board-prover.js). A proof from it is taken only
 // when the pool would settle it now with these memos: the same simulation the settle itself runs, from the settle wallet.
+// The word a job's proof reports to the holder's page while the board has it ('queued', 'starting', 'claimed'): set around a job's prove call (withStageReport) and read
+// where the board lane is asked, so no prove signature carries a job id.
+const stageStore = new AsyncLocalStorage();
+export const withStageReport = (report, fn) => stageStore.run({ report }, fn);
 let board = null;
 const boardLog = (m) => console.log(`[prover ${new Date().toISOString()}] ${m}`);
 function boardLane() {
   if (!CFG.proverBoard) return null;
-  board ||= makeBoardProver({ post: boardPost, status: boardStatus, cancel: boardCancel, race: boardRace, verify: verifySettle, alive: boardAlive, waitMs: CFG.proverBoardWaitSecs * 1000, claimStallMs: CFG.proverBoardClaimStallSecs * 1000, log: boardLog });
+  board ||= makeBoardProver({ post: boardPost, status: boardStatus, cancel: boardCancel, race: boardRace, verify: verifySettle, alive: boardAlive, quiet: boardQuiet, waitMs: CFG.proverBoardWaitSecs * 1000, claimStallMs: CFG.proverBoardClaimStallSecs * 1000, log: boardLog });
   return board;
 }
 // Whether a worker has polled the board in the last half minute (the worker polls every few seconds), read at most every
@@ -472,6 +477,19 @@ export async function boardAlive() {
   // community machines (who race public jobs only) are not what keeps the board alive for the jobs Tacit's own workers take
   aliveWas = !s || s.workers.some((w) => !w.community && Number(w.lastSeenSeconds) <= 30);
   return aliveWas;
+}
+// Whether Tacit's own worker (the one that proves a user's job) has stopped polling: it asks every second, so a few seconds of nothing is its GPU server restarting
+// (about a minute: the box recycles it when its Groth16 step slows, and every start proves a warm-up first) or the box finishing a proof it cannot stop (a proof-pool wrap, up
+// to about 40 s). Either way it is getting ready, which is what the page says. Read at most every three seconds; an unreadable summary, or no
+// worker ever seen, is not quiet (alive() above is what a board with no worker is judged by).
+let quietAt = 0, quietWas = false;
+export async function boardQuiet() {
+  if (Date.now() - quietAt < 3_000) return quietWas;
+  const s = await boardSummary();
+  quietAt = Date.now();
+  const own = (s?.workers || []).filter((w) => !w.community && w.lastSeenSeconds != null);
+  quietWas = own.length > 0 && own.every((w) => Number(w.lastSeenSeconds) > 8);
+  return quietWas;
 }
 // → true (the pool takes it), 'stale' (the proof is sound but its roots have moved on: the op's fault, not the worker's), 'op:<name> <selector>'
 // (the pool refuses the op itself, a spent note or a pool that moved under the reserves it binds: settle-check.js EFFECT_REVERTS; no prover
@@ -535,7 +553,7 @@ async function viaBoard({ stdin, cycleLimit, gasLimit, label, memos, timeoutMs, 
   }
   const t0 = Date.now();
   try {
-    const r = await lane.prove({ stdin, cycleLimit, gasLimit, cls, label, memos, timeoutMs, ...(check ? { check } : {}) });
+    const r = await lane.prove({ stdin, cycleLimit, gasLimit, cls, label, memos, timeoutMs, onStage: stageStore.getStore()?.report, ...(check ? { check } : {}) });
     boardBreaker.proved(label);
     boardLog(`${label}: proved on the board by ${r.worker} in ${Math.round((Date.now() - t0) / 1000)} s`);
     return { proof: { publicValues: r.publicValues, proof: r.proof, lane: 'board', worker: r.worker }, spentMs: Date.now() - t0 };
@@ -558,7 +576,7 @@ export async function proveSealed({ type, sealed, memos = [], timeoutMs }) {
   const limits = LIMITS[type];
   if (!limits) throw Object.assign(new Error(`a ${type} cannot be proved sealed`), { code: 'sealed_unsupported' });
   try {
-    const r = await lane.prove({ sealed, ...limits, cls: 'private', label: `sealed ${type}`, memos, timeoutMs });
+    const r = await lane.prove({ sealed, ...limits, cls: 'private', label: `sealed ${type}`, memos, timeoutMs, onStage: stageStore.getStore()?.report });
     boardLog(`sealed ${type}: proved on the board by ${r.worker}`);
     return { publicValues: r.publicValues, proof: r.proof, lane: 'board', worker: r.worker };
   } catch (e) {

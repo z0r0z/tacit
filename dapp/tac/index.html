@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-8ypiemMRRi68vPCu8cfQxRlzJrh0VpzDoVhYY08BDKE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-iiG+KVyKPJ0RaYAyukEZiF6pHzv71RnihQta6EtgTXI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -71,7 +71,7 @@
 <link rel="modulepreload" href="/bridge-in.js?cb=4cd75cac">
 <link rel="modulepreload" href="/bridge-tick.js?cb=8f677598">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
-<link rel="modulepreload" href="/activity.js?cb=ab16f158">
+<link rel="modulepreload" href="/activity.js?cb=f692784e">
 <link rel="modulepreload" href="/pool-hint.js?cb=a5413c70">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -2629,7 +2629,7 @@ import { SERVED as SERVED_POOLS, keeperIdOf, makeTokenPools, KEEPERS as POOL_KEE
 import { bridgeError, checkText, listNotes as listBridgeNotes, begin as beginBridge, toSelf as noteToSelf, through as brThrough, transfers as brTransfers, longCount as brLongCount, longReason as brLongReason, needsSend as brNeedsSend, firstStep as brFirst, haltText as bridgeHaltText, halts as brHalts, mergeSend, startNote, tryAgain, bulkFee, prepsAfterPass, runMerge as bridgeRunMerge, runAll as bridgeRunAll, proofWait as brProofWait, whyText as brWhy, splitTag as brSplitTag, waitFor as brWaitFor, splitFee as brSplitFeeOf } from '/bridge-in.js?cb=4cd75cac';
 import { stepIn, stepOut, advanceOut, outPubs, discoverIn, unsearched, discoverEvery, IN_DONE, IN_HELD, IN_BURN_SENT, waitRanOut } from '/bridge-tick.js?cb=8f677598';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
-import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeOffers, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead, fastItem, lookReplaced, landedHash, traceTx, guessSeen, REPLACED_TEXT } from '/activity.js?cb=ab16f158';
+import { ACT_KEY, ACT_MAX, JOB_LABEL, ENDS, ended, listed as listedOf, actBridge, actOpen, actDone, makeJournal, makeFollow, makeOffers, makeRelayState, makePace, WAIT_WHY, OPENISH, ahead, fastItem, lookReplaced, landedHash, traceTx, guessSeen, REPLACED_TEXT } from '/activity.js?cb=f692784e';
 // The relay's API goes through the private route when a forwarder answers it (private-route.js apiFetch). The pool client below and the page's own reads of the relay take their fetch from here at each
 // call, so a call made before this has loaded is a plain fetch, as it always was.
 import('/private-route.js?cb=b8835ba3').then((m) => { globalThis.__tacitRelayFetch ||= m.apiFetch(); }, () => {});
@@ -3412,7 +3412,7 @@ function spStale(id) {
   if (it && !ended(it) && !JOBS.get(id.slice(4)) && Date.now() - Math.max(it.up || it.at, it.seen || 0) > 30 * 60e3) actPut(id, { status: 'failed', err: 'The page that asked for it closed before it was sent, so nothing was sent. Start it again.' });
 }
 const spStage = (st) => {
-  if (st?.jobId && !OWN_JOB.test(st.jobId) && actGet('job:' + st.jobId)) actPut('job:' + st.jobId, { ahead: st.status === 'pending' ? st.ahead ?? undefined : undefined });
+  if (st?.jobId && !OWN_JOB.test(st.jobId) && actGet('job:' + st.jobId)) actPut('job:' + st.jobId, { ahead: st.status === 'pending' ? st.ahead ?? undefined : undefined, board: st.stage ?? undefined });
   const j = OWN_JOB.test(st?.jobId || '') && st.stage ? actGet('job:' + st.jobId) : null;
   if (!j) return;
   actPut(j.id, { stage: st.stage, ...(st.phase ? { phase: st.phase, secs: st.secs ?? null, eta: st.eta ?? null, seen: Date.now() } : {}), ...(st.inputPublic ? { inPub: true } : {}) });
@@ -4199,6 +4199,14 @@ function paceOf(it) {
   for (const x of parts) { const p = pacePart(x.it); spent += p.spent; left += ended(x.it) ? 0 : p.left; late = late || (!ended(x.it) && !!p.late); }
   return PACE.of({ spent, left, late });
 }
+// The prover board's word for a job being proved (the relay says it; worker/src/confidential-settle.js stageJob), in the line under the bar: the bar alone said nothing of a wait for
+// a worker that was restarting its GPU server (about a minute) or finishing another proof (up to about 40 s). Only a job still being proved shows one; an action of several jobs shows the one that is.
+const BOARD_WORDS = { queued: 'waiting for a prover', starting: 'a prover is getting ready', claimed: 'a prover has it' };
+function boardWord(it) {
+  const parts = it?.kind === 'op' ? opParts(it).map((x) => x.it).filter(Boolean) : [it];
+  for (const x of parts) if (x && !ended(x) && x.status === 'proving' && BOARD_WORDS[x.board]) return BOARD_WORDS[x.board];
+  return null;
+}
 const leftWords = (s) => (s < 8 ? 'a few seconds' : s < 55 ? `about ${Math.max(10, Math.round(s / 5) * 5)} s` : s < 90 ? 'about a minute' : `about ${Math.round(s / 60)} min`);
 function paceTick() {
   if (document.hidden) return;
@@ -4226,7 +4234,7 @@ function paceTick() {
     if (!pc) { if (b.dataset.run || b.dataset.card) b.remove(); continue; }
     const bar = b.firstElementChild, i = bar?.firstElementChild, t = b.lastElementChild;
     if (bar && bar.getAttribute('aria-valuenow') !== String(pc.pct)) { bar.setAttribute('aria-valuenow', String(pc.pct)); i.style.width = `${pc.pct}%`; }
-    const w = pc.late ? 'taking longer than usual' : leftWords(pc.left);
+    const bw = boardWord(actGet(b.dataset.pace)), w = `${bw ? `${bw}, ` : ''}${pc.late ? 'taking longer than usual' : leftWords(pc.left)}`;
     if (t && t.textContent !== w) t.textContent = w;
   }
 }
@@ -16004,7 +16012,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=6c14d995').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=23359f36').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

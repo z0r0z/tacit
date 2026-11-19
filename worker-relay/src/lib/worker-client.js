@@ -290,6 +290,12 @@ export async function confidentialAck({ jobId, txHash, error, broadcastHashes, s
   console.error(`CRITICAL: /confidential/ack refused for job=${jobId} (status ${status}) — the worker still holds it as proving and will re-serve it after the claim TTL`);
   return { ok: false, status };
 }
+// Where a job this relay is proving stands at the prover board ('queued', 'starting', 'claimed'), for the page to name the wait (worker/src/confidential-settle.js
+// stageJob). Its own route (/confidential/stage), never a field of an ack: an API without it answers 404, which an ack body it did not know could not be trusted to do.
+// Said once and never waited on: a word that does not arrive only leaves the page with its one bar.
+export async function confidentialStage({ jobId, stage }) {
+  try { await postJson('/confidential/stage', { jobId, stage }, { timeoutMs: 8_000 }); } catch { /* the page keeps its bar */ }
+}
 // The activateExit outcome for a settled exit that carried its recipe. A lost report only means the user's own
 // activate path takes over; the escrow stays activatable by anyone until the recipe deadline.
 export async function confidentialActivateAck({ jobId, txHash, error }) {
