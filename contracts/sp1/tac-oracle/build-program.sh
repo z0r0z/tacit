@@ -13,7 +13,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE/program"
 echo "Building the program reproducibly (cargo prove build --docker, SP1 image v6.2.2, linux/amd64)..."
-DOCKER_DEFAULT_PLATFORM=linux/amd64 cargo prove build --docker --tag v6.2.2
+DOCKER_DEFAULT_PLATFORM=linux/amd64 cargo prove build --docker --tag v6.2.2 --workspace-directory ..
 
 # cargo-prove writes the ELF under target/elf-compilation (or elf/ in some versions): take the one this build wrote.
 ELF=$(find elf target -type f -name tac_oracle -newer Cargo.toml 2>/dev/null | head -1)

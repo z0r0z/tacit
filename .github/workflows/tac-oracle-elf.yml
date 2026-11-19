@@ -26,7 +26,7 @@ jobs:
 
       - name: Build the program in Docker
         working-directory: contracts/sp1/tac-oracle/program
-        run: cargo prove build --docker --tag v6.2.2 2>&1 | tail -20
+        run: cargo prove build --docker --tag v6.2.2 --workspace-directory .. 2>&1 | tail -20
 
       - name: Hash and key
         working-directory: contracts/sp1/tac-oracle/program
