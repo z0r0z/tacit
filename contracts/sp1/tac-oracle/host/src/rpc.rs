@@ -30,15 +30,19 @@ impl Rpc {
     pub fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
         let mut last = String::new();
-        for round in 0..3 {
+        for round in 0..8 {
             for node in &self.nodes {
                 match self.post(node, &body) {
-                    Ok(v) if v.get("result").is_some() => return Ok(v["result"].clone()),
+                    Ok(v) if v.get("result").is_some() => {
+                        // Free nodes limit by address: a short pause between calls keeps a long fetch under it.
+                        std::thread::sleep(Duration::from_millis(150));
+                        return Ok(v["result"].clone());
+                    }
                     Ok(v) => last = format!("{node}: {}", v.get("error").unwrap_or(&v)),
                     Err(e) => last = e,
                 }
             }
-            std::thread::sleep(Duration::from_millis(800 * (round + 1)));
+            std::thread::sleep(Duration::from_millis(1500 * (round + 1)));
         }
         Err(format!("{method}: {last}"))
     }
