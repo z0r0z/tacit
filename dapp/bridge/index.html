@@ -29,10 +29,11 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /bridge/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/bridge/app.js?cb=09e1b18b">
-<link rel="modulepreload" href="/bridge/runtime.js?cb=a00e3cff">
+<link rel="modulepreload" href="/bridge/app.js?cb=33a0dd1c">
+<link rel="modulepreload" href="/bridge/runtime.js?cb=b48f01b8">
 <link rel="modulepreload" href="/bridge/track.js?cb=d2e81a08">
 <link rel="modulepreload" href="/rpc-body.js">
+<link rel="modulepreload" href="/bridge/token-pick.js?cb=72a4ae9a">
 <link rel="modulepreload" href="/fee-floor.js?cb=5d6104ed">
 <!-- preload:end -->
 <style>
@@ -104,6 +105,23 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 /* five in a row on a phone too: each its mark over its name */
 @media (max-width: 560px) { .bt-a button { flex-direction: column; gap: 3px; padding: 6px 0; font-size: 12px; } .bt-a button .tk { width: 20px; height: 20px; } }
 .bt-a button[aria-selected="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 0 var(--hair-2); }
+.bt-more { margin-top: 8px; }
+#bt-more { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; font: 500 13px var(--mono); color: var(--mute); background: none; border: 1px dashed var(--hair-2); border-radius: 9px; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+#bt-more:hover { color: var(--ink); border-color: var(--ink); }
+#bt-more svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform .2s; }
+#bt-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+#bt-more.on { color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); }
+#bt-pop { margin-top: 8px; padding: 12px; background: var(--field); border: 1px solid var(--hair); border-radius: 12px; }
+#bt-pop label { display: block; margin-bottom: 6px; font-size: 11px; color: var(--mute); text-transform: uppercase; letter-spacing: .1em; }
+#bt-addr { width: 100%; min-height: var(--tap); padding: 0 12px; font: 400 14px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 9px; }
+#bt-addr:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+#bt-addr[aria-invalid="true"] { border-color: var(--bad, #c0504d); }
+#bt-pop .bt-w { margin: 8px 0 0; }
+#bt-mine { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+#bt-mine button { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 10px; font: 500 13px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--hair-2); border-radius: 9px; cursor: pointer; }
+#bt-mine button:hover { border-color: var(--ink); }
+#bt-mine .tk { width: 20px; height: 20px; }
+#bt-mine small { color: var(--mute); font-size: 11px; }
 .bt-r { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; margin: 18px 0 6px; }
 .bt-c { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--hair); border-radius: 12px; background: var(--field); }
 @media (max-width: 420px) { .bt-c { flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px; } }
@@ -622,6 +640,15 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
           <button type="button" role="tab" data-asset="cusd" aria-selected="false"><svg class="tk" aria-hidden="true"><use href="#tk-cusd"/></svg>cUSD</button>
           <button type="button" role="tab" data-asset="cusdt" aria-selected="false"><svg class="tk" aria-hidden="true"><use href="#tk-usdt"/></svg>USDT</button>
         </div>
+        <div class="bt-more">
+          <button type="button" id="bt-more" aria-expanded="false" aria-controls="bt-pop"><span id="bt-more-t">Another token</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+          <div id="bt-pop" role="group" aria-label="Bridge any token" hidden>
+            <label for="bt-addr">Token address</label>
+            <input id="bt-addr" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="0x… any ERC-20 on Ethereum" aria-describedby="bt-addr-say">
+            <p class="bt-w" id="bt-addr-say" role="status" aria-live="polite">Any token the pool can hold crosses the same way. Paste its address, or pick one you have bridged.</p>
+            <ul id="bt-mine" aria-label="Tokens you have bridged" hidden></ul>
+          </div>
+        </div>
         <div class="bt-r">
           <div class="bt-c"><span class="pair"><svg class="tk" aria-hidden="true"><use id="bt-from-ic" href="#c-btc"/></svg><svg class="tk bt-tk" aria-hidden="true"><use href="#tk-tac"/></svg></span><span><small>From</small><b id="bt-from">Bitcoin</b></span></div>
           <button type="button" id="bt-flip" aria-label="Switch direction" title="Switch direction"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h15l-4-4"/><path d="M20 15H5l4 4"/></svg></button>
@@ -1080,6 +1107,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </footer>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/bridge/app.js?cb=09e1b18b"></script>
+<script type="module" src="/bridge/app.js?cb=33a0dd1c"></script>
 </body>
 </html>
