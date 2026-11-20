@@ -16,7 +16,7 @@ import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=c5192cc4';
 import { quoteEthToToken } from '/swap/route.js?cb=efdb1794';
 import { zapPlanExt } from '/lp-zap.js?cb=041bcb7f';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=c53d4d70';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, ackKind, askedMore, CETH, ZAP_GAS } from '/farm/zap.js?cb=5eb1c492';
 
 try { sessionStorage.removeItem('tacit-farm-back-v1'); } catch { /* the front page's way back to a farm: this page is where it goes, so it is spent */ }
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992';
@@ -322,6 +322,7 @@ function show(f, { first = false } = {}) {
   const ends = [[$('.plate', src), $('#k-plate'), 'plate'], [$('.nm', src), $('#k-name'), 'dishname']];
   for (const [a, b, v] of ends) name(f ? a : b, v);
   const vt = document.startViewTransition(() => { for (const [a, b, v] of ends) { name(f ? a : b, ''); name(f ? b : a, v); } swap(); });
+  vt.ready.catch(() => {});                                                       // a transition another one skips (a quick Back or Escape) rejects it: nothing to report
   vt.finished.finally(() => { for (const [a, b] of ends) { name(a, ''); name(b, ''); } });
   if (f) react('pick', 900);
 }
@@ -488,7 +489,7 @@ function maxLine() {
 }
 $('#pz-max').addEventListener('click', () => { if (Z.busy) return; const v = spendable(); amtIn.value = v > 0n ? plain(v) : ''; typed(); });
 
-const acked = () => { const q = Z.q; if (!q?.plan || !(q.cost >= 15 || !q.checked)) return true; const el = $('#pz-ack'); return !!el && (el.type === 'checkbox' ? el.checked : el.value.trim() === String(Math.round(q.cost))); };
+const acked = () => { const q = Z.q; if (!ackKind(q)) return true; const el = $('#pz-ack'); return !!el && (el.type === 'checkbox' ? el.checked : el.value.trim() === String(Math.round(q.cost))); };
 function gate() {
   if (Z.busy) return;
   const f = Z.f, q = Z.q, wei = parseUnits(amtIn.value) || 0n;
@@ -679,7 +680,7 @@ goBtn.addEventListener('click', async () => {
   try {
     // the price at the press: one that has moved against the quote is shown, not sent into
     const fresh = await quoteOf(f, q.wei);
-    if (!fresh.plan || fresh.over || fresh.plan.shares * 1000n < q.plan.shares * 995n || (fresh.cost >= 15 && Math.round(fresh.cost) !== Math.round(q.cost))) {
+    if (!fresh.plan || fresh.over || fresh.plan.shares * 1000n < q.plan.shares * 995n || askedMore(q, fresh)) {
       Z.q = fresh; paintQuote();
       throw Object.assign(new Error('The price moved. Nothing was sent; the figures above are the new ones.'), { said: true, quiet: true });
     }
@@ -716,11 +717,12 @@ function failed(f, q, e, hash) {
   if (e?.unlockCancelled || (declined(e) && !e?.ready && !hash && !e?.share)) { cookHide(); statusEl.textContent = 'Not signed in. Nothing was sent.'; return; }
   if (e?.quiet) { cookHide(); statusEl.innerHTML = `<span class="err">${msg}</span>`; return; }
   cook.removeAttribute('data-live');
-  if (e?.share) {                                                               // the transaction landed: the ETH is in the pool as a private share
+  if (e?.share || e?.already) {                                                 // the transaction landed (now, or at an earlier press): the ETH is in the pool as a private share
     steps('farm', true); clearForm(); Z.share = { f, note: e.note || null };
     sayEl.innerHTML = `<span class="ok">Your share is private and safe.</span> It is not in the farm yet: ${msg}`;
     acts.innerHTML = '<button class="btn sm" type="button" data-act="farmit">Farm it</button>';
     react('down', 1600); readLoose();
+    if (!e.note) watchLoose(f.pool);                                            // a balance that does not show it yet is read again, so the Farm it under the positions is there when it does
     return;
   }
   if (e?.reverted) {                                                            // sent and failed: the fee is gone, the share was not made, the proof is kept
@@ -732,12 +734,12 @@ function failed(f, q, e, hash) {
   if (e?.sent || hash) {                                                        // sent, and not seen to land
     steps('send', true); clearForm();
     sayEl.innerHTML = `<span class="err">Sent, not confirmed yet.</span> ${txLink(e.sent || hash)} Check it there before sending anything again. Once it lands, your share shows under Your private farms.`;
-    react('down', 1600);
+    react('down', 1600); readLoose(); watchLoose(f.pool);                       // and is read again until it does
     return;
   }
-  const kept = !!Z.ready && declined(e);
-  steps(kept ? 'send' : 'prove', !kept);
-  sayEl.innerHTML = kept ? 'Not sent. Your share’s proof is kept: press again to send it.' : `<span class="err">${msg}</span>${/Nothing was sent|nothing was spent/i.test(msg) ? '' : ' Nothing was sent.'}`;
+  const held = !!Z.ready, kept = held && declined(e);
+  steps(held ? 'send' : 'prove', !kept);
+  sayEl.innerHTML = kept ? 'Not sent. Your share’s proof is kept: press again to send it.' : `<span class="err">${msg}</span>${/Nothing was sent|nothing was spent/i.test(msg) ? '' : ' Nothing was sent.'}${held && !(e?.stale || e?.moved) ? ' Your share’s proof is kept for this amount.' : ''}`;
   acts.innerHTML = !kept && (w || e?.front || /prove/i.test(String(e?.message || ''))) && f.pid != null ? frontLink(f, q.wei) : '';
   if (!kept) react('down', 1600);
 }
@@ -753,7 +755,19 @@ async function readLoose() {
     host.innerHTML = list.map(({ pool }, i) => `<div class="loose"><p>A ${esc(pairName(pool.pair))} share of yours is private and not in the farm.</p><button class="act" type="button" data-loose="${i}">Farm it</button></div>`).join('');
   } catch { /* read again at the next change */ }
 }
-let LOOSE = [], looseFor = null;
+let LOOSE = [], looseFor = null, watchTimer = 0;
+// A deposit sent and not seen to land, or made private where the balance does not show it yet: the key's shares are read again every half minute
+// for ten minutes (until one of this pool's shows), so the Farm it under the positions is there once the share is.
+function watchLoose(pool) {
+  clearTimeout(watchTimer);
+  const pub = keyPub, id = lc(pool?.poolId);
+  const tick = async (left) => {
+    if (keyPub !== pub || left <= 0) return;
+    if (!Z.busy) { await readLoose(); if (looseFor === pub && LOOSE.some((x) => lc(x.pool.poolId) === id)) return; }
+    watchTimer = setTimeout(() => tick(left - 1), 30e3);
+  };
+  watchTimer = setTimeout(() => tick(20), 30e3);
+}
 async function farmIt(pool, note0, btn = null) {
   if (busyNow()) return;
   if (Z.mode === 'both' && hasEth(Z.f)) setMode('eth');                           // its steps are said in the ETH form's card, which is the one on screen
