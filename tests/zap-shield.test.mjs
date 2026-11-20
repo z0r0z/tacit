@@ -89,8 +89,9 @@ function cardWith({ coin = { ticker: 'x:spx', id: '0xid', tdec: 8, scale: '1', s
   const H = { moves: { poolCoin: () => coin, zapShield: async (...a) => { log.hosted.push(a); return host.result === undefined ? true : host.result; }, ...(host.moves || {}) } };
   if (host.throws) H.moves.zapShield = async () => { throw new Error(host.throws); };
   const Rx = { ...R, quoteEthToToken: async (o) => { log.quoted.push(o); return typeof quote === 'function' ? quote(o) : quote; } };
-  const mk = new Function('H', 'S', 'R', 'within', 'chainTime', 'chainDeadline', 'say', 'requote', 'ethCall', 'esc', `${zapOneOfSrc}\n${zapOneSrc}\nreturn { zapOne, zapOneOf };`);
-  const api = mk(H, S, Rx, (p) => p, async () => {}, () => BigInt(f0.deadline), (...a) => log.said.push(a), () => { log.requotes++; }, async () => '0x', (x) => String(x));
+  const mk = new Function('H', 'S', 'R', 'within', 'chainTime', 'chainDeadline', 'say', 'requote', 'ethCall', 'esc', 'buyQuote', `${zapOneOfSrc}\n${zapOneSrc}\nreturn { zapOne, zapOneOf };`);
+  // buyQuote is the card's quoter with its fallback to the aggregator's route: here the quoter alone, which is what answers (or does not) in these cases
+  const api = mk(H, S, Rx, (p) => p, async () => {}, () => BigInt(f0.deadline), (...a) => log.said.push(a), () => { log.requotes++; }, async () => '0x', (x) => String(x), (o) => Rx.quoteEthToToken(o));
   return { ...api, S, log };
 }
 const f0 = fixtures[0];
@@ -191,7 +192,7 @@ function hostWith(o = {}) {
     rpc: async (m, p) => { log.calls.push([m, p]); if (o.simFails) throw Object.assign(new Error('execution reverted'), { code: 3 }); return '0x'; },
     say: (el, v) => log.said.push(String(v)),
     sendTx: async (tx) => { log.sent.push(tx); if (o.declines) throw Object.assign(new Error('User rejected the request.'), { code: 4001 }); return '0x' + 'ab'.repeat(32); },
-    fmt: (v, d) => String(Number(v) / 10 ** d), txLink: (h) => h, kDep: (d) => 'd:' + d.depositId, runTx: (r, h) => { log.runTxs.push(h); return h; }, actTx: (h) => h,
+    fmt: (v, d) => String(Number(v) / 10 ** d), txLink: (h) => h, kDep: (d) => 'd:' + d.depositId, minedAs: (h) => h, runTx: (r, h) => { log.runTxs.push(h); return h; }, actTx: (h) => h,
     waitTx: async (h) => { log.waits.push(h); if (o.reverts) throw new Error('The transaction reverted.'); return {}; },
     getUx: async () => t, walletPriv: () => priv, ownNow: () => !!o.own, proveOwn: async () => !!o.own, ownReady: async () => {}, xtRegister: async () => {}, xtFrom: () => {}, xtSave: () => {},
     proveFirstWrap: async () => { log.proveFirst++; }, xtToken: (r) => ({ address: r.addr, sym: r.sym, dec: r.dec, permit2: true }),
