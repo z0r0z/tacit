@@ -89,10 +89,17 @@ for (const [name, token] of TOKENS) {
     assert.equal(await balOf(token, ROUTER), 0n, 'the router keeps nothing');
     // the wallet's own shieldShares, for the page's share note
     const note = ux.buildShareWrap({ walletPriv: priv, poolId, shares: plan.shares, index: 0 });
-    await send(POOL, router.shieldSharesCalldata({ poolId, shares: plan.shares, commit: note.commit }), 0n, 400000n);
+    const shieldData = router.shieldSharesCalldata({ poolId, shares: plan.shares, commit: note.commit });
+    // what a stop between the two steps leaves, read as the page's xtStartResume reads it: the deposit does not exist yet (status 0), the founding shares are the payer's own (the
+    // shield call passes from the payer), and nobody else's (it reverts from an account with no shares: a start whose add never landed has nothing to finish)
+    assert.equal(BigInt(await ethCall(POOL, '0x7da9874f' + w32(note.depositId))), 0n, 'before the second step the share note\'s deposit does not exist');
+    await ethCall(POOL, shieldData, 'latest', { from: acct.address });
+    assert.ok(await ethCall(POOL, shieldData, 'latest', { from: '0x' + '0c'.repeat(20) }).then(() => false, () => true), 'from an account with no shares the shield call reverts');
+    await send(POOL, shieldData, 0n, 400000n);
     assert.equal(BigInt(await ethCall(POOL, '0x7da9874f' + w32(note.depositId))), 1n, 'the share note\'s deposit waits for its proof');
     const again = await ethCall(POOL, router.shieldSharesCalldata({ poolId, shares: 1n, commit: note.commit }), 'latest', { from: acct.address }).then(() => false, () => true);
     assert.ok(again, 'no public shares are left to shield (all of them went into the note)');
+    assert.ok(await ethCall(POOL, shieldData, 'latest', { from: acct.address }).then(() => false, () => true), 'and the same call again, once shielded, reverts: a resume reads status 1 and settles instead');
   });
 }
 console.log(`\n${n} passed`);

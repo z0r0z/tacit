@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-SkFOULgUe9AQKmBod7RjvExEyEvxARNh9KY6Gadjx4g=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ID3OsG5fWrblU3fUp05C1aGCSC5rwS2mihAlwk+QWY0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -2924,7 +2924,7 @@ function revertText(e) {
   return m ? REVERTS[(m[1] || m[2]).toLowerCase()] : undefined;
 }
 // What a call that failed to run says: the contract refuses it only where the node says it reverted; a node that did not answer is said as that, not as a refusal.
-const simWhy = (e, who, what = 'as it stands') => (e?.revert ? `Nothing was sent: ${who} refuses this ${what}. ${revertText(e) || ''}`.trim() : 'Nothing was sent: it could not be checked just now. Try again in a moment.');
+const simWhy = (e, who, what = 'as it stands', lead = 'Nothing was sent') => (e?.revert ? `${lead}: ${who} refuses this ${what}. ${revertText(e) || ''}`.trim() : `${lead}: it could not be checked just now. Try again in a moment.`);
 const walletDeclined = (e) => e?.code === 4001 || /user (rejected|denied)|rejected the request|denied transaction|no wallet selected/i.test(String(e?.shortMessage || e?.message || e || ''));
 const errText = (e) => {
   if (e?.said) return e.message;
@@ -7406,8 +7406,14 @@ async function xtPoolPlan(r, wei) {
 }
 const xtSaid = (m) => Object.assign(new Error(m), { said: true });
 // The share note's proof is made first, while nothing has left the wallet; the transaction then settles it.
-async function xtShareProof({ run, t, priv, pub, poolId, shares, tell }) {
+async function xtShareProof(args) {
+  const made = {};
+  try { return await xtShareProofSteps(args, made); }
+  catch (e) { if (made.index != null) { try { args.t.releaseShareIndex({ walletPriv: args.priv, poolId: args.poolId, index: made.index }); } catch { } } throw e; }      // no proof, no share: its index is given back (as farm/zap.js does)
+}
+async function xtShareProofSteps({ run, t, priv, pub, poolId, shares, tell }, made) {
   const index = t.nextShareIndex({ walletPriv: priv, poolId, owned: await scanOwned(), used: [...zapsKept().filter((x) => x.pub === pub && x.poolId === poolId), ...(await vouchers()).list(pub, lpTicker(poolId))].map((x) => x.index) });
+  made.index = index;
   const built = t.buildShareWrap({ walletPriv: priv, poolId, shares, index });
   run.take(kDep(built));
   // the proof comes first, so the wait before the wallet asks is named on every line of it
@@ -7428,7 +7434,7 @@ async function xtShareProof({ run, t, priv, pub, poolId, shares, tell }) {
     try { const k = 'tacit-proof-slow-v1', l = JSON.parse(localStorage.getItem(k) || '[]'); l.push(diag); localStorage.setItem(k, JSON.stringify(l.slice(-10))); } catch { }
     console.warn('proof slow', diag);
     const line = `Relay: ${q ? `${q.pending} waiting${q.oldestPendingSec ? `, the oldest ${q.oldestPendingSec} s` : ''}${q.provingType ? `, proving a ${q.provingType} for ${q.oldestProvingSec} s` : ', nothing proving'}` : 'not answering'}. This job: ${seen.st || 'sent'}${seen.job ? ` (${String(seen.job).slice(0, 8)}…)` : ''}.`;
-    return zapWay({ tell: (m) => tell(typeof m === 'string' ? `${m} ${line}` : html`${m}<small class="mute">${line}</small>`), inflight: proving, down: false });
+    return zapWay({ tell: (m) => tell(typeof m === 'string' ? `${m} ${line}` : html`${m}<small class="mute">${line}</small>`), inflight: proving, down: false, relay: false });      // the proof travels in the zap's own transaction: there is no sending first for the relay to finish
   });
   const way = await Promise.race([proving.then(() => null, () => null), slow]);
   over = true;
@@ -7440,7 +7446,7 @@ async function xtShareProof({ run, t, priv, pub, poolId, shares, tell }) {
 }
 // One transaction from the wallet: the ETH's swap half (outside, or inside the pool), both legs in, the share shielded and its proof settled.
 // Run as a call first: exactly the shares proved, or nothing is sent.
-async function xtZapSend({ run, t, r, plan, feeBps, built, proven, swapData = null, eth, from, tell, what, pre = [] }) {
+async function xtZapSend({ run, t, r, plan, feeBps, built, proven, swapData = null, eth, from, tell, what, pre = [], sent = () => {} }) {
   const data = zapSettleCalldata({ plan, router: ADDR.confRouter, amm: ADDR.publicAmm, tokenB: r.addr, assetA: eth, assetB: r.id, feeBps, deadline: BigInt(chainNow() + 1200),
     commit: built.commit, swapData, publicValues: proven.publicValues, proof: proven.proof, memos: proven.memos || built.memos });
   if (pre.length) {
@@ -7448,6 +7454,7 @@ async function xtZapSend({ run, t, r, plan, feeBps, built, proven, swapData = nu
     // batch lands whole or not at all, so a zap that would not mint the shares proved reverts the registration with it
     tell(`Proved. Confirm in your wallet: ${r.sym} added to the pool and the transaction that ${what}, together…`);
     const hash = runTx(run, await sendBatch([...pre, { to: ADDR.confRouter, data, value: plan.value }], run.to.label), 'Pool', 'Adding');
+    sent();
     tell(html`Sent ${txLink(hash)}. Waiting for it to land…`);
     await waitTx(hash);
     return hash;
@@ -7460,6 +7467,7 @@ async function xtZapSend({ run, t, r, plan, feeBps, built, proven, swapData = nu
   // the transaction finishes the proof job it spends, so the Activity item closes when it lands (as a self-sent settle does)
   const nest = run.op && actGet(run.op) ? run.op : null;
   const hash = runTx(run, await sendTx({ to: ADDR.confRouter, data, value: plan.value, label: run.to.label, protect: true, nest, finishes: [nest, proven.jobId && 'job:' + proven.jobId].filter(Boolean) }), 'Pool', 'Adding');
+  sent();
   tell(html`Sent ${txLink(hash)}. Waiting for it to land…`);
   await waitTx(hash, { gone: () => protectGone(hash) });                          // a Protect send no builder took in time is said to have cost nothing, as the other zaps say it
   return hash;
@@ -7472,9 +7480,12 @@ async function xtStartCore({ run, r, wei, st }) {
   for (const f of [30, 5, 100, 1]) if ((await t.poolReserves(t.routePoolId(eth, r.id, f)).catch(() => null))?.totalShares > 0n) throw xtSaid(`${r.sym} has a pool already: add to it instead.`);
   const plan = await xtPoolPlan(r, wei), poolId = t.routePoolId(eth, r.id, POOL_START_FEE);
   const { built, proven } = await xtShareProof({ run, t, priv, pub, poolId, shares: plan.shares, tell });
-  const fresh = await xtPoolQuote(r, plan.swapIn);
-  if (!fresh || fresh.amountLimit < plan.bLeg) throw xtSaid(`The price of ${r.sym} moved while your share was proved, so nothing was sent. Press again for a fresh quote.`);
-  const hash = await xtZapSend({ run, t, r, plan, feeBps: POOL_START_FEE, built, proven, swapData: fresh.callData, eth, from, tell, what: `buys the ${r.sym}, starts the pool`, pre: batchReg ? [t.registerTokenCall(r.addr)] : [] });
+  let sent = false, hash;
+  try {
+    const fresh = await xtPoolQuote(r, plan.swapIn);
+    if (!fresh || fresh.amountLimit < plan.bLeg) throw xtSaid(`The price of ${r.sym} moved while your share was proved, so nothing was sent. Press again for a fresh quote.`);
+    hash = await xtZapSend({ run, t, r, plan, feeBps: POOL_START_FEE, built, proven, swapData: fresh.callData, eth, from, tell, what: `buys the ${r.sym}, starts the pool`, pre: batchReg ? [t.registerTokenCall(r.addr)] : [], sent: () => { sent = true; } });
+  } catch (e) { if (!sent) { try { t.releaseShareIndex({ walletPriv: priv, poolId, index: built.index }); } catch { } } throw e; }      // nothing went with this proof: its share's index is free again
   if (batchReg) { const f = await t.externalAsset(r.addr); if (f.registered) { r.registered = true; xtFrom(r, f.row); } }
   Object.assign(r, { keep: true, pooled: true, pool: { poolId, feeBps: POOL_START_FEE, lp: t.lpShareId(poolId) } }); xtSave();
   return hash;
@@ -7501,13 +7512,16 @@ async function xtStartBoth({ run, r, wei, st, plan }) {
   if (r.registered !== true && !batch) await xtRegister(run, t, r, via, st);
   const { permit2 } = await permit2Args({ t, via, value: plan.bLeg, status: st, token: xtToken(r), approve: true });
   const data = t.router.addLiquidityPublicETHWithPermit2Calldata({ token: r.addr, feeBps: POOL_START_FEE, tokenAmount: plan.bLeg, minSharesOut: plan.shares, deadline: BigInt(chainNow() + 1200), to: plan.owner, permitSingle: permit2.permitSingle, signature: permit2.signature });
-  try { await rpc('eth_call', [{ from: plan.owner, to: router, data, value: '0x' + plan.ethLeg.toString(16) }, 'latest']); }
-  catch (e) { throw xtSaid(simWhy(e, 'the pool', 'start as it stands')); }
+  // with the token still to be added in the same batch, the add cannot be run as a call (it reverts until the token is in): the batch lands whole or not at all
+  if (!(batch && r.registered !== true)) {
+    try { await rpc('eth_call', [{ from: plan.owner, to: router, data, value: '0x' + plan.ethLeg.toString(16) }, 'latest']); }
+    catch (e) { throw xtSaid(simWhy(e, 'the pool', 'start as it stands', 'No pool was started')); }      // (an approval for Permit2 may have been sent for it: it is not a pool)
+  }
   const index = t.nextShareIndex({ walletPriv: priv, poolId, owned: await scanOwned(), used: [...zapsKept().filter((x) => x.pub === pub && x.poolId === poolId), ...(await vouchers()).list(pub, lpTicker(poolId))].map((x) => x.index) });
   const built = t.buildShareWrap({ walletPriv: priv, poolId, shares: plan.shares, index });
   run.take(kDep(built));
   const shield = t.router.shieldSharesCalldata({ poolId, shares: plan.shares, commit: built.commit });
-  let hash;
+  let hash, addSent = false, addLanded = false;
   try {
     if (batch) {
       tell(`Confirm in your wallet: ${r.registered !== true ? `${r.sym} added to the pool, ` : ''}your ETH and ${r.sym} into the new pool, and your share made private, together…`);
@@ -7516,20 +7530,65 @@ async function xtStartBoth({ run, r, wei, st, plan }) {
     }
     if (!hash) {
       tell(`Confirm in ${your(via)}: your ETH and ${r.sym} found the ${r.sym} pool, then your share is made private…`);
+      // the add makes the payer's shares public liquidity until the second step: the start is kept from here, so a stop between the two is finished (xtStartResume), not stranded
+      startKeep({ pub, poolId, addr: String(r.addr).toLowerCase(), shares: String(plan.shares), index, owner: plan.owner, at: Date.now() }); r.keep = true; xtSave();
       const added = runTx(run, await sendTx({ to: router, data, value: plan.ethLeg, via, label: `Start the tETH / ${r.sym} pool`, protect: true }), 'Pool', 'Adding');
+      addSent = true;
       await waitTx(added);
+      addLanded = true;
       tell(html`Pool open ${txLink(added)}. Making your share private…`);
-      hash = runTx(run, await sendTx({ to: t.cfg.pool, data: shield, via, label: 'Make your pool share private' }), 'Shield', 'Shielding');
+      try { hash = runTx(run, await sendTx({ to: t.cfg.pool, data: shield, via, label: 'Make your pool share private' }), 'Shield', 'Shielding'); }
+      catch (e) { throw xtStillPublic(r, e); }
       await waitTx(hash);
+      startDone(pub, poolId);
     } else { await waitTx(hash).catch(() => {}); }
-  } catch (e) { try { t.releaseShareIndex({ walletPriv: priv, poolId, index }); } catch { } throw e; }
+  } catch (e) {
+    // an add that never went in (not sent, dropped, replaced or reverted) made no shares: nothing to finish. One that landed keeps its record and its index, whatever stopped the
+    // second step (a shield that was replaced or dropped leaves the shares public too); one not known to have landed (a wait that ran out) is read at the next press.
+    if (!addLanded && (!addSent || e?.dropped || /reverted/i.test(e?.message || ''))) { startDone(pub, poolId); try { t.releaseShareIndex({ walletPriv: priv, poolId, index }); } catch { } }
+    throw e;
+  }
   if (r.registered !== true) { const f = await t.externalAsset(r.addr); if (f.registered) { r.registered = true; xtFrom(r, f.row); } }
-  tell(html`Sent ${txLink(hash)}. The relay is proving your share…`);
+  await xtStartSettle({ run, t, r, built, hash, poolId, st, tell });
+  return hash;
+}
+// The share of a started pool, proved and settled by the relay, once its shares are shielded (by one call from the payer): then the pool is the page's.
+async function xtStartSettle({ run, t, r, built, hash, poolId, st, tell }) {
+  tell(html`Sent ${hash ? txLink(hash) : ''}. The relay is proving your share…`);
   await proveOr({ run, types: ['wrap'], offer: false, label: run.to.label, sheet: '', status: () => st,
     go: (y) => t.submitWrapSettle({ built, waitOpts: y.waitOpts, selfSettle: y.selfSettle }),
-    relayed: () => t.submitWrapSettle({ built, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(built)] }), depositTx: minedAs(hash) }) });
+    relayed: () => t.submitWrapSettle({ built, waitOpts: run.wait(null, 15 * 60e3, { deps: [kDep(built)] }), depositTx: hash ? minedAs(hash) : null }) });
   Object.assign(r, { keep: true, pooled: true, pool: { poolId, feeBps: POOL_START_FEE, lp: t.lpShareId(poolId) } }); xtSave();
-  return hash;
+}
+// A pool started from ETH and the token in two steps (the add, then the share made private) can stop between them: the shares are then the payer's public liquidity, which
+// nothing else on the page can make private. The start is kept until its share is private, and the next press on the token's start row finishes it where it stopped.
+const STARTS_KEY = 'tacit-starts-v1';
+const startsKept = () => { try { return (JSON.parse(localStorage.getItem(STARTS_KEY) || '[]') || []).filter((x) => x?.pub && x.poolId && x.addr && x.shares && x.owner && Number.isInteger(x.index)); } catch { return []; } };
+const startKeep = (x) => { try { localStorage.setItem(STARTS_KEY, JSON.stringify([...startsKept().filter((y) => !(y.pub === x.pub && y.poolId === x.poolId)), x].slice(-8))); } catch { } };
+const startDone = (pub, poolId) => { try { localStorage.setItem(STARTS_KEY, JSON.stringify(startsKept().filter((y) => !(y.pub === pub && y.poolId === poolId)))); } catch { } };
+const startPending = (r) => { const pub = S.key?.pubHex; return pub && r?.addr ? startsKept().find((x) => x.pub === pub && x.addr === String(r.addr).toLowerCase()) || null : null; };
+const xtStillPublic = (r, e) => Object.assign(new Error(`The tETH / ${r.sym} pool is open, and your share in it is still public liquidity in ${your()}. Press Start the pool again to make it private: nothing more is added. ${errText(e)}`.trim()), { said: true });
+async function xtStartResume({ run, r, st, rec }) {
+  const tell = (m) => run.say(st, m), t = await getUx(), priv = walletPriv(), via = payer(), pub = S.key.pubHex, poolId = rec.poolId, shares = BigInt(rec.shares);
+  const built = t.buildShareWrap({ walletPriv: priv, poolId, shares, index: rec.index });
+  // 0: not shielded (the shares are still the payer's public liquidity, or the add never landed), 1: shielded and waiting for its proof, 2: made private
+  const state = wordAt(await rpc('eth_call', [{ to: ADDR.pool, data: '0x7da9874f' + strip(built.depositId).padStart(64, '0') }, 'latest']), 0);
+  if (state === 2n) { startDone(pub, poolId); Object.assign(r, { keep: true, pooled: true, pool: { poolId, feeBps: POOL_START_FEE, lp: t.lpShareId(poolId) } }); xtSave(); return { hash: null }; }
+  let hash = null;
+  run.take(kDep(built));
+  if (state === 0n) {
+    const owner = usdtOwner(via), shield = t.router.shieldSharesCalldata({ poolId, shares, commit: built.commit });
+    if (String(owner || '').toLowerCase() !== String(rec.owner).toLowerCase()) throw xtSaid(`Those shares are in ${short(rec.owner, 4)}, not in ${your()}. Switch to that account and press again.`);
+    try { await rpc('eth_call', [{ from: owner, to: t.cfg.pool, data: shield }, 'latest']); }
+    catch (e) { if (e?.revert) { startDone(pub, poolId); return null; } throw xtSaid(simWhy(e, 'the pool')); }      // the shares are not there: the add never landed, and this is a start like any other
+    tell(`Your ${r.sym} pool is open and your share in it is still public. Confirm in ${your(via)}: this makes it private and adds nothing…`);
+    try { hash = runTx(run, await sendTx({ to: t.cfg.pool, data: shield, via, label: 'Make your pool share private' }), 'Shield', 'Shielding'); }
+    catch (e) { throw xtStillPublic(r, e); }
+    await waitTx(hash);
+  }
+  startDone(pub, poolId);
+  await xtStartSettle({ run, t, r, built, hash, poolId, st, tell });
+  return { hash };
 }
 // The same pool started from PRIVATE coins: the tETH and the token a key already holds as notes go in together at the market's rate (the same plan as a wallet's), with
 // nothing public about the amounts. The page cuts a note of each leg's size (noteFor), the relay proves the add (the module's lpAdd: the first add into an empty pool creates it,
@@ -7598,15 +7657,20 @@ async function xtAddCore({ run, r, wei, st }) {
   if (!plan) throw xtSaid('Enter a larger amount: this one is too small to make a share of the pool.');
   { const bad = await xtAddCheck(r, { ra: ra0, rb: rb0, plan }); if (bad) throw xtSaid(bad); }
   const { built, proven } = await xtShareProof({ run, t, priv, pub, poolId: r.pool.poolId, shares: plan.shares, tell });
-  const { res, ra, rb } = await xtAddPlan(t, r, wei);
-  let now, swapData = null;
-  if (plan.ext) {
-    // the pool may have moved while the share was proved: the legs are the least that mint exactly the proved count at the pool now, and the swap is asked for again, sized to bring the token leg at its floor
-    now = await zapPlanExtFor({ shares: plan.shares, prev: plan, quote: (x) => xtPoolQuote(r, x, 50), ra, rb, total: res.totalShares, unitA: E10, unitB: r.scale, maxEth: wei + wei / 50n }).catch(() => null);
-    swapData = now?.callData || null;
-  } else now = zapPlanFor({ shares: plan.shares, ra, rb, total: res.totalShares, feeBps: BigInt(res.feeBps), unitA: E10, unitB: r.scale, maxEth: wei + wei / 50n, settles: true });
-  if (!now) throw xtSaid('The pool or the price moved while your share was proved, so nothing was sent. Press again for a fresh quote.');
-  const hash = await xtZapSend({ run, t, r, plan: now, feeBps: Number(res.feeBps), built, proven, swapData, eth, from, tell, what: plan.ext ? `buys ${r.sym} outside and adds your ETH to the tETH / ${r.sym} pool` : `adds your ETH to the tETH / ${r.sym} pool` });
+  let sent = false, hash;
+  try {
+    const { res, ra, rb } = await xtAddPlan(t, r, wei);
+    let now, swapData = null;
+    if (plan.ext) {
+      // the pool may have moved while the share was proved: the legs are the least that mint exactly the proved count at the pool now, and the swap is asked for again, sized to bring the token leg at its floor
+      now = await zapPlanExtFor({ shares: plan.shares, prev: plan, quote: (x) => xtPoolQuote(r, x, 50), ra, rb, total: res.totalShares, unitA: E10, unitB: r.scale, maxEth: wei + wei / 50n }).catch(() => null);
+      swapData = now?.callData || null;
+    } else now = zapPlanFor({ shares: plan.shares, ra, rb, total: res.totalShares, feeBps: BigInt(res.feeBps), unitA: E10, unitB: r.scale, maxEth: wei + wei / 50n, settles: true });
+    if (!now) throw xtSaid('The pool or the price moved while your share was proved, so nothing was sent. Press again for a fresh quote.');
+    // the guard on the pool's price is held to at the press too, not only before the proof (which can take minutes): a pool moved off the market meanwhile is not added to
+    { const bad = await xtAddCheck(r, { ra, rb, plan: now }); if (bad) throw xtSaid(`${bad} Nothing was sent.`); }
+    hash = await xtZapSend({ run, t, r, plan: now, feeBps: Number(res.feeBps), built, proven, swapData, eth, from, tell, what: plan.ext ? `buys ${r.sym} outside and adds your ETH to the tETH / ${r.sym} pool` : `adds your ETH to the tETH / ${r.sym} pool`, sent: () => { sent = true; } });
+  } catch (e) { if (!sent) { try { t.releaseShareIndex({ walletPriv: priv, poolId: r.pool.poolId, index: built.index }); } catch { } } throw e; }      // nothing went with this proof: its share's index is free again
   r.keep = true; xtSave();
   return { hash, built };
 }
@@ -7614,15 +7678,17 @@ async function xtAddCore({ run, r, wei, st }) {
 const farmEpoch = (p) => p?.epoch || FARM.program?.epoch;
 // What the pool behind a farm holds, as rows for its card: its two coins as they stand and about what they are worth (a pool is worth twice a side), and, for a deposit, what share of the pool it
 // would be (the pool's whole value moves with every deposit and swap, so a thin pool says its APR for a deposit that is small beside it). `p` is a pool as the program lists it, or any { pair, reserves }.
-function poolRows(p, share = null) {
+function poolRows(p, share = null, token = null) {
   const rs = p?.reserves;
   if (!rs || !(Number(rs.reserveA) > 0) || !(Number(rs.reserveB) > 0)) return [];
+  // a reserve is in the pool's units of its coin: 1e-8 of one for tETH and the launch coins, and for another token (`token`, as XT holds it) its scale of its smallest part (a 6-decimal token's unit is 1e-6, not 1e-8)
+  const per = (id) => (token?.id && String(id).toLowerCase() === String(token.id).toLowerCase() ? 10 ** token.dec / Number(token.scale) : 1e8);
   const names = String(p.pair).split('/').map((x) => (x === 'cETH' ? 'tETH' : x)), known = (id) => assetById(id)?.ticker;
   const symA = known(rs.assetA) || names.find((x) => x !== known(rs.assetB)), symB = known(rs.assetB) || names.find((x) => x !== symA);
   if (!symA || !symB) return [];
   const worth = poolWorth(p), usdTxt = worth > 0 ? hxUsd('eth', worth) : '', pct = (f) => `${(f * 100).toFixed(f >= 0.1 ? 0 : f >= 0.01 ? 1 : 2)}%`;
   return [
-    ['Pool', `${sig(Number(rs.reserveA) / 1e8)} ${symA} · ${sig(Number(rs.reserveB) / 1e8)} ${symB}${usdTxt ? ` · about ${usdTxt}` : ''}`, '', 'What the pool holds now. The farm’s TAC is shared by everyone in it in proportion to their share, so a small pool pays a small deposit a lot and a large one little, and a deposit that is a big part of it moves its price on the way in and out.'],
+    ['Pool', `${sig(Number(rs.reserveA) / per(rs.assetA))} ${symA} · ${sig(Number(rs.reserveB) / per(rs.assetB))} ${symB}${usdTxt ? ` · about ${usdTxt}` : ''}`, '', 'What the pool holds now. The farm’s TAC is shared by everyone in it in proportion to their share, so a small pool pays a small deposit a lot and a large one little, and a deposit that is a big part of it moves its price on the way in and out.'],
     ...(share > 0 ? [['Your share', `${pct(share)} of the pool`, share >= 0.2 ? 'warn' : '', 'What this deposit would be of the pool once it is in, counting its own shares.']] : []),
   ];
 }
@@ -7680,11 +7746,12 @@ async function xtPoolStart(k, wei) {
 }
 // Earn's rows for any token's tETH pool (xa:<address>, add to it) or for a listed token with no pool yet (xs:<address>, start it)
 const xtEarnable = () => [...XT.by.values()].filter((r) => (r.registered === true || (r.want && r.registered === false && !!SWC.card?.tokenInfo?.(r.addr))) && (r.pool || !r.builtin) && (r.keep || r.want || ((r.pooled || r.listed) && !!SWC.card?.tokenInfo?.(r.addr))));
-const xtEarnRows = () => (xtPooled(), xtEarnable()).filter((r) => !SPXP || r.addr === SPX_A).map((r) => ({ k: `${r.pool ? 'xa' : 'xs'}:${r.addr}`, name: `tETH / ${r.sym}`, note: r.pool ? 'private · LP only' : SPXP ? 'opens once the pool is set up' : 'no pool yet · start it', icons: ['tk-teth', xtIco(r)], apr: null, day: 0, impact: 0, dry: false, off: SPXP && !r.pool }));
+const xtEarnRows = () => (xtPooled(), xtEarnable()).filter((r) => !SPXP || r.addr === SPX_A).map((r) => { const stopped = !!startPending(r); return { k: `${r.pool && !stopped ? 'xa' : 'xs'}:${r.addr}`, name: `tETH / ${r.sym}`, note: stopped ? 'started · make your share private' : r.pool ? 'private · LP only' : SPXP ? 'opens once the pool is set up' : 'no pool yet · start it', icons: ['tk-teth', xtIco(r)], apr: null, day: 0, impact: 0, dry: false, off: SPXP && !r.pool && !stopped }; });
 async function xtEarnQuote(pick, units) {
   const r = xtOf(pick.k.slice(3)), start = pick.k.startsWith('xs:'), wei = units ? units * E10 : 0n;
   if (!r) return { out: null, go: goL, warn: true, line: 'This pool could not be read.' };
   const name = `tETH / ${r.sym}`, held = HX.from === 'eth' ? spendable('eth') * E10 : hxWalletEth(1), over = held != null && wei > held, farm = !start && !HX.lp ? spxFarmOf(r) : null, goL = farm ? 'Zap into the farm' : 'Add as private LP';
+  if (start && startPending(r)) return { out: null, go: 'Make your share private', warn: false, line: `The ${name} pool is open, and your share in it is still public liquidity. This makes it private and adds nothing: the amount above is not used.`, rc: [['Does', 'makes your share in the open pool private'], ['Sent', 'in one transaction, then the relay proves it']] };
   const rc = [...(start ? [['Starts', `the ${name} pool, at the market’s price`], ['How', `half the ETH buys ${r.sym}, then both go in`]] : [['How', 'half the ETH swapped in the pool, then both go in']]),
     ['You hold', farm ? `private ${name} liquidity, in the farm` : `private ${name} liquidity`], ...(farm ? [['Farm', farmEpoch(farm)?.active ? `TAC streams to it, ${Math.round(Number(farm.tacPerDayForPool)).toLocaleString('en-US')} a day in all${(() => { const u = farmUntil(farm); return u ? `, ${u.short ? 'funded until' : 'until'} ${dayFmt(u.at)}` : ''; })()}` : 'its TAC stream starts soon: your share waits in it']] : []), ['Take it out', 'from Your Tacit, both coins back privately'], ['Sent', 'in one transaction, once your share is proved']];
   if (start && r.registered !== true) rc.splice(2, 0, ['First', `${r.sym} is added to the pool, once for everyone`, '', 'One more confirmation (or part of the same one, if your wallet sends calls together). It lets the pool hold the token and says nothing about it.']);
@@ -7718,9 +7785,9 @@ async function xtEarnQuote(pick, units) {
     // (a caution about the pool's price still shows what the deposit earns: the zap is allowed, the estimate is the row's TAC a day at this deposit)
     if (bad) return { out: units && pick.day > 0 ? sig(pick.day) : null, go: goL, warn: true, line: bad, rc };
     if (x?.plan?.ext && !start) rc[0] = ['How', `part of the ETH buys ${r.sym} on the open market, then both go in at the pool’s price`];
-    if (x?.plan) rc.unshift(['Puts in', `${fmt(x.plan.ethLeg, 18, 6)} ETH and ${fmt(x.plan.bLeg, r.dec, 6)} ${r.sym}`], ...poolRows({ pair: `${r.sym}/cETH`, reserves: x.res }, x.plan.shareOfPool));
+    if (x?.plan) rc.unshift(['Puts in', `${fmt(x.plan.ethLeg, 18, 6)} ETH and ${fmt(x.plan.bLeg, r.dec, 6)} ${r.sym}`], ...poolRows({ pair: `${r.sym}/cETH`, reserves: x.res }, x.plan.shareOfPool, r));
   }
-  if (!start && !(wei && !over && rc[0]?.[0] === 'Puts in')) rc.unshift(...poolRows(spxFarmOf(r) || r.pool && { pair: `${r.sym}/cETH`, reserves: r.pool.reserves }));
+  if (!start && !(wei && !over && rc[0]?.[0] === 'Puts in')) rc.unshift(...poolRows(spxFarmOf(r) || r.pool?.res && { pair: `${r.sym}/cETH`, reserves: r.pool.res }, null, r));
   return { out: units && pick.day > 0 ? sig(pick.day) : null, go: start ? `Start the ${name} pool` : goL, warn: over, line: over ? `More ETH than ${your()} holds.` : '', rc };
 }
 async function xtEarnGo(run, key, units) {
@@ -7729,14 +7796,16 @@ async function xtEarnGo(run, key, units) {
   if (!r || !wei) return;
   PROVE_AT.el = st;
   try {
-    const farm = !start && !HX.lp ? spxFarmOf(r) : null;
-    run.go({ label: start ? `Start the tETH / ${r.sym} pool with ${fmt(wei, 18, 6)} ETH` : `Add ${fmt(wei, 18, 6)} ETH to tETH / ${r.sym}`, status: () => st, clear: hxEarnClear, mine: true, mid: farm ? `added, ${FARMING.charAt(0).toLowerCase()}${FARMING.slice(1)}` : undefined });
+    const farm = !start && !HX.lp ? spxFarmOf(r) : null, pend = start ? startPending(r) : null;
+    run.go({ label: start ? (pend ? `Finish the tETH / ${r.sym} pool` : `Start the tETH / ${r.sym} pool with ${fmt(wei, 18, 6)} ETH`) : `Add ${fmt(wei, 18, 6)} ETH to tETH / ${r.sym}`, status: () => st, clear: hxEarnClear, mine: true, mid: farm ? `added, ${FARMING.charAt(0).toLowerCase()}${FARMING.slice(1)}` : undefined });
     let hash, built = null;
     if (start) {
-      if (HX.from === 'eth') { const pb = await xtPrivBothUse(r, wei).catch(() => null); if (!pb) throw xtSaid(`Your private tETH and ${r.sym} do not cover both sides of that start.`); hash = await xtStartPrivate({ run, r, wei, st, plan: pb }); }
+      const resumed = pend ? await xtStartResume({ run, r, st, rec: pend }) : null;
+      if (resumed) hash = resumed.hash;
+      else if (HX.from === 'eth') { const pb = await xtPrivBothUse(r, wei).catch(() => null); if (!pb) throw xtSaid(`Your private tETH and ${r.sym} do not cover both sides of that start.`); hash = await xtStartPrivate({ run, r, wei, st, plan: pb }); }
       else { const both = await xtBothUse(r, wei).catch(() => null); hash = both ? await xtStartBoth({ run, r, wei, st, plan: both }) : await xtStartCore({ run, r, wei, st }); }
     } else ({ hash, built } = await xtAddCore({ run, r, wei, st }));
-    run.say(st, html`<span class="ok">${start ? `The tETH / ${r.sym} pool is open, and your share in it is a private note.` : `Added: your tETH / ${r.sym} share is a private note.${farm ? ' Putting it in the farm…' : ''}`}</span> ${txLink(hash)}`);
+    run.say(st, html`<span class="ok">${start ? `The tETH / ${r.sym} pool is open, and your share in it is a private note.` : `Added: your tETH / ${r.sym} share is a private note.${farm ? ' Putting it in the farm…' : ''}`}</span> ${hash ? txLink(hash) : ''}`);
     toast(start ? `tETH / ${r.sym} pool started` : 'Liquidity added');
     if (farm && built) {
       try { await xtBondShare(run, farm, built, st); }
@@ -10569,7 +10638,7 @@ function zapsRead() {
   if (!pub || !pools.length || (was && !(was.failedAt && Date.now() - was.failedAt > 60e3))) return;
   ZAPS_READ.set(at, getUx().then((t) => t.shareDeposits(walletPriv(), { router: ADDR.confRouter, amm: ADDR.publicAmm, pools, accounts: [S.wallet], fromBlock: ZAP_FROM })).then((found) => {
     const had = new Set(zapsKept().map((z) => z.depositId)), fresh = found.filter((f) => !had.has(f.depositId));
-    for (const f of fresh) zapKeep({ pub, pid: pools.find((p) => p.poolId === f.poolId)?.pid, poolId: f.poolId, shares: String(f.shares), index: f.index, depositId: f.depositId, tx: f.tx, at: Date.now() });
+    for (const f of fresh) zapKeep({ pub, pid: pools.find((p) => p.poolId === f.poolId)?.pid, poolId: f.poolId, shares: String(f.shares), index: f.index, depositId: f.depositId, tx: f.tx, at: Date.now(), bond: false });      // whether it was to be farmed was a choice made on the browser that sent it: finished here, the share is made private and farming it is a press away
     if (fresh.length && S.key?.pubHex === pub && !running('farm')) rerender('farm');
     if (fresh.length && HX.mode === 'earn') { HX.q = null; hxQuote(); }
   }).catch(() => ZAPS_READ.set(at, { failedAt: Date.now() })));
@@ -10629,13 +10698,23 @@ async function proveWithCredit({ run, t, p, plan, prover, tell, pub, priv }) {
     return { built, index, proven };
   } catch { try { t.releaseShareIndex({ walletPriv: priv, poolId: p.poolId, index }); } catch { } return null; }
 }
+// A proof made with the person's own Succinct credit costs PROVE, so one the zap was not sent with (a no in the wallet, a pool that moved, a call the router
+// refuses) is kept as a ready voucher, with its index, for the next press: not if the zap was sent with it, or the proof is not for this share.
+async function keepPaidProof(poolId, c, t) {
+  try {
+    const pub = S.key?.pubHex;
+    if (!pub || !t.wrapProofFits(c.built, c.proven) || zapsKept().some((k) => k.depositId === c.built.depositId)) return false;
+    (await vouchers()).put(pub, { ...lpRec(poolId, c.built, { by: 'own' }), status: 'ready', publicValues: c.proven.publicValues, proof: c.proven.proof, memos: c.proven.memos || c.built.memos });
+    return true;
+  } catch { return false; }
+}
 const ZAPWAY = { cb: null, then: null, id: 0 };
-function zapWay({ tell, inflight = null, down = false, then = null }) {
+function zapWay({ tell, inflight = null, down = false, then = null, relay = true }) {
   return new Promise((resolve) => {
     if (ZAPWAY.cb) ZAPWAY.cb('again');
     const id = ++ZAPWAY.id, fin = (v) => { if (ZAPWAY.cb === fin) ZAPWAY.cb = null; resolve(v); };
     ZAPWAY.cb = fin; ZAPWAY.then = then;
-    tell(html`<span class="err">${down ? 'The proof can’t be made here right now.' : 'The proof is taking a little longer.'}</span> Nothing has left your wallet.<div class="actr-f" data-zapid="${id}"><button class="link" type="button" data-zapway="own">Prove it yourself</button>, on this computer or with your credit · <button class="link" type="button" data-zapway="relay">Send the zap and let the relay finish it</button></div>`);
+    tell(html`<span class="err">${down ? 'The proof can’t be made here right now.' : 'The proof is taking a little longer.'}</span> Nothing has left your wallet.<div class="actr-f" data-zapid="${id}"><button class="link" type="button" data-zapway="own">Prove it yourself</button>, on this computer or with your credit · ${relay ? html`<button class="link" type="button" data-zapway="relay">Send the zap and let the relay finish it</button>` : 'or keep waiting'}</div>`);
     if (inflight) inflight.then(() => fin('ready'), () => fin('ready'));
   });
 }
@@ -10650,7 +10729,7 @@ document.addEventListener('click', (e) => {
 async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved = () => {}, again = null }) {
   const pid = p.pid, tkB = zapTkB(p), tokenB = ZAP_TOKEN[tkB], label = pairName(p.pair);
   const tell = (m) => say(status, m);
-  let t = null, priv = null, built = null, hash = null, landed = false, guarded = false, rec = null;
+  let t = null, priv = null, built = null, hash = null, landed = false, guarded = false, rec = null, keptProof = false;
   const pub = S.key?.pubHex;
   try {
     t = await getUx(); priv = walletPriv();
@@ -10676,7 +10755,9 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
           run.go({ label: `Zap ${fmt(plan.value, 18, 6)} ETH into ${label}`, status: () => status, clear });
           run.take(kDep(c.built));
           ZAP_LIVE++; guarded = true; built = c.built;
-          const r = await zapShareFirst({ run, t, p, built: c.built, index: c.index, shares: plan.shares, maxEth: z.wei + z.wei / 50n, tokenB, from, tell, status, proven: c.proven, bond });
+          let r;
+          try { r = await zapShareFirst({ run, t, p, built: c.built, index: c.index, shares: plan.shares, maxEth: z.wei + z.wei / 50n, tokenB, from, tell, status, proven: c.proven, bond }); }
+          catch (e) { keptProof = await keepPaidProof(p.poolId, c, t); throw e; }
           hash = r.hash; rec = r.rec; landed = true;
           if ((await zapFinish(run, p, r.rec, c.built, tell, status, { bond })) === 'landing') throw Object.assign(new Error('Your zap landed, but the pool does not show it yet. Press Finish it in a minute to put its share in the farm.'), { said: true });
           clear();
@@ -10692,8 +10773,12 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
         if (way === 'relay') break;
       }
       const ready = await lpReady(p.poolId, z.wei, res), v = await vouchers();
+      // the quote took a voucher only where its cost (the deposit and the settle's gas) fits the balance, or neither way does: the press goes the way the quote said, unless a voucher that fits has come since
+      const roomFor = (r) => z.have == null || r.plan.value + ZAP_SETTLE_GAS * gp * 3n / 2n <= z.have;
       if (ready && wordAt(await rpc('eth_call', [{ to: ADDR.pool, data: '0x7da9874f' + strip(ready.x.depositId).padStart(64, '0') }, 'latest']), 0) !== 0n) v.drop(pub, ready.x.depositId);
-      else if (ready) {
+      // a zap sent with this proof that has not landed (a wait that ran out): the same proof is not sent again
+      else if (ready && zapsKept().some((k) => k.depositId === ready.x.depositId)) throw Object.assign(new Error('A zap with this share’s proof was already sent and has not landed yet. Check it on Etherscan: once it lands, Finish it puts the share in the farm. Nothing more was sent.'), { said: true });
+      else if (ready && (z.ready || roomFor(ready))) {
         const x = ready.x, shares = BigInt(x.amount), kept = { ...t.buildShareWrap({ walletPriv: priv, poolId: p.poolId, shares, index: x.index }), memos: x.memos };
         run.go({ label: `Zap ${fmt(ready.plan.value, 18, 6)} ETH into ${label}`, status: () => status, clear });
         run.take(kDep(kept));
@@ -10740,7 +10825,7 @@ async function zapNow({ run, p, z, status, bond = true, clear = () => {}, moved 
     if ((await zapFinish(run, p, rec, built, tell, status, { bond })) === 'landing') throw Object.assign(new Error('Your zap landed, but the pool does not show it yet. Press Finish it in a minute to make its share private and farm it.'), { said: true });
     clear();
   } catch (e) {
-    if (built && !hash && t && (payer() === 'tacit' || walletDeclined(e))) t.releaseShareIndex({ walletPriv: priv, poolId: p.poolId, index: built.index });
+    if (built && !hash && t && !keptProof && (payer() === 'tacit' || walletDeclined(e))) t.releaseShareIndex({ walletPriv: priv, poolId: p.poolId, index: built.index });
     if (hash && !landed && (/reverted/.test(e?.message || '') || e?.dropped)) zapDone(built.depositId);
     if (e?.dropped && built) t.releaseShareIndex({ walletPriv: priv, poolId: p.poolId, index: built.index });
     if (landed && !e?.offered && !e?.said) e = Object.assign(new Error(rec?.settled ? `Your share is a private note: ${errText(e)} Farm it from ${farmedAt(status)}.` : `Your zap landed and its share is safe: ${errText(e)} Press Finish it to make it private and farm it.`), { said: true });
