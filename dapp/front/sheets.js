@@ -1735,7 +1735,7 @@ render.btc = () => {
       <div class="side">${b || BTC.err ? html`<button class="link" type="button" id="btc-re">${BTC.err || !b ? 'retry' : 'refresh'}</button>` : 'updating…'}</div>
     </div>
     ${(b?.held || []).map((a) => html`<div class="kv"><span>${a.ticker} on Bitcoin${a.id === TAC_BTC_ID ? html` · <a href="#bridge" data-link="bridge">Bridge to Ethereum</a>` : ''}</span><b class="num">${fmt(a.balance, a.decimals, assetById(a.id)?.dp ?? 4)}</b></div>`)}
-    ${shLookingNote(S.key.pubHex)}
+    ${shLookingNote(S.key.pubHex, true)}
     ${segSub('btcm', BTC.mode, [['send', 'Send'], ['receive', 'Receive'], ['notes', 'Notes']])}
     <div id="btc-form"></div>
     <div class="status" role="status" id="btc-status"></div>`);

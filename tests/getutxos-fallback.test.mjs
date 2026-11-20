@@ -318,5 +318,34 @@ await test('mempool endpoint failure is non-fatal: chain-only result returns', a
   );
 });
 
+// ---- the coins getUtxos leaves out, told apart (split) ----
+// A coin a bridge in progress will spend and a cBTC lock's collateral are not free, and the page says how much of each an address has
+// (the balance and the bridge's "short of" message), so getUtxos can hand them back with their reason beside the free ones.
+const { protectOutpoint } = await import('../dapp/confidential-deployments.js');
+
+await test('split: the free coins are the plain list; a lock and a coin a bridge will spend come back held with their reason', async () => {
+  const addr = testAddr(30);
+  const coin = (n, vout, value) => ({ txid: txid(n), vout, value, status: { confirmed: true } });
+  protectOutpoint(txid(302), 1, 90000n);
+  const record = [{ id: `${txid(303)}:0`, stage: 'migrate-signed', migrate: { fundingUtxo: { txid: txid(303), vout: 0, value: 7000 } } }];
+  for (const net of ['mainnet', 'signet']) localStorage.setItem(`tacit-burndep-bridge-v1:${net}:split-test`, JSON.stringify(record));
+  return withRouter([[`/address/${addr}/utxo`, () => jsonResp([coin(301, 0, 3145), coin(302, 1, 90000), coin(303, 0, 7000)])]], async () => {
+    const plain = await getUtxos(addr);
+    const both = await getUtxos(addr, null, { split: true });
+    const why = (n) => both.held.find((u) => u.txid === txid(n))?.hold;
+    return plain.length === 1 && plain[0].txid === txid(301)
+      && both.free.length === 1 && both.free[0].txid === txid(301) && both.held.length === 2
+      && why(302) === 'lock' && why(303) === 'bridge' && both.held.find((u) => u.txid === txid(302)).value === 90000;
+  });
+});
+
+await test('split: an address with nothing spoken for has no held coins, and the free list is what getUtxos always returned', async () => {
+  const addr = testAddr(31);
+  return withRouter([[`/address/${addr}/utxo`, () => jsonResp([{ txid: txid(311), vout: 0, value: 5000, status: { confirmed: true } }])]], async () => {
+    const both = await getUtxos(addr, null, { split: true });
+    return both.held.length === 0 && both.free.length === 1 && both.free[0].value === 5000;
+  });
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

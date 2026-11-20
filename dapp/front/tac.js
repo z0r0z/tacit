@@ -1,7 +1,7 @@
 // TAC's page. index.html imports this when TAC's page opens (its address, /tac/, preloads it) or a link to it is pointed at, and calls
 // install() with what this code reads from its module: let and var bindings are read as ctx.X, so their changes there are seen here.
 export default function install(ctx) {
-const { $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brHolds, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your } = ctx;
+const { $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brHolds, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, heldParts, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your } = ctx;
 const TCD_FILL = { at: 0 };   // (a Stake press made before the wallet's TAC was read: see tcardStakeFill)
 function idMark(a, size = 40) {
   const h = addressId(a).replace(/·/g, ''), hue = Math.round((parseInt(h.slice(0, 2), 16) / 256) * 360);
@@ -248,7 +248,7 @@ function renderBridgeIn(el) {
           bswOffer($('#br-swap', rc), n).catch(() => {});
         }
         if (bad.name === 'reflected' || bad.name === 'old-leaf') {
-          const coins = await withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
+          const got = await brFree(pub), coins = got && got.coins;
           if (my !== seq || !rc.isConnected) return;
           const none = !!coins && !coins.some((c) => Number(c?.value) > 0);
           const ux = await brUx(), rate = await ux.quoteRate().catch(() => null);
@@ -262,14 +262,14 @@ function renderBridgeIn(el) {
           const cost = $('#br-prepcost', rc);
           if (cost && later) cost.textContent = `Its Bitcoin fee is about ${Number(later.fee).toLocaleString('en-US')} sats at today’s rates; if it would cost more than ${autoMaxFee.toLocaleString('en-US')}, it waits for me.`;
           if (!none) brPublicFee(n.amount);
-          if (none) warn(rc, html`The send pays a small Bitcoin fee, and this key’s Bitcoin address has no BTC free for it. <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>, then pick this note again.`);
+          if (none) warn(rc, html`The send pays a small Bitcoin fee, and this key’s Bitcoin address has no BTC free for it.${brHeldNote(got && got.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>, then pick this note again.`);
           const prep = $('#br-prep', rc);
           if (prep && !none) prep.onclick = () => busy(prep, (run) => brPrep(run, n, brPlanFrom(rc, { autoMaxFee })));
         }
         return;
       }
       const one = pf.path === 'reflected', rate = one ? pf.burnFeeRate : pf.migrateFeeRate;
-      const coins = await withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
+      const got = await brFree(pub), coins = got && got.coins;
       const cost = (await brUx()).bridgeCost({ path: pf.path, feeRate: rate, coins: coins || [], noteSats: n.sats, burnRate: pf.burnRate });
       if (my !== seq || !rc.isConnected) return;
       review = { key: rvKey, note: n, pf, cost, short: !!coins && !cost.ok, at: Date.now() };
@@ -286,8 +286,8 @@ function renderBridgeIn(el) {
       brPublicFee(n.amount);
       if (review.short) {
         const have = BigInt(cost.have || 0), arriving = BTC.pub === pub && BTC.pending > 0n ? html` ${fmt(BTC.pending, 8, 8)} BTC is still arriving; once it confirms, check again.` : '';
-        warn(rc, one ? html`This key’s Bitcoin address has ${fmt(have, 8, 8)} BTC free for fees, short of the ${sats(cost.need)} this needs.${arriving} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`
-          : html`The move spends one coin whole: the largest free coin on this key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC, and this needs one of ${sats(cost.need)}.${arriving} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
+        warn(rc, one ? html`This key’s Bitcoin address has ${fmt(have, 8, 8)} BTC free for fees, short of the ${sats(cost.need)} this needs.${arriving}${brHeldNote(got.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`
+          : html`The move spends one coin whole: the largest free coin on this key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC, and this needs one of ${sats(cost.need)}.${coins.length > 1 ? html` The ${coins.length} free coins there hold ${fmt(coins.reduce((n, c) => n + BigInt(c.value || 0), 0n), 8, 8)} BTC in all.` : ''}${arriving}${brHeldNote(got.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
       }
       if (BR.acked !== rvKey) ack.checked = false;
       if (toWrap) toWrap.hidden = pf.path !== 'reflected';
@@ -403,9 +403,19 @@ const brMergeSend = (pub, ns, plan) => mergeSend({ withKey: (fn) => withKey(fn, 
   return r;
 });
 const brStartNote = async (pub, n, publicTo) => startNote(await loadTacit(), { withKey: (fn) => withKey(fn, pub), mem: store, pub, walletPub: hexToBytes(pub), priv: () => walletPriv(), note: n, publicTo, errText });
+// The coins this key's Bitcoin address can pay a fee from, and what else is there that does not count as free (sats): held for a bridge in progress, locked as collateral, or in coins that carry tokens or are not checked yet.
+const brFree = (pub) => withKey(async (t) => {
+  const { free, held } = await t.getUtxos(t.wallet.address(), null, { split: true }), coins = await t.pickSafeCommitSats(free);
+  const usable = new Set(coins.map((u) => `${u.txid}:${u.vout}`)), hold = { bridge: 0n, lock: 0n, other: 0n };
+  const add = (k, u) => { const v = BigInt(u.value || 0); if (v > 546n) hold[k] += v; };
+  for (const u of held) add(u.hold, u);
+  for (const u of free) if (!usable.has(`${u.txid}:${u.vout}`)) add('other', u);
+  return { coins, hold };
+}, pub).catch(() => null);
+const brHeldNote = (h) => { const p = heldParts(h); return p.length ? html` Not counted as free: ${p}.` : ''; };
 async function brBulkFee(pub, bulk, kind) {
-  const coins = await withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
-  return bulkFee(await loadTacit(), { bulk, kind, coins });
+  const got = await brFree(pub), q = await bulkFee(await loadTacit(), { bulk, kind, coins: got && got.coins });
+  return q && got ? { ...q, hold: got.hold } : q;
 }
 const brRecentNote = (skipped) => { const n = skipped.filter((x) => x.why === 'recent').length; return n ? html`<p class="note">${brNotes(n)} too recent for Bitcoin’s proof to have seen ${n === 1 ? 'stays' : 'stay'} out of this.</p>` : ''; };
 function brBulkPanel(kind, bulk) {
@@ -458,7 +468,7 @@ function brBulkWire(el, pub, bulk, closeSingle) {
       quote = q; short = q.short;
       const fee = $('#br-allfee', panel);
       if (fee) fee.textContent = `≈ ${q.fee.toLocaleString('en-US')} sats${q.later ? `, and about ${q.later.toLocaleString('en-US')} for the burns after` : ''}`;
-      if (short) warn(panel, html`This key’s Bitcoin address has ${q.free.toLocaleString('en-US')} sats free for fees, short of the about ${q.need.toLocaleString('en-US')} this needs. <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
+      if (short) warn(panel, html`This key’s Bitcoin address has ${q.free.toLocaleString('en-US')} sats free for fees, short of the about ${q.need.toLocaleString('en-US')} this needs.${brHeldNote(q.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
       gate();
     }).catch(() => { const fee = $('#br-allfee', panel); if (fee) fee.textContent = 'not quoted'; });
     go.onclick = () => busy(go, (run) => (kind === 'merge' ? brRunMerge : brRunAll)(run, pub, bulk, brBulkPlan(panel, quote, kind)));
@@ -1971,7 +1981,7 @@ async function tnConfirm(list, picked) {
   const done = (m) => { TN.picks = []; TN.step = null; say(st, m); dashSoon(); Promise.allSettled([loadBridge(true), loadBtc(true)]).then(() => { rerender('tac'); tnPaint(); }); };
   let ready = { fee: false, more: true }, lack = false;
   const gate = () => { const go = $('#tn-go', cf); if (go) go.disabled = lack || !ready.fee || !ready.more; };
-  const noSats = (q) => { lack = true; warn(cf, html`This key’s Bitcoin address has ${tnSats(q.free || 0)} free for fees, short of the about ${tnSats(q.need)} this needs. <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`); };
+  const noSats = (q) => { lack = true; (q.hold ? Promise.resolve(q.hold) : brFree(pub).then((g) => g && g.hold)).then((hold) => { if (live()) warn(cf, html`This key’s Bitcoin address has ${tnSats(q.free || 0)} free for fees, short of the about ${tnSats(q.need)} this needs.${brHeldNote(hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`); }); };
   if (kind === 'merge') {
     const plan = planPick(list, TN.picks, { capRaw: tnCap() }), tracked = plan.kind === 'tracked', count = plan.notes.length;
     mount(cf, html`<h3>Merge ${count} notes → 1 note of ${brTac(plan.total)}</h3>

@@ -2754,12 +2754,21 @@ async function _ownLocksReadyForSpend(a = null) {
   if (!p) return;
   try { await p; } catch { throw new Error(_LOCKS_UNREAD_MSG); }
 }
-async function getUtxos(a, onProgress, { forSpend = false } = {}) {
+// split: { free, held } instead of the free coins alone; held are the coins spoken for, each with `hold`: 'bridge' (a bridge in progress will spend it) or 'lock' (collateral).
+// A coin this page has just spent is in neither.
+async function getUtxos(a, onProgress, { forSpend = false, split = false } = {}) {
   if (forSpend) await _ownLocksReadyForSpend(a);
   else await _ownLocksReserved(a)?.catch(() => {});
-  const _filterRecent = (utxos) => Array.isArray(utxos)
-    ? utxos.filter(u => !_isRecentlySpent(u.txid, u.vout) && !_isProtectedOutpoint(u.txid, u.vout) && !_burndepReserved(u.txid, u.vout) && !_crossoutReserved(u.txid, u.vout))
-    : utxos;
+  const _filterRecent = (utxos) => {
+    if (!Array.isArray(utxos)) return split ? { free: utxos, held: [] } : utxos;
+    const free = [], held = [];
+    for (const u of utxos) {
+      if (_isRecentlySpent(u.txid, u.vout)) continue;
+      const hold = _isProtectedOutpoint(u.txid, u.vout) ? 'lock' : (_burndepReserved(u.txid, u.vout) || _crossoutReserved(u.txid, u.vout)) ? 'bridge' : null;
+      if (hold) held.push({ ...u, hold }); else free.push(u);
+    }
+    return split ? { free, held } : free;
+  };
   if (_heavyAddresses.has(a)) {
     const cached = _utxoCacheByTxCount.get(a);
     if (cached) {
