@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-xvX8qaJ/V+7gOEvTHI5piATiHEvRcBMBcijzGuEFQOI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-SkFOULgUe9AQKmBod7RjvExEyEvxARNh9KY6Gadjx4g=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -2992,6 +2992,8 @@ function revertText(e) {
   const m = String(e?.message || '').match(/\(0x([0-9a-f]{8})\)|reverted[^0-9a-z]*0x([0-9a-f]{8})/i);
   return m ? REVERTS[(m[1] || m[2]).toLowerCase()] : undefined;
 }
+// What a call that failed to run says: the contract refuses it only where the node says it reverted; a node that did not answer is said as that, not as a refusal.
+const simWhy = (e, who, what = 'as it stands') => (e?.revert ? `Nothing was sent: ${who} refuses this ${what}. ${revertText(e) || ''}`.trim() : 'Nothing was sent: it could not be checked just now. Try again in a moment.');
 const walletDeclined = (e) => e?.code === 4001 || /user (rejected|denied)|rejected the request|denied transaction|no wallet selected/i.test(String(e?.shortMessage || e?.message || e || ''));
 const errText = (e) => {
   if (e?.said) return e.message;
@@ -7521,18 +7523,18 @@ async function xtZapSend({ run, t, r, plan, feeBps, built, proven, swapData = nu
   }
   let sim;
   try { sim = strip(await rpc('eth_call', [{ from, to: ADDR.confRouter, data, value: '0x' + plan.value.toString(16) }, 'latest'])); }
-  catch (e) { throw xtSaid(`Nothing was sent: the router refuses this as it stands. ${revertText(e) || ''}`.trim()); }
+  catch (e) { throw xtSaid(simWhy(e, 'the router')); }
   if (wordAt(sim, 0) !== plan.shares) throw xtSaid('It would not mint exactly the share proved, so nothing was sent. Press again for a fresh quote.');
   tell(`Proved. Sending it from ${your()}: one transaction ${what} and makes your share private…`);
   // the transaction finishes the proof job it spends, so the Activity item closes when it lands (as a self-sent settle does)
   const nest = run.op && actGet(run.op) ? run.op : null;
   const hash = runTx(run, await sendTx({ to: ADDR.confRouter, data, value: plan.value, label: run.to.label, protect: true, nest, finishes: [nest, proven.jobId && 'job:' + proven.jobId].filter(Boolean) }), 'Pool', 'Adding');
   tell(html`Sent ${txLink(hash)}. Waiting for it to land…`);
-  await waitTx(hash);
+  await waitTx(hash, { gone: () => protectGone(hash) });                          // a Protect send no builder took in time is said to have cost nothing, as the other zaps say it
   return hash;
 }
 async function xtStartCore({ run, r, wei, st }) {
-  const tell = (m) => run.say(st, m), t = await getUx(), priv = walletPriv(), from = S.wallet || S.address, pub = S.key.pubHex, eth = String(t.assetByTicker.cETH.assetId).toLowerCase();
+  const tell = (m) => run.say(st, m), t = await getUx(), priv = walletPriv(), from = usdtOwner(), pub = S.key.pubHex, eth = String(t.assetByTicker.cETH.assetId).toLowerCase();
   if (r.registered !== true) { const f = await t.externalAsset(r.addr); if (f.registered) { r.registered = true; xtFrom(r, f.row); } }
   const batchReg = r.registered !== true && payer() === 'wallet' && (await canBatch());
   if (r.registered !== true && !batchReg) await xtRegister(run, t, r, payer(), st);
@@ -7569,7 +7571,7 @@ async function xtStartBoth({ run, r, wei, st, plan }) {
   const { permit2 } = await permit2Args({ t, via, value: plan.bLeg, status: st, token: xtToken(r), approve: true });
   const data = t.router.addLiquidityPublicETHWithPermit2Calldata({ token: r.addr, feeBps: POOL_START_FEE, tokenAmount: plan.bLeg, minSharesOut: plan.shares, deadline: BigInt(chainNow() + 1200), to: plan.owner, permitSingle: permit2.permitSingle, signature: permit2.signature });
   try { await rpc('eth_call', [{ from: plan.owner, to: router, data, value: '0x' + plan.ethLeg.toString(16) }, 'latest']); }
-  catch (e) { throw xtSaid(`Nothing was sent: the pool refuses this start as it stands. ${revertText(e) || ''}`.trim()); }
+  catch (e) { throw xtSaid(simWhy(e, 'the pool', 'start as it stands')); }
   const index = t.nextShareIndex({ walletPriv: priv, poolId, owned: await scanOwned(), used: [...zapsKept().filter((x) => x.pub === pub && x.poolId === poolId), ...(await vouchers()).list(pub, lpTicker(poolId))].map((x) => x.index) });
   const built = t.buildShareWrap({ walletPriv: priv, poolId, shares: plan.shares, index });
   run.take(kDep(built));
@@ -7660,7 +7662,7 @@ async function xtAddCheck(r, x) {
   return null;
 }
 async function xtAddCore({ run, r, wei, st }) {
-  const tell = (m) => run.say(st, m), t = await getUx(), priv = walletPriv(), from = S.wallet || S.address, pub = S.key.pubHex;
+  const tell = (m) => run.say(st, m), t = await getUx(), priv = walletPriv(), from = usdtOwner(), pub = S.key.pubHex;       // the account that sends, which the call is run from (the Tacit account, when it pays)
   const { plan, eth, ra: ra0, rb: rb0 } = await xtAddPlan(t, r, wei);
   if (!plan) throw xtSaid('Enter a larger amount: this one is too small to make a share of the pool.');
   { const bad = await xtAddCheck(r, { ra: ra0, rb: rb0, plan }); if (bad) throw xtSaid(bad); }
@@ -7810,7 +7812,7 @@ async function xtEarnGo(run, key, units) {
       catch (e) {
         farmNote(run, 'Added, but not in the farm yet: farm it from Your Tacit.');
         farmSay(run, st, html`<span class="err">Added, but not in the farm yet: ${errText(e)} Farm it from Your Tacit.</span>`);
-        throw e;
+        throw run.away ? e : Object.assign(e, { offered: true });                  // said above: the run's own failure line would write over it with the bare error
       }
     }
     run.release?.();
@@ -10832,7 +10834,7 @@ async function zapShareFirst({ run, t, p, built, index, shares, maxEth, tokenB, 
     deadline: BigInt(deadline), commit: built.commit, publicValues: proven.publicValues, proof: proven.proof, memos: proven.memos || built.memos });
   let sim;
   try { sim = strip(await rpc('eth_call', [{ from, to: ADDR.confRouter, data, value: '0x' + plan.value.toString(16) }, 'latest'])); }
-  catch (e) { throw Object.assign(new Error(`Nothing was sent: the router refuses this zap as it stands. ${revertText(e) || ''}`.trim()), { said: true }); }
+  catch (e) { throw Object.assign(new Error(simWhy(e, 'the router', 'zap as it stands')), { said: true }); }
   if (wordAt(sim, 0) !== shares) throw new Error('The zap would not mint exactly the share proved, so nothing was sent. Press again for a fresh quote.');
   const rec = { pub: S.key?.pubHex, pid: p.pid, poolId: p.poolId, shares: String(shares), index, depositId: built.depositId, tx: null, deadline, at: Date.now(), ...(bond ? {} : { bond: false }) };
   tell(`Proved. Sending it from ${your()}: one transaction adds your ETH and makes your share private…`);
@@ -10844,7 +10846,15 @@ async function zapShareFirst({ run, t, p, built, index, shares, maxEth, tokenB, 
   return { hash, rec };
 }
 const farmedAt = (status) => (status?.id === 'hx-zs' ? 'Yours, below' : 'Your private farming');
-async function zapFinish(run, p, rec, built, tell, status, { bond = true } = {}) {
+// A zap's Activity record is done when its last step has landed. Its steps are the page's own transaction and the relay's jobs for the share (each named, none the main
+// one, unless the share was proved through the relay first), which Activity would read as "the first part went through, but the rest did not start" once the run ends, with
+// a failure toast and a "start it again" for a zap that went through.
+async function zapFinish(run, p, rec, built, tell, status, opts = {}) {
+  const r = await zapFinishSteps(run, p, rec, built, tell, status, opts);
+  if (r === 'done' && run.op) actPut(run.op, { done: true });
+  return r;
+}
+async function zapFinishSteps(run, p, rec, built, tell, status, { bond = true } = {}) {
   const t = await getUx(), priv = walletPriv(), here = !!built;
   built ||= t.buildShareWrap({ walletPriv: priv, poolId: rec.poolId, shares: BigInt(rec.shares), index: rec.index });
   const leaf = String(built.leaf).toLowerCase(), held = () => (P.scan?.notes || []).find((n) => String(n.leaf).toLowerCase() === leaf);
