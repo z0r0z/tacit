@@ -37,6 +37,7 @@ import { checkJob, stepChain } from './lib/points-tasks.js';
 import { quoteTacForEth } from './lib/tac-quote.js';
 import { clientKey } from './lib/token-bucket.js';
 import { mayPublishRoot } from './lib/points-publish-gate.js';
+import { makeCirculating, uncirculatedWallets, parseExcluded } from './lib/tac-circulating.js';
 import { makeClient as holdingClient } from './lib/evm-pool-snapshot-chain.js';
 import { decideBondHolds, accrueBondHolds } from './lib/points-bond-hold.js';
 import { parseCategoryWeights, parseAddressDayCaps, parseCategoryShareCaps, parseEngagementSchedule } from './lib/points-engagement.js';
@@ -81,6 +82,14 @@ function capToBoostCoverage(tip) {
 // for every other activity. Binary search over mainnet block timestamps (monotonic) for the last block at or
 // before `targetTime`, up to `tip` (a real, uncapped mainnet block number).
 const mainnetBlockAtOrBefore = makeBlockAtOrBefore(async (n) => (await publicClient.getBlock({ blockNumber: n })).timestamp);
+
+// TAC's circulating supply for CoinGecko (GET /supply, lib/tac-circulating.js). An entry of POINTS_SUPPLY_EXCLUDED that is not an address is
+// left out and said so: one typo must not stop the points service.
+const excludedExtra = parseExcluded(CFG.pointsSupplyExcluded);
+if (excludedExtra.bad.length) log(`POINTS_SUPPLY_EXCLUDED: not addresses, ignored: ${excludedExtra.bad.join(', ')}`);
+const circulating = makeCirculating({
+  client: publicClient, token: CFG.tacToken, wallets: uncirculatedWallets({ distributor: CFG.pointsDistributor, extra: excludedExtra.ok }), log,
+});
 
 // One-time fast catch-up for a freshly (re-)enabled boost, run once at startup before scanTacTransfers's
 // eth_getLogs-based incremental scan takes over. That scan chunks by block range, and this RPC caps
@@ -1741,6 +1750,11 @@ function startHttp(store, evmState) {
           // Same, for the Z-share holder boost.
           zShareBoostLastScannedBlock: zShareBoost ? String(zShareBoost.coveredThrough()) : null,
         }));
+        return;
+      }
+      if (url.pathname === '/supply') {
+        const r = await circulating();
+        res.statusCode = r.status; res.setHeader('Cache-Control', r.status === 200 ? 'public, max-age=60' : 'no-store'); res.end(JSON.stringify(r.body));
         return;
       }
       if (url.pathname === '/tasks') {

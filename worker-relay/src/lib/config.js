@@ -73,6 +73,9 @@ export const ADDR = {
   // PointsDistributor (contracts/src/PointsDistributor.sol) — empty until deployed, in which case
   // points-indexer.js's settleCycle logs and skips publishing rather than failing.
   pointsDistributor: opt('POINTS_DISTRIBUTOR_ADDR', ''),
+  // Wallets whose TAC is not circulating, beyond the ops multisig, the airdrop and the distributor (src/lib/tac-circulating.js, served at
+  // GET /supply for CoinGecko): the team's and the treasury's, as comma-separated addresses. Keep it the same as the supply update form's list.
+  pointsSupplyExcluded: opt('POINTS_SUPPLY_EXCLUDED', ''),
   // WrapTipForwarder (contracts/src/WrapTipForwarder.sol) — deployed 2026-09-23. Optional for
   // points-indexer.js: when set, a Wrap's matching WrappedWithTip (same tx) is recorded alongside it purely
   // as metadata (tip amount + who it went to) — it never changes which address gets points. Points always
