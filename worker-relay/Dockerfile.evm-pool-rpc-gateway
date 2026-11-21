@@ -16,7 +16,7 @@ COPY dapp/vendor/tacit-deps.min.js /app/dapp/vendor/tacit-deps.min.js
 WORKDIR /app/worker-relay
 COPY worker-relay/package.json ./package.json
 COPY worker-relay/src/evm-pool-rpc-gateway.js ./src/evm-pool-rpc-gateway.js
-COPY worker-relay/src/lib/evm-pool-keeper-sealed.js worker-relay/src/lib/evm-pool-keeper-rpc.js worker-relay/src/lib/fixed-pool-history.js worker-relay/src/lib/token-bucket.js worker-relay/src/lib/safe-err.js ./src/lib/
+COPY worker-relay/src/lib/evm-pool-keeper-sealed.js worker-relay/src/lib/evm-pool-keeper-rpc.js worker-relay/src/lib/fixed-pool-history.js worker-relay/src/lib/token-bucket.js worker-relay/src/lib/safe-err.js worker-relay/src/lib/safe-url.js ./src/lib/
 
 # The shared modules must load here, or the image is unusable.
 RUN node -e "import('./src/evm-pool-rpc-gateway.js').then((m) => { if (typeof m.makeRpcGateway !== 'function') process.exit(1); console.log('rpc gateway ok'); })"

@@ -151,7 +151,7 @@ await check('the image\'s files start the gateway', async () => {
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const out = mkdtempSync(join(tmpdir(), 'rpc-gw-image-'));
   const files = ['dapp/package.json', 'dapp/sealed-request.js', 'dapp/relay-gateway-doc.js', 'dapp/fixed-pool-sync.js', 'dapp/vendor/tacit-deps.min.js', 'worker-relay/package.json', 'worker-relay/src/evm-pool-rpc-gateway.js',
-    'worker-relay/src/lib/evm-pool-keeper-sealed.js', 'worker-relay/src/lib/evm-pool-keeper-rpc.js', 'worker-relay/src/lib/fixed-pool-history.js', 'worker-relay/src/lib/token-bucket.js', 'worker-relay/src/lib/safe-err.js'];
+    'worker-relay/src/lib/evm-pool-keeper-sealed.js', 'worker-relay/src/lib/evm-pool-keeper-rpc.js', 'worker-relay/src/lib/fixed-pool-history.js', 'worker-relay/src/lib/token-bucket.js', 'worker-relay/src/lib/safe-err.js', 'worker-relay/src/lib/safe-url.js'];
   const docker = (await import('node:fs')).readFileSync(join(root, 'worker-relay/Dockerfile.evm-pool-rpc-gateway'), 'utf8');
   for (const f of files) { mkdirSync(dirname(join(out, f)), { recursive: true }); copyFileSync(join(root, f), join(out, f)); assert.ok(docker.includes(f.split('/').pop()), `the Dockerfile copies ${f}`); }
   const m = await import(pathToFileURL(join(out, 'worker-relay/src/evm-pool-rpc-gateway.js')).href);
