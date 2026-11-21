@@ -472,4 +472,9 @@ html:not([data-page="spx"]) {
   & .swc .go:disabled { color: var(--faint, var(--mute)); background: var(--field); border-color: transparent; }
   & .swc .to input { border-radius: 10px; border-color: var(--hair); background: var(--card); }
   & .swc .slip button[aria-pressed="true"] { background: var(--raise, color-mix(in srgb, var(--ink) 12%, transparent)); }
+  /* the line under the button (a quote, a note, what went wrong) sits centred under it, as the steps do; the copy-link button keeps its place on the
+     right, and an empty gutter as wide on the left keeps the line centred whether that button shows or not */
+  & .swc .act { grid-template-columns: 36px minmax(0, 1fr) 36px; }
+  & .swc .act > .q { grid-column: 2; text-align: center; }
+  & .swc .act > .cp, & .swc .act > #hx-copy.cp { grid-column: 3; justify-self: end; }
 }
