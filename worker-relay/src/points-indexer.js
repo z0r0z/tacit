@@ -84,11 +84,12 @@ function capToBoostCoverage(tip) {
 const mainnetBlockAtOrBefore = makeBlockAtOrBefore(async (n) => (await publicClient.getBlock({ blockNumber: n })).timestamp);
 
 // TAC's circulating supply for CoinGecko (GET /supply, lib/tac-circulating.js). An entry of POINTS_SUPPLY_EXCLUDED that is not an address is
-// left out and said so: one typo must not stop the points service.
-const excludedExtra = parseExcluded(CFG.pointsSupplyExcluded);
+// left out and said so: one typo must not stop the points service. (These addresses are in ADDR, not CFG.)
+const excludedExtra = parseExcluded(ADDR.pointsSupplyExcluded);
 if (excludedExtra.bad.length) log(`POINTS_SUPPLY_EXCLUDED: not addresses, ignored: ${excludedExtra.bad.join(', ')}`);
+if (!ADDR.pointsDistributor) log('POINTS_DISTRIBUTOR_ADDR is not set: /supply does not subtract the points distributor');
 const circulating = makeCirculating({
-  client: publicClient, token: CFG.tacToken, wallets: uncirculatedWallets({ distributor: CFG.pointsDistributor, extra: excludedExtra.ok }), log,
+  client: publicClient, token: ADDR.tacToken, wallets: uncirculatedWallets({ distributor: ADDR.pointsDistributor, extra: excludedExtra.ok }), log,
 });
 
 // One-time fast catch-up for a freshly (re-)enabled boost, run once at startup before scanTacTransfers's

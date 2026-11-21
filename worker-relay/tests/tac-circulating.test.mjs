@@ -24,6 +24,19 @@ const ok = (msg) => { n++; console.log(`ok - ${msg}`); };
   ok('the multisig, the airdrop and the distributor are the repo\'s addresses, to the byte');
 }
 
+// The service reads these from ADDR, not CFG (a read with no token address went out as "Transaction creation failed" on the first deploy).
+{
+  process.env.RPC_URL ??= 'http://127.0.0.1:8545';     // the config insists on a node; nothing here connects to it
+  const { ADDR, CFG } = await import('../src/lib/config.js');
+  assert.equal(ADDR.tacToken, TOKEN, 'ADDR holds the TAC token');
+  assert.equal(typeof ADDR.pointsSupplyExcluded, 'string', 'ADDR holds the extra wallets setting');
+  assert.equal(CFG.tacToken, undefined, 'and CFG does not, so reading it from CFG gives nothing');
+  const wiring = /makeCirculating\(\{[\s\S]*?\}\);/.exec(readFileSync(new URL('../src/points-indexer.js', import.meta.url), 'utf8'))[0];
+  assert.ok(/token: ADDR\.tacToken/.test(wiring) && /distributor: ADDR\.pointsDistributor/.test(wiring), 'the indexer wires the token and the distributor from ADDR');
+  assert.ok(!/CFG\.(tacToken|pointsDistributor|pointsSupplyExcluded)\b/.test(readFileSync(new URL('../src/points-indexer.js', import.meta.url), 'utf8')), 'and reads none of them from CFG');
+  ok('the indexer reads the token, the distributor and the extra wallets from ADDR');
+}
+
 // A fake chain: balanceOf by wallet.
 const chain = (balances, calls = []) => ({
   readContract: async ({ address, functionName, args }) => {
