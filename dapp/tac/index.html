@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-T8NSqOppkt3ZG/PhHlZqa1JtXP5DcBTkbSc0YdPoQKs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-bDiLdZmWBs2ZTIym/eu2zvuERhtb2/SEEvrRk/13+CA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -1238,7 +1238,9 @@ html[data-sec]:not([data-page="tac"]) .hero { padding-top: 0; }
 html[data-sec][data-page="tac"] .tpg { display: block; padding-top: 0; }
 html[data-sec][data-page="tac"] .tpg > * { max-width: 460px; margin-left: auto; margin-right: auto; position: static; }
 /* every view keeps #tpg-act, where a button that opens the swap card puts it; "Manage your TAC" (#tpg-notes) is the Notes view's alone */
-html[data-sec="payments/request"] :is(.tpg > :not(#tpg-side, #tpg-act), #tpg-notes, #tcd-seg, #tcd-tabs), html[data-sec="payments/links"] :is(.tpg > :not(#tpg-side, #tpg-act), #tpg-notes, #tcd-seg, #tcd-head) { display: none !important; }
+html[data-sec="payments/links"] :is(.tpg > :not(#tpg-side, #tpg-act), #tpg-notes, #tcd-seg, #tcd-head) { display: none !important; }
+/* in Payments the section's tabs are the card's Send and Request, so the card's own switch between them gives way */
+html[data-sec^="payments/"] .hx .hx-sr { display: none !important; }
 /* Claim links is the pool's card cut to the claim link: its figures, its tabs, the send form over the link and the rule between them go, so the
    view is the amount, the PIN, the button and the links made here, and nothing asks to be scrolled past */
 html[data-sec="payments/links"] :is(#tcd-net, #tcd-pool .tp > .seg.sub, #tp-held-row, #tp-p-send > :not(.tp-sep, .tp-sep ~ *), #tp-p-send > .tp-sep) { display: none !important; }
@@ -2444,7 +2446,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=1b2d7806" defer></script>
+<script src="/chrome.js?cb=d95a5b2b" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -5565,8 +5567,10 @@ function secView() {
   if (sec === 'chains/notes') { const w = $('#tpg-where'), br = $('#tpg-br'); if (w && !w.open) w.open = true; if (br && !br.open) br.open = true; }
   if (!sec || `#/${sec.replace(/\/$/, '')}` !== location.hash) return false;
   SECV.hash = location.hash;
-  const spec = { 'payments/send': `send:${HX.send}`, 'defi/swap': 'swap', 'chains/move': 'shield', 'chains/bridge': 'bridge' }[sec];
-  if (spec) { hxPreset(spec, ''); window.scrollTo(0, 0); }      // the card is the view here: nothing to scroll to, the view starts at its head
+  // Request is the card's own: its Send held to asking (an asset that cannot be asked for, wallet TAC, a pool share, gives way to ETH)
+  const ask = sec === 'payments/request', askable = !['wtac', 'rtac'].includes(HX.send) && !hxIsLp(HX.send);
+  const spec = { 'payments/send': `send:${HX.send}`, 'payments/request': `send:${askable ? HX.send : 'eth'}`, 'defi/swap': 'swap', 'chains/move': 'shield', 'chains/bridge': 'bridge' }[sec];
+  if (spec) { hxPreset(spec, ''); if (ask) { HX.ask = true; paintHx(); } window.scrollTo(0, 0); }      // the card is the view here: nothing to scroll to, the view starts at its head
   return true;
 }
 document.addEventListener('tacit:sec', () => { viewTitle(); if (SECV.hash !== location.hash) secView(); if (TACP.on && TPG_PATH.test(location.pathname) && !running('tac')) keep($('#sheet-tac'), render.tac); });

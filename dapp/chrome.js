@@ -151,7 +151,7 @@
   const SEC = {
     "payments": ["Payments", "Send to anyone, ask to be paid, or leave TAC for someone with no wallet yet.", [
       ["send", "Send", "/#/payments/send", "One send for every asset: private TAC, ETH, cUSD, cBTC, TAC on the Tacit chain, BTC. To a tacit1 address, a name or 0x."],
-      ["request", "Request", "/tac/?v=request#receive", "Ask for an amount: a pay link and a QR that waits for the payment to land."],
+      ["request", "Request", "/#/payments/request", "Ask to be paid in any asset: a link and a QR that open the payment, filled in."],
       ["links", "Claim links", "/tac/?v=links#pool/send", "Leave TAC for someone with no wallet yet, with a PIN if you like; take it back if they never claim."]]],
     "defi": ["DeFi", "Swap, farm and stake, privately when you want.", [
       ["swap", "Swap", "/#/defi/swap", "Public or private swaps at the best route."],
@@ -173,7 +173,7 @@
   // the mock-up's addresses for what is a page, a sheet or another address here
   const ELSE = { '#/portfolio': '/#portfolio', '#/defi/earn': '/#card=earn', '#/borrow': '/vault/', '#/borrow/btc': '/vault/#btc', '#/borrow/tac': '/vault/', '#/rewards': '/rewards/', '#/more': '/#/menu', '#/activity': '/#activity',
     '#/account': '/#wallet', '#/account/wallet': '/#wallet', '#/account/addresses': '/#bitcoin/receive', '#/account/proofs': '/#prove-self' };
-  const TAC_VIEW = { request: 'payments', links: 'payments', stake: 'defi', notes: 'chains' };
+  const TAC_VIEW = { links: 'payments', stake: 'defi', notes: 'chains' };
   const HREF = { portfolio: '/#portfolio', payments: '/#/payments', defi: '/#/defi', chains: '/#/chains', borrow: '/vault/', rewards: '/rewards/', menu: '/#/menu' };
   const main = document.querySelector('main');
   if (!main || !document.querySelector('.sn')) return;
