@@ -448,8 +448,8 @@ html:not([data-page="spx"]) {
   & .swc .f:has(.coin use[href*="usdc"]) { --tone: #2775CA; }
   & .swc .f:has(.coin use[href*="usdt"]), & .swc .f:has(.coin use[href*="cusd"]) { --tone: #26A17B; }
   & .swc .f:has(.where.priv), & .swc .f.priv { outline: 1px dashed var(--hair-2); outline-offset: -1px; }
-  & .swc .f:has(.where.priv)::after, & .swc .f.priv::after { content: ''; position: absolute; inset: 1px; z-index: -1; border-radius: inherit; pointer-events: none; background: var(--cipher, none) 4px 3px / 220px 126px;
-    -webkit-mask-image: linear-gradient(90deg, rgba(0,0,0,.25), #000 62%); mask-image: linear-gradient(90deg, rgba(0,0,0,.25), #000 62%); }
+  & .swc .f:has(.where.priv)::after, & .swc .f.priv::after { content: ''; position: absolute; inset: 1px; z-index: -1; border-radius: inherit; pointer-events: none; background: var(--cipher, none) 4px 3px / 220px 126px; opacity: .5;
+    -webkit-mask-image: linear-gradient(90deg, rgba(0,0,0,.1), #000 70%); mask-image: linear-gradient(90deg, rgba(0,0,0,.1), #000 70%); }
   & .swc .fh, & .swc .ff { font-size: 13px; }
   & .swc .fm .amt, & .swc .fm .big { font: 400 38px/1.15 var(--mono); letter-spacing: -.04em; }
   & .swc .fm .say { font: 400 15px/1.4 var(--sans, inherit); }
