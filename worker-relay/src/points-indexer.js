@@ -37,7 +37,7 @@ import { checkJob, stepChain } from './lib/points-tasks.js';
 import { quoteTacForEth } from './lib/tac-quote.js';
 import { clientKey } from './lib/token-bucket.js';
 import { mayPublishRoot } from './lib/points-publish-gate.js';
-import { makeCirculating, uncirculatedWallets, parseExcluded } from './lib/tac-circulating.js';
+import { makeCirculating, uncirculatedWallets, parseExcluded, plainValue } from './lib/tac-circulating.js';
 import { makeClient as holdingClient } from './lib/evm-pool-snapshot-chain.js';
 import { decideBondHolds, accrueBondHolds } from './lib/points-bond-hold.js';
 import { parseCategoryWeights, parseAddressDayCaps, parseCategoryShareCaps, parseEngagementSchedule } from './lib/points-engagement.js';
@@ -1756,6 +1756,11 @@ function startHttp(store, evmState) {
       if (url.pathname === '/supply') {
         const r = await circulating();
         res.statusCode = r.status; res.setHeader('Cache-Control', r.status === 200 ? 'public, max-age=60' : 'no-store'); res.end(JSON.stringify(r.body));
+        return;
+      }
+      if (url.pathname === '/supply/total' || url.pathname === '/supply/circulating') {
+        const r = plainValue(await circulating(), url.pathname === '/supply/total' ? 'total' : 'circulating');
+        res.statusCode = r.status; res.setHeader('Cache-Control', r.status === 200 ? 'public, max-age=60' : 'no-store'); res.end(r.text);
         return;
       }
       if (url.pathname === '/tasks') {

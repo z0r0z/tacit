@@ -2,7 +2,7 @@
 //   node worker-relay/tests/tac-circulating.test.mjs
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { makeCirculating, uncirculatedWallets, parseExcluded, OPS_MULTISIG, TAC_AIRDROP } from '../src/lib/tac-circulating.js';
+import { makeCirculating, uncirculatedWallets, parseExcluded, plainValue, OPS_MULTISIG, TAC_AIRDROP } from '../src/lib/tac-circulating.js';
 import { TAC_ETCH_SUPPLY } from '../src/lib/tac-supply.js';
 
 const TAC = 10n ** 18n;
@@ -119,6 +119,22 @@ const wallets = uncirculatedWallets({ distributor: DISTRIBUTOR });
   const get = makeCirculating({ client: chain({ [OPS_MULTISIG.toLowerCase()]: TAC_ETCH_SUPPLY + TAC }), token: TOKEN, wallets, nowMs: () => 0 });
   assert.equal((await get()).body.circulating_supply, 0);
   ok('the circulating supply is never negative');
+}
+
+// The two plain-number answers: one figure, nothing else, and valid JSON too.
+{
+  const r = await makeCirculating({ client: chain(held), token: TOKEN, wallets, nowMs: () => 0 })();
+  const circ = plainValue(r, 'circulating'), total = plainValue(r, 'total');
+  assert.deepEqual([circ.status, total.status], [200, 200]);
+  assert.equal(total.text, '21000000', 'the total is the bare number');
+  assert.equal(JSON.parse(circ.text), r.body.circulating_supply, 'the circulating figure is the same number, decimals kept');
+  assert.ok(/^\d+(\.\d+)?$/.test(circ.text) && /^\d+$/.test(total.text), 'digits only, no exponent, no quotes, no object');
+  const down = plainValue({ status: 503, body: { error: 'supply is not readable right now' } }, 'circulating');
+  assert.equal(down.status, 503, 'a failed read is a 503, never a number');
+  assert.ok(!/^\d/.test(down.text));
+  const src = readFileSync(new URL('../src/points-indexer.js', import.meta.url), 'utf8');
+  assert.ok(src.includes("'/supply/total'") && src.includes("'/supply/circulating'") && /plainValue\(await circulating\(\)/.test(src), 'the indexer serves both routes from the same read');
+  ok('/supply/total and /supply/circulating answer one bare number each');
 }
 
 console.log(`\n${n} tac-circulating checks passed`);

@@ -35,6 +35,13 @@ export function uncirculatedWallets({ distributor = '', extra = [] } = {}) {
   return list.filter((w) => { const k = w.address.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
 }
 
+// One figure as a bare number, for a field that wants only that (CoinGecko's own example endpoint, blockchain.info/q/totalbc, answers one): GET
+// /supply/total and /supply/circulating. A bare number is also valid JSON. r is get()'s answer; a failed read passes its status and error through.
+export function plainValue(r, which) {
+  if (r.status !== 200) return { status: r.status, text: JSON.stringify(r.body) };
+  return { status: 200, text: String(which === 'total' ? r.body.total_supply : r.body.circulating_supply) };
+}
+
 // whole tokens with up to eight decimals, from wei
 const tokens = (wei) => Number(wei / 10n ** 10n) / 1e8;
 
