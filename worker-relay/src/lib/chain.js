@@ -60,7 +60,9 @@ export const settleWallet = walletFor(CFG.settleKey || CFG.relayKey, settleTrans
 // The same signer over each configured private endpoint, tried in order: one relay refusing a submission
 // (stale validator, outage) would otherwise waste a proof the relay has already paid for.
 export const settleWallets = [
-  ...(CFG.settleRpcUrls || []).map((url) => ({ url, wallet: walletFor(CFG.settleKey || CFG.relayKey, http(url)) })),
+  // retryCount 0: viem's default asks a failing endpoint three more times with a short delay, which a rate-limited endpoint counts as four requests; the settle relay's
+  // rounds (and its one backoff retry for a rate limit) are the retries.
+  ...(CFG.settleRpcUrls || []).map((url) => ({ url, wallet: walletFor(CFG.settleKey || CFG.relayKey, http(url, { retryCount: 0, timeout: 10_000 })) })),
   ...(CFG.settleAllowPublic ? [{ url: `${CFG.rpcUrl} (PUBLIC)`, wallet: walletFor(CFG.settleKey || CFG.relayKey, transport) }] : []),
 ].filter((e) => e.wallet);
 

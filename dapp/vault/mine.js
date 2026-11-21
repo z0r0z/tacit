@@ -3,14 +3,14 @@
 // a whole cBTC note and its repayment, the mint and the loans relayed. Paying the deposit address from a wallet in the browser, a note cut to
 // size and a relay that will not take it (the front page sends it from the Tacit account) are the front page's: those link there. Nothing here is loaded until the holder asks: this module, the key, the pool and Bitcoin's history come in on that press.
 import { sha256, hmac, secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { makeKeySession, signInSheet } from '/trade/key.js?cb=67d4d4de';
-import { btcWay, btcSeen } from '/trade/btc-way.js?cb=b358ce45';
+import { makeKeySession, signInSheet } from '/trade/key.js?cb=04a214c9';
+import { btcWay, btcSeen } from '/trade/btc-way.js?cb=0ba892b7';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
-import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=ac332664';
+import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=a947983f';
 import { makeLoans, exactNotes, bondGap, bondCall, bondShareCall, bondBackCall, outpointOf, lockPad, lockRate, loanHealth, liqPhrase, healthLine, loanTag, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=e1f5e408';
 import { makeRunner } from '/activity.js';
 import { relayRefused, relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { esc, short, grp, plain, parseUnits, word, wordAt } from '/trade/util.js?cb=1d2cd8d3';
+import { esc, short, grp, plain, parseUnits, word, wordAt } from '/trade/util.js?cb=9c8b4133';
 
 const API = 'https://api.tacit.finance';
 // Bitcoin's explorers, in order: a read that fails at one is asked of the next
@@ -338,7 +338,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
       <div class="lbl"><span>cBTC to put up</span></div>
       <div class="sel">${tk('cbtc')}<select id="bm-note" aria-label="cBTC note to put up"${off()}>${notes.map((x) => `<option value="${esc(noteId(x))}"${x === n ? ' selected' : ''}>${esc(btcTxt(x.value))} cBTC</option>`).join('')}</select></div>
       <div class="lbl"><span>cUSD to borrow</span></div>
-      <div class="amt"><input id="bm-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="cUSD to borrow" value="${esc(f.amt || '')}"${off()}><span class="u">${tk('cusd')}cUSD</span></div>
+      <div class="amt"><input id="bm-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="cUSD to borrow" value="${esc(f.amt || '')}"${off()}><span class="u">${tk('cusd')}cUSD</span></div>
       ${chips.length ? `<div class="lbl"><span>Collateral ratio</span></div><div class="chips bm-chips" role="group" aria-label="Collateral ratio">${chips.map(([r, v]) => `<button type="button" data-mine="ratio" data-v="${v}" aria-label="Borrow ${v} cUSD, a ${r}% collateral ratio"${off()}>${r}%</button>`).join('')}</div>` : ''}
       <p class="hint bm-health" id="bm-health">${healthHtml(n, f.amt)}</p>
       ${max ? `<p class="hint">Up to ${esc(max.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))} cUSD at the ${esc(String(e.ratio))}% floor.${e.liq ? ` A loan can be liquidated below ${esc(String(e.liq))}%.` : ''}</p>` : ''}
@@ -356,7 +356,7 @@ export function mountMine(root, { ticket = null, pick, wallet = null, W = null, 
       <div class="bm-addr"><code>${esc(d.addr)}</code></div>
       ${D.form.qr ? `<div class="bm-qr" data-addr="${esc(d.addr)}"></div>` : ''}
       <div class="lbl"><span>BTC to lock</span>${most >= 10000n ? `<button class="linkbtn" type="button" data-mine="lockmax" data-v="${esc(plain(most, 8))}"${off()}>Up to ${esc(plain(most, 8))} · Max</button>` : ''}</div>
-      <div class="amt"><input id="bm-lock" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="BTC to lock" value="${esc(D.form.lock || '')}"${off()}><span class="u">${tk('btc')}BTC</span></div>
+      <div class="amt"><input id="bm-lock" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="BTC to lock" value="${esc(D.form.lock || '')}"${off()}><span class="u">${tk('btc')}BTC</span></div>
       <div class="rows">
         <div class="kv"><span>Bond</span><b class="num" id="bm-bond">${esc(bondLine())}</b></div>
         <div class="kv"><span>At the address</span><b class="num">${esc(btcTxt(d.sats))} BTC${d.pending > 0n ? `<small>${esc(btcTxt(d.pending))} on its way</small>` : ''}</b></div>

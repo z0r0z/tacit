@@ -1,7 +1,9 @@
 # tacit-evm-pool-forwarder: a forwarder for the EVM pool private route (src/evm-pool-forwarder.js). A wallet sends it a request sealed to a keeper's
 # gateway key; it hands that to the keeper's POST /sealed and returns the sealed answer. It sees the caller's address and the size and time of each
 # envelope, never what is in it; it holds no key and keeps nothing. Anyone can run one.
-# Build context is the repo root: the forwarder shares the envelope limits with the wallet's own code (dapp/sealed-request.js).
+# Build context is the repo root: the forwarder shares the envelope limits with the wallet's own code (dapp/sealed-request.js), and reads the relay registry
+# with the page's own reader (dapp/evm-pool-open-relays.js) to carry the relays people have listed (FORWARDER_RPC_URL). Every file the forwarder imports is named
+# below: tests/forwarder-image.test.mjs lays the image out from this list and runs the load check, so a new import cannot be left off it.
 #   docker build -f worker-relay/Dockerfile.evm-pool-forwarder .
 #   docker run -p 10000:10000 -e FORWARDER_GATEWAYS='{"k":"https://<keeper>/sealed"}' <image>
 
@@ -11,16 +13,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 
 COPY dapp/package.json /app/dapp/package.json
-COPY dapp/sealed-request.js /app/dapp/sealed-request.js
+COPY dapp/sealed-request.js dapp/evm-pool-open-relays.js dapp/evm-pool-relays.js /app/dapp/
 COPY dapp/vendor/tacit-deps.min.js /app/dapp/vendor/tacit-deps.min.js
 
 WORKDIR /app/worker-relay
 COPY worker-relay/package.json ./package.json
 COPY worker-relay/src/evm-pool-forwarder.js ./src/evm-pool-forwarder.js
-COPY worker-relay/src/lib/evm-pool-forwarder.js worker-relay/src/lib/token-bucket.js ./src/lib/
+COPY worker-relay/src/lib/evm-pool-forwarder.js worker-relay/src/lib/token-bucket.js worker-relay/src/lib/safe-https.js worker-relay/src/lib/relay-registry-reader.js ./src/lib/
 
-# The shared limits must load here, or the image is unusable.
-RUN node -e "import('./src/lib/evm-pool-forwarder.js').then((m) => { if (typeof m.makeForwarder !== 'function') process.exit(1); console.log('forwarder ok'); })"
+# The service and everything it imports must load here, or the image is unusable.
+RUN node -e "Promise.all([import('./src/lib/evm-pool-forwarder.js'), import('./src/evm-pool-forwarder.js')]).then(([m, s]) => { if (typeof m.makeForwarder !== 'function' || typeof s.gatewaysOf !== 'function') process.exit(1); console.log('forwarder ok'); })"
 
 ENV NODE_ENV=production \
     PORT=10000

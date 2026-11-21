@@ -1,7 +1,7 @@
 // TAC's page. index.html imports this when TAC's page opens (its address, /tac/, preloads it) or a link to it is pointed at, and calls
 // install() with what this code reads from its module: let and var bindings are read as ctx.X, so their changes there are seen here.
 export default function install(ctx) {
-const { $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brHolds, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your } = ctx;
+const { $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brHolds, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, heldParts, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your } = ctx;
 const TCD_FILL = { at: 0 };   // (a Stake press made before the wallet's TAC was read: see tcardStakeFill)
 function idMark(a, size = 40) {
   const h = addressId(a).replace(/·/g, ''), hue = Math.round((parseInt(h.slice(0, 2), 16) / 256) * 360);
@@ -176,7 +176,7 @@ function renderBridgeIn(el) {
         <div class="rcpt" id="br-allp" hidden></div>` : ''}`}
     <div class="rcpt" id="br-rcpt" hidden></div>
     ${BR_TO_ON ? html`<div id="br-towrap" hidden>
-      <div class="amt text"><input id="br-to" placeholder="Send it to someone else: their Tacit address or name" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Send it to someone else"></div>
+      <div class="amt text"><input id="br-to" placeholder="Send it to someone else: their Tacit address or name" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Send it to someone else"></div>
       <div class="status" role="status" id="br-tos"></div></div>` : ''}
     <label class="pick" id="br-ackrow" hidden><input type="checkbox" id="br-ack"><span id="br-acktext">I understand a bridge can’t be undone once its burn confirms on Bitcoin.</span></label>
     <button class="btn" type="button" id="br-go" disabled>Bridge to Ethereum</button>
@@ -184,9 +184,9 @@ function renderBridgeIn(el) {
     <p class="note">A bridge from Bitcoin needs no Ethereum gas: the relay sends the Ethereum side. The Bitcoin fee is paid in sats from your Bitcoin address. <button class="link" type="button" id="br-addrs">Your addresses and what each is for</button></p>
     <details class="lockmore"><summary>A bridge you started is not listed</summary>
       <p class="note">One started on another device, or in the classic app, is rebuilt from its burn or move transaction and this key.</p>
-      <div class="amt text"><input id="br-txid" placeholder="Burn or move transaction id" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Burn or move transaction id"></div>
-      <div class="amt text" id="br-amtrow" hidden><input id="br-ramt" inputmode="decimal" placeholder="TAC amount" autocomplete="off" aria-label="TAC amount of that bridge"></div>
-      ${BR_TO_ON ? html`<div class="amt text"><input id="br-fto" placeholder="Sent to someone else? Their address" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Address that bridge paid"></div>` : ''}
+      <div class="amt text"><input id="br-txid" placeholder="Burn or move transaction id" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Burn or move transaction id"></div>
+      <div class="amt text" id="br-amtrow" hidden><input id="br-ramt" inputmode="decimal" placeholder="TAC amount" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="TAC amount of that bridge"></div>
+      ${BR_TO_ON ? html`<div class="amt text"><input id="br-fto" placeholder="Sent to someone else? Their address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Address that bridge paid"></div>` : ''}
       <button class="btn ghost" type="button" id="br-find">Find it</button>
       <div class="status" role="status" id="br-fstatus"></div>
     </details>`);
@@ -248,7 +248,7 @@ function renderBridgeIn(el) {
           bswOffer($('#br-swap', rc), n).catch(() => {});
         }
         if (bad.name === 'reflected' || bad.name === 'old-leaf') {
-          const coins = await withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
+          const got = await brFree(pub), coins = got && got.coins;
           if (my !== seq || !rc.isConnected) return;
           const none = !!coins && !coins.some((c) => Number(c?.value) > 0);
           const ux = await brUx(), rate = await ux.quoteRate().catch(() => null);
@@ -262,14 +262,14 @@ function renderBridgeIn(el) {
           const cost = $('#br-prepcost', rc);
           if (cost && later) cost.textContent = `Its Bitcoin fee is about ${Number(later.fee).toLocaleString('en-US')} sats at today’s rates; if it would cost more than ${autoMaxFee.toLocaleString('en-US')}, it waits for me.`;
           if (!none) brPublicFee(n.amount);
-          if (none) warn(rc, html`The send pays a small Bitcoin fee, and this key’s Bitcoin address has no BTC free for it. <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>, then pick this note again.`);
+          if (none) warn(rc, html`The send pays a small Bitcoin fee, and this key’s Bitcoin address has no BTC free for it.${brHeldNote(got && got.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>, then pick this note again.`);
           const prep = $('#br-prep', rc);
           if (prep && !none) prep.onclick = () => busy(prep, (run) => brPrep(run, n, brPlanFrom(rc, { autoMaxFee })));
         }
         return;
       }
       const one = pf.path === 'reflected', rate = one ? pf.burnFeeRate : pf.migrateFeeRate;
-      const coins = await withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
+      const got = await brFree(pub), coins = got && got.coins;
       const cost = (await brUx()).bridgeCost({ path: pf.path, feeRate: rate, coins: coins || [], noteSats: n.sats, burnRate: pf.burnRate });
       if (my !== seq || !rc.isConnected) return;
       review = { key: rvKey, note: n, pf, cost, short: !!coins && !cost.ok, at: Date.now() };
@@ -286,8 +286,8 @@ function renderBridgeIn(el) {
       brPublicFee(n.amount);
       if (review.short) {
         const have = BigInt(cost.have || 0), arriving = BTC.pub === pub && BTC.pending > 0n ? html` ${fmt(BTC.pending, 8, 8)} BTC is still arriving; once it confirms, check again.` : '';
-        warn(rc, one ? html`This key’s Bitcoin address has ${fmt(have, 8, 8)} BTC free for fees, short of the ${sats(cost.need)} this needs.${arriving} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`
-          : html`The move spends one coin whole: the largest free coin on this key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC, and this needs one of ${sats(cost.need)}.${arriving} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
+        warn(rc, one ? html`This key’s Bitcoin address has ${fmt(have, 8, 8)} BTC free for fees, short of the ${sats(cost.need)} this needs.${arriving}${brHeldNote(got.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`
+          : html`The move spends one coin whole: the largest free coin on this key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC, and this needs one of ${sats(cost.need)}.${coins.length > 1 ? html` The ${coins.length} free coins there hold ${fmt(coins.reduce((n, c) => n + BigInt(c.value || 0), 0n), 8, 8)} BTC in all.` : ''}${arriving}${brHeldNote(got.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
       }
       if (BR.acked !== rvKey) ack.checked = false;
       if (toWrap) toWrap.hidden = pf.path !== 'reflected';
@@ -403,9 +403,19 @@ const brMergeSend = (pub, ns, plan) => mergeSend({ withKey: (fn) => withKey(fn, 
   return r;
 });
 const brStartNote = async (pub, n, publicTo) => startNote(await loadTacit(), { withKey: (fn) => withKey(fn, pub), mem: store, pub, walletPub: hexToBytes(pub), priv: () => walletPriv(), note: n, publicTo, errText });
+// The coins this key's Bitcoin address can pay a fee from, and what else is there that does not count as free (sats): held for a bridge in progress, locked as collateral, or in coins that carry tokens or are not checked yet.
+const brFree = (pub) => withKey(async (t) => {
+  const { free, held } = await t.getUtxos(t.wallet.address(), null, { split: true }), coins = await t.pickSafeCommitSats(free);
+  const usable = new Set(coins.map((u) => `${u.txid}:${u.vout}`)), hold = { bridge: 0n, lock: 0n, other: 0n };
+  const add = (k, u) => { const v = BigInt(u.value || 0); if (v > 546n) hold[k] += v; };
+  for (const u of held) add(u.hold, u);
+  for (const u of free) if (!usable.has(`${u.txid}:${u.vout}`)) add('other', u);
+  return { coins, hold };
+}, pub).catch(() => null);
+const brHeldNote = (h) => { const p = heldParts(h); return p.length ? html` Not counted as free: ${p}.` : ''; };
 async function brBulkFee(pub, bulk, kind) {
-  const coins = await withKey(async (t) => t.pickSafeCommitSats(await t.getUtxos(t.wallet.address())), pub).catch(() => null);
-  return bulkFee(await loadTacit(), { bulk, kind, coins });
+  const got = await brFree(pub), q = await bulkFee(await loadTacit(), { bulk, kind, coins: got && got.coins });
+  return q && got ? { ...q, hold: got.hold } : q;
 }
 const brRecentNote = (skipped) => { const n = skipped.filter((x) => x.why === 'recent').length; return n ? html`<p class="note">${brNotes(n)} too recent for Bitcoin’s proof to have seen ${n === 1 ? 'stays' : 'stay'} out of this.</p>` : ''; };
 function brBulkPanel(kind, bulk) {
@@ -458,7 +468,7 @@ function brBulkWire(el, pub, bulk, closeSingle) {
       quote = q; short = q.short;
       const fee = $('#br-allfee', panel);
       if (fee) fee.textContent = `≈ ${q.fee.toLocaleString('en-US')} sats${q.later ? `, and about ${q.later.toLocaleString('en-US')} for the burns after` : ''}`;
-      if (short) warn(panel, html`This key’s Bitcoin address has ${q.free.toLocaleString('en-US')} sats free for fees, short of the about ${q.need.toLocaleString('en-US')} this needs. <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
+      if (short) warn(panel, html`This key’s Bitcoin address has ${q.free.toLocaleString('en-US')} sats free for fees, short of the about ${q.need.toLocaleString('en-US')} this needs.${brHeldNote(q.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
       gate();
     }).catch(() => { const fee = $('#br-allfee', panel); if (fee) fee.textContent = 'not quoted'; });
     go.onclick = () => busy(go, (run) => (kind === 'merge' ? brRunMerge : brRunAll)(run, pub, bulk, brBulkPlan(panel, quote, kind)));
@@ -563,7 +573,7 @@ function tacPlaceGo(what) {
   load.tac().then(() => rerender('tac')).catch(() => {});
 }
 function tacPool() {
-  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=6c88b814').then((m) => {
+  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=25c985e5').then((m) => {
     const api = m.makeTacPool({
       key: () => (S.key ? { pubHex: S.key.pubHex } : null),
       priv: () => walletPriv(),
@@ -619,7 +629,7 @@ function renderTacBal(el) {
     ${tacPlacesView(places)}
     ${spendable('tac') && TACW.pub ? html`<div class="callout"><span>${fmt(spendable('tac') * E10, 18, 2)} TAC to ${your()}.${tacFeeNote()}</span><button class="btn ghost" type="button" id="tac-pub">Withdraw all</button></div>
       <div class="lbl"><span>Send it to</span><span>${your()} unless you enter an address</span></div>
-      <div class="amt text"><input id="tac-pub-to" placeholder="0x… (optional)" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Where the public TAC goes"></div>` : ''}
+      <div class="amt text"><input id="tac-pub-to" placeholder="0x… (optional)" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Where the public TAC goes"></div>` : ''}
     <p class="tpg-ways"><button class="link" type="button" data-th="forms" aria-expanded="${String(TACW.forms)}">${TACW.forms ? 'Fewer ways' : 'More ways'}</button></p>
     <div id="tac-forms"><div id="tac-shield"></div><div id="tac-send"></div></div>
     <div class="status" role="status" id="tac-bal-status"></div>`);
@@ -819,7 +829,7 @@ function tcoPaint() {
     ${l.note ? html`<p class="tco-note"><span>Their note</span>“${l.note}”</p>` : ''}
     ${l.amt ? html`<p class="tco-amt num">${fmt(units, 8, 8)}<small>TAC</small></p><p class="tco-usd">${usd ? `≈ ${usd}` : html`&nbsp;`}</p>` : ''}`);
   const inEl = $('#tco-in');
-  if (!l.amt && !$('#tco-amt')) { inEl.__h = null; mount(inEl, html`<div class="amt tco-amtin"><input id="tco-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="How much to pay, in TAC"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div><p class="tco-usd" id="tco-usd"></p>`); $('#tco-amt').oninput = () => tcoPaint(); }
+  if (!l.amt && !$('#tco-amt')) { inEl.__h = null; mount(inEl, html`<div class="amt tco-amtin"><input id="tco-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="How much to pay, in TAC"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div><p class="tco-usd" id="tco-usd"></p>`); $('#tco-amt').oninput = () => tcoPaint(); }
   else if (l.amt && inEl.firstChild) mount(inEl, html``);
   if ($('#tco-usd')) $('#tco-usd').textContent = usd ? `≈ ${usd}` : '';
   const held = k && chainOn() ? chainHeld() : null, q = ctx.TCO.q && ctx.TCO.qKey === tcoQk(rc, units) ? ctx.TCO.q : null;
@@ -1061,11 +1071,14 @@ function tcoPaidPaint() {
       <p class="tco-amt num">${fmt(p.units, 8, 8)}<small>TAC</small></p>
       <p class="tco-to">to <b>${p.who}</b>${p.secs <= 20 ? html` · in <span class="num">${p.secs.toFixed(1)}</span> seconds` : ''}</p>
       <ol class="tco-tl">${p.how === 'signed' ? html`<li class="done">Made private with one signature</li>` : p.how === 'sent' ? html`<li class="done">Made private from your wallet</li>` : p.how === 'moved' ? html`<li class="done">Moved from the DeFi pool</li>` : ''}<li class="done">Proved on this device</li><li class="done">With the Tacit chain, private</li><li id="tco-land"></li></ol>
+      <div class="treq-flow tco-flow" id="tco-flow" role="progressbar" aria-label="Settling on Ethereum"><div class="bar"><i></i></div></div>
       <button class="btn ghost tco-go" type="button" data-tco-done>Done</button></div>`);
   }
+  const fl = $('#tco-flow');
+  if (fl) { fl.classList.toggle('done', p.landed); fl.hidden = p.err; fl.setAttribute('aria-valuetext', p.landed ? 'Settled on Ethereum' : 'Settling on Ethereum'); }
   const li = $('#tco-land');
   li.className = p.landed ? 'done' : p.err ? 'err' : 'now';
-  mount(li, p.landed ? html`Settled on Ethereum${p.height != null ? html`, in block <b class="num">${p.height}</b>` : ''}` : p.err ? 'Not settled yet: it is kept here and goes on by itself' : 'Settling on Ethereum, about a minute…');
+  mount(li, p.landed ? html`Settled on Ethereum${p.height != null ? html`, in block <b class="num">${p.height}</b>` : ''}` : p.err ? 'Not settled yet: it is kept here and goes on by itself' : 'Settling on Ethereum, usually under a minute…');
 }
 const tickSvg = () => html`<svg class="tick" viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24"/><path d="M15 27.5l7.5 7.5L38 19"/></svg>`;
 function treqOpen() {
@@ -1095,7 +1108,8 @@ function treqPaint() {
     const v = html`<div class="treq-paid">${tickSvg()}<p class="treq-k" id="treq-h">Paid</p>
       <p class="treq-amt num">${fmt(got, 8, 8)}<small>TAC</small></p>
       <p class="treq-usd">${gotUsd ? `≈ ${gotUsd} · ` : ''}private, on the Tacit chain</p>
-      <p class="treq-land ${ctx.TREQ.landed ? 'ok' : ''}" id="treq-land">${ctx.TREQ.landed ? 'Settled on Ethereum ✓' : 'Settling on Ethereum, about a minute…'}</p>
+      <p class="treq-land ${ctx.TREQ.landed ? 'ok' : ''}" id="treq-land">${ctx.TREQ.landed ? 'Settled on Ethereum ✓' : 'Received. Settling on Ethereum, usually under a minute…'}</p>
+      <div class="treq-flow ${ctx.TREQ.landed ? 'done' : ''}" id="treq-flow" role="progressbar" aria-label="Settling on Ethereum" aria-valuetext="${ctx.TREQ.landed ? 'Settled on Ethereum' : 'Received, settling on Ethereum'}"><div class="stp"><span class="on">Received</span><span class="${ctx.TREQ.landed ? 'on' : 'now'}">In a block</span><span class="${ctx.TREQ.landed ? 'on' : ''}">On Ethereum</span></div><div class="bar"><i></i></div></div>
       ${head}
       <div class="treq-acts"><button class="btn" type="button" data-treq-new>New request</button><button class="btn ghost" type="button" data-treq-close>Done</button></div></div>`;
     if (el.__h !== v.s) { el.__h = v.s; mount(el, v); }
@@ -1151,7 +1165,7 @@ async function treqWatch(my) {
     await sleep(5000);
     if (my !== ctx.TREQ.n) return;
     await chainScan(true).catch(() => {});
-    if (c.has(ctx.TREQ.paid.key)) { ctx.TREQ.landed = true; const l = $('#treq-land'); if (l) { l.classList.add('ok'); l.textContent = 'Settled on Ethereum ✓'; } rerender('tac'); }
+    if (c.has(ctx.TREQ.paid.key)) { ctx.TREQ.landed = true; const l = $('#treq-land'); if (l) { l.classList.add('ok'); l.textContent = 'Settled on Ethereum ✓'; } const f = $('#treq-flow'); if (f) { f.classList.add('done'); f.setAttribute('aria-valuetext', 'Settled on Ethereum'); f.querySelectorAll('.stp span').forEach((x) => { x.className = 'on'; }); } rerender('tac'); }
   }
 }
 document.addEventListener('click', (e) => {
@@ -1216,7 +1230,7 @@ function tcardAll(k, side) {
   return html`<p class="tcd-all"><b class="num">${t(all)}</b> private in all: ${rest.map(([key, what, go], i) => html`${i ? ' · ' : ''}<span class="num">${t(p[key])}</span> ${what}${go ? html` ${go}` : ''}`)}</p>`;
 }
 const tcdAmt = () => html`<div class="lbl"><label for="tcd-amt">Amount</label><span class="tcd-have num" id="tcd-have"></span><button type="button" id="tcd-max">Max</button></div>
-  <div class="amt"><input id="tcd-amt" inputmode="decimal" placeholder="0.00" autocomplete="off"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>`;
+  <div class="amt"><input id="tcd-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>`;
 const tcdRow = (k, v) => html`<div><dt>${k}</dt><dd>${v}</dd></div>`;
 const tcdRows = (...rows) => html`<dl class="tcd-rows">${rows.filter(Boolean)}</dl>`;
 const tcdHave = (text) => { const el = $('#tcd-have'); if (el && el.textContent !== text) el.textContent = text; };
@@ -1254,8 +1268,8 @@ function tcardForm() {
   if (tab === 'receive') {
     if (!key) return html`${line}<button class="btn tcd-go" type="button" data-signin>Sign in to see your address</button>`;
     return html`${line}<div class="lbl"><label for="tcd-link-amt">Ask for</label><span>or leave it to them</span></div>
-      <div class="amt"><input id="tcd-link-amt" inputmode="decimal" placeholder="Any amount" autocomplete="off"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
-      <div class="tcd-linkin"><input id="tcd-link-for" maxlength="80" placeholder="What for (optional)" aria-label="What it is for, optional: the payer sees it" autocomplete="off"><input id="tcd-link-name" placeholder="your name (.wei), optional" aria-label="A name of yours for the link, optional" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
+      <div class="amt"><input id="tcd-link-amt" inputmode="decimal" placeholder="Any amount" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
+      <div class="tcd-linkin"><input id="tcd-link-for" maxlength="80" placeholder="What for (optional)" aria-label="What it is for, optional: the payer sees it" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other"><input id="tcd-link-name" placeholder="your name (.wei), optional" aria-label="A name of yours for the link, optional" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off"></div>
       <button class="btn tcd-go" type="button" id="tcd-req-go">Show the code to pay</button>
       <div id="tcd-linkrow"></div>
       ${navigator.share ? html`<button class="btn ghost tcd-go" type="button" id="tcd-share">Share your pay link</button>` : ''}
@@ -1268,7 +1282,7 @@ function tcardForm() {
     ${tab === 'withdraw' ? html`<div class="tcd-dest" role="radiogroup" aria-label="Where it goes">${TCD_DEST.map(([k, t]) => html`<button type="button" role="radio" aria-checked="${String(ctx.TCARD.dest === k)}" tabindex="${ctx.TCARD.dest === k ? 0 : -1}" data-tcd-dest="${k}">${t}</button>`)}</div>` : ''}
     ${tcdAmt()}
     ${tab === 'send' ? html`<div class="lbl"><label for="tcd-to">To</label><span>tacit1…, 0x… or a name</span></div>
-      <div class="amt text"><input id="tcd-to" placeholder="Their name.wei or tacit1… address" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off"></div>` : ''}
+      <div class="amt text"><input id="tcd-to" name="tacit-recipient" placeholder="Their name.wei or tacit1… address" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" autocapitalize="off" autocorrect="off"></div>` : ''}
     <div class="note tcd-q" id="tcd-q" data-tab="${tab}" aria-live="polite"></div>
     <button class="btn tcd-go" type="button" id="tcd-go">${go}</button>
     ${tab === 'withdraw' && ctx.TCARD.dest === 'wallet' && key ? html`<p class="tcd-way"><button class="link" type="button" data-tcd-tab="send">Another address? Send it there</button></p>` : ''}
@@ -1839,7 +1853,7 @@ function tacShield(el, status, acctBal, walletBal) {
   if (!src) { mount(el, html`${swap}`); wireSwap(); return; }
   mount(el, html`
     <div class="lbl"><span>Shield TAC</span><button type="button" id="tsh-max">TAC in ${from} ${fmt(balance, 18, 2)}</button></div>
-    <div class="amt"><input id="tsh-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="TAC to make private"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
+    <div class="amt"><input id="tsh-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="TAC to make private"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div>
     <div class="rcpt" id="tsh-rcpt" hidden></div>
     <button class="btn" type="button" id="tsh-go" disabled>Shield</button>
     <p class="note">One transaction from ${from}${src === 'wallet' ? ', with a signed permit' : ''}; ${ownNow(['wrap']) ? `it is proved ${devOn() ? 'on this computer' : 'with your own credit'} first, so nothing waits in the pool` : 'Tacit’s relay does the privacy work after'}. It stays private until you send it or make it public again.</p>${swap}`);
@@ -1967,7 +1981,7 @@ async function tnConfirm(list, picked) {
   const done = (m) => { TN.picks = []; TN.step = null; say(st, m); dashSoon(); Promise.allSettled([loadBridge(true), loadBtc(true)]).then(() => { rerender('tac'); tnPaint(); }); };
   let ready = { fee: false, more: true }, lack = false;
   const gate = () => { const go = $('#tn-go', cf); if (go) go.disabled = lack || !ready.fee || !ready.more; };
-  const noSats = (q) => { lack = true; warn(cf, html`This key’s Bitcoin address has ${tnSats(q.free || 0)} free for fees, short of the about ${tnSats(q.need)} this needs. <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`); };
+  const noSats = (q) => { lack = true; (q.hold ? Promise.resolve(q.hold) : brFree(pub).then((g) => g && g.hold)).then((hold) => { if (live()) warn(cf, html`This key’s Bitcoin address has ${tnSats(q.free || 0)} free for fees, short of the about ${tnSats(q.need)} this needs.${brHeldNote(hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`); }); };
   if (kind === 'merge') {
     const plan = planPick(list, TN.picks, { capRaw: tnCap() }), tracked = plan.kind === 'tracked', count = plan.notes.length;
     mount(cf, html`<h3>Merge ${count} notes → 1 note of ${brTac(plan.total)}</h3>
@@ -2007,7 +2021,7 @@ async function tnConfirm(list, picked) {
   } else if (kind === 'split') {
     const n = picked[0], amt = BigInt(n.amount);
     mount(cf, html`<h3>Split ${brTac(amt)}</h3>
-      <div class="amt"><input id="tn-amt" inputmode="decimal" autocomplete="off" placeholder="TAC to split off" aria-label="TAC to split off"><span class="u">TAC</span></div>
+      <div class="amt"><input id="tn-amt" inputmode="decimal" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" placeholder="TAC to split off" aria-label="TAC to split off"><span class="u">TAC</span></div>
       ${kv('Keeps', '—', 'tn-keep')}
       ${kv('Bitcoin fee', 'Checking…', 'tn-fee')}
       ${kv('Then', 'Both notes can be bridged once Bitcoin’s proof has seen them, usually a few hours')}

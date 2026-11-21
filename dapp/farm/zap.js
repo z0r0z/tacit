@@ -5,7 +5,7 @@
 // Whatever stops it after the transaction leaves a private share note in the key's balance, which `bondShare` farms later.
 // The front page's Earn card has more ways in (a proof kept ready, a swap split with the Precision pool, your own prover, LP only);
 // this is the one path a page with a wallet and a key needs. Everything it calls is the pool module's (confidential-pool-ux.js).
-import { zapPlan, zapPlanFor, zapPlanExt, zapPlanExtFor, zapSettleCalldata } from '/lp-zap.js?cb=a14dd27e';
+import { zapPlan, zapPlanFor, zapPlanExt, zapPlanExtFor, addRoute, zapSettleCalldata } from '/lp-zap.js?cb=041bcb7f';
 import { relayedOrOwn } from '/farm-ops.js?cb=c5192cc4';
 
 export const PUBLIC_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
@@ -88,8 +88,7 @@ async function outsidePlan({ res, wei, m, unitB, decimals, market, gp, token, ou
   const quote = token && outside ? outside(token) : null;
   const ext = quote ? await zapPlanExt({ eth: wei, ra: res.reserveA, rb: res.reserveB, total: res.totalShares, unitB, quote }).catch(() => null) : null;
   if (!ext) return null;
-  const per = (p) => Number(p.shares) / Number(p.value);
-  if (m && !((per(ext) - per(m.plan)) / per(m.plan) * Number(wei) > Number(EXT_GAS * gp) * 1.5)) return null;
+  if (m && addRoute({ inPool: m.plan, ext, wei, gasWei: EXT_GAS * gp }) !== 'ext') return null;
   const dep = Number(wei) / 1e18, against = market ? Math.max(0, (Number(ext.ethLeg) / 1e18 - (Number(ext.bLeg) / 10 ** decimals) * market) / dep * 100) : 0;
   return { plan: ext, impact: 0, against, cost: against, checked: market != null, outside: quote };
 }
@@ -108,6 +107,16 @@ export async function zapQuote({ pool, wei, reserves, gasPrice = async () => 0n,
   return { pid: pool.pid, wei, ...m, res, gp, fee, bal, day, apr: day > 0 && tacEth > 0 && eth > 0 ? day * 365 * tacEth / eth * 100 : null,
     over: bal != null && m.plan.value + fee > bal, unitB, decimals, token: row?.underlying || null, at: Date.now() };
 }
+
+// What a quote asks of the person before a press: a number typed for a deposit that gives up 30% or more of itself, a tick for 15% or more or for a
+// pool whose price could not be checked against the market, nothing below that.
+export const ackKind = (q) => (!q?.plan ? null : q.cost >= 30 ? 'type' : q.cost >= 15 || !q.checked ? 'box' : null);
+// Whether the price at the press asks more than what was acknowledged for the quote on screen: an acknowledgement of its kind or stronger (a typed number
+// stands for a tick) at the same whole percent. A price that crosses 15% or 30% while rounding to the same percent still asks it again.
+export const askedMore = (was, now) => {
+  const need = ackKind(now), rank = { box: 1, type: 2 };
+  return !!need && ((rank[ackKind(was)] || 0) < rank[need] || Math.round(now.cost) !== Math.round(was.cost));
+};
 
 // The token behind a pool coin: the deployment's own list first, else what the pool itself says (a token registered since, as SPX was).
 const tokenOf = (t, assetId, fallback = null) => {
@@ -152,7 +161,27 @@ export async function zapProve({ t, priv, pool, q, wait = () => ({}), used = [],
 // exactly those shares), then sent from the wallet and waited for. Errors before the wallet is asked carry `ready` (the proof, good for
 // another press); one after it was sent carries `sent`.
 export async function zapSend({ t, rpc, wallet, from, pool, ready, say = () => {} }) {
-  const router = routerOf(t), max = ready.wei + ready.wei / SLACK;
+  const router = routerOf(t);
+  const { plan, data } = await zapCheck({ t, rpc, from, pool, ready, say, router }).catch((e) => { throw keepProof(e, ready); });
+  say('confirm', plan.value);
+  let hash;
+  try { hash = await wallet.sendTx({ to: router, data, value: plan.value, from }); }
+  catch (e) { throw Object.assign(e, { ready }); }
+  say('sent', hash);
+  let rc;
+  try { rc = await wallet.receipt(hash); } catch (e) { throw Object.assign(e, { sent: hash }); }
+  if (rc.status !== '0x1') throw said(`The transaction failed (${hash.slice(0, 10)}…). Nothing was lost but its network fee. Your share’s proof is kept: press again to send it.`, { reverted: true, ready });
+  const mined = rc.transactionHash || hash;                                       // a sped-up deposit went in under another hash: that one goes to the relay
+  if (ready.proven.jobId) Promise.resolve(t.relay.landed?.(ready.proven.jobId, mined)).catch(() => {});
+  return { hash, value: plan.value };                                             // (the page keeps its journal entry under the hash it sent)
+}
+// A stop before the wallet is asked leaves the proof good for another press, whatever stopped it (a node that did not answer, the router's
+// address, a coin without a token): only a pool that moved off the share proved, or a share already made, ends it. An error that names its own
+// proof, or says the call would not go through as the pool stands, is left as it is.
+const keepProof = (e, ready) => (e && typeof e === 'object' && !e.moved && !e.stale && !e.already && !('ready' in e) ? Object.assign(e, { ready }) : e);
+// Everything up to the wallet: the legs sized again for the proved share count at the reserves now, the call run first (it must mint exactly those shares).
+async function zapCheck({ t, rpc, from, pool, ready, say, router }) {
+  const max = ready.wei + ready.wei / SLACK;
   say('check');
   const res = await t.poolReserves(pool.poolId);
   let plan = null, swapData = null;
@@ -175,17 +204,7 @@ export async function zapSend({ t, rpc, wallet, from, pool, ready, say = () => {
     throw said(e?.revert ? 'The deposit would not go through as the pool stands, so nothing was sent. Press again for a new quote.' : 'The deposit could not be checked, so nothing was sent. Try again in a moment.', { ready, stale: !!e?.revert });
   }
   if (wordAt(sim, 0) !== ready.shares) throw said('The deposit would not mint exactly the share proved, so nothing was sent. Press again for a new quote.', { stale: true });
-  say('confirm', plan.value);
-  let hash;
-  try { hash = await wallet.sendTx({ to: router, data, value: plan.value, from }); }
-  catch (e) { throw Object.assign(e, { ready }); }
-  say('sent', hash);
-  let rc;
-  try { rc = await wallet.receipt(hash); } catch (e) { throw Object.assign(e, { sent: hash }); }
-  if (rc.status !== '0x1') throw said(`The transaction failed (${hash.slice(0, 10)}…). Nothing was lost but its network fee. Your share’s proof is kept: press again to send it.`, { reverted: true, ready });
-  const mined = rc.transactionHash || hash;                                       // a sped-up deposit went in under another hash: that one goes to the relay
-  if (ready.proven.jobId) Promise.resolve(t.relay.landed?.(ready.proven.jobId, mined)).catch(() => {});
-  return { hash, value: plan.value };                                             // (the page keeps its journal entry under the hash it sent)
+  return { plan, data };
 }
 const consumed = async (rpc, t, built) => { try { return wordAt(await rpc('eth_call', [{ to: t.cfg.pool, data: '0x7da9874f' + strip(built.depositId).padStart(64, '0') }, 'latest']), 0) === 2n; } catch { return false; } };
 

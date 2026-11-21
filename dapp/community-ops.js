@@ -41,7 +41,7 @@ export async function readPrices({ call }) {
 const HEX_BYTES = /^0x(?:[0-9a-f]{2})+$/i, WORD = /^0x[0-9a-f]{64}$/i;
 const lc = (s) => String(s || '').toLowerCase();
 const trimSlash = (s) => String(s).replace(/\/+$/, '');
-const webFetch = (...a) => globalThis.fetch(...a);
+const webFetch = (...a) => (globalThis.__tacitRelayFetch || globalThis.fetch)(...a);
 
 // ETH as a short figure: three decimals from 0.01 up, two significant digits below, "<0.0001" under that.
 export function ethText(wei) {

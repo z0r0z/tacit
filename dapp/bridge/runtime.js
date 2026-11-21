@@ -13,12 +13,14 @@ const STEPS_OUT = ['Burned on Ethereum', 'Proven for Bitcoin', 'Sent to Bitcoin'
 const STEPS_IN = ['Burned on Bitcoin', 'Confirmed', 'Proven on Ethereum', 'Minted privately'];
 
 // The tracker's route entry (dapp/bridge/track.js ROUTES) for a token: its row names, where a row's link sends the page (the bridge tab: its deep-link
-// grammar names only the built-in sources), and the steps.
-export function bridgeRoute({ ticker, icon, dp, dec }) {
+// grammar names only the built-in sources, so a token with an address links by that), and the steps.
+export function bridgeRoute({ ticker, icon, dp, dec, addr }) {
+  // a token named by its address opens its own card on the front page (#card=bridge:xw0x… to Bitcoin, xb back); the bare #bridge is the TAC page there
+  const to = /^0x[0-9a-fA-F]{40}$/.test(addr || '') ? (k) => `/#card=bridge:x${k}${addr.toLowerCase()}` : () => '/#bridge';
   return {
     ticker, icon, dp, ...(dec != null && dec !== 8 ? { dec } : {}),
-    in: { start: '/#bridge', href: '/#bridge', go: `Bring ${ticker} back`, steps: STEPS_IN },
-    out: { start: '/#bridge', href: '/#bridge', go: `Bridge ${ticker}`, steps: STEPS_OUT },
+    in: { start: to('b'), href: to('b'), go: `Bring ${ticker} back`, steps: STEPS_IN },
+    out: { start: to('w'), href: to('w'), go: `Bridge ${ticker}`, steps: STEPS_OUT },
   };
 }
 
@@ -35,8 +37,8 @@ const ADDR = /^0x[0-9a-f]{40}$/, HEX64 = /^[0-9a-f]{64}$/;
 // A token with no logo of its own is a colour of its address under its first two letters.
 export const markColor = (id) => { let h = 7; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return `hsl(${h % 360} 38% 48%)`; };
 export const runtimeIcon = (addr) => `tk-x${addr}`;
-// A logo is a path on this site; anything else is not drawn.
-const ownLogo = (v) => (/^\/(?!\/)/.test(String(v || '')) ? String(v) : '');
+// A logo is a path on this site, or an image carried in the token list itself (a base64 SVG or PNG: an image in a symbol runs nothing); anything else is not drawn.
+const ownLogo = (v) => (/^\/(?!\/)/.test(String(v || '')) || (/^data:image\/(svg\+xml|png);base64,[A-Za-z0-9+/=]+$/.test(String(v || '')) && String(v).length < 40000) ? String(v) : '');
 
 // The sprite <symbol> for a token's mark: its logo clipped to a circle, or the letter mark.
 export function runtimeSymbol(doc, { addr, logo, sym }) {

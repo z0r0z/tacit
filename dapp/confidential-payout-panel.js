@@ -29,7 +29,7 @@ export function payoutPanelHtml() {
             <div id="cpay-form">
               <label class="field-label" for="cpay-amount" style="margin-top:10px;">They receive</label>
               <div class="field-row">
-                <input id="cpay-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="Amount the recipient gets">
+                <input id="cpay-amount" type="text" inputmode="decimal" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" placeholder="Amount the recipient gets">
                 <button id="cpay-review-btn" type="button">Review</button>
               </div>
             </div>

@@ -191,8 +191,8 @@ for (const n of [...Object.keys(amounts), ...(LEAN ? [] : ['erin']), 'bob']) {
 }
 for (const n of Object.keys(amounts)) {
   const bal = await pub.getBalance({ address: eoa[n].account.address });
-  const cost = (await pub.getGasPrice()) * 2n * 21_000n;
-  if (bal > cost) { await receipt(await eoa[n].sendTransaction({ to: funder.account.address, value: bal - cost, gas: 21_000n })); }
+  const cost = (await pub.getGasPrice()) * 2n * 60_000n;
+  if (bal > cost) { await receipt(await eoa[n].sendTransaction({ to: funder.account.address, value: bal - cost, gas: 60_000n })); }
 }
 const pr = provingTimes.sort((a, b) => a - b);
 log(`done in ${Math.round((Date.now() - t0) / 1000)}s · ${pr.length} proofs here, median ${(pr[pr.length >> 1] / 1000).toFixed(1)}s`);

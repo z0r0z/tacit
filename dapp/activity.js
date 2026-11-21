@@ -23,8 +23,8 @@ export const listed = (items) => items.filter((x) => !x.in);
 
 // The Activity item for a fast bridge record (fastbridge-client.js describe(): the fast route keeps the records in this browser and says where each stands). One for
 // each that is under way, or that ended in the last day; a bridge that came back to Bitcoin is a failed one (returned, not done). null for an old ended one.
-export function fastItem(r, { fmt = (v) => String(v), now = Date.now() / 1000, pub = null } = {}) {
-  if (!r || !r.id || (r.ended && now - r.created > 86400)) return null;
+export function fastItem(r, { fmt = (v) => String(v), now = Date.now() / 1000, pub = null, keep = false } = {}) {
+  if (!r || !r.id || (r.ended && !keep && now - (r.updated || r.created) > 86400)) return null;
   const status = !r.ended ? 'pending' : r.returned ? 'failed' : 'settled';
   return {
     id: `fast:${r.id}`,
@@ -234,7 +234,7 @@ export function makeFollow({ journal, jobStatus, receipt, receiptOnce, trace = n
         if (it.status === 'pending' && age > 60e3) onSlow(it);
         if (!live(id)) {
           const st = await jobStatus(id.slice(4)).catch(() => null);
-          if (st?.status && (st.status !== 'unknown' || age > 120e3)) journal.put(id, { status: st.status, hash: st.txHash || undefined, err: st.error || undefined, ahead: st.ahead ?? undefined });
+          if (st?.status && (st.status !== 'unknown' || age > 120e3)) journal.put(id, { status: st.status, hash: st.txHash || undefined, err: st.error || undefined, ahead: st.ahead ?? undefined, board: st.stage ?? undefined });
         }
         await sleep(age < 180e3 ? 5000 : age < 1800e3 ? 15000 : 60000);
       }
@@ -310,13 +310,15 @@ export function makePace({ storage = globalThis.localStorage } = {}) {
   try { P = { ...PACE0, ...JSON.parse(storage?.getItem(PACE_KEY) || '{}') }; } catch { }
   const proveOf = (lane) => P[`prove:${laneOf(lane)}`] ?? P.prove;
   const sum = (stages, now) => {
-    let spent = 0, left = 0, live = false;
+    let spent = 0, left = 0, live = false, late = false;
     for (const [e, start, stop] of stages) {
       if (stop) { spent += Math.max(0, (stop - (start || stop)) / 1000); continue; }
-      if (!live && start) { live = true; const ran = Math.max(0, (now - start) / 1000); spent += ran; left += Math.max(e * 0.15, e - ran); continue; }
+      // a stage that has run well past its usual time keeps a sliver of time left (the bar never reaches its end), which read as "a few seconds"
+      // for as long as it took: `late` lets the card say it is taking longer than usual instead
+      if (!live && start) { live = true; const ran = Math.max(0, (now - start) / 1000); spent += ran; left += Math.max(e * 0.15, e - ran); late = ran > e * 1.5; continue; }
       left += e;
     }
-    return { spent, left };
+    return { spent, left, late };
   };
   function job(it, now = Date.now()) {
     const ts = it.ts || {}, prove = proveOf(it.lane), pAt = ts.proving, sAt = ts.proven || ts.sending || ts.open;
@@ -324,7 +326,7 @@ export function makePace({ storage = globalThis.localStorage } = {}) {
   }
   const tx = (it, now = Date.now()) => sum([[P.tx, it.at, it.end]], now);
   const ahead = (lane = null) => P.queue + proveOf(lane) + P.send;
-  const of = ({ spent, left }) => ({ spent, left, pct: Math.min(97, Math.max(3, Math.round((spent / Math.max(1, spent + left)) * 100))) });
+  const of = ({ spent, left, late = false }) => ({ spent, left, late: !!late, pct: Math.min(97, Math.max(3, Math.round((spent / Math.max(1, spent + left)) * 100))) });
   function learn(it) {
     const ts = it.ts || {}, pAt = ts.proving, sAt = ts.proven || ts.sending || ts.open, put = (k, ms) => { const v = ms / 1000; if (v > 0 && v < 1800) P[k] = Math.round((P[k] ?? v) * 0.7 + v * 0.3); };
     if (it.kind !== 'job' || it.status !== 'settled' || !sAt || !it.end) return;
@@ -347,7 +349,7 @@ export function makeRelayState({ api, base = async () => api, others = async () 
   const state = { at: 0, why: null, reading: null };
   async function jobStatus(jobId) {
     const s = String(jobId), i = s.lastIndexOf('@'), at = i > 0 ? s.slice(i + 1) : '', theirs = !!at && (await others()).includes(at);
-    const r = await fetch(`${theirs ? at : await base()}/confidential/status?id=${encodeURIComponent(theirs ? s.slice(0, i) : s)}`, { cache: 'no-store', signal: within(15e3) });
+    const r = await (globalThis.__tacitRelayFetch || fetch)(`${theirs ? at : await base()}/confidential/status?id=${encodeURIComponent(theirs ? s.slice(0, i) : s)}`, { cache: 'no-store', signal: within(15e3) });
     if (r.status === 404) return { status: 'unknown' };
     if (!r.ok) throw new Error(`relay ${r.status}`);
     return r.json();
@@ -357,7 +359,7 @@ export function makeRelayState({ api, base = async () => api, others = async () 
       const rs = await uxState();
       if (rs) return RELAY_WHY[rs.state ?? rs] ?? null;
     } catch { }
-    const r = await fetch(`${api}/confidential/relay`, { cache: 'no-store', signal: within(10e3) });
+    const r = await (globalThis.__tacitRelayFetch || fetch)(`${api}/confidential/relay`, { cache: 'no-store', signal: within(10e3) });
     if (r.ok) return RELAY_WHY[(await r.json())?.state] ?? null;
     if (r.status !== 404) throw new Error(`relay ${r.status}`);
     const h = await fetch(`${api}/prover-health?network=mainnet`, { cache: 'no-store', signal: within(10e3) }).then((x) => x.json());

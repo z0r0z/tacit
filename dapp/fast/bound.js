@@ -23,7 +23,7 @@ export function mountBound({ root, keyS, open, refreshMs = 60000 }) {
     <div class="pv-in">
       <p class="note">Make TAC ready once. A few hours later it moves to your private balance in one step, with no provider.</p>
       <div class="rows" id="bd-list"></div>
-      <div class="fx-amt"><input id="bd-amt" inputmode="decimal" placeholder="0" autocomplete="off" spellcheck="false" aria-label="TAC to make ready"><span>TAC</span></div>
+      <div class="fx-amt"><input id="bd-amt" inputmode="decimal" placeholder="0" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" aria-label="TAC to make ready"><span>TAC</span></div>
       <button class="btn" id="bd-go" type="button">Make ready</button>
       <p class="status" id="bd-st" role="status" aria-live="polite"></p>
     </div>`;

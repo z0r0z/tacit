@@ -136,8 +136,8 @@ for (const n of ['alice', 'carol', 'dave', 'erin', 'bob']) {
 }
 for (const k of [ids.aliceEoa, ids.carolEoa, ids.daveEoa]) {
   const w = walletOf(k); const bal = await pub.getBalance({ address: w.account.address });
-  const cost = (await pub.getGasPrice()) * 3n * 21_000n + 10n ** 12n;
-  if (bal > cost) await receipt(await w.sendTransaction({ to: funder.account.address, value: bal - cost, gas: 21_000n }));
+  const cost = (await pub.getGasPrice()) * 3n * 60_000n + 10n ** 12n;
+  if (bal > cost) await receipt(await w.sendTransaction({ to: funder.account.address, value: bal - cost, gas: 60_000n }));
 }
 const s = times.sort((a, b) => a - b);
 log(`done · ${s.length} proofs on this machine, median ${(s[s.length >> 1] / 1000).toFixed(1)}s`);

@@ -424,6 +424,12 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     };
   }
 
+  // Opt-in privacy for a PUBLIC LP position: burns `shares` of the caller's public LP shares in the POOL (not the router) and records the pending deposit
+  // an ordinary wrap settle consumes into a private share note bound to `commit`. Sent by the holder of the shares, to the pool.
+  function shieldSharesCalldata({ poolId, shares, commit }) {
+    return '0x' + selector('shieldShares(bytes32,uint256,bytes32)') + String(poolId).replace(/^0x/, '').padStart(64, '0') + word(BigInt(shares)) + String(commit).replace(/^0x/, '').padStart(64, '0');
+  }
+
   function buildRemoveLiquidityPublic({ tokenA, tokenB, feeBps, shares, minAmountA, minAmountB, deadline, to }) {
     return { to: routerAddr(), value: 0n, calldata: removeLiquidityPublicCalldata({ tokenA, tokenB, feeBps, shares, minAmountA, minAmountB, deadline, to }) };
   }
@@ -709,7 +715,7 @@ export function makeConfidentialRouter({ secp, keccak256, sha256, cfg } = {}) {
     swapPublicWithPermitCalldata, swapPublicWithPermit2Calldata, swapPublicETHCalldata,
     swapPublicPathWithPermit2Calldata, swapPublicETHPathCalldata,
     swapETHViaZRouterCalldata, swapTokenViaZRouterWithPermit2Calldata, addLiquidityPublicWithPermit2Calldata,
-    addLiquidityPublicETHWithPermit2Calldata, removeLiquidityPublicCalldata,
+    addLiquidityPublicETHWithPermit2Calldata, shieldSharesCalldata, removeLiquidityPublicCalldata,
     wrapAndSettleWithPermitCalldata, wrapAndSettleWithPermit2Calldata, wrapAndSettleETHCalldata, zapETHToPaymentCalldata,
     wrapAndMintCusdWithPermitCalldata, wrapAndMintCusdWithPermit2Calldata, wrapETHAndMintCusdCalldata,
     zapETHToShieldedNoteCalldata, zapETHToCanonicalNoteCalldata, zapTokenToCanonicalNoteWithPermit2Calldata,

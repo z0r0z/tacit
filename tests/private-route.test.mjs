@@ -17,7 +17,8 @@ const sealedUrl = pathToFileURL(new URL('../dapp/sealed-request.js', import.meta
 const source = readFileSync(new URL('../dapp/private-route.js', import.meta.url), 'utf8');
 assert.match(source, /import\('\/sealed-request\.js\?cb=[A-Za-z0-9_-]+'\)/, 'it loads the sealed fetch on demand, by the page\'s own URL');
 const dir = mkdtempSync(join(tmpdir(), 'private-route-'));
-writeFileSync(join(dir, 'private-route.mjs'), source.replace(/\/sealed-request\.js\?cb=[A-Za-z0-9_-]+/, sealedUrl));
+const relaysUrl = pathToFileURL(new URL('../dapp/evm-pool-relays.js', import.meta.url).pathname).href;
+writeFileSync(join(dir, 'private-route.mjs'), source.replace(/\/sealed-request\.js\?cb=[A-Za-z0-9_-]+/, sealedUrl).replace("'./evm-pool-relays.js'", `'${relaysUrl}'`));
 const route = await import(pathToFileURL(join(dir, 'private-route.mjs')).href);
 const { ROUTE, available, enabled, keeperFetch } = route;
 assert.equal(route.turn, undefined, 'there is no setting that turns the route off');
@@ -52,7 +53,7 @@ await check('the page ships with its gateway key and forwarders, and the route i
   assert.equal(available(), true);
   assert.equal(enabled(), true);
 });
-const SHIPPED = { keeper: ROUTE.keeper, gateway: ROUTE.gateway, forwarders: [...ROUTE.forwarders], nostr: [...(ROUTE.nostr || [])] };
+const SHIPPED = { keeper: ROUTE.keeper, gateway: ROUTE.gateway, forwarders: [...ROUTE.forwarders], nostr: [...(ROUTE.nostr || [])], rpc: { ...(ROUTE.rpc || {}) }, api: { ...(ROUTE.api || {}) } };
 Object.assign(ROUTE, { gateway: '', forwarders: [] });   // a page with no route configured is a plain fetch
 
 await check('a page that names no gateway or forwarder fetches as it always did', async () => {
@@ -116,7 +117,7 @@ const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url)
 await check('the pay page sends every request to a relay through keeperFetch, and its wallets ask it whether they are on the route', () => {
   const direct = page.split('\n').map((line, i) => [i + 1, line]).filter(([, line]) => /(^|[^\w.])fetch\(/.test(line) && /chainKeeper\(|\.keeper\b|POOL_KEEPERS|onrender\.com\/\$\{|evm-pool\/keeper/.test(line));
   assert.deepEqual(direct, [], `a relay request that does not go through keeperFetch: ${direct.map(([i]) => i)}`);
-  assert.match(page, /import \{ keeperFetch, available as routeAvailable, enabled as routeOn(?:, listRelays)? \} from '\/private-route\.js\?cb=[A-Za-z0-9_-]+';/);
+  assert.match(page, /import \{ keeperFetch(?:, rpcFetch)?(?:, walletRpcFetch)?(?:, bundlerFetch)?(?:, poolHistory)?, available as routeAvailable, enabled as routeOn(?:, listRelays)? \} from '\/private-route\.js\?cb=[A-Za-z0-9_-]+';/);
   assert.match(page, /const timedFetch = \(url, init = \{\}\) => keeperFetch\(url,/);
   assert.match(page, /Object\.defineProperty\(timedFetch, 'sealed', \{ get: routeOn \}\)/);
   const wallets = [...page.matchAll(/makeEvmPoolWallet\(/g)].map((m) => {
@@ -149,6 +150,11 @@ await check('every host the route can use is in the CSP of every page that can c
     assert.ok(connect.length > 5, `${pg} has a connect-src in its CSP meta tag`);
     for (const host of [SHIPPED.keeper, ...SHIPPED.forwarders, ...SHIPPED.nostr]) assert.ok(connect.includes(host), `${pg} does not allow ${host}`);
   }
+  for (const pg of ['teth/index.html', 'splitter/index.html']) {   // pages that carry only the relay API's reads
+    const html = readFileSync(new URL(`../dapp/${pg}`, import.meta.url), 'utf8');
+    const connect = (/http-equiv="Content-Security-Policy"[^>]*?connect-src([^;]*)/s.exec(html)?.[1] || '').split(/\s+/);
+    for (const host of [...SHIPPED.forwarders, ...SHIPPED.nostr, 'https://api.tacit.finance']) assert.ok(connect.includes(host), `${pg} does not allow ${host}`);
+  }
   assert.ok(SHIPPED.nostr.length >= 3 && SHIPPED.nostr.every((u) => /^wss:\/\//.test(u)), 'at least three wss relays');
 });
 
@@ -158,6 +164,48 @@ await check('the prove page reads each forwarder\'s health, so its CSP names the
   for (const host of SHIPPED.forwarders) assert.ok(connect.includes(host), `prove/index.html does not allow ${host}`);
   assert.match(html, /id="fwd-box"/);
   assert.match(html, /community-runner\.mjs forward/);
+});
+
+await check('the pay page reads the wallet\'s side through the wallet-read gateway and the relay registry straight from a node', () => {
+  const page2 = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8');
+  assert.match(page2, /const rpcApart = async \(c\) => \{[^}]*jsonRpc\(\[\.\.\.c\.rpc\]\.reverse\(\), walletRpcFetch\(c\.chainId\)\)/, 'rpcApart goes to the wallet-read gateway');
+  assert.match(page2, /const rpcRegistry = async \(c\) => \{[^}]*jsonRpc\(\[\.\.\.c\.rpc\]\.reverse\(\)\)/, 'the registry reader has no route');
+  assert.match(page2, /openRelays\(\{[\s\S]{0,80}rpc = await rpcRegistry\(CHAINS\[0\]\)|rpc = await rpcRegistry\(CHAINS\[0\]\)/, 'the registry is read by rpcRegistry');
+  assert.ok(!/rpc = await rpcApart\(CHAINS\[0\]\);\s*\n\s*const real/.test(page2), 'and not by the wallet reader');
+  assert.match(SHIPPED.rpc.gateway, /^0[23][0-9a-f]{64}$/); assert.notEqual(SHIPPED.rpc.gateway, SHIPPED.gateway, 'its own key, not the relay\'s');
+  assert.match(SHIPPED.api.gateway, /^0[23][0-9a-f]{64}$/); assert.ok(![SHIPPED.gateway, SHIPPED.rpc.gateway].includes(SHIPPED.api.gateway), 'the relay API\'s gateway has its own key');
+  assert.equal(SHIPPED.api.url, 'https://api.tacit.finance');
+});
+
+await check('every module that talks to the relay takes the route\'s fetch, and every page that calls the relay sets it and names the forwarders', () => {
+  const read = (f) => readFileSync(new URL(`../dapp/${f}`, import.meta.url), 'utf8');
+  for (const [f, min] of [['confidential-pool-ux.js', 1], ['confidential-relay.js', 1], ['confidential-bridge-mint.js', 3], ['community-ops.js', 1], ['activity.js', 2], ['prove/app.js', 1], ['index.html', 3]]) {
+    const hits = (read(f).match(/__tacitRelayFetch/g) || []).length;
+    assert.ok(hits >= min, `${f} takes the route's fetch (${hits} of at least ${min})`);
+  }
+  for (const f of ['index.html', 'tacit.js']) assert.match(read(f), /__tacitRelayFetch \|\|= m\.apiFetch\(\)/, `${f} sets the hook`);
+  for (const f of ['prove/app.js', 'relay/app.js']) assert.match(read(f), /import '\/relay-route\.js\?cb=[0-9a-f]+';/, `${f} loads the hook module`);
+  assert.match(read('relay-route.js'), /globalThis\.__tacitRelayFetch \|\|= apiFetch\(\)/);
+  for (const pg of ['prove/index.html', 'relay/index.html']) {
+    const csp = (/http-equiv="Content-Security-Policy"[^>]*?connect-src([^;]*)/s.exec(read(pg))?.[1] || '').split(/\s+/);
+    for (const host of [...SHIPPED.forwarders, ...SHIPPED.nostr]) assert.ok(csp.includes(host), `${pg} allows ${host}`);
+  }
+});
+
+await check('the pay page hands the fixed-pool flow the route\'s bundler fetch, and the flow takes it', () => {
+  assert.match(readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8'), /__tacitBundlerFetch \|\|= bundlerFetch\(\)/);
+  assert.match(readFileSync(new URL('../dapp/fixed-pool-flow.js', import.meta.url), 'utf8'), /__tacitBundlerFetch \|\| globalThis\.fetch/);
+});
+
+await check('the pay page gives each fixed-pool flow the route\'s pool history, and the flow hands it to the sync', () => {
+  const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8');
+  assert.equal((page.match(/history: poolHistory,/g) || []).length, 3, 'attach, attachWithdraw and attachIntake');
+  assert.match(readFileSync(new URL('../dapp/fixed-pool-pay.js', import.meta.url), 'utf8'), /history: env\.history\?\.\(chainId\)/);
+});
+
+await check('the pay page\'s policy does not allow the published history host, so the page cannot contact it', () => {
+  const page = readFileSync(new URL('../dapp/pay/eth/index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(/http-equiv="Content-Security-Policy"[^>]*>/s.exec(page)?.[0] || '', /saga\.0000000000\.org/);
 });
 
 console.log(`\n${n} checks passed`);

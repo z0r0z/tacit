@@ -9,8 +9,8 @@ import { keccak_256, bytesToHex } from './vendor/tacit-deps.min.js';
 import {
   FIXED_POOLS, noteTypedData, canonicalRS, deriveSecrets, depositCall, commitmentBytes32, noteString, parseNoteString,
 } from '/fixed-pool-notes.js?cb=ab06e6d2';
-import { fixedPoolLeaves } from '/fixed-pool-sync.js?cb=cd4a3f3a';
-import { PAYMASTERS, paymasterFor, bundlerSet, readGasFeeReference, readFallbackGasPrice, prepareSponsoredWithdrawal, sendSponsoredOperation } from '/fixed-pool-paymaster.js?cb=b8ddfbc9';
+import { fixedPoolLeaves } from '/fixed-pool-sync.js?cb=611dcd33';
+import { PAYMASTERS, paymasterFor, bundlerSet, readGasFeeReference, readFallbackGasPrice, prepareSponsoredWithdrawal, sendSponsoredOperation } from '/fixed-pool-paymaster.js?cb=414482bd';
 
 const enc = new TextEncoder();
 const selector = (sig) => '0x' + bytesToHex(keccak_256(enc.encode(sig)).slice(0, 4));
@@ -19,6 +19,7 @@ const SEL = {
   isSpent: selector('isSpent(bytes32)'),
   denomination: selector('denomination()'),
   isKnownRoot: selector('isKnownRoot(bytes32)'),
+  nextIndex: selector('nextIndex()'),
 };
 const WITHDRAW = selector('withdraw(bytes,bytes32,bytes32,address,address,uint256,uint256)');
 const hexOf = (n) => '0x' + BigInt(n).toString(16);
@@ -73,7 +74,7 @@ export function checkWithdrawCall(out, { pool, recipient, root, nullifierHash, r
 // several flows for the same wallet passes them one session, so a note number is signed for once and the wallet is checked once, not before every action.
 export const newSession = () => ({ sigs: new Map(), checked: false });
 
-export function makeFlow({ provider, account, chainId, store = null, poll = 1500, timeout = 10 * 60 * 1000, fetchImpl = globalThis.fetch?.bind(globalThis), session = newSession() }) {
+export function makeFlow({ provider, account, chainId, store = null, poll = 1500, timeout = 10 * 60 * 1000, fetchImpl = (u, i) => (globalThis.__tacitBundlerFetch || globalThis.fetch)(u, i), session = newSession(), history = null }) {
   const pools = FIXED_POOLS[chainId] || [];
   const sigs = session.sigs;
 
@@ -269,6 +270,55 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
   }
 
   const knownRoot = async (pool, root) => (await call(pool.address, SEL.isKnownRoot + word(root).slice(2))) !== 0n;
+  const nextIndexOf = async (pool) => Number(await call(pool.address, SEL.nextIndex));
+
+  // Reads a pool's deposits (from the gateway's history, else the published cache, else the chain), builds its tree in the prover and keeps the leaves in `cache` for the next withdrawal
+  // from the pool. What was read is not trusted: the tree has to land on a root the pool knows, the leaves have to be 0..n-1, and, when `has` asks for a note, a read that has fewer
+  // deposits than the pool counts is incomplete. A read that fails any of that is made again from the chain alone, which no outside party can have shaped; only then is it an error.
+  async function loadTree({ pool, prover, onStep, leaves, cache, has = null }) {
+    const attempt = async (opts) => {
+      onStep({ step: 'read' });
+      const r = await leaves({
+        chainId, pool,
+        getLogs: (f) => provider.request({ method: 'eth_getLogs', params: [f] }),
+        blockNumber: async () => Number(await provider.request({ method: 'eth_blockNumber' })),
+        onProgress: (p) => onStep({ step: 'read', ...p }),
+        ...opts,
+      });
+      if (has && !has(r.bytes, r.count)) {
+        const total = await nextIndexOf(pool).catch(() => null);
+        throw Object.assign(new Error('This note\'s deposit is not among the pool\'s deposits. Check the note, or try again in a minute if it was just made.'), total != null && r.count < total ? { untrusted: true } : {});
+      }
+      onStep({ step: 'tree', count: r.count });
+      const keep = cache ? r.bytes.slice() : null;           // the prover takes the buffer it is given
+      if (cache) cache.loaded = null;
+      const { root } = await prover.load(r.bytes);
+      if (!(await knownRoot(pool, root))) throw Object.assign(new Error('The deposits read do not add up to a root the pool knows. Try again in a minute.'), { untrusted: true });
+      return { root, keep, count: r.count };
+    };
+    let built;
+    try { built = await attempt({ history }); }
+    catch (e) {
+      if (!e?.untrusted) throw e;
+      onStep({ step: 'read', fromChain: true });
+      built = await attempt({ history: null, base: null });
+    }
+    if (cache) { cache.pools.set(pool.address, { bytes: built.keep, count: built.count, root: built.root }); cache.loaded = pool.address; }
+    return built;
+  }
+
+  // The same, ahead of a withdrawal, for a pool the person holds a note in: so that the withdrawal starts at the proof. `cache` is the page's ({ pools, loaded, inflight, busy });
+  // nothing starts while a withdrawal is running (the prover holds one tree at a time), and a warm already running for the pool is joined.
+  async function warmPool({ pool, prover, cache, onStep = () => {}, leaves = fixedPoolLeaves }) {
+    if (!cache || cache.busy) return null;
+    cache.inflight ??= new Map();
+    if (cache.inflight.has(pool.address)) return cache.inflight.get(pool.address);
+    const have = cache.pools.get(pool.address);
+    if (have && (await knownRoot(pool, have.root).catch(() => false))) return have;
+    const task = (async () => { await checkPool(pool); return loadTree({ pool, prover, onStep, leaves, cache }); })().finally(() => cache.inflight.delete(pool.address));
+    cache.inflight.set(pool.address, task);
+    return task;
+  }
 
   // The steps both withdrawals share: the note is for this network and a pool, the recipient is an address, the
   // pool is what it says, the note is unspent and among the pool's deposits, and the tree built from them lands on
@@ -287,19 +337,10 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     // A run of withdrawals that shares `cache` ({ pools: Map, loaded }, with one prover) reads each pool's deposits and builds its tree once: the
     // pool is read again only if it no longer knows that root or the note is not among the deposits read (a busy pool moved on, a note was made
     // since). The proved call is still checked against this root before anything is sent, so a tree left in the prover by mistake cannot spend.
+    // A pool whose tree is being built ahead of this (warmPool) is waited for, not read twice.
+    if (cache?.inflight?.has(pool.address)) { onStep({ step: 'read' }); await cache.inflight.get(pool.address).catch(() => {}); }
     let src = cache?.pools.get(pool.address) ?? null, reused = false;
     if (src && has(src.bytes, src.count) && (await knownRoot(pool, src.root))) reused = true; else src = null;
-    if (!src) {
-      onStep({ step: 'read' });
-      const r = await leaves({
-        chainId, pool,
-        getLogs: (f) => provider.request({ method: 'eth_getLogs', params: [f] }),
-        blockNumber: async () => Number(await provider.request({ method: 'eth_blockNumber' })),
-        onProgress: (p) => onStep({ step: 'read', ...p }),
-      });
-      if (!has(r.bytes, r.count)) throw new Error('This note\'s deposit is not among the pool\'s deposits. Check the note, or try again in a minute if it was just made.');
-      src = { bytes: r.bytes, count: r.count };
-    }
     let root;
     if (reused) {
       if (cache.loaded !== pool.address) {
@@ -310,12 +351,7 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
       }
       root = src.root;
     } else {
-      onStep({ step: 'tree', count: src.count });
-      const keep = cache ? src.bytes.slice() : null;           // the prover takes the buffer it is given
-      if (cache) cache.loaded = null;
-      ({ root } = await prover.load(src.bytes));
-      if (!(await knownRoot(pool, root))) throw new Error('The deposits read do not add up to a root the pool knows. Try again in a minute.');
-      if (cache) { cache.pools.set(pool.address, { bytes: keep, count: src.count, root }); cache.loaded = pool.address; }
+      ({ root } = await loadTree({ pool, prover, onStep, leaves, cache, has }));
     }
     return { note, pool, root, preimageHex: bytesToHex(note.preimage) };
   }
@@ -360,23 +396,36 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
       beforeRead: (p) => paymasterFor(chainId, p.address), // a pool the paymaster does not take stops here
     });
     const client = bundler || bundlerSet(cfg.bundlers, fetchImpl);
-    const reference = await readGasFeeReference(provider);
-    const prepared = await prepareSponsoredWithdrawal({
-      chainId, pool: pool.address, denomination: pool.denomination, recipient, bundler: client, reference, nodePrice: () => readFallbackGasPrice(provider), onStep, maxFeePercent,
+    // The operation is made at the bundler's price of the moment, and the proof is bound to the fee that price gives. A price that moves while the person reads the fee (the bundler's quote
+    // swings by a sixth in seconds) makes the bundler refuse the operation, with nothing sent: it is then made again at the new price from the tree already built (one new proof), and sent
+    // without asking again when its fee is within what was approved; a higher fee is asked about again.
+    const prepare = async () => prepareSponsoredWithdrawal({
+      chainId, pool: pool.address, denomination: pool.denomination, recipient, bundler: client, reference: await readGasFeeReference(provider), nodePrice: () => readFallbackGasPrice(provider), onStep, maxFeePercent,
       prove: async (fee) => {
         const out = await prover.prove({ chainId, pool: pool.address, preimageHex, recipient, relayer: cfg.paymaster, fee: String(fee) });
         checkWithdrawCall(out, { pool, recipient, root, nullifierHash: note.nullifierHash, relayer: cfg.paymaster, fee });
         return out;
       },
     });
-    const receive = pool.denomination - prepared.fee;
-    onStep({ step: 'quote', fee: prepared.fee, receive });
-    if (!send) return { op: prepared.op, fee: prepared.fee, receive, sent: false, gasEstimation: prepared.gasEstimation };
-    if (confirm && !(await confirm({ fee: prepared.fee, receive, denomination: pool.denomination }))) {
-      throw Object.assign(new Error('Cancelled. Nothing was sent.'), { cancelled: true });
+    let prepared = await prepare(), approved = null;
+    for (let again = 0; ; again++) {
+      const receive = pool.denomination - prepared.fee;
+      const ask = !!confirm && (approved == null || prepared.fee > approved);
+      if (!send || ask || again === 0) onStep({ step: 'quote', fee: prepared.fee, receive });
+      if (!send) return { op: prepared.op, fee: prepared.fee, receive, sent: false, gasEstimation: prepared.gasEstimation };
+      if (ask) {
+        if (!(await confirm({ fee: prepared.fee, receive, denomination: pool.denomination }))) throw Object.assign(new Error('Cancelled. Nothing was sent.'), { cancelled: true });
+        approved = prepared.fee;
+      }
+      try {
+        const done = await sendSponsoredOperation({ op: prepared.op, chainId, bundler: client, onStep, poll });
+        return { op: prepared.op, fee: prepared.fee, receive, sent: true, hash: done.txHash, userOpHash: done.hash, spent: await settled(pool, note), gasEstimation: prepared.gasEstimation };
+      } catch (e) {
+        if (!e?.priceMoved || again >= 2) throw e;
+        onStep({ step: 'reprice' });
+        prepared = await prepare();
+      }
     }
-    const done = await sendSponsoredOperation({ op: prepared.op, chainId, bundler: client, onStep, poll });
-    return { op: prepared.op, fee: prepared.fee, receive, sent: true, hash: done.txHash, userOpHash: done.hash, spent: await settled(pool, note), gasEstimation: prepared.gasEstimation };
   }
 
   // The note text for a deposit this wallet made: the secrets come from signing its nonce again, so only (nonce, pool) is kept.
@@ -387,7 +436,7 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     return noteString({ denomination: p.denomination, chainId, preimage: secrets.preimage });
   }
 
-  return { pools, signNonce, probe, scan, deposit, depositWith, sendOne, prepareNotes, landedNotes, checkPool, atomicSupported, seen, spent, withdraw, withdrawSponsored, knownRoot, noteText };
+  return { pools, signNonce, probe, scan, deposit, depositWith, sendOne, prepareNotes, landedNotes, checkPool, atomicSupported, seen, spent, withdraw, withdrawSponsored, warmPool, knownRoot, noteText };
 }
 
 // What a found or fresh note shows: its size, its place, and the line that spends it elsewhere.

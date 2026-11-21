@@ -82,6 +82,12 @@ const ok = (c, m) => { if (c) { console.log('  ok -', m); n++; } else { console.
   saveRuntime(bad, { ...e, logo: 'https://evil.example/x.png' });
   saveRuntime(bad, { ...e, addr: '0x' + 'ef'.repeat(20), logo: '//evil.example/x.png' });
   ok(readRuntime(bad).every((x) => x.logo === ''), 'a logo off this site is dropped, and the token still kept');
+  // the token list carries some logos inside it (a base64 SVG or PNG): drawn, as the swap card draws them; nothing else of the data: kind is
+  const svg = 'data:image/svg+xml;base64,' + Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString('base64');
+  const good = '0x' + 'ab'.repeat(20), doc2 = { createElementNS: (n, t) => ({ name: t, attrs: {}, kids: [], setAttribute(k, v) { this.attrs[k] = v; }, append(...k) { this.kids.push(...k); }, set textContent(v) { this.t = v; } }) };
+  const drawn = (logo) => runtimeSymbol(doc2, { addr: good, logo, sym: 'JP' }).kids.some((k) => k.name === 'image');
+  ok(drawn(svg) && drawn('data:image/png;base64,iVBORw0KGgo='), 'a list logo (a base64 SVG or PNG) is drawn');
+  for (const evil of ['data:text/html;base64,PGI+', 'data:image/svg+xml,<svg onload=alert(1)>', 'data:image/svg+xml;base64,AAAA"onload="x', 'data:image/svg+xml;base64,' + 'A'.repeat(40000), 'javascript:alert(1)']) ok(!drawn(evil), `drew ${evil.slice(0, 40)}`);
   // damaged storage reads as none, and a storage that refuses is not a crash
   const dmg = mem(); dmg.setItem(RUNTIME_STORE, '{not json');
   ok(readRuntime(dmg).length === 0, 'damaged storage reads as nothing');

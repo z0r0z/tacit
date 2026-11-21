@@ -175,7 +175,7 @@ const SATS_CB_FILES = ['sats/join-worker.js', 'sats/mix.js', 'sats/secret.js', '
 // (TAC's Bitcoin pool, tac/pool.js and what it loads, the sheets, front/sheets.js, and TAC's page, front/tac.js, are hashed before the front page that loads them)
 const WELD_CB_FILES = ['btc-borrow.js', 'btcswap-page.js', 'walletconnect.js', 'evm-pool-sync-worker.js', 'holding-prove-worker.js', 'tac/sats.js', 'tac/claim.js', 'tac/pool.js', 'front/sheets.js', 'front/tac.js', 'front-route.js', 'index.html', 'weld/stats/index.html'];
 // dapp/pay/ and dapp/pay/eth/ are built the same way as weld: one page each, every import in its inline module.
-const PAY_CB_FILES = ['private-route.js', 'sign-wait.js', 'pay/index.html', 'pay/eth/index.html'];
+const PAY_CB_FILES = ['private-route.js', 'relay-route.js', 'sign-wait.js', 'pay/index.html', 'pay/eth/index.html'];
 // dapp/tac/ holds TAC's Bitcoin pool, which TAC's page draws: pool.js lazy-imports sats.js and claim.js, so those are hashed first, then pool.js
 // (and the front page, in the weld walk above). /tac/ itself is the front page made for its address (tacPage below).
 const TAC_CB_FILES = ['tac/sats.js', 'tac/claim.js', 'tac/pool.js'];

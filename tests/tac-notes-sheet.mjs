@@ -15,10 +15,12 @@ import { createRequire } from 'node:module';
 import http from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { createHash } from 'node:crypto';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT || new URL('../node_modules/playwright-core', import.meta.url).pathname);
 const { keccak_256 } = require('@noble/hashes/sha3');
+const secp = await import('@noble/secp256k1');
 const DAPP = process.env.DAPP || new URL('../dapp/', import.meta.url).pathname;
 const PORT = 33000 + Math.floor(Math.random() * 900), BASE = `http://127.0.0.1:${PORT}`;
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.woff2': 'font/woff2' };
@@ -41,8 +43,13 @@ const NOTES = [['a1', 600, true], ['a2', 300, true], ['a3', 250, true], ['b1', 1
   .map(([t, v, tracked]) => ({ txid: t.repeat(32), vout: 0, amount: String(BigInt(v) * 100000000n), tracked }));
 const key = (txid, vout) => { const b = new Uint8Array(36); b.set(Buffer.from(txid, 'hex').reverse(), 0); new DataView(b.buffer).setUint32(32, vout, true); return '0x' + Buffer.from(keccak_256(b)).toString('hex'); };
 const DUMP = { attestedHeight: PROOF, snapshot: { height: PROOF, liveTriples: NOTES.filter((x) => x.tracked).map((x) => [key(x.txid, x.vout), '0x', '0x', '0x', 0]), burnNodes: [], noteLeaves: [] } };
-const COIN = [{ txid: 'ee'.repeat(32), vout: 1, value: 250000, status: { confirmed: true, block_height: H, block_time: 1700000000 } }];
-const TACIT_JS = readFileSync(join(DAPP, 'tacit.js'), 'utf8') + '\n_testSetScanHoldingsOverride(() => (globalThis.__held ? globalThis.__held() : new Map()));\n';
+const coin = (t, vout, value) => ({ txid: t.repeat(32), vout, value, status: { confirmed: true, block_height: H, block_time: 1700000000 } });
+let COIN = [coin('ee', 1, 250000)];
+// what the TAC page's bridge reads for a note the reflection does not track, answered only for the last check: the note's own transaction, its history and the miner's rates
+let LATE = false;
+const OWN_SPK = '0014' + createHash('ripemd160').update(createHash('sha256').update(Buffer.from(secp.getPublicKey(KEY, true))).digest()).digest().toString('hex');
+// (the cBTC lock sync reads the pool, which this test refuses; it is answered as done, so the coins the page counts as free are the address's own and the protected ones seeded below stay)
+const TACIT_JS = readFileSync(join(DAPP, 'tacit.js'), 'utf8') + '\n_testSetScanHoldingsOverride(() => (globalThis.__held ? globalThis.__held() : new Map()));\n_ownLocksReserved = () => Promise.resolve();\n';
 
 const browser = await chromium.launch({ args: ['--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1'] });
 try {
@@ -60,6 +67,9 @@ try {
     const json = (o) => r.fulfill({ status: 200, headers: CORS, body: JSON.stringify(o) });
     if (/\/reflection\/dump/.test(u)) return json(DUMP);
     if (/\/reflection\/status/.test(u)) return json({ attestedHeight: PROOF });
+    if (LATE && /\/reflection\/burndep\/trace/.test(u)) return json({ ok: true, bundle: { fake: true }, hops: 1 });
+    if (LATE && /slipstream\.mara\.com\/api\/rates/.test(u)) return json({ effective_rate: 8, submit_fee_rate: 8, market_rate: 4, multiplier: 2, slipstream_rate: 8, discounted_multiplier: 2 });
+    if (LATE && /\/tx\/[0-9a-f]{64}(\?|$)/.test(u)) return json({ status: { confirmed: true, block_height: H, block_time: 1700000000 }, vout: [{ scriptpubkey: OWN_SPK, value: 546 }] });
     if (/\/address\/[^/]+\/utxo/.test(u)) return json(COIN);
     if (/\/v1\/fees\/recommended/.test(u)) return json({ fastestFee: 4, halfHourFee: 3, hourFee: 2, economyFee: 1, minimumFee: 1 });
     if (/\/fee-estimates/.test(u)) return json({ 1: 4, 3: 3, 6: 2, 144: 1 });
@@ -166,6 +176,39 @@ try {
   await page.click('#tpg-top [data-tn-top]').catch(() => {});
   await page.waitForTimeout(500);
   ok(await page.$eval(sheet, (d) => d.open).catch(() => false), 'the Bitcoin address row of All your TAC opens it too');
+
+  // the address has a small free coin, a larger one a bridge in progress will spend and a larger one locked as collateral: a fee it cannot pay says what is there but not free
+  COIN = [coin('ee', 1, 900), coin('ff', 2, 1200), coin('cc', 0, 7000), coin('dd', 0, 90000)];
+  await page.evaluate(([lock, held]) => {
+    localStorage.setItem('tacit-protected-outpoints-v1', JSON.stringify({ [lock]: '90000' }));
+    localStorage.setItem('tacit-burndep-bridge-v1:mainnet:held-test', JSON.stringify([{ id: held, stage: 'migrate-signed', migrate: { fundingUtxo: { txid: held.split(':')[0], vout: 0, value: 7000 } } }]));
+  }, [`${'dd'.repeat(32)}:0`, `${'cc'.repeat(32)}:0`]);
+  await page.waitForTimeout(16000);   // the address's coins are kept for 15 s
+  await setTicks(['a2', 'a3']);
+  await press('[data-tn-act="merge"]');
+  await page.waitForFunction(() => /short of the about/.test(document.querySelector('#tn-cf')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+  const short = await text('#tn-cf');
+  ok(/free for fees, short of the about [\d,]+ sats this needs\. Not counted as free: 0\.00007 BTC held for a bridge in progress \(it frees up when that bridge finishes\) and 0\.0009 BTC locked as collateral\./.test(short) && !(await isOn('#tn-go')),
+    `a merge the address cannot pay the fee for says what is held for a bridge and what is locked, and stays shut: ${short.slice(short.indexOf('This key')).slice(0, 300)}`);
+
+  // the TAC page's bridge of a note the reflection does not track (a move, then a burn through a miner), which spends one coin whole: the same address, a coin too small to pay it
+  LATE = true;
+  await page.click(`${sheet} [data-tn-close]`);
+  await page.evaluate(() => { document.querySelector('#tpg-where').open = true; document.querySelector('#tpg-br').open = true; });
+  await page.check(`#bridge-body input[value="${'b1'.repeat(32)}:0"]`);
+  await page.waitForFunction(() => /one coin whole|err/.test(document.querySelector('#br-rcpt')?.textContent || ''), null, { timeout: 90000 }).catch(() => {});
+  const review = await text('#br-rcpt');
+  ok(/Bitcoin fee\s*≈ [\d,]+ sats, and about [\d,]+ sats for the burn later/.test(review) && /this needs one of [\d,]+ sats\. The 2 free coins there hold 0\.000021 BTC in all\. Not counted as free: 0\.00007 BTC held for a bridge in progress \(it frees up when that bridge finishes\) and 0\.0009 BTC locked as collateral\. Add bitcoin to it/.test(review),
+    `its review says the largest free coin is short of the one it needs, what the free coins add up to, and what is held and locked: ${review.slice(review.indexOf('The move spends')).slice(0, 420)}`);
+
+  // the Bitcoin sheet's balance is the free coins only (900 + 1,200 sats), and it says what else the address has
+  await page.evaluate(() => { location.hash = '#bitcoin'; });
+  await page.waitForSelector('#btc-re', { timeout: 30000 });
+  await page.click('#btc-re');
+  await page.waitForFunction(() => /Not counted in the balance/.test(document.querySelector('#btc-body')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+  const bal = await text('#btc-body');
+  ok(/0\.000021\s*BTC/.test(bal) && /Not counted in the balance: 0\.00007 BTC held for a bridge in progress \(it frees up when that bridge finishes\) and 0\.0009 BTC locked as collateral\./.test(bal),
+    `the Bitcoin sheet's balance says what the address has that it does not count: ${bal.slice(0, 260)}`);
   ok(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`);
   if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT, fullPage: true });
   await ctx.close();

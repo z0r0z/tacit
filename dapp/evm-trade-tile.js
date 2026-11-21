@@ -279,7 +279,7 @@ function createLane(host, opts0) {
           <label class="bm-field">
             <span class="bm-label" data-k="elabel">You spend</span>
             <span class="bm-inputrow">
-              <input data-k="eamount" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="Amount">
+              <input data-k="eamount" inputmode="decimal" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" placeholder="0" aria-label="Amount">
               <span class="bm-unit bm-unit-static" data-k="eunit"></span>
             </span>
           </label>

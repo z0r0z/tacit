@@ -72,7 +72,8 @@ export function forgetKeys() {
 export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, network, logStore, snapshotOpts = {} } = {}) {
   const cfg = getConfidentialDeployment(network);
   if (!cfg || !cfg.pool) throw new Error(`confidential pool not deployed on "${network || activeNetwork()}"`);
-  const _fetch = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+  // A page may name a fetch for the relay's API (tacit.js sets one that goes through the private route); with none, the plain fetch.
+  const _fetch = fetchImpl || (typeof fetch !== 'undefined' ? (u, i) => (globalThis.__tacitRelayFetch || fetch)(u, i) : null);
 
   const evm = makeEvmAccount({ secp, keccak256, sha256 });
   const indexer = makeConfidentialIndexer({ secp, keccak256, sha256 });

@@ -324,7 +324,7 @@ export function makeConfidentialBridgeMint({ pool, ct, relay = null, fetchImpl =
   }
 
   async function fetchReflectionSnapshot({ network = 'mainnet' } = {}) {
-    const f = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+    const f = fetchImpl || (typeof fetch !== 'undefined' ? (u, i) => (globalThis.__tacitRelayFetch || fetch)(u, i) : null);
     if (!f) throw new Error('bridge-mint: no fetch available');
     const root = String(relayBase || '').replace(/\/$/, '');
     const res = await f(`${root}/reflection/dump?network=${network === 'signet' ? 'signet' : 'mainnet'}`);
@@ -345,7 +345,7 @@ export function makeConfidentialBridgeMint({ pool, ct, relay = null, fetchImpl =
   async function armMint({ network = 'mainnet', recovery, ephRand, ...args }) {
     if (!relay || typeof relay.sealFor !== 'function') throw new Error('bridge-mint: no relay wired');
     if (!recovery || (!recovery.seedDerived && recovery.ownerPub == null)) throw new Error('bridge-mint: pass recovery { ownerPub, secret } or { seedDerived: true } so the minted note stays recoverable');
-    const f = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+    const f = fetchImpl || (typeof fetch !== 'undefined' ? (u, i) => (globalThis.__tacitRelayFetch || fetch)(u, i) : null);
     if (!f) throw new Error('bridge-mint: no fetch available');
     const parts = bridgeMintParts(args);
     const memos = relay.sealFor({ leaves: [parts.destLeaf], outputs: [outputFor(recovery, args.dest, parts.op)], ephRand: ephRand || freshScalar });
@@ -356,7 +356,7 @@ export function makeConfidentialBridgeMint({ pool, ct, relay = null, fetchImpl =
     return { ok: true, status: j.status, jobId: j.jobId || null, dest: parts.destLeaf };
   }
   async function armedStatus(dest, { network = 'mainnet' } = {}) {
-    const f = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+    const f = fetchImpl || (typeof fetch !== 'undefined' ? (u, i) => (globalThis.__tacitRelayFetch || fetch)(u, i) : null);
     if (!f) throw new Error('bridge-mint: no fetch available');
     const root = String(relayBase || '').replace(/\/$/, '');
     const res = await f(`${root}/confidential/armed?dest=${encodeURIComponent(dest)}&network=${network === 'signet' ? 'signet' : 'mainnet'}`);

@@ -22,13 +22,30 @@ function publicHost(url) {
   const host = url.replace(/^https:\/\//, '').split('/')[0].replace(/:\d+$/, '').toLowerCase();
   return /^[a-z0-9_-]+(?:\.[a-z0-9_-]+)+$/.test(host) && !/\.\d+$/.test(host) && !LOCAL_TLD.test(host);
 }
+// A relay at a Tor onion address, listed like any other as `https://<id>.onion/evm-pool/keeper` (the relay registry takes only https URLs). Tor carries and
+// encrypts the traffic, so a page on Tor asks it as plain http; a page that is not on Tor leaves these out, since it cannot reach them.
+export const isOnion = (url) => /^https?:\/\/[a-z2-7]{16,56}\.onion(?::\d+)?(?:\/|$)/i.test(String(url));
+export const onionHttp = (url) => String(url).replace(/^https:/i, 'http:');
+// Whether this page reaches the web through Tor: served from an onion address, or switched on in this browser: a link with `?tor=1` turns it on and keeps it (localStorage
+// 'tacit-tor' = '1'), `?tor=0` turns it off. A page cannot tell that it is in Tor Browser, so a person who is says so once.
+export function onTor() {
+  try {
+    if (/\.onion$/i.test(globalThis.location?.hostname || '')) return true;
+    const q = new URLSearchParams(globalThis.location?.search || '').get('tor');
+    if (q === '1' || q === '0') {
+      try { if (q === '1') globalThis.localStorage?.setItem('tacit-tor', '1'); else globalThis.localStorage?.removeItem('tacit-tor'); } catch { /* storage blocked: the link still decides for this page */ }
+      return q === '1';
+    }
+    return globalThis.localStorage?.getItem('tacit-tor') === '1';
+  } catch { return false; }
+}
 const LOCAL = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/;
 
 // The entries a wallet works with, from a chain's `keepers` list and its single `keeper` (the one a chain config has always named), with `relayer`
 // the address pinned for that one (which is kept as it is, pinned or not). `pinned`: on a real origin every other relay must name the address it is to be
 // paid at, and a host that is a public name; off one (a test, a local page) a relay may go without, and a local host is fine. A listed relay that is not a
 // plain https URL ending in `/evm-pool/keeper`, or lacks its pin where one is wanted, is left out, not guessed at.
-export function relaysOf({ keeper = null, keepers = null, relayer = null, pinned = true } = {}) {
+export function relaysOf({ keeper = null, keepers = null, relayer = null, pinned = true, tor = onTor() } = {}) {
   const out = [], seen = new Set(), own = new Set();
   const add = (url, addr, weight, listed) => {
     if (typeof url !== 'string') return;
@@ -36,6 +53,7 @@ export function relaysOf({ keeper = null, keepers = null, relayer = null, pinned
     // the relay a config ships with is the one at its URL: a list that names the same URL (the relay itself, listed for others to find, or someone else's
     // entry for it) adds nothing, and must not pin it to an address of the list's choosing
     if (listed && own.has(u.toLowerCase())) return;
+    if (isOnion(u) && !tor) return;
     if (!/^https:\/\/[\w.-]+(?::\d+)?(?:\/[\w./-]*)?$/.test(u) && !LOCAL.test(u)) return;
     if (listed && !KEEPER_PATH.test(u)) return;
     if (listed && pinned && !publicHost(u)) return;

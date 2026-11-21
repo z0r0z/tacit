@@ -1,9 +1,10 @@
 // A fixed pool's deposits, in leaf order, for building its tree.
 //
-// History comes from a published chunk cache (gzip files of logs, each with a sha256 in a manifest; the file
-// is checked against it). The last stretch, from the cache's last block to the chain's tip, comes from the
-// wallet's own node. Nothing read here is trusted: the tree built from it has to land on a root the pool
-// knows, and the caller checks that before it proves anything.
+// History comes first from the wallet-read gateway through the private route (`history`: pages of leaves it keeps from the chain's logs, so no outside host sees which pool is read),
+// then, if that does not answer, from the chain alone. A published chunk cache (gzip files of logs, each with a sha256 in a manifest; the file is checked against it) is read only where a `base`
+// is given: the gateway seeds its history from one once, when it starts, and the page does not read it (the host is none of ours, and would see which pool is read, and when).
+// The last stretch, from where the history ends to the chain's tip, comes from the wallet's own node. Nothing read here is trusted: the tree built from it has to land on a root the pool
+// knows, and the caller checks that before it proves anything (and reads again from the chain if it does not).
 
 import { keccak_256, sha256, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 
@@ -79,11 +80,37 @@ export async function readTail({ getLogs, address, from, to, piece = 20000 }) {
   return out;
 }
 
+// The pool's leaves from the gateway's history, a page at a time: { deposits, upTo } as the chunk cache gives them. `history({ pool, from, n })` → a page ({ total, upTo, from, n, leaves } with
+// the leaves as base64) or null.
+export const HISTORY_PAGE = 16384;
+const fromBase64 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+export async function readHistory({ history, pool, onProgress = () => {} }) {
+  const first = await history({ pool: pool.address, from: 0, n: HISTORY_PAGE });
+  if (!first || !Number.isInteger(first.total) || first.total < 1 || !Number.isInteger(first.upTo)) throw new Error('the history is not ready');
+  const pages = Math.max(1, Math.ceil(first.total / HISTORY_PAGE)), deposits = [];
+  let page = first, got = 0;
+  for (;;) {
+    const bytes = fromBase64(String(page.leaves || ''));
+    if (page.from !== got || !Number.isInteger(page.n) || page.n < 1 || bytes.length !== page.n * 32) throw new Error('a page of the history is wrong');
+    for (let i = 0; i < page.n; i++) deposits.push({ index: got + i, commitment: '0x' + bytesToHex(bytes.subarray(i * 32, (i + 1) * 32)), block: 0 });
+    got += page.n;
+    onProgress({ done: Math.ceil(got / HISTORY_PAGE), of: pages });
+    if (got >= first.total) break;
+    page = await history({ pool: pool.address, from: got, n: HISTORY_PAGE });
+    if (!page) throw new Error('a page of the history is missing');
+  }
+  return { deposits, upTo: first.upTo };
+}
+
 // All the pool's commitments, 32 bytes each in leaf order, and how many. Throws if the leaf numbers are not 0..n-1.
-export async function fixedPoolLeaves({ chainId, pool, getLogs, blockNumber, base = CHUNK_CACHES[chainId], fetchImpl, onProgress }) {
+export async function fixedPoolLeaves({ chainId, pool, getLogs, blockNumber, base = null, history = null, fetchImpl, onProgress }) {
   const denomination = (Number(pool.denomination / 10n ** 15n) / 1000).toString();
   let deposits = [], upTo = pool.deployBlock;
-  if (base) {
+  if (history) {
+    try { ({ deposits, upTo } = await readHistory({ history, pool, onProgress })); }
+    catch { deposits = []; upTo = pool.deployBlock; }   // not ready, or not there: the chain gives it (or `base`, where one is given)
+  }
+  if (!deposits.length && base) {
     try {
       ({ deposits, upTo } = await readChunkCache({ base, chainId, denomination, address: pool.address, fetchImpl, onProgress }));
     } catch (e) {
@@ -100,7 +127,7 @@ export async function fixedPoolLeaves({ chainId, pool, getLogs, blockNumber, bas
   const bytes = new Uint8Array(n * 32);
   for (let i = 0; i < n; i++) {
     const c = byIndex.get(i);
-    if (!c) throw new Error(`leaf ${i} is missing from the deposits read`);
+    if (!c) throw Object.assign(new Error(`leaf ${i} is missing from the deposits read`), { untrusted: true });
     bytes.set(hexToBytes(c.slice(2)), i * 32);
   }
   return { bytes, count: n };

@@ -1,6 +1,6 @@
-import { makeBtcSession, short } from '/trade/btc-session.js?cb=a86559fe';
+import { makeBtcSession, short } from '/trade/btc-session.js?cb=711a098f';
 import { overlay, esc } from '/trade/sheet.js?cb=d857446c';
-import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=d31a80e0';
+import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=7e9e64d2';
 
 const MARKET_URL = '/btc-market.js', CSS_URL = '/trade/btc-market.css?cb=0f3f9ed2';
 const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
@@ -217,7 +217,7 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
       await Promise.all([session.load(), ensureCss()]);
       // a bridged token other than TAC is sold into bound bids (trade/bound.js), never by the atomic sales of the book below
       if (asset.bound) {
-        const { mountBoundMarket } = await import('/trade/bound.js?cb=3423addf');
+        const { mountBoundMarket } = await import('/trade/bound.js?cb=50564172');
         if (main !== mine) return;
         box.replaceChildren();
         ctl = mountBoundMarket(box, { T: session.T, asset: { id: AID, ticker: asset.ticker || 'tokens', decimals: asset.decimals ?? 8 }, unlock, notify });

@@ -1,0 +1,67 @@
+name: Vault oracle program build
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main, tac-oracle-elf]
+    paths:
+      - 'contracts/sp1/tac-oracle/core/**'
+      - 'contracts/sp1/tac-oracle/program/**'
+      - 'contracts/sp1/tac-oracle/elf/**'
+      - 'contracts/sp1/tac-oracle/elf-vkey-pin.json'
+      - '.github/workflows/tac-oracle-elf.yml'
+  pull_request:
+    paths:
+      - 'contracts/sp1/tac-oracle/core/**'
+      - 'contracts/sp1/tac-oracle/program/**'
+      - 'contracts/sp1/tac-oracle/elf/**'
+      - 'contracts/sp1/tac-oracle/elf-vkey-pin.json'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install sp1up
+        run: |
+          curl -L https://sp1.succinct.xyz | bash
+          echo "$HOME/.sp1/bin" >> $GITHUB_PATH
+
+      - name: Install cargo-prove toolchain
+        run: |
+          sp1up
+          cargo prove --version
+
+      - name: Build the program in Docker
+        working-directory: contracts/sp1/tac-oracle/program
+        run: cargo prove build --docker --tag v6.2.2 --workspace-directory .. 2>&1 | tail -20
+
+      - name: Hash and key
+        working-directory: contracts/sp1/tac-oracle/program
+        run: |
+          ELF=$(find elf target -type f -name tac_oracle -newer Cargo.toml 2>/dev/null | head -1)
+          echo "elf: $ELF"
+          cp "$ELF" "$RUNNER_TEMP/tac_oracle"
+          sha256sum "$RUNNER_TEMP/tac_oracle"
+          KEY=$(cargo prove vkey --elf "$RUNNER_TEMP/tac_oracle" | grep -oE '0x[0-9a-f]{64}' | tail -1)
+          echo "key: $KEY"
+          PIN=../elf-vkey-pin.json
+          [ -f "$PIN" ] || { echo "no pin committed yet"; exit 0; }
+          WANT_SHA=$(python3 -c "import json; print(json.load(open('$PIN'))['elf_sha256'])")
+          WANT_KEY=$(python3 -c "import json; print(json.load(open('$PIN'))['program_vkey'])")
+          GOT_SHA=$(sha256sum "$RUNNER_TEMP/tac_oracle" | cut -d' ' -f1)
+          COMMITTED=$(sha256sum ../elf/tac_oracle | cut -d' ' -f1)
+          [ "$GOT_SHA" = "$WANT_SHA" ] || { echo "::error::the rebuilt program is not the pinned one"; exit 1; }
+          [ "$COMMITTED" = "$WANT_SHA" ] || { echo "::error::the committed ELF is not the pinned one"; exit 1; }
+          [ "$KEY" = "$WANT_KEY" ] || { echo "::error::the program key is not the pinned one"; exit 1; }
+          echo "rebuild, committed ELF and pin agree"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tac_oracle
+          path: ${{ runner.temp }}/tac_oracle
+          retention-days: 30

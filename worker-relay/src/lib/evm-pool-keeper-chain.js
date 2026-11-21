@@ -277,6 +277,8 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
   }));
 
   return {
+    // A raw JSON-RPC read through the read nodes: what the private route's /rpc carries for a wallet (evm-pool-keeper-rpc.js).
+    rpcRequest: (method, params) => pub.request({ method, params }),
     address: account.address,
     chainId,
     pool: cfg.pool,

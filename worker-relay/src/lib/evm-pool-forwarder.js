@@ -15,6 +15,7 @@
 // gateways: { "<id>": "<a /sealed URL>" }: an id is a chain's ("1"), a pool's ("1-xdac17f958d") or a service's ("k": the multi-keeper
 // service's POST /sealed, which carries every pool). Each caller is limited by its address, as the keeper limits its own.
 
+import { createHmac } from 'node:crypto';
 import { makeTokenBucket, clientKey } from './token-bucket.js';
 import { MAX_REQUEST } from '../../../dapp/sealed-request.js';
 import { relayOrigin } from './safe-https.js';
@@ -36,7 +37,19 @@ function readBody(req, max) {
 
 const MAX_KEY_DOC = 16 << 10;
 
-export function makeForwarder({ gateways, ratePerMin = 60, timeoutMs = 210_000, fetchImpl = globalThis.fetch, community = null }) {
+// A stand-in for who is asking, for a service that has to count each caller (queue fairness, daily budgets) and must not be told who: a keyed hash, made here and only
+// here, of the caller's network (an IPv4 /24, an IPv6 /64) and the UTC day. The same network gets the same token for a day, so a service can group its callers by it; the
+// token cannot be turned back into an address (the key is this forwarder's), and tomorrow's does not match today's, so a service cannot follow a caller across days.
+export function senderToken(secret, key, day = Math.floor(Date.now() / 86_400_000)) {
+  const k = String(key);
+  const v4 = /^(?:::ffff:)?(\d+)\.(\d+)\.(\d+)\.\d+$/.exec(k);
+  const prefix = v4 ? `${v4[1]}.${v4[2]}.${v4[3]}.0/24` : k;
+  return createHmac('sha256', secret).update(`${day}|${prefix}`).digest('hex').slice(0, 12);
+}
+
+// `senderSecret` and `senderIds`: the gateway ids (FORWARDER_SENDER_IDS) that get the caller's token in an `x-tacit-sender` header. The others get nothing of the caller's.
+export function makeForwarder({ gateways, ratePerMin = 60, timeoutMs = 210_000, fetchImpl = globalThis.fetch, community = null, senderSecret = null, senderIds = [] }) {
+  const wantsToken = new Set(senderIds);
   const allowed = makeTokenBucket({ perMin: ratePerMin, burst: Math.max(1, Math.min(20, ratePerMin)) });
   const relayAllowed = makeTokenBucket({ perMin: ratePerMin * 20, burst: 60 });      // a relay is asked for by every caller: its own limit, wider than one caller's
   const reply = (res, code, body, type = 'application/json') => {
@@ -82,7 +95,7 @@ export function makeForwarder({ gateways, ratePerMin = 60, timeoutMs = 210_000, 
     try { body = await readBody(req, MAX_REQUEST); } catch { return reply(res, 413, '{"error":"body too large"}'); }
     let up;
     try {
-      up = await fetchImpl(gateway, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body, signal: AbortSignal.timeout(timeoutMs) });
+      up = await fetchImpl(gateway, { method: 'POST', headers: { 'content-type': 'application/octet-stream', ...(senderSecret && wantsToken.has(m[1]) ? { 'x-tacit-sender': senderToken(senderSecret, clientKey(req)) } : {}) }, body, signal: AbortSignal.timeout(timeoutMs) });
     } catch { return reply(res, 502, '{"error":"the keeper did not answer"}'); }
     const answer = Buffer.from(await up.arrayBuffer());
     if (answer.length > MAX_ANSWER) return reply(res, 502, '{"error":"the answer is too large"}');

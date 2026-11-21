@@ -57,9 +57,9 @@ export function mountFarm(host, ctx) {
         </div>
         <p class="note fm-how" id="fm-how"></p>
         <div id="fm-eth"><div class="lbl"><span>ETH</span><button class="linkbtn" type="button" id="fm-emax" hidden></button></div>
-          <div class="amt"><input id="fm-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="ETH to deposit"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div></div>
+          <div class="amt"><input id="fm-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="ETH to deposit"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div></div>
         <div id="fm-tac" hidden><div class="lbl"><span>TAC</span><button class="linkbtn" type="button" id="fm-tmax" hidden></button></div>
-          <div class="amt"><input id="fm-tacamt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="TAC to deposit"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div></div>
+          <div class="amt"><input id="fm-tacamt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="TAC to deposit"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg>TAC</span></div></div>
         <div class="fm-rcpt" id="fm-rcpt" hidden></div>
         <button class="btn" type="button" id="fm-go">Connect wallet</button>
         <div class="status" id="fm-status" role="status"></div>
@@ -135,7 +135,7 @@ export function mountFarm(host, ctx) {
       <details class="wd" id="fm-wd"${F.wdOpen ? ' open' : ''}><summary>Withdraw</summary>
       <div class="fm-out"><div class="seg" id="fm-pct" role="group" aria-label="How much">${[['25', '25%'], ['50', '50%'], ['100', 'All'], ['custom', 'Custom']].map(([v, l]) => `<button type="button" data-pct="${v}" aria-pressed="${F.outPct === v}">${l}</button>`).join('')}</div>
       <div class="seg" id="fm-as" role="group" aria-label="Withdraw as">${[['both', 'ETH + TAC'], ['eth', 'ETH'], ['tac', 'TAC']].map(([v, l]) => `<button type="button" data-as="${v}" aria-pressed="${F.outAs === v}">${l}</button>`).join('')}</div></div>
-      ${F.outPct === 'custom' ? `<div class="amt"><input id="fm-wamt" inputmode="decimal" placeholder="0.00" autocomplete="off" aria-label="Amount to withdraw, in ETH" value="${esc(F.outAmt)}"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
+      ${F.outPct === 'custom' ? `<div class="amt"><input id="fm-wamt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Amount to withdraw, in ETH" value="${esc(F.outAmt)}"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
       <p class="note">Counted in ETH at the pool’s price. Your stake is worth about ${amt(stakeWorthOf(x), 5)} ETH.</p>` : ''}
       <div class="fm-rcpt" id="fm-out-rcpt" hidden></div>
       <button class="btn ghost" type="button" id="fm-exit" disabled>Withdraw</button></details>` : '')
@@ -182,7 +182,7 @@ export function mountFarm(host, ctx) {
   }
   const ackBox = (id, loss, what, prior) => {
     const n = Math.round(loss);
-    return loss >= 30 ? `<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this ${what} to the swap.</span><input id="${id}" inputmode="numeric" autocomplete="off" aria-label="Type ${n} to accept" value="${prior ? n : ''}"></label>`
+    return loss >= 30 ? `<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this ${what} to the swap.</span><input id="${id}" inputmode="numeric" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Type ${n} to accept" value="${prior ? n : ''}"></label>`
       : `<label class="ack"><input type="checkbox" id="${id}"${prior ? ' checked' : ''}><span>I accept losing about ${n}% of this ${what} to the swap.</span></label>`;
   };
   const accepted = (id, loss) => {

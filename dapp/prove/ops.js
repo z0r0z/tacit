@@ -580,7 +580,7 @@ async function autoAdd() {
   A.adding = true; paintAuto();
   try {
     const a = relayAcct(true);
-    const hash = await send({ to: a.address, data: '0x', gas: 21000n, value: 10n ** 16n });
+    const hash = await send({ to: a.address, data: '0x', gas: 60000n, value: 10n ** 16n });
     A.said = 'Sending 0.01 ETH to the relay account…'; paintAuto();
     if (!landed(await waitReceipt(hash))) throw new Error('That transfer did not go through.');
     toast('0.01 ETH added to the relay account');
@@ -598,9 +598,11 @@ async function autoOut() {
   try {
     if (!S.address) await connect();
     const [bal, nonce, block] = await Promise.all([rpc('eth_getBalance', [a.address, 'latest']).then(BigInt), rpc('eth_getTransactionCount', [a.address, 'pending']).then(BigInt), rpc('eth_getBlockByNumber', ['latest', false])]);
-    const tip = 10n ** 8n, maxFee = BigInt(block.baseFeePerGas) * 2n + tip, value = bal - 21000n * maxFee;
+    // 60,000 gas, not 21,000: an account with code (a smart account, an EIP-7702 delegation) runs it on receiving ETH and a bare 21,000 reverts. The unused gas is refunded.
+    const GAS = 60000n;
+    const tip = 10n ** 8n, maxFee = BigInt(block.baseFeePerGas) * 2n + tip, value = bal - GAS * maxFee;
     if (value <= 0n) throw new Error('The relay account holds too little to cover the transfer’s own network fee.');
-    const { raw } = evmTx.signEip1559({ chainId: 1n, nonce, maxPriorityFeePerGas: tip, maxFeePerGas: maxFee, gasLimit: 21000n, to: S.address, value, data: '0x' }, a.priv);
+    const { raw } = evmTx.signEip1559({ chainId: 1n, nonce, maxPriorityFeePerGas: tip, maxFeePerGas: maxFee, gasLimit: GAS, to: S.address, value, data: '0x' }, a.priv);
     const hash = await rpc('eth_sendRawTransaction', [raw]);
     A.said = `Sending ${ethText(value)} ETH to ${short(S.address)}…`; paintAuto();
     if (!landed(await waitReceipt(hash))) throw new Error('That transfer did not go through.');
@@ -643,6 +645,16 @@ evm.onElsewhere(restoreWallet);                                  // a wallet con
 const inView = () => !document.hidden && [...document.querySelectorAll('.tab.ops')].some((t) => !t.hidden);
 const readAll = () => { refresh().catch(() => {}); refreshProof().catch(() => {}); refreshBoard().catch(() => {}); };
 let started = false;
+// The Pay relays card (prove/pay-relays.js): the registry's relays, and an owner's controls for the wallet connected here. Started when the Relay tab opens.
+let payStarted = false;
+export function startPay() {
+  if (payStarted) return;
+  payStarted = true;
+  Promise.all([import('/prove/pay-relays.js?cb=6a3fca14'), import('/private-route.js?cb=59f0bc81')])
+    .then(([m, r]) => m.startPayRelays({ $, esc, short, toast, rpc, send, waitReceipt, landed, txLink, S, connect, busy }, { forwarders: r.ROUTE.forwarders }))
+    .catch(() => { payStarted = false; });
+}
+
 export function startOps() {
   if (started) return;
   started = true;

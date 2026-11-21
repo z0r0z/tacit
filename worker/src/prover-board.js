@@ -89,7 +89,7 @@ export const PROVER_BOARD = Object.freeze({
   offerHoldMs: 60_000,                                  // a program a machine named in a claim this recently is still one it offers (its latest claim may name fewer)
   // Past drawHedgeFactor times its usual time (at least drawHedgeMinMs; drawNewHedgeMs for a machine with no record) the drawn machine is
   // joined by the race but keeps its claim, so a slow draw costs a user little and the drawn machine still wins if it is first.
-  drawHedgeFactor: 1.5,
+  drawHedgeFactor: 1.0,                                // was 1.5 (2026-11-18): a block drawn to a 15-30 s machine waited 22-45 s before the race joined; now it waits that machine's usual time
   drawHedgeMinMs: 10_000,
   drawNewHedgeMs: 30_000,
   communityRacers: 8,                                  // community machines racing one job at most

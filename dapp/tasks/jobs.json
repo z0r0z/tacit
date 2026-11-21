@@ -933,6 +933,84 @@
           "href": "https://discord.gg/VxYx9XSBrM"
         }
       ]
+    },
+    {
+      "id": "coingecko-listing",
+      "chainId": 1,
+      "opensAt": 1794997564,
+      "title": "List TAC on CoinGecko",
+      "tagline": "File Tacit’s CoinGecko listing request for TAC: about fifteen minutes, paid once.",
+      "verified": false,
+      "created": [],
+      "hint": "Opens the brief, which has every field. Comment “claiming” on it first, file the request, then come back here and claim with the Request ID CoinGecko emails you.",
+      "reviewVia": {
+        "label": "the brief",
+        "href": "https://github.com/z0r0z/tacit/issues/87"
+      },
+      "steps": [
+        {
+          "id": "01-filer",
+          "kind": "review",
+          "to": "0x0000000000000000000000000000000000000000",
+          "gas": 22000,
+          "approved": [],
+          "minWei": "100000000000000000000",
+          "maxWei": "100000000000000000000",
+          "evidence": {
+            "text": true,
+            "pattern": "^CL[0-9]{3,}$"
+          },
+          "label": "Filer",
+          "detail": "Files the request on CoinGecko from the team’s verification post.",
+          "action": {
+            "label": "Open the brief",
+            "href": "https://github.com/z0r0z/tacit/issues/87"
+          },
+          "ask": "The Request ID CoinGecko emailed you (like CL12345). It is paid to the wallet you claim from.",
+          "input": {
+            "placeholder": "CoinGecko Request ID",
+            "pattern": "^CL[0-9]{3,}$",
+            "text": true,
+            "error": "That is not a CoinGecko Request ID (it looks like CL12345)."
+          }
+        }
+      ],
+      "about": [
+        {
+          "h": "What it is",
+          "p": "TAC is not on CoinGecko yet. Their request form needs a logged-in account, a captcha and the terms accepted by a person, so we ask the community to file it. The team has already published the verification post CoinGecko requires, and replies to it with your Request ID."
+        },
+        {
+          "h": "What to do",
+          "p": "Comment “claiming” on the brief so one person files it, then follow its steps: every field is written out, ready to paste, and it takes about fifteen minutes with a free CoinGecko account. Choose the free Regular Pass and never pay for anything. CoinGecko emails you a Request ID, and you claim here with it."
+        },
+        {
+          "h": "Paid",
+          "p": "100 TAC once, to the wallet you claim from, for about fifteen minutes of your time. A person reads the claim first: the request exists on CoinGecko, it was filed from the verification post, and the team’s account has replied to it with the id. It does not depend on CoinGecko approving the listing."
+        },
+        {
+          "h": "Claiming",
+          "p": "You claim with a transaction from your wallet to itself that names the Request ID, which this page sends. It costs a few cents of gas on Ethereum, and the reward is then claimed on the Rewards page like any other."
+        }
+      ],
+      "links": [
+        {
+          "label": "The brief, with every field",
+          "href": "https://github.com/z0r0z/tacit/issues/87"
+        },
+        {
+          "label": "The verification post",
+          "href": "https://x.com/tacitfi/status/2122997312071033001"
+        },
+        {
+          "label": "Rewards",
+          "href": "/rewards/"
+        },
+        {
+          "label": "Discord",
+          "href": "https://discord.gg/VxYx9XSBrM"
+        }
+      ]
     }
   ]
 }

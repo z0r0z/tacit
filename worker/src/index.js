@@ -96,6 +96,8 @@ import { buildConfidentialSettler, FREE_POSTED_TYPES } from './confidential-sett
 import { pvDeadline, pvFees, settleCalldata as openSettleCalldata, carriesPublicValues, checkPostedShape } from './confidential-open.js';
 import { passesFloor, feeAssetOf, floorInFeeUnits, totalFee, decodePoolState, ammUsdPerUnitBest, AMM_PRICE_DEFAULTS, FEELESS_TYPES } from './relay-quote.js';
 import { makeConfidentialIndex } from './confidential-index.js';
+import { makePoolAnonymity } from './pool-anonymity.js';
+import { makeChainAnonymity } from './chain-anonymity.js';
 import { buildFlow, appendSeries, flowPoint } from './flow-feed.js';
 import { ethStatsBody, pageStatsBody } from './stats-views.js';
 import { preauthSalesBookBody } from './book-views.js';
@@ -982,7 +984,8 @@ async function recordCrossBlock(env, { jobId, attestedTo, txHash, eth }) {
 // refuses logs up to another's head), and kept newest last in tc:recent ({ to, list }).
 const TACIT_BLOCKS = '0x00000000000a9147ffd8d41d152d730ca5f84e6c', TACIT_BLOCKS_FROM = 26366005;
 const T_TACIT_LANDED = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('Landed(uint256,bytes32,bytes32,address)')));
-const ROLLUP_KEEP = 300;
+// A week of blocks has to fit (the chain page's 7-day figures read it back; a busy day lands ~150): 1200 holds more than a week at that pace.
+export const ROLLUP_KEEP = 1200;
 // The pool and shares a landed block left (public word 18 of its land call: pool ‖ shares, 64 bits each, in units of 1e-8 TAC), from its
 // transaction's input: what the share price, (pool + 1e8) / (shares + 1e8), was after it. Null for a call that is not a land.
 const TACIT_LAND_SEL = '0x' + bytesToHex(keccak_256(new TextEncoder().encode('land(bytes,bytes,(bytes,bytes,bytes32[],bytes32[],bytes,bytes,bytes,bytes,bytes,bytes,bytes))'))).slice(0, 8);
@@ -995,9 +998,11 @@ function tacitPoolSharesOf(input) {
   return { pool: String((w >> 64n) & m), shares: String(w & m) };
 }
 let _rollupAt = 0;
-async function rollupList(env) {
+let _rollupMemo = null;
+export async function rollupList(env) {
   const kv = env.REGISTRY_KV;
   if (!kv) return [];
+  if (_rollupMemo && _rollupMemo.kv === kv && Date.now() - _rollupAt <= 15_000) return _rollupMemo.list;   // the stored list is a few hundred KB: read it once per pass, not per request
   let st = null;
   try { st = JSON.parse((await kv.get('tc:recent')) || 'null'); } catch { st = null; }
   if (!st || !Array.isArray(st.list)) st = { to: TACIT_BLOCKS_FROM - 1, list: [] };
@@ -1014,13 +1019,34 @@ async function rollupList(env) {
           if (st.list.some((x) => x.height === height)) continue;
           st.list.push({ height, ethBlock: Number(BigInt(l.blockNumber)), tx: l.transactionHash, by: '0x' + String(l.topics[2] || '').slice(26) });
         }
-        st = { to, list: st.list.sort((a, b) => a.height - b.height).slice(-ROLLUP_KEEP) };
+        st = { ...st, to, list: st.list.sort((a, b) => a.height - b.height).slice(-ROLLUP_KEEP) };
         await kv.put('tc:recent', JSON.stringify(st));
         break;
       } catch { /* the next node */ }
     }
-    // each block's pool and shares, read once from its land call (eight a pass at most, so a long gap fills over several)
-    const missing = st.list.filter((x) => x.pool == null).slice(0, 8);
+    // a list kept shorter than ROLLUP_KEEP is filled backwards, one 9000-block step a pass, from the lowest Ethereum block it has (`lo`) to the
+    // contract's first: this is how a raised ROLLUP_KEEP reaches the older blocks the old cap had dropped, with the newest blocks never held up
+    if (st.list.length && st.list.length < ROLLUP_KEEP && st.list[0].height > 1) {
+      const lo = Number.isInteger(st.lo) ? Math.min(st.lo, st.list[0].ethBlock) : st.list[0].ethBlock;
+      if (lo > TACIT_BLOCKS_FROM) {
+        const from = Math.max(TACIT_BLOCKS_FROM, lo - 9000);
+        for (const rpc of ETH_LOG_NODES.slice(0, 3)) {
+          try {
+            const logs = await _ethRpcOrThrow(rpc, 'eth_getLogs', [{ address: TACIT_BLOCKS, topics: [T_TACIT_LANDED], fromBlock: '0x' + from.toString(16), toBlock: '0x' + (lo - 1).toString(16) }]);
+            for (const l of logs || []) {
+              const height = Number(BigInt(l.topics[1]));
+              if (st.list.some((x) => x.height === height)) continue;
+              st.list.push({ height, ethBlock: Number(BigInt(l.blockNumber)), tx: l.transactionHash, by: '0x' + String(l.topics[2] || '').slice(26) });
+            }
+            st = { ...st, lo: from, list: st.list.sort((a, b) => a.height - b.height).slice(-ROLLUP_KEEP) };
+            await kv.put('tc:recent', JSON.stringify(st));
+            break;
+          } catch { /* the next node */ }
+        }
+      }
+    }
+    // each block's pool and shares, read once from its land call (eight a pass at most, newest first, so a long gap fills over several)
+    const missing = st.list.filter((x) => x.pool == null).slice(-8);   // the newest first: backfilled older blocks wait behind the head
     if (missing.length) {
       for (const x of missing) {
         for (const rpc of ETH_LOG_NODES.slice(0, 3)) {
@@ -1030,6 +1056,7 @@ async function rollupList(env) {
       if (missing.some((x) => x.pool != null)) await kv.put('tc:recent', JSON.stringify(st));
     }
   }
+  _rollupMemo = { kv, list: st.list };
   return st.list;
 }
 const rollupBlocks = async (env) => (await rollupList(env)).slice(-20).reverse();
@@ -4754,6 +4781,17 @@ async function handleConfidentialAck(req, env, cors) {
     open: body.open === true, requeue: body.requeue === true, release: body.release === true });
   return jsonResponse(r, 200, cors);
 }
+// POST /confidential/stage {jobId, stage} — the relay's word on where a job it is proving stands at the prover board (confidential-settle.js stageJob). A route of
+// its own, not a field of /confidential/ack: an API that does not have it answers 404, where an ack body it does not know could be read as a settle.
+async function handleConfidentialStage(req, env, cors) {
+  const q = confSettler(env);
+  if (!q) return jsonResponse({ error: 'confidential settle not configured' }, 404, cors);
+  if (!checkConfidentialAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ ok: false, error: 'bad json' }, 400, cors); }
+  if (!/^0x[0-9a-f]{64}$/i.test(String(body.jobId || ''))) return jsonResponse({ ok: false, error: 'jobId required' }, 400, cors);
+  return jsonResponse(await q.stageJob(String(body.jobId).toLowerCase(), String(body.stage || '')), 200, cors);
+}
 let _openCache = null;
 // GET /confidential/open?limit= — public. The board: relayed jobs proved and waiting for a sender, and proofs posted for
 // any sender. Each carries what settle() needs; whoever sends one is paid the fee its proof binds.
@@ -4842,6 +4880,49 @@ async function handleConfidentialIndex(req, env, url, cors) {
   try { await idx.fresh(); } catch (e) { refreshError = String((e && e.message) || e).slice(0, 200); }
   const out = await idx.read({ from: url.searchParams.get('from'), limit: url.searchParams.get('limit') });
   return jsonResponse(refreshError ? { ...out, refreshError } : out, 200, { ...cors, 'Cache-Control': 'public, max-age=5' });
+}
+
+// GET /pool/anonymity — deposits per asset in the pool over the last 30 and 7 days and all time (worker/src/pool-anonymity.js), read from the
+// public event index above: a suggestion of how crowded an asset's private side is, shown beside Shield. Cached a minute; public data, no auth.
+let _poolAnon = null;
+function poolAnon(env) {
+  const idx = confIndex(env), d = _CONFIDENTIAL_DEPLOYMENTS?.mainnet, kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  if (!idx || !d || !kv) return null;
+  if (!_poolAnon) {
+    const names = {};
+    for (const a of d.assets || []) if (a.assetId && a.ticker) names[String(a.assetId).toLowerCase()] = a.ticker;
+    _poolAnon = makePoolAnonymity({ index: idx, storage: { get: (k) => kv.get(k), put: (k, v) => kv.put(k, v) }, pool: d.pool, names });
+  }
+  return _poolAnon;
+}
+async function handlePoolAnonymity(env, cors) {
+  const a = poolAnon(env);
+  if (!a) return jsonResponse({ error: 'not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  try { return jsonResponse(await a.summary(), 200, { ...cors, 'Cache-Control': 'public, max-age=60' }); }
+  catch (e) { return jsonResponse({ error: String((e && e.message) || e).slice(0, 160) }, 503, { ...cors, 'Cache-Control': 'no-store' }); }
+}
+
+// GET /tacit-chain/anonymity — how crowded the Tacit chain's private side is: notes made, spent and still unspent, the TAC held, and the growth over
+// the last day and week (worker/src/chain-anonymity.js), from the leader's public /state with an hourly reading kept. Cached a minute; no auth.
+const TACIT_CHAIN_LEADER = 'https://tacit-chain-leader.onrender.com';
+let _chainAnon = null;
+function chainAnon(env) {
+  const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
+  if (!kv) return null;
+  if (!_chainAnon) {
+    const leader = String(env.TACIT_CHAIN_LEADER_URL || TACIT_CHAIN_LEADER).replace(/\/+$/, '');
+    _chainAnon = makeChainAnonymity({
+      read: async () => { const r = await fetch(`${leader}/state`, { signal: AbortSignal.timeout(8000) }); if (!r.ok) throw new Error(`leader ${r.status}`); return r.json(); },
+      storage: { get: (k) => kv.get(k), put: (k, v) => kv.put(k, v) },
+    });
+  }
+  return _chainAnon;
+}
+async function handleChainAnonymity(env, cors) {
+  const a = chainAnon(env);
+  if (!a) return jsonResponse({ error: 'not configured' }, 404, { ...cors, 'Cache-Control': 'no-store' });
+  try { return jsonResponse(await a.summary(), 200, { ...cors, 'Cache-Control': 'public, max-age=60' }); }
+  catch (e) { return jsonResponse({ error: String((e && e.message) || e).slice(0, 160) }, 503, { ...cors, 'Cache-Control': 'no-store' }); }
 }
 
 // Bearer-token gate for the debug endpoints (/scan, /rescan). Either of those
@@ -28763,6 +28844,7 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/confidential/wake' && req.method === 'GET') return handleConfidentialWake(req, env, cors);
     if (url.pathname === '/confidential/ledger' && req.method === 'GET') return handleConfidentialLedger(req, env, cors);
     if (url.pathname === '/confidential/ack' && req.method === 'POST') return handleConfidentialAck(req, env, cors);
+    if (url.pathname === '/confidential/stage' && req.method === 'POST') return handleConfidentialStage(req, env, cors);
     if (url.pathname === '/confidential/arm' && req.method === 'POST') return handleConfidentialArm(req, env, cors);
     if (url.pathname === '/confidential/armed' && req.method === 'GET') return handleConfidentialArmed(req, env, url, cors);
     if (url.pathname === '/confidential/refresh' && req.method === 'POST') return handleConfidentialRefresh(req, env, cors);
@@ -28772,6 +28854,8 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/confidential/landed' && req.method === 'POST') return handleConfidentialLanded(req, env, cors);
     if (url.pathname === '/confidential/quote' && req.method === 'GET') return handleConfidentialQuote(req, env, url, cors);
     if (url.pathname === '/confidential/index' && req.method === 'GET') return handleConfidentialIndex(req, env, url, cors);
+    if (url.pathname === '/pool/anonymity' && req.method === 'GET') return handlePoolAnonymity(env, cors);
+    if (url.pathname === '/tacit-chain/anonymity' && req.method === 'GET') return handleChainAnonymity(env, cors);
     if (url.pathname === '/confidential/relay' && req.method === 'GET') return handleConfidentialRelay(env, cors);
 
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);

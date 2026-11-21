@@ -4,13 +4,17 @@
 // worker that fails or a proof the pool refuses hands the job on to the prover network, so the board can only add a lane,
 // never lose a job. `post`, `status`, `cancel` and `verify` are injected (lib/worker-client.js and the chain), so this is
 // tested without either.
+//
+// `onStage(stage)` (per prove call) says where the job stands for the holder's page, once each time it changes: 'queued' (posted, no worker has it),
+// 'starting' (still unclaimed and `quiet()` says Tacit's worker has stopped polling: restarting its GPU server, about a minute, or finishing another proof) and 'claimed'. A
+// word that cannot be said is dropped: it never holds the proof up.
 
 // `claimStallMs`: how long a claimed settle proof (the pool's own program) may go without an answer before the job is handed on. Tacit's
 // worker proves one in about 40 s; a claim that has said nothing for this long is not going to answer in time, and waiting out the whole
 // wait holds every job behind it in the relay's queue.
 // `race(jobId, worker, ok)`: the relay's verdict on a community machine's candidate (a public job's racers, worker/src/prover-board.js); each
 // candidate is checked as the board's own proof is, and the first that passes is the job's proof while Tacit's worker goes on with it.
-export function makeBoardProver({ post, status, cancel, verify, race = null, alive = null, waitMs = 240_000, pollMs = 1000, claimStallMs = 100_000, now = Date.now, sleep, log = () => {} } = {}) {
+export function makeBoardProver({ post, status, cancel, verify, race = null, alive = null, quiet = null, waitMs = 240_000, pollMs = 1000, claimStallMs = 100_000, now = Date.now, sleep, log = () => {} } = {}) {
   const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const miss = (reason, extra = {}) => Object.assign(new Error(`prover board: ${reason}`), { code: 'board_miss', reason, ...extra });
   // The check's word for an op the pool refuses: 'op:<name> <selector>'.
@@ -28,7 +32,7 @@ export function makeBoardProver({ post, status, cancel, verify, race = null, ali
   // worker), 'op:<name> <selector>' (the pool refuses the OP as it stands, so no prover could pass it: lib/settle-check.js
   // EFFECT_REVERTS) or false (refused: it counts against the worker). → { publicValues, proof, worker, jobId }, or an error with
   // code 'board_miss', or with code 'op_refused' (the job must fail now: the next lane would prove the same op into the same revert).
-  async function prove({ stdin = null, sealed = null, cycleLimit, gasLimit, cls = 'private', label = null, memos = [], timeoutMs = waitMs, program = 'confidential', mode = null, check = null } = {}) {
+  async function prove({ stdin = null, sealed = null, cycleLimit, gasLimit, cls = 'private', label = null, memos = [], timeoutMs = waitMs, program = 'confidential', mode = null, check = null, onStage = null } = {}) {
     if (sealed == null && (!(stdin instanceof Uint8Array) || !stdin.length)) throw new Error('prover board: stdin must be the input bytes');
     if (sealed != null && (typeof sealed !== 'object' || typeof sealed.worker !== 'string' || typeof sealed.ct !== 'string')) throw new Error('prover board: sealed must be { worker, epk, iv, ct }');
     // No worker has polled lately: the job would only sit out the wait, so it goes straight to the next lane.
@@ -41,6 +45,9 @@ export function makeBoardProver({ post, status, cancel, verify, race = null, ali
       deadline: Math.floor(now() / 1000) + Math.ceil(budget / 1000) + 60, label }).catch((e) => ({ ok: false, error: String(e && e.message || e) }));
     if (!posted || !posted.ok || !posted.jobId) throw miss(`not posted: ${(posted && posted.error) || 'no answer from the API'}`);
     const { jobId } = posted;
+    let stageNow = null;
+    const stage = (v) => { if (!onStage || v === stageNow) return; stageNow = v; Promise.resolve().then(() => onStage(v)).catch(() => {}); };
+    stage('queued');
     let lastSeen = null, claimedAt = 0;
     const judged = new Set();
     for (;;) {
@@ -56,6 +63,8 @@ export function makeBoardProver({ post, status, cancel, verify, race = null, ali
         if (ok === true) return { publicValues: c.publicValues, proof: c.proof, worker: c.worker, jobId };
         if (opWord(ok)) { await cancel(jobId, 'stale').catch(() => {}); throw refusal(opWord(ok), { jobId, worker: c.worker }); }
       }
+      if (s === 'claimed') stage('claimed');
+      else if (onStage && quiet && (!s || s === 'queued')) stage(await Promise.resolve(quiet()).catch(() => false) ? 'starting' : 'queued');
       if (s && s !== lastSeen) { lastSeen = s; log(`prover board: job ${jobId.slice(0, 10)} ${s}${st.worker ? ` (${st.worker})` : ''}`); }
       if (s === 'proved') {
         const ok = await Promise.resolve((check || verify)({ publicValues: st.publicValues, proof: st.proof, memos })).catch(() => (check ? 'unchecked' : false));

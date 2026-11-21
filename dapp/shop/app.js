@@ -1,6 +1,6 @@
-import { makeConnect } from '/trade/connect.js?cb=06b41e2f';
+import { makeConnect } from '/trade/connect.js?cb=41394526';
 import { esc } from '/trade/sheet.js?cb=d857446c';
-import { $, rpc } from '/trade/util.js?cb=1d2cd8d3';
+import { $, rpc } from '/trade/util.js?cb=9c8b4133';
 import { readSpot, readPrecision } from '/trade/farm-read.js?cb=fb6ec72f';
 import { makeEvmTradeVenues, ZROUTER } from '/evm-trade-venues.js?cb=196b14fb';
 import { SHOP, MARKET, TAC, TAC_NAME, FROM_BLOCK, TOPICS, foldShelf, sortShelf, filterShelf, zeroTiers, zerosOf, zerosText, zeroBits, addressParts, tacText, usdText, priceUsd, tacUsdFrom, tokenNumber,
@@ -332,7 +332,7 @@ const rowHtml = (x) => {
 const filtersHtml = () => {
   const tiers = zeroTiers(S.shelf);
   const chips = tiers.length > 1 ? `<div class="zcs" role="group" aria-label="Leading zeros">${[null, ...tiers].map((z) => `<button class="zc" type="button" data-zeros="${z === null ? '' : z}" aria-pressed="${S.zeros === z}">${z === null ? 'All' : esc(zerosText(z))}</button>`).join('')}</div>` : '';
-  return `<div class="filters">${chips}<input id="find" type="search" autocomplete="off" spellcheck="false" placeholder="Search the addresses" aria-label="Search the addresses" value="${esc(S.q)}"></div>`;
+  return `<div class="filters">${chips}<input id="find" type="search" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" placeholder="Search the addresses" aria-label="Search the addresses" value="${esc(S.q)}"></div>`;
 };
 // the field someone is typing in, kept (with its caret) through a redraw
 const keepFocus = (root, ids, redraw) => {
@@ -357,7 +357,7 @@ function render() {
     if (S.shelf.length > 1) out += filtersHtml();
     out += shown.length ? `<ol class="shelf">${shown.map(rowHtml).join('')}</ol>` : `<p class="empty">No address matches that. <button class="linkbtn" type="button" id="clear">Show them all</button></p>`;
   }
-  if (W.account && S.shelf.length) out += `<label class="to"><span class="mute">Send the token to</span><input id="to" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="${esc(W.account)}" value="${esc(S.to)}"></label>`;
+  if (W.account && S.shelf.length) out += `<label class="to"><span class="mute">Send the token to</span><input id="to" type="text" inputmode="text" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" placeholder="${esc(W.account)}" value="${esc(S.to)}"></label>`;
   if (!anchored) out += `<div id="note" class="status" aria-live="polite"></div>`;
   keepFocus(root, ['to', 'find'], () => { root.innerHTML = out; });     // a refresh of the list must not take a field from someone typing in it
   paintNote();
@@ -410,9 +410,9 @@ function renderUse() {
     <div class="useform">
       <label class="to"><span class="mute">Address</span><span class="sel"><select id="use-token">${opts}</select></span></label>
       <label class="to"><span class="mute">What should it do?</span><span class="sel"><select id="use-kind"><option value="forward"${forward ? ' selected' : ''}>Pass ETH on to an address of mine</option><option value="custom"${forward ? '' : ' selected'}>Run my own contract</option></select></span></label>
-      ${sel === 'other' ? `<label class="to wide"><span class="mute">Token id (a number, or 0x and hex)</span><input id="use-id" type="text" autocomplete="off" spellcheck="false" placeholder="0x…" value="${esc(U.otherId)}"></label>` : ''}
+      ${sel === 'other' ? `<label class="to wide"><span class="mute">Token id (a number, or 0x and hex)</span><input id="use-id" type="text" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" placeholder="0x…" value="${esc(U.otherId)}"></label>` : ''}
       ${forward
-        ? `<label class="to wide"><span class="mute">Send everything that arrives to</span><input id="use-to" type="text" autocomplete="off" spellcheck="false" placeholder="${esc(who)}" value="${esc(U.to)}"></label>
+        ? `<label class="to wide"><span class="mute">Send everything that arrives to</span><input id="use-to" type="text" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" placeholder="${esc(who)}" value="${esc(U.to)}"></label>
            <p class="note wide">A tiny contract with one job: ETH sent to the address goes straight on to the one above, for good. It cannot be changed, and only ETH is passed on: tokens sent to it would be stuck.</p>`
         : `<label class="to wide"><span class="mute">Creation bytecode (hex)</span><textarea id="use-init" rows="4" spellcheck="false" autocomplete="off" placeholder="0x6080…">${esc(U.init)}</textarea></label>
            <p class="note wide">Your contract is deployed to the address with no ETH sent along.</p>`}

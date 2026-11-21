@@ -55,6 +55,25 @@ test('a failed step is still named, and done does not hide a stop', () => {
   assert.equal(r.err, 'The relay refused it.');
 });
 
+// a farm zap from a proof kept ready (or the zap's own credit, or sent first and settled by the relay): its steps are the page's transaction and the relay's jobs for the share,
+// each named, so none is the main one
+const zapTx = { id: 'tx:1:0xabc', step: 'Zap', status: 'confirmed' }, bondJob = { id: 'job:bond', step: 'Farm your tETH / TAC share', status: 'settled' };
+test('a farm zap that went through is not read as failed when none of its steps is the main one', () => {
+  const r = world().op([zapTx, bondJob]);
+  assert.equal(r.status, 'failed', 'what the steps alone say: the reading the zap must head off');
+  assert.match(r.err, /did not start/);
+  const done = world().op([zapTx, bondJob], { done: true });
+  assert.equal(done.status, 'settled');
+  assert.equal(done.err, undefined);
+});
+test('zapFinish marks the zap’s record done once its last step has landed, and not otherwise', () => {
+  const at = html.indexOf('async function zapFinish(run,'), body = html.slice(at, html.indexOf('\nasync function zapFinishSteps', at));
+  assert.ok(at > 0 && /const r = await zapFinishSteps\(/.test(body), 'zapFinish is the wrapper');
+  assert.match(body, /if \(r === 'done' && run\.op\) actPut\(run\.op, \{ done: true \}\);\s+return r;/, 'done only when the steps ended in done (not when the zap did not land, or has not yet)');
+  const steps = html.slice(html.indexOf('async function zapFinishSteps'), html.indexOf('\nasync function stepBond'));
+  assert.ok(!/done: true/.test(steps) && (steps.match(/return 'done'/g) || []).length === 3 && /return 'landing'/.test(steps) && /return 'gone'/.test(steps), 'the steps return done, landing or gone, and only done is marked');
+});
+
 test('while the run is live it is not called failed', () => {
   const r = world({ live: true }).op([combine()]);
   assert.notEqual(r.status, 'failed');

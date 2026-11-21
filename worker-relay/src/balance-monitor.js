@@ -573,7 +573,7 @@ async function checkTacSupply() {
 // (critical) when a keeper does not answer, or cannot front an ordinary relay at this block's base fee (the keeper
 // then refuses quotes and every user falls back to sending from their own wallet). It warns when it could not after
 // a fourfold base-fee rise, or cannot front its largest transaction (the gas cap, e.g. a bridge move) with the full
-// headroom it sends with. EVM_POOL_KEEPERS=off skips the check; a JSON list replaces the defaults.
+// headroom it sends with. EVM_POOL_KEEPERS=off skips the check; a JSON list replaces the defaults; EVM_POOL_KEEPERS_EXTRA, a JSON list, adds to them.
 const EVM_POOL_KEEPERS_DEFAULT = [
   { chainId: 1, name: 'Ethereum', keeper: 'https://tacit-evm-pool-keepers.onrender.com/1/evm-pool/keeper', address: '0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0', rpc: ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://mainnet.gateway.tenderly.co'], minTipWei: '50000000' },
   { chainId: 8453, name: 'Base', keeper: 'https://tacit-evm-pool-keepers.onrender.com/8453/evm-pool/keeper', address: '0xfA2afbaB631C7Eda7CeA6AE1440605C504E322Ec', rpc: ['https://mainnet.base.org', 'https://base.drpc.org', 'https://base.rpc.blxrbdn.com'] },
@@ -604,7 +604,10 @@ async function keeperRpc(urls, method, params = []) {
 async function checkEvmPoolKeepers() {
   const raw = process.env.EVM_POOL_KEEPERS;
   if (raw === 'off') return;
-  const keepers = raw ? JSON.parse(raw) : EVM_POOL_KEEPERS_DEFAULT;
+  // EVM_POOL_KEEPERS_EXTRA: more keepers to watch (a JSON list of the same entries), added to whichever list is in use: the defaults above, or EVM_POOL_KEEPERS
+  let more = [];
+  try { more = process.env.EVM_POOL_KEEPERS_EXTRA ? JSON.parse(process.env.EVM_POOL_KEEPERS_EXTRA) : []; } catch { await alert('warning', 'EVM_POOL_KEEPERS_EXTRA is not valid JSON: the keepers in it are not watched'); }
+  const keepers = [...(raw ? JSON.parse(raw) : EVM_POOL_KEEPERS_DEFAULT), ...(Array.isArray(more) ? more : [])];
   // keepers that share an address (the token pools' one key) page once about it: its balance is one, and so is the reason it cannot quote
   const firstOf = new Map();
   for (const k of keepers) { const a = `${k.chainId}:${String(k.address).toLowerCase()}`; if (!firstOf.has(a)) firstOf.set(a, k); }

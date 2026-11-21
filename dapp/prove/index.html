@@ -21,7 +21,10 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /prove/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/prove/app.js?cb=30fff6a7">
+<link rel="modulepreload" href="/prove/app.js?cb=baf402b2">
+<link rel="modulepreload" href="/relay-route.js?cb=ac4b96ce">
+<link rel="modulepreload" href="/private-route.js?cb=59f0bc81">
+<link rel="modulepreload" href="/evm-pool-relays.js">
 <link rel="modulepreload" href="/community-prove.js?cb=e2a65259">
 <link rel="modulepreload" href="/prove/view.js?cb=f0f73815">
 <link rel="modulepreload" href="/prove/invader.js?cb=e8a5ec59">
@@ -304,6 +307,8 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .fld input[aria-invalid="true"] { border-color: var(--err); }
 .fld .bad { color: var(--err); font-size: 12px; margin: 0; }
 .fld .bad:empty { display: none; }
+.relay { display: grid; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--hair); }
+.relay .btn { margin-top: 0; }
 .state { display: flex; align-items: center; gap: 12px; margin: 20px 0 0; }
 .state .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--hair-2); }
 .state[data-s="waiting"] .dot, .state.tab .dot { background: var(--ok); animation: pulse 2.4s ease-in-out infinite; }
@@ -421,6 +426,7 @@ pre.cmd code::before { content: '$ '; color: var(--mute); -webkit-user-select: n
 .ops .callout a { color: var(--ink); }
 .ops .callout .btn { margin-top: 8px; }
 .ops pre.cmd { margin: 12px 0 0; font: 12px/1.7 var(--mono); border-color: var(--hair); overflow-x: auto; white-space: pre; }
+.ops pre.cmd.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ops .tscroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .ops table.batches { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 10px; }
 .ops table.batches th, .ops table.batches td { text-align: right; padding: 5px 0 5px 10px; border-bottom: 1px solid var(--hair); font-weight: 400; white-space: nowrap; }
@@ -945,7 +951,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
       <section class="panel" id="desk" aria-live="polite" data-card="node">
         <p class="eyebrow"><span>Your node</span><span class="me" id="me"></span></p>
-        <label class="fld" for="addr"><span>Pays to</span><input id="addr" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="0x… the address TAC is paid to" maxlength="64" aria-describedby="addr-bad"><p class="bad" id="addr-bad" role="alert"></p></label>
+        <label class="fld" for="addr"><span>Pays to</span><input id="addr" type="text" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" placeholder="0x… the address TAC is paid to" maxlength="64" aria-describedby="addr-bad"><p class="bad" id="addr-bad" role="alert"></p></label>
         <div class="state" id="state" data-s="none"><span class="dot" aria-hidden="true"></span><h2 id="title">Looking for tacit-prover…</h2><span class="win num" id="win" aria-live="polite"></span></div>
         <p class="status err" id="blocked" hidden>This browser is stopping the page from reaching tacit-prover on this computer. Allow local network access for tacit.finance in the site settings (the icon left of the address), then reload.</p>
         <div class="forge" id="forge" hidden><ol><li></li><li></li><li></li><li></li></ol><p class="num" id="stage"></p></div>
@@ -1094,6 +1100,21 @@ node tools/private-route-check.mjs --service https://tacit-evm-pool-keepers.onre
       <p class="plan">Send the address to Tacit to be listed. <a href="https://github.com/src-company/tacit/blob/main/docs/COMMUNITY-OPS.md" target="_blank" rel="noopener noreferrer">How it works</a></p>
     </div>
   </section>
+  <section class="grp" id="g-pay" aria-labelledby="h-pay" data-card="pay-relays">
+    <h2 id="h-pay"><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>Pay relays</h2>
+    <div class="panel">
+      <p class="lede">Relays that send private ETH spends from the pay page, for a fee. Anyone can list one by staking TAC; wallets favor the cheapest they can reach, and reach each one through the private route, so a relay never sees who is asking.</p>
+      <div class="plan num" id="pay-box"><p><span class="sk" style="--w:22ch"></span></p></div>
+      <div id="pay-mine" hidden></div>
+      <p class="status" id="pay-status" role="status"></p>
+      <p class="lede">Run one from your laptop. It needs Node 20 or newer, git, and cloudflared for the tunnel (brew install cloudflared). The command makes the relay its own key and a fresh address to hold the stake, says where to send the stake and a little ETH (send them from a private balance and nothing links the relay to you), starts the relay, opens a tunnel so you need no server, and lists it. A relay earns while it is on, and wallets pass over it while it is off. A machine that already runs a prover can run one too.</p>
+      <div class="pair"><pre class="cmd wrap"><code id="pay-cmd">git clone https://github.com/src-company/tacit
+cd tacit/worker-relay &amp;&amp; npm ci
+node scripts/pay-relay.mjs --tunnel</code></pre><button class="btn ghost" id="pay-copy" type="button">Copy</button></div>
+      <p class="plan">Prefer Tor? Put <code>--onion</code> where <code>--tunnel</code> is (needs <code>tor</code>: brew install tor). The relay then has an .onion address: people on Tor Browser reach it without it ever seeing their address, and your machine's address stays hidden too. Add <code>?tor=1</code> to a page's link once to make it list onion relays.</p>
+      <p class="plan"><a href="https://github.com/src-company/tacit/blob/main/docs/RUN-A-PAY-RELAY.md" target="_blank" rel="noopener noreferrer">Run and list a relay</a> · <a href="https://etherscan.io/address/0x00000000000299F48Fb844626ab96c6A20059a01#code" target="_blank" rel="noopener noreferrer">The registry</a></p>
+    </div>
+  </section>
     </div>
 
     <div class="tab ops" id="t-bitcoin" role="tabpanel" aria-labelledby="tb-bitcoin" hidden>
@@ -1169,6 +1190,6 @@ node tools/private-route-check.mjs --service https://tacit-evm-pool-keepers.onre
 
 <div id="toast-container" class="toasts" popover="manual"></div>
 
-<script type="module" src="/prove/app.js?cb=30fff6a7"></script>
+<script type="module" src="/prove/app.js?cb=baf402b2"></script>
 </body>
 </html>

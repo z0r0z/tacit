@@ -256,6 +256,40 @@ await test('confirm yes sends it', async () => {
   const out = await flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerFor(log), confirm: async () => true });
   eq(out.sent, true); eq(log.filter((m) => m === 'eth_sendUserOperation').length, 1);
 });
+// a bundler whose minimum priority fee moves past the operation while the person reads the fee: the first `refuse` sends are refused for it; each quote after a refusal is dearer by `rise`
+const bundlerMoving = (log, { refuse = 1, rise = 0n } = {}) => {
+  let refused = 0, quotes = 0;
+  return {
+    async request(method, params) {
+      log.push(method);
+      if (method === 'pimlico_getUserOperationGasPrice') { const up = BigInt(Math.min(quotes++, 1)) * rise; return { standard: { maxFeePerGas: '0x' + (400_000_000n + up).toString(16), maxPriorityFeePerGas: '0x' + (100_000_000n + up / 4n).toString(16) } }; }
+      if (method === 'eth_estimateUserOperationGas') return { callGasLimit: '0x0', verificationGasLimit: '0x9c40', preVerificationGas: '0xea60', paymasterVerificationGasLimit: '0x55730', paymasterPostOpGasLimit: '0x7530' };
+      if (method === 'eth_sendUserOperation') {
+        if (refused < refuse) { refused++; throw Object.assign(new Error('rpc'), { kind: 'rpc', code: -32602, details: 'maxPriorityFeePerGas must be at least 82899262 (current maxPriorityFeePerGas: 70660787) - use pimlico_getUserOperationGasPrice to get the current gas price.' }); }
+        log.sent = params[0]; return '0x1';
+      }
+      if (method === 'eth_getUserOperationReceipt') return { success: true, receipt: { transactionHash: '0x' + 'ee'.repeat(32) } };
+      throw new Error('unexpected ' + method);
+    },
+  };
+};
+await test('a price that moved while the fee was read is made again at the new price and sent, without asking again when the fee is no higher', async () => {
+  const w = sponsoredWorld(); const log = []; const asked = []; const steps = [];
+  const out = await flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerMoving(log), confirm: async (q) => { asked.push(q.fee); return true; }, onStep: (s) => steps.push(s.step) });
+  eq(out.sent, true); eq(log.filter((m) => m === 'eth_sendUserOperation').length, 2, 'refused once, sent once'); eq(asked.length, 1, 'asked once');
+  eq(steps.includes('reprice'), true); eq(w.log.sends.length, 0, 'nothing from the wallet');
+});
+await test('when the new price makes the fee higher than the one approved, it is asked about again, and no sends no second time', async () => {
+  const w = sponsoredWorld(); const log = []; const asked = []; let answers = [true, false];
+  const e = await rejects(flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerMoving(log, { rise: 200_000_000n }), confirm: async (q) => { asked.push(q.fee); return answers.shift(); } }), /Cancelled. Nothing was sent/);
+  eq(asked.length, 2, 'asked again'); eq(asked[1] > asked[0], true, 'the second fee is higher'); eq(e.cancelled, true);
+  eq(log.filter((m) => m === 'eth_sendUserOperation').length, 1, 'only the first was sent, and refused');
+});
+await test('a price that keeps moving stops after three tries with nothing sent', async () => {
+  const w = sponsoredWorld(); const log = [];
+  await rejects(flowOf(w).withdrawSponsored({ noteText, recipient: RECIPIENT, prover, leaves, bundler: bundlerMoving(log, { refuse: 99 }), confirm: async () => true }), /did not accept the withdrawal: maxPriorityFeePerGas must be at least.*Nothing was sent/s);
+  eq(log.filter((m) => m === 'eth_sendUserOperation').length, 3); eq(w.log.sends.length, 0);
+});
 await test('a note on a chain without a paymaster is refused before anything is read', async () => {
   const w = world({ chainIdOnWallet: 8453 });
   await rejects(flowOf(w).withdrawSponsored({ noteText: noteString({ denomination: POOL.denomination, chainId: 8453, preimage: new Uint8Array(62) }), recipient: RECIPIENT, prover, leaves }), /not available on this network/);
@@ -331,6 +365,51 @@ await test('a tree left in the prover for another pool cannot spend: a proof aga
   // the prover itself says the note's leaf is not in the tree it holds; a tree that did hold it but gave another root would be refused by the call check
   await rejects(f.withdraw({ noteText: a1.text, recipient: RECIPIENT, prover: cp, leaves: leavesFn, send: true, cache }), /root|note|pool|leaf/);
   eq(w.log.sends.length, 0, 'nothing was sent'); cp.close();
+});
+
+console.log('where the deposits come from');
+// a flow whose page gives it a history; the pool's count is answered when asked
+const flowWith = (w, history, count = null) => {
+  if (count != null) { const base = w.provider.request; w.provider.request = async (r) => (r.method === 'eth_call' && r.params[0].data.startsWith('0x' + sel('nextIndex()')) ? '0x' + count.toString(16).padStart(64, '0') : base(r)); }
+  return makeFlow({ provider: w.provider, account: ACCOUNT, chainId: w.chainId, poll: 1, timeout: 2000, history });
+};
+await test('the history the page gives is handed to the read of the pool', async () => {
+  const n1 = mkNote(P0, 1), bytes = bytesFor([n1.sx.commitment], 'h1'), w = world({ knownRoots: new Set([rootOf(bytes)]) }), hist = async () => null; let seen;
+  const cp = countingProver();
+  await flowWith(w, hist).withdraw({ noteText: n1.text, recipient: RECIPIENT, prover: cp, send: false, leaves: async (o) => { seen = o; return { bytes: bytes.slice(), count: bytes.length / 32 }; } });
+  eq(seen.history, hist, 'the history'); cp.close();
+});
+await test('a tree that is not on a root the pool knows is read again from the chain alone (no history, no cache), and the second read is the one used', async () => {
+  const n1 = mkNote(P0, 1), good = bytesFor([n1.sx.commitment], 'h2'), bad = good.slice(); bad[3 * 32 + 1] ^= 1;   // a filler leaf changed (the note's own is intact): another root
+  const w = world({ knownRoots: new Set([rootOf(good)]) }), calls = [], steps = []; const cp = countingProver();
+  const out = await flowWith(w, async () => null).withdraw({ noteText: n1.text, recipient: RECIPIENT, prover: cp, send: false, onStep: (s) => steps.push(s), leaves: async (o) => { calls.push({ history: o.history, base: o.base }); return { bytes: (calls.length === 1 ? bad : good).slice(), count: good.length / 32 }; } });
+  eq(calls.length, 2, 'read twice'); eq(calls[1].history, null, 'no history the second time'); eq(calls[1].base, null, 'no cache the second time');
+  eq(out.sent, false); eq(steps.some((s) => s.fromChain), true, 'the page is told it reads from the chain'); cp.close();
+});
+await test('a read with fewer deposits than the pool counts that lacks the note is read again from the chain; one that has them all and lacks the note is the person\'s error, with no second read', async () => {
+  const n1 = mkNote(P0, 1), n2 = mkNote(P0, 2), full = bytesFor([n1.sx.commitment, n2.sx.commitment], 'h3'), short = full.slice(0, 32 * (full.length / 32 - 1));
+  const w = world({ knownRoots: new Set([rootOf(full), rootOf(short)]) }); let reads = 0; const cp = countingProver();
+  const lv = async () => { reads++; const b = reads === 1 ? short : full; return { bytes: b.slice(), count: b.length / 32 }; };
+  await flowWith(w, null, full.length / 32).withdraw({ noteText: n2.text, recipient: RECIPIENT, prover: cp, send: false, leaves: lv });
+  eq(reads, 2, 'the short read was made again');
+  const w2 = world({ knownRoots: new Set([rootOf(short)]) }); let reads2 = 0;
+  await rejects(flowWith(w2, null, short.length / 32).withdraw({ noteText: n2.text, recipient: RECIPIENT, prover: cp, send: false, leaves: async () => { reads2++; return { bytes: short.slice(), count: short.length / 32 }; } }), /not among the pool/);
+  eq(reads2, 1, 'a complete read that lacks the note is not repeated'); cp.close();
+});
+await test('a pool warmed ahead is not read again by the withdrawal; a warm still running is joined, not repeated; a warm does not start while a withdrawal runs', async () => {
+  const n1 = mkNote(P0, 1), bytes = bytesFor([n1.sx.commitment], 'h4'), w = world({ knownRoots: new Set([rootOf(bytes)]) }); let reads = 0; const cp = countingProver();
+  const lv = async () => { reads++; await new Promise((r) => setTimeout(r, 30)); return { bytes: bytes.slice(), count: bytes.length / 32 }; };
+  const cache = { pools: new Map(), loaded: null, inflight: new Map(), busy: false }, f = flowOf(w);
+  const warm = f.warmPool({ pool: P0, prover: cp, cache, leaves: lv });
+  const joined = f.warmPool({ pool: P0, prover: cp, cache, leaves: lv });                 // the same pool while it is being built
+  const out = await f.withdraw({ noteText: n1.text, recipient: RECIPIENT, prover: cp, send: false, leaves: lv, cache });   // joins it
+  await Promise.all([warm, joined]);
+  eq(reads, 1, 'one read for the warm, the second warm and the withdrawal'); eq(cp.log.loads, 1, 'one tree'); eq(out.sent, false);
+  await f.withdraw({ noteText: n1.text, recipient: RECIPIENT, prover: cp, send: false, leaves: lv, cache });
+  eq(reads, 1, 'a later withdrawal reads nothing');
+  cache.pools.clear(); cache.busy = true;
+  eq(await f.warmPool({ pool: P0, prover: cp, cache, leaves: lv }), null, 'nothing starts while a withdrawal runs'); eq(reads, 1);
+  cp.close();
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

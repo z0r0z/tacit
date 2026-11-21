@@ -472,7 +472,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
         if (!claimable) return null;
         if (j.retryAfter && clock() < j.retryAfter) return null;                // a job the relay failed on its own account waits a little before its one more try
         const nonce = crypto.randomUUID();
-        j.status = 'proving'; j.claimedAt = clock(); j.claimNonce = nonce;
+        j.status = 'proving'; j.claimedAt = clock(); j.claimNonce = nonce; j.stage = null; j.stageAt = 0;
         await storage.putJob(id, j);
         return { j, nonce };
       });
@@ -533,7 +533,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
         if (named.some((k) => roots[k] !== undefined && String(roots[k]).toLowerCase() !== String(op[k]).toLowerCase())) return null;
         for (const k of named) roots[k] = op[k];
         const nonce = crypto.randomUUID();
-        j.status = 'proving'; j.claimedAt = clock(); j.claimNonce = nonce;
+        j.status = 'proving'; j.claimedAt = clock(); j.claimNonce = nonce; j.stage = null; j.stageAt = 0;
         await storage.putJob(id, j);
         return { id, j, nonce };
       });
@@ -565,6 +565,20 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   const ackView = (j) => ({ ok: true, status: j.status, txHash: j.txHash, publicValues: j.publicValues, proof: j.proof, activateTx: j.activateTx || null });
 
   function ackJob(jobId, ack = {}) { return exclusive(() => ackJobLocked(jobId, ack)); }
+  // Where a job being proved stands at the prover board, said by the relay as it changes ('queued': posted and waiting for a worker, 'starting': waiting
+  // and the board's worker has gone quiet, restarting its GPU server or finishing another proof, 'claimed': a worker has it), so the page can name the wait instead of showing one bar.
+  // Only a job being proved takes one, and only a word from this list; it is cleared when the job is claimed again, and read only while it is proving.
+  const STAGES = ['queued', 'starting', 'claimed'];
+  function stageJob(jobId, stage) {
+    return exclusive(async () => {
+      if (!STAGES.includes(stage)) return { ok: false, reason: 'unknown stage' };
+      const j = await storage.getJob(jobId);
+      if (!j) return { ok: false, reason: 'unknown job' };
+      if (j.status !== 'proving') return { ok: true, ignored: true };
+      if (j.stage !== stage) { j.stage = stage; j.stageAt = clock(); await storage.putJob(jobId, j); }
+      return { ok: true };
+    });
+  }
   // A failed job sent again as it was, for a failure that was the relay's and not the op's (a prover that could not run, a
   // board that was away): back to pending with the op or sealed input it kept, so the relay takes it once more and a page that
   // asks after it finds it proving, then proven or settled. A job in any other state, or one that kept nothing to prove, is left.
@@ -713,7 +727,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       ahead = j.early ? before.length : (await Promise.all(before.map((id) => storage.getJob(id)))).filter((x) => x && !x.early && (mine !== 'settle' || (x.mode || 'settle') === 'settle' || x.status === 'proving')).length;
     }
     return { jobId, type: j.type, mode: j.mode || 'settle', status, txHash: j.txHash, error: j.error, lane: j.lane || null, sealed: !!j.sealed,
-      createdAt: j.createdAt, ...(ahead >= 0 ? { ahead } : {}), publicValues: j.publicValues || null, proof: j.proof || null,
+      createdAt: j.createdAt, ...(ahead >= 0 ? { ahead } : {}), ...(status === 'proving' && j.stage ? { stage: j.stage, stageAt: j.stageAt || 0 } : {}), publicValues: j.publicValues || null, proof: j.proof || null,
       // An open job's memos are public for the same reason: any sender needs them, and they go on chain with the settle.
       memos: (j.status === 'proven' || j.status === 'open' || j.status === 'sending') && Array.isArray(j.memos) ? j.memos : null,
       ...(j.status === 'open' || j.status === 'sending' ? { openSince: j.openSince || 0, expiresAt: j.expiresAt || 0, posted: !!j.posted } : {}),
@@ -780,7 +794,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     });
   }
 
-  return { submitJob, nextJob, nextBatch, ackJob, requeueJob, renewJobOp, jobStatus, pendingCount, queueStats, jobIdOf, openList, nextOpen, landedJob };
+  return { submitJob, nextJob, nextBatch, ackJob, stageJob, requeueJob, renewJobOp, jobStatus, pendingCount, queueStats, jobIdOf, openList, nextOpen, landedJob };
 }
 
 // KV-backed wiring for the worker runtime. KV keys: cps:pending (id[]), cps:open (id[]), cps:job:<id> (job).

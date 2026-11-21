@@ -4,8 +4,8 @@
 // private, and the relay bonds it. What the key holds in the private farms is the rewards page's panel (rewards/farms.js), on one
 // sign-in with the deposits. The borrow markets' pools are joined on the vault page: their tiles lead there.
 // Figures are read as /assets/ and /rewards/ read them (trade/farm-read.js, trade/lp-campaign.js), so a farm's APR is the same on each.
-import { makeConnect } from '/trade/connect.js?cb=06b41e2f';
-import { rpc, api, esc, usd, fmtUnits, parseUnits, plain, $ } from '/trade/util.js?cb=1d2cd8d3';
+import { makeConnect } from '/trade/connect.js?cb=41394526';
+import { rpc, api, esc, usd, fmtUnits, parseUnits, plain, $ } from '/trade/util.js?cb=9c8b4133';
 import { nodeHealth } from '/trade/rpc.js';
 import { batchReads } from '/trade/batch.js';
 import { day as dayFmt } from '/trade/fmt.js?cb=172824e5';
@@ -13,10 +13,10 @@ import { aprText, readPrecision, readSpot, readStake, privateFarms, poolWorthEth
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=c5192cc4';
-import { quoteEthToToken } from '/swap/route.js?cb=7c0d8f3b';
-import { zapPlanExt } from '/lp-zap.js?cb=a14dd27e';
+import { quoteEthToToken } from '/swap/route.js?cb=efdb1794';
+import { zapPlanExt } from '/lp-zap.js?cb=041bcb7f';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, CETH, ZAP_GAS } from '/farm/zap.js?cb=5487907c';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, ackKind, askedMore, CETH, ZAP_GAS } from '/farm/zap.js?cb=5eb1c492';
 
 try { sessionStorage.removeItem('tacit-farm-back-v1'); } catch { /* the front page's way back to a farm: this page is where it goes, so it is spent */ }
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992';
@@ -322,6 +322,7 @@ function show(f, { first = false } = {}) {
   const ends = [[$('.plate', src), $('#k-plate'), 'plate'], [$('.nm', src), $('#k-name'), 'dishname']];
   for (const [a, b, v] of ends) name(f ? a : b, v);
   const vt = document.startViewTransition(() => { for (const [a, b, v] of ends) { name(f ? a : b, ''); name(f ? b : a, v); } swap(); });
+  vt.ready.catch(() => {});                                                       // a transition another one skips (a quick Back or Escape) rejects it: nothing to report
   vt.finished.finally(() => { for (const [a, b] of ends) { name(a, ''); name(b, ''); } });
   if (f) react('pick', 900);
 }
@@ -362,7 +363,7 @@ function paintStation() {
 // ── the TAC/ETH farm: the Precision farm's form, with amounts a press away under its ETH field ──
 let pubP = null, pubUi = null;
 function mountPublic() {
-  return pubP ||= Promise.all([import('/trade/farm.js?cb=017e9b13'), import('/evm-trade-venues.js?cb=196b14fb')]).then(([{ mountFarm }, E]) => {
+  return pubP ||= Promise.all([import('/trade/farm.js?cb=431619ca'), import('/evm-trade-venues.js?cb=196b14fb')]).then(([{ mountFarm }, E]) => {
     const ethCall = (to, data, block = 'latest', o = {}) => rpc('eth_call', [{ to, data, ...(o.from ? { from: o.from } : {}), ...(o.value ? { value: `0x${BigInt(o.value).toString(16)}` } : {}) }, block]);
     const batch = async (calls) => E._internal.decAggregate3(await ethCall(E.MULTICALL3, E._internal.encAggregate3(calls)), calls.length);
     const host = $('#farm-host');
@@ -488,7 +489,7 @@ function maxLine() {
 }
 $('#pz-max').addEventListener('click', () => { if (Z.busy) return; const v = spendable(); amtIn.value = v > 0n ? plain(v) : ''; typed(); });
 
-const acked = () => { const q = Z.q; if (!q?.plan || !(q.cost >= 15 || !q.checked)) return true; const el = $('#pz-ack'); return !!el && (el.type === 'checkbox' ? el.checked : el.value.trim() === String(Math.round(q.cost))); };
+const acked = () => { const q = Z.q; if (!ackKind(q)) return true; const el = $('#pz-ack'); return !!el && (el.type === 'checkbox' ? el.checked : el.value.trim() === String(Math.round(q.cost))); };
 function gate() {
   if (Z.busy) return;
   const f = Z.f, q = Z.q, wei = parseUnits(amtIn.value) || 0n;
@@ -542,7 +543,7 @@ function paintQuote() {
   // a pool this thin takes a real swap at this size: the other way in swaps nothing, and the links say where the other coin comes from
   const skip = q.cost >= 5 && bothOk(f) ? `<p class="note">Skip the swap: <button class="linkbtn" type="button" data-alt="both">add the ${esc(f.name.split(' / ')[0] || 'tETH')} and ${esc(other)} you already hold</button>${GET[other] ? `, or get ${esc(other)} first.</p>${getRow(other)}` : '.</p>'}` : '';
   // with no market price to check against (its read failed), the pool's own price is all there is: said, and held to a tick
-  const ack = q.cost >= 30 ? `<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this deposit to the pool’s price.</span><input id="pz-ack" inputmode="numeric" autocomplete="off" aria-label="Type ${n} to accept" value="${Z.ack === key ? n : ''}"></label>`
+  const ack = q.cost >= 30 ? `<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this deposit to the pool’s price.</span><input id="pz-ack" inputmode="numeric" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Type ${n} to accept" value="${Z.ack === key ? n : ''}"></label>`
     : q.cost >= 15 ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>I accept losing about ${n}% of this deposit to the pool’s price.</span></label>`
     : !q.checked ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>The market’s price for ${esc(other)} could not be read, so this pool’s price is not checked against it. I accept that.</span></label>` : '';
   rcpt.innerHTML = (f.live ? row('Earns about', `${tacTxt(q.day)} TAC a day${dayUsd ? ` · ${dayUsd}` : ''}`) + row('APR', q.apr == null ? '—' : aprText(q.apr)) : '')
@@ -604,7 +605,7 @@ const ownSender = (t) => walletSettle(t, wallet, async () => W.account || (await
 let keyP = null, key = null, K = null, mineUi = null, mineP = null, uxP = null, ownP = null, runner = null;
 const getUx = () => (uxP ||= import('/trade/poolux.js?cb=59d125e5').then((m) => m.getUx()).catch((e) => { uxP = null; throw e; }));
 function session() {
-  return keyP ||= import('/trade/key.js?cb=67d4d4de').then((m) => {
+  return keyP ||= import('/trade/key.js?cb=04a214c9').then((m) => {
     K = m;
     key = m.makeKeySession({ moved: (why) => { mineUi ? mineUi.forget(why) : key.lock(); statusEl.innerHTML = `<span class="err">${esc(why)}</span>`; }, busy: busyNow });
     key.onChange(onKey);
@@ -679,7 +680,7 @@ goBtn.addEventListener('click', async () => {
   try {
     // the price at the press: one that has moved against the quote is shown, not sent into
     const fresh = await quoteOf(f, q.wei);
-    if (!fresh.plan || fresh.over || fresh.plan.shares * 1000n < q.plan.shares * 995n || (fresh.cost >= 15 && Math.round(fresh.cost) !== Math.round(q.cost))) {
+    if (!fresh.plan || fresh.over || fresh.plan.shares * 1000n < q.plan.shares * 995n || askedMore(q, fresh)) {
       Z.q = fresh; paintQuote();
       throw Object.assign(new Error('The price moved. Nothing was sent; the figures above are the new ones.'), { said: true, quiet: true });
     }
@@ -716,11 +717,12 @@ function failed(f, q, e, hash) {
   if (e?.unlockCancelled || (declined(e) && !e?.ready && !hash && !e?.share)) { cookHide(); statusEl.textContent = 'Not signed in. Nothing was sent.'; return; }
   if (e?.quiet) { cookHide(); statusEl.innerHTML = `<span class="err">${msg}</span>`; return; }
   cook.removeAttribute('data-live');
-  if (e?.share) {                                                               // the transaction landed: the ETH is in the pool as a private share
+  if (e?.share || e?.already) {                                                 // the transaction landed (now, or at an earlier press): the ETH is in the pool as a private share
     steps('farm', true); clearForm(); Z.share = { f, note: e.note || null };
     sayEl.innerHTML = `<span class="ok">Your share is private and safe.</span> It is not in the farm yet: ${msg}`;
     acts.innerHTML = '<button class="btn sm" type="button" data-act="farmit">Farm it</button>';
     react('down', 1600); readLoose();
+    if (!e.note) watchLoose(f.pool);                                            // a balance that does not show it yet is read again, so the Farm it under the positions is there when it does
     return;
   }
   if (e?.reverted) {                                                            // sent and failed: the fee is gone, the share was not made, the proof is kept
@@ -732,12 +734,12 @@ function failed(f, q, e, hash) {
   if (e?.sent || hash) {                                                        // sent, and not seen to land
     steps('send', true); clearForm();
     sayEl.innerHTML = `<span class="err">Sent, not confirmed yet.</span> ${txLink(e.sent || hash)} Check it there before sending anything again. Once it lands, your share shows under Your private farms.`;
-    react('down', 1600);
+    react('down', 1600); readLoose(); watchLoose(f.pool);                       // and is read again until it does
     return;
   }
-  const kept = !!Z.ready && declined(e);
-  steps(kept ? 'send' : 'prove', !kept);
-  sayEl.innerHTML = kept ? 'Not sent. Your share’s proof is kept: press again to send it.' : `<span class="err">${msg}</span>${/Nothing was sent|nothing was spent/i.test(msg) ? '' : ' Nothing was sent.'}`;
+  const held = !!Z.ready, kept = held && declined(e);
+  steps(held ? 'send' : 'prove', !kept);
+  sayEl.innerHTML = kept ? 'Not sent. Your share’s proof is kept: press again to send it.' : `<span class="err">${msg}</span>${/Nothing was sent|nothing was spent/i.test(msg) ? '' : ' Nothing was sent.'}${held && !(e?.stale || e?.moved) ? ' Your share’s proof is kept for this amount.' : ''}`;
   acts.innerHTML = !kept && (w || e?.front || /prove/i.test(String(e?.message || ''))) && f.pid != null ? frontLink(f, q.wei) : '';
   if (!kept) react('down', 1600);
 }
@@ -753,7 +755,19 @@ async function readLoose() {
     host.innerHTML = list.map(({ pool }, i) => `<div class="loose"><p>A ${esc(pairName(pool.pair))} share of yours is private and not in the farm.</p><button class="act" type="button" data-loose="${i}">Farm it</button></div>`).join('');
   } catch { /* read again at the next change */ }
 }
-let LOOSE = [], looseFor = null;
+let LOOSE = [], looseFor = null, watchTimer = 0;
+// A deposit sent and not seen to land, or made private where the balance does not show it yet: the key's shares are read again every half minute
+// for ten minutes (until one of this pool's shows), so the Farm it under the positions is there once the share is.
+function watchLoose(pool) {
+  clearTimeout(watchTimer);
+  const pub = keyPub, id = lc(pool?.poolId);
+  const tick = async (left) => {
+    if (keyPub !== pub || left <= 0) return;
+    if (!Z.busy) { await readLoose(); if (looseFor === pub && LOOSE.some((x) => lc(x.pool.poolId) === id)) return; }
+    watchTimer = setTimeout(() => tick(left - 1), 30e3);
+  };
+  watchTimer = setTimeout(() => tick(20), 30e3);
+}
 async function farmIt(pool, note0, btn = null) {
   if (busyNow()) return;
   if (Z.mode === 'both' && hasEth(Z.f)) setMode('eth');                           // its steps are said in the ETH form's card, which is the one on screen
@@ -792,7 +806,7 @@ $('#pz-loose').addEventListener('click', async (e) => {
 
 // the key's positions in the private farms: the rewards page's panel, on this page's key
 function mountMine() {
-  return mineP ||= import('/rewards/farms.js?cb=cea421dd').then((m) => {
+  return mineP ||= import('/rewards/farms.js?cb=12158990').then((m) => {
     mineUi = m.mountFarms($('#pf-mine'), { pick: pickProvider, session: key, wallet, W, connect: () => connect.connect(), program: () => S.prog,
       names: () => new Map(S.priv.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = S.priv.find((x) => String(x.pid) === String(pid))?.icons; return icons ? pairIcons(icons) : ''; },
       onRead: (list) => { S.mine = new Map(list.map((p) => [Number(p.pid), p])); paint(); },

@@ -1,12 +1,13 @@
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=06b41e2f';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=41394526';
 import { declinedWords } from '/wallet-prompts.js';
 import { esc } from '/trade/sheet.js?cb=d857446c';
-import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=1d2cd8d3';
+import { rpc, RPCS, $, short, fmtUnits } from '/trade/util.js?cb=9c8b4133';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { bodyType } from '/trade/rpc.js';
 import { BASE_NODES, ROBINHOOD_NODES } from '/eth-nodes.js';
 import { checkPayload, checkStep } from '/tasks/verify.js?cb=b8174dad';
 import { trace, guide } from '/tasks/inspect.js?cb=3c995729';
+import { reviewData } from '/tasks/review.js?cb=80d30e19';
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
 
 const POINTS = 'https://tacit-points.onrender.com';
@@ -402,7 +403,7 @@ const claimPanel = (job, todo, open, status = true) => `<section class="panel p-
           <p class="eyebrow">Claim</p>
           ${todo.filter((s, i) => todo.findIndex((x) => x.ask === s.ask) === i).map((s) => `<form class="review" autocomplete="off" data-job="${esc(job.id)}" data-step="${esc(s.id)}">
             <label class="lbl"><span>${esc(s.ask)}</span>
-              <textarea rows="2" spellcheck="false" data-for="${esc(`${job.id}/${s.id}`)}" placeholder="Bitcoin transaction id"></textarea></label>
+              <textarea rows="2" spellcheck="false" data-for="${esc(`${job.id}/${s.id}`)}" placeholder="${esc(s.input?.placeholder ?? 'Bitcoin transaction id')}"></textarea></label>
             <button class="btn ghost" type="submit" ${open && S.running !== job.id ? '' : 'disabled'}>${S.running === job.id ? 'Sending…' : W.account ? 'Claim' : 'Connect wallet'}</button>
           </form>`).join('')}
           ${status ? `<div class="status" role="status" data-for="${esc(job.id)}"></div>` : ''}
@@ -587,13 +588,15 @@ async function go(job, only = null) {
 async function sendReview(form) {
   if (S.running) return;
   if (!W.account) { await conn.connect(); return; }
-  const job = S.jobs.find((j) => j.id === form.dataset.job), txid = form.querySelector('textarea').value.trim().toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(txid)) { say('That is not a Bitcoin transaction id.', true, job.id); return; }
+  const job = S.jobs.find((j) => j.id === form.dataset.job), step = job.steps.find((s) => s.id === form.dataset.step);
+  const data = reviewData(step, form.querySelector('textarea').value);
+  if (!data) { say(esc(step.input?.error ?? 'That is not a Bitcoin transaction id.'), true, job.id); return; }
   S.running = job.id; renderAll();
   try {
     say('Confirm in your wallet…', false, job.id);
-    const hash = await conn.wallet.sendTx({ to: W.account, data: `0x${txid}`, value: 0n, from: W.account, chain: null });
-    say(`Sent: ${link(`${ETHERSCAN}/tx/${hash}`, esc(short(hash, 6)))}. Post this link in ${link(DISCORD, 'Discord')} for review.`, false, job.id);
+    const hash = await conn.wallet.sendTx({ to: W.account, data, value: 0n, from: W.account, chain: null });
+    const via = job.reviewVia ?? { label: 'Discord', href: DISCORD };
+    say(`Sent: ${link(`${ETHERSCAN}/tx/${hash}`, esc(short(hash, 6)))}. Post this link in ${link(via.href, esc(via.label))} for review.`, false, job.id);
   } catch (e) { say(esc(e instanceof UserStopped ? declinedWords(e) : (e.message || 'The wallet did not send it.')), !(e instanceof UserStopped), job.id); }
   finally { S.running = null; renderAll(); }
 }

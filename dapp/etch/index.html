@@ -25,8 +25,8 @@
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
 <!-- preload-roots: /etch/app.js | | /trade/btc.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/etch/app.js?cb=3f60bb51">
-<link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
+<link rel="modulepreload" href="/etch/app.js?cb=d5c3d43c">
+<link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
 <link rel="modulepreload" href="/eth-nodes.js">
@@ -34,7 +34,7 @@
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
-<link rel="modulepreload" href="/etch/find.js?cb=08470204">
+<link rel="modulepreload" href="/etch/find.js?cb=846266c3">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -590,7 +590,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
                 <details class="more" id="more">
                   <summary>Name, logo and more</summary>
                   <div class="mb">
-                    <label class="fld"><span>Name</span><input type="text" id="nm" maxlength="64" placeholder="Optional" autocomplete="off"></label>
+                    <label class="fld"><span>Name</span><input type="text" id="nm" maxlength="64" placeholder="Optional" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other"></label>
                     <div class="fld"><span>Logo</span>
                       <div class="logo-row">
                         <span id="lg-mark" class="tk letter" hidden></span>
@@ -600,7 +600,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
                       </div>
                     </div>
                     <label class="fld"><span>Description</span><textarea id="ds" maxlength="500" rows="2" placeholder="Optional"></textarea></label>
-                    <label class="fld"><span>Link</span><input type="text" id="ln" placeholder="https://" autocomplete="off" spellcheck="false"></label>
+                    <label class="fld"><span>Link</span><input type="text" id="ln" placeholder="https://" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false"></label>
                     <label class="chk" id="pub-row"><input type="checkbox" id="pub" checked><span>Publish the supply<small>Anyone can check the total against the chain.</small></span></label>
                     <label class="chk" id="mint-row"><input type="checkbox" id="mint"><span>Mintable<small>You can issue more later. Fixed once etched.</small></span></label>
                     <label class="chk" id="reg-row" hidden><input type="checkbox" id="reg"><span>Register it with the Tacit pool<small>Optional: whoever shields it first registers it otherwise. One more call, sent together with the first when your wallet takes batches.</small></span></label>
@@ -620,7 +620,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
               <button type="button" role="radio" aria-checked="true" data-fchain="btc"><svg class="tk" aria-hidden="true"><use href="#c-btc"/></svg>Bitcoin</button>
               <button type="button" role="radio" aria-checked="false" data-fchain="eth"><svg class="tk" aria-hidden="true"><use href="#c-eth"/></svg>Ethereum</button>
             </div>
-            <div class="srch"><input id="find" type="search" placeholder="Ticker, name or asset ID" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Search assets"></div>
+            <div class="srch"><input id="find" type="search" placeholder="Ticker, name or asset ID" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" autocapitalize="off" spellcheck="false" aria-label="Search assets"></div>
             <div class="cnt num" id="cnt" role="status"></div>
             <ul class="al" id="list"></ul>
             <button class="btn ghost" id="more-r" type="button" hidden>Show more</button>
@@ -659,15 +659,15 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 </div>
 <!-- warm:begin -->
 <template id="warm">
-<link rel="modulepreload" href="/trade/btc.js?cb=207d2bf9">
-<link rel="modulepreload" href="/trade/btc-session.js?cb=a86559fe">
+<link rel="modulepreload" href="/trade/btc.js?cb=d3bc2c13">
+<link rel="modulepreload" href="/trade/btc-session.js?cb=711a098f">
 <link rel="modulepreload" href="/tab-key.js?cb=ad0c42e2">
 <link rel="modulepreload" href="/trade/sheet.js?cb=d857446c">
-<link rel="modulepreload" href="/trade/sign-in.js?cb=d31a80e0">
+<link rel="modulepreload" href="/trade/sign-in.js?cb=7e9e64d2">
 <link rel="modulepreload" href="/sign-wait.js?cb=ab42ced1">
 </template>
 <!-- warm:end -->
 <div class="sr" id="live" role="status" aria-live="polite"></div>
-<script type="module" src="/etch/app.js?cb=3f60bb51"></script>
+<script type="module" src="/etch/app.js?cb=d5c3d43c"></script>
 </body>
 </html>

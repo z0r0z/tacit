@@ -1,0 +1,17 @@
+{
+  "EVM_POOL_CHAINS": "1",
+  "EVM_POOL_CHAIN_ID": "1",
+  "EVM_POOL_ADDR": "0x000000c2A20657CE25f2Ba99737933D031AFBEE9",
+  "EVM_POOL_ROUTER_ADDR": "0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5",
+  "EVM_POOL_START_BLOCK_1": "26069245",
+  "EVM_POOL_RPC_URL_1": "https://ethereum-rpc.publicnode.com",
+  "EVM_POOL_RPC_URLS_FALLBACK_1": "https://eth.drpc.org,https://1rpc.io",
+  "EVM_POOL_KEEPER_MIN_FEES_1": "eth:20000000000000",
+  "EVM_POOL_KEEPER_SINGLE_THREAD": "1",
+  "EVM_POOL_WASM": "https://tacit.finance/evm-pool/transact.wasm",
+  "EVM_POOL_WASM_SHA256": "02dd5e84970e5bc629a7a3cd4d7eae5fc9ca05579fa22c9b39b5ea70c8d8a6c1",
+  "EVM_POOL_ZKEY": "https://tacit.finance/evm-pool/transact_final.zkey",
+  "EVM_POOL_ZKEY_SHA256": "40758061a0786fb0bdc5e5dec4c354bbf85fc106f7412716e25e781af4e79c4b",
+  "EVM_POOL_VK": "https://tacit.finance/evm-pool/transact_vk.json",
+  "EVM_POOL_VK_HASH": "43d11e6e1607e1ea7f3980c9bca91beed95e2e80d173d0873189e99d402e5757"
+}

@@ -17,6 +17,18 @@ export function foundingPlan({ swapIn, amountOut, amountLimit, unitA = 10n ** 10
   return { swapIn, ethLeg, bLeg, shares: total - 1000n, value: swapIn + ethLeg, total };
 }
 
+// Which way an ETH add buys the token's half: `inPool` (the swap half inside the pool: zapPlan) or `ext` (on the open market, the deposit then going in at the pool's own ratio:
+// zapPlanExt). The market's plan is the one when the pool is thin: the swap inside it moves the pool's price by more than `maxImpact` (a pool left off the market is traded back by
+// whoever sees it, at the liquidity providers' cost, however little the add saved), or when it gives more shares per ETH by more than its extra gas (`gasWei`, times `gasMult`).
+// 'pool' when the market has no plan.
+export function addRoute({ inPool, ext, wei, gasWei, maxImpact = 0.02, gasMult = 1.5 }) {
+  if (!ext) return 'pool';
+  if (!inPool) return 'ext';
+  if (Number(inPool.impact) > maxImpact) return 'ext';
+  const per = (p) => Number(p.shares) / Number(p.value);
+  return (per(ext) - per(inPool)) / per(inPool) * Number(wei) > Number(gasWei) * gasMult ? 'ext' : 'pool';
+}
+
 export function ammOut(rIn, rOut, vIn, feeBps) {
   const g = vIn * (10000n - BigInt(feeBps));
   const out = (rOut * g) / (rIn * 10000n + g);

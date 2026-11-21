@@ -1,7 +1,7 @@
 # The private route over Nostr
 
 The private route (docs/EVM-POOL.md, "Private route") carries a wallet's sealed requests to the EVM pool keepers through HTTP forwarders. The same
-sealed request can be carried by public Nostr relays, which anyone runs. A request sealed to the keeper's gateway key is ciphertext, so a relay sees
+sealed request, to the relay API (`api.tacit.finance`, `RELAY_API_NOSTR_RELAYS` on the server) as well, can be carried by public Nostr relays, which anyone runs. A request sealed to the keeper's gateway key is ciphertext, so a relay sees
 the sender's address and a blob of a few fixed sizes, never what is in it, as a forwarder does.
 
 ## Order of roads

@@ -3,9 +3,9 @@ import { addrView } from '/address-view.js?cb=58dd4914';
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vault/chain.js?cb=fafa70cd';
 import { makeFeed } from '/vault/feed.js?cb=d2f993b2';
-import { makePools } from '/vault/pools.js?cb=577c8070';
+import { makePools } from '/vault/pools.js?cb=8ccd685c';
 import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=cdfdc3d7';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=06b41e2f';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=41394526';
 import { tabKeyRead } from '/tab-key.js?cb=ad0c42e2';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
 
@@ -455,12 +455,12 @@ document.addEventListener('click', (e) => {
 // The Bitcoin side's own position (vault/mine.js): loaded on the holder's first press, or with the side when this tab already has a Tacit
 // wallet open, so the side reads nothing more until then
 // with no wallet connected here, the visitor chooses among the browser's wallets (the sign-in sheet's own picker)
-const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : import('/trade/key.js?cb=67d4d4de').then((m) => m.pickWalletSheet(list)); };
+const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : import('/trade/key.js?cb=04a214c9').then((m) => m.pickWalletSheet(list)); };
 let mineP = null;
 function openMine(press, btn = null) {
   if (mineP) return;
   if (btn) { btn.textContent = 'Opening…'; btn.disabled = true; }
-  mineP = import('/vault/mine.js?cb=03c729db').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectSaying }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
+  mineP = import('/vault/mine.js?cb=efd0924c').then((m) => { m.mountMine($('#btc-mine'), { ticket: $('#btc-tk'), pick: pickProvider, wallet, W, connect: connectSaying }); if (press) $('#btc-mine [data-mine="open"]')?.click(); })
     .catch((err) => { mineP = null; if (btn) { btn.textContent = 'Could not load. Try again'; btn.disabled = false; } console.warn('your position:', err?.message || err); });
 }
 $('#btc').addEventListener('click', (e) => {

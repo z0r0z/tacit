@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://api.tacit.finance wss://relay.walletconnect.org wss://relay.primal.net wss://nos.lol wss://offchain.pub https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com">
 <meta name="color-scheme" content="light dark">
 <title>tacit relay</title>
 <meta name="description" content="What the relay earns, what it spends keeping settles and the bridge running, and the tenth of its fee income that buys TAC. Send a settle it has proved, or pay for its proofs.">
@@ -14,26 +14,29 @@
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <!-- preload-roots: /relay/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/relay/app.js?cb=58506022">
-<link rel="modulepreload" href="/trade/connect.js?cb=06b41e2f">
+<link rel="modulepreload" href="/relay/app.js?cb=caf759c5">
+<link rel="modulepreload" href="/relay-route.js?cb=ac4b96ce">
+<link rel="modulepreload" href="/private-route.js?cb=59f0bc81">
+<link rel="modulepreload" href="/evm-pool-relays.js">
+<link rel="modulepreload" href="/trade/connect.js?cb=41394526">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/wallet-prompts.js">
 <link rel="modulepreload" href="/trade/sheet.js?cb=d857446c">
-<link rel="modulepreload" href="/trade/util.js?cb=1d2cd8d3">
+<link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
-<link rel="modulepreload" href="/relay/open.js?cb=95658ab6">
-<link rel="modulepreload" href="/confidential-relay.js?cb=fc0e58c1">
+<link rel="modulepreload" href="/relay/open.js?cb=9d633b06">
+<link rel="modulepreload" href="/confidential-relay.js?cb=dc9287eb">
 <link rel="modulepreload" href="/confidential-deployments.js?cb=fa423929">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/confidential-deployments.generated.js">
 <link rel="modulepreload" href="/relay/abi.js?cb=190ea12d">
 <link rel="modulepreload" href="/zrouter-guard.js">
-<link rel="modulepreload" href="/relay/prove.js?cb=67b5fc0f">
+<link rel="modulepreload" href="/relay/prove.js?cb=824a9a4e">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
 <!-- preload:end -->
 <style>
@@ -562,7 +565,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <p class="lead">Every proof is paid in PROVE, Succinct’s prover token, from one prover account. About 0.4 PROVE pays for one proof. PROVE sent there is used within a few minutes, or at the next half-hourly top-up when under 2 PROVE.</p>
         <div class="seg" role="group" aria-label="Pay with"><button type="button" data-pay="prove" aria-pressed="true">Send PROVE</button><button type="button" data-pay="eth" aria-pressed="false">Pay with ETH</button></div>
         <div class="lbl2"><label for="pv-amt" id="pv-lbl">PROVE to send</label><span><span id="pv-bal"></span> <button class="linkbtn" id="pv-max" type="button" hidden>Max</button></span></div>
-        <div class="amt"><input id="pv-amt" inputmode="decimal" placeholder="0.0" autocomplete="off" aria-describedby="pv-quote"><span class="u" id="pv-unit">PROVE</span></div>
+        <div class="amt"><input id="pv-amt" inputmode="decimal" placeholder="0.0" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-describedby="pv-quote"><span class="u" id="pv-unit">PROVE</span></div>
         <div class="rows" id="pv-quote"></div>
         <button class="btn" id="pv-go" type="button">Connect wallet</button>
         <div class="status" id="pv-status" role="status"></div>
@@ -597,6 +600,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/relay/app.js?cb=58506022"></script>
+<script type="module" src="/relay/app.js?cb=caf759c5"></script>
 </body>
 </html>

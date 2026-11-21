@@ -135,7 +135,7 @@ function chain(st) {
       if (!p) return '0x' + W(0).repeat(7);
       return '0x' + W(1) + p.reserves.assetA.slice(2) + p.reserves.assetB.slice(2) + W(p.reserves.reserveA) + W(p.reserves.reserveB) + W(p.feeBps) + W(p.reserves.lpTotalShares);
     }
-    if (to === POOL && sel === '0x7da9874f') return '0x' + W(0);                       // depositStatus: none made
+    if (to === POOL && sel === '0x7da9874f') return '0x' + W(st.consumed ? 2 : 0);     // depositStatus: none made (2: an earlier press made it)
     if (to === POOL && sel === '0x9fda5b66') {                                         // assets(bytes32): how the pool holds a coin
       const row = ROWS['0x' + data.slice(10, 74)];
       return row ? '0x' + W(1) + W(BigInt(row.token)) + W(row.unit) + W(1) + W(row.minted ? 1 : 0) + W(row.dec) : '0x' + W(0).repeat(6);
@@ -146,7 +146,7 @@ function chain(st) {
       const out = spxOut(arg(4));
       return '0x' + W(3) + W(30) + W(arg(4)) + W(out) + W(7 * 32) + W(out * 99n / 100n) + W(arg(4)) + W(0);
     }
-    if (to === ROUTER && sel === '0xc4294fac') return '0x' + W(arg(4));                // the zap run as a call: it mints the share count it names
+    if (to === ROUTER && sel === '0xc4294fac') { if (st.routerRevert) throw Object.assign(new Error('execution reverted'), { code: 3 }); return '0x' + W(arg(4)); }      // the zap run as a call: it mints the share count it names
     if (to === LENS && sel === '0xe7cddab0') return '0x' + W(1) + W(0) + W(arg(2) * 1000n * E18 / (6n * E18) * 99n / 100n);       // previewZap: the shares of a deposit, 1% under the pool's price
     if (to === PRECISION_FARM && sel === '0x8703a0d8') return '0x' + W(1);             // zapETH run as a call
     if (to === PRECISION_FARM && (sel === '0x98807d84' || sel === '0x008cc262')) return '0x' + W(sel === '0x98807d84' ? st.staked || 0n : st.earned || 0n);
@@ -379,6 +379,22 @@ try {
     ok(await until(page, () => document.querySelector('#station').hidden), 'a second Escape closes it');
     clean(r, 'routes');
     await r.browser.close();
+
+    {
+      // a farm opened and closed again while the page's own transition is still running: the transition the next one skips is not a page error
+      const q = await openPage(), { page } = q;
+      await settled(page, 'teth-tac', aprText(priv[0].apr));
+      // the way back is pressed in the very frame the farm is shown, which starts a second transition before the first has begun to animate: that one is skipped
+      await page.evaluate(() => new Promise((resolve) => {
+        const st = document.querySelector('#station');
+        new MutationObserver((_, ob) => { if (!st.hidden) { ob.disconnect(); document.querySelector('#bk').click(); resolve(); } }).observe(st, { attributes: true, attributeFilter: ['hidden'] });
+        document.querySelector('#d-teth-tac').click();
+      }));
+      ok(await until(page, () => !document.querySelector('#menu').hidden && document.querySelector('#station').hidden && location.hash === ''), 'the menu is back');
+      await sleep(600);
+      clean(q, 'a farm opened and closed in the same frame');
+      await q.browser.close();
+    }
 
     const deep = await openPage({ hash: '#teth-cusd' });
     ok(await deep.page.evaluate(() => window.__view0) === 'farm', 'a link to a farm marks the page before its script runs, so the menu is never shown first');
@@ -630,6 +646,22 @@ try {
       await page.click('#pz-go');
       ok(await sayIs(page, /In the farm/), 'the next press sends the same proof');
       ok(await page.evaluate(() => window.__ux.filter((x) => x.startsWith('prove')).length === 1), 'without proving again');
+      await r.browser.close();
+    }
+    {
+      // a share an earlier press already made, which the balance does not show yet: it is said to be the key's, with Farm it, and the balance is read again by itself, so the
+      // share shows over the positions once it appears, with no reload
+      const r = await openPage({ hash: '#teth-tac', fake: true, wallet: true, st: { consumed: true, routerRevert: true } }), { page, st } = r;
+      await until(page, () => /Enter an amount/.test(document.querySelector('#pz-go').textContent));
+      await page.click('#pz .quick [data-q="0.1"]'); await quoted(page);
+      await until(page, () => !document.querySelector('#pz-go').disabled);
+      await page.click('#pz-go');
+      ok(await sayIs(page, /already made private/), `a share an earlier press made: ${await text(page, '#pz-say')}`);
+      ok(st.sent.length === 0 && await page.evaluate(() => !!document.querySelector('#pz-acts [data-act="farmit"]') && /Your share is private and safe/.test(document.querySelector('#pz-say').textContent) && document.querySelector('#pz-steps li[data-s="farm"]').dataset.at === 'bad'),
+        'nothing was sent, the share is said to be the key’s, the last step is marked and Farm it is offered');
+      ok(await page.evaluate(() => document.querySelector('#pz-loose').textContent === ''), 'the balance does not show it yet');
+      await page.evaluate((a) => { window.__t.loose = a; }, LPA[0]);                     // the balance shows it now
+      ok(await until(page, () => /share of yours is private and not in the farm/.test(document.querySelector('#pz-loose')?.textContent || ''), null, 45000), 'read again, the share shows over the positions without a reload');
       await r.browser.close();
     }
     {

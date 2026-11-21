@@ -351,7 +351,7 @@ test('a bridge that did not go through says what went wrong, that the Bitcoin is
   assert.equal(d.receive, '0', 'what it would have paid is not shown for a bridge that did not happen');
   assert.deepEqual([d.returned, d.ended], [true, false]);
   assert.match(at(23 * HOUR - 1800).detail, /within the hour|in about an hour/);
-  assert.match(at(143 * 600 + 5).detail, /due back now, and is sent to your address from here while the app is open/, 'once the timelock has run it says so');
+  assert.match(at(143 * 600 + 5).detail, /due back now\. Open Tacit signed in with the same wallet and it is sent back to your address/, 'once the timelock has run it says so');
   assert.match(describe({ ...rec, confirmedAt: undefined }, () => T0).detail, /when its timelock ends, about a day after it confirmed/, 'with no confirmation time it still says it is safe and roughly when');
   for (const [why, re] of [
     ['the counterparty could not be reached', /^The provider did not answer\./], ['the provider did not answer', /^The provider did not answer\./],

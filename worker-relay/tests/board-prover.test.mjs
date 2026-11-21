@@ -258,3 +258,47 @@ test('a check that answers true is still taken as before, and a program\'s own c
   const b = fakeBoard({ script: [{ status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF }] });
   await assert.rejects(makeBoardProver(b.api).prove({ stdin, cycleLimit: 1, gasLimit: 1, memos: [], check: async () => 'op:OverClaim 0x508ece93' }), (e) => e.code === 'op_refused');
 });
+
+// What the page is told while the board has the job (onStage; settle-relay.js stageReport -> POST /confidential/stage).
+const flush = () => new Promise((r) => setImmediate(r));
+const stageRun = async ({ script, quiet = null, onStageThrows = false }) => {
+  const { api } = fakeBoard({ script });
+  const said = [];
+  const lane = makeBoardProver({ ...api, ...(quiet ? { quiet } : {}) });
+  const r = await lane.prove({ stdin, cycleLimit: 1, gasLimit: 1, memos: [], onStage: (s) => { said.push(s); if (onStageThrows) throw new Error('api down'); } });
+  await flush();
+  return { said, r };
+};
+
+test('a job is said to be queued when it is posted, then claimed when a worker has it', async () => {
+  const { said, r } = await stageRun({ script: [{ status: 'queued' }, { status: 'queued' }, { status: 'claimed', worker: 'gpu1' }, { status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF }] });
+  assert.deepEqual(said, ['queued', 'claimed']);
+  assert.equal(r.worker, 'gpu1');
+});
+
+test('a worker that has gone quiet while the job waits is said to be starting, and back to queued when it polls again', async () => {
+  const quiet = (() => { const answers = [false, true, true, false]; let i = 0; return async () => answers[Math.min(i++, answers.length - 1)]; })();
+  const { said } = await stageRun({ quiet, script: [{ status: 'queued' }, { status: 'queued' }, { status: 'queued' }, { status: 'queued' }, { status: 'claimed', worker: 'gpu1' }, { status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF }] });
+  assert.deepEqual(said, ['queued', 'starting', 'queued', 'claimed'], 'each change once, none repeated');
+});
+
+test('quiet is only asked of a job nobody has claimed, and a claimed job stays claimed', async () => {
+  let asked = 0;
+  const { said } = await stageRun({ quiet: async () => { asked++; return true; }, script: [{ status: 'claimed', worker: 'gpu1' }, { status: 'claimed', worker: 'gpu1' }, { status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF }] });
+  assert.deepEqual(said, ['queued', 'claimed']);
+  assert.equal(asked, 0, 'asked about a worker while one had the job');
+});
+
+test('a stage that cannot be said, or a quiet that fails, never holds the proof up or changes it', async () => {
+  const a = await stageRun({ onStageThrows: true, script: [{ status: 'queued' }, { status: 'claimed', worker: 'gpu1' }, { status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF }] });
+  assert.equal(a.r.worker, 'gpu1');
+  const b = await stageRun({ quiet: async () => { throw new Error('summary unreadable'); }, script: [{ status: 'queued' }, { status: 'queued' }, { status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF }] });
+  assert.deepEqual(b.said, ['queued']);
+  assert.equal(b.r.worker, 'gpu1');
+});
+
+test('without an onStage, or without quiet, the lane behaves as it did', async () => {
+  const f = fakeBoard({ script: [{ status: 'queued' }, { status: 'claimed', worker: 'gpu1' }, { status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF }] });
+  const r = await makeBoardProver(f.api).prove({ stdin, cycleLimit: 1, gasLimit: 1, memos: [] });
+  assert.equal(r.worker, 'gpu1');
+});

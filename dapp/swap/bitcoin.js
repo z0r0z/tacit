@@ -1,9 +1,9 @@
 // The swap page's Bitcoin lane: tETH and TAC swapped in the Bitcoin pool, signed by a Tacit key. The page loads this when the lane is first opened. tacit.js
 // comes with it through the trade page's Bitcoin module, which also holds the key's sign-in. Nothing here builds or signs a transaction: tacit.js does.
-import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=1d2cd8d3';
+import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 import { moveSatsNeeded, MOVE_SATS_FLAT } from '/btc-book.js?cb=f7962f33';
 
-const BTC_MODULE = '/trade/btc.js?cb=207d2bf9';
+const BTC_MODULE = '/trade/btc.js?cb=d3bc2c13';
 const TETH = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const TOKENS = { [TETH]: { sym: 'tETH', icon: 'teth', dec: 8 }, [TAC]: { sym: 'TAC', icon: 'tac', dec: 8 } };
 const SLIPS = [50, 100, 300];
@@ -47,7 +47,7 @@ export function makeBitcoinLane({ host, notify = () => {}, wallet = () => null, 
   host.innerHTML = `
     <div class="f" id="b-pay">
       <div class="fh"><span>From</span><span class="where"><svg class="tk xs" aria-hidden="true"><use href="#c-btc"/></svg>Bitcoin</span></div>
-      <div class="fm"><input class="amt" id="b-amt" inputmode="decimal" placeholder="0" autocomplete="off" spellcheck="false" aria-label="Amount to pay"><span class="coin" id="b-pay-coin"></span></div>
+      <div class="fm"><input class="amt" id="b-amt" inputmode="decimal" placeholder="0" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" aria-label="Amount to pay"><span class="coin" id="b-pay-coin"></span></div>
       <div class="ff"><span id="b-bal" class="num"></span><span class="quick" id="b-quick"></span></div>
     </div>
     <div class="mid"><button class="flip" id="b-flip" type="button" aria-label="Swap the two sides"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3v17m0 0-4-4m4 4 4-4M16 21V4m0 0-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>

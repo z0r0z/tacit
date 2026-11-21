@@ -12,7 +12,7 @@ export async function resolve(spec, ctx, next) {
 }`));
 import assert from 'node:assert/strict';
 
-const { readReserves, marketOf, otherOf, zapMath, zapQuote, zapProve, zapSend, zapRun, shareNote, bondShare, looseOf, declined, assetRow, publicRate, ZQUOTER, ZAP_GAS, PUBLIC_AMM } = await import('../dapp/farm/zap.js');
+const { readReserves, marketOf, otherOf, zapMath, zapQuote, zapProve, zapSend, zapRun, shareNote, bondShare, looseOf, declined, assetRow, publicRate, ackKind, askedMore, ZQUOTER, ZAP_GAS, PUBLIC_AMM } = await import('../dapp/farm/zap.js');
 const { zapPlan, zapPlanFor } = await import('../dapp/lp-zap.js');
 
 const W = (v) => BigInt(v).toString(16).padStart(64, '0'), E18 = 10n ** 18n;
@@ -66,6 +66,20 @@ const pool = { pid: 0, pair: 'TAC/cETH', poolId: '0x' + '01'.repeat(32), lpAsset
   eq((await zapQuote({ pool, wei: 10n ** 10n, reserves: async () => RES })).plan, null, 'too small for a share: no plan');
   await fails(zapQuote({ pool, wei: WEI, reserves: async () => null }), (e) => ok(/not open for liquidity/.test(e.message) && e.said), 'a pool not opened');
   await fails(zapQuote({ pool, wei: WEI, reserves: async () => ({ ...RES, assetA: A_TAC }) }), (e) => ok(/reads differently/.test(e.message)), 'a pool whose first coin is not tETH');
+}
+
+// ── what a quote asks of the person, and what the price at the press may ask beyond it ──
+{
+  const q = (cost, checked = true) => ({ plan: {}, cost, checked });
+  eq([ackKind(q(0)), ackKind(q(14.9)), ackKind(q(15)), ackKind(q(29.9)), ackKind(q(30)), ackKind(q(5, false)), ackKind({ plan: null, cost: 99, checked: true }), ackKind(null)],
+    [null, null, 'box', 'box', 'type', 'box', null, null], 'a tick from 15%, a typed number from 30%, a tick where the market could not be read, nothing for a quote with no plan');
+  ok(askedMore(q(14.6), q(15.2)), 'a price that crosses 15% at the press while rounding to the same percent asks for the tick it was not given');
+  ok(askedMore(q(29.6), q(30.2)), 'one that crosses 30% asks for the number, not the tick it had');
+  ok(askedMore(q(5), q(5, false)), 'a market price that could not be read at the press asks for the tick');
+  ok(askedMore(q(20), q(26)), 'a price at another percent asks again');
+  ok(!askedMore(q(20), q(20.3)) && !askedMore(q(32), q(32.4)) && !askedMore(q(5, false), q(5, false)), 'the same percent, with what it asked, stands');
+  ok(!askedMore(q(30.4), q(29.6)), 'a typed number stands for a tick at the same percent');
+  ok(!askedMore(q(20), q(14)) && !askedMore(q(40), q(0)), 'a price that fell under what asked for anything needs nothing');
 }
 
 // ── the steps ──
@@ -185,6 +199,20 @@ const readyOf = async (w) => zapProve({ t: w.t, priv: w.priv, pool, q: await quo
   eq(off.names(), ['call'], 'is not sent');
   const nocoin = world(), r8 = await readyOf(nocoin); nocoin.st.res = { ...RES, assetB: A_USD };
   await fails(zapSend({ t: nocoin.t, rpc: nocoin.rpc, wallet: nocoin.wallet, from: FROM, pool, ready: r8 }), (e) => ok(/no token on Ethereum/.test(e.message)), 'a pool whose coin has no token here');
+
+  // a node that does not answer before the wallet is asked costs nothing but a press: the proof (a minute of the prover's time) is carried for the next one
+  const flaky = world(), r12 = await readyOf(flaky); flaky.log.length = 0;
+  flaky.t.poolReserves = async () => { throw new Error('fetch failed'); };
+  await fails(zapSend({ t: flaky.t, rpc: flaky.rpc, wallet: flaky.wallet, from: FROM, pool, ready: r12 }), (e) => ok(e.ready === r12 && !e.stale && !e.moved && /fetch failed/.test(e.message)), 'the pool could not be read');
+  eq(flaky.names(), [], 'the wallet was not asked');
+  const noTime = world(), r13 = await readyOf(noTime); noTime.log.length = 0;
+  const rpcNoTime = async (m, p) => { if (m === 'eth_getBlockByNumber') throw new Error('rate limited'); return noTime.rpc(m, p); };
+  await fails(zapSend({ t: noTime.t, rpc: rpcNoTime, wallet: noTime.wallet, from: FROM, pool, ready: r13 }), (e) => ok(e.ready === r13 && /rate limited/.test(e.message)), 'the chain’s clock could not be read');
+  ok(!noTime.names().includes('send'), 'and nothing was sent');
+  const again13 = await zapSend({ t: noTime.t, rpc: noTime.rpc, wallet: noTime.wallet, from: FROM, pool, ready: r13 });
+  ok(again13.hash && noTime.names().includes('send'), 'the same proof is sent at the next press');
+  // what ends a proof stays ended: the pool moved off the share (dear), a share already made (used), a call the pool refuses as it stands (rev) carry no proof to reuse
+  for (const [e, why] of [[await fails(zapSend({ t: dear.t, rpc: dear.rpc, wallet: dear.wallet, from: FROM, pool, ready: r1 }), () => {}, 'dear again'), 'a pool that moved off the share'], [await fails(zapSend({ t: used.t, rpc: used.rpc, wallet: used.wallet, from: FROM, pool, ready: r6 }), () => {}, 'used again'), 'a share already made']]) ok(!e.ready, `${why} carries no proof`);
 
   const no = world({ sendErr: Object.assign(new Error('User rejected the request.'), { code: 4001 }) }), r9 = await readyOf(no); no.log.length = 0;
   const e9 = await fails(zapSend({ t: no.t, rpc: no.rpc, wallet: no.wallet, from: FROM, pool, ready: r9 }), (e) => ok(declined(e) && e.ready === r9), 'a no in the wallet carries the proof for the next press');

@@ -36,8 +36,8 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
       <div class="kv" id="pv-want" hidden><span>Waiting for a provider</span><b class="num"></b></div>
       <div class="rows flat" id="pv-inv"></div>
       <div id="pv-set" hidden>
-        <label class="pv-f"><span>Fee, %</span><input id="pv-fee" inputmode="decimal" autocomplete="off" aria-label="Fee in percent"></label>
-        <label class="pv-f"><span>Most per bridge, TAC</span><input id="pv-most" inputmode="decimal" autocomplete="off" aria-label="Most TAC per bridge"></label>
+        <label class="pv-f"><span>Fee, %</span><input id="pv-fee" inputmode="decimal" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Fee in percent"></label>
+        <label class="pv-f"><span>Most per bridge, TAC</span><input id="pv-most" inputmode="decimal" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Most TAC per bridge"></label>
         <label class="pv-chk"><input id="pv-any" type="checkbox" checked><span>Take TAC that came out of the shielded pool<small>It cannot be bridged home afterwards, only traded on Bitcoin.</small></span></label>
       </div>
       <div class="rows" id="pv-run" hidden></div>

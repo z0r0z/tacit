@@ -26,6 +26,14 @@ export const unboundSalt = (salt) => keccak256(salt);
 
 const lower = (s) => String(s).toLowerCase();
 
+// The text a reviewed step's claim names, from its 32 bytes: ASCII up to the first zero (the padding). A step that asks for an id from
+// another site says what it must look like in `evidence` (`{ text: true, pattern }`); one with none takes any 32 bytes.
+export const evidenceText = (input) => {
+  const bytes = (String(input).replace(/^0x/, '').match(/../g) ?? []).map((h) => parseInt(h, 16));
+  const end = bytes.indexOf(0);
+  return String.fromCharCode(...(end < 0 ? bytes : bytes.slice(0, end)));
+};
+
 // The chain a step is on (its own, else its job's) and the salt CreateX guards its deployment under there.
 export const stepChain = (job, step) => step.chainId ?? job.chainId;
 export const saltOf = (chainId, step) => (step.bound === false ? unboundSalt(step.salt) : guardedSalt(chainId, step.salt));
@@ -123,7 +131,8 @@ export function stepsCompleted(job, tx, receipt, chainId = job.chainId) {
     } else if (step.kind === 'review') {
       // What is done off this chain is read by hand: the sender names the Bitcoin transaction in a transaction to itself, and the
       // step lists the hash of that transaction once the work has been read on both chains.
-      if (tx.to && lower(tx.to) === lower(tx.from) && /^0x[0-9a-fA-F]{64}$/.test(tx.input ?? '') && step.approved.some((h) => lower(h) === lower(tx.hash))) out.push({ step, proof: { reviewed: true } });
+      const named = tx.to && lower(tx.to) === lower(tx.from) && /^0x[0-9a-fA-F]{64}$/.test(tx.input ?? '');
+      if (named && step.approved.some((h) => lower(h) === lower(tx.hash)) && (!step.evidence || new RegExp(step.evidence.pattern).test(evidenceText(tx.input)))) out.push({ step, proof: { reviewed: true } });
     }
   }
   return out;
@@ -147,7 +156,11 @@ export function checkJob(job) {
     else if (s.kind === 'post') { if (!Number.isInteger(s.minSize) || s.minSize < 2) throw new Error(`${job.id}/${s.id}: minSize`); }
     else if (s.kind === 'register') { if (!hex(s.asset, 64)) throw new Error(`${job.id}/${s.id}: asset`); }
     else if (s.kind === 'pair') { if (!hex(s.dataHash, 64)) throw new Error(`${job.id}/${s.id}: dataHash`); }
-    else if (s.kind === 'review') { if (!Array.isArray(s.approved) || !s.approved.every((h) => hex(h, 64)) || s.minWei == null || s.minWei !== s.maxWei) throw new Error(`${job.id}/${s.id}: review fields`); }
+    else if (s.kind === 'review') {
+      if (!Array.isArray(s.approved) || !s.approved.every((h) => hex(h, 64)) || s.minWei == null || s.minWei !== s.maxWei) throw new Error(`${job.id}/${s.id}: review fields`);
+      const regex = (p) => { try { return typeof p === 'string' && p.length <= 100 && !!new RegExp(p); } catch { return false; } };
+      if (s.evidence != null && !(s.evidence.text === true && regex(s.evidence.pattern))) throw new Error(`${job.id}/${s.id}: evidence`);
+    }
     else throw new Error(`${job.id}/${s.id}: kind ${s.kind}`);
   }
   return job;

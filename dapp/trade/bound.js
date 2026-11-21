@@ -76,13 +76,13 @@ export function mountBoundMarket(box, { T, asset, unlock = async () => {}, notif
         ${st.err ? `<p class="err">${esc(st.err)}</p>` : bidRows ? `<ul class="rows">${bidRows}</ul>` : `<p class="note">No bids for ${esc(ticker)} on Bitcoin yet.</p>`}
         <p class="note">Selling sends one of your ${esc(ticker)} notes on Bitcoin to the buyer, for its sats, in one transaction the buyer's watchtower completes. Enter an amount to sell part of a note: the rest comes back to your Bitcoin address. You can close the page after offering.</p></section>
       <section><h3>Place a bid</h3>
-        <div class="form"><input id="bb-amt" inputmode="decimal" placeholder="Amount of ${esc(ticker)}" aria-label="Amount of ${esc(ticker)} to buy">
-          <input id="bb-sats" inputmode="numeric" placeholder="Total sats" aria-label="Total sats you pay">
-          <input id="bb-fee" inputmode="numeric" placeholder="Fee budget (optional)" aria-label="Sats set aside for Bitcoin fees, 10,000 unless you enter another amount">
-          <button class="btn" type="button" data-bid-place ${st.busy ? 'disabled' : ''}>${st.busy === 'bid' ? 'Placing…' : 'Place a bid'}</button></div>
-        <label class="note"><input type="checkbox" id="bb-self"> Take offers myself: the bid's key stays on this device and you take each offer here, after it is checked. Otherwise the watchtower holds that key and takes offers while you are away.</label>
-        <p class="note">A bid sets aside its price plus a fee budget (10,000 sats unless you enter another, at least 2,000) in a wallet the watchtower holds. What is not spent comes back when the bid closes.</p>
-        <p class="note">What a bid buys arrives on Bitcoin and moves to Ethereum from here.</p></section>
+        <div class="bb-form">
+          <label class="bb-f"><span>Amount of ${esc(ticker)}</span><input id="bb-amt" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="Amount of ${esc(ticker)} to buy"></label>
+          <label class="bb-f"><span>Total sats you pay</span><input id="bb-sats" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Total sats you pay"></label>
+          <label class="bb-f bb-wide"><span>Fee budget <em>optional, 10,000 sats unless you enter another</em></span><input id="bb-fee" inputmode="numeric" autocomplete="off" placeholder="10,000" aria-label="Sats set aside for Bitcoin fees, 10,000 unless you enter another amount"></label>
+          <button class="btn bb-go" type="button" data-bid-place ${st.busy ? 'disabled' : ''}>${st.busy === 'bid' ? 'Placing…' : 'Place a bid'}</button></div>
+        <label class="bb-opt"><input type="checkbox" id="bb-self"><span><b>Take offers myself</b>The bid's key stays on this device and you take each offer here, after it is checked. Otherwise the watchtower holds that key and takes offers while you are away.</span></label>
+        <p class="note">A bid sets aside its price plus the fee budget (at least 2,000 sats) in a wallet the watchtower holds. What is not spent comes back when the bid closes. What a bid buys arrives on Bitcoin and moves to Ethereum from here.</p></section>
       ${wtRows ? `<section><h3>Your bids</h3><ul class="rows">${wtRows}</ul>
         <p class="note">The watchtower takes offers into these while you are away. Closing a bid takes it off the book and returns what it set aside to your Bitcoin address.</p></section>` : ''}
       ${mineRows ? `<section><h3>Your bids you take yourself</h3><ul class="rows">${mineRows}</ul>

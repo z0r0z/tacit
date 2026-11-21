@@ -1,5 +1,5 @@
-import { makeConnect } from '/trade/connect.js?cb=06b41e2f';
-import { $, esc, short, word, strip, fmtUnits, parseUnits, rpc, ethCall } from '/trade/util.js?cb=1d2cd8d3';
+import { makeConnect } from '/trade/connect.js?cb=41394526';
+import { $, esc, short, word, strip, fmtUnits, parseUnits, rpc, ethCall } from '/trade/util.js?cb=9c8b4133';
 import { SALE, FROM_BLOCK, TOTAL, FACE, LOCK_DAYS } from '/face/config.js?cb=aa6672a5';
 import { pixelText, ghost, blocks } from '/face/pixel.js?cb=2a763b38';
 

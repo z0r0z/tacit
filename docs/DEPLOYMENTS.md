@@ -311,8 +311,7 @@ same address is reserved on Ethereum. The paymaster is unaudited and not deploye
 
 Integration guide: [`EVM-POOL.md`](./EVM-POOL.md). Machine-readable source of truth:
 [`contracts/deployments/evm-pool.json`](../contracts/deployments/evm-pool.json). This pool and the
-`ConfidentialPool` above keep separate notes; a hop between them is a public exit/entry
-([`EVM-POOL.md#moving-between-v1-and-this-pool`](./EVM-POOL.md#moving-between-v1-and-this-pool)).
+`ConfidentialPool` above keep separate notes; a hop between them is a public exit/entry.
 
 ## Lineage
 

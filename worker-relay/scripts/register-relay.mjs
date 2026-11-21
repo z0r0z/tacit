@@ -94,7 +94,7 @@ must(eth > 500_000n * maxFee * 3n, 'the key needs a little ETH for two transacti
 must(maxFee < parseGwei('20'), 'gas is dear right now: try again later');
 if (tac < amount) { log(`\nthe key holds ${formatUnits(tac, 18)} TAC and the stake is ${formatUnits(amount, 18)}. ${SEND ? 'NOT SENDING.' : 'Every other check passed; nothing sent.'}`); process.exit(SEND ? 1 : 0); }
 const TWO_STEP = process.argv.includes('--two-step');
-const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+const deadline = block.timestamp + 3600n;      // the chain's clock, not this machine's: a laptop whose clock is an hour off would sign a permit that is already over
 // one transaction: the key permits the registry to take the stake and lists the relay in the same call
 const permit = allowance >= amount || TWO_STEP ? null : await signPermit({ account, client: pub, token: TAC, spender: REGISTRY, value: amount, deadline });
 const listing = permit

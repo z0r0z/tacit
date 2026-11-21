@@ -1,6 +1,7 @@
-import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol, NO_LIMITS } from '/bridge/runtime.js?cb=a00e3cff';
+import { bridgeRoute, bridgeLimitEntry, readRuntime, runtimeIcon, runtimeSymbol, NO_LIMITS } from '/bridge/runtime.js?cb=643fbc26';
 import { ROUTES, addBridgeAsset, readBridges, liveLine, nextOf, fmtAmount, limitLine, limitsSaid, ethSpan, costLine } from '/bridge/track.js?cb=d2e81a08';
 import { bodyType } from '/rpc-body.js';
+import { isAddr, norm, shortAddr, tokenHash, parseTokenHash, readToken, tokenRoute, safeSymbol } from '/bridge/token-pick.js?cb=72a4ae9a';
 import { floorFromBlocks, priorityRate } from '/fee-floor.js?cb=5d6104ed';
 { const fq = document.getElementById('fq-lim'); if (fq) fq.textContent = limitsSaid(); }
 // The tile's picker is the assets this page explains. A token the front page met and kept (dapp/bridge/runtime.js) is not one of them, but a crossing
@@ -9,7 +10,7 @@ const TABS = Object.keys(ROUTES);
 try {
   const host = document.getElementById('tk-usdt')?.parentNode;
   for (const e of readRuntime(localStorage)) {
-    if (!addBridgeAsset({ key: e.key, id: e.id, route: bridgeRoute({ ticker: e.ticker, icon: runtimeIcon(e.addr), dp: e.dp, dec: e.dec }), limits: bridgeLimitEntry(NO_LIMITS) })) continue;   // a limit an older visit saved is not one any more
+    if (!addBridgeAsset({ key: e.key, id: e.id, route: bridgeRoute({ ticker: e.ticker, icon: runtimeIcon(e.addr), dp: e.dp, dec: e.dec, addr: e.addr }), limits: bridgeLimitEntry(NO_LIMITS) })) continue;   // a limit an older visit saved is not one any more
     if (host && !document.getElementById(runtimeIcon(e.addr))) host.append(runtimeSymbol(document, e));
   }
 } catch { }
@@ -143,23 +144,50 @@ async function readTxs(rows) {
   }));
 }
 
-const PICK = { asset: 'tac', dir: 'in' };
+const PICK = { asset: 'tac', dir: 'in', token: null };   // token: any ERC-20 named by its address (bridge/token-pick.js), in place of one of the tabs
 
 const hashWay = () => location.hash.replace(/^#/, '').toLowerCase().split('/');
+// A token named in the hash (#0x…, #0x…/out): its tile, with the name read from the token while the address stands in for it
+function openToken(addr, dir) {
+  const kept = readRuntime(localStorage).find((e) => norm(e.addr) === addr);
+  PICK.token = { addr, ticker: kept ? safeSymbol(kept.ticker, addr) : shortAddr(addr), dec: kept?.dec ?? 8, name: '' };
+  PICK.dir = dir;
+  tokenSprite(PICK.token);
+  if (kept) return;
+  readToken({ call: (to, data) => rpc('eth_call', [{ to, data }, 'latest']), addr }).then((tk) => {
+    if (tk && PICK.token?.addr === addr) { PICK.token = tk; tokenSprite(tk); paintTile(); }
+  }, () => {});
+}
+// the sprite <symbol> a token's mark is drawn from (its letter), drawn again when its name is read
+function tokenSprite(tok) {
+  const host = document.getElementById('tk-usdt')?.parentNode, id = runtimeIcon(tok.addr);
+  if (!host) return;
+  const had = document.getElementById(id);
+  if (had && had.dataset.sym === tok.ticker) return;
+  if (had) had.replaceWith();
+  const sym = runtimeSymbol(document, { addr: tok.addr, sym: tok.ticker });
+  sym.dataset.sym = tok.ticker;
+  host.append(sym);
+}
 function readHash() {
+  const tk = parseTokenHash(location.hash);
+  if (tk) { openToken(tk.addr, tk.dir); return true; }
   const [a, d] = hashWay();
   if (!TABS.includes(a)) return !a;
+  PICK.token = null;
   PICK.asset = a;
   PICK.dir = d === 'out' && ROUTES[PICK.asset].out ? 'out' : 'in';
   return true;
 }
 
 function paintTile() {
-  const a = ROUTES[PICK.asset], route = a[PICK.dir];
-  $$('#bt-assets [data-asset]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.asset === PICK.asset)));
+  const tok = PICK.token, a = tok ? tokenRoute(tok, bridgeRoute) : ROUTES[PICK.asset], route = a[PICK.dir];
+  $$('#bt-assets [data-asset]').forEach((b) => b.setAttribute('aria-selected', String(!tok && b.dataset.asset === PICK.asset)));
+  const more = $('#bt-more');
+  if (more) { $('#bt-more-t').textContent = tok ? tok.ticker : 'Another token'; more.classList.toggle('on', !!tok); }
   const t = $('#bt');
   t.dataset.dir = PICK.dir;
-  t.dataset.asset = PICK.asset;
+  t.dataset.asset = tok ? 'token' : PICK.asset;
   $('#bt-flip').disabled = !a.out;
   $('#bt-flip').title = a.out ? 'Switch direction' : `${a.ticker} enters by a lock`;
   $('#bt-from').textContent = PICK.dir === 'in' ? 'Bitcoin' : 'Ethereum';
@@ -167,7 +195,7 @@ function paintTile() {
   $('#bt-from-ic').setAttribute('href', `#${CHAIN[ends(PICK.dir)[0]][0]}`);
   $('#bt-to-ic').setAttribute('href', `#${CHAIN[ends(PICK.dir)[1]][0]}`);
   $$('#bt .bt-tk use').forEach((u) => u.setAttribute('href', `#${a.icon}`));
-  const steps = $('#bt-steps'), key = `${PICK.asset}/${PICK.dir}`;
+  const steps = $('#bt-steps'), key = `${tok ? `x${tok.addr}` : PICK.asset}/${PICK.dir}`;
   if (steps.dataset.key !== key) {
     steps.dataset.key = key;
     steps.innerHTML = route.steps.map((s, i) => `<li style="--i:${i}"><span class="dot" aria-hidden="true"></span>${stepHtml(s)}</li>`).join('');
@@ -180,20 +208,78 @@ function paintTile() {
   way.setAttribute('aria-label', wayName(PICK.dir));
   $('.lost a').href = a.in.href;
   paintWait();
-  const lim = limitLine(PICK.asset, PICK.dir);
+  // a token has no minimum of its own (a new one often has no market to price it): it has only to be more than its relay fee
+  const lim = tok ? 'No fixed minimum: the amount only has to be more than its relay fee' : limitLine(PICK.asset, PICK.dir);
   $('#bt-limit').textContent = lim;
   $('#bt-limit').hidden = !lim;
-  const cost = costLine(PICK.asset, PICK.dir, COST);
+  const cost = tok ? '' : costLine(PICK.asset, PICK.dir, COST);
   $('#bt-cost').textContent = cost;
   $('#bt-cost').hidden = !cost;
-  const want = `#${PICK.asset}${PICK.dir === 'out' ? '/out' : ''}`, at = hashWay()[0];
-  if ((!at || TABS.includes(at)) && location.hash !== want && !(want === '#tac' && !location.hash)) history.replaceState(null, '', want);
+  const want = tok ? tokenHash(tok.addr, PICK.dir) : `#${PICK.asset}${PICK.dir === 'out' ? '/out' : ''}`, at = hashWay()[0];
+  if ((!at || TABS.includes(at) || parseTokenHash(location.hash)) && location.hash !== want && !(want === '#tac' && !location.hash)) history.replaceState(null, '', want);
+}
+
+// The "Another token" panel: a pasted address, or a token this browser has bridged. The token is read from the chain (its symbol and decimals), the tile becomes its tile, and
+// the button goes to the front page on its bridge.
+function wireTokenPicker() {
+  const btn = $('#bt-more'), pop = $('#bt-pop'), input = $('#bt-addr'), say = $('#bt-addr-say'), mine = $('#bt-mine');
+  if (!btn || !pop || !input || !say) return;
+  const FIRST = say.textContent;
+  const toggle = (open) => { pop.hidden = !open; btn.setAttribute('aria-expanded', String(open)); if (open) input.focus(); };
+  btn.addEventListener('click', () => toggle(pop.hidden));
+  pop.addEventListener('keydown', (e) => { if (e.key === 'Escape') { toggle(false); btn.focus(); } });
+  const use = (tk) => {
+    PICK.token = tk; PICK.dir = 'out';
+    tokenSprite(tk); paintTile();
+    say.textContent = `${tk.ticker}${tk.name ? `, ${tk.name}` : ''}: ${tk.dec} decimals. The tile below is for it.`;
+    input.removeAttribute('aria-invalid');
+  };
+  const bad = (m) => { input.setAttribute('aria-invalid', 'true'); say.textContent = m; };
+  let seq = 0, timer = 0;
+  async function choose(v) {
+    const addr = norm(v), my = ++seq;
+    say.textContent = 'Reading the token…';
+    let tk = null;
+    try { tk = await readToken({ call: (to, data) => rpc('eth_call', [{ to, data }, 'latest']), addr }); } catch { }
+    if (my !== seq) return;
+    if (!tk) return bad('That address is not an ERC-20 token on Ethereum. Check it and paste it again.');
+    use(tk);
+  }
+  input.addEventListener('input', () => {
+    clearTimeout(timer); seq++;
+    const v = input.value.trim();
+    input.removeAttribute('aria-invalid');
+    if (!v) { say.textContent = FIRST; return; }
+    if (isAddr(v)) { timer = setTimeout(() => choose(v), 250); return; }
+    if (v.length >= 42) return bad('That is not a token address: it is 0x and then 40 hex characters.');
+    say.textContent = 'Keep typing, or paste the whole address.';
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && isAddr(input.value)) { e.preventDefault(); clearTimeout(timer); choose(input.value.trim()); } });
+  try {
+    const list = readRuntime(localStorage);
+    if (list.length && mine) {
+      mine.hidden = false;
+      for (const e of list) {
+        const li = document.createElement('li'), b = document.createElement('button'), addr = norm(e.addr);
+        b.type = 'button';
+        const tk = { addr, ticker: safeSymbol(e.ticker, addr), dec: e.dec ?? 8, name: '' };
+        tokenSprite(tk);
+        const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg'), u = document.createElementNS(ns, 'use');
+        svg.setAttribute('class', 'tk'); svg.setAttribute('aria-hidden', 'true'); u.setAttribute('href', `#${runtimeIcon(addr)}`); svg.append(u);
+        const small = document.createElement('small'); small.textContent = shortAddr(addr);
+        b.append(svg, document.createTextNode(`${tk.ticker} `), small);
+        b.addEventListener('click', () => { input.value = addr; use(tk); });
+        li.append(b); mine.append(li);
+      }
+    }
+  } catch { }
 }
 
 function wireTile() {
   $('#bt-assets').addEventListener('click', (e) => {
     const b = e.target.closest('[data-asset]');
     if (!b) return;
+    PICK.token = null;
     PICK.asset = b.dataset.asset;
     if (!ROUTES[PICK.asset].out) PICK.dir = 'in';
     paintTile();
@@ -201,13 +287,14 @@ function wireTile() {
   $('#bt-assets').addEventListener('keydown', (e) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
     const i = TABS.indexOf(PICK.asset);
+    PICK.token = null;
     PICK.asset = TABS[(i + (e.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length];
     if (!ROUTES[PICK.asset].out) PICK.dir = 'in';
     paintTile();
     $(`#bt-assets [data-asset="${PICK.asset}"]`).focus();
   });
   $('#bt-flip').addEventListener('click', () => {
-    if (!ROUTES[PICK.asset].out) return;
+    if (!PICK.token && !ROUTES[PICK.asset].out) return;
     PICK.dir = PICK.dir === 'in' ? 'out' : 'in';
     paintTile();
   });
@@ -230,6 +317,7 @@ function rowHtml(r) {
     : mine && r.dir === 'out' && r.stage === 'covered' && nx.due === 'Send to Bitcoin' ? '<span class="mb-self">Goes on by itself</span>'
     : nx.due
     ? `<a class="mb-due" href="${r.href}">${esc(nx.due)} <span aria-hidden="true">→</span></a>`
+    : r.done && r.dir === 'out' && !r.paid ? `<a class="mb-open" href="/#bitcoin/notes" title="It arrived at your Taproot address. Move it to your Bitcoin address to send it on Bitcoin.">Send or move it <span aria-hidden="true">→</span></a>`
     : r.done || r.back ? '' : nx.self ? '<span class="mb-self">Goes on by itself</span>'
     : `<a class="mb-open" href="${r.href}">Open to move it on <span aria-hidden="true">→</span></a>`;
   const links = [
@@ -327,7 +415,7 @@ function mineSay(text, front = false) {
   el.hidden = !text;
   el.innerHTML = text ? `${esc(text)}${front ? ` <a href="${esc(typeof front === 'string' ? front : '/#bridge')}">Do it on the front page →</a>` : ''}` : '';
 }
-const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=290e727d').then((m) => {
+const loadMover = () => (MVP ||= import('/bridge/mover.js?cb=225f54bf').then((m) => {
   const b = $('#mine-mv');
   MV = m.mountMover({ repaint: () => { readMine.sig = null; readMine(); }, say: mineSay,
     onState: (on) => { if (b) { b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Moving them on here' : 'Move them on here'; } } });
@@ -467,6 +555,7 @@ function mountLive() {
 
 readHash();
 wireTile();
+wireTokenPicker();
 paintTile();
 readMine();
 wireSteppers();

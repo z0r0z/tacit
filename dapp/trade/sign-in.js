@@ -3,7 +3,7 @@
 // Tacit key opens it from here (trade/key.js for the pages with a key session, trade/btc.js for the Bitcoin market), so the sheet is the same on each.
 // What the sheet looks like is trade/sheet.js's; this file is what it says and does.
 import { overlay, esc, mark } from '/trade/sheet.js?cb=d857446c';
-import { short } from '/trade/util.js?cb=1d2cd8d3';
+import { short } from '/trade/util.js?cb=9c8b4133';
 import { waitLine, cancellable } from '/sign-wait.js?cb=ab42ced1';
 
 export class Cancelled extends Error { constructor(m = 'Cancelled.') { super(m); this.unlockCancelled = true; } }
