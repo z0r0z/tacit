@@ -2175,7 +2175,8 @@ html:not([data-page="spx"]) {
   /* the glyph layer (glyphs.js). The field is fixed behind the whole page (chrome.css), which is why the page's ground is on <html> and <body> is clear; the stamp
      lies behind its side's own words; and a rule of glyphs thins out to dots between the headline and the card. */
   & body { background: transparent; }
-  & .hx canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .3; pointer-events: none; }
+  & .hx canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .15; pointer-events: none; }
+  @media (max-width: 520px) { & .hx canvas.gx-stamp { opacity: .12; } }      /* (a narrow card puts it behind the label and the coin) */
   /* the wallet sheet's ways to sign in: Tacit's mark struck across them in glyphs (glyphs.js), seen through the rows, and behind each way's mark a breath of its colour */
   & #sheet-wallet .sheet-in { position: relative; isolation: isolate; }
   & #sheet-wallet canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: .34; pointer-events: none; transition: opacity .15s ease; }
