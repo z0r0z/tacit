@@ -46,7 +46,8 @@ assert.equal(road.stats().relays.length, 1, 'the server is listening on the rela
 const dir = mkdtempSync(join(tmpdir(), 'route-api-nostr-'));
 const dapp = (f) => pathToFileURL(fileURLToPath(new URL(`../dapp/${f}`, import.meta.url))).href;
 writeFileSync(join(dir, 'private-route.mjs'), readFileSync(new URL('../dapp/private-route.js', import.meta.url), 'utf8')
-  .replace(/\/sealed-request\.js\?cb=[A-Za-z0-9_-]+/g, dapp('sealed-request.js')).replace(/\/route-nostr\.js\?cb=[A-Za-z0-9_-]+/g, dapp('route-nostr.js')));
+  .replace(/\/sealed-request\.js\?cb=[A-Za-z0-9_-]+/g, dapp('sealed-request.js')).replace(/\/route-nostr\.js\?cb=[A-Za-z0-9_-]+/g, dapp('route-nostr.js'))
+  .replace(/(from\s*)'\.\/([\w./-]+\.js)'/g, (m, f, p) => `${f}'${dapp(p)}'`));      // (its relative imports are dapp/'s)
 const { ROUTE, apiFetch } = await import(pathToFileURL(join(dir, 'private-route.mjs')).href);
 Object.assign(ROUTE, { gateway: bytesToHex(gatewayKeys(newGatewayKey()).pub), forwarders: ['http://127.0.0.1:1'], nostr: [relay.url], api: { url: 'https://api.test', id: 'a', gateway: PUB } });
 const direct = [];

@@ -417,16 +417,17 @@ const CSETTLE = await import(join(ROOT, 'worker/src/confidential-settle.js'));
 const COPEN = await import(join(ROOT, 'worker/src/confidential-open.js'));
 const SHA3 = await import(join(ROOT, 'node_modules/@noble/hashes/sha3.js'));
 const NOBLE = await import(join(ROOT, 'node_modules/@noble/hashes/utils.js'));
+const IPB = await import(join(ROOT, 'worker/src/ip-bucket.js'));      // every per-client key is a keyed hash of the address (worker/src/ip-bucket.js)
 const submitSrc = unexport(worker.slice(worker.indexOf('const budgetKey'), worker.indexOf('async function handleConfidentialJob')));
 function loadSubmit({ cap = '3', freeCap = '3', env = {}, submitJob, jobStatus = async () => null, boardWorkers = [], kvStore = new Map(), feeOf = () => 0n, tipPaid = async () => false, health = async () => ({ status: 'ok', age_seconds: 5, note: 'settle: idle — queue empty' }), expiryOf = (type, op) => (type === 'unwrap' ? Number(op?.opDeadline || 0) : 0) }) {
   const kv = { get: async (k) => (kvStore.has(k) ? kvStore.get(k) : null), put: async (k, v) => { kvStore.set(k, v); } };
   // confPool: no pool named, so a bridge mint's admission (checked against the mainnet pool's burn root only) passes as it does off mainnet.
   const mk = new Function('confSettler', 'buildProverBoard', 'FEELESS_TYPES', 'proveRateLimit', 'jsonResponse', 'hasVerifiableFee', 'totalFee', 'ctx', 'withKvKeyLock', 'wrapTipPaid', 'readProverKindHealth', 'opExpiry', 'checkPostedShape', 'confPool', '_CONFIDENTIAL_DEPLOYMENTS', 'SHAPED_TYPES', 'admitOpShape',
-    'keccak_256', 'bytesToHex', 'hexToBytes', 'FREE_POSTED_TYPES', 'pvFees',
+    'keccak_256', 'bytesToHex', 'hexToBytes', 'FREE_POSTED_TYPES', 'pvFees', 'ipBucket',
     submitSrc + '; return handleConfidentialSubmit;');
   const handler = mk(() => ({ submitJob, jobIdOf: (type, op, mode) => `${mode}:${type}:${JSON.stringify(op)}`, jobStatus }), () => ({ summary: async () => ({ workers: boardWorkers }) }), rq.FEELESS_TYPES, async () => ({ ok: true }), (body, status, headers) => ({ body, status, headers }), () => false, (type, op) => feeOf(type, op), {},
     (_key, fn) => fn(), tipPaid, health, expiryOf, () => null, () => null, {}, opAdmit.SHAPED_TYPES, opAdmit.admitOpShape,
-    SHA3.keccak_256, NOBLE.bytesToHex, NOBLE.hexToBytes, CSETTLE.FREE_POSTED_TYPES, COPEN.pvFees);
+    SHA3.keccak_256, NOBLE.bytesToHex, NOBLE.hexToBytes, CSETTLE.FREE_POSTED_TYPES, COPEN.pvFees, IPB.ipBucket);
   const call = (body) => handler({ json: async () => body, headers: { get: () => '1.2.3.4' } }, { REGISTRY_KV: kv, PROVE_MODE_DAILY_CAP: cap, FREE_RELAY_DAILY_CAP: freeCap, ...env }, {});
   return { call, kvStore };
 }
@@ -571,7 +572,8 @@ test('one client gets its own share of the day\'s free proofs; a tipped wrap spe
   ok((await call({ type: 'unwrap', op: {}, mode: 'prove' })).status === 200 && (await call({ type: 'unwrap', op: {}, mode: 'prove' })).status === 200, 'two within the client cap');
   const third = await call({ type: 'unwrap', op: {}, mode: 'prove' });
   ok(third.status === 429 && third.body.code === 'prove_budget' && third.body.class === 'client' && third.body.hint === 'relay' && /2\/2/.test(third.body.error), `the third from one client is refused, got ${third.status} ${JSON.stringify(third.body)}`);
-  ok([...kvStore.keys()].some((k) => k.startsWith('cps:budget:prove:1.2.3.4:')), 'the client counter is keyed by its address');
+  const own = IPB.ipBucket({}, '1.2.3.4');      // (no IP_HASH_SALT here: the process's own salt, the one the handler used)
+  ok([...kvStore.keys()].some((k) => k.startsWith(`cps:budget:prove:${own}:`)) && ![...kvStore.keys()].some((k) => k.includes('1.2.3.4')), 'the client counter is keyed by a keyed hash of its address, and no key holds the address');
   ok(Number(kvStore.get([...kvStore.keys()].find((k) => /^cps:budget:prove:\d{4}/.test(k)))) === 2, 'the global counter counts the two accepted');
   const paid = loadSubmit({ cap: '50', env: { PROVE_MODE_CLIENT_DAILY_CAP: '1' }, submitJob: async () => ({ jobId: 'w', status: 'pending' }), tipPaid: async () => true });
   for (let i = 0; i < 3; i++) ok((await paid.call({ type: 'wrap', op: {}, mode: 'prove', depositTx: '0x' + 'ab'.repeat(32) })).status === 200, 'a tipped wrap is never counted');
@@ -1095,8 +1097,8 @@ test('batch: the relay gates every member before proving, and acks refusals with
 });
 
 test('rate-limit buckets cannot collide', () => {
-  // Same IP, two buckets, one KV namespace — the bucket name has to be in the key.
-  ok(/cps:rl:\$\{bucket\}:\$\{ip\}/.test(worker), 'bucket name missing from the rate-limit key');
+  // Same IP, two buckets, one KV namespace — the bucket name has to be in the key (the client part is the keyed hash of the address).
+  ok(/cps:rl:\$\{bucket\}:\$\{(ip|ipBucket\(env, ip\))\}/.test(worker), 'bucket name missing from the rate-limit key');
 });
 
 // ── behaviour, not just source: which wallets does each service actually see? ──

@@ -74,10 +74,13 @@ await test('the stats carry counts and ages ONLY — nothing about any job\'s co
   const q = mk();
   await q.submitJob({ type: 'swap', op: opN(30) });
   const s = await q.queueStats();
-  // the stats the verdict reads are all there, and every field is a count or an age: a number, never a string, an id or an object (a field about a job's contents would be one)
+  // the stats the verdict reads are all there, and every field is a count or an age: a number, never an id or an object (a field about a job's contents
+  // would be one). The one word beside them is provingType, the kind of job the loop has been on longest ("swap", "swap (prove-only)"), which the
+  // front page's relay line shows: null or that label alone, never an id, an address or anything else from the job.
   const keys = Object.keys(s);
   ok(['oldestPendingSec', 'oldestProvingSec', 'open', 'pending', 'proving'].every((k) => keys.includes(k)), `missing fields: ${keys}`);
-  ok(keys.every((k) => Number.isFinite(s[k]) && s[k] >= 0 && /^(pending|proving|open|oldest\w*Sec)/.test(k)), `unexpected fields: ${keys.map((k) => `${k}=${typeof s[k]}`)}`);
+  const kindOnly = (k) => k === 'provingType' && (s[k] === null || /^[a-z][a-z0-9-]{0,31}( \(prove-only\))?$/.test(s[k]));
+  ok(keys.every((k) => kindOnly(k) || (Number.isFinite(s[k]) && s[k] >= 0 && /^(pending|proving|open|oldest\w*Sec)/.test(k))), `unexpected fields: ${keys.map((k) => `${k}=${typeof s[k]}`)}`);
 });
 
 // ── the verdict ──

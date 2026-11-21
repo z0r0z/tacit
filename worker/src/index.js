@@ -4336,7 +4336,8 @@ async function handleGasRelay(req, env, url, cors) {
   const removed = await board.remove(id, { payer: b.payer, nonce: b.nonce });
   return jsonResponse(removed, removed.ok ? 200 : 409, nostore);
 }
-// The queue as a picture anyone may read: counts and ages, never a job's contents (the box-token /confidential/queue has the same numbers for the monitor). It is what
+// The queue as a picture anyone may read: counts, ages and the kind of job the loop is on (a word such as "swap"), never a job's contents (the box-token
+// /confidential/queue has the same numbers for the monitor). It is what
 // tells a stuck queue (an oldest job that keeps getting older, or the loop on one job for minutes) from a busy one. Read at most every five seconds, since each read
 // walks the pending jobs.
 const _relayQueue = { at: 0, v: null };

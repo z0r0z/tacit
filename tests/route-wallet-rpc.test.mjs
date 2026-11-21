@@ -16,7 +16,8 @@ import { makeRpcGateway, nodesOf } from '../worker-relay/src/evm-pool-rpc-gatewa
 let n = 0;
 const check = async (name, fn) => { await fn(); n++; console.log(`ok - ${name}`); };
 const sealedUrl = pathToFileURL(new URL('../dapp/sealed-request.js', import.meta.url).pathname).href;
-const source = readFileSync(new URL('../dapp/private-route.js', import.meta.url), 'utf8').replace(/\/sealed-request\.js\?cb=[A-Za-z0-9_-]+/, sealedUrl);
+const source = readFileSync(new URL('../dapp/private-route.js', import.meta.url), 'utf8').replace(/\/sealed-request\.js\?cb=[A-Za-z0-9_-]+/, sealedUrl)
+  .replace(/(from\s*)'\.\/([\w./-]+\.js)'/g, (m, f, p) => `${f}'${pathToFileURL(new URL(`../dapp/${p}`, import.meta.url).pathname).href}'`);      // (its relative imports, ./evm-pool-relays.js and any later one, are dapp/'s)
 const dir = mkdtempSync(join(tmpdir(), 'route-wallet-rpc-'));
 writeFileSync(join(dir, 'private-route.mjs'), source);
 const { ROUTE, rpcFetch, walletRpcFetch, bundlerFetch } = await import(pathToFileURL(join(dir, 'private-route.mjs')).href);

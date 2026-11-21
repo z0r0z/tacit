@@ -17,6 +17,7 @@ import { createServer } from 'node:http';
 import { makeServiceGateway } from './lib/evm-pool-keeper-sealed.js';
 import { makeRpcPassthrough, MAX_BODY } from './lib/evm-pool-keeper-rpc.js';
 import { makePoolHistory, POOLS as HISTORY_POOLS, PAGE as HISTORY_PAGE } from './lib/fixed-pool-history.js';
+import { parseUrl, badRequest } from './lib/safe-url.js';
 
 // The public nodes this reads from have limits of their own, so a log read may span more here than on a relay's paid node: a day of a busy token is about 7,200 blocks.
 const MAX_LOG_RANGE = 20_000;
@@ -114,7 +115,9 @@ export function makeRpcGateway({ secret, nodes, forwarders = [], fetchImpl, rate
     if (hm && req.method === 'GET') {
       const hist = historyOf(Number(hm[1]));
       if (!hist) return json(res, 404, { error: 'no history on this chain' });
-      const q = new URL(req.url, 'http://gateway').searchParams, pool = String(q.get('pool') || '');
+      const u = parseUrl(req, 'http://gateway');
+      if (!u) return badRequest(res);
+      const q = u.searchParams, pool = String(q.get('pool') || '');
       if (!/^0x[0-9a-fA-F]{40}$/.test(pool) || !hist.has(pool)) return json(res, 404, { error: 'not a pool' });
       const from = Number(q.get('from') ?? 0), n = Number(q.get('n') ?? HISTORY_PAGE);
       if (!Number.isInteger(from) || !Number.isInteger(n) || from < 0 || n < 1) return json(res, 400, { error: 'bad range' });
