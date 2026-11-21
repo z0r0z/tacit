@@ -470,13 +470,18 @@ function boardLane() {
 // Whether a worker has polled the board in the last half minute (the worker polls every few seconds), read at most every
 // ten seconds; an unreadable summary counts as alive, since the post itself then answers.
 let aliveAt = 0, aliveWas = true;
-export async function boardAlive() {
-  if (Date.now() - aliveAt < 10_000) return aliveWas;
-  const s = await boardSummary();
-  aliveAt = Date.now();
-  // community machines (who race public jobs only) are not what keeps the board alive for the jobs Tacit's own workers take
-  aliveWas = !s || s.workers.some((w) => !w.community && Number(w.lastSeenSeconds) <= 30);
-  return aliveWas;
+let aliveCommunityWas = true;
+export async function boardAlive(cls = 'private', program = 'confidential') {
+  if (Date.now() - aliveAt >= 10_000) {
+    const s = await boardSummary();
+    aliveAt = Date.now();
+    // community machines (who race public jobs only) are not what keeps the board alive for the jobs Tacit's own workers take ...
+    aliveWas = !s || s.workers.some((w) => !w.community && Number(w.lastSeenSeconds) <= 30);
+    // ... but a public job is theirs to race: with Tacit's own workers down (2026-11-21: both GPU boxes stopped for credit), a wrap that skipped the board
+    // was proved on the relay's own CPU while 150 community machines were polling
+    aliveCommunityWas = !s || aliveWas || s.workers.some((w) => w.community && Number(w.lastSeenSeconds) <= 30 && (!Array.isArray(w.programs) || w.programs.includes(program)));
+  }
+  return cls === 'public' ? aliveCommunityWas : aliveWas;
 }
 // Whether Tacit's own worker (the one that proves a user's job) has stopped polling: it asks every second, so a few seconds of nothing is its GPU server restarting
 // (about a minute: the box recycles it when its Groth16 step slows, and every start proves a warm-up first) or the box finishing a proof it cannot stop (a proof-pool wrap, up

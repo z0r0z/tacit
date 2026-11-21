@@ -83,6 +83,13 @@ test('with no worker seen lately the job is not posted at all', async () => {
   assert.equal(r.worker, 'gpu1', 'an unreadable liveness read does not hold the job back');
 });
 
+test('the liveness check is told the job\'s class and program, so a public job can count the community machines that race it', async () => {
+  const f = fakeBoard({ script: [{ status: 'proved', worker: 'gpu1', publicValues: PV, proof: PROOF }] });
+  const asked = [];
+  await makeBoardProver({ ...f.api, alive: async (cls, program) => { asked.push([cls, program]); return true; } }).prove({ stdin, cycleLimit: 1, gasLimit: 1, cls: 'public' });
+  assert.deepEqual(asked, [['public', 'confidential']]);
+});
+
 test('another program: posted with its program and mode, and checked by the caller\'s check instead of the settle check', async () => {
   const f = fakeBoard({ script: [{ status: 'proved', worker: 'tacit-a5000', publicValues: PV, proof: 'QUJD' }], verifyOk: false });
   const seen = [];

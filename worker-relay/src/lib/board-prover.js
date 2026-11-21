@@ -35,8 +35,8 @@ export function makeBoardProver({ post, status, cancel, verify, race = null, ali
   async function prove({ stdin = null, sealed = null, cycleLimit, gasLimit, cls = 'private', label = null, memos = [], timeoutMs = waitMs, program = 'confidential', mode = null, check = null, onStage = null } = {}) {
     if (sealed == null && (!(stdin instanceof Uint8Array) || !stdin.length)) throw new Error('prover board: stdin must be the input bytes');
     if (sealed != null && (typeof sealed !== 'object' || typeof sealed.worker !== 'string' || typeof sealed.ct !== 'string')) throw new Error('prover board: sealed must be { worker, epk, iv, ct }');
-    // No worker has polled lately: the job would only sit out the wait, so it goes straight to the next lane.
-    if (alive && !(await Promise.resolve(alive()).catch(() => true))) throw miss('no worker has been seen lately');
+    // No worker that could take this job has polled lately (for a public job, a community machine counts: alive(cls, program)): it would only sit out the wait, so it goes straight to the next lane.
+    if (alive && !(await Promise.resolve(alive(cls, program)).catch(() => true))) throw miss('no worker has been seen lately');
     const budget = Math.min(waitMs, timeoutMs);
     const t0 = now();
     // The job's deadline sits a minute past this wait: a worker that answers just late is not paid for by the network too.
