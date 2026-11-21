@@ -14,8 +14,8 @@
 //   5. the way in   in the wallet sheet, Tacit's mark struck across the ways to sign in, and the mark of whichever way is
 //                   pointed at struck across that way's row alone.
 //
-// It is the Graphite skin's alone. chrome.js imports it once the page is idle, while that skin is on (the default; not <html data-skin="classic">), calls
-// start(), and calls what start() returns when the skin is changed back: every canvas, timer, observer and listener goes with it.
+// chrome.js imports it once the page is idle and calls start(); what start() returns takes it all away again (every canvas, timer,
+// observer and listener).
 // A page works the same without this file, and chrome.js ignores a failure to load it. It reads no
 // key, balance or network, only the page's own markup (which asset a side names, which way in a row is) and its --ink. It
 // adds canvases and two custom properties and changes nothing else. Under prefers-reduced-motion each piece is drawn once and

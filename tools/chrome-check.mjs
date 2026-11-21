@@ -40,7 +40,7 @@ const browser = await chromium.launch();
 const ctx = await browser.newContext();
 // Whatever is not the page's own answers as an empty reading (a node, the API, an explorer), so the page settles without a network.
 await ctx.route((u) => u.hostname !== '127.0.0.1', (route) => {
-  const body = JSON.parse(route.request().postData() || 'null');
+  let body = null; try { body = JSON.parse(route.request().postData() || 'null'); } catch {}      // (a body that is not JSON, as a relay's, gets the 404)
   const one = (b) => ({ jsonrpc: '2.0', id: b?.id ?? 1, result: '0x0' });
   return route.fulfill({ status: body ? 200 : 404, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(Array.isArray(body) ? body.map(one) : body ? one(body) : {}) });
 });

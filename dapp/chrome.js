@@ -147,24 +147,26 @@
 // change by a `tacit:sec` event on the document), so the two cannot disagree. Each view lives at one address (its href in SEC): an address on the
 // front page that names a view another page shows goes there, and one that names a view the section does not have is put right, to its first view.
 (() => {
+  // (written as JSON: build/chrome.mjs reads this table to stamp the head into the pages that are a view by their path)
   const SEC = {
-    payments: ['Payments', 'Send to anyone, ask to be paid, or leave TAC for someone with no wallet yet.', [
-      ['send', 'Send', '/#/payments/send', 'One send for every asset: private TAC, ETH, cUSD, cBTC, TAC on the Tacit chain, BTC. To a tacit1 address, a name or 0x.'],
-      ['request', 'Request', '/tac/?v=request#receive', 'Ask for an amount: a pay link and a QR that waits for the payment to land.'],
-      ['links', 'Claim links', '/tac/?v=links#pool/send', 'Leave TAC for someone with no wallet yet, with a PIN if you like; take it back if they never claim.']]],
-    defi: ['DeFi', 'Swap, farm and stake, privately when you want.', [
-      ['swap', 'Swap', '/#/defi/swap', 'Public or private swaps at the best route.'],
-      ['farm', 'Farm', '/farm/', 'Pick a farm, put ETH in, earn TAC.'],
-      ['stake', 'Stake', '/tac/?v=stake#private', 'Stake TAC on the Tacit chain: it earns a share of every payment, with no lock.']]],
-    chains: ['Chains', 'Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.', [
-      ['move', 'Move', '/#/chains/move', 'Make it private, or take it back out: pick what and where it goes. ↕ flips to withdraw.'],
-      ['bridge', 'Bridge', '/#/chains/bridge', 'Any asset between Bitcoin and Ethereum, either way, with the steps, fee and time up front.'],
-      ['fast', 'Fast bridge', '/fast/', 'TAC from Bitcoin in about 15 minutes, paid out by a provider for a fee; or be a provider.'],
-      ['notes', 'Notes', '/tac/?v=notes#bridge', 'Your TAC notes on Bitcoin: merge, split, bridge them all; and everything getting ready or on the way.']]],
-    borrow: ['Borrow', 'Borrow dollars against your BTC or your TAC.', [
-      ['btc', 'Against BTC', '/vault/#btc', 'Lock BTC (you keep the key), mint cBTC, borrow cUSD.'],
-      ['tac', 'Against TAC', '/vault/', 'Put TAC in a vault, borrow TACD (dollars) or TACE (ether).']]],
-    rewards: ['Rewards', 'Your airdrop, your points and the leaderboard.', []],
+    "payments": ["Payments", "Send to anyone, ask to be paid, or leave TAC for someone with no wallet yet.", [
+      ["send", "Send", "/#/payments/send", "One send for every asset: private TAC, ETH, cUSD, cBTC, TAC on the Tacit chain, BTC. To a tacit1 address, a name or 0x."],
+      ["request", "Request", "/tac/?v=request#receive", "Ask for an amount: a pay link and a QR that waits for the payment to land."],
+      ["links", "Claim links", "/tac/?v=links#pool/send", "Leave TAC for someone with no wallet yet, with a PIN if you like; take it back if they never claim."]]],
+    "defi": ["DeFi", "Swap, earn, farm and stake, privately when you want.", [
+      ["swap", "Swap", "/#/defi/swap", "Public or private swaps at the best route."],
+      ["earn", "Earn", "/#/defi/earn", "Farm from the app: put ETH into a pool in one step and earn TAC."],
+      ["farm", "Farm", "/farm/", "Pick a farm, put ETH in, earn TAC."],
+      ["stake", "Stake", "/tac/?v=stake#private", "Stake TAC on the Tacit chain: it earns a share of every payment, with no lock."]]],
+    "chains": ["Chains", "Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.", [
+      ["move", "Move", "/#/chains/move", "Make it private, or take it back out: pick what and where it goes. ↕ flips to withdraw."],
+      ["bridge", "Bridge", "/#/chains/bridge", "Between Bitcoin and Ethereum, either way, with the steps, fee and time up front."],
+      ["fast", "Fast bridge", "/fast/", "TAC from Bitcoin in minutes, paid out by a provider for a fee; or be a provider."],
+      ["notes", "Notes", "/tac/?v=notes#bridge", "Your TAC notes on Bitcoin: merge, split, bridge them all; and everything getting ready or on the way."]]],
+    "borrow": ["Borrow", "Borrow dollars against your BTC or your TAC.", [
+      ["btc", "Against BTC", "/vault/#btc", "Lock BTC (you keep the key), mint cBTC, borrow cUSD."],
+      ["tac", "Against TAC", "/vault/", "Put TAC in a vault, borrow TACD (dollars) or TACE (ether). No interest, one fee."]]],
+    "rewards": ["Rewards", "Your airdrop, your points and the leaderboard.", []]
   };
   // the More page's line for each page of the menu
   const ABOUT = { '/assets/': 'TAC, tETH, cBTC, cUSD and how each is backed', '/tac/': 'the Tacit chain: stake, pay, bridge', '/pay/': 'BTC, TAC and ETH paid privately from one key', '/bridge/': 'every way between Bitcoin and Ethereum',
@@ -181,12 +183,12 @@
   const at = () => {
     const p = location.pathname, h = location.hash;
     if (front()) { const m = /^#\/(payments|defi|chains)(?:\/([a-z]*))?$/.exec(h); return m ? [m[1], SEC[m[1]][2].some((v) => v[0] === m[2]) ? m[2] : SEC[m[1]][2][0][0]] : h === '#/menu' ? ['menu', ''] : null; }
-    if (/^\/tac\/?$/.test(p)) { const v = new URLSearchParams(location.search).get('v'); return TAC_VIEW[v] ? [TAC_VIEW[v], v] : null; }
+    if (/^\/tac\/?$/.test(p)) { const v = new URLSearchParams(location.search).get('v'); return v && Object.hasOwn(TAC_VIEW, v) ? [TAC_VIEW[v], v] : null; }
     if (p.startsWith('/farm/')) return ['defi', 'farm'];
     if (p.startsWith('/fast/')) return ['chains', 'fast'];
     if (h === '#pools') whole = true; else if (h === '#btc') whole = false;      // (the page takes #pools off the address once it has shown them: they stay the whole page's until a side is asked for)
     if (p.startsWith('/vault/')) return whole ? null : ['borrow', h === '#btc' ? 'btc' : 'tac'];      // where TACD sells (linked from other pages) is the whole page's: the view of TAC's side leaves it out
-    if (p.startsWith('/rewards/')) return /^#farms?$/.test(h) ? null : ['rewards', ''];      // the farms there (linked from tETH, cBTC, the vault, the farm) are the whole page's
+    if (p.startsWith('/rewards/')) return ['rewards', ''];
     return null;
   };
   const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
@@ -205,11 +207,10 @@
     if (u.hash !== location.hash) history.replaceState(history.state, '', location.pathname + location.search + u.hash);
     return true;
   };
-  // A view opens the folds its page keeps shut that the view is for: the fast bridge's provider panel, the rewards page's points and its leaderboard.
-  // At once, so they are open at the first paint and nothing under them moves when they open (chrome.css holds the height each will fill to);
+  // A view opens the folds its page keeps shut that the view is for: the fast bridge's provider panel. At once, so it is open at the first paint;
   // once only, so a fold the holder shuts stays shut. The page's script fills a fold when it is told it opened, and may not have been listening
   // yet: once the page has loaded it is told again (each filler leaves a fold it has filled alone).
-  const FOLDS = { 'chains/fast': ['provide'], 'rewards/': ['earn', 'lb'] };
+  const FOLDS = { 'chains/fast': ['provide'] };
   const folds = (key) => {
     const mine = [];
     for (const id of FOLDS[key] || []) { const d = document.getElementById(id); if (d && !d.dataset.secOpen) { d.dataset.secOpen = '1'; if (!d.open) { d.open = true; mine.push(d); } } }
@@ -283,30 +284,7 @@
   for (const k of ['pushState', 'replaceState']) { const was = history[k]; history[k] = function (...args) { const r = was.apply(this, args); queueMicrotask(sync); return r; }; }
 })();
 
-// The skins. skin.js put the one in use on <html data-skin>; here the switch beside the menu shows it (on is Graphite, the default), a press
-// turns it at once and keeps the choice on this device, and another tab's change is followed. Graphite's glyph layer (glyphs.js) is drawn
-// while that skin is on, once the page is idle, and taken away when it is not; nothing is reloaded, so an open key stays open.
+// The glyph layer (glyphs.js), drawn once the page is idle. A page works the same without it, and a failure to load it is ignored.
 (() => {
-  const root = document.documentElement, KEY = 'tacit-skin';
-  let stop = null, loading = false;
-  const graphite = () => root.dataset.skin !== 'classic';
-  const glyphs = () => {
-    if (!graphite() && stop) { stop(); stop = null; }
-    if (graphite() && !stop && !loading) {
-      loading = true;
-      import('/glyphs.js').then((g) => { loading = false; if (graphite() && !stop) stop = g.start(); }, () => { loading = false; });
-    }
-  };
-  const mark = () => { for (const b of document.querySelectorAll('.skt')) { b.setAttribute('aria-checked', String(graphite())); b.title = graphite() ? 'Graphite look (turn off for Classic)' : 'Classic look (turn on for Graphite)'; } };
-  const use = (skin, keep) => {
-    skin = skin === 'classic' ? 'classic' : 'graphite';
-    if (keep) { try { localStorage.setItem(KEY, skin); } catch {} for (const b of document.querySelectorAll('.skt')) b.dataset.turned = '1'; }      // a press: the shine crosses it (chrome.css)
-    if (root.dataset.skin !== skin) { root.dataset.skin = skin; glyphs(); }
-    mark();
-  };
-  document.addEventListener('click', (e) => { if (e.target.closest?.('.skt')) use(graphite() ? 'classic' : 'graphite', true); });
-  addEventListener('storage', (e) => { if (e.key === KEY) use(e.newValue, false); });
-  if (!root.dataset.skin) { let skin = 'graphite'; try { if (localStorage.getItem(KEY) === 'classic') skin = 'classic'; } catch {} root.dataset.skin = skin; }
-  mark();
-  (window.requestIdleCallback || setTimeout)(glyphs);
+  (window.requestIdleCallback || setTimeout)(() => import('/glyphs.js').then((g) => g.start(), () => {}));
 })();

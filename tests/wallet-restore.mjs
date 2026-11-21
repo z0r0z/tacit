@@ -128,8 +128,8 @@ try {
       const h = document.querySelector('header'), chip = document.querySelector(chipSel), r = (e) => { const b = e.getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height }; };
       const group = [...h.children].find((e) => e.contains(chip)), rest = [...h.children].filter((e) => e !== group).map(r);
       // a header whose sections share the row with the chip (the app's six, .sn > a, on a phone in the bar at the foot instead): the group that grows
-      // is the run from the skin switch (or the menu button) to the end of the row, and the sections shown in the row are among what must not move
-      const secs = [...group.querySelectorAll('.sn > a')].filter((e) => e.offsetParent), from = group.querySelector('.sn > .skt') || group.querySelector('.sn > .sm');
+      // is the run from the menu button to the end of the row, and the sections shown in the row are among what must not move
+      const secs = [...group.querySelectorAll('.sn > a')].filter((e) => e.offsetParent), from = group.querySelector('.sn > .sm');
       if (group.querySelector('.sn > a') && from) {
         const a = from.getBoundingClientRect(), g = group.getBoundingClientRect();
         return { header: r(h), group: { x: a.x, y: g.y, w: g.right - a.x, h: g.height }, chip: r(chip), rest: [...rest, ...secs.map(r)] };

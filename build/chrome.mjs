@@ -1,7 +1,6 @@
 // The header's links and the footer, made once and stamped into every page that wears them (build.mjs calls this and
-// `--verify-only` fails when a page differs). The styles are dapp/chrome.css and the scripts dapp/skin.js, which puts the skin
-// picked with the header's switch on <html>, and dapp/chrome.js, which closes the menu and turns the switch; without them the menu
-// still opens and shuts, as a <details>, and the page is in Graphite, the default.
+// `--verify-only` fails when a page differs). The styles are dapp/chrome.css and the one script dapp/chrome.js, which closes the
+// menu, draws the sections' heads and the glyph layer; without it the menu still opens and shuts, as a <details>.
 //
 // A page marks where they go:
 //   <!-- chrome:nav:begin -->…<!-- chrome:nav:end -->     the page links, inside the header's .top-r, before the page's own chips
@@ -44,8 +43,6 @@ const G = {
   defi: '<path d="M7 7h10l-3-3"/><path d="M17 17H7l3 3"/>',
   chains: '<path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/>',
   menu: '<path d="M5 7h14M5 12h14M5 17h14"/>',
-  trade: '<path d="M4 4v16h16"/><path d="M7.5 15l3.500-4.500 3 2.500L19 7"/>',
-  classic: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   tasks: '<path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/>',
   build: '<path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/>',
   stats: '<path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/>',
@@ -75,10 +72,6 @@ const BAR = 4;   // how many of the sections the phone's bar holds before More; 
 
 const here = (key, k) => (key === k ? ' aria-current="page"' : '');
 
-// the skin switch, beside the menu: Graphite (on, the default) or Classic (off). skin.js marks it as the page is read; chrome.js turns it,
-// keeps the choice on the device and draws Graphite's glyphs
-const SKIN = `<button type="button" class="skt" role="switch" aria-checked="true" aria-label="Graphite look" title="Graphite look"><i aria-hidden="true"></i></button>`;
-
 export function navHtml(key) {
   const main = MAIN.map(([k, href, name]) => `<a href="${href}" title="${name}"${here(key, k)}>${svg(k)}<span>${name}</span></a>`).join('\n    ');
   const phone = MAIN.slice(BAR).map(([k, href, name]) => `<a class="pr" href="${href}"${here(key, k)}>${svg(k)}${name}</a>`).join('\n      ');
@@ -86,7 +79,6 @@ export function navHtml(key) {
   const inMenu = MORE.some(([k]) => k === key);
   return `<nav class="sn" aria-label="Sections">
     ${main}
-    ${SKIN}
     <details class="sm">
       <summary aria-label="More pages" title="More"${inMenu ? ' class="here"' : ''}>${svg('more')}</summary>
       <div class="sm-p">
@@ -133,7 +125,7 @@ export function footHtml(label = 'tacit.finance · mainnet', id = '') {
 const token = (dapp, file) => createHash('sha256').update(readFileSync(join(dapp, file))).digest('hex').slice(0, 8);
 // A stylesheet link is a request the first paint waits for, and it queues behind the page's preloads (fonts, modules).
 // `<!-- chrome:head:begin inline -->` puts the styles in the page instead, so the first paint needs the HTML alone.
-export const headHtml = (dapp, inline = false) => `${inline ? `<style>\n${readFileSync(join(dapp, 'chrome.css'), 'utf8').trim()}\n</style>` : `<link rel="stylesheet" href="/chrome.css?cb=${token(dapp, 'chrome.css')}">`}\n<script src="/skin.js?cb=${token(dapp, 'skin.js')}" async></script>\n<script src="/chrome.js?cb=${token(dapp, 'chrome.js')}" defer></script>`;
+export const headHtml = (dapp, inline = false) => `${inline ? `<style>\n${readFileSync(join(dapp, 'chrome.css'), 'utf8').trim()}\n</style>` : `<link rel="stylesheet" href="/chrome.css?cb=${token(dapp, 'chrome.css')}">`}\n<script src="/chrome.js?cb=${token(dapp, 'chrome.js')}" defer></script>`;
 
 // The pages that are a section's view by their path alone, and the view. The view's mark (<html data-sec>) and the section's head (the name, its
 // line, the tabs, the view's own line) are stamped into these, so the page is cut to the view and the head is there from the first paint:
@@ -145,7 +137,7 @@ export const SEC_PAGES = { 'farm/index.html': 'defi/farm', 'fast/index.html': 'c
 const secTable = (dapp) => {
   const m = /\n  const SEC = (\{\n[\s\S]*?\n  \});\n/.exec(readFileSync(join(dapp, 'chrome.js'), 'utf8'));
   if (!m) throw new Error('dapp/chrome.js should have its SEC table: update build/chrome.mjs');
-  return new Function(`return ${m[1]}`)();
+  return JSON.parse(m[1]);
 };
 const escHtml = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 // the head as chrome.js draws it (its sync())
