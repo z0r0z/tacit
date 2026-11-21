@@ -1,8 +1,8 @@
 // dapp/portfolio.js: the front page's "Your Tacit" rows sorted into the places the Portfolio sheet shows, TAC split into its private and
-// public part, a pool's liquidity counted once, and each group's worth.
+// public part, a pool's liquidity counted once, and each group's worth; and the same rows by asset, for the Portfolio page.
 //   node tests/portfolio.test.mjs
 import assert from 'node:assert/strict';
-import { portfolio, placeOf } from '../dapp/portfolio.js';
+import { portfolio, placeOf, byAsset } from '../dapp/portfolio.js';
 
 let pass = 0;
 const ok = (name, c) => { assert.ok(c, name); pass++; console.log('  ok  ' + name); };
@@ -91,5 +91,28 @@ ok('and the groups add up to what the rows were worth before they were grouped',
 }
 ok('a row the page adds later lands with the private or the public tokens by what it says of itself', placeOf({ key: 'new', meta: 'public' }) === 'public' && placeOf({ key: 'new', meta: 'private' }) === 'private' && placeOf({ key: 'devtok-dai', meta: 'x' }) === 'pay');
 ok('nothing held is no groups', portfolio([], {}).length === 0 && portfolio(null).length === 0);
+
+// by asset: the same rows turned the other way
+{
+  const KIND = { teth: 'eth', dev: 'eth', tethbtc: 'eth', devtac: 'tac', ctac: 'tac', tac: 'tac', btc: 'btc', cbtc: 'btc', tacbtc: 'btc', cusd: 'usd', cusdt: 'usd', 'devtok-usdc': 'usd', tacd: 'usd' };
+  const kind = (r) => r.kind || (r.key.startsWith('sats-') ? (r.label === 'TAC' ? 'tac' : 'btc') : KIND[r.key]);
+  const label = { teth: 'tETH', dev: 'ETH', tethbtc: 'tETH', devtac: 'TAC', ctac: 'TAC', tac: 'TAC', btc: 'BTC', cbtc: 'cBTC', tacbtc: 'tacBTC', cusd: 'cUSD', cusdt: 'USDT', 'devtok-usdc': 'USDC', tacd: 'TACD', 'sats-tac': 'TAC', 'btc-aaaa': 'RUNE' };
+  const named = portfolio(items.map((r) => ({ ...r, label: label[r.key] || r.label })), { usd, amount });
+  const pf = byAsset(named, { kind }), a = Object.fromEntries(pf.assets.map((x) => [x.name, x])), places = (x) => x.rows.map((r) => `${r.place}:${r.key}`).join();
+  ok('TAC is one asset wherever it is: private, on the Tacit chain, in the pay pool, public, on Bitcoin', places(a.TAC) === 'private:tac,private:ctac,pay:devtac,public:tacpub,bitcoin:sats-tac');
+  ok('ether is one asset however it is wrapped, and so is bitcoin', places(a.ETH) === 'private:teth,pay:dev,bitcoin:tethbtc' && places(a.BTC) === 'private:cbtc,public:tacbtc,bitcoin:btc');
+  ok('each dollar token is its own asset: two different dollars are never added together', a.cUSD.rows.length === 1 && a.USDT.rows.length === 1 && a.USDC.rows.length === 1 && a.TACD.rows.length === 1);
+  ok('a token the page does not price is its own asset too', a.RUNE.rows.length === 1 && a.RUNE.usd === null);
+  ok('every row says which place it is in, by name', a.TAC.rows.map((r) => r.placeName).join() === 'Private,Private,Pay pool,Public,On Bitcoin');
+  ok("an asset's amount is its rows' added up, whatever places each is kept to", a.ETH.v === 125n * E18 / 100n + 4n * E18 / 10n + 7n * E18 / 1000n && a.ETH.dec === 18 && a.ETH.max === 4);
+  ok('and it is worth its rows', Math.abs(a.ETH.usd - (1.25 + 0.4 + 0.007) * 3400) < 1e-6 && Math.abs(a.TAC.usd - (12000 + 1500 + 800) * 0.5) < 1e-6);
+  ok('the most valuable asset comes first, and what has no worth comes last', pf.assets[0].name === 'TAC' && pf.assets.at(-1).usd === null && pf.assets.findIndex((x) => x.usd === null) > pf.assets.findIndex((x) => x.name === 'cUSD'));
+  ok('liquidity, rewards and loans are not assets: they stand beside them', pf.positions.length === 3 && pf.earned.map((r) => r.key).join() === 'pts,farm,rtac,air' && pf.owed.length === 1 && !pf.assets.some((x) => x.rows.some((r) => /^(lp|pts|farm|air|loans)/.test(r.key))));
+  const all = pf.assets.reduce((n, x) => n + (x.usd ?? 0), 0), held = ['private', 'pay', 'public', 'bitcoin'].reduce((n, id) => n + g[id].usd, 0);
+  ok('the assets add up to what the places held', Math.abs(all - held) < 1e-6);
+  const reading = byAsset(portfolio([row('teth', null, { dec: 8, meta: 'private', core: true, label: 'tETH' }), row('dev', E18, { meta: 'private on this device', label: 'ETH' })], { usd, amount }), { kind });
+  ok('an asset with a place still being read has no amount yet', reading.assets.length === 1 && reading.assets[0].v === null && reading.assets[0].rows.length === 2);
+  ok('nothing held is no assets', byAsset([], {}).assets.length === 0 && byAsset(null).assets.length === 0);
+}
 
 console.log(`\n${pass} passed, 0 failed`);

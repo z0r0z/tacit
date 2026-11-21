@@ -201,16 +201,25 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
    and its brand, chips and spacing. Nothing here is a size the page has to agree with: the header's width is read from the header. */
 
 header.top { position: relative; z-index: 30; container: top / inline-size; }
+/* one header on every page, so moving between a section's views (some are the front page, some pages of their own) moves nothing: the same height,
+   and, where the sections are named, the same place for them whatever the page's label beside the mark */
+header.top { padding-top: 22px; padding-bottom: 8px; }
+@container top (min-width: 900px) { header.top .brand { min-width: 160px; } }
 header.top .top-r { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
 
-/* page links: six in the header (icons, then icons and names as the header gets wide), the rest in the menu; on a phone all of them are there */
-.sn { display: flex; align-items: center; gap: 2px; }
+/* the sections: six in the header, beside the mark (glyphs, then names as the header gets wide), every other page in the menu at the far end; on a phone
+   the sections are the bar at the foot of the window */
+header.top .top-r { flex: 1 1 auto; margin-left: 14px; }
+.sn { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; }
+header.top .sn > .sm { margin-left: auto; }
 .sn > a, .sn summary {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: none;
   height: 40px; min-width: 40px; padding: 0 9px; border-radius: 12px; color: var(--mute);
   font: 500 12.5px/1 var(--mono); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
   transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
+/* the look's own rules each sit under the rule they restyle, at the same weight */
+.sn > a, .sn summary { font: 400 14px/1 var(--sans, var(--mono)); }
 .sn summary::-webkit-details-marker { display: none; }
 /* the menu is a <details>: a page's own rules for details and summary (a border, a "+", a margin) are not for it */
 header.top .sm { margin: 0; padding: 0; border: 0; font: inherit; }
@@ -235,14 +244,17 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 @container top (min-width: 540px) { .sn .sm > summary > .bd { display: none; } }
 /* the Activity link chrome.js adds on a page without its own chip: at every width, once there is something in it, with the count still going */
 .sn > a.sa:not([hidden]) { display: inline-flex; }
+.sn > a.sa[hidden] { display: none; }
 .sn > a.sa .n { position: absolute; top: 3px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 8px; background: var(--orange); color: #fff; font: 600 10px/16px var(--mono); text-align: center; }
 @container top (min-width: 900px) {
-  .sn > a { padding: 0 13px 0 11px; }
+  .sn > a { padding: 0 13px; }
   .sn > a span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+  .sn > a:not(.sa) > svg { display: none; }      /* named, the sections need no glyph (Activity is a glyph alone) */
 }
 
 /* a very narrow header keeps the mark and the name; the page's label, and the Activity and total chips' room, go first */
 @container top (max-width: 340px) { header.top .brand i { display: none; } }
+@container top (max-width: 539px) { header.top .sn { flex-shrink: 0; } }      /* a phone: the chip shortens before the menu button beside it would run under it */
 
 /* the account chip (and, on the front page, Activity and the total): a quiet outline on the page's own ground, not a block; the dot says whether a wallet is open */
 header.top .chip {
@@ -251,11 +263,13 @@ header.top .chip {
   font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
+header.top .chip { background: var(--card, transparent); border-radius: 10px; font: 500 14px/1 var(--sans, var(--mono)); }
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
 header.top .chip .dot.on { background: var(--ok); }
 header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); }
 header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; }
+header.top .chip.act { background: transparent; }
 header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
 @media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
 header.top .chip:active { transform: scale(.97); }
@@ -273,6 +287,71 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
   header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
 }
 
+/* the phone's bar: the first four sections and More, fixed to the foot of the window; the footer keeps clear of it */
+.bn { display: none; }
+@media (max-width: 539px) {
+  .bn { position: fixed; z-index: 29; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(5, 1fr); padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+    background: color-mix(in srgb, var(--paper, var(--bg, #fff)) 92%, transparent); border-top: 1px solid var(--hair); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+  .bn a { display: grid; justify-items: center; gap: 3px; min-height: 44px; padding: 5px 2px 3px; border-radius: 12px; color: var(--mute); font: 500 10.5px/1.1 var(--mono); text-decoration: none; -webkit-tap-highlight-color: transparent; }
+  .bn a svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .bn a[aria-current="page"] { color: var(--ink); background: var(--hair); }
+  .bn a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+  footer.sf { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
+  /* what a page pins to the foot of the window stands on the bar (57 px: its padding and a 44 px row), not under it: the buy bar of cBTC, tETH and
+     TAC's market (.stick), and the card's button row, sticky at the foot of a long card */
+  .stick:not([hidden]) { bottom: calc(57px + env(safe-area-inset-bottom)); }
+  body:has(.stick) footer.sf { margin-bottom: calc(137px + env(safe-area-inset-bottom)); }
+  .swc .act { bottom: calc(57px + env(safe-area-inset-bottom)); }
+}
+
+/* a section's head (chrome.js): its name and line, centred, and its views as a row of tabs with the one shown raised */
+.sh { margin: 28px auto 18px; text-align: center; }
+.sh h1 { margin: 0; font: 400 clamp(40px, 6vw, 56px)/1 var(--serif, Georgia, serif); letter-spacing: -.02em; color: var(--ink); }
+.sh h1:focus { outline: none; }
+.sh p { margin: 8px auto 0; max-width: 46em; color: var(--mute); font: 400 13.5px/1.5 var(--mono); }
+.sh-t { display: inline-grid; grid-auto-flow: column; grid-auto-columns: minmax(96px, 1fr); gap: 2px; margin: 18px auto 0; padding: 3px; max-width: 100%; border-radius: 15px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.sh-t a { display: flex; align-items: center; justify-content: center; min-height: 38px; padding: 6px 16px; border-radius: 12px; color: var(--mute); font: 500 13px/1.2 var(--mono); text-decoration: none; white-space: nowrap; transition: background-color .15s, color .15s; }
+.sh-t a[aria-current="page"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
+.sh-t a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+/* the pill under the current tab: chrome.js places it and, between two views of one document, slides it; unplaced, the tab wears it itself */
+.sh-t { position: relative; }
+.sh-t a { position: relative; }
+.sh-t .sh-i { position: absolute; top: 3px; bottom: 3px; left: 0; width: 0; border-radius: 12px; background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); pointer-events: none; transition: transform .24s cubic-bezier(.2,.7,.2,1), width .24s cubic-bezier(.2,.7,.2,1); }
+.sh-t.pill a[aria-current="page"] { background: none; box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { .sh-t .sh-i { transition: none; } }
+.sh p.sh-n { margin-top: 14px; max-width: 52em; font-size: 12.5px; color: var(--faint, var(--mute)); min-height: 1.5em; }
+.sh.sh-l { max-width: 560px; text-align: left; } .sh.sh-l .sh-more { margin-top: 18px; }
+@media (hover: hover) { .sh-t a:hover { color: var(--ink); } }
+@media (max-width: 520px) { .sh { margin-top: 18px; } .sh-t { display: grid; grid-auto-columns: 1fr; } .sh-t a { padding: 6px 6px; font-size: 12px; } }
+.sh-more { list-style: none; margin: 22px auto 0; padding: 4px 18px; max-width: 560px; text-align: left; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
+.sh-more li + li { border-top: 1px solid var(--hair); }
+.sh-more a { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 2px 14px; padding: 14px 2px; color: var(--ink); font: 400 14px/1.3 var(--mono); text-decoration: none; }
+.sh-more a svg { grid-column: 1; grid-row: 1 / span 2; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; color: var(--mute); } .sh-more a svg.fill { fill: currentColor; stroke: none; }
+.sh-more a b { grid-column: 2; font-weight: 500; } .sh-more a small { grid-column: 2; font-size: 12px; color: var(--mute); } .sh-more a i { grid-column: 3; grid-row: 1 / span 2; font-style: normal; color: var(--mute); }
+/* in Graphite the sections' words are set in the grotesk, as the header's are; a page that has no --sans keeps its own face */
+.sh p, .sh-t a, .sh-more a, .bn a { font-family: var(--sans, var(--mono)); }
+.sh-t { border-radius: 10px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); }
+.sh-t a { border-radius: 8px; }
+.sh-t a[aria-current="page"] { background: var(--raise, var(--card)); }
+.sh-t .sh-i { border-radius: 8px; background: var(--raise, var(--card)); }
+/* each page of its own, as the view of its section: its own heading (and the switch the section's tabs now are) gives way to the section's head; everything
+   else the page has stays, its notes, explainers and status lines included, and what belongs to the other view is out of the way */
+/* (the vault is stamped with its section alone, data-sec="borrow", until chrome.js names the side from the address; the page's own rules already keep
+   each side's blocks to that side from the first paint) */
+html[data-sec^="borrow"] .hero :is(h1, nav.via, .sub) { display: none !important; }
+html[data-sec^="borrow"] .hero { padding-top: 0; text-align: center; }      /* what the hero still holds (the explainer, a promo line) sits under the head */
+html[data-sec^="borrow"] .hero .how { margin-inline: auto; text-align: left; } html[data-sec^="borrow"] .hero .how summary { margin-inline: auto; }      /* (opened, it reads left to right) */
+html[data-sec="borrow/btc"] :is(#app, #how), html[data-sec="borrow/tac"] .btc-side { display: none !important; }
+:root:has(#pools:target) #sec-head { display: none; }
+/* opened on #btc, the head stamped for the first view shows the Bitcoin tab as the current one until chrome.js has said so (as the page's own switch does) */
+:root:has(#btc:target) .sh-t:not(.pill) a[data-side="tac"] { color: var(--mute); background: none; box-shadow: none; }
+:root:has(#btc:target) .sh-t:not(.pill) a[data-side="btc"] { color: var(--ink); background: var(--raise, var(--card)); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }      /* /vault/#pools is the whole page (chrome.js takes the head away) */
+html[data-sec="chains/fast"] .hero :is(h1, .sub) { display: none !important; }
+html[data-sec="chains/fast"] .hero { padding: 0; }      /* (its status line, when it shows, keeps its own margin) */
+html[data-sec="defi/farm"] .hero :is(#farm-h1, .lede) { display: none !important; }
+html[data-sec="rewards/"] #find-h { display: none !important; }
+
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
   position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
@@ -283,6 +362,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 .sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
+.sm-p a { font: 400 14px/1 var(--sans, var(--mono)); }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
 .sm-p a[aria-current="page"] { background: var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
@@ -290,6 +370,13 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
 @media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
+/* The glyph layer (glyphs.js). The field is fixed behind a page, so it is there wherever the page is scrolled to. It is behind everything, so a
+   page's ground has to be on <html> for it to be seen: <body> keeps its own pattern and gives up only its colour. The menu's panel has Tacit's mark struck
+   across its foot. Neither is there on a page the script leaves alone, or when the script does not load. */
+canvas.gx-field { position: fixed; top: 0; left: 0; z-index: -1; max-width: 100%; pointer-events: none; }
+:root:has(> body > canvas.gx-field) { background-color: var(--paper, var(--bg)); }
+:root:has(> body > canvas.gx-field) > body { background-color: transparent; }
+.sm-p canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .24; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .sm-p { animation: none; } .sn > a, .sn summary, header.top .chip { transition: none; } }
 
 /* a page with little on it still reaches the bottom of the window, so its footer is not left floating under a few lines (a page that sets a height for its own <main> keeps it) */
@@ -299,6 +386,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
    places that have a mark of their own are that mark; in a narrow one every place is an icon that says its name on hover and to a screen reader (they narrow a little on a small
    phone before they would run off the page) */
 footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
+footer.sf { font: 400 13px/1.4 var(--sans, var(--mono)); }
 footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
 footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); text-decoration: none; transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
 footer.sf nav a:active { transform: scale(.92); }
@@ -316,10 +404,37 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
 /* what only one page has to point at (papers, the pool on each chain): a quiet line above the footer */
 .sf-x { display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; margin-top: 48px; color: var(--mute); font: 400 12px/1.4 var(--mono); }
+.sf-x { font: 400 13px/1.4 var(--sans, var(--mono)); }
 .sf-x + footer.sf { margin-top: 12px; }
 .sf-x span { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
 .sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
 @media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
+
+/* Graphite's palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
+   its head, so the one block recolours them all and a page's own styles are untouched. The values are the front page's (index.html keeps them with the rest of its
+   tokens). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and are left out: the SPX page, by
+   its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the build gives it. */
+:root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
+  --paper: #E6E6E4; --bg: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --ink: #17181B; --mute: #5C5D62;
+  --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24); --hair-strong: rgba(23,24,27,.24); --skel: rgba(23,24,27,.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
+    --paper: #131417; --bg: #131417; --card: #1A1B1F; --field: #15161A; --ink: #E4E4E1; --mute: #9A9BA1;
+    --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22); --hair-strong: rgba(228,228,225,.22); --skel: rgba(228,228,225,.07);
+  }
+}
+
+/* Graphite's grotesk, for the header, the menu and the footer of every page that wears them (the front page names it in its own head as well, for its first paint), and a
+   local face scaled to its width and line metrics that shows until it arrives; the same for Newsreader, the front page's serif. Measured against each font's own
+   advances. */
+@font-face { font-family: 'Schibsted Grotesk'; font-weight: 400 600; font-display: swap; src: url('/fonts/schibsted-grotesk-latin.woff2') format('woff2'); }
+:root { --sans: 'Schibsted Grotesk', 'Schibsted Grotesk Fallback', system-ui, sans-serif; }
+@font-face { font-family: 'Schibsted Grotesk Fallback'; src: local('Arial'), local('Helvetica'), local('Liberation Sans'), local('Arimo'); size-adjust: 103.5%; ascent-override: 94.7%; descent-override: 25.1%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback'; src: local('Georgia'); size-adjust: 96.1%; ascent-override: 77%; descent-override: 27.1%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback'; font-style: italic; src: local('Georgia Italic'), local('Georgia-Italic'); size-adjust: 89.1%; ascent-override: 83.1%; descent-override: 29.2%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback T'; src: local('Times New Roman'), local('TimesNewRomanPSMT'), local('Liberation Serif'), local('Tinos'); size-adjust: 105%; ascent-override: 70.5%; descent-override: 24.8%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 98.9%; ascent-override: 74.8%; descent-override: 26.3%; line-gap-override: 0%; }
 
 /* A serif scaled to Instrument Serif's width and line metrics (Georgia, Times or Noto Serif, whichever the device has) shows until the font arrives, so the swap moves nothing */
 @font-face { font-family: 'Instrument Serif Fallback'; src: local('Georgia'); size-adjust: 75.8%; ascent-override: 130.6%; descent-override: 40.9%; line-gap-override: 0%; }
@@ -329,7 +444,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=3cafe52f" defer></script>
+<script src="/chrome.js?cb=1b2d7806" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>
@@ -346,26 +461,26 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <a class="brand" href="/" aria-label="tacit shop"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>shop</i></a>
     <div class="top-r">
       <!-- chrome:nav:begin -->
-      <nav class="sn" aria-label="Pages">
-          <a href="/assets/" title="Assets"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg><span>Assets</span></a>
-          <a href="/farm/" title="Farm"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 14.2A4.2 4.2 0 0 1 7.8 6.1a4.6 4.6 0 0 1 8.4 0 4.2 4.2 0 0 1 1.3 8.1"/><path d="M6.5 14.2V19a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-4.8"/><path d="M6.5 16.8h11"/></svg><span>Farm</span></a>
+      <nav class="sn" aria-label="Sections">
+          <a href="/#portfolio" title="Portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg><span>Portfolio</span></a>
+          <a href="/#/payments" title="Payments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Payments</span></a>
+          <a href="/#/defi" title="DeFi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10l-3-3"/><path d="M17 17H7l3 3"/></svg><span>DeFi</span></a>
+          <a href="/#/chains" title="Chains"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Chains</span></a>
+          <a href="/vault/" title="Borrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg><span>Borrow</span></a>
           <a href="/rewards/" title="Rewards"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg><span>Rewards</span></a>
-          <a href="/prove/" title="Prove"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg><span>Prove</span></a>
           <details class="sm">
             <summary aria-label="More pages" title="More" class="here"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.7"/></svg></summary>
             <div class="sm-p">
-            <a class="pr" href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
-            <a class="pr" href="/farm/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 14.2A4.2 4.2 0 0 1 7.8 6.1a4.6 4.6 0 0 1 8.4 0 4.2 4.2 0 0 1 1.3 8.1"/><path d="M6.5 14.2V19a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-4.8"/><path d="M6.5 16.8h11"/></svg>Farm</a>
+            <a class="pr" href="/vault/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg>Borrow</a>
             <a class="pr" href="/rewards/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg>Rewards</a>
-            <a class="pr" href="/prove/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Prove</a>
             <hr class="pr">
-            <a href="/#portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg>Portfolio</a>
-            <a href="/pay/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg>Pay</a>
-            <a href="/vault/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg>Borrow</a>
-            <a href="/bridge/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
+            <a href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
             <a href="/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>TAC</a>
+            <a href="/pay/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg>Pay pool</a>
+            <a href="/bridge/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
             <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
             <a href="/shop/" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 4h11L21 9l-9 11L3 9z"/><path d="M3 9h18"/><path d="M9.5 4L8 9l4 11 4-11-1.5-5"/></svg>Shop</a>
+            <a href="/prove/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Prove</a>
             <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
             <a href="/face/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 20V10a6 6 0 0 1 12 0v10l-2-2-2 2-2-2-2 2-2-2z"/><path d="M9.5 11.5h1M13.5 11.5h1"/></svg>FACE</a>
             </div>
@@ -405,6 +520,13 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <a href="https://discord.gg/VxYx9XSBrM" title="Tacit Discord community" aria-label="Tacit Discord community" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></svg></a>
     </nav>
   </footer>
+  <nav class="bn" aria-label="Sections">
+    <a href="/#portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg><span>Portfolio</span></a>
+    <a href="/#/payments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Payments</span></a>
+    <a href="/#/defi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10l-3-3"/><path d="M17 17H7l3 3"/></svg><span>DeFi</span></a>
+    <a href="/#/chains"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Chains</span></a>
+    <a href="/#/menu" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg><span>More</span></a>
+  </nav>
   <!-- chrome:foot:end -->
 </div>
 <script type="module" src="/shop/app.js?cb=c1da811c"></script>

@@ -67,46 +67,49 @@ async function visit(utxos) {
   await page.fill('#ws-hex', KEY);
   await page.click('#ws-in [data-in="key"]');
   await page.waitForFunction(() => (document.querySelector('#wd-id')?.textContent || '').length > 12, null, { timeout: 30000 });
-  // Refresh in the Wallet sheet reads the Bitcoin address again and repaints the tiles (the Ethereum reads here are refused, so nothing else would)
-  await page.click('#wallet');
-  await page.waitForSelector('#wbal-re:not([disabled])', { timeout: 30000 });
-  await page.click('#wbal-re');
-  await page.waitForFunction(() => !document.querySelector('#wbal-re')?.disabled, null, { timeout: 60000 }).catch(() => {});
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.querySelector('dialog.sheet[open]'), null, { timeout: 10000 }).catch(() => {});
+  // the Portfolio page, and its Refresh, which reads the Bitcoin address again and repaints (the Ethereum reads here are refused, so nothing else would)
   await page.click('#dash-go button.all');
-  await page.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 20000 });
+  await page.waitForSelector('html[data-view="portfolio"] #ppg-body .ppg-card', { timeout: 20000 });
+  await page.click('#ppg-re');
+  await page.waitForFunction(() => !document.querySelector('#ppg-re')?.disabled, null, { timeout: 60000 }).catch(() => {});
   return { ctx, page, errors };
 }
-const tile = (id) => `#dash-g [data-btc-asset="${id}"]`, btcTile = '#dash-g [data-dash-open="btc"]:not([data-btc-asset])';
-const tiles = (page) => page.$$eval('#dash-g .wb-go', (es) => es.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
-const groupOf = (page, sel) => page.$eval(sel, (e) => e.closest('ul')?.previousElementSibling?.querySelector('span')?.textContent.trim() || '').catch(() => '');
+// The page lists what is held by asset; an asset opens to a row for each place it is in (one asset open at a time; a shut asset's rows are in the
+// page too, hidden, so #dash-g always holds every row). A row for something held on Bitcoin carries its asset id; BTC's own row does not.
+const asset = (a) => `#ppg-body [data-pf-open="${a}"]`, tile = (id) => `#ppg-body .ppg-more:not([hidden]) [data-btc-asset="${id}"]`, btcTile = '#ppg-body .ppg-more:not([hidden]) [data-dash-open="btc"]:not([data-btc-asset])';
+const assets = (page) => page.$$eval('#ppg-body [data-pf-open]', (es) => es.map((e) => `${e.dataset.pfOpen}: ${e.textContent.replace(/\s+/g, ' ').trim()}`));
+const open = async (page, a) => { if ((await page.getAttribute(asset(a), 'aria-expanded').catch(() => null)) === 'false') await page.click(asset(a)); };
+const tagsOf = (page, a) => page.$$eval(`${asset(a)} .ppg-tag`, (es) => es.map((e) => e.textContent.replace(/\s+/g, ' ').trim())).catch(() => []);
 
 try {
   // a key whose Bitcoin address holds some BTC, TAC, tETH and FAIR
   {
     const { ctx, page, errors } = await visit(COIN);
     const text = (sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim());
-    await page.waitForSelector(tile(TAC), { timeout: 60000 }).catch(() => {});
-    if (process.env.DEBUG) console.log(await tiles(page));
-    ok(!!(await page.$(tile(TAC))), 'TAC held on Bitcoin has a row of its own');
+    await page.waitForFunction(() => /6,388,437\.49/.test(document.querySelector('#ppg-body [data-pf-open="tac"]')?.textContent || ''), null, { timeout: 60000 }).catch(() => {});
+    if (process.env.DEBUG) console.log(await assets(page));
+    const tacTags = await tagsOf(page, 'tac');
+    ok(tacTags.some((t) => /6,388,437\.49 On Bitcoin/.test(t)), `TAC held on Bitcoin is one of TAC's places, said in full on its asset: ${tacTags.join(' | ')}`);
+    await open(page, 'tac');
+    ok(!!(await page.$(tile(TAC))), 'and it has a row of its own when TAC is opened');
     if (await page.$(tile(TAC))) {
-      const t = await text(tile(TAC)), g = await groupOf(page, tile(TAC));
-      ok(/TAC/.test(t) && /6,388,437\.49/.test(t) && g === 'On Bitcoin', `and it says how much, in full, under where it is held: ${g} | ${t}`);
+      const t = await text(tile(TAC));
+      ok(/TAC/.test(t) && /6,388,437\.49/.test(t) && /On Bitcoin/.test(t), `which says how much, in full, and where it is held: ${t}`);
     }
-    ok(!!(await page.$(tile(TETH))) && /tETH.*1\.5/.test(await text(tile(TETH)).catch(() => '')), 'tETH held on Bitcoin has one too');
-    ok(!!(await page.$(tile(FAIR))) && /FAIR.*300/.test(await text(tile(FAIR)).catch(() => '')), 'FAIR, a token the page has not met, still has its own');
-    const b = await text(btcTile).catch(() => '');
+    await open(page, 'eth');
+    ok(!!(await page.$(tile(TETH))) && /tETH.*1\.5/.test(await text(tile(TETH)).catch(() => '')) && (await tagsOf(page, 'eth')).some((t) => /1\.5 On Bitcoin/.test(t)), 'tETH held on Bitcoin has one too, under ETH');
+    const fair = (await assets(page)).find((a) => /FAIR/.test(a))?.split(': ')[0] ?? '';
+    if (fair) await open(page, fair);
+    ok(!!fair && !!(await page.$(tile(FAIR))) && /FAIR.*300/.test(await text(tile(FAIR)).catch(() => '')), `FAIR, a token the page has not met, still has its own asset and row (${fair})`);
+    await open(page, 'btc');
+    const b = await text(btcTile).catch(() => ''), under = await page.$$eval('#ppg-body .ppg-more:not([hidden]) .wb-go', (es) => es.length);
     ok(/BTC/.test(b) && /0\.0025/.test(b) && /at your Bitcoin address/.test(b) && !/TAC|tETH/.test(b), `the BTC row is BTC alone: ${b}`);
-    const order = await page.evaluate(([a, c, d]) => {
-      const q = (s) => document.querySelector(s), before = (x, y) => !!(x && y && x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING);
-      return before(q(c), q(a)) && before(q(c), q(d));
-    }, [tile(TAC), btcTile, tile(TETH)]);
-    ok(order, 'the rows for what is on Bitcoin come after BTC');
-    // the Wallet sheet lists the same TAC, once
-    await page.keyboard.press('Escape');
-    await page.waitForFunction(() => !document.querySelector('dialog.sheet[open]'), null, { timeout: 10000 }).catch(() => {});
+    ok(under === 1 && !(await page.$(tile(TAC))), 'and nothing else that is on Bitcoin is listed under BTC: each is under its own asset');
+    // the Wallet sheet lists the same TAC, once (with a key open the chip is a menu: its first entry is the wallet)
     await page.click('#wallet');
+    await page.click('#acct-pop [data-acct="wallet"]');
     await page.waitForSelector('#wbal-box', { timeout: 20000 });
     await page.waitForFunction(() => /6,388,437\.49/.test(document.querySelector('#wbal-box')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
     const rows = await page.$$eval('#wbal-box li', (es) => es.map((e) => e.textContent.replace(/\s+/g, ' ').trim()).filter((t) => /TAC/.test(t) && /6,388,437\.49/.test(t)));
@@ -117,9 +120,10 @@ try {
   // a key whose Bitcoin address holds no coin, only TAC: the TAC tile is there and a BTC tile of 0 is not
   {
     const { ctx, page } = await visit([]);
-    await page.waitForSelector(tile(TAC), { timeout: 60000 }).catch(() => {});
-    if (process.env.DEBUG) console.log(await tiles(page));
-    ok(!!(await page.$(tile(TAC))) && !(await page.$(btcTile)), 'with no coin on the address the TAC row shows and a BTC row of nothing does not');
+    await page.waitForFunction(() => /6,388,437\.49/.test(document.querySelector('#ppg-body [data-pf-open="tac"]')?.textContent || ''), null, { timeout: 60000 }).catch(() => {});
+    if (process.env.DEBUG) console.log(await assets(page));
+    await open(page, 'tac');
+    ok(!!(await page.$(tile(TAC))) && !(await page.$(asset('btc'))), 'with no coin on the address the TAC row shows and BTC, with nothing, is not an asset there');
     await ctx.close();
   }
 } finally {

@@ -137,7 +137,9 @@ try {
   {
     const { page, bad, shot } = await visit(`/fast/?lp=${encodeURIComponent(lp.base)}&claimPub=${claimPub}`);
     await page.waitForFunction(() => /fee/.test(document.getElementById('fx-lp')?.textContent || ''), null, { timeout: 15000 });
-    ok((await page.title()) === 'tacit fast' && /^Bridge in minutes/.test(await text(page, 'h1')), 'the page is "tacit fast", headed "Bridge in minutes"');
+    // its own heading, under a header of sections the Chains section's head (#sec-head) over it with the Fast bridge tab marked
+    const own = await page.evaluate(() => document.querySelector('.hero h1')?.textContent.trim() || ''), sec = await page.evaluate(() => document.querySelector('#sec-head') ? `${document.querySelector('#sec-head h1')?.textContent}|${document.querySelector('#sec-head .sh-t a[aria-current="page"]')?.textContent}` : '');
+    ok((await page.title()) === 'tacit fast' && /^Bridge in minutes/.test(own) && (!sec || sec === 'Chains|Fast bridge'), `the page is "tacit fast", headed "Bridge in minutes"${sec ? ' (under Chains, its Fast bridge tab marked)' : ''}`);
     ok(await page.$eval('#fx-alt a', (a) => a.getAttribute('href') === '/#card=bridge'), 'the regular bridge is linked from the card');
     ok(await page.$eval('#provide', (e) => !e.hidden) && (await text(page, '#pv-go')) === 'Open wallet', 'anyone who comes by finds the provider panel, with a way to open the wallet');
     ok(/0\.30% \+ 0\.000002 TAC fee/.test(await text(page, '#fx-lp')), `the provider's fee is shown (${await text(page, '#fx-lp')})`);
@@ -257,7 +259,7 @@ try {
     await shot('fast-ready-bound');
     // the provider panel: shown once a key is open, read when opened, started with a fee and a size, stopped
     ok(!(await page.$eval('#provide', (e) => e.hidden)), 'the provider panel shows once a key is open');
-    await page.click('#provide > summary');
+    if (!(await page.$eval('#provide', (e) => e.open))) await page.click('#provide > summary');      // (the Chains section's view of this page opens the panel itself)
     await page.waitForFunction(() => /Your private TAC/.test(document.getElementById('pv-inv').textContent), null, { timeout: 5000 });
     ok(/4,200 TAC/.test(await text(page, '#pv-inv')) && (await page.inputValue('#pv-fee')) === '0.30' && (await page.inputValue('#pv-most')) === '1000', `the panel reads the key (${await text(page, '#pv-inv')})`);
     await page.fill('#pv-fee', '0.25'); await page.fill('#pv-most', '500');

@@ -71,14 +71,14 @@ try {
 
   await page.goto(BASE + '/', { waitUntil: 'commit' });
   await page.waitForSelector('#wallet', { timeout: 30000 });
-  await page.click('#wallet');
+  await page.click('#wallet'); if (await page.$('#acct-pop:not([hidden])')) await page.click('#acct-pop [data-acct="wallet"]');      // (with a key open the chip is the account's menu, and the wallet sheet its first entry)
   await page.waitForSelector('#ws-in', { timeout: 15000 });
   await page.click('#ws-in .more-in summary');
   await page.click('#ws-in [data-in="paste"]');
   await page.fill('#ws-hex', KEY);
   await page.click('#ws-in [data-in="key"]');
   await page.waitForFunction(() => (document.querySelector('#wd-id')?.textContent || '').length > 12, null, { timeout: 30000 });
-  await page.click('#wallet');
+  await page.click('#wallet'); if (await page.$('#acct-pop:not([hidden])')) await page.click('#acct-pop [data-acct="wallet"]');
   await page.waitForSelector('#w-own', { timeout: 20000 });
 
   const text = (sel) => page.$eval(sel, (e) => e.textContent.trim());
@@ -131,7 +131,7 @@ try {
   // it stops answering while the setting is on
   own.mode = 'down';
   await page.keyboard.press('Escape');
-  await page.click('#wallet');
+  await page.click('#wallet'); if (await page.$('#acct-pop:not([hidden])')) await page.click('#acct-pop [data-acct="wallet"]');
   await page.waitForFunction(() => /Nothing answered/.test(document.querySelector('#w-own-say')?.textContent || ''), null, { timeout: 20000 });
   ok(/Public nodes are used meanwhile\.$/.test(await text('#w-own-say')) && (await rowText()) === 'Yours, then public ones', 'down while on: the sheet says the public nodes are in use, and the setting stays on');
 
@@ -151,7 +151,7 @@ try {
 
   // off
   await page.keyboard.press('Escape');
-  await page.click('#wallet');
+  await page.click('#wallet'); if (await page.$('#acct-pop:not([hidden])')) await page.click('#acct-pop [data-acct="wallet"]');
   await page.waitForSelector('#w-own', { timeout: 20000 });
   await page.click('#w-own');
   await page.waitForFunction(() => document.querySelector('#w-own')?.textContent.trim() === 'use my own node', null, { timeout: 20000 });

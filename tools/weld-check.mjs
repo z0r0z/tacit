@@ -567,8 +567,13 @@ const flowFeed = () => { const t = Math.floor(Date.now() / 1000), ago = (x) => t
   events: { attests: [ago(70000), ago(30000), ago(900)], settles: [ago(50000), ago(3000)], deposits: [ago(20000)], tacOut: [ago(10000), ago(9000)], tacIn: [ago(5000)] } }; };
 const until = (page, fn, arg, timeout = 60000) => page.waitForFunction(fn, arg, { timeout });
 const go = (p, h) => p.evaluate((x) => { location.hash = ''; location.hash = x; }, h);
-// The Portfolio sheet, open: its rows (#dash-g) are kept current while it is closed, and are pressed with it open.
-const port = async (p) => { if (!(await p.$('#sheet-portfolio[open]'))) await go(p, '#portfolio'); await p.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 30000 }); };
+// The Portfolio page, open: its rows (#dash-g) are kept current while it is closed (an asset's rows are in it whether the asset is open or shut), and
+// are pressed with the page open: a row of a shut asset once its asset is opened (portPress).
+const PF_PAGE = 'html[data-view="portfolio"] #dash-g';
+// "Paste a key" is under the wallet sheet's "Other ways to sign in": that is opened, then the way pressed.
+const pasteWay = async (p, root) => { await p.waitForSelector(`${root} [data-in="paste"]`, { state: 'attached', timeout: 60000 }); await p.evaluate(() => document.querySelectorAll('details.more-in').forEach((d) => { d.open = true; })); await p.click(`${root} [data-in="paste"]`); };
+const port = async (p) => { if (!(await p.$(PF_PAGE))) await go(p, '#portfolio'); await p.waitForSelector(PF_PAGE, { timeout: 30000 }); };
+const portPress = async (p, sel) => { await port(p); await p.evaluate((s) => { const more = document.querySelector(s)?.closest('.ppg-more'); if (more?.hidden) more.previousElementSibling.click(); }, sel); await p.click(sel); };
 // a tab of the card: Bridge and Borrow sit under its More tab, which is opened first when they are not shown
 // a route row of the card: Earn shows only the farm it picked until its Change opens the others
 const rowClick = async (page, sel) => { const c = await page.$('#hx-routes .chg'); if (c && !(await page.isVisible(sel))) await c.click(); await page.click(sel); };
@@ -1719,7 +1724,7 @@ await step('devtacacct', async () => {
   const nonce = async () => BigInt(await rpc('eth_getTransactionCount', [want, 'latest']));
   try {
     await p.goto(r.url + '#wallet');
-    await p.click('#wallet-body [data-in="paste"]');
+    await pasteWay(p, '#wallet-body');
     await p.fill('#ws-hex', hex);
     await p.click('#wallet-body [data-in="key"]');
     await until(p, () => !!document.querySelector('#wallet-dot.on'));
@@ -1938,8 +1943,7 @@ await step('hxborrowback', async () => {
     ok(!(await p.$('[data-hxm="borrow"][data-due]')), `hxborrowback: and the tab does not call for it (${await p.$eval('#hx-bw', (e) => e.textContent.replace(/\s+/g, ' ').slice(0, 160))})`);
     await p.click('[data-hxm="swap"]');
     await until(p, () => !!document.querySelector('#dash-g [data-dash-open="borrow"]'), null, 120000);
-    await port(p);
-    await p.click('#dash-g [data-dash-open="borrow"]');
+    await portPress(p, '#dash-g [data-dash-open="borrow"]');
     await until(p, () => document.querySelector('[data-hxm="borrow"]')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#hx-bw'), null, 60000);
     ok(!(await p.$('dialog.sheet[open]')), "hxborrowback: the dashboard's cBTC opens the card's Borrow tab, where the lock is followed");
     if (r.errors.length) { fails++; console.log('FAIL hxborrowback page errors: ' + r.errors.slice(0, 3).join(' | ')); }
@@ -2133,7 +2137,7 @@ await step('locks', async () => {
   const body = () => r.page.evaluate(() => (document.querySelector('#borrow-body')?.textContent || '').replace(/\s+/g, ' '));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -2193,7 +2197,7 @@ await step('redeem', async () => {
     }
     await r.ctx.route((u) => /\/address\/bc1p[0-9a-z]+\/utxo$/.test(u.pathname), (route) => json(route, []));   // nothing bridged to this key's Taproot address
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -2351,7 +2355,7 @@ await step('redeemgo', async () => {
     const big = (v) => ({ __big: String(v) });
     await r.page.evaluate(([k, v]) => localStorage.setItem(k, v), [`tacit-crossout-bridge-v1:mainnet:${pub}`, JSON.stringify([{ id: NU, network: 'mainnet', walletPub: pub, stage: 'minted', createdAt: Date.now() - 36e5, destXonly: XONLY.slice(2),
       source: { nullifier: NU, value: big(AMOUNT + 2000n), amount: big(AMOUNT), fee: big(2000), assetId: CBTC, ticker: 'cBTC' }, settle: { txHash: 'e1'.repeat(32), claimId: CLAIM, cx: NOTE.cx, cy: NOTE.cy, ethBlock: 26000000, claimIdVerified: true } }])]);
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -2459,7 +2463,7 @@ await step('repay', async () => {
   const hex = 'be11'.padEnd(64, '7'), pub = Buffer.from(secp.getPublicKey(hex, true)).toString('hex');
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -2521,7 +2525,7 @@ await step('csend', async () => {
     }` }));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -2566,7 +2570,7 @@ await step('shield', async () => {
   const r = await openPage({ account: A0, key: K0 });
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -2610,7 +2614,7 @@ await step('shieldwallet', async () => {
   // Opens the TAC sheet with this key open and the wallet paying, on a tab that shows the balance.
   const open = async (r, hex) => {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -2710,7 +2714,7 @@ await step('farmjoin', async () => {
     }` }));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -2774,7 +2778,7 @@ await step('tacsend', async () => {
     }` }));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -2829,7 +2833,7 @@ await step('selfexit', async () => {
     }` }));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -2896,7 +2900,7 @@ await step('selfmore', async () => {
         return ux;
       }` }));
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -2997,7 +3001,7 @@ await step('selflocks', async () => {
     }` }));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -3072,7 +3076,7 @@ await step('selfsplit', async () => {
     }` }));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -3125,7 +3129,7 @@ await step('makepub', async () => {
     }` }));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -3171,7 +3175,7 @@ await step('keys', async () => {
   ok((await shown(r.page)).includes(addr), 'keys: continuing reopens the same tacit1 address');
   await lock(r.page);
   const hex = 'c0ffee'.padEnd(64, '1');
-  await r.page.click('#wallet-body [data-in="paste"]');
+  await pasteWay(r.page, '#wallet-body');
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -3295,7 +3299,7 @@ await step('acct', async () => {
   const hex = 'feed'.padEnd(64, '3');
   const want = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }).deriveEvmAccount(Buffer.from(hex, 'hex'), 'mainnet').address;
   await r.page.goto(r.url + '#wallet');
-  await r.page.click('#wallet-body [data-in="paste"]');
+  await pasteWay(r.page, '#wallet-body');
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -3446,7 +3450,7 @@ await step('btc', async () => {
   const r = await openPage({ account: A0, key: K0 });
   const hex = 'b17c'.padEnd(64, '5');
   await r.page.goto(r.url + '#wallet');
-  await r.page.click('#wallet-body [data-in="paste"]');
+  await pasteWay(r.page, '#wallet-body');
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -3539,8 +3543,7 @@ await step('btc', async () => {
   ok(!(await r.page.$(`#dash-g [data-btc-asset="${TAC}"], #dash-g [data-btc-asset="${TETH}"]`)), 'btc: TAC and tETH keep the rows they have, not a second one');
   const fake = (await text(r.page, `#dash-g [data-btc-asset="${'b9'.repeat(32)}"]`)).replace(/\s+/g, ' ');
   ok(/TAC \(b9b9…\)/.test(fake) && !(await text(r.page, '#dash-g [data-btc-asset="' + ORANGE + '"]')).includes('('), `btc: another asset called TAC is shown with the start of its id, beside the real one (${fake})`);
-  await port(r.page);
-  await r.page.click(`#dash-g [data-btc-asset="${ORANGE}"]`);
+  await portPress(r.page, `#dash-g [data-btc-asset="${ORANGE}"]`);
   await until(r.page, () => /Send ORANGE/.test(document.querySelector('#bt-go')?.textContent || ''), null, 60000);
   ok(true, 'btc: the row opens the Bitcoin sheet on Send, with that asset chosen');
   await r.page.keyboard.press('Escape');
@@ -3603,7 +3606,7 @@ await step('bridge', async () => {
     // One that arrived an hour ago: listed under Arrived, with its Ethereum transaction, until Done.
     recOf('d5'.repeat(32), 'minted', { createdAt: Date.now() - 9e6, mintedAt: Date.now() - 36e5, mintedTxHash: '0x' + 'ab'.repeat(32) })];
   await r.page.evaluate(([k, v]) => localStorage.setItem(k, v), [`tacit-burndep-bridge-v1:mainnet:${pub}`, JSON.stringify(journal)]);
-  await r.page.click('#wallet-body [data-in="paste"]');
+  await pasteWay(r.page, '#wallet-body');
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -3814,7 +3817,7 @@ await step('bridgedeep', async () => {
       const note = (txid, amount) => ({ utxo: { txid, vout: 0, value: 546, status: { confirmed: true } }, amount, blinding: 12345n + amount });
       T._testSetScanHoldingsOverride(() => new Map([[aid, { assetIdHex: aid, ticker: 'TAC', decimals: 8, balance: 9000000000n, utxos: [note(n1, 4000000000n), note(n2, 3000000000n), note(n3, 2000000000n)], ghosts: [], inflated: [], pending: [] }]]));
     }, [N1, N2, N3, TAC]);
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -3897,7 +3900,7 @@ await step('fastroute', async () => {
       const note = (txid, amount) => ({ utxo: { txid, vout: 0, value: 546, status: { confirmed: true } }, amount, blinding: 12345n + amount });
       T._testSetScanHoldingsOverride(() => new Map([[aid, { assetIdHex: aid, ticker: 'TAC', decimals: 8, balance: 28000000000n, utxos: [note(n1, 25000000000n), note(n2, 3000000000n)], ghosts: [], inflated: [], pending: [] }]]));
     }, [N1, N2, TAC]);
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -3965,7 +3968,7 @@ await step('fastwant', async () => {
       await r.page.goto(r.url + '#wallet');
       await r.page.waitForSelector('#wallet-body [data-in="paste"], #wallet-dot.on', { timeout: 60000 });
       if (!(await r.page.$('#wallet-dot.on'))) {
-        await r.page.click('#wallet-body [data-in="paste"]');
+        await pasteWay(r.page, '#wallet-body');
         await r.page.fill('#ws-hex', hex);
         await r.page.click('#wallet-body [data-in="key"]');
       }
@@ -4027,7 +4030,7 @@ async function bridgeAllRig({ search = '' } = {}) {
     const balance = utxos.reduce((x, u) => x + u.amount, 0n);
     T._testSetScanHoldingsOverride(() => new Map([[aid, { assetIdHex: aid, ticker: 'TAC', decimals: 8, balance, utxos, ghosts: [], inflated: [], pending: [] }]]));
   }, [ID, Object.fromEntries(Object.entries(AMT).map(([k, v]) => [k, String(v)])), TAC]);
-  await r.page.click('#wallet-body [data-in="paste"]');
+  await pasteWay(r.page, '#wallet-body');
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -4213,7 +4216,7 @@ await step('bridgepub', async () => {
     }` }));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -4264,7 +4267,7 @@ await step('bridgefind', async () => {
     }
     await r.page.goto(r.url + '#wallet');
     if (journal) await r.page.evaluate(([k, v]) => localStorage.setItem(k, v), [`tacit-burndep-bridge-v1:mainnet:${pub}`, JSON.stringify(journal)]);
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -4315,7 +4318,7 @@ await step('clearedfind', async () => {
       localStorage.setItem('tacit-lite-bridged-look-v1', JSON.stringify({ [p]: { tac: Date.now(), teth: Date.now() } }));
     }, [pub]);
     if (before) await before(r.page);
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -4391,7 +4394,7 @@ await step('xobridge', async () => {
     const T = await import([...document.scripts].map((x) => x.textContent).join('').match(/\/tacit\.js\?cb=[0-9a-f]+/)[0]);
     T._testSetScanHoldingsOverride(() => new Map());
   });
-  await r.page.click('#wallet-body [data-in="paste"]');
+  await pasteWay(r.page, '#wallet-body');
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -4720,7 +4723,7 @@ await step('xbring', async () => {
     source: { nullifier: n.nullifier, value: big(n.amount), amount: big(n.amount), fee: big(0), assetId: CETH, ticker: 'tETH' }, settle: { txHash: 'e1'.repeat(32), claimId: n.claimId, cx: n.cx, cy: n.cy, ethBlock: 26000000, claimIdVerified: true } });
   await r.page.evaluate(([k, v]) => localStorage.setItem(k, v), [`tacit-crossout-bridge-v1:mainnet:${pub}`, JSON.stringify([jr(NA), jr(NB), jr(NC), jr(ND)])]);
   await r.page.evaluate(() => localStorage.setItem('tacit-teth-btc', 'true'));
-  await r.page.click('#wallet-body [data-in="paste"]');
+  await pasteWay(r.page, '#wallet-body');
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -4746,7 +4749,7 @@ await step('xbring', async () => {
   await shot(r.page, 'xbring-tab-notes');
   // The dashboard and the landing card read the same notes: what is on Bitcoin, and how much of it can come back now.
   await r.page.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
-  await until(r.page, () => /2 notes · 1 ready to bring back/.test(document.querySelector('#pf-bitcoin + ul')?.textContent || ''), null, 120000)
+  await until(r.page, () => /2 notes · 1 ready to bring back/.test(document.querySelector('#dash-g a[href="#private/bitcoin/back"]')?.textContent || ''), null, 120000)
     .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | dash: ${(await text(r.page, '#dash-g')).replace(/\s+/g, ' ').slice(0, 300)}`); });
   ok(/0\.007/.test(await r.page.$eval('#dash-g a[href="#private/bitcoin/back"]', (a) => a.textContent)), `xbring: the dashboard counts the tETH on Bitcoin, 0.007 in 2 notes, 1 ready (${(await r.page.$eval('#dash-g a[href="#private/bitcoin/back"]', (a) => a.textContent)).replace(/\s+/g, ' ')})`);
   await shot(r.page, 'xbring-dashboard');
@@ -4754,8 +4757,7 @@ await step('xbring', async () => {
   await until(r.page, () => /0\.007 tETH on Bitcoin, in 2 notes/.test(document.querySelector('#hx-have')?.textContent || ''), null, 60000);
   ok(/1 of them can come back now \(0\.004 tETH\)/.test(await text(r.page, '#hx-have')), `xbring: and the card, with tETH on Bitcoin picked, says the same (${(await text(r.page, '#hx-have')).replace(/\s+/g, ' ')})`);
   await shot(r.page, 'xbring-card');
-  await port(r.page);
-  await r.page.click('#dash-g a[href="#private/bitcoin/back"]');
+  await portPress(r.page, '#dash-g a[href="#private/bitcoin/back"]');
   await until(r.page, () => document.querySelectorAll('#eth-v1 input[name="xb-note"]').length === 2, null, 120000);
   ok(true, 'xbring: the dashboard line opens the To Bitcoin tab with the notes');
   // Above the ceiling nothing is offered: the receipt says so, with the cost, and there is no box to tick.
@@ -4893,7 +4895,7 @@ await step('xtbridge', async () => {
     const T = await import([...document.scripts].map((x) => x.textContent).join('').match(/\/tacit\.js\?cb=[0-9a-f]+/)[0]);
     T._testSetScanHoldingsOverride(() => new Map());
   });
-  await r.page.click('#wallet-body [data-in="paste"]');
+  await pasteWay(r.page, '#wallet-body');
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -5221,7 +5223,7 @@ await step('xtring', async () => {
     source: { nullifier: n.nullifier, value: big(n.amount + 200000000n), amount: big(n.amount), fee: big(200000000), assetId: TAC, ticker: 'TAC' }, settle: { txHash: 'e1'.repeat(32), claimId: n.claimId, cx: n.cx, cy: n.cy, ethBlock: 26000000, claimIdVerified: true } });
   await r.page.evaluate(([k, v]) => localStorage.setItem(k, v), [`tacit-crossout-bridge-v1:mainnet:${pub}`, JSON.stringify([jr(NA)])]);
   await r.page.evaluate(() => localStorage.setItem('tacit-tac-btc', 'true'));
-  await r.page.click('#wallet-body [data-in="paste"]');
+  await pasteWay(r.page, '#wallet-body');
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -5406,7 +5408,7 @@ await step('xtfind', async () => {
     const T = await import([...document.scripts].map((x) => x.textContent).join('').match(/\/tacit\.js\?cb=[0-9a-f]+/)[0]);
     T._testSetScanHoldingsOverride(() => new Map());
   });
-  await r.page.click('#wallet-body [data-in="paste"]');
+  await pasteWay(r.page, '#wallet-body');
   await r.page.fill('#ws-hex', hex);
   await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -5451,7 +5453,7 @@ await step('pts', async () => {
   const hex = 'a11ce'.padEnd(64, '7'), acct = makeEvmAccount({ secp, keccak256: keccak_256, sha256 }).deriveEvmAccount(Buffer.from(hex, 'hex'), 'mainnet').address;
   await rpc('anvil_setBalance', [acct, '0x' + (10n ** 17n).toString(16)]);
   await w.page.goto(w.url + '#wallet');
-  await w.page.click('#wallet-body [data-in="paste"]');
+  await pasteWay(w.page, '#wallet-body');
   await w.page.fill('#ws-hex', hex);
   await w.page.click('#wallet-body [data-in="key"]');
   await until(w.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -6526,7 +6528,7 @@ const serveStatus = (ctx, served) => ctx.route(/\/confidential\/status\?id=/, (r
 });
 const pasteKey = async (p, hex) => {
   await p.evaluate(() => { location.hash = ''; location.hash = '#wallet'; });
-  await p.click('#wallet-body [data-in="paste"]');
+  await pasteWay(p, '#wallet-body');
   await p.fill('#ws-hex', hex);
   await p.click('#wallet-body [data-in="key"]');
   await until(p, () => !!document.querySelector('#wallet-dot.on'));
@@ -7147,8 +7149,10 @@ await step('dash', async () => {
       if (tag === 'desk') {
         await until(r.page, () => !!document.querySelector('#hints [data-hint="bal"]'), null, 30000);
         await r.page.click('#hints [data-hint="bal"]');
-        await r.page.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 15000 });
+        await r.page.waitForSelector(PF_PAGE, { timeout: 15000 });
         ok(true, 'dash: signed in, the chips under the tile are My balances (and Activity once there is some), and My balances opens the Portfolio');
+        await r.page.click('header.top a.brand');      // the Portfolio is a page: the mark leaves it for the front page
+        await r.page.waitForFunction(() => !document.documentElement.dataset.view, null, { timeout: 15000 });
       }
       await r.page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
       const early = await r.page.evaluate(() => document.querySelectorAll('#dash-g .sk').length);
@@ -7474,7 +7478,7 @@ async function openFarmKey(hex, stub, viewport, setup) {
   await stubFarmUx(r.page, stub);
   if (setup) await setup(r.page);
   await r.page.goto(r.url + '#wallet');
-  await r.page.click('#wallet-body [data-in="paste"]'); await r.page.fill('#ws-hex', hex); await r.page.click('#wallet-body [data-in="key"]');
+  await pasteWay(r.page, '#wallet-body'); await r.page.fill('#ws-hex', hex); await r.page.click('#wallet-body [data-in="key"]');
   await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
   return r;
 }
@@ -8033,7 +8037,7 @@ await step('hxbal', async () => {
     const worth = (await text(p, '#dash-worth')).replace(/\s+/g, ' ');
     ok(/private/.test(worth) && !(await p.$eval('#hold-tot', (b) => b.hidden)), `hxbal: Your Tacit and the header say what it is all worth, and how much is private (${worth})`);
     await p.click('#hold-tot');
-    ok(await p.waitForSelector('#sheet-portfolio[open] #dash-g', { timeout: 15000 }).then(() => true, () => false), 'hxbal: the header total opens the Portfolio');
+    ok(await p.waitForSelector(PF_PAGE, { timeout: 15000 }).then(() => true, () => false), 'hxbal: the header total opens the Portfolio');
     if (r.errors.length) { fails++; console.log('FAIL hxbal page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
@@ -8626,7 +8630,7 @@ await step('hxsendpp', async () => {
     // tacit pay asks for the key once more (the same wallet), then shows its Send
     await p.waitForSelector('#g-in [data-in="eth"], #g-in [data-in="paste"]', { timeout: 60000 });
     if (await p.$('#g-in [data-in="eth"]')) await p.click('#g-in [data-in="eth"]');
-    else { await p.click('#g-in [data-in="paste"]'); await p.fill('#g-hex', K0); await p.click('#g-in [data-in="key"]'); }
+    else { await pasteWay(p, '#g-in'); await p.fill('#g-hex', K0); await p.click('#g-in [data-in="key"]'); }
     await until(p, ([a]) => document.querySelector('#f-to')?.value === a && document.querySelector('#f-amt')?.value === '0.01', [to], 120000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | f-to ${await p.evaluate(() => document.querySelector('#f-to')?.value?.slice(0, 20))} f-amt ${await p.evaluate(() => document.querySelector('#f-amt')?.value)} hash ${new URL(p.url()).hash.slice(0, 40)}`); });
     ok(true, 'hxsendpp: and its Send has the Tacit address and the amount filled in, on Ethereum');
@@ -9664,7 +9668,7 @@ await step('farmzapdrop', async () => {
     q = await r.browser.contexts()[0].newPage();
     await stubFarmUx(q, stub);
     await q.goto(r.url + '#wallet');
-    await q.click('#wallet-body [data-in="paste"]'); await q.fill('#ws-hex', hex); await q.click('#wallet-body [data-in="key"]');
+    await pasteWay(q, '#wallet-body'); await q.fill('#ws-hex', hex); await q.click('#wallet-body [data-in="key"]');
     await until(q, () => !!document.querySelector('#wallet-dot.on'));
     await toZap(q);
     await q.click('#sz-go-0');
@@ -9933,7 +9937,7 @@ await step('shieldsrc', async () => {
     await p.route(/\/confidential\/quote\?/, (route) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
       body: JSON.stringify({ relayFeeEligible: true, recommendedTipRecipient: '0x' + '6c'.repeat(20), tipSplitter: '0x' + '5e'.repeat(20), recommendedWrapTipWei: '90000000000000', recommendedProveTipWei: '20000000000000' }) }));
     await p.goto(r.url + '#wallet');
-    await p.click('#wallet-body [data-in="paste"]');
+    await pasteWay(p, '#wallet-body');
     await p.fill('#ws-hex', '5e1d'.padEnd(64, '9'));
     await p.click('#wallet-body [data-in="key"]');
     await until(p, () => !!document.querySelector('#wallet-dot.on'));
@@ -9971,7 +9975,7 @@ await step('shieldwc', async () => {
   const p = r.page;
   try {
     await p.goto(r.url + '#wallet');
-    await p.click('#wallet-body [data-in="paste"]');
+    await pasteWay(p, '#wallet-body');
     await p.fill('#ws-hex', '3c0a'.padEnd(64, '4'));
     await p.click('#wallet-body [data-in="key"]');
     await until(p, () => !!document.querySelector('#wallet-dot.on'));
@@ -10531,10 +10535,10 @@ await step('xtspx', async () => {
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | saved ${await p.evaluate(() => localStorage.getItem('tacit-pool-tokens-v1'))} | errors ${r.errors.slice(0, 2).join(' | ')}`); });
     ok(await p.evaluate(() => JSON.parse(localStorage.getItem('tacit-pool-tokens-v1') || '[]')).then((l) => l.includes(SPX)), 'xtspx: the page found SPX under its notes\' asset id and remembers it');
     const row = await p.evaluate((k) => { const b = [...document.querySelectorAll('[data-dash-open]')].find((x) => x.dataset.dashOpen === `send:${k}`); return b ? b.textContent.replace(/\s+/g, ' ').trim() : ''; }, key);
-    ok(/SPX\s*25\s*2 notes/.test(row), `xtspx: Your Tacit lists 25 private SPX in 2 notes, as a row that opens Send (${row})`);
+    ok(/SPX\s*25\s*(Private · )?2 notes/.test(row), `xtspx: Your Tacit lists 25 private SPX in 2 notes, as a row that opens Send (${row})`);      // (the Portfolio page's row names its place)
     await p.click('#hold-tot');
-    await until(p, () => /SPX/.test(document.querySelector('#portfolio-body')?.textContent || ''), null, 60000).catch(() => {});
-    const pf = (await text(p, '#portfolio-body')).replace(/\s+/g, ' ');
+    await until(p, () => /SPX/.test(document.querySelector('#ppg-body')?.textContent || ''), null, 60000).catch(() => {});
+    const pf = (await text(p, '#ppg-body')).replace(/\s+/g, ' ');
     ok(/SPX\s*25/.test(pf), `xtspx: the Portfolio lists it too (${pf.slice(pf.indexOf('SPX') - 20, pf.indexOf('SPX') + 60)})`);
     // the private notes list is the wallet sheet's
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); location.hash = 'wallet'; });
@@ -10998,16 +11002,17 @@ await step('tradelinks', async () => {
       const seen = await p.evaluate(() => {
         const vis = (s) => { const e = document.querySelector(s); if (!e) return false; const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && b.left >= 0 && b.right <= window.innerWidth + 1; };
         const list = (s) => [...document.querySelectorAll(s)].map((a) => `${a.textContent.trim()}:${a.getAttribute('href')}`).join(' ');
-        return { assets: vis('.sn > a[href="/assets/"]'), menu: vis('.sn .sm > summary'), order: list('.sn > a'), more: list('.sm-p a:not(.pr)'), all: list('.sm-p a'), tile: !!document.querySelector('#tac a[href="/trade/tac/"]'),
+        return { sections: vis('.sn > a[href="/#/defi"]') && vis('.sn > a[href="/rewards/"]'), bar: [...document.querySelectorAll('nav.bn a')].filter((a) => a.getBoundingClientRect().width > 0).map((a) => `${a.textContent.trim()}:${a.getAttribute('href')}`).join(' '), menu: vis('.sn .sm > summary'), order: list('.sn > a:not(.sa)'), more: list('.sm-p a:not(.pr)'), all: list('.sm-p a'), tile: !!document.querySelector('#tac a[href="/trade/tac/"]'),
           chip: (() => { const l = document.getElementById('wallet-label'); return !!l && l.scrollWidth <= l.clientWidth + 1 && l.clientWidth >= 30; })(), foot: [...document.querySelectorAll('footer.sf nav a')].map((a) => a.getAttribute('aria-label')).join(', '),
           scroll: document.documentElement.scrollWidth > window.innerWidth + 1 };
       });
       ok(seen.menu, `tradelinks (${name}): the header has its menu in view`);
-      if (name === 'desktop') ok(seen.assets && seen.order === 'Assets:/assets/ Farm:/farm/ Rewards:/rewards/ Prove:/prove/', `tradelinks (${name}): and Assets, Farm, Rewards and Prove beside it (${seen.order})`);
-      else ok(!seen.assets && seen.all.startsWith('Assets:/assets/ Farm:/farm/ Rewards:/rewards/ Prove:/prove/ '), `tradelinks (${name}): the menu holds them all, Assets first (${seen.all})`);
-      ok(seen.more === 'Portfolio:/#portfolio Pay:/pay/ Borrow:/vault/ Bridges:/bridge/ TAC:/tac/ Etch:/etch/ Shop:/shop/ Tasks:/tasks/ FACE:/face/', `tradelinks (${name}): and, under the menu, the rest of the pages (${seen.more})`);
+      const SECTIONS = 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains Borrow:/vault/ Rewards:/rewards/';
+      if (name === 'desktop') ok(seen.sections && seen.order === SECTIONS, `tradelinks (${name}): and the six sections beside it (${seen.order})`);
+      else ok(!seen.sections && seen.bar === 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains More:/#/menu' && seen.all.startsWith('Borrow:/vault/ Rewards:/rewards/ Assets:/assets/ '), `tradelinks (${name}): four sections and More are the bar at the foot, the other two first in the menu (${seen.bar} | ${seen.all})`);
+      ok(seen.more === 'Assets:/assets/ TAC:/tac/ Pay pool:/pay/ Bridges:/bridge/ Etch:/etch/ Shop:/shop/ Prove:/prove/ Tasks:/tasks/ FACE:/face/', `tradelinks (${name}): and, under the menu, the pages no section is (${seen.more})`);
       await p.click('.sn .sm > summary');
-      ok(await p.evaluate(() => [...document.querySelectorAll('.sm-p a[href="/assets/"]')].some((a) => a.getBoundingClientRect().width > 0)) === (name === 'phone'), `tradelinks (${name}): the menu lists Assets only where the header has not`);
+      ok(await p.evaluate(() => [...document.querySelectorAll('.sm-p a.pr')].some((a) => a.getBoundingClientRect().width > 0)) === (name === 'phone'), `tradelinks (${name}): the menu lists Borrow and Rewards only where the header has not`);
       await p.keyboard.press('Escape');
       ok(!(await p.$eval('.sm', (d) => d.open)), `tradelinks (${name}): and Escape shuts it`);
       ok(seen.chip, `tradelinks (${name}): and the account chip still shows its whole label`);
@@ -11706,7 +11711,7 @@ await step('provecap', async () => {
   const said = () => text(r.page, '#v1-status').then((t) => t.replace(/\s+/g, ' '));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -11789,7 +11794,7 @@ await step('heldborrow', async () => {
   const offerIn = () => until(r.page, () => !!document.querySelector('#bw-status [data-selfdo], #bw-s4 [data-selfdo]'), null, QUOTE_WAIT).then(() => true, () => false);
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -12464,7 +12469,7 @@ await step('holdborrow', async () => {
   const sheet = () => r.page.evaluate(() => (document.querySelector('#borrow-body')?.textContent || '').replace(/\s+/g, ' '));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -12530,7 +12535,7 @@ await step('hxheld', async () => {
   const calls = () => r.page.evaluate(() => (window.__hb?.calls || []).map((c) => c.kind + (c.value ? ':' + c.value : '') + (c.amount ? ':' + c.amount : '')).join(','));
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -12563,8 +12568,7 @@ await step('hxheld', async () => {
     await until(r.page, () => [...document.querySelectorAll('#dash-g .wb-go')].some((d) => /cUSD owed/.test(d.textContent) && /1 loan · \d+%/.test(d.textContent)), null, 240000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${(await text(r.page, '#dash-g').catch(() => '?')).replace(/\s+/g, ' ').slice(0, 300)}`); });
     ok(true, 'hxheld: the Portfolio shows what is owed, the number of loans and the ratio');
-    await port(r.page);
-    await r.page.click('#dash-g [data-dash-open="loans"]');
+    await portPress(r.page, '#dash-g [data-dash-open="loans"]');
     await until(r.page, () => document.querySelector('[data-hxm="borrow"]')?.getAttribute('aria-selected') === 'true' && !document.querySelector('#hx-bwl')?.hidden, null, 60000);
     ok(true, 'hxheld: and pressed, it opens the Borrow tab on the loans');
     await r.page.click('#hx-bwl [data-brp]');
@@ -12592,7 +12596,7 @@ await step('holdpublic', async () => {
   try {
     proveStub = true;
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -12635,7 +12639,7 @@ await step('usdback', async () => {
   const r = await openPage({ account: W, key: kw });
   try {
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));
@@ -13224,7 +13228,7 @@ await step('zapcredit', async () => {
   try {
     proveStub = false; poolDone = false;
     await p.goto(r.url + '#wallet');
-    await p.click('#wallet-body [data-in="paste"]'); await p.fill('#ws-hex', hex); await p.click('#wallet-body [data-in="key"]');
+    await pasteWay(p, '#wallet-body'); await p.fill('#ws-hex', hex); await p.click('#wallet-body [data-in="key"]');
     await until(p, () => !!document.querySelector('#wallet-dot.on'));
     await p.evaluate(() => { window.__zapWay = null; document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await p.click('[data-hxm="earn"]');
@@ -13257,7 +13261,7 @@ await step('zapresume', async () => {
   try {
     proveStub = false; poolDone = false;
     await p.goto(r.url + '#wallet');
-    await p.click('#wallet-body [data-in="paste"]'); await p.fill('#ws-hex', hex); await p.click('#wallet-body [data-in="key"]');
+    await pasteWay(p, '#wallet-body'); await p.fill('#ws-hex', hex); await p.click('#wallet-body [data-in="key"]');
     await until(p, () => !!document.querySelector('#wallet-dot.on'));
     await p.evaluate(() => { window.__zapWay = null; document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     await p.click('[data-hxm="earn"]');
@@ -13313,7 +13317,7 @@ await step('zapresume2', async () => {
   try {
     proveStub = false; poolDone = false;
     await p.goto(r.url + '#wallet');
-    await p.click('#wallet-body [data-in="paste"]'); await p.fill('#ws-hex', hex); await p.click('#wallet-body [data-in="key"]');
+    await pasteWay(p, '#wallet-body'); await p.fill('#ws-hex', hex); await p.click('#wallet-body [data-in="key"]');
     await until(p, () => !!document.querySelector('#wallet-dot.on'));
     await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
     // the farm sheet's zap form
@@ -13930,7 +13934,7 @@ await step('tacvoucher', async () => {
     poolDone = false;
     const q0 = poolReqs.length;
     await r.page.goto(r.url + '#wallet');
-    await r.page.click('#wallet-body [data-in="paste"]');
+    await pasteWay(r.page, '#wallet-body');
     await r.page.fill('#ws-hex', hex);
     await r.page.click('#wallet-body [data-in="key"]');
     await until(r.page, () => !!document.querySelector('#wallet-dot.on'));

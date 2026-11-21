@@ -326,7 +326,8 @@ try {
     ok(te.kind === 'Borrow market' && te.href === '/vault/#v=eth&pools' && te.sel === 'Supply' && !te.hidden, `the TACE / ETH market's tile leads to the vault's pools (${te.apr})`);
     ok(td.hidden, 'TACD’s pools trade outside their range, so its tile is not offered');
     ok(pub.top === p0.top && p0.top === p1.top && p2.top > pub.top && pub.left < p0.left && p0.left < p1.left, 'three tiles to a row on a desktop');
-    ok(await page.evaluate(() => document.querySelector('header .sn a[href="/farm/"]')?.getAttribute('aria-current') === 'page'), 'the header’s Farm link is this page');
+    // the header's Farm link, or, in a header of sections, DeFi with its Farm tab (the section's head, #sec-head)
+    ok(await page.evaluate(() => { const on = (s) => document.querySelector(s)?.getAttribute('aria-current') === 'page'; return on('header .sn a[href="/farm/"]') || (on('header .sn a[href="/#/defi"]') && on('#sec-head .sh-t a[href="/farm/"]')); }), 'the header’s Farm link (or DeFi and its Farm tab) is this page');
     ok(await wide(page) <= 0, 'nothing is wider than the screen');
     await shot(page, 'menu-1280');
     clean(r, 'menu');
@@ -883,7 +884,7 @@ try {
     {
       // the rewards page mounts the same panel without a card: its join stays in the panel
       const r = await openPage({ fake: true, t: { keyOpen: true, privNotes } });
-      await r.page.goto(`http://127.0.0.1:${WEB}/rewards/`, { waitUntil: 'load' });
+      await r.page.goto(`http://127.0.0.1:${WEB}/rewards/#farms`, { waitUntil: 'load' });      // the farms' part of the page, as tETH's, cBTC's and the vault's links name it (the Rewards section's view of /rewards/ leaves the farms to DeFi)
       await until(r.page, () => !!document.querySelector('#pf-mine [data-pf="open"]'));
       await r.page.click('#pf-row > summary').catch(() => {});
       await r.page.click('#pf-mine [data-pf="open"]');

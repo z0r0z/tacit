@@ -126,8 +126,15 @@ try {
     const idle = await newContext([]);
     const headerOf = (page, k) => page.evaluate((chipSel) => {
       const h = document.querySelector('header'), chip = document.querySelector(chipSel), r = (e) => { const b = e.getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height }; };
-      const group = [...h.children].find((e) => e.contains(chip));
-      return { header: r(h), group: r(group), chip: r(chip), rest: [...h.children].filter((e) => e !== group).map(r) };
+      const group = [...h.children].find((e) => e.contains(chip)), rest = [...h.children].filter((e) => e !== group).map(r);
+      // a header whose sections share the row with the chip (the app's six, .sn > a, on a phone in the bar at the foot instead): the group that grows
+      // is the run from the menu button to the end of the row, and the sections shown in the row are among what must not move
+      const secs = [...group.querySelectorAll('.sn > a')].filter((e) => e.offsetParent), from = group.querySelector('.sn > .sm');
+      if (group.querySelector('.sn > a') && from) {
+        const a = from.getBoundingClientRect(), g = group.getBoundingClientRect();
+        return { header: r(h), group: { x: a.x, y: g.y, w: g.right - a.x, h: g.height }, chip: r(chip), rest: [...rest, ...secs.map(r)] };
+      }
+      return { header: r(h), group: r(group), chip: r(chip), rest };
     }, PAGES[k].chip);
     for (const [w, h] of [[390, 844], [1280, 900]]) {
       for (const k of ['front', 'hub', 'eth', 'keeper']) {
@@ -200,7 +207,7 @@ try {
     await page.click(`${PAGES[k].sheet}[open] [data-in="key"]`);
     await until(page, (s) => /^(tacit1|Opening)/.test(document.querySelector(s)?.textContent.trim()), PAGES[k].label, 30000);
     if (await page.$(`${PAGES[k].sheet}[open]`)) await page.keyboard.press('Escape');
-    await page.click(PAGES[k].chip);
+    await page.click(PAGES[k].chip); if (await page.$('#acct-pop:not([hidden])')) await page.click('#acct-pop [data-acct="wallet"]');
     await page.waitForSelector(`${PAGES[k].sheet}[open] ${PAGES[k].off}`);
     ok(true, `${k}: with a key open the sheet still shows the wallet, with Disconnect`);
     await page.click(`${PAGES[k].sheet}[open] ${PAGES[k].off}`);
@@ -216,7 +223,7 @@ try {
   c = await newContext([MAIN]);
   {
     const { page } = await open(c.ctx, PAGES.keeper.path);
-    await page.click('#wallet');
+    await page.click('#wallet'); if (await page.$('#acct-pop:not([hidden])')) await page.click('#acct-pop [data-acct="wallet"]');      // (with a key open the chip is the account's menu, and the wallet sheet its first entry)
     ok(await showing(page, 'keeper', SHORT_A) && (await remembered(page)) === 'test.wallet', `keeper: Connect shows the account and records which wallet (${await remembered(page)})`);
     await page.close();
     const rw = await open(c.ctx, PAGES.rewards.path);
@@ -260,7 +267,7 @@ try {
   c = await newContext([BARE]);
   {
     const first = await open(c.ctx, PAGES.keeper.path);
-    await first.page.click('#wallet');
+    await first.page.click('#wallet'); if (await first.page.$('#acct-pop:not([hidden])')) await first.page.click('#acct-pop [data-acct="wallet"]');
     ok(await showing(first.page, 'keeper', SHORT_A) && (await remembered(first.page)) === 'Browser wallet', `keeper: a wallet that announces nothing is recorded as the browser's wallet (${await remembered(first.page)})`);
     await first.page.close();
     for (const k of ['front', 'hub', 'eth']) {

@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-ID3OsG5fWrblU3fUp05C1aGCSC5rwS2mihAlwk+QWY0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-T8NSqOppkt3ZG/PhHlZqa1JtXP5DcBTkbSc0YdPoQKs=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -15,12 +15,13 @@
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=51f5d28b"></script>
 <script type="module" src="/px-strip.js?cb=d4520508" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=20512ecf" as="style">
-<link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/swap/card.css?cb=83bcec67" as="style">
+<link rel="preload" href="/fonts/newsreader-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/newsreader-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-<script defer src="/front-route.js?cb=5dbd683d"></script>
+<script defer src="/front-route.js?cb=0a9ed330"></script>
 <title>tacit SPX</title>
 <link rel="canonical" href="https://tacit.finance/spx/">
 <meta name="description" content="SPX6900, privately: shield $SPX into the Tacit DeFi pool, send it, take it out or bridge it to Bitcoin.">
@@ -58,7 +59,7 @@
 <link rel="modulepreload" href="/address-id.js?cb=01f14d36">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
 <link rel="modulepreload" href="/wallet-balances.js?cb=1cd3e7a4">
-<link rel="modulepreload" href="/portfolio.js?cb=4bd81bcc">
+<link rel="modulepreload" href="/portfolio.js?cb=fcadbdb8">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=fb6ec72f">
 <link rel="modulepreload" href="/bridge-all.js?cb=45f85325">
 <link rel="modulepreload" href="/lp-zap.js?cb=041bcb7f">
@@ -96,6 +97,10 @@
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-mono-500-latin.woff2') format('woff2'); }
 @font-face { font-family: 'Instrument Serif'; font-weight: 400; font-display: swap; src: url('/fonts/instrument-serif-400-latin.woff2') format('woff2'); }
 @font-face { font-family: 'Instrument Serif'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/instrument-serif-400i-latin.woff2') format('woff2'); }
+/* Graphite's serif and grotesk */
+@font-face { font-family: 'Newsreader'; font-weight: 400; font-display: swap; src: url('/fonts/newsreader-400-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Newsreader'; font-weight: 400; font-style: italic; font-display: swap; src: url('/fonts/newsreader-400i-latin.woff2') format('woff2'); }
+@font-face { font-family: 'Schibsted Grotesk'; font-weight: 400 600; font-display: swap; src: url('/fonts/schibsted-grotesk-latin.woff2') format('woff2'); }
 
 :root {
   --paper: #E8E0CC;
@@ -151,6 +156,25 @@
     color-scheme: dark;
   }
 }
+/* Graphite: grey ground and cards, a raised plate for what is chosen, the serif Newsreader and the grotesk Schibsted for words (figures stay in the mono) */
+:root {
+  --paper: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --raise: #FFFFFF;
+  --ink: #17181B; --mute: #5C5D62; --faint: #636468; --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24);
+  --scrim: rgba(23,24,27,.36); --lift: 0 22px 44px -28px rgba(23,24,27,.45); --skel: rgba(23,24,27,.08); --skel-hi: rgba(23,24,27,.02); --bar: #8B8C91;
+  --float: 0 1px 2px rgba(23,24,27,.05), 0 30px 70px -50px rgba(23,24,27,.45);
+  --serif: 'Newsreader', 'Newsreader Fallback', 'Newsreader Fallback T', Georgia, serif;
+  --sans: 'Schibsted Grotesk', 'Schibsted Grotesk Fallback', system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #131417; --card: #1A1B1F; --field: #15161A; --raise: #2A2B31;
+    --ink: #E4E4E1; --mute: #9A9BA1; --faint: #86878D; --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22);
+    --skel: rgba(228,228,225,.07); --skel-hi: rgba(228,228,225,.15); --bar: #66676D;
+    --float: 0 0 0 1px rgba(228,228,225,.04), 0 40px 90px -50px #000;
+  }
+}
+/* the SPX page (made from this one, with a look of its own) keeps its own face where Graphite names the grotesk */
+html[data-page="spx"] { --sans: var(--mono); }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -160,6 +184,7 @@ body {
   background-image: radial-gradient(ellipse 54rem 30rem at 50% 26rem, color-mix(in srgb, var(--card) 70%, transparent), transparent 72%); background-repeat: no-repeat;
   padding: 0 max(16px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px, env(safe-area-inset-left));
 }
+body { font: 14px/1.6 var(--sans); background-image: none; }
 a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
 @media (hover: hover) { a:hover { text-decoration-thickness: 2px; } }
 button { font: inherit; color: inherit; letter-spacing: inherit; }
@@ -262,20 +287,15 @@ main:focus { outline: none; }
 .chip.tot b { font-weight: 500; }
 @media (max-width: 640px) { .chip.tot { display: none; } }
 .dash .callout { margin: 0 0 10px; }
-/* Your Tacit on the front page: what each place holds, one press from the Portfolio sheet that lists it. */
+/* Your Tacit on the front page: what each place holds, one press from the Portfolio page that lists it. */
 .dash-go { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 0; }
 .dash-go button { display: inline-flex; align-items: baseline; gap: 8px; min-height: 36px; padding: 6px 14px; font: inherit; font-size: 13px; color: var(--mute); background: var(--card); border: 1px solid var(--hair); border-radius: 999px; cursor: pointer; transition: border-color .15s; }
 .dash-go button b { font: 500 13px var(--mono); color: var(--ink); }
 .dash-go button.all { color: var(--ink); border-color: var(--ink); }
 @media (hover: hover) { .dash-go button:hover { border-color: var(--ink); } }
 .dash-go button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-/* The Portfolio sheet: the private share of the total as a bar, then a group for each place, its rows the wallet sheet's (.wbal). */
-.pf-split { display: flex; height: 6px; margin: 14px 0 6px; border-radius: 99px; overflow: hidden; background: var(--hair-2, var(--hair)); }
-.pf-split i { display: block; background: var(--ink); border-radius: 99px; }
-.pf-key { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--mute); }
 .pf-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 20px 0 0; padding-bottom: 7px; border-bottom: 1px solid var(--hair); font-size: 12px; color: var(--mute); scroll-margin-top: 72px; }
 .pf-h b { font: 500 13px var(--mono); color: var(--ink); }
-#dash-g .wbal .wb-go { padding-top: 10px; padding-bottom: 10px; }
 .wbal .wb-k .pair { display: inline-flex; flex: none; }
 .wbal .wb-k .pair .tk + .tk { margin-left: -7px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--card); }
 .wbal .wb-k .dot { flex: none; }
@@ -425,6 +445,11 @@ main:focus { outline: none; }
 @media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
 @media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
 @media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
+:where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 580px; }
+@media (max-width: 640px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
+@media (max-width: 370px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
+@media (max-width: 356px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
+@media (max-width: 338px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 602px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -1211,6 +1236,98 @@ a.btn { text-decoration: none; white-space: nowrap; }
 /* ── TAC's page (/tac/): this page drawn as TAC's own, the landing's sections out of the way while it shows ── */
 html[data-page="tac"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi), html:not([data-page="tac"]) #sheet-tac { display: none; }
 .tpg { max-width: 600px; margin: 0 auto; padding: 36px 0 8px; }
+/* ── the Portfolio as a page (/#portfolio): what is held, by asset, the landing's sections out of the way while it shows. Two columns: the total and
+   the assets, then what waits on the holder, their positions and what they have earned. On a narrow window the columns fold into one, in that order. ── */
+html[data-view="portfolio"] :is(.hero, #dash, #how, #tac, .pg, .sx.pi, #sheet-tac), html:not([data-view="portfolio"]) #page-portfolio { display: none; }
+/* ── a section's view of this page (chrome.js marks <html data-sec>): the card held to one thing, its own tabs and the landing around it out of the way;
+   or TAC's page cut to the one part the view is, in one column; or the More page, with nothing of the landing ── */
+html[data-sec]:not([data-page="tac"]) :is(.hero > :not(#hx), #dash, #how, #tac, .pg, .sx.pi, #hx .hx-h) { display: none !important; }
+html[data-sec="chains/bridge"] #hx .hx-more, html[data-sec="menu/"] .hero { display: none !important; }
+html[data-sec]:not([data-page="tac"]) .hero { padding-top: 0; }
+html[data-sec][data-page="tac"] .tpg { display: block; padding-top: 0; }
+html[data-sec][data-page="tac"] .tpg > * { max-width: 460px; margin-left: auto; margin-right: auto; position: static; }
+/* every view keeps #tpg-act, where a button that opens the swap card puts it; "Manage your TAC" (#tpg-notes) is the Notes view's alone */
+html[data-sec="payments/request"] :is(.tpg > :not(#tpg-side, #tpg-act), #tpg-notes, #tcd-seg, #tcd-tabs), html[data-sec="payments/links"] :is(.tpg > :not(#tpg-side, #tpg-act), #tpg-notes, #tcd-seg, #tcd-head) { display: none !important; }
+/* Claim links is the pool's card cut to the claim link: its figures, its tabs, the send form over the link and the rule between them go, so the
+   view is the amount, the PIN, the button and the links made here, and nothing asks to be scrolled past */
+html[data-sec="payments/links"] :is(#tcd-net, #tcd-pool .tp > .seg.sub, #tp-held-row, #tp-p-send > :not(.tp-sep, .tp-sep ~ *), #tp-p-send > .tp-sep) { display: none !important; }
+html[data-sec="defi/stake"] :is(.tpg > :not(#tpg-side, #tpg-act, #tpg-earn, #tpg-top), #tpg-notes, #tcd-seg, #tcd-t-send, #tcd-t-receive) { display: none !important; }   /* "All your TAC" (#tpg-top) stays: an interrupted deposit is finished there */
+html[data-sec="defi/stake"] #tpg-earn { margin-top: 36px; border-top: 0; padding-top: 0; }
+html[data-sec="defi/stake"] .tcd-tabs { grid-template-columns: 1fr 1fr; }
+@media (min-width: 1000px) {      /* Stake on a wide window keeps the page's two columns: what staking earns, the card beside it */
+  html[data-sec="defi/stake"][data-page="tac"] .tpg { display: grid; }
+  html[data-sec="defi/stake"][data-page="tac"] .tpg > * { max-width: none; margin-left: 0; margin-right: 0; }
+  html[data-sec="defi/stake"][data-page="tac"] .tpg > :is(#tpg-side, #tpg-act) { position: sticky; }
+}
+html[data-sec="chains/notes"] :is(.tpg > :not(#tpg-where, #tpg-notes, #tpg-side, #tpg-act), #tpg-side > :not(#tpg-notes), #tac-bal, #tpg-where > summary, #tpg-br > summary) { display: none !important; }   /* the notes card sits in the side column (#tpg-side): the column stays, the rest of it goes */
+html[data-sec="chains/notes"][data-page="tac"] .tpg > * { max-width: 720px; }
+html[data-sec="chains/notes"] #tpg-where { border: 0; }
+.ppg { padding: 28px 0 8px; }
+.ppg-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 0 0 22px; }
+.ppg-head h1 { font: 400 clamp(40px, 6vw, 56px)/1 var(--serif); letter-spacing: -.02em; margin: 0; }
+.ppg-head h1:focus { outline: none; }
+.ppg-head p { margin: 6px 0 0; color: var(--mute); }
+.ppg-cols { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 28px; align-items: start; }
+.ppg-card { padding: 20px 22px 22px; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; box-shadow: var(--float); }
+.ppg-card + .ppg-card { margin-top: 16px; }
+.ppg-card h2 { font: 400 26px/1.1 var(--serif); margin: 0 0 12px; }
+.ppg-card > .note:last-child { margin-bottom: 0; }
+.ppg-lbl { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 0 0 8px; font-size: 12px; color: var(--mute); }
+.ppg-big { margin: 0; font: 400 clamp(46px, 7vw, 64px)/1 var(--serif); }
+.ppg-big.none { color: var(--faint); }
+.ppg-bar { display: flex; gap: 2px; height: 6px; margin-top: 14px; border-radius: 3px; overflow: hidden; }
+.ppg-bar i { display: block; min-width: 2px; }
+.ppg-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.ppg-tag { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid var(--hair); border-radius: 999px; font-size: 11.5px; color: var(--mute); white-space: nowrap; }
+.ppg-tag i { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.ppg-list { list-style: none; margin: 0; padding: 0; }
+.ppg-list > li { border-top: 1px solid var(--hair); }
+.ppg-list > li:last-child { border-bottom: 1px solid var(--hair); }
+.ppg-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 14px; align-items: center; width: 100%; padding: 14px 4px; font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer; }
+.ppg-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; border-radius: 10px; }
+.ppg-row .ppg-ic { display: grid; place-items: center; }
+.ppg-row .ppg-ic .tk { width: 30px; height: 30px; }
+.ppg-row .ppg-ic .pair .tk { width: 22px; height: 22px; }
+.ppg-row b { font-weight: 500; }
+.ppg-row .ppg-full { color: var(--mute); }
+.ppg-row .ppg-tags { margin-top: 6px; }
+.ppg-row .ppg-r { text-align: right; }
+.ppg-row .ppg-r small { display: block; font-size: 12px; color: var(--mute); }
+.ppg-more.wbal { margin: 0 0 14px 44px; }
+.ppg-acts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px 44px; }
+@media (max-width: 520px) { .ppg-acts { margin-left: 0; } }
+.ppg-needs { display: grid; gap: 8px; }
+.ppg-need { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; font-size: 13px; background: var(--field); border: 1px solid var(--hair); border-radius: 14px; }
+.ppg-need.hot { border-left: 3px solid var(--orange); }
+.ppg-need b { font-weight: 500; }
+.ppg-go { flex: none; display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 4px 14px; font: inherit; font-size: 12.5px; font-weight: 500; color: var(--ink); text-decoration: none; background: transparent; border: 1px solid var(--hair-2); border-radius: 11px; cursor: pointer; }
+.ppg-need.hot:first-child .ppg-go { color: var(--card); background: var(--ink); border-color: var(--ink); }
+@media (hover: hover) { .ppg-go:hover { border-color: var(--ink); } }
+@media (max-width: 960px) {
+  .ppg-cols { display: flex; flex-direction: column; gap: 16px; } .ppg-cols > div { display: contents; } .ppg-card + .ppg-card { margin-top: 0; }
+  .ppg-o1 { order: 1; } .ppg-o2 { order: 2; } .ppg-o3 { order: 3; } .ppg-o4 { order: 4; } .ppg-o5 { order: 5; }
+}
+@media (max-width: 520px) { .ppg-card { padding: 16px 16px 18px; } .ppg-more.wbal { margin-left: 0; } }
+/* The account chip's menu: with a Tacit key open the chip opens it (the ID, the wallet and its key, the addresses, how proofs are made, signing out);
+   signed out the chip opens the wallet sheet as it did. The panel is the page menu's (chrome.css .sm-p), the chip keeps its place in the header's row. */
+.acm { position: relative; display: flex; flex: 0 1 auto; min-width: 0; }
+.acm-p { position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box; width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
+  background: var(--card); border: 1px solid var(--hair-2); border-radius: 16px; box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06); transform-origin: 100% 0; animation: sm-in .16s ease-out; }
+.acm-p[hidden] { display: none; }
+.acm-k { display: grid; gap: 4px; padding: 9px 12px 7px; font: 400 11px/1.2 var(--mono); color: var(--mute); }
+.acm-k b { font: 500 13px/1.2 var(--mono); color: var(--ink); }
+.acm-p button { display: flex; align-items: center; gap: 12px; box-sizing: border-box; width: 100%; min-height: 42px; padding: 0 12px; border: 0; border-radius: 10px; background: none; color: var(--ink); font: 400 13px/1 var(--mono); text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.acm-p button svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; color: var(--mute); }
+.acm-p button:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+.acm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
+@media (hover: hover) { .acm-p button:hover { background: var(--hair); } }
+@media (prefers-reduced-motion: reduce) { .acm-p { animation: none; } }
+:where(:root:not([data-page="spx"])) .acm-p button { font: 400 14px/1 var(--sans, var(--mono)); }
+:where(:root:not([data-page="spx"])) .acm-k span { font-family: var(--sans, var(--mono)); }
+/* Graphite on the Portfolio page: words in the grotesk, figures in the mono */
+html:not([data-page="spx"]) :is(.ppg-head p, .ppg-lbl, .ppg-tag, .ppg-need, .ppg-go, .ppg-row, .ppg-card .note) { font-family: var(--sans, inherit); }
+html:not([data-page="spx"]) .ppg :is(.num, .ppg-r) { font-family: var(--mono); }
+html:not([data-page="spx"]) .ppg-card { border-radius: 16px; }
 .tpg-hero h1 { font: 400 clamp(44px, 7vw, 64px)/.96 var(--serif); letter-spacing: -.02em; margin: 0 0 14px; }
 .tpg-hero h1:focus { outline: none; }
 .tpg-hero p { margin: 0; max-width: 58ch; color: var(--mute); text-wrap: pretty; }
@@ -2008,9 +2125,83 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .sk { background: var(--skel); }
 }
+/* ───────────────────────────── Graphite, the default skin: the hero and the card's frame ─────────────────────────────
+   Built around privacy. One light thing on a screen: the button. What is chosen is a raised grey plate, not a
+   highlight. Words are in the grotesk, figures in the mono, the headline in the serif with its second word in quiet italics.
+   The rules here restyle the ones above (the tab strip's sliding line is put away, not removed: the strip is a plate now). */
+html:not([data-page="spx"]) {
+  & .hero h1 { font: 400 clamp(44px, 12vw, 68px)/1.02 var(--serif); letter-spacing: -.025em; }
+  & .hero h1 .hero-w2 { font-style: italic; color: var(--mute); }
+  & .hero .sub { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
+  & .hero .sub b { font: 400 .88em var(--mono); color: var(--ink); }
+  & .hero-t { margin-bottom: 26px; }
+  & .hx { border-radius: 20px; border-color: var(--hair); background: linear-gradient(180deg, color-mix(in srgb, var(--card) 93%, #fff) 0, var(--card) 140px); }
+  /* the tabs: one plate, the chosen tab raised on it */
+  & .hx-h { margin: 12px 12px 4px; padding: 3px; border: 0; border-radius: 12px; background: var(--field); }
+  & .hx-h::after { display: none; }
+  & .hx-h button { padding: 10px 0; border-radius: 9px; font: 500 14px/1 var(--sans); letter-spacing: 0; transition: background-color .2s, color .2s; }
+  & .hx-h button[aria-selected="true"] { background: var(--raise); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  & .hx-sk .t { height: 40px; margin: 0 -4px 6px; }
+  & .hx-path { font-family: var(--sans); font-size: 12.5px; }
+  /* a choice of two in the card (Send or Request, Farm or LP only, from the wallet or from Bitcoin): the tab strip's plate, smaller */
+  & .hx-mode { background: var(--field); border-radius: 10px; }
+  & .hx-mode button { border-radius: 8px; font: 500 13px var(--sans); }
+  & .hx-mode button[aria-checked="true"] { background: var(--raise); }
+  /* Bridge and Borrow: two words with a rule under the chosen one, not a second row of plates */
+  & .hx-more { display: flex; gap: 18px; margin: 6px 4px 12px; padding: 0; background: none; border-bottom: 1px solid var(--hair); border-radius: 0; }
+  & .hx-more button { flex: none; margin-bottom: -1px; padding: 8px 2px 10px; border-bottom: 2px solid transparent; border-radius: 0; font: 500 14px var(--sans); }
+  & .hx-more button[aria-selected="true"] { background: none; box-shadow: none; border-bottom-color: var(--ink); }
+  /* a bridge's steps: a rail that runs from one chain's colour to the other's, a ring at each step between its ends */
+  & .hx-brs { margin: 18px 4px 4px; font: 400 12px/1.35 var(--sans); }
+  & .hx-brs li { padding-top: 22px; }
+  & .hx-brs li::before, & .hx-brs li::after { left: 14px; top: 6px; height: 2px; border-radius: 2px; }
+  & .hx-brs li::before { background: linear-gradient(90deg, color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)), color-mix(in srgb, var(--from) calc(67% - var(--i, 0) * 33%), var(--to))); opacity: .55; }
+  & .hx-brs .dot { box-sizing: border-box; width: 14px; height: 14px; background: var(--card); border: 2px solid color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)); }
+  & .hx-brs li:first-child .dot { background: var(--from); }
+  & .hx-brs li:last-child .dot { background: var(--to); border-color: var(--to); }
+  /* the two ways on from a bridge, as chips */
+  & #hx-brl { gap: 8px; margin-top: 14px; }
+  & .hx #hx-brl a { padding: 7px 13px; border: 1px solid var(--hair); border-radius: 999px; font: 400 12.5px var(--sans); text-decoration: none; }
+  @media (hover: hover) { & .hx #hx-brl a:hover { border-color: var(--hair-2); } }
+  & .hx .lede-s, & .hx .hx-hv, & .hx-lead { font-family: var(--sans); }
+  /* the page under the card: every section it had, quieter, so the card stays the page's subject. Less air between sections, smaller headings, the
+     line under a heading in the grotesk, the asset tabs and figures in the card's own hands (grotesk for names, mono for numbers), the coin smaller */
+  & .sx { padding-top: 88px; }
+  & .sx-h { margin-bottom: 32px; }
+  & .sx-h h2 { font-size: clamp(28px, 3.4vw, 38px); }
+  & .sx-h p { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
+  & .tc .sx-h { margin-bottom: 20px; }
+  & .tc-stage { height: 112px; margin-bottom: 8px; }
+  & .tc-tilt { scale: .42; }
+  & .tc-shadow { bottom: 6px; width: 92px; }
+  & .tc-as { margin-bottom: 22px; }
+  & .tc-as button { font: 500 14px/1 var(--sans); letter-spacing: 0; }
+  & .tc-facts dd { font: 400 26px/1.15 var(--mono); letter-spacing: -.03em; }
+  @media (min-width: 641px) { & .tc-facts { gap: 14px 48px; } }
+  @media (max-width: 640px) { & .tc-facts dd { font-size: clamp(13px, 4.1vw, 17px); } }   /* three figures to a row on a phone: the mono is wider than the serif was, so it is set to fit its column */
+  & .tc-links { margin-top: 26px; }
+  & .tc-links .btn { border-radius: 12px; }
+  /* the glyph layer (glyphs.js). The field is fixed behind the whole page (chrome.css), which is why the page's ground is on <html> and <body> is clear; the stamp
+     lies behind its side's own words; and a rule of glyphs thins out to dots between the headline and the card. */
+  & body { background: transparent; }
+  & .hx canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .3; pointer-events: none; }
+  /* the wallet sheet's ways to sign in: Tacit's mark struck across them in glyphs (glyphs.js), seen through the rows, and behind each way's mark a breath of its colour */
+  & #sheet-wallet .sheet-in { position: relative; isolation: isolate; }
+  & #sheet-wallet canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: .34; pointer-events: none; transition: opacity .15s ease; }
+  & #sheet-wallet .sheet-in:not(:has(#ws-in)) canvas.gx-stamp { display: none; }
+  & #ws-in .opt { --tone: transparent; background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), color-mix(in srgb, var(--field) 58%, transparent); }
+  & #ws-in .opt:has(use[href="#tk-eth"]) { --tone: #627EEA; }
+  & #ws-in .opt:has(use[href="#tk-btc"]), & #ws-in .opt:has(use[href="#i-key"]) { --tone: #F7931A; }
+  /* a way pointed at or focused carries its own mark, struck across its row alone (glyphs.js), as the card's "To" side carries its asset's; the
+     row is solid while it does, so the sheet's own mark does not show through it */
+  & #ws-in .opt { position: relative; isolation: isolate; }
+  & #ws-in .opt canvas.gx-way { border-radius: inherit; opacity: .4; }
+  & #ws-in .opt:has(> canvas.gx-way) { background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), var(--field); }
+  @media (prefers-reduced-motion: reduce) { & #sheet-wallet canvas.gx-stamp { transition: none; } }
+}
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=20512ecf" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=83bcec67" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -2018,16 +2209,25 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
    and its brand, chips and spacing. Nothing here is a size the page has to agree with: the header's width is read from the header. */
 
 header.top { position: relative; z-index: 30; container: top / inline-size; }
+/* one header on every page, so moving between a section's views (some are the front page, some pages of their own) moves nothing: the same height,
+   and, where the sections are named, the same place for them whatever the page's label beside the mark */
+header.top { padding-top: 22px; padding-bottom: 8px; }
+@container top (min-width: 900px) { header.top .brand { min-width: 160px; } }
 header.top .top-r { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
 
-/* page links: six in the header (icons, then icons and names as the header gets wide), the rest in the menu; on a phone all of them are there */
-.sn { display: flex; align-items: center; gap: 2px; }
+/* the sections: six in the header, beside the mark (glyphs, then names as the header gets wide), every other page in the menu at the far end; on a phone
+   the sections are the bar at the foot of the window */
+header.top .top-r { flex: 1 1 auto; margin-left: 14px; }
+.sn { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; }
+header.top .sn > .sm { margin-left: auto; }
 .sn > a, .sn summary {
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; flex: none;
   height: 40px; min-width: 40px; padding: 0 9px; border-radius: 12px; color: var(--mute);
   font: 500 12.5px/1 var(--mono); text-decoration: none; list-style: none; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
   transition: color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
+/* the look's own rules each sit under the rule they restyle, at the same weight */
+.sn > a, .sn summary { font: 400 14px/1 var(--sans, var(--mono)); }
 .sn summary::-webkit-details-marker { display: none; }
 /* the menu is a <details>: a page's own rules for details and summary (a border, a "+", a margin) are not for it */
 header.top .sm { margin: 0; padding: 0; border: 0; font: inherit; }
@@ -2052,14 +2252,17 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 @container top (min-width: 540px) { .sn .sm > summary > .bd { display: none; } }
 /* the Activity link chrome.js adds on a page without its own chip: at every width, once there is something in it, with the count still going */
 .sn > a.sa:not([hidden]) { display: inline-flex; }
+.sn > a.sa[hidden] { display: none; }
 .sn > a.sa .n { position: absolute; top: 3px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 8px; background: var(--orange); color: #fff; font: 600 10px/16px var(--mono); text-align: center; }
 @container top (min-width: 900px) {
-  .sn > a { padding: 0 13px 0 11px; }
+  .sn > a { padding: 0 13px; }
   .sn > a span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+  .sn > a:not(.sa) > svg { display: none; }      /* named, the sections need no glyph (Activity is a glyph alone) */
 }
 
 /* a very narrow header keeps the mark and the name; the page's label, and the Activity and total chips' room, go first */
 @container top (max-width: 340px) { header.top .brand i { display: none; } }
+@container top (max-width: 539px) { header.top .sn { flex-shrink: 0; } }      /* a phone: the chip shortens before the menu button beside it would run under it */
 
 /* the account chip (and, on the front page, Activity and the total): a quiet outline on the page's own ground, not a block; the dot says whether a wallet is open */
 header.top .chip {
@@ -2068,11 +2271,13 @@ header.top .chip {
   font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
+header.top .chip { background: var(--card, transparent); border-radius: 10px; font: 500 14px/1 var(--sans, var(--mono)); }
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
 header.top .chip .dot.on { background: var(--ok); }
 header.top .chip .dot.warn, header.top .chip .dot.live { background: var(--orange); }
 header.top .chip.act { position: relative; width: 40px; padding: 0; color: var(--mute); border-color: transparent; }
+header.top .chip.act { background: transparent; }
 header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
 @media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
 header.top .chip:active { transform: scale(.97); }
@@ -2090,6 +2295,71 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
   header.top a.brand::after { content: ''; position: absolute; inset: -8px -6px; }
 }
 
+/* the phone's bar: the first four sections and More, fixed to the foot of the window; the footer keeps clear of it */
+.bn { display: none; }
+@media (max-width: 539px) {
+  .bn { position: fixed; z-index: 29; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(5, 1fr); padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+    background: color-mix(in srgb, var(--paper, var(--bg, #fff)) 92%, transparent); border-top: 1px solid var(--hair); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+  .bn a { display: grid; justify-items: center; gap: 3px; min-height: 44px; padding: 5px 2px 3px; border-radius: 12px; color: var(--mute); font: 500 10.5px/1.1 var(--mono); text-decoration: none; -webkit-tap-highlight-color: transparent; }
+  .bn a svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .bn a[aria-current="page"] { color: var(--ink); background: var(--hair); }
+  .bn a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+  footer.sf { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
+  /* what a page pins to the foot of the window stands on the bar (57 px: its padding and a 44 px row), not under it: the buy bar of cBTC, tETH and
+     TAC's market (.stick), and the card's button row, sticky at the foot of a long card */
+  .stick:not([hidden]) { bottom: calc(57px + env(safe-area-inset-bottom)); }
+  body:has(.stick) footer.sf { margin-bottom: calc(137px + env(safe-area-inset-bottom)); }
+  .swc .act { bottom: calc(57px + env(safe-area-inset-bottom)); }
+}
+
+/* a section's head (chrome.js): its name and line, centred, and its views as a row of tabs with the one shown raised */
+.sh { margin: 28px auto 18px; text-align: center; }
+.sh h1 { margin: 0; font: 400 clamp(40px, 6vw, 56px)/1 var(--serif, Georgia, serif); letter-spacing: -.02em; color: var(--ink); }
+.sh h1:focus { outline: none; }
+.sh p { margin: 8px auto 0; max-width: 46em; color: var(--mute); font: 400 13.5px/1.5 var(--mono); }
+.sh-t { display: inline-grid; grid-auto-flow: column; grid-auto-columns: minmax(96px, 1fr); gap: 2px; margin: 18px auto 0; padding: 3px; max-width: 100%; border-radius: 15px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.sh-t a { display: flex; align-items: center; justify-content: center; min-height: 38px; padding: 6px 16px; border-radius: 12px; color: var(--mute); font: 500 13px/1.2 var(--mono); text-decoration: none; white-space: nowrap; transition: background-color .15s, color .15s; }
+.sh-t a[aria-current="page"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
+.sh-t a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+/* the pill under the current tab: chrome.js places it and, between two views of one document, slides it; unplaced, the tab wears it itself */
+.sh-t { position: relative; }
+.sh-t a { position: relative; }
+.sh-t .sh-i { position: absolute; top: 3px; bottom: 3px; left: 0; width: 0; border-radius: 12px; background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); pointer-events: none; transition: transform .24s cubic-bezier(.2,.7,.2,1), width .24s cubic-bezier(.2,.7,.2,1); }
+.sh-t.pill a[aria-current="page"] { background: none; box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { .sh-t .sh-i { transition: none; } }
+.sh p.sh-n { margin-top: 14px; max-width: 52em; font-size: 12.5px; color: var(--faint, var(--mute)); min-height: 1.5em; }
+.sh.sh-l { max-width: 560px; text-align: left; } .sh.sh-l .sh-more { margin-top: 18px; }
+@media (hover: hover) { .sh-t a:hover { color: var(--ink); } }
+@media (max-width: 520px) { .sh { margin-top: 18px; } .sh-t { display: grid; grid-auto-columns: 1fr; } .sh-t a { padding: 6px 6px; font-size: 12px; } }
+.sh-more { list-style: none; margin: 22px auto 0; padding: 4px 18px; max-width: 560px; text-align: left; background: var(--card); border: 1px solid var(--hair); border-radius: 18px; }
+.sh-more li + li { border-top: 1px solid var(--hair); }
+.sh-more a { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 2px 14px; padding: 14px 2px; color: var(--ink); font: 400 14px/1.3 var(--mono); text-decoration: none; }
+.sh-more a svg { grid-column: 1; grid-row: 1 / span 2; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; color: var(--mute); } .sh-more a svg.fill { fill: currentColor; stroke: none; }
+.sh-more a b { grid-column: 2; font-weight: 500; } .sh-more a small { grid-column: 2; font-size: 12px; color: var(--mute); } .sh-more a i { grid-column: 3; grid-row: 1 / span 2; font-style: normal; color: var(--mute); }
+/* in Graphite the sections' words are set in the grotesk, as the header's are; a page that has no --sans keeps its own face */
+.sh p, .sh-t a, .sh-more a, .bn a { font-family: var(--sans, var(--mono)); }
+.sh-t { border-radius: 10px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); }
+.sh-t a { border-radius: 8px; }
+.sh-t a[aria-current="page"] { background: var(--raise, var(--card)); }
+.sh-t .sh-i { border-radius: 8px; background: var(--raise, var(--card)); }
+/* each page of its own, as the view of its section: its own heading (and the switch the section's tabs now are) gives way to the section's head; everything
+   else the page has stays, its notes, explainers and status lines included, and what belongs to the other view is out of the way */
+/* (the vault is stamped with its section alone, data-sec="borrow", until chrome.js names the side from the address; the page's own rules already keep
+   each side's blocks to that side from the first paint) */
+html[data-sec^="borrow"] .hero :is(h1, nav.via, .sub) { display: none !important; }
+html[data-sec^="borrow"] .hero { padding-top: 0; text-align: center; }      /* what the hero still holds (the explainer, a promo line) sits under the head */
+html[data-sec^="borrow"] .hero .how { margin-inline: auto; text-align: left; } html[data-sec^="borrow"] .hero .how summary { margin-inline: auto; }      /* (opened, it reads left to right) */
+html[data-sec="borrow/btc"] :is(#app, #how), html[data-sec="borrow/tac"] .btc-side { display: none !important; }
+:root:has(#pools:target) #sec-head { display: none; }
+/* opened on #btc, the head stamped for the first view shows the Bitcoin tab as the current one until chrome.js has said so (as the page's own switch does) */
+:root:has(#btc:target) .sh-t:not(.pill) a[data-side="tac"] { color: var(--mute); background: none; box-shadow: none; }
+:root:has(#btc:target) .sh-t:not(.pill) a[data-side="btc"] { color: var(--ink); background: var(--raise, var(--card)); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }      /* /vault/#pools is the whole page (chrome.js takes the head away) */
+html[data-sec="chains/fast"] .hero :is(h1, .sub) { display: none !important; }
+html[data-sec="chains/fast"] .hero { padding: 0; }      /* (its status line, when it shows, keeps its own margin) */
+html[data-sec="defi/farm"] .hero :is(#farm-h1, .lede) { display: none !important; }
+html[data-sec="rewards/"] #find-h { display: none !important; }
+
 /* the menu: under the header's right edge, whatever the width */
 .sm-p {
   position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
@@ -2100,6 +2370,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 .sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
+.sm-p a { font: 400 14px/1 var(--sans, var(--mono)); }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
 .sm-p a[aria-current="page"] { background: var(--hair); }
 .sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
@@ -2107,6 +2378,13 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
 @media (hover: hover) { .sm-p a:hover { background: var(--hair); } }
+/* The glyph layer (glyphs.js). The field is fixed behind a page, so it is there wherever the page is scrolled to. It is behind everything, so a
+   page's ground has to be on <html> for it to be seen: <body> keeps its own pattern and gives up only its colour. The menu's panel has Tacit's mark struck
+   across its foot. Neither is there on a page the script leaves alone, or when the script does not load. */
+canvas.gx-field { position: fixed; top: 0; left: 0; z-index: -1; max-width: 100%; pointer-events: none; }
+:root:has(> body > canvas.gx-field) { background-color: var(--paper, var(--bg)); }
+:root:has(> body > canvas.gx-field) > body { background-color: transparent; }
+.sm-p canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; border-radius: inherit; opacity: .24; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .sm-p { animation: none; } .sn > a, .sn summary, header.top .chip { transition: none; } }
 
 /* a page with little on it still reaches the bottom of the window, so its footer is not left floating under a few lines (a page that sets a height for its own <main> keeps it) */
@@ -2116,6 +2394,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
    places that have a mark of their own are that mark; in a narrow one every place is an icon that says its name on hover and to a screen reader (they narrow a little on a small
    phone before they would run off the page) */
 footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
+footer.sf { font: 400 13px/1.4 var(--sans, var(--mono)); }
 footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
 footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); text-decoration: none; transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
 footer.sf nav a:active { transform: scale(.92); }
@@ -2133,10 +2412,37 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
 /* what only one page has to point at (papers, the pool on each chain): a quiet line above the footer */
 .sf-x { display: flex; flex-wrap: wrap; align-items: center; gap: 0 18px; margin-top: 48px; color: var(--mute); font: 400 12px/1.4 var(--mono); }
+.sf-x { font: 400 13px/1.4 var(--sans, var(--mono)); }
 .sf-x + footer.sf { margin-top: 12px; }
 .sf-x span { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
 .sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
 @media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
+
+/* Graphite's palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
+   its head, so the one block recolours them all and a page's own styles are untouched. The values are the front page's (index.html keeps them with the rest of its
+   tokens). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and are left out: the SPX page, by
+   its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the build gives it. */
+:root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
+  --paper: #E6E6E4; --bg: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --ink: #17181B; --mute: #5C5D62;
+  --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24); --hair-strong: rgba(23,24,27,.24); --skel: rgba(23,24,27,.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
+    --paper: #131417; --bg: #131417; --card: #1A1B1F; --field: #15161A; --ink: #E4E4E1; --mute: #9A9BA1;
+    --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22); --hair-strong: rgba(228,228,225,.22); --skel: rgba(228,228,225,.07);
+  }
+}
+
+/* Graphite's grotesk, for the header, the menu and the footer of every page that wears them (the front page names it in its own head as well, for its first paint), and a
+   local face scaled to its width and line metrics that shows until it arrives; the same for Newsreader, the front page's serif. Measured against each font's own
+   advances. */
+@font-face { font-family: 'Schibsted Grotesk'; font-weight: 400 600; font-display: swap; src: url('/fonts/schibsted-grotesk-latin.woff2') format('woff2'); }
+:root { --sans: 'Schibsted Grotesk', 'Schibsted Grotesk Fallback', system-ui, sans-serif; }
+@font-face { font-family: 'Schibsted Grotesk Fallback'; src: local('Arial'), local('Helvetica'), local('Liberation Sans'), local('Arimo'); size-adjust: 103.5%; ascent-override: 94.7%; descent-override: 25.1%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback'; src: local('Georgia'); size-adjust: 96.1%; ascent-override: 77%; descent-override: 27.1%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback'; font-style: italic; src: local('Georgia Italic'), local('Georgia-Italic'); size-adjust: 89.1%; ascent-override: 83.1%; descent-override: 29.2%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback T'; src: local('Times New Roman'), local('TimesNewRomanPSMT'), local('Liberation Serif'), local('Tinos'); size-adjust: 105%; ascent-override: 70.5%; descent-override: 24.8%; line-gap-override: 0%; }
+@font-face { font-family: 'Newsreader Fallback T'; font-style: italic; src: local('Times New Roman Italic'), local('TimesNewRomanPS-ItalicMT'), local('Liberation Serif Italic'), local('Tinos Italic'); size-adjust: 98.9%; ascent-override: 74.8%; descent-override: 26.3%; line-gap-override: 0%; }
 
 /* A serif scaled to Instrument Serif's width and line metrics (Georgia, Times or Noto Serif, whichever the device has) shows until the font arrives, so the swap moves nothing */
 @font-face { font-family: 'Instrument Serif Fallback'; src: local('Georgia'); size-adjust: 75.8%; ascent-override: 130.6%; descent-override: 40.9%; line-gap-override: 0%; }
@@ -2146,7 +2452,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=3cafe52f" defer></script>
+<script src="/chrome.js?cb=1b2d7806" defer></script>
 <!-- chrome:head:end -->
 <link rel="preload" href="/fonts/orbitron-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/space-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -2195,37 +2501,47 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     <a class="brand" href="/" aria-label="tacit v1"><svg class="tk" aria-hidden="true"><use href="#tk-tac"/></svg><b>tacit</b><i>v1</i></a>
     <div class="top-r">
       <!-- chrome:nav:begin -->
-      <nav class="sn" aria-label="Pages">
-          <a href="/assets/" title="Assets"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg><span>Assets</span></a>
-          <a href="/farm/" title="Farm"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 14.2A4.2 4.2 0 0 1 7.8 6.1a4.6 4.6 0 0 1 8.4 0 4.2 4.2 0 0 1 1.3 8.1"/><path d="M6.5 14.2V19a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-4.8"/><path d="M6.5 16.8h11"/></svg><span>Farm</span></a>
+      <nav class="sn" aria-label="Sections">
+          <a href="/#portfolio" title="Portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg><span>Portfolio</span></a>
+          <a href="/#/payments" title="Payments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Payments</span></a>
+          <a href="/#/defi" title="DeFi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10l-3-3"/><path d="M17 17H7l3 3"/></svg><span>DeFi</span></a>
+          <a href="/#/chains" title="Chains"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Chains</span></a>
+          <a href="/vault/" title="Borrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg><span>Borrow</span></a>
           <a href="/rewards/" title="Rewards"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg><span>Rewards</span></a>
-          <a href="/prove/" title="Prove"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg><span>Prove</span></a>
           <details class="sm">
             <summary aria-label="More pages" title="More"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.7"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.7"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.7"/></svg></summary>
             <div class="sm-p">
-            <a class="pr" href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
-            <a class="pr" href="/farm/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 14.2A4.2 4.2 0 0 1 7.8 6.1a4.6 4.6 0 0 1 8.4 0 4.2 4.2 0 0 1 1.3 8.1"/><path d="M6.5 14.2V19a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-4.8"/><path d="M6.5 16.8h11"/></svg>Farm</a>
+            <a class="pr" href="/vault/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg>Borrow</a>
             <a class="pr" href="/rewards/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M5 12v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8"/><path d="M7.5 8a2.5 2.5 0 1 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 1 1 0 5"/></svg>Rewards</a>
-            <a class="pr" href="/prove/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Prove</a>
             <hr class="pr">
-            <a href="/#portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg>Portfolio</a>
-            <a href="/pay/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg>Pay</a>
-            <a href="/vault/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5"/><path d="M5.5 10v8M10 10v8M14 10v8M18.5 10v8"/><path d="M3 20.5h18"/></svg>Borrow</a>
-            <a href="/bridge/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
+            <a href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
             <a href="/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>TAC</a>
+            <a href="/pay/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg>Pay pool</a>
+            <a href="/bridge/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
             <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
             <a href="/shop/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 4h11L21 9l-9 11L3 9z"/><path d="M3 9h18"/><path d="M9.5 4L8 9l4 11 4-11-1.5-5"/></svg>Shop</a>
+            <a href="/prove/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Prove</a>
             <a href="/tasks/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>Tasks</a>
             <a href="/face/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 20V10a6 6 0 0 1 12 0v10l-2-2-2 2-2-2-2 2-2-2z"/><path d="M9.5 11.5h1M13.5 11.5h1"/></svg>FACE</a>
             </div>
           </details>
         </nav>
       <!-- chrome:nav:end -->
-      <button class="chip act" id="act" type="button" aria-haspopup="dialog" aria-label="Activity" hidden>
+      <button class="chip act" id="act" type="button" aria-haspopup="dialog" aria-label="Activity" title="Activity" hidden>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="num" id="act-n" hidden></span>
       </button>
       <button class="chip tot" id="hold-tot" type="button" hidden title="What you hold, private and public, on both chains"><b>$0</b></button>
-      <button class="chip" id="wallet" type="button"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Sign in</span></button>
+      <div class="acm" id="acct">
+        <button class="chip" id="wallet" type="button"><span class="dot" id="wallet-dot"></span><span id="wallet-label">Sign in</span></button>
+        <div class="acm-p" id="acct-pop" role="menu" aria-label="Your account" hidden>
+          <div class="acm-k"><span>Your Tacit ID</span><b class="num" id="acct-id"></b></div>
+          <button type="button" role="menuitem" data-acct="wallet" title="Your tacit1 address, the key's backup, where gas comes from"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg>Wallet and key</button>
+          <button type="button" role="menuitem" data-acct="addresses" title="Your tacit1, Bitcoin and Ethereum addresses"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.2"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.2"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.2"/><path d="M13.5 13.5h3v3M20 13.5V20h-3.5M13.5 20h.01"/></svg>Addresses</button>
+          <button type="button" role="menuitem" data-acct="proofs" title="Prove with the relay or on this computer"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>Proofs</button>
+          <hr>
+          <button type="button" role="menuitem" data-acct="out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M15 8l4 4-4 4"/><path d="M19 12H9"/></svg>Sign out</button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -2281,6 +2597,10 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </section>
   <dialog class="treq tn" id="tac-notes" aria-labelledby="tn-h"><div class="treq-in"><button class="treq-x" type="button" data-tn-close aria-label="Close">×</button><div id="tn-b"></div></div></dialog>
   <dialog class="treq" id="tac-req" aria-labelledby="treq-h"><div class="treq-in"><button class="treq-x" type="button" data-treq-close aria-label="Close">×</button><div id="treq-b"></div></div></dialog>
+  <section class="ppg" id="page-portfolio" aria-labelledby="ppg-h">
+    <div class="ppg-head"><div><h1 id="ppg-h" tabindex="-1">Portfolio</h1><p>Everything you hold, by asset. Where it sits is the small print.</p></div><button class="link" type="button" id="ppg-re">Refresh</button></div>
+    <div id="ppg-body"></div>
+  </section>
   <section class="hero" aria-labelledby="hero-h">
     <div class="spx-top">
       <p class="spx-tick" aria-hidden="true"><span>PROXY.TERMINAL // V.6900</span><span>BLOCK.SYNC//OK</span><span>LUMINA.SIG&gt;&gt;STABLE</span><span>AEON.NET::ONLINE</span><span>TRADFI&gt;&gt;FLIPPING</span></p>
@@ -2535,6 +2855,13 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       <a href="https://discord.gg/VxYx9XSBrM" title="Tacit Discord community" aria-label="Tacit Discord community" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" class="fill" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></svg></a>
     </nav>
   </footer>
+  <nav class="bn" aria-label="Sections">
+    <a href="/#portfolio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/><path d="M16 14h.01"/></svg><span>Portfolio</span></a>
+    <a href="/#/payments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"/><path d="M13 6l6 6-6 6"/></svg><span>Payments</span></a>
+    <a href="/#/defi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10l-3-3"/><path d="M17 17H7l3 3"/></svg><span>DeFi</span></a>
+    <a href="/#/chains"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/></svg><span>Chains</span></a>
+    <a href="/#/menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg><span>More</span></a>
+  </nav>
   <!-- chrome:foot:end -->
 </div>
 
@@ -2576,12 +2903,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 </dialog>
 
 <!-- ── points ── -->
-<dialog class="sheet" id="sheet-portfolio" aria-labelledby="portfolio-h">
-  <div class="sheet-in">
-    <div class="sheet-head"><h2 id="portfolio-h" tabindex="-1" autofocus>Portfolio</h2><button class="x" type="button" data-close aria-label="Close">×</button></div>
-    <div id="portfolio-body"></div>
-  </div>
-</dialog>
 
 <dialog class="sheet" id="sheet-pts" aria-labelledby="pts-h">
   <div class="sheet-in">
@@ -2715,7 +3036,7 @@ import { poolNote } from '/pool-hint.js?cb=a5413c70';
 import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { balanceRows } from '/wallet-balances.js?cb=1cd3e7a4';
-import { portfolio } from '/portfolio.js?cb=4bd81bcc';
+import { portfolio, byAsset } from '/portfolio.js?cb=fcadbdb8';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=d4520508';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapPlanExt, zapPlanExtFor, addRoute, zapWorth, foundingPlan, zapEntry, farmPick } from '/lp-zap.js?cb=041bcb7f';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
@@ -4374,6 +4695,7 @@ function paintAct() {
   b.classList.toggle('busy', live > 0);
   n.hidden = !live; n.textContent = live ? String(live) : '';
   b.setAttribute('aria-label', live ? `Activity, ${live} in progress` : 'Activity');
+  if (PFP.on) paintPfPage();
   if ($('#sheet-act').open) renderAct();
 }
 function openAct() { renderAct(); const d = $('#sheet-act'); if (!d.open) d.showModal(); syncLink(); }
@@ -4435,7 +4757,7 @@ const render = {}, load = {};
 const tacCtx = () => ({ $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brHolds, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, heldParts, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your, get CH() { return CH; }, get T() { return T; }, get TACP() { return TACP; }, get TCARD() { return TCARD; }, get TCO() { return TCO; }, get TPOOL() { return TPOOL; }, get TREQ() { return TREQ; }, get brLooking() { return brLooking; } });
 // front-tac:end
 let TAC_CODE = null;
-const tacReady = lazy(() => import('/front/tac.js?cb=ed16af07').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
+const tacReady = lazy(() => import('/front/tac.js?cb=6ded7ca4').then((m) => { TAC_CODE ||= m.default(tacCtx()); }));
 const withTac = (f) => (TAC_CODE ? f() : tacReady().then(f, () => {}));
 for (const k of ["tac"]) render[k] = () => { if (!TAC_CODE) withTac(() => rerender(k)); };
 for (const k of ["tac"]) load[k] = () => tacReady().then(() => load[k]());
@@ -4449,10 +4771,10 @@ const tacWarm = (e) => { if (!TAC_CODE && e.target.closest?.('a[href^="/tac/"], 
 for (const t of ['pointerover', 'focusin']) document.addEventListener(t, tacWarm, { passive: true });
 // The sheets' code is front/sheets.js: it loads when a sheet first opens, on the first press or key, or once the page is idle.
 // front-sheets:begin
-const sheetsCtx = () => ({ $, $$, OWNNODE, ACT, ADDR, ASSET_SEND_SATS, BASE_NODES, BF, BR_DONE, BTC, BTC_NOTE_ASSETS, BTC_TOKENS, BWB, BWX, CETH_ID, CHAIN_ASSETS, CHAIN_META, CSEND, CS_ASSETS, DEV, DEVICE_CHAINS, DEV_JOB, DEV_PREF, DISTRIBUTOR, E10, ETHERSCAN, ETH_DP, ETH_LOG_NODES, EVM_POOL, EVM_ROUTER, EXIT_AHEAD, FARM, FLASH, HARVEST_WORTH, HOLD, HOLD_CONSENT, HX, HX_FLIGHT, JOBS, JOIN, KEEP_READY, KEPT, L2BAL, LK, LOCAL, LOCK, LOGO, farmIcons, icoHtml, LP_KEEP_ETH, MEMPOOL, NOTIFY_KEY, OFFERED, OPENISH, OPEN_OFFERED, OUT, P, PGM, POOL_TK, PTS, PTS_BOARD, REDEEM, RETRY, REVERTS, REWARD_PAID, RS, RUNS, Raw, S, SATS_DUST, SEALED, SEL, SELF, SELFDO, SP, SP_PREF, SP_SEAL, SWAP_ASSETS, TAB, TAC_BTC_ID, TAC_DP, TK, TOKEN_POOLS, US, V1, VOUCH, WAIT_WHY, WAL, WNS, WTAC, XA, XA_REDEEM, XO_AT, XO_STEPS, ZAP_SETTLE_GAS, ZROUTER, ZSWAP, aFor, aboutEth, acked, actBridge, actBtc, actDone, actGet, actSave, addrFlat, addrWord, addressFor, addressId, ago, alts, aprLong, aprOf, aprShort, assetById, assetSendForm, bFor, badStatus, big, bondAck, bondDue, bondElsewhere, bondFunds, bondNoWallet, bondNotes, bondVia, bondsNow, brJournal, btcQr, btcRouteM, btcSendNow, busy, bwCanWst, byValue, bytesToHex, chainFull, chainMark, chainMarks, chainNow, chainRpc, chainTag, clearField, clock, concatBytes, connect, copy, cutAhead, dashGo, dashSoon, dayFmt, dayShort, deadline, debounce, depositCallout, devBal, devDepositSend, devNow, devOn, devOutSend, devProver, devResolve, devSaid, deviceSync, deviceWallet, dfmt, earnRows, earnedNow, ended, errText, etaWords, ethBalance, ethBase, ethCall, ethKeep, ethOfTac, evm, exitAheadFor, exitGo, exitKind, exitPosition, failText, farmLinkOf, feeRoom, feesLine, fmt, freeNotes, getDeviceMods, getUx, heldLabel, hexToBytes, hmac, holdBehind, holdConsented, holdPayTo, holderTier, holdingRound, html, hxBwInflight, hxDraft, hxLive, hxPts, hxWarmWrap, idRow, inUse, joinAhead, joinMax, joinNow, joinOnePlan, joinPairPlan, joinSides, joinTerms, kLock, kNote, kOfAsset, kPos, keccak_256, keep, keepKey, keepReady, keepSizes, keeperDown, keeperRead, keeperTrouble, keeperTx, keyRow, knownWallet, lastEnd, lastSeen, leftWords, linkNote, linked, listed, loadBonds, loadBorrow, loadBtc, loadFarms, loadHeld, loadLocks, loadPoints, loadPositions, loadUnified, loadUsdtBal, lockAhead, lockId, lockLine, lockList, lockNext, lossGate, lossOk, lpCost, lpKeep, lpPoolFor, lpSays, lpSendNow, lpShare, lpTicker, lsKv, maxAria, midAction, mine, mount, multicall, needKey, nfmt, noRelayFee, noteFor, noteKeep, now, offerMore, offerSelf, okStatus, onEdit, onTheWay, opParts, openLink, openOf, openProve, openSheet, openerOn, otherKey, otherSelf, otherWallet, overBalance, ownAccount, ownJob, ownNow, ownOn, ownWord, paceOf, paintAct, paintProve, paintSp, paintWallet, paintWalletBal, pairName, parseUnits, payFrom, payFromTok, payer, payingAccount, pct, pctFmt, pendingFor, pendingSent, perProof, permitSig, plain, pointsWho, poolLine, poolMaking, poolVsMarket, poolWorth, potTac, precisionApr, privateOf, proofsBusy, proofsFor, proveAhead, proveFmt, proveFor, proveOr, proveOwn, prover, provingNote, ptChain, ptsDays, ptsEnd, ptsFmt, ptsWhy, pubExitSend, pubOutData, pubPreview, pubSend, quoteErr, rankRows, rateStr, reProve, readOutlook, readPublicTac, readRow, readWrapTip, recipientOf, redeemBuild, redeemOn, redeemRefresh, redeemSend, redeemSent, redeemStep, refreshAll, refreshFarm, refreshWalletBal, relayDeposit, relayProving, relayWhy, render, rerender, resetPrivate, resolveToM, revertText, rewardPop, rewardWorth, rpc, running, samePos, say, sayErr, sayLive, scanIfNew, scanPrivate, scanShielded, scheduled, sealOn, secp, segSub, selfDo, selfOffer, selfWork, sendTx, setDeviceChain, setNotify, setPayer, settleBorrow, shLookingNote, sha256, sharePct, sharesEth, sheetOf, shieldedApr, short, shown, shownAs, sig, signIn, sizesNow, sleep, spApply, spMod, spOn, spRead, spSaid, spendable, stealthSendNow, stepBond, stepHarvest, stepLi, stepOf, stepRedeem, stepTakeOut, stepUnbond, store, strip, swapAsset, syncAccount, syncLink, tacOf, tacShort, tacitShort, takeBond, takeDraft, takenByOther, tickerOf, lockDec, tkPin, toSelf, toast, tokDepositSend, tokRecipient, tokenSync, tokenWallet, tooFine, txFail, txLink, txMark, txSite, txUrl, unharvested, unitOf, unwrapNow, usdtExitFee, usdtOwner, usdtWrapNow, utcDay, viaText, viewAddr, vouchers, waitRanOut, waitTx, walletBalances, walletPriv, warn, wireAck, wireFinish, wireSignIn, wireSub, withKey, word, wordAt, wrapMax, wrapNow, wtacHere, xaOf, xbHeld, xbOf, xoCovered, xoDue, xoErr, xoFundRow, xoJournal, xoKeyOpen, xoLink, xoNoteText, xoOut, xoRecords, xoShown, your, zapAhead, zapNow, zapQuote, zapUnit, zapsFinish, zapsMine, zapsRead, get PTSINFO() { return PTSINFO; }, get T() { return T; }, get UNI() { return UNI; } });
+const sheetsCtx = () => ({ $, $$, OWNNODE, ACT, ADDR, ASSET_SEND_SATS, BASE_NODES, BF, BR_DONE, BTC, BTC_NOTE_ASSETS, BTC_TOKENS, BWB, BWX, CETH_ID, CHAIN_ASSETS, CHAIN_META, CSEND, CS_ASSETS, DEV, DEVICE_CHAINS, DEV_JOB, DEV_PREF, DISTRIBUTOR, E10, ETHERSCAN, ETH_DP, ETH_LOG_NODES, EVM_POOL, EVM_ROUTER, EXIT_AHEAD, FARM, FLASH, HARVEST_WORTH, HOLD, HOLD_CONSENT, HX, HX_FLIGHT, JOBS, JOIN, KEEP_READY, KEPT, L2BAL, LK, LOCAL, LOCK, LOGO, farmIcons, icoHtml, LP_KEEP_ETH, MEMPOOL, NOTIFY_KEY, OFFERED, OPENISH, OPEN_OFFERED, OUT, P, PGM, POOL_TK, PTS, PTS_BOARD, REDEEM, RETRY, REVERTS, REWARD_PAID, RS, RUNS, Raw, S, SATS_DUST, SEALED, SEL, SELF, SELFDO, SP, SP_PREF, SP_SEAL, SWAP_ASSETS, TAB, TAC_BTC_ID, TAC_DP, TK, TOKEN_POOLS, US, V1, VOUCH, WAIT_WHY, WAL, WNS, WTAC, XA, XA_REDEEM, XO_AT, XO_STEPS, ZAP_SETTLE_GAS, ZROUTER, ZSWAP, aFor, aboutEth, acked, actBridge, actBtc, actDone, actGet, actSave, addrFlat, addrWord, addressFor, addressId, ago, alts, aprLong, aprOf, aprShort, assetById, assetSendForm, bFor, badStatus, big, bondAck, bondDue, bondElsewhere, bondFunds, bondNoWallet, bondNotes, bondVia, bondsNow, brJournal, btcQr, btcRouteM, btcSendNow, busy, bwCanWst, byValue, bytesToHex, chainFull, chainMark, chainMarks, chainNow, chainRpc, chainTag, clearField, clock, concatBytes, connect, copy, cutAhead, dashGo, dashSoon, dayFmt, dayShort, deadline, debounce, depositCallout, devBal, devDepositSend, devNow, devOn, devOutSend, devProver, devResolve, devSaid, deviceSync, deviceWallet, dfmt, earnRows, earnedNow, ended, errText, etaWords, ethBalance, ethBase, ethCall, ethKeep, ethOfTac, evm, exitAheadFor, exitGo, exitKind, exitPosition, failText, farmLinkOf, feeRoom, feesLine, fmt, freeNotes, getDeviceMods, getUx, heldLabel, hexToBytes, hmac, holdBehind, holdConsented, holdPayTo, holderTier, holdingRound, html, hxBwInflight, hxDraft, hxLive, hxPts, hxWarmWrap, idRow, inUse, joinAhead, joinMax, joinNow, joinOnePlan, joinPairPlan, joinSides, joinTerms, kLock, kNote, kOfAsset, kPos, keccak_256, keep, keepKey, keepReady, keepSizes, keeperDown, keeperRead, keeperTrouble, keeperTx, keyRow, knownWallet, lastEnd, lastSeen, leftWords, linkNote, linked, listed, loadBonds, loadBorrow, loadBtc, loadFarms, loadHeld, loadLocks, loadPoints, loadPositions, loadUnified, loadUsdtBal, lockAhead, lockId, lockLine, lockList, lockNext, lossGate, lossOk, lpCost, lpKeep, lpPoolFor, lpSays, lpSendNow, lpShare, lpTicker, lsKv, maxAria, lockWallet, midAction, mine, mount, multicall, needKey, nfmt, noRelayFee, noteFor, noteKeep, now, offerMore, offerSelf, okStatus, onEdit, onTheWay, opParts, openLink, openOf, openProve, openSheet, openerOn, otherKey, otherSelf, otherWallet, overBalance, ownAccount, ownJob, ownNow, ownOn, ownWord, paceOf, paintAct, paintProve, paintSp, paintWallet, paintWalletBal, pairName, parseUnits, payFrom, payFromTok, payer, payingAccount, pct, pctFmt, pendingFor, pendingSent, perProof, permitSig, plain, pointsWho, poolLine, poolMaking, poolVsMarket, poolWorth, potTac, precisionApr, privateOf, proofsBusy, proofsFor, proveAhead, proveFmt, proveFor, proveOr, proveOwn, prover, provingNote, ptChain, ptsDays, ptsEnd, ptsFmt, ptsWhy, pubExitSend, pubOutData, pubPreview, pubSend, quoteErr, rankRows, rateStr, reProve, readOutlook, readPublicTac, readRow, readWrapTip, recipientOf, redeemBuild, redeemOn, redeemRefresh, redeemSend, redeemSent, redeemStep, refreshAll, refreshFarm, refreshWalletBal, relayDeposit, relayProving, relayWhy, render, rerender, resetPrivate, resolveToM, revertText, rewardPop, rewardWorth, rpc, running, samePos, say, sayErr, sayLive, scanIfNew, scanPrivate, scanShielded, scheduled, sealOn, secp, segSub, selfDo, selfOffer, selfWork, sendTx, setDeviceChain, setNotify, setPayer, settleBorrow, shLookingNote, sha256, sharePct, sharesEth, sheetOf, shieldedApr, short, shown, shownAs, sig, signIn, sizesNow, sleep, spApply, spMod, spOn, spRead, spSaid, spendable, stealthSendNow, stepBond, stepHarvest, stepLi, stepOf, stepRedeem, stepTakeOut, stepUnbond, store, strip, swapAsset, syncAccount, syncLink, tacOf, tacShort, tacitShort, takeBond, takeDraft, takenByOther, tickerOf, lockDec, tkPin, toSelf, toast, tokDepositSend, tokRecipient, tokenSync, tokenWallet, tooFine, txFail, txLink, txMark, txSite, txUrl, unharvested, unitOf, unwrapNow, usdtExitFee, usdtOwner, usdtWrapNow, utcDay, viaText, viewAddr, vouchers, waitRanOut, waitTx, walletBalances, walletPriv, warn, wireAck, wireFinish, wireSignIn, wireSub, withKey, word, wordAt, wrapMax, wrapNow, wtacHere, xaOf, xbHeld, xbOf, xoCovered, xoDue, xoErr, xoFundRow, xoJournal, xoKeyOpen, xoLink, xoNoteText, xoOut, xoRecords, xoShown, your, zapAhead, zapNow, zapQuote, zapUnit, zapsFinish, zapsMine, zapsRead, get PTSINFO() { return PTSINFO; }, get T() { return T; }, get UNI() { return UNI; } });
 // front-sheets:end
 let SHEET_CODE = null;
-const sheetsReady = lazy(() => import('/front/sheets.js?cb=6da679f1').then((m) => { SHEET_CODE ||= m.default(sheetsCtx()); }));
+const sheetsReady = lazy(() => import('/front/sheets.js?cb=9bfe6511').then((m) => { SHEET_CODE ||= m.default(sheetsCtx()); }));
 const withSheets = (f) => (SHEET_CODE ? f() : sheetsReady().then(f, () => {}));
 for (const k of ["wallet","eth","usdt","btc","pts","farm","borrow"]) render[k] = () => { if (!SHEET_CODE) withSheets(() => rerender(k)); };
 function renderProve(...a) { if (SHEET_CODE) return SHEET_CODE.renderProve(...a); withSheets(() => { if ($('#sheet-prove').open) reProve(); }); }
@@ -5145,10 +5467,47 @@ function btcSend(to, sats) {
 function paintWallet() {
   try { hxPathPaint(); } catch { }
   $('#wallet-dot').className = 'dot' + (S.key ? ' on' : S.address ? ' live' : '');
+  $('#wallet').setAttribute('aria-haspopup', S.key ? 'menu' : 'dialog');
+  if (ACM) acctMenu(ACM.open);      // (shut when the key has closed; and the chip says which it opens)
   const wid = $('#wd-id'); if (wid) wid.textContent = S.key?.tacit ? short(S.key.tacit, 6) : 'tacit1…';
   mount($('#wallet-label'), S.key ? (S.key.tacit ? chipView(S.key.tacit) : html`Opening…`) : html`${knownWallet() || otherWallet() ? 'Open wallet' : S.address ? short(S.address) : 'Sign in'}`);
 }
-$('#wallet').onclick = () => { openSheet('wallet'); if (!S.key) getUx().catch(() => {}); };
+// The account chip. Signed out it opens the wallet sheet, where the ways to sign in are. With a Tacit key open it is a menu: the ID, then the wallet and
+// its key (the wallet sheet), the addresses (the Bitcoin sheet's receive), how proofs are made (the proving sheet), and signing out, which locks the
+// key as the wallet sheet's Lock does. ACM.open is whether the menu shows; it shuts on a press outside, Escape, a choice, and when the key closes.
+var ACM = { open: false };      // (var: paintWallet, above, can run before this line does)
+function acctMenu(on, byKey = false) {
+  const pop = $('#acct-pop'), chip = $('#wallet');
+  on = !!on && !!S.key;
+  ACM.open = on; pop.hidden = !on;
+  if (S.key) { chip.setAttribute('aria-expanded', String(on)); chip.setAttribute('aria-controls', 'acct-pop'); } else { chip.removeAttribute('aria-expanded'); chip.removeAttribute('aria-controls'); }      // signed out it opens a sheet, not this
+  if (on) { $('#acct-id').textContent = S.key.tacit ? short(S.key.tacit, 8) : 'tacit1…'; if (byKey) pop.querySelector('button')?.focus(); }
+}
+function lockWallet() {      // locks the key: the account menu's Sign out and the wallet sheet's Lock (front/sheets.js #w-lock)
+  if (midAction()) return;
+  evm.deselectProvider(); S.key = null; syncAccount(); resetPrivate(); paintWallet(); refreshAll(); rerender('wallet');
+}
+$('#wallet').onclick = (e) => {
+  if (S.key) return acctMenu(!ACM.open, e.detail === 0);
+  openSheet('wallet'); getUx().catch(() => {});
+};
+$('#acct-pop').onclick = (e) => {
+  const k = e.target.closest('[data-acct]')?.dataset.acct;
+  if (!k) return;
+  acctMenu(false); $('#wallet').focus({ preventScroll: true });      // (the chip, so a sheet that shuts hands focus back to it)
+  if (k === 'wallet') openSheet('wallet'); else if (k === 'addresses') openLink('bitcoin/receive'); else if (k === 'proofs') openLink('prove-self'); else if (k === 'out') lockWallet();
+};
+document.addEventListener('click', (e) => { if (ACM.open && !e.target.closest?.('#acct')) acctMenu(false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ACM.open) { acctMenu(false); $('#wallet').focus(); } });
+// the arrows, Home and End walk its entries (from the chip, Down goes in); focus leaving it, or the address changing under it, shuts it
+$('#acct').addEventListener('keydown', (e) => {
+  if (!ACM.open) return;
+  const items = [...$('#acct-pop').querySelectorAll('[role="menuitem"]')], i = items.indexOf(document.activeElement);
+  const to = e.key === 'ArrowDown' ? items[(i + 1) % items.length] : e.key === 'ArrowUp' ? (i <= 0 ? items.at(-1) : items[i - 1]) : e.key === 'Home' ? items[0] : e.key === 'End' ? items.at(-1) : null;
+  if (to) { e.preventDefault(); to.focus(); }
+});
+$('#acct').addEventListener('focusout', (e) => { if (ACM.open && e.relatedTarget && !$('#acct').contains(e.relatedTarget)) acctMenu(false); });
+for (const ev of ['hashchange', 'popstate']) addEventListener(ev, () => { if (ACM.open) acctMenu(false); });
 $('#hold-tot').onclick = () => openPortfolio();
 const WAL = { mode: 'add', asset: 'eth', chain: 1, all: false };
 const L2BAL = { who: null, at: 0, p: null };
@@ -5162,7 +5521,7 @@ const wbRow = (r) => {
   const v = r.v != null ? show(r.v) : prev != null ? html`<span class="stale">${show(prev)}</span>` : r.err || r.lazy ? '—' : html`<span class="sk" style="--w:7ch"></span>`;
   const nn = r.noteVals?.length || 0, said = 'note' in r ? r.note : r.meta;
   const parts = [r.delta ? html`<span class="${r.delta.up ? 'up' : ''}">${r.delta.up ? '+' : '−'}${r.delta.txt}</span>` : '', said || '', r.pending ? `${fmt(r.pending, r.dec, r.max)} arriving` : '', nn > 0 ? `${nn} note${nn === 1 ? '' : 's'}` : ''].filter(Boolean);
-  const meta = r.err ? 'could not read right now' : html`${parts.map((x, i) => html`${i ? ' · ' : ''}${x}`)}`;
+  const meta = r.err ? (r.errAt ? `${r.errAt} · could not read right now` : 'could not read right now') : html`${parts.map((x, i) => html`${i ? ' · ' : ''}${x}`)}`;   // errAt: the place, where the heading does not say it
   const usd = r.v != null ? dashRowUsd(r) : null;
   const body = html`<span class="wb-k">${mark}${r.label}${r.live ? html`<span class="dot live"></span>` : ''}</span><span class="wb-v num">${v}</span><span class="wb-m">${meta}</span><span class="wb-u num">${usd != null ? usdSmall(usd) : ''}</span>`;
   const go = r.href ? html`<a class="wb-go" href="${r.href}">${body}</a>`
@@ -5193,33 +5552,120 @@ function refreshWalletBal() {
   wbReading = true; paintWalletBal(); paintPortfolio();
   Promise.allSettled([loadBtc(true), scanPrivate(true)]).finally(() => { wbReading = false; paintWalletBal(); paintPortfolio(); dashSoon(); });
 }
-// The Portfolio sheet: everything "Your Tacit" counts, grouped by where it is held (portfolio.js), each row one press from its own sheet.
-function portfolioView() {
-  const groups = DASH.groups || [], w = DASH.worth, isTac = (r) => r.key === 'tac' || r.key === 'tacpub', tacRows = groups.reduce((n, g) => n + g.rows.filter(isTac).length, 0);
+// The Portfolio is a page (below): this is the one name everything that changes what is held calls to draw it again.
+const pfMark = (a) => a.icons ? html`<span class="pair">${a.icons.map((i) => icoHtml(i))}</span>` : a.mark ? html`<span class="tk letter" style="--c:${markColor(a.markId)}" aria-hidden="true">${a.mark.slice(0, 2).toUpperCase()}</span>` : icoHtml(a.icon);
+const pfWhere = (r) => (!r.note ? r.placeName : typeof r.note === 'string' ? `${r.placeName} · ${r.note}` : html`${r.placeName} · ${r.note}`);
+function paintPortfolio() { paintPfPage(); }
+
+// The Portfolio, a page. Everything "Your Tacit" counts (portfolio.js sorts it by place, byAsset by asset): the total and how much of it is private, with a bar and a tag for each
+// place; one row for each asset (portfolio.js byAsset), its places as tags, opening to a row for each place that is one press from its own sheet;
+// what waits on the holder (something to claim, a note ready to bring back, things in motion); their positions; and what they have earned.
+// PFP.on is whether it shows, PFP.open the one asset that is open (the others' rows are in the page too, hidden). <html data-view="portfolio"> lays it out, and the address is /#portfolio.
+const PFP = { on: false, open: null };
+const SECV = { hash: '' };      // the section's view of this page the address names ('' for none), kept as the page's link while no sheet is open
+const PF_HUE = { private: 'var(--blue)', pay: 'var(--green)', lp: 'var(--ok)', public: 'var(--faint)', bitcoin: 'var(--orange)' };
+const PF_FULL = { eth: 'Ether', btc: 'Bitcoin' };
+// what an opened asset can do next, each a section's view (a dollar token: send it, or move it in or out of private)
+const PF_ACTS = { tac: [['Send', '/#/payments/send'], ['Bridge', '/#/chains/bridge'], ['Swap', '/#/defi/swap'], ['Stake', '/tac/?v=stake#private']], eth: [['Send', '/#/payments/send'], ['Make private', '/#/chains/move'], ['Swap', '/#/defi/swap']],
+  btc: [['Send', '/#/payments/send'], ['Lock for cBTC', '/vault/#btc']], usd: [['Send', '/#/payments/send'], ['Move', '/#/chains/move']] };
+function pfPageView() {
+  const groups = DASH.groups || [], w = DASH.worth, pf = byAsset(groups, { kind: dashKind });
+  const isTac = (r) => r.key === 'tac' || r.key === 'tacpub', tacRows = groups.reduce((n, g) => n + g.rows.filter(isTac).length, 0);
   const row = (r) => wbRow({ ...r, delta: isTac(r) ? (tacRows === 1 ? DASH.delta?.tac : null) : DASH.delta?.[r.key] });
-  return html`<div class="wb-top"><div>${w?.all > 0 ? html`<div class="wb-tot"><small>≈</small><b class="num">${usdFmt(w.all)}</b></div>` : html`<div class="wb-tl">${S.key ? 'What your Tacit wallet and its addresses hold' : 'What your wallet holds'}</div>`}</div>${S.key ? html`<button type="button" id="port-re"${wbReading ? ' disabled' : ''}>${wbReading ? 'Reading…' : 'Refresh'}</button>` : ''}</div>
-    ${w?.all > 0 ? html`<div class="pf-split" aria-hidden="true"><i style="width:${Math.min(100, Math.max(0, w.priv / w.all * 100)).toFixed(1)}%"></i></div><div class="pf-key">${w.priv >= w.all * 0.999 ? html`<span>All private</span>` : html`<span>${usdFmt(w.priv)} private</span><span>${usdFmt(Math.max(0, w.all - w.priv))} public</span>`}</div>` : ''}
-    <p class="note" id="dash-since"${DASH.since ? '' : ' hidden'}>${DASH.since || ''}</p>
-    <div id="dash-g">${groups.map((g) => html`<div class="pf-h" id="pf-${g.id}"><span>${g.name}</span>${g.usd != null && g.usd >= 0.005 ? html`<b class="num">${usdFmt(g.usd)}</b>` : ''}</div><ul class="wbal">${g.rows.map(row)}</ul>`)}</div>
-    ${S.key ? '' : html`<p class="note">Open your Tacit wallet to see what you hold privately. <button class="link" type="button" data-signin>Open wallet</button></p>`}`;
+  const dot = (id) => html`<i style="background:${PF_HUE[id] || 'var(--faint)'}"></i>`;
+  const held = groups.filter((g) => PF_HUE[g.id] && g.usd != null && g.usd >= 0.005);
+  const total = html`<div class="ppg-card ppg-o1"><div class="ppg-lbl"><span role="heading" aria-level="2">Total</span>${w?.all > 0 ? html`<span>${w.priv >= w.all * 0.999 ? 'all private' : `${Math.round(w.priv / w.all * 100)}% private`}</span>` : ''}</div>
+    ${w?.all > 0 ? html`<p class="ppg-big num">${usdFmt(w.all)}</p><div class="ppg-bar" aria-hidden="true">${held.map((g) => html`<i style="flex:${g.usd.toFixed(2)};background:${PF_HUE[g.id]}"></i>`)}</div><div class="ppg-tags">${held.map((g) => html`<span class="ppg-tag">${dot(g.id)}${g.name} ${usdFmt(g.usd)}</span>`)}</div>`
+      : html`<p class="ppg-big num none">—</p><p class="note">${!dashId() ? 'Open a wallet to see what it is worth.' : wbReading ? 'Reading what you hold…' : 'Its worth shows once every balance and the prices are read.'}</p>`}
+    <p class="note" id="dash-since"${DASH.since ? '' : ' hidden'}>${DASH.since || ''}</p></div>`;
+  const amount = (r) => (r.v == null ? '…' : r.num ? ptsFmt(r.v) : fmt(r.v, r.dec, r.max));
+  const asset = (a) => {
+    const open = PFP.open === a.id, acts = PF_ACTS[a.id] || (a.id.startsWith('usd:') ? PF_ACTS.usd : null);
+    return html`<li><button class="ppg-row" type="button" data-pf-open="${a.id}" aria-expanded="${open ? 'true' : 'false'}"><span class="ppg-ic">${pfMark(a)}</span><span><b>${a.name}</b>${PF_FULL[a.id] ? html` <span class="ppg-full">${PF_FULL[a.id]}</span>` : ''}<span class="ppg-tags">${a.rows.map((r) => html`<span class="ppg-tag">${dot(r.place)}${amount(r)} ${r.placeName}</span>`)}</span></span><span class="ppg-r num"><b>${a.v != null ? fmt(a.v, a.dec, a.max) : '—'}</b>${a.usd != null && a.usd >= 0.005 ? html`<small>${usdFmt(a.usd)}</small>` : ''}</span></button><ul class="wbal ppg-more"${open ? '' : ' hidden'}>${a.rows.map((r) => row({ ...r, note: pfWhere(r), errAt: r.placeName }))}</ul>${open && acts ? html`<div class="ppg-acts">${acts.map(([t, href]) => html`<a class="ppg-go" href="${href}">${t}</a>`)}</div>` : ''}</li>`;
+  };
+  // what waits on the holder: the page already knows each of these, and each opens what its own row opens
+  const go = (r, word) => (r.href ? html`<a class="ppg-go" href="${r.href}">${word}</a>` : r.open ? html`<button class="ppg-go" type="button" data-dash-open="${r.open}">${word}</button>` : '');
+  const needs = [];
+  for (const g of groups) for (const r of g.rows) {
+    if (r.ready > 0) needs.push(html`<div class="ppg-need hot"><span><b>${r.ready} ${r.label} note${r.ready === 1 ? '' : 's'} ready to bring back</b> · on Bitcoin</span>${go(r, 'Bring back')}</div>`);
+    else if (r.live && typeof r.meta === 'string' && /to claim|^claim by/.test(r.meta)) needs.push(html`<div class="ppg-need hot"><span><b>${r.label}</b> · ${r.meta}</span>${go(r, 'Claim')}</div>`);
+  }
+  const moving = listed().filter((x) => !actDone(x)).length;
+  if (moving) needs.push(html`<div class="ppg-need"><span>${moving} thing${moving === 1 ? '' : 's'} in motion</span><button class="ppg-go" type="button" data-pf-act>Follow</button></div>`);
+  const positions = [...pf.positions, ...pf.owed];
+  return html`<div class="ppg-cols" id="dash-g"><div>${total}
+    <div class="ppg-card ppg-o3"><div class="ppg-lbl"><span role="heading" aria-level="2">Assets</span><span>press one for where it is</span></div>${pf.assets.length ? html`<ul class="ppg-list">${pf.assets.map(asset)}</ul>` : dashId() ? html`<p class="note">Nothing held yet.</p>` : ''}
+      ${S.key ? '' : html`<p class="note">Open your Tacit wallet to see what you hold privately. <button class="link" type="button" data-signin>Open wallet</button> · <a href="/#/defi">Explore DeFi</a></p>`}</div>
+  </div><div>
+    <div class="ppg-card ppg-o2"><h2>Needs you</h2>${needs.length ? html`<div class="ppg-needs">${needs}</div>` : html`<p class="note">Nothing is waiting on you.</p>`}</div>
+    <div class="ppg-card ppg-o4"><h2>Positions</h2>${positions.length ? html`<ul class="wbal">${positions.map(row)}</ul>` : html`<p class="note">No liquidity, farm or loan yet. <a href="/farm/">Farm</a> · <a href="/vault/">Borrow against BTC or TAC</a></p>`}</div>
+    ${pf.earned.length ? html`<div class="ppg-card ppg-o5"><h2>Rewards</h2><ul class="wbal">${pf.earned.map(row)}</ul></div>` : ''}
+  </div></div>`;
 }
-function paintPortfolio() {
-  const d = $('#sheet-portfolio'), el = $('#portfolio-body');
-  if (!dashId()) { if (d.open) d.close(); el.__v = el.innerHTML = ''; return; }
-  const view = portfolioView().s;
+function paintPfPage() {
+  const el = $('#ppg-body');
+  if (!el) return;
+  // Drawn whenever it shows or a wallet is open, so its rows (#dash-g: every row of what is held, an asset's own in the page whether the asset is open
+  // or shut) are current when it opens and can be read while it is closed. Showing with no wallet open it is its signed-out self: a paint never
+  // closes the page, only the address does.
+  if (!PFP.on && !dashId()) { el.__v = el.innerHTML = ''; return; }
+  const view = pfPageView().s;
   if (el.__v === view) return;
-  const f = document.activeElement?.closest?.('#portfolio-body [data-dash-open], #portfolio-body [data-asset], #portfolio-body a.wb-go');
-  const was = f && (f.dataset.btcAsset ? `[data-btc-asset="${f.dataset.btcAsset}"]` : f.dataset.dashOpen ? `[data-dash-open="${f.dataset.dashOpen}"]` : f.dataset.asset ? `[data-asset="${f.dataset.asset}"]` : `a.wb-go[href="${f.getAttribute('href')}"]`);
+  const f = document.activeElement?.closest?.('#ppg-body [data-pf-open], #ppg-body [data-dash-open], #ppg-body [data-asset]');
+  const was = f && (f.dataset.pfOpen ? `[data-pf-open="${CSS.escape(f.dataset.pfOpen)}"]` : f.dataset.btcAsset ? `[data-btc-asset="${f.dataset.btcAsset}"]` : f.dataset.dashOpen ? `[data-dash-open="${f.dataset.dashOpen}"]` : `[data-asset="${f.dataset.asset}"]`);
   el.__v = view; el.innerHTML = view;
+  $('#ppg-re').disabled = wbReading; $('#ppg-re').textContent = wbReading ? 'Reading…' : 'Refresh';
   if (was) $(was, el)?.focus();
 }
-render.portfolio = paintPortfolio;
-$('#portfolio-body').onclick = (e) => {
-  if (e.target.closest('#port-re')) return refreshWalletBal();
+// The tab's title names what this document shows, worked out in this one place from the one mark of each: a section's view (<html data-sec>, which
+// chrome.js keeps), the Portfolio page, TAC's page, or the front page. A section's name wins, so TAC's page cut to Request reads "tacit payments".
+const SEC_TITLE = { payments: 'payments', defi: 'defi', chains: 'chains', menu: 'more' };
+function viewTitle() {
+  const sec = (document.documentElement.dataset.sec || '').split('/')[0];
+  document.title = `tacit ${SEC_TITLE[sec] || (PFP.on ? 'portfolio' : TACP.on ? 'TAC' : document.documentElement.dataset.page === 'spx' ? 'SPX' : 'defi')}`;
+}
+// A section's view of the front page (/#/section/view): the card held to the one thing the view is. chrome.js reads the address and marks the view on
+// <html data-sec>, then tells this page with `tacit:sec`; the card follows the mark once it names this very address. route() asks on every change of
+// address and the event answers when chrome.js marks later than route() runs (as when TAC's page hands over: its pushState marks in a microtask).
+// The Notes view of TAC's page opens its bridge, which the view shows without the summaries that would open it.
+function secView() {
+  const sec = document.documentElement.dataset.sec || '';
+  if (sec === 'chains/notes') { const w = $('#tpg-where'), br = $('#tpg-br'); if (w && !w.open) w.open = true; if (br && !br.open) br.open = true; }
+  if (!sec || `#/${sec.replace(/\/$/, '')}` !== location.hash) return false;
+  SECV.hash = location.hash;
+  const spec = { 'payments/send': `send:${HX.send}`, 'defi/swap': 'swap', 'chains/move': 'shield', 'chains/bridge': 'bridge' }[sec];
+  if (spec) { hxPreset(spec, ''); window.scrollTo(0, 0); }      // the card is the view here: nothing to scroll to, the view starts at its head
+  return true;
+}
+document.addEventListener('tacit:sec', () => { viewTitle(); if (SECV.hash !== location.hash) secView(); if (TACP.on && TPG_PATH.test(location.pathname) && !running('tac')) keep($('#sheet-tac'), render.tac); });
+// (TAC's page draws by the view: Stake names its first tab. Drawn, never linked: on Back the mark changes before the page has read the address, and
+// writing the address here would put the state being left over the one arrived at.)
+// In a section's view, a plain link to a sheet (#bitcoin, #points, #asset/…) opens it as a button does, so the address is the view's again when the
+// sheet shuts; followed as a link it would be a change of address, which leaves the view for the front page.
+document.addEventListener('click', (e) => {
+  if (!SECV.hash || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const a = e.target.closest?.('a[href^="#"]:not([data-link], [data-asset])'), h = a?.getAttribute('href').slice(1) || '', head = h.split('/')[0];
+  if (!h || h.startsWith('/') || !(SHEETS.includes(head) || Object.hasOwn(ALIAS, head) || head === 'asset' || head === 'activity' || head === 'prove-self')) return;
+  e.preventDefault();
+  openLink(h);
+});
+function pfPageSet(on) {
+  if (PFP.on === on) { if (on) paintPfPage(); return; }
+  PFP.on = on;
+  if (on) document.documentElement.dataset.view = 'portfolio'; else delete document.documentElement.dataset.view;
+  viewTitle();
+  for (const a of $$('a[href="/#portfolio"]')) { if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
+  if (!on) PFP.open = null;
+  paintPfPage();
+}
+$('#ppg-re').onclick = () => refreshWalletBal();
+$('#ppg-body').onclick = (e) => {
+  const a = e.target.closest('[data-pf-open]');
+  if (a) { PFP.open = PFP.open === a.dataset.pfOpen ? null : a.dataset.pfOpen; paintPfPage(); return; }
+  if (e.target.closest('[data-pf-act]')) return openAct();
   const b = e.target.closest('[data-dash-open]');
   if (!b) return;
   e.preventDefault(); e.stopPropagation();
-  $('#sheet-portfolio').close();
   dashGo(b);
 };
 function openProve() {
@@ -5385,7 +5831,7 @@ function openAsset(key) {
 }
 document.addEventListener('click', (e) => { const b = e.target.closest?.('[data-asset]'); if (b) { e.preventDefault(); openAsset(b.dataset.asset); } });
 
-const SHEETS = ['eth', 'btc', 'tac', 'pts', 'farm', 'borrow', 'usdt', 'wallet', 'portfolio'];
+const SHEETS = ['eth', 'btc', 'tac', 'pts', 'farm', 'borrow', 'usdt', 'wallet'];
 const CARD = { buy: 'swap:ether:tac', swap: 'swap:ether:tac', sell: 'swap:tac:ether' };
 const AWAY = { airdrop: '/rewards/' };
 const goAway = (name) => { location.href = AWAY[name]; };
@@ -5454,7 +5900,7 @@ function linkNow() {
   if ($('#sheet-act').open) return '#activity';
   const d = $('dialog.sheet[open]:not(.layer)');
   if (d) return '#' + linkOf(d.id.replace('sheet-', ''));
-  return TACP.on ? tpgLink() : '';
+  return TACP.on ? tpgLink() : PFP.on ? '#portfolio' : SECV.hash;
 }
 var LINK_READ = false;
 function syncLink() {
@@ -5462,17 +5908,37 @@ function syncLink() {
   const h = linkNow();
   if (location.hash !== h) history.replaceState(null, '', location.pathname + location.search + h);
 }
-// Portfolio: the sheet that lists what "Your Tacit" counts. With no wallet open it has nothing to show, so the wallet sheet asks for one and the
-// Portfolio opens once it is open. `at` names a group to show first.
+// Portfolio: the page that lists what "Your Tacit" counts, at /#portfolio. With no wallet open it is its signed-out self (nothing of anyone's, a way
+// to open a wallet) and the wallet sheet asks for one over it; it fills once one is open. `at` names a group to show first (the front page's
+// strip has a button for each): liquidity and loans are the Positions card, what was earned the Rewards card, and a place (private, the Pay
+// pool, public, Bitcoin) is the first asset held there, opened to its places.
+function pfFocus(at) {
+  const groups = DASH.groups || [];
+  if (!groups.some((g) => g.id === at)) return;
+  let el = null;
+  if (at === 'lp' || at === 'owed') el = $('#ppg-body .ppg-o4');
+  else if (at === 'earned') el = $('#ppg-body .ppg-o5');
+  else {
+    const a = byAsset(groups, { kind: dashKind }).assets.find((x) => x.rows.some((r) => r.place === at));
+    if (a) { PFP.open = a.id; paintPfPage(); el = $(`#ppg-body [data-pf-open="${CSS.escape(a.id)}"]`); }
+  }
+  if (!el) return;
+  el.scrollIntoView({ block: 'center', behavior: calmMotion() ? 'auto' : 'smooth' });
+  if (el.matches('button')) el.focus({ preventScroll: true });
+}
 const PF = { want: 0 };
 function openPortfolio(at = null) {
-  if (dashId()) {
-    if (!DASH.groups) paintDash();
-    openSheet('portfolio');
-    if (at) $(`#pf-${at}`)?.scrollIntoView({ block: 'start' });
-    return;
+  if (TACP.on) return tacPageLeave('#portfolio', location.hash === '#portfolio');      // from TAC's page: back to the front page, which opens it
+  if (dashId() && !DASH.groups) paintDash();
+  for (const o of $$('dialog.sheet[open]:not(.layer)')) o.close();
+  const was = PFP.on;
+  pfPageSet(true);
+  if (!was) {
+    if (location.hash !== '#portfolio') history.pushState(null, '', location.pathname + location.search + '#portfolio');
+    window.scrollTo(0, 0); $('#ppg-h')?.focus({ preventScroll: true });
   }
-  history.replaceState(null, '', location.pathname + location.search);      // so the same link works again
+  if (at) pfFocus(at);
+  if (dashId()) return;
   PF.want = Date.now();
   openSheet('wallet');
   if (!S.key) getUx().catch(() => {});
@@ -9567,9 +10033,11 @@ const calmMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const TPG_PATH = /^\/(tac|chain)\/?$/;
 function tacPageSet(on) {
+  if (on && PFP.on) pfPageSet(false);
   TACP.on = on;
+  if (on) SECV.hash = '';      // the front page's view was left for this page: a sheet shutting here does not go back to it
   if (on) document.documentElement.dataset.page = 'tac'; else delete document.documentElement.dataset.page;
-  document.title = on ? 'tacit TAC' : 'tacit defi';
+  viewTitle();
   for (const a of $$('a[href="/tac/"]')) { if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
   if (!on) {
     TPOOL.open = false; tpgAct(null); tacClaimStop(); chainLive(false); chlRead(); refreshTape();
@@ -9606,8 +10074,10 @@ function tacPageOpen(part = null) {
   }
   syncLink();
 }
-function tacPageLeave(hash = '') {
-  history.pushState(null, '', '/' + location.search + hash);
+function tacPageLeave(hash = '', replace = false) {
+  const q = new URLSearchParams(location.search); q.delete('v');      // ?v= is TAC's page cut to a section's view (chrome.js); the front page has none
+  const qs = q.toString();
+  history[replace ? 'replaceState' : 'pushState'](null, '', '/' + (qs ? '?' + qs : '') + hash);
   tacPageSet(false);
   window.scrollTo(0, 0);
   if (hash) route();
@@ -9624,8 +10094,9 @@ function tpgHash(h) {
   if (/^to=/.test(h)) { tpgPayLink(new URLSearchParams(h)); return true; }
   const [head, ...rest] = h.split('/');
   if (head === 'private' || head === 'cash-out' || head === 'pay' || head === 'receive') { tpgTab({ private: 'priv', 'cash-out': 'out' }[head] || head); return true; }
-  if (head === 'pool') { tacPoolOpen(rest[0] || 'shield', rest[1] || null); return true; }
-  if (head === 'shield' || head === 'send' || head === 'withdraw') { tacPoolOpen(head, rest[0] || null); return true; }
+  const links = new URLSearchParams(location.search).get('v') === 'links';      // Claim links: the pool's Send whatever tab is named, its tabs being out of the view
+  if (head === 'pool') { tacPoolOpen(links ? 'send' : rest[0] || 'shield', links ? null : rest[1] || null); return true; }
+  if (head === 'shield' || head === 'send' || head === 'withdraw') { tacPoolOpen(links ? 'send' : head, links ? null : rest[0] || null); return true; }
   if (head === 'notes') { tacPageOpen(); tacNotesOpen(); return true; }
   if (head === 'bridge' || head === 'out' || head === 'in') { BRM.mode = head === 'out' || rest[0] === 'out' ? 'out' : 'in'; tacPageOpen('bridge'); return true; }
   if (head === 'buy' || head === 'market') { location.replace('/trade/tac/#btc=buy'); return true; }
@@ -9644,11 +10115,18 @@ document.addEventListener('click', (e) => {
   if (toTac) {
     if (!TACP.on) { history.pushState(null, '', '/tac/' + u.search + (u.pathname.startsWith('/tac') ? u.hash : '')); tacPageSet(true); window.scrollTo(0, 0); $('#tac-h')?.focus({ preventScroll: true }); if (u.hash) route(); return; }
     if (u.hash) { history.pushState(null, '', '/tac/' + u.search + u.hash); route(); return; }
+    // already on TAC's page: a link to it with another ?v= (or none: the whole page, from one of its views) is a step to that address
+    if (new URLSearchParams(u.search).get('v') !== new URLSearchParams(location.search).get('v')) history.pushState(null, '', '/tac/' + u.search);
     TPOOL.open = false; tpgAct(null); window.scrollTo({ top: 0, behavior: calmMotion() ? 'auto' : 'smooth' }); syncLink(); return;
   }
   tacPageLeave(u.hash);
 });
-window.addEventListener('popstate', () => { const on = TPG_PATH.test(location.pathname); if (on !== TACP.on) { tacPageSet(on); window.scrollTo(0, 0); } });
+// Back or forward to an entry with another path or query (the front page and TAC's page, one of its views and another) fires no hashchange, so
+// the address is routed here once the browser has had its chance to fire one (route() notes when it last ran)
+window.addEventListener('popstate', () => {
+  const on = TPG_PATH.test(location.pathname); if (on !== TACP.on) { tacPageSet(on); window.scrollTo(0, 0); }
+  const t = performance.now(); setTimeout(() => { if (!(route.at >= t)) route(); }, 0);
+});
 
 function tpgAct(kind, title = '') {
   const box = $('#tpg-act'), body = $('#tpg-act-b'), hx = $('#hx');
@@ -12113,14 +12591,14 @@ function dashItems() {
     const xb = xbOf(XA.teth), xbH = xbHeld(k, XA.teth);
     if (!(xb.pub === k && xb.notes) && !xb.loading && !xb.err && (xb.asked === k || xoJournaled(k) || xbJournaled(k) || xbCacheGet(k, XA.teth))) loadBridged(false, XA.teth).then(dashSoon, () => {});
     if (xbH) {
-      out.push({ key: 'tethbtc', icon: 'tk-teth', label: 'tETH', dec: 8, max: 6, v: xbH.v, href: '#private/bitcoin/back', show: xbH.v > 0n,
+      out.push({ key: 'tethbtc', icon: 'tk-teth', label: 'tETH', dec: 8, max: 6, v: xbH.v, href: '#private/bitcoin/back', show: xbH.v > 0n, ready: xbH.ready,
         meta: `on Bitcoin · ${xbH.n} note${xbH.n === 1 ? '' : 's'}${xbH.ready < xbH.n ? ` · ${xbH.ready} ready to bring back` : ''}` }); }
     const xt = xbOf(XA.tac), xtH = xbHeld(k, XA.tac);
     if (!(xt.pub === k && xt.notes) && !xt.loading && !xt.err && (xt.asked === k || xoJournaled(k, XA.tac) || xbJournaled(k, XA.tac) || xoArrivedLately(k, XA.tac) || xbCacheGet(k, XA.tac))) loadBridged(false, XA.tac).then(dashSoon, () => {});
     const xu = xbOf(XA.cusdt), xuH = xbHeld(k, XA.cusdt);
     if (!(xu.pub === k && xu.notes) && !xu.loading && !xu.err && (xu.asked === k || xoJournaled(k, XA.cusdt) || xbJournaled(k, XA.cusdt) || xoArrivedLately(k, XA.cusdt) || xbCacheGet(k, XA.cusdt))) loadBridged(false, XA.cusdt).then(dashSoon, () => {});
     if (xuH) {
-      out.push({ key: 'usdtbtc', icon: 'tk-usdt', label: 'USDT', dec: 6, max: 2, v: xuH.v, href: '#usdt/bitcoin/back', show: xuH.v > 0n,
+      out.push({ key: 'usdtbtc', icon: 'tk-usdt', label: 'USDT', dec: 6, max: 2, v: xuH.v, href: '#usdt/bitcoin/back', show: xuH.v > 0n, ready: xuH.ready,
         meta: `on Bitcoin · ${xuH.n} note${xuH.n === 1 ? '' : 's'}${xuH.ready < xuH.n ? ` · ${xuH.ready} ready to bring back` : ''}` }); }
     // a token the pool escrows, bridged to Bitcoin the way cUSDT is: its notes are at the Taproot address too, so it has a row from the same read
     for (const a of Object.values(XA)) {
@@ -12131,7 +12609,7 @@ function dashItems() {
         meta: `on Bitcoin · ${xrH.n} note${xrH.n === 1 ? '' : 's'}${xrH.ready < xrH.n ? ` · ${xrH.ready} ready to bring back` : ''}` });
     }
     if (xtH) {
-      out.push({ key: 'tacbridged', icon: 'tk-tac', label: 'TAC', dec: 8, max: 4, v: xtH.v, href: '#bridge/out', show: xtH.v > 0n,
+      out.push({ key: 'tacbridged', icon: 'tk-tac', label: 'TAC', dec: 8, max: 4, v: xtH.v, href: '#bridge/out', show: xtH.v > 0n, ready: xtH.ready,
         meta: `bridged to Bitcoin · ${xtH.n} note${xtH.n === 1 ? '' : 's'}${xtH.ready < xtH.n ? ` · ${xtH.ready} ready to bring back` : ''}` }); }
   }
   const who = [...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))].join();
@@ -13972,6 +14450,7 @@ const HX_MEET = new Set();
 function hxPreset(spec, amt, inCard = false, route = null, lp = false) {
   const [tab, a, b, r] = spec.split(':');
   if (SPXP && (tab === 'borrow' || (tab === 'swap' && !spxPooled()))) return;
+  if (PFP.on) { pfPageSet(false); if (location.hash === '#portfolio') history.replaceState(null, '', location.pathname + location.search); }      // the card is under the Portfolio page: it goes
   // a token named by its bridge key (xw: from the wallet to Bitcoin, xp: from the pool, xb: back from Bitcoin): met by its address; the bridge page's token picker links here
   const met = /^x[wpb]0x[0-9a-f]{40}$/.test(a || '') ? xtAddr(String(a).replace(/^xb/, 'xw')) : null;
   if (met && !HX_MEET.has(met) && xtOf(met)?.registered == null) {
@@ -17077,8 +17556,21 @@ function chlRead() {
 setInterval(() => { if (!document.hidden) chlRead(); }, 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastTick > 60e3) tick(); });
 const route = () => {
+  route.at = performance.now();
   HX.routed = true; LINK_READ = true;
   const h = location.hash.slice(1), pay = h.match(/^(sp|st)=([0-9a-fA-F]{64})/);
+  if (PFP.on && h !== 'portfolio' && (!h || h.startsWith('/'))) pfPageSet(false);      // the address has left /#portfolio (the logo, back, or another section)
+  // a section's view of this page, /#/section/view: the card held to the one thing the view is. chrome.js is the one reader of the address for a
+  // section (it draws the section's head and tabs, puts a view the section lacks right, and sends one another page shows there) and marks the view
+  // on <html data-sec> before this runs, so the card follows that mark, never an address of its own reading
+  if (h.startsWith('/')) {
+    for (const o of $$('dialog.sheet[open]:not(.layer)')) o.close();
+    if (SECV.hash !== location.hash) secView();      // (secView, above: what chrome.js has marked; its event does it if it marks after this)
+    viewTitle();
+    window.scrollTo(0, 0);
+    return;
+  }
+  SECV.hash = '';
   if (TACP.on && h && tpgHash(h)) return;
   const snd = h.match(/^card=send(?::([a-z][a-z0-9]*))?((?:&(?:to|amt)=[^&]*){0,2})$/);
   if (snd) {
@@ -17130,6 +17622,7 @@ const route = () => {
 };
 window.addEventListener('hashchange', route);
 if (TACP.on) tacPageSet(true);
+viewTitle();
 // the SPX page opens the tile on its token (a link in the address is taken after this, so it still wins), and asks the pool about it a moment later so that
 // its Send, Withdraw and Bridge answer at once. It opens on Shield SPX whatever tab the browser last left the tile on: a saved Send tab opened before the
 // token is read, with a Send list of tETH alone, and stopped the page's start.

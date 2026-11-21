@@ -111,7 +111,8 @@ if (!chromium) {
     return { ctx, page, log, errors };
   }
   const shown = (page, sel) => page.evaluate((s) => { const el = document.querySelector(s); return !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden'; }, sel);
-  const h1 = (page) => page.evaluate(() => document.querySelector('#h').innerText.replace(/\s+/g, ' ').trim());
+  // the section's head (Borrow, and a tab for each side) stands where the page's own heading and switch did: the side is the tab marked current
+  const h1 = (page) => page.evaluate(() => `${document.querySelector('#sec-head h1').innerText.trim()} ${document.querySelector('#sec-head .sh-t a[aria-current="page"]').innerText.trim().toLowerCase().replace('btc', 'Bitcoin').replace('tac', 'TAC')}`);
   const current = (page) => page.evaluate(() => document.querySelector('.via a[aria-current="page"]')?.dataset.side || null);
   const sideIs = (page, s) => page.waitForFunction((x) => document.documentElement.dataset.side === x, s, { timeout: 10000 }).then(() => true, () => false);
 
@@ -119,7 +120,7 @@ if (!chromium) {
     // Opened on Bitcoin, with no script at all: the side is the CSS's.
     {
       const { ctx, page } = await open('/vault/#btc', { js: false });
-      ok(await shown(page, '#btc') && !(await shown(page, '#sub')) && (await h1(page)) === 'Borrow against Bitcoin', 'no script: /vault/#btc draws the Bitcoin side from its :target');
+      ok(await shown(page, '#btc') && !(await shown(page, '#app')) && (await page.innerText('#sec-head h1')) === 'Borrow' && await page.evaluate(() => getComputedStyle(document.querySelector('#sec-head a[data-side="btc"]')).backgroundColor !== getComputedStyle(document.querySelector('#sec-head a[data-side="tac"]')).backgroundColor), 'no script: /vault/#btc draws the Bitcoin side from its :target, its tab the one marked');
       ok(await page.evaluate(() => scrollY) === 0, 'no script: opening #btc leaves the page at its top');
       await ctx.close();
     }
@@ -130,7 +131,7 @@ if (!chromium) {
       await page.waitForFunction(() => document.querySelector('[data-bf="out"]')?.textContent !== '…', null, { timeout: 15000 }).catch(() => {});
       ok((await page.textContent('[data-bf="out"]')) === '4,420.12 cUSD' && (await page.textContent('[data-bf="ratio"]')) === '150%' && (await page.textContent('[data-bf="liq"]')) === '130%', 'the board shows the engine’s figures');
       ok((await h1(page)) === 'Borrow against Bitcoin' && (await current(page)) === 'btc', 'h1 and aria-current are on Bitcoin');
-      ok(await shown(page, '.s-btc.sub') && !(await shown(page, '#app')) && !(await shown(page, '#how')) && await shown(page, '#wallet-chip'), 'the TAC side and its how-to are hidden; the wallet chip stays (it posts a lock\'s bond)');
+      ok(await shown(page, '#sec-head .sh-n') && !(await shown(page, '#app')) && !(await shown(page, '#how')) && await shown(page, '#wallet-chip'), 'the TAC side and its how-to are hidden; the wallet chip stays (it posts a lock\'s bond)');
       ok(!!(await page.$('#btc-mine [data-mine="open"]')) && (await page.getAttribute('#btc a[href="/cbtc/"]', 'href')) === '/cbtc/' && !(await page.$('#btc a[href^="/#"]')), 'the side\'s own panels do the borrowing (Open your Tacit wallet), with the cBTC market a link and none back to the front page');
       await page.waitForTimeout(1500);
       ok(log.vault === 0 && log.engine === 1, `the Bitcoin side reads the engine once and no vault (engine ${log.engine}, vault ${log.vault}, other ${log.other})`);
@@ -139,10 +140,10 @@ if (!chromium) {
       ok(cls <= 0.04, `layout shift on the Bitcoin side ${cls.toFixed(4)} <= 0.04`);
       // To TAC, without a reload.
       await page.evaluate(() => { window.__same = 1; });
-      await page.click('.via a[data-side="tac"]');
+      await page.click('#sec-head a[data-side="tac"]');
       ok(await sideIs(page, 'tac'), 'TAC in the switch shows the TAC side');
       ok(await page.evaluate(() => window.__same === 1 && location.pathname + location.search + location.hash === '/vault/'), 'no reload, and the address bar is /vault/ with no bare #');
-      ok((await h1(page)) === 'Borrow against TAC' && (await current(page)) === 'tac' && await shown(page, '#sub') && !(await shown(page, '#btc')), 'h1, the sub line and aria-current follow');
+      ok((await h1(page)) === 'Borrow against TAC' && (await current(page)) === 'tac' && await shown(page, '#app') && !(await shown(page, '#btc')), 'the head\'s tab, the side and aria-current follow');
       await page.waitForTimeout(1500);
       ok(log.vault > 0, `the vaults are read once the TAC side is shown (${log.vault} reads)`);
       await page.goBack();
@@ -161,7 +162,7 @@ if (!chromium) {
       ok(await shown(page, '.btc-l a[data-side="btc"]'), 'the TAC side has its one line to Bitcoin');
       await page.click('.btc-l a[data-side="btc"]');
       ok(await sideIs(page, 'btc') && (await page.evaluate(() => location.hash)) === '#btc', 'the TAC side’s line opens #btc');
-      await page.click('.via a[data-side="tac"]');
+      await page.click('#sec-head a[data-side="tac"]');
       ok(await sideIs(page, 'tac') && (await page.evaluate(() => location.hash)) === '#t=repay', 'back on TAC, its own hash (#t=repay) is kept');
       await page.goBack();
       ok(await sideIs(page, 'btc'), 'back is Bitcoin');

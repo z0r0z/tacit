@@ -1465,7 +1465,7 @@ function tcard() {
   const tabs = $('#tcd-tabs'), p = $('#tpg-p'), pool = $('#tcd-pool');
   tabs.hidden = p.hidden = !chain; pool.hidden = chain;
   if (chain) {
-    tpgMount(tabs, html`<div class="tcd-tabs" role="tablist" aria-label="Private TAC on the Tacit chain">${TCD_TABS.map(([k, t]) => html`<button type="button" role="tab" id="tcd-t-${k}" aria-controls="tpg-p" aria-selected="${String(ctx.TCARD.tab === k)}" tabindex="${ctx.TCARD.tab === k ? 0 : -1}" data-tcd-tab="${k}">${t}</button>`)}</div>`);
+    tpgMount(tabs, html`<div class="tcd-tabs" role="tablist" aria-label="Private TAC on the Tacit chain">${TCD_TABS.map(([k, t]) => html`<button type="button" role="tab" id="tcd-t-${k}" aria-controls="tpg-p" aria-selected="${String(ctx.TCARD.tab === k)}" tabindex="${ctx.TCARD.tab === k ? 0 : -1}" data-tcd-tab="${k}">${k === 'shield' && document.documentElement.dataset.sec === 'defi/stake' ? 'Stake' : t}</button>`)}</div>`);
     p.setAttribute('aria-labelledby', `tcd-t-${ctx.TCARD.tab}`);
     const was = $('#tcd-amt')?.value || '';
     if (tpgMount(p, tcardForm(), tcardWire) && was && $('#tcd-amt')) $('#tcd-amt').value = was;
