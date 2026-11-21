@@ -495,6 +495,7 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
   .sn > a { padding: 0 13px; }
   .sn > a span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
   .sn > a:not(.sa) > svg { display: none; }      /* named, the sections need no glyph (Activity is a glyph alone) */
+  .sn[data-owed] > a[href="/rewards/"]::after, .sn > a > .bd { left: auto; right: 4px; top: 9px; }      /* a dot at the name's corner: the glyph's corner is where the name now is */
 }
 
 /* a very narrow header keeps the mark and the name; the page's label, and the Activity and total chips' room, go first */

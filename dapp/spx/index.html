@@ -779,7 +779,8 @@ html.hx-pin .hw:not(:has(#hw-p:not([hidden]))) { opacity: 0; visibility: hidden;
 /* TAC: one calm coin above its title; it turns to show Bitcoin on its back, then Ethereum. */
 .tc { display: flex; flex-direction: column; align-items: center; text-align: center; }
 .tc .sx-h { margin-bottom: 26px; }
-.tc-stage { position: relative; width: 100%; height: 168px; margin-bottom: 14px; display: grid; place-items: center; perspective: 900px; }
+/* the row is the stage's height: the coin's box is 200px whatever its scale, and a row of that size would hang it from the stage's top, over the line below */
+.tc-stage { position: relative; width: 100%; height: 168px; margin-bottom: 14px; display: grid; grid-template-rows: 100%; place-items: center; perspective: 900px; }
 .tc-tilt { scale: .62; transform-style: preserve-3d; animation: tc-bob 7s ease-in-out infinite; }
 @keyframes tc-bob { 0%, 100% { transform: rotateX(8deg) rotateZ(-4deg) translateY(-3px); } 50% { transform: rotateX(8deg) rotateZ(-4deg) translateY(3px); } }
 .tc-coin { --t: 14px; --cyc: 14s; position: relative; width: 200px; height: 200px; transform-style: preserve-3d; animation: tc-spin var(--cyc) infinite; }
@@ -2262,6 +2263,7 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
   .sn > a { padding: 0 13px; }
   .sn > a span { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
   .sn > a:not(.sa) > svg { display: none; }      /* named, the sections need no glyph (Activity is a glyph alone) */
+  .sn[data-owed] > a[href="/rewards/"]::after, .sn > a > .bd { left: auto; right: 4px; top: 9px; }      /* a dot at the name's corner: the glyph's corner is where the name now is */
 }
 
 /* a very narrow header keeps the mark and the name; the page's label, and the Activity and total chips' room, go first */
