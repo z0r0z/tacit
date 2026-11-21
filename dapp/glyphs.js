@@ -19,7 +19,7 @@
 // A page works the same without this file, and chrome.js ignores a failure to load it. It reads no
 // key, balance or network, only the page's own markup (which asset a side names, which way in a row is) and its --ink. It
 // adds canvases and two custom properties and changes nothing else. Under prefers-reduced-motion each piece is drawn once and
-// left still; a hidden tab draws nothing, and a field nobody is touching is redrawn six times a second, not forty-five.
+// left still; a hidden tab draws nothing, and a field nobody is touching is redrawn twice a second, not forty-five.
 
 const RAMP = ".,:;'-+/\\|!*=%#&$@";   // light to dense. Punctuation only: letters and digits read as text
 const LIGHT = RAMP.slice(0, 10);      // the field and the cipher use the light half, so they stay quiet
@@ -42,7 +42,7 @@ const canvasOf = (cls) => { const c = Object.assign(document.createElement('canv
 // hundred is re-rolled each frame. The canvas is fixed behind the page, so the field is there wherever the page is scrolled
 // to. `ground.at(x, y)` says how much of the field a point of the window may have (0 where the page has something, 1 well
 // clear of it), and each glyph eases towards that as the page moves under it.
-const FIELD = { w: 11, h: 18, font: `13px ${MONO}`, reach: 110, fps: 45, rest: 6 };
+const FIELD = { w: 11, h: 18, font: `13px ${MONO}`, reach: 110, fps: 45, rest: 2 };
 function strokeOf(dx, dy) {
   const a = ((Math.atan2(dy, dx) * 180) / Math.PI + 180) % 180;
   return a < 22.5 || a >= 157.5 ? '-' : a < 67.5 ? '\\' : a < 112.5 ? '|' : '/';
@@ -112,7 +112,7 @@ function field(canvas, ground) {
     last = now;
     if (moved) aim(false);
     if (physics()) awake = now + 600;
-    for (let i = 0; i < cells.length * (resting ? 0.04 : 0.01); i++) { const c = cells[(Math.random() * cells.length) | 0]; if (c && Math.abs(c.ox) + Math.abs(c.oy) < 1) c.ch = pick(LIGHT); }   // only glyphs at rest
+    for (let i = 0; i < cells.length * (resting ? 0.12 : 0.01); i++) { const c = cells[(Math.random() * cells.length) | 0]; if (c && Math.abs(c.ox) + Math.abs(c.oy) < 1) c.ch = pick(LIGHT); }   // only glyphs at rest
     draw();
   }
   const wake = () => { awake = performance.now() + 600; };

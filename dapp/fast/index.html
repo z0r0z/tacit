@@ -252,6 +252,10 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
    and its brand, chips and spacing. Nothing here is a size the page has to agree with: the header's width is read from the header. */
 
 header.top { position: relative; z-index: 30; container: top / inline-size; }
+/* one header on every page, so moving between a section's views (some are the front page, some pages of their own) moves nothing: the same height,
+   and, where the sections are named, the same place for them whatever the page's label beside the mark */
+header.top { padding-top: 22px; padding-bottom: 8px; }
+@container top (min-width: 900px) { header.top .brand { min-width: 160px; } }
 header.top .top-r { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
 
 /* the sections: six in the header, beside the mark (glyphs, then names as the header gets wide), every other page in the menu at the far end; on a phone
@@ -387,12 +391,15 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 /* (the vault is stamped with its section alone, data-sec="borrow", until chrome.js names the side from the address; the page's own rules already keep
    each side's blocks to that side from the first paint) */
 html[data-sec^="borrow"] .hero :is(h1, nav.via, .sub) { display: none !important; }
+html[data-sec^="borrow"] .hero { padding-top: 0; text-align: center; }      /* what the hero still holds (the explainer, a promo line) sits under the head */
+html[data-sec^="borrow"] .hero .how { margin-inline: auto; text-align: left; } html[data-sec^="borrow"] .hero .how summary { margin-inline: auto; }      /* (opened, it reads left to right) */
 html[data-sec="borrow/btc"] :is(#app, #how), html[data-sec="borrow/tac"] .btc-side { display: none !important; }
 :root:has(#pools:target) #sec-head { display: none; }
 /* opened on #btc, the head stamped for the first view shows the Bitcoin tab as the current one until chrome.js has said so (as the page's own switch does) */
 :root:has(#btc:target) .sh-t:not(.pill) a[data-side="tac"] { color: var(--mute); background: none; box-shadow: none; }
 :root:has(#btc:target) .sh-t:not(.pill) a[data-side="btc"] { color: var(--ink); background: var(--raise, var(--card)); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }      /* /vault/#pools is the whole page (chrome.js takes the head away) */
 html[data-sec="chains/fast"] .hero :is(h1, .sub) { display: none !important; }
+html[data-sec="chains/fast"] .hero { padding: 0; }      /* (its status line, when it shows, keeps its own margin) */
 html[data-sec="defi/farm"] .hero :is(#farm-h1, .lede) { display: none !important; }
 html[data-sec="rewards/"] #find-h { display: none !important; }
 
@@ -488,7 +495,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=2abc4187" defer></script>
+<script src="/chrome.js?cb=1b2d7806" defer></script>
 <!-- chrome:head:end -->
 </head>
 <body>

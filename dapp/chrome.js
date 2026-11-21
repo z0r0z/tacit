@@ -153,9 +153,8 @@
       ["send", "Send", "/#/payments/send", "One send for every asset: private TAC, ETH, cUSD, cBTC, TAC on the Tacit chain, BTC. To a tacit1 address, a name or 0x."],
       ["request", "Request", "/tac/?v=request#receive", "Ask for an amount: a pay link and a QR that waits for the payment to land."],
       ["links", "Claim links", "/tac/?v=links#pool/send", "Leave TAC for someone with no wallet yet, with a PIN if you like; take it back if they never claim."]]],
-    "defi": ["DeFi", "Swap, earn, farm and stake, privately when you want.", [
+    "defi": ["DeFi", "Swap, farm and stake, privately when you want.", [
       ["swap", "Swap", "/#/defi/swap", "Public or private swaps at the best route."],
-      ["earn", "Earn", "/#/defi/earn", "Farm from the app: put ETH into a pool in one step and earn TAC."],
       ["farm", "Farm", "/farm/", "Pick a farm, put ETH in, earn TAC."],
       ["stake", "Stake", "/tac/?v=stake#private", "Stake TAC on the Tacit chain: it earns a share of every payment, with no lock."]]],
     "chains": ["Chains", "Move your money: wallet ↔ private, Ethereum ↔ Tacit chain, Bitcoin ↔ Ethereum.", [
@@ -172,7 +171,7 @@
   const ABOUT = { '/assets/': 'TAC, tETH, cBTC, cUSD and how each is backed', '/tac/': 'the Tacit chain: stake, pay, bridge', '/pay/': 'BTC, TAC and ETH paid privately from one key', '/bridge/': 'every way between Bitcoin and Ethereum',
     '/etch/': 'issue your own asset', '/shop/': 'addresses that start with zeros, for TAC', '/prove/': 'run a prover, send waiting settles', '/tasks/': 'small jobs paid in TAC', '/face/': 'buy TAC: the biggest buyer wins the address' };
   // the mock-up's addresses for what is a page, a sheet or another address here
-  const ELSE = { '#/portfolio': '/#portfolio', '#/borrow': '/vault/', '#/borrow/btc': '/vault/#btc', '#/borrow/tac': '/vault/', '#/rewards': '/rewards/', '#/more': '/#/menu', '#/activity': '/#activity',
+  const ELSE = { '#/portfolio': '/#portfolio', '#/defi/earn': '/#card=earn', '#/borrow': '/vault/', '#/borrow/btc': '/vault/#btc', '#/borrow/tac': '/vault/', '#/rewards': '/rewards/', '#/more': '/#/menu', '#/activity': '/#activity',
     '#/account': '/#wallet', '#/account/wallet': '/#wallet', '#/account/addresses': '/#bitcoin/receive', '#/account/proofs': '/#prove-self' };
   const TAC_VIEW = { request: 'payments', links: 'payments', stake: 'defi', notes: 'chains' };
   const HREF = { portfolio: '/#portfolio', payments: '/#/payments', defi: '/#/defi', chains: '/#/chains', borrow: '/vault/', rewards: '/rewards/', menu: '/#/menu' };
