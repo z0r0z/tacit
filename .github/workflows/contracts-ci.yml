@@ -46,6 +46,8 @@ jobs:
         run: |
           git clone --depth 1 --branch v1.16.1 https://github.com/foundry-rs/forge-std lib/forge-std
           git clone --depth 1 --branch v0.1.26 https://github.com/Vectorized/solady lib/solady
+      - name: Install the solc builds the pins name (this foundry release does not list them)
+        run: bash contracts/ci-install-solc.sh 0.8.36 0.8.37
       - name: forge test
         working-directory: contracts
         # Fork tests need a reliable mainnet RPC; on CI's free public endpoints they rate-limit
@@ -76,6 +78,8 @@ jobs:
         run: |
           git clone --depth 1 --branch v1.16.1 https://github.com/foundry-rs/forge-std lib/forge-std
           git clone --depth 1 --branch v0.1.26 https://github.com/Vectorized/solady lib/solady
+      - name: Install the solc builds the pins name (this foundry release does not list them)
+        run: bash contracts/ci-install-solc.sh 0.8.36 0.8.37
       - name: Build ConfidentialPool artifact
         working-directory: contracts
         run: forge build
@@ -98,6 +102,8 @@ jobs:
         run: |
           git clone --depth 1 --branch v1.16.1 https://github.com/foundry-rs/forge-std lib/forge-std
           git clone --depth 1 --branch v0.1.26 https://github.com/Vectorized/solady lib/solady
+      - name: Install the solc builds the pins name (this foundry release does not list them)
+        run: bash contracts/ci-install-solc.sh 0.8.36 0.8.37
       - name: Guest slot constants == forge storageLayout
         working-directory: contracts/sp1/confidential
         run: bash verify-storage-slots.sh
