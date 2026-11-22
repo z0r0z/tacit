@@ -98,6 +98,7 @@ async function ensureChain() {
   const id = await provider().request({ method: 'eth_chainId' });
   if (parseInt(id, 16) === 1) return;
   await provider().request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+  if (parseInt(await provider().request({ method: 'eth_chainId' }), 16) !== 1) throw new Error('Switch your wallet to Ethereum, then try again.');
 }
 async function connect() {
   if (!provider()) throw new Error('No wallet found in this browser. The Safe batch below works without one.');
@@ -110,7 +111,7 @@ async function connect() {
 async function sendTx(tx) {
   if (!S.account) await connect();
   await ensureChain();
-  const A = await import('../activity.js').catch(() => null), ask = () => provider().request({ method: 'eth_sendTransaction', params: [{ from: S.account, ...tx }] });
+  const A = await import('../activity.js').catch(() => null), ask = () => provider().request({ method: 'eth_sendTransaction', params: [{ from: S.account, ...tx, chainId: '0x1' }] });
   return A?.sendGuess ? A.sendGuess({ read: rpc, request: ask, from: S.account, to: tx.to, value: tx.value ? BigInt(tx.value) : 0n, data: tx.data || '0x' }) : ask();   // (with the guess a wallet on a private mempool needs)
 }
 const walletWords = (e) => (e?.code === 4001 || /user (rejected|denied)/i.test(e?.message || '') ? declinedWords(e) : String(e?.message || e).slice(0, 240));

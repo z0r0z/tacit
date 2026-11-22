@@ -54,6 +54,38 @@ test('splitter: where activity.js cannot load it is the plain wait it was', asyn
   const c2 = pending(); later(40, () => { c2.mempool.delete(orig.hash); c2.mine(fast, 990); });
   await assert.rejects(splitter(c2.read, NOWHERE)(orig.hash, 150), /Not confirmed after 20 minutes/, 'and then a speed-up is not followed, as before');
 });
+// The splitter's sends: the chain is read again after a switch, and each transaction names Ethereum.
+const splitterWalletSrc = cut(src('splitter/app.js'), 'async function ensureChain() {', '\nconst walletWords', 'the splitter\'s wallet');
+const splitterWallet = (wallet) => {
+  const S = { account: null };
+  return new Function('provider', 'S', 'paint', 'ACT', 'lc', `${splitterWalletSrc.replace(IMPORT, 'import(ACT)')}\nreturn { ensureChain, sendTx };`)(() => wallet, S, () => {}, NOWHERE, (a) => String(a || '').toLowerCase());
+};
+const fakeWallet = (chainId, { switches = true } = {}) => {
+  const w = { chainId, sent: [], asked: [] };
+  w.request = async ({ method, params }) => {
+    w.asked.push(method);
+    if (method === 'eth_chainId') return '0x' + w.chainId.toString(16);
+    if (method === 'eth_requestAccounts') return [me];
+    if (method === 'wallet_switchEthereumChain') { if (switches) w.chainId = parseInt(params[0].chainId, 16); return null; }
+    if (method === 'eth_sendTransaction') { w.sent.push(params[0]); return orig.hash; }
+    throw new Error(`unexpected ${method}`);
+  };
+  return w;
+};
+test('splitter: a wallet on Ethereum, or one that switches to it, sends as before, and the transaction names chain 1', async () => {
+  const on = fakeWallet(1), a = splitterWallet(on);
+  assert.equal(await a.sendTx({ to: pool, data: '0xabcd' }), orig.hash);
+  assert.deepEqual(on.sent, [{ from: me, to: pool, data: '0xabcd', chainId: '0x1' }]);
+  assert.ok(!on.asked.includes('wallet_switchEthereumChain'), 'a wallet already on Ethereum is not asked to switch');
+  const moved = fakeWallet(8453), b = splitterWallet(moved);
+  assert.equal(await b.sendTx({ to: pool, data: '0xabcd', value: '0x5' }), orig.hash);
+  assert.deepEqual(moved.sent, [{ from: me, to: pool, data: '0xabcd', value: '0x5', chainId: '0x1' }]);
+});
+test('splitter: a wallet still on another chain after the switch is not sent anything', async () => {
+  const stuck = fakeWallet(8453, { switches: false }), a = splitterWallet(stuck);
+  await assert.rejects(a.sendTx({ to: pool, data: '0xabcd' }), /Switch your wallet to Ethereum, then try again\./);
+  assert.deepEqual(stuck.sent, []);
+});
 
 // ── the Pay page: the status of a payment's transaction ──
 const paySrc = scale(cut(src('pay/eth/index.html'), 'const TRACK = new Map();', '\nconst mined = ', 'the Pay page\'s receiptOf'), [['15_000', '10']]);
