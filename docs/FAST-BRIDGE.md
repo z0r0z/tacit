@@ -227,6 +227,8 @@ needed. The wait is paid once, when the TAC is made ready, not when it moves.
 | `dapp/fastbridge-evm.js` | the pool side of both machines on the pool wallet module: time, the lock set, who claimed, the lock, claim and refund ops, sending them through the relay |
 | `dapp/fastbridge-http.js` | the user's side of a provider's API: the terms, a quote, a reservation, the offer, the pool lock's offer, over HTTP or any other transport |
 | `dapp/fastbridge-provider.js` | a provider's engine: its quotes, what it can take, reservations and the handler of a user's requests, over the Ethereum-locker machine; one module for a page and a process |
+| `dapp/fastbridge-reverse-provider.js` | a provider's reverse side (Ethereum to Bitcoin): its quotes and routes (`/reverse/...`) over the Bitcoin-locker machine, from a Bitcoin address of its own, with the sends at once and the TAC out at once bounded |
+| `dapp/fastbridge-reverse-client.js` | the user's side of the reverse direction: the quote checked before it is shown, the Ethereum-locker machine, and the passes that fetch the provider's lock offer and post the pool offer back |
 | `dapp/fastbridge-board.js` | the board's rules: signed ads, sealed requests and answers, bounded queues |
 | `dapp/fastbridge-board-client.js` | a board reached over HTTP |
 | `dapp/fastbridge-mailbox.js` | requests sealed to a provider and carried by a board: the user's counter, the provider's mailbox, its ad |
@@ -307,9 +309,15 @@ among providers, a provider mode for any key, and a browser check. The page read
 
 Ethereum to Bitcoin: the two machines, unchanged and with the roles swapped (the LP the Bitcoin locker, the user the
 Ethereum locker), complete a whole swap in the simulated chain, and the LP takes its Bitcoin note back by the timelock when
-the user never locks (`tests/fastbridge-reverse.test.mjs`; that chain mirrors the pool's checks in JS). Nothing else of
-this direction has been run: not against the real settle guest, and none of its failure cases beyond that one.
+the user never locks (`tests/fastbridge-reverse.test.mjs`; that chain mirrors the pool's checks in JS). A provider's reverse
+service and the user's client over those machines (`tests/fastbridge-reverse-service.test.mjs`, same chain) complete a swap whose
+two amounts differ by the provider's fee, refuse what they should (a key that is not a key, an amount out of range or with no TAC
+behind it, a quote that is not for the user, a lock by another key), keep a stranger's offer out, survive a provider restart, and
+bound what a stream of requests can tie up. Not run for this direction: the real settle guest, and most of the failure cases the
+other direction has (a user silent after the provider locks is covered; slow confirmations, a claim that fails to land, a pool lock
+refunded after the provider claimed late, dishonest offers are not).
 
-Not built: the Ethereum to Bitcoin direction as something a person can use (a provider that holds Bitcoin TAC and locks it
-first, where the LP process builds only the Ethereum locker; the user's side that locks a pool note; the ad, the API and the
-page for it), and the claim prover's options (the relay that is not the provider, the user's device, a prover network).
+Not built: the Ethereum to Bitcoin direction as something a person can use. The two modules above are in no process and no page
+yet: the daemon does not build the reverse service, derive the Bitcoin address it sells from, or scan that address's notes; the
+page has no way in; and a provider's ad does not say it sells this way. Also not built: the claim prover's options (the relay
+that is not the provider, the user's device, a prover network).
