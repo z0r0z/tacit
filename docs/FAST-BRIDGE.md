@@ -299,11 +299,17 @@ pinned `elf/cxfer-guest`, whose verifying key is the one inside the deployed poo
 Live on mainnet: the bridge page (`/fast/`) and the front page's Bridge tab, with providers found through the board named in
 `dapp/fast/lp.json`.
 
-Built and tested: the protocol, the transaction builders, both role machines, a simulated chain, the full swap in both
-directions against the real settle guest and the real note validator, the pool adapter, the LP process with its
-HTTP API, store and explorer adapter, the board and the mailbox over it, and the bridge page (`/fast/`) with its client,
-recovery from the key, a choice among providers, a provider mode for any key, and a browser check. The page reads its
-board from `dapp/fast/lp.json`.
+Built and tested: the protocol (its messages in both directions, `tests/adaptor-xswap.test.mjs`), the transaction builders,
+both role machines, a simulated chain, the full swap Bitcoin to Ethereum against the real settle guest and the real note
+validator (`tests/fastbridge-fork.mjs`), the pool adapter, the LP process with its HTTP API, store and explorer adapter,
+the board and the mailbox over it, and the bridge page (`/fast/`) with its client, recovery from the key, a choice
+among providers, a provider mode for any key, and a browser check. The page reads its board from `dapp/fast/lp.json`.
 
-Not built: the Ethereum to Bitcoin direction in the pages, and the claim prover's options (the relay that is not the
-provider, the user's device, a prover network).
+Ethereum to Bitcoin: the two machines, unchanged and with the roles swapped (the LP the Bitcoin locker, the user the
+Ethereum locker), complete a whole swap in the simulated chain, and the LP takes its Bitcoin note back by the timelock when
+the user never locks (`tests/fastbridge-reverse.test.mjs`; that chain mirrors the pool's checks in JS). Nothing else of
+this direction has been run: not against the real settle guest, and none of its failure cases beyond that one.
+
+Not built: the Ethereum to Bitcoin direction as something a person can use (a provider that holds Bitcoin TAC and locks it
+first, where the LP process builds only the Ethereum locker; the user's side that locks a pool note; the ad, the API and the
+page for it), and the claim prover's options (the relay that is not the provider, the user's device, a prover network).
