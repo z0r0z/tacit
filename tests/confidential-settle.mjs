@@ -412,12 +412,12 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   ok('a sender whose job is proving waits for the others before their next');
 
   // a settler built afresh over the same store with a shared map (the worker builds one per request) reads each sender once
-  const store3 = freshStore(), shared = new Map();
+  const store3 = freshStore(), shared = new Map(), sharedKinds = new Map();
   const q3 = makeConfidentialSettler({ storage: store3, hash, now, sleep: instantSleep, senders: new Map() });
   for (let i = 0; i < 5; i++) await q3.submitJob({ type: 'transfer', op: op(`k${i}`), mode: 'prove', client: `s${i % 2}/24` });
   let reads = 0;
   const counted = { ...store3, getJob: async (id) => { reads++; return store3.getJob(id); } };
-  const fresh = () => makeConfidentialSettler({ storage: counted, hash, now, sleep: instantSleep, senders: shared });
+  const fresh = () => makeConfidentialSettler({ storage: counted, hash, now, sleep: instantSleep, senders: shared, kinds: sharedKinds });
   await fresh().nextJob();
   const firstLook = reads;
   reads = 0;
@@ -503,6 +503,77 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   const off = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, maxProveOnlyPerSender: 0 });
   for (let i = 0; i < 10; i++) await off.submitJob({ type: 'farmunbond', op: op(`o${i}`), memos: [], mode: 'prove', client: A });
   ok('a sender is held to a few prove-only jobs waiting (default 6): settles, paid, pre-proved, other networks and unsent-from ones are not; a slot frees when one ends; 0 turns it off');
+}
+
+// ───────────────── 25. ops that pin the pool's reserves are taken first, and the rest are held back only so long ─────────────────
+{
+  const t0 = t;
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, senders: new Map(), kinds: new Map() });
+  const op = (k) => ({ chainBinding: '0xcb', spendRoot: '0xr', fee: 0, n: k });
+  const tr1 = await q.submitJob({ type: 'transfer', op: op('pin-t1'), memos: [], client: 'a/24' });
+  const tr2 = await q.submitJob({ type: 'transfer', op: op('pin-t2'), memos: [], client: 'b/24' });
+  const sw1 = await q.submitJob({ type: 'route', op: op('pin-s1'), memos: [], client: 'c/24' });
+  const sw2 = await q.submitJob({ type: 'swap', op: op('pin-s2'), memos: [], client: 'c/24' });
+  const lp1 = await q.submitJob({ type: 'lp', op: op('pin-l1'), memos: [], client: 'd/24' });
+  assert.strictEqual((await q.jobStatus(tr1.jobId)).ahead, 3, 'a transfer queued first has the three that pin reserves ahead of it');
+  assert.strictEqual((await q.jobStatus(sw1.jobId)).ahead, 0);
+  const got = [];
+  for (let k = 0; k < 5; k++) got.push((await q.nextJob()).jobId);
+  assert.deepStrictEqual(got, [sw1.jobId, lp1.jobId, sw2.jobId, tr1.jobId, tr2.jobId],
+    'the pinned ones go first, each sender in turn (c’s second after the others’ first), then the rest in arrival order');
+  ok('a swap, route or liquidity add is taken before a transfer queued earlier, senders still in turn');
+
+  // a sender's turns are counted within each group: their swap is their first among the swaps, though a transfer of theirs came before it
+  const q1b = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, senders: new Map(), kinds: new Map() });
+  await q1b.submitJob({ type: 'transfer', op: op('rd-t'), memos: [], client: 'a/24' });
+  const aSwap = await q1b.submitJob({ type: 'swap', op: op('rd-a'), memos: [], client: 'a/24' });
+  const bSwap = await q1b.submitJob({ type: 'swap', op: op('rd-b'), memos: [], client: 'b/24' });
+  assert.strictEqual((await q1b.nextJob()).jobId, aSwap.jobId, 'a’s swap is a’s first swap and came first');
+  assert.strictEqual((await q1b.nextJob()).jobId, bSwap.jobId);
+  ok('a sender’s turns among the swaps do not count their transfers');
+
+  // a job that has waited the head start is no longer behind them, and takes its place by arrival
+  const q2 = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, senders: new Map(), kinds: new Map() });
+  t = t0 + 1000;
+  const old = await q2.submitJob({ type: 'transfer', op: op('age-t'), memos: [], client: 'a/24' });
+  t = t0 + 1000 + 100_000;
+  const fresh1 = await q2.submitJob({ type: 'swap', op: op('age-s1'), memos: [], client: 'b/24' });
+  assert.strictEqual((await q2.jobStatus(old.jobId)).ahead, 1, 'inside the head start the transfer is behind the swap');
+  t = t0 + 1000 + 125_000;
+  const fresh2 = await q2.submitJob({ type: 'swap', op: op('age-s2'), memos: [], client: 'c/24' });
+  assert.strictEqual((await q2.jobStatus(old.jobId)).ahead, 0, 'past it the transfer is first again, by its arrival');
+  const order = [];
+  for (let k = 0; k < 3; k++) order.push((await q2.nextJob()).jobId);
+  assert.deepStrictEqual(order, [old.jobId, fresh1.jobId, fresh2.jobId]);
+  t = t0;
+  ok('a job passed over for two minutes goes back to its place by arrival, so a run of swaps cannot hold the others back');
+
+  // a record with no queue time (queued before it was kept) is never held behind, and the kinds are read once across settlers sharing a map
+  const store3 = freshStore(), shared = new Map(), sharedKinds = new Map();
+  const q3 = makeConfidentialSettler({ storage: store3, hash, now, sleep: instantSleep, senders: shared, kinds: sharedKinds });
+  const noTime = await q3.submitJob({ type: 'transfer', op: op('nt-t'), memos: [], client: 'a/24' });
+  const j = await store3.getJob(noTime.jobId); delete j.createdAt; await store3.putJob(noTime.jobId, j);
+  sharedKinds.clear(); shared.clear();
+  const sw = await q3.submitJob({ type: 'swap', op: op('nt-s'), memos: [], client: 'b/24' });
+  assert.strictEqual((await q3.nextJob()).jobId, noTime.jobId, 'with no queue time on record the job keeps its place by arrival');
+  let reads = 0;
+  const counted = { ...store3, getJob: async (id) => { reads++; return store3.getJob(id); } };
+  sharedKinds.clear(); shared.clear();
+  await makeConfidentialSettler({ storage: counted, hash, now, sleep: instantSleep, senders: shared, kinds: sharedKinds }).nextJob();
+  const first = reads; reads = 0;
+  await makeConfidentialSettler({ storage: counted, hash, now, sleep: instantSleep, senders: shared, kinds: sharedKinds }).nextJob();
+  assert.ok(first >= 2 && reads < first, `a later settler over the same maps reads no kind again (${first} reads, then ${reads})`);
+  assert.ok(sw.jobId);
+  ok('a job with no queue time on record is not held behind, and a job’s kind is read once across settlers sharing a map');
+
+  // the maps are pruned like the senders one
+  const big = new Map(), bigKinds = new Map();
+  for (let i = 0; i < 300; i++) { big.set(`x${i}`, 'z'); bigKinds.set(`x${i}`, { pinned: false, at: 0 }); }
+  const q4 = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, senders: big, kinds: bigKinds });
+  await q4.submitJob({ type: 'swap', op: op('prune'), memos: [], client: 'a/24' });
+  await q4.nextJob();
+  assert.ok(big.size < 10 && bigKinds.size < 10, `ids no longer queued are dropped from both maps (${big.size}, ${bigKinds.size})`);
+  ok('the sender and kind maps drop jobs that left the queue');
 }
 
 console.log(`\n${n} confidential-settle checks passed.`);

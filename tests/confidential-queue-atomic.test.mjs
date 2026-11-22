@@ -64,6 +64,19 @@ await test('submits through separate per-request settlers over one KV do not ove
   for (const r of rs) ok(pend.includes(r.jobId), 'accepted job missing from queue');
 });
 
+await test('per-request settlers over one KV read each queued job once for the order, not on every request', async () => {
+  const kv = slowKV();
+  const env = { CONFIDENTIAL_KV: kv };
+  const mk = () => buildConfidentialSettler(env, { hash });
+  for (const n of [1, 2, 3, 4]) await mk().submitJob({ type: n % 2 ? 'swap' : 'transfer', op: opN(n), client: `c${n}/24` });
+  let reads = 0;
+  const getOrig = kv.get;
+  kv.get = async (k) => { if (String(k).startsWith('cps:job:')) reads++; return getOrig(k); };
+  await mk().nextJob();
+  kv.get = getOrig;
+  ok(reads <= 2, `the order reads no job record (the claim reads one twice): ${reads} reads for four queued jobs`);
+});
+
 await test('submit racing a claim keeps both the claim and the new entry', async () => {
   const kv = slowKV(); const q = settlerOver(kv);
   const a = await q.submitJob({ type: 'swap', op: opN(1) });
@@ -149,7 +162,7 @@ await test('a proof asked for ahead of its press waits for the jobs people have 
   const early = (await q.submitJob({ type: 'sendunwrap', op: opN(7), mode: 'prove', early: true })).jobId;
   const pressed = (await q.submitJob({ type: 'swap', op: opN(8) })).jobId;
   const [e, p] = await Promise.all([q.jobStatus(early), q.jobStatus(pressed)]);
-  ok(e.ahead === 0 && p.ahead === 0, `the pressed job is next, the early one does not count ahead of it (${e.ahead}, ${p.ahead})`);
+  ok(p.ahead === 0 && e.ahead === 1, `the pressed job is next, the early one does not count ahead of it, and it waits for the pressed one (${e.ahead}, ${p.ahead})`);   // a swap pins reserves, so it is served before a send queued earlier (confidential-settle.js PINNED_TYPES)
   const first = await q.nextJob(), second = await q.nextJob();
   ok(first?.jobId === pressed && second?.jobId === early, `the pressed job is taken first (${first?.jobId === pressed}, ${second?.jobId === early})`);
   const settleOnly = (await q.submitJob({ type: 'swap', op: opN(9), early: true })).jobId;
