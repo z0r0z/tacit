@@ -49,7 +49,7 @@ let COIN = [coin('ee', 1, 250000)];
 let LATE = false;
 const OWN_SPK = '0014' + createHash('ripemd160').update(createHash('sha256').update(Buffer.from(secp.getPublicKey(KEY, true))).digest()).digest().toString('hex');
 // (the cBTC lock sync reads the pool, which this test refuses; it is answered as done, so the coins the page counts as free are the address's own and the protected ones seeded below stay)
-const TACIT_JS = readFileSync(join(DAPP, 'tacit.js'), 'utf8') + '\n_testSetScanHoldingsOverride(() => (globalThis.__held ? globalThis.__held() : new Map()));\n_ownLocksReserved = () => Promise.resolve();\n';
+const TACIT_JS = readFileSync(join(DAPP, 'tacit.js'), 'utf8') + '\n_testSetScanHoldingsOverride(() => (globalThis.__held ? globalThis.__held() : new Map()));\n_ownLocksReserved = () => Promise.resolve();\nglobalThis.__recordSp = (o) => recordSpCredit(o);\n';
 
 const browser = await chromium.launch({ args: ['--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1'] });
 try {
@@ -209,6 +209,23 @@ try {
   const bal = await text('#btc-body');
   ok(/0\.000021\s*BTC/.test(bal) && /Not counted in the balance: 0\.00007 BTC held for a bridge in progress \(it frees up when that bridge finishes\) and 0\.0009 BTC locked as collateral\./.test(bal),
     `the Bitcoin sheet's balance says what the address has that it does not count: ${bal.slice(0, 260)}`);
+  // a key whose only coin is under the dust line, and whose other BTC is a silent payment (the balance above counts it, the address does not hold it): the review says the address has no free coin,
+  // not that its largest holds 0 BTC, and says where the rest is
+  COIN = [coin('ee', 3, 300)];
+  await page.evaluate(() => { localStorage.removeItem('tacit-protected-outpoints-v1'); window.__recordSp({ txidHex: 'ab'.repeat(32), vout: 0, sats: 700, tweakHex: '11'.repeat(32), blockTime: 1700000000 }); });
+  await page.waitForTimeout(16000);   // the address's coins are kept for 15 s
+  await page.click('#btc-re');
+  await page.waitForFunction(() => /0\.000007\s*BTC/.test(document.querySelector('#btc-body')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+  ok(/0\.000007\s*BTC/.test(await text('#btc-body')), `the Bitcoin sheet's balance counts the silent payment: ${(await text('#btc-body')).slice(0, 200)}`);
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => { location.hash = ''; });
+  await page.waitForFunction(() => !document.querySelector('dialog.sheet[open]'), null, { timeout: 10000 }).catch(() => {});
+  await page.evaluate(() => { document.querySelector('#tpg-where').open = true; document.querySelector('#tpg-br').open = true; });
+  await page.check(`#bridge-body input[value="${'b2'.repeat(32)}:0"]`);
+  await page.waitForFunction(() => /one coin whole|err/.test(document.querySelector('#br-rcpt')?.textContent || ''), null, { timeout: 90000 }).catch(() => {});
+  const none = await text('#br-rcpt');
+  ok(/The move spends one coin whole: this key’s Bitcoin address has no free coin, and this needs one of [\d,]+ sats\. Not counted as free: 0\.000007 BTC in silent payments, which are not coins at this address and 0\.000003 BTC in coins under 546 sats, too small to spend\. Add bitcoin to it/.test(none) && !/holds 0 BTC/.test(none),
+    `with no free coin it says so, and says what the address has that does not count: ${none.slice(none.indexOf('The move spends')).slice(0, 420)}`);
   ok(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`);
   if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT, fullPage: true });
   await ctx.close();

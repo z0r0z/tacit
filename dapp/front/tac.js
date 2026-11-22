@@ -287,7 +287,7 @@ function renderBridgeIn(el) {
       if (review.short) {
         const have = BigInt(cost.have || 0), arriving = BTC.pub === pub && BTC.pending > 0n ? html` ${fmt(BTC.pending, 8, 8)} BTC is still arriving; once it confirms, check again.` : '';
         warn(rc, one ? html`This key’s Bitcoin address has ${fmt(have, 8, 8)} BTC free for fees, short of the ${sats(cost.need)} this needs.${arriving}${brHeldNote(got.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`
-          : html`The move spends one coin whole: the largest free coin on this key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC, and this needs one of ${sats(cost.need)}.${coins.length > 1 ? html` The ${coins.length} free coins there hold ${fmt(coins.reduce((n, c) => n + BigInt(c.value || 0), 0n), 8, 8)} BTC in all.` : ''}${arriving}${brHeldNote(got.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
+          : html`The move spends one coin whole: ${have ? html`the largest free coin on this key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC` : 'this key’s Bitcoin address has no free coin'}, and this needs one of ${sats(cost.need)}.${coins.length > 1 ? html` The ${coins.length} free coins there hold ${fmt(coins.reduce((n, c) => n + BigInt(c.value || 0), 0n), 8, 8)} BTC in all.` : ''}${arriving}${brHeldNote(got.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
       }
       if (BR.acked !== rvKey) ack.checked = false;
       if (toWrap) toWrap.hidden = pf.path !== 'reflected';
@@ -403,13 +403,13 @@ const brMergeSend = (pub, ns, plan) => mergeSend({ withKey: (fn) => withKey(fn, 
   return r;
 });
 const brStartNote = async (pub, n, publicTo) => startNote(await loadTacit(), { withKey: (fn) => withKey(fn, pub), mem: store, pub, walletPub: hexToBytes(pub), priv: () => walletPriv(), note: n, publicTo, errText });
-// The coins this key's Bitcoin address can pay a fee from, and what else is there that does not count as free (sats): held for a bridge in progress, locked as collateral, or in coins that carry tokens or are not checked yet.
+// The coins this key's Bitcoin address can pay a fee from, and what else is there that does not count as free (sats): held for a bridge in progress, locked as collateral, in coins that carry tokens or are not checked yet, in coins under the 546-sat dust line, or in silent payments (the Bitcoin sheet's balance counts those; they are not coins at the address, so no fee can come from them).
 const brFree = (pub) => withKey(async (t) => {
   const { free, held } = await t.getUtxos(t.wallet.address(), null, { split: true }), coins = await t.pickSafeCommitSats(free);
-  const usable = new Set(coins.map((u) => `${u.txid}:${u.vout}`)), hold = { bridge: 0n, lock: 0n, other: 0n };
+  const usable = new Set(coins.map((u) => `${u.txid}:${u.vout}`)), hold = { bridge: 0n, lock: 0n, other: 0n, dust: 0n, silent: BTC.pub === pub ? BigInt(BTC.silent || 0n) : 0n };
   const add = (k, u) => { const v = BigInt(u.value || 0); if (v > 546n) hold[k] += v; };
   for (const u of held) add(u.hold, u);
-  for (const u of free) if (!usable.has(`${u.txid}:${u.vout}`)) add('other', u);
+  for (const u of free) if (!usable.has(`${u.txid}:${u.vout}`)) { add('other', u); if (BigInt(u.value || 0) < 546n) hold.dust += BigInt(u.value || 0); }
   return { coins, hold };
 }, pub).catch(() => null);
 const brHeldNote = (h) => { const p = heldParts(h); return p.length ? html` Not counted as free: ${p}.` : ''; };
