@@ -264,7 +264,9 @@ post-quantum, and a Tornado deposit and its withdrawal are linked only as far as
 
 A user never needs gas or a funded address: a relay submits the transaction and is paid `fee` out of the user's shielded
 funds in the same call. The proof binds `relayer` and `fee`, so a relay cannot redirect funds or raise its fee, and a copy
-of the transaction sent by anyone else still pays the relay named in it. Deposits are not relayed: whoever sends a deposit
+of the transaction sent by anyone else still pays the relay named in it. Both are public inputs of that one proof: there is
+no fee note to open and no second transaction, so paying the relay shows nothing the spend did not already show, and a pool
+holds one asset, so a spend has no token to give away either. Deposits are not relayed: whoever sends a deposit
 pays it. Sending from your own wallet is always possible ("send from my wallet instead").
 
 **Choosing a relay.** The RelayRegistry lists relays that hold a bond in TAC (minimum 1,000 TAC, 7-day exit delay). The page
