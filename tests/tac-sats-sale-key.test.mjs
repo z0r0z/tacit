@@ -207,13 +207,13 @@ const TOTAL = 10_000_000_000n;   // 100 TAC: the 2.5 TAC taken out, the 15 TAC f
 const notes = [{ asset: '0x' + ASSET, value: TOTAL.toString(), nf: '0x01', txid: 'aa'.repeat(32), leafIndex: 0 }];
 const FEE = 1500000000n;
 let log;
-function stub({ fee = FEE, quoteFee = fee, quote = 'ok', submit = [], status = (n) => (n === 2 ? { carrier: 'cc'.repeat(32) } : { state: 'queued' }), wait = null, prove = 'ok' } = {}) {
+function stub({ fee = FEE, quoteFee = fee, payee = relayAddr, quote = 'ok', submit = [], status = (n) => (n === 2 ? { carrier: 'cc'.repeat(32) } : { state: 'queued' }), wait = null, prove = 'ok' } = {}) {
   log = { quotes: [], submits: 0, statuses: 0, proofs: 0, builds: [], posts: 0, opened: [] };
-  client.relayInfo = async () => (fee == null ? null : { fees: { ['0x' + ASSET]: fee.toString() } });
+  client.relayInfo = async () => (fee == null ? null : { address: relayAddr, fees: { ['0x' + ASSET]: fee.toString() } });
   client.quote = async (body) => {
     log.quotes.push(body);
     if (quote === 'fail') throw new Error('quote table full');
-    return { fee: quoteFee.toString(), address: relayAddr, bind: { txid: 'bb'.repeat(32), vout: 0 }, quoteId: 'q' + log.quotes.length, exitVout: 0 };
+    return { fee: quoteFee.toString(), address: payee, bind: { txid: 'bb'.repeat(32), vout: 0 }, quoteId: 'q' + log.quotes.length, exitVout: 0 };
   };
   client.submit = async () => { const e = submit[log.submits++]; if (e) throw e; return { id: 's1' }; };
   client.relayStatus = async () => status(++log.statuses);
@@ -230,6 +230,12 @@ const key = secret.saleKey(pw, 3);
 const out = (opts = {}) => secret.exitToSaleKey(tacit, { poolWallet: pw, amount: 250000000n, asset: ASSET, key, ...opts });
 const declined = (p, msg) => assert.rejects(p, (e) => e.relayDeclined === true && e.said === true && e.message === msg);
 const conflict = (exitVout) => Object.assign(new Error('exit_vout is not free in the open carrier; re-sign with exitVout'), { status: 409, body: { exitVout } });
+
+// A quote whose fee output pays another address than the relay's own: nothing is proved.
+stub({ payee: secret.poolWalletFor(new Uint8Array(32).fill(9), 'mainnet').addressString });
+store.clear();
+await declined(out(), 'The relay can’t take this one right now. Nothing was sent. Try again in a few minutes.');
+assert.equal(log.proofs, 0, 'nothing proved for another payee');
 
 // The relay takes it out: the exit pays the sale key, the relay's fee is a pool output, the bind is the quote's.
 stub();

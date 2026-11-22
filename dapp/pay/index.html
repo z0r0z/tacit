@@ -2213,7 +2213,7 @@ const askSelfPost = (pub) => async (why, { timedOut = false, signal } = {}) => {
 function tacFail(status, e) {
   if (e?.relayDeclined) return say(status, e.message);
   if (e?.feeMoved == null) return sayErr(status, e);
-  TAC.fee = e.feeMoved; render();
+  TAC.fee = e.feeMoved; TAC.relay = true; render();
   say($('#status'), html`<span class="err">The relay fee changed to ${fmt(e.feeMoved, 8, 8)} TAC. Check it and press again.</span>`);
 }
 const combineFee = () => (TAC.relay && TAC.fee != null && TAC.route !== 'self' ? TAC.fee : null);
@@ -2303,7 +2303,7 @@ function tacSend(f) {
         ? (viaRelay ? 'Inside the shielded pool · sender, recipient and amount hidden' : 'Inside the shielded pool · recipient and amount hidden; your Bitcoin address posts it')
         : 'Shielded transfer from your Bitcoin address · the recipient stays hidden';
       mount(rc, html`<div class="kv"><span>${r.name || 'To'}</span><b>${r.shown}</b></div>${idRow(r)}<div class="kv"><span>How</span><b>${how}</b></div>
-        ${r.kind === 'pool' && viaRelay && v ? (fee != null ? html`<div class="kv"><span>Relay fee, at most</span><b class="num">${fmt(fee, 8, 8)} TAC</b></div>` : html`<div class="kv"><span>Relay fee</span><b>quoted as it goes</b></div>`) : ''}
+        ${r.kind === 'pool' && viaRelay && v ? (fee != null ? html`<div class="kv"><span>Relay fee, at most</span><b class="num">${fmt(fee, 8, 8)} TAC</b></div>` : html`<div class="kv"><span>Relay fee</span><b>shown before it is sent</b></div>`) : ''}
         ${r.kind === 'stealth' ? html`<p class="note">This address is from before pool payments, so the TAC goes from your Bitcoin address, not the pool${seen && !pub ? ', which holds none' : ''}.</p>` : ''}
         ${comb || (stop ? html`<p class="note err" role="alert">${stop}</p>` : avail != null && v > avail ? html`<p class="note err" role="alert">More than you hold.</p>` : '')}`);
       wireRoute(rc);
@@ -2329,7 +2329,7 @@ function tacSend(f) {
         if (!viaRelay) { const short = await carrierShort(); if (short) return say(status, html`<span class="err">${short}</span>`); }
         const X = await getSecret();
         sayTurn(status, 'Getting ready…');
-        const res = await withKey((t) => { going(status, 'Getting ready…'); return X.payPrivately(t, { poolWallet: pw, to: r.to, amount: v, asset: X.TAC_ASSET_MAINNET, anchor, noRelay: !viaRelay, maxFee: viaRelay ? fee : null, say: (m) => going(status, m), askSelf: askSelfPost(pub) }); }, pub);
+        const res = await withKey((t) => { going(status, 'Getting ready…'); return X.payPrivately(t, { poolWallet: pw, to: r.to, amount: v, asset: X.TAC_ASSET_MAINNET, anchor, noRelay: !viaRelay, maxFee: viaRelay ? fee ?? 0n : null, say: (m) => going(status, m), askSelf: askSelfPost(pub) }); }, pub);
         if (res.wait) return waitView(res, 'f-go', X);
         markPaid('tac', raw, v, res.revealTxid);
         actJust({ mode: 'tac', kind: 'tsent', v, tx: res.revealTxid, relayed: !!res.relayed });

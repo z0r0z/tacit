@@ -14,13 +14,14 @@ const client = secret.poolClientFor('mainnet');
 const ASSET = secret.TAC_ASSET_MAINNET;
 const pw = secret.poolWalletFor(new Uint8Array(32).fill(7), 'mainnet');
 const to = secret.poolWalletFor(new Uint8Array(32).fill(8), 'mainnet').addressString;
+const RELAY = secret.poolWalletFor(new Uint8Array(32).fill(9), 'mainnet').addressString;
 const notes = [{ asset: '0x' + ASSET, value: '100000000', nf: '0x01', txid: 'aa'.repeat(32), leafIndex: 0 }];
 
 let log;
-function stub({ fee = 1000n, quote = true, submit = true, status = () => null } = {}) {
+function stub({ fee = 1000n, quote = true, submit = true, status = () => null, payee = RELAY } = {}) {
   log = { quotes: 0, submits: 0, statuses: 0, proofs: 0, posts: 0, asks: [] };
-  client.relayInfo = async () => (fee == null ? null : { fees: { ['0x' + ASSET]: fee.toString() } });
-  client.quote = async () => { log.quotes++; if (!quote) throw new Error('quote table full'); return { fee: fee.toString(), address: to, bind: { txid: 'bb'.repeat(32), vout: 0 }, quoteId: 'q1' }; };
+  client.relayInfo = async () => (fee == null ? null : { address: RELAY, fees: { ['0x' + ASSET]: fee.toString() } });
+  client.quote = async () => { log.quotes++; if (!quote) throw new Error('quote table full'); return { fee: fee.toString(), address: payee, bind: { txid: 'bb'.repeat(32), vout: 0 }, quoteId: 'q1' }; };
   client.submit = async () => { log.submits++; if (submit !== true) throw new Error(submit); return { id: 's1' }; };
   client.relayStatus = async () => status(++log.statuses);
   client.walletNotes = async () => notes;
@@ -111,5 +112,20 @@ await declined(pay({ askSelf: asker((why, d) => new Promise((res) => realTimeout
 const polls = log.statuses;
 await new Promise((r) => realTimeout(r, 50));
 assert.ok(log.statuses <= polls + 1, 'no polling after the answer');
+
+// A quote whose fee output pays an address other than the relay's own: nothing is proved or posted.
+stub({ payee: to }); await declined(pay({ askSelf: asker(false) }), NO_RELAY);
+assert.equal(log.proofs, 0, 'nothing proved'); assert.equal(log.submits, 0); assert.equal(log.posts, 0);
+
+// The pages that pay through the relay pass the fee they showed, or 0 when none was shown, so a quote above it is shown before anything is sent.
+stub(); await assert.rejects(pay({ maxFee: 0n }), (e) => e.feeMoved === 1000n);
+assert.equal(log.proofs, 0, 'nothing proved before the fee is shown');
+{
+  const { readFileSync } = await import('node:fs');
+  const payPage = readFileSync(new URL('../dapp/pay/index.html', import.meta.url), 'utf8'), sats = readFileSync(new URL('../dapp/sats/secret.js', import.meta.url), 'utf8');
+  assert.match(payPage, /X\.payPrivately\(t, \{[^}]*maxFee: viaRelay \? fee \?\? 0n : null/, '/pay/ passes the shown fee, or 0');
+  assert.match(payPage, /TAC\.fee = e\.feeMoved; TAC\.relay = true; render\(\);/, '/pay/ shows a fee the relay quoted');
+  assert.match(sats, /payPrivately\(tacit, \{ poolWallet: pw, to, amount: value, asset: asset\(\), anchor, maxFee: shown \?\? 0n,/, '/sats passes the shown fee, or 0');
+}
 
 console.log('secret-pay-ask-self: all checks passed');

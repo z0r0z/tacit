@@ -386,6 +386,8 @@ export async function payPrivately(tacit, { poolWallet, to, amount, asset, ancho
   const q = fee != null ? await askQuote().catch(() => new Promise((r) => setTimeout(r, 1500)).then(askQuote).catch(() => null)) : null;
   const cap = maxFee ?? (fee != null ? (BigInt(fee) * 5n) / 4n : null);
   if (q && cap != null && BigInt(q.fee) > BigInt(cap)) throw Object.assign(new Error('The relay’s fee changed.'), { feeMoved: BigInt(q.fee) });
+  // the fee output pays the relay's own pool address, as its info names it
+  if (q && String(q.address) !== String(info?.address)) throw relayDeclined('The relay can’t take this one right now. Nothing was sent.');
   const pay = deductFee ? amount - (q ? BigInt(q.fee) : 0n) : amount;
   if (pay <= 0n) throw Object.assign(new Error('The relay’s fee is more than this payment.'), { feeOver: q ? BigInt(q.fee) : 0n });
   say('finding your notes…');
@@ -932,7 +934,7 @@ export async function exitToSaleKey(tacit, { poolWallet, amount, asset, key, anc
   if (listed == null) throw relayDeclined(NOT_NOW);
   const askQuote = () => client.quote({ asset: '0x' + assetHex, exitScriptPubKey: key.scriptPubKey });
   const q = await askQuote().catch(() => new Promise((r) => setTimeout(r, 1500)).then(askQuote).catch(() => null));
-  if (!q || !Number.isInteger(q.exitVout)) throw relayDeclined(NOT_NOW);
+  if (!q || !Number.isInteger(q.exitVout) || String(q.address) !== String(info.address)) throw relayDeclined(NOT_NOW);
   const fee = BigInt(q.fee);
   if (fee > (maxFee ?? (BigInt(listed) * 5n) / 4n)) throw Object.assign(new Error('The relay’s fee changed.'), { feeMoved: fee });
   say('finding your notes…');
@@ -1626,8 +1628,10 @@ export function mountMainnet(root, ctx) {
     render();
   }
 
+  const relayKey = () => '0x' + String(asset()).replace(/^0x/, '').toLowerCase();
+  const relayFee = () => { const f = relay.fees?.[relayKey()]; return /^\d+$/.test(String(f ?? '')) ? BigInt(f) : null; };
   async function checkRelay() {
-    try { relay = { checked: true, live: !!(await poolClientFor('mainnet').relayInfo()) }; }
+    try { const info = await poolClientFor('mainnet').relayInfo(); relay = { checked: true, live: !!info, fees: info?.fees || {} }; }
     catch { relay = { checked: true, live: false }; }
     render();
   }
@@ -1692,7 +1696,14 @@ export function mountMainnet(root, ctx) {
     const value = parseTacUnits(payAmtField.value, pub.decimals);
     if (value <= 0n) throw new Error('Enter an amount above zero.');
     payStatus.textContent = '';
-    const r = await payPrivately(tacit, { poolWallet: pw, to, amount: value, asset: asset(), anchor, say: (m) => { payStatus.textContent = m; }, askSelf: askSelfIn(payStatus) });
+    // the relay's fee is the one shown above: a quote above it is shown and asked for again
+    const shown = relayFee();
+    const r = await payPrivately(tacit, { poolWallet: pw, to, amount: value, asset: asset(), anchor, maxFee: shown ?? 0n, say: (m) => { payStatus.textContent = m; }, askSelf: askSelfIn(payStatus) })
+      .catch((e) => {
+        if (e?.feeMoved == null) throw e;
+        relay = { ...relay, fees: { ...relay.fees, [relayKey()]: e.feeMoved.toString() } };
+        throw new Error(`The relay’s fee is ${fmt(e.feeMoved)} ${sel.ticker}. Nothing was sent. Press again to pay with it.`);
+      });
     if (r.wait) { pending.pay = { ...r }; return; }
     lastPay = { txid: r.revealTxid, to: to.slice(0, 16) + '…', value: value.toString(), relayed: r.relayed };
     toField.value = ''; payAmtField.value = '';
@@ -1746,7 +1757,7 @@ export function mountMainnet(root, ctx) {
 
     items.push(el('p', { class: 'note' },
       !relay.checked ? 'Checking the gasless relay…'
-        : relay.live ? 'The gasless relay is live: payments and exits can ride it fee-free.'
+        : relay.live ? `The gasless relay is live: a private payment through it pays the relay’s fee${relayFee() != null ? ` of ${fmt(relayFee())} ${sel.ticker}` : ''} from your notes, and no Bitcoin fee.`
         : 'Gasless relay: coming soon. Shielding, payments and exits all work now — each pays its own Bitcoin network fee.'));
 
     if (!who?.connected) {
