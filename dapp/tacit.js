@@ -12543,6 +12543,8 @@ function recordActivity(entry) {
     txid:     /^[0-9a-f]{64}$/.test(entry.txid || '') ? entry.txid : '',
     ts:       Number(entry.ts) || Date.now(),
   };
+  const _by = _openAddr();
+  if (_by) out.addr = _by;
   if (entry.extra && typeof entry.extra === 'object') {
     try { out.extra = JSON.parse(JSON.stringify(entry.extra)); } catch { }
   }
@@ -12553,6 +12555,128 @@ function recordActivity(entry) {
   if (out.kind === 'otc-reserved') {
     try { if (typeof _renderInflightPill === 'function') _renderInflightPill(); } catch {}
   }
+}
+
+// The Activity list is kept for the whole browser and Holdings for the wallet that is open, so each entry carries the
+// address of the wallet that was open when it was recorded. Older instant buys have none: the buyer's wallet is the
+// address of the buy's first output (the dust output the take pays to its own key), read once from the chain.
+function _openAddr() { try { return wallet.pub ? wallet.address() : ''; } catch { return ''; } }
+function _walletTag(a) { a = String(a || ''); return a.length > 20 ? a.slice(0, 10) + '…' + a.slice(-6) : a; }
+const _ACTIVITY_OWNED_KINDS = new Set(['swap-buy', 'transfer-in']);
+const _BUY_OUT0_SOURCES = new Set(['preauth-take', 'preauth-take-batch']);
+const _buyerLookupTried = new Set();
+let _buyerLookupInFlight = null;
+const _isUntaggedBuy = (e) => !!e && e.kind === 'swap-buy' && !e.addr && /^[0-9a-f]{64}$/.test(e.txid || '')
+  && _BUY_OUT0_SOURCES.has(e.extra?.source);
+async function _resolveActivityBuyersImpl(max) {
+  const key = activityKey();
+  let arr;
+  try { arr = JSON.parse(localStorage.getItem(key) || '[]'); } catch { return false; }
+  if (!Array.isArray(arr)) return false;
+  const ids = [];
+  for (const e of arr) {
+    if (_isUntaggedBuy(e) && !_buyerLookupTried.has(e.txid) && !ids.includes(e.txid) && ids.length < max) ids.push(e.txid);
+  }
+  if (!ids.length) return false;
+  ids.forEach(id => _buyerLookupTried.add(id));
+  const found = new Map();
+  await Promise.all(ids.map(async (id) => {
+    try {
+      const v = (await getTx(id))?.vout?.[0];
+      const spk = String(v?.scriptpubkey || '').toLowerCase();
+      if (v && Number(v.value) === DUST && /^0014[0-9a-f]{40}$/.test(spk)) {
+        found.set(id, bech32.encode(NET.hrp, [0, ...bech32.toWords(hexToBytes(spk.slice(4)))]));
+      }
+    } catch {}
+  }));
+  if (!found.size || key !== activityKey()) return false;
+  let cur;
+  try { cur = JSON.parse(localStorage.getItem(key) || '[]'); } catch { return false; }
+  if (!Array.isArray(cur)) return false;
+  let changed = false;
+  for (const e of cur) if (_isUntaggedBuy(e) && found.has(e.txid)) { e.addr = found.get(e.txid); changed = true; }
+  if (changed) { try { localStorage.setItem(key, JSON.stringify(cur)); } catch { return false; } }
+  return changed;
+}
+function _resolveActivityBuyers(max = 6) {
+  if (!_buyerLookupInFlight) {
+    _buyerLookupInFlight = _resolveActivityBuyersImpl(max).finally(() => { _buyerLookupInFlight = null; });
+  }
+  return _buyerLookupInFlight;
+}
+function _kickBuyerLookup() {
+  _resolveActivityBuyers().then((changed) => {
+    if (!changed) return;
+    try { renderActivity(); } catch {}
+    try { _refreshHoldingsActivityNote(); } catch {}
+  }).catch(() => {});
+}
+function _activityByWallet(entries) {
+  const out = { me: _openAddr(), mine: 0, unknown: 0, total: 0, other: new Map() };
+  for (const e of entries || []) {
+    if (!e || !_ACTIVITY_OWNED_KINDS.has(e.kind)) continue;
+    out.total++;
+    if (!e.addr) out.unknown++;
+    else if (e.addr === out.me) out.mine++;
+    else out.other.set(e.addr, (out.other.get(e.addr) || 0) + 1);
+  }
+  return out;
+}
+function _holdingsActivityNoteHtml() {
+  let s;
+  try { s = _activityByWallet(loadActivity()); } catch { return ''; }
+  if (!s.total || !s.me) return '';
+  const noun = (n) => `${n} ${n === 1 ? 'entry' : 'entries'}`;
+  const tag = (a) => `<span class="mono" title="${escapeHtml(a)}">${escapeHtml(_walletTag(a))}</span>`;
+  const open = `The wallet open now is ${tag(s.me)}.`;
+  const paras = [];
+  let manage = false, rescan = false;
+  if (s.other.size) {
+    const n = [...s.other.values()].reduce((a, b) => a + b, 0);
+    paras.push(`Activity on this browser lists ${noun(n)} made with ${s.other.size === 1 ? 'a different wallet' : 'different wallets'}: ${[...s.other.keys()].map(tag).join(', ')}. ${open} Holdings shows only the wallet that is open, while Activity is kept for the whole browser. Open the wallet that made them in <strong>Manage wallet</strong> (passkey, Ethereum wallet, Bitcoin wallet or a saved key) and its assets show here.`);
+    manage = true;
+  }
+  if (s.unknown) {
+    paras.push(s.other.size
+      ? `${noun(s.unknown)} more have no wallet recorded.`
+      : `Activity on this browser lists ${noun(s.unknown)}. ${open} Holdings shows only the wallet that is open. If a different wallet made those, open it in <strong>Manage wallet</strong> to see them.`);
+    manage = true;
+  }
+  if (s.mine) {
+    paras.push(`Activity lists ${noun(s.mine)} made with this wallet, but the scan found no assets. That is usually a slow or unreachable indexer: Rescan. The transactions are on chain either way (the tx links in Activity).`);
+    rescan = true;
+  }
+  const btn = 'font-size:11px;padding:5px 12px;margin-right:8px;';
+  return `<div class="muted" style="font-family:var(--mono);font-size:11px;font-style:normal;line-height:1.6;text-align:left;border:1px solid var(--ink-faint);padding:10px 12px;margin:0 0 14px;">
+    ${paras.map(p => `<div style="margin-bottom:8px;">${p}</div>`).join('')}
+    ${manage ? `<button type="button" class="btn-go" data-act="note-manage-wallet" style="${btn}">Manage wallet</button>` : ''}
+    ${rescan ? `<button type="button" class="btn-go" data-act="note-rescan" style="${btn}">↻ Rescan</button>` : ''}
+  </div>`;
+}
+function _wireHoldingsActivityNote(root) {
+  const m = root.querySelector('[data-act="note-manage-wallet"]');
+  if (m) m.onclick = () => {
+    const overview = document.querySelector('.tabs.subtabs[data-group="wallet"] .tab[data-tab="wallet"]');
+    if (overview) overview.click(); else location.hash = '#tab=wallet';
+    setTimeout(() => {
+      const d = document.querySelector('details.wallet-manage');
+      if (!d) return;
+      d.open = true;
+      try { d.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+    }, 150);
+  };
+  const r = root.querySelector('[data-act="note-rescan"]');
+  if (r) r.onclick = async () => {
+    r.disabled = true; r.textContent = 'rescanning…';
+    try { invalidateHoldingsCache(); await scanHoldings(true); renderHoldings(); }
+    catch (e) { r.disabled = false; r.textContent = '↻ Rescan'; toast('Rescan failed: ' + (e?.message || e), 'error'); }
+  };
+}
+function _refreshHoldingsActivityNote() {
+  const slot = document.getElementById('holdings-activity-note');
+  if (!slot) return;
+  slot.innerHTML = _holdingsActivityNoteHtml();
+  _wireHoldingsActivityNote(slot);
 }
 
 let _localXferIdsCache = null;
@@ -49135,6 +49259,7 @@ async function renderHoldings() {
   try { _renderHoldingsSlotSummary(); } catch {}
   try { _renderHoldingsUnifiedStrip(); } catch {}
   try { _renderSoftCancelRiskStrip(); } catch {}
+  try { renderActivity(); } catch {}
   setTimeout(() => { try { _pruneSoftCancelRecords(); } catch {} }, 50);
 
   const _holdingsIsFirstRender = !_holdingsLastRenderOk;
@@ -49233,9 +49358,11 @@ async function renderHoldings() {
       const fundingHint = NET.name === 'signet'
         ? `or hit the <strong>faucet</strong> for some signet sats and <strong>Etch</strong> to mint your own`
         : `or fund your wallet (Xverse / UniSat / Leather, or any Bitcoin wallet) and <strong>Etch</strong> to mint your own`;
+      const actNote = _holdingsActivityNoteHtml();
       list.innerHTML = `<div class="empty">
-        <div style="font-weight:700;margin-bottom:8px;">No tacit assets on ${escapeHtml(NET.name)} yet.</div>
-        <div style="margin-bottom:14px;">Browse the live orderbook to <strong>buy your first token</strong> — same Bitcoin tx atomicity, confidential balance from the start.</div>
+        <div style="font-weight:700;margin-bottom:8px;">${actNote ? `No tacit assets in the wallet that is open on ${escapeHtml(NET.name)}.` : `No tacit assets on ${escapeHtml(NET.name)} yet.`}</div>
+        <div id="holdings-activity-note">${actNote}</div>
+        ${actNote ? '' : '<div style="margin-bottom:14px;">Browse the live orderbook to <strong>buy your first token</strong> — same Bitcoin tx atomicity, confidential balance from the start.</div>'}
         <div style="margin-bottom:14px;">
           <a href="#tab=market" data-act="empty-goto-market" class="btn-go btn-go--shadow" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;text-decoration:none;font-size:13px;">
             Browse markets &rarr;
@@ -49248,6 +49375,10 @@ async function renderHoldings() {
       const emptyMarketBtn = list.querySelector('[data-act="empty-goto-market"]');
       if (emptyMarketBtn) {
         emptyMarketBtn.onclick = (ev) => { ev.preventDefault(); location.hash = '#tab=market'; };
+      }
+      if (actNote) {
+        try { _wireHoldingsActivityNote(list); } catch {}
+        _kickBuyerLookup();
       }
       try { _renderHoldingsTethBridgeNotes(list); } catch {}
       try { _renderHoldingsBurndepBridges(list); } catch {}
@@ -52112,10 +52243,13 @@ function renderActivity() {
   const clearBtn = $('#btn-activity-clear');
   if (!list) return;
   const _actRaw = localStorage.getItem(activityKey()) || '[]';
-  if (_actRaw === _activitySig && list.children.length > 0) return;
-  _activitySig = _actRaw;
+  const _openNow = _openAddr();
+  const _actSig = _actRaw + '|' + _openNow;
+  if (_actSig === _activitySig && list.children.length > 0) return;
+  _activitySig = _actSig;
   let entries;
   try { const a = JSON.parse(_actRaw); entries = Array.isArray(a) ? a : []; } catch { entries = []; }
+  if (entries.some(_isUntaggedBuy)) _kickBuyerLookup();
   if (entries.some(e => e.kind === 'swap-sell' && e.extra?.state === 'pending-take')) {
     _reconcileSwapSellPending().catch(() => {});
   }
@@ -52246,6 +52380,9 @@ function renderActivity() {
           ${verbPaid} ${totalSats.toLocaleString()} sats${unitPriceStr}${pnlBadge}${stateHtml}
         </div>`;
     }
+    const walletLine = (e.addr && _openNow && e.addr !== _openNow)
+      ? `<div class="muted" style="grid-column:1 / -1;font-size:10px;margin-top:2px;" title="Holdings lists only the wallet that is open. Open this wallet in Manage wallet to see what it holds.">made with wallet <span class="mono">${escapeHtml(_walletTag(e.addr))}</span>, not the wallet open now</div>`
+      : '';
     return `
       <div class="activity-row">
         <span class="activity-kind activity-${escapeHtml(e.kind)}">${escapeHtml(verb)}</span>
@@ -52253,6 +52390,7 @@ function renderActivity() {
         <span class="activity-time muted">${escapeHtml(relTime(e.ts))}</span>
         <span class="activity-tx">${txLink}</span>
         ${extraLine}
+        ${walletLine}
       </div>`;
   }).join('');
   list.innerHTML = recoveryBannerHtml + rows;
@@ -62538,6 +62676,7 @@ export {
   watchtowerBidFinished, returnWatchtowerBidFunds, scheduleBidWalletReturn,
   deriveWatchtowerBidKey, encryptWatchtowerBidKey, watchtowerRegisterMsg, watchtowerCancelMsg,
   _testInjectHoldingsCache, _testSetScanHoldingsOverride, _testClearRecentSpends, _testSetTrackedNotes, openTransferOutput,
+  recordActivity, renderActivity, renderHoldings, activityKey, _resolveActivityBuyers,
   _preauthSaleAuthMsg as preauthSaleAuthMsg,
   _preauthSaleCancelMsg as preauthSaleCancelMsg,
   _preauthSaleIdHex as preauthSaleIdHex,
