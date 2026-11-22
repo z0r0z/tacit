@@ -1284,10 +1284,10 @@ test('lpRemove: a removal the relay refused because the pool moved is built agai
 
 // A job the pool moved under while it still waits UNCLAIMED in the relay's queue is built again at once (waitOpts.whileQueued, read every queuedCheckMs while 'pending'), not after the relay has taken it, refused it
 // and the holder has been told. Nothing was asked of the relay, so it is counted apart and allowed more often.
-function queuedPool({ movesAfterPolls = 2, stayPending = true, settleAfter = 0 } = {}) {
+function queuedPool({ movesAfterPolls = 2, stayPending = true, settleAfter = 0, moveShares = false } = {}) {
   const w = (n) => BigInt(n).toString(16).padStart(64, '0');
   const captured = [], polls = {};
-  let reserveB = 10_000_000n;
+  let reserveB = 10_000_000n, shares = 10_000_000n;
   const fetchImpl = async (url, opts) => {
     const body = opts && opts.body ? JSON.parse(opts.body) : null;
     let obj;
@@ -1295,9 +1295,9 @@ function queuedPool({ movesAfterPolls = 2, stayPending = true, settleAfter = 0 }
     else if (String(url).includes('/confidential/status')) {
       const id = new URL(String(url)).searchParams.get('id'), n = Number(id.slice(1));
       polls[id] = (polls[id] || 0) + 1;
-      if (n === 1 && polls[id] >= movesAfterPolls) reserveB = 9_500_000n;       // a trade lands while the first one is still waiting its turn
+      if (n === 1 && polls[id] >= movesAfterPolls) { if (moveShares) shares = 10_100_000n; else reserveB = 9_500_000n; }       // a trade (or another add) lands while the first one is still waiting its turn
       obj = n === 1 && (stayPending || polls[id] < settleAfter) ? { jobId: id, status: 'pending' } : { jobId: id, status: 'settled' };   // (settleAfter: waits that many polls, then settles, so a pool that moves meanwhile is seen from the queue)
-    } else obj = { result: body && body.method === 'eth_call' ? '0x' + [1n, 0n, 0n, 10_000_000n, reserveB, 30n, 10_000_000n].map(w).join('') : '0x0' };
+    } else obj = { result: body && body.method === 'eth_call' ? '0x' + [1n, 0n, 0n, 10_000_000n, reserveB, 30n, shares].map(w).join('') : '0x0' };
     return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
   };
   return { captured, polls, fetchImpl };
@@ -1396,6 +1396,22 @@ test('lpAdd, lpBond and lpRemove: built again while they wait unclaimed when the
     await uxR.lpRemove({ walletPriv: '0x' + 'c9'.repeat(32), assetA: nR.assetLow, assetB: nR.assetHigh, feeBps: 30, shareNote: note, fee: 0n, waitOpts: { intervalMs: 0, sleep: async () => {}, queuedCheckMs: 0 } });
     assert.equal(rmMock.captured.length, move ? 2 : 1, `lpRemove, pool ${move ? 'moved' : 'still'}`);
   }
+});
+
+test('lpAdd and wrapLp: an add also goes stale when only the pool\'s share total moved while it waited, so it is built again', async () => {
+  const mock = queuedPool({ movesAfterPolls: 2, moveShares: true });
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: mock.fetchImpl });
+  const n = liquidityNotes(ux, '0x' + 'ca'.repeat(32));
+  const [aNote, bNote] = n.seal([n.mk(n.assetLow, 0), n.mk(n.assetHigh, 1)]);
+  await ux.lpAdd({ walletPriv: '0x' + 'ca'.repeat(32), aNote, bNote, feeBps: 30, maxDonationBps: 10000, waitOpts: { intervalMs: 0, sleep: async () => {}, queuedCheckMs: 0 } });
+  assert.equal(mock.captured.length, 2, 'the add was built again');
+  assert.equal(String(mock.captured[0].op.sharesPre), '10000000');
+  assert.equal(String(mock.captured[1].op.sharesPre), '10100000', 'on the share total the pool holds now');
+  const w = queuedPool({ movesAfterPolls: 2, moveShares: true });
+  const f = await wrapLpFixture(w);
+  await f.ux.wrapLp({ ...f.args, waitOpts: { ...f.args.waitOpts, queuedCheckMs: 0 } });
+  assert.equal(w.captured.length, 2);
+  assert.equal(String(w.captured[1].op.sharesPre), '10100000');
 });
 
 test('route: refused before any proof again and again, it is built again each time and goes through on the sixth', async () => {
