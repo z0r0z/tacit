@@ -123,6 +123,26 @@
       ],
       "note": "Core only. zRouter is not on this chain, so the router was deployed with zRouter set to zero and its zap entry points are off. The zap contract is not deployed."
     },
+    "252": {
+      "pool": "0x000000c2A20657CE25f2Ba99737933D031AFBEE9",
+      "router": "0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5",
+      "verifier": "0x000000b1c0e84CEc8AdF8278B90c4d6400DfB153",
+      "poseidonT5": "0x555333f3f677Ca3930Bf7c56ffc75144c51D9767",
+      "createX": "0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed",
+      "deployer": "0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7",
+      "zRouter": "0x0000000000000000000000000000000000000000",
+      "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+      "network": "fraxtal",
+      "v1": "0x0000000000000000000000000000000000000000",
+      "poseidonT5Tx": "0x612093f99f50f6e72b4dc601e082352a7ecdf73851ddb788a74db1d483c072ec",
+      "verifierTx": "0xdc343ac97a5d83c00ffd353596aa410314e4f6ec961fc3eea037e932f6d7c934",
+      "verifierBlock": 44265339,
+      "poolTx": "0xcf85895b6d0b8ecdf555d9722d28d7122e3ac3921b57250f2a52d043da353397",
+      "deployBlock": 44265340,
+      "routerTx": "0xc3c44d897906a34550786bf7984e2e652db00727ee4893cc2ee62d5944f31b5e",
+      "routerBlock": 44265342,
+      "note": "Core only, deployed 22 November 2026. The pool's asset is the chain's native gas token, which on Fraxtal is frxETH, not ETH. zRouter is not on this chain, so the router was deployed with zRouter set to zero and its zap entry points are off. The zap contract is not deployed. No relay yet."
+    },
     "11155111": {
       "pool": "0x000000c2A20657CE25f2Ba99737933D031AFBEE9",
       "router": "0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5",
