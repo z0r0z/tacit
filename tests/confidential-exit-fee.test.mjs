@@ -117,6 +117,11 @@ test('a note split (transfer) can be settled by the caller: proof only, no relay
     return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
   };
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl });
+  // the relay's proof carries the op's leaves in its public values (PublicValues.leaves), as the pool emits them
+  const w32 = (n) => BigInt(n).toString(16).padStart(64, '0'), pvOf = (leaves) => '0x' + w32(32) + w32(0).repeat(4) + w32(160) + w32(leaves.length) + leaves.map((l) => String(l).replace(/^0x/, '').padStart(64, '0')).join('');
+  const realProve = ux.relay.prove;
+  let pv = null;
+  ux.relay.prove = async (spec, w) => { const p = await realProve(spec, w); pv = pvOf(spec.leaves); return { ...p, publicValues: pv }; };
   const note = tacNote(ux);
   const selfSettle = async (x) => { sent.push(x); return { txHash: '0x' + 'cd'.repeat(32) }; };
   const r = await ux.transfer({ walletPriv, notes: [note], recipientPubHex: ux.identity(walletPriv).pubHex, amount: BigInt(note.value) / 2n, fee: 0n, selfSettle, waitOpts: { intervalMs: 0, sleep: async () => {} } });
@@ -124,7 +129,7 @@ test('a note split (transfer) can be settled by the caller: proof only, no relay
   assert.equal(subs[0].mode, 'prove', 'the relay is asked for the proof only');
   assert.equal(BigInt(subs[0].op.transfer?.fee ?? subs[0].op.fee ?? 0), 0n, 'no relay fee in the op');
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].publicValues, '0x03'); assert.equal(sent[0].proof, '0x04');
+  assert.equal(sent[0].publicValues, pv); assert.equal(sent[0].proof, '0x04');
   assert.equal(r.txHash, '0x' + 'cd'.repeat(32));
 });
 

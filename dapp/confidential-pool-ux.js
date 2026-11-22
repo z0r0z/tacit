@@ -1184,6 +1184,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (selfSettle) {
       const proven = await relay.prove(depositTx ? { ...spec, depositTx } : spec, waitOpts);
       if (proven.status === 'settled') return proven;
+      _proofFor(proven, [built.leaf]);
       const memos = proven.memos || built.memos;
       const sent = await selfSettle({ jobId: proven.jobId, publicValues: proven.publicValues, proof: proven.proof, memos });
       return relay.verifyEmittedMemos({ jobId: proven.jobId, status: 'settled', ...sent }, [built.leaf], memos);
@@ -3288,10 +3289,34 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return e;
   }
 
+  // The leaves a proof's public values append (the pool's PublicValues.leaves, the fifth field, which it emits as LeavesInserted), read
+  // as wrapProofFits reads them. A proof sent from the holder's own account carries every output leaf the op was built with.
+  function _proofLeaves(publicValues) {
+    const h = String(publicValues).replace(/^0x/, '').toLowerCase(), w = (i) => BigInt('0x' + h.slice(i * 64, i * 64 + 64));
+    if (w(0) !== 32n) throw new Error('public values');
+    const at = 1 + Number(w(5) / 32n), len = Number(w(at));
+    if (len > 4096 || h.length < (at + 1 + len) * 64) throw new Error('public values');
+    return Array.from({ length: len }, (_, k) => w(at + 1 + k));
+  }
+  function _proofHasLeaves(publicValues, leaves) {
+    if (!Array.isArray(leaves) || !leaves.length) return true;
+    try {
+      const got = new Set(_proofLeaves(publicValues)), n = (x) => (typeof x === 'bigint' ? x : BigInt('0x' + String(x).replace(/^0x/i, '')));
+      return leaves.every((lf) => got.has(n(lf)));
+    } catch { return false; }
+  }
+  function _proofFor(proven, leaves) {
+    if (proven && proven.publicValues != null && !_proofHasLeaves(proven.publicValues, leaves)) {
+      throw Object.assign(new Error('the proof returned is not for this operation, so it is not used and nothing was sent'), { code: 'wrong_proof' });
+    }
+    return proven;
+  }
+
   async function _dispatch({ type, spec, sealedMemos, selfRelay, selfSettle = null, walletPriv, waitOpts, pair = null }) {
     if (!selfRelay && !selfSettle) return relay.settle({ type, ...spec, memos: sealedMemos }, waitOpts);
     const proven = await relay.prove({ type, ...spec, memos: sealedMemos }, waitOpts);
     if (proven.status === 'settled') return proven;
+    _proofFor(proven, spec.leaves);
     const memos = proven.memos || sealedMemos;
     if (selfSettle) return { jobId: proven.jobId, ...(await selfSettle({ jobId: proven.jobId, publicValues: proven.publicValues, proof: proven.proof, memos, pair })) };
     return settleFromAccount({ settlerPriv: walletPriv, publicValues: proven.publicValues, proof: proven.proof, memos, pair });
@@ -3667,6 +3692,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       const sealed = guard.sealMemosForOutputs({ outputs: changeOut, ephRand });
       const proven = await relay.prove({ ...spec, memos: sealed }, waitOpts);
       if (proven.status === 'settled') return { ...out, jobId: proven.jobId, status: 'settled', txHash: proven.txHash || null };
+      _proofFor(proven, [changeLeaf]);
       const memos = proven.memos || sealed;
       const sent = await selfSettle({ jobId: proven.jobId, publicValues: proven.publicValues, proof: proven.proof, memos });
       const checked = await relay.verifyEmittedMemos({ jobId: proven.jobId, status: 'settled', ...sent }, [changeLeaf], memos);

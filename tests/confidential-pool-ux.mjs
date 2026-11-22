@@ -408,9 +408,43 @@ function relayRpcMock(seen, submitStatus = 'proven', receiptStatus = '0x1') {
   };
 }
 
-test('transfer selfRelay: box proves (mode=prove) then broadcasts settle from the user EOA', async () => {
+// A relay's proof carries the op's output leaves in its public values (the pool's PublicValues.leaves, which it emits as LeavesInserted):
+// the answer a relay gives for the op it was sent. `honestLeaves` makes the mocked relay answer so; `pvWithLeaves` is that encoding.
+const w32pv = (n) => BigInt(n).toString(16).padStart(64, '0');
+const pvWithLeaves = (leaves) => '0x' + w32pv(32) + w32pv(0).repeat(4) + w32pv(160) + w32pv(leaves.length) + leaves.map((l) => String(l).replace(/^0x/, '').padStart(64, '0')).join('');
+function honestLeaves(ux, leavesOf = (spec) => spec.leaves || []) {
+  const real = ux.relay.prove;
+  ux.relay.prove = async (spec, w) => { const p = await real(spec, w); return p && p.publicValues ? { ...p, publicValues: pvWithLeaves(leavesOf(spec)) } : p; };
+  return ux;
+}
+
+test('transfer selfRelay: a proof whose public values do not carry the op\'s leaves is not sent from the account', async () => {
   const seen = {};
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen, 'proven') });
+  const walletPriv = '0x' + '66'.repeat(32);
+  const { note, recipientPubHex } = transferFixture(ux, walletPriv);
+  honestLeaves(ux, (spec) => ['0x' + '77'.repeat(32), ...spec.leaves.slice().reverse()]);
+  const r = await ux.transfer({ walletPriv, notes: [note], recipientPubHex, amount: 40000n, selfRelay: true });
+  assert.equal(seen.broadcast, true, 'every leaf of the op is there (others beside it too): sent');
+  assert.match(r.txHash, /^0x[0-9a-f]{64}$/);
+  for (const other of [(spec) => spec.leaves.slice(1), () => ['0x' + '77'.repeat(32)], () => []]) {
+    const seen2 = {};
+    const ux2 = makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen2, 'proven') });
+    const f = transferFixture(ux2, walletPriv);
+    honestLeaves(ux2, other);
+    await assert.rejects(ux2.transfer({ walletPriv, notes: [f.note], recipientPubHex: f.recipientPubHex, amount: 40000n, selfRelay: true }), (e) => e.code === 'wrong_proof' && /nothing was sent/.test(e.message));
+    assert.equal(seen2.broadcast, undefined, 'nothing broadcast');
+  }
+  const seen3 = {};
+  const ux3 = makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen3, 'proven') });
+  const f3 = transferFixture(ux3, walletPriv);
+  await assert.rejects(ux3.transfer({ walletPriv, notes: [f3.note], recipientPubHex: f3.recipientPubHex, amount: 40000n, selfRelay: true }), (e) => e.code === 'wrong_proof');
+  assert.equal(seen3.broadcast, undefined, 'public values that do not read as the pool\'s are not sent either');
+});
+
+test('transfer selfRelay: box proves (mode=prove) then broadcasts settle from the user EOA', async () => {
+  const seen = {};
+  const ux = honestLeaves(makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen, 'proven') }));
   const walletPriv = '0x' + '66'.repeat(32);
   const { note, recipientPubHex } = transferFixture(ux, walletPriv);
   const r = await ux.transfer({ walletPriv, notes: [note], recipientPubHex, amount: 40000n, selfRelay: true });
@@ -422,7 +456,7 @@ test('transfer selfRelay: box proves (mode=prove) then broadcasts settle from th
 
 test('transfer selfRelay: a settle that reverts on chain is an error, not a success with a hash', async () => {
   const seen = {};
-  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen, 'proven', '0x0') });
+  const ux = honestLeaves(makeConfidentialPoolUx({ ...deps, fetchImpl: relayRpcMock(seen, 'proven', '0x0') }));
   const walletPriv = '0x' + '66'.repeat(32);
   const { note, recipientPubHex } = transferFixture(ux, walletPriv);
   await assert.rejects(
@@ -1283,6 +1317,7 @@ test('self-settled wrap: proved by the relay, sent by the caller with the memos 
   } });
   const walletPriv = '0x' + '6c'.repeat(32), waitOpts = { intervalMs: 0, sleep: async () => {} };
   const selfSettle = async (x) => { sent.push(x); return { txHash: '0x' + 'dd'.repeat(32) }; };
+  honestLeaves(ux);
   first = ux.buildWrap({ walletPriv, amountWei: '1000000000000000', ticker: 'cETH', index: 4 });
   const again = ux.buildWrap({ walletPriv, amountWei: '1000000000000000', ticker: 'cETH', index: 4 });
 
@@ -1290,7 +1325,7 @@ test('self-settled wrap: proved by the relay, sent by the caller with the memos 
   const r = await ux.submitWrapSettle({ built: again, waitOpts, depositTx: '0x' + 'ee'.repeat(32), selfSettle });
   assert.equal(subs[0].mode, 'prove', 'the relay is asked for a proof only');
   assert.equal(subs[0].depositTx, '0x' + 'ee'.repeat(32), 'the deposit transaction goes with the proof request: submitWrapSettle sends it when it has one (the caller still sends the settle itself)');
-  assert.deepEqual(sent[0], { jobId: 'p', publicValues: '0x01', proof: '0x02', memos: first.memos }, 'the job it settles, and the memos the proof commits to, not a fresh seal');
+  assert.deepEqual(sent[0], { jobId: 'p', publicValues: pvWithLeaves([again.leaf]), proof: '0x02', memos: first.memos }, 'the job it settles, and the memos the proof commits to, not a fresh seal');
   assert.equal(r.status, 'settled');
   assert.equal(r.txHash, '0x' + 'dd'.repeat(32));
   assert.equal(r.memoCheck.ok, true);
@@ -1332,6 +1367,7 @@ test('self-settled exit: no fee, the whole amount to the recipient, proved only 
   } });
   const walletPriv = '0x' + '5f'.repeat(32), recipient = '0x' + '12'.repeat(20), waitOpts = { intervalMs: 0, sleep: async () => {} };
   const selfSettle = async (x) => { state.sent.push(x); return { txHash: '0x' + 'ab'.repeat(32) }; };
+  honestLeaves(ux);
   const { note } = transferFixture(ux, walletPriv);
   const amount = BigInt(note.value) / 2n;
   const r = await ux.sendUnwrap({ note, walletPriv, recipient, amount, waitOpts, selfSettle });
@@ -1507,6 +1543,7 @@ test('fastlane exit: authenticated transfer witness (bound leaf, non-membership,
       : { result: body && body.method === 'eth_gasPrice' ? '0x3b9aca00' : body && body.method === 'eth_sendRawTransaction' ? '0x' + 'cd'.repeat(32) : body && body.method === 'eth_getTransactionReceipt' ? { blockNumber: '0x1', status: '0x1' } : '0x0' };
     return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
   } });
+  honestLeaves(ux);
   const pool = ux.pool;
   const walletPriv = '0x' + '5b'.repeat(32);
   const asset = ux.assets[0].assetId;
