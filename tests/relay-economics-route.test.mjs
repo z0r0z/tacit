@@ -99,6 +99,15 @@ ok(j.ledger.owedWei === '0' && j.ledger.pendingUsd === 0, 'an owed or pending fi
 r = await call('/relay/economics'); j = await r.json();
 ok(j.ledger && j.ledger.owedWei === undefined && j.ledger.pendingUsd === undefined, 'and neither reaches the public page');
 ok(!JSON.stringify(await (await call('/prover-health?network=mainnet')).json()).includes('owedWei'), 'or /prover-health');
+// the note anyone reads keeps its words and leaves out the job it names; a box-token caller reads it whole
+{
+  const id = '0x' + 'e8'.repeat(32);
+  await beat({ note: `settle: proving ${id} route` });
+  const pub = await (await call('/prover-health?network=mainnet&kind=settle')).json();
+  ok(pub.note === 'settle: proving route', 'the public note names the work, not the job', pub.note);
+  const box = await (await call('/prover-health?network=mainnet&kind=settle', { headers: { Origin: 'https://tacit.finance', Authorization: `Bearer ${BOX}` } })).json();
+  ok(box.note === `settle: proving ${id} route`, 'a box-token caller reads the note whole', box.note);
+}
 r = await beat({ ledger: { ...ledger, owedEth: 0.0123 } });   // posted by a relay from before the exact figure
 r = await asBox('/confidential/ledger'); j = await r.json();
 ok(j.ledger.owedWei === '12300000000000000', 'a relay that only posted owedEth has it taken back as wei');

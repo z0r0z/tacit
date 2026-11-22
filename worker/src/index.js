@@ -763,6 +763,9 @@ async function handleProverHeartbeat(req, env, cors) {
   return jsonResponse({ ok: true, stored: rec.ts }, 200, cors);
 }
 
+// What anyone may read of a service's note: its words ("settle: proving swap"), with job ids and other long hex left out; a box-token caller
+// reads it whole.
+const publicNote = (note) => String(note || '').replace(/\s*0x[0-9a-fA-F]{16,}(?:…[0-9a-fA-F]*)?/g, '');
 // One kind's stored heartbeat -> the {status,healthy,reasons,...} shape /prover-health has always returned.
 // Shared by the single-kind and all-kinds paths below so they can never drift apart on what "healthy" means.
 async function readProverKindHealth(env, network, kind, authed = false) {
@@ -788,7 +791,7 @@ async function readProverKindHealth(env, network, kind, authed = false) {
     last_heartbeat_ts: hb.ts || null,
     gas_wei: gas !== null ? hb.gas_wei : null,
     prover_alive: hb.prover_alive !== false,
-    note: hb.note || '',
+    note: authed ? (hb.note || '') : publicNote(hb.note),
     ...(authed && hb.prover_credit ? { prover_credit: hb.prover_credit } : {}),
     last_proven_height: Number.isInteger(hb.last_proven_height) ? hb.last_proven_height : null,
     relay_tip: Number.isInteger(hb.relay_tip) ? hb.relay_tip : null,
