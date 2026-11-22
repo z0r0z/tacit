@@ -991,10 +991,13 @@ test('route: a broadcast that may still land, or a wait that ran out, is never s
 });
 
 test('route: the relay naming the revert is enough to build again, even when the reserves read the same', async () => {
-  const mock = movingPool({ moves: 0, fail: 'Execution reverted for an unknown reason. (0x29b3c833)' });
-  const { ux, args } = await routeFixture(mock);
-  await ux.route({ ...args, minOut: 0n });
-  assert.equal(mock.captured.length, 2);
+  // the revert named after a settle, and the relay's refusal before it proves (worker-relay/src/lib/reserves-precheck.js), word for word
+  for (const fail of ['Execution reverted for an unknown reason. (0x29b3c833)', 'swap not proved: the pool moved after this was built, so it was not proved and nothing was spent (0x29b3c833)']) {
+    const mock = movingPool({ moves: 0, fail });
+    const { ux, args } = await routeFixture(mock);
+    await ux.route({ ...args, minOut: 0n });
+    assert.equal(mock.captured.length, 2, fail);
+  }
 });
 
 test('route: a price that fell past the least the holder takes stops the second build', async () => {

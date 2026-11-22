@@ -35,6 +35,7 @@ import { findCarrier, isRevert, isPendingRevert, isRateLimited, errDetail, holdP
 import { cbtcMintBlocker } from './lib/cbtc-mint-precheck.js';
 import { cdpBlocker } from './lib/cdp-precheck.js';
 import { bridgeMintBlocker } from './lib/bridge-mint-precheck.js';
+import { poolMovedAck } from './lib/reserves-precheck.js';
 import { bondBlocker } from './lib/farm-bond-precheck.js';
 import { renewStaleMint } from './lib/bridge-mint-renew.js';
 import { settleWallet, settleWallets, relayWallet, publicClient, ethUsdPrice, POOL, POOL_ABI, ROUTER } from './lib/chain.js';
@@ -643,6 +644,17 @@ async function skipBlockedMint(job) {
   return true;
 }
 
+// A swap or a liquidity add is proved on the pool's reserves as they stood when its holder built it, and the pool takes it only against those exact
+// reserves. One a trade has already moved can only revert, so it is failed without a proof, with the revert's selector in the ack for the pages
+// to turn into words (lib/reserves-precheck.js). It follows skipConsumed everywhere: a job that already landed has moved the pool itself.
+async function skipMovedPool(job) {
+  const error = await poolMovedAck(job, { client: publicClient, pool: POOL });
+  if (!error) return false;
+  log(`job ${job.jobId} type=${job.type} ${error}`);
+  await confidentialAck({ jobId: job.jobId, error });
+  return true;
+}
+
 // Prove and settle one claimed job on the ordinary single-op path, carrying it to a terminal ack either way. A job already
 // claimed when proving paused (a batch member) is failed without being proved, in the words the pages read as "send it
 // another way".
@@ -651,7 +663,7 @@ async function settleOne(j) {
     await confidentialAck({ jobId: j.jobId, error: 'prove failed: the relay isn’t proving right now; nothing was spent. Prove it with your own prover account, or send it again later' });
     return;
   }
-  if (await skipConsumed(j)) return;
+  if (await skipConsumed(j) || await skipMovedPool(j)) return;   // a same-pool member of a refused batch is checked after the one before it settled
   // Beat before the proof, as the ordinary single path does: `beating` only starts beating after four minutes, so a job that
   // fails faster than that (every member of a batch the chain refuses comes through here) would pass without one.
   await beat(`proving ${j.jobId} ${j.type}`);
@@ -726,7 +738,7 @@ async function batchCycle() {
   jobs = [];
   for (const j of admitted) {
     if (await skipExpired(j) || await skipConsumed(j)) continue;
-    if (j.type !== 'transfer' && (await skipUnlanded(j) || await skipBlockedMint(j))) continue;
+    if (j.type !== 'transfer' && (await skipUnlanded(j) || await skipBlockedMint(j) || await skipMovedPool(j))) continue;
     jobs.push(j);
   }
   // Two members spending the same note can never prove together (the second is a double spend); in practice it is a
@@ -1166,7 +1178,7 @@ async function cycle() {
   }
 
   if (await skipExpired(job)) return true;
-  if (mode !== 'preproven' && (await skipConsumed(job) || (mode === 'settle' && await skipUnlanded(job)) || await skipBlockedMint(job))) return true;
+  if (mode !== 'preproven' && (await skipConsumed(job) || (mode === 'settle' && await skipUnlanded(job)) || await skipBlockedMint(job) || await skipMovedPool(job))) return true;
 
   log(`job ${jobId} type=${type} mode=${mode} — proving (network groth16). ${gate.reason} [gas ${gasGwei.toFixed(4)} gwei, ETH $${Number(ethPx).toFixed(2)}, PROVE $${Number(provePx).toFixed(4)}]`);
   await beat(`proving ${jobId} ${type}`);
