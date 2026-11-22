@@ -87,6 +87,28 @@ export const btcLaneUsd = (bar, btcUsd) => scale(bar, btcUsd / 1e8);
 
 export const gap = (a, b) => (a > 0 && b > 0 ? b / a - 1 : null);
 
+// How long ago, in words: 'just now', '12 min ago', '5 h ago', '1 day ago', '10 days ago'.
+export function ageWords(sec) {
+  const s = Math.max(0, Number(sec) || 0);
+  if (s < 90) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  const d = Math.round(s / 86400);
+  return d === 1 ? '1 day ago' : `${d} days ago`;
+}
+
+// The Bitcoin book's last trade as a page should state it. A trade more than `fresh` seconds old is not today's price: the page shows it with its age,
+// and the price it states for Bitcoin is the cheapest ask (what a buyer pays) until a trade is recent again. `source`: 'trade' (a recent trade),
+// 'ask' (the cheapest ask, the last trade being old), 'old' (only the old trade is known), null (nothing). `lastTs` unknown: the mark is taken as current.
+export const LAST_FRESH_SEC = 86400;
+export function lastTradeView({ mark, lastTs, ask, now, fresh = LAST_FRESH_SEC }) {
+  const age = lastTs > 0 && now >= 0 ? Math.max(0, now - lastTs) : null;
+  const stale = age != null && age > fresh;
+  const hasMark = mark > 0, hasAsk = ask > 0;
+  const [sats, source] = hasMark && !stale ? [mark, 'trade'] : hasAsk ? [ask, 'ask'] : hasMark ? [mark, 'old'] : [null, null];
+  return { age, stale, sats, source, words: age == null ? '' : ageWords(age) };
+}
+
 export function closeAt(bars, t) {
   let lo = 0, hi = bars.length - 1, ans = null;
   while (lo <= hi) { const mid = (lo + hi) >> 1; if (bars[mid].t <= t) { ans = bars[mid]; lo = mid + 1; } else hi = mid - 1; }

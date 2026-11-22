@@ -241,5 +241,16 @@ await run('sell headline', async () => {
   ok(/Best bid 150\S* sats\/TAC · 1 bid you can sell into now$/.test(worse), `a bid that settles only while its bidder is online and pays less adds nothing (${worse})`);
 });
 
+await run('last trade mark: a trade more than a day old is dimmed and carries its age', async () => {
+  const day = 86400, lastOf = async (ago) => { const m = await mk({ listings: [mkL('o1', 10, 2500)], bids: [], markUnit: 150, lastTradeTs: now() - ago }); return m.$('spread').querySelector('.bm-sp-last'); };
+  const fresh = await lastOf(3600);
+  ok(fresh && !fresh.classList.contains('old') && fresh.querySelector('em').textContent === 'last', 'a trade an hour old reads as it did: the price and "last"');
+  const edge = await lastOf(day - 600);
+  ok(edge && !edge.classList.contains('old'), 'a trade just under a day old is still today\'s');
+  const old = await lastOf(10 * day);
+  ok(old && old.classList.contains('old') && old.querySelector('em').textContent === 'last · 10d ago', `a trade ten days old is dimmed and says how old (${old && old.textContent})`);
+  ok(old && /10d ago/.test(old.title), 'and its hover text says so too');
+});
+
 console.log(fails ? `\n${fails} FAILED, ${n} ok` : `\n${n} btc-market-sheet checks passed`);
 process.exit(fails ? 1 : 0);

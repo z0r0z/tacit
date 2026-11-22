@@ -6,7 +6,7 @@ import {
 } from '/evm-trade-venues.js?cb=9aac0fac';
 import { DEPLOY_OVERRIDES } from '/confidential-deployments.generated.js';
 import { buildBook, planBuy, planSell as planBtcSell, ladderLevels } from '/btc-book.js';
-import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, TAPE_FINE, TAPE_COARSE, TAPE_WORDS } from '/trade/tape.js?cb=a0713849';
+import { decodeTape, chartBars, continuous, invert, ethLaneUsd, btcLaneUsd, candlesFromTrades, tradePrices, closeAt, volumeSince, gap, lastTradeView, ageWords, TAPE_FINE, TAPE_COARSE, TAPE_WORDS } from '/trade/tape.js?cb=7b013b52';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
 import { mountDepth } from '/trade/depth.js?cb=4f87419e';
 import { precisionPool, tacitPool, poolBook, perLevel, roundDown, CHART_STEPS } from '/trade/pools.js?cb=8f983ea2';
@@ -144,7 +144,7 @@ async function readTapes({ coarse: wantCoarse = true } = {}) {
 
 async function loadBitcoin({ lists = true } = {}) {
   const [asset, sales, bidRows] = await Promise.all([api(`/assets/${TAC_BTC_ID}?network=mainnet`), lists ? api(`/assets/${TAC_BTC_ID}/preauth-sales?network=mainnet&view=book`) : null, lists ? api(`/assets/${TAC_BTC_ID}/bid-intents?network=mainnet`) : null]);
-  if (asset) D.btc = { trades: asset.trades || [], mark: Number(asset.mark_price?.unit) || null, last: asset.last_trade || null, change24: asset.price_24h_change_pct, vol24: Number(asset.volume_24h_sats) || 0, holders: asset.holder_count ?? null, firstTrade: asset.price_first_trade_ts || null, tradesCap: asset.trades_cap };
+  if (asset) D.btc = { trades: asset.trades || [], mark: Number(asset.mark_price?.unit) || null, lastTs: Number(asset.last_trade?.ts || asset.mark_price?.ts) || null, last: asset.last_trade || null, change24: asset.price_24h_change_pct, vol24: Number(asset.volume_24h_sats) || 0, holders: asset.holder_count ?? null, firstTrade: asset.price_first_trade_ts || null, tradesCap: asset.trades_cap };
   D.btcFailed = !asset && !D.btc; D.bookFailed = lists && !Array.isArray(sales?.sales) && !D.book;
   if (asset && D.book) { D.btc.ask = D.book.bestAsk; D.btc.bid = D.book.bestBid; }
   if (Array.isArray(sales?.sales)) {
@@ -194,6 +194,9 @@ function parseUnits(text, dec = 18) {
 const priceEth = () => (D.perEth ? 1 / D.perEth : null);
 const usdOf = (eth) => (eth != null && D.ethUsd ? eth * D.ethUsd : null);
 const btcUsdPerTac = () => (D.btc?.mark && D.btcUsd ? (D.btc.mark * D.btcUsd) / 1e8 : null);
+// The last trade with its age, and the Bitcoin price the page states: the last trade while it is recent, else the cheapest ask.
+const lastView = () => lastTradeView({ mark: D.btc?.mark, lastTs: D.btc?.lastTs, ask: D.btc?.ask, now: now() });
+const btcNowUsd = () => { const s = lastView().sats; return s && D.btcUsd ? (s * D.btcUsd) / 1e8 : null; };
 const laneGap = (other) => { const base = usdOf(priceEth()); return base && other ? gap(base, other) : null; };
 const gapClass = (g) => (g == null ? '' : Math.abs(g) < 0.01 ? 'mute' : g > 0 ? 'up' : 'down');
 // A deadline `s` seconds on, by the chain's own clock (Multicall3's timestamp, read with the pools): a device's clock can be far off. Read here when the pools' read has not brought it yet.
@@ -239,20 +242,23 @@ function renderHead() {
   const ask = D.btc?.ask && D.btcUsd ? (D.btc.ask * D.btcUsd) / 1e8 : null, gl = laneGap(btcUsdPerTac()), ga = laneGap(ask);
   const side = (v) => (Math.abs(v) < 0.01 ? 0 : Math.sign(v));
   const rel = (v) => (side(v) === 0 ? 'level with' : html`<b>${Math.round(Math.abs(v) * 100)}% ${v > 0 ? 'above' : 'below'}</b>`);
-  const lastTxt = gl != null ? `the last trade was ${rel(gl)} Ethereum’s price` : '', askTxt = ga != null ? `the cheapest ask is ${rel(ga)} ${lastTxt ? 'it' : 'Ethereum’s price'}` : '';
-  setHtml($('#gapnote'), lastTxt || askTxt ? `On Bitcoin, ${lastTxt}${lastTxt && askTxt ? (side(gl) === side(ga) ? ', and ' : ', but ') : ''}${askTxt}.` : '');
+  // A last trade more than a day old is told by its age, not compared with today's Ethereum price.
+  const lv = lastView();
+  const lastTxt = lv.stale ? `the last trade was ${lv.words}` : gl != null ? `the last trade was ${rel(gl)} Ethereum’s price` : '', askTxt = ga != null ? `the cheapest ask is ${rel(ga)} ${lastTxt && !lv.stale ? 'it' : 'Ethereum’s price'}` : '';
+  setHtml($('#gapnote'), lastTxt || askTxt ? `On Bitcoin, ${lastTxt}${lastTxt && askTxt ? (lv.stale || side(gl) === side(ga) ? ', and ' : ', but ') : ''}${askTxt}.` : '');
 }
 const CM_ETH = '<svg class="tk xs inl" aria-hidden="true"><use href="#c-eth"/></svg>', CM_BTC = '<svg class="tk xs inl" aria-hidden="true"><use href="#c-btc"/></svg>';
 function renderLanes() {
   const base = usdOf(priceEth()), ask = D.btc?.ask ? (D.btc.ask * (D.btcUsd || 0)) / 1e8 : null, cards = [
     { name: 'Precision pool', sw: ETHBLUE, v: base, s: priceEth() != null ? `${sig(priceEth())} ETH` : null, g: 'the reference', gc: 'mute' },
     { name: 'Tacit pool', sw: GREEN, v: usdOf(tacitEth()), s: tacitEth() != null ? `${sig(tacitEth())} ETH` : null, gap: laneGap(usdOf(tacitEth())), dev: true, sub: 'public or private swap' },
-    { name: 'Bitcoin · last trade', sw: ORANGE, v: btcUsdPerTac(), s: D.btc?.mark ? `${satsFmt(D.btc.mark)} sats` : null, gap: laneGap(btcUsdPerTac()) },
+    { name: 'Bitcoin · last trade', sw: ORANGE, v: btcUsdPerTac(), s: D.btc?.mark ? `${satsFmt(D.btc.mark)} sats` : null, ...(lastView().stale ? { g: lastView().words, gc: 'mute' } : { gap: laneGap(btcUsdPerTac()) }) },
     { name: 'Bitcoin · cheapest ask', sw: ORANGE, v: ask || null, s: D.btc?.ask ? `${satsFmt(D.btc.ask)} sats` : null, gap: laneGap(ask || null) },
   ];
-  const bg = laneGap(btcUsdPerTac());
-  setHtml($('#hints-sum'), base != null || btcUsdPerTac() != null
-    ? [base != null ? html`<span>${CM_ETH}<span class="nm">Ethereum </span><b>${usd(base)}</b></span>` : '', btcUsdPerTac() != null ? html`<span>${base != null ? '· ' : ''}${CM_BTC}<span class="nm">Bitcoin </span><b>${usd(btcUsdPerTac())}</b></span>` : '', bg != null && Math.abs(bg) >= 0.01 ? html`<span class="apart">· ${Math.round(Math.abs(bg) * 100)}% apart</span>` : ''].join('')
+  // The Bitcoin figure in the header is today's: the last trade while it is recent, else the cheapest ask (named on hover).
+  const bg = laneGap(btcNowUsd()), lv = lastView(), bnote = lv.source === 'ask' ? ` title="${esc(`The cheapest ask on the Bitcoin order book: the last trade was ${lv.words}`)}"` : '';
+  setHtml($('#hints-sum'), base != null || btcNowUsd() != null
+    ? [base != null ? html`<span>${CM_ETH}<span class="nm">Ethereum </span><b>${usd(base)}</b></span>` : '', btcNowUsd() != null ? html`<span${bnote}>${base != null ? '· ' : ''}${CM_BTC}<span class="nm">Bitcoin </span><b>${usd(btcNowUsd())}</b></span>` : '', bg != null && Math.abs(bg) >= 0.01 ? html`<span class="apart">· ${Math.round(Math.abs(bg) * 100)}% apart</span>` : ''].join('')
     : 'Prices on each chain');
   setHtml($('#lanes'), cards.map((c) => {
     const g = c.g ?? (c.gap != null ? `${pct(c.gap)} vs Precision${c.dev && Math.abs(c.gap) >= 0.01 ? ' · apart' : ''}` : c.sub || '');
@@ -721,7 +727,7 @@ function notify(msg, kind = '', ms = 5000) {
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 let bitcoinP = null;
 function getBitcoin() {
-  return (bitcoinP ||= import('/trade/btc.js?cb=e6e1f73d').then((m) => (bitcoin = m.makeBitcoin({
+  return (bitcoinP ||= import('/trade/btc.js?cb=01a35a91').then((m) => (bitcoin = m.makeBitcoin({
     notify, wallet: pageWallet, onChange: () => syncMe(),
     onTraded: (t) => { noteBitcoinTrade(t); loadBitcoin().then(paintAll).catch(() => {}); },
   }))).catch((e) => { bitcoinP = null; throw e; }));
@@ -965,6 +971,13 @@ function useLevel(side, amt) {
   renderBalance(); renderPin(); requote();
   $('.p-ticket').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
+// The ladder's last-trade mark: a trade more than a day old is dimmed and carries its age, so it is not read as today's price.
+function lastSpan() {
+  const lv = lastView(), px = esc(btcPxFmt(btcPx(D.btc.mark)));
+  return lv.stale
+    ? `<span class="ob-last old" title="${esc(`The last trade on Bitcoin was ${lv.words}. The book above and below is today's.`)}"><b>${px}</b><em>last trade · ${esc(ago(D.btc.lastTs))}</em></span>`
+    : `<span class="ob-last"><b>${px}</b><em>last trade</em></span>`;
+}
 function btcStack(b, live) {
   const lvs = (rows, ask) => { let upTo = 0; return ladderLevels(rows, ask ? 'ask' : 'bid').map((l, i) => {
     const amt = Number(l.amount) / 1e8, px = btcPxFmt(btcPx(l.unit)), ends = ask ? Math.min(...l.rows.map((r) => r.expiry).filter(Boolean)) : 0;
@@ -975,7 +988,7 @@ function btcStack(b, live) {
       label: `${ask ? 'Buy' : 'Sell'} ${tacFmt(upTo)} TAC in all, ${ask ? 'up' : 'down'} to ${px} each` };
   }); };
   return stackBook({ asks: lvs(b.asks, true), bids: lvs(b.bids, false), totalHead: 'Sats', levels: true,
-    mid: `${D.btc?.mark ? `<span class="ob-last"><b>${esc(btcPxFmt(btcPx(D.btc.mark)))}</b><em>last trade</em></span>` : '<span></span>'}${spreadTxt(b.bestAsk, b.bestBid, ' A bid settles when its bidder is online, and a listing is taken whole.', ladderLevels(b.bids, 'bid')[0]?.flag === 'manual')}` });
+    mid: `${D.btc?.mark ? lastSpan() : '<span></span>'}${spreadTxt(b.bestAsk, b.bestBid, ' A bid settles when its bidder is online, and a listing is taken whole.', ladderLevels(b.bids, 'bid')[0]?.flag === 'manual')}` });
 }
 const setHtml = (el, h) => { if (el.__h !== h) { el.__h = h; el.innerHTML = h; } };
 function renderBook() {

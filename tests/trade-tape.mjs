@@ -4,7 +4,7 @@
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import {
-  TAPE_FINE, TAPE_COARSE, unpackFloat, decodeBar, decodeTape, invert, scale, rollup, chartBars, continuous, tradePrices, candlesFromTrades, ethLaneUsd, btcLaneUsd, gap, closeAt, volumeSince,
+  TAPE_FINE, TAPE_COARSE, unpackFloat, decodeBar, decodeTape, invert, scale, rollup, chartBars, continuous, tradePrices, candlesFromTrades, ethLaneUsd, btcLaneUsd, gap, closeAt, volumeSince, ageWords, lastTradeView, LAST_FRESH_SEC,
 } from '../dapp/trade/tape.js';
 import { cumulative } from '../dapp/trade/book.js';
 
@@ -142,6 +142,36 @@ const coarse = decodeTape(fx.coarse, TAPE_COARSE), fine = decodeTape(fx.fine, TA
   assert.equal(volumeSince({ coarse: [bar(0, 1)], fine: [bar(10800, 1)] }, 0, 11400, 0), 1, 'the 5-minute tape is told where it starts');
   assert.equal(volumeSince({ coarse: [bar(0, 1)], fine: [bar(10800, 1)] }, 0, 11400), 1.75, 'without it, the first bar read stands for the start (as before)');
   ok('volume over a window: the 5-minute bars, then the 4-hour ones by their share, with no bar counted twice');
+}
+
+// The Bitcoin book's last trade: shown with its age once it is old, and the price the page states is the cheapest ask until a trade is recent again.
+{
+  assert.equal(ageWords(0), 'just now'); assert.equal(ageWords(89), 'just now');
+  assert.equal(ageWords(90), '2 min ago'); assert.equal(ageWords(3599), '60 min ago'); assert.equal(ageWords(3 * 3600), '3 h ago');
+  assert.equal(ageWords(86400), '1 day ago'); assert.equal(ageWords(10 * 86400 + 600), '10 days ago');
+  assert.equal(ageWords(-5), 'just now'); assert.equal(ageWords(undefined), 'just now');
+  ok('age in words: just now, minutes, hours, days, never negative');
+  const now = 1_800_000_000, day = LAST_FRESH_SEC;
+  // 2026-11-22 live: the last trade 244 h old at 367 sats/TAC, the cheapest ask 899
+  const live = lastTradeView({ mark: 366.996, lastTs: now - 244 * 3600, ask: 899, now });
+  assert.deepEqual([live.stale, live.sats, live.source, live.words], [true, 899, 'ask', '10 days ago']);
+  ok('a ten-day-old last trade is old: the stated Bitcoin price is the cheapest ask, and the words say how old');
+  const recent = lastTradeView({ mark: 900, lastTs: now - 3600, ask: 1000, now });
+  assert.deepEqual([recent.stale, recent.sats, recent.source], [false, 900, 'trade']);
+  assert.equal(lastTradeView({ mark: 900, lastTs: now - day, ask: 1000, now }).stale, false, 'exactly a day is still recent');
+  assert.equal(lastTradeView({ mark: 900, lastTs: now - day - 1, ask: 1000, now }).stale, true, 'a second over is old');
+  ok('a recent trade is the price, up to exactly a day');
+  const noAsk = lastTradeView({ mark: 367, lastTs: now - 10 * day, ask: null, now });
+  assert.deepEqual([noAsk.stale, noAsk.sats, noAsk.source], [true, 367, 'old']);
+  assert.deepEqual(lastTradeView({ mark: null, lastTs: null, ask: 899, now }).source, 'ask');
+  assert.deepEqual(lastTradeView({ mark: null, lastTs: null, ask: null, now }), { age: null, stale: false, sats: null, source: null, words: '' });
+  ok('an old trade with no ask is still shown (marked old); no mark takes the ask; nothing known says nothing');
+  const unknown = lastTradeView({ mark: 400, lastTs: null, ask: 899, now });
+  assert.deepEqual([unknown.stale, unknown.sats, unknown.source, unknown.words], [false, 400, 'trade', '']);
+  assert.equal(lastTradeView({ mark: 400, lastTs: 0, ask: 899, now }).stale, false);
+  ok('a mark with no time on it is taken as current, as before');
+  assert.equal(lastTradeView({ mark: 400, lastTs: now + 500, ask: 899, now }).age, 0, 'a clock that is behind the server never gives a negative age');
+  ok('a trade stamped ahead of the clock has age 0');
 }
 
 console.log(`\n${n} trade-tape checks passed`);

@@ -370,7 +370,9 @@ function createMarket(host, ctx) {
     el.bidMore.title = (farAsks + farBids) ? `Includes ${farAsks + farBids} priced far from the market` : '';
     const a = ctx.asset();
     let sp = '';
-    if (a.markUnit > 0) sp += `<span class="bm-sp-last" title="Price of the last trade"><b>${fmtUnit(a.markUnit)}</b><em>last</em></span>`;
+    // a last trade more than a day old is dimmed and carries its age: it is not today's price
+    const lastOld = a.lastTradeTs > 0 && nowSec() - a.lastTradeTs > 86400;
+    if (a.markUnit > 0) sp += `<span class="bm-sp-last${lastOld ? ' old' : ''}" title="${lastOld ? `The last trade was ${ago(a.lastTradeTs)} ago` : 'Price of the last trade'}"><b>${fmtUnit(a.markUnit)}</b><em>${lastOld ? `last · ${ago(a.lastTradeTs)} ago` : 'last'}</em></span>`;
     if (b.bestAsk != null && b.bestBid != null) {
       if (b.overlap) {
         const autoAbove = b.bids.some((x) => !x.mine && x.auto && x.unit > b.bestAsk);
