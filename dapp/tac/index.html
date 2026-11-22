@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-mu9TOYhSkHLVVwzoWZIoTS2CUjm0gtng7BYBqdSLxm0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-c/cRtWQP6ad3IzxcXnR1pnR+QTrTDkQF7C4AtLddMZ8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -11464,6 +11464,17 @@ function joinSidesOld(p, side = 'a') {
   return { kA, kB, kS, kO, tkB, other, dpB, inA: kS === kA, unit: { [kA]: 'tETH', [kB]: other }, dp: { [kA]: 6, [kB]: dpB }, icon: { [kA]: 'tk-teth', [kB]: LOGO[tkB] || 'tk-tac' } };
 }
 const noteExact = (k, v) => freeNotes(P.scan?.[k]?.notes).some((n) => BigInt(n.value) === v);
+// A note already made for an add keeps serving it when the pool's price has moved a little since. The bond takes both notes whole and the pool keeps the sliver that is off its ratio (it
+// refuses more than 0.5% of a side), so a note within what cutting a new one would cost, and within 0.4% of itself, is taken as it is instead of cut again. The nearest one is taken.
+const noteNear = (k, v, fee) => {
+  let best = null, bd = null;
+  for (const n of freeNotes(P.scan?.[k]?.notes)) {
+    const w = BigInt(n.value), d = w > v ? w - v : v - w;
+    if (d <= fee && d * 10000n <= w * 40n && (bd === null || d < bd)) { best = n; bd = d; }
+  }
+  return best;
+};
+const noteFits = (k, v, fee) => (n) => { const best = noteNear(k, v, fee); return best ? kNote(n) === kNote(best) : BigInt(n.value) === v; };
 function joinFresh(kS, Zin, fr, rIn, rOut, feeBps, fee) {
   const s2 = noteExact(kS, Zin) ? 0n : fee;
   let s1 = fee, z = zapSize(Zin - s1 - s2, fr, rIn, rOut, feeBps);
@@ -11512,7 +11523,7 @@ function joinOnePlan(t, p, j, sd, Zin, gasShort = false) {
 }
 function joinPairPlan(t, p, j, sd, a, gasShort = false) {
   const { kA, kB } = sd, res = j.res, b = bFor(a, res);
-  const fA = noteExact(kA, a) ? 0n : j.feeA, fB = noteExact(kB, b) ? 0n : j.feeB;
+  const fA = noteExact(kA, a) ? 0n : j.feeA, fB = noteNear(kB, b, j.feeB) ? 0n : j.feeB;
   const shares = t.pool.lpAddShares(res.totalShares, a, b, res.reserveA, res.reserveB);
   return { q: { kind: 'pair', a, b, over: a + fA > spendable(kA) || b + fB > spendable(kB), gasShort }, a, b, fA, fB, shares };
 }
@@ -11618,7 +11629,8 @@ async function joinNow({ run, p, z, sd, btn, line, sheet = 'farm', moved = () =>
       const j = await joinTerms(t, p, true); a = z.a; b = bFor(a, j.res);
       if (b !== z.b) { moved(); throw Object.assign(new Error('The pool moved since this was quoted. Check the new amounts and press again.'), { said: true }); }
       nA = await noteFor(run, t, priv, a, (n) => BigInt(n.value) === a, line(), kA);
-      nB = await noteFor(run, t, priv, b, (n) => BigInt(n.value) === b, line(), kB);
+      nB = await noteFor(run, t, priv, b, noteFits(kB, b, j.feeB), line(), kB);
+      b = BigInt(nB.value);
       tell('The relay is proving your farm entry…');
     }
     const sendBond = settleFrom(t, { label: `Add ${fmt(a, 8, dp[kA])} ${unit[kA]} + ${fmt(b, 8, dp[kB])} ${unit[kB]} to the farm`, say: tell });
