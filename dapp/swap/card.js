@@ -781,7 +781,7 @@ const PK = new Proxy({ teth: 'eth', [lc(R.TAC)]: 'tac', [lc(R.CUSD)]: 'cusd', [l
 const POOL_TK = new Proxy({ eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' }, { get: (o, k) => (k in o ? o[k] : ownPool(k)?.ticker) });
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=c94e1a76'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=0c34745d'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));
