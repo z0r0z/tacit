@@ -248,7 +248,7 @@ render.wallet = () => {
       ${k.tacit ? html`<div class="u">ID <b class="num">${addressId(k.tacit)}</b> · a payer sees it too</div>` : ''}
       <div class="u by">Opened with ${viaText(k)} · <button class="link" type="button" id="w-lock">Lock</button></div></div>
     <div class="lbl sep" id="w-key"><span>Back up your key</span></div>
-    <p class="note">${keyHow} Anyone who has the key holds these funds and the address that goes with it.</p>
+    <p class="note">${keyHow} Anyone who has the key holds these funds and the address that goes with it. Never send it to anyone, including Tacit support.</p>
     ${k.mode === 'key' ? '' : html`<button class="btn ghost" type="button" id="w-backup">Copy key</button>`}
     <div id="w-keys">${walletKeys()}</div>
     <div class="lbl sep" id="pay-h"><span>Public ETH comes from</span></div>
@@ -279,11 +279,18 @@ render.wallet = () => {
   loadBtc().then(paintWalletBal, paintWalletBal);
   $('#wbal-box').onclick = wbClick;
   // (with a PQ ID the key alone does not open the TAC on the Tacit chain: its passkey does too, and the copy says so)
-  $('#w-backup')?.addEventListener('click', () => navigator.clipboard.writeText(k.priv).then(async () => {
+  const backup = $('#w-backup'), copyKey = () => navigator.clipboard.writeText(k.priv).then(async () => {
     let pq = false;
     try { pq = !!(await import('/tacit-chain-root.js')).keptRoot(k.priv); } catch { }
     toast(pq ? 'Key copied. Keep it somewhere private. Your TAC on the Tacit chain also needs your PQ ID passkey.' : 'Key copied. Keep it somewhere private.');
-  }, () => toast('Could not copy the key: the browser refused clipboard access.', true)));
+  }, () => toast('Could not copy the key: the browser refused clipboard access.', true));
+  // (a wallet or passkey sign-in asks for a second press within six seconds: its key opens the funds without it, so the copy is never one stray click)
+  let armed = 0;
+  backup?.addEventListener('click', () => {
+    if (kept || armed) { clearTimeout(armed); armed = 0; backup.textContent = 'Copy key'; return copyKey(); }
+    backup.textContent = 'Press again to copy the key';
+    armed = setTimeout(() => { armed = 0; backup.textContent = 'Copy key'; }, 6000);
+  });
   $('#w-lock').onclick = () => lockWallet();      // (the page's, which the account menu's Sign out also calls)
   const bal = (id, who) => { const e = $('#' + id); if (who && e) rpc('eth_getBalance', [who, 'latest']).then((b) => `${fmt(BigInt(b), 18, 4)} ETH`, () => '—').then((t) => { e.textContent = t; }); };
   bal('ac-abal', a.address); bal('ac-wbal', S.wallet);

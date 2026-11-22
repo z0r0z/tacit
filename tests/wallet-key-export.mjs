@@ -2,7 +2,7 @@
 // The Wallet sheet's "Back up your key" (dapp/front/sheets.js), in a real browser under the page's own CSP, with a browser wallet that signs for real:
 //   · signed out, the sheet says where the key is once signed in;
 //   · signed in with the wallet, the section sits right under the address card, says the wallet's recovery phrase brings the key back,
-//     and has a Copy key button that puts 64 hex characters on the clipboard;
+//     says never to send the key to anyone, and has a Copy key button that asks for a second press before it puts 64 hex characters on the clipboard;
 //   · that key, pasted after Lock, opens the same Tacit address, and the section then says a pasted key is its own backup, with no button.
 //
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/wallet-key-export.mjs
@@ -88,10 +88,16 @@ try {
   ok(!!(await page.$('#w-backup')), 'a wallet sign-in has a Copy key button');
   const tacit = (await page.evaluate(() => document.querySelector('#w-tacit .full code')?.textContent || '')).trim();
   ok(tacit.length > 100, `the Tacit address is read (${tacit.length} characters)`);
+  ok(/Never send it to anyone, including Tacit support/.test(how), 'the note says never to send the key to anyone, Tacit support included');
+  // a wallet sign-in's copy takes two presses: the first copies nothing and asks, the second copies
+  await page.evaluate(() => navigator.clipboard.writeText('untouched'));
+  await page.click('#w-backup');
+  ok(/Press again/.test(await text('#w-backup')) && (await page.evaluate(() => navigator.clipboard.readText())) === 'untouched', 'the first press copies nothing and asks for a second');
   await page.click('#w-backup');
   await page.waitForFunction(() => /Key copied/.test(document.body.textContent), null, { timeout: 15000 }).catch(() => {});
   const copied = await page.evaluate(() => navigator.clipboard.readText());
-  ok(/^[0-9a-f]{64}$/.test(copied), 'Copy key puts the 64-character key on the clipboard');
+  ok(/^[0-9a-f]{64}$/.test(copied), 'the second press puts the 64-character key on the clipboard');
+  ok(await text('#w-backup') === 'Copy key', 'and the button goes back to Copy key');
 
   // ── that key, pasted after Lock, opens the same address ──
   await page.click('#w-lock');
