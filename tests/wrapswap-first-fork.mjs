@@ -123,7 +123,8 @@ globalThis.fetch = async (url, init) => {
   const u = String(url);
   if (/^https:\/\/api\.tacit\.finance\/confidential\//.test(u)) return realFetch(u.replace('https://api.tacit.finance', RELAY), init);
   if (/^https:\/\/api\.tacit\.finance\//.test(u)) return new Response('{}', { status: 404 });
-  if (/^https?:\/\/[^/]*(rpc|node|gateway|eth\.|llama|ankr|drpc|merkle|infura|alchemy|cloudflare|1rpc)/i.test(u) && init?.method === 'POST') return again(() => realFetch(RPC, { ...init, signal: AbortSignal.timeout(180_000) }), 'the fork');
+  // every JSON-RPC call goes to the fork, whatever its host: a node the pattern below does not name (eth-mainnet.public.blastapi.io) answered from the live chain, whose pool had traded since the fork block
+  if (init?.method === 'POST' && (/"jsonrpc"/.test(String(init.body || '')) || /^https?:\/\/[^/]*(rpc|node|gateway|eth\.|llama|ankr|drpc|merkle|infura|alchemy|cloudflare|1rpc)/i.test(u))) return again(() => realFetch(RPC, { ...init, signal: AbortSignal.timeout(180_000) }), 'the fork');
   return again(() => realFetch(url, init), new URL(u).host);
 };
 
@@ -232,6 +233,28 @@ const ETH = 10n ** 16n;
     ok(!s2.error && await depositStatus(r.built.depositId) === 2n && c.value === ETH && BigInt(await rpcA('eth_getBalance', [TIPTO, 'latest'])) === b0,
       `one transaction deposits and settles it with no tip: the ${fmtTac(r.built.amountOut)} TAC note is in the pool (${s2.error ? s2.error.message : `${BigInt(s2.rc.gasUsed)} gas`}; value ${c.value})`);
   }
+}
+
+// ── 6. the pool moved while the swap was proved, and the swap is handed a way to build again (submitWrapSwap's `rebuild`, which the page passes): it settles on the reserves now,
+// spending the deposit that was waiting, where section 4 (given none) gives up and settles the deposit as a plain wrap ──
+{
+  const index = await ux.nextWrapIndex({ walletPriv: priv, ticker: 'cETH' }), fee = BigInt(await ux.quoteOpFee('cETH', 'route'));
+  const args = { walletPriv: priv, toTicker: 'cTAC', amountWei: ETH, feeBps, fee, index };
+  const built = await ux.buildWrapSwap(args);
+  await send(FROM, WRAP_TIP, '0xfc24c435' + built.commit.slice(2).padStart(64, '0') + ETH.toString(16).padStart(64, '0') + TIPTO.slice(2).toLowerCase().padStart(64, '0'), hex(ETH + 10n ** 14n));
+  // another key's swap trades the pool first (the same page object, so the log scan is not made again for it)
+  const b = await ux.proveWrapSwap({ walletPriv: crypto.getRandomValues(new Uint8Array(32)), toTicker: 'cTAC', amountWei: ETH, feeBps, ahead: true, waitOpts: wait });
+  await sendCall(ux.wrapSettleCall({ built: b.built, proven: b.proven }));
+  const now = await ux.poolReserves(built.pid);
+  ok(BigInt(now.reserveA) !== built.reserveA || BigInt(now.reserveB) !== built.reserveB, 'another swap trades the pool after this one was built: the reserves its proof pins are gone');
+  let again = null;
+  const r = await ux.submitWrapSwap({ walletPriv: priv, built, rebuild: async () => (again = await ux.buildWrapSwap(args)), waitOpts: wait }).catch((e) => ({ error: e }));
+  ok(!r.error && !!again && String(again.depositId).toLowerCase() === String(built.depositId).toLowerCase() && await depositStatus(built.depositId) === 2n,
+    `the pool refused the first swap, it was built again on the reserves now, and it settles, spending the same deposit (${r.error ? r.error.message : 'settled'}; ${log.slice(-1)[0] || ''})`);
+  ok(!!again && again.amountOut > 0n && again.amountOut < built.amountOut && r.amountOut === again.amountOut,
+    `the answer is what the swap that settled pays, ${fmtTac(again?.amountOut)} TAC, less than the ${fmtTac(built.amountOut)} the first quote said`);
+  const got = (await notesOf(priv, ux, tac)).filter((n) => BigInt(n.value) === again?.amountOut);
+  ok(got.length >= 1, `a private ${fmtTac(again?.amountOut)} TAC note is the key's`);
 }
 
 if (fails) console.error(log.join('\n'));
