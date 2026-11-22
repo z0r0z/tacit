@@ -214,10 +214,25 @@ const isHex = (s, bytes) => typeof s === 'string' && /^0x[0-9a-fA-F]*$/.test(s) 
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const b64len = (s) => Math.floor(s.length * 3 / 4) - (s.endsWith('==') ? 2 : s.endsWith('=') ? 1 : 0);
 
-function makeLock() {
-  let tail = Promise.resolve();
-  return (fn) => { const p = tail.then(fn, fn); tail = p.then(() => {}, () => {}); return p; };
+// One thing at a time over a board's storage. Every post, claim, result and cancel waits behind it, and a pass under it used to take about a second (it read
+// every retained job, up to four times over, one after another), while ~150 community machines and the house workers ask every few seconds: on 2026-11-22 a
+// post waited ~14 s at the median (p90 20 s: the relay's own 20 s limit sent those jobs to the network instead) and so did a house worker's claim.
+// Calls with `{ first: true }` (the relay's post, cancel and verdict, a house worker's claim, anyone's result) go ahead of the community's asks that are waiting; a
+// community ask that has waited `agingMs` is taken before them, so a steady stream of urgent calls cannot starve the community's racing. Each class is first in, first out.
+export function makeBoardLock({ agingMs = 1500, now = Date.now } = {}) {
+  const urgent = [], rest = [];
+  let busy = false;
+  const next = () => {
+    if (busy) return;
+    const oldest = rest[0];
+    const turn = oldest && now() - oldest.at >= agingMs ? rest.shift() : (urgent.shift() || rest.shift());
+    if (!turn) return;
+    busy = true;
+    Promise.resolve().then(turn.fn).then(turn.res, turn.rej).then(() => { busy = false; next(); });
+  };
+  return (fn, { first = false } = {}) => new Promise((res, rej) => { (first ? urgent : rest).push({ fn, res, rej, at: now() }); next(); });
 }
+const makeLock = makeBoardLock;
 
 // The input is a user's witness: it stays on a record only while a worker may still need it (queued or claimed) and is
 // dropped the moment the job is over, and a record leaves storage when it leaves the list.
@@ -267,6 +282,16 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
   // a batch's size in MB of input, which its proving time follows (more Bitcoin blocks, more input)
   const sizeOf = (j) => Math.max(0.001, (j.inputBytes || 1e6) / 1e6);
   const exclusive = lock || makeLock();
+  // The relay's calls and the workers' answers go first (see makeBoardLock); a lock handed in by a test may take only the function.
+  const urgent = (fn) => exclusive(fn, { first: true });
+  // Every job on the list read at once, kept in `recs` for the rest of the pass (a pass changes the records it holds in place and writes them back, and holds
+  // the lock, so what it read is what is stored): one round of reads where there were up to four rounds of one-by-one reads.
+  // (Sixteen at a time: the store behind it is a pooled database, and a pass should not take every connection.)
+  const loadJobs = async (ids, recs = new Map()) => {
+    const need = ids.filter((x) => !recs.has(x));
+    for (let i = 0; i < need.length; i += 16) await Promise.all(need.slice(i, i + 16).map(async (x) => { recs.set(x, await storage.getJob(x)); }));
+    return recs;
+  };
   const id = hash || ((s) => 'pb_' + s.length.toString(36) + '_' + Array.from(s).reduce((a, c) => ((a * 33) ^ c.charCodeAt(0)) >>> 0, 5381).toString(36));
   const fast = (cfg.communityFast ?? PROVER_BOARD.communityFast) !== 0;
   const viewMs = cfg.communityViewMs ?? PROVER_BOARD.communityViewMs;
@@ -299,11 +324,12 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
 
   // Finished and cancelled jobs are dropped from the pending list once kept long enough; the list is read on every call.
   let retainAt = Infinity;                       // when the soonest finished job still kept will leave the list, as the last sweep read it
-  async function sweep(pend) {
+  async function sweep(pend, recs = new Map()) {
     const keep = [];
     let soonest = Infinity;
+    await loadJobs(pend, recs);
     for (const jid of pend) {
-      const j = await storage.getJob(jid);
+      const j = recs.get(jid);
       if (!j) continue;
       if (j.status === 'queued' || j.status === 'claimed') {
         if (j.deadline && clock() > j.deadline * 1000) { j.status = 'expired'; await end(j); await storage.putJob(jid, j); }
@@ -361,7 +387,7 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
     if (!Number.isFinite(cyc) || cyc <= 0 || !Number.isFinite(gas) || gas <= 0) throw new Error('cycleLimit and gasLimit must be positive');
     if (!Number.isFinite(dl) || dl * 1000 <= clock()) throw new Error('deadline must be a unix time in the future');
     if (label != null && (typeof label !== 'string' || label.length > 80)) throw new Error('label must be a short string');
-    return exclusive(async () => {
+    return urgent(async () => {
       const pend = await sweep(await storage.getPending());
       const jobId = id(`${program}|${cls}|${sealedOk ? `sealed:${sealed.ct}` : stdin}`);
       const have = await storage.getJob(jobId);
@@ -391,7 +417,7 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
   // The relay's check of a community candidate: one that passed becomes the job's proof (the job is done, whoever had claimed it); one that
   // did not is dropped and counts against the machine that made it.
   async function raceVerdict({ jobId, worker, ok } = {}) {
-    return exclusive(async () => {
+    return urgent(async () => {
       const j = await storage.getJob(String(jobId || ''));
       if (!j) return { ok: false, error: 'no such job' };
       const c = (j.race || []).find((x) => x.worker === worker);
@@ -423,7 +449,7 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
   // The relay gives a job up (it went to the network, or the proof that came back did not pass): a result after this is
   // ignored, and `reason` 'bad' counts against the worker that made it.
   async function cancel({ jobId, reason = null } = {}) {
-    return exclusive(async () => {
+    return urgent(async () => {
       const j = await storage.getJob(String(jobId || ''));
       if (!j) return { ok: false, error: 'no such job' };
       if (!['queued', 'claimed', 'proved'].includes(j.status)) return { ok: true, status: j.status };
@@ -558,18 +584,19 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
     if (!worker || !Array.isArray(classes) || !classes.length) throw new Error('worker and classes are required');
     const can = Array.isArray(programs) && programs.length ? programs.filter((p) => PROVER_BOARD.programs.includes(p)) : ['confidential'];
     if (worker.community) return communityClaim(worker, Array.isArray(programs) && programs.length ? can : ['confidential']);
-    return exclusive(async () => {
+    return urgent(async () => {
       await bump(worker.name, null, pubkey, warming ? null : can); // a warming ping names no programs: what it proved last stands
       if (warming) return null;
-      const pend = await sweep(await storage.getPending());
+      const recs = new Map();
+      const pend = await sweep(await storage.getPending(), recs);
       await storage.putPending(pend);
       let open = 0;
-      for (const jid of pend) { const j = await storage.getJob(jid); if (j && j.status === 'claimed' && j.worker === worker.name) open++; }
+      for (const jid of pend) { const j = recs.get(jid); if (j && j.status === 'claimed' && j.worker === worker.name) open++; }
       if (open >= PROVER_BOARD.maxOpenPerWorker) return null;
       let ws = null, live = null;
       // the pool's own proofs first: a tacit chain block (public work community machines race too) is taken only when no other job waits
       for (const pass of [0, 1]) for (const jid of pend) {
-        const j = await storage.getJob(jid);
+        const j = recs.get(jid);
         if (!j || j.status !== 'queued' || !classes.includes(j.class) || !worker.classes.includes(j.class) || !can.includes(j.program || 'confidential')) continue;
         if (Number((j.program || 'confidential') === 'tacit-block') !== pass) continue;
         if (j.sealed && j.sealed.worker !== worker.name) continue; // sealed to another worker: not even offered
@@ -578,7 +605,7 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
         if (first > 0 && clock() - (j.postedAt || 0) < first) {
           if (liveRacers(j).length) continue;
           ws = ws || await workers();
-          live = live || (await Promise.all(pend.map((id) => storage.getJob(id)))).filter((x) => x && ['queued', 'claimed'].includes(x.status));
+          live = live || pend.map((id) => recs.get(id)).filter((x) => x && ['queued', 'claimed'].includes(x.status));
           if (readyFor(ws, live, j)) continue;
         }
         j.status = 'claimed'; j.worker = worker.name; j.claimedAt = clock(); j.leaseUntil = clock() + leaseFor(j);
@@ -622,10 +649,11 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
     return exclusive(async () => {
       if (fast && !first && lookIsFresh(mem.view) && nothingToRace(mem.view, worker, races)) return null;   // an ask ahead of this one has just looked
       if (!fast || first || clock() - mem.flushedAt >= PROVER_BOARD.communityFlushMs) { mem.flushedAt = clock(); await bump(worker.name, null, null, races, true, worker.client); }
-      const pend = await sweep(await storage.getPending());
+      const recs = new Map();
+      const pend = await sweep(await storage.getPending(), recs);
       await storage.putPending(pend);
       const open = [];
-      for (const jid of pend) { const j = await storage.getJob(jid); if (j && ['queued', 'claimed'].includes(j.status)) open.push(j); }
+      for (const jid of pend) { const j = recs.get(jid); if (j && ['queued', 'claimed'].includes(j.status)) open.push(j); }
       if (fast) {
         const until = open.reduce((m, j) => Math.min(m, j.deadline ? j.deadline * 1000 : Infinity, j.status === 'claimed' && j.leaseUntil ? j.leaseUntil : Infinity), Infinity);
         mem.view = { epoch: mem.epoch, at: clock(), until: Math.min(until, retainAt), open: open.map(lookAt) };
@@ -781,7 +809,7 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
   // settle() takes; a compressed one is the base64 of the bincode SP1ProofWithPublicValues.
   async function result({ worker, jobId, publicValues = null, proof = null, error = null } = {}) {
     if (!worker) throw new Error('worker is required');
-    return exclusive(async () => {
+    return urgent(async () => {
       const j = await storage.getJob(String(jobId || ''));
       if (!j) return { ok: false, error: 'no such job' };
       if (worker.community) {
@@ -831,8 +859,9 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
     const pend = await storage.getPending();
     const counts = { queued: 0, claimed: 0, proved: 0, failed: 0 };
     const waits = [], proves = [], racing = new Map();
+    const recs = await loadJobs(pend);
     for (const jid of pend) {
-      const j = await storage.getJob(jid);
+      const j = recs.get(jid);
       if (!j) continue;
       const live = j.status === 'claimed' && clock() > j.leaseUntil ? 'queued' : j.status;
       if (counts[live] != null) counts[live]++;
