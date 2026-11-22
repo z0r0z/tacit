@@ -162,6 +162,8 @@ export async function quoteEthToToken({ ethCall, to, tokenOut, amount, slippageB
   if (same(tokenOut, ZERO) || same(tokenOut, WETH) || tacitToken(tokenOut)) return null;
   const q = await zqBest({ ethCall, to, tokenIn: ZERO, tokenOut, amount, exactOut: false, slippageBps, deadline });
   if (!q || q.amountOut <= 0n || q.amountLimit <= 0n || q.amountIn !== BigInt(amount) || q.msgValue !== BigInt(amount)) return null;
+  // The swap's least is held to the slippage asked of its own output, and the calldata to that least.
+  if (q.amountLimit < (q.amountOut * (10000n - BigInt(slippageBps))) / 10000n) return null;
   if (checkRoute(q.callData, { to, tokenIn: ZERO, tokenOut, exactOut: false, amount, maxIn: amount, minOut: q.amountLimit, deadline })) return null;
   return { ...q, name: SOURCES[q.source] || 'a pool', to, tokenOut, deadline };
 }

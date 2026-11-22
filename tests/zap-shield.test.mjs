@@ -145,6 +145,27 @@ test('zapOne: a price that fell below the least the person accepted stops the pr
   assert.match(String(c.log.said.at(-1)[0]), /price moved below the least you accept\. Nothing was sent/);
 });
 
+test('zapOne: a swap whose least is under the least the quote showed stops the press, though its output clears the floor', async () => {
+  const c = cardWith({ quote: { ...quoteOf(f0), amountLimit: BigInt(f0.amountLimit) - 1n } });
+  assert.strictEqual(await c.zapOne(press({ r: { min: BigInt(f0.amountLimit) } })), true);
+  assert.strictEqual(c.log.hosted.length, 0, 'the host was not asked');
+  assert.match(String(c.log.said.at(-1)[0]), /price moved below the least you accept\. Nothing was sent/);
+});
+
+test('quoteEthToToken: an answer whose least is under the slippage asked of its own output is no quote', async () => {
+  const w = (v) => BigInt(v).toString(16).padStart(64, '0');
+  const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', user = '0x' + '11'.repeat(20), amount = 10n ** 18n, deadline = 1900000000n, out = 3000_000000n;
+  const answer = (limit) => {
+    const call = '6e0a4f98' + pad(user) + w(0) + pad('0x0') + pad(USDC) + w(amount) + w(limit) + w(deadline), len = call.length / 2;
+    return '0x' + w(0) + w(30) + w(amount) + w(out) + w(224) + w(limit) + w(amount) + w(len) + call.padEnd(Math.ceil(len / 32) * 64, '0');
+  };
+  const at = (limit) => R.quoteEthToToken({ ethCall: async () => answer(limit), to: user, tokenOut: USDC, amount, slippageBps: 50, deadline });
+  assert.strictEqual(await at(1n), null, 'a least of 1 is refused');
+  assert.strictEqual(await at((out * 9950n) / 10000n - 1n), null, 'one under the slippage is refused');
+  const q = await at((out * 9950n) / 10000n);
+  assert.ok(q && q.amountLimit === (out * 9950n) / 10000n, 'the least the quoter gives for that slippage is a quote');
+});
+
 test('zapOneOf: what the quote shows the person is the note and what comes back, and nothing where the buy would be in two steps', () => {
   const r = { zap: quoteOf(f0) };
   const c = cardWith({ quote: null });

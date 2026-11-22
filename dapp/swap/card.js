@@ -1302,7 +1302,7 @@ async function zapOne(P) {
     say('Reading the price again…');
     const q = await within(buyQuote({ to: R.CONF_ROUTER, tokenOut: P.get, amount: P.wei, slippageBps: P.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time.');
     if (!q) return false;
-    if (q.amountOut < P.floor) { say('The price moved below the least you accept. Nothing was sent; the quote above is the new one.', '', true); S.busy = false; requote(true); return true; }
+    if (q.amountOut < P.floor || q.amountLimit < (P.r?.min ?? P.floor)) { say('The price moved below the least you accept. Nothing was sent; the quote above is the new one.', '', true); S.busy = false; requote(true); return true; }
     plan = R.zapShieldPlan({ quote: q, tokenOut: P.get, wei: P.wei, scale: coin.scale, deadline: dl });
     if (plan.why) return false;
   } catch { return false; }
@@ -1474,7 +1474,7 @@ async function prepare(P, from) {
     tx = await aggTx(q, from);
   } else if (P.kind === 'zap') {
     const q = await within(buyQuote({ to: from, tokenOut: P.get, amount: P.wei, slippageBps: P.slip, deadline: dl }), 20e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
-    if (!q || q.amountOut < P.floor) return moved();
+    if (!q || q.amountOut < P.floor || q.amountLimit < (P.r.min ?? P.floor)) return moved();
     tx = { to: R.ZROUTER, data: q.callData, value: q.msgValue };
   } else throw new Error('Nothing to do for this pair.');
   if (RELAY_MODE) return tx;
