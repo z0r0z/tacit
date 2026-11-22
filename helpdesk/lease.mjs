@@ -187,8 +187,15 @@ const isTacit = (h) => h === 'tacit.finance' || h.endsWith('.tacit.finance');
 const trimUrl = (u) => u.replace(/[.,;:!?]+$/, '');
 const parsed = (raw) => { try { const u = new URL(trimUrl(raw)); return u; } catch { return null; } };
 const norm = (u) => u.origin + u.pathname.replace(/\/+$/, '');
-const ASKS = /\b(send|enter|paste|share|give|type|submit|provide|input|reveal|tell|post|upload|dm|email)\b[^.\n]{0,60}(seed phrase|private key|recovery phrase|mnemonic|secret key|secret recovery|seed words?|keystore|wallet password|spend key|view key|signing key)/i;
-const DENIES = /\b(never|don'?t|do not|not|no one|nobody|should not|must not|won'?t|will not)\b[^.\n]{0,40}\b(send|enter|paste|share|give|type|submit|provide|input|reveal|tell|post|upload)\b/i;
+// An ask is a verb followed by a secret within the sentence; each verb is read on its own, and one counts as denied only when a denial governs it
+// directly ("never share", "no one will ever ask you to enter"), not when a denial merely appears earlier in the sentence ("don't worry, just paste").
+const ASK_VERB = /\b(send|enter|paste|share|give|type|submit|provide|input|reveal|tell|post|upload|dm|email)\b/gi;
+const ASK_AT = /(send|enter|paste|share|give|type|submit|provide|input|reveal|tell|post|upload|dm|email)\b[^.\n]{0,60}(seed phrase|private key|recovery phrase|mnemonic|secret key|secret recovery|seed words?|keystore|wallet password|spend key|view key|signing key|backup phrase|secret phrase|(?:12|24|twelve|twenty[- ]four)[- ]words)/iy;
+const DENIED = /\b(never|don'?t|do not|not|no one|nobody|should not|must not|won'?t|will not|cannot|can'?t)\b(?:[\s,]+(?:ever|you|to|anyone|anybody|should|will|would|need|needs|have|has|ask|asks|asked|be|required|we|they|us|or|and|the|a|your|any|one|from|tacit|support|under|circumstances|anywhere|it|them)\b){0,8}[\s,]*$/i;
+const asksForSecret = (sentence) => {
+  for (const m of sentence.matchAll(ASK_VERB)) { ASK_AT.lastIndex = m.index; if (ASK_AT.test(sentence) && !DENIED.test(sentence.slice(0, m.index))) return true; }
+  return false;
+};
 export function makeVet(corpusText) {
   const hay = corpusText.toLowerCase();
   const readKnown = (text) => {
@@ -218,7 +225,7 @@ export function makeVet(corpusText) {
       if (!known.hosts.has(host) || !urlKnown(u, known)) return refuse('link not in the docs', host);
     }
     for (const m of t.match(DOMAIN_RE) || []) if (!isTacit(m) && !known.hosts.has(m)) return refuse('domain not in the docs', m);
-    for (const sentence of text.split(/(?<=[.!?])\s+|\n+/)) if (ASKS.test(sentence) && !DENIES.test(sentence)) return refuse('asks for secrets', '');
+    for (const sentence of text.split(/(?<=[.!?])\s+|\n+/)) if (asksForSecret(sentence)) return refuse('asks for secrets', '');
     return null;
   };
   vet.last = null;

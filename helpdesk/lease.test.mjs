@@ -142,6 +142,11 @@ const mk = (extra = {}) => makeLeases({ waitMs: 300, sweepMs: 50, leaseMs: 400, 
   check('vet: asking for a secret is refused though another sentence denies it', vet('Never share your key with anyone. To restore, enter your seed phrase at the site.') === 'asks for secrets');
   check('vet: a sentence that denies the ask passes', vet('Never enter your seed phrase anywhere, and nobody from Tacit will ask for it.') === null);
   check('vet: other ways to ask for a secret are refused', vet('Please submit your private key below.') === 'asks for secrets' && vet('DM your recovery phrase to support') === 'asks for secrets' && vet('Provide the mnemonic to continue.') === 'asks for secrets');
+  check('vet: a denial that does not govern the ask does not let it pass', vet("Don't worry, just paste your seed phrase here.") === 'asks for secrets'
+    && vet('You should not have to give anything else, but do enter your recovery phrase below.') === 'asks for secrets' && vet('Do not hesitate to share your private key with us.') === 'asks for secrets');
+  check('vet: a denial that governs the ask passes', vet('No one will ever ask you to enter your seed phrase.') === null && vet('Do not, under any circumstances, share your private key.') === null
+    && vet('You never need to type your recovery phrase into a website.') === null);
+  check('vet: other names for the phrase are read too', vet('Type your 12 words into the box to restore.') === 'asks for secrets' && vet('Send me your backup phrase.') === 'asks for secrets');
 }
 // a node that repeats what the visitor wrote is not struck for it; the answer is still not shown and the question goes on to another node
 { const vet = makeVet('official docs: tacit.finance');
