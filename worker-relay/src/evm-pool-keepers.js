@@ -6,6 +6,8 @@
 //                                            pool; a chain id and a name (1-tac) is another pool on the same chain, here the TAC pool
 //   EVM_POOL_<KNOB>_<chainId>                a chain's own value of any keeper knob (EVM_POOL_RPC_URL_8453, EVM_POOL_KEEPER_PRIV_8453,
 //                                            EVM_POOL_START_BLOCK_8453 …); without one, the plain EVM_POOL_<KNOB> applies to every chain
+//                                            EVM_POOL_KEEPER_L1_FEE_<chainId>=op on an OP-stack chain adds its L1 data fee to every cost
+//                                            the keeper prices (src/lib/evm-pool-keeper-l1.js); unset elsewhere
 //   EVM_POOL_<KNOB>_<CHAINID>_<NAME>         a named pool's own value (EVM_POOL_ADDR_1_TAC); over its chain's, which it otherwise takes
 //                                            (nodes, fees) except for what is the pool's alone: its addresses, first block, store, seed,
 //                                            key and price feed. A named pool that cannot start is left out; the others run on

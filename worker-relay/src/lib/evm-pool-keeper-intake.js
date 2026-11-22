@@ -24,7 +24,7 @@ import { getAddress, isAddress, encodeFunctionData, parseAbi } from 'viem';
 import { depositIntent, callIntent, callEscrowAddress } from '../../../dapp/evm-pool-gateway.js';
 import { P_FR } from '../../../dapp/btc-pool-zk.js';
 import { ETH } from './evm-pool-keeper-config.js';
-import { coverCheck, quoteFee, receiveMinOf, relayMarginOf, subsidyRoom, sweepGasOf } from './evm-pool-keeper-loop.js';
+import { coverCheck, l1Of, quoteFee, receiveMinOf, relayMarginOf, subsidyRoom, sweepGasOf } from './evm-pool-keeper-loop.js';
 import { PipelineError } from './evm-pool-keeper-pipeline.js';
 import { revertName as defaultRevertName } from './evm-pool-keeper-chain.js';
 import { safeErr } from './safe-err.js';
@@ -42,6 +42,12 @@ export class IntakeError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 const bad = (m) => new IntakeError(400, m);
+// The L1 data fee of a send (0 on a chain without one). One that cannot be read refuses the request: a quote or a fee check that guessed zero
+// would sell the send below what it costs.
+const l1For = async (chain, functionName, args) => {
+  try { return await l1Of(chain, functionName, args); }
+  catch { throw new IntakeError(503, "the relay can't price this send right now: the L1 data fee could not be read; try again in a few minutes. Sending it from your own wallet also works, and shows your address as the sender"); }
+};
 
 function uint(x, name, max = U256) {
   let v;
@@ -464,14 +470,16 @@ export function createIntakeHandler({
     const asset = chain.asset.toLowerCase();
     if (!cfg.rates.has(asset) && !cfg.minFees.has(asset)) throw new IntakeError(503, "the relay can't price its fee in this token right now; try again in a few minutes. Sending it from your own wallet also works, and shows your address as the sender");
     const price = await gasPrice();
+    // the L1 data fee, on a chain that charges one: each quote below is for a typical call of its kind
+    const [l1Relay, l1Sweep, l1Deposit] = await Promise.all([l1For(chain, 'pool.transact'), l1For(chain, 'sweepReceive'), l1For(chain, 'completeDeposit')]);
     // a pool with a day's allowance of gas (one served on request) quotes nothing it could not send today
-    if (chain.gasBudget && chain.gasBudget.left() < gas * price) throw new IntakeError(503, "the relay has used today's gas for this pool; try again tomorrow. Sending it from your own wallet also works, and shows your address as the sender");
+    if (chain.gasBudget && chain.gasBudget.left() < gas * price + l1Relay) throw new IntakeError(503, "the relay has used today's gas for this pool; try again tomorrow. Sending it from your own wallet also works, and shows your address as the sender");
     await mustFront((gas * 13n) / 10n);
-    const q = quoteFee({ token: chain.asset, gas, gasPrice: price, cfg });
+    const q = quoteFee({ token: chain.asset, gas, gasPrice: price, cfg, l1: l1Relay });
     // What collecting a receive box costs now, and the smallest balance whose 0.25% cap pays for it.
-    const sweep = quoteFee({ token: chain.asset, gas: sweepGasOf({ chain, cfg }), gasPrice: price, cfg, floor: !cfg.rates.has(chain.asset.toLowerCase()) });
+    const sweep = quoteFee({ token: chain.asset, gas: sweepGasOf({ chain, cfg }), gasPrice: price, cfg, floor: !cfg.rates.has(chain.asset.toLowerCase()), l1: l1Sweep });
     // what completing a deposit box costs, at the gas this keeper prices one at (its setting, not a page's guess): the least fee its box may carry
-    const depositFee = quoteFee({ token: chain.asset, gas: cfg.depositGas, gasPrice: price, cfg });
+    const depositFee = quoteFee({ token: chain.asset, gas: cfg.depositGas, gasPrice: price, cfg, l1: l1Deposit });
     return {
       chainId: chain.chainId, pool: chain.pool, relayer: chain.address, asset: chain.asset, fee: q.toString(), gas: gas.toString(),
       depositGas: cfg.depositGas.toString(), depositFee: depositFee.toString(),
@@ -501,9 +509,9 @@ export function createIntakeHandler({
       try { est = await chain.estimate(functionName, sendArgs); }
       catch (e) { throw estimateFailure(e); }
     }
-    const price = await gasPrice();
-    const cov = coverCheck({ reward: fee, token: chain.asset, gas: est, gasPrice: price, cfg, marginBps: relayMarginOf(cfg) });
-    if (!cov.ok) throw Object.assign(bad(`fee too low: ${cov.reason}`), { needFee: quoteFee({ token: chain.asset, gas: est, gasPrice: price, cfg }).toString() });
+    const price = await gasPrice(), l1 = await l1For(chain, functionName, sendArgs);
+    const cov = coverCheck({ reward: fee, token: chain.asset, gas: est, gasPrice: price, cfg, marginBps: relayMarginOf(cfg), l1 });
+    if (!cov.ok) throw Object.assign(bad(`fee too low: ${cov.reason}`), { needFee: quoteFee({ token: chain.asset, gas: est, gasPrice: price, cfg, l1 }).toString() });
     await mustFront(cov.gas);
     if (cfg.dryRun) return { dryRun: true, gas: est.toString() };
     const send = async ({ simulate }) => {
@@ -547,9 +555,9 @@ export function createIntakeHandler({
       try { est = await chain.estimate(functionName, sendArgs); }
       catch (e) { throw estimateFailure(e); }
     }
-    const price = await gasPrice();
-    const cov = coverCheck({ reward: fee, token: chain.asset, gas: est, gasPrice: price, cfg, marginBps: relayMarginOf(cfg) });
-    if (!cov.ok) throw Object.assign(bad(`fee too low: ${cov.reason}`), { needFee: quoteFee({ token: chain.asset, gas: est, gasPrice: price, cfg }).toString() });
+    const price = await gasPrice(), l1 = await l1For(chain, functionName, sendArgs);
+    const cov = coverCheck({ reward: fee, token: chain.asset, gas: est, gasPrice: price, cfg, marginBps: relayMarginOf(cfg), l1 });
+    if (!cov.ok) throw Object.assign(bad(`fee too low: ${cov.reason}`), { needFee: quoteFee({ token: chain.asset, gas: est, gasPrice: price, cfg, l1 }).toString() });
     await mustFront(cov.gas);
     if (cfg.dryRun) return { dryRun: true, gas: est.toString() };
     { const c = conflict(keys, Date.now()); if (c) throw c; }

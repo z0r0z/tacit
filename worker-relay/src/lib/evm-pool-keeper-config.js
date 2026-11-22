@@ -9,6 +9,7 @@ import { privateSettleUrl } from './private-settle-url.js';
 import { RECEIVE_FEE_BPS } from '../../../dapp/evm-pool-gateway.js';
 import { gatewayKeys } from '../../../dapp/sealed-request.js';
 import { parseRateFeed } from './evm-pool-keeper-rates.js';
+import { OP_GAS_PRICE_ORACLE } from './evm-pool-keeper-l1.js';
 
 const ETH = '0x0000000000000000000000000000000000000000';
 // The catch-up registry, the same address on every chain the pool is on: CreateX CREATE2 under a salt anyone may use
@@ -63,6 +64,16 @@ export function checkReceiveFloor(minReceiveFeeBps) {
     throw new Error(`EVM_POOL_KEEPER_MIN_RECEIVE_FEE_BPS=${minReceiveFeeBps} is above the canonical receive fee cap ${RECEIVE_FEE_BPS}; this keeper would refuse every app's receive address`);
   }
   return minReceiveFeeBps;
+}
+
+// EVM_POOL_KEEPER_L1_FEE: '' / 0 / off = none; op / 1 = the OP GasPriceOracle predeploy; an address = another oracle with getL1Fee(bytes).
+// Anything else stops the keeper at start: a typo must not read as "no L1 fee", which is the mispricing this setting exists to remove.
+export function parseL1Fee(v) {
+  const s = String(v || '').trim();
+  if (s === '' || s === '0' || s.toLowerCase() === 'off') return null;
+  if (s === '1' || s.toLowerCase() === 'op') return OP_GAS_PRICE_ORACLE;
+  if (isAddress(s)) return getAddress(s);
+  throw new Error(`EVM_POOL_KEEPER_L1_FEE must be op, 1, 0 or an oracle address, not "${s}"`);
 }
 
 export function loadKeeperConfig(env = process.env) {
@@ -143,6 +154,11 @@ export function loadKeeperConfig(env = process.env) {
     depositGas: big(env, 'EVM_POOL_KEEPER_DEPOSIT_GAS', 500000n),
     wrapGas: big(env, 'EVM_POOL_KEEPER_WRAP_GAS', 300000n),
     sweepGas: big(env, 'EVM_POOL_KEEPER_SWEEP_GAS', 600000n),
+    // An OP-stack chain (Base, Fraxtal …) charges an L1 data fee on top of gas, out of the signer's balance and not counted in gas, so a cost of
+    // gas × price leaves it out and the keeper sells sends below what they cost. EVM_POOL_KEEPER_L1_FEE=op adds it, read from the chain's
+    // GasPriceOracle predeploy (1 is the same); an address names another oracle with getL1Fee(bytes); unset or 0 leaves it out, as on Ethereum and
+    // on a chain whose gas already carries it (Arbitrum's). Set per chain: EVM_POOL_KEEPER_L1_FEE_252=op.
+    l1FeeOracle: parseL1Fee(str(env, 'EVM_POOL_KEEPER_L1_FEE')),
     // A sweep's fee is capped at 25 bps of the box, so the smallest balance it pays for is 400 times its cost. To move smaller
     // deposits in, the keeper absorbs part of the cost itself: SWEEP_SUBSIDY_BPS of it (of 10,000), never more than
     // SWEEP_SUBSIDY_WEI per sweep (the bound when gas spikes), nor SWEEP_SUBSIDY_DAILY_WEI in a rolling day (0 = no daily bound; one budget

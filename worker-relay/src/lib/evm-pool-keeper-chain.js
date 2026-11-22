@@ -4,6 +4,7 @@ import { createPublicClient, createWalletClient, defineChain, fallback, getAddre
 import { withNonceRetry } from './nonce-retry.js';
 import { safeErr } from './safe-err.js';
 import { ETH } from './evm-pool-keeper-config.js';
+import { L1_ORACLE_ABI, makeL1Fee } from './evm-pool-keeper-l1.js';
 
 const DEPOSIT_INTENT = {
   name: 'intent', type: 'tuple', components: [
@@ -86,7 +87,7 @@ export const HUB_ABI = parseAbi([
   'function post(address pool, uint256 size, uint256 blockNumber, bytes32[32] filled)',
   'error NotEven()', 'error BadBlock()', 'error Known()', 'error NotHeld()',
 ]);
-const POOL_ABI = [
+export const POOL_ABI = [
   fn('transact', [
     { type: 'uint256[2]' }, { type: 'uint256[2][2]' }, { type: 'uint256[2]' }, { type: 'uint256[11]' }, { type: 'address' },
     { type: 'int256' }, { type: 'address' }, { type: 'uint256' }, { type: 'bytes' }, { type: 'bytes' },
@@ -184,6 +185,15 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
       : functionName === 'hub.post'
         ? { address: cfg.pointsHub, abi: HUB_ABI, functionName: 'post' }
         : { address: cfg.router, abi: ROUTER_ABI, functionName });
+  // The L1 data fee a send of `functionName` (with `args`, or a typical call when none) is charged on a chain that has one
+  // (EVM_POOL_KEEPER_L1_FEE, evm-pool-keeper-l1.js); null elsewhere. A fee the oracle cannot give is an error, never zero.
+  const l1Fee = cfg.l1FeeOracle
+    ? makeL1Fee({ target, readFee: (raw) => pub.readContract({ address: cfg.l1FeeOracle, abi: L1_ORACLE_ABI, functionName: 'getL1Fee', args: [raw] }) })
+    : null;
+  if (l1Fee) {
+    try { log(`L1 data fee priced from ${cfg.l1FeeOracle}: a relayed transfer ${await l1Fee('pool.transact')} wei, a receive sweep ${await l1Fee('sweepReceive')} wei`); }
+    catch (e) { log(`warning: the L1 data fee oracle ${cfg.l1FeeOracle} did not answer (${safeErr(e)}); quotes and sends here are refused until it does`); }
+  }
   // One signer, one nonce: the loop and relay requests (and any other pool's keeper on this chain with the same key) send through this
   // queue one at a time.
   const signer = signerOf(chainId, account.address);
@@ -422,6 +432,8 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
       const floor = (block.baseFeePerGas ?? 0n) + cfg.minPriorityFee;
       return gp > floor ? gp : floor;
     },
+    // What a send of `functionName` costs on top of gas × price: the L1 data fee, 0 on a chain that has none.
+    l1Fee: l1Fee || (async () => 0n),
     receiveBoxOf: async (npk, feeBps) => getAddress(await read(cfg.router, ROUTER_ABI, 'receiveBoxOf', [npk, feeBps])),
     receiveCount: async (box) => BigInt(await read(cfg.router, ROUTER_ABI, 'receiveCount', [box])),
     estimate: (functionName, args) => pub.estimateContractGas({ ...target(functionName), args, account }),

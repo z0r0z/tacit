@@ -18,7 +18,8 @@ const E18 = 10n ** 18n;
 
 // Whether `reward` (in `token` base units) pays for `gas` at `gasPrice`, with the margin on top, and meets the
 // token's minimum unless `floor` is false. A token with neither a minimum nor a price configured is never completed.
-export function coverCheck({ reward, token, gas, gasPrice, cfg, floor = true, marginBps = cfg.marginBps }) {
+// `l1` is the L1 data fee of the send, in wei, on a chain that charges one (evm-pool-keeper-l1.js): part of what the send costs.
+export function coverCheck({ reward, token, gas, gasPrice, cfg, floor = true, marginBps = cfg.marginBps, l1 = 0n }) {
   const t = token.toLowerCase();
   const min = cfg.minFees.get(t);
   const rate = cfg.rates.get(t);
@@ -26,7 +27,7 @@ export function coverCheck({ reward, token, gas, gasPrice, cfg, floor = true, ma
   if (BigInt(gas) > cfg.gasCap) return { ok: false, reason: `needs ${gas} gas, over the ${cfg.gasCap} cap` };
   if (floor && min !== undefined && BigInt(reward) < min) return { ok: false, reason: `reward ${reward} is below the ${min} minimum` };
   if (rate !== undefined) {
-    const cost = BigInt(gas) * BigInt(gasPrice);
+    const cost = BigInt(gas) * BigInt(gasPrice) + BigInt(l1);
     const need = cost + (cost * marginBps) / 10000n;
     const value = (BigInt(reward) * rate) / E18;
     if (value < need) return { ok: false, reason: `reward worth ${value} wei is below the ${need} wei cost` };
@@ -39,13 +40,18 @@ export function coverCheck({ reward, token, gas, gasPrice, cfg, floor = true, ma
 // the send, so a fee that still pays for the send is taken down to relayMarginBps (never above the quote's).
 export const relayMarginOf = (cfg) => (cfg.relayMarginBps === undefined || cfg.relayMarginBps > cfg.marginBps ? cfg.marginBps : cfg.relayMarginBps);
 
-// The smallest fee, in `token` base units, that coverCheck accepts for `gas` at `gasPrice` (with the same `floor`).
-export function quoteFee({ token, gas, gasPrice, cfg, floor = true }) {
+// The L1 data fee of a send of `functionName` (with `args`, or a typical call without), in wei: 0 on a chain that has none, and for a
+// chain object (a test's) that does not say. It throws when the chain has a fee and cannot read it: the caller refuses the send
+// rather than price it as free.
+export const l1Of = async (chain, functionName, args) => (chain.l1Fee ? BigInt(await chain.l1Fee(functionName, args)) : 0n);
+
+// The smallest fee, in `token` base units, that coverCheck accepts for `gas` at `gasPrice` and an `l1` data fee (with the same `floor`).
+export function quoteFee({ token, gas, gasPrice, cfg, floor = true, l1 = 0n }) {
   const t = token.toLowerCase();
   const min = (floor && cfg.minFees.get(t)) || 0n;
   const rate = cfg.rates.get(t);
   if (rate === undefined) return min;
-  const cost = BigInt(gas) * BigInt(gasPrice);
+  const cost = BigInt(gas) * BigInt(gasPrice) + BigInt(l1);
   const need = cost + (cost * cfg.marginBps) / 10000n;
   const fee = (need * E18 + rate - 1n) / rate;
   return fee > min ? fee : min;
@@ -106,9 +112,9 @@ export function absorbWei({ wei, cfg, chain, at = nowSecs() }) {
 
 // Whether sending `bal` of `token` back from a box is worth the gas the keeper pays for it (the router sends the whole balance to the refund, so there is nothing to take the
 // gas from): for ETH, three times what the send costs; for a token, what coverCheck accepts (at least its minimum fee, and its price against the gas).
-export function reclaimWorth({ bal, token, est, price, cfg }) {
-  if (String(token).toLowerCase() === ETH.toLowerCase()) return BigInt(bal) >= BigInt(est) * BigInt(price) * 3n;
-  return coverCheck({ reward: bal, token, gas: est, gasPrice: price, cfg }).ok;
+export function reclaimWorth({ bal, token, est, price, cfg, l1 = 0n }) {
+  if (String(token).toLowerCase() === ETH.toLowerCase()) return BigInt(bal) >= (BigInt(est) * BigInt(price) + BigInt(l1)) * 3n;
+  return coverCheck({ reward: bal, token, gas: est, gasPrice: price, cfg, l1 }).ok;
 }
 
 // The floor under the smallest balance a sweep of cost `cost` is done for: RECEIVE_MIN_MULT times the cost, and the token's own.
@@ -211,7 +217,7 @@ export function createKeeper({
   }
 
   async function completeDeposit(r, intent, t) {
-    const pre = coverCheck({ reward: r.reward, token: r.token, gas: cfg.depositGas, gasPrice: await chain.gasPrice(), cfg });
+    const pre = coverCheck({ reward: r.reward, token: r.token, gas: cfg.depositGas, gasPrice: await chain.gasPrice(), cfg, l1: await l1Of(chain, 'completeDeposit') });
     if (!pre.ok) return { skipped: pre.reason };
     const hint = hintArgs(r.hint);
     for (let round = 0; round <= cfg.staleRetries; round++) {
@@ -244,7 +250,7 @@ export function createKeeper({
           return { failed: revertName(e) || safeErr(e) };
         }
       }
-      const cov = coverCheck({ reward: r.reward, token: r.token, gas: est, gasPrice: await chain.gasPrice(), cfg });
+      const cov = coverCheck({ reward: r.reward, token: r.token, gas: est, gasPrice: await chain.gasPrice(), cfg, l1: await l1Of(chain, 'completeDeposit', [intent, tx]) });
       if (!cov.ok) { await release(); return { skipped: cov.reason }; }
       let out;
       try { out = await submit(r, 'completeDeposit', [intent, tx], cov.gas, t, slot, tx); }
@@ -262,7 +268,7 @@ export function createKeeper({
     let est;
     try { est = await chain.estimate('completeWrap', [intent]); }
     catch (e) { return { failed: revertName(e) || safeErr(e) }; }
-    const cov = coverCheck({ reward: r.reward, token: r.token, gas: est, gasPrice: await chain.gasPrice(), cfg });
+    const cov = coverCheck({ reward: r.reward, token: r.token, gas: est, gasPrice: await chain.gasPrice(), cfg, l1: await l1Of(chain, 'completeWrap', [intent]) });
     if (!cov.ok) return { skipped: cov.reason };
     const out = await submit(r, 'completeWrap', [intent], cov.gas, t);
     return out === 'reverted' ? { failed: 'completion reverted on chain' } : { out };
@@ -279,8 +285,8 @@ export function createKeeper({
     const args = [intent, r.token];
     try { est = await chain.estimate(fnName, args); }
     catch (e) { return failed(r, t, `reclaim: ${revertName(e) || safeErr(e)}`); }
-    const price = BigInt(await chain.gasPrice()), cost = BigInt(est) * price;
-    if (!reclaimWorth({ bal, token: r.token, est, price, cfg })) {
+    const price = BigInt(await chain.gasPrice()), l1 = await l1Of(chain, fnName, args), cost = BigInt(est) * price + l1;
+    if (!reclaimWorth({ bal, token: r.token, est, price, cfg, l1 })) {
       const note = 'too little to send back';
       return t > Number(intent.deadline) + cfg.expireGraceSecs ? finish(r, t, 'expired', { note }) : backoff(r, t, note);
     }
@@ -309,8 +315,8 @@ export function createKeeper({
       if (name && name !== 'NotExpired') { log(`deposit ${r.box}: surplus refused (${name})`); return store.update(r.box, { note: 'refused', updated: t }); }
       return log(`deposit ${r.box}: surplus not sent yet (${name || safeErr(e)})`);
     }
-    const price = BigInt(await chain.gasPrice()), cost = BigInt(est) * price;
-    if (!reclaimWorth({ bal, token: r.token, est, price, cfg })) return store.update(r.box, { note: 'dust', updated: t });
+    const price = BigInt(await chain.gasPrice()), l1 = await l1Of(chain, 'reclaimDeposit', [intent, r.token]), cost = BigInt(est) * price + l1;
+    if (!reclaimWorth({ bal, token: r.token, est, price, cfg, l1 })) return store.update(r.box, { note: 'dust', updated: t });
     if (cfg.dryRun) return log(`deposit ${r.box}: dry run, would send ${bal} back to its refund`);
     if (!(await reclaimRoom(cost, t))) return log(`deposit ${r.box}: surplus waits: the day's budget for sending boxes back is used`);
     absorbWei({ wei: cost, cfg, chain, at: t });
@@ -339,13 +345,16 @@ export function createKeeper({
     const gasPrice = await chain.gasPrice();
     const floor = !cfg.rates.has(r.token.toLowerCase());
     const assumed = sweepGasOf({ chain, cfg, at: t });
-    const cost = quoteFee({ token: r.token, gas: assumed, gasPrice, cfg, floor });
+    // The L1 data fee is part of what the sweep costs, and on a chain where it is the larger part the cap alone would not cover it. The proof does not
+    // exist yet, so the fee here is a typical sweep's; the exact calldata is priced again once it does.
+    const l1Typical = await l1Of(chain, 'sweepReceive');
+    const cost = quoteFee({ token: r.token, gas: assumed, gasPrice, cfg, floor, l1: l1Typical });
     const feeFor = (amount) => { const cap = (amount * BigInt(feeBps)) / 10_000n; return cost < cap ? cost : cap; };
     // What the keeper takes on itself of the cost counts toward the reward; a balance under the floor is left alone.
     const room = await subsidyRoom({ chain, cfg, at: t });
     const sub = subsidyOf({ token: r.token, cost, cfg, room }), floorMin = receiveFloorOf({ token: r.token, cost, cfg });
     if (sub > 0n && bal < floorMin) return { skipped: `balance ${bal} is below the ${floorMin} the keeper sweeps at a loss` };
-    const pre = coverCheck({ reward: feeFor(bal) + sub, token: r.token, gas: assumed, gasPrice, cfg, floor });
+    const pre = coverCheck({ reward: feeFor(bal) + sub, token: r.token, gas: assumed, gasPrice, cfg, floor, l1: l1Typical });
     if (!pre.ok) return { skipped: pre.reason };
     for (let round = 0; round <= cfg.staleRetries; round++) {
       const n = await chain.receiveCount(r.box);
@@ -380,9 +389,9 @@ export function createKeeper({
         }
       }
       // The fee is in the proof; what the keeper takes on is not, so the subsidy is sized on the estimate, not on the gas assumed.
-      const gp = await chain.gasPrice();
-      const costNow = quoteFee({ token: r.token, gas: est, gasPrice: gp, cfg, floor }), subNow = subsidyOf({ token: r.token, cost: costNow, cfg, room });
-      const cov = coverCheck({ reward: f + subNow, token: r.token, gas: est, gasPrice: gp, cfg, floor });
+      const gp = await chain.gasPrice(), l1Now = await l1Of(chain, 'sweepReceive', args);
+      const costNow = quoteFee({ token: r.token, gas: est, gasPrice: gp, cfg, floor, l1: l1Now }), subNow = subsidyOf({ token: r.token, cost: costNow, cfg, room });
+      const cov = coverCheck({ reward: f + subNow, token: r.token, gas: est, gasPrice: gp, cfg, floor, l1: l1Now });
       if (!cov.ok) { await release(); return { skipped: cov.reason }; }
       let out;
       try { out = await submit(r, 'sweepReceive', args, cov.gas, t, slot, tx); }

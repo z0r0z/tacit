@@ -1227,6 +1227,53 @@ await test('a priced token\'s sweep charges its gas cost, not the relay minimum'
   assert.equal(await s.chain.balanceOf(TOKEN, KEEPER), s.cfg.sweepGas, 'charged its cost (gas at price 1), not the cap');
 });
 
+await test('on a chain with an L1 data fee a sweep charges it too, and a box whose cap does not cover gas plus that fee is left alone', async () => {
+  // gas 600000 at price 1, margin 0, the token at 1:1: a sweep costs 600,000 wei of gas; the chain's L1 data fee adds 5,000,000
+  const over = { minFees: new Map([[TOKEN.toLowerCase(), 10n ** 9n]]), rates: new Map([[TOKEN.toLowerCase(), 10n ** 18n]]), marginBps: 0n };
+  const asks = [];
+  const withL1 = setup({ cfg: over });
+  withL1.chain.l1Fee = async (fn, args) => { asks.push([fn, args !== undefined]); return 5_000_000n; };
+  const big = await addReceive(withL1, 50);
+  withL1.chain.fund(TOKEN, big, 10n ** 10n);   // the 50 bps cap is 50,000,000, far over the cost
+  await withL1.keeper.tick();
+  assert.equal(withL1.chain.sent.length, 1);
+  assert.equal(await withL1.chain.balanceOf(TOKEN, KEEPER), 5_600_000n, 'the fee is the gas plus the L1 data fee');
+  assert.deepEqual(asks.filter(([fn]) => fn === 'sweepReceive'), [['sweepReceive', false], ['sweepReceive', true]], 'a typical sweep is priced before the proof, the exact call after it');
+
+  const small = setup({ cfg: over });
+  small.chain.l1Fee = async () => 5_000_000n;
+  const box = await addReceive(small, 50);
+  small.chain.fund(TOKEN, box, 10n ** 9n);   // the cap is 5,000,000: over the gas alone (600,000), under gas plus the L1 fee (5,600,000)
+  await small.keeper.tick();
+  assert.equal(small.chain.sent.length, 0, 'not swept at a loss');
+  assert.equal(small.prover.calls, 0, 'and no proof is made for it');
+  assert.equal(await small.chain.balanceOf(TOKEN, box), 10n ** 9n, 'the box keeps its balance for its owner to take in');
+
+  const control = setup({ cfg: over });   // the same box on a chain with no L1 fee: swept for the gas alone
+  const cbox = await addReceive(control, 50);
+  control.chain.fund(TOKEN, cbox, 10n ** 9n);
+  await control.keeper.tick();
+  assert.equal(control.chain.sent.length, 1, 'it is the L1 fee that holds the box back');
+  assert.equal(await control.chain.balanceOf(TOKEN, KEEPER), 600_000n);
+});
+
+await test('an L1 data fee the keeper cannot read stops a sweep for now instead of pricing it as free', async () => {
+  const over = { minFees: new Map([[TOKEN.toLowerCase(), 10n ** 9n]]), rates: new Map([[TOKEN.toLowerCase(), 10n ** 18n]]), marginBps: 0n };
+  const s = setup({ cfg: over });
+  s.chain.l1Fee = async () => { throw new Error('oracle unreachable'); };
+  const box = await addReceive(s, 50);
+  s.chain.fund(TOKEN, box, 10n ** 10n);
+  await s.keeper.tick();
+  assert.equal(s.chain.sent.length, 0, 'nothing sent while the cost is unknown');
+  assert.equal(s.prover.calls, 0);
+  assert.equal(await s.chain.balanceOf(TOKEN, box), 10n ** 10n);
+  assert.notEqual(s.store.get(box).status, 'done', 'the box stays watched');
+  s.chain.l1Fee = async () => 5_000_000n;   // the oracle is back
+  s.advance(s.cfg.maxBackoffSecs);
+  await s.keeper.tick();
+  assert.equal(s.chain.sent.length, 1, 'swept once the fee can be read');
+});
+
 await test('a receive box whose capped fee does not cover gas waits for more funds; no proof is made', async () => {
   const s = setup();
   const box = await addReceive(s, 50);
@@ -1365,6 +1412,57 @@ await test('HTTP relay: a fee that covers the gas is taken after the price moved
     assert.equal(r.status, 200);
     assert.match((await r.json()).txHash, /^0x/);
     assert.equal(await chain.balanceOf(TOKEN, KEEPER), 3_675_000n);
+  } finally { server.close(); }
+});
+
+await test('/quote on a chain with an L1 data fee: the relay, deposit and sweep fees and the smallest box all carry it; an unreadable fee is a 503, not a cheap quote', async () => {
+  const cfg = mkCfg({ ratePerMin: 1000, minFees: new Map(), rates: new Map([[TOKEN.toLowerCase(), 10n ** 18n]]), marginBps: 0n });
+  const ask = async (l1Fee) => {
+    const chain = mockChain();
+    if (l1Fee) chain.l1Fee = l1Fee;
+    const server = createServer(createIntakeHandler({ store: openKeeperStore(':memory:'), chain, zk, assetField, cfg, now: () => T0, log: () => {} }));
+    await new Promise((r) => server.listen(0, r));
+    try { const r = await fetch(`http://127.0.0.1:${server.address().port}/evm-pool/keeper/quote`); return { status: r.status, body: await r.json() }; }
+    finally { server.close(); }
+  };
+  const L1 = 7_000_000n;
+  const plain = (await ask()).body, withL1 = (await ask(async () => L1)).body;
+  // gas price 1, margin 0: relay 450000 gas, deposit 500000, sweep 600000, ETH-style 1:1 price
+  assert.deepEqual([plain.fee, plain.depositFee, plain.sweepFee], ['450000', '500000', '600000']);
+  assert.deepEqual([withL1.fee, withL1.depositFee, withL1.sweepFee], [String(450_000n + L1), String(500_000n + L1), String(600_000n + L1)], 'each is its gas plus the L1 data fee');
+  assert.equal(BigInt(withL1.receiveMin), ((600_000n + L1) * 10_000n + 24n) / 25n, 'the smallest box is the one whose 25 bps cap pays the whole cost');
+  assert.ok(BigInt(withL1.receiveMin) > BigInt(plain.receiveMin) * 10n, 'a box that paid its way without the L1 fee does not with it');
+  const broken = await ask(async () => { throw new Error('oracle unreachable'); });
+  assert.equal(broken.status, 503);
+  assert.match(broken.body.error, /L1 data fee could not be read.*your own wallet/);
+});
+
+await test('HTTP relay on a chain with an L1 data fee: the fee must cover gas plus it, the margin applies to both, and the answer tells what to pay', async () => {
+  const cfg = mkCfg({ minFees: new Map(), rates: new Map([[TOKEN.toLowerCase(), 10n ** 18n]]) });
+  const store = openKeeperStore(':memory:');
+  const chain = mockChain();
+  chain.gas = 10n;
+  const asked = [];
+  chain.l1Fee = async (fn, args) => { asked.push([fn, args !== undefined]); return 1_000_000n; };
+  const handler = createIntakeHandler({ store, chain, zk, assetField, cfg, now: () => T0, log: () => {} });
+  const server = createServer(handler);
+  await new Promise((r) => server.listen(0, r));
+  const base = `http://127.0.0.1:${server.address().port}/evm-pool/keeper`;
+  const post = (path, body) => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    // the mock estimates a plain transact at 350000 gas = 3,500,000 wei at price 10, plus 1,000,000 of L1 fee = 4,500,000:
+    // the quote adds 20% (5,400,000), a relay is taken at 5% (4,725,000). Without the L1 fee the same numbers were 4,200,000 and 3,675,000.
+    let r = await post('/relay', relayTx({ ext: -10_000_000n, fee: 4_724_999n }));
+    assert.equal(r.status, 400);
+    const low = await r.json();
+    assert.match(low.error, /fee too low/);
+    assert.equal(low.needFee, '5400000', 'what a page is told to pay carries the L1 data fee');
+    r = await post('/relay', relayTx({ ext: -10_000_000n, fee: 3_675_000n }));
+    assert.equal(r.status, 400, 'the fee that was enough without the L1 fee is not enough with it');
+    r = await post('/relay', relayTx({ ext: -10_000_000n, fee: 4_725_000n }));
+    assert.equal(r.status, 200);
+    assert.equal(await chain.balanceOf(TOKEN, KEEPER), 4_725_000n);
+    assert.ok(asked.some(([fn, exact]) => fn === 'pool.transact' && exact), 'the fee is asked for the exact call being relayed');
   } finally { server.close(); }
 });
 
