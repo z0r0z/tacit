@@ -128,6 +128,28 @@ ok('POST body reaches worker (auth-gated, not 5xx)', hb.status >= 400 && hb.stat
     nextTickDelay(boundary, interval) === interval);
 }
 
+// a handler error is logged with the route and method, not the query or the address in the path
+{
+  const thrower = { fetch: async () => { throw new Error('handler failed'); } };
+  const s2 = createTacitServer({ workerModule: thrower, env, driver, ctxFactory: createCtxFactory() });
+  await new Promise((r) => s2.listen(0, r));
+  const b2 = `http://127.0.0.1:${s2.address().port}`;
+  const lines = [];
+  const orig = console.error;
+  console.error = (...a) => { lines.push(a.map(String).join(' ')); };
+  const addr = '0x' + 'ab12'.repeat(10);
+  let r1, r2;
+  try {
+    r1 = await fetch(`${b2}/points/${addr}?dest=bc1qexampleexampleexample&address=${addr}`);
+    r2 = await fetch(`${b2}/relay/economics`);
+  } finally { console.error = orig; }
+  s2.close();
+  const joined = lines.join('\n');
+  ok('a handler error still answers 500', r1.status === 500 && r2.status === 500);
+  ok('the error log names the route', /\[harness\] GET \/points\/:id/.test(joined) && /\[harness\] GET \/relay\/economics/.test(joined), joined.slice(0, 300));
+  ok('the error log leaves out the address and the query', !joined.includes(addr) && !joined.includes('dest=') && !joined.includes('bc1qexample'), joined.slice(0, 300));
+}
+
 server.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

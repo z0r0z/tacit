@@ -32144,7 +32144,7 @@ export default {
         // corsHeaders itself threw (corrupt env binding) — bare 500.
         _resp = new Response('worker error', { status: 500 });
       }
-      try { console.error('[worker] uncaught', req.method, new URL(req.url).pathname, e?.stack || e?.message || e); } catch {}
+      try { console.error('[worker] uncaught', req.method, new URL(req.url).pathname.replace(/\/(0x)?[0-9a-f]{16,}(?=\/|$)/gi, '/:id'), e?.stack || e?.message || e); } catch {}
       return _resp;
     } finally {
       // Sampled analytics — see _logAnalytics. Never blocks the response.

@@ -98,6 +98,16 @@ function rawClientIp(nodeReq, env) {
 
 const STRIPPED_HEADERS = new Set(['cf-connecting-ip', 'x-tacit-proxy-key', 'x-tacit-forwarded-ip']);
 
+// What a log line names of a request: its path without the query, with any segment that is an address, a key or an id
+// (long hex, a Bitcoin address, a long base58 string) written as ':id'. The route stays readable.
+const HEX_SEG = /^(0x)?[0-9a-f]{16,}$/i;
+const BECH32_SEG = /^(bc1|tb1|bcrt1)[0-9a-z]{6,}$/i;
+const B58_SEG = /^[1-9A-HJ-NP-Za-km-z]{25,}$/;
+export function logPath(rawUrl) {
+  const p = String(rawUrl || '').split(/[?#]/)[0];
+  return p.split('/').map((s) => (HEX_SEG.test(s) || BECH32_SEG.test(s) || B58_SEG.test(s) ? ':id' : s)).join('/').slice(0, 200);
+}
+
 // --- request body ceiling ---------------------------------------------------
 // On Cloudflare the platform capped an inbound body (100 MB) before the worker
 // ever saw it; on Node nothing does, and `req.json()` / `req.formData()` buffer
@@ -350,15 +360,15 @@ export function createTacitServer({ workerModule, env, driver, ctxFactory, seale
         const after = process.memoryUsage().heapUsed;
         if (after - before > memTraceBytes) {
           const mb = (n) => Math.round(n / (1024 * 1024));
-          console.warn(`[req-mem] ${nodeReq.method} ${nodeReq.url} +${mb(after - before)}MB heap -> ${mb(after)}MB`);
+          console.warn(`[req-mem] ${nodeReq.method} ${logPath(nodeReq.url)} +${mb(after - before)}MB heap -> ${mb(after)}MB`);
         }
       }
       await writeWebResponse(resp, nodeRes);
     } catch (e) {
       // The client went away mid-response (tab closed, a proxy timeout) — Node can no longer pipe into
       // the socket. Routine under any concurrent load, not a handler bug; nothing to write back to either.
-      if (e?.code === 'ERR_STREAM_UNABLE_TO_PIPE') { console.log('[harness] client disconnected mid-response', nodeReq.method, nodeReq.url); return; }
-      console.error('[harness]', nodeReq.method, nodeReq.url, e?.stack || e);
+      if (e?.code === 'ERR_STREAM_UNABLE_TO_PIPE') { console.log('[harness] client disconnected mid-response', nodeReq.method, logPath(nodeReq.url)); return; }
+      console.error('[harness]', nodeReq.method, logPath(nodeReq.url), e?.stack || e);
       if (!nodeRes.headersSent) nodeRes.writeHead(500, { 'Content-Type': 'application/json' });
       if (!nodeRes.writableEnded) nodeRes.end(JSON.stringify({ error: 'internal error' }));
     }
