@@ -42,12 +42,12 @@
     // a link that opens a sheet: the sheets' code is asked for now, beside the page's module, not once the module reaches the link
     if (window.location.hash.length > 1) {
       var pre = document.createElement('link');
-      pre.rel = 'modulepreload'; pre.href = '/front/sheets.js?cb=9bfe6511';
+      pre.rel = 'modulepreload'; pre.href = '/front/sheets.js?cb=d70c0a9a';
       document.head.appendChild(pre);
       // and a link to TAC's page (its card, the bridge, a claim) the TAC page's code too
       if (/^#(?:tac|bridge)(?:\/|$)|^#tacclaim=/.test(window.location.hash)) {
         var tac = document.createElement('link');
-        tac.rel = 'modulepreload'; tac.href = '/front/tac.js?cb=34c24708';
+        tac.rel = 'modulepreload'; tac.href = '/front/tac.js?cb=9a0e15fe';
         document.head.appendChild(tac);
       }
     }

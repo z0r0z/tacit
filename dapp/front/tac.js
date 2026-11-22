@@ -576,7 +576,7 @@ function tacPlaceGo(what) {
   load.tac().then(() => rerender('tac')).catch(() => {});
 }
 function tacPool() {
-  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=9cc2126f').then((m) => {
+  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=bc33a4ad').then((m) => {
     const api = m.makeTacPool({
       key: () => (S.key ? { pubHex: S.key.pubHex } : null),
       priv: () => walletPriv(),

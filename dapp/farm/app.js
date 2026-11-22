@@ -13,7 +13,7 @@ import { aprText, readPrecision, readSpot, readStake, privateFarms, poolWorthEth
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
 import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=c5192cc4';
-import { quoteEthToToken } from '/swap/route.js?cb=efdb1794';
+import { quoteEthToToken } from '/swap/route.js?cb=0affad24';
 import { zapPlanExt } from '/lp-zap.js?cb=041bcb7f';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
 import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, ackKind, askedMore, CETH, ZAP_GAS } from '/farm/zap.js?cb=5eb1c492';

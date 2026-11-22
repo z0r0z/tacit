@@ -1,6 +1,6 @@
 import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=04a214c9';
 import { forgetUx } from '/trade/poolux.js?cb=59d125e5';
-import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=7c3c9e23';
+import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=459a34ad';
 import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=1fc456f6';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
 import { makeRunner } from '/activity.js?cb=f692784e';
@@ -260,7 +260,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
   }
 
   let stageP = null;
-  const stage = async () => (stageP ||= (async () => { const t = await getUx(); const { makeConfidentialStage } = await import('/confidential-stage.js?cb=8dfd1b9f'); return makeConfidentialStage({ ux: t }); })());
+  const stage = async () => (stageP ||= (async () => { const t = await getUx(); const { makeConfidentialStage } = await import('/confidential-stage.js?cb=92962e8b'); return makeConfidentialStage({ ux: t }); })());
   async function stagedSwap(plan, say) {
     const t = await getUx();
     if (plan.path?.length !== 1 || lc(plan.asset) !== lc(t.assetByTicker.cETH.assetId)) return null;

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-S4XG5eLlWvTQBlGMDrLQWFHEgo4ziC35v4nF0h+Dtmo=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-YXOs4Hpmd4ekIe0g8mesOWSEj/ankrDl21EyT/1KkTw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -37,12 +37,12 @@
 <link rel="modulepreload" href="/address-id.js?cb=01f14d36">
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
 <link rel="modulepreload" href="/qr.js?cb=7ca24213">
-<link rel="modulepreload" href="/gas-relay.js?cb=e8d173a8">
+<link rel="modulepreload" href="/gas-relay.js?cb=d87b3b06">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/json-rpc.js">
 <link rel="modulepreload" href="/rpc-pace.js">
 <link rel="modulepreload" href="/evm-pool-tokens.js?cb=16e0e196">
-<link rel="modulepreload" href="/private-route.js?cb=59f0bc81">
+<link rel="modulepreload" href="/private-route.js?cb=5be09cfa">
 <link rel="modulepreload" href="/evm-pool-relays.js">
 <!-- preload:end -->
 <!-- The first reads go to these four: their connections open while the modules load. -->
@@ -916,7 +916,7 @@ import { prfBytesToScalar, prfLogin, prfRegister, loadPrfMap, savePrfMap, isPass
 import { knownWallets } from '/tacit-wallet-known.js?cb=ec5b5193';
 import { makeEvmWallet, declinedWords } from '/evm-wallet.js?cb=ed67f38d';
 import { waitLine, cancellable } from '/sign-wait.js?cb=ab42ced1';
-import * as GR from '/gas-relay.js?cb=e8d173a8';
+import * as GR from '/gas-relay.js?cb=d87b3b06';
 import { announceWalletConnect, wcSheets, dialogHost, WC_PROJECT_ID } from '/walletconnect.js?cb=843803d6';
 import { makeTacitAddress, poolKeysOf } from '/tacit-address.js';
 import { bip352TaggedHash } from '/bip352.js';
@@ -924,14 +924,14 @@ import { addressId } from '/address-id.js?cb=01f14d36';
 import { addrView } from '/address-view.js?cb=58dd4914';
 import { qrSvg as qrMarkup } from '/qr.js?cb=7ca24213';
 import { keeperIdOf, KEEPERS as POOL_KEEPERS } from '/evm-pool-tokens.js?cb=16e0e196';
-import { keeperFetch, rpcFetch, walletRpcFetch, bundlerFetch, poolHistory, available as routeAvailable, enabled as routeOn, listRelays } from '/private-route.js?cb=59f0bc81';
+import { keeperFetch, rpcFetch, walletRpcFetch, bundlerFetch, poolHistory, available as routeAvailable, enabled as routeOn, listRelays } from '/private-route.js?cb=5be09cfa';
 globalThis.__tacitBundlerFetch ||= bundlerFetch();
 import { signBoxSync as signBox, boxSigOk as boxRecordOk } from '/box-record.js?cb=c66c8473';
 import { tabKeyRead, tabKeyWrite, tabKeyClear, tabKeyWatch } from '/tab-key.js?cb=ad0c42e2';
 
 if (!secp.etc.hmacSha256Sync) secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, concatBytes(...m));
 // preload-later:begin
-for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=1ac76020","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-open-relays.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
+for (const u of ["/evm-pool-zk.js","/btc-pool-zk.js","/amm-bjj.js","/evm-pool-wallet.js?cb=99511251","/btc-shielded-pool.js","/vendor/tacit-poseidon.min.js","/btc-pool-zk-boundary.js","/amm-sigma.js","/bulletproofs.js","/bulletproofs-plus.js","/evm-pool-scan.js","/evm-pool-open-relays.js","/evm-pool-gateway.js","/evm-pool-zk-prover.js?cb=00ff69c2"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
 // preload-later:end
 
 const POOL = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', ROUTER = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5';
@@ -1154,7 +1154,7 @@ function sayLive(el, view) {
 
 const mods = lazy(async () => {
   const [zkm, wm, gw, pm, pos] = await Promise.all([
-    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=1ac76020'), import('/evm-pool-gateway.js'),
+    import('/evm-pool-zk.js'), import('/evm-pool-wallet.js?cb=99511251'), import('/evm-pool-gateway.js'),
     import('/evm-pool-zk-prover.js?cb=00ff69c2'), import('/vendor/tacit-poseidon.min.js'),
   ]);
   const PO = { 2: pos.poseidon2, 3: pos.poseidon3, 4: pos.poseidon4, 5: pos.poseidon5, 7: pos.poseidon7 };
@@ -1628,7 +1628,7 @@ const PSW = { w: null, n: 0, wait: new Map() };
 function pswDrop() { PSW.w?.terminate(); PSW.w = null; for (const f of PSW.wait.values()) f({ ok: false }); PSW.wait.clear(); }
 function pswWorker() {
   if (PSW.w) return PSW.w;
-  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=ef56ae27', { type: 'module' }); } catch { return null; }
+  try { PSW.w = new Worker('/evm-pool-sync-worker.js?cb=06b451eb', { type: 'module' }); } catch { return null; }
   PSW.w.onmessage = (e) => PSW.wait.get(e.data?.id)?.(e.data);
   PSW.w.onerror = pswDrop;
   return PSW.w;
@@ -1703,7 +1703,7 @@ function backfillChain(c) {
     syncChain(c, true).then(() => historyOf(c, true));
   });
 }
-const sealing = lazy(() => import('/evm-pool-wallet.js?cb=1ac76020'));
+const sealing = lazy(() => import('/evm-pool-wallet.js?cb=99511251'));
 // `whole`: a state that held the whole history is read whole again, in the worker, before a wallet is made from it (syncInWorker, walletOn), and the
 // balance it showed stays on screen, as older history being read, until then; without it the new state begins at a catch-up point.
 async function freshWallet(c, whole = false) {
@@ -3117,7 +3117,7 @@ async function largeWithdraw(c, onNotes) {
   const host = $('#lg-wd');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=174c1085');
+    const m = await import('/fixed-pool-pay.js?cb=e6393c31');
     if (!host.isConnected) return null;
     const ctl = m.attachWithdraw({
       host, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -3134,7 +3134,7 @@ async function largeIntake(c) {
   const host = $('#lg-in');
   if (!host) return null;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=174c1085');
+    const m = await import('/fixed-pool-pay.js?cb=e6393c31');
     if (!host.isConnected) return null;
     return m.attachIntake({
       host, chain: c, store: kv,
@@ -3157,7 +3157,7 @@ async function largeCards(c, amountInput, hooks) {
   const host = $('#lg-split'), notesHost = $('#lg-notes');
   if (!host || !notesHost) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=174c1085');
+    const m = await import('/fixed-pool-pay.js?cb=e6393c31');
     if (!host.isConnected) return;
     m.attach({
       host, notesHost, amountInput, chain: c, store: kv, workerUrl: '/fixed-pool-worker.js?cb=2999c092',
@@ -3178,7 +3178,7 @@ async function largeName(c, W) {
   const host = $('#lg-name');
   if (!host || !S.key || !S.keys) return;
   try {
-    const m = await import('/fixed-pool-pay.js?cb=174c1085');
+    const m = await import('/fixed-pool-pay.js?cb=e6393c31');
     if (!host.isConnected) return;
     m.attachName({
       host, account: () => S.wallet, shownBox: () => W.receiveBox, ownPool: () => S.key.bp,
@@ -4847,7 +4847,7 @@ function tokSigner(t) {
   s.batch = (calls, sent) => sendBatch(t.chain, calls, sent);
   return s;
 }
-const ROUTE_MOD = lazy(() => import('/swap/route.js?cb=efdb1794'));
+const ROUTE_MOD = lazy(() => import('/swap/route.js?cb=0affad24'));
 const readOn = (c) => async (to, data) => (await rpcOn(c))('eth_call', [{ to, data }, 'latest']);
 const tokenBalanceOf = async (t, who) => BigInt(await readOn(t.chain)(t.token, '0x70a08231' + strip(who).toLowerCase().padStart(64, '0')));
 // USDT on Ethereum changes an allowance only through zero
