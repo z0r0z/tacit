@@ -1890,6 +1890,50 @@ await test('frontFees: full headroom when the balance covers it, less when it do
   assert.deepEqual([f.ok, f.need], [false, 11_000_000n], 'below this block it cannot send at all');
 });
 
+// A stand-in node for the chain's send path: fee reads, a nonce, an estimate that can be made to fail, and the sends it takes.
+const sendNode = (o) => new Promise((res) => {
+  const word = (h) => '0x' + h.replace(/^0x/, '').padStart(64, '0');
+  const srv = createServer((req, rsp) => {
+    let body = ''; req.on('data', (d) => { body += d; }); req.on('end', () => {
+      const one = (x) => {
+        const r = (result) => ({ jsonrpc: '2.0', id: x.id, result });
+        switch (x.method) {
+          case 'eth_chainId': return r('0x1');
+          case 'eth_call': return r(word(POOL));
+          case 'eth_getBlockByNumber': return r({ number: '0x10', hash: '0x' + '12'.repeat(32), parentHash: '0x' + '13'.repeat(32), timestamp: '0x1', baseFeePerGas: toHex(o.base), gasLimit: '0x1c9c380', gasUsed: '0x0', transactions: [] });
+          case 'eth_maxPriorityFeePerGas': return r(toHex(o.tip));
+          case 'eth_gasPrice': return r(toHex(o.gasPrice));
+          case 'eth_getBalance': return r(toHex(10n ** 20n));
+          case 'eth_getTransactionCount': return r('0x5');
+          case 'eth_estimateGas': return o.estimate === 'revert' ? { jsonrpc: '2.0', id: x.id, error: { code: 3, message: 'execution reverted', data: '0x' } }
+            : o.estimate === 'down' ? { jsonrpc: '2.0', id: x.id, error: { code: -32603, message: 'internal error' } } : r('0x5208');
+          case 'eth_sendTransaction': o.sent.push(x.params[0]); return r('0x' + 'ab'.repeat(32));
+          case 'eth_getTransactionReceipt': return r(null);
+          default: return r('0x0');
+        }
+      };
+      const j = JSON.parse(body); rsp.setHeader('content-type', 'application/json'); rsp.end(JSON.stringify(Array.isArray(j) ? j.map(one) : one(j)));
+    });
+  }).listen(0, () => res({ srv, url: `http://127.0.0.1:${srv.address().port}` }));
+});
+
+await test('send fees: the tip is at most what the node\'s gas price implies over the base fee, never what a high tip estimate says', async () => {
+  const o = { base: 10_000_000_000n, tip: 500_000_000_000n, gasPrice: 12_000_000_000n, sent: [] };
+  const A = await sendNode(o);
+  try {
+    const chain = await makeKeeperChain({ cfg: { rpcUrls: [A.url], pool: POOL, router: ROUTER, chainId: 1, sendRpcUrls: [], allowPublicSend: true, minPriorityFee: 50_000_000n, resendSecs: 0 }, account: { address: KEEPER } });
+    let f = await chain.canFront(100_000n);
+    assert.equal(f.maxPriorityFeePerGas, 2_000_000_000n, 'the gas price less the base fee');
+    assert.ok(o.base + f.maxPriorityFeePerGas <= await chain.gasPrice(), 'a send pays per gas no more than the price its fee was checked at');
+    o.tip = 1_000_000_000n;
+    f = await chain.canFront(100_000n);
+    assert.equal(f.maxPriorityFeePerGas, 1_000_000_000n, 'a lower tip estimate is used as it is');
+    o.tip = 0n; o.gasPrice = o.base;
+    f = await chain.canFront(100_000n);
+    assert.equal(f.maxPriorityFeePerGas, 50_000_000n, 'never under the configured floor');
+  } finally { A.srv.close(); }
+});
+
 await test('a keeper that cannot front a send says so on /quote and /relay (503) instead of taking the job', async () => {
   const cfg = mkCfg({ ratePerMin: 100 });
   const store = openKeeperStore(':memory:');

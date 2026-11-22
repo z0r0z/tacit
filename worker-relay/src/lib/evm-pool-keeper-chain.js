@@ -200,9 +200,14 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
   };
   // Fees that survive several blocks of base-fee rises, with at least the configured tip (a private builder skips a
   // transaction that pays it nothing), within what the keeper can front for `gas` (see frontFees).
+  // The tip is at most the one the node's gas price implies over the base fee (gasPrice() below, what the fee checks price a send at), so a
+  // send never pays more per gas than its fee was checked against.
   const prices = async () => {
-    const [block, tip, balance] = await Promise.all([pub.getBlock(), pub.estimateMaxPriorityFeePerGas().catch(() => 0n), pub.getBalance({ address: account.address })]);
-    return { base: block.baseFeePerGas ?? 0n, prio: tip > cfg.minPriorityFee ? tip : cfg.minPriorityFee, balance };
+    const [block, tip, balance, gp] = await Promise.all([pub.getBlock(), pub.estimateMaxPriorityFeePerGas().catch(() => 0n), pub.getBalance({ address: account.address }), pub.getGasPrice().catch(() => null)]);
+    const base = block.baseFeePerGas ?? 0n;
+    let prio = tip > cfg.minPriorityFee ? tip : cfg.minPriorityFee;
+    if (gp != null) { const implied = gp - base > cfg.minPriorityFee ? gp - base : cfg.minPriorityFee; if (prio > implied) prio = implied; }
+    return { base, prio, balance };
   };
   const fees = async (gas) => {
     const f = frontFees({ ...(await prices()), gas });
