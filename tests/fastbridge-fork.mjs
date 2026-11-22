@@ -49,6 +49,7 @@ const SETTLER = '0x00000000000000000000000000000000005e771e', FROM = '0x00000000
 const ETH_ID = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const E10 = 10n ** 10n;
 let n = 0, fails = 0;
+const runs = (s) => !process.env.SCENARIOS || process.env.SCENARIOS.split(',').includes(s);     // SCENARIOS=E runs only E (default: every scenario)
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const hex = (v) => '0x' + BigInt(v).toString(16);
@@ -305,7 +306,7 @@ function memStore() {
 const heldOf = async (priv) => ((await ux.balance(priv)).byAsset[ETH_ID] || { notes: [] }).notes.map((x) => BigInt(x.value));
 
 // ── A. the swap: the LP cuts the note to size, locks it in the live pool, the user claims, the LP reads t from the settle and takes the Bitcoin ──
-{
+if (runs('A')) {
   const w = world('A');
   const t1 = Date.now();
   ok((await w.evmL.available()) === UNITS - (await w.evmL.cutReserve(UNITS)), `the LP's lockable balance is what its wallet holds (${UNITS} units), less the relay's fee for a cut`);
@@ -328,7 +329,7 @@ const heldOf = async (priv) => ((await ux.balance(priv)).byAsset[ETH_ID] || { no
 }
 
 // ── B. the user goes silent after the LP has locked: after the deadline the LP refunds its note, and the pool takes it ──
-{
+if (runs('B')) {
   const w = world('B');
   const seenBefore = jobsSeen.length;
   await w.start();
@@ -351,7 +352,7 @@ const heldOf = async (priv) => ((await ux.balance(priv)).byAsset[ETH_ID] || { no
 
 // ── C. the relay is held (its settle wallet under its floor): it proves but sends nothing. The LP's cut and lock and the user's claim are
 //       proved prove-only and sent from each one's own Ethereum wallet (fast/wire.js walletSettle, an EIP-1193 provider on the fork) ──
-{
+if (runs('C')) {
   const src = readFileSync(join(ROOT, 'dapp/fast/wire.js'), 'utf8');
   const walletSettle = new Function(`${src.slice(src.indexOf('export function walletSettle('), src.indexOf('// What both roles need of a key')).replace('export function', 'function')}; return walletSettle;`)();
   const sends = [];
@@ -382,6 +383,90 @@ const heldOf = async (priv) => ((await ux.balance(priv)).byAsset[ETH_ID] || { no
   ok(landedSeen.length >= 2, `the relay was told where each landed (${landedSeen.length})`);
   ok(!jobsSeen.some((j) => j.held && j.error), 'no prove-only job failed');
   held = false;
+}
+
+// ── E. Ethereum -> Bitcoin: the provider (dapp/fastbridge-reverse-provider.js) sells a Bitcoin note it holds and the user (dapp/fastbridge-reverse-client.js) sends
+//       private pool ETH, the two machines turned around, with the options, the seed and the pool adapter the daemon builds for it (fastbridge-lp/lib/reverse.mjs).
+//       The provider locks its Bitcoin note first; the user locks in the live pool (a note cut to size, the real guest's adaptorlock); the provider's claim of that
+//       lock (the real guest's adaptorclaim) shows s; the user takes the Bitcoin note. The two amounts differ by the provider's fee. SCENARIOS=E runs this alone;
+//       MUTATE=claim-amount spoils the claim's op and the swap must then not end. ──
+if (runs('E')) {
+  const { makeReverseService } = await import('../dapp/fastbridge-reverse-provider.js');
+  const { makeReverseClient, makeReverseCounter } = await import('../dapp/fastbridge-reverse-client.js');
+  const { reverseOptions, reverseSeedOf } = await import('../fastbridge-lp/lib/reverse.mjs');
+  const jobs0 = jobsSeen.length, t1 = Date.now();
+  const SEND = AMOUNT, PV = 2_000_000n, FEE = 5000n;                         // 30 bps of 1,000,000 is 3,000, and the flat part is 2,000
+  const btc = chainSim.makeBitcoinSim(clock);
+  const kit = tacitKit(sim.tacit);
+  const wal = (name) => makeBtcWallet({ priv: bigintToBytes32(sim.scalar(`E/${name}/btc-wallet`)), hrp: 'tb', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('offline'); }, fetchFeeRate: async () => 3 });
+  const uW = wal('user'), lW = wal('lp');
+  // the provider's Bitcoin stock: one note at its address (etched by one signer, so one asset)
+  const r0 = sim.scalar('E/note');
+  const etch = sim.etchNote({ ticker: 'TP', value: PV, r: r0, script: lW.prims.p2wpkhScript(lW.wallet.pub), signerD: sim.scalar('E/etcher') });
+  btc.addConfirmed(etch);
+  const inventory = [{ txid: etch.txid, vout: 0, value: 546, amount: PV, blinding: r0 }];
+  let coinN = 0;
+  const sats = () => [{ txid: Buffer.from(chainSim.sha256(sim.te(`E/coin/${coinN++}`))).toString('hex'), vout: 0, value: 200_000 }];
+  const uBtc = btc.adapter({ prims: uW.prims, builder: makeAdaptorBtcTx({ prims: uW.prims, kit }), sats });
+  const lBtc = btc.adapter({ prims: lW.prims, builder: makeAdaptorBtcTx({ prims: lW.prims, kit }), sats });
+  // the user's private ETH: what it sends, and room for the relay's fees (a note is cut to size)
+  const userPriv = crypto.getRandomValues(new Uint8Array(32));
+  ux.identity(userPriv);
+  await wrapEth({ priv: () => userPriv, wei: (SEND + 500_000n) * E10, tip: 60000000000000n, to: SETTLER, from: FROM, wallet, ux });
+  const userSeed = chainSim.sha256(userPriv), lpSeed = chainSim.sha256(new Uint8Array([...lpPriv, 1]));
+  const evmU = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: userPriv, seed: userSeed, asset: ETH_ID, poolAddress: POOL });
+  // the provider's pool side is the one the forward side uses (the forward seed): the reverse service's own seed is only for its Bitcoin locks
+  const evmL = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: lpPriv, seed: lpSeed, asset: ETH_ID, poolAddress: POOL });
+  const opts = reverseOptions({ btcAsset: Buffer.from(etch.asset).toString('hex'), evmAsset: ETH_ID, policy: { evmWindowSecs: 4 * 3600, minClaimSecs: 3600 }, reverse: { enabled: true, minAmount: '1000', maxAmount: '100000000', flatFee: '2000' } });
+  const lpSwaps = memStore(), userStore = memStore(), quoteStore = memStore();
+  const service = makeReverseService({
+    seed: reverseSeedOf(lpPriv), btc: lBtc, evm: evmL, swaps: lpSwaps, quotes: memStore(), offers: memStore(), evmOffers: memStore(), inventory: { notes: async () => inventory }, now: clock.now,
+    config: { ...opts, refreshSecs: 0, minConfsFor: () => 1 }, log: (o) => { if (o.level !== 'info') note(`E provider: ${o.msg} ${o.error || ''}`); },
+  });
+  const call = async (method, path, body) => { const r = await service.handle({ method, path, body }); return { status: r.status, body: r.body }; };
+  const client = makeReverseClient({ lp: makeReverseCounter(call), btc: uBtc, evm: evmU, store: userStore, quoteStore, seed: userSeed, now: clock.now, policy: { startGraceSecs: 6 * 3600 } });
+
+  const info = (await call('GET', '/reverse/info')).body;
+  ok(info.direction === 'out' && info.open === 0 && BigInt(info.available) >= SEND, `the provider answers for the stock it holds: it can take ${info.available} units, the user sends ${SEND}`);
+  const sum = (a) => a.reduce((x, y) => x + y, 0n);
+  const userBefore = sum(await heldOf(userPriv)), lpSendBefore = (await heldOf(lpPriv)).filter((v) => v === SEND).length;
+  ok(await evmU.available() >= SEND, `the user's lockable private balance covers the send (${await evmU.available()} of ${userBefore} units, after the relay's fee for a cut)`);
+  const qt = await client.quote(SEND);
+  ok(qt.evmAmount === SEND && qt.btcValue === SEND - FEE && qt.fee === FEE, `the quote: the user sends ${qt.evmAmount} and takes ${qt.btcValue} on Bitcoin, the provider keeps ${qt.fee}`);
+  await client.start({ quote: qt });
+
+  let ticks = 0;
+  const seen = {};
+  const failedJob = () => jobsSeen.slice(jobs0).find((j) => j.error);
+  let l = null, u = null;
+  for (let i = 0; i < 900; i++) {
+    l = (await lpSwaps.list())[0]; u = (await userStore.list())[0];
+    for (const [k, r] of [['provider', l], ['user', u]]) { const p = r && `${r.phase}${r.lastError ? ' (' + String(r.lastError).slice(0, 100) + ')' : ''}`; if (p !== seen[k]) { seen[k] = p; console.log(`  ..   E ${k}: ${p}  [${Math.round((Date.now() - t00) / 1000)} s]`); } }
+    if ((l && l.phase === 'done' && u && u.phase === 'done') || failedJob()) break;
+    await syncChain();
+    await service.tick(); await client.pump();
+    await sleep(250);
+    clock.advance(20); ticks++;
+    if (ticks % 30 === 0) btc.mine(1, { advance: false });
+  }
+  const mine = jobsSeen.slice(jobs0);
+  if (process.env.MUTATE === 'claim-amount') {
+    ok(!!failedJob() && !(l && l.phase === 'done') && !(u && u.phase === 'done'), `a claim whose op was changed is refused by the guest and the swap does not end (${failedJob() ? failedJob().error.slice(0, 80) : 'no job failed'})`);
+  } else {
+    ok(!!l && l.phase === 'done' && !!u && u.phase === 'done', `both sides end done (${Math.round((Date.now() - t1) / 1000)} s): provider ${l && l.phase}, user ${u && u.phase}${failedJob() ? ', a job failed: ' + failedJob().error.slice(0, 160) : ''}`);
+    ok(!!u.take && !!(await btc.resolveNote(u.take.txid, 0)), 'the user took the Bitcoin lock, and the real note validator takes its note');
+    ok(l.takenBy === u.take.txid, 'the provider sees its lock spent by the user\'s take');
+    ok(!!(await evmL.lockPosition(u.lock.lockLeaf)), 'the user\'s lock is in the live pool\'s lock set, which the wallet rebuilt and checked against the pool\'s own count and root');
+    const zs = await evmU.findClaim(u.lock.lockNu, { sinceSecs: u.created });
+    ok(Array.isArray(zs) && zs.length === 1, 'the provider\'s claim of it was read from the real settle\'s public values (that is what gave the user s)');
+    const userAfter = sum(await heldOf(userPriv));
+    ok(userBefore - userAfter >= SEND, `the user's private ETH fell by the ${SEND} it sent and the relay's fees (${userBefore} -> ${userAfter} units, ${userBefore - userAfter} in all)`);
+    const lpSendAfter = (await heldOf(lpPriv)).filter((v) => v === SEND).length;
+    ok(lpSendAfter === lpSendBefore + 1, `the provider's claim left it a private ETH note of ${SEND} units, found from its key alone (${lpSendBefore} -> ${lpSendAfter} of that size)`);
+    ok(mine.filter((j) => /^adaptor/.test(j.type)).map((j) => j.type).join() === 'adaptorlock,adaptorclaim', `the guest ran the user's lock and the provider's claim (${mine.map((j) => j.type).join(', ')})`);
+    ok(!mine.some((j) => j.error), 'no relayed job failed');
+    ok((await call('GET', '/reverse/info')).body.open === 0, 'the provider has nothing open any more');
+  }
 }
 
 console.log(`\nfork reads: ${proxy.stats.hits} from the cache, ${proxy.stats.misses} asked of the upstream, ${proxy.stats.retries} asked again`);
