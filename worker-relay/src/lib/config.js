@@ -421,6 +421,8 @@ export const CFG = {
   reflectionNextJobWaitSecs: num('REFLECTION_NEXT_JOB_WAIT_SECS', 300),
   reflectionRunBudgetSecs: num('REFLECTION_RUN_BUDGET_SECS', 2700),
   settlePollSecs: num('SETTLE_POLL_SECS', 15),
+  // How many settle loops run side by side (src/settle-relay.js main, lib/worker-loops.js): each proves its own job, settles take turns on the wallet. 1 = the old single loop; capped at 4.
+  settleConcurrency: num('SETTLE_CONCURRENCY', 1),
   // Relayed settles are claimed before prove-only jobs; after this many settles in a row one prove-only job gets a turn (0: never, settles always first).
   proveTurnEvery: num('PROVE_TURN_EVERY', 4),
   // ...and once this many seconds have passed since the last prove-only turn while settles (batched ones too) keep coming (0: off).

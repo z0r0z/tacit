@@ -965,7 +965,7 @@ test('gate: a fee a little under the cost is relayed, the relay carrying the res
   ok(near.carried > 0 && far.carried === undefined && exact.carried === undefined, `only a job taken under its cost reports what the relay carries: ${near.carried} / ${far.carried} / ${exact.carried}`);
 });
 test('submit: a settle some endpoint accepted is waited for once more before the job is called failed, and the failure never borrows another endpoint\'s refusal', () => {
-  const fn = settle.slice(settle.indexOf('async function submitCall('), settle.indexOf('async function activateRelayedExit('));
+  const fn = settle.slice(settle.indexOf('async function sendCall('), settle.indexOf('async function activateRelayedExit('));   // (submitCall wraps sendCall in the wallet's turn)
   const verdict = fn.slice(fn.indexOf('const late = await ownReceipt()'));
   ok(/if \(seen\.length && LATE_WAIT_MS > 0\)/.test(verdict) && /awaitInclusion\(\{\s*hashes: seen, nonce, waitMs: LATE_WAIT_MS/.test(verdict),
     'after the rounds, an accepted settle must get one more bounded wait');

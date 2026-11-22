@@ -48,7 +48,7 @@ test('the witness file outlives the private attempt, so the public retry can rea
   const src = await readFile(new URL('../src/lib/prover.js', import.meta.url), 'utf8');
   const attempt = src.slice(src.indexOf('const attempt = async (extra, ms) => {'), src.indexOf('// The witness file stays for every attempt'));
   assert.ok(!/rm\(opFile/.test(attempt), 'an attempt must not remove the op file: the public retry reads it');
-  assert.ok(/finally \{ await rm\(opFile, \{ force: true \}\); \}/.test(src), 'the op file is removed once every attempt is over');
+  assert.ok(/finally \{ await rm\(opFile, \{ force: true \}\); releaseFiles\(\); \}/.test(src), 'the op file is removed once every attempt is over, and only then is the fallback files\' turn given up');
 });
 
 test('a request the network will not run is never sent again in public, read from stderr where the panic puts it; an unfulfilled one still is', () => {

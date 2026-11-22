@@ -25,6 +25,8 @@ import { confidentialJob, confidentialWake, confidentialBatch, confidentialAck, 
 import { makeBatchWindow } from './lib/batch-window.js';
 import { makeJobPicker } from './lib/job-picker.js';
 import { proveSettle, proveMixed, proveSealed, proveStdin, boardAlive, withStageReport } from './lib/prover.js';
+import { makeSerial } from './lib/serial.js';
+import { runLoops } from './lib/worker-loops.js';
 import { quoteTacForEth, deepest } from './lib/tac-quote.js';
 import { makeGasSolver } from './lib/gas-solver.js';
 import { abi as GAS_ABI, executeCall } from './lib/gas-calls.js';
@@ -247,7 +249,12 @@ export async function awaitInclusion({
 // already fixed and simulated at. `landed` (optional) names a transaction by another sender that already did this
 // call's work; it is asked whenever the call turns out to have nothing left to do, and its answer is returned as
 // the result.
-async function submitCall(base, label, { gasLimit = null, landed = null, competitive = false } = {}) {
+// Every send from the settle wallet takes its turn here. The settle loop can run more than once at a time (CFG.settleConcurrency), and a send reads the
+// account's pending nonce as it goes out: two at once would share one, and the second would replace the first. The turn is held through the wait for
+// inclusion, so the next send sees the nonce this one used. Proving is not inside it and overlaps freely.
+const walletTurn = makeSerial();
+function submitCall(base, label, opts = {}) { return walletTurn.run(() => sendCall(base, label, opts)); }
+async function sendCall(base, label, { gasLimit = null, landed = null, competitive = false } = {}) {
   // Price + estimate on the PUBLIC client, never the private endpoint. Left to itself viem derives the fee
   // cap (and nonce/gas) through the settle transport, and a cap taken from a lagging view of the base fee
   // gets the tx rejected outright as unincludable. Base fee can also climb between pricing and inclusion, so
@@ -1288,6 +1295,10 @@ async function maybeReplenish() {
   await probeCredit();
   if (!replenishDue({ enabled: CFG.replenishInSettle, now: Date.now(), lastAt: lastReplenishAt, intervalMin: CFG.replenishIntervalMin, pendingDrain: !!CFG.replenishDrainToSink && !drained,
     credit: eagerCredit, urgentBelow: CFG.proveUrgentBelowWei, urgentEveryMin: CFG.proveEagerEveryMin })) return;
+  // Due: take the wallet's turn (another loop may be settling), then re-check inside it, since the wait can be long.
+  await walletTurn.run(replenishNow);
+}
+async function replenishNow() {
   // Serialisation with settles holds only while a settle is being awaited. Once its rounds are exhausted the
   // job is acked failed and the loop goes idle — but the transaction is still live at the private endpoint
   // and can still be included. A swap signed here would reuse that nonce, get mined first because it is
@@ -1328,7 +1339,7 @@ async function maybeDepositArrived() {
   if (Date.now() - lastProveWatchAt < CFG.proveWatchSecs * 1000) return;
   lastProveWatchAt = Date.now();
   if (lastBroadcastNonce >= 0 && relayWallet.account.address === settleWallet.account.address) return;
-  try { await depositArrivedProve({ minWei: CFG.proveWatchMinWei }); }
+  try { await walletTurn.run(() => depositArrivedProve({ minWei: CFG.proveWatchMinWei })); }
   catch (e) { log(`deposit of arrived PROVE failed (settling continues): ${e?.message || e}`); }
 }
 
@@ -1367,33 +1378,43 @@ async function main() {
   // outlast a prove and settle for this to help.)
   let stopping = false;
   process.on('SIGTERM', () => { if (!stopping) log('SIGTERM — finishing the job in hand, taking no new ones'); stopping = true; });
-  for (;;) {
-    if (stopping) { log('stopped cleanly'); process.exit(0); }
-    try {
-      let worked = await cycle();
-      if (!worked) worked = await gasCycle();
-      // An empty queue is the common case, not an error — but it must still beat, or /prover-health
-      // goes stale (and "down") after 10 quiet minutes on a perfectly healthy relay. heartbeat() itself
-      // only fires on real activity (proving/settled/error), so idle time needs its own signal. While the relay is short or
-      // paused, its standing note is the signal (standWith), and an idle beat would hide it.
-      if (!worked) { if (!standing) await sendBeatIdle('idle — queue empty'); await abandoned.sweep(); }
-      // A cycle that worked beats from the paths above — but one that fails FAST does not have to: a job the chain refuses is
-      // acked failed and dropped in well under `beating`'s four minutes, so a steady stream of them can hold the loop for
-      // ten minutes without a beat, and /prover-health then calls the relay "down" while it is up and failing every job
-      // (which is the moment the reading matters most). This floor makes that case beat; withFailures() puts the count of
-      // recent prove failures in the note, so "up and failing" is not mistaken for "up and well".
-      else if (Date.now() - lastBeatAt > BEAT_FLOOR_MS) await beat('working');
-      // Between jobs as well as when idle: a steady stream of jobs is when the prover credit drains fastest, and the top-up
-      // has to be able to run then (it is awaited here, so it still never overlaps a settle on the same nonce).
-      await maybeReplenish();
-      await maybeDepositArrived();
-      if (!worked) await idleWait();
-    } catch (e) {
-      log('cycle error (continuing):', e.message);
-      await sendBeat(`error ${safeErr(e)}`);
-      await sleep(CFG.settlePollSecs);
-    }
-  }
+  // The loop runs CFG.settleConcurrency times side by side (1 = as it always did). Each loop claims and proves its own job; their settles take turns on the wallet
+  // (walletTurn). The upkeep that must happen once (the idle beat, the abandoned sweep, the credit top-up and the deposit of PROVE that arrived, the gas relay) is loop 0's,
+  // and the top-up runs inside the wallet's turn so it never shares a nonce with another loop's settle.
+  const count = Math.max(1, Math.min(4, Math.floor(CFG.settleConcurrency) || 1));
+  if (count > 1) log(`running ${count} settle loops side by side; settles take turns on the wallet`);
+  await runLoops({
+    count,
+    stopping: () => stopping,
+    stopped: async () => { log('stopped cleanly'); process.exit(0); },
+    step: async (i) => {
+      try {
+        let worked = await cycle();
+        if (i > 0) { if (!worked) await idleWait(); return; }
+        if (!worked) worked = await gasCycle();
+        // An empty queue is the common case, not an error — but it must still beat, or /prover-health
+        // goes stale (and "down") after 10 quiet minutes on a perfectly healthy relay. heartbeat() itself
+        // only fires on real activity (proving/settled/error), so idle time needs its own signal. While the relay is short or
+        // paused, its standing note is the signal (standWith), and an idle beat would hide it.
+        if (!worked) { if (!standing) await sendBeatIdle('idle — queue empty'); await abandoned.sweep(); }
+        // A cycle that worked beats from the paths above — but one that fails FAST does not have to: a job the chain refuses is
+        // acked failed and dropped in well under `beating`'s four minutes, so a steady stream of them can hold the loop for
+        // ten minutes without a beat, and /prover-health then calls the relay "down" while it is up and failing every job
+        // (which is the moment the reading matters most). This floor makes that case beat; withFailures() puts the count of
+        // recent prove failures in the note, so "up and failing" is not mistaken for "up and well".
+        else if (Date.now() - lastBeatAt > BEAT_FLOOR_MS) await beat('working');
+        // Between jobs as well as when idle: a steady stream of jobs is when the prover credit drains fastest, and the top-up
+        // has to be able to run then (it is awaited here and takes the wallet's turn once it is due, so it never overlaps a settle on the same nonce).
+        await maybeReplenish();
+        await maybeDepositArrived();
+        if (!worked) await idleWait();
+      } catch (e) {
+        log('cycle error (continuing):', e.message);
+        await sendBeat(`error ${safeErr(e)}`);
+        await sleep(CFG.settlePollSecs);
+      }
+    },
+  });
 }
 
 // Only run the loop when invoked directly (settle-relay is also imported for feeGate reuse).

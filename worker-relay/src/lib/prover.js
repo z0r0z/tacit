@@ -5,6 +5,7 @@
 // To prove locally instead, point BITCOIN_PROVE_BIN / EXEC_BIN at locally built GPU
 // binaries and unset SP1_PROVER.
 
+import { makeSerial } from './serial.js';
 import { spawn, execFile } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { STALE_PROOF_SELECTORS } from './open-board.js';
@@ -630,6 +631,7 @@ export async function proveStdin({ stdin, type = 'wrap', memos = [], timeoutMs =
 // (the prover network, input readable by anyone).
 const laned = (p, lane) => ({ ...p, lane });
 
+const fallbackFiles = makeSerial();
 export async function proveSettle({ type, op, memos = [], timeoutMs }) {
   // Resolve `type` to its binary before anything touches the filesystem. `type` originates in the worker's
   // job queue and is used to build the fixture path (`${type}_op.json`), so the allowlist above is the only
@@ -669,9 +671,14 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
       timeoutMs = Math.max(60_000, timeoutMs - first.spentMs);
     }
   }
-  await writeFile(opFile, JSON.stringify({ ...op, memoHashes }));
+  // The fallback prover works through fixed files (this op's input, public_values.hex, proof_bytes.hex): one proof at a time, though the relay may run
+  // several loops (SETTLE_CONCURRENCY). The board lane above has no files and runs side by side.
+  const releaseFiles = await fallbackFiles.acquire();
   const cwd = CFG.proverOut;
-  await mkdir(cwd, { recursive: true });
+  try {
+    await writeFile(opFile, JSON.stringify({ ...op, memoHashes }));
+    await mkdir(cwd, { recursive: true });
+  } catch (e) { releaseFiles(); throw e; }
 
   const attempt = async (extra, ms) => {
     await rm(path.join(cwd, 'public_values.hex'), { force: true });
@@ -712,7 +719,7 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
     }
   };
   // The witness file stays for every attempt below (a public retry reads it again) and goes once the last one is over.
-  try { return await attempts(); } finally { await rm(opFile, { force: true }); }
+  try { return await attempts(); } finally { await rm(opFile, { force: true }); releaseFiles(); }
   async function attempts() {
   const plan = privateProvePlan(process.env, timeoutMs);
   if (!plan.fallback) return laned(await attempt({}, timeoutMs), process.env.PRIVATE_STDIN === '1' ? 'network-private' : 'network-public');
