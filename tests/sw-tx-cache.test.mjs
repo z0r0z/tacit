@@ -92,4 +92,30 @@ const json = (o, status = 200) => new Response(JSON.stringify(o), { status, head
   const names = [...b.stores.keys()];
   ok(!names.some((x) => x.includes('v1-ipfs-cid-verified')) && names.includes('tacit-btc-pool-artifacts-v1'), 'activation purges the earlier version and leaves the pages\' own caches');
 }
+// A versioned file (?cb=<first eight hex digits of its sha-256>): kept once it matches, and a kept copy is checked each time it answers.
+{
+  const { createHash } = await import('node:crypto');
+  const body = 'export const x = 1;\n';
+  const tok = createHash('sha256').update(body).digest('hex').slice(0, 8);
+  const URLJS = `https://tacit.finance/chrome.js?cb=${tok}`;
+  const basic = (text) => { const r = new Response(text, { status: 200, headers: { 'content-type': 'text/javascript' } }); Object.defineProperty(r, 'type', { value: 'basic' }); return r; };
+  const b = boot();
+  b.ctx.answer = () => basic(body);
+  const r1 = await b.send(URLJS);
+  ok(await r1.text() === body && b.calls.length === 1, 'a versioned file is fetched once');
+  const r2 = await b.send(URLJS);
+  ok(await r2.text() === body && b.calls.length === 1, 'and then answered from the kept copy');
+  const store = [...b.stores.entries()].find(([k]) => k.startsWith('tacit-tokened-'));
+  ok(store && store[1].has(URLJS), 'the copy is kept in the versioned-file cache');
+  store[1].set(URLJS, new Response('/* other bytes */', { status: 200, headers: { 'content-type': 'text/javascript' } }));
+  const r3 = await b.send(URLJS);
+  ok(await r3.text() === body && b.calls.length === 2, 'a kept copy whose bytes do not match its token is not served: the network answers');
+  const kept = await store[1].get(URLJS).clone().text();
+  ok(kept === body, 'and the matching bytes replace it');
+  // activation keeps only the current versioned-file cache
+  b.stores.set('tacit-tokened-v1', new Map([[URLJS, basic(body)]]));
+  let done; b.listeners.activate({ waitUntil(p) { done = p; } }); await done;
+  const names = [...b.stores.keys()].filter((x) => x.startsWith('tacit-tokened-'));
+  ok(names.length === 1 && names[0] !== 'tacit-tokened-v1', 'activation empties the earlier versioned-file cache');
+}
 console.log(`${n} checks`);

@@ -26,8 +26,9 @@
 const CACHE_VERSION = 'v3-confirmed-tx-1h-ipfs-verified-1f6beb6f';
 const STATIC_CACHE  = `tacit-static-${CACHE_VERSION}`;
 const IMMUTABLE_CACHE = `tacit-immutable-${CACHE_VERSION}`;
-// Versioned files (see _tokenOf). Its own name, not tied to CACHE_VERSION: an entry is right for as long as its URL exists.
-const TOKENED_CACHE = 'tacit-tokened-v1';
+// Versioned files (see _tokenOf). Its own name, not tied to CACHE_VERSION: an entry is right for as long as its URL exists. A new label here
+// empties it for everyone on the worker's next activation (the purge below keeps only this name).
+const TOKENED_CACHE = 'tacit-tokened-v2';
 const TOKENED_KEEP = 400;
 
 self.addEventListener('install', (event) => {
@@ -223,19 +224,23 @@ function _tokenOf(url) {
 // deploy whose build was not run, an edge still holding the last deploy's file, a token made another way) is passed through unchanged and
 // not stored, so the worker cannot hold the wrong bytes under a token. On a network failure with nothing kept the request fails as it would
 // with no worker.
+// A kept copy is checked the same way each time it answers: one whose bytes do not match its token is dropped and the network is asked.
 async function _tokenedFirst(req, token) {
   const cache = await caches.open(TOKENED_CACHE);
   const hit = await cache.match(req);
-  if (hit) return hit;
+  if (hit) {
+    try {
+      if (await _tokenHex(hit.clone()) === token) return hit;
+    } catch { /* unreadable: treated as not matching */ }
+    try { await cache.delete(req); } catch { /* fine */ }
+  }
   let resp;
   try { resp = await fetch(req); }
   catch { return Response.error(); }
   if (resp.status === 200 && resp.type === 'basic') {
     try {
       const forHash = resp.clone(), forCache = resp.clone();
-      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await forHash.arrayBuffer()));
-      const hex = Array.from(digest.subarray(0, 4), (b) => b.toString(16).padStart(2, '0')).join('');
-      if (hex === token) {
+      if (await _tokenHex(forHash) === token) {
         await cache.put(req, forCache);
         // a deploy gives a changed file a new URL and the earlier one is never asked for again: one version of a path is kept (these can be
         // megabytes), and past that the oldest entries go
@@ -246,6 +251,12 @@ async function _tokenedFirst(req, token) {
     } catch { /* quota, or a body that cannot be read twice: the response still goes out */ }
   }
   return resp;
+}
+
+// The first eight hex digits of the sha-256 of a response's body: the form the build gives a token.
+async function _tokenHex(resp) {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await resp.arrayBuffer()));
+  return Array.from(digest.subarray(0, 4), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // Network-first: the network's answer, kept for when it cannot be had. A response that is not ok (a 404 or 5xx) is returned as it came, and

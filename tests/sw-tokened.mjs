@@ -53,12 +53,12 @@ try {
 
   // the second visit goes through the worker, which fetches and keeps each versioned file
   await page.reload({ waitUntil: 'load' }); await sleep(900);
-  const keys = await page.evaluate(async () => (await (await caches.open('tacit-tokened-v1')).keys()).map((r) => new URL(r.url).pathname + new URL(r.url).search));
+  const keys = await page.evaluate(async () => (await (await caches.open('tacit-tokened-v2')).keys()).map((r) => new URL(r.url).pathname + new URL(r.url).search));
   ok(keys.length >= 3 && keys.every(tokened), `it kept the page's versioned files and only those (${keys.length}: ${keys.slice(0, 3).join(', ')}…)`);
 
   // every kept file's bytes match its token
   const bad = await page.evaluate(async () => {
-    const out = [], cache = await caches.open('tacit-tokened-v1');
+    const out = [], cache = await caches.open('tacit-tokened-v2');
     for (const req of await cache.keys()) {
       const body = await (await cache.match(req)).arrayBuffer();
       const hex = [...new Uint8Array(await crypto.subtle.digest('SHA-256', body)).subarray(0, 4)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -81,13 +81,13 @@ try {
   const r1 = await page.evaluate(async () => { const r = await fetch('/bridge/track.js?cb=00000000'); return { ok: r.ok, len: (await r.text()).length }; });
   await page.evaluate(() => fetch('/bridge/track.js?cb=00000000').then((r) => r.text()));
   await sleep(300);
-  const after = await page.evaluate(async () => (await (await caches.open('tacit-tokened-v1')).keys()).map((r) => r.url));
+  const after = await page.evaluate(async () => (await (await caches.open('tacit-tokened-v2')).keys()).map((r) => r.url));
   ok(r1.ok && r1.len > 1000, 'a file under a wrong token is still served');
   ok(!after.some((u) => u.includes('cb=00000000')) && hits.get('/bridge/track.js?cb=00000000') === 2, 'but it is not kept: the server is asked each time');
 
   // other things are not touched
   const other = await page.evaluate(async () => { const r = await fetch('/rpc-body.js'); return r.ok; });
-  const keys2 = await page.evaluate(async () => (await (await caches.open('tacit-tokened-v1')).keys()).map((r) => r.url));
+  const keys2 = await page.evaluate(async () => (await (await caches.open('tacit-tokened-v2')).keys()).map((r) => r.url));
   ok(other && !keys2.some((u) => u.endsWith('/rpc-body.js')), 'a file with no token is left to the network');
 
   // the code files with no token ask the network first, and the kept copy answers only when the network cannot
