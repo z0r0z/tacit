@@ -127,7 +127,8 @@ globalThis.fetch = async (url, init) => {
   const u = String(url);
   if (/^https:\/\/api\.tacit\.finance\/confidential\//.test(u)) return realFetch(u.replace('https://api.tacit.finance', RELAY), init);
   if (/^https:\/\/api\.tacit\.finance\//.test(u)) return new Response('{}', { status: 404 });
-  if (/^https?:\/\/[^/]*(rpc|node|gateway|eth\.|llama|ankr|drpc|merkle|infura|alchemy|cloudflare|1rpc)/i.test(u) && init?.method === 'POST') return again(() => realFetch(RPC, { ...init, signal: AbortSignal.timeout(180_000) }), 'the fork');
+  // every JSON-RPC call goes to the fork, whatever its host: a node the pattern below does not name (eth-mainnet.public.blastapi.io) answered from the live chain, whose pool had traded since the fork block
+  if (init?.method === 'POST' && (/"jsonrpc"/.test(String(init.body || '')) || /^https?:\/\/[^/]*(rpc|node|gateway|eth\.|llama|ankr|drpc|merkle|infura|alchemy|cloudflare|1rpc)/i.test(u))) return again(() => realFetch(RPC, { ...init, signal: AbortSignal.timeout(180_000) }), 'the fork');
   return again(() => realFetch(url, init), new URL(u).host);
 };
 
