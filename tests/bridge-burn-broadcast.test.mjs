@@ -18,6 +18,7 @@ import { makeConfidentialBridgeMint, txidInternal } from '../dapp/confidential-b
 import { makeBridgeBurnBroadcaster } from '../dapp/bridge-burn-broadcast.js';
 import { makeBtcWallet } from '../dapp/bitcoin-taproot-wallet.js';
 import { verifySchnorr } from '../dapp/bulletproofs.js';
+import { NET_MIN_FLOOR } from '../dapp/fee-floor.js';
 import { makeScanReflectionIndexer } from '../dapp/confidential-reflection-scan-indexer.js';
 import { makeBurnDepositKit, classifyConfidentialTx, extractInputs } from '../dapp/burn-deposit-bitcoin.js';
 import { computeTxid, computeMerkleRoot, mineHeader, makeCoinbaseForEnvTx } from './btc-mini.mjs';
@@ -270,6 +271,23 @@ const { snapshot: snapW } = await roundTrip({ bound: false, wpkh: true });
   ok('refuses a P2WPKH note whose script is not the key\'s, one recorded under a Taproot key, and prims of another key');
 }
 
+// ── the network takes rates under 1 sat/vB and the page quotes them (fee-floor.js): the burn is built at the rate it was quoted at ──
+{
+  for (const rate of [0.505, 0.243, NET_MIN_FLOOR]) {
+    for (const given of [true, false]) {
+      const w = testWallet({ rate });
+      const b = await burner.buildBridgeBurnTxs({ note, notePriv: NOTE_PRIV, chainBinding: CHAIN_BINDING, fee: FEE, snapshot: snap1, prims: w.prims, dest: { owner: DEST_OWNER, blinding: destBlinding }, isSpendable: () => true, ...(given ? { feeRate: rate } : {}) });
+      const what = `${rate} sat/vB ${given ? 'given' : 'read from the wallet'}`;
+      assert.strictEqual(b.feeRate, rate, `${what}: built at the quoted rate`);
+      assert.strictEqual(b.commitFee, 150, `${what}: the commit pays the 150-sat floor a rate under 1 sat/vB has`);
+      assert.strictEqual(b.revealFee, 150, `${what}: the reveal pays the 150-sat floor`);
+      assert.ok(b.commitFee >= 0.1 * b.commitVsize && b.revealFee >= 0.1 * b.revealVsize, `${what}: both are over the 0.1 sat/vB relay minimum`);
+      assert.strictEqual(w.sent.length, 0);
+    }
+  }
+  ok('builds at 0.505, 0.243 and the quote floor, given or read from the wallet: a 150-sat commit and reveal, not a refusal');
+}
+
 // ── refusals: nothing is built or broadcast ──
 {
   const base = { note, notePriv: NOTE_PRIV, chainBinding: CHAIN_BINDING, fee: FEE, snapshot: snap1, dest: { owner: DEST_OWNER, blinding: destBlinding }, isSpendable: () => true };
@@ -291,8 +309,8 @@ const { snapshot: snapW } = await roundTrip({ bound: false, wpkh: true });
   await refuse({ notePriv: new Uint8Array(32).fill(0x33) }, /auth key/, 'key is not the note\'s auth key');
   await refuse({ note: { ...note, script: '5120' + 'ab'.repeat(32) } }, /P2TR output of notePriv/, 'script is not the key\'s P2TR');
   await refuse({ chainBinding: hex32(0) }, /chainBinding/, 'zero chain binding');
-  await refuse({ feeRate: 0.5 }, /minimum relay rate/, 'fee rate under 1 sat/vB');
-  ok('refuses: unreflected note, wrong class, burn-deposit class, off-ladder / oversized fee, destination not net of fee, bad owner / blinding, wrong opening / asset / key / script, zero binding, sub-relay fee rate');
+  for (const r of [0.05, 0, -1, NaN]) await refuse({ feeRate: r }, /minimum relay rate/, `fee rate ${r} sat/vB`);
+  ok('refuses: unreflected note, wrong class, burn-deposit class, off-ladder / oversized fee, destination not net of fee, bad owner / blinding, wrong opening / asset / key / script, zero binding, a fee rate under the 0.1 sat/vB relay minimum');
 }
 {
   // A bound note burned toward a different deployment: its leaf is not in the tree under that binding.

@@ -7,7 +7,7 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=04a214c9';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=0b0f5e94';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=ca6e2054';
-import { makeLoans, exactNotes, bondGap, bondCall, bondShareCall, bondBackCall, outpointOf, lockPad, lockRate, loanHealth, liqPhrase, healthLine, loanTag, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=e1f5e408';
+import { makeLoans, exactNotes, bondGap, bondCall, bondShareCall, bondBackCall, outpointOf, lockPad, lockRate, loanHealth, liqPhrase, healthLine, loanTag, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=2a2d543f';
 import { makeRunner } from '/activity.js';
 import { relayRefused, relayWords } from '/relay-outcome.js?cb=ad7c898d';
 import { esc, short, grp, plain, parseUnits, word, wordAt } from '/trade/util.js?cb=9c8b4133';

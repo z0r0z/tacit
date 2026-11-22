@@ -35,7 +35,8 @@ const ZERO32 = '0x' + '00'.repeat(32);
 const MAX_SCRIPT_ELEMENT = 520;       // consensus push limit, tapscript included
 const MAX_TAPSCRIPT_STACK_ITEM = 80;  // policy limit on the initial stack of a script-path spend
 const MAX_STANDARD_WEIGHT = 400000;
-const MIN_RELAY_RATE = 1;             // sat/vB
+// sat/vB: Bitcoin Core's default minimum relay fee. The page's quoted rate follows the recent blocks (fee-floor.js, never under twice this), so it can be under 1.
+const MIN_RELAY_RATE = 0.1;
 
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 const lc = (x) => String(x || '').toLowerCase();

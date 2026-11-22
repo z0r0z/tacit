@@ -24,7 +24,8 @@ export const CBTC_ZK_ASSET_ID = '0x62a20d98fc1cd20289621d1315294cb8772f934d822e4
 
 const DUST = 546;
 const P2WPKH_DUST = 294;
-const MIN_RELAY_RATE = 1;
+// sat/vB: Bitcoin Core's default minimum relay fee. The page's quoted rate follows the recent blocks (fee-floor.js, never under twice this), so it can be under 1.
+const MIN_RELAY_RATE = 0.1;
 const MAX_NOTES = 24;
 const DEFAULT_MAX_FEE_SATS = 100_000;     // guards against a mistyped fee rate
 const KERNEL_DOMAIN = 'tacit-kernel-v1';
@@ -148,7 +149,7 @@ export function makeCbtcRedeem({ pool, secp, sha256, prims: defaultPrims = null,
     const notes = normNotes(notesIn, vBtc, xonlyHex);
 
     const rate = Number(feeRate);
-    if (!Number.isFinite(rate) || rate < MIN_RELAY_RATE) throw new Error('cbtc-redeem: feeRate must be at least 1 sat/vB');
+    if (!Number.isFinite(rate) || rate < MIN_RELAY_RATE) throw new Error('cbtc-redeem: feeRate must be at least 0.1 sat/vB');
     const fee = (vb) => Math.ceil(vb * rate);
 
     // Spending the lock, a note or another lock as funding would forfeit a bond.
@@ -439,7 +440,7 @@ export function makeCbtcRedeem({ pool, secp, sha256, prims: defaultPrims = null,
   //   lock { txid, vout, value, spk } → { hex, txid, fee, outValue, vsize }
   function buildUnlockTx({ prims, lock: lockIn, feeRate, to = null, maxFeeSats = DEFAULT_MAX_FEE_SATS } = {}) {
     const P = primsOf(prims), lock = normLock(lockIn), signer = signerFor(lock.spk, P), rate = Number(feeRate);
-    if (!(rate >= MIN_RELAY_RATE)) throw new Error('cbtc-redeem: feeRate must be at least 1 sat/vB');
+    if (!(rate >= MIN_RELAY_RATE)) throw new Error('cbtc-redeem: feeRate must be at least 0.1 sat/vB');
     const toSpk = to ? (typeof to === 'string' ? hexBytes(to) : to) : P.p2wpkhScript(P.wallet.pub);
     const prevouts = [{ value: lock.value, script: hexBytes(lock.spk) }];
     const make = (value) => {

@@ -269,6 +269,18 @@ const burn = await rd.buildBurnDepositRevealTxs({ prims, burnHome: mig.burnHome,
   ok('the burn pays its fee rate on its size with the change output, at 3, 10 and 25 sat/vB');
 }
 {
+  // The network takes rates under 1 sat/vB and the page quotes them: the migration and the burn are built at that rate, not refused.
+  const m = await rd.buildMigrationTxs({ prims, note, walletPriv: WALLET_PRIV, fundingUtxo: fundingUtxo1, feeRate: 0.243 });
+  assert.strictEqual(m.feeRate, 0.243);
+  for (const rate of [0.505, 0.243]) {
+    const b = await rd.buildBurnDepositRevealTxs({ prims, burnHome: mig.burnHome, envelope, fundingUtxo: fundingUtxo2, feeRate: rate });
+    assert.strictEqual(b.feeRate, rate);
+    assert.ok(b.fee >= 0.1 * b.vsize, `the burn pays over the 0.1 sat/vB relay minimum at ${rate} (${b.fee} sats for ${b.vsize} vB)`);
+  }
+  await assert.rejects(() => rd.buildBurnDepositRevealTxs({ prims, burnHome: mig.burnHome, envelope, fundingUtxo: fundingUtxo2, feeRate: 0.05 }), /minimum relay rate/, 'a rate under the relay minimum is refused');
+  ok('the migration and the burn build at 0.505 and 0.243 sat/vB; 0.05 is refused');
+}
+{
   const ins = extractInputs(burn.revealHex);
   assert.strictEqual(ins.length, 2, 'burn reveal spends the burn-home and the funding UTXO');
   assert.strictEqual(ins[0].prevTxid.toLowerCase(), ('0x' + reverseHex(mig.burnHome.txid)).toLowerCase(), 'vin[0] is the burn-home (reflect.rs\'s "burned outpoint")');

@@ -5,7 +5,8 @@ import { bppRangeProve, bigintToBytes32, pointToBytes, pedersenCommit } from './
 
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 const DUST = 546;
-const MIN_RELAY_RATE = 1;
+// sat/vB: Bitcoin Core's default minimum relay fee. The page's quoted rate follows the recent blocks (fee-floor.js, never under twice this), so it can be under 1.
+const MIN_RELAY_RATE = 0.1;
 const EMPTY_ITEM = new Uint8Array(0);
 const lc = (x) => String(x || '').toLowerCase();
 const stripHex = (x) => String(x).replace(/^0x/, '');

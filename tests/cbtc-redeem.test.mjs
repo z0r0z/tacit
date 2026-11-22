@@ -159,6 +159,17 @@ if (process.env.CBTC_REDEEM_VECTOR_OUT) {
   ok(`outputs ${built.outputSats} sats; fees ${built.commitFee}+${built.revealFee} at ${built.feeRate} sat/vB`);
 }
 
+// ── 5b. the network takes rates under 1 sat/vB and the page quotes them: built at that rate, not refused ──
+{
+  for (const feeRate of [0.505, 0.243]) {
+    const b = build({ feeRate });
+    assert.equal(b.feeRate, feeRate);
+    assert.ok(b.commitFee / b.commitVb >= 0.1 && b.revealFee / b.revealVb >= 0.1, `both pay over the 0.1 sat/vB relay minimum at ${feeRate}`);
+    assert.equal(classifyConfidentialTx(b.revealHex).type, 'cbtc_redeem');
+  }
+  ok('builds at 0.505 and 0.243 sat/vB');
+}
+
 // ── 6. an early lock held at the key's P2WPKH address ──
 {
   const b = build({ lock: mkLock(lockSpkWpkh) });
@@ -183,7 +194,8 @@ if (process.env.CBTC_REDEEM_VECTOR_OUT) {
   throws(() => build({ lock: { ...mkLock(), vout: 0 } }), /at least 1/, 'vout 0 lock');
   throws(() => build({ expectedVBtc: 99999n }), /pool records this lock at 99999/, 'pool value differs from the output');
   throws(() => build({ funding: [{ txid: txid('dd'), vout: 0, value: 300 }] }), /not enough plain bitcoin/, 'too little for fees');
-  throws(() => build({ feeRate: 0 }), /at least 1 sat\/vB/, 'zero fee rate');
+  throws(() => build({ feeRate: 0 }), /at least 0.1 sat\/vB/, 'zero fee rate');
+  throws(() => build({ feeRate: 0.05 }), /at least 0.1 sat\/vB/, 'a rate under the relay minimum');
   throws(() => build({ feeRate: 5000, funding: [{ txid: txid('dd'), vout: 0, value: 5_000_000 }] }), /over the 100000 guard/, 'absurd fee rate');
   throws(() => build({ funding: [] }), /no plain bitcoin/, 'no funding');
   throws(() => build({ notes: [{ ...notes[0], cx: '0x1', cy: '0x2' }, notes[1]] }), /does not reproduce its commitment/, 'a mismatched stored commitment');

@@ -86,7 +86,7 @@ const notLocks = () => { try { const v = JSON.parse(localStorage.getItem(NOT_LOC
 const notLock = (txid) => { notLocks().add(txid); try { localStorage.setItem(NOT_LOCKS_KEY, JSON.stringify([...NOT_LOCKS].slice(-300))); } catch {} };
 const sentence = (s) => `${s.charAt(0).toUpperCase()}${s.slice(1)}.`;
 
-export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, noteRecovery = () => import('/cbtc-note-recovery.js'), redeemModule = () => import('/cbtc-redeem.js?cb=de8f620c'),
+export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, noteRecovery = () => import('/cbtc-note-recovery.js'), redeemModule = () => import('/cbtc-redeem.js?cb=6a65bb1a'),
   lockModule = () => import('/cbtc-lock-mint.js?cb=6083caf9'), deployments = () => import('/confidential-deployments.js') }) {
   async function positions() {
     const { makeCdpPositionStore } = await import('/confidential-secret-store.js');
