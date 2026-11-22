@@ -81,5 +81,55 @@ ok(/_hintMaySettle\(derived, confirmed\)/.test(handler) && !/if \(derived && der
 const scan = src.slice(src.indexOf('source: \'cron-chain-backfill\''), src.indexOf('} else if (decoded.opcode === T_PETCH) {'));
 ok((scan.match(/_settleFillRecords\(env, network, dx\.asset_id, derived\.fills\)/g) || []).length === 2, 'the scan does the same for a trade it counts and for one a hint counted first');
 ok((handler.match(/an etch is read at output 0/g) || []).length === 2, 'both kinds of etch are refused at an output other than 0');
+
+// The layout the chain really has (three fills on Bitcoin mainnet, 2026-11-22; tests/fixtures/preauth-fills-2026-11-22.json holds the transactions as an explorer gave
+// them): the seller's note is the reveal's OWN input (vin[1]) and the seller is paid at the vout of the same index, the listed price to the sat. The commit holds
+// only the buyer's funding coin. A derivation that looked in the commit alone never found one of these, so no preauth trade was recorded.
+const real = JSON.parse(readFileSync(new URL('./fixtures/preauth-fills-2026-11-22.json', import.meta.url), 'utf8')).fills;
+const saleOf = (f, over = {}) => ({ asset_id: ASSET, sale_id: f.sale_id, asset_outpoint: f.note, asset_opening: { amount: f.amount, blinding: '00'.repeat(32) }, min_price_sats: f.price_sats, seller_payout_script: f.reveal.vout[1].scriptpubkey, ...over });
+const seed = async (f, over) => { await kv.put(preauthSaleKey(NETWORK, ASSET, f.sale_id), saleOf(f, over)); await kv.put(preauthOutpointIndexKey(NETWORK, ASSET, f.note.txid, f.note.vout), f.sale_id); };
+const [F1, F2] = real;
+store.clear(); chain = new Map(); chain.set(F1.commit.txid, F1.commit);
+await seed(F1);
+ok(F1.reveal.vin[1].txid === F1.note.txid && !F1.commit.vin.some((v) => v.txid === F1.note.txid), 'the fixture is the real layout: the sold note is in the reveal, not the commit');
+const real1 = await _deriveTradeFromChain(env, NETWORK, F1.reveal, T_AXFER, ASSET);
+ok(real1 && real1.price_sats === 1158275 && real1.amount === 100000000000n && real1.fills.length === 1 && real1.fills[0].kind === 'preauth' && real1.fills[0].sale_id === F1.sale_id,
+  'a real preauth fill is the trade: 1,158,275 sats for 1,000 TAC');
+chain = new Map();
+const noCommit = await _deriveTradeFromChain(env, NETWORK, F1.reveal, T_AXFER, ASSET);
+ok(noCommit && noCommit.price_sats === 1158275, 'and it needs no read of the commit: the reveal alone says it, so an unreadable commit is not an error here');
+chain.set(F1.commit.txid, F1.commit);
+
+// the payout is what makes a spend a fill
+const withPay = (rev, i, over) => ({ ...rev, vout: rev.vout.map((o, k) => (k === i ? { ...o, ...over } : o)) });
+ok((await _deriveTradeFromChain(env, NETWORK, withPay(F1.reveal, 1, { value: 1158274 }), T_AXFER, ASSET)) === null, 'a spend that pays the seller a sat under the price is no fill');
+ok((await _deriveTradeFromChain(env, NETWORK, withPay(F1.reveal, 1, { scriptpubkey: '0014' + 'ab'.repeat(20) }), T_AXFER, ASSET)) === null, 'a spend that pays someone else is no fill (the seller moving their own note)');
+await kv.put(preauthSaleKey(NETWORK, ASSET, F1.sale_id), saleOf(F1, { seller_payout_script: undefined }));
+ok((await _deriveTradeFromChain(env, NETWORK, F1.reveal, T_AXFER, ASSET)) === null, 'a sale record with no payout script cannot vouch for a payout');
+await seed(F1);
+ok((await _deriveTradeFromChain(env, NETWORK, withPay(F1.reveal, 1, { value: 1158275 + 5000 }), T_AXFER, ASSET)).price_sats === 1158275, 'a payout over the price is priced at the listing');
+
+// a batched take: two sellers' notes at vin[1] and vin[2], paid at vout[1] and vout[2]
+await seed(F2);
+const batch = { ...F1.reveal, txid: 'ee'.repeat(32), vin: [F1.reveal.vin[0], F1.reveal.vin[1], F2.reveal.vin[1]], vout: [F1.reveal.vout[0], F1.reveal.vout[1], F2.reveal.vout[1]] };
+const bt = await _deriveTradeFromChain(env, NETWORK, batch, T_AXFER, ASSET);
+ok(bt && bt.fills.length === 2 && bt.price_sats === 1158275 + 1193023 && bt.amount === 200000000000n, 'a batched take is one trade of both fills: the prices and amounts add');
+const swapped = { ...batch, vout: [F1.reveal.vout[0], F2.reveal.vout[1], F1.reveal.vout[1]] };
+const st = await _deriveTradeFromChain(env, NETWORK, swapped, T_AXFER, ASSET);
+ok(st && st.fills.length === 1 && st.fills[0].sale_id === F1.sale_id, 'with one seller and the payouts swapped the dearer lot is underpaid at its own vout and is not a fill; the cheaper, paid more, still is');
+// two different sellers: each is paid at the vout of their own input, so crossed payouts match neither
+const OTHER_SELLER = '0014' + 'cd'.repeat(20), PAY2 = { scriptpubkey: OTHER_SELLER, value: 1193023 };
+await seed(F2, { seller_payout_script: OTHER_SELLER });
+const two = { ...batch, vout: [F1.reveal.vout[0], F1.reveal.vout[1], PAY2] };
+const twoOk = await _deriveTradeFromChain(env, NETWORK, two, T_AXFER, ASSET);
+ok(twoOk && twoOk.fills.length === 2, 'two different sellers, each paid at the vout of their own input: both fills');
+const crossed = { ...batch, vout: [F1.reveal.vout[0], PAY2, F1.reveal.vout[1]] };
+ok((await _deriveTradeFromChain(env, NETWORK, crossed, T_AXFER, ASSET)) === null, 'the same two sellers paid at each other\'s vout: neither is a fill');
+
+// one outpoint is one fill, however it is reached
+chain.set(F1.commit.txid, { ...F1.commit, vin: [...F1.commit.vin, { txid: F1.note.txid, vout: F1.note.vout }] });
+const dup = await _deriveTradeFromChain(env, NETWORK, F1.reveal, T_AXFER, ASSET);
+ok(dup && dup.fills.length === 1 && dup.price_sats === 1158275, 'a note found in the reveal and in the commit is one fill, not two');
+
 console.log(`${n} ok`);
 process.exit(0);

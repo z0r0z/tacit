@@ -9375,9 +9375,12 @@ function _ringVolumeSumSats(tradesArr) {
 // trade record from chain bytes alone:
 //
 //   reveal tx (carries T_AXFER envelope)
-//     └─ vin[0] = commit tx vout[0] (the P2TR script-path output)
-//          └─ vin[*] = seller's asset_utxo (1 for single-take, N for
-//             batched preauth-take or batched atomic-intent fills)
+//     ├─ vin[0] = commit tx vout[0] (the P2TR script-path output)
+//     │    └─ the commit's own inputs: where an atomic intent's asset
+//     │       outpoint is spent
+//     └─ vin[1..N] = the sellers' asset UTXOs of a preauth take (1 for a
+//        single take, N for a batched one), each paid at the vout of the
+//        same index: the seller signed SIGHASH_SINGLE over input and output
 //
 // For each spent asset_utxo we check both outpoint indices —
 // `axintent-by-outpoint` (this commit) and `presale-by-outpoint` (the
@@ -9398,21 +9401,47 @@ function _ringVolumeSumSats(tradesArr) {
 // `strict`: a commit transaction that cannot be read is an error, not "nothing to derive" (the hint path leaves such a trade to the scan).
 async function _deriveAxferTradeFromChain(env, network, revealTx, opcode, assetIdHex, { strict = false } = {}) {
   if (!revealTx?.vin?.length) return null;
-  const vin0Txid = revealTx.vin[0]?.txid;
-  if (!/^[0-9a-f]{64}$/.test(String(vin0Txid || ''))) return null;
-  let commitTx;
-  try { commitTx = await fetchFreshTxJson(env, vin0Txid, network); }
-  catch (e) { if (strict) throw e; return null; }
-  if (!commitTx?.vin?.length) return null;
-
   let totalPriceSats = 0;
   let totalAmount = 0n;
   const fills = [];
+  const matched = new Set();     // an outpoint is one fill, however it was reached
 
-  for (const cin of commitTx.vin) {
+  // A preauth take spends the seller's note as the REVEAL's own input (vin[1..]): the seller signed SIGHASH_SINGLE over that input and the output of the same
+  // index, so the reveal pays the seller's payout script the listed price at vout[i]. On the chain (three mainnet fills of 2026-11-22): vin[1] is the note and
+  // vout[1] is the price to the cent. That payout is what makes a spend a FILL; the seller moving their own note to withdraw a listing is not one.
+  // (The walk below, of the commit transaction's inputs, never finds a preauth sale: the commit holds the buyer's funding coins only.)
+  for (let i = 1; i < revealTx.vin.length; i++) {
+    const ctxid = String(revealTx.vin[i]?.txid || '').toLowerCase();
+    const cvout = revealTx.vin[i]?.vout;
+    if (!/^[0-9a-f]{64}$/.test(ctxid) || !Number.isInteger(cvout) || matched.has(`${ctxid}:${cvout}`)) continue;
+    const saleIdHex = await env.REGISTRY_KV.get(preauthOutpointIndexKey(network, assetIdHex, ctxid, cvout));
+    if (!saleIdHex) continue;
+    const sale = await env.REGISTRY_KV.get(preauthSaleKey(network, assetIdHex, saleIdHex), 'json');
+    const px = Number(sale?.min_price_sats);
+    if (!sale || !Number.isInteger(px) || px <= 0) continue;
+    const pay = revealTx.vout?.[i];
+    if (!pay || String(pay.scriptpubkey || '').toLowerCase() !== String(sale.seller_payout_script || '').toLowerCase() || !(Number(pay.value) >= px)) continue;
+    let amt = 0n;
+    try { amt = BigInt(sale.asset_opening?.amount || '0'); } catch {}
+    matched.add(`${ctxid}:${cvout}`);
+    totalPriceSats += px;
+    totalAmount += amt;
+    fills.push({ kind: 'preauth', sale_id: saleIdHex, price_sats: px, outpoint: { txid: ctxid, vout: cvout } });
+  }
+
+  // The commit transaction's inputs: where an atomic intent's asset outpoint is spent. A commit that cannot be read is an error when nothing else
+  // has been found (the hint then leaves the trade to the scan), and not when the reveal's own inputs already gave the trade.
+  const vin0Txid = revealTx.vin[0]?.txid;
+  let commitTx = null;
+  if (/^[0-9a-f]{64}$/.test(String(vin0Txid || ''))) {
+    try { commitTx = await fetchFreshTxJson(env, vin0Txid, network); }
+    catch (e) { if (strict && fills.length === 0) throw e; }
+  }
+
+  for (const cin of commitTx?.vin || []) {
     const ctxid = String(cin?.txid || '').toLowerCase();
     const cvout = cin?.vout;
-    if (!/^[0-9a-f]{64}$/.test(ctxid) || !Number.isInteger(cvout)) continue;
+    if (!/^[0-9a-f]{64}$/.test(ctxid) || !Number.isInteger(cvout) || matched.has(`${ctxid}:${cvout}`)) continue;
 
     // Preauth sale match — same logic the hint path uses, but driven
     // off the on-chain outpoint instead of a dapp-supplied price.
@@ -23984,6 +24013,33 @@ async function sweepBidPartialClaims(env, network) {
 const PREAUTH_PHANTOM_SWEEP_LIMIT = 60;  // per-tick per-network ceiling
 const PREAUTH_PHANTOM_CURSOR_KEY = (network) =>
   network === 'signet' ? 'sweep-preauth-phantoms:cursor' : `sweep-preauth-phantoms:${network}:cursor`;
+// A listing whose note a take has spent is a FILL, and the trade is recorded before the listing is forgotten: the listing record is what gives the trade its
+// price, and a buyer that sends no /hint (a script, a tab that closed) leaves nothing else to learn it from. The spender is read from the chain and counts as
+// this sale's fill only if it is a T_AXFER reveal that pays the seller (_deriveAxferTradeFromChain), so a seller moving their own note is not mistaken for
+// one. The same gate as the hint and the scan (bumpTransferCount) keeps a trade from being counted twice between the three.
+// -> true when the trade was recorded (or had been) and the records it spent are taken out; false when the spend is no fill of this sale (the caller drops
+// the listing as a phantom, as before). Throws when the spender cannot be read: the listing stays, and the next sweep tries again.
+async function _recordPreauthFillFromSweep(env, network, sale, spendingTxid) {
+  const aid = String(sale?.asset_id || '').toLowerCase();
+  const txid = String(spendingTxid || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(aid) || !/^[0-9a-f]{64}$/.test(txid)) return false;
+  const tx = await fetchFreshTxJson(env, txid, network);
+  const wit = tx?.vin?.[0]?.witness;
+  if (!Array.isArray(wit) || wit.length < 3) return false;              // not a tacit reveal: a plain spend, the seller's own move
+  let decoded;
+  try { decoded = decodeEnvelopeScript(hexToBytes(wit[1])); } catch { return false; }
+  if (!decoded || (decoded.opcode !== T_AXFER && decoded.opcode !== T_AXFER_BPP)) return false;
+  const derived = await _deriveAxferTradeFromChain(env, network, tx, decoded.opcode, aid);
+  if (!derived || !(derived.price_sats > 0) || !derived.fills.some((f) => f.sale_id === sale.sale_id)) return false;
+  if (await bumpTransferCount(env, network, aid, txid)) {
+    await _recordSettledTradeVolume(env, network, aid, {
+      txid, price_sats: derived.price_sats, amount: String(derived.amount),
+      ts: tx.status?.block_time || Math.floor(Date.now() / 1000), fill_count: Math.max(1, Math.min(255, derived.fills.length)), source: 'sweep-chain',
+    });
+  }
+  await _settleFillRecords(env, network, aid, derived.fills);
+  return true;
+}
 async function sweepPreauthPhantoms(env, network) {
   const prefix = network === 'signet' ? 'presale:' : `presale:${network}:`;
   const cursorKey = PREAUTH_PHANTOM_CURSOR_KEY(network);
@@ -24018,6 +24074,14 @@ async function sweepPreauthPhantoms(env, network) {
       // outspends), so repeated phantom sweeps don't burn fresh API hits.
       const probe = await chainOutspendProbe(env, network, op.txid, op.vout).catch(() => null);
       if (!probe || probe.spent !== true) continue;
+      // A spend that is a take is a trade: it is recorded, and the records it spent taken out, before anything is forgotten. A spender that cannot be read
+      // leaves the listing for the next sweep, so a blip does not lose the trade.
+      if (probe.spending_txid) {
+        let filled = false;
+        try { filled = await _recordPreauthFillFromSweep(env, network, sale, probe.spending_txid); }
+        catch { continue; }
+        if (filled) { deleted++; continue; }
+      }
       // UTXO is spent on chain — listing is a phantom. Delete the sale
       // record + its outpoint reverse index. Idempotent: KV.delete on a
       // missing key is a no-op, so re-running this sweep is safe.
@@ -28257,7 +28321,7 @@ export {
   // tests can pin (a) derivation from a synthetic reveal + commit pair,
   // (b) helper writes match the hint-path aggregates byte-for-byte.
   // Drift in either silently breaks lifetime + 24h volume accuracy.
-  _deriveAxferTradeFromChain, _recordSettledTradeVolume,
+  _deriveAxferTradeFromChain, _recordSettledTradeVolume, sweepPreauthPhantoms, _recordPreauthFillFromSweep,
   // Journal-based reconcile — race-free authoritative recompute of the
   // lifetime counter from the trade-event journal. Tests pin (a) sum
   // correctness across N entries, (b) single put semantics (no RMW),
