@@ -159,10 +159,13 @@ const hopsWaiting = (now) => [{ units: '700000000', commit: '0x' + '88'.repeat(3
 // the leader, on the page's own server under /tacit-chain-leader
 const directory = new Map();
 const LEAVES = 365, SPENT = 151, SPENDS = 987, SWEEP_FEE = '40000000000000000';
+// what the leader says it holds: pending (null: what the pressed shields leave), and the new notes of its payments (null: no such list, as on an older leader)
+const HOLD = { pending: null, notes: null };
 // (the chain address the leader's fee is paid to: a key of its own)
 const LEADER_ADDRESS = w.encodeAddress(await makeChainClient({ cfg: cfgOf('http://x'), rpcCall, priv: Buffer.from('1eade4'.padEnd(64, '5'), 'hex'), system: () => null, storage: null }).address());
 const LEADER = {
-  'GET /state': () => [200, { height: 1234 + landed(), pending: press.spends.length && !landed() ? 1 : 0, leaves: LEAVES + 2 * landed(), nullifiers: SPENT, spends: SPENDS + landed(), pool: String(RATE.pool), shares: String(RATE.shares) }],
+  'GET /state': () => [200, { height: 1234 + landed(), pending: HOLD.pending ?? (press.spends.length && !landed() ? 1 : 0), leaves: LEAVES + 2 * landed(), nullifiers: SPENT, spends: SPENDS + landed(), pool: String(RATE.pool), shares: String(RATE.shares) }],
+  'GET /pending-notes': () => (HOLD.notes ? [200, { leaves: HOLD.notes, memos: HOLD.notes.map(() => '0x' + '22'.repeat(1152)) }] : [404, { error: 'not here' }]),
   'GET /fee': () => [200, { address: LEADER_ADDRESS, fee: '1500000', shieldCap: '100000000000', sweepFee: SWEEP_FEE, at: NOW_S }],
   'POST /spend': (q, body) => {
     const j = JSON.parse(body);
@@ -346,7 +349,7 @@ try {
       for (let i = 3; i < d.length; i += 4) if (d[i]) inked++;
       return { shown: !f.hidden, says: f.querySelector('figcaption').textContent.replace(/\s+/g, ' ').trim(), inked, height: Math.round(c.getBoundingClientRect().height) };
     });
-    ok(pool?.shown && pool.says.startsWith(`${LEAVES} notes made, ${SPENT} spent.`) && pool.inked > LEAVES && pool.height > 30 && pool.height < 90, `the pool's notes are drawn, the leader's counts under them (${JSON.stringify(pool)})`);
+    ok(pool?.shown && pool.says.startsWith(`${LEAVES} notes made, ${SPENT} spent, ${LEAVES - SPENT} still unspent.`) && pool.inked > LEAVES && pool.height > 30 && pool.height < 90, `the pool's notes are drawn, the leader's counts under them (${JSON.stringify(pool)})`);
     await page.waitForFunction(() => /GPUs? prove/.test(document.querySelector('#tpg-part')?.textContent || ''), null, { timeout: 20000 }).catch(() => {});
     const ways = await page.$$eval('#tpg-part .cl-part li', (ls) => ls.map((l) => [l.querySelector('b').textContent.trim(), l.querySelector('div span').textContent.trim()]));
     ok(ways.map((x) => x[0]).join('|') === 'Stake|Pay|Lead|Prove|Verify' && /^2 GPUs prove its blocks\./.test(ways[3]?.[1] || ''), `the ways to take part, staking and paying first, then one for each step of the path, the board's provers counted (${ways.map((x) => x[0]).join(', ')}: ${ways[3]?.[1]})`);
@@ -543,6 +546,28 @@ try {
       ok(bad.length === 0, `no errors or CSP violations (${bad.join(' | ')})`);
       await ctx.close();
     }
+  }
+  // the chain panel's Payments line: a shield waiting on its deposit is held out of blocks, so it is no payment waiting for one; the leader's list of the
+  // new notes of its payments says which it holds, and a leader without the list is taken at its count
+  if (PRESS !== 'only') {
+    for (const [what, notes, want, forming] of [
+      ['one spend pending, the leader lists no payment notes (a shield waiting on its deposit)', [], 'ok', false],
+      ['one spend pending, the leader lists a payment\'s notes', ['0x' + '11'.repeat(32)], 'busy', true],
+      ['one spend pending, a leader with no list', null, 'busy', true],
+    ]) {
+      HOLD.pending = 1; HOLD.notes = notes;
+      const { page, ctx, bad } = await visit();
+      // (a cell still being read is a bare .cl-n, and the strip shows empty slots until the blocks are read: wait for every cell, the verdict and a block, then read together)
+      await page.waitForFunction(() => { const ns = [...document.querySelectorAll('#tpg-mid .cl-n')]; return ns.length > 0 && ns.every((e) => /\b(ok|busy|bad)\b/.test(e.className)) && !!document.querySelector('#tpg-live .cl-v')?.dataset.s && !!document.querySelector('#tpg-live .cl-chain li:not(.sl)'); }, null, { timeout: 30000 }).catch(() => {});
+      const { cells, nx, head } = await page.evaluate(() => ({
+        cells: Object.fromEntries([...document.querySelectorAll('#tpg-mid .cl-n')].map((e) => [e.querySelector('.cl-k')?.textContent, [...e.classList].find((c) => /^(ok|busy|bad)$/.test(c)) || ''])),
+        nx: !!document.querySelector('#tpg-live .cl-chain li.nx'), head: document.querySelector('#tpg-live .cl-v')?.dataset.s || '' }));
+      ok(cells.Payments === want && nx === forming && (want !== 'ok' || head === 'ok'),
+        `${what}: the Payments line is ${want}${want === 'ok' ? ' and the panel says Working' : ''}, ${forming ? 'a block forming' : 'no block forming'} (${JSON.stringify(cells)}, forming ${nx}, panel ${head})`);
+      ok(bad.length === 0, `and no errors (${bad.join(' | ')})`);
+      await ctx.close();
+    }
+    HOLD.pending = null; HOLD.notes = null;
   }
   // a phone and a desk, light and dark: nothing sideways. On the phone the card comes under the chain's newest blocks and over its path, its amount
   // on the first screen. These accounts hold no ETH: the leader sends a shield in for its fee, with nothing else to choose
