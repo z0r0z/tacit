@@ -2,6 +2,7 @@
 //   node --test tests/job-picker.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { readFileSync } from 'node:fs';
 import { makeJobPicker } from '../worker-relay/src/lib/job-picker.js';
 
 // A queue of jobs by kind; confidentialJob({ mode }) hands out the oldest of that kind, like the API's nextJob.
@@ -96,4 +97,51 @@ test('a due turn with no prove-only job waiting is spent, not asked for again ev
 
 test('a missing client is refused', () => {
   assert.throws(() => makeJobPicker({}), /confidentialJob is required/);
+});
+
+test('a waiting swap holds the prove-only turn back until `proveHoldSecs` since the last, and then the turn comes', async () => {
+  let t = 0; const now = () => t;
+  const q = queue({ settle: 6, prove: 2 });
+  const pick = makeJobPicker({ confidentialJob: q.confidentialJob, proveTurnEvery: 4, proveTurnSecs: 120, proveHoldSecs: 300, now });
+  assert.deepStrictEqual(await drain(pick, 5, { pinned: true }), ['s1', 's2', 's3', 's4', 's5'], 'four settles are due a prove-only turn when nothing waits, not while a swap does');
+  assert.strictEqual(pick.proveDue(), true, 'it is due as before for the unpinned rule');
+  assert.strictEqual(pick.proveDue({ pinned: true }), false, 'but not while a swap waits');
+  t = 200_000;
+  assert.strictEqual(pick.proveDue({ pinned: true }), false, 'two minutes past the usual turn, still held for the swap');
+  t = 300_000;
+  assert.strictEqual(pick.proveDue({ pinned: true }), true, 'after proveHoldSecs the prove-only job is not starved');
+  assert.strictEqual((await pick({ pinned: true }))?.jobId, 'p1');
+  assert.strictEqual(pick.proveDue({ pinned: true }), false, 'its turn spent, the swap goes on first again');
+});
+
+test('proveHoldSecs 0: no prove-only turn at all while a swap waits, but the turn is as before when none does', async () => {
+  let t = 0; const now = () => t;
+  const q = queue({ settle: 8, prove: 1 });
+  const pick = makeJobPicker({ confidentialJob: q.confidentialJob, proveTurnEvery: 2, proveTurnSecs: 60, now });
+  t = 10 * 60_000;
+  assert.deepStrictEqual(await drain(pick, 6, { pinned: true }), ['s1', 's2', 's3', 's4', 's5', 's6']);
+  assert.strictEqual(pick.proveDue({ pinned: true }), false);
+  assert.strictEqual(pick.proveDue(), true);
+  assert.strictEqual((await pick())?.jobId, 'p1', 'with no swap waiting the turn comes');
+});
+
+test('a waiting swap does not make the picker take prove-only jobs when no settle is waiting, and an unpinned call is the old behavior', async () => {
+  const q = queue({ settle: 0, prove: 2 });
+  const pick = makeJobPicker({ confidentialJob: q.confidentialJob, proveHoldSecs: 300 });
+  assert.deepStrictEqual(await drain(pick, 3, { pinned: true }), ['p1', 'p2', null], 'with no settle claimable the prove-only jobs go on, as always');
+  const q2 = queue({ settle: 9, prove: 2 });
+  const pick2 = makeJobPicker({ confidentialJob: q2.confidentialJob, proveTurnEvery: 3, proveHoldSecs: 300 });
+  assert.deepStrictEqual(await drain(pick2, 5), ['s1', 's2', 's3', 'p1', 's4']);
+});
+
+test('settle-relay.js tells the picker when a swap waits, holds no company for it, and reads the hold from config', () => {
+  const src = readFileSync(new URL('../worker-relay/src/settle-relay.js', import.meta.url), 'utf8');
+  const cfg = readFileSync(new URL('../worker-relay/src/lib/config.js', import.meta.url), 'utf8');
+  const cyc = src.slice(src.indexOf('async function cycle()'), src.indexOf('async function cycle()') + 3500);
+  assert.match(src, /makeJobPicker\(\{[^}]*proveHoldSecs: CFG\.proveHoldSecs/, 'the picker gets the hold');
+  assert.match(cfg, /proveHoldSecs: num\('PROVE_HOLD_SECS', 300\)/, 'five minutes by default');
+  assert.match(cyc, /const pinned = Number\(q\?\.pendingPinned\) > 0;/, 'the queue says whether a swap waits');
+  assert.match(cyc, /const gather = short \|\| pinned \? 0 : await gatherWait\(q\);/, 'a waiting swap is not held for company');
+  assert.match(cyc, /pickJob\.proveDue\(\{ pinned \}\) \? await pickJob\.proveTurn\(\)/, 'the prove-only turn before a batch follows the same rule');
+  assert.match(cyc, /await pickJob\(\{ short, gather, pinned \}\)/, 'and so does the pick');
 });

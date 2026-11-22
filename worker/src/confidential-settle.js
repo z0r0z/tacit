@@ -783,7 +783,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   async function queueStats() {
     const pend = await storage.getPending();
     const t = clock();
-    let pending = 0, proving = 0, oldestPendingMs = 0, oldestProvingMs = 0, pendingSettle = 0, oldestPendingSettleMs = 0, pendingProveOnly = 0, provingType = null;
+    let pending = 0, proving = 0, oldestPendingMs = 0, oldestProvingMs = 0, pendingSettle = 0, oldestPendingSettleMs = 0, pendingProveOnly = 0, pendingPinned = 0, provingType = null;
     for (const id of pend) {
       const j = await storage.getJob(id);
       if (!j) continue;
@@ -792,6 +792,8 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
         if ((j.mode || 'settle') === 'prove') pendingProveOnly++;
         // Only a relayed settle can share a settle with another: a prove-only job is handed back to its page and is never batched.
         if ((j.mode || 'settle') === 'settle' && !j.exit && !(j.retryAfter && t < j.retryAfter)) { pendingSettle++; oldestPendingSettleMs = Math.max(oldestPendingSettleMs, t - (j.createdAt || t)); }
+        // A relayed swap or liquidity add the relay could take now: its reserves go stale as the pool moves, so the relay does not hold it for company or for a prove-only job (settle-relay.js).
+        if ((j.mode || 'settle') === 'settle' && !j.early && !j.exit && PINNED_TYPES.includes(j.type) && !(j.retryAfter && t < j.retryAfter)) pendingPinned++;
       }
       else if (j.status === 'proving') {
         proving++;
@@ -801,7 +803,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     }
     // `open`: proved jobs waiting on the board for a sender (they are not in the pending queue).
     const open = (await getOpen()).length;
-    return { pending, proving, open, pendingSettle, pendingProveOnly, oldestPendingSec: Math.round(oldestPendingMs / 1000), oldestPendingSettleSec: Math.round(oldestPendingSettleMs / 1000), oldestProvingSec: Math.round(oldestProvingMs / 1000), provingType };
+    return { pending, proving, open, pendingSettle, pendingPinned, pendingProveOnly, oldestPendingSec: Math.round(oldestPendingMs / 1000), oldestPendingSettleSec: Math.round(oldestPendingSettleMs / 1000), oldestProvingSec: Math.round(oldestProvingMs / 1000), provingType };
   }
 
   async function pendingCount() {

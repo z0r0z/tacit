@@ -613,4 +613,24 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   ok('the sender and kind maps drop jobs that left the queue');
 }
 
+// ───────────────── 26. the queue says how many swaps and liquidity adds wait for the relay (it does not hold them for company or a prove-only job) ─────────────────
+{
+  const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, senders: new Map(), kinds: new Map(), retries: new Map() });
+  const op = (k) => ({ chainBinding: '0xcb', spendRoot: '0xr', fee: 0, n: k });
+  assert.strictEqual((await q.queueStats()).pendingPinned, 0);
+  await q.submitJob({ type: 'transfer', op: op('ps-t'), memos: [] });
+  await q.submitJob({ type: 'route', op: op('ps-r1'), memos: [] });
+  await q.submitJob({ type: 'lp', op: op('ps-l'), memos: [] });
+  await q.submitJob({ type: 'swap', op: op('ps-s-proveonly'), memos: [], mode: 'prove' });
+  await q.submitJob({ type: 'swap', op: op('ps-s-early'), memos: [], mode: 'prove', early: true });
+  const st = await q.queueStats();
+  assert.strictEqual(st.pendingPinned, 2, 'a relayed route and a liquidity add count; a transfer, a prove-only swap and a proof asked for ahead of a press do not');
+  const c = await q.nextJob();
+  assert.strictEqual(c.type, 'route');
+  assert.strictEqual((await q.queueStats()).pendingPinned, 1, 'one being proved is not waiting');
+  await q.ackJob(c.jobId, { error: 'swap not proved: the pool moved after this was built (0x29b3c833)' });
+  assert.strictEqual((await q.queueStats()).pendingPinned, 1);
+  ok('queueStats: pendingPinned counts the relayed swaps and adds that wait, not prove-only, early, claimed or other kinds');
+}
+
 console.log(`\n${n} confidential-settle checks passed.`);

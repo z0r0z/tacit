@@ -425,6 +425,8 @@ export const CFG = {
   proveTurnEvery: num('PROVE_TURN_EVERY', 4),
   // ...and once this many seconds have passed since the last prove-only turn while settles (batched ones too) keep coming (0: off).
   proveTurnSecs: num('PROVE_TURN_SECS', 120),
+  // While a swap waits, a prove-only job's turn comes this often instead (0: never while one waits).
+  proveHoldSecs: num('PROVE_HOLD_SECS', 300),
   // An op the board's input builder cannot read fails at once instead of after the binary has spent minutes starting up on it (PROVER_FAIL_FAST_BAD_OP=0: the old way).
   proverFailFastBadOp: opt('PROVER_FAIL_FAST_BAD_OP', '1') !== '0',
   // the longest an idle relay waits on the API's wake before looking again (0: the plain SETTLE_POLL_SECS pause)

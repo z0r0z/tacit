@@ -16,19 +16,24 @@
 //   if (!job?.jobId && await batchCycle()) pick.settled();
 //   job = await pick({ short, gather });   // → the API's job ({ jobId, ... }) or {} / null when there is none
 //
+// `pinned` (a swap or liquidity add waits) holds the prove-only turns back for `proveHoldSecs` (see proveDue below).
 // `short` (the settle wallet cannot pay) and `gather` (settles are being left a moment for company) both take only prove-only jobs, as the relay always did.
-export function makeJobPicker({ confidentialJob, proveTurnEvery = 4, proveTurnSecs = 0, now = Date.now } = {}) {
+export function makeJobPicker({ confidentialJob, proveTurnEvery = 4, proveTurnSecs = 0, proveHoldSecs = 0, now = Date.now } = {}) {
   if (typeof confidentialJob !== 'function') throw new Error('makeJobPicker: confidentialJob is required');
   let settles = 0;      // settles sent since a prove-only job last had a turn
   let turnAt = now();   // when a prove-only job last had a turn, or one was looked for and none waited
   const turned = () => { settles = 0; turnAt = now(); };
-  const proveDue = () => (proveTurnEvery > 0 && settles >= proveTurnEvery) || (proveTurnSecs > 0 && settles > 0 && now() - turnAt >= proveTurnSecs * 1000);
+  // `pinned`: a swap waits. It pins the pool's reserves, which the next settle on the pool outdates, so a prove-only job (a minute or more of the loop,
+  // none of it for the swap) is made to wait for it: its turn then comes only once `proveHoldSecs` have passed since the last one (0: not while a swap waits).
+  const proveDue = ({ pinned = false } = {}) => pinned
+    ? proveHoldSecs > 0 && settles > 0 && now() - turnAt >= proveHoldSecs * 1000
+    : (proveTurnEvery > 0 && settles >= proveTurnEvery) || (proveTurnSecs > 0 && settles > 0 && now() - turnAt >= proveTurnSecs * 1000);
   // Taken or not, the turn is spent: an empty prove-only queue is not asked again every cycle.
   async function proveTurn() { const j = await confidentialJob({ mode: 'prove' }); turned(); return j; }
   async function takeProve() { const j = await confidentialJob({ mode: 'prove' }); if (j?.jobId) turned(); return j; }
-  async function pick({ short = false, gather = false } = {}) {
+  async function pick({ short = false, gather = false, pinned = false } = {}) {
     if (short || gather) return takeProve();
-    if (proveDue()) {
+    if (proveDue({ pinned })) {
       const turn = await proveTurn();
       if (turn?.jobId) return turn;
     }

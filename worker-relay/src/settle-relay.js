@@ -701,9 +701,8 @@ const mixedOn = () => CFG.settleBatchMixed && !!CFG.networkPrivateKey && Date.no
 // SETTLE_BATCH_WAIT_MAX_SECS; prove-only jobs are never held (they are not batched).
 const batchWindow = makeBatchWindow({ maxWaitMs: CFG.settleBatchWaitMaxSecs * 1000 });
 let gatherNotedAt = 0;
-async function gatherWait() {
+async function gatherWait(q) {
   if (CFG.settleBatchMax <= 1 || CFG.settleBatchWaitMaxSecs <= 0) return 0;
-  const q = await confidentialQueue().catch(() => null);
   if (!q) return 0;
   // Only relayed settles can join one another: a queue of prove-only jobs holds nobody, and an older API that does not say how many
   // of the pending are settles gets the old reading.
@@ -1118,7 +1117,8 @@ async function freeProveAllowed(type) {
 
 // Relayed settles are claimed before prove-only jobs (which can cost minutes of this one loop before they fail), and a prove-only job still has its turn
 // after every PROVE_TURN_EVERY settles or batches, and once PROVE_TURN_SECS have passed since the last one had it (lib/job-picker.js).
-const pickJob = makeJobPicker({ confidentialJob, proveTurnEvery: CFG.proveTurnEvery, proveTurnSecs: CFG.proveTurnSecs });
+const pickJob = makeJobPicker({ confidentialJob, proveTurnEvery: CFG.proveTurnEvery, proveTurnSecs: CFG.proveTurnSecs, proveHoldSecs: CFG.proveHoldSecs });
+let pinnedNotedAt = 0;
 
 async function cycle() {
   const short = await fundsShort();
@@ -1130,12 +1130,20 @@ async function cycle() {
   // Paused: nothing is claimed, so every job keeps its place in the queue until the credit covers a request.
   if (paused) return false;
   // Gathering: the queued settle jobs are left a moment for company; only prove-only jobs are taken meanwhile.
-  const gather = short ? 0 : await gatherWait();
+  // A swap or liquidity add that waits is not held for company, and no prove-only job goes before it for a while: its reserves are outdated by the next settle on its pool,
+  // so every minute it waits is a refusal and a build again (the queue says how many wait: worker/src/confidential-settle.js queueStats).
+  const q = short ? null : await confidentialQueue().catch(() => null);
+  const pinned = Number(q?.pendingPinned) > 0;
+  const gather = short || pinned ? 0 : await gatherWait(q);
+  if (pinned && pickJob.proveDue() && !pickJob.proveDue({ pinned }) && Date.now() - pinnedNotedAt > 60_000) {
+    pinnedNotedAt = Date.now();
+    log(`${q.pendingPinned} swap${q.pendingPinned === 1 ? '' : 's'} waiting: a prove-only job's turn is held back for them (up to ${CFG.proveHoldSecs} s since the last)`);
+  }
   // A prove-only job whose turn has come goes before a batch too: batches alone would hold it for as long as settles keep arriving.
-  let job = !short && !gather && pickJob.proveDue() ? await pickJob.proveTurn() : null;
+  let job = !short && !gather && pickJob.proveDue({ pinned }) ? await pickJob.proveTurn() : null;
   if (!job?.jobId) {
     if (!short && !gather && await batchCycle()) { pickJob.settled(); return true; }
-    job = await pickJob({ short, gather });
+    job = await pickJob({ short, gather, pinned });
   }
   if (gather && !job?.jobId) { await sleep(Math.min(gather / 1000, CFG.settlePollSecs)); return true; }
   // While the wallet cannot pay for a settle, a relayed job any account could send is still proved and put on the open
