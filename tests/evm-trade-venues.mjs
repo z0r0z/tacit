@@ -441,4 +441,23 @@ const B32 = '0x' + 'ab'.repeat(32);
   ok('quoteZQuoter needs no deadline from its caller: the tile\'s probe reaches the node (status no-route, not error) with a default half an hour out');
 }
 
+// ── build() of a zQuoter route reads the floor in its calldata ──
+{
+  const v = makeEvmTradeVenues({ ethCall: async () => { throw new Error('no node'); } });
+  const A1z = '0x' + '11'.repeat(20), pad = (a) => String(a).replace(/^0x/, '').toLowerCase().padStart(64, '0'), wordN = (x) => BigInt(x).toString(16).padStart(64, '0');
+  const swapV2 = (to, tin, tout, amt, lim, dl) => '0x6e0a4f98' + [pad(to), wordN(0), pad(tin), pad(tout), wordN(amt), wordN(lim), wordN(dl)].join('');
+  const amountIn = 10n ** 17n, amountOut = 1000n * 10n ** 18n, limit = (amountOut * 99n) / 100n, dl = 1900000000n;
+  const quote = { venue: VENUES.ZQUOTER, status: 'ok', amountIn, amountOut, feeBps: 30n, callData: swapV2(A1z, ZERO_ADDR, TAC_ERC20, amountIn, limit, dl), msgValue: amountIn };
+  const built = v.build({ quote, dir: 'ETH_TO_TAC', account: A1z, minOut: limit });
+  assert.equal(built.to.toLowerCase(), ZROUTER.toLowerCase());
+  assert.equal(built.data, quote.callData, 'a route whose floor meets the reviewed minimum is sent as quoted');
+  assert.equal(built.value, amountIn);
+  assert.equal(v.build({ quote, dir: 'ETH_TO_TAC', account: A1z, minOut: limit - 1n }).data, quote.callData, 'a lower reviewed minimum also takes it');
+  assert.throws(() => v.build({ quote, dir: 'ETH_TO_TAC', account: A1z, minOut: limit + 1n }), /zQuoter route does not fit/, 'a floor under the reviewed minimum is not sent');
+  assert.throws(() => v.build({ quote, dir: 'ETH_TO_TAC', account: A1z, slippageBps: 50 }), /zQuoter route does not fit/, 'nor under the default 0.5%');
+  const other = { ...quote, callData: swapV2('0x' + '22'.repeat(20), ZERO_ADDR, TAC_ERC20, amountIn, limit, dl) };
+  assert.throws(() => v.build({ quote: other, dir: 'ETH_TO_TAC', account: A1z, minOut: limit }), /zQuoter route does not fit/, 'a route paying another address is not sent');
+  ok('build() sends a zQuoter route only when its own floor pays at least the reviewed minimum, to the account, for the amount quoted');
+}
+
 console.log(`\n${n} evm-trade-venues checks passed`);

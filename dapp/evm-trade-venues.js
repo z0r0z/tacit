@@ -522,6 +522,10 @@ export function makeEvmTradeVenues({ ethCall, keccak256 } = {}) {
     if (quote.venue === VENUES.TACIT_AMM) return buildTacitAmmSwap({ quote, dir, account, to, minOut, deadline: dl, permit });
     if (quote.venue === VENUES.ZQUOTER) {
       if (String(to).toLowerCase() !== String(account).toLowerCase()) throw new Error('build: a zQuoter route is quoted for one recipient');
+      // the route's own floor is read from its calldata: it is sent only when it pays at least `minOut`
+      const tokenIn = dir === 'ETH_TO_TAC' ? ZERO_ADDR : TAC_ERC20, tokenOut = dir === 'ETH_TO_TAC' ? TAC_ERC20 : ZERO_ADDR;
+      const why = checkZRouterCall(quote.callData, { to: account, tokenIn, tokenOut, exactOut: false, amount: quote.amountIn, maxIn: quote.amountIn, minOut });
+      if (why) throw new Error(`build: the zQuoter route does not fit this swap (${why})`);
       return buildZQuoterSwap({ quote });
     }
     throw new Error(`build: unknown venue ${quote.venue}`);
