@@ -22,7 +22,7 @@ const { makeTacPool, parseAmount, CLAIM_HASH } = await import('../dapp/tac/pool.
 const ASSET = 'f0'.repeat(32), TAC = 100000000n;
 const pw = { addressString: 'bp1qmine', network: 'mainnet' };
 const notes = [{ nf: '01', value: String(30n * TAC), asset: ASSET }, { nf: '02', value: String(20n * TAC), asset: ASSET }];
-const calls = { pay: [], exit: [], shield: [], create: [], sweep: [], hist: [] };
+const calls = { pay: [], exit: [], shield: [], create: [], sweep: [], hist: [], sync: [] };
 let histFail = false, joiningNow = 0n;   // what secret.js's pendingView reports as settling: a shield waiting for its block
 const Y = new Date().getUTCFullYear(), noon = (y, m, d) => Date.UTC(y, m, d, 12) / 1000;
 const HIST = [
@@ -42,6 +42,7 @@ const S = {
   payPrivately: async (t, o) => { calls.pay.push(o); return { revealTxid: 'aa'.repeat(32), relayed: true }; },
   exitToWallet: async (t, o) => { calls.exit.push(o); return { revealTxid: 'bb'.repeat(32) }; },
   shieldNote: async (t, o) => { calls.shield.push(o); joiningNow = BigInt(o.note.amount); return { revealTxid: 'cc'.repeat(32), poolNote: { value: o.note.amount } }; },
+  syncPendingShields: async (t, w) => { calls.sync.push({ t, w }); },   // secret.js's look at the Bitcoin address's mempool
   recoverExitOpenings: async () => 0,
 };
 const C = {
@@ -78,6 +79,7 @@ assert.deepEqual([...host.querySelectorAll('[data-tp]')].map((b) => b.textConten
 assert.match(st('tp-bal'), /50 TAC shielded, in 2 notes/, 'the shielded balance is read for the key');
 assert.deepEqual(tp.totals(), { shielded: 50n * TAC, joining: 0n, public: 7n * TAC, forSale: null });
 assert.doesNotMatch(st('tp-bal'), /joining/, 'nothing is joining before a shield');
+assert.ok(calls.sync.length >= 1 && calls.sync.every((c) => c.w === pw && c.t === T), 'the shielded read also looks at what the key’s Bitcoin address has waiting, for the key’s own pool wallet');
 {
   // History, read only when asked for: each transaction, when, what it was and what it did to the balance, with its link
   assert.equal($('tp-hist').hidden, true, 'no history until asked for');

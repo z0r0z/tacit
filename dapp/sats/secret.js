@@ -309,15 +309,52 @@ function pendingRead() {
   return out;
 }
 const ownerTag = (poolWallet) => (poolWallet?.addressString ? String(poolWallet.addressString).slice(-16) : null);
-function pendingMark(notes, txid, change, asset, out = 0n, owner = null, { pay = false, hold = null } = {}) {
+function pendingMark(notes, txid, change, asset, out = 0n, owner = null, { pay = false, hold = null, shield = false } = {}) {
   const p = pendingRead(), at = Date.now();
   for (const n of notes) if (n.nf) p.spent[nfKey(n.nf)] = { at, txid, ...(hold ? { until: at + hold } : {}) };
-  if (txid && (change > 0n || out > 0n)) p.change[txid] = { at, v: change.toString(), ...(out > 0n ? { [pay ? 'pay' : 'out']: out.toString() } : {}), asset: String(asset).replace(/^0x/, '').toLowerCase(), ...(owner ? { owner } : {}) };
+  if (txid && (change > 0n || out > 0n)) p.change[txid] = { at, v: change.toString(), ...(out > 0n ? { [pay ? 'pay' : 'out']: out.toString() } : {}), asset: String(asset).replace(/^0x/, '').toLowerCase(), ...(owner ? { owner } : {}), ...(shield ? { shield: true } : {}) };
   try { if (typeof localStorage !== 'undefined') localStorage.setItem(PENDING_KEY, JSON.stringify(p)); } catch {}
 }
 // A shield joins the pool with its block. Until then the note it spent is gone from the public list and the pool's list has nothing of it, so the amount
 // is kept as settling (pendingView) until that list holds a note of the shield's own transaction: the balance can say where the TAC is.
-function markShield(poolWallet, revealTxid, asset, total) { pendingMark([], revealTxid, BigInt(total), asset, 0n, ownerTag(poolWallet)); }
+function markShield(poolWallet, revealTxid, asset, total) { pendingMark([], revealTxid, BigInt(total), asset, 0n, ownerTag(poolWallet), { shield: true }); }
+function pendingDrop(txid) {
+  const p = pendingRead();
+  if (!(txid in p.change)) return;
+  delete p.change[txid];
+  try { if (typeof localStorage !== 'undefined') localStorage.setItem(PENDING_KEY, JSON.stringify(p)); } catch {}
+}
+// What this browser kept is not the whole story: a shield made on another device, or before this browser kept one, is waiting too, and one this browser kept may
+// have been dropped or replaced since. The wallet's Bitcoin address says which: its transactions in the mempool that carry a shield, the amount read by opening
+// their output notes under the pool wallet (as the pool's own list is read), are kept as joining; a kept shield that is in no block and no longer in the mempool is
+// let go, after a short grace for an explorer that has not heard of it yet. One look at a time per wallet, and not again within 15 seconds.
+const T_BTC_SHIELD = 0x6c, SHIELD_GRACE_MS = 90e3, SHIELD_LOOK_MS = 15e3;
+const shieldLooks = new Map();
+export function syncPendingShields(tacit, poolWallet, { address = null, force = false } = {}) {
+  const addr = address || tacit.wallet.address(), key = `${addr}|${ownerTag(poolWallet)}`, kept = shieldLooks.get(key);
+  if (!force && kept && Date.now() - kept.at < SHIELD_LOOK_MS) return kept.p;
+  const p = lookPendingShields(tacit, poolWallet, addr);
+  shieldLooks.set(key, { at: Date.now(), p });
+  p.catch(() => { if (shieldLooks.get(key)?.p === p) shieldLooks.delete(key); });
+  return p;
+}
+async function lookPendingShields(tacit, poolWallet, addr) {
+  const waiting = await esplora(tacit, `/address/${addr}/txs/mempool`), owner = ownerTag(poolWallet), inMempool = new Set();
+  for (const tx of Array.isArray(waiting) ? waiting : []) {
+    const env = tacit.txOutputEnvelope(tx);
+    if (!env || env.opcode !== T_BTC_SHIELD) continue;
+    let sh;
+    try { sh = pool.parseShield(env.payload); } catch { continue; }
+    inMempool.add(tx.txid);
+    const total = pool.scan(poolWallet, sh.outputs.map((o, j) => ({ ...o, leafIndex: j }))).reduce((t, x) => t + BigInt(x.value), 0n);
+    if (total > 0n && !(tx.txid in pendingRead().change)) pendingMark([], tx.txid, total, sh.asset, 0n, owner, { shield: true });
+  }
+  const now = Date.now();
+  for (const [txid, c] of Object.entries(pendingRead().change)) {
+    if (!c.shield || inMempool.has(txid) || (c.owner && owner && c.owner !== owner) || now - c.at < SHIELD_GRACE_MS) continue;
+    if ((await esplora(tacit, `/tx/${txid}`).catch(() => undefined)) === null) pendingDrop(txid);   // null: the explorer knows no such transaction
+  }
+}
 export function pendingView(notes, asset, poolWallet = null) {
   const p = pendingRead(), seen = new Set(notes.map((n) => n.txid)), owner = ownerTag(poolWallet);
   const live = notes.filter((n) => !n.spent && !(n.nf && p.spent[nfKey(n.nf)]));

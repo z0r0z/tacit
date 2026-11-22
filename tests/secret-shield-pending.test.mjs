@@ -1,13 +1,24 @@
 // A shield into the Bitcoin pool counts in the pool with its block. Until then the note it spent is gone from the public list and the pool's list
 // holds nothing of it, so secret.js keeps the amount as settling (pendingView) from the moment the shield goes out until the pool lists a note of the
 // shield's own transaction. Both ways in are covered, shieldNote and buyAndShield; a shield Bitcoin refused leaves nothing behind.
-// The explorer, the carrier's Bitcoin calls and the prover are stood in; the shield envelope is built for real.
+// What this browser kept is checked against the chain (syncPendingShields): the wallet address's mempool transactions that carry a shield are kept as joining
+// (their output notes opened under the pool wallet, so a shield made elsewhere counts, and one into another wallet does not), and a kept shield that is in no block
+// and no longer in the mempool is let go. The explorer, the carrier's Bitcoin calls and the prover are stood in; the shield envelope is built for real, and the
+// envelope is carried and read back by tacit.js itself.
 //   node tests/secret-shield-pending.test.mjs
 
 import assert from 'node:assert/strict';
+import { JSDOM } from './_jsdom.mjs';
+
+const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' });
+for (const k of ['window', 'document', 'location', 'navigator']) globalThis[k] = dom.window[k];
+globalThis.__TACIT_NO_INIT__ = true;
+dom.window.localStorage.setItem('tacit-network-v1', 'mainnet');
+globalThis.localStorage = dom.window.localStorage;
+const real = await import('../dapp/tacit.js');
 
 const mem = new Map();
-globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
+globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k), clear: () => mem.clear() };
 
 const secret = await import('../dapp/sats/secret.js');
 const { secp } = await import('../dapp/vendor/tacit-deps.min.js');
@@ -78,4 +89,91 @@ mem.clear(); sent = false; refuseReveal = true;
 await assert.rejects(() => shieldNote(tacit, { note, poolWallet: pw }), /Bitcoin refused/);
 assert.equal(pendingView([], ASSET, pw).settling, 0n, 'nothing is joining when the shield did not go out');
 
+// ── syncPendingShields: the chain's side ──
+const hex = (b) => Buffer.from(b).toString('hex');
+const shieldPayload = (wallet, amount = AMOUNT) => {
+  const { cx: x, cy: y } = pool.commitXY(amount, '0x' + blindHex);
+  const built = pool.buildShieldEnvelope({ asset: '0x' + ASSET, inputs: [{ txid: TXID, vout: 0, Cx: x, Cy: y, value: amount, blinding: BLINDING }], recipientAddress: wallet.addressString, network: 'mainnet' });
+  return Uint8Array.from([...built.body, ...Buffer.from(built.kernelSig.replace(/^0x/, ''), 'hex'), 4, 0, 0, 0, 0, 0]);
+};
+const PAYLOAD = { mine: shieldPayload(pw), other: shieldPayload(other, 5n * 10n ** 8n) };   // built once: each is a real proof of the amount's boundary
+const carried = (txid, payload) => ({ txid, vin: [{ witness: ['00', hex(real.encodeEnvelopeScript(new Uint8Array(32).fill(5), payload)), '00'] }], vout: [] });
+const ADDR = 'bc1qmine', SHIELD_TX = 'f1'.repeat(32), OTHER_TX = 'f2'.repeat(32), PLAIN_TX = 'f3'.repeat(32), OLD_TX = 'f4'.repeat(32);
+const chain = { NET: { api: 'https://esplora.test', api2: null }, wallet: { address: () => ADDR }, txOutputEnvelope: real.txOutputEnvelope };
+let mempool = [], txs = {}, asked = [];
+globalThis.fetch = async (url) => {
+  const path = url.replace('https://esplora.test', '');
+  asked.push(path);
+  if (path === `/address/${ADDR}/txs/mempool`) { if (mempool instanceof Error) throw mempool; return { ok: true, status: 200, json: async () => mempool }; }
+  const m = /^\/tx\/([0-9a-f]{64})$/.exec(path);
+  const t = m ? txs[m[1]] : undefined;
+  if (t instanceof Error) throw t;
+  return t === undefined ? { ok: false, status: 404, json: async () => null } : { ok: true, status: 200, json: async () => t };
+};
+const sync = (wallet = pw) => secret.syncPendingShields(chain, wallet, { force: true });
+const keep = (rec) => localStorage.setItem('tacit-pool-pending-v1', JSON.stringify({ spent: {}, change: rec }));
+const store = () => JSON.parse(localStorage.getItem('tacit-pool-pending-v1') || '{"change":{}}').change;
+const settling = (wallet = pw) => pendingView([], ASSET, wallet).settling;
+const aged = (txid, ago, extra = {}) => ({ [txid]: { at: Date.now() - ago, v: String(AMOUNT), asset: ASSET, owner: pw.addressString.slice(-16), shield: true, ...extra } });
+
+// a shield made somewhere else: this browser kept nothing, the mempool holds it
+localStorage.clear(); mem.clear();
+mempool = [carried(SHIELD_TX, PAYLOAD.mine)];
+assert.equal(settling(), 0n, 'nothing kept here');
+await sync();
+assert.equal(settling(), AMOUNT, 'the shield in the mempool counts as joining, its amount opened under the pool wallet');
+assert.equal(store()[SHIELD_TX].shield, true);
+await sync();
+assert.equal(settling(), AMOUNT, 'a second look does not count it twice');
+assert.equal(Object.keys(store()).length, 1);
+assert.equal(settling(other), 0n, 'another wallet on this browser does not count it');
+
+// a shield into another wallet, and a transaction that is not a shield, are not this wallet's
+localStorage.clear();
+mempool = [carried(OTHER_TX, PAYLOAD.other), carried(PLAIN_TX, Uint8Array.from([0x01, 2, 3]))];
+await sync();
+assert.equal(settling(), 0n, 'a shield into someone else’s pool address is not joining');
+assert.deepEqual(store(), {}, 'and nothing is kept for it');
+
+// a kept shield: still in the mempool stays; once the pool lists it nothing is joining (pendingView), and the mempool no longer holds it
+localStorage.clear(); keep(aged(SHIELD_TX, 5 * 60e3));
+mempool = [carried(SHIELD_TX, PAYLOAD.mine)];
+await sync();
+assert.equal(settling(), AMOUNT, 'a kept shield still in the mempool stays');
+assert.ok(!asked.slice(-3).some((u) => u.includes(`/tx/${SHIELD_TX}`)), 'and is not asked about one by one');
+
+// a kept shield the mempool no longer holds
+for (const [what, tx, left] of [
+  ['confirmed (in a block)', { status: { confirmed: true } }, AMOUNT],
+  ['dropped or replaced (the explorer knows no such transaction)', undefined, 0n],
+  ['unknown because the explorer did not answer', new Error('offline'), AMOUNT],
+]) {
+  localStorage.clear(); keep(aged(OLD_TX, 5 * 60e3)); mempool = []; txs = { [OLD_TX]: tx };
+  await sync();
+  assert.equal(settling(), left, `a kept shield that is ${what}: ${left === 0n ? 'let go' : 'kept'}`);
+}
+localStorage.clear(); keep(aged(OLD_TX, 20e3)); mempool = []; txs = {};
+await sync();
+assert.equal(settling(), AMOUNT, 'a shield sent seconds ago is kept even if the explorer has not heard of it yet');
+localStorage.clear(); keep(aged(OLD_TX, 5 * 60e3, { owner: other.addressString.slice(-16) })); mempool = []; txs = {};
+await sync();
+assert.equal(settling(other), AMOUNT, 'another wallet’s kept shield is not judged by this wallet’s look');
+localStorage.clear(); keep({ [OLD_TX]: { at: Date.now() - 5 * 60e3, v: String(AMOUNT), asset: ASSET, owner: pw.addressString.slice(-16) } }); mempool = []; txs = {};
+await sync();
+assert.equal(settling(), AMOUNT, 'a record that is not a shield (a relayed payment’s change) is left to the pool’s list');
+
+// the look is shared and spaced, and an explorer that does not answer changes nothing
+localStorage.clear(); mem.clear(); keep(aged(SHIELD_TX, 5 * 60e3)); mempool = [carried(SHIELD_TX, PAYLOAD.mine)]; asked = [];
+const first = secret.syncPendingShields(chain, pw, { force: true });
+assert.equal(secret.syncPendingShields(chain, pw), first, 'a look within 15 seconds is the one already made');
+await first;
+assert.equal(asked.filter((u) => u.endsWith('/txs/mempool')).length, 1, 'one request for the mempool');
+mempool = new Error('offline');
+await assert.rejects(() => sync(), /offline/);
+assert.equal(settling(), AMOUNT, 'an explorer that does not answer leaves what was kept');
+mempool = [carried(SHIELD_TX, PAYLOAD.mine)];
+await secret.syncPendingShields(chain, pw);
+assert.equal(settling(), AMOUNT, 'and the next look is made again, not held to the failed one');
+
 console.log('secret shield pending: all passed');
+process.exit(0);   // tacit.js, loaded for its envelope reader, keeps timers alive

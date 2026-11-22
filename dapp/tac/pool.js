@@ -1,5 +1,5 @@
 
-const SECRET_URL = '/sats/secret.js?cb=b414c47c';
+const SECRET_URL = '/sats/secret.js?cb=9a70cb66';
 const SATS_URL = '/tac/sats.js?cb=2d64741d';
 const CLAIM_URL = '/tac/claim.js?cb=dc513e91';
 const WORKER = 'https://api.tacit.finance';
@@ -207,8 +207,12 @@ export function makeTacPool(ctx) {
     if (!w) return;
     shielded = { ...shielded, loading: true }; paintBalances();
     try {
+      // (what the Bitcoin address has waiting in the mempool is looked at while the pool's list is read: a shield made elsewhere, or one let go)
+      // (waited for a moment, not longer: an explorer that is slow changes the balance on the next read)
+      const waiting = S.syncPendingShields ? Promise.race([ctx.withKey((t) => S.syncPendingShields(t, w)).catch(() => {}), new Promise((r) => setTimeout(r, 2500))]) : null;
       const kept = feedFresh();
       const notes = kept ? (await S.poolClientFor('mainnet').walletNotes(S.pool, w, { notes: await kept })).filter((n) => lc(n.asset).replace(/^0x/, '') === S.TAC_ASSET_MAINNET) : await S.poolNotes(w, S.TAC_ASSET_MAINNET);
+      await waiting;
       if (wallet() !== w) return;
       shielded = { loading: false, notes, read: true };
       hist = null;
