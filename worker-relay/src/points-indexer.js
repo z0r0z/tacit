@@ -49,6 +49,7 @@ import { parseBoostTiers, openTacBoost, scanTacTransfers } from './lib/tac-holde
 import { build as buildMerkleTree, formatTac, rewardEntries } from './lib/points-merkle.js';
 import { factoryListsPool } from './lib/pool-registry.js';
 import { makeTtlCache } from './lib/ttl-cache.js';
+import { withReadCache } from './lib/read-cache-front.js';
 import { parseUrl, badRequest } from './lib/safe-url.js';
 import {
   openEvmPoolPointsState, scanEvmPoolChain, resolvePendingBoxes, explorerGet, isV1WrapViaEvmRouter, WRAP_BOX_COMPLETED_EVENT, rpcRefusal,
@@ -1684,7 +1685,7 @@ function startHttp(store, evmState) {
     previewMemo = { at: Date.now(), day: todayDay, upcoming: upcoming.fromDay, value };
     return value;
   };
-  const server = createServer(async (req, res) => {
+  const handleRequest = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'application/json');
 
@@ -1979,7 +1980,8 @@ function startHttp(store, evmState) {
       if (res.statusCode === 413) res.setHeader('Connection', 'close');
       res.end(JSON.stringify({ error: String(err?.message || err) }));
     }
-  });
+  };
+  const server = createServer(withReadCache(handleRequest, { parse: (req) => parseUrl(req, 'http://localhost'), ttlMs: CFG.pointsReadCacheMs }));
   server.listen(CFG.pointsHttpPort, () => log(`http listening on :${CFG.pointsHttpPort}`));
 }
 

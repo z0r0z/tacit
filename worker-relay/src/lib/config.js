@@ -661,6 +661,7 @@ export const CFG = {
   // pointsStartBlock — no backfill, so a wrap before that block never appears.
   pointsStartBlock: opt('POINTS_START_BLOCK', ''), // required: chain head at first deploy of this service
   pointsPollSecs: num('POINTS_POLL_SECS', 60),
+  pointsReadCacheMs: num('POINTS_READ_CACHE_MS', 10_000), // how long a read route's answer is shared; 0 turns it off
   pointsScanChunk: num('POINTS_SCAN_CHUNK', 2000), // getLogs block span per call
   // scanZRouterCycle's Signal 1 fetches a FULL block body (every transaction, not just hashes) per block in
   // range — much heavier than a getLogs call, so it gets its own, much smaller chunk. Signal 1 only runs on

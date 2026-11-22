@@ -73,6 +73,12 @@ try {
   }
   const lb = await get('/leaderboard?day=today&limit=1');
   assert.ok(lb.program, 'the rest of the service is unaffected');
+  // The read routes share one answer for a few seconds; health is never kept.
+  const first = await fetch(`http://127.0.0.1:${PORT}/leaderboard?limit=7`), second = await fetch(`http://127.0.0.1:${PORT}/leaderboard?limit=7`);
+  assert.equal(first.headers.get('x-points-cache'), 'miss'); assert.equal(second.headers.get('x-points-cache'), 'hit');
+  assert.equal(await first.text(), await second.text());
+  assert.equal((await fetch(`http://127.0.0.1:${PORT}/health`)).headers.get('x-points-cache'), null);
+  console.log('ok - read routes share one answer for a few seconds, health is not kept');
 } finally {
   child.kill('SIGKILL');
   rmSync(dir, { recursive: true, force: true });
