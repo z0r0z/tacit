@@ -32,5 +32,5 @@ export async function discoverProviders({ providers = [], boards = [], fetchImpl
 }
 
 // A provider's defaults, in base units of TAC (8 places): 0.30% and 1 TAC, from 10 to 1,000 TAC.
-// a flat fee of 0.1 TAC keeps the smallest bridge (10 TAC) at 1.3% with the default 0.3%, well inside the 5% a bridger's page accepts
+// a flat fee of 0.1 TAC keeps the smallest bridge (10 TAC) at 1.3% with the default 0.3%, well under the 5% above which a bridger's page marks a fee as high (it accepts up to 90%, fastbridge-client.js maxFeeBps)
 export const PROVIDER_DEFAULTS = { feeBps: 30, flatFee: 10_000_000n, minAmount: 1_000_000_000n, maxAmount: 100_000_000_000n };
