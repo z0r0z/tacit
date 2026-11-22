@@ -1,6 +1,6 @@
 // Before a proof is paid for, look on chain for inputs the settle would consume that are already gone: a note whose
-// nullifier is recorded as spent (a bridged Bitcoin note and a farm receipt included), or a wrap deposit that was
-// already consumed. Such a settle can only revert (the usual cause is a job served again after its first settle
+// nullifier is recorded as spent (a bridged Bitcoin note and a farm receipt included), a wrap deposit that was
+// already consumed, or a swap lock that a claim or refund already spent. Such a settle can only revert (the usual cause is a job served again after its first settle
 // landed), so it is failed without proving.
 //
 // Every id is recomputed from the job's own witness fields with the guest's formulas (cxfer-core leaf, native_nu,
@@ -11,6 +11,7 @@ import { keccak256, concat, pad, toHex, numberToHex } from 'viem';
 const NATIVE_NULLIFIER_DOM = toHex('tacit-native-nullifier-v1');
 const SPENT = toHex('spent');
 const NULLIFIER_SPENT_SLOT = pad('0x46', { size: 32 }); // ConfidentialPool.nullifierSpent, declaration slot 70
+export const LOCK_SPENT_SLOT = pad('0x77', { size: 32 }); // ConfidentialPool.lockSpent, declaration slot 119 (the slot the pages read it at)
 const MAX_READS = 64;
 const DEPOSIT_STATUS_ABI = [{ type: 'function', name: 'depositStatus', stateMutability: 'view', inputs: [{ type: 'bytes32' }], outputs: [{ type: 'uint8' }] }];
 const DEPOSIT_CONSUMED = 2;
@@ -56,6 +57,21 @@ export function farmReceiptNullifier(op) {
   return keccak256(concat([FARM_RECEIPT_NULL_DOM, leaf]));
 }
 
+// The lock nullifier an adaptor claim or refund records for the lock it spends (cxfer-core adaptor_lock_leaf, then the spent-once nullifier);
+// the pool refuses a second spend of it (LockAlreadySpent). A lock op spends none.
+const ADAPTOR_LOCK_DOM = toHex('tacit-adaptor-lock-v1');
+export function adaptorLockNullifier(op) {
+  if (!op || !['asset', 'lCx', 'lCy', 'tx', 'ty', 'recipient', 'locker'].every((k) => isHex32(op[k])) || op.deadline == null) return null;
+  const leaf = keccak256(concat([ADAPTOR_LOCK_DOM, b32(op.asset), b32(op.lCx), b32(op.lCy), b32(op.tx), b32(op.ty), numberToHex(BigInt(op.deadline), { size: 8 }), b32(op.recipient), b32(op.locker)]));
+  return keccak256(concat([leaf, SPENT]));
+}
+export function lockNullifiersOf(type, op) {
+  try {
+    if (type === 'adaptorclaim' || type === 'adaptorrefund') { const n = adaptorLockNullifier(op); return n ? [n] : []; }
+  } catch { /* an op in a shape this formula does not read is let through */ }
+  return [];
+}
+
 // Every nullifier the settle would record for this job that the witness fixes: the spent notes' own, plus the ones
 // whose types carry them another way.
 export function nullifiersOf(type, op) {
@@ -98,7 +114,7 @@ export function spentInputsOf(op) {
   return out;
 }
 
-// The first input the job's settle would consume that is already gone, as { kind: 'deposit' | 'nullifier', id,
+// The first input the job's settle would consume that is already gone, as { kind: 'deposit' | 'nullifier' | 'lock', id,
 // reason }, else null.
 export async function consumedInput({ type, op }, { client, pool }) {
   try {
@@ -115,6 +131,11 @@ export async function consumedInput({ type, op }, { client, pool }) {
       const word = await client.getStorageAt({ address: pool, slot: keccak256(concat([nu, NULLIFIER_SPENT_SLOT])) });
       if (word && word !== '0x' && BigInt(word) !== 0n) return { kind: 'nullifier', id: nu, reason: `input nullifier ${nu} is already spent` };
     }
+    for (const lu of lockNullifiersOf(type, op)) {
+      if (++reads > MAX_READS) return null;
+      const word = await client.getStorageAt({ address: pool, slot: keccak256(concat([lu, LOCK_SPENT_SLOT])) });
+      if (word && word !== '0x' && BigInt(word) !== 0n) return { kind: 'lock', id: lu, reason: `swap lock ${lu} is already spent` };
+    }
   } catch { return null; }
   return null;
 }
@@ -130,6 +151,7 @@ export function consumedAck(gone, { own = null, by = null, type = null } = {}) {
   if (gone.kind === 'deposit' && by && type === 'wrap') return { txHash: by, settledBy: by };
   const where = by ? ` in ${by}` : '';
   return { error: gone.kind === 'deposit' ? `this deposit was already settled into a private note${where}`
+    : gone.kind === 'lock' ? `this swap lock was already spent${where}; if that was this same claim, it went through`
     : `this note was already spent${where}; if that was this same request, it went through` };
 }
 

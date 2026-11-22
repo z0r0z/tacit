@@ -5,7 +5,7 @@
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { keccak256, concat, pad } from '../worker-relay/node_modules/viem/_esm/index.js';
-import { depositsOf, spentInputsOf, noteNullifier, depositIdOf, consumedInputs, consumedInput, consumedAck, unlandedDeposits, bridgeMintNullifier, farmReceiptNullifier, nullifiersOf } from '../worker-relay/src/lib/spent-precheck.js';
+import { depositsOf, spentInputsOf, noteNullifier, depositIdOf, consumedInputs, consumedInput, consumedAck, unlandedDeposits, bridgeMintNullifier, farmReceiptNullifier, nullifiersOf, adaptorLockNullifier, lockNullifiersOf, LOCK_SPENT_SLOT } from '../worker-relay/src/lib/spent-precheck.js';
 import { secp, sha256, keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 
@@ -130,5 +130,58 @@ ok('the same ν is not named twice, and a type without its own rule names only t
     });
   }
 }
+
+// ── swap locks: an adaptor claim or refund spends a lock once; the pool refuses a second spend (LockAlreadySpent) ──
+const advOp = (kind) => JSON.parse(readFileSync(new URL(`adaptor_${kind}_op.json`, OPS), 'utf8'));
+const advPv = (kind) => JSON.parse(readFileSync(new URL(`adaptor_${kind}_groth16.json`, PVS), 'utf8')).publicValues.toLowerCase();
+for (const [kind, type] of [['claim', 'adaptorclaim'], ['refund', 'adaptorrefund']]) {
+  ok(`${type}: the lock nullifier is the one the proof committed`, () => {
+    const nu = adaptorLockNullifier(advOp(kind));
+    assert.ok(nu && advPv(kind).includes(nu.slice(2).toLowerCase()), 'the guest committed this lock nullifier');
+    assert.deepEqual(lockNullifiersOf(type, advOp(kind)), [nu]);
+  });
+}
+ok('a lock op spends no lock, and other ops carry none', () => {
+  assert.deepEqual(lockNullifiersOf('adaptorlock', advOp('lock')), []);
+  assert.deepEqual(lockNullifiersOf('wrap', opOf('wrap')), []);
+  assert.deepEqual(lockNullifiersOf('adaptorclaim', {}), [], 'an op missing the lock fields is let through');
+  assert.deepEqual(lockNullifiersOf('adaptorclaim', { ...advOp('claim'), deadline: 'soon' }), [], 'and so is one the formula cannot read');
+  assert.deepEqual(lockNullifiersOf('adaptorclaim', null), []);
+});
+ok('the lock slot is the one the pages read the pool at', () => {
+  assert.equal(BigInt(LOCK_SPENT_SLOT), 119n);
+  for (const f of ['../dapp/fastbridge-evm.js', '../dapp/confidential-pool-ux.js']) assert.match(readFileSync(new URL(f, import.meta.url), 'utf8'), /LOCK_SPENT_SLOT = 119n/, f);
+});
+
+const lockSlotOf = (nu) => lc(keccak256(concat([nu, pad('0x77', { size: 32 })])));
+const lockChain = ({ spent = [], broken = false, reads = [] } = {}) => ({
+  async readContract() { throw new Error('a lock job reads no deposit'); },
+  async getStorageAt({ slot }) { reads.push(lc(slot)); if (broken) throw new Error('rpc down'); return spent.map(lockSlotOf).includes(lc(slot)) ? pad('0x1', { size: 32 }) : pad('0x0', { size: 32 }); },
+});
+const claimJob = { type: 'adaptorclaim', op: advOp('claim') };
+const refundJob = { type: 'adaptorrefund', op: advOp('refund') };
+for (const job of [claimJob, refundJob]) {
+  const lu = adaptorLockNullifier(job.op);
+  await okAsync(`${job.type}: a lock already spent stops the job before it is proved; an unspent one and an unreadable chain let it through`, async () => {
+    assert.deepEqual(await consumedInput(job, { client: lockChain({ spent: [lu] }), pool: POOL }), { kind: 'lock', id: lu, reason: `swap lock ${lu} is already spent` });
+    assert.match(await consumedInputs(job, { client: lockChain({ spent: [lu] }), pool: POOL }), /swap lock 0x[0-9a-f]{64} is already spent/);
+    assert.equal(await consumedInput(job, { client: lockChain(), pool: POOL }), null);
+    assert.equal(await consumedInput(job, { client: lockChain({ broken: true }), pool: POOL }), null);
+  });
+}
+await okAsync('the lock is read at the pool\'s lockSpent slot for its nullifier, and a lock op reads none', async () => {
+  const reads = [];
+  await consumedInput(claimJob, { client: lockChain({ reads }), pool: POOL });
+  assert.ok(reads.includes(lockSlotOf(adaptorLockNullifier(claimJob.op))), 'asked the mapping slot of this lock');
+  const lockReads = [];
+  assert.equal(await consumedInput({ type: 'adaptorlock', op: advOp('lock') }, { client: lockChain({ reads: lockReads, spent: [adaptorLockNullifier(advOp('lock'))] }), pool: POOL }), null);
+  assert.ok(!lockReads.includes(lockSlotOf(adaptorLockNullifier(advOp('lock')))), 'a lock op does not read lockSpent');
+});
+ok('a spent lock is acked in words that say a claim that already went through did', () => {
+  const lock = { kind: 'lock', id: '0x' + '11'.repeat(32), reason: 'x' };
+  assert.deepEqual(consumedAck(lock, { own: '0xaa' }), { txHash: '0xaa' });
+  assert.match(consumedAck(lock, { by: '0xbb', type: 'adaptorclaim' }).error, /^this swap lock was already spent in 0xbb; if that was this same claim, it went through$/);
+  assert.match(consumedAck(lock, {}).error, /^this swap lock was already spent; if that was this same claim/);
+});
 
 console.log(`\n${pass} passed, 0 failed`);
