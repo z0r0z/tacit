@@ -2,7 +2,7 @@
 //
 // A send there costs gas × price on the L2 and, separately, a fee for posting its bytes to Ethereum, paid out of the signer's balance
 // and not counted in gas. The keeper prices every send as gas × price, so on a chain where the second part is the larger one (Fraxtal's
-// is about 1e-4 ETH for a proof-sized call, against 1e-9 for the gas) it quotes and accepts fees that do not pay for the send, and a
+// is about 1e-4 of its gas token (FRAX) for a proof-sized call, against 5e-7 for the gas) it quotes and accepts fees that do not pay for the send, and a
 // receive-box sweep, whose fee is capped at 25 bps of the box, loses the difference every time.
 //
 // This module turns a call into the fee the chain's gas price oracle (OP's GasPriceOracle predeploy: getL1Fee(bytes), the signed

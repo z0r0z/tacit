@@ -952,7 +952,7 @@ services:
   #     # and confirmations, its fee floor (eth:20000000000000 on Ethereum, eth:5000000000000 on Base and Robinhood)
   #     # An OP-stack chain also charges an L1 data fee out of the signer's balance, which gas × price leaves out: set
   #     # EVM_POOL_KEEPER_L1_FEE_<chainId>=op there so quotes, relay fee checks and sweeps count it. Measured 22 Nov 2026 for 1 KB of
-  #     # calldata: Fraxtal 8e-5 ETH (set it), Base 1e-8 and MegaETH 3e-9 (negligible, leave unset); Ethereum and Robinhood have no
+  #     # calldata, in each chain's own gas token: Fraxtal 8e-5 FRAX (set it), Base 1e-8 ETH and MegaETH 3e-9 ETH (negligible, leave unset); Ethereum and Robinhood have no
   #     # such oracle (the setting would fail there, loudly).
   #     - key: EVM_POOL_KEEPER_PRIV_1
   #       sync: false

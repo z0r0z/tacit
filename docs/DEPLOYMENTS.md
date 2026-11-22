@@ -285,14 +285,14 @@ docs: [tacit.finance/docs/chain](https://tacit.finance/docs/chain/); live view: 
 A separate, smaller pool: one fixed Groth16 circuit, proved on the user's own device — not part of the
 `ConfidentialPool`/SP1 suite above. The native-asset pool is at the same addresses on all five chains (CreateX CREATE3,
 salts locked to deployer `0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7`); its asset is the chain's native token, which is
-ETH everywhere but Fraxtal, where it is frxETH. MegaETH and Fraxtal have the core (pool, router, verifier,
+ETH everywhere but Fraxtal, where it is FRAX. MegaETH and Fraxtal have the core (pool, router, verifier,
 PoseidonT5) and no token swaps: zRouter, zQuoter and the zap are not deployed there. On Ethereum the same contracts also
 run ERC-20 pools (TAC, TACD, TACE, USDC, USDT, and any token's pool anyone opens); their addresses are in
 [`EVM-POOL.md`](./EVM-POOL.md#addresses).
 
 | | |
 |---|---|
-| `TacitEvmPool` (native token: ETH, frxETH on Fraxtal) | `0x000000c2A20657CE25f2Ba99737933D031AFBEE9` |
+| `TacitEvmPool` (native token: ETH, FRAX on Fraxtal) | `0x000000c2A20657CE25f2Ba99737933D031AFBEE9` |
 | `TacitEvmPoolRouter` | `0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5` |
 | Groth16 verifier (`TransactVerifier`) | `0x000000b1c0e84CEc8AdF8278B90c4d6400DfB153` |
 | PoseidonT5 | `0x555333f3f677Ca3930Bf7c56ffc75144c51D9767` |
@@ -308,10 +308,10 @@ run ERC-20 pools (TAC, TACD, TACE, USDC, USDT, and any token's pool anyone opens
 | Fraxtal (252) | 44265340 | Sourcify, Fraxscan | `https://tacit-evm-pool-keepers.onrender.com/252/evm-pool/keeper` |
 | Sepolia (11155111) | 11999020 | Etherscan, Sourcify | none: every spend is sent by the user's own account |
 
-**Fraxtal** (252) is an OP-stack chain whose gas token is frxETH, so its pool holds frxETH: the pool's asset is the zero
-address, the chain's native token. Fraxtal also charges an L1 data fee on top of gas, about 0.0001 frxETH for a pool call
+**Fraxtal** (252) is an OP-stack chain whose gas token is FRAX, so its pool holds FRAX: the pool's asset is the zero
+address, the chain's native token. Fraxtal also charges an L1 data fee on top of gas, about 0.0001 FRAX for a pool call
 (measured on 22 November 2026; it follows Ethereum's base fee), far more than the gas itself. The keeper counts it in every
-fee it quotes: a relayed spend pays about 0.0002 frxETH, and a deposit address is swept from about 0.0007 frxETH, the
+fee it quotes: a relayed spend pays about 0.0002 FRAX, and a deposit address is swept from about 0.0007 FRAX, the
 keeper paying part of the sweep itself. A smaller balance stays in its address until its owner collects it, which costs only
 the owner's own transaction. zRouter, zQuoter and the zap are not on the chain, so the router was deployed with zRouter set
 to zero and its zap entry points are off for good.

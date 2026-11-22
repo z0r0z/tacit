@@ -147,7 +147,7 @@
         "sourcify",
         "etherscan"
       ],
-      "note": "Core only, deployed 22 November 2026. The pool's asset is the chain's native gas token, which on Fraxtal is frxETH, not ETH. zRouter is not on this chain, so the router was deployed with zRouter set to zero and its zap entry points are off. The zap contract is not deployed. Fraxtal charges an L1 data fee on top of gas (about 0.0001 frxETH for a pool call), which the keeper counts in its fees."
+      "note": "Core only, deployed 22 November 2026. The pool's asset is the chain's native gas token, which on Fraxtal is FRAX, not ETH. zRouter is not on this chain, so the router was deployed with zRouter set to zero and its zap entry points are off. The zap contract is not deployed. Fraxtal charges an L1 data fee on top of gas (about 0.0001 FRAX for a pool call), which the keeper counts in its fees."
     },
     "11155111": {
       "pool": "0x000000c2A20657CE25f2Ba99737933D031AFBEE9",

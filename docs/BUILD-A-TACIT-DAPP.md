@@ -1192,7 +1192,7 @@ different contract — and it is why the outbox address is not surfaced as a set
 
 ## 5h. The EVM pool: a separate, multichain private-ETH pool
 
-`TacitEvmPool` is Tacit's other pool: the chain's native token only (ETH; frxETH on Fraxtal), one fixed Groth16
+`TacitEvmPool` is Tacit's other pool: the chain's native token only (ETH; FRAX on Fraxtal), one fixed Groth16
 circuit proved on the user's own device, no SP1, no relay witness, and no state shared with the confidential pool
 above. It is immutable and live, unchanged, at the same addresses on Ethereum mainnet, Base, Robinhood Chain, MegaETH
 and Fraxtal:
