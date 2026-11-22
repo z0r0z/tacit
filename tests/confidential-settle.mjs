@@ -621,15 +621,20 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   await q.submitJob({ type: 'transfer', op: op('ps-t'), memos: [] });
   await q.submitJob({ type: 'route', op: op('ps-r1'), memos: [] });
   await q.submitJob({ type: 'lp', op: op('ps-l'), memos: [] });
+  await q.submitJob({ type: 'lpremove', op: op('ps-rm'), memos: [] });
   await q.submitJob({ type: 'swap', op: op('ps-s-proveonly'), memos: [], mode: 'prove' });
   await q.submitJob({ type: 'swap', op: op('ps-s-early'), memos: [], mode: 'prove', early: true });
   const st = await q.queueStats();
-  assert.strictEqual(st.pendingPinned, 2, 'a relayed route and a liquidity add count; a transfer, a prove-only swap and a proof asked for ahead of a press do not');
+  assert.strictEqual(st.pendingPinned, 3, 'a relayed route, a liquidity add and a removal count; a transfer, a prove-only swap and a proof asked for ahead of a press do not');
   const c = await q.nextJob();
   assert.strictEqual(c.type, 'route');
-  assert.strictEqual((await q.queueStats()).pendingPinned, 1, 'one being proved is not waiting');
+  assert.strictEqual((await q.queueStats()).pendingPinned, 2, 'one being proved is not waiting');
   await q.ackJob(c.jobId, { error: 'swap not proved: the pool moved after this was built (0x29b3c833)' });
-  assert.strictEqual((await q.queueStats()).pendingPinned, 1);
+  assert.strictEqual((await q.queueStats()).pendingPinned, 2);
+  assert.strictEqual((await q.nextJob()).type, 'lp', 'then the add, then the removal, both before the transfer queued first');
+  assert.strictEqual((await q.nextJob()).type, 'lpremove');
+  assert.strictEqual((await q.nextJob()).type, 'swap', 'a prove-only swap is the same kind of job for its pool');
+  assert.strictEqual((await q.nextJob()).type, 'transfer');
   ok('queueStats: pendingPinned counts the relayed swaps and adds that wait, not prove-only, early, claimed or other kinds');
 }
 

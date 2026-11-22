@@ -44,9 +44,9 @@ const CLAIM_VERIFY_DELAY_MS = 400;
 const MAX_PENDING_JOBS = 512;
 // One sender's share of it: well past what a person or an integrator has waiting at once, and far short of the whole queue.
 const MAX_PENDING_PER_SENDER = 32;
-// Ops that pin the pool's exact reserves go stale each time the pool moves, and a stale one is refused and proved again, so they are taken before the
+// Ops that pin the pool's exact reserves (a remove, its pro-rata share of them) go stale each time the pool moves, and a stale one is refused and proved again, so they are taken before the
 // rest, which wait only this long behind them (after it a job takes its place in the arrival order, so a stream of swaps cannot hold the others back).
-const PINNED_TYPES = ['route', 'swap', 'wrapswap', 'wraplp', 'lp', 'lpbond'];
+const PINNED_TYPES = ['route', 'swap', 'wrapswap', 'wraplp', 'lp', 'lpbond', 'lpremove'];
 const PINNED_HEAD_START_MS = 120 * 1000;
 // A sender whose swap or liquidity add was refused because the pool had moved has already waited its turn once, and the page builds it again on the pool's
 // reserves at once, so that second job goes before every other: queued behind the rest again it would be stale by the time it was looked at. Each refusal

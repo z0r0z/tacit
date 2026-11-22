@@ -3,7 +3,8 @@
 // trade on the pool in the minutes between the holder's build and the relay's settle moves them: the settle then reverts whatever it proves, and
 // the proof was bought for nothing. A job whose reserves are already stale is failed without proving, with the selector in the ack so the pages
 // read "the pool moved" and the holder's page builds it again at the new price within seconds, not after a proof.
-// A liquidity REMOVE settles against the live reserves (no pin), so it is never checked. Anything unreadable or unusual lets the job through: a route
+// A liquidity REMOVE is not pinned to exact reserves but may take no more than its pro-rata share of the LIVE pool (the same selector when it takes more:
+// a swap that moved the ratio the wrong way for one leg), so its amounts are checked against what the pool holds now. Anything unreadable or unusual lets the job through: a route
 // that passes through one pool twice (its second hop binds the first hop's result), a pool with a protocol fee (its id differs), an op that does not
 // parse. A node a block behind the page that built the op would show the older reserves, so a mismatch is read again a few seconds later before
 // it is believed. The check only ever skips work that cannot succeed.
@@ -13,7 +14,7 @@ const POOLS_ABI = [{ type: 'function', name: 'pools', stateMutability: 'view', i
   { type: 'bool' }, { type: 'bytes32' }, { type: 'bytes32' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'uint32' }, { type: 'uint256' }] }];
 
 export const POOL_RESERVE_MISMATCH = '0x29b3c833';
-const LABEL = { route: 'swap', wrapswap: 'swap', wraplp: 'liquidity add' };
+const LABEL = { route: 'swap', wrapswap: 'swap', wraplp: 'liquidity add', lp: 'liquidity add', lpbond: 'liquidity add', lpremove: 'liquidity removal' };
 
 const word = (v) => pad(typeof v === 'string' && v.startsWith('0x') ? v : numberToHex(BigInt(v)), { size: 32 });
 
@@ -37,12 +38,25 @@ export function pinsOf({ type, op }) {
     });
     return new Set(pins.map((p) => p.id)).size === pins.length ? pins : null;
   }
-  if (type === 'wrapswap' || type === 'wraplp') {
+  if (type === 'wrapswap' || type === 'wraplp' || type === 'lp' || type === 'lpbond') {
     if (BigInt(op.protocolFeeBps ?? 0) !== 0n) return null;
-    return [{ id: poolIdOf(op.assetA, op.assetB, op.feeBps), a: BigInt(op.reserveAPre), b: BigInt(op.reserveBPre), ...(type === 'wraplp' ? { shares: BigInt(op.sharesPre) } : {}) }];
+    return [{ id: poolIdOf(op.assetA, op.assetB, op.feeBps), a: BigInt(op.reserveAPre), b: BigInt(op.reserveBPre), ...(type === 'wrapswap' ? {} : { shares: BigInt(op.sharesPre) }) }];
   }
   return null;
 }
+
+// A liquidity remove's withdrawal against the pool: the amounts it takes and the shares it burns, with the pool's id. null when the op is not a remove or not readable (a pool with a protocol fee has another id).
+export function removeOf({ type, op }) {
+  if (type !== 'lpremove' || !op) return null;
+  if (BigInt(op.protocolFeeBps ?? 0) !== 0n) return null;
+  const shares = op.share && op.share.dShares != null ? op.share.dShares : op.dShares;
+  if (op.assetA == null || op.assetB == null || op.dA == null || op.dB == null || shares == null) return null;
+  const dS = BigInt(shares);
+  if (dS <= 0n) return null;
+  return { id: poolIdOf(op.assetA, op.assetB, op.feeBps), dA: BigInt(op.dA), dB: BigInt(op.dB), dS };
+}
+// ConfidentialPool.settle's remove: dA·totalShares ≤ reserveA·dShares and the same for B, on what the pool holds now.
+const takesTooMuch = (rm, now) => rm.dA * now.shares > now.a * rm.dS || rm.dB * now.shares > now.b * rm.dS;
 
 const held = async (client, pool, id) => {
   const r = await client.readContract({ address: pool, abi: POOLS_ABI, functionName: 'pools', args: [id] });
@@ -75,11 +89,12 @@ export function splitByPool(jobs) {
 export async function poolMovedAck({ type, op }, { client, pool, lookAgainMs = [2000], sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   if (!LABEL[type]) return null;
   try {
-    const pins = pinsOf({ type, op });
-    if (!pins) return null;
+    const pins = pinsOf({ type, op }), rm = pins ? null : removeOf({ type, op });
+    if (!pins && !rm) return null;
+    const ids = pins ? pins.map((p) => p.id) : [rm.id], stale = (now) => (pins ? pins.some((p, i) => differs(p, now[i])) : takesTooMuch(rm, now[0]));
     for (let look = 0; ; look++) {
-      const now = await Promise.all(pins.map((p) => held(client, pool, p.id)));
-      if (!pins.some((p, i) => differs(p, now[i]))) return null;
+      const now = await Promise.all(ids.map((id) => held(client, pool, id)));
+      if (!stale(now)) return null;
       if (look >= lookAgainMs.length) break;
       await sleep(lookAgainMs[look]);
     }

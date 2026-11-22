@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { keccak256, hexToBytes } from 'viem';
-import { poolMovedAck, poolIdOf, pinsOf, poolIdsOf, splitByPool, POOL_RESERVE_MISMATCH } from '../src/lib/reserves-precheck.js';
+import { poolMovedAck, poolIdOf, pinsOf, poolIdsOf, removeOf, splitByPool, POOL_RESERVE_MISMATCH } from '../src/lib/reserves-precheck.js';
 import { makeConfidentialRoute } from '../../dapp/confidential-route.js';
 
 let n = 0;
@@ -109,12 +109,65 @@ await test('a pool with a protocol fee has another id, so it is let through unre
   assert.deepEqual(reads, []);
 });
 
-await test('other ops are never looked at, the removal of liquidity among them (it settles against the live reserves)', async () => {
-  for (const type of ['transfer', 'unwrap', 'lpremove', 'lp_remove', 'swap', 'lpbond', 'cbtcmint']) {
+await test('other ops are never looked at', async () => {
+  for (const type of ['transfer', 'unwrap', 'lp_remove', 'swap', 'cbtcmint']) {
     const reads = [];
     assert.equal(await ack({ type, op: { assetA: ETH, assetB: TAC, feeBps: 30, reserveAPre: '1', reserveBPre: '1', sharesPre: '1' } }, chain({}, reads)), null, type);
     assert.deepEqual(reads, [], type);
   }
+});
+
+// Liquidity from notes (`lp`), a bonded add (`lpbond`) and a wrapped one (`wraplp`) pin the pool's reserves and share total exactly; a removal (`lpremove`) takes only its pro-rata share of the live pool.
+const noteAdd = (type, over = {}) => ({ type, op: { assetA: ETH, assetB: TAC, feeBps: 30, reserveAPre: '1000', reserveBPre: '5000', sharesPre: '300', ...over } });
+await test('an add from notes and a bonded add are held to the reserves and the share total, as a wrapped one is', async () => {
+  for (const type of ['lp', 'lpbond']) {
+    assert.equal(await ack(noteAdd(type), chain({ [ETH_TAC]: [1000n, 5000n, 300n] })), null, `${type} on the pool as it was built`);
+    for (const now of [[1001n, 5000n, 300n], [1000n, 4999n, 300n], [1000n, 5000n, 301n]]) {
+      const why = await ack(noteAdd(type), chain({ [ETH_TAC]: now }));
+      assert.match(why, /^liquidity add not proved: the pool moved after this was built/, `${type} ${now}`);
+      assert.ok(why.endsWith(`(${POOL_RESERVE_MISMATCH})`));
+    }
+  }
+});
+
+const remove = (over = {}) => ({ type: 'lpremove', op: { assetA: ETH, assetB: TAC, feeBps: 30, reserveAPre: '1000', reserveBPre: '5000', sharesPre: '300', dA: 100, remA: 900, dB: 500, remB: 4500, share: { dShares: 30 }, ...over } });
+await test('a removal is held to its pro-rata share of the pool as it is now, not to the reserves it was built on', async () => {
+  assert.equal(await ack(remove(), chain({ [ETH_TAC]: [1000n, 5000n, 300n] })), null, 'the pool as built');
+  assert.equal(await ack(remove(), chain({ [ETH_TAC]: [1100n, 5200n, 300n] })), null, 'reserves up: it takes less than its share');
+  assert.equal(await ack(remove(), chain({ [ETH_TAC]: [1100n, 5500n, 330n] })), null, 'other reserves and shares at the same ratio: exactly its share');
+  const why = await ack(remove(), chain({ [ETH_TAC]: [990n, 5000n, 300n] }));
+  assert.match(why, /^liquidity removal not proved: the pool moved after this was built/, 'A fell: 100 · 300 > 990 · 30');
+  assert.match(why, /nothing was spent/);
+  assert.ok(why.endsWith(`(${POOL_RESERVE_MISMATCH})`));
+  assert.match(await ack(remove(), chain({ [ETH_TAC]: [1000n, 4990n, 300n] })), /^liquidity removal not proved/, 'B fell');
+  assert.match(await ack(remove(), chain({ [ETH_TAC]: [1000n, 5000n, 310n] })), /^liquidity removal not proved/, 'more shares for the same reserves');
+});
+
+await test('a removal at exactly its share is let through, and a refusal is read again before it is believed', async () => {
+  assert.equal(await ack(remove({ dA: 100, dB: 500, share: { dShares: 30 } }), chain({ [ETH_TAC]: [1000n, 5000n, 300n] })), null, '100 · 300 = 1000 · 30');
+  const reads = [];
+  assert.match(await ack(remove(), chain({ [ETH_TAC]: [990n, 5000n, 300n] }, reads)), /not proved/);
+  assert.equal(reads.length, 3, 'one reading and two looks again');
+  assert.deepEqual(sleeps, [3000, 3000]);
+});
+
+await test('a removal that cannot be read, or with no shares, or on a pool with a protocol fee, is let through', async () => {
+  const stale = chain({ [ETH_TAC]: [1n, 1n, 1n] });
+  for (const j of [remove({ dA: undefined }), remove({ share: undefined }), remove({ share: { dShares: 0 } }), remove({ protocolFeeBps: 5 }), { type: 'lpremove' }, remove({ assetA: undefined })]) {
+    assert.equal(await ack(j, stale), null, JSON.stringify(j).slice(0, 80));
+  }
+  assert.equal(removeOf({ type: 'lpremove', op: null }), null);
+  assert.equal(removeOf({ type: 'route', op: remove().op }), null);
+  assert.equal(await ack(remove(), chain({}, [], new Error('429'))), null, 'a failing node lets it through');
+});
+
+await test('a removal pins nothing for batching: a swap and a removal on one pool may share a batch', () => {
+  const Jx = (id, over) => ({ jobId: id, ...over });
+  assert.deepEqual(poolIdsOf(Jx('rm', remove())), []);
+  const { keep, later } = splitByPool([Jx('s', route([hop(TAC, 30, 1, 1)])), Jx('rm', remove())]);
+  assert.equal(keep.length, 2); assert.equal(later.length, 0);
+  assert.deepEqual(poolIdsOf(Jx('a', noteAdd('lp'))), [ETH_TAC]);
+  assert.deepEqual(poolIdsOf(Jx('b', noteAdd('lpbond'))), [ETH_TAC]);
 });
 
 await test('anything unreadable lets the job through: a failing node, a missing field, no op', async () => {
