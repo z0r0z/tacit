@@ -50,6 +50,17 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
   const running = () => !!(S.st && S.st.running);
   const accepting = () => !!(S.st && S.st.accepting);
 
+  // Whether bridgers can see this provider, and when they cannot, why: a provider that thinks it is on and is not listed earns nothing, and
+  // would not know. A session that does not say (`taking` missing) gets no row.
+  const kv = (label, value, small = '') => `<div class="kv"><span>${label}</span><b class="num">${esc(value)}${small ? `<small>${esc(small)}</small>` : ''}</b></div>`;
+  const seen = (st) => {
+    if (!st.accepting || st.taking === undefined) return '';
+    if (!st.taking) return kv('Bridgers see you', 'paused', 'This tab was in the background, so it takes no new bridges. Bring it to the front.');
+    if (st.listed) return kv('Bridgers see you', 'yes', `as ${st.listed.name}`);
+    if (st.adError) return kv('Bridgers see you', 'not yet', `The board did not take your offer: ${st.adError}`);
+    return kv('Bridgers see you', 'posting…');
+  };
+
   // the waiting bridges this key could take: inside its least and what it holds free, and its most per bridge when it has one set
   const freeNow = () => (!S.inv ? 0n : S.st && S.st.held != null && S.inv.pool > S.st.held ? S.inv.pool - S.st.held : S.st && S.st.held != null ? 0n : S.inv.pool);
   const fitting = (w) => {
@@ -84,6 +95,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     run.hidden = !st || !(st.running || st.lastTake);
     if (st) {
       run.innerHTML = `${st.running ? `<div class="kv"><span>${st.accepting ? 'Providing' : 'Finishing'}</span><b class="num">${st.accepting ? 'on' : 'no new bridges'}</b></div>
+        ${seen(st)}
         <div class="kv"><span>Open bridges</span><b class="num">${st.open}</b></div>
         <div class="kv"><span>Done</span><b class="num">${st.done}</b></div>
         <div class="kv"><span>Earned</span><b class="num">${esc(fmtTac(st.earned))} TAC</b></div>` : ''}${st.done > 0 ? `
@@ -113,7 +125,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     if (need && doc.hidden && st.open > 0) { if (doc.title !== warn) { W.title = doc.title; doc.title = warn; } } else if (doc.title === warn) doc.title = W.title;
   }
   // the browser lets go of the lock when the tab is hidden: it is asked for again when the tab is back
-  doc.addEventListener('visibilitychange', async () => { if (S.sess) { try { S.st = await S.sess.status(); } catch { /* the last one read */ } } keepAwake(); });
+  doc.addEventListener('visibilitychange', async () => { if (S.sess) { try { S.st = await S.sess.status(); } catch { /* the last one read */ } paint(); } keepAwake(); });
 
   // what is typed, as the engine takes it: { feeBps, maxAmount } or the reason it cannot be
   function read() {
@@ -196,7 +208,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
         if (running()) S.sess.stop();
         await S.sess.start({ settings: { feeBps: r.feeBps, maxAmount: r.maxAmount, anyTac }, accept: true });
         S.st = await S.sess.status();
-        note('Providing. Keep this page open until your bridges are done.');
+        note('Providing. Keep this page open and in front: a tab in the background takes no new bridges after 30 seconds.');
       } catch (e) { note(String((e && e.message) || e).slice(0, 160), true); }
     } finally { S.busy = false; paint(); }
   }

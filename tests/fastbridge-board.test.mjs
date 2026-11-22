@@ -17,7 +17,7 @@ import { secp, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { signSchnorr } from '../dapp/bulletproofs.js';
 import { sealRequest } from '../dapp/sealed-request.js';
 import { makeBoard, signAd, checkAd, signWant, checkWant, replyDigest, messageId, LIMITS } from '../dapp/fastbridge-board.js';
-import { gatewayOf, makeMailboxCall, makeMailboxServer, makeAdPublisher, makeProvider, readProviders } from '../dapp/fastbridge-mailbox.js';
+import { gatewayOf, makeMailboxCall, makeMailboxServer, makeAdPublisher, makeProvider, readProviders, defaultAdName } from '../dapp/fastbridge-mailbox.js';
 import { makeFastBridgeClient } from '../dapp/fastbridge-client.js';
 import { makeBoardClient } from '../dapp/fastbridge-board-client.js';
 import { makeBoardHandler, boardKindOf } from '../fastbridge-lp/lib/board-http.mjs';
@@ -393,6 +393,20 @@ test('the ads: a provider posts its terms and what it can take now; a user reads
   info = null;
   assert.equal(await makeAdPublisher({ board, handle: async () => ({ status: 503, body: null }), claimPriv: P.p, claimPub: P.claimPub, keys: P.keys, now: c.now }).publish(), null);
   void ads;
+});
+
+test('a provider nobody named is called by its key: two such providers on one board read as two, not as one name', async () => {
+  const c = clock(), board = makeBoard({ now: c.now });
+  const info = { btcAsset: 'ab'.repeat(32), evmAsset: '0x' + 'cd'.repeat(32), minAmount: '1000', maxAmount: '50000', available: '7000', feeBps: 25, flatFee: '100', csvBlocks: 144, evmWindowSecs: 14400 };
+  const A = providerOf(1, async () => ({ status: 200, body: info }), c), B = providerOf(2, async () => ({ status: 200, body: info }), c);
+  for (const P of [A, B]) await makeAdPublisher({ board, handle: P.handle, claimPriv: P.p, claimPub: P.claimPub, keys: P.keys, now: c.now }).publish();
+  const names = (await readProviders({ board, now: c.now })).map((p) => p.name).sort();
+  assert.deepEqual(names, [A, B].map((P) => `Provider ${P.claimPub.slice(2, 8)}`).sort());
+  assert.equal(new Set(names).size, 2);
+  assert.equal(defaultAdName('02' + 'ab'.repeat(32)), 'Provider ababab', 'the first six hex digits after the key\'s prefix byte');
+  // a name that was chosen is kept as it is
+  const named = await makeAdPublisher({ board, handle: A.handle, claimPriv: A.p, claimPub: A.claimPub, keys: A.keys, name: 'shinobi', now: c.now }).publish();
+  assert.equal(named.name, 'shinobi');
 });
 
 // ── the board over HTTP ──

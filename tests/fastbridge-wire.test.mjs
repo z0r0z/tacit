@@ -354,7 +354,7 @@ test('a provider and a user, each from its own key, find and reach each other th
   providerAddress = provider.address;
   const inv = await provider.inventory();
   assert.deepEqual([inv.pool, inv.address === provider.address], [5000n * TAC, true]);
-  assert.deepEqual(await provider.status(), { running: false, accepting: false, open: 0, done: 0, earned: 0n, lastError: null, lastTake: null, held: null });
+  assert.deepEqual(await provider.status(), { running: false, accepting: false, open: 0, done: 0, earned: 0n, lastError: null, lastTake: null, held: null, taking: false, listed: null, adError: null });
   await provider.start({ settings: { feeBps: 30, flatFee: TAC, minAmount: 10n * TAC, maxAmount: 1000n * TAC }, accept: true });
   try {
     await new Promise((r) => setTimeout(r, 80));
@@ -419,6 +419,72 @@ test('a provider away from its page takes on nothing new: no ad is posted and a 
     assert.equal(back.quotes.length, 1, 'back at the page, it quotes');
     T._testSetScanHoldingsOverride(null);
   } finally { provider.stop(); }
+});
+
+test('a provider can tell whether bridgers see it: `listed` while its ad stands, `adError` when the board turns it away, `taking` false while the tab is away; a tab that comes back posts at once', async () => {
+  const pPriv = key(13), pPub = bytesToHex(secp.getPublicKey(pPriv, true));
+  const w = world({ coinsFor: () => [] });
+  let refuse = false;
+  const fetchImpl = async (url, init = {}) => {
+    const u = new URL(String(url));
+    return refuse && u.host === 'board.example' && init.method === 'PUT' && u.pathname === '/ad' ? json({ error: 'the board has all the ads it takes' }, 503) : w.fetchImpl(url, init);
+  };
+  const uxP = {
+    cfg: { pool: POOL }, chainBindingHex: () => '0x' + '11'.repeat(32), rpc: async () => '0x0',
+    balance: async () => ({ byAsset: { ['0x' + TAC_ASSET]: { notes: [{ value: 5000n * TAC, leaf: '0x' + 'ab'.repeat(32) }] } } }),
+  };
+  // a page with a tab that can be hidden and shown: the provider listens for it only while it runs
+  const listeners = new Set();
+  const doc = { hidden: false, addEventListener: (t, f) => { if (t === 'visibilitychange') listeners.add(f); }, removeEventListener: (t, f) => { if (t === 'visibilitychange') listeners.delete(f); } };
+  let here = true;
+  const settings = { feeBps: 30, flatFee: TAC, minAmount: 10n * TAC, maxAmount: 1000n * TAC };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  openWallet(pPriv);
+  const provider = await openProvider({ T, ux: uxP, priv: pPriv, pubHex: pPub, boards: ['https://board.example'], fetchImpl, hrp: 'tb', pollMs: 15, tickSecs: 1, present: () => here });
+  globalThis.document = doc;
+  try {
+    // nothing to say before it runs
+    let st = await provider.status();
+    assert.deepEqual([st.taking, st.listed, st.adError], [false, null, null]);
+    await provider.start({ settings, accept: true });
+    await wait(80);
+    st = await provider.status();
+    assert.equal(st.taking, true);
+    assert.equal(st.adError, null);
+    assert.equal(st.listed.name, `Provider ${provider.claimPub.slice(2, 8)}`, 'it is listed under the name its ad carries');
+    assert.ok(st.listed.until > Math.floor(Date.now() / 1000), 'for as long as the ad stands');
+    assert.equal(listeners.size, 1, 'it listens for the tab coming back while it runs');
+
+    // away: no new bridges, and the ad that still stands is no longer one bridgers can use (the panel says paused)
+    here = false; doc.hidden = true; listeners.forEach((f) => f());
+    st = await provider.status();
+    assert.equal(st.taking, false);
+    // back: it posts at once, not at the next minute's post
+    const before = w.posts.length;
+    here = true; doc.hidden = false; listeners.forEach((f) => f());
+    await wait(60);
+    assert.equal(w.posts.length, before + 1, 'the ad is posted when the tab is back');
+    assert.equal((await provider.status()).taking, true);
+
+    // stopped: the ad left on the board is not claimed, and the listener is gone
+    provider.stop();
+    st = await provider.status();
+    assert.deepEqual([st.running, st.taking, st.listed, st.adError], [false, false, null, null]);
+    assert.equal(listeners.size, 0, 'nothing is listened for once it has stopped');
+
+    // the board turns the ad away: the reason is kept for the panel, and nothing is listed
+    refuse = true;
+    await provider.start({ settings, accept: true });
+    await wait(80);
+    st = await provider.status();
+    assert.equal(st.listed, null);
+    assert.match(st.adError, /the board has all the ads it takes/);
+    // it recovers on its own when a post is taken again (here, a tab coming back)
+    refuse = false; listeners.forEach((f) => f());
+    await wait(60);
+    st = await provider.status();
+    assert.equal(st.adError, null); assert.ok(st.listed);
+  } finally { provider.stop(); delete globalThis.document; }
 });
 
 test('discovering providers: the ones that serve HTTP are checked against their pinned key, one entry for each key, an unreachable one left out', async () => {

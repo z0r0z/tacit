@@ -137,6 +137,31 @@ test('Start providing: the fee and the size go to the provider as they were type
   assert.match(text(m.$('pv-run')), /Open bridges 2/); assert.match(text(m.$('pv-run')), /Earned 3\.5 TAC/);
 });
 
+test('Bridgers see you: the panel says whether the offer stands on a board, why it does not, and when this tab has gone quiet', async () => {
+  const m = mount({ refreshMs: 15 });
+  await m.load();
+  m.$('pv-go').click();
+  await until(() => m.stub.calls.starts.length === 1, 'the start');
+  await until(() => m.$('pv-go').textContent === 'Stop providing', 'the switch');
+  // a session that does not say (no `taking`) gets no row: nothing is claimed that is not known
+  assert.doesNotMatch(text(m.$('pv-run')), /Bridgers see you/);
+  const set = async (st, re) => { Object.assign(m.stub.st, st); m.stub.session.status = async () => ({ ...m.stub.st }); await until(() => re.test(text(m.$('pv-run'))), String(re)); };
+  await set({ taking: true, listed: null, adError: null }, /Bridgers see you posting/);
+  await set({ listed: { name: 'Provider 03f14d', until: 9e9 } }, /Bridgers see you yes as Provider 03f14d/);
+  await set({ listed: null, adError: 'the board has all the ads it takes' }, /Bridgers see you not yet The board did not take your offer: the board has all the ads it takes/);
+  // an ad that still stands from before the tab went to the background is not "yes": new bridges are declined meanwhile
+  await set({ taking: false, listed: { name: 'Provider 03f14d', until: 9e9 }, adError: null }, /Bridgers see you paused This tab was in the background/);
+  assert.doesNotMatch(text(m.$('pv-run')), /Bridgers see you yes/);
+  assert.match(m.$('pv-st').textContent, /in front/, 'the start line says the tab has to stay in front');
+  // finishing only (no new bridges): the row goes with the offer
+  Object.assign(m.stub.st, { accepting: false, open: 1 });
+  await until(() => !/Bridgers see you/.test(text(m.$('pv-run'))), 'the row gone once it takes no new bridges');
+  // the provider's name is escaped like the rest
+  Object.assign(m.stub.st, { accepting: true, taking: true, listed: { name: '<img src=x onerror=alert(1)>', until: 9e9 } });
+  await until(() => /Bridgers see you yes/.test(text(m.$('pv-run'))), 'the row again');
+  assert.equal(m.$('pv-run').querySelector('img'), null);
+});
+
 test('taking TAC that came out of the shielded pool is on unless it is switched off: the panel says what it means, keeps the choice for the key and sends it with the start', async () => {
   const m = mount({ refreshMs: 20 });
   await m.load();

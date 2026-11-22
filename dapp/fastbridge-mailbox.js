@@ -114,8 +114,12 @@ export function makeMailboxServer({ board, keys, handle, signReply, now = () => 
 // AD_SECS (inside the board's 600 s), several times the posting interval, so a late or failed post (a throttled tab, a board that
 // did not answer once) never leaves a gap in which a bridger finds no provider.
 const AD_SECS = 360;
+// What a provider is called when nobody named it: the first six hex digits of its key. Two providers that never chose a name still read as two,
+// on the page's own provider panel and on a daemon that left its name out, instead of all being "Provider" (or the example config's placeholder).
+export const defaultAdName = (claimPub) => `Provider ${String(claimPub).replace(/^0x/, '').slice(2, 8)}`;
 export function makeAdPublisher({ board, handle, claimPriv, claimPub, keys, name = null, now = () => Math.floor(Date.now() / 1000), everySecs = 60, log = () => {} }) {
   let timer = null;
+  const label = name || defaultAdName(claimPub);
   async function publish() {
     const r = await handle({ method: 'GET', path: '/info', body: null });
     if (r.status !== 200 || !r.body) return null;
@@ -123,7 +127,7 @@ export function makeAdPublisher({ board, handle, claimPriv, claimPub, keys, name
     const ad = signAd({
       claimPub, gateway: bytesToHex(keys.pub), btcAsset: strip(i.btcAsset), evmAsset: strip(i.evmAsset), minAmount: String(i.minAmount), maxAmount: String(i.maxAmount),
       available: i.available == null ? null : String(i.available), feeBps: i.feeBps, flatFee: String(i.flatFee), csvBlocks: i.csvBlocks, evmWindowSecs: i.evmWindowSecs,
-      ...(i.anyTac === true ? { anyTac: true } : {}), ...(name ? { name } : {}), at: t, until: t + Math.min(600, Math.max(AD_SECS, 2 * everySecs + 60)),
+      ...(i.anyTac === true ? { anyTac: true } : {}), name: label, at: t, until: t + Math.min(600, Math.max(AD_SECS, 2 * everySecs + 60)),
     }, claimPriv);
     await board.putAd(ad);
     return ad;

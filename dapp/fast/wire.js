@@ -16,14 +16,14 @@ import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=a360394a';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=bea8334c';
 import { makeLpService } from '/fastbridge-provider.js?cb=36620f82';
-import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, gatewayOf } from '/fastbridge-mailbox.js?cb=e88908a8';
+import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=96a024c6';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=c8534a8d';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=0ea3f784';
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=0ea3f784';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=fa86cf30';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=fa86cf30';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api'];
@@ -379,7 +379,10 @@ export async function openProvider({ T, withKey, ux, priv, pubHex, boards = [], 
   let evmLog = () => {};
   const { prims, btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-lp-seed', forNotes: true, wallet, ask, log: (o) => evmLog(o) });
   const claimPub = hex(prims.wallet.pub);
-  const adName = name || `Provider ${claimPub.slice(2, 8)}`;
+  const adName = name || defaultAdName(claimPub);
+  // What the last post of the ad did, on each board: the ad that stands (until when, under what name) or why it was not taken. This is what
+  // tells the one who provides whether bridgers can see them: `status().listed` while an ad stands, `adError` when the boards turn it away.
+  const posted = new Map();
   const swaps = makeLocalStore(`tacit-fastlp-v1:mainnet:${pubHex}:swaps:`), quoteStore = makeLocalStore(`tacit-fastlp-v1:mainnet:${pubHex}:quotes:`);
   const keys = gatewayOf(priv);
   // more Bitcoin confirmations for a larger amount
@@ -389,11 +392,17 @@ export async function openProvider({ T, withKey, ux, priv, pubHex, boards = [], 
   async function status() {
     const recs = await swaps.list();
     const done = recs.filter((r) => r.phase === 'done');
+    // `taking`: new bridges are being answered now (a tab left in the background answers none, and posts no ad). `listed`: an ad of this
+    // provider stands on a board. `adError`: the boards turned the last post away, and no earlier one stands.
+    const t = now(), seen = [...posted.values()], live = seen.find((p) => p.until && p.until > t), failed = seen.find((p) => p.error);
     return {
       running, accepting, open: recs.filter((r) => !TERMINAL.includes(r.phase)).length, done: done.length,
       earned: done.reduce((a, r) => a + (BigInt(r.offer.btc.value) - BigInt(r.offer.evm.amount)), 0n), lastError,
       lastTake: done.filter((r) => r.take).sort((a, b) => (b.updated || 0) - (a.updated || 0))[0]?.take.txid ?? null,
       held: service && service.held ? await service.held().catch(() => null) : null,
+      taking: running && accepting && present(),
+      listed: running && accepting && live ? { name: live.name, until: live.until } : null,
+      adError: running && accepting && !live && failed ? failed.error : null,
     };
   }
   async function inventory() {
@@ -434,12 +443,27 @@ export async function openProvider({ T, withKey, ux, priv, pubHex, boards = [], 
     const adHandle = async (req) => (taking() || (await openSwap()) ? service.handle(req) : { status: 503, body: null });
     // on the board whether it takes new bridges or only finishes open ones: a user whose bridge is open reaches it only through the board
     {
+      posted.clear();
+      const publishers = [];
       for (const base of boards) {
         const board = makeBoardClient({ base, fetchImpl });
+        // the ad's own board client records each post, so the panel can say whether bridgers see this provider (and the board's reason when they do not)
+        const adBoard = { ...board, async putAd(ad) {
+          try { const r = await board.putAd(ad); posted.set(base, { at: ad.at, until: ad.until, name: ad.name }); return r; }
+          catch (e) { posted.set(base, { error: String((e && e.message) || e).slice(0, 120) }); throw e; }
+        } };
         const mail = makeMailboxServer({ board, keys, handle, signReply: (d) => signSchnorr(d, priv), now, pollMs, log: note });
-        const ads = makeAdPublisher({ board, handle: adHandle, claimPriv: priv, claimPub, keys, name: adName, now, everySecs: 60, log: note });
+        const ads = makeAdPublisher({ board: adBoard, handle: adHandle, claimPriv: priv, claimPub, keys, name: adName, now, everySecs: 60, log: note });
         mail.start(); ads.start();
+        publishers.push(ads);
         stops.push(() => { mail.stop(); ads.stop(); });
+      }
+      // a tab that comes back is listed again at once, not at the next minute's post
+      const doc = typeof document !== 'undefined' && document && typeof document.addEventListener === 'function' ? document : null;
+      if (doc && publishers.length) {
+        const back = () => { if (!doc.hidden) for (const p of publishers) p.publish().catch(() => { /* recorded in `posted`, and the next post tries again */ }); };
+        doc.addEventListener('visibilitychange', back);
+        stops.push(() => doc.removeEventListener('visibilitychange', back));
       }
     }
     const timer = setInterval(async () => {

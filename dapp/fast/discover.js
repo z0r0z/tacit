@@ -5,7 +5,7 @@
 
 import { makeHttpCounter } from '/fastbridge-http.js';
 import { termsOf } from '/fastbridge-client.js?cb=bea8334c';
-import { readProviders } from '/fastbridge-mailbox.js?cb=e88908a8';
+import { readProviders } from '/fastbridge-mailbox.js?cb=96a024c6';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 
 // Every provider there is to bridge with: the ones that serve HTTP (checked against the key the page pins for each) and the ones on the

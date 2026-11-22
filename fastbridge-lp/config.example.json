@@ -2,7 +2,6 @@
   "network": "mainnet",
   "dataDir": "fastbridge-lp/data",
   "port": 8787,
-  "name": "My provider",
   "boards": ["https://tacit-fast-board.onrender.com"],
   "origins": ["https://tacit.finance"],
   "trustProxy": true,

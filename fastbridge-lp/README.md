@@ -17,7 +17,7 @@ a day of the bridger's lock, before their refund opens, and a bridge it does not
 ```
 git clone https://github.com/src-company/tacit && cd tacit
 (cd worker-relay && npm ci --omit=dev --ignore-scripts) && (cd worker && npm ci --omit=dev --ignore-scripts)
-cp fastbridge-lp/config.example.json fastbridge-lp/config.json     # name, fee and sizes are yours to set
+cp fastbridge-lp/config.example.json fastbridge-lp/config.json     # fee and sizes are yours to set; add "name": "…" to be called something
 export FB_LP_KEY=$(openssl rand -hex 32)                           # keep an offline copy: the funds are only as safe as this key
 node fastbridge-lp/server.mjs                                      # prints the address to fund
 ```
@@ -25,7 +25,10 @@ node fastbridge-lp/server.mjs                                      # prints the 
 1. **Send it TAC.** The start line shows `poolAccount`: send TAC (the ERC-20, on Ethereum) there, and about 0.01 ETH for gas. It notices within a minute and
    shields the TAC into private notes, which takes a little while, and lends it once they are in; send more at any time and it does the same. No other step, no tool to run.
 2. **It takes bridges.** It posts its ad on the board, so `/fast/` and the front page's Bridge tab find it. Each bridge pays you the fee in TAC on Bitcoin
-   (at the Bitcoin address of the key).
+   (at the Bitcoin address of the key). **Check that it shows up:** on a first start with an empty `dataDir` the first read of the pool takes about two minutes, and the ad is
+   posted after it, so give it three. Then `/fast/` lists it under "Providers online" with your `name` (or `Provider` and the first six hex digits of the claim key, when you
+   named it nothing), and "full right now" until the TAC is private. The board shows it too: `curl https://tacit-fast-board.onrender.com/ads` has an ad with your `claimPub`.
+   Not there after five minutes: the log says `the ad was not posted` and why (usually an unreachable board or a wrong `boards` URL).
 3. **Know what comes home.** Bitcoin TAC builds up as the private TAC drains. You can trade it on Bitcoin, or bring home what the regular bridge can carry (the front
    page's Bridge tab with the same key, or `tools/fastbridge-lp-bridge-home.mjs` from a terminal) and lend it again. The bridge cannot follow TAC whose history passes through
    Bitcoin's shielded pool, a pool or farm trade, or a very long chain of transfers, and a provider that takes every note is often paid in such TAC: it stays on
@@ -82,7 +85,7 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `lowFreeTac` | the provider tells its operator (an alert, below) when the TAC it holds free is under this, again each `alertSecs` while it stays low; unset for no alert |
 | `lowEth` | the same for the ETH of its own address, in ETH (`"0.002"`): when the relay is not sending settles each one this address sends costs about 0.0002 ETH, and with none left the provider stops taking bridges. Unset for no alert |
 | `mailboxPollSecs` | how often the board is read for requests left for this provider (3 s unless set; `config.render.json` sets 1): a request waits for the next read |
-| `name`, `boards` | the name shown in the LP's ad, and the boards it is on (URLs of `fastbridge-lp/board.mjs`): it posts its ad there every minute and answers the requests left for it, so a user finds it without its own URL |
+| `name`, `boards` | the name shown in the LP's ad (`Provider` and the first six hex digits of the claim key when there is none: two providers never share a name by default), and the boards it is on (URLs of `fastbridge-lp/board.mjs`): it posts its ad there every minute and answers the requests left for it, so a user finds it without its own URL |
 | `alertSecs`, `tickSecs`, `port`, `origins`, `trustProxy` | alert interval, tick length, the HTTP face; `trustProxy` reads the client from `X-Forwarded-For`, only behind a proxy you control |
 
 ## Running it on Render
