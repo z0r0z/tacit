@@ -1655,7 +1655,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const ephRand = freshEph;
     const sealedMemos = guard.sealMemosForOutputs({ outputs, ephRand });
     guard.assertOutputsRecoverable({ leaves: [shareLeaf], outputs, memos: sealedMemos });
-    const r = await _dispatch({ type: 'wraplp', spec: { op, leaves: [shareLeaf], outputs, ephRand }, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts, pair: sharesPre === 0n ? { assetA, assetB, feeBps } : null });
+    const r = await _dispatch({ type: 'wraplp', spec: { op, leaves: [shareLeaf], outputs, ephRand }, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts: res ? _watchQueued(waitOpts, () => _poolMoved(routePoolId(assetA, assetB, feeBps), { reserveA: rA, reserveB: rB, totalShares: sharesPre })) : waitOpts, pair: sharesPre === 0n ? { assetA, assetB, feeBps } : null });
     return { ...r, dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
   }
 
@@ -1723,7 +1723,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const again = swapRetry(waitOpts);
     for (;;) {
       try {
-        const r = await _dispatch({ type: 'wrapswap', spec: { op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand }, sealedMemos: b.memos, selfRelay, selfSettle, walletPriv, waitOpts });
+        const r = await _dispatch({ type: 'wrapswap', spec: { op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand }, sealedMemos: b.memos, selfRelay, selfSettle, walletPriv, waitOpts: rebuild ? _watchQueued(waitOpts, () => _poolMoved(b.pid, { reserveA: b.reserveA, reserveB: b.reserveB })) : waitOpts });
         return { ...r, amountOut: b.amountOut, pid: b.pid, assetIn: b.assetIn, assetOut: b.assetOut };
       } catch (e) {
         if (!rebuild || !(await wrapSwapMoved(e, b))) throw e;
@@ -1960,7 +1960,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     guard.assertOutputsRecoverable({ leaves, outputs, memos: sealedMemos });
     const rec = ((cfg.farm && cfg.farm.standalone) || []).some((x) => String(x.lpAsset).toLowerCase() === String(b.lpAsset).toLowerCase()) ? lpBondRecord({ walletPriv, controller: b.controller, lpAsset: b.lpAsset, anchorLeaf: b.anchorLeaf, shares: b.dShares, receiptLeaf: b.receiptLeaf }) : null;
     let r;
-    try { r = await _dispatch({ type: 'lpbond', spec: { op: b.op, leaves, outputs, ephRand: freshEph }, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts }); }
+    try { r = await _dispatch({ type: 'lpbond', spec: { op: b.op, leaves, outputs, ephRand: freshEph }, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts: _watchQueued(waitOpts, () => _poolMoved(routePoolId(aNote.asset, bNote.asset, feeBps), res)) }); }
     catch (e) {
       // proved and waiting to be sent, or still in the relay's line: it may yet land, and its position is then kept all the same
       if (rec && e && (e.code === 'open' || e.open || /settle timed out|status polling for job/i.test(String(e.message || '')))) keepFarmPosition(rec, { walletPriv, quick: 0 }).catch(() => {});
@@ -2339,7 +2339,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     guard.assertOutputsRecoverable({ leaves: allLeaves, outputs: allOutputs, memos });
 
     const opWire = toLpAddWire(op);
-    const r = await _dispatch({ type: 'lp', spec: { op: opWire, leaves: allLeaves, outputs: allOutputs, ephRand }, sealedMemos: memos, selfRelay, selfSettle, walletPriv, waitOpts, pair: sharesPre === 0n ? { assetA, assetB, feeBps } : null });
+    const r = await _dispatch({ type: 'lp', spec: { op: opWire, leaves: allLeaves, outputs: allOutputs, ephRand }, sealedMemos: memos, selfRelay, selfSettle, walletPriv, waitOpts: res ? _watchQueued(waitOpts, () => _poolMoved(routePoolId(assetA, assetB, feeBps), { reserveA: reserveAPre, reserveB: reserveBPre, totalShares: sharesPre })) : waitOpts, pair: sharesPre === 0n ? { assetA, assetB, feeBps } : null });
     return { ...r, dShares: op.dShares, pid, lpAsset, assetA, assetB, firstMint: sharesPre === 0n };
   }
 
@@ -2465,7 +2465,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     if (f > 0n) { const u = await feeUsdFor(f, tickerA).catch(() => null); if (u != null) op.feeUsd = u; }
 
     const opWire = toLpRemoveWire(op);
-    const r = await _dispatch({ type: 'lpremove', spec: { op: opWire, leaves, outputs: [outA, outB], ephRand }, sealedMemos: memos, selfRelay, selfSettle, walletPriv, waitOpts });
+    const r = await _dispatch({ type: 'lpremove', spec: { op: opWire, leaves, outputs: [outA, outB], ephRand }, sealedMemos: memos, selfRelay, selfSettle, walletPriv, waitOpts: _watchQueued(waitOpts, () => _removalMoved(routePoolId(a, b, feeBps), op.dA, op.dB, burn)) });
     return { ...r, burned: burn, dA: op.dA, dB: op.dB, netA: op.dA - f, fee: f, pid, lpAsset, assetA: a, assetB: b };
   }
 
@@ -3153,26 +3153,41 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // The same swap built again on the reserves now, as often as the pool moves under it: the holder's least (minOut) still bounds what it may take, so a price that fell past it stops here.
   // How often depends on what the refusal cost. One BEFORE any proof (the relay's check, "… not proved: the pool moved") cost the relay nothing and the holder some seconds, so it is tried again promptly
   // and several times, after a short pause for the chain to move on. One AFTER the proof (the pool moved while it was proved) cost a proof and about a minute, so it is tried fewer times. A swap is
+  // A swap whose pool moved while it still waited unclaimed in the relay's queue (`waitOpts.whileQueued`, see confidential-relay.js waitForSettle) is built again at once and counted apart (`queued`): the relay was asked for nothing.
   // not chased for longer than the budget either way, which runs from the FIRST refusal: the wait in the relay's queue before it (minutes, when it is busy) is not the swap being chased, and each
   // new try waits its own turn there. `waitOpts.onAgain({ cheap, attempt })` lets a page say that it is happening.
-  const MOVED = { cheap: 6, dear: 2, pauseMs: 1500, budgetMs: 480_000 };
+  const MOVED = { cheap: 6, dear: 4, queued: 12, pauseMs: 1500, budgetMs: 480_000 };
   const _refusedBeforeProof = (e) => /not proved: the pool moved/i.test(String(e?.message || ''));
   const _wait = (ms) => new Promise((r) => setTimeout(r, ms));
   function swapRetry(waitOpts, now = Date.now) {
     let t0 = null;
-    const used = { cheap: 0, dear: 0 };
+    const used = { cheap: 0, dear: 0, queued: 0 };
     return async (e) => {                              // -> true: build it again and send it; false: stop
-      const cheap = _refusedBeforeProof(e), kind = cheap ? 'cheap' : 'dear', t = now();
+      const queued = !!e?.staleQueued, cheap = queued || _refusedBeforeProof(e), kind = queued ? 'queued' : cheap ? 'cheap' : 'dear', t = now();
       if (t0 === null) t0 = t;
       if (++used[kind] > MOVED[kind] || t - t0 > MOVED.budgetMs) return false;
-      try { waitOpts?.onAgain?.({ cheap, attempt: used.cheap + used.dear }); } catch { /* a page's wording never stops a swap */ }
-      if (cheap) await (waitOpts?.sleep || _wait)(MOVED.pauseMs);
+      try { waitOpts?.onAgain?.({ cheap, attempt: used.cheap + used.dear + used.queued }); } catch { /* a page's wording never stops a swap */ }
+      if (cheap && !queued) await (waitOpts?.sleep || _wait)(MOVED.pauseMs);       // (a swap that went stale while queued is built again at once: nothing was asked of the relay)
       return true;
     };
   }
   // A liquidity add, bond or removal the pool moved under is built again on the pool as it is now, as a swap is. The pool pins an add's reserves and share total exactly and takes a removal only up to its pro-rata share of the
   // pool as it stands, so a trade landing between the build and the settle refuses either (PoolReserveMismatch): the relay says so before any proof ("… not proved: the pool moved") or the pool does after one. The notes are
   // unspent either way, and a build reads the pool afresh, so the same press goes again, within swapRetry's counts and budget. Only a refusal that names that revert is chased.
+  // What a job still waiting in the relay's queue is built on, read again while it waits (see waitOpts.whileQueued): a swap's hops, an add's reserves and share total, a removal's withdrawal against the pool now.
+  const _watchQueued = (waitOpts, moved) => ({ ...waitOpts, whileQueued: moved });
+  async function _hopsMoved({ asset0, amountIn, path, fee, hops }) {
+    const now = await quoteRoute({ asset0, amountIn, path, fee });
+    return !!now && now.hops.length === hops.length && now.hops.some((h, i) => BigInt(h.reserveAPre) !== BigInt(hops[i].reserveAPre) || BigInt(h.reserveBPre) !== BigInt(hops[i].reserveBPre));
+  }
+  async function _poolMoved(poolId, res) {
+    const now = await poolReserves(poolId);
+    return !!now && (BigInt(now.reserveA) !== BigInt(res.reserveA) || BigInt(now.reserveB) !== BigInt(res.reserveB) || (res.totalShares != null && BigInt(now.totalShares) !== BigInt(res.totalShares)));
+  }
+  async function _removalMoved(poolId, dA, dB, burn) {
+    const now = await poolReserves(poolId);
+    return !!now && (BigInt(dA) * BigInt(now.totalShares) > BigInt(now.reserveA) * BigInt(burn) || BigInt(dB) * BigInt(now.totalShares) > BigInt(now.reserveB) * BigInt(burn));
+  }
   async function _againOnMove(waitOpts, run) {
     const again = swapRetry(waitOpts);
     for (;;) {
@@ -3195,7 +3210,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       const { q, spec, sealedMemos } = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee, split });
       if (!first && q.amountOut < BigInt(minOut)) throw _priceMoved();
       let r;
-      try { r = await _dispatch({ type: 'route', spec, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts }); }
+      try { r = await _dispatch({ type: 'route', spec, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts: _watchQueued(waitOpts, () => _hopsMoved({ asset0: inNote.asset, amountIn, path, fee, hops: q.hops })) }); }
       catch (e) {
         if (!(await routeMoved(e, { asset0: inNote.asset, amountIn, path, fee, hops: q.hops }))) throw e;
         if (!(await again(e))) throw _poolKeptMoving(e, ' Nothing was spent; press again for a fresh quote.');

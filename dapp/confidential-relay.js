@@ -219,10 +219,12 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
     return e;
   }
 
-  async function waitForSettle(jobId, { intervalMs = 2000, timeoutMs = 5 * 60 * 1000, openGraceMs = 20_000, onUpdate, sleep } = {}) {
+  // `whileQueued` (optional): asked every `queuedCheckMs` while the job still waits unclaimed in the relay's queue ('pending'), never once the relay has it. It answers whether what the job was built on has gone
+  // stale (a swap's pinned reserves: the pool moved); if so the wait ends with `staleQueued`, so the caller can build it again now instead of after the relay has taken it, refused it, and the holder has learned of it.
+  async function waitForSettle(jobId, { intervalMs = 2000, timeoutMs = 5 * 60 * 1000, openGraceMs = 20_000, onUpdate, sleep, whileQueued = null, queuedCheckMs = 6000 } = {}) {
     const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     const deadline = Date.now() + timeoutMs;
-    let last = null, lastStage, openAt = 0, nearAt = 0;
+    let last = null, lastStage, openAt = 0, nearAt = 0, queuedAt = Date.now();
     const pollState = {};
     for (;;) {
       const st = await pollStatus(jobId, pollState, { wait, intervalMs });
@@ -232,6 +234,12 @@ export function makeConfidentialRelay({ base, others = [], fetchImpl, guard, che
       if (st.status === 'settled') return st;
       if (st.status === 'failed') throw failedError('settle', st);
       if (st.status === 'unknown') throw new Error('relay lost the job (worker restart / KV miss)');
+      if (st.status === 'pending' && whileQueued && Date.now() - queuedAt >= queuedCheckMs) {
+        queuedAt = Date.now();
+        let stale = false;
+        try { stale = !!(await whileQueued(st)); } catch { stale = false; }                       // a check that cannot be made never ends the wait
+        if (stale) throw Object.assign(new Error('not proved: the pool moved while this waited for the relay to take it, so nothing was spent (0x29b3c833)'), { staleQueued: true, jobId });
+      }
       if (st.status === 'open' && st.publicValues && st.proof) {
         if (!openAt) openAt = Date.now();
         if (Date.now() - openAt >= openGraceMs) throw openError(st);

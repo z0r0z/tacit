@@ -1041,11 +1041,11 @@ test('route: a price that fell past the least the holder takes stops the second 
   assert.equal(mock.captured.length, 1, 'no second proof was asked for');
 });
 
-test('route: a pool that keeps moving is built again twice, then said plainly', async () => {
+test('route: a pool that keeps moving is built again four times, then said plainly', async () => {
   const mock = movingPool({ moves: 9, failFirst: 9 });
   const { ux, args } = await routeFixture(mock);
   await assert.rejects(ux.route({ ...args, minOut: 0n }), (e) => e.moved === true && e.said === true && /pool kept moving/.test(e.message));
-  assert.equal(mock.captured.length, 3, 'the first build and two more');
+  assert.equal(mock.captured.length, 5, 'the first build and four more');
 });
 
 // The same for a wrap-swap: the swap proved against the pool's reserves and the deposit it spends. A settle the pool refused because it moved leaves the deposit waiting in the pool,
@@ -1121,11 +1121,11 @@ test('wrap-swap: a price that fell past the least the holder takes stops the sec
   assert.equal(mock.captured.length, 1, 'no second proof was asked for');
 });
 
-test('wrap-swap: a pool that keeps moving is built again twice, then said plainly without claiming nothing was spent', async () => {
+test('wrap-swap: a pool that keeps moving is built again four times, then said plainly without claiming nothing was spent', async () => {
   const mock = movingPool({ moves: 9, failFirst: 9 });
   const { ux, build, waitOpts, walletPriv } = await wrapFixture(mock);
   await assert.rejects(ux.submitWrapSwap({ walletPriv, built: await build(), rebuild: () => build(), waitOpts }), (e) => e.moved === true && e.said === true && e.poolMoving === true && /pool kept moving/.test(e.message) && !/Nothing was spent/.test(e.message));
-  assert.equal(mock.captured.length, 3, 'the first build and two more');
+  assert.equal(mock.captured.length, 5, 'the first build and four more');
 });
 
 // How hard a swap the pool moved under is chased depends on what the refusal cost: before any proof (the relay's check) it cost the relay nothing and the holder some seconds, so it is tried again promptly
@@ -1143,12 +1143,13 @@ test('retry policy: a refusal before any proof is tried again six times, each af
   assert.deepEqual(said.map((x) => [x.cheap, x.attempt]), [[true, 1], [true, 2], [true, 3], [true, 4], [true, 5], [true, 6]]);
 });
 
-test('retry policy: a refusal after the proof, which cost a minute, is tried again twice with no pause; the two kinds are counted apart', async () => {
+test('retry policy: a refusal after the proof, which cost a minute, is tried again four times with no pause; the two kinds are counted apart', async () => {
   const { ux } = await routeFixture(movingPool());
   const said = [], slept = [], again = ux.swapRetry({ onAgain: (x) => said.push(x), sleep: async (ms) => { slept.push(ms); } });
-  assert.equal(await again(settle(BOARD)), true); assert.equal(await again(settle(BOARD)), true); assert.equal(await again(settle(BOARD)), false);
+  for (let i = 1; i <= 4; i++) assert.equal(await again(settle(BOARD)), true, `retry ${i}`);
+  assert.equal(await again(settle(BOARD)), false, 'the fifth is the end');
   assert.deepEqual(slept, [], 'no pause: the proof already took its time');
-  assert.deepEqual(said.map((x) => x.cheap), [false, false]);
+  assert.deepEqual(said.map((x) => x.cheap), [false, false, false, false]);
   for (let i = 0; i < 6; i++) assert.equal(await again(settle(GATE)), true, 'the cheap count is its own');
   assert.equal(await again(settle(GATE)), false);
 });
@@ -1217,7 +1218,7 @@ test('wrapLp: a pool that keeps moving ends it after the tries, in words about l
   assert.equal(mock.captured.length, 7, 'the first and six more');
 });
 
-test('lpBond: a bond the pool refused after its proof is built again, twice at most', async () => {
+test('lpBond: a bond the pool refused after its proof is built again, four times at most', async () => {
   const BOARD_REFUSAL = 'lpbond: the pool refused this op as it stands (PoolReserveMismatch 0x29b3c833); it was not proved again and nothing was spent';
   const mock = movingPool({ moves: 99, failFirst: 99, fail: `settle failed: ${BOARD_REFUSAL}` });
   const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: mock.fetchImpl });
@@ -1235,7 +1236,7 @@ test('lpBond: a bond the pool refused after its proof is built again, twice at m
   const aNote = mk(assetLow, 0), bNote = mk(assetHigh, 1);
   for (const n of [aNote, bNote]) { n.path = tree.rootAndPath(n.leafIndex).path; n.root = tree.root(); }
   await assert.rejects(ux.lpBond({ walletPriv, controller: '0x' + 'fa'.repeat(20), aNote, bNote, feeBps: 30, maxDonationBps: 10000, waitOpts: { intervalMs: 0, sleep: async () => {} } }), /The pool kept moving while your liquidity was proved/);
-  assert.equal(mock.captured.length, 3, 'the first and two more: a refusal after a proof costs a minute, so it is chased less than one before');
+  assert.equal(mock.captured.length, 5, 'the first and four more: a refusal after a proof costs a minute, so it is chased less than one before (six)');
 });
 
 function liquidityNotes(ux, walletPriv) {
@@ -1279,6 +1280,122 @@ test('lpRemove: a removal the relay refused because the pool moved is built agai
   assert.equal(String(mock.captured[1].op.reserveBPre), '9500000', 'the second build takes its share of the pool as it stands');
   assert.ok(BigInt(mock.captured[1].op.dB) < BigInt(mock.captured[0].op.dB), 'and so takes less of the leg that fell');
   assert.ok(r.dB > 0n);
+});
+
+// A job the pool moved under while it still waits UNCLAIMED in the relay's queue is built again at once (waitOpts.whileQueued, read every queuedCheckMs while 'pending'), not after the relay has taken it, refused it
+// and the holder has been told. Nothing was asked of the relay, so it is counted apart and allowed more often.
+function queuedPool({ movesAfterPolls = 2, stayPending = true, settleAfter = 0 } = {}) {
+  const w = (n) => BigInt(n).toString(16).padStart(64, '0');
+  const captured = [], polls = {};
+  let reserveB = 10_000_000n;
+  const fetchImpl = async (url, opts) => {
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
+    let obj;
+    if (String(url).includes('/confidential/submit')) { captured.push(body); obj = { jobId: 'j' + captured.length, status: 'pending' }; }
+    else if (String(url).includes('/confidential/status')) {
+      const id = new URL(String(url)).searchParams.get('id'), n = Number(id.slice(1));
+      polls[id] = (polls[id] || 0) + 1;
+      if (n === 1 && polls[id] >= movesAfterPolls) reserveB = 9_500_000n;       // a trade lands while the first one is still waiting its turn
+      obj = n === 1 && (stayPending || polls[id] < settleAfter) ? { jobId: id, status: 'pending' } : { jobId: id, status: 'settled' };   // (settleAfter: waits that many polls, then settles, so a pool that moves meanwhile is seen from the queue)
+    } else obj = { result: body && body.method === 'eth_call' ? '0x' + [1n, 0n, 0n, 10_000_000n, reserveB, 30n, 10_000_000n].map(w).join('') : '0x0' };
+    return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+  };
+  return { captured, polls, fetchImpl };
+}
+
+test('retry policy: a swap that went stale while queued is built again at once, counted apart and allowed twelve times, and uses none of the others', async () => {
+  const { ux } = await routeFixture(movingPool());
+  const said = [], slept = [], again = ux.swapRetry({ onAgain: (x) => said.push(x), sleep: async (ms) => { slept.push(ms); } });
+  const stale = () => Object.assign(new Error('not proved: the pool moved while this waited for the relay to take it, so nothing was spent (0x29b3c833)'), { staleQueued: true });
+  for (let i = 1; i <= 12; i++) assert.equal(await again(stale()), true, `rebuild ${i}`);
+  assert.equal(await again(stale()), false, 'the thirteenth is the end');
+  assert.deepEqual(slept, [], 'no pause: the relay was asked for nothing');
+  assert.ok(said.every((x) => x.cheap === true), 'it is told as a cheap one');
+  for (let i = 0; i < 6; i++) assert.equal(await again(settle(GATE)), true, 'the six before a proof are still all there');
+  for (let i = 0; i < 4; i++) assert.equal(await again(settle(BOARD)), true, 'and the four after one');
+});
+
+test('relay.waitForSettle: asks whileQueued only while the job waits unclaimed, at its own pace, and a check that cannot be made never ends the wait', async () => {
+  const seq = ['pending', 'pending', 'pending', 'proving', 'proving', 'settled'];
+  let i = 0;
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: async (url) => {
+    const obj = String(url).includes('/confidential/status') ? { jobId: 'j1', status: seq[Math.min(i++, seq.length - 1)], txHash: '0x' + 'ab'.repeat(32) } : { result: '0x0' };
+    return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+  } });
+  const asked = [];
+  await ux.relay.waitForSettle('j1', { intervalMs: 0, sleep: async () => {}, queuedCheckMs: 0, whileQueued: async (st) => { asked.push(st.status); if (asked.length === 2) throw new Error('node down'); return false; } });
+  assert.deepEqual(asked, ['pending', 'pending', 'pending'], 'asked at every poll while pending, never once the relay had it (proving, proving)');
+  i = 0;
+  await assert.rejects(ux.relay.waitForSettle('j1', { intervalMs: 0, sleep: async () => {}, queuedCheckMs: 0, whileQueued: async () => i >= 2 }), (e) => e.staleQueued === true && e.jobId === 'j1' && /^not proved: the pool moved while this waited/.test(e.message) && /0x29b3c833\)$/.test(e.message));
+  i = 0; let n = 0;
+  await ux.relay.waitForSettle('j1', { intervalMs: 0, sleep: async () => {}, whileQueued: async () => { n++; return true; } });
+  assert.equal(n, 0, 'with the default pace (six seconds) a quick wait is not asked at all');
+});
+
+test('route: a swap whose pool moved while it waited unclaimed is built again on the reserves now, before the relay ever takes it', async () => {
+  const mock = queuedPool({ movesAfterPolls: 2 });
+  const { ux, args } = await routeFixture(mock);
+  const said = [];
+  const r = await ux.route({ ...args, minOut: 0n, waitOpts: { ...args.waitOpts, queuedCheckMs: 0, onAgain: (x) => said.push([x.cheap, x.attempt]) } });
+  assert.equal(mock.captured.length, 2, 'the first build and the one on the new reserves');
+  assert.equal(String(mock.captured[0].op.hops[0].reserveBPre), '10000000');
+  assert.equal(String(mock.captured[1].op.hops[0].reserveBPre), '9500000', 'the second build binds the reserves the pool holds now');
+  assert.ok((mock.polls.j1 || 0) <= 3, `the first job was left after a poll or two (${mock.polls.j1}), not waited out`);
+  assert.deepEqual(said, [[true, 1]]);
+  assert.ok(r.amountOut > 0n);
+});
+
+test('route: a pool that stays put while the swap waits is not built again', async () => {
+  const mock = queuedPool({ movesAfterPolls: 99, stayPending: false, settleAfter: 4 });      // pending for a few polls, so the check does run, and the pool holds still
+  const { ux, args } = await routeFixture(mock);
+  await ux.route({ ...args, minOut: 0n, waitOpts: { ...args.waitOpts, queuedCheckMs: 0 } });
+  assert.equal(mock.captured.length, 1);
+});
+
+test('wrap-swap and wrapLp: the same, for a deposit swap and an add', async () => {
+  const wrapMock = queuedPool({ movesAfterPolls: 2 });
+  const f = await wrapFixture(wrapMock);
+  await f.ux.submitWrapSwap({ walletPriv: f.walletPriv, built: await f.build(), rebuild: () => f.build(), waitOpts: { ...f.waitOpts, queuedCheckMs: 0 } });
+  assert.equal(wrapMock.captured.length, 2, 'the wrap-swap was built again while it waited');
+  assert.equal(String(wrapMock.captured[1].op.reserveBPre), '9500000');
+  const noRebuild = queuedPool({ movesAfterPolls: 2, stayPending: false, settleAfter: 5 });
+  const g = await wrapFixture(noRebuild);
+  await g.ux.submitWrapSwap({ walletPriv: g.walletPriv, built: await g.build(), waitOpts: { ...g.waitOpts, queuedCheckMs: 0 } });
+  assert.equal(noRebuild.captured.length, 1, 'with nothing to build it again with, the wait is not cut short');
+  const lpMock = queuedPool({ movesAfterPolls: 2 });
+  const { ux, args } = await wrapLpFixture(lpMock);
+  await ux.wrapLp({ ...args, waitOpts: { ...args.waitOpts, queuedCheckMs: 0 } });
+  assert.equal(lpMock.captured.length, 2, 'the add was built again while it waited');
+  assert.equal(String(lpMock.captured[1].op.reserveBPre), '9500000');
+});
+
+test('lpAdd, lpBond and lpRemove: built again while they wait unclaimed when the pool moved, and left alone when it did not', async () => {
+  const { makeConfidentialLp } = await import('../dapp/confidential-lp.js');
+  for (const move of [true, false]) {
+    const after = move ? 2 : 99;
+    // an add from notes
+    const addMock = queuedPool({ movesAfterPolls: after, stayPending: move, settleAfter: 4 });
+    const uxA = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: addMock.fetchImpl });
+    const nA = liquidityNotes(uxA, '0x' + 'c7'.repeat(32));
+    const [aNote, bNote] = nA.seal([nA.mk(nA.assetLow, 0), nA.mk(nA.assetHigh, 1)]);
+    await uxA.lpAdd({ walletPriv: '0x' + 'c7'.repeat(32), aNote, bNote, feeBps: 30, maxDonationBps: 10000, waitOpts: { intervalMs: 0, sleep: async () => {}, queuedCheckMs: 0 } });
+    assert.equal(addMock.captured.length, move ? 2 : 1, `lpAdd, pool ${move ? 'moved' : 'still'}`);
+    // a bond
+    const bondMock = queuedPool({ movesAfterPolls: after, stayPending: move, settleAfter: 4 });
+    const uxB = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: bondMock.fetchImpl });
+    const nB = liquidityNotes(uxB, '0xc8'.padEnd(66, 'c8'));
+    const [a2, b2] = nB.seal([nB.mk(nB.assetLow, 0), nB.mk(nB.assetHigh, 1)]);
+    await uxB.lpBond({ walletPriv: '0xc8'.padEnd(66, 'c8'), controller: '0x' + 'fa'.repeat(20), aNote: a2, bNote: b2, feeBps: 30, maxDonationBps: 10000, waitOpts: { intervalMs: 0, sleep: async () => {}, queuedCheckMs: 0 } });
+    assert.equal(bondMock.captured.length, move ? 2 : 1, `lpBond, pool ${move ? 'moved' : 'still'}`);
+    // a removal
+    const rmMock = queuedPool({ movesAfterPolls: after, stayPending: move, settleAfter: 4 });
+    const uxR = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: rmMock.fetchImpl });
+    const nR = liquidityNotes(uxR, '0x' + 'c9'.repeat(32));
+    const lp = makeConfidentialLp({ keccak256: keccak_256, pool: uxR.pool });
+    const note = nR.seal([nR.mk(lp.lpShareId(lp.poolId(nR.assetLow, nR.assetHigh, 30)), 0, 1000n)])[0];
+    await uxR.lpRemove({ walletPriv: '0x' + 'c9'.repeat(32), assetA: nR.assetLow, assetB: nR.assetHigh, feeBps: 30, shareNote: note, fee: 0n, waitOpts: { intervalMs: 0, sleep: async () => {}, queuedCheckMs: 0 } });
+    assert.equal(rmMock.captured.length, move ? 2 : 1, `lpRemove, pool ${move ? 'moved' : 'still'}`);
+  }
 });
 
 test('route: refused before any proof again and again, it is built again each time and goes through on the sixth', async () => {
