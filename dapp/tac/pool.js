@@ -463,6 +463,7 @@ export function makeTacPool(ctx) {
     try { T.invalidateHoldingsCache?.(); } catch {}
     await loadPublic(); await loadShielded();
     ctx.changed?.('bitcoin');
+    return r.revealTxid;
   }
   const maxInto = (field, statusId) => async () => {
     await ready();
@@ -860,6 +861,17 @@ export function makeTacPool(ctx) {
       q('tp-send-to').value = String(to || ''); q('tp-send-amt').value = String(amount || '');
       paintHints(); paintSendComb();
       return busy(q('tp-send-go'), 'tp-st-send', () => doSend());
+    },
+    // Everything shielded out to the key's own Bitcoin address, the Withdraw tab's To my wallet for the whole balance. The withdrawal's transaction
+    // id, or null when it did not go (the tab says why: a block to wait for, nothing shielded, an error).
+    exitAll: async () => {
+      pick('withdraw', 'self');
+      let sent = null;
+      await busy(q('tp-exit-go'), 'tp-st-exit', async () => {
+        await maxInto('tp-exit-amt', 'tp-st-exit')();
+        if (parseUnits(q('tp-exit-amt').value) > 0n) sent = (await doExit()) || null;
+      });
+      return sent;
     },
     fees: () => loadRelay().then(() => ({ relay: relayLive && relayFee != null ? relayFee : null })),
     poolAddress: () => loadSecret().then(() => (unlocked() ? wallet()?.addressString || null : null)),

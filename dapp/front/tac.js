@@ -1,7 +1,7 @@
 // TAC's page. index.html imports this when TAC's page opens (its address, /tac/, preloads it) or a link to it is pointed at, and calls
 // install() with what this code reads from its module: let and var bindings are read as ctx.X, so their changes there are seen here.
 export default function install(ctx) {
-const { $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brHolds, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getUx, hexToBytes, html, hxChainEth, hxLive, hxPreset, hxUsd, hxWalletBal, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, heldParts, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your } = ctx;
+const { $, $$, ADDR, BR, BRM, BR_SEEN, BR_TO_ON, BSW, BTC, BTC_TOKENS, CETH_POOL_ASSET_ID, CHAIN_HOP_WAIT, CHAIN_SWEEP, CSEND, E10, FLASH, HELD, HX, HXWB, MEMPOOL, NOTIFY_KEY, P, PERMIT_WAIT, S, TACB, TACSEND, TAC_BOOK, TAC_BTC_ID, TAC_POOL_ASSET_ID, TK, TPG_FLOOR, TPG_KNOWN, TPG_KNOWN_AT, TPX, XA, acctUsed, actBtc, addressId, ago, assetSendForm, brAct, brBridgeNow, brCheckText, brDiscover, brFail, brFirst, brId, brList, brLineWaiting, brHolds, brLongReason, brMarked, brPaid, brPrepSet, brPrepState, brPrepTick, brPreps, brRecords, brRow, brSplitDone, brSplitFee, brSplitLooking, brTagged, brTk, brTransfers, brTry, brUx, brWhy, bridgeRunAll, bridgeRunMerge, bswHas, bswMod, bswOpen, bswTick, bulkFee, busy, byValue, bytesToHex, calmMotion, chainAhead, chainCap, chainCapLine, chainClient, chainHeld, chainHopRun, chainInRun, chainMark, chainMods, chainNotTo, chainOn, chainOutRun, chainOverCap, chainPayRun, chainQuote, chainRecipient, chainSaid, chainScan, chainSentLine, chainSettle, chainShieldAhead, chainShieldRun, chainSweepFee, chainWarm, chainWayOf, chainWrapWarm, clearField, connect, copy, countAll, dashSoon, decodeTacitAddress, depositCallout, devBal, devOn, errText, ethCall, evm, fastRoute, fmt, freeNotes, gasNow, getDeviceMods, getUx, hexToBytes, html, hxChainEth, hxDevAny, hxLive, hxPreset, hxUsd, hxWalletBal, hxWalletBals, hxWays, keep, keyRow, load, loadBridge, loadBtc, loadHeld, loadTacHoldings, loadTacPrice, loadTacit, mergeSend, mount, multicall, nameAddrM, needKey, onEdit, openAddresses, openSheet, opsCompared, ownNow, parseUnits, payer, payingAccount, plain, planAll, planMerge, planPick, privateOf, qrModule, quoteErr, readPublicTac, render, rerender, resolveTo, resolveToM, satsFmt, say, sayErr, scanPrivate, segSub, setNotify, setPayer, heldParts, shLookingNote, short, shown, shownAs, sig, sleep, spendable, startNote, stepLi, store, strip, syncLink, tacPageOpen, tacPublicNow, tacWrapNow, tacitIsMine, tacitLanes, takeDraft, tcardQuoteSoon, toSelf, toast, tokOutNow, tokenSync, tokenWallet, tpgAct, tpgBusy, tpgPrice, viewAddr, vouchers, walletPriv, warn, wireFinish, wireSub, withKey, xoOn, xoOut, xoShown, your } = ctx;
 const TCD_FILL = { at: 0 };   // (a Stake press made before the wallet's TAC was read: see tcardStakeFill)
 function idMark(a, size = 40) {
   const h = addressId(a).replace(/·/g, ''), hue = Math.round((parseInt(h.slice(0, 2), 16) / 256) * 360);
@@ -564,6 +564,8 @@ function tacSeenKeep(k, places) {
 const tacSeenOn = (k, places) => { const seen = k ? tacSeen(k) : null; return seen ? places.map((p) => (p.v == null && seen[p.key] != null ? { ...p, v: BigInt(seen[p.key]), bad: false, seen: true } : p)) : places; };
 // TAC in a shield that is waiting for its block: out of the public list, not yet in the pool's. From the pool card's own read when it is up, else the page's holdings read.
 const tacJoining = (k) => (ctx.TPOOL.api?.totals().joining || 0n) || (HELD.pub === k ? HELD.sats?.find((a) => a.ticker === 'TAC')?.joining ?? 0n : 0n);
+const TAC_MOVE_PAY = 'Takes it out of the Pay pool to your wallet, then shields it to the Tacit chain.';
+const TAC_MOVE_BTC = 'Takes all of it out of the pool to your Bitcoin address, then opens the bridge to Ethereum. From there it moves to the Tacit chain.';
 function tacPlaces(k, who) {
   const ch = chainOn(), way = (sf, w) => hxWays(sf).includes(w), hx = (t, spec) => ({ t, hx: spec });
   const btcTac = k && BTC.pub === k ? BTC.held.find((a) => a.id === TAC_BTC_ID) : null, chainV = ch ? chainHeld() : null, payV = devBal('tac', k);
@@ -579,16 +581,16 @@ function tacPlaces(k, who) {
     { key: 'btc', t: 'On Bitcoin', s: 'public', m: 'btc', core: true, v: BTC.pub === k && BTC.got >= 2 ? (btcTac ? btcTac.balance * 10n ** BigInt(18 - btcTac.decimals) : 0n) : null, bad: !!BTC.err && (BTC.pub !== k || BTC.got < 2),
       acts: (v) => (v > 0n ? [{ t: 'Shield', th: 'pool:shield' }, { t: 'To Ethereum', th: 'bridge:in' }, hx('Send', 'send:tacb')] : []) },
     { key: 'pool', t: 'Bitcoin pool', s: 'shielded', m: 'btc', v: pool == null ? null : pool * E10,
-      acts: (v) => [...(v > 0n ? [{ t: 'Send', th: 'pool:send' }, { t: 'Withdraw', th: 'pool:withdraw' }] : []), { t: 'Receive', th: 'pool:receive' }] },
+      acts: (v) => [...(v > 0n ? [ch && way('tac', 'chain') && { t: 'Withdraw to the Tacit chain', go: 'btc', title: TAC_MOVE_BTC }, { t: 'Send', th: 'pool:send' }, { t: 'Withdraw', th: 'pool:withdraw' }] : []), { t: 'Receive', th: 'pool:receive' }] },
     ...(k && tacJoining(k) > 0n ? [{ key: 'joining', t: 'Joining the pool', s: 'shielded, waiting for a block', m: 'btc', v: tacJoining(k) * E10, acts: () => [] }] : []),
     // taken out of the pool to sell: at the wallet's own sale keys, listed or waiting to be, until sold or put back
     ...(forSale > 0n ? [{ key: 'sale', t: 'For sale', s: 'taken out, on Bitcoin', m: 'btc', v: forSale * E10, acts: () => [{ t: 'List or put back', th: 'pool:withdraw:sats' }] }] : []),
   ];
-  if (payV > 0n) out.push({ key: 'pay', t: 'Pay pool', s: 'private', m: 1, v: payV, acts: () => [hx('Send', 'send:ptac'), { t: 'Withdraw', link: 'device/tac/withdraw' }] });
+  if (payV > 0n) out.push({ key: 'pay', t: 'Pay pool', s: 'private', m: 1, v: payV, acts: () => [ch && way('wtac', 'chain') && { t: 'Move to the Tacit chain', go: 'pay', title: TAC_MOVE_PAY }, hx('Send', 'send:ptac'), { t: 'Withdraw', link: 'device/tac/withdraw' }] });
   return out;
 }
 function tacPlacesView(places) {
-  const act = (a) => (a.hx ? html`<button class="link" type="button" data-hx="${a.hx}">${a.t}</button>` : a.link ? html`<a class="link" href="#${a.link}" data-link="${a.link}">${a.t}</a>` : html`<button class="link" type="button" data-th="${a.th}">${a.t}</button>`);
+  const act = (a) => (a.go ? html`<button class="link" type="button" data-tac-move="${a.go}" title="${a.title}">${a.t}</button>` : a.hx ? html`<button class="link" type="button" data-hx="${a.hx}">${a.t}</button>` : a.link ? html`<a class="link" href="#${a.link}" data-link="${a.link}">${a.t}</a>` : html`<button class="link" type="button" data-th="${a.th}">${a.t}</button>`);
   return html`<ul class="th" aria-label="Where your TAC is">${places.map((p) => {
     const acts = p.v == null ? [] : p.acts(p.v).filter(Boolean);
     return html`<li data-place="${p.key}">${chainMark(p.m)}<span class="th-n">${p.t}<small>${p.s}</small></span>
@@ -605,8 +607,83 @@ function tacPlaceGo(what) {
   tacPageOpen('bridge');
   load.tac().then(() => rerender('tac')).catch(() => {});
 }
+// Two older private balances reach the Tacit chain from the lists of where a key's TAC is, each as one press.
+//   Pay pool: its TAC goes out to this wallet and straight in as a shield (tacPayChainRun).
+//   Bitcoin pool: all of it comes out to this key's Bitcoin address, and the bridge opens for it (tacBtcChain). Pool TAC reaches Ethereum by the fast bridge,
+//   which needs a provider, a quote to approve and about fifteen minutes, so it cannot go on by itself; its Tacit chain press is the DeFi pool line's.
+// What one press of the Pay pool's button moves, in the chain's 8-decimal units. `most` is the most one withdrawal can take (18 decimals), `sweepFee` the leader's fee
+// when the leader pays the shield's gas (a tenth is left over for it to move), `cap` the most a shield takes. `amount` is what to withdraw so the wallet holds it all.
+function tacPayChainSize({ most, sweepFee = 0n, cap = null }) {
+  const room = sweepFee + sweepFee / 10n;
+  let units = most > room ? (most - room) / E10 : 0n;
+  if (cap != null && units > cap) units = cap;
+  return units > 0n ? { units, amount: units * E10 + room } : null;
+}
+async function tacPayChainRun(run, st, way) {
+  const p = hxDevAny('ptac');
+  if (!p) throw chainSaid('There is no Pay pool for TAC here.');
+  const to = await payingAccount();
+  say(st, 'Reading your Pay pool…');
+  await tokenSync(true, p);
+  run.check();
+  const [W, mods] = [await tokenWallet(p), await getDeviceMods()];
+  const relay = !!p.keeper && !TK.self, quote = relay ? await W.quote().catch(() => null) : null, fee = quote ? BigInt(quote.fee || 0) : 0n;
+  let lo = 0n, hi = TK.bal ?? 0n;
+  while (lo < hi) { const mid = (lo + hi + 1n) / 2n; if (mods.mergePlan(W.notes().map((n) => n.v), mid + fee, fee) != null) lo = mid; else hi = mid - 1n; }
+  const sweepFee = way === 'permit' ? await chainSweepFee(true).catch(() => 0n) : 0n, cap = CHAIN_SWEEP.cap ?? await chainCap().catch(() => null);
+  const size = tacPayChainSize({ most: lo, sweepFee, cap });
+  if (!size) throw chainSaid(`Too little in the Pay pool to move: the relay’s fee${sweepFee ? ' and the leader’s fee' : ''} come first.`);
+  const capped = cap != null && size.units === cap && (lo - (sweepFee + sweepFee / 10n)) / E10 > cap;
+  run.go({ label: `Move ${fmt(size.amount, 18, 2)} TAC from the Pay pool to the Tacit chain`, one: false, status: () => st });
+  say(st, `Moving ${fmt(size.units * E10, 18, 4)} TAC from the Pay pool to the Tacit chain…`);
+  if (!await tokOutNow({ run, t: p, op: 'withdraw', amt: plain(size.amount, 18), raw: to, st, clear: () => {}, after: () => {} })) return false;
+  run.check();
+  const need = size.units * E10 + sweepFee;
+  let held = null;
+  for (let i = 0; i < 8; i++) {
+    await hxWalletBals(true);
+    held = hxWalletBal('wtac');
+    if (held != null && held >= need) break;
+    await sleep(3000);
+    run.check();
+  }
+  if (held == null || held < need) { say(st, 'Out of the Pay pool and on its way to your wallet. Press Tacit chain on the Wallet line once it shows there.'); return false; }
+  let failed = false;
+  const fail = run.fail;
+  run.fail = (el, e) => { failed = true; return fail(el, e); };
+  await chainShieldRun(run, st, size.units, { held, way, after: null });
+  if (!failed && capped) toast(`The Tacit chain takes up to ${fmt(cap, 8, 4)} TAC a shield, so the rest is still in the Pay pool. Press it again for that.`, false, 12000);
+  return !failed;
+}
+// Where the press was made decides where its progress shows: the card's own line, or the list's. From the card the card is put on the chain side first.
+function tacMoveGo(kind, btn) {
+  if (!S.key) return openSheet('wallet');
+  if (kind === 'btc') return tacBtcChain();
+  const inCard = !!btn.closest('#tpg-card');
+  if (inCard && !tcardGo('chain', 'shield')) return;
+  const go = inCard ? $('#tcd-go') : btn, st = inCard ? $('#tcd-st') : $('#tac-bal-status');
+  if (!go || !st) return;
+  const way = inCard ? tcardWay() : chainWayOf(HX.chainWay);
+  return busy(go, async (run) => {
+    try { await tacPayChainRun(run, st, way); } catch (e) { run.fail(st, e); }
+  });
+}
+async function tacBtcChain() {
+  const api = await tacPoolOpen('withdraw', 'self');
+  if (!api) return;
+  const txid = await api.exitAll();
+  if (!txid) return;
+  toast(html`Out of the pool, to your Bitcoin address: <a href="${MEMPOOL}/tx/${txid}" target="_blank" rel="noopener">${short(txid, 6)} ↗</a>. Bridge it to Ethereum here; once it lands, move it to the Tacit chain.`, false, 20000);
+  tacPlaceGo('bridge:in');
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest?.('[data-tac-move]');
+  if (!b) return;
+  e.preventDefault();
+  tacMoveGo(b.dataset.tacMove, b);
+});
 function tacPool() {
-  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=bc33a4ad').then((m) => {
+  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=65bf75e9').then((m) => {
     const api = m.makeTacPool({
       key: () => (S.key ? { pubHex: S.key.pubHex } : null),
       priv: () => walletPriv(),
@@ -1256,9 +1333,9 @@ function tcardAll(k, side) {
   if (!p) return '';
   const here = side === 'btc' ? 'pool' : 'chain', t = (v) => fmt(v, 8, 2);
   const rest = [['chain', 'on the Tacit chain', html`<button class="link" type="button" data-tcd-side="chain">Show</button>`],
-    ['pool', 'in the Bitcoin pool', html`<button class="link" type="button" data-tcd-side="btc">Show</button>`],
+    ['pool', 'in the Bitcoin pool', html`<button class="link" type="button" data-tcd-side="btc">Show</button>${chainOn() && hxWays('tac').includes('chain') ? html` <button class="link" type="button" data-tac-move="btc" title="${TAC_MOVE_BTC}">Withdraw to the Tacit chain</button>` : ''}`],
     ['defi', 'in the DeFi pool', chainOn() ? html`<button class="link" type="button" data-hx="shield:tac:chain" data-amt="${plain(p.defi, 8)}">Move to the Tacit chain</button>` : ''],
-    ['pay', 'in the pay pool', '']].filter(([key]) => key !== here && p[key] > 0n);
+    ['pay', 'in the pay pool', chainOn() && hxWays('wtac').includes('chain') ? html`<button class="link" type="button" data-tac-move="pay" title="${TAC_MOVE_PAY}">Move to the Tacit chain</button>` : '']].filter(([key]) => key !== here && p[key] > 0n);
   if (!rest.length) return '';
   const all = p.chain + p.pool + p.defi + p.pay;
   return html`<p class="tcd-all"><b class="num">${t(all)}</b> private in all: ${rest.map(([key, what, go], i) => html`${i ? ' · ' : ''}<span class="num">${t(p[key])}</span> ${what}${go ? html` ${go}` : ''}`)}</p>`;

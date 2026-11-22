@@ -156,6 +156,25 @@ await click('tp-exit-go');
 assert.equal(calls.exit.length, 1);
 assert.equal(calls.exit[0].amount, 3n * TAC);
 assert.ok(changed.includes('bitcoin'));
+// exitAll, the Bitcoin pool's press toward the Tacit chain: the whole shielded balance out, the transaction's id back; null when the exit waits for a block or fails
+{
+  calls.exit.length = 0; changed = [];
+  assert.equal(await tp.exitAll(), 'bb'.repeat(32), 'the id of the withdrawal comes back');
+  assert.equal(calls.exit.length, 1);
+  assert.equal(calls.exit[0].amount, 50n * TAC, 'all of the shielded balance goes, not what the box held');
+  assert.ok(changed.includes('bitcoin'), 'the page is told its TAC on Bitcoin moved');
+  const exit0 = S.exitToWallet;
+  S.exitToWallet = async (t, o) => { calls.exit.push(o); return { wait: 2, tip: 7 }; };
+  calls.exit.length = 0;
+  assert.equal(await tp.exitAll(), null, 'an exit that has to wait for a block has not gone');
+  assert.equal(calls.exit.length, 1);
+  assert.match(st('tp-st-exit'), /needs 2 more Bitcoin blocks/, 'the tab says why');
+  S.exitToWallet = async () => { throw new Error('the pool refused it'); };
+  assert.equal(await tp.exitAll(), null, 'a refused exit has not gone');
+  assert.match(st('tp-st-exit'), /the pool refused it/);
+  S.exitToWallet = exit0;
+  type('tp-exit-amt', '');
+}
 await click('tp-wt-sats');
 assert.equal($('tp-sats').textContent, 'sats panel', 'To sats draws the sale panel');
 assert.deepEqual(tp.view(), ['withdraw', 'sats']);
