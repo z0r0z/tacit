@@ -253,10 +253,22 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
   // already has it, or a nonce used since, is no failure.
   const sentCalls = new Map();
   const remember = (hash, call) => { sentCalls.set(hash, call); if (sentCalls.size > 64) sentCalls.delete(sentCalls.keys().next().value); };
+  // Each time, the call is simulated again first: one that would now revert is not sent again, and one that cannot be simulated just now
+  // (a node error, or a call sent unsimulated behind the keeper's own) goes to the private endpoints only.
   async function resend(hash) {
     const call = sentCalls.get(hash);
     if (!call || await receiptOf(hash).catch(() => null)) return false;
+    let publicOk = call.simulate !== false;
+    if (publicOk) {
+      try { await pub.estimateContractGas({ ...target(call.functionName), args: call.args, account }); }
+      catch (e) {
+        // (a revert is told by the node's own execution-reverted answer: viem reports a node's internal error as a revert too)
+        if (revertName(e) || e?.walk?.((x) => x?.name === 'ExecutionRevertedError') || /execution reverted/i.test(String(e?.shortMessage || e?.message || ''))) { log(`  ${hash} would not go through now (${safeErr(e)}); not sent again`); sentCalls.delete(hash); return false; }
+        publicOk = false;
+      }
+    }
     for (const urls of [privateUrls, publicUrls]) {
+      if (urls === publicUrls && !publicOk) continue;
       if (urls.length) await via(call, urls, urls === publicUrls, () => {}).catch(() => {});
     }
     return true;
@@ -371,7 +383,7 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
         if (!urls.length) continue;
         const hash = await withNonceRetry(functionName, async () => {
           const [nonce, fee] = await Promise.all([nextNonce(), fees(gas)]);
-          const call = { functionName, args, gas, nonce, fee };
+          const call = { functionName, args, gas, nonce, fee, simulate };
           const h = await via(call, urls, urls === publicUrls, fail);
           if (!h) throw lastErr || new Error('no submission endpoint took it');
           signer.sentNonce = nonce;

@@ -1934,6 +1934,28 @@ await test('send fees: the tip is at most what the node\'s gas price implies ove
   } finally { A.srv.close(); }
 });
 
+await test('a send not mined is simulated again before it is sent again: one that would revert now is not sent, one that cannot be simulated goes to the private endpoints only', async () => {
+  const pubNode = { base: 1_000_000_000n, tip: 1_000_000n, gasPrice: 2_000_000_000n, sent: [] }, privNode = { ...pubNode, sent: [] };
+  const A = await sendNode(pubNode), P = await sendNode(privNode);
+  const PTS = '0x5555555555555555555555555555555555555555';
+  try {
+    const chain = await makeKeeperChain({ cfg: { rpcUrls: [A.url], sendRpcUrls: [P.url], allowPublicSend: true, pool: POOL, router: ROUTER, chainId: 1, minPriorityFee: 0n, resendSecs: 0, pointsAddress: PTS }, account: { address: KEEPER, type: 'json-rpc' } });
+    const args = [5n, 16n, Array.from({ length: 32 }, () => '0x' + '00'.repeat(32))];
+    const hash = await chain.send('checkpoints.post', args, { gas: 300_000n });
+    assert.equal(privNode.sent.length, 1, 'sent to the private endpoint'); assert.equal(pubNode.sent.length, 0);
+    assert.equal(await chain.resend(hash), true);
+    assert.deepEqual([privNode.sent.length, pubNode.sent.length], [2, 1], 'still good: sent again to both');
+    pubNode.estimate = 'down';
+    assert.equal(await chain.resend(hash), true);
+    assert.deepEqual([privNode.sent.length, pubNode.sent.length], [3, 1], 'not simulated: the private endpoint only');
+    pubNode.estimate = 'revert';
+    assert.equal(await chain.resend(hash), false);
+    assert.deepEqual([privNode.sent.length, pubNode.sent.length], [3, 1], 'would revert: not sent again anywhere');
+    pubNode.estimate = undefined;
+    assert.equal(await chain.resend(hash), false, 'and it is forgotten');
+  } finally { A.srv.close(); P.srv.close(); }
+});
+
 await test('a keeper that cannot front a send says so on /quote and /relay (503) instead of taking the job', async () => {
   const cfg = mkCfg({ ratePerMin: 100 });
   const store = openKeeperStore(':memory:');
