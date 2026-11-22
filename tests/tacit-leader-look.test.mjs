@@ -1,7 +1,7 @@
 // How often the leader looks at a shield that has no deposit yet: every step while it is young, then every minute, then every five; a funded one is forgotten.
 //   node tests/tacit-leader-look.test.mjs
 import assert from 'node:assert';
-import { makeLooks } from '../tacit-leader/look.mjs';
+import { makeLooks, pickLooks } from '../tacit-leader/look.mjs';
 import { nodeEnv } from '../tacit-leader/node-env.mjs';
 
 const L = makeLooks({ young: 120_000, mid: 600_000, everyMid: 60_000, everyOld: 300_000 });
@@ -29,6 +29,17 @@ assert.equal(L.size, 0, 'only the ids still waiting are kept');
   const steps = 600, mk = makeLooks(); const ids = Array.from({ length: 128 }, (_, i) => 'id' + i); let looks = 0;
   for (let s = 0; s < steps; s++) { const t = s * 6_000; for (const id of ids) if (mk.due(id, t)) { looks++; mk.saw(id, t, false); } }
   assert.ok(looks < 128 * steps * 0.15, `128 unfunded shields cost ${looks} looks in an hour, not ${128 * steps}`);
+}
+// at most `cap` shields are read in a step, the longest unlooked first, so every waiting shield is read within a few steps
+{
+  const mk = makeLooks(), shields = Array.from({ length: 200 }, (_, i) => ({ id: 's' + i })), seen = new Set();
+  for (let s = 0; s < 4; s++) {
+    const t = s * 6_000, pick = pickLooks(mk, shields, t, 64);
+    assert.ok(pick.length <= 64, 'a step reads at most the cap');
+    for (const d of pick) { seen.add(d.id); mk.saw(d.id, t, false); }
+  }
+  assert.equal(seen.size, 200, 'all 200 young shields were read within four steps');
+  assert.equal(pickLooks(makeLooks(), shields, 0).length, 200, 'with no cap, every due shield');
 }
 // the node is started with its own settings only
 {

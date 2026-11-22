@@ -7,8 +7,15 @@ export function makeLooks({ young = 120_000, mid = 600_000, everyMid = 60_000, e
   return {
     due(id, t) { const a = m.get(id); return !a || t - a.last >= every(t - a.first); },
     aged(id, t) { const a = m.get(id); return !!a && t - a.first >= young; },
+    last(id) { return m.has(id) ? m.get(id).last : -Infinity; },
     saw(id, t, funded) { if (funded) m.delete(id); else m.set(id, { first: m.get(id)?.first ?? t, last: t }); },
     prune(ids) { for (const id of [...m.keys()]) if (!ids.has(id)) m.delete(id); },
     get size() { return m.size; },
   };
+}
+
+// The shields to look at this step: those due, the longest unlooked first (one never looked at counts as looked at long ago), at most `cap`.
+// The rest wait for a later step, so the reads a step makes stay bounded however many shields wait.
+export function pickLooks(looks, shields, t, cap = Infinity) {
+  return shields.filter((d) => looks.due(d.id, t)).map((d, i) => [d, i]).sort((a, b) => { const x = looks.last(a[0].id), y = looks.last(b[0].id); return x < y ? -1 : x > y ? 1 : a[1] - b[1]; }).slice(0, cap).map(([d]) => d);
 }

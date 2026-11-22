@@ -31,7 +31,7 @@ import { makeRpc, send as sendTx, addressOf, num, suggestedTip } from './rpc.mjs
 import { feeTerms, readPrice, makeFeeDesk, admitPaying, blockReady, landCover } from './fees.mjs';
 import { archiveEntry, loadArchive } from './archive.mjs';
 import { hopsIn, hopKey, makeHopLedger, sweepHops } from './hops.mjs';
-import { makeLooks } from './look.mjs';
+import { makeLooks, pickLooks } from './look.mjs';
 import { nodeEnv } from './node-env.mjs';
 import { makeBoardProver } from '../worker-relay/src/lib/board-prover.js';
 
@@ -374,6 +374,7 @@ const DROP_UNFUNDED = Number(env.DROP_UNFUNDED_SECS || 3600) * 1000;
 // (each sweep is a few reads of Ethereum, per way back it was sent with).
 const looks = makeLooks();
 const SWEEPS_PER_STEP = Number(env.SWEEPS_PER_STEP || 8);
+const LOOKS_PER_STEP = Number(env.LOOKS_PER_STEP || 64);          // shields whose deposit is read in one step at most (the rest on later steps)
 
 // A restart rebuilds the node from the blocks on this disk when they are the whole chain: every block from 1 to the contract's height is there, each
 // starts where the one before ended, the first from the empty chain's state and the last at the contract's own state, and no forced entry waits (its
@@ -418,11 +419,14 @@ async function step() {
   const pendingOf = (d) => view('pending(bytes32)', ['address', 'uint256', 'uint256'], [hexOf(keccak_256(bytesOf(d.deposit)))]);
   const t0 = Date.now(), shields = pool.spends.filter((d) => d.deposit);
   // (one not looked at this step is unfunded as far as this step goes, and stays held out of the block)
-  const toLook = shields.filter((d) => looks.due(d.id, t0));
+  const toLook = pickLooks(looks, shields, t0, LOOKS_PER_STEP);
   for (const d of shields) if (!toLook.includes(d)) exclude.push(d.id);
-  const looked = await Promise.all(toLook.map(async (d) => [d, await pendingOf(d)]));
+  // (a read that fails leaves its shield out of this step only: it is looked at again on a later one)
+  const looked = await Promise.all(toLook.map(async (d) => [d, await pendingOf(d).catch((e) => { log({ shieldUnread: d.id, error: String(e?.message || e).slice(0, 160) }); return null; })]));
   let sweeps = 0;
-  for (const [d, [from0]] of looked) {
+  for (const [d, read] of looked) {
+    if (!read) { exclude.push(d.id); continue; }
+    const [from0] = read;
     let from = from0;
     // a shield paid to its inbox (the confidential pool's unwrap pays one): sweep it in once it holds the deposit, trying each way
     // back it was sent with
