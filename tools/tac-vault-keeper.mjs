@@ -29,6 +29,12 @@
 // actions pay at most ACTION_MAX_GWEI, since a liquidation must not wait out a gas spike. A transaction that mines
 // but reverts is reported. Anyone can run one.
 //
+// Reads go to RPC. When it fails the way a provider does (a dropped connection, a rate limit, an HTML error page, an "Internal error"),
+// the same read goes to RPC_FALLBACKS (SEND_RPC when unset), which are then tried first for RPC_COOLDOWN_SECONDS (120) so that a dead
+// endpoint does not hold up every call. A fallback that cannot serve a read (the proof of an old block) changes nothing: RPC is tried
+// next. A revert is the chain's answer and is never retried elsewhere, and sends go to SEND_RPC alone. The start check waits out a
+// provider's trouble (up to START_TRIES times, START_RETRY_SECONDS apart) and exits only when the endpoint answers that it cannot serve the proof.
+//
 // Lines starting ALERT report what an operator may want to act on: an auction opened on a vault (its owner can repay
 // or add TAC until the owner window ends), a venue's price more than 40% under its longest window's upper median or
 // 60% over its lower one, an oracle the vault's owner has announced or put in place whose venues are not recorded
@@ -37,6 +43,7 @@
 // Usage:
 //   KEEPER_ACCOUNT=<cast keystore name> [KEEPER_PASSWORD_FILE=..] RPC=<archive endpoint>
 //   [ORACLE=0xvenue1,0xvenue2] [VAULTS=0xusd,0xeth FROM_BLOCK=<vault deploy block>] [SEND_RPC=https://...]
+//   [RPC_FALLBACKS=https://...,https://...] [RPC_COOLDOWN_SECONDS=120] [START_TRIES=30] [START_RETRY_SECONDS=20]
 //   [MAX_GWEI=1] [RECORD_TIP_GWEI=0.001] [URGENT_MAX_GWEI=25] [URGENT_TIP_GWEI=0.1] [URGENT_AFTER_BLOCKS=5]
 //   [ACTION_MAX_GWEI=100] [ACTION_TIP_GWEI=0.1] [RECORD_POLL_SECONDS=12] [FULL_SWEEP_SECONDS=300] [SCAN_SECONDS=60]
 //   [LOG_CHUNK=5000] [ALERT_WEBHOOK=https://...] [ONCE=1] [FEE_HEADROOM=3] [RECORD_MODE=always|demand] [RISK_COVER_BPS=28000]
@@ -55,6 +62,12 @@ if (!(KEEPER_PRIV || KEEPER_ACCOUNT) || !RPC || !(VAULTS.length || ORACLES.lengt
   process.exit(2);
 }
 const SEND_RPC = process.env.SEND_RPC || RPC;
+// Where a read goes when RPC fails the way a provider does, in order: RPC_FALLBACKS (a list, possibly empty), else the send endpoint.
+const READ_RPCS = [RPC, ...(process.env.RPC_FALLBACKS === undefined ? [SEND_RPC] : process.env.RPC_FALLBACKS.split(','))]
+  .map((s) => s.trim()).filter((s, i, a) => s && a.indexOf(s) === i);
+const RPC_COOLDOWN = Number(process.env.RPC_COOLDOWN_SECONDS || 120) * 1000;
+const START_TRIES = Number(process.env.START_TRIES || 30);
+const START_RETRY = Number(process.env.START_RETRY_SECONDS || 20);
 const gwei = (x) => BigInt(Math.round(Number(x) * 1e9));
 const RECORD_CAP = gwei(process.env.MAX_GWEI || 1);
 const RECORD_TIP = gwei(process.env.RECORD_TIP_GWEI || 0.001);
@@ -92,10 +105,56 @@ const ONCE = process.env.ONCE === '1';
 
 const cast = (args) => execFileSync('cast', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const num = (s) => BigInt(s.split(' ')[0]);
-const call = (to, sig, ...a) => cast(['call', to, sig, ...a, '--rpc-url', RPC]);
 const errLine = (e) => String(e.stderr || e.message).split('\n')[0];
 const log = (...m) => console.log(new Date().toISOString(), ...m);
-const head = () => num(cast(['block-number', '--rpc-url', RPC]));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// What cast says when the provider failed and not the chain: a dropped connection, a rate limit or an error page (cast gives up on those
+// with "Max retries exceeded HTTP error ..."), a body that is not JSON, or the node's own "Internal error".
+const DOWN = /error sending request|Max retries exceeded|HTTP error|deserialization error|error decoding response body|timed out|connection (?:reset|closed|refused)|broken pipe|dns error|unexpected eof|bad gateway|service unavailable|gateway time-?out|too many requests|rate limit/i;
+const stderrOf = (e) => String((e && e.stderr) || '');
+const troubled = (e) => DOWN.test(stderrOf(e)) || /Internal error/i.test(stderrOf(e));
+// The chain's answer, which another endpoint would only repeat: a revert, or a call to an address with no code.
+const answered = (e) => /execution reverted|error code 3\b|does not have any code/i.test(stderrOf(e));
+const hostOf = (u) => { try { return new URL(u).host; } catch { return 'rpc'; } };
+// An error line for the log with each URL (which may carry a key) reduced to its host.
+const quiet = (e) => errLine(e).replace(/https?:\/\/[^\s)]+/g, hostOf);
+
+// A read goes to RPC; when RPC is in trouble it goes to the next endpoint, and for RPC_COOLDOWN the others are tried first, so that a dead RPC
+// costs one slow call and not one on every call. An endpoint that cannot serve this read (an old block's proof) passes it on. If none
+// can, RPC's own error is the one thrown.
+let rpcDown = false;
+let rpcRetryAt = 0;
+function rd(args) {
+  const [main, ...others] = READ_RPCS;
+  const order = rpcDown && Date.now() < rpcRetryAt ? [...others, main] : READ_RPCS;
+  let mainErr;
+  let firstErr;
+  for (const url of order) {
+    try {
+      const out = cast([...args, '--rpc-url', url]);
+      if (url === main && rpcDown) {
+        rpcDown = false;
+        log('RPC', hostOf(main), 'answers again');
+      }
+      return out;
+    } catch (e) {
+      if (answered(e) || order.length === 1) throw e;
+      firstErr ??= e;
+      if (url === main) {
+        mainErr = e;
+        if (troubled(e)) {
+          if (!rpcDown) log('RPC', hostOf(main), 'is failing (', quiet(e), '); reading from', others.map(hostOf).join(', '), 'first for', String(RPC_COOLDOWN / 1000), 's');
+          rpcDown = true;
+          rpcRetryAt = Date.now() + RPC_COOLDOWN;
+        }
+      }
+    }
+  }
+  throw mainErr || firstErr;
+}
+const call = (to, sig, ...a) => rd(['call', to, sig, ...a]);
+const head = () => num(rd(['block-number']));
 
 // Reports something an operator may act on: a log line, and a POST to ALERT_WEBHOOK when set. Each key alerts once
 // until it is cleared.
@@ -126,7 +185,7 @@ if (!KEEPER_ACCOUNT) log('WARNING: KEEPER_PRIV is visible in the process list; p
 // Simulates a call from the keeper's address: { ok, reason }.
 function simulate(to, sig, ...a) {
   try {
-    cast(['call', to, sig, ...a, '--from', sender, '--rpc-url', RPC]);
+    rd(['call', to, sig, ...a, '--from', sender]);
     return { ok: true };
   } catch (e) {
     return { ok: false, reason: errLine(e) };
@@ -150,11 +209,11 @@ function noteAfford(e) {
 // Sends with a gas limit 30% over the estimate and a fee cap of at most the given cap, waits for the receipt (up to five
 // minutes, so the next send takes the next nonce) and returns the hash; throws if the wallet cannot pay for it or the transaction reverted.
 function send(to, sig, args, cap, tip) {
-  const estimate = num(cast(['estimate', to, sig, ...args, '--from', sender, '--rpc-url', RPC]));
+  const estimate = num(rd(['estimate', to, sig, ...args, '--from', sender]));
   const gasLimit = estimate * 13n / 10n;
-  const fee = feeCapFor(num(cast(['base-fee', '--rpc-url', RPC])), cap, tip);
+  const fee = feeCapFor(num(rd(['base-fee'])), cap, tip);
   const need = gasLimit * fee;
-  const have = num(cast(['balance', sender, '--rpc-url', RPC]));
+  const have = num(rd(['balance', sender]));
   if (have < need) {
     const e = new Error(`it holds ${eth(have)} ETH and this transaction needs ${eth(need)} ETH (${gasLimit} gas at a fee cap of ${Number(fee) / 1e9} gwei)`);
     e.afford = true;
@@ -207,7 +266,7 @@ let hasMulticall;
 function multicall() {
   if (hasMulticall === undefined) {
     try {
-      hasMulticall = cast(['code', MULTICALL3, '--rpc-url', RPC]).length > 2;
+      hasMulticall = rd(['code', MULTICALL3]).length > 2;
     } catch {
       hasMulticall = false;
     }
@@ -221,13 +280,13 @@ let lastFull = 0;
 // The arguments of `record` for interval k of an oracle: its sample block is picked by the next block's mixHash.
 function buildRecord(oracle, c, k, top) {
   const next = (k + 1n) * c.step;
-  const mix = BigInt(cast(['block', String(next), '--field', 'mixHash', '--rpc-url', RPC]));
+  const mix = BigInt(rd(['block', String(next), '--field', 'mixHash']));
   const n = k * c.step + (mix % c.step);
-  const p = JSON.parse(cast(['proof', c.pool, ...c.slots, '-B', String(n), '--rpc-url', RPC]));
+  const p = JSON.parse(rd(['proof', c.pool, ...c.slots, '-B', String(n)]));
   const list = (a) => `[${a.join(',')}]`;
   const args = [
-    cast(['block', String(n), '--raw', '--rpc-url', RPC]),
-    cast(['block', String(next), '--raw', '--rpc-url', RPC]),
+    rd(['block', String(n), '--raw']),
+    rd(['block', String(next), '--raw']),
     list(p.accountProof),
     list(p.storageProof[0].proof),
     list(p.storageProof[1].proof),
@@ -241,7 +300,7 @@ function sampleAll() {
   const full = Date.now() - lastFull >= FULL_SWEEP * 1000;
   for (const oracle of ORACLES) if (!readConfig(oracle)) return;
   const top = head();
-  const baseFee = num(cast(['base-fee', '--rpc-url', RPC]));
+  const baseFee = num(rd(['base-fee']));
   const stepMax = Math.max(...ORACLES.map((o) => Number(configs.get(o).step)));
   const depth = full ? Math.max(...ORACLES.map((o) => Number(configs.get(o).intervals))) : Math.max(3, Number(DEFER_BLOCKS) / stepMax + 3);
   let missed = 0;
@@ -281,7 +340,7 @@ function cheapOrLate(all, baseFee) {
   if (all.some((d) => d.age >= DEFER_BLOCKS)) return true;
   if (Date.now() - feeCache.at > 60e3) {
     try {
-      const h = JSON.parse(cast(['rpc', 'eth_feeHistory', '0x12c', 'latest', '[]', '--rpc-url', RPC]));
+      const h = JSON.parse(rd(['rpc', 'eth_feeHistory', '0x12c', 'latest', '[]']));
       feeCache = { at: Date.now(), sorted: h.baseFeePerGas.slice(0, -1).map((x) => BigInt(x)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) };
     } catch (e) {
       log('fee history unavailable, not waiting:', errLine(e));
@@ -384,8 +443,10 @@ function checkVaultOracles() {
   const known = new Set(ORACLES.map((o) => o.toLowerCase()));
   for (const vault of VAULTS) {
     try {
+      // An oracle that answers A() and B() with a revert is its own venue. A read that failed says nothing about its venues, so it ends the
+      // check for now (it is made again in SCAN_SECONDS) and is not taken for that.
       const venuesOf = (oracle) => {
-        try { return [call(oracle, 'A()(address)'), call(oracle, 'B()(address)')]; } catch { return [oracle]; }
+        try { return [call(oracle, 'A()(address)'), call(oracle, 'B()(address)')]; } catch (e) { if (answered(e)) return [oracle]; throw e; }
       };
       const now = call(vault, 'ORACLE()(address)');
       const stray = venuesOf(now).filter((v) => !known.has(v.toLowerCase()));
@@ -417,13 +478,13 @@ function readOwners(vault) {
     const to = s.next + logChunk - 1n < top ? s.next + logChunk - 1n : top;
     let out;
     try {
-      out = cast([
+      out = rd([
         'logs', '--address', vault, '--from-block', String(s.next), '--to-block', String(to),
-        'Borrowed(address indexed,address,uint256,uint256)', '--rpc-url', RPC, '--json',
+        'Borrowed(address indexed,address,uint256,uint256)', '--json',
       ]);
     } catch (e) {
-      // A provider's range limit: retry with a smaller chunk.
-      if (logChunk <= 100n) throw e;
+      // A provider's range limit: retry with a smaller chunk. A provider that is down is not one, and a smaller chunk would not help.
+      if (DOWN.test(stderrOf(e)) || logChunk <= 100n) throw e;
       logChunk /= 2n;
       log('log range refused, chunk now', String(logChunk));
       continue;
@@ -496,7 +557,7 @@ function scan(vault) {
     log(vault, 'read failed:', errLine(e));
     return;
   }
-  const now = num(cast(['block', 'latest', '--field', 'timestamp', '--rpc-url', RPC]));
+  const now = num(rd(['block', 'latest', '--field', 'timestamp']));
   let window = 0n;
   try {
     window = num(call(vault, 'OWNER_WINDOW()(uint256)'));
@@ -546,8 +607,8 @@ function scan(vault) {
 // An operator's warning: the wallet holds little, in hours of recording at today's base fee (a pair of records is about 1.87M gas, six pairs an hour).
 function checkBalance() {
   try {
-    const bal = num(cast(['balance', sender, '--rpc-url', RPC]));
-    const fee = num(cast(['base-fee', '--rpc-url', RPC]));
+    const bal = num(rd(['balance', sender]));
+    const fee = num(rd(['base-fee']));
     const perHour = 6n * 1_870_000n * (fee > 0n ? fee : 1n);
     if (bal < LOW_BALANCE) alertOnce('balance', `the keeper wallet ${sender} holds ${Number(bal) / 1e18} ETH, about ${Number((bal * 10n) / perHour) / 10} hours of recording at the current base fee; send it ETH`);
     else clearAlert('balance');
@@ -558,15 +619,24 @@ function checkBalance() {
 
 async function main() {
   for (const oracle of ORACLES) {
-    try {
-      // The oldest block the keeper reads: its longest window of intervals back.
-      const step = num(call(oracle, 'STEP()(uint256)'));
-      const reach = (num(call(oracle, 'MAX_WINDOW()(uint256)')) / (step * 12n) + 3n) * step;
-      const oldest = head() > reach ? head() - reach : 1n;
-      cast(['proof', call(oracle, 'POOL()(address)'), '0', '-B', String(oldest), '--rpc-url', RPC]);
-    } catch (e) {
-      console.error('RPC does not serve eth_getProof for old blocks; use an archive endpoint:', errLine(e));
-      process.exit(2);
+    for (let tries = 1; ; tries++) {
+      try {
+        // The oldest block the keeper reads: its longest window of intervals back.
+        const step = num(call(oracle, 'STEP()(uint256)'));
+        const reach = (num(call(oracle, 'MAX_WINDOW()(uint256)')) / (step * 12n) + 3n) * step;
+        const oldest = head() > reach ? head() - reach : 1n;
+        rd(['proof', call(oracle, 'POOL()(address)'), '0', '-B', String(oldest)]);
+        break;
+      } catch (e) {
+        // A provider in trouble says nothing about what it serves: wait and ask again, as the restart that an exit brings would.
+        if (troubled(e) && tries < START_TRIES) {
+          log('start check: the endpoint is failing (', quiet(e), '); trying again in', String(START_RETRY), 's (', String(tries), 'of', String(START_TRIES), ')');
+          await sleep(START_RETRY * 1000);
+          continue;
+        }
+        console.error('RPC does not serve eth_getProof for old blocks; use an archive endpoint:', errLine(e));
+        process.exit(2);
+      }
     }
   }
   let lastScan = 0;
