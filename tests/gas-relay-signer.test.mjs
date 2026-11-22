@@ -79,3 +79,26 @@ test('an order for any call the relay never ran, read to the end, says it lapsed
   assert.match(out.e?.message || '', /lapsed.*Nothing was spent/);
   assert.strictEqual(out.e?.nothingSpent, true);
 });
+
+// The deposit fee's bounds, as the swap card's: the gas it pays for, a USDC fee in dollars, and a quarter of the deposit.
+test('a deposit plan is offered at a usual gas price, and not when the gas it pays for is above its bound or a USDC fee above 25 USDC', async () => {
+  const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', realFetch = globalThis.fetch;
+  const chainAt = (gwei) => async (method) => (method === 'eth_getCode' ? '0x6080' : method === 'eth_gasPrice' ? '0x' + (gwei * 10n ** 9n).toString(16) : '0x0');
+  let out = 0n;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: { routeSummary: { amountOut: String(out) } } }) });
+  try {
+    out = 3_000_000n;
+    assert.deepEqual(await gr.relayDepositPlan({ rpc: chainAt(1n), ethOf: async () => 0n, token: USDC }), { fee: 3_000_000n, gasPrice: 10n ** 9n });
+    assert.equal(await gr.relayDepositPlan({ rpc: chainAt(20n), ethOf: async () => 0n, token: USDC }), null, 'gas above the bound');
+    out = 26_000_000n;
+    assert.equal(await gr.relayDepositPlan({ rpc: chainAt(1n), ethOf: async () => 0n, token: USDC }), null, 'a USDC fee above 25 USDC');
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test('a deposit whose fee is more than a quarter of it is refused before anything is signed', async () => {
+  let signed = 0;
+  const sign = { permit: async () => { signed++; return { v: 27, r: '0x' + '33'.repeat(32), s: '0x' + '44'.repeat(32) }; }, order: async () => { signed++; return '0x' + '55'.repeat(65); } };
+  const s = gr.relaySigner({ address: ACCOUNT, token: gr.TAC, router: ROUTER, symbol: 'TAC', amount: 10n ** 18n, plan: { fee: 10n ** 18n / 4n + 1n }, rpc: rpcOver({ used: () => '0x' + '00'.repeat(32), block: () => '0x10' }), step: () => {}, sign, now: () => 1_800_000_000 });
+  await assert.rejects(s.send({ to: ROUTER, data: '0x' + '66'.repeat(40) }), /more than a quarter of this deposit/);
+  assert.equal(signed, 0);
+});

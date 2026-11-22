@@ -95,13 +95,19 @@ export const kyberEthTo = async (token, wei) => {
   const o = r?.data?.routeSummary?.amountOut;
   return /^\d+$/.test(String(o ?? '')) ? BigInt(o) : null;
 };
+// The relay's deposit fee is held as the swap card holds its own: the gas it pays for at most MAX_DEPOSIT_FEE_WEI of ETH (where the card
+// holds the fee to $25), a USDC fee at most 25 USDC, and (relaySigner) never more than a quarter of the deposit.
+export const MAX_DEPOSIT_FEE_WEI = 10n ** 16n;
+const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', MAX_USDC_FEE = 25_000_000n;
 export async function relayDepositPlan({ rpc, ethOf, token, chainId = 1 }) {
   if (chainId !== 1 || !PERMIT_TOKENS[lc(token)]) return null;
   if (String(await rpc('eth_getCode', [GAS_RELAY[1], 'latest']).catch(() => '0x')).length <= 2) return null;
   const [eth, gasPrice] = await Promise.all([ethOf(), rpc('eth_gasPrice', []).then(BigInt)]);
   if (eth == null || !needsRelay({ ethWei: eth, gasPriceWei: gasPrice, units: DEPOSIT_GAS })) return null;
+  if ((gasPrice * DEPOSIT_GAS * 15000n) / 10000n > MAX_DEPOSIT_FEE_WEI) return null;
   const fee = await feeFor({ gasPriceWei: gasPrice, units: DEPOSIT_GAS, ethToToken: (w) => kyberEthTo(token, w) });
-  return fee == null ? null : { fee, gasPrice };
+  if (fee == null || (lc(token) === USDC && fee > MAX_USDC_FEE)) return null;
+  return { fee, gasPrice };
 }
 export function relaySigner({ address, token, router, symbol, amount, plan, rpc, step, sign, guard = () => {}, api = 'https://api.tacit.finance', decimals = 18, now = null }) {
   const relay = GAS_RELAY[1], meta = PERMIT_TOKENS[lc(token)];
@@ -115,6 +121,7 @@ export function relaySigner({ address, token, router, symbol, amount, plan, rpc,
   return { address, relayed: true, send: async ({ to, data }) => {
     guard();
     if (lc(to) !== lc(router)) throw new Error('The relay only sends the deposit to the pool’s router.');
+    if (BigInt(plan.fee) * 4n > BigInt(amount)) throw new Error(`The network fee (${fmt(plan.fee)} ${symbol}) is more than a quarter of this deposit. Deposit more, or add a little ETH. Nothing was sent.`);
     const clock = await clockOf(), total = BigInt(amount) + plan.fee, dl = clock + 900;
     const { order } = buildOrder({ payer: address, tokenIn: token, amountIn: amount, feeToken: token, fee: plan.fee, tokenOut: ZERO, minOut: 0n, recipient: address, target: router, data, now: clock });
     step(`Sign the ${symbol} deposit and its ${fmt(plan.fee)} ${symbol} network fee. No ETH is needed`);
