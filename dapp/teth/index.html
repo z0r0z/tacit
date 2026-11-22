@@ -24,7 +24,7 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload-roots: /teth/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/teth/app.js?cb=8eb8f343">
+<link rel="modulepreload" href="/teth/app.js?cb=9ccf18a9">
 <link rel="modulepreload" href="/relay-route.js?cb=9ec0eab1">
 <link rel="modulepreload" href="/private-route.js?cb=5be09cfa">
 <link rel="modulepreload" href="/evm-pool-relays.js">
@@ -61,7 +61,7 @@
 <link rel="modulepreload" href="/address-view.js?cb=58dd4914">
 <link rel="modulepreload" href="/trade/depth.js?cb=4f87419e">
 <link rel="modulepreload" href="/trade/book.js?cb=577d1f94">
-<link rel="modulepreload" href="/trade/tape.js?cb=a0713849">
+<link rel="modulepreload" href="/trade/tape.js?cb=7b013b52">
 <link rel="modulepreload" href="/teth/market.js?cb=15c6868a">
 <link rel="modulepreload" href="/btc-book.js?cb=f7962f33">
 <!-- preload:end -->
@@ -374,8 +374,8 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 .ob-row .a, .ob-row .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ob-row .t { color: var(--mute); }
 .ob-row.mine { box-shadow: inset 3px 0 0 var(--mute); } .ob-row.take { box-shadow: inset 3px 0 0 var(--orange); }
 .ob-tag { font-style: normal; font-size: 9px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--warn); margin-right: 6px; }
-.ob-spread { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; padding: 0 12px; border-top: 1px solid var(--hair-2); border-bottom: 1px solid var(--hair-2); background: var(--field); font-size: 11px; color: var(--mute); }
-.ob-last { display: inline-flex; align-items: baseline; gap: 6px; } .ob-last b { font-size: 15px; font-weight: 500; color: var(--ink); } .ob-last em { font-style: normal; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+.ob-spread { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 12px; min-height: 36px; padding: 4px 12px; border-top: 1px solid var(--hair-2); border-bottom: 1px solid var(--hair-2); background: var(--field); font-size: 11px; color: var(--mute); }
+.ob-last { display: inline-flex; align-items: baseline; gap: 6px; } .ob-last b { font-size: 15px; font-weight: 500; color: var(--ink); } .ob-last em { font-style: normal; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; } .ob-last.old b { font-weight: 400; color: var(--mute); }
 .ob-empty { padding: 12px; font-size: 11.5px; color: var(--mute); }
 .ob-sub { margin: 16px 0 -6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); }
 .ob-peek { min-height: 1.7em; margin: 8px 0 0; font-size: 12px; color: var(--mute); }
@@ -973,6 +973,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/teth/app.js?cb=8eb8f343"></script>
+<script type="module" src="/teth/app.js?cb=9ccf18a9"></script>
 </body>
 </html>

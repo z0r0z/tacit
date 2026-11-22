@@ -205,6 +205,7 @@ body[data-market-mode="asset"] .market-intro-note { display: none; }
 .bm-spread:empty { display: none; }
 .bm-sp-last { display: inline-flex; align-items: baseline; gap: 6px; }
 .bm-sp-last b { font-size: 15px; color: var(--ink); font-weight: 700; }
+.bm-sp-last.old b { color: var(--ink-mid); font-weight: 400; }
 .bm-sp-last em { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
 .bm-sp-note { cursor: help; letter-spacing: 0.02em; }
 .bm-more { display: block; width: 100%; background: none; border: 0; border-top: 1px solid var(--bm-line); height: 30px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-mid); cursor: pointer; }
