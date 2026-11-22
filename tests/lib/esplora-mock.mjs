@@ -58,8 +58,9 @@ export function startEsploraMock({ sim, addressUtxos = () => [], feeEstimates = 
     if (sim.txs.has(tx.txid)) return send(res, 400, 'sendrawtransaction RPC error: {"code":-27,"message":"Transaction already in block chain"}', 'text/plain');
     if (commits.has(tx.txid)) return send(res, 400, 'sendrawtransaction RPC error: {"code":-26,"message":"txn-already-in-mempool"}', 'text/plain');
     if (!tx.inputs.some((i) => commits.has(i.txid))) {
-      // a transaction that spends something the simulator tracks, with no commit behind it, is a reveal sent too early
-      if (tx.inputs.some((i) => sim.txs.has(i.txid))) return missing(res);
+      // a transaction that spends a NOTE the simulator tracks (a dust-sized output), with no commit behind it, is a reveal sent too early; one that spends
+      // a plain coin of a tracked transaction (the fee a lock paid for its take) is a commit funded by it, as a node would take it
+      if (tx.inputs.some((i) => { const e = sim.txs.get(i.txid); return e && ((e.esplora.vout[i.vout] && e.esplora.vout[i.vout].value) ?? 0) <= 546; })) return missing(res);
       commits.add(tx.txid); state.posted.push({ kind: 'commit', txid: tx.txid });
       return send(res, 200, tx.txid, 'text/plain');
     }

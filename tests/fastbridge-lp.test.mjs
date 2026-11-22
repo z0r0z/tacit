@@ -796,11 +796,71 @@ test('a provider with no Bitcoin of its own: each quote names the fee of the tak
   assert.equal(q.takeSats, 546 + Math.ceil(750 * 3 * 2), 'the take priced at twice the rate, with its dust');
   w.lEvm.fund(BigInt(q.evmAmount), 'exact');
   assert.equal((await post(s, '/reserve', { quoteId: q.id })).body.ok, true, 'held with no coin');
+  const handed = [], build = w.lBtc.tx.claimTransfer;
+  w.lBtc.tx.claimTransfer = (a) => { handed.push(a.satsUtxos.map((c) => ({ txid: c.txid, vout: c.vout, value: c.value }))); return build(a); };
   const rec = await startSwap(w, q);
   await w.run(bothDone(w));
   assert.ok(w.btc.txs.get(rec.lock.txid).esplora.vout.some((o) => o.scriptpubkey === own && o.value === q.takeSats), 'the lock pays the fee to the provider');
   assert.ok((await w.lp()).take, 'taken');
-  assert.ok(seen.length && seen.every((c) => c.txid === rec.lock.txid && c.value === q.takeSats), 'the only coin the take could spend was the lock\'s fee output');
+  assert.equal(handed.length, 1, 'one take was built');
+  assert.ok(handed[0].length === 1 && handed[0][0].txid === rec.lock.txid && handed[0][0].value === q.takeSats, 'the only coin the take could spend was the lock\'s fee output');
+  assert.equal(seen.length, 0, 'and the address was never listed for it: the fee coin is read from the lock\'s own transaction');
+});
+
+// The take reads its fee coin from the lock's own transaction, so it does not wait on the address's whole coin list, which explorers refuse for an address
+// with over 500 outputs and rate limit hardest. Numbers as on the network at present: quoted at 1 sat/vB (a fee coin of 2,046 sats), taken at 2.
+test('a take goes through when the address cannot be listed: the fee its own lock paid funds it', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(100_000n, 'inv');
+  const s = await serve(w);
+  ref.base = s.base;
+  let rate = 1, listed = 0;
+  w.lBtc.feeRate = async () => rate;
+  w.lBtc.satsUtxos = async () => { listed++; throw new Error('the address cannot be listed: too many unspent outputs'); };
+  const q = (await post(s, '/quote', { amount: '2000' })).body;
+  assert.equal(q.takeSats, 546 + Math.ceil(750 * 1 * 2), 'quoted at 1 sat/vB: a fee coin of 2,046 sats');
+  w.lEvm.fund(BigInt(q.evmAmount), 'exact');
+  assert.equal((await post(s, '/reserve', { quoteId: q.id })).body.ok, true);
+  await startSwap(w, q);
+  rate = 2;                                    // fees have doubled by the time of the take: the fee coin is made for that
+  await w.run(bothDone(w));
+  assert.ok((await w.lp()).take, 'taken');
+  assert.equal(listed, 0, 'the address was never listed');
+  assert.deepEqual(s.alerts, []);
+});
+
+test('a fee coin that is not enough is joined by the address list, no coin spent twice; with the list refused the take waits, and goes through when it answers', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(100_000n, 'inv');
+  const s = await serve(w);
+  ref.base = s.base;
+  let rate = 1, refuse = true, listed = 0;
+  w.lBtc.feeRate = async () => rate;
+  const own = bytesToHex(w.lW.prims.p2wpkhScript(w.lW.wallet.pub));
+  const chain = () => [...w.btc.txs].flatMap(([txid, e]) => (e.height == null ? [] : e.esplora.vout.map((o, vout) => ({ txid, vout, value: o.value, spk: o.scriptpubkey }))))
+    .filter((c) => c.spk === own && c.value > 546 && !w.btc.spends.has(`${c.txid}:${c.vout}`)).map(({ txid, vout, value }) => ({ txid, vout, value }));
+  // the list holds the fee coin too (the address's whole list does), and a large coin besides
+  w.lBtc.satsUtxos = async () => { listed++; if (refuse) throw new Error('the address cannot be listed'); return [...chain(), { txid: '9'.repeat(64), vout: 0, value: 300_000 }]; };
+  const handed = [], build = w.lBtc.tx.claimTransfer;
+  w.lBtc.tx.claimTransfer = (a) => { handed.push(a.satsUtxos.map((c) => `${c.txid}:${c.vout}`)); return build(a); };
+  const q = (await post(s, '/quote', { amount: '2000' })).body;
+  w.lEvm.fund(BigInt(q.evmAmount), 'exact');
+  assert.equal((await post(s, '/reserve', { quoteId: q.id })).body.ok, true);
+  const rec = await startSwap(w, q);
+  rate = 4;                                    // 546 + about 590 x 4 is more than the 2,046-sat fee coin holds
+  await w.run(async () => (await w.lp())?.phase === 'taking');
+  for (let i = 0; i < 4; i++) await s.svc.tick();
+  assert.equal((await w.lp()).phase, 'taking', 'the fee coin cannot pay it and the list is refused: it waits');
+  assert.match((await w.lp()).lastError, /cannot be listed/, 'and says why');
+  assert.ok(listed >= 1 && !(await w.lp()).take, 'the list was asked for, nothing was built');
+  assert.deepEqual(handed[0], [`${rec.lock.txid}:${chain()[0].vout}`], 'the first try was the fee coin alone');
+  refuse = false;
+  await w.run(bothDone(w));
+  assert.ok((await w.lp()).take, 'taken once the list answers');
+  const last = handed[handed.length - 1];
+  assert.equal(new Set(last).size, last.length, 'no coin appears twice');
+  assert.equal(last.length, 2, 'the fee coin and the large coin');
+  assert.equal(last[0], handed[0][0], 'the fee coin first');
 });
 
 test('a lock that does not pay the fee of the take is refused', async () => {

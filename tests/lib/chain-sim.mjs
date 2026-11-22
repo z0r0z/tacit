@@ -87,6 +87,12 @@ export function makeBitcoinSim(clock, { baseHeight = 800_000 } = {}) {
     prims, wallet: { pub: prims.wallet.pub, priv: prims.wallet.priv, xonly: prims.wallet.pub.slice(1) }, address: prims.wallet.address(), tx: recordingBuilder(builder),
     history: async () => [...sim.txs.entries()].reverse().map(([txid, e]) => ({ ...e.esplora, txid, status: { confirmed: e.height != null, block_height: e.height ?? undefined } })),
     satsUtxos: async () => sats(), feeRate: async () => 3,
+    // the plain-sat coins a confirmed transaction paid to this wallet that are still unspent (what a lock leaves for the take of it)
+    coinsIn: async (txid) => {
+      const e = sim.txs.get(txid), mine = bytesToHex(prims.p2wpkhScript(prims.wallet.pub));
+      if (!e || e.height == null) return [];
+      return e.esplora.vout.map((o, vout) => ({ txid, vout, value: o.value, spk: o.scriptpubkey })).filter((o) => o.spk === mine && o.value > 546 && !sim.spends.has(`${txid}:${o.vout}`)).map(({ spk, ...c }) => c).sort((a, b) => b.value - a.value);
+    },
     broadcast: async (p) => {
       const id = p.revealTxid || p.txid, tx = pairs.get(id);
       if (!tx) throw new Error('chain-sim: this reveal was not built by a builder of this run');

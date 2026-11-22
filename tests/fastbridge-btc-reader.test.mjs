@@ -157,6 +157,44 @@ test('a 400 (a request of ours that is wrong) does not cool an explorer', async 
   assert.ok(seen.filter((h) => h === 'a.test').length >= 2, 'still asked in its turn');
 });
 
+// coinsIn: the plain coins a confirmed transaction paid to this wallet that are still unspent, read from that transaction and its outspends alone
+const pathOf = (u) => u.pathname.replace(/^\/api/, '');
+const mineHex = Buffer.from(prims.p2wpkhScript(prims.wallet.pub)).toString('hex'), otherHex = '0014' + 'ab'.repeat(20);
+const lockTx = (vouts, confirmed = true) => ({ txid: tid(50), status: confirmed ? { confirmed: true, block_height: 800_000 } : { confirmed: false }, vout: vouts.map(([scriptpubkey, value]) => ({ scriptpubkey, value })) });
+const coinsOf = (tx, spentVouts = [], extra = {}) => chainOf(['a.test'], (u) => {
+  if (pathOf(u) === `/tx/${tid(50)}`) return json(tx);
+  const m = /^\/tx\/[0-9a-f]{64}\/outspend\/(\d+)$/.exec(pathOf(u));
+  if (m) return spentVouts.includes(Number(m[1])) ? json({ spent: true, txid: tid(77) }) : json({ spent: false });
+  return json('unexpected ' + pathOf(u), 500);
+}, extra);
+
+test('coinsIn: the unspent plain coins paid to this wallet, largest first; dust, other addresses and spent coins are left out', async () => {
+  const tx = lockTx([[otherHex, 546], [mineHex, 546], [mineHex, 0], [mineHex, 2046], [mineHex, 5000], [otherHex, 9000], [mineHex, 3000]]);
+  const { btc, seen } = coinsOf(tx, [6]);
+  assert.deepEqual(await btc.coinsIn(tid(50)), [{ txid: tid(50), vout: 4, value: 5000 }, { txid: tid(50), vout: 3, value: 2046 }], 'the coin of 3000 is spent, the rest of ours is dust');
+  assert.ok(seen.length >= 1);
+});
+
+test('coinsIn: never lists the address', async () => {
+  const paths = [];
+  const { btc } = chainOf(['a.test'], (u) => { paths.push(pathOf(u)); return /outspend/.test(pathOf(u)) ? json({ spent: false }) : json(lockTx([[mineHex, 2046]])); });
+  await btc.coinsIn(tid(50));
+  assert.ok(paths.length >= 2 && paths.every((p) => p.startsWith('/tx/')), `only reads by transaction id: ${paths}`);
+});
+
+test('coinsIn: a transaction that is not confirmed, or not found, gives no coins', async () => {
+  assert.deepEqual(await coinsOf(lockTx([[mineHex, 2046]], false)).btc.coinsIn(tid(50)), [], 'a coin of a transaction that may be dropped is not spent on');
+  const { btc } = chainOf(['a.test'], () => gone());
+  assert.deepEqual(await btc.coinsIn(tid(50)), []);
+  await assert.rejects(() => btc.coinsIn('not a txid'), /not a transaction id/);
+});
+
+test('coinsIn: a coin whose spend cannot be read is left out, not guessed to be unspent', async () => {
+  const tx = lockTx([[mineHex, 2046], [mineHex, 4000]]);
+  const { btc } = chainOf(['a.test'], (u) => (pathOf(u) === `/tx/${tid(50)}` ? json(tx) : /outspend\/1$/.test(pathOf(u)) ? json('down', 503) : json({ spent: false })));
+  assert.deepEqual(await btc.coinsIn(tid(50)), [{ txid: tid(50), vout: 0, value: 2046 }], 'the coin whose outspend failed is not offered');
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }

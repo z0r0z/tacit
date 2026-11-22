@@ -9,6 +9,8 @@
 //   FB_LP_MAX_AMOUNT     the most it takes. Below the least, it quotes nothing and finishes its open swaps: the switch to turn it off
 //   FB_LP_FEE_BPS        the fee as a share of the amount, in hundredths of a percent (30 is 0.30%)
 //   FB_LP_FLAT_FEE       the flat part of the fee, in base units
+//   FB_LP_BTC_BASES      the Bitcoin explorers (esplora base URLs, https, comma separated, asked in this order) in place of the config's list: a keyed or
+//                        self-hosted one goes first, without a new image
 //   FB_LP_MAILBOX_POLL_SECS  how often it reads the board for requests left for it, in seconds (1 to 30; 3 when unset): a request waits for the
 //                        next read, so a shorter wait answers a user's quote sooner. Not under 1: the board takes 120 reads a minute from one address
 
@@ -26,5 +28,10 @@ export function applyEnv(C, env = process.env) {
   if (has('FB_LP_FEE_BPS')) { const b = Number(env.FB_LP_FEE_BPS); if (!Number.isInteger(b) || b < 0 || b > 500) throw new Error(`FB_LP_FEE_BPS must be 0 to 500 (got "${env.FB_LP_FEE_BPS}")`); out.quote.feeBps = b; }
   if (has('FB_LP_FLAT_FEE')) out.quote.flatFee = uint('FB_LP_FLAT_FEE', String(env.FB_LP_FLAT_FEE).trim());
   if (has('FB_LP_MAILBOX_POLL_SECS')) { const n = Number(env.FB_LP_MAILBOX_POLL_SECS); if (!Number.isFinite(n) || n < 1 || n > 30) throw new Error(`FB_LP_MAILBOX_POLL_SECS must be 1 to 30 (got "${env.FB_LP_MAILBOX_POLL_SECS}")`); out.mailboxPollSecs = n; }
+  if (has('FB_LP_BTC_BASES')) {
+    const bases = String(env.FB_LP_BTC_BASES).split(',').map((s) => s.trim().replace(/\/$/, '')).filter(Boolean);
+    if (!bases.length || bases.some((b) => !/^https:\/\/[^\s/][^\s]*$/.test(b))) throw new Error('FB_LP_BTC_BASES must be https URLs, comma separated');
+    out.btcBases = bases;
+  }
   return out;
 }

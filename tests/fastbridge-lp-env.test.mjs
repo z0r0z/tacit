@@ -38,6 +38,16 @@ test('a value that is set and is not valid stops the start, naming it', () => {
   }
 });
 
+test('the Bitcoin explorers can be set: https only, in the order given, a trailing slash dropped, and a bad value never echoes the (possibly keyed) URL', () => {
+  const c = applyEnv({ ...BASE, btcBases: ['https://old.example/api'] }, { FB_LP_BTC_BASES: ' https://keyed.example/v1/KEY/api/ , https://mempool.space/api, ' });
+  assert.deepEqual(c.btcBases, ['https://keyed.example/v1/KEY/api', 'https://mempool.space/api']);
+  assert.deepEqual(applyEnv({ ...BASE, btcBases: ['https://old.example/api'] }, {}).btcBases, ['https://old.example/api'], 'unset: the config\'s list stands');
+  assert.deepEqual(applyEnv({ ...BASE, btcBases: ['https://old.example/api'] }, { FB_LP_BTC_BASES: '  ' }).btcBases, ['https://old.example/api'], 'blank is unset');
+  for (const bad of ['http://plain.example/api', 'mempool.space/api', 'https://', 'https://ok.example/api, ftp://x', ',']) {
+    assert.throws(() => applyEnv(BASE, { FB_LP_BTC_BASES: bad }), (e) => e.message.includes('FB_LP_BTC_BASES') && !e.message.includes('plain.example') && !e.message.includes('ftp'), bad);
+  }
+});
+
 let passed = 0;
 for (const [name, fn] of tests) { try { fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; } }
 console.log(`\n${passed}/${tests.length} provider env checks passed`);

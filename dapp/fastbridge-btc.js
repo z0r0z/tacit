@@ -155,6 +155,21 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     const all = await getJson(`/address/${address}/utxo`);
     return all.filter((u) => u.status && u.status.confirmed && u.value > DUST).sort((a, b) => b.value - a.value).map((u) => ({ txid: u.txid, vout: u.vout, value: u.value }));
   }
+  // The plain-sat coins a confirmed transaction pays to this address that are still unspent. A lock leaves one for the take of it (`takeSats`, paid to the
+  // claimer's address), so the take can be funded from that one transaction, read by its id, instead of listing the whole address: explorers refuse that
+  // list for an address with over 500 outputs and rate limit it harder than any other read. A coin whose spend cannot be read is left out, not guessed.
+  async function coinsIn(txid) {
+    const tx = await fetchTx(txid);
+    if (!tx || !tx.status || !tx.status.confirmed) return [];
+    const mine = bytesToHex(prims.p2wpkhScript(prims.wallet.pub)), out = [];
+    for (const [vout, o] of (tx.vout || []).entries()) {
+      if (o.scriptpubkey !== mine || !(o.value > DUST)) continue;
+      let spent;
+      try { spent = await outspend(txid, vout); } catch { continue; }
+      if (spent === null) out.push({ txid, vout, value: o.value });
+    }
+    return out.sort((a, b) => b.value - a.value);
+  }
   // the same bytes to every explorer; one that takes it (or already has it) is enough
   async function post(hex) {
     let took = false, last = 'no explorer answered';
@@ -228,5 +243,5 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     return null;
   }
 
-  return { prims, wallet, tx: builder, address, satsUtxos, feeRate, broadcast, fetchTx, status, tip, blockTime, outspend, history, resolveNote, crossLaneBlocked };
+  return { prims, wallet, tx: builder, address, satsUtxos, coinsIn, feeRate, broadcast, fetchTx, status, tip, blockTime, outspend, history, resolveNote, crossLaneBlocked };
 }

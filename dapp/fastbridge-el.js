@@ -196,10 +196,22 @@ export function makeEthereumLocker(ctx) {
         if (!rec.take) {
           const lock = deriveLock({ prims: btc.prims, claimerPub: btc.wallet.pub, T: secretsOf(rec).T, lockerXonly: hexToBytes(strip(rec.offer.btc.lockerXonly)), csvBlocks: rec.csvBlocks });
           const sk = claimSecret({ dClaimer: btc.wallet.priv, t: BigInt(rec.t), lock });
-          const pair = btc.tx.claimTransfer({
+          const claim = (coins, feeRate) => btc.tx.claimTransfer({
             asset: hexToBytes(strip(rec.offer.btc.asset)), lockOut: { txid: rec.lockTxid, vout: rec.lockVout, value: rec.lockValue }, lock, sk,
-            amount: BigInt(rec.offer.btc.value), rLock: BigInt('0x' + strip(rec.offer.btc.rLock)), satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate(),
+            amount: BigInt(rec.offer.btc.value), rLock: BigInt('0x' + strip(rec.offer.btc.rLock)), satsUtxos: coins, feeRate,
           });
+          const feeRate = await btc.feeRate();
+          // The lock paid the fee of this take to this address: that coin is read from the lock's own transaction and tried first, so the take does not wait
+          // on the address's whole coin list (which explorers refuse for a busy address and rate limit hardest). The list is asked for only when it is not enough.
+          const own = typeof btc.coinsIn === 'function' ? await btc.coinsIn(rec.lockTxid).catch(() => []) : [];
+          let pair = null;
+          if (own.length) {
+            try { pair = claim(own, feeRate); } catch (e) { if (!/not enough sats to fund the commit/.test(String((e && e.message) || e))) throw e; }
+          }
+          if (!pair) {
+            const listed = await btc.satsUtxos();
+            pair = claim([...own, ...listed.filter((c) => !own.some((o) => o.txid === c.txid && o.vout === c.vout))], feeRate);
+          }
           await save(rec, { take: { txid: pair.revealTxid, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, at: ctx.now() } });
         }
         try { await btc.broadcast(rec.take, null); } catch (e) {
