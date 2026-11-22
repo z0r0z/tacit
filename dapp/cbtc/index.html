@@ -457,6 +457,14 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 .fm-pf .d { color: var(--mute); font-size: 11.5px; } .fm-pf b { font-weight: 500; } .fm-pf i { font-style: normal; color: var(--mute); }
 @media (hover: hover) { .fm-pf:hover { background: var(--field); } .fm-pf:hover i { color: var(--ink); } }
 .fm-prog .note { margin: 6px 0 0; font-size: 11.5px; }
+/* Bitcoin chosen on the chart: the ticket is the Bitcoin one (#btc-ticket), the Ethereum controls are put away by this class and come back with the lane */
+#btc-ticket { display: none; } .p-ticket.on-btc #btc-ticket { display: block; }
+.p-ticket.on-btc > :not(h2):not(#btc-ticket):not(#bw):not(#stk-alt) { display: none !important; }
+#btc-ticket .bt { margin: 0 0 16px; display: grid; gap: 12px; } #btc-ticket .bt > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+#btc-ticket .bt dt { font-size: 12.5px; color: var(--mute); } #btc-ticket .bt dd { margin: 0; text-align: right; min-width: 0; }
+#btc-ticket .bt dd b { display: block; font-size: 18px; font-weight: 500; color: var(--ink); } #btc-ticket .bt .mute dd b { font-size: 14px; font-weight: 400; color: var(--mute); }
+#btc-ticket .bt dd small { display: block; font-size: 11.5px; color: var(--mute); line-height: 1.4; }
+#btc-ticket .btn { width: 100%; } #btc-ticket .bt-hint { margin: 0 0 10px; font-size: 12.5px; color: var(--mute); } #btc-ticket .bt-note { margin: 10px 0 0; font-size: 12px; line-height: 1.5; color: var(--mute); } #btc-ticket .bt-note .linkbtn { color: var(--ink); }
 .btc-alt { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; font-size: 12.5px; color: var(--mute); } .btc-alt .tk { flex: none; } .btc-alt b { color: var(--ink); font-weight: 500; } .btc-alt b.up { color: var(--up); } .btc-alt .linkbtn { color: var(--ink); }
 .privnote { margin: 10px 0 0; font-size: 12px; color: var(--mute); text-align: center; } .privnote a { color: var(--mute); text-underline-offset: 3px; } .privnote a:hover { color: var(--ink); }
 .fm-pos, .fm-add { border-top: 1px solid var(--hair); margin-top: 14px; padding-top: 14px; }

@@ -57,7 +57,7 @@
 <link rel="preload" as="fetch" href="https://api.tacit.finance/assets/f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b/bid-intents?network=mainnet" crossorigin fetchpriority="low">
 <link rel="preload" as="fetch" href="https://api.tacit.finance/farm/program?network=mainnet" crossorigin fetchpriority="low">
 <!-- preload:begin -->
-<link rel="modulepreload" href="/trade/app.js?cb=dd0b3bff">
+<link rel="modulepreload" href="/trade/app.js?cb=decb0d3d">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/wallet-prompts.js">
@@ -479,6 +479,14 @@ button.ob-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2p
 .fm-pf .d { color: var(--mute); font-size: 11.5px; } .fm-pf b { font-weight: 500; } .fm-pf i { font-style: normal; color: var(--mute); }
 @media (hover: hover) { .fm-pf:hover { background: var(--field); } .fm-pf:hover i { color: var(--ink); } }
 .fm-prog .note { margin: 6px 0 0; font-size: 11.5px; }
+/* Bitcoin chosen on the chart: the ticket is the Bitcoin one (#btc-ticket), the Ethereum controls are put away by this class and come back with the lane */
+#btc-ticket { display: none; } .p-ticket.on-btc #btc-ticket { display: block; }
+.p-ticket.on-btc > :not(h2):not(#btc-ticket):not(#bw):not(#stk-alt) { display: none !important; }
+#btc-ticket .bt { margin: 0 0 16px; display: grid; gap: 12px; } #btc-ticket .bt > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+#btc-ticket .bt dt { font-size: 12.5px; color: var(--mute); } #btc-ticket .bt dd { margin: 0; text-align: right; min-width: 0; }
+#btc-ticket .bt dd b { display: block; font-size: 18px; font-weight: 500; color: var(--ink); } #btc-ticket .bt .mute dd b { font-size: 14px; font-weight: 400; color: var(--mute); }
+#btc-ticket .bt dd small { display: block; font-size: 11.5px; color: var(--mute); line-height: 1.4; }
+#btc-ticket .btn { width: 100%; } #btc-ticket .bt-hint { margin: 0 0 10px; font-size: 12.5px; color: var(--mute); } #btc-ticket .bt-note { margin: 10px 0 0; font-size: 12px; line-height: 1.5; color: var(--mute); } #btc-ticket .bt-note .linkbtn { color: var(--ink); }
 .btc-alt { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; font-size: 12.5px; color: var(--mute); } .btc-alt .tk { flex: none; } .btc-alt b { color: var(--ink); font-weight: 500; } .btc-alt b.up { color: var(--up); } .btc-alt .linkbtn { color: var(--ink); }
 .privnote { margin: 10px 0 0; font-size: 12px; color: var(--mute); text-align: center; } .privnote a { color: var(--mute); text-underline-offset: 3px; } .privnote a:hover { color: var(--ink); }
 .fm-pos, .fm-add { border-top: 1px solid var(--hair); margin-top: 14px; padding-top: 14px; }
@@ -844,7 +852,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
     <div class="side">
     <section class="panel p-ticket" aria-labelledby="tk-h">
-      <h2 class="eyebrow" id="tk-h"><svg class="tk xs" aria-hidden="true"><use href="#tk-tac"/></svg>Trade TAC</h2>
+      <h2 class="eyebrow" id="tk-h"><svg class="tk xs" aria-hidden="true"><use href="#tk-tac"/></svg><span id="tk-title">Trade TAC</span></h2>
+      <div id="btc-ticket" aria-live="polite"></div>
       <div class="seg big" id="side-seg" role="group" aria-label="Buy or sell">
         <button type="button" data-side="buy" aria-pressed="true">Buy TAC</button>
         <button type="button" data-side="sell" aria-pressed="false">Sell TAC</button>
@@ -925,6 +934,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/trade/app.js?cb=dd0b3bff"></script>
+<script type="module" src="/trade/app.js?cb=decb0d3d"></script>
 </body>
 </html>
