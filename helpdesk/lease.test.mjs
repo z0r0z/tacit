@@ -333,4 +333,12 @@ check('and dropped when it is long, has spaces, markup or control characters, or
   small(1, () => { n++; return { over: true }; });                 // cleared when the third came: read again
   check('credits cache: it holds a bounded number of days', n === 4); }
 
+// the client key: a plain hash of the address by default, an HMAC under ipSalt when one is set; either way a job runs end to end
+{ const { createHash, createHmac } = await import('node:crypto'); const ip = '64.1.2.3';
+  const run = async (L) => { const p = L.enqueue('answer', msgs, { timeoutMs: 2000 }); const j = await L.lease({ miner: A, ip }); const r = await L.submit({ id: j.id, lease: j.lease, miner: A, ip, text: 'ok' }); await p; return r; };
+  const plain = mk(); const r1 = await run(plain);
+  check('client key: with no salt the key is the plain hash, as before', r1.points === 1 && [...plain._clients.keys()][0] === createHash('sha256').update(ip).digest('hex').slice(0, 16)); plain.close();
+  const salted = mk({ ipSalt: 's'.repeat(32) }); const r2 = await run(salted); const k = [...salted._clients.keys()][0];
+  check('client key: with a salt the key is the HMAC, and the job still runs', r2.points === 1 && k === createHmac('sha256', 's'.repeat(32)).update(ip).digest('hex').slice(0, 16) && k !== createHash('sha256').update(ip).digest('hex').slice(0, 16)); salted.close(); }
+
 console.log(fails ? `${fails} lease test(s) failed` : 'lease: all tests passed'); process.exit(fails ? 1 : 0);

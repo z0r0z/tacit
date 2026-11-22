@@ -53,6 +53,7 @@ Settings (environment):
 | `DATA_DIR` | where the ledger, the inbox, the scan cursor and the lease state live (default: this folder) |
 | `ALLOW_ORIGINS` | sites allowed to call it from a browser (default tacit.finance and www) |
 | `TRUST_PROXY`, `TRUST_PROXY_HOPS` | behind a proxy the client is `True-Client-IP`, else the entry that many hops from the right of `X-Forwarded-For`; `GET /whoami` shows what it sees |
+| `HELPDESK_IP_SALT` | a secret the client key (what strikes, bans and caps hang on) is an HMAC of the address under; empty: a plain hash, as before. Setting or changing it starts the kept strikes and bans over |
 | `LLM_URLS` | comma list of OpenAI-compatible servers to fall back on (empty: community nodes only) |
 | `RATE_PER_MIN` | questions per client per minute (default 20) |
 | `POINTS_ANSWER`, `POINTS_CANARY`, `POINTS_SCAN`, `POINTS_MAX_DAY` | points an answer, a passed check and a reviewed window earn, and the most one address or one client earns in a UTC day |

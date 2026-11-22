@@ -138,7 +138,7 @@ const DESK_BUDGET = envNum('POINTS_DESK_BUDGET', 6000), DESK_MIN = envNum('POINT
 const DESK_FROM = envNum('POINTS_DESK_RULES_FROM_DAY', 20772);
 const PAY = { paid: process.env.REVIEW_PAID === '1', points: POINTS, maxPerDay: MAX_DAY, budgetPerDay: DESK_BUDGET, minPerDay: DESK_MIN, rulesFromDay: DESK_FROM };
 const leases = makeLeases({
-  ledger: path.join(DATA, 'ledger.jsonl'), persist: path.join(DATA, 'leases-state.json'),
+  ledger: path.join(DATA, 'ledger.jsonl'), persist: path.join(DATA, 'leases-state.json'), ipSalt: process.env.HELPDESK_IP_SALT || '',
   points: POINTS, clientMaxPerDay: MAX_DAY, vet: makeVet(corpus.chunks.map((c) => c.text).join('\n')),
   canaryEvery: Number(process.env.CANARY_EVERY || 6), waitMs: Number(process.env.LEASE_HOLD_MS || 20000),
   scan: scanFeed, check: checkFeed, scanPerHour: Number(process.env.SCAN_PER_HOUR ?? (SWARM ? 30 : 12)), payable: examBook ? (kind, ctx) => examBook.payable(kind, ctx.node) : null, checkShare: Number(process.env.CHECK_SHARE ?? 0.5),

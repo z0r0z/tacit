@@ -2,7 +2,7 @@
 // text, like the proof pool. Because the gateway knows who answered, it can check nodes: a known-answer canary question is mixed in
 // among real ones, answers are vetted before a visitor sees them, and a client that keeps failing is paused. Credit goes to the address;
 // strikes and bans key on the CLIENT (a hash of its IP), never the address, because anyone can name any address.
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, createHash, createHmac } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { shape as verdictShape } from './codecheck/roles.mjs';
 import { looseFindings } from './codecheck/scan.mjs';
@@ -36,7 +36,8 @@ export function makeLeases(opts = {}) {
     points: { answer: 1, canary: 1, scan: 1, check: 1 },      // credited per unit; the policy is the operator's, set by env in server.mjs
     clientMaxPerDay: 100,                           // points one client (IP hash) can earn in a UTC day, however many addresses it names
     clientIdleMs: 3 * 86400000, statsMiners: 50,    // a client unheard of this long (not banned, no recent strikes) is forgotten; /stats names this many miners, the most points first
-    persist: null, ...opts };   // persist: a file for bans, strikes and totals, so a restart does not clear them
+    persist: null, ipSalt: '', ...opts };   // persist: a file for bans, strikes and totals, so a restart does not clear them; ipSalt: keys the client hash (empty: a plain hash)
+  const ckOf = (ip) => (o.ipSalt ? createHmac('sha256', String(o.ipSalt)).update(String(ip)).digest('hex').slice(0, 16) : hash(ip));
   const queue = [];                 // real jobs waiting for a node
   const leased = new Map();         // id -> { job, token, addr, ck, expires }
   const clients = new Map();        // client key -> { seen, leases, strikes: [t], bannedUntil, scans: [t] }
@@ -68,7 +69,7 @@ export function makeLeases(opts = {}) {
 
   function enqueue(kind, messages, { max_tokens = 300, temperature = 0.2, timeoutMs = 12000, ctxText = '', askerIp = null } = {}) {
     return new Promise((resolve, reject) => {
-      const job = { id: randomBytes(8).toString('hex'), kind, messages, max_tokens, temperature, ctxText, resolve, reject, tries: 0, canary: false, askerCk: askerIp ? hash(askerIp) : null };
+      const job = { id: randomBytes(8).toString('hex'), kind, messages, max_tokens, temperature, ctxText, resolve, reject, tries: 0, canary: false, askerCk: askerIp ? ckOf(askerIp) : null };
       job.timer = setTimeout(() => { const i = queue.indexOf(job); if (i >= 0) queue.splice(i, 1); leased.delete(job.id); reject(new Error('no node answered in time')); }, timeoutMs);
       queue.push(job); wake();
     });
@@ -84,7 +85,7 @@ export function makeLeases(opts = {}) {
   async function lease({ miner: addr, ip, kinds = ['answer'], closed, hw, model }) {
     if (!isAddr(addr)) return { error: 'miner must be an address' };
     if (closed?.aborted) return null;   // the node is already gone: it takes nothing
-    const ck = hash(ip), c = client(ck), t = o.now(); c.seen = t; { const mm = miners.get(addr.toLowerCase()); if (mm) mm.last = t; }       // (an address is filed once it has work to its name, not by asking)
+    const ck = ckOf(ip), c = client(ck), t = o.now(); c.seen = t; { const mm = miners.get(addr.toLowerCase()); if (mm) mm.last = t; }       // (an address is filed once it has work to its name, not by asking)
     const nd = node(ck, addr); nd.seen = t;
     if (hw !== undefined) nd.hw = cleanHw(hw);   // a node that says nothing keeps what it said before
     if (model !== undefined) nd.model = cleanModel(model);
@@ -119,7 +120,7 @@ export function makeLeases(opts = {}) {
 
   // A node hands in its work. -> { ok, points } or { error }.
   async function submit({ id, lease: token, miner: addr, ip, text, error }) {
-    const L = leased.get(id); const ck = hash(ip);
+    const L = leased.get(id); const ck = ckOf(ip);
     if (!L || L.token !== token || L.ck !== ck || !isAddr(addr) || L.addr !== addr.toLowerCase()) return { error: 'no such lease' };
     leased.delete(id); const job = L.job, m = miner(addr);
     const requeue = () => { if (!job.canary && !job.scan && job.tries < o.maxTries && queue.indexOf(job) < 0) { queue.unshift(job); wake(); } else if (!job.canary && !job.scan) { clearTimeout(job.timer); job.reject?.(new Error('no node could answer')); } };
