@@ -627,6 +627,26 @@
           }
         }
       ]
+    },
+    {
+      "id": "coingecko-supply",
+      "chainId": 1,
+      "opensAt": 1795341746,
+      "steps": [
+        {
+          "id": "01-filer",
+          "kind": "review",
+          "to": "0x0000000000000000000000000000000000000000",
+          "gas": 22000,
+          "approved": [],
+          "minWei": "32000000000000000000",
+          "maxWei": "32000000000000000000",
+          "evidence": {
+            "text": true,
+            "pattern": "^SU[0-9]{3,}$"
+          }
+        }
+      ]
     }
   ]
 }

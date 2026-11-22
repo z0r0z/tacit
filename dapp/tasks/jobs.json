@@ -1011,6 +1011,84 @@
           "href": "https://discord.gg/VxYx9XSBrM"
         }
       ]
+    },
+    {
+      "id": "coingecko-supply",
+      "chainId": 1,
+      "opensAt": 1795341746,
+      "title": "Fix TAC’s supply on CoinGecko",
+      "tagline": "File Tacit’s CoinGecko supply update with the right numbers: about 25 minutes, paid once.",
+      "verified": false,
+      "created": [],
+      "hint": "Opens the brief, which lists every input of the form. Comment “claiming” on it first, file the request, then come back here and claim with the Request ID CoinGecko emails you.",
+      "reviewVia": {
+        "label": "the brief",
+        "href": "https://github.com/z0r0z/tacit/issues/89"
+      },
+      "steps": [
+        {
+          "id": "01-filer",
+          "kind": "review",
+          "to": "0x0000000000000000000000000000000000000000",
+          "gas": 22000,
+          "approved": [],
+          "minWei": "32000000000000000000",
+          "maxWei": "32000000000000000000",
+          "evidence": {
+            "text": true,
+            "pattern": "^SU[0-9]{3,}$"
+          },
+          "label": "Filer",
+          "detail": "Files the supply update on CoinGecko with the numbers in the brief.",
+          "action": {
+            "label": "Open the brief",
+            "href": "https://github.com/z0r0z/tacit/issues/89"
+          },
+          "ask": "The Request ID CoinGecko emailed you (like SU12345). It is paid to the wallet you claim from.",
+          "input": {
+            "placeholder": "CoinGecko Request ID",
+            "pattern": "^SU[0-9]{3,}$",
+            "text": true,
+            "error": "That is not a CoinGecko supply Request ID (it looks like SU12345)."
+          }
+        }
+      ],
+      "about": [
+        {
+          "h": "What it is",
+          "p": "TAC is on CoinGecko, but it shows about 3.08M circulating: only the public ERC-20, while most TAC is held privately on Bitcoin and in the privacy pools. A Token Supply update puts the real total and circulating figures there. CoinGecko’s form needs a logged-in account, a captcha and accepted terms, so we ask the community to file it."
+        },
+        {
+          "h": "What to do",
+          "p": "Comment “claiming” on the brief so one person files it, then fill the form with the inputs it lists, section by section. Two figures change over time (the wallet balances and the circulating supply), so you read them when you submit, from links in the brief. Never pay for anything. CoinGecko emails you a Request ID, and you claim here with it. The team then posts CoinGecko’s verification post from its own account."
+        },
+        {
+          "h": "Paid",
+          "p": "32 TAC once, to the wallet you claim from, for about 25 minutes of your time. A person reads the claim first: the request exists on CoinGecko and the verification post is up with its id. It does not depend on CoinGecko approving the update."
+        },
+        {
+          "h": "Claiming",
+          "p": "You claim with a transaction from your wallet to itself that names the Request ID, which this page sends. It costs a few cents of gas on Ethereum, and the reward is then claimed on the Rewards page like any other."
+        }
+      ],
+      "links": [
+        {
+          "label": "The brief, with every input",
+          "href": "https://github.com/z0r0z/tacit/issues/89"
+        },
+        {
+          "label": "The live supply figures",
+          "href": "https://tacit-points.onrender.com/supply"
+        },
+        {
+          "label": "Rewards",
+          "href": "/rewards/"
+        },
+        {
+          "label": "Discord",
+          "href": "https://discord.gg/VxYx9XSBrM"
+        }
+      ]
     }
   ]
 }

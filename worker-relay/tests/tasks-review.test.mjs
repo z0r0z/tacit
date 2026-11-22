@@ -47,3 +47,19 @@ assert.ok(reviewData(page.steps[0], 'CL12345'), 'the page accepts a request id')
 assert.equal(reviewData(page.steps[0], txid), reviewData(page.steps[0], txid), 'and is deterministic');
 for (const l of page.links) assert.match(l.href, /^(https:\/\/|\/)/, `link ${l.label}`);
 console.log('ok - the CoinGecko job is the same in the service and the page');
+
+// The supply update job: the same shape, its own request id.
+{
+  const s = read('../src/lib/points-tasks-jobs.json').find((j) => j.id === 'coingecko-supply');
+  const p = read('../../dapp/tasks/jobs.json').find((j) => j.id === 'coingecko-supply');
+  assert.ok(s && p, 'the supply update job is in both files');
+  checkJob(s);
+  assert.equal(s.steps.length, 1);
+  assert.equal(p.steps[0].minWei, s.steps[0].minWei);
+  assert.equal(BigInt(s.steps[0].minWei), 32n * 10n ** 18n, 'it pays 32 TAC');
+  assert.ok(reviewData(p.steps[0], 'SU12345'), 'the page accepts a supply request id');
+  assert.equal(reviewData(p.steps[0], 'CL12345'), null, 'and not a listing request id');
+  assert.match(p.reviewVia.href, /^https:\/\/github\.com\/.+\/issues/, 'the claim is posted on the brief');
+  for (const l of p.links) assert.match(l.href, /^(https:\/\/|\/)/, `link ${l.label}`);
+  console.log('ok - the supply update job is the same in the service and the page, and takes an SU id');
+}
