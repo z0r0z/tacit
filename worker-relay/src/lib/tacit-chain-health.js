@@ -7,6 +7,16 @@
 // → [{ level: 'warning' | 'critical', msg, extra }]
 export const PROVER_SEEN_S = 600;
 
+// The leader's `pending` counts every spend it holds, shields among them. A shield waits on its deposit and is held out of blocks until it comes (and dropped
+// after an hour), so it is no spend a block is late to take. GET /pending-notes lists the new notes of the payments held, never a shield's: with that list
+// empty, only shields are pending. A leader that does not answer the list is taken at its count. get(path) → parsed JSON, or throws.
+export async function paymentsWaiting(leader, get) {
+  const n = Number(leader?.pending || 0);
+  if (!(n > 0)) return 0;
+  const list = await get('/pending-notes').catch(() => null);
+  return Array.isArray(list?.leaves) && list.leaves.length === 0 ? 0 : n;
+}
+
 export function tacitChainVerdict({ leader, chain, board, now }) {
   const out = [];
   const min = (s) => Math.max(0, Math.round(s / 60));

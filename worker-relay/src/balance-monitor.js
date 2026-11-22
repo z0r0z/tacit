@@ -47,7 +47,7 @@ import { scanLagVerdict } from './lib/scan-lag.js';
 import { boardVerdict, runpodVerdict, vastVerdict } from './lib/board-health.js';
 import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, readReflectionDigest, HEADER_RELAY, RELAY_ABI, POOL } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
-import { tacitChainVerdict } from './lib/tacit-chain-health.js';
+import { tacitChainVerdict, paymentsWaiting } from './lib/tacit-chain-health.js';
 
 const log = (...a) => console.log(`[monitor ${new Date().toISOString()}]`, ...a);
 
@@ -233,11 +233,13 @@ async function tacitChainRead() {
   return { height: Number(height), queued: Number(queued), queueDone: Number(queueDone), oldestQueuedAt, forceDelay: Number(forceDelay), window: Number(window) };
 }
 async function checkTacitChain() {
-  const state = async () => {
-    const r = await fetch(`${TACIT_CHAIN_LEADER}/state`, { signal: AbortSignal.timeout(15000) });
+  const get = async (path) => {
+    const r = await fetch(`${TACIT_CHAIN_LEADER}${path}`, { signal: AbortSignal.timeout(15000) });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return r.json();
   };
+  const state = () => get('/state');
+  const payments = async (s) => ({ ...s, pending: await paymentsWaiting(s, get) });
   let base = 0n;
   try { base = (await publicClient.getBlock({ blockTag: 'latest' })).baseFeePerGas ?? 0n; } catch (e) { log(`tacit chain: base fee unread: ${safeErr(e)}`); }
   const bal = await publicClient.getBalance({ address: TACIT_CHAIN_WALLET });
@@ -254,15 +256,17 @@ async function checkTacitChain() {
     fetch(`${CFG.workerBase}/prover/board`, { signal: AbortSignal.timeout(15000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
   ]);
   if (chain && Number(a.height) < chain.height) { await new Promise((r) => setTimeout(r, 60_000)); a = await state().catch(() => a); }   // a block landed a moment ago is read on the leader's next step
-  for (const v of tacitChainVerdict({ leader: a, chain, board, now: Math.floor(Date.now() / 1000) })) await alert(v.level, v.msg, v.extra);
+  const held = await payments(a);
+  for (const v of tacitChainVerdict({ leader: held, chain, board, now: Math.floor(Date.now() / 1000) })) await alert(v.level, v.msg, v.extra);
   if (chain) log(`tacit chain contract height ${chain.height}, forced queue ${chain.queueDone}/${chain.queued}`);
-  if (!(Number(a.pending) > 0)) { log(`tacit chain height ${a.height}, nothing waiting`); return; }
+  if (!(held.pending > 0)) { log(`tacit chain height ${a.height}, ${Number(a.pending) > 0 ? `${a.pending} shield(s) waiting on deposits` : 'nothing waiting'}`); return; }
   await new Promise((r) => setTimeout(r, TACIT_WAIT_MS));
   let b;
   try { b = await state(); } catch (e) { await alert('critical', `tacit chain leader not answering (${TACIT_CHAIN_LEADER}): ${safeErr(e)}`); return; }
-  if (Number(b.pending) > 0 && Number(b.height) === Number(a.height)) {
-    await alert('warning', `tacit chain: ${b.pending} spend(s) waiting and no block landed in ${TACIT_WAIT_MS / 60000} minutes (height ${b.height}): read the tacit-chain-leader log`, { height: b.height, pending: b.pending });
-  } else log(`tacit chain height ${a.height} → ${b.height}, ${b.pending} waiting`);
+  const later = await payments(b);
+  if (later.pending > 0 && Number(b.height) === Number(a.height)) {
+    await alert('warning', `tacit chain: ${later.pending} spend(s) waiting and no block landed in ${TACIT_WAIT_MS / 60000} minutes (height ${b.height}): read the tacit-chain-leader log`, { height: b.height, pending: later.pending });
+  } else log(`tacit chain height ${a.height} → ${b.height}, ${later.pending} waiting`);
 }
 
 async function checkFarmHealth() {
