@@ -1,9 +1,13 @@
 # Deployed contracts
 
 The `ConfidentialPool`, router, and SP1 guests are **immutable**: no proxy, no upgrade path, no pause switch,
-and no admin key over escrow, exits or payouts. The pool's three privileged callers (the lineage steward, the
-public AMM and the farm controller) are listed in [SPEC §7.1](../SPEC.md#71-immutable-surface); none can move a
-note or escrow. The steward's one call, `createNextGen`, is described under [Lineage](#lineage).
+and no admin key over escrow, exits or payouts. The pool has four privileged callers. Three are listed in
+[SPEC §7.1](../SPEC.md#71-immutable-surface): the lineage steward, whose one call, `createNextGen`, is described
+under [Lineage](#lineage); the public AMM, which moves public-LP escrow only through its own immutable owner and
+operator check; and the farm controller, which can recover only its own farm treasury less the rewards it still
+owes. The fourth is the `CollateralEngine` below: the pool calls it for each cUSD position it opens, tops up,
+closes or liquidates, and for each cBTC mint (`escrowSufficient`), and its answer decides whether cUSD is issued,
+whether a liquidation settles and whether a cBTC mint goes through.
 
 The **`CollateralEngine`** (CDP/cUSD and cBTC escrow) is governed. Its owner is the ops multisig, which can
 set the oracle and CDP parameters, drive cBTC-escrow enforcement and draw on the insurance reserve. Its
