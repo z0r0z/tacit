@@ -100,5 +100,12 @@ await test('wrapNow repaints again when the scan its send started finishes', asy
   ok(paints === 2, `paints ${paints}`);
 });
 
+// The deposit wrapNow sends pays the tip the form showed, and nothing in wrapNow puts another tip in its place.
+await test('wrapNow deposits with the tip the form showed', async () => {
+  const body = cut(page, 'async function wrapNow({', '\nconst getNames = ');
+  ok(/value: x\.wei \+ x\.tip,/.test(body), 'the deposit is the amount and the shown tip');
+  ok(!/\bx = \{/.test(body) && !/x\.tip = /.test(body), 'the shown tip is not replaced');
+});
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

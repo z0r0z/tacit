@@ -6406,7 +6406,7 @@ async function wrapNow({ run, x, via = payer(), status, line, anchor, sheet = 'e
       }
     }
     say(status, 'Preparing your note…');
-    if (x.tip > 0n) { const f = await readWrapTip(x.wei).catch(() => null); if (f && f.full > x.tip) x = { ...x, tip: f.full, to: f.to }; }
+    // The deposit carries the tip the form showed (x.tip); the relay proves a wrap whatever its tip.
     const index = await t.nextWrapIndex({ walletPriv: priv, ticker: 'cETH' });
     w = t.buildWrap({ walletPriv: priv, amountWei: x.wei, ticker: 'cETH', index });
     run.take(kDep(w));
