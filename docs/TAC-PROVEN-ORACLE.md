@@ -50,6 +50,12 @@ TacVaultRouter stay as they are: the oracle keeps the venue oracles' `record` se
 3. Deploy: `PROGRAM_VKEY=<pin's program_vkey> GRACE=<blocks, 1 to 49> forge script script/DeployTacProvenOracle.s.sol
    --rpc-url $RPC --broadcast --account <funded account>`. It refuses a key that is not the pin's, and prints the
    oracle, its CONFIG and the multisig calls.
+
+   `SALT` picks the address. Left out, it is the CREATE2 default, where the address also pins this init code. A salt
+   whose first 20 bytes are the deployer and whose 21st is 0x00 is one the salt pool mined for a CREATE3 vanity
+   address: the script then deploys through CREATE3, which only that deployer can do. A CREATE3 slot is single use,
+   so check the address has no code first — the pool's bank keeps a salt after it is spent, and several in it are.
+   A CREATE3 address does not depend on the code at it, so read the terms the script prints off the chain.
 4. Ops multisig: `queueOracle(<oracle>)` on both vaults (one `batch` call is printed).
 5. Within the three days: a prover recording proofs, and one proof recorded.
 6. Ops multisig: `executeOracle()` on both vaults, after the delay and while a proof covers the interval that counts

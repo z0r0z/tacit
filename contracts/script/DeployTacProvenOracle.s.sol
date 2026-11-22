@@ -7,6 +7,8 @@ import {TacVaultsDeployment as D} from "./TacVaultsDeployment.sol";
 
 interface ICreateX3 {
     function deployCreate2(bytes32 salt, bytes memory initCode) external payable returns (address newContract);
+    function deployCreate3(bytes32 salt, bytes memory initCode) external payable returns (address newContract);
+    function computeCreate3Address(bytes32 guardedSalt) external view returns (address);
 }
 
 interface IAmmVenue {
@@ -19,8 +21,13 @@ interface IAmmVenue {
 ///         counts (the vault checks the new oracle answers every view).
 ///
 ///         PROGRAM_VKEY=<sp1/tac-oracle/elf-vkey-pin.json's key> GRACE=<blocks, 1 to STEP - 1>
-///         [SALT=<bytes32: 20 zero bytes, 0x01, any 11>]
-///         forge script script/DeployTacProvenOracle.s.sol --rpc-url $RPC --broadcast --account <any funded account>
+///         [SALT=<bytes32>] forge script script/DeployTacProvenOracle.s.sol --rpc-url $RPC --broadcast
+///             --account <any funded account>
+///
+///         Two salt forms, told apart by the salt itself:
+///           - the deployer's 20 bytes then 0x00: a salt the pool mined for a CREATE3 vanity address. Only that
+///             deployer reaches the address, and the slot is single use, so check the address has no code first.
+///           - 20 zero bytes then 0x01 (the default): CREATE2, where the address also pins this init code.
 contract DeployTacProvenOracle is Script {
     /// Intervals every proof answers for, from X - 1: through X + 3, so its prices keep answering for three intervals
     /// after its own, and within the four the shortest window (12 intervals at two thirds) can go unrecorded. Its depth
@@ -52,11 +59,26 @@ contract DeployTacProvenOracle is Script {
         return abi.encodePacked(type(TacProvenOracle).creationCode, abi.encode(config(vkey, grace)));
     }
 
-    /// The address CreateX gives `initCodeHash` under `salt`, a salt bound to this chain.
+    /// True for a salt mined against a CREATE3 address, which CreateX binds to `deployer`: its first 20 bytes are the
+    /// deployer and its 21st is zero. Any other accepted salt is the CREATE2 form, 20 zero bytes then 0x01.
+    function isCreate3(bytes32 salt, address deployer) public pure returns (bool) {
+        return bytes20(salt) == bytes20(deployer) && uint8(salt[20]) == 0;
+    }
+
+    /// The address CreateX gives `initCodeHash` under `salt`, a salt bound to this chain. The CREATE2 form only: a
+    /// CREATE3 address does not depend on the init code, so `predictCreate3` takes no hash.
     function predict(bytes32 salt, bytes32 initCodeHash) public view returns (address) {
         require(bytes20(salt) == bytes20(0) && uint8(salt[20]) == 1, "salt form");
         bytes32 guarded = keccak256(abi.encode(block.chainid, salt));
         return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), D.CREATEX, guarded, initCodeHash)))));
+    }
+
+    /// The address CreateX gives a deployer-bound CREATE3 salt, the form the salt pool mines. CreateX hashes the salt
+    /// with the sender, so only `deployer` reaches this address and the slot is single use on this chain.
+    function predictCreate3(bytes32 salt, address deployer) public view returns (address) {
+        require(isCreate3(salt, deployer), "salt is not bound to this deployer");
+        bytes32 guarded = keccak256(abi.encodePacked(uint256(uint160(deployer)), salt));
+        return ICreateX3(D.CREATEX).computeCreate3Address(guarded);
     }
 
     function run() external {
@@ -73,10 +95,18 @@ contract DeployTacProvenOracle is Script {
         require(grace > 0 && grace < D.ORACLE_STEP, "GRACE: 1 to STEP - 1 blocks for a proof to land in");
         bytes32 salt = vm.envOr("SALT", bytes32(uint256(1) << 88));
         bytes memory init = initCode(vkey, grace);
-        address at = predict(salt, keccak256(init));
+        // A salt the pool mined for a CREATE3 address carries the deployer; anything else is the CREATE2 form. The
+        // CREATE3 address holds whatever its one deploy puts there, so the signers read the terms below off the chain
+        // rather than from the address, which a CREATE2 address would itself pin to this init code.
+        bool create3 = isCreate3(salt, msg.sender);
+        address at = create3 ? predictCreate3(salt, msg.sender) : predict(salt, keccak256(init));
+        console2.log(create3 ? "CREATE3, salt bound to the deployer" : "CREATE2, salt bound to the chain", msg.sender);
         if (at.code.length == 0) {
             vm.broadcast();
-            require(ICreateX3(D.CREATEX).deployCreate2(salt, init) == at, "landed elsewhere");
+            address landed = create3
+                ? ICreateX3(D.CREATEX).deployCreate3(salt, init)
+                : ICreateX3(D.CREATEX).deployCreate2(salt, init);
+            require(landed == at, "landed elsewhere");
             console2.log("deployed TacProvenOracle", at);
         } else {
             console2.log("already there", at);
