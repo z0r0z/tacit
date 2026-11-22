@@ -24,7 +24,7 @@
 <link rel="preconnect" href="https://tacit-fast-board.onrender.com" crossorigin>
 <!-- preload-roots: /fast/app.js | | /fast/wire.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/fast/app.js?cb=6835f224">
+<link rel="modulepreload" href="/fast/app.js?cb=effc5acb">
 <link rel="modulepreload" href="/trade/btc-session.js?cb=c8967d7f">
 <link rel="modulepreload" href="/tab-key.js?cb=ad0c42e2">
 <link rel="modulepreload" href="/prf-wallet.js">
@@ -46,11 +46,12 @@
 <link rel="modulepreload" href="/sign-wait.js?cb=ab42ced1">
 <link rel="modulepreload" href="/tacit-session.js?cb=4636e436">
 <link rel="modulepreload" href="/trade/poolux.js?cb=59d125e5">
-<link rel="modulepreload" href="/fast/ui.js?cb=20766144">
+<link rel="modulepreload" href="/fast/ui.js?cb=2a73d1e3">
 <link rel="modulepreload" href="/fast/fmt.js">
 <link rel="modulepreload" href="/fast/route.js">
 <link rel="modulepreload" href="/fast/sweep.js">
 <link rel="modulepreload" href="/fastbridge-price.js">
+<link rel="modulepreload" href="/fast/ladder.js">
 <link rel="modulepreload" href="/fast/provide.js?cb=f205b95a">
 <link rel="modulepreload" href="/fast/bound.js?cb=f0f32804">
 <link rel="modulepreload" href="/fast/discover.js?cb=2390538c">
@@ -199,6 +200,10 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .fx-how summary { cursor: pointer; color: var(--mute); text-align: center; }
 .fx-how summary:hover { color: var(--ink); }
 .fx-how[open] summary { margin-bottom: 4px; }
+/* the depth ladder: a size's label stays on one line however long its detail line is, and each heading has room above it */
+.fx-depth .kv > span { white-space: nowrap; }
+.fx-depth .eyebrow { margin-top: 16px; }
+.fx-depth .eyebrow:first-child { margin-top: 8px; }
 .gate .rows-h { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mute); margin: 0 0 6px; }
 .fx-amt { display: flex; align-items: baseline; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--hair-2); }
 .fx-amt input { flex: 1 1 auto; min-width: 0; font: 400 clamp(30px, 6vw, 40px)/1.1 var(--serif); letter-spacing: -.01em; background: transparent; border: 0; outline: 0; padding: 0; }
@@ -565,7 +570,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </main>
 <!-- warm:begin -->
 <template id="warm">
-<link rel="modulepreload" href="/fast/wire.js?cb=3e3c139b">
+<link rel="modulepreload" href="/fast/wire.js?cb=d9e315a3">
 <link rel="modulepreload" href="/bitcoin-taproot-wallet.js">
 <link rel="modulepreload" href="/adaptor-btc-tx.js">
 <link rel="modulepreload" href="/fastbridge-btc.js?cb=1ad52807">
@@ -584,7 +589,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 <link rel="modulepreload" href="/burn-deposit-provenance.js">
 <link rel="modulepreload" href="/burn-deposit-assembler.js">
 <link rel="modulepreload" href="/confidential-crossout-consumer.js">
-<link rel="modulepreload" href="/fast/sweep.js?cb=b9f25eb8">
+<link rel="modulepreload" href="/fast/sweep.js?cb=713466b3">
 </template>
 <!-- warm:end -->
 
@@ -613,6 +618,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/fast/app.js?cb=6835f224"></script>
+<script type="module" src="/fast/app.js?cb=effc5acb"></script>
 </body>
 </html>

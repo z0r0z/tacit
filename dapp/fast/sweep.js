@@ -1,5 +1,5 @@
 // A bridge too big for any one provider, split across several: which providers take which part, and which of the key's notes fund each part.
-// No DOM, no network, no imports: the providers' terms and the key's notes are passed in, so the rule runs without a wallet. Each part is a whole
+// No DOM, no network, and one import (the sum a provider keeps): the providers' terms and the key's notes are passed in, so the rule runs without a wallet. Each part is a whole
 // bridge on its own (fastbridge-client.js `sweep`), with its own lock on Bitcoin and its own refund; a part that goes wrong costs the others nothing.
 //
 //   sweepRoom(providers)                      the most that can be split now
@@ -7,6 +7,8 @@
 //   assignNotes(amounts, notes, pick)         -> [{ notes, change }] for each amount (no note in two), or null when the notes cannot be shared out
 //
 //   providers  [{ id, name, ref, terms }] as fast/discover.js lists them (terms: feeBps, flatFee, minAmount, maxAmount, available, anyTac)
+
+import { feeOf } from '../fastbridge-price.js';
 
 export const MAX_LEGS = 4;
 // A rough price, in base units of TAC (1 TAC), for each part: its lock has a Bitcoin fee of its own, and one more part is one more thing that can stop.
@@ -16,8 +18,8 @@ export const LEG_PENALTY = 100_000_000n;
 const POOL = 10;
 
 const capOf = (t) => (t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount);
-// what a provider keeps of an amount: its quote's own sum (fastbridge-provider.js `price`)
-export const feeAt = (t, a) => (a * BigInt(t.feeBps)) / 10000n + t.flatFee;
+// what a provider keeps of an amount: its quote's own sum (fastbridge-price.js, the one definition of it)
+export const feeAt = (t, a) => feeOf(t, a);
 const room = (p) => { const c = capOf(p.terms); return c >= p.terms.minAmount && c > 0n; };
 const byCap = (a, b) => (capOf(a.terms) > capOf(b.terms) ? -1 : capOf(a.terms) < capOf(b.terms) ? 1 : String(a.id) < String(b.id) ? -1 : 1);
 

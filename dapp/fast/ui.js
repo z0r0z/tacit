@@ -2,6 +2,7 @@
 import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId, highFee, highTake, keyTag, lineageText } from './fmt.js';
 import { minutesFor } from './route.js';
 import { sweepRoom } from './sweep.js';
+import { costBySize, waitLevels } from './ladder.js';
 import { feeOf, meetsPrice } from '../fastbridge-price.js';
 export { fmtTac, parseTac, slowNet, lineageText };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
@@ -22,7 +23,7 @@ const range = (a, b) => `${fmtTac(a, 2)} to ${fmtTac(b, 2)} TAC`;
 
 export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, pinned = () => null, quoteDelayMs = 350, refreshMs = 30000, retryMs = 15000, say = () => {} }) {
   const doc = root.ownerDocument;
-  const S = { providers: [], empties: 0, loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null, checking: false, anyOnly: null, split: null };
+  const S = { providers: [], empties: 0, loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null, checking: false, anyOnly: null, split: null, waits: null, depthTimer: 0 };
   let kept = 0;
   try { kept = Number(doc.defaultView.localStorage.getItem(KEPT)) || 0; } catch { }
 
@@ -48,6 +49,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     <button class="btn" id="fx-go" type="button" hidden>Open wallet</button>
     <p class="status" id="fx-st" role="status" aria-live="polite"></p>
     <p class="alt" id="fx-alt">No provider fee? The <a href="/#card=bridge">regular bridge</a>, about 4 hours. Or <a href="#provide">provide liquidity</a> and earn the fee.</p>
+    <details class="fx-how fx-depth" id="fx-depth" hidden><summary>Cost by size, and who is waiting</summary><div id="fx-depth-in"></div></details>
     <details class="fx-how" id="fx-how"><summary>New to the fast bridge?</summary>
       <p class="note">You lock TAC on Bitcoin. A liquidity provider pays you the same TAC, less its fee, into your private balance on Tacit (Ethereum’s private pool). It takes minutes; the quote says how many.</p>
       <p class="note">A private balance is not an Ethereum wallet. To hold the TAC in a wallet, withdraw it afterwards: <a href="${WITHDRAW}">Withdraw to Ethereum</a>.</p>
@@ -272,7 +274,42 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       </div>`).join('')}</div>` : '';
   }
 
-  const paint = () => { paintProvider(); paintTiles(); paintForm(); paintNote(); paintList(); };
+  // The depth of the providers as a ladder (fast/ladder.js): what each size costs the way the page would bridge it now, and what is waiting for a
+  // provider and at what price. It needs no key. It is drawn only while it is open; the waiting bridges are read when it opens and then each minute.
+  function paintDepth() {
+    const d = $('fx-depth'), ps = others();
+    d.hidden = !S.loaded || !ps.length;
+    if (d.hidden || !d.open) return;
+    const L = costBySize(ps), tac = (u) => `${fmtTac(u)} TAC`, name = (p) => esc(p.provider.name || 'Provider');
+    const via = (r) => (r.parts.length === 1 ? name(r.parts[0]) : `split in ${r.parts.length}: ${r.parts.slice(0, 3).map((x) => `${name(x)} ${esc(fmtTac(x.amount))}`).join(', ')}${r.parts.length > 3 ? `, +${r.parts.length - 3}` : ''}`);
+    let html = '<p class="eyebrow"><span>What it costs, by size</span></p>';
+    if (L.rows.length) {
+      html += L.rows.map((r) => `<div class="kv"><span>${esc(tac(r.amount))}</span><b class="num">${esc(fmtTac(r.fee))} TAC<small>${esc(pct(r.fee, r.amount))} · ${via(r)}</small></b></div>`).join('');
+      html += `<p class="note">Each is the way it would be bridged now. The most that can be bridged now is ${esc(tac(L.depth))}.${L.rows.some((r) => r.parts.length > 1) ? ' A size no one provider takes is split across several, each part a bridge of its own.' : ''}</p>`;
+    } else html += '<p class="note">Every provider is full right now.</p>';
+    if (S.waits && S.waits.items) {
+      const levels = waitLevels(S.waits.items);
+      html += `<p class="eyebrow"><span>Waiting for a provider</span><span class="who num">${esc(String(S.waits.count))}</span></p>`;
+      html += levels.length ? levels.map((x) => `<div class="kv"><span>${x.maxFeeBps === null ? 'any fee' : `up to ${esc(bpsText(x.maxFeeBps))}`}</span><b class="num">${x.count} bridge${x.count === 1 ? '' : 's'}<small>${esc(tac(x.total))}</small></b></div>`).join('') : '<p class="note">No one is waiting.</p>';
+    }
+    $('fx-depth-in').innerHTML = html;
+  }
+  async function lookWaits() {
+    if (!wants || typeof wants.waiting !== 'function') return;
+    try { S.waits = await wants.waiting(); } catch { /* the boards did not answer: what was read stands */ }
+    paintDepth();
+  }
+  // (a toggle that changes nothing, which some browsers send twice for one change, is ignored: it would read the boards and start a timer again)
+  let depthOpen = false;
+  $('fx-depth').addEventListener('toggle', () => {
+    const now = $('fx-depth').open;
+    if (now === depthOpen) return;
+    depthOpen = now;
+    clearInterval(S.depthTimer);
+    if (now) { paintDepth(); lookWaits(); S.depthTimer = setInterval(lookWaits, 60000); }
+  });
+
+  const paint = () => { paintProvider(); paintTiles(); paintDepth(); paintForm(); paintNote(); paintList(); };
 
   async function readProviders(force = false) {
     if (!force && Date.now() - S.termsAt < refreshMs) return;
@@ -565,6 +602,6 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   readProviders(true).then(() => { if (keyS.unlocked && !S.sess && !S.opening) openSession(); });
   return {
     lock: (text) => reset(text),
-    destroy: () => { if (S.stop) S.stop(); clearTimeout(S.timer); clearInterval(S.watch); },
+    destroy: () => { if (S.stop) S.stop(); clearTimeout(S.timer); clearInterval(S.watch); clearInterval(S.depthTimer); },
   };
 }

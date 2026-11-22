@@ -950,6 +950,116 @@ test('a priced want is told of the providers that keep no more than its price, a
   n.ui.destroy();
 });
 
+// ── the depth ladder: what each size costs, and who is waiting ──
+
+const openDepth = (m) => { m.$('fx-depth').open = true; m.$('fx-depth').dispatchEvent(new m.dom.window.Event('toggle')); };
+const closeDepth = (m) => { m.$('fx-depth').open = false; m.$('fx-depth').dispatchEvent(new m.dom.window.Event('toggle')); };
+
+test('the depth ladder: there when providers are, with no key, closed until it is opened; drawn then with what each size costs and the most that can be had', async () => {
+  const m = mount({ providers: [provider('Tacit')] });
+  assert.equal(m.$('fx-depth').hidden, true, 'not before the providers are read');
+  await until(() => !m.$('fx-depth').hidden, 'the ladder');
+  assert.equal(m.key.unlocked, false, 'no key was needed');
+  assert.equal(m.$('fx-depth').open, false);
+  assert.equal(m.$('fx-depth-in').innerHTML, '', 'nothing is drawn while it is closed');
+  assert.match(text(m.$('fx-depth')), /Cost by size, and who is waiting/);
+  openDepth(m);
+  const t = text(m.$('fx-depth-in'));
+  assert.match(t, /What it costs, by size/);
+  assert.match(t, /Each is the way it would be bridged now\./);
+  // 0.30% and 1 TAC: 1.03 of 10, 1.3 of 100, 4 of 1,000; one provider, so nothing is split
+  assert.match(t, /10 TAC 1\.03 TAC 10\.30% · Tacit/);
+  assert.match(t, /100 TAC 1\.3 TAC 1\.30% · Tacit/);
+  assert.match(t, /1,000 TAC 4 TAC 0\.40% · Tacit/);
+  assert.match(t, /The most that can be bridged now is 1,000 TAC\./);
+  assert.doesNotMatch(t, /split/);
+  assert.doesNotMatch(t, /Waiting for a provider/, 'a page with no way to read the wants says nothing of them');
+  m.ui.destroy();
+});
+
+test('a size no one provider takes is shown split, across whom; providers that are full leave a line saying so; none listed, no ladder', async () => {
+  const split = [provider('A', { available: String(500n * TAC), anyTac: true }), provider('B', { available: String(400n * TAC), anyTac: true })];
+  const m = mount({ providers: split });
+  await until(() => !m.$('fx-depth').hidden, 'the ladder');
+  openDepth(m);
+  const t = text(m.$('fx-depth-in'));
+  assert.match(t, /900 TAC .* split in 2: A 500, B 400/);
+  assert.match(t, /The most that can be bridged now is 900 TAC\. A size no one provider takes is split across several, each part a bridge of its own\./);
+  m.ui.destroy();
+  const f = mount({ providers: [provider('Tacit', { available: '0' })] });
+  await until(() => !f.$('fx-depth').hidden, 'the ladder, with the providers full');
+  openDepth(f);
+  assert.match(text(f.$('fx-depth-in')), /Every provider is full right now\./);
+  f.ui.destroy();
+  const none = mount({ providers: [] });
+  await until(() => /No provider is online/.test(text(none.$('fx-lp'))), 'the offline line');
+  assert.equal(none.$('fx-depth').hidden, true, 'no ladder with no providers');
+  none.ui.destroy();
+});
+
+test('the ladder lists who is waiting by the price they will pay, reads the wants when it opens and each minute while it stays open, and stops when it closes or the page ends', async () => {
+  const item = (tac, maxFeeBps) => ({ pub: 'p' + tac, amount: BigInt(tac) * TAC, maxFeeBps });
+  let waits = { count: 3, total: 0n, items: [item(7999, null), item(3873, 150), item(100, 150)] };
+  let reads = 0;
+  const wants = { ask: async () => {}, kept: () => null, start: async () => null, stop: async () => {}, waiting: async () => { reads++; return waits; } };
+  const sets = [], clears = [], realSet = globalThis.setInterval, realClear = globalThis.clearInterval;
+  globalThis.setInterval = (fn, ms, ...a) => { const id = realSet(fn, ms, ...a); if (ms === 60000) sets.push({ id, fn }); return id; };
+  globalThis.clearInterval = (id) => { clears.push(id); return realClear(id); };
+  try {
+    const m = mount({ providers: [provider('Tacit')], wants });
+    await until(() => !m.$('fx-depth').hidden, 'the ladder');
+    assert.equal(reads, 0, 'nothing is read while it is closed');
+    openDepth(m);
+    await until(() => /Waiting for a provider/.test(text(m.$('fx-depth-in'))), 'the waiting bridges');
+    assert.equal(reads, 1);
+    const t = text(m.$('fx-depth-in'));
+    assert.match(t, /Waiting for a provider 3/);
+    assert.match(t, /any fee 1 bridge 7,999 TAC/);
+    assert.match(t, /up to 1\.50% 2 bridges 3,973 TAC/);
+    assert.ok(t.indexOf('any fee') < t.indexOf('up to 1.50%'), 'the ones that name no price first');
+    assert.equal(sets.length, 1, 'read again each minute while it is open');
+    waits = { count: 0, total: 0n, items: [] };
+    await sets[0].fn();
+    assert.equal(reads, 2);
+    assert.match(text(m.$('fx-depth-in')), /No one is waiting\./);
+    closeDepth(m);
+    assert.ok(clears.includes(sets[0].id), 'closing it stops the reads');
+    m.ui.destroy();
+    // a board that does not answer leaves the ladder as it was, with no waiting section
+    const down = mount({ providers: [provider('Tacit')], wants: { ...wants, waiting: async () => { throw new Error('down'); } } });
+    await until(() => !down.$('fx-depth').hidden, 'the ladder');
+    openDepth(down);
+    await tick(30);
+    assert.match(text(down.$('fx-depth-in')), /What it costs, by size/);
+    assert.doesNotMatch(text(down.$('fx-depth-in')), /Waiting for a provider/);
+    down.ui.destroy();
+    // the page ending while it is open stops the reads too
+    const last = mount({ providers: [provider('Tacit')], wants });
+    await until(() => !last.$('fx-depth').hidden, 'the ladder');
+    openDepth(last);
+    const id = sets.at(-1).id;
+    last.ui.destroy();
+    assert.ok(clears.includes(id), 'destroy stops the reads');
+  } finally { globalThis.setInterval = realSet; globalThis.clearInterval = realClear; }
+});
+
+test('the ladder follows the providers: a refresh redraws it while it is open, with the new cost and the new most', async () => {
+  let online = [provider('Tacit')];
+  const m = mount({ refreshMs: 20, discover: async () => online });
+  await until(() => !m.$('fx-depth').hidden, 'the ladder');
+  openDepth(m);
+  assert.match(text(m.$('fx-depth-in')), /The most that can be bridged now is 1,000 TAC\./);
+  online = [provider('Tacit', { feeBps: 10, flatFee: '0', available: String(200n * TAC) }), provider('Other', { available: String(300n * TAC) })];
+  await tick(40);                                  // past the page's refresh interval, so the next look reads the providers again
+  m.$('fx-amt').dispatchEvent(new m.dom.window.Event('input'));
+  await until(() => /The most that can be bridged now is 300 TAC\./.test(text(m.$('fx-depth-in'))), 'the new most');
+  assert.match(text(m.$('fx-depth-in')), /100 TAC 0\.1 TAC 0\.10% · Tacit/, 'the cheaper provider is the one for 100');
+  // (that a toggle which changes nothing reads the boards and starts a timer only once is held by the reads and timers counted in the test above:
+  // JSDOM sends a toggle of its own as well as the one sent here)
+  assert.equal(m.$('fx-depth').open, true, 'it stayed open through the refreshes');
+  m.ui.destroy();
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

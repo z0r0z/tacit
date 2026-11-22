@@ -76,6 +76,13 @@ the provider's own:
   only of a provider that keeps no more than the price (`meetsPrice`, `dapp/fastbridge-board.js`, the one judgement every page and the daemon use; it
   is the provider's own sum, `feeOf`, so a want is judged as the quote will be), and the page says when every provider that could take it asks more.
   A board needs no change for prices: it keeps a want as it came, and a reader that does not know the field leaves it out.
+- **Depth.** `/fast/` has a section, closed until opened and needing no key, that lays the providers out as a ladder (`dapp/fast/ladder.js`): what each
+  size costs, from the least any provider takes through round sizes (10, 30, 100, 300, 1,000 TAC and on) to the most that can be had now, as the page would
+  bridge it. A provider's fee is a rate and a flat part, so the cost of a size is a curve and the cheapest provider changes with it; a size one provider
+  takes whole goes to the cheapest of those that do, and a size none takes whole is split (the row says across whom), so the ladder shows what the page
+  will do and not a cheaper split it would not. Below it, what is waiting for a provider, grouped by the price it will pay (those that name none first, then
+  the highest price down), read from the boards when the section opens and each minute while it stays open. It is a view of what the quotes will say, not a
+  book that matches anything: a bridge still runs by asking a provider for a quote.
 
 A provider in a page is for modest amounts: it answers requests and takes the Bitcoin while the page is open, and swaps that
 are open when the page closes are tended again the next time the key is opened. A provider that is a process (`fastbridge-lp/`)
