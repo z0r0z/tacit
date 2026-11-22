@@ -26,7 +26,8 @@
 //              status(txid) -> { confirmations, height }, tip(), outspend(txid, vout) -> spending txid | null }
 //   evm      { now(), lockPosition(leaf) -> { lIndex, lPath, lockSetRoot } | null,
 //              recipient(swapIdHex) -> { xonly, priv }, claimOp({ rec, evmOffer, sec, position }) -> an op the adapter sends as it is,
-//              submit(type, op) -> { jobId }, claimStatus(jobId, { type, bundle }) -> 'pending' | 'settled' | 'failed' }
+//              submit(type, op) -> { jobId }, claimStatus(jobId, { type, bundle, sinceSecs? }) -> 'pending' | 'settled' | 'failed'
+//              (a claim the relay calls failed is settled when the pool shows its lock spent by a claim, read from sinceSecs on) }
 //   counter  { sendOffer({ quoteId, offer }) -> { ok, retry?, why? }, getEvmOffer(swapIdHex) -> evmOffer | null,
 //              extend?({ quoteId, txid }) -> { ok, retry?, why? } }
 
@@ -187,7 +188,7 @@ export function makeBitcoinLocker(ctx) {
           const { jobId } = await evm.submit('adaptorclaim', rec.claim.op);
           return save(rec, { claim: { ...rec.claim, jobId, at: await evm.now() } });
         }
-        const st = await evm.claimStatus(rec.claim.jobId, { type: 'adaptorclaim', bundle: rec.claim.op });
+        const st = await evm.claimStatus(rec.claim.jobId, { type: 'adaptorclaim', bundle: rec.claim.op, sinceSecs: rec.claimStartedAt });
         if (st === 'settled') return save(rec, { phase: 'claimed', claimedAt: ctx.now() });
         if (st === 'failed') return save(rec, { claim: { op: rec.claim.op }, claimFailures: (rec.claimFailures || 0) + 1 });
         // a claim still unanswered after the deadline can no longer land

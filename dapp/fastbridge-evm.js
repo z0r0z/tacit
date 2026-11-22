@@ -139,6 +139,13 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return 'pending';
   }
   const relayHeld = async () => { try { const r = ux.relay.state ? await ux.relay.state() : null; return !!(r && r.state === 'held'); } catch { return false; } };
+  // A relay calls a claim failed when its own try found nothing left to do: the lock was spent already, by a claim whose answer the relay never
+  // heard or one another settler sent. The pool decides: a lock spent by a claim settle is a claim that landed.
+  async function claimLanded(again) {
+    const nu = again && again.type === 'adaptorclaim' && again.bundle && again.bundle.op && again.bundle.op.lockNullifier;
+    if (!nu) return false;
+    try { const found = await findClaim(nu, { sinceSecs: again.sinceSecs || 0 }); return !!(found && found.length); } catch { return false; }
+  }
   async function jobStatus(id, again = null) {
     if (isOwnJob(id)) {
       if (own.get(id) && own.get(id).done) return 'settled';
@@ -148,7 +155,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const st = await ux.relay.status(id);
     const s = st && st.status;
     if (s === 'settled' || (own.get(id) && own.get(id).done)) return 'settled';
-    if (s === 'failed' || s === 'unknown') return 'failed';
+    if (s === 'failed' || s === 'unknown') return (await claimLanded(again)) ? 'settled' : 'failed';
     if (!selfSettle) return 'pending';
     if (s === 'open' && st.publicValues && st.proof) return sendOwn(id, () => st);
     if (again && again.bundle && (own.has(id) || (await relayHeld()))) return sendOwn(id, () => ux.relay.prove(specOf(again.type, again.bundle)));
