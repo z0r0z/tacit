@@ -1,6 +1,6 @@
 import { makeKeySession, signInSheet, Cancelled } from '/trade/key.js?cb=04a214c9';
 import { forgetUx } from '/trade/poolux.js?cb=59d125e5';
-import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=7c3cdef5';
+import { wrapEth, wrapFirst, wrapCalldata, settle, relayState, relayStopped, relayWords } from '/teth/wrap.js?cb=7c3c9e23';
 import { wrapQuote, WRAP_TIP } from '/teth/read.js?cb=1fc456f6';
 import { secp, keccak_256, sha256, bytesToHex } from '/vendor/tacit-deps.min.js';
 import { makeRunner } from '/activity.js?cb=f692784e';
@@ -395,8 +395,11 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
       say('posted');
       try { r = await t.routeAheadSend(ahead, { waitOpts: { ...run().wait(label, 15 * 60e3), intervalMs: 4000, viaRelay: true } }); RAH.delete(ahead.slot.k); q = { amountOut: ahead.out }; }
       catch (e) {
-        if (!e?.notPosted) { if (pending(e)) busy.set(lc(note.leaf), Date.now()); throw e; }
+        // a proof made ahead is for the reserves it was made on: when the pool has moved since and the job was refused for good, it is built again on the reserves now, below
+        const moved = !e?.notPosted && !!t.routeMoved && await t.routeMoved(e, { asset0: note.asset, amountIn: units, path, fee, hops: ahead.hops });
+        if (!e?.notPosted && !moved) { if (pending(e)) busy.set(lc(note.leaf), Date.now()); throw e; }
         RAH.delete(ahead.slot.k);
+        if (moved) q = await priced(fee);
       }
     }
     if (!r) say('route');
@@ -414,7 +417,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     } catch (e) { if (pending(e)) busy.set(lc(note.leaf), Date.now()); throw e; }
     busy.set(lc(note.leaf), Date.now());
     held = null;
-    return { txHash: r?.txHash || null, out: q.amountOut };
+    return { txHash: r?.txHash || null, out: r?.amountOut ?? q.amountOut };
   }
 
   async function escrowOf(t, recipe) {

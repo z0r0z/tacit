@@ -225,6 +225,42 @@ test('on this computer: a proof the pool traded past is made again at the new pr
   assert.strictEqual(b.M.routes.length, 3, 'three tries, then it says so');
 });
 
+// A proof the relay made ahead, while the amount was on screen, is for the reserves it was made on. Posted at the press, it is refused for good when a trade landed in between,
+// with the note unspent: the swap is built again on the reserves now (the price checked against the least first) instead of ending as "settle failed".
+async function aheadSetup(refusal, { moved }) {
+  const { M, ux } = setup({ notes: [note('0xexact', 1000)], fee: 10n });
+  M.relay = { state: 'ok', proving: true, settling: true };
+  ux.assetByTicker = { cETH: { assetId: ETH } };
+  ux.relay.ownProving = () => false;
+  ux.rpc = async () => '0x1';
+  const hops = [{ assetNext: TAC, feeBps: 30, reserveAPre: 1n, reserveBPre: 1n }];
+  M.asked = [];
+  ux.quoteRoute = async () => ({ amountOut: 900n, hops });
+  ux.routeAhead = async () => ({ out: 900n, hops, proven: {} });
+  ux.routeAheadSend = async () => { throw new Error(refusal); };
+  ux.routeMoved = async (e, a) => { M.asked.push({ e, a }); return moved; };
+  const pv = await load(ux);
+  await pv.open();
+  await pv.routeAhead(plan());
+  assert.strictEqual(pv.routeAheadOf(plan()) ? 'ready' : null, 'ready', 'the proof made ahead is ready');
+  return { M, pv };
+}
+
+test('a proof made ahead that the pool traded past: refused for good, it is built again at the new price', async () => {
+  const { M, pv } = await aheadSetup('settle failed: Execution reverted for an unknown reason.', { moved: true });
+  const r = await run(pv, plan());
+  assert.strictEqual(M.asked.length, 1, 'asked whether the pool moved');
+  assert.deepStrictEqual(M.asked[0].a.hops.map((h) => String(h.reserveBPre)), ['1'], 'against the reserves the proof was made on');
+  assert.strictEqual(M.routes.length, 1, 'built and sent again');
+  assert.deepStrictEqual({ tx: r.txHash, out: r.out }, { tx: '0xswap', out: 900n });
+});
+
+test('a proof made ahead that was refused while the pool has not moved is the error it was', async () => {
+  const { M, pv } = await aheadSetup('settle failed: Execution reverted for an unknown reason.', { moved: false });
+  await assert.rejects(run(pv, plan()), /settle failed: Execution reverted/);
+  assert.strictEqual(M.routes.length, 0, 'nothing was sent again');
+});
+
 test('on this computer with no prover answering: nothing is sent, and it says so', async () => {
   const { M, ux } = setup({ notes: [note('0xold', 1000)] });
   M.relay = { state: 'down' };

@@ -919,6 +919,98 @@ test('route: minted notes use a fresh per-note nk, never the identity owner', as
   assert.equal(String(ux.pool.nkToOwner(opened.secret)).toLowerCase(), String(out.owner).toLowerCase(), 'the sealed nk owns the output leaf');
 });
 
+// A route's proof binds the pool's reserves as they stood at build time, and the pool refuses it unless they are still exact at settle. A trade landing
+// while the relay proves ends that job for good with the note unspent: route() builds it again on the reserves now (bounded by the holder's least), and
+// only when the chain shows the pool did move, so a refusal for any other reason is still the error it was.
+function movingPool({ moves = 1, fail = 'Execution reverted for an unknown reason.', failFirst = 1, stay = false, stall = false } = {}) {
+  const w = (n) => BigInt(n).toString(16).padStart(64, '0');
+  const captured = [], seen = { reads: 0 };
+  let reserveB = 10_000_000n;
+  const fetchImpl = async (url, opts) => {
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
+    let obj;
+    if (String(url).includes('/confidential/submit')) {
+      captured.push(body);
+      const n = captured.length;
+      if (!stay && n <= moves) reserveB -= 500_000n; // a trade lands while this one is being proved
+      obj = { jobId: 'j' + n, status: 'pending' };
+    } else if (String(url).includes('/confidential/status')) {
+      const n = Number(new URL(String(url)).searchParams.get('id').slice(1));
+      obj = stall ? { jobId: 'j' + n, status: 'pending' } : n <= failFirst ? { jobId: 'j' + n, status: 'failed', error: fail } : { jobId: 'j' + n, status: 'settled' };
+    } else {
+      seen.reads++;
+      obj = { result: body && body.method === 'eth_call' ? '0x' + [1n, 0n, 0n, 10_000_000n, reserveB, 30n, 10_000_000n].map(w).join('') : '0x0' };
+    }
+    return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+  };
+  return { captured, seen, fetchImpl };
+}
+async function routeFixture(mock) {
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: mock.fetchImpl });
+  const walletPriv = '0x' + '7a'.repeat(32);
+  const w = ux.buildWrap({ walletPriv, amountWei: '10000000000000000', ticker: 'cETH', index: 0 });
+  const tree = new ux.pool.Tree();
+  const leafIndex = tree.insert(w.leaf);
+  const inNote = { ...w.note, leafIndex, path: tree.rootAndPath(leafIndex).path, root: tree.root() };
+  const other = ux.assets.find((a) => a.ticker !== 'cETH' && a.ticker !== 'TAC').assetId;
+  const path = [{ assetNext: other, feeBps: 30 }];
+  const waitOpts = { intervalMs: 0, sleep: async () => {} };
+  const first = await ux.quoteRoute({ asset0: inNote.asset, amountIn: BigInt(inNote.value), path });
+  return { ux, walletPriv, inNote, path, waitOpts, first, args: { walletPriv, inNote, amountIn: BigInt(inNote.value), path, waitOpts } };
+}
+
+test('route: a settle the pool refused after it moved is built again on the reserves now', async () => {
+  const mock = movingPool({ moves: 1 });
+  const { ux, args, first } = await routeFixture(mock);
+  const r = await ux.route({ ...args, minOut: 0n });
+  assert.equal(mock.captured.length, 2, 'the same swap was sent twice: the refused build and the one on the new reserves');
+  const [a, b] = mock.captured.map((c) => c.op.hops[0]);
+  assert.notEqual(String(a.reserveBPre), String(b.reserveBPre), 'the second build binds the reserves the pool holds now');
+  assert.equal(String(b.reserveBPre), '9500000');
+  assert.ok(r.amountOut < first.amountOut, 'the result says what the swap on the new reserves pays');
+  assert.equal(BigInt(mock.captured[1].op.amountOut), r.amountOut);
+});
+
+test('route: a refusal while the pool has not moved is the error it was', async () => {
+  const mock = movingPool({ moves: 0 });
+  const { ux, args } = await routeFixture(mock);
+  await assert.rejects(ux.route({ ...args, minOut: 0n }), /^Error: settle failed: Execution reverted for an unknown reason\.$/);
+  assert.equal(mock.captured.length, 1, 'nothing was sent again');
+});
+
+test('route: a broadcast that may still land, or a wait that ran out, is never sent again', async () => {
+  const pendingTx = 'Execution reverted for an unknown reason. — broadcast and possibly still pending: 0x' + 'ab'.repeat(32);
+  const a = movingPool({ moves: 1, fail: pendingTx });
+  const fa = await routeFixture(a);
+  await assert.rejects(fa.ux.route({ ...fa.args, minOut: 0n }), /settle failed.*possibly still pending/);
+  assert.equal(a.captured.length, 1, 'a broadcast that may still land');
+  const b = movingPool({ moves: 1, stall: true });
+  const fb = await routeFixture(b);
+  await assert.rejects(fb.ux.route({ ...fb.args, waitOpts: { ...fb.waitOpts, timeoutMs: 30 }, minOut: 0n }), /settle timed out/);
+  assert.equal(b.captured.length, 1, 'a wait that ran out');
+});
+
+test('route: the relay naming the revert is enough to build again, even when the reserves read the same', async () => {
+  const mock = movingPool({ moves: 0, fail: 'Execution reverted for an unknown reason. (0x29b3c833)' });
+  const { ux, args } = await routeFixture(mock);
+  await ux.route({ ...args, minOut: 0n });
+  assert.equal(mock.captured.length, 2);
+});
+
+test('route: a price that fell past the least the holder takes stops the second build', async () => {
+  const mock = movingPool({ moves: 1 });
+  const { ux, args, first } = await routeFixture(mock);
+  await assert.rejects(ux.route({ ...args, minOut: first.amountOut }), (e) => e.moved === true && /price moved past what was quoted/.test(e.message));
+  assert.equal(mock.captured.length, 1, 'no second proof was asked for');
+});
+
+test('route: a pool that keeps moving is built again twice, then said plainly', async () => {
+  const mock = movingPool({ moves: 9, failFirst: 9 });
+  const { ux, args } = await routeFixture(mock);
+  await assert.rejects(ux.route({ ...args, minOut: 0n }), (e) => e.moved === true && e.said === true && /pool kept moving/.test(e.message));
+  assert.equal(mock.captured.length, 3, 'the first build and two more');
+});
+
 test('crossOut: a destination owner is required for every destination chain', async () => {
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => { throw new Error('no network expected'); } });
   const walletPriv = '0x' + '79'.repeat(32);

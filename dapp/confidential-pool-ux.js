@@ -3111,9 +3111,33 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const wireOp = { ...op, change: (op.change || []).map((c) => ({ cx: c.cx, cy: c.cy, owner: c.owner })) };
     return { q, spec: { op: wireOp, leaves, outputs, ephRand }, sealedMemos };
   }
+  // A route's proof binds the pools' reserves as they stood when it was built, and the pool refuses it (PoolReserveMismatch, 0x29b3c833) unless they are still exact when it settles. A trade landing
+  // in the minutes between build and settle fails the job for good and leaves the note unspent. `routeMoved` says whether `e` is that: a refusal the relay called final (not a wait that ran out, not
+  // a broadcast that may still land) while the pools now hold other reserves than the op bound. The reserves are read from the chain, so it holds whether or not the relay named the revert.
+  async function routeMoved(e, { asset0, amountIn, path, fee = 0n, hops }) {
+    const m = String(e?.message || '');
+    if (e?.open || e?.notPosted || /possibly still pending/i.test(m)) return false;
+    if (/29b3c833|PoolReserveMismatch/i.test(`${e?.data?.data || e?.data || ''} ${m}`)) return true;
+    if (!/^settle (failed|reverted)/i.test(m) || /fee below the current floor/i.test(m)) return false;
+    const now = await quoteRoute({ asset0, amountIn, path, fee }).catch(() => null);
+    return !!now && now.hops.length === hops.length
+      && now.hops.some((h, i) => BigInt(h.reserveAPre) !== BigInt(hops[i].reserveAPre) || BigInt(h.reserveBPre) !== BigInt(hops[i].reserveBPre));
+  }
+  // The same swap built again on the reserves now, as often as the pool moves under it: the holder's least (minOut) still bounds what it may take, so a price that fell past it stops here.
+  const ROUTE_MOVED_RETRIES = 2;
   async function route({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, split = null, selfRelay = false, selfSettle = null, waitOpts } = {}) {
-    const { spec, sealedMemos } = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee, split });
-    return _dispatch({ type: 'route', spec, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts });
+    for (let left = ROUTE_MOVED_RETRIES; ; left--) {
+      const { q, spec, sealedMemos } = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee, split });
+      if (left < ROUTE_MOVED_RETRIES && q.amountOut < BigInt(minOut)) throw Object.assign(new Error('The price moved past what was quoted, so the swap was not sent.'), { moved: true, said: true });
+      let r;
+      try { r = await _dispatch({ type: 'route', spec, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts }); }
+      catch (e) {
+        if (!(await routeMoved(e, { asset0: inNote.asset, amountIn, path, fee, hops: q.hops }))) throw e;
+        if (left <= 0) throw Object.assign(new Error('The pool kept moving while your swap was proved, so it did not go through. Nothing was spent; press again for a fresh quote.'), { moved: true, said: true, cause: e });
+        continue;
+      }
+      return r && typeof r === 'object' ? { ...r, amountOut: q.amountOut } : r;
+    }
   }
   async function routeAhead({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, split = null, waitOpts } = {}) {
     const b = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee, split });
@@ -3786,7 +3810,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, addAsset, externalAsset, externalAssets, readAsset, registerTokenCall, tokenTicker, registeredTokens, pooledTokens, lpShareId: (poolId) => String(_lp.lpShareId(poolId)).toLowerCase(), account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
     deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
-    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, lpBondRecord, keepFarmPosition, recoverSoloFarmPositions, decodeCdpMints: (pv) => recovery().decodeCdpFields(pv).mints, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
+    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeMoved, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, lpBondRecord, keepFarmPosition, recoverSoloFarmPositions, decodeCdpMints: (pv) => recovery().decodeCdpFields(pv).mints, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };
 }
