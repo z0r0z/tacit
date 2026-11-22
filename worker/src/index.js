@@ -2895,6 +2895,8 @@ async function handleBridgeRecoverMark(req, env, url, cors) {
     ...c, status: b.status, ...(txid && /^[0-9a-f]{64}$/.test(txid) ? { txid } : {}), ...(inputs && inputs.length ? { inputs } : {}),
     ...(b.note ? { note: String(b.note).slice(0, 300) } : {}), [`${b.status}At`]: Date.now(),
   };
+  // A sent claim is final and read only for what was sent: the note's opening and the holder's signature are not kept with it.
+  if (next.status === 'sent') { delete next.blinding; delete next.sig; }
   await env.REGISTRY_KV.put(key, JSON.stringify(next));
   return jsonResponse(bridgeRecoverView(next), 200, cors);
 }

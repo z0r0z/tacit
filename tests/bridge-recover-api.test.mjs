@@ -66,6 +66,16 @@ test('marks record the notes about to be spent, the payment, and a sent claim st
   await call(e, '/bridge/recover/mark?network=mainnet', { method: 'POST', token: TOKEN, body: { burnTxid: BURN, status: 'held', note: 'late' } });
   kept = JSON.parse(await e.REGISTRY_KV.get(`bridge:recover:mainnet:${BURN}`));
   assert.equal(kept.status, 'sent');
+  assert.equal(kept.blinding, undefined, 'a sent claim keeps no opening');
+  assert.equal(kept.sig, undefined, 'nor the signature');
+  assert.equal(kept.amount, '10000000000');
+  assert.equal(kept.pubkey, '02' + '11'.repeat(32), 'what was sent and to whom stays');
+  assert.deepEqual(kept.inputs, [{ txid: 'a1'.repeat(32), vout: 0 }]);
+  const again = await (await call(e, '/bridge/recover?network=mainnet', { method: 'POST', body: claim() })).json();
+  assert.deepEqual(again, { ok: true, status: 'sent', txid: 'ab'.repeat(32) }, 'the claim is answered as sent when its holder asks again');
+  const q2 = await (await call(e, '/bridge/recover/queue?network=mainnet', { token: TOKEN })).json();
+  assert.equal(q2.claims.length, 1);
+  assert.equal(q2.claims[0].status, 'sent', 'the service still reads what it sent');
   const pub = await (await call(e, `/bridge/recover?network=mainnet&burn=${BURN}`)).json();
   assert.deepEqual(pub, { ok: true, status: 'sent', txid: 'ab'.repeat(32) }, 'the public read says sent and where, nothing else');
 });
