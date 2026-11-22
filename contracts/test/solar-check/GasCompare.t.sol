@@ -27,7 +27,7 @@ contract GasCompare is TacitBlocksFixture {
         emit log_named_uint("force", vm.lastCallGas().gasTotalUsed);
         landAndLog(2, "land 2 forced");
         landAndLog(3, "land 3 hop");
-        uint256 v = vm.parseJsonUint(fx, ".hop.value");
+        uint256 v = amountOf("hop");
         bytes32 c = vm.parseJsonBytes32(fx, ".hop.commit");
         blocks.sendHop(v, c);
         emit log_named_uint("sendHop", vm.lastCallGas().gasTotalUsed);
