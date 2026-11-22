@@ -109,3 +109,28 @@ test('an order is removed only for the payer and nonce the relay reports used', 
   assert.equal((await board.remove(r.id, { payer: acct.address.toLowerCase(), nonce: '7' })).ok, true);
   assert.equal((await board.list()).length, 0);
 });
+
+test('the list is served in turns, one order per client per turn, and one client or payer holds a bounded number', async () => {
+  const board = makeGasBoard({ kv: kvOf(), now: () => NOW });
+  const { privateKeyToAccount: pk } = require('viem/accounts');
+  const orderBy = async (i) => {
+    const a = pk('0x' + (i + 1).toString(16).padStart(64, '0'));
+    const { order, data: d } = gr.buildOrder({ payer: a.address, tokenIn: gr.TAC, amountIn: 10n ** 18n, feeToken: gr.TAC, fee: 1n, tokenOut: USDC, minOut: 1n, recipient: a.address, target: ZR, data, now: NOW, nonce: BigInt(i) });
+    const t = gr.orderTypedData(order);
+    const signature = await a.signTypedData({ domain: t.domain, types: { Order: gr.ORDER_TYPES.Order }, primaryType: 'Order', message: order });
+    return { order, data: d, signature, inPermit: gr.NO_PERMIT, feePermit: gr.NO_PERMIT, p2: gr.NO_P2 };
+  };
+  // two busy clients post first, each up to what the board holds for one client
+  let refused = 0;
+  for (let i = 0; i < 24; i++) { const r = await board.post(await orderBy(i), { client: i % 2 ? 'n:aa' : 'n:bb' }); if (!r.ok) refused++; }
+  assert.equal(refused, 4);
+  const late = await orderBy(100), r = await board.post(late, { client: 'n:cc' });
+  assert.equal(r.ok, true);
+  const page = await board.list(20);
+  assert.equal(page.length, 20);
+  assert.ok(page.slice(0, 3).some((o) => o.id === r.id), 'the later client is in the first turn');
+  // one payer holds at most livePerPayer orders
+  const x = await signed();
+  for (let n = 0; n < 4; n++) assert.equal((await board.post(await signed({ nonce: BigInt(20 + n) }), { client: 'n:dd' })).ok, true);
+  assert.match((await board.post(x, { client: 'n:ee' })).error, /payer/);
+});

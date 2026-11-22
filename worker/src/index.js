@@ -4322,7 +4322,7 @@ async function handleGasRelay(req, env, url, cors) {
   if (url.pathname === '/gas/order') {
     const rl = await proveRateLimit(env, ip, 'gas-post', GAS_RELAY.perClientPerHour, Math.floor(3600000 / GAS_RELAY.perClientPerHour));
     if (!rl.ok) return jsonResponse({ ok: false, error: `too many orders, retry in ~${rl.retryAfter}s`, retryAfter: rl.retryAfter }, 429, { ...nostore, 'Retry-After': String(rl.retryAfter) });
-    const r = await board.post(b.order);
+    const r = await board.post(b.order, { client: senderKey(env, queueSender(ip)) });
     return jsonResponse(r, r.ok ? 200 : 400, nostore);
   }
   // /gas/done { id, payer, nonce }: clears an order the contract reports used (its nonce spent, by a send or a cancel).

@@ -5,7 +5,9 @@
 // target, that `data` is the signed call, and that the signature recovers to the payer (a contract wallet is not listed: the relay would have
 // to simulate to know). The contract is the authority: the relay simulates before it sends.
 //
-// Storage (KV): gr:order:<digest> (the order, expiring with its deadline) and gr:index (a list of { id, at, until } newest last, capped).
+// Storage (KV): gr:order:<digest> (the order, expiring with its deadline) and gr:index (a list of { id, at, until, c, p } newest last, capped;
+// c is the posting client's keyed tag, p the payer). The list is served in turns, one order per client per turn, so one client's orders take
+// one place in each turn rather than the whole page.
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
 import * as secp from '@noble/secp256k1';
@@ -20,7 +22,7 @@ function recoverSigner(digest, sigHex) {
   return '0x' + bytesToHex(keccak_256(pub).slice(12));
 }
 
-export const GAS_RELAY = { maxOrders: 200, maxData: 16384, minTtlSecs: 60, maxTtlSecs: 3600, perClientPerHour: 30 };
+export const GAS_RELAY = { maxOrders: 200, maxData: 16384, minTtlSecs: 60, maxTtlSecs: 3600, perClientPerHour: 30, livePerClient: 10, livePerPayer: 4 };
 export const GAS_RELAY_ADDR = '0x000000197E8f0B64463B2010e568fF42090Af88d';
 export const GAS_TARGETS = [
   '0x000000000000FB114709235f1ccBFfb925F600e4', '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5', '0x000000fA029Eaf69840C1490Bf9AA6C094794D5a',
@@ -70,27 +72,43 @@ export function checkGasOrder(x, { relay = GAS_RELAY_ADDR, chainId = 1, now = Ma
   } catch (e) { return `the order could not be read: ${e.message}`; }
 }
 
+// Orders in turns: each client (by tag, else by payer) in the order of its oldest waiting order, one order from each per turn, oldest first.
+export function takeTurns(idx, limit) {
+  const groups = new Map();
+  for (const e of idx) { const g = e.c ? `c:${e.c}` : `p:${e.p || e.id}`; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(e); }
+  const lists = [...groups.values()], out = [];
+  for (let turn = 0; out.length < limit; turn++) {
+    let any = false;
+    for (const l of lists) { if (turn < l.length) { any = true; out.push(l[turn]); if (out.length >= limit) break; } }
+    if (!any) break;
+  }
+  return out;
+}
+
 export function makeGasBoard({ kv, relay = GAS_RELAY_ADDR, chainId = 1, cfg = GAS_RELAY, now = () => Math.floor(Date.now() / 1000) } = {}) {
   const readIndex = async () => { const s = await kv.get('gr:index'); try { return JSON.parse(s || '[]') || []; } catch { return []; } };
   const writeIndex = (list) => kv.put('gr:index', JSON.stringify(list.slice(-cfg.maxOrders)));
   return {
-    async post(x) {
+    // `client` is the posting client's keyed tag (never an address); orders posted without one count only under their payer.
+    async post(x, { client = null } = {}) {
       const why = checkGasOrder(x, { relay, chainId, now: now(), cfg });
       if (why) return { ok: false, error: why };
-      const id = '0x' + bytesToHex(orderDigest(x.order, relay, chainId)), until = Number(x.order.deadline);
+      const id = '0x' + bytesToHex(orderDigest(x.order, relay, chainId)), until = Number(x.order.deadline), payer = lc(x.order.payer);
       if (await kv.get(`gr:order:${id}`)) return { ok: true, id, existing: true };
       const idx = (await readIndex()).filter((e) => e.until > now());
       if (idx.length >= cfg.maxOrders) return { ok: false, error: 'the board is full, try again shortly' };
+      if (idx.filter((e) => e.p === payer).length >= cfg.livePerPayer) return { ok: false, error: 'this payer has as many orders waiting as the board holds for one payer' };
+      if (client && idx.filter((e) => e.c === client).length >= cfg.livePerClient) return { ok: false, error: 'you have as many orders waiting as the board holds for one client, try again shortly' };
       // what the board keeps is the order's own fields, not whatever else the request carried
       const stored = JSON.stringify({ order: x.order, signature: x.signature, data: x.data, inPermit: x.inPermit, feePermit: x.feePermit, p2: x.p2 });
       if (stored.length > 2 * cfg.maxData + 8192) return { ok: false, error: 'the order is too large' };
       await kv.put(`gr:order:${id}`, stored, { expirationTtl: Math.max(60, until - now() + 60) });
-      idx.push({ id, at: now(), until });
+      idx.push({ id, at: now(), until, c: client || null, p: payer });
       await writeIndex(idx);
       return { ok: true, id };
     },
     async list(limit = 20) {
-      const idx = (await readIndex()).filter((e) => e.until > now()).slice(0, limit), out = [];
+      const idx = takeTurns((await readIndex()).filter((e) => e.until > now()), limit), out = [];
       for (const e of idx) { const s = await kv.get(`gr:order:${e.id}`); if (s) { try { out.push({ id: e.id, ...JSON.parse(s) }); } catch { /* skip */ } } }
       return out;
     },
