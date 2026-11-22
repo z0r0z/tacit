@@ -11117,7 +11117,7 @@ await step('hxways', async () => {
 });
 
 // The Swap tab of the Tacit pool: its link, a swap of a note that is exactly the amount (one route over the whole note, the least
-// it returns 1% under the quote, a relay fee), an amount no note matches (cut first), a swap between two assets that are not tETH
+// it returns 1% to 5% under the quote, a relay fee), an amount no note matches (cut first), a swap between two assets that are not tETH
 // (through tETH, two pools in one route), and a relay that refuses (the swap offered from the paying account, no relay fee).
 await step('swap', async () => {
   const r = await openFarmKey('5a9b'.padEnd(64, '6'), { notes: [[FARM_CETH, 5000000n], [FARM_CETH, 5000000n], [FARM_CTAC, 50000000000n], ['@cUSD', 10000000000n]], swap: true });
@@ -11150,8 +11150,8 @@ await step('swap', async () => {
     await p.click('#sw-go');
     await until(p, () => window.__swapCalls.length >= 1, null, 300000);
     let c = (await calls())[0];
-    ok(c.amountIn === '5000000' && c.noteValue === '5000000' && c.path.length === 1 && c.path[0].endsWith(FARM_CTAC) && BigInt(c.fee) > 0n && BigInt(c.minOut) === BigInt(c.out) * 99n / 100n,
-      `swap: one route over the whole note into TAC, the least 1% under the quote, a relay fee (${JSON.stringify(c)})`);
+    ok(c.amountIn === '5000000' && c.noteValue === '5000000' && c.path.length === 1 && c.path[0].endsWith(FARM_CTAC) && BigInt(c.fee) > 0n && BigInt(c.minOut) <= BigInt(c.out) * 99n / 100n && BigInt(c.minOut) >= BigInt(c.out) * 95n / 100n,
+      `swap: one route over the whole note into TAC, the least 1% to 5% under the quote (more room where the pool is thin, swap/slip.js), a relay fee (${JSON.stringify(c)})`);
     await settled(/Private 0\.05 tETH/);
     await choose('swf', 'tac');
     await settled(/Private [\d,.]+ TAC/);

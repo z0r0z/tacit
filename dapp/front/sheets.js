@@ -813,6 +813,9 @@ async function swapFee(t, from, to) {
   const f = BigInt(await t.quoteOpFee(POOL_TK[from], 'route'));
   return swapStops(from, to).length > 1 ? twoDigits((f * 14n) / 10n) : f;
 }
+// The least a swap through the pools takes: 1%, and more where the pool is thin for this swap (swap/slip.js). `impact` is the plan's, in percent, the pool's fee not in it.
+const slipMod = () => import('/swap/slip.js?cb=b2233769');
+const poolLeast = async (plan) => { const { poolSlipBps, floorOf } = await slipMod(); return floorOf(plan.amountOut, poolSlipBps((plan.impact || 0) / 100)); };
 async function swapPlan(t, from, to, units, fee, id = (k) => P.scan[k].id) {
   let cur = id(from), amt = units - fee, mid = Number(amt);
   const path = [];
@@ -878,7 +881,7 @@ function v1Swap(el, status) {
       const plan = await swapPlan(t, from, to, units, fee);
       if (my !== seq || !amt.isConnected) return;
       if (!plan) throw new Error('There is no pool to swap these in yet.');
-      const minOut = (plan.amountOut * 99n) / 100n;
+      const minOut = await poolLeast(plan);
       q = { from, to, units, fee, split, ...plan, minOut, at: Date.now() };
       setOut(plan.amountOut);
       mount(rc, html`

@@ -6,6 +6,7 @@ import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wall
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=9c8b4133';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js';
 import * as R from '/swap/route.js?cb=0affad24';
+import { poolSlipBps, netOfFees, floorOf } from '/swap/slip.js?cb=b2233769';
 import * as A from '/swap/aggregate.js?cb=a9b9592c';
 import * as SV from '/swap/solvers.js?cb=669b2617';
 import { linkName, linkSides } from '/swap/link.js?cb=00bf0557';
@@ -85,7 +86,9 @@ function rowPts(x, q) {
 const laterPts = (q, r) => (!q || r?.hop ? null : ptsFor('dev', laterDeposit(q)));
 const ptsSaid = (p, word = true) => (p ? `${p.floor ? '' : '≈ '}${Math.round(p.pts).toLocaleString('en-US')}${p.floor ? '+' : ''}${word ? ' points' : ''}` : '');
 const AVOID = new Map();
-const poolFloor = (x, slip = S.slip) => (x * (10000n - BigInt(Math.max(Number(slip) || 0, 100)))) / 10000n;
+// The least a swap through the pools takes: what the holder picked, or more room where the pool is thin for this swap (swap/slip.js), never under 1%. `net` is poolNet(q).
+const poolNet = (q) => netOfFees(q?.impact, q?.pools);
+const poolFloor = (x, slip = S.slip, net = 0) => floorOf(x, Math.max(Number(slip) || 0, poolSlipBps(net)));
 const BOTH = 'Both pools';
 const splitBar = (legs, from) => {
   const [p, t] = legs, sh = Math.round(Number((p.amountIn * 1000n) / (p.amountIn + t.amountIn)) / 10), [a, b] = from === 'TAC' ? ['TAC', 'ETH'] : ['ETH', 'TAC'];
@@ -1022,7 +1025,7 @@ function quotePaint() {
     const one = r.zap ? zapOneOf(r) : null;
     if (laterOn(kind)) { }
     else if (!r.priv || (r.pout && !isEth(S.get))) lines.push(['At least', `${tidy(amtFmt(one ? one.wrap : r.min ?? (r.out * BigInt(10000 - S.slip)) / 10000n, get.dec))} ${get.sym}`]);
-    else if (r.priv && !r.pout) lines.push(['At least', `${tidy(amtFmt(poolFloor(r.out / scOf(S.get)) * scOf(S.get), get.dec))} ${get.sym}`]);
+    else if (r.priv && !r.pout) lines.push(['At least', `${tidy(amtFmt(poolFloor(r.out / scOf(S.get), S.slip, poolNet(q)) * scOf(S.get), get.dec))} ${get.sym}`]);
     if (r.sell?.rest > 0n) lines.push(['Plus', `about ${tidy(amtFmt(r.sell.rest, 18))} WETH`]);
     if (one?.back > 0n) lines.push(['Back to wallet', `about ${tidy(amtFmt(one.back, get.dec))} ${get.sym}, public`, '', `Exactly the “At least” amount goes into the pool as your private note. What the swap pays above it comes back to your wallet in the same transaction, not private, and so does any ETH it does not spend.`]);
     const routed = r.agg || r.sv ? (q.rows || []).length < 2 : r.any?.hop || r.sell || r.buy || r.pin || r.zap || r.via || r.hop;
@@ -2354,7 +2357,7 @@ const routeAheadArgs = (q) => {
   if (ownPool(S.pay) || ownPool(S.get)) return null;
   const r = picked(q), units = parseUnits(S.amt, 8), k0 = PK[S.pay];
   if (S.pay === 'teth' && q.pools.length === 1 && units && PV?.stagedSizes?.()?.includes(units)) return null;
-  return r && units && IDS[k0] ? { wallet: false, asset: IDS[k0], units, ticker: POOL_TK[k0], fee: q.fee ?? 0n, path: q.pools.map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })), minOut: poolFloor(r.out / E10) } : null;
+  return r && units && IDS[k0] ? { wallet: false, asset: IDS[k0], units, ticker: POOL_TK[k0], fee: q.fee ?? 0n, path: q.pools.map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })), minOut: poolFloor(r.out / E10, S.slip, poolNet(q)) } : null;
 };
 let ahT = 0;
 function aheadSoon() {
@@ -2444,7 +2447,7 @@ async function privateGo(r, kind = 'private', here = false) {
   const slip = S.slip, toTacit = S.toTacit, outAddr = kind === 'pout' ? outTo() : null;
   if (now() - (q.at || 0) > 60) {
     S.busy = true; paintQuote(); say('Reading the price again…');
-    const least = poolFloor(r.out, slip), my = ++S.seq;
+    const least = poolFloor(r.out, slip, poolNet(q)), my = ++S.seq;
     await within(quote(my, q.wei), 30e3, 'The price was not read in time.').catch(() => {});
     const nr = my === S.seq && S.q && !S.q.err ? picked(S.q) : null;
     if (!nr || nr.k !== r.k || nr.out < least) { S.busy = false; paintQuote(); say('The price moved. Check it and press once more.', '', true); return; }
@@ -2470,7 +2473,7 @@ async function privateGo(r, kind = 'private', here = false) {
       if (!to) throw new Error('Name the address it goes to, or connect a wallet. Nothing was sent.');
       const plan = { asset: IDS[k0], units, ticker: POOL_TK[k0], fee: q.fee ?? 0n, eth: IDS.eth,
         path: k0 === 'eth' ? [] : (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })),
-        minOut: poolFloor(q.tUnits, slip), label: `Swap ${what} for ${get.sym} to ${who(to)}`,
+        minOut: poolFloor(q.tUnits, slip, poolNet(q)), label: `Swap ${what} for ${get.sym} to ${who(to)}`,
         out: { token: eth ? null : tokenOut, to, minFee: q.xmin, min: r.min, wei: r.wei,
           quote: (wei) => buyQuote({ to, tokenOut, amount: wei, slippageBps: slip, deadline: chainDeadline(1800) }) } };
       let res;
@@ -2486,7 +2489,7 @@ async function privateGo(r, kind = 'private', here = false) {
     const k0 = fromWallet ? 'eth' : PK[S.pay];
     const plan = { wallet: fromWallet, wei: units * E10, units, asset: IDS[k0], ticker: POOL_TK[k0], fee: q.fee ?? 0n,
       path: S.get === 'teth' && fromWallet ? [] : (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })),
-      minOut: poolFloor(r.out / scOf(S.get), slip), label: `Swap ${what} for ${get.sym} privately`, sendTo: toTacit, outTicker: POOL_TK[PK[S.get]] };
+      minOut: poolFloor(r.out / scOf(S.get), slip, poolNet(q)), label: `Swap ${what} for ${get.sym} privately`, sendTo: toTacit, outTicker: POOL_TK[PK[S.get]] };
     const res = await (here ? pv.swapHere(plan, { wallet, from: W.account, say: step }) : S.self && selfPossible() && pv.canSelf ? pv.swapSelf(plan, { wallet, from: W.account, say: step }) : pv.swap(plan, { wallet, from: W.account, say: step }));
     if (!popped) { popped = true; reward(earned); }
     const got = res.made != null ? `${tidy(plain(res.made, 8))} tETH` : `${tidy(amtFmt(res.out * scOf(S.get), get.dec))} ${get.sym}`;
@@ -2530,7 +2533,7 @@ async function pinGo(r) {
     await pv.open();
     say('Reading the price again…');
     await pv.relayOpen();
-    if (getKey !== 'teth') await pv.priceOk(IDS.eth, q.ethIn / E10, (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })), q.fee ?? 0n, poolFloor(r.out / scOf(getKey), slip));
+    if (getKey !== 'teth') await pv.priceOk(IDS.eth, q.ethIn / E10, (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })), q.fee ?? 0n, poolFloor(r.out / scOf(getKey), slip, poolNet(q)));
     const r1 = await within(A.bestRoute({ ethCall, to: from, refundTo: from, tokenIn: payKey, tokenOut: R.ZERO, amountIn: q.wei, slippageBps: slip, deadline: chainDeadline(1200) }), 20e3, 'zQuoter did not answer in time. Nothing was sent; try again.');
     if (!r1 || r1.min < q.ethIn) { say('The price moved below what was quoted. Nothing was sent; the quote above is the new one.', '', true); requote(true); return; }
     const tx = await aggTx(r1, from);
@@ -2544,7 +2547,7 @@ async function pinGo(r) {
     remember(h, `${what} → ETH, to be made private`);
     const plan = { wallet: true, wei: q.ethIn, units: q.ethIn / E10, asset: IDS.eth, ticker: 'cETH', fee: q.fee ?? 0n,
       path: getKey === 'teth' ? [] : (q.pools || []).map((p) => ({ assetNext: IDS[p.b], feeBps: p.feeBps })),
-      minOut: poolFloor(r.out / scOf(getKey), slip), label: `Swap ${what} for ${get.sym} privately`, sendTo: toTacit, outTicker: POOL_TK[PK[getKey]] };
+      minOut: poolFloor(r.out / scOf(getKey), slip, poolNet(q)), label: `Swap ${what} for ${get.sym} privately`, sendTo: toTacit, outTicker: POOL_TK[PK[getKey]] };
     const step = (k, x) => (paced(k), say({ prepare: 'Swapped to ETH. Preparing the deposit…', confirm: 'Confirm the deposit in your wallet…', sent: `Deposit sent ${x ? txLink(x) : ''}. Waiting for it to land…`,
       proving: `Deposited ${x ? txLink(x) : ''}. The relay is making it private, about a minute…`, note: 'Private now. Finding its note…', route: 'The relay is proving your private swap, about a minute…', ahead: 'Finishing the proof of your swap…', posted: 'The relay is sending your private swap, its proof is made, a few moments…', own: 'Proving your swap with your own prover, about a minute. Nothing has left your wallet yet…', check: 'Checking it first…', swap: `Deposited ${x ? txLink(x) : ''}. The relay is proving your swap, about a minute…`, send: 'The relay is sending it on to them, about a minute…' }[k] || ''));
     const res = await pv.swap(plan, { wallet, from, say: step });
