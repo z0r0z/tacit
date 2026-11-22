@@ -50,8 +50,29 @@ const held = async (client, pool, id) => {
 };
 const differs = (pin, now) => now.a !== pin.a || now.b !== pin.b || (pin.shares != null && now.shares !== pin.shares);
 
-// The ack's error when the job's settle can only revert, else null. `lookAgainMs`: the pauses before each further reading of a mismatch.
-export async function poolMovedAck({ type, op }, { client, pool, lookAgainMs = [3000, 3000], sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+// The pools a job pins, by id; none for a job that pins no pool, or whose op does not parse (it is then never held back for another's sake).
+export function poolIdsOf(job) {
+  try { return (pinsOf(job) || []).map((p) => p.id); } catch { return []; }
+}
+
+// Jobs claimed together, split into the ones that can settle together and the ones that cannot. Two jobs pinned to the same pool's reserves never settle in one batch: the second's reserves are the
+// first's result, not what the pool holds, so the batch's proof is bought for nothing and then every member is settled one by one (seen 11-22: two routes on one pool in a mixed batch). The first
+// of a pool stays in `keep`, the rest come back in `later`, in the order they came, to be settled on their own once the batch is done, where the pool check refuses one the first moved the pool
+// under, in seconds and with no proof.
+export function splitByPool(jobs) {
+  const taken = new Set(), keep = [], later = [];
+  for (const j of jobs) {
+    const ids = poolIdsOf(j);
+    if (ids.some((id) => taken.has(id))) { later.push(j); continue; }
+    for (const id of ids) taken.add(id);
+    keep.push(j);
+  }
+  return { keep, later };
+}
+
+// The ack's error when the job's settle can only revert, else null. `lookAgainMs`: the pauses before each further reading of a mismatch. One look again, 2 s on, is enough for a node a block behind the
+// page that built the op to catch up in most cases; a refusal that is wrong is cheap for the page to try again (its next build reads the pool afresh), and a right one should not keep the holder waiting.
+export async function poolMovedAck({ type, op }, { client, pool, lookAgainMs = [2000], sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   if (!LABEL[type]) return null;
   try {
     const pins = pinsOf({ type, op });

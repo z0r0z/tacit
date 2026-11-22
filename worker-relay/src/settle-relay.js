@@ -35,7 +35,7 @@ import { findCarrier, isRevert, isPendingRevert, isRateLimited, errDetail, holdP
 import { cbtcMintBlocker } from './lib/cbtc-mint-precheck.js';
 import { cdpBlocker } from './lib/cdp-precheck.js';
 import { bridgeMintBlocker } from './lib/bridge-mint-precheck.js';
-import { poolMovedAck } from './lib/reserves-precheck.js';
+import { poolMovedAck, splitByPool } from './lib/reserves-precheck.js';
 import { bondBlocker } from './lib/farm-bond-precheck.js';
 import { renewStaleMint } from './lib/bridge-mint-renew.js';
 import { settleWallet, settleWallets, relayWallet, publicClient, ethUsdPrice, POOL, POOL_ABI, ROUTER } from './lib/chain.js';
@@ -751,6 +751,10 @@ async function batchCycle() {
     for (const n of nus) spent.add(n);
     return true;
   });
+  // Two members pinned to the same pool's reserves can never settle together either (lib/reserves-precheck.js splitByPool): the first stays, the rest follow on their own.
+  const byPool = splitByPool(jobs);
+  jobs = byPool.keep;
+  later.push(...byPool.later);
   try {
     if (!jobs.length) return true;
     const ids = jobs.map((j) => j.jobId);
