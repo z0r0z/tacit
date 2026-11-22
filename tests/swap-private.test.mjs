@@ -63,7 +63,7 @@ function setup({ notes = [], deposit = null, quote = 900n, quotes = null, routeE
     quoteUnwrapFee: (value, tk, { minFee }) => { const v = BigInt(value), pct = v / 100n, f = pct > minFee ? pct : minFee; return { fee: f, net: v - f }; },
     buildUnwrap: ({ note: n, recipient, feeOpts }) => { const v = BigInt(n.value), pct = v / 100n, f = pct > feeOpts.minFee ? pct : feeOpts.minFee; M.unwraps.push({ n, recipient, fee: f }); return { op: { asset: n.asset, recipient, fee: f.toString(), value: v.toString() } }; },
     cfg: { router: '0xrouter' },
-    router: { escrowAddressForCalldata: (r) => 'esc:' + r.finalRecipient + ':' + r.calls[0].value + ':' + r.nonce, activateExitCalldata: () => '0xact', reclaimExitCalldata: () => '0xback' },
+    router: { escrowAddressForCalldata: (r) => 'esc:' + r.finalRecipient + ':' + r.calls[0].value + ':' + r.nonce, activateExitCalldata: () => '0xact', reclaimExitCalldata: () => '0xback', exitRecipeEscrow: () => '0x' + 'e5c0' + '0'.repeat(36) },
     ethCall: async (to, data) => '0x' + '00'.repeat(12) + 'e5c0' + '0'.repeat(36),
     relay: {
       submitOp: async (spec) => { M.submits.push(spec); const e = submitErr.shift(); if (e) throw new Error(e); return { jobId: 'job' + M.submits.length }; },
@@ -474,6 +474,13 @@ test('a sale under the floor the quote promised (scaled to what the note pays) d
   assert.strictEqual(M.submits.length, 0, 'no exit was sent');
   const b = setup({ notes: [note('0xt', 1000)] });
   await assert.rejects((await load(b.ux)).swapOut(outPlan({ asset: ETH, path: [] }, { quote: async (wei) => sale(wei, 1n) })), (e) => e.moved && !e.kept);
+});
+
+test('an escrow the router names that is not the one its recipe gives: nothing leaves the pool', async () => {
+  const { M, ux } = setup({ notes: [note('0xt', 1000)] });
+  ux.router.exitRecipeEscrow = () => '0x' + 'ba'.repeat(20);
+  await assert.rejects((await load(ux)).swapOut(outPlan({ asset: ETH, path: [] }, { wei: 990n * 10n ** 10n })), /does not match its recipe/);
+  assert.strictEqual(M.submits.length, 0, 'no exit was sent');
 });
 
 test('the relay refuses to run the swap: the exit is stuck at its escrow and says so, with its recipe', async () => {
