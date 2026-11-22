@@ -9,7 +9,12 @@
 // it settles into a private TAC note. Each op runs through the worker's job queue, the pinned SETTLE GUEST in SP1 execute mode and
 // pool.settle(); only the pool's SP1 verifier is replaced.
 //
-//   node tests/staged-swap-fork.mjs        (FORK=<rpc url>; EXEC=<the exec-stdin binary>, built from tests/exec-stdin when not given)
+//   node tests/staged-swap-fork.mjs        (FORK=<rpc url>; EXEC=<the exec-stdin binary>, built from tests/exec-stdin when not given;
+//                                           LOG_RPC=<rpc url>; LOG_CACHE=<file>)
+// FORK serves the chain's STATE at the fork block: https://ethereum-rpc.publicnode.com for a run that starts at the head (it keeps the last 128 blocks, and a run takes minutes);
+// rpc.mevblocker.io serves any depth but rate-limits a state read with HTTP 429 after a few runs.
+// LOG_RPC serves the pool's old LOGS (default https://rpc.mevblocker.io: any depth, spans up to 10,000 blocks), fetched once in chunks. LOG_CACHE keeps the settled chunks between
+// runs (default: a file in the temp folder; empty for none): the first run on a cold cache reads the pool's history, a few minutes, and the next ones start with it.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -123,12 +128,35 @@ const server = createServer(async (req, res) => {
 server.keepAliveTimeout = 120_000;
 procs.push({ kill: () => server.close() });
 const again = async (go, what) => { for (let i = 0; ; i++) { try { return await go(); } catch (e) { if (i >= 3) { log.push(`fetch to ${what} failed: ${e.cause?.code || e.message}`); throw e; } await sleep(700 * (i + 1)); } } };
+// The pool's log scan is made once (tests/fork-log-cache.mjs): a getLogs for blocks at or behind the fork block is answered from aligned chunks fetched once from LOG_RPC, an archive node
+// that takes 10,000-block spans (the fork's own state node need not keep old logs); LOG_CACHE keeps the settled ones between runs (default: a file in the temp folder; LOG_CACHE= with
+// nothing after it keeps none). Without it each page object scans the pool's whole history, an hour and more.
+const FORK_AT = BigInt(process.env.FORK_BLOCK || head);
+const LOG_RPC = process.env.LOG_RPC || 'https://rpc.mevblocker.io';
+const LOG_CACHE = process.env.LOG_CACHE === undefined ? join(tmpdir(), 'tacit-fork-getlogs-v1.json') : process.env.LOG_CACHE || null;
+const logCache = (await import('./fork-log-cache.mjs')).makeLogCache({
+  head: () => FORK_AT, file: LOG_CACHE,
+  fetchChunk: async (filter, from, to) => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getLogs', params: [{ ...filter, fromBlock: hex(from), toBlock: hex(to) }] });
+    const j = await (await again(() => realFetch(LOG_RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(180_000) }), 'the archive node')).json();
+    if (!Array.isArray(j.result)) throw new Error(`getLogs ${from}-${to}: ${JSON.stringify(j.error || j).slice(0, 120)}`);
+    return j.result;
+  },
+});
+const cachedLogs = async (init) => {
+  try {
+    const q = JSON.parse(init.body);
+    if (q.method !== 'eth_getLogs') return null;
+    const out = await logCache.logs(q.params && q.params[0]);
+    return out && new Response(JSON.stringify({ jsonrpc: '2.0', id: q.id, result: out }), { status: 200, headers: { 'content-type': 'application/json' } });
+  } catch { return null; }
+};
 globalThis.fetch = async (url, init) => {
   const u = String(url);
   if (/^https:\/\/api\.tacit\.finance\/confidential\//.test(u)) return realFetch(u.replace('https://api.tacit.finance', RELAY), init);
   if (/^https:\/\/api\.tacit\.finance\//.test(u)) return new Response('{}', { status: 404 });
   // every JSON-RPC call goes to the fork, whatever its host: a node the pattern below does not name (eth-mainnet.public.blastapi.io) answered from the live chain, whose pool had traded since the fork block
-  if (init?.method === 'POST' && (/"jsonrpc"/.test(String(init.body || '')) || /^https?:\/\/[^/]*(rpc|node|gateway|eth\.|llama|ankr|drpc|merkle|infura|alchemy|cloudflare|1rpc)/i.test(u))) return again(() => realFetch(RPC, { ...init, signal: AbortSignal.timeout(180_000) }), 'the fork');
+  if (init?.method === 'POST' && (/"jsonrpc"/.test(String(init.body || '')) || /^https?:\/\/[^/]*(rpc|node|gateway|eth\.|llama|ankr|drpc|merkle|infura|alchemy|cloudflare|1rpc)/i.test(u))) return (await cachedLogs(init)) || again(() => realFetch(RPC, { ...init, signal: AbortSignal.timeout(180_000) }), 'the fork');
   return again(() => realFetch(url, init), new URL(u).host);
 };
 
