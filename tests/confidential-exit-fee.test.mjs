@@ -127,3 +127,20 @@ test('a note split (transfer) can be settled by the caller: proof only, no relay
   assert.equal(sent[0].publicValues, '0x03'); assert.equal(sent[0].proof, '0x04');
   assert.equal(r.txHash, '0x' + 'cd'.repeat(32));
 });
+
+test('the cETH floor follows the gas price, and is held to a thousand times the static floor however high a node says gas is', async () => {
+  const at = (gwei) => {
+    const fetchImpl = async (url, opts) => {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      const one = (b) => ({ jsonrpc: '2.0', id: b.id ?? 1, result: b.method === 'eth_gasPrice' ? '0x' + (gwei * 10n ** 9n).toString(16) : '0x0' });
+      const obj = Array.isArray(body) ? body.map(one) : one(body);
+      return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+    };
+    return makeConfidentialPoolUx({ ...deps, fetchImpl });
+  };
+  const low = at(1n), scale = BigInt(low.assetByTicker.cETH.unitScale), cap = (10n ** 14n * 1000n) / scale;
+  const f1 = await low.quoteOpFee('cETH', 'unwrap');
+  assert.ok(f1 > 10n ** 14n / scale && f1 < cap, `at 1 gwei the floor (${f1}) is the gas cost, under the cap`);
+  const huge = await at(1_000_000n).quoteOpFee('cETH', 'sendunwrap');
+  assert.ok(huge >= cap && huge <= cap + cap / 10n, `at a million gwei the floor (${huge}) is held near ${cap}`);
+});

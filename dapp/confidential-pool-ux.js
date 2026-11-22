@@ -3359,6 +3359,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     let floor;
     if (pol.usd === 'eth') {
       floor = _ladderFee(costWei / _unitScaleOf(ticker));
+      // held to a thousand times the static floor (0.1 ETH), as the floors below are held to fifty
+      if (staticFloor > 0n && floor > staticFloor * 1000n) floor = _ladderFee(staticFloor * 1000n);
     } else if (pol.usd) {
       const ethPx = await ethUsdPrice();
       const assetPx = pol.usd === 'stable' ? 1 : await feedUsdPrice(pol.usd);
