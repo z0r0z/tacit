@@ -16,6 +16,16 @@ export function dayPot(dayRows, budgetWei, maxWeiPerPoint = null, groups = []) {
   return { totalPoints, pot: totalPoints > 0 ? applyRateCeiling(budgetWei, BigInt(Math.round(totalPoints * POINTS_SCALE)), maxWeiPerPoint) : budgetWei };
 }
 
+// The day so far, ready to be looked up by address: the pot and total points, what the split pays each address, and each address's row. These are
+// the figures dayPot and splitDayBudget give and a scan of `dayRows` finds, made once for every address that asks.
+export function dayShares(dayRows, budgetWei, maxWeiPerPoint = null, groups = []) {
+  const { totalPoints, pot } = dayPot(dayRows, budgetWei, maxWeiPerPoint, groups);
+  const paid = splitDayBudget(dayRows, budgetWei, maxWeiPerPoint, groups);
+  const byAddress = new Map();
+  for (const r of dayRows) { const k = r.address.toLowerCase(); if (!byAddress.has(k)) byAddress.set(k, r); }
+  return { totalPoints, pot, paid, row: (address) => byAddress.get(String(address).toLowerCase()) };
+}
+
 export function dayBoard(dayRows, { budgetWei, maxWeiPerPoint = null, limit = 100, groups = [] }) {
   const { totalPoints, pot, groups: shared } = dayPot(dayRows, budgetWei, maxWeiPerPoint, groups);
   const ranked = dayRows.filter((r) => r.dayPoints > 0).sort((a, b) => b.dayPoints - a.dayPoints || (a.address < b.address ? -1 : 1));

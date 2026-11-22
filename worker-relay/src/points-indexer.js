@@ -41,7 +41,8 @@ import { makeCirculating, uncirculatedWallets, parseExcluded, plainValue } from 
 import { makeClient as holdingClient } from './lib/evm-pool-snapshot-chain.js';
 import { decideBondHolds, accrueBondHolds } from './lib/points-bond-hold.js';
 import { parseCategoryWeights, parseAddressDayCaps, parseCategoryShareCaps, parseEngagementSchedule } from './lib/points-engagement.js';
-import { dayPot, dayBoard, dayHistory, splitDayBudget } from './lib/points-day-board.js';
+import { dayPot, dayBoard, dayHistory, dayShares, splitDayBudget } from './lib/points-day-board.js';
+import { makeTtlMemo } from './lib/ttl-memo.js';
 import { parseBudgets, budgetsForDay, nextBudgets, allocateDay, groupResult, settledBudgets, checkSettledBudgets } from './lib/points-budgets.js';
 import Database from 'better-sqlite3';
 import { openStore } from './lib/points-store.js';
@@ -1665,8 +1666,15 @@ async function setupHolding(store) {
 }
 function startHttp(store, evmState) {
   const counted = countedFor(store);
+  // A day's rows are read from the database for each of these routes; every reader only reads them, so they are kept for a few seconds and shared.
+  const memo = makeTtlMemo({ ttlMs: CFG.pointsReadCacheMs, max: 40 });
+  const sharedRows = (d) => memo(`rows:${d}`, () => counted.rows(d));
+  const todayShares = () => {
+    const startDay = Math.floor(CFG.pointsProgramStartSec / 86400), todayDay = Math.floor(Date.now() / 1000 / 86400);
+    return memo(`today:${todayDay}`, () => dayShares(counted.rows(todayDay), dayBudgetWei(todayDay - startDay), rateCapForDay(rateCapSchedule, todayDay), groupsFor(todayDay)));
+  };
   const history = dayHistory({
-    dayRowsFor: (d) => counted.rows(d),
+    dayRowsFor: (d) => sharedRows(d),
     budgetFor: (d) => dayBudgetWei(d - Math.floor(CFG.pointsProgramStartSec / 86400)),
     capFor: (d) => rateCapForDay(rateCapSchedule, d),
     groupsFor,
@@ -1847,7 +1855,7 @@ function startHttp(store, evmState) {
           res.end(JSON.stringify({
             day: todayDay, programDay: todayDay - startDay + 1, programDays: CFG.pointsProgramDays,
             program: programTerms({ cfg: CFG, dayBudgetWei, rateCapSchedule, tiers: CFG.tacBoostTiers ? parseBoostTiers(CFG.tacBoostTiers) : [], weights: categoryWeights, engagement: engagementSchedule, addressDayCaps, categoryShareCaps: shareCaps, budgets: budgetSchedule }),
-            ...dayBoard(counted.rows(todayDay), { budgetWei: dayBudgetWei(todayDay - startDay), maxWeiPerPoint: rateCapForDay(rateCapSchedule, todayDay), limit, groups: groupsFor(todayDay) }),
+            ...dayBoard(sharedRows(todayDay), { budgetWei: dayBudgetWei(todayDay - startDay), maxWeiPerPoint: rateCapForDay(rateCapSchedule, todayDay), limit, groups: groupsFor(todayDay) }),
             ...(budgetPreview(todayDay, startDay) ? { preview: budgetPreview(todayDay, startDay) } : {}),
           }));
           return;
@@ -1865,19 +1873,15 @@ function startHttp(store, evmState) {
         // flat points-to-TAC rate. null when the reward program isn't configured yet — no day budget to report.
         let today = null;
         if (CFG.pointsProgramStartSec) {
-          const startDay = Math.floor(CFG.pointsProgramStartSec / 86400);
-          const todayDay = Math.floor(Date.now() / 1000 / 86400);
-          const dayRows = counted.rows(todayDay);
-          const row = dayRows.find((r) => r.address.toLowerCase() === address.toLowerCase());
-          // The running total as of THIS request, not a settled end-of-day figure — it moves as more
+          // The running total as of a few seconds ago, not a settled end-of-day figure — it moves as more
           // addresses deposit today, same as `row`'s own count does. The pot is the day's budget as it would split
           // right now, or less where the TAC-per-point ceiling binds, so a client's "share of today's pot" estimate
           // matches what settlement will pay.
-          const budgetWei = dayBudgetWei(todayDay - startDay), cap = rateCapForDay(rateCapSchedule, todayDay), groups = groupsFor(todayDay);
-          const { totalPoints, pot } = dayPot(dayRows, budgetWei, cap, groups);
+          const shares = todayShares();
+          const row = shares.row(address), { totalPoints, pot } = shares;
           // tacWei: what this address's points would be paid if the day ended now, through the same sharing settlement uses (with groups in force
           // an address can be paid at its group's ceiling, which "the pot x my points / all points" does not say).
-          const paid = row && row.dayPoints > 0 ? splitDayBudget(dayRows, budgetWei, cap, groups).get(row.address) ?? 0n : 0n;
+          const paid = row && row.dayPoints > 0 ? shares.paid.get(row.address) ?? 0n : 0n;
           today = { points: row ? row.dayPoints : 0, totalPoints, dayBudgetWei: pot.toString(), tacWei: paid.toString(), factor: row?.factor ?? 1, rawPoints: row ? row.rawPoints : 0, kinds: row?.kinds ?? 0, activeDays: row?.activeDays ?? 0 };
         }
         res.end(JSON.stringify({ ...total, today, deposits }));
