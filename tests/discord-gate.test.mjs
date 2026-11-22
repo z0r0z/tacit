@@ -38,9 +38,9 @@ const server = createTacitServer({ workerModule, env, driver, ctxFactory: create
 await new Promise((r) => server.listen(0, r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
-function post(interaction, { badSig = false } = {}) {
+function post(interaction, { badSig = false, ageSecs = 0 } = {}) {
   const body = JSON.stringify(interaction);
-  const ts = String(Math.floor(Date.now() / 1000));
+  const ts = String(Math.floor(Date.now() / 1000) - ageSecs);
   let sig = sign(null, Buffer.from(ts + body), privateKey).toString('hex');
   if (badSig) sig = sig.replace(/^../, (b) => (b === '00' ? '01' : '00'));
   return fetch(`${base}/discord/interaction`, {
@@ -57,6 +57,12 @@ const ping = await post({ type: 1 });
 ok('PING is answered with PONG', ping.status === 200 && (await ping.json()).type === 1);
 const bad = await post({ type: 1 }, { badSig: true });
 ok('bad signature is refused', bad.status === 401);
+const recent = await post({ type: 1 }, { ageSecs: 30 });
+ok('a correctly signed request stamped half a minute ago is answered', recent.status === 200 && (await recent.json()).type === 1);
+const old = await post({ type: 1 }, { ageSecs: 3600 });
+ok('a correctly signed request stamped an hour ago is refused', old.status === 401);
+const ahead = await post({ type: 1 }, { ageSecs: -3600 });
+ok('a correctly signed request stamped an hour ahead is refused', ahead.status === 401);
 const unsigned = await fetch(`${base}/discord/interaction`, { method: 'POST', body: '{"type":1}' });
 ok('unsigned request is refused', unsigned.status === 401);
 

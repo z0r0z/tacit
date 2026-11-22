@@ -28564,6 +28564,7 @@ async function handleDiscordStatus(req, env, nonce, cors) {
 }
 
 // ============== DISCORD INTERACTIONS ENDPOINT ==============
+const DISCORD_TS_WINDOW_SECS = 600;
 
 async function handleDiscordInteraction(req, env, cors) {
   const publicKey = env.DISCORD_PUBLIC_KEY;
@@ -28572,6 +28573,10 @@ async function handleDiscordInteraction(req, env, cors) {
   const signature = req.headers.get('X-Signature-Ed25519');
   const timestamp = req.headers.get('X-Signature-Timestamp');
   if (!signature || !timestamp) return new Response('missing signature headers', { status: 401 });
+  // Discord stamps each interaction with the second it sent it (and wants an answer within seconds): a stamp more than
+  // ten minutes from this clock is not taken.
+  const tsSec = Number(timestamp);
+  if (!/^\d{1,12}$/.test(timestamp) || Math.abs(Date.now() / 1000 - tsSec) > DISCORD_TS_WINDOW_SECS) return new Response('invalid request signature', { status: 401 });
 
   const body = await req.text();
   const key = await crypto.subtle.importKey('raw', hexToBytes(publicKey), 'Ed25519', false, ['verify']);
