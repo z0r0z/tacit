@@ -499,7 +499,12 @@ test('hold: while a page is about to ask for a proof, Tacit\'s own provers lease
   assert.equal(h.t - start, 120_000);
   assert.equal((await h.pool.hold()).body.until, start + 90_000 + 45_000, 'past the cap the hold is not extended');
   h.t = start + 90_000 + 45_000 + 1;
-  assert.equal((await h.pool.hold()).body.until, h.t + 45_000, 'once it lapsed, a new run starts');
+  assert.equal((await h.pool.hold()).body.until, start + 90_000 + 45_000, 'right after a long run lapses, a new run waits out its rest');
+  h.t = start + 90_000 + 45_000 + 90_000 + 1;
+  assert.equal((await h.pool.hold()).body.until, h.t + 45_000, 'once the rest is over, a new run starts');
+  // a single short hold leaves no rest behind it
+  h.t += 45_000 + 1;
+  assert.equal((await h.pool.hold()).body.until, h.t + 45_000, 'a run of one hold is followed at once by another');
   const off = harness({ cfg: { holdMs: 0 } });
   assert.equal((await off.pool.hold()).body.until, 0, 'POOL_HOLD_MS=0 turns holds off');
 });

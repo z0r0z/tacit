@@ -515,15 +515,18 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
 
   // A page's word that a proof is about to be asked of Tacit's own provers (an amount typed that no kept proof covers): for `holdMs` they
   // lease nothing from the pool, so the proof asked for finds the GPU free. Holds that run on unbroken past `holdMaxMs` are not
-  // extended until they lapse, so a page (or anyone) asking without end cannot keep the pool's own work from being done.
+  // extended until they lapse, and a run longer than one hold is followed by a rest as long as its extensions ran before the next run
+  // starts, so holds asked without end leave the pool's own provers at least half the time.
   async function hold() {
     if (!cfg.holdMs) return reply(200, { ok: true, until: 0 });
     return exclusive(async () => {
       const t = clock(), h = await read(K.hold, { until: 0, since: 0 });
+      const ran = Number.isFinite(h.since) ? Math.max(0, h.until - h.since - cfg.holdMs) : 0;
+      if (t >= h.until && t < h.until + ran) return reply(200, { ok: true, until: h.until });
       const since = t < h.until ? h.since : t;
       if (t - since >= cfg.holdMaxMs) return reply(200, { ok: true, until: h.until });
       const until = Math.max(h.until, t + cfg.holdMs);
-      await write(K.hold, { until, since }, Math.ceil(cfg.holdMaxMs / 1000) + 60);
+      await write(K.hold, { until, since }, Math.ceil((cfg.holdMs + 2 * cfg.holdMaxMs) / 1000) + 60);
       return reply(200, { ok: true, until });
     });
   }
