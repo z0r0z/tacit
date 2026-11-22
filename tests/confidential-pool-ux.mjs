@@ -1014,6 +1014,86 @@ test('route: a pool that keeps moving is built again twice, then said plainly', 
   assert.equal(mock.captured.length, 3, 'the first build and two more');
 });
 
+// The same for a wrap-swap: the swap proved against the pool's reserves and the deposit it spends. A settle the pool refused because it moved leaves the deposit waiting in the pool,
+// so the swap is built again on the reserves now (spending that same deposit), bounded by the holder's least. A caller that gives no `rebuild` gets the error as it was.
+async function wrapFixture(mock) {
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: mock.fetchImpl });
+  const walletPriv = '0x' + '7b'.repeat(32);
+  const toAsset = ux.assets.find((a) => a.ticker !== 'cETH' && a.ticker !== 'TAC').assetId;
+  const args = { walletPriv, toAsset, amountWei: '10000000000000000', feeBps: 30, fee: 0n, index: 2 };
+  const waitOpts = { intervalMs: 0, sleep: async () => {} };
+  const build = (extra = {}) => ux.buildWrapSwap({ ...args, minOut: 0n, ...extra });
+  return { ux, args, build, waitOpts, walletPriv };
+}
+
+test('wrap-swap: a settle the pool refused after it moved is built again on the reserves now, spending the same deposit', async () => {
+  const mock = movingPool({ moves: 1 });
+  const { ux, build, waitOpts, walletPriv } = await wrapFixture(mock);
+  const first = await build();
+  let again = null;
+  const r = await ux.submitWrapSwap({ walletPriv, built: first, rebuild: async () => (again = await build()), waitOpts });
+  assert.equal(mock.captured.length, 2, 'the refused build and the one on the new reserves');
+  const [a, b] = mock.captured.map((c) => c.op);
+  assert.equal(a.reserveBPre, '10000000');
+  assert.equal(b.reserveBPre, '9500000', 'the second build binds the reserves the pool holds now');
+  assert.deepEqual(b.depositIds, a.depositIds, 'it spends the deposit the first one did');
+  assert.ok(again.amountOut > 0n && again.amountOut < first.amountOut, 'on the lower reserves it pays less');
+  assert.equal(r.amountOut, again.amountOut, 'the answer says what the swap that was sent pays, not what the first one would have');
+});
+
+test('wrap-swap: wrapSwap builds again by itself', async () => {
+  const mock = movingPool({ moves: 1 });
+  const { ux, args, waitOpts } = await wrapFixture(mock);
+  await ux.wrapSwap({ ...args, fromTicker: 'cETH', minOut: 0n, waitOpts });
+  assert.equal(mock.captured.length, 2);
+});
+
+test('wrap-swap: a refusal while the pool has not moved, or with no way to build again, is the error it was', async () => {
+  const still = movingPool({ moves: 0 });
+  const f1 = await wrapFixture(still);
+  await assert.rejects(f1.ux.submitWrapSwap({ walletPriv: f1.walletPriv, built: await f1.build(), rebuild: () => f1.build(), waitOpts: f1.waitOpts }), /^Error: settle failed: Execution reverted for an unknown reason\.$/);
+  assert.equal(still.captured.length, 1, 'the pool had not moved');
+  const moved = movingPool({ moves: 1 });
+  const f2 = await wrapFixture(moved);
+  await assert.rejects(f2.ux.submitWrapSwap({ walletPriv: f2.walletPriv, built: await f2.build(), waitOpts: f2.waitOpts }), /settle failed/);
+  assert.equal(moved.captured.length, 1, 'no rebuild was given');
+});
+
+test('wrap-swap: a broadcast that may still land, or a wait that ran out, is never sent again', async () => {
+  const a = movingPool({ moves: 1, fail: 'Execution reverted for an unknown reason. — broadcast and possibly still pending: 0x' + 'ab'.repeat(32) });
+  const fa = await wrapFixture(a);
+  await assert.rejects(fa.ux.submitWrapSwap({ walletPriv: fa.walletPriv, built: await fa.build(), rebuild: () => fa.build(), waitOpts: fa.waitOpts }), /possibly still pending/);
+  assert.equal(a.captured.length, 1, 'a broadcast that may still land');
+  const b = movingPool({ moves: 1, stall: true });
+  const fb = await wrapFixture(b);
+  await assert.rejects(fb.ux.submitWrapSwap({ walletPriv: fb.walletPriv, built: await fb.build(), rebuild: () => fb.build(), waitOpts: { ...fb.waitOpts, timeoutMs: 30 } }), /settle timed out/);
+  assert.equal(b.captured.length, 1, 'a wait that ran out');
+});
+
+test('wrap-swap: the relay naming the revert is enough to build again, whether it came after a settle or before a proof', async () => {
+  for (const fail of ['Execution reverted for an unknown reason. (0x29b3c833)', 'swap not proved: the pool moved after this was built, so it was not proved and nothing was spent (0x29b3c833)']) {
+    const mock = movingPool({ moves: 0, fail });
+    const { ux, build, waitOpts, walletPriv } = await wrapFixture(mock);
+    await ux.submitWrapSwap({ walletPriv, built: await build(), rebuild: () => build(), waitOpts });
+    assert.equal(mock.captured.length, 2, fail);
+  }
+});
+
+test('wrap-swap: a price that fell past the least the holder takes stops the second build', async () => {
+  const mock = movingPool({ moves: 1 });
+  const { ux, build, waitOpts, walletPriv } = await wrapFixture(mock);
+  const first = await build();
+  await assert.rejects(ux.submitWrapSwap({ walletPriv, built: await build({ minOut: first.amountOut }), rebuild: () => build({ minOut: first.amountOut }), waitOpts }), (e) => e.moved === true && e.said === true && /price moved past what was quoted/.test(e.message));
+  assert.equal(mock.captured.length, 1, 'no second proof was asked for');
+});
+
+test('wrap-swap: a pool that keeps moving is built again twice, then said plainly without claiming nothing was spent', async () => {
+  const mock = movingPool({ moves: 9, failFirst: 9 });
+  const { ux, build, waitOpts, walletPriv } = await wrapFixture(mock);
+  await assert.rejects(ux.submitWrapSwap({ walletPriv, built: await build(), rebuild: () => build(), waitOpts }), (e) => e.moved === true && e.said === true && e.poolMoving === true && /pool kept moving/.test(e.message) && !/Nothing was spent/.test(e.message));
+  assert.equal(mock.captured.length, 3, 'the first build and two more');
+});
+
 test('crossOut: a destination owner is required for every destination chain', async () => {
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => { throw new Error('no network expected'); } });
   const walletPriv = '0x' + '79'.repeat(32);

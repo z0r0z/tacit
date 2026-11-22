@@ -1712,12 +1712,24 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   async function wrapSwap({ walletPriv, fromTicker, toTicker, toAsset = null, amountWei, feeBps = 30, minOut = 0n, fee = 0n, deadline = 0n, index = 0, selfRelay = false, selfSettle = null, waitOpts } = {}) {
-    const b = await buildWrapSwap({ walletPriv, fromTicker, toTicker, toAsset, amountWei, feeBps, minOut, fee, deadline, index });
-    return submitWrapSwap({ walletPriv, built: b, selfRelay, selfSettle, waitOpts });
+    const args = { walletPriv, fromTicker, toTicker, toAsset, amountWei, feeBps, minOut, fee, deadline, index };
+    const b = await buildWrapSwap(args);
+    return submitWrapSwap({ walletPriv, built: b, rebuild: () => buildWrapSwap(args), selfRelay, selfSettle, waitOpts });
   }
-  async function submitWrapSwap({ walletPriv, built: b, selfRelay = false, selfSettle = null, waitOpts } = {}) {
-    const r = await _dispatch({ type: 'wrapswap', spec: { op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand }, sealedMemos: b.memos, selfRelay, selfSettle, walletPriv, waitOpts });
-    return { ...r, amountOut: b.amountOut, pid: b.pid, assetIn: b.assetIn, assetOut: b.assetOut };
+  // `rebuild` (optional) builds the same swap again on the pool's reserves now. Given one, a settle the pool refused because it moved (see routeMoved) is sent again that way, as often as the pool moves
+  // under it: the deposit the swap spends is still waiting in the pool, and the holder's least (minOut) still bounds the price, so a quote that fell past it stops here. The answer carries what the sent swap pays.
+  async function submitWrapSwap({ walletPriv, built: b, rebuild = null, selfRelay = false, selfSettle = null, waitOpts } = {}) {
+    for (let left = POOL_MOVED_RETRIES; ; left--) {
+      try {
+        const r = await _dispatch({ type: 'wrapswap', spec: { op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand }, sealedMemos: b.memos, selfRelay, selfSettle, walletPriv, waitOpts });
+        return { ...r, amountOut: b.amountOut, pid: b.pid, assetIn: b.assetIn, assetOut: b.assetOut };
+      } catch (e) {
+        if (!rebuild || !(await wrapSwapMoved(e, b))) throw e;
+        if (left <= 0) throw _poolKeptMoving(e, ' Press again for a fresh quote.');
+        try { b = await rebuild(); }
+        catch (e2) { throw /below minOut/.test(String(e2?.message)) ? _priceMoved() : e2; }
+      }
+    }
   }
   async function proveWrapSwap({ walletPriv, fromTicker = 'cETH', toTicker = null, toAsset = null, amountWei, feeBps = 30, deadline = 0n, index, ahead = false, waitOpts, onBuilt } = {}) {
     if (!cfg.router) throw new Error('ConfidentialRouter not deployed for this network');
@@ -3114,26 +3126,41 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // A route's proof binds the pools' reserves as they stood when it was built, and the pool refuses it (PoolReserveMismatch, 0x29b3c833) unless they are still exact when it settles. A trade landing
   // in the minutes between build and settle fails the job for good and leaves the note unspent. `routeMoved` says whether `e` is that: a refusal the relay called final (not a wait that ran out, not
   // a broadcast that may still land) while the pools now hold other reserves than the op bound. The reserves are read from the chain, so it holds whether or not the relay named the revert.
-  async function routeMoved(e, { asset0, amountIn, path, fee = 0n, hops }) {
+  // How a settle was refused, from what the relay said: 'named' when the ack carries PoolReserveMismatch, 'final' when the job ended for good on some other revert, null for anything that may
+  // still land or is about something else (a wait that ran out, a broadcast that may still land, the fee floor).
+  function _poolRefusal(e) {
     const m = String(e?.message || '');
-    if (e?.open || e?.notPosted || /possibly still pending/i.test(m)) return false;
-    if (/29b3c833|PoolReserveMismatch/i.test(`${e?.data?.data || e?.data || ''} ${m}`)) return true;
-    if (!/^settle (failed|reverted)/i.test(m) || /fee below the current floor/i.test(m)) return false;
+    if (e?.open || e?.notPosted || /possibly still pending/i.test(m)) return null;
+    if (/29b3c833|PoolReserveMismatch/i.test(`${e?.data?.data || e?.data || ''} ${m}`)) return 'named';
+    return /^settle (failed|reverted)/i.test(m) && !/fee below the current floor/i.test(m) ? 'final' : null;
+  }
+  async function routeMoved(e, { asset0, amountIn, path, fee = 0n, hops }) {
+    const how = _poolRefusal(e);
+    if (how !== 'final') return how === 'named';
     const now = await quoteRoute({ asset0, amountIn, path, fee }).catch(() => null);
     return !!now && now.hops.length === hops.length
       && now.hops.some((h, i) => BigInt(h.reserveAPre) !== BigInt(hops[i].reserveAPre) || BigInt(h.reserveBPre) !== BigInt(hops[i].reserveBPre));
   }
+  // The same for a wrap-swap (`built` is what buildWrapSwap returned): the one pool it binds now holds other reserves than it was built on.
+  async function wrapSwapMoved(e, built) {
+    const how = _poolRefusal(e);
+    if (how !== 'final') return how === 'named';
+    const now = await poolReserves(built.pid).catch(() => null);
+    return !!now && (BigInt(now.reserveA) !== BigInt(built.reserveA) || BigInt(now.reserveB) !== BigInt(built.reserveB));
+  }
   // The same swap built again on the reserves now, as often as the pool moves under it: the holder's least (minOut) still bounds what it may take, so a price that fell past it stops here.
-  const ROUTE_MOVED_RETRIES = 2;
+  const POOL_MOVED_RETRIES = 2;
+  const _priceMoved = () => Object.assign(new Error('The price moved past what was quoted, so the swap was not sent.'), { moved: true, said: true });
+  const _poolKeptMoving = (cause, tail) => Object.assign(new Error(`The pool kept moving while your swap was proved, so it did not go through.${tail}`), { moved: true, said: true, poolMoving: true, cause });
   async function route({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, split = null, selfRelay = false, selfSettle = null, waitOpts } = {}) {
-    for (let left = ROUTE_MOVED_RETRIES; ; left--) {
+    for (let left = POOL_MOVED_RETRIES; ; left--) {
       const { q, spec, sealedMemos } = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee, split });
-      if (left < ROUTE_MOVED_RETRIES && q.amountOut < BigInt(minOut)) throw Object.assign(new Error('The price moved past what was quoted, so the swap was not sent.'), { moved: true, said: true });
+      if (left < POOL_MOVED_RETRIES && q.amountOut < BigInt(minOut)) throw _priceMoved();
       let r;
       try { r = await _dispatch({ type: 'route', spec, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts }); }
       catch (e) {
         if (!(await routeMoved(e, { asset0: inNote.asset, amountIn, path, fee, hops: q.hops }))) throw e;
-        if (left <= 0) throw Object.assign(new Error('The pool kept moving while your swap was proved, so it did not go through. Nothing was spent; press again for a fresh quote.'), { moved: true, said: true, cause: e });
+        if (left <= 0) throw _poolKeptMoving(e, ' Nothing was spent; press again for a fresh quote.');
         continue;
       }
       return r && typeof r === 'object' ? { ...r, amountOut: q.amountOut } : r;

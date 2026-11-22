@@ -26,6 +26,8 @@ const IN_USE_MS = 20 * 60e3;
 const mayGoThrough = (words, cause) => Object.assign(new Error(`${words} Your swap may still go through: check your private balance in a few minutes before swapping again.`), { pending: true, cause });
 const twoDigits = (v) => { if (v <= 0n) return 0n; const d = BigInt(String(v).length); if (d <= 2n) return v; const m = 10n ** (d - 2n); return ((v + m - 1n) / m) * m; };
 const kept = (msg, cause) => Object.assign(new Error(msg), { kept: true, cause });
+// Why a swap stopped when its price moved: past the least the holder takes, or because the pool kept moving under every build of it (confidential-pool-ux.js route, submitWrapSwap).
+const movedWords = (e) => (e?.poolMoving ? 'the pool kept moving while it was proved.' : 'the price moved past what was quoted.');
 const ZERO = '0x0000000000000000000000000000000000000000', ZROUTER = '0x000000000000FB114709235f1ccBFfb925F600e4', E10 = 10n ** 10n;
 const EXIT_TTL = 1800;
 const nonce = () => BigInt('0x' + Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')).toString();
@@ -578,7 +580,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     try { made = await route({ note, ...plan, say }); }
     catch (e) {
       if (pending(e)) throw mayGoThrough(relayWords(e), e);
-      if (plan.wallet) throw kept(`Your ETH is private now as tETH, but the swap stopped: ${e.moved ? 'the price moved past what was quoted.' : relayWords(e)}`, e);
+      if (plan.wallet) throw kept(`Your ETH is private now as tETH, but the swap stopped: ${e.moved ? movedWords(e) : relayWords(e)}`, e);
       throw e;
     }
     return plan.sendTo ? sendOn({ plan, made, before, say }) : made;
@@ -621,12 +623,14 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     held = null;
     say('swap', hash);
     try {
-      const r = await t.submitWrapSwap({ walletPriv: priv, built, waitOpts: { ...run().wait(plan.label, 15 * 60e3), intervalMs: 4000, viaRelay: true } });
-      return { txHash: r?.txHash || null, out: built.amountOut };
+      // the deposit waits in the pool for the swap, so a swap the pool moved under (it is refused for good) is built again on the reserves now, and says what it paid
+      const rebuild = () => t.buildWrapSwap({ walletPriv: priv, toAsset: hop.assetNext, amountWei: plan.wei, feeBps: hop.feeBps, fee: plan.fee, minOut: plan.minOut, index });
+      const r = await t.submitWrapSwap({ walletPriv: priv, built, rebuild, waitOpts: { ...run().wait(plan.label, 15 * 60e3), intervalMs: 4000, viaRelay: true } });
+      return { txHash: r?.txHash || null, out: r?.amountOut ?? built.amountOut };
     } catch (e) {
       if (pending(e)) throw mayGoThrough(relayWords(e), e);
       await settle({ t, built: asWrap(), hash, say });
-      throw kept(`Your ETH is private now as tETH, but the swap stopped: ${/reserve|amm|state/i.test(String(e?.message)) ? 'the pool’s price moved while it was proved.' : relayWords(e)}`, e);
+      throw kept(`Your ETH is private now as tETH, but the swap stopped: ${e?.moved ? movedWords(e) : /reserve|amm|state/i.test(String(e?.message)) ? 'the pool’s price moved while it was proved.' : relayWords(e)}`, e);
     }
   }
 

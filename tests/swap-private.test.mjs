@@ -380,6 +380,36 @@ test('a swap that fails after the deposit settles it as a plain wrap and says th
   assert.strictEqual(M.settled[0].hash, '0xdep');
 });
 
+// The deposit waits in the pool for its swap, so a swap the pool moved under is built again (confidential-pool-ux.js submitWrapSwap): the page hands it the way to build
+// the same swap again: the same deposit's index, the same least, fee and pool.
+test('from the wallet: the swap is handed a way to build again that spends the same deposit under the same limit', async () => {
+  const { M, ux } = setup({ notes: [note('0xold', 1000)] });
+  await run(await load(ux), plan({ wallet: true }));
+  const sent = M.wrapSwapSubmits[0];
+  assert.strictEqual(typeof sent.rebuild, 'function');
+  assert.strictEqual(M.wrapSwaps.length, 1);
+  await sent.rebuild();
+  assert.strictEqual(M.wrapSwaps.length, 2, 'the rebuild builds a swap');
+  const [a, b] = M.wrapSwaps;
+  assert.deepStrictEqual({ index: b.index, minOut: b.minOut, fee: b.fee, toAsset: b.toAsset, feeBps: b.feeBps, amountWei: b.amountWei }, { index: a.index, minOut: a.minOut, fee: a.fee, toAsset: a.toAsset, feeBps: a.feeBps, amountWei: a.amountWei });
+});
+
+test('from the wallet: what the swap that was sent paid is what the page says', async () => {
+  const { ux } = setup({ notes: [note('0xold', 1000)] });
+  ux.submitWrapSwap = async () => ({ txHash: '0xswap', amountOut: 777n });
+  const r = await run(await load(ux), plan({ wallet: true }));
+  assert.deepStrictEqual({ tx: r.txHash, out: r.out }, { tx: '0xswap', out: 777n }, 'not the quote the first build made (900)');
+});
+
+test('from the wallet: a pool that kept moving, or a price past the least, is said as that once the deposit is kept as tETH', async () => {
+  for (const [flags, words] of [[{ poolMoving: true }, /pool kept moving while it was proved/], [{}, /price moved past what was quoted/]]) {
+    const { M, ux } = setup({ notes: [note('0xold', 1000)] });
+    ux.submitWrapSwap = async (a) => { M.wrapSwapSubmits.push(a); throw Object.assign(new Error('x'), { moved: true, said: true, ...flags }); };
+    await assert.rejects(run(await load(ux), plan({ wallet: true })), (e) => e.kept && words.test(e.message) && /private now as tETH/.test(e.message));
+    assert.strictEqual(M.settled.length, 1, 'the deposit still settles as a plain wrap');
+  }
+});
+
 test('a closed key sheet stops before anything is read or sent', async () => {
   const { M, ux } = setup({ notes: [note('0xn', 1000)] });
   M.cancel = true;
