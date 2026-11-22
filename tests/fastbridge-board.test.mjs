@@ -108,6 +108,102 @@ test('wants over HTTP, and fast/want.js: kept in the browser, posted under a one
   assert.equal((await down.start(user, 9n)).amount, 9n, 'a board that cannot be reached: the want is still kept here');
 });
 
+test('a priced want: the most its holder will pay is signed with it and must be a whole number of hundredths of a percent; a want that names none is what it always was', () => {
+  const w = (over = {}) => signWant({ pub: pubOf(priv(1)), btcAsset: 'ab'.repeat(32), amount: '100000000000', at: T0, until: T0 + 86400, ...over }, priv(1));
+  const priced = w({ maxFeeBps: 150 });
+  assert.equal(checkWant(priced, T0), priced);
+  for (const bad of [-1, 10001, 1.5, '150', NaN, {}]) assert.match(thrown(() => checkWant(w({ maxFeeBps: bad }), T0)).message, /maxFeeBps is out of range/, String(bad));
+  assert.equal(checkWant(w({ maxFeeBps: 0 }), T0).maxFeeBps, 0, '0 is a price: no fee at all');
+  assert.equal(checkWant(w({ maxFeeBps: 10000 }), T0).maxFeeBps, 10000);
+  // signed with the rest: a price changed on the way is not the want that was signed, and it cannot be taken off either
+  assert.match(thrown(() => checkWant({ ...priced, maxFeeBps: 1000 }, T0)).message, /not signed by its key/);
+  const { maxFeeBps, ...bare } = priced; void maxFeeBps;
+  assert.match(thrown(() => checkWant(bare, T0)).message, /not signed by its key/);
+  // no price, no field: the want that names none is the one that was made before prices
+  assert.ok(!('maxFeeBps' in w()));
+  // a board that knows nothing of prices keeps a priced want as it came (the board stores what it was given)
+  const board = makeBoard({ now: () => T0 });
+  board.putWant(priced);
+  assert.equal(board.wants()[0].maxFeeBps, 150);
+});
+
+test('what a want\'s price is judged against: what a provider keeps of the amount (the rate rounded down, and the flat part), the same sum its own quote makes', async () => {
+  const { makeQuoter } = await import('../dapp/fastbridge-provider.js');
+  const { feeOf, meetsPrice } = await import('../dapp/fastbridge-price.js');
+  let seed = 11;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  for (let i = 0; i < 60; i++) {
+    const feeBps = rnd(501), flatFee = BigInt(rnd(5_000_000)), amount = BigInt(10_000_000 + rnd(900_000_000_000));
+    const q = makeQuoter({ store: null, now: () => T0, params: { minAmount: 1, maxAmount: 10n ** 15n, feeBps, flatFee } });
+    let price = null;
+    try { price = q.price(amount).fee; } catch { /* a fee that swallows the amount is not quoted */ }
+    if (price != null) assert.equal(feeOf({ feeBps, flatFee }, amount), price, `${feeBps} bps + ${flatFee} on ${amount}`);
+  }
+  const terms = { feeBps: 30, flatFee: 100_000_000n };           // 0.30% and 1 TAC
+  const at = (maxFeeBps, amount = 100n * 10n ** 8n) => meetsPrice(terms, { amount, maxFeeBps });
+  assert.equal(feeOf(terms, 100n * 10n ** 8n), 130_000_000n, '1.30 TAC of 100');
+  assert.equal(at(130), true, 'exactly the price is met');
+  assert.equal(at(129), false, 'a hair over is not');
+  assert.equal(at(500), true);
+  assert.equal(at(0), false, 'a price of nothing is met by no provider that keeps something');
+  assert.equal(meetsPrice({ feeBps: 0, flatFee: 0n }, { amount: 5n, maxFeeBps: 0 }), true, 'and by one that keeps nothing');
+  assert.equal(at(null), true, 'a want that names no price is met by any provider');
+  assert.equal(at(undefined), true);
+  assert.equal(meetsPrice(terms, { amount: 100n * 10n ** 8n }), true);
+  for (const unreadable of [1.5, '130', NaN, -1]) assert.equal(at(unreadable), true, `a price that cannot be read (${String(unreadable)}) is no price`);
+  assert.equal(at(130, 10n * 10n ** 8n), false, 'a smaller amount feels the flat part more: 1.03 of 10 is 10.3%');
+  assert.equal(meetsPrice({ feeBps: 30, flatFee: '100000000' }, { amount: '10000000000', maxFeeBps: 130 }), true, 'strings are read as amounts');
+});
+
+test('priced wants through fast/want.js: kept and posted with the price, listed with it, and only the providers that keep no more than it are told of; one with no price is as before', async () => {
+  const c = clock(), board = makeBoard({ now: c.now }), handle = makeBoardHandler(board);
+  const fetchImpl = async (url, opts = {}) => {
+    const u = new URL(url);
+    if (u.host === 'lp.example') return new Response(JSON.stringify({ claimPub: pubOf(priv(9)), minAmount: '500', maxAmount: '5000', available: '2000', feeBps: 50, flatFee: '0', anyTac: true }), { status: 200 });
+    const r = await handle({ method: opts.method || 'GET', path: u.pathname, body: opts.body ? JSON.parse(opts.body) : null });
+    return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json' } });
+  };
+  const mem = new Map(), storage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v), removeItem: (k) => mem.delete(k) };
+  const { makeWants } = await import('../dapp/fast/want.js');
+  const asset = 'ab'.repeat(32), user = '03' + 'cd'.repeat(32);
+  const w = makeWants({ boards: ['https://board.example'], providers: [{ base: 'https://lp.example', name: 'Http LP' }], storage, fetchImpl, now: c.now, asset });
+  board.putAd(adOf(7, T0, { btcAsset: asset, minAmount: '500', maxAmount: '5000', available: null, feeBps: 100, flatFee: '0' }));
+  board.putAd(adOf(8, T0, { btcAsset: asset, minAmount: '500', maxAmount: '5000', available: null, feeBps: 300, flatFee: '0' }));
+  // unpriced: the want it always was, and every provider that takes the size is told of
+  const none = await w.start(user, 1000n);
+  assert.equal(none.maxFeeBps, null);
+  assert.ok(!('maxFeeBps' in board.wants()[0]), 'nothing of a price on the board');
+  assert.deepEqual((await w.takers(1000n)).map((p) => p.name).sort(), ['Http LP', 'p7', 'p8']);
+  assert.equal((await w.waiting()).items[0].maxFeeBps, null);
+  // priced: 2.00% of 1,000 is 20; p7 keeps 10, the http provider 5, p8 30
+  const k = await w.start(user, 1000n, { maxFeeBps: 200 });
+  assert.deepEqual([k.amount, k.maxFeeBps], [1000n, 200], 'kept in the browser with its price');
+  assert.equal(JSON.parse(mem.get(`tacit-fastbridge-want-v1:${user}`)).maxFeeBps, 200, 'in the record the front page reads');
+  const posted = board.wants();
+  assert.equal(posted.length, 1, 'it replaced the one before');
+  assert.equal(posted[0].maxFeeBps, 200, 'posted with it, signed');
+  assert.equal(checkWant(posted[0], T0), posted[0]);
+  const waits = await w.waiting();
+  assert.deepEqual(waits.items.map((i) => [i.amount, i.maxFeeBps]), [[1000n, 200]], 'listed with it');
+  assert.deepEqual((await w.takers(1000n, { maxFeeBps: 200 })).map((p) => p.name).sort(), ['Http LP', 'p7'], 'p8 keeps 3%: not told of, for a holder who pays 2% at most');
+  assert.deepEqual((await w.takers(1000n, { maxFeeBps: 100 })).map((p) => p.name).sort(), ['Http LP', 'p7'], 'exactly 1% is met');
+  assert.deepEqual((await w.takers(1000n, { maxFeeBps: 99 })).map((p) => p.name), ['Http LP'], 'a provider that serves HTTP is judged by its /info');
+  assert.deepEqual(await w.takers(1000n, { maxFeeBps: 10 }), [], 'none that keep so little');
+  assert.deepEqual((await w.takers(1000n, { maxFeeBps: null })).length, 3, 'a want with no price takes all');
+  // a price that is not a price is refused before anything is kept or posted
+  for (const bad of [-1, 10001, 1.5, '200']) await assert.rejects(() => w.start(user, 1000n, { maxFeeBps: bad }), /hundredths of a percent/);
+  assert.equal(w.kept(user).maxFeeBps, 200, 'the one that stands is untouched');
+  // taking it down takes the price with it
+  c.advance(1);
+  await w.stop(user);
+  assert.equal(w.kept(user), null); assert.deepEqual(board.wants(), []);
+  // a record from before prices, with none in it, reads as none
+  mem.set(`tacit-fastbridge-want-v1:${user}`, JSON.stringify({ amount: '5', at: c.now(), until: c.now() + 100 }));
+  assert.equal(w.kept(user).maxFeeBps, null);
+  mem.set(`tacit-fastbridge-want-v1:${user}`, JSON.stringify({ amount: '5', maxFeeBps: 'lots', at: c.now(), until: c.now() + 100 }));
+  assert.equal(w.kept(user).maxFeeBps, null, 'one that cannot be read is no price');
+});
+
 // ── ads ──
 
 test('an ad: signed by its provider\'s key and checked for shape and time; any change to it, or another key, fails', () => {

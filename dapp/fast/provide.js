@@ -16,7 +16,9 @@
 //   -> { busy() }   whether closing the page now would leave a swap untended
 
 import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId } from './fmt.js';
+import { meetsPrice } from '../fastbridge-price.js';
 
+const bpsText = (bps) => `${(bps / 100).toFixed(2)}%`;
 const MIN_AMOUNT = 10n * ONE;
 const FEE_LIMIT_BPS = 500n;
 const DEFAULT_MOST = 1000n * ONE;
@@ -63,11 +65,19 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
 
   // the waiting bridges this key could take: inside its least and what it holds free, and its most per bridge when it has one set
   const freeNow = () => (!S.inv ? 0n : S.st && S.st.held != null && S.inv.pool > S.st.held ? S.inv.pool - S.st.held : S.st && S.st.held != null ? 0n : S.inv.pool);
-  const fitting = (w) => {
+  // the fee this key would keep: the one typed in the panel, else the one kept for the key, else the default
+  const feeNow = () => {
+    const typed = $('pv-fee') ? percent($('pv-fee').value) : null;
+    if (typed != null) return typed;
+    const kept = S.pub ? settings.get(S.pub) : null;
+    return kept && kept.feeBps != null ? kept.feeBps : 30;
+  };
+  // `priced` false leaves a want's price out: the ones that fit in size, whatever they would pay
+  const fitting = (w, priced = true) => {
     if (!S.inv || !w || !w.items) return [];
-    const free = freeNow();
+    const free = freeNow(), terms = { feeBps: feeNow(), flatFee: base.flatFee };
     const kept = S.pub ? settings.get(S.pub) : null, most = kept && kept.maxAmount != null ? BigInt(kept.maxAmount) : free;
-    return w.items.filter((i) => i.amount >= base.minAmount && i.amount <= free && i.amount <= most);
+    return w.items.filter((i) => i.amount >= base.minAmount && i.amount <= free && i.amount <= most && (!priced || meetsPrice(terms, i)));
   };
   // too little private TAC for the smallest bridge, and not providing (a provider that is on can always stop)
   const short = () => !!(S.inv && S.inv.pool < MIN_AMOUNT && !accepting());
@@ -80,8 +90,12 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     $('pv-waiting').textContent = w ? ` · ${w.count} waiting` : '';
     $('pv-want').hidden = !w;
     if (w) {
-      const sizes = (w.items || []).map((i) => fmtTac(i.amount)), fits = fitting(w).length;
-      $('pv-want').lastElementChild.textContent = sizes.length ? `${sizes.slice(0, 4).join(' · ')} TAC${sizes.length > 4 ? ` +${sizes.length - 4}` : ''}${inv ? ` (you can take ${fits})` : ''}` : `${w.count} bridge${w.count === 1 ? '' : 's'}, ${fmtTac(w.total)} TAC`;
+      // a want may name the most its holder will pay: said beside its size, and counted against the fee this key would keep
+      const items = w.items || [], anyPrice = items.some((i) => i.maxFeeBps != null);
+      const sizes = items.map((i) => (anyPrice ? `${fmtTac(i.amount)} TAC${i.maxFeeBps != null ? ` at up to ${bpsText(i.maxFeeBps)}` : ''}` : fmtTac(i.amount)));
+      const fits = fitting(w).length, dear = fitting(w, false).length - fits;
+      const take = inv ? ` (you can take ${fits}${dear > 0 ? `; ${dear} more at a lower fee` : ''})` : '';
+      $('pv-want').lastElementChild.textContent = sizes.length ? `${sizes.slice(0, 4).join(' · ')}${anyPrice ? '' : ' TAC'}${sizes.length > 4 ? ` +${sizes.length - 4}` : ''}${take}` : `${w.count} bridge${w.count === 1 ? '' : 's'}, ${fmtTac(w.total)} TAC`;
     }
     $('pv-inv').innerHTML = S.loading ? '<p class="empty">Reading what you can provide…</p>' : inv ? `
       <div class="kv"><span>Your private TAC</span><b class="num">${esc(fmtTac(inv.pool))} TAC</b></div>${st && st.held != null && st.held > 0n ? `

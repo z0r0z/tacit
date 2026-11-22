@@ -2,8 +2,13 @@
 import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId, highFee, highTake, keyTag, lineageText } from './fmt.js';
 import { minutesFor } from './route.js';
 import { sweepRoom } from './sweep.js';
+import { feeOf, meetsPrice } from '../fastbridge-price.js';
 export { fmtTac, parseTac, slowNet, lineageText };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
+// a price in hundredths of a percent, as the page says it
+const bpsText = (bps) => `${(bps / 100).toFixed(2)}%`;
+// the most fee a holder can name for a want: a percentage with up to two places, 0 to 90 (a fee over 90% is one the page does not quote)
+const percentBps = (text) => { const t = String(text).trim().replace('%', ''); if (!/^\d+(\.\d{0,2})?$/.test(t)) return null; const bps = Math.round(Number(t) * 100); return bps >= 0 && bps <= 9000 ? bps : null; };
 const SCAN = 'https://mempool.space/tx/';
 // where private TAC is turned into public TAC in an Ethereum wallet: the front page's Withdraw tab on TAC, set to take it all (the app's own link for it)
 const WITHDRAW = '/#card=shield:tac:wallet';
@@ -34,6 +39,11 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       </div>
       <div class="rows" id="fx-recv" hidden></div>
       <div class="kv" id="fx-wait" hidden><span></span><button class="linkbtn" id="fx-unwait" type="button">Stop waiting</button></div>
+      <p class="note" id="fx-wait-note" hidden></p>
+      <div id="fx-price" hidden>
+        <label class="pv-f"><span>Most fee, %</span><input id="fx-maxfee" inputmode="decimal" placeholder="any" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" spellcheck="false" aria-label="Most fee in percent, or blank for any"></label>
+        <p class="note" id="fx-price-note"></p>
+      </div>
     </div>
     <button class="btn" id="fx-go" type="button" hidden>Open wallet</button>
     <p class="status" id="fx-st" role="status" aria-live="polite"></p>
@@ -109,13 +119,20 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     $('fx-bal').textContent = signed && S.bal != null ? `${fmtTac(S.bal)} TAC on Bitcoin` : '';
     $('fx-max').hidden = !(signed && S.bal > 0n);
     wt.hidden = !(signed && S.want);
-    if (!wt.hidden) wt.firstElementChild.textContent = `Waiting for a provider for ${fmtTac(S.want.amount)} TAC`;
+    if (!wt.hidden) wt.firstElementChild.textContent = `Waiting for a provider for ${fmtTac(S.want.amount)} TAC${S.want.maxFeeBps != null ? `, at up to ${bpsText(S.want.maxFeeBps)}` : ''}`;
+    const dear = !wt.hidden ? pricedOut() : '';
+    $('fx-wait-note').hidden = !dear; $('fx-wait-note').textContent = dear;
+    $('fx-price').hidden = true;
     if (!signed) { go.textContent = 'Open wallet'; go.disabled = S.busy; recv.hidden = true; out.hidden = true; return; }
     const units = parseTac(S.amt), bad = problem(units), q = S.quote, wait = waitable(units);
     // a bridge split across providers has its own offer: a receipt of its parts, in place of a single quote's
     const sp = !q && S.split && units != null && S.split.amount === units ? S.split : null, short = !!(sp ? sp.cost && sp.cost.short : S.cost && S.cost.short);
     go.hidden = !!S.want && !q && !sp;
-    if (wait) { recv.hidden = true; out.hidden = true; go.textContent = S.busy ? 'Working…' : 'Wait for a provider'; go.disabled = S.busy; paintNote(); return; }
+    if (wait) {
+      recv.hidden = true; out.hidden = true;
+      $('fx-price').hidden = false; $('fx-price-note').textContent = priceNote(units); $('fx-maxfee').disabled = S.busy;
+      go.textContent = S.busy ? 'Working…' : 'Wait for a provider'; go.disabled = S.busy; paintNote(); return;
+    }
     out.hidden = !q && !sp; recv.hidden = !q && !sp;
     if (sp) drawSplit(sp);
     else if (q) {
@@ -131,6 +148,25 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     go.textContent = S.busy ? 'Working…' : S.checking ? 'Checking…' : S.sure ? 'Press again to bridge' : sp ? `Bridge in ${sp.legs.length} parts` : 'Bridge';
     go.disabled = S.busy || S.checking || !!bad || (!q && !sp) || units == null || short;
     paintNote();
+  }
+
+  // What a holder is told about the price of waiting: that providers see it, and what the providers online keep of this amount (full ones too: they
+  // say what the fee is, if not whether there is room).
+  function priceNote(units) {
+    const fees = others().map((p) => feeOf(p.terms, units));
+    const said = 'Optional. Providers see the most you would pay, and you are told when one can take it for no more.';
+    if (!fees.length) return said;
+    const lo = fees.reduce((a, b) => (b < a ? b : a)), hi = fees.reduce((a, b) => (b > a ? b : a));
+    return `${said} The providers online keep ${pct(lo, units)}${hi > lo ? ` to ${pct(hi, units)}` : ''} of this amount.`;
+  }
+  // a want with a price that every provider able to take it asks more than: said under the waiting line, with what to do
+  function pricedOut() {
+    const w = S.want;
+    if (!w || w.maxFeeBps == null) return '';
+    const fit = byAmount(w.amount);
+    if (!fit.length || fit.some((p) => meetsPrice(p.terms, w))) return '';
+    const lowest = fit.map((p) => feeOf(p.terms, w.amount)).reduce((a, b) => (b < a ? b : a));
+    return `Providers that can take it keep at least ${pct(lowest, w.amount)} of it, above the ${bpsText(w.maxFeeBps)} you set. Stop waiting and wait again with a higher limit, or bridge at their fee.`;
   }
 
   // The receipt of a split bridge: each part (its provider, its size, the fee it keeps), then the fee, the Bitcoin fee of all the locks, and the time.
@@ -377,14 +413,15 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       if (!S.want || S.told) return;
       await readProviders(true);
       if (!S.want || S.told) return;
-      let ps = byAmount(S.want.amount);
+      // the providers that take the amount, and keep no more of it than the price the want names (when it names one)
+      let ps = byAmount(S.want.amount).filter((p) => meetsPrice(p.terms, S.want));
       if (ps.length && S.sess && S.sess.reach) {
         const kind = await S.sess.reach(S.want.amount).catch(() => 'all');
         if (kind === 'any') ps = ps.filter((p) => p.terms.anyTac);
       }
       if (!S.want || S.told || !ps.length) return;
       S.told = true;
-      const text = `A provider can take your ${fmtTac(S.want.amount)} TAC now.`;
+      const text = `A provider can take your ${fmtTac(S.want.amount)} TAC now${S.want.maxFeeBps != null ? `, for no more than the ${bpsText(S.want.maxFeeBps)} you set` : ''}.`;
       note(text); notify(text);
       if (!S.amt.trim() || parseTac(S.amt) === S.want.amount) { $('fx-amt').value = plain(S.want.amount); typed(); }
     };
@@ -392,11 +429,14 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     look();
   }
   async function wait(units) {
+    // the price is optional: blank is any fee; what is typed must be a percentage the page can quote
+    const raw = $('fx-maxfee').value.trim(), bps = raw === '' ? null : percentBps(raw);
+    if (raw !== '' && bps == null) { note('The most fee is a percentage from 0 to 90, or leave it blank for any.', true); return; }
     S.busy = true; paintForm();
     try {
       await (wants.ask ? wants.ask() : null);
-      S.want = await wants.start(S.pub, units); S.told = false;
-      note('You are told here, and on the front page, when one can take it.');
+      S.want = await wants.start(S.pub, units, { maxFeeBps: bps }); S.told = false;
+      note(`You are told here, and on the front page, when one can take it${bps != null ? ` for no more than ${bpsText(bps)}` : ''}.`);
       watchWant();
     } catch (e) { note(wording(e), true); } finally { S.busy = false; paint(); }
   }

@@ -848,6 +848,108 @@ test('a session that cannot split, or providers that screen, leave the page as i
   n.ui.destroy();
 });
 
+// ── a want that names the most its holder will pay ──
+
+// every provider is full, so an amount of 100 TAC is waited for; the wants stub keeps what it is given, price included
+function pricedWants() {
+  const kept = new Map(), starts = [], told = [];
+  return { kept, starts, told, wants: {
+    ask: async () => {}, kept: (pub) => kept.get(pub) || null,
+    start: async (pub, amount, o) => { starts.push(o); kept.set(pub, { amount, maxFeeBps: o && o.maxFeeBps != null ? o.maxFeeBps : null, at: 1, until: 2 }); return kept.get(pub); },
+    stop: async (pub) => { kept.delete(pub); },
+  } };
+}
+const full = (name, over = {}) => provider(name, { available: '0', ...over });
+
+test('waiting with a price: the field is there only while waiting is what is offered, says what the providers keep of this amount, and sends the price with the want', async () => {
+  const w = pricedWants();
+  const m = mount({ wants: w.wants, discover: async () => [full('Tacit'), full('Cheap', { feeBps: 10, flatFee: '0' })] });
+  await signIn(m);
+  assert.equal(m.$('fx-price').hidden, true, 'nothing to wait for yet');
+  typeIn(m, '100');
+  await until(() => m.$('fx-go').textContent === 'Wait for a provider', 'the wait button');
+  assert.equal(m.$('fx-price').hidden, false);
+  assert.equal(m.$('fx-maxfee').placeholder, 'any', 'blank is any fee');
+  assert.match(text(m.$('fx-price')), /Optional\. Providers see the most you would pay, and you are told when one can take it for no more\. The providers online keep 0\.10% to 1\.30% of this amount\./, 'a full provider still says what it keeps');
+  m.$('fx-maxfee').value = '1.5';
+  m.$('fx-go').click();
+  const pub = m.key.key.pubHex;
+  await until(() => w.kept.has(pub), 'the want kept');
+  assert.deepEqual(w.starts, [{ maxFeeBps: 150 }], 'the price goes with the want, in hundredths of a percent');
+  await until(() => /Waiting for a provider for 100 TAC, at up to 1\.50%/.test(text(m.$('fx-wait'))), 'the waiting line says the price');
+  assert.equal(m.$('fx-price').hidden, true, 'the field goes once it is waiting');
+  assert.match(m.$('fx-st').textContent, /You are told here, and on the front page, when one can take it for no more than 1\.50%\./);
+  // stopping brings the field back, to wait again with another price
+  m.$('fx-unwait').click();
+  await until(() => !w.kept.has(pub) && !m.$('fx-price').hidden, 'the field again');
+  m.ui.destroy();
+});
+
+test('a blank price is any fee, as it always was; a price that is not a percentage the page can quote is refused in words and nothing is kept', async () => {
+  const w = pricedWants();
+  const m = mount({ wants: w.wants, discover: async () => [full('Tacit')] });
+  await signIn(m);
+  typeIn(m, '100');
+  await until(() => m.$('fx-go').textContent === 'Wait for a provider', 'the wait button');
+  for (const bad of ['abc', '95', '-1', '1.234', '5%%']) {
+    m.$('fx-maxfee').value = bad;
+    m.$('fx-go').click();
+    await until(() => /The most fee is a percentage from 0 to 90, or leave it blank for any\./.test(m.$('fx-st').textContent), `refused: ${bad}`);
+    assert.equal(m.$('fx-st').className, 'status err');
+    assert.equal(w.kept.size, 0, 'nothing kept');
+    assert.equal(m.$('fx-go').disabled, false, 'and it can be pressed again');
+  }
+  assert.deepEqual(w.starts, []);
+  // 0 is a price (no fee at all), 90 is the most, a percent sign is allowed, blank is none
+  for (const [typed, want] of [['0', 0], ['90', 9000], ['2%', 200], ['', null]]) {
+    m.$('fx-maxfee').value = typed;
+    m.$('fx-go').click();
+    await until(() => w.kept.size === 1, `kept: ${typed}`);
+    assert.deepEqual(w.starts.at(-1), { maxFeeBps: want }, typed || 'blank');
+    assert.equal(w.kept.get(m.key.key.pubHex).maxFeeBps, want);
+    if (typed === '') assert.doesNotMatch(text(m.$('fx-wait')), /at up to/, 'a want with no price says none');
+    m.$('fx-unwait').click();
+    await until(() => w.kept.size === 0, 'stopped');
+  }
+  m.ui.destroy();
+});
+
+test('a priced want is told of the providers that keep no more than its price, and says so when the ones that could take it all keep more', async () => {
+  const w = pricedWants();
+  let online = [full('Tacit')];
+  const m = mount({ wants: w.wants, notify: (t) => w.told.push(t), refreshMs: 20, discover: async () => online });
+  await signIn(m);
+  typeIn(m, '100');
+  await until(() => m.$('fx-go').textContent === 'Wait for a provider', 'the wait button');
+  m.$('fx-maxfee').value = '1.5';
+  m.$('fx-go').click();
+  await until(() => w.kept.size === 1, 'the want kept');
+  // a provider with room keeps 5.00% of 100 TAC (4% and 1 TAC): it takes the size, and not at this price
+  online = [full('Tacit'), provider('Dear', { feeBps: 400 })];
+  await until(() => /Providers that can take it keep at least 5\.00% of it, above the 1\.50% you set\./.test(text(m.$('fx-wait-note'))), 'the page says why it is not told');
+  assert.match(text(m.$('fx-wait-note')), /Stop waiting and wait again with a higher limit, or bridge at their fee\./);
+  assert.equal(m.$('fx-wait-note').hidden, false);
+  await tick(100);
+  assert.equal(w.told.length, 0, 'told of nothing: the one that could take it asks more than the price');
+  // one that keeps 1.00% of 100 TAC (flat 0, 100 bps) is within it
+  online = [full('Tacit'), provider('Dear', { feeBps: 400 }), provider('Fair', { feeBps: 100, flatFee: '0' })];
+  await until(() => w.told.length === 1, 'told once a provider within the price can take it');
+  assert.match(w.told[0], /^A provider can take your 100 TAC now, for no more than the 1\.50% you set\.$/);
+  assert.equal(m.$('fx-wait-note').hidden, true, 'the page stops saying why not');
+  m.ui.destroy();
+  // a want with no price is told of any provider that takes the size, in the old words
+  const v = pricedWants(); let there = [full('Tacit')];
+  const n = mount({ wants: v.wants, notify: (t) => v.told.push(t), refreshMs: 20, discover: async () => there });
+  await signIn(n); typeIn(n, '100');
+  await until(() => n.$('fx-go').textContent === 'Wait for a provider', 'the wait button');
+  n.$('fx-go').click(); await until(() => v.kept.size === 1, 'kept');
+  there = [full('Tacit'), provider('Dear', { feeBps: 400 })];
+  await until(() => v.told.length === 1, 'told of the dear one: no price was named');
+  assert.equal(v.told[0], 'A provider can take your 100 TAC now.');
+  assert.equal(n.$('fx-wait-note').hidden, true);
+  n.ui.destroy();
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

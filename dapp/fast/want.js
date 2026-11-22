@@ -3,13 +3,15 @@
 // when a provider can take it. No DOM; the front page and /fast/ both use it.
 //
 //   const w = makeWants({ boards, providers, storage, fetchImpl, now })
-//   w.kept(pub)             the want this browser keeps for a key, or null: { amount, at, until }
-//   w.start(pub, amount)    keeps one for `amount` (base units) and posts it -> the want kept
+//   w.kept(pub)             the want this browser keeps for a key, or null: { amount, maxFeeBps, at, until }
+//   w.start(pub, amount, { maxFeeBps })   keeps one for `amount` (base units) and posts it -> the want kept. `maxFeeBps` is the most the holder will
+//                           pay, as hundredths of a percent of the amount (a whole number, 0 to 10000), or none: any fee the page quotes
 //   w.stop(pub)             takes it down and forgets it
-//   w.takers(amount)        the providers online that take `amount` now: [{ id, name, anyTac }]
-//   w.waiting()             what is waiting on the boards: { count, total, items: [{ pub, amount }] smallest first }
+//   w.takers(amount, { maxFeeBps })   the providers online that take `amount` now, and at no more than that price: [{ id, name, anyTac }]
+//   w.waiting()             what is waiting on the boards: { count, total, items: [{ pub, amount, maxFeeBps }] smallest first } (maxFeeBps null when none)
 
 import { signWant, checkWant, checkAd } from '/fastbridge-board.js';
+import { meetsPrice } from '/fastbridge-price.js?cb=418ffe25';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
@@ -27,12 +29,17 @@ export function makeWants({ boards = [], providers = [], storage = globalThis.lo
   function kept(pub) {
     const v = read(pub);
     if (!v || !(Number(v.until) > now())) { if (v) write(pub, null); return null; }
-    return { amount: BigInt(v.amount), at: v.at, until: v.until };
+    return { amount: BigInt(v.amount), maxFeeBps: Number.isInteger(v.maxFeeBps) && v.maxFeeBps >= 0 ? v.maxFeeBps : null, at: v.at, until: v.until };
   }
-  async function start(pub, amount) {
+  async function start(pub, amount, { maxFeeBps = null } = {}) {
+    if (maxFeeBps != null && (!Number.isInteger(maxFeeBps) || maxFeeBps < 0 || maxFeeBps > 10000)) throw new Error('the most fee is a whole number of hundredths of a percent, 0 to 10000');
+    // a want already kept for the key is taken down first: each is posted under a key of its own, which only this browser holds, so one left on
+    // the board could never be taken down once its key is replaced here (a want with a new price is a new want)
+    if (kept(pub)) await stop(pub);
     const priv = secp.utils.randomPrivateKey(), at = now();
-    const want = signWant({ pub: bytesToHex(secp.getPublicKey(priv, true)), btcAsset: asset, amount: String(amount), at, until: at + DAY }, priv);
-    write(pub, { amount: String(amount), at, until: want.until, priv: bytesToHex(priv) });
+    // a want that names no price is the want it always was, byte for byte
+    const want = signWant({ pub: bytesToHex(secp.getPublicKey(priv, true)), btcAsset: asset, amount: String(amount), ...(maxFeeBps != null ? { maxFeeBps } : {}), at, until: at + DAY }, priv);
+    write(pub, { amount: String(amount), ...(maxFeeBps != null ? { maxFeeBps } : {}), at, until: want.until, priv: bytesToHex(priv) });
     await post(want);
     return kept(pub);
   }
@@ -52,7 +59,7 @@ export function makeWants({ boards = [], providers = [], storage = globalThis.lo
         const r = await fetchImpl(String(p.base).replace(/\/$/, '') + '/info', { signal: AbortSignal.timeout(8000) });
         const i = r.ok ? await r.json() : null, id = String(i?.claimPub || '').toLowerCase();
         if (!id || (p.claimPub && p.claimPub.toLowerCase() !== id)) return;
-        out.set(id, { id, name: p.name || 'Provider', min: BigInt(i.minAmount), max: BigInt(i.maxAmount), available: i.available == null ? null : BigInt(i.available), anyTac: i.anyTac === true });
+        out.set(id, { id, name: p.name || 'Provider', min: BigInt(i.minAmount), max: BigInt(i.maxAmount), available: i.available == null ? null : BigInt(i.available), anyTac: i.anyTac === true, feeBps: Number(i.feeBps) || 0, flatFee: BigInt(i.flatFee ?? 0) });
       } catch { /* a provider that does not answer is not online */ }
     }));
     await Promise.all(clients.map(async (c) => {
@@ -60,15 +67,16 @@ export function makeWants({ boards = [], providers = [], storage = globalThis.lo
         for (const ad of await c.ads()) {
           try { checkAd(ad, t); } catch { continue; }
           if (String(ad.btcAsset).replace(/^0x/, '').toLowerCase() !== asset || out.has(ad.claimPub)) continue;
-          out.set(ad.claimPub, { id: ad.claimPub, name: ad.name || 'Provider', min: BigInt(ad.minAmount), max: BigInt(ad.maxAmount), available: ad.available == null ? null : BigInt(ad.available), anyTac: ad.anyTac === true });
+          out.set(ad.claimPub, { id: ad.claimPub, name: ad.name || 'Provider', min: BigInt(ad.minAmount), max: BigInt(ad.maxAmount), available: ad.available == null ? null : BigInt(ad.available), anyTac: ad.anyTac === true, feeBps: Number(ad.feeBps) || 0, flatFee: BigInt(ad.flatFee ?? 0) });
         }
       } catch { /* a board that does not answer has no providers here */ }
     }));
     return [...out.values()];
   }
-  async function takers(amount) {
+  // the providers that take the amount now, and keep no more of it than the price (when there is one)
+  async function takers(amount, { maxFeeBps = null } = {}) {
     const a = BigInt(amount);
-    return (await online()).filter((p) => a >= p.min && a <= (p.available != null && p.available < p.max ? p.available : p.max)).map(({ id, name, anyTac }) => ({ id, name, anyTac }));
+    return (await online()).filter((p) => a >= p.min && a <= (p.available != null && p.available < p.max ? p.available : p.max) && meetsPrice(p, { amount: a, maxFeeBps })).map(({ id, name, anyTac }) => ({ id, name, anyTac }));
   }
 
   async function waiting() {
@@ -77,12 +85,12 @@ export function makeWants({ boards = [], providers = [], storage = globalThis.lo
       try {
         for (const w of await c.wants()) {
           try { checkWant(w, t); } catch { continue; }
-          if (String(w.btcAsset).replace(/^0x/, '').toLowerCase() === asset && BigInt(w.amount) > 0n) seen.set(w.pub, BigInt(w.amount));
+          if (String(w.btcAsset).replace(/^0x/, '').toLowerCase() === asset && BigInt(w.amount) > 0n) seen.set(w.pub, { amount: BigInt(w.amount), maxFeeBps: w.maxFeeBps == null ? null : w.maxFeeBps });
         }
       } catch { /* a board that does not answer, or one that keeps no wants yet */ }
     }));
-    const items = [...seen].map(([pub, amount]) => ({ pub, amount })).sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0));
-    return { count: seen.size, total: [...seen.values()].reduce((s, x) => s + x, 0n), items };
+    const items = [...seen].map(([pub, x]) => ({ pub, amount: x.amount, maxFeeBps: x.maxFeeBps })).sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0));
+    return { count: seen.size, total: items.reduce((s, x) => s + x.amount, 0n), items };
   }
 
   return { kept, start, stop, takers, waiting };

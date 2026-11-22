@@ -68,7 +68,9 @@ export function checkAd(ad, now) {
 }
 
 // A user's want: TAC on Bitcoin waiting for a provider, signed with a key made for it alone, so it names no wallet. It moves no funds;
-// a provider that sees it starts providing, and the user bridges as with any provider.
+// a provider that sees it starts providing, and the user bridges as with any provider. It may name the most the holder will pay, `maxFeeBps`:
+// what the provider keeps (its rate and its flat part together) as hundredths of a percent of the amount. A want that names none takes any fee
+// the page quotes. The price is signed with the rest, so no one on the way can change it, and a board that knows nothing of it keeps it as it came.
 export function signWant(want, priv) {
   const body = { v: 1, ...want };
   return { ...body, sig: bytesToHex(signSchnorr(wantDigest(body), scalar32(priv))) };
@@ -81,6 +83,7 @@ export function checkWant(w, now, wantSecs = LIMITS.wantSecs) {
   if (!hex(66).test(String(w.pub))) bad('the want\'s pub is not a key');
   if (!hex(64).test(strip(w.btcAsset || ''))) bad('the want\'s btcAsset is not an asset');
   if (!uint.test(String(w.amount))) bad('the want\'s amount is not an amount');
+  if (w.maxFeeBps != null && (!Number.isInteger(w.maxFeeBps) || w.maxFeeBps < 0 || w.maxFeeBps > 10000)) bad('the want\'s maxFeeBps is out of range');
   if (!Number.isInteger(w.at) || !Number.isInteger(w.until) || w.until <= w.at || w.until - w.at > wantSecs) bad('the want\'s time is not valid');
   if (w.until <= now) bad('the want has run out');
   if (w.at > now + LIMITS.skewSecs) bad('the want is from the future');

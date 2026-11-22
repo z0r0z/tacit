@@ -68,6 +68,14 @@ the provider's own:
 - **A wait.** When no provider online takes the amount, and it cannot be split either, the page keeps a want for the key in the browser and posts it to the
   boards, signed by a key made for it alone, for up to a day. Providers see what is waiting (the provider panel, and an alert in
   the daemon); the holder is told on `/fast/`, and on the front page once, when a provider can take it. A want moves nothing.
+  A want may also name the most its holder will pay, `maxFeeBps` (what the provider keeps, its rate and its flat part together, as hundredths of a percent
+  of the amount; whole numbers from 0 to 10000, the page asks for 0 to 90%). The field is optional and is signed with the rest, so no one on the way can
+  change it; a want that names none is the want it was before prices, byte for byte, and any fee the page quotes will do. The price is the demand a
+  provider sees: the panel shows it beside the size and counts a want as one this key can take only when the fee it would keep is within it ("N more at a lower
+  fee" says how many it would take at a lower one), and the daemon's alert says what they pay at most and how many its own fee meets. The holder is told
+  only of a provider that keeps no more than the price (`meetsPrice`, `dapp/fastbridge-board.js`, the one judgement every page and the daemon use; it
+  is the provider's own sum, `feeOf`, so a want is judged as the quote will be), and the page says when every provider that could take it asks more.
+  A board needs no change for prices: it keeps a want as it came, and a reader that does not know the field leaves it out.
 
 A provider in a page is for modest amounts: it answers requests and takes the Bitcoin while the page is open, and swaps that
 are open when the page closes are tended again the next time the key is opened. A provider that is a process (`fastbridge-lp/`)

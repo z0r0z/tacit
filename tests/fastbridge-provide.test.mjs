@@ -263,6 +263,33 @@ test('the bridges waiting are listed by size with how many this key can take, an
   assert.equal(told.length, 1, 'told once');
 });
 
+test('a waiting bridge that names the most its holder will pay is shown with it and counted against the fee this key would keep; the ones it could take at a lower fee are said', async () => {
+  const item = (pub, tac, maxFeeBps = null) => ({ pub, amount: BigInt(tac) * TAC, maxFeeBps });
+  // this key keeps 0.30% and 0.1 TAC: 0.40% of 100 TAC, 0.35% of 200, 0.33% of 300
+  let w = { count: 3, total: 0n, items: [item('a', 100, 100), item('b', 100, 39), item('c', 1000)] };
+  const told = [];
+  const m = mount({ waiting: async () => w, waitMs: 20, refreshMs: 15, notify: (t) => told.push(t) });
+  await m.load();
+  await until(() => /you can take/.test(text(m.$('pv-want'))), 'the sizes');
+  assert.match(text(m.$('pv-want')), /Waiting for a provider 100 TAC at up to 1\.00% · 100 TAC at up to 0\.39% · 1,000 TAC \(you can take 2; 1 more at a lower fee\)/,
+    'a price is said beside its size; the one under 0.40% is not one this fee meets; a want with none is met by any');
+  // the fee typed is the one it is counted against
+  m.$('pv-fee').value = '0.20';
+  await until(() => /you can take 3\)/.test(text(m.$('pv-want'))), 'counted again at 0.20%');
+  assert.doesNotMatch(text(m.$('pv-want')), /more at a lower fee/);
+  m.$('pv-fee').value = '4';
+  await until(() => /you can take 1; 2 more at a lower fee/.test(text(m.$('pv-want'))), 'and at 4%: only the one that names no price');
+  m.$('pv-fee').value = '0.30';
+  await until(() => /you can take 2; 1 more/.test(text(m.$('pv-want'))), 'back to 0.30%');
+  // told only of a new waiting bridge this key could take at its fee: 200 TAC at up to 0.20% is not one (it keeps 0.35%); 300 TAC at up to 0.50% is
+  assert.deepEqual(told, [], 'what was there at the first look is not news');
+  w = { count: 5, total: 0n, items: [item('a', 100, 100), item('d', 200, 20), item('e', 300, 50)] };
+  await until(() => told.length > 0, 'the notice');
+  assert.deepEqual(told, ['A bridge of 300 TAC is waiting for a provider you can be.'], 'not of the one whose price this fee does not meet');
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(told.length, 1, 'told once');
+});
+
 test('the key\'s pairing link is offered with what it can provide, and Start providing asks leave to tell it of waiting bridges', async () => {
   let asked = 0;
   const m = mount({ ask: async () => { asked++; } });

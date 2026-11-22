@@ -175,8 +175,9 @@ if (C.boards && C.boards.length) {
       makeAdPublisher({ board, handle: service.handle, claimPriv: key, claimPub: config.claimPub, keys, name: C.name || null, everySecs: 60, log }).start();
       log({ level: 'info', msg: 'on the board', board: url, gateway: Buffer.from(keys.pub).toString('hex') });
     }
-    // bridges waiting for a provider: alerted when a new one appears, so the operator can raise what it takes
+    // bridges waiting for a provider: alerted when a new one appears, so the operator can raise what it takes (or lower its fee, for one that names a price)
     const { checkWant } = await import('../dapp/fastbridge-board.js');
+    const { waitingFields } = await import('./lib/wants.mjs');
     const seen = new Set();
     const lookWants = async () => {
       const now = Math.floor(Date.now() / 1000), fresh = [];
@@ -184,11 +185,11 @@ if (C.boards && C.boards.length) {
         try {
           for (const w of await makeBoardClient({ base: url }).wants()) {
             try { checkWant(w, now); } catch { continue; }
-            if (w.btcAsset.replace(/^0x/, '').toLowerCase() === String(C.btcAsset).toLowerCase() && BigInt(w.amount) > 0n && !seen.has(w.pub)) { seen.add(w.pub); fresh.push(w.amount); }
+            if (w.btcAsset.replace(/^0x/, '').toLowerCase() === String(C.btcAsset).toLowerCase() && BigInt(w.amount) > 0n && !seen.has(w.pub)) { seen.add(w.pub); fresh.push({ amount: w.amount, maxFeeBps: w.maxFeeBps == null ? null : w.maxFeeBps }); }
           }
         } catch { /* a board that keeps no wants */ }
       }
-      if (fresh.length) alert({ level: 'warn', msg: 'bridges are waiting for a provider', count: fresh.length, amounts: fresh });
+      if (fresh.length) alert({ level: 'warn', msg: 'bridges are waiting for a provider', ...waitingFields(fresh, C.quote) });
     };
     lookWants(); setInterval(lookWants, 300000).unref();
   }

@@ -4,11 +4,11 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=04a214c9';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=7b77225f';
-import { mountProvide } from '/fast/provide.js?cb=b299c2e9';
+import { mountFast } from '/fast/ui.js?cb=20766144';
+import { mountProvide } from '/fast/provide.js?cb=f205b95a';
 import { mountBound } from '/fast/bound.js?cb=f0f32804';
 import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=2390538c';
-import { makeWants } from '/fast/want.js?cb=1ab031d1';
+import { makeWants } from '/fast/want.js?cb=de216254';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 // The fast bridge page: TAC held on Bitcoin goes to the key's private balance through a provider, and any key can be a provider
@@ -78,7 +78,7 @@ keyS.onChange(() => { if (!keyS.unlocked) { TS.drop(); forgetUx(); } });
 const stored = makeWants({}), onBoards = LISTS.then((l) => makeWants({ boards: l.boards, providers: l.providers }));
 const wants = {
   kept: (pub) => stored.kept(pub),
-  start: async (pub, units) => (await onBoards).start(pub, units),
+  start: async (pub, units, o) => (await onBoards).start(pub, units, o),
   stop: async (pub) => (await onBoards).stop(pub),
   waiting: async () => (await onBoards).waiting(),
   ask: async () => { try { if (typeof Notification === 'function' && Notification.permission === 'default') await Notification.requestPermission(); } catch { /* the page says it as well */ } },
