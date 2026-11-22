@@ -162,7 +162,8 @@ export function makeFlow({ provider, account, chainId, store = null, poll = 1500
     }
   }
 
-  const txOf = (c) => ({ from: account, to: c.to, value: hexOf(c.value), data: c.data });
+  // each deposit names its chain, so a wallet moved to another network mid-run refuses it
+  const txOf = (c) => ({ from: account, to: c.to, value: hexOf(c.value), data: c.data, chainId: hexOf(chainId) });
 
   async function sendBatch(calls) {
     const res = await provider.request({

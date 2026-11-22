@@ -161,6 +161,7 @@ await test('three 0.1 notes in order, one transaction each, from nonce 0', async
   const out = await f.deposit(planFor('0.3'));
   eq(out.sent, 'sequential'); eq(w.log.sends.length, 3); eq(out.notes.length, 3);
   eq(out.notes.map((n) => n.nonce).join(), '0,1,2');
+  for (const tx of w.log.sends) eq(tx.chainId, '0xaa36a7', 'each deposit names its chain');
   for (const n of out.notes) {
     const pool = w.pools.get(n.pool.address.toLowerCase());
     eq(pool.seen.has(commitmentBytes32(n.secrets.commitment).slice(2)), true, 'commitment landed');
