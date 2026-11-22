@@ -109,24 +109,31 @@ export function walletRpcFetch(chainId, opts = {}) {
 }
 
 // A fixed pool's withdrawal goes to a public ERC-4337 bundler (fixed-pool-paymaster.js), which would see the person's address and the recipient. Through the route the wallet-read gateway sends
-// it, and the bundler sees the gateway. A road that fails sends it straight to the bundler, as before: the withdrawal must still be possible. A user operation sent twice is one (the EntryPoint
-// runs it once), which the flow already relies on when a reply is lost.
+// it, and the bundler sees the gateway. When the road fails, the person is asked (once a visit, by `ask`; the browser's confirm by default) whether to send it straight to the bundler, so the
+// withdrawal stays possible; a "no" sends nothing and fails with "try again", and is not asked again while the road rests. A user operation sent twice is one (the EntryPoint runs it once),
+// which the flow already relies on when a reply is lost.
 const BUNDLER_URL = [[/^https:\/\/public\.pimlico\.io\/v2\/(\d{1,10})\/rpc$/, 'pimlico'], [/^https:\/\/api\.candide\.dev\/public\/v3\/(\d{1,10})$/, 'candide']];
-export function bundlerFetch({ fetchImpl = (u, i) => fetch(u, i), now = () => Date.now() } = {}) {
-  let skipUntil = 0;
+export const BUNDLER_DIRECT_ASK = 'The private route to the bundler is not answering. Send the withdrawal to the bundler directly? The bundler will see your IP address.';
+export const BUNDLER_DIRECT_NO = 'The private route to the bundler is not answering, so nothing was sent. Try again in a minute.';
+const browserAsk = (text) => (typeof globalThis.confirm === 'function' ? !!globalThis.confirm(text) : true);
+export function bundlerFetch({ fetchImpl = (u, i) => fetch(u, i), now = () => Date.now(), ask = browserAsk } = {}) {
+  let skipUntil = 0, agreed = false, declinedUntil = 0;
   return async (url, init = {}) => {
     const hit = BUNDLER_URL.map(([re, name]) => [re.exec(String(url)), name]).find(([m]) => m);
-    if (!hit || !ROUTE.rpc?.gateway || !enabled() || now() < skipUntil || String(init.method || 'GET').toUpperCase() !== 'POST') return fetchImpl(url, init);
-    try {
-      const f = await walletSealed();
-      const r = await f(`${ROUTE.rpc.url}/${hit[0][1]}/evm-pool/keeper/bundler-${hit[1]}`, init);
-      // a gateway that was refused or throttled by the bundler (every caller leaves from its one address) or that could not carry the call: the person's own address is not throttled with it, so this goes straight to the bundler
-      if (r.status === 404 || r.status === 403 || r.status === 429 || r.status >= 500) throw new Error('the route did not carry the bundler call');
-      return r;
-    } catch (e) {
-      if (init.signal?.aborted) throw e;
-      skipUntil = now() + RPC_PAUSE_MS;
+    if (!hit || !ROUTE.rpc?.gateway || !enabled() || String(init.method || 'GET').toUpperCase() !== 'POST') return fetchImpl(url, init);
+    if (now() >= skipUntil) {
+      try {
+        const f = await walletSealed();
+        const r = await f(`${ROUTE.rpc.url}/${hit[0][1]}/evm-pool/keeper/bundler-${hit[1]}`, init);
+        // a gateway that was refused or throttled by the bundler (every caller leaves from its one address) or that could not carry the call
+        if (r.status === 404 || r.status === 403 || r.status === 429 || r.status >= 500) throw new Error('the route did not carry the bundler call');
+        return r;
+      } catch (e) {
+        if (init.signal?.aborted) throw e;
+        skipUntil = now() + RPC_PAUSE_MS;
+      }
     }
+    if (!agreed && (now() < declinedUntil || !(agreed = !!(await ask(BUNDLER_DIRECT_ASK))))) { declinedUntil = skipUntil; throw new Error(BUNDLER_DIRECT_NO); }
     return fetchImpl(url, init);
   };
 }

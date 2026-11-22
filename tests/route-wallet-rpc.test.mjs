@@ -135,5 +135,35 @@ await check('a bundler that throttles the gateway (429) is a road that failed: t
   assert.equal(seen.envelopes.r, before, 'not tried again for a minute'); seen.throttled = false;
 });
 
+await check('when the road fails, the person is asked before the bundler call goes straight to the bundler, once a visit', async () => {
+  reset(); const direct = [], asked = [];   const bf = bundlerFetch({ now: () => clock, ask: async (text) => { asked.push(text); return true; }, fetchImpl: async (u) => { direct.push(String(u)); return new Response('{"jsonrpc":"2.0","id":1,"result":"0xdirect"}'); } });
+  const PIM = 'https://public.pimlico.io/v2/1/rpc', body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_sendUserOperation', params: [{}, '0x' + '22'.repeat(20)] });
+  await bf(PIM, { method: 'POST', body });
+  assert.deepEqual(asked, [], 'a road that carries the call asks nothing'); assert.deepEqual(direct, []);
+  walletUp = false;
+  assert.equal((await (await bf(PIM, { method: 'POST', body })).json()).result, '0xdirect');
+  assert.equal(asked.length, 1); assert.match(asked[0], /will see your IP address/); assert.deepEqual(direct, [PIM]);
+  await bf('https://api.candide.dev/public/v3/1', { method: 'POST', body });
+  clock += 61_000; await bf(PIM, { method: 'POST', body });
+  assert.equal(asked.length, 1, 'asked once'); assert.equal(direct.length, 3);
+  walletUp = true;
+});
+
+await check('a "no" sends nothing and fails, and is not asked again while the road rests', async () => {
+  reset(); const direct = [], asked = [];
+  const bf = bundlerFetch({ now: () => clock, ask: async (text) => { asked.push(text); return false; }, fetchImpl: async (u) => { direct.push(String(u)); return new Response('{"jsonrpc":"2.0","id":1,"result":"0xdirect"}'); } });
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_estimateUserOperationGas', params: [{}, '0x' + '22'.repeat(20)] });
+  walletUp = false;
+  await assert.rejects(bf('https://public.pimlico.io/v2/1/rpc', { method: 'POST', body }), /nothing was sent/);
+  await assert.rejects(bf('https://api.candide.dev/public/v3/1', { method: 'POST', body }), /nothing was sent/);
+  assert.equal(asked.length, 1, 'the second bundler is not asked about again'); assert.deepEqual(direct, []);
+  clock += 61_000;
+  await assert.rejects(bf('https://public.pimlico.io/v2/1/rpc', { method: 'POST', body }), /nothing was sent/);
+  assert.equal(asked.length, 2, 'asked again once the road has been tried again'); assert.deepEqual(direct, []);
+  walletUp = true; clock += 61_000;
+  assert.equal((await bf('https://public.pimlico.io/v2/1/rpc', { method: 'POST', body })).status, 200, 'and the road carries it when it is back');
+  assert.deepEqual(direct, []);
+});
+
 globalThis.fetch = realFetch;
 console.log(`\n${n} checks passed`);
