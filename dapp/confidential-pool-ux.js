@@ -1719,13 +1719,14 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // `rebuild` (optional) builds the same swap again on the pool's reserves now. Given one, a settle the pool refused because it moved (see routeMoved) is sent again that way, as often as the pool moves
   // under it: the deposit the swap spends is still waiting in the pool, and the holder's least (minOut) still bounds the price, so a quote that fell past it stops here. The answer carries what the sent swap pays.
   async function submitWrapSwap({ walletPriv, built: b, rebuild = null, selfRelay = false, selfSettle = null, waitOpts } = {}) {
-    for (let left = POOL_MOVED_RETRIES; ; left--) {
+    const again = swapRetry(waitOpts);
+    for (;;) {
       try {
         const r = await _dispatch({ type: 'wrapswap', spec: { op: b.op, leaves: b.leaves, outputs: b.outputs, ephRand: b.ephRand }, sealedMemos: b.memos, selfRelay, selfSettle, walletPriv, waitOpts });
         return { ...r, amountOut: b.amountOut, pid: b.pid, assetIn: b.assetIn, assetOut: b.assetOut };
       } catch (e) {
         if (!rebuild || !(await wrapSwapMoved(e, b))) throw e;
-        if (left <= 0) throw _poolKeptMoving(e, ' Press again for a fresh quote.');
+        if (!(await again(e))) throw _poolKeptMoving(e, ' Press again for a fresh quote.');
         try { b = await rebuild(); }
         catch (e2) { throw /below minOut/.test(String(e2?.message)) ? _priceMoved() : e2; }
       }
@@ -3149,18 +3150,34 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return !!now && (BigInt(now.reserveA) !== BigInt(built.reserveA) || BigInt(now.reserveB) !== BigInt(built.reserveB));
   }
   // The same swap built again on the reserves now, as often as the pool moves under it: the holder's least (minOut) still bounds what it may take, so a price that fell past it stops here.
-  const POOL_MOVED_RETRIES = 2;
+  // How often depends on what the refusal cost. One BEFORE any proof (the relay's check, "… not proved: the pool moved") cost the relay nothing and the holder some seconds, so it is tried again promptly
+  // and several times, after a short pause for the chain to move on. One AFTER the proof (the pool moved while it was proved) cost a proof and about a minute, so it is tried fewer times. A swap is
+  // not chased for longer than the budget either way. `waitOpts.onAgain({ cheap, attempt })` lets a page say that it is happening.
+  const MOVED = { cheap: 6, dear: 2, pauseMs: 1500, budgetMs: 120_000 };
+  const _refusedBeforeProof = (e) => /not proved: the pool moved/i.test(String(e?.message || ''));
+  const _wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  function swapRetry(waitOpts, now = Date.now) {
+    const t0 = now(), used = { cheap: 0, dear: 0 };
+    return async (e) => {                              // -> true: build it again and send it; false: stop
+      const cheap = _refusedBeforeProof(e), kind = cheap ? 'cheap' : 'dear';
+      if (++used[kind] > MOVED[kind] || now() - t0 > MOVED.budgetMs) return false;
+      try { waitOpts?.onAgain?.({ cheap, attempt: used.cheap + used.dear }); } catch { /* a page's wording never stops a swap */ }
+      if (cheap) await (waitOpts?.sleep || _wait)(MOVED.pauseMs);
+      return true;
+    };
+  }
   const _priceMoved = () => Object.assign(new Error('The price moved past what was quoted, so the swap was not sent.'), { moved: true, said: true });
   const _poolKeptMoving = (cause, tail) => Object.assign(new Error(`The pool kept moving while your swap was proved, so it did not go through.${tail}`), { moved: true, said: true, poolMoving: true, cause });
   async function route({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, split = null, selfRelay = false, selfSettle = null, waitOpts } = {}) {
-    for (let left = POOL_MOVED_RETRIES; ; left--) {
+    const again = swapRetry(waitOpts);
+    for (let first = true; ; first = false) {
       const { q, spec, sealedMemos } = await _routeBuild({ walletPriv, inNote, amountIn, path, minOut, fee, split });
-      if (left < POOL_MOVED_RETRIES && q.amountOut < BigInt(minOut)) throw _priceMoved();
+      if (!first && q.amountOut < BigInt(minOut)) throw _priceMoved();
       let r;
       try { r = await _dispatch({ type: 'route', spec, sealedMemos, selfRelay, selfSettle, walletPriv, waitOpts }); }
       catch (e) {
         if (!(await routeMoved(e, { asset0: inNote.asset, amountIn, path, fee, hops: q.hops }))) throw e;
-        if (left <= 0) throw _poolKeptMoving(e, ' Nothing was spent; press again for a fresh quote.');
+        if (!(await again(e))) throw _poolKeptMoving(e, ' Nothing was spent; press again for a fresh quote.');
         continue;
       }
       return r && typeof r === 'object' ? { ...r, amountOut: q.amountOut } : r;
@@ -3839,7 +3856,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
 
   return { cfg, assets: _poolAssets, assetByTicker, addAsset, externalAsset, externalAssets, readAsset, registerTokenCall, tokenTicker, registeredTokens, pooledTokens, lpShareId: (poolId) => String(_lp.lpShareId(poolId)).toLowerCase(), account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
     deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
-    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeMoved, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, lpBondRecord, keepFarmPosition, recoverSoloFarmPositions, decodeCdpMints: (pv) => recovery().decodeCdpFields(pv).mints, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
+    settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeMoved, swapRetry, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, lpBondRecord, keepFarmPosition, recoverSoloFarmPositions, decodeCdpMints: (pv) => recovery().decodeCdpFields(pv).mints, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };
 }

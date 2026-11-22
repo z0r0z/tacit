@@ -384,7 +384,7 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     let q = await priced(fee);
     mark('route: priced');
     const send0 = (f) => t.route({ walletPriv: key.priv(), inNote: note, amountIn: units, path, minOut, fee: f, selfSettle: selfFor(t, label),
-      waitOpts: { ...marked(run().wait(label, 15 * 60e3), 'route'), intervalMs: 4000, ...relayOnly() } });
+      waitOpts: { ...marked(run().wait(label, 15 * 60e3), 'route'), intervalMs: 4000, ...relayOnly(), onAgain: () => say('again') } });
     const send = async (f) => {
       for (let left = HERE ? 2 : 0; ; left--) {
         try { return await send0(f); }
@@ -629,7 +629,11 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     try {
       // the deposit waits in the pool for the swap, so a swap the pool moved under (it is refused for good) is built again on the reserves now, and says what it paid
       const rebuild = () => t.buildWrapSwap({ walletPriv: priv, toAsset: hop.assetNext, amountWei: plan.wei, feeBps: hop.feeBps, fee: plan.fee, minOut: plan.minOut, index });
-      const r = await t.submitWrapSwap({ walletPriv: priv, built, rebuild, waitOpts: { ...run().wait(plan.label, 15 * 60e3), intervalMs: 4000, viaRelay: true } });
+      // The wallet's confirmation and the block took time the pool did not wait through: the swap built before them is priced on reserves that are older by now, and was the one most often refused.
+      // It is built again on the pool as it is, spending the same deposit (the same index), before the relay sees it. A quote that fell past the least stops it here, the deposit kept as tETH.
+      try { built = await rebuild(); }
+      catch (e0) { if (/below minOut/.test(String(e0?.message))) throw Object.assign(new Error('The price moved past what was quoted, so the swap was not sent.'), { moved: true, said: true }); }
+      const r = await t.submitWrapSwap({ walletPriv: priv, built, rebuild, waitOpts: { ...run().wait(plan.label, 15 * 60e3), intervalMs: 4000, viaRelay: true, onAgain: () => say('again') } });
       return { txHash: r?.txHash || null, out: r?.amountOut ?? built.amountOut };
     } catch (e) {
       if (pending(e)) throw mayGoThrough(relayWords(e), e);

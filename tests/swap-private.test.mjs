@@ -387,11 +387,53 @@ test('from the wallet: the swap is handed a way to build again that spends the s
   await run(await load(ux), plan({ wallet: true }));
   const sent = M.wrapSwapSubmits[0];
   assert.strictEqual(typeof sent.rebuild, 'function');
-  assert.strictEqual(M.wrapSwaps.length, 1);
+  assert.strictEqual(M.wrapSwaps.length, 2, 'built before the deposit and again once it landed');
   await sent.rebuild();
-  assert.strictEqual(M.wrapSwaps.length, 2, 'the rebuild builds a swap');
-  const [a, b] = M.wrapSwaps;
-  assert.deepStrictEqual({ index: b.index, minOut: b.minOut, fee: b.fee, toAsset: b.toAsset, feeBps: b.feeBps, amountWei: b.amountWei }, { index: a.index, minOut: a.minOut, fee: a.fee, toAsset: a.toAsset, feeBps: a.feeBps, amountWei: a.amountWei });
+  assert.strictEqual(M.wrapSwaps.length, 3, 'the rebuild builds a swap');
+  const [a, b, c] = M.wrapSwaps;
+  const same = (x) => ({ index: x.index, minOut: x.minOut, fee: x.fee, toAsset: x.toAsset, feeBps: x.feeBps, amountWei: x.amountWei });
+  assert.deepStrictEqual(same(b), same(a)); assert.deepStrictEqual(same(c), same(a));
+});
+
+// The wallet's confirmation and the block take time the pool does not wait through, and a swap built before them was the one most often refused: once the deposit has landed it is priced again, on the
+// pool as it is, and that is the one the relay is handed.
+const tagged = (M, ux, fail = {}) => { let n = 0; ux.buildWrapSwap = async (a) => { n++; M.wrapSwaps.push(a); if (fail[n]) throw fail[n]; return { commit: '0xc0', amountOut: 900n, index: a.index, sentAtBuild: M.sent.length, n }; }; };
+test('from the wallet: the swap the relay is handed was priced after the deposit landed, not before the wallet was asked', async () => {
+  const { M, ux } = setup({ notes: [note('0xold', 1000)] });
+  tagged(M, ux);
+  await run(await load(ux), plan({ wallet: true }));
+  assert.strictEqual(M.wrapSwaps.length, 2);
+  assert.strictEqual(M.wrapSwapSubmits[0].built.sentAtBuild, 1, 'built once the deposit had been sent');
+  assert.strictEqual(M.wrapSwapSubmits[0].built.n, 2);
+});
+
+test('from the wallet: a price that fell past the least while the deposit landed sends nothing: the deposit is kept as tETH and the page says the price moved', async () => {
+  const { M, ux } = setup({ notes: [note('0xold', 1000)] });
+  tagged(M, ux, { 2: new Error('wrap-swap: quote below minOut') });
+  await assert.rejects(run(await load(ux), plan({ wallet: true })), (e) => e.kept && /private now as tETH/.test(e.message) && /price moved past what was quoted/.test(e.message));
+  assert.strictEqual(M.wrapSwapSubmits.length, 0, 'the swap was never sent');
+  assert.strictEqual(M.settled.length, 1, 'the deposit settles as a plain wrap');
+});
+
+test('from the wallet: pricing it again that cannot be read keeps the first price and goes on', async () => {
+  const { M, ux } = setup({ notes: [note('0xold', 1000)] });
+  tagged(M, ux, { 2: new Error('rpc down') });
+  const r = await run(await load(ux), plan({ wallet: true }));
+  assert.strictEqual(M.wrapSwapSubmits.length, 1);
+  assert.strictEqual(M.wrapSwapSubmits[0].built.n, 1, 'the first build is the one sent');
+  assert.strictEqual(r.txHash, '0xswap');
+});
+
+// A wait the pool makes longer has words: both swaps hand their retry a way to tell the page, which shows its "pricing it again" line.
+test('a swap the pool moved under tells the page each time it is tried again, from the wallet and from the private balance', async () => {
+  const w = setup({ notes: [note('0xold', 1000)] }), stepsW = [];
+  await (await load(w.ux)).swap(plan({ wallet: true }), { wallet, from: '0xme', say: (k) => stepsW.push(k) });
+  w.M.wrapSwapSubmits[0].waitOpts.onAgain({ cheap: true, attempt: 1 });
+  assert.ok(stepsW.includes('again'), `the wallet swap says it (${stepsW})`);
+  const p = setup({ notes: [note('0xold', 1000)] }), stepsP = [];
+  await (await load(p.ux)).swap(plan(), { wallet, from: '0xme', say: (k) => stepsP.push(k) });
+  p.M.routes[0].waitOpts.onAgain({ cheap: true, attempt: 1 });
+  assert.ok(stepsP.includes('again'), `the private swap says it (${stepsP})`);
 });
 
 test('from the wallet: what the swap that was sent paid is what the page says', async () => {

@@ -917,12 +917,14 @@ function v1Swap(el, status) {
       await proveOr({ run, types: ['route'], label, sheet: 'eth', status: () => $('#v1-status'),
         go: (y) => y.t.route({ walletPriv: y.priv, ...args, fee: 0n, selfSettle: y.selfSettle, waitOpts: y.waitOpts }),
         relayed: async () => {
-          try { await t.route({ walletPriv: priv, ...args, fee: x.fee, waitOpts: run.wait(null, 15 * 60e3) }); }
+          // a swap the pool moves under is priced again by itself (confidential-pool-ux.js route); this says so while it waits
+          const moved = { onAgain: () => run.say(status, 'The pool moved while this was being proved. Pricing your swap again on its new price…') };
+          try { await t.route({ walletPriv: priv, ...args, fee: x.fee, waitOpts: { ...run.wait(null, 15 * 60e3), ...moved } }); }
           catch (e0) {
             if (!/fee below the current floor/i.test(e0?.message || '')) throw e0;
             const fee2 = await swapFee(t, x.from, x.to), again = fee2 < x.units ? await swapPlan(t, x.from, x.to, x.units, fee2) : null;
             if (!again || again.amountOut < x.minOut) throw e0;
-            await t.route({ walletPriv: priv, ...args, path: again.path, fee: fee2, waitOpts: run.wait(null, 15 * 60e3) });
+            await t.route({ walletPriv: priv, ...args, path: again.path, fee: fee2, waitOpts: { ...run.wait(null, 15 * 60e3), ...moved } });
           }
         } });
       await scanPrivate(true).catch(() => {});

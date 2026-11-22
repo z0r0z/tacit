@@ -1094,6 +1094,71 @@ test('wrap-swap: a pool that keeps moving is built again twice, then said plainl
   assert.equal(mock.captured.length, 3, 'the first build and two more');
 });
 
+// How hard a swap the pool moved under is chased depends on what the refusal cost: before any proof (the relay's check) it cost the relay nothing and the holder some seconds, so it is tried again promptly
+// and several times; after the proof it cost about a minute, so fewer times. A page is told each time, so the wait has words.
+const GATE = 'swap not proved: the pool moved after this was built, so it was not proved and nothing was spent (0x29b3c833)';
+const BOARD = 'route: the pool refused this op as it stands (PoolReserveMismatch 0x29b3c833); it was not proved again and nothing was spent';
+const settle = (text) => Object.assign(new Error(`settle failed: ${text}`));
+
+test('retry policy: a refusal before any proof is tried again six times, each after a pause, and says so each time', async () => {
+  const { ux } = await routeFixture(movingPool());
+  const said = [], slept = [], again = ux.swapRetry({ onAgain: (x) => said.push(x), sleep: async (ms) => { slept.push(ms); } });
+  for (let i = 1; i <= 6; i++) assert.equal(await again(settle(GATE)), true, `retry ${i}`);
+  assert.equal(await again(settle(GATE)), false, 'the seventh is the end');
+  assert.deepEqual(slept, [1500, 1500, 1500, 1500, 1500, 1500], 'a pause for the chain to move on, before each');
+  assert.deepEqual(said.map((x) => [x.cheap, x.attempt]), [[true, 1], [true, 2], [true, 3], [true, 4], [true, 5], [true, 6]]);
+});
+
+test('retry policy: a refusal after the proof, which cost a minute, is tried again twice with no pause; the two kinds are counted apart', async () => {
+  const { ux } = await routeFixture(movingPool());
+  const said = [], slept = [], again = ux.swapRetry({ onAgain: (x) => said.push(x), sleep: async (ms) => { slept.push(ms); } });
+  assert.equal(await again(settle(BOARD)), true); assert.equal(await again(settle(BOARD)), true); assert.equal(await again(settle(BOARD)), false);
+  assert.deepEqual(slept, [], 'no pause: the proof already took its time');
+  assert.deepEqual(said.map((x) => x.cheap), [false, false]);
+  for (let i = 0; i < 6; i++) assert.equal(await again(settle(GATE)), true, 'the cheap count is its own');
+  assert.equal(await again(settle(GATE)), false);
+});
+
+test('retry policy: a swap is not chased past the budget, whatever tries are left; a page that cannot say it never stops one', async () => {
+  const { ux } = await routeFixture(movingPool());
+  let t = 0;
+  const again = ux.swapRetry({ sleep: async () => {} }, () => t);
+  assert.equal(await again(settle(GATE)), true);
+  t = 120_001;
+  assert.equal(await again(settle(GATE)), false, 'past two minutes');
+  const noisy = ux.swapRetry({ onAgain: () => { throw new Error('the page broke'); }, sleep: async () => {} });
+  assert.equal(await noisy(settle(GATE)), true, 'a throwing page callback does not stop the retry');
+  assert.equal(await ux.swapRetry({})(settle(GATE)).catch(() => 'threw'), true, 'no callback, no sleep given: the real pause is used');
+});
+
+test('route: refused before any proof again and again, it is built again each time and goes through on the sixth', async () => {
+  const mock = movingPool({ moves: 5, failFirst: 5, fail: GATE });
+  const { ux, args, waitOpts } = await routeFixture(mock);
+  const said = [], slept = [];
+  const r = await ux.route({ ...args, minOut: 0n, waitOpts: { ...waitOpts, onAgain: (x) => said.push(x.attempt), sleep: async (ms) => { slept.push(ms); } } });
+  assert.equal(mock.captured.length, 6, 'the first build and five more');
+  assert.deepEqual(said, [1, 2, 3, 4, 5], 'the page was told each time');
+  assert.equal(slept.filter((ms) => ms === 1500).length, 5);
+  assert.ok(r.amountOut > 0n);
+});
+
+test('route: refused before any proof more than six times, it stops there and says the pool is busy', async () => {
+  const mock = movingPool({ moves: 99, failFirst: 99, fail: GATE });
+  const { ux, args, waitOpts } = await routeFixture(mock);
+  await assert.rejects(ux.route({ ...args, minOut: 0n, waitOpts: { ...waitOpts } }), (e) => e.poolMoving === true && e.moved === true && /pool kept moving/.test(e.message) && /Nothing was spent/.test(e.message));
+  assert.equal(mock.captured.length, 7, 'the first build and six more');
+});
+
+test('wrap-swap: refused before any proof again and again, it is built again each time and goes through on the sixth', async () => {
+  const mock = movingPool({ moves: 5, failFirst: 5, fail: GATE });
+  const { ux, build, waitOpts, walletPriv } = await wrapFixture(mock);
+  const said = [];
+  const r = await ux.submitWrapSwap({ walletPriv, built: await build(), rebuild: () => build(), waitOpts: { ...waitOpts, onAgain: (x) => said.push(x.attempt) } });
+  assert.equal(mock.captured.length, 6);
+  assert.deepEqual(said, [1, 2, 3, 4, 5]);
+  assert.ok(r.amountOut > 0n);
+});
+
 test('crossOut: a destination owner is required for every destination chain', async () => {
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: async () => { throw new Error('no network expected'); } });
   const walletPriv = '0x' + '79'.repeat(32);
