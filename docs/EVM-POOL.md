@@ -21,9 +21,11 @@ not covered here.
 | Withdraw | Any amount to any address, as ETH or as a token. A note in a fixed pool leaves gaslessly. |
 | Receive | A standing deposit address anyone can pay, and payment links. |
 
-Everything is proved in the browser, found again from your key (or your 24 words), and needs no account or server of
-ours: the page reads Ethereum directly, and every outside service it uses is named in an onchain registry
-([Dependencies](#dependencies-are-registry-driven)).
+Everything is proved in the browser, found again from your key (or your 24 words), and needs no account. The page reads
+Ethereum from public nodes, or from your own under Endpoints. It also uses the project's relay, forwarders and gateway:
+history comes from the relay's index when it answers (the page keeps it only if it builds a tree the pool has held), and
+spends go through a relay. Each has a way around it: the chain's logs, and sending from your own wallet. Every outside
+service the page uses is named in an onchain registry ([Dependencies](#dependencies-are-registry-driven)).
 
 ## Addresses
 
@@ -43,7 +45,7 @@ sender can deploy at these addresses.
 | RelayRegistry | `0x00000000000299F48Fb844626ab96c6A20059a01` |
 | TacitPayRegistry | `0x0000000000029534a955A164223417fc5f4fA405` |
 | Catch-up registry (`TacitEvmPoolCheckpoints`) / hub | `0x00000000C3267616ED5E0DAA6F6490D109d6844D` / `0x00000000C824B4F120C03f4Bdd4Bf4656232E835` |
-| tacit.wei page (`TacitPay8244`, steward ross.wei) | `0x000000000009dde9bb333bbad42ad74bbacc2bd6` |
+| tacit.wei page (`TacitPay8244`, steward the ops multisig) | `0x000000000009dde9bb333bbad42ad74bbacc2bd6` |
 
 Everything the pool does (shield, send, withdraw, deposit addresses) needs only the pool, router and verifier. The zap,
 zRouter and token list are the token flows; the catch-up registry speeds up a new device; the relay and dependency registries
@@ -91,6 +93,12 @@ events. Key notes by `(leaf, index)`: the same leaf can appear twice, and each c
 | Withdraw | Recipient, amount, relayer, fee, who submitted it. | Which deposit funds it; the value of any change. |
 | Payment to a deposit address | The payer, the amount and the address. | Which wallet owns the address. |
 | Sweep of a deposit address | The amount and the box's note key in the call data. | Anything tying that key to your address. |
+
+The table is what the chain shows. The nodes the page reads through also see your IP address beside what it reads:
+your deposit addresses when it checks them for payments, and a recipient's name when it looks it up. With your own
+node set under Endpoints, those reads go only to it. The reference wallet (`dapp/evm-pool-wallet.js`, used by
+tacit.finance/pay/eth) leaves an unused output empty on deposits, merges and withdrawals, so its transactions show how
+many outputs they have and whether a withdrawal has change; tacit.wei fills both.
 
 The pool hides which deposit pays a withdrawal and who pays whom. Amounts and addresses at both ends are public: while
 the pool is small, a withdrawal of the same amount soon after a deposit is easy to match. Use round amounts, let time
@@ -163,7 +171,10 @@ self    65 B, shaped as a classical memo: a note to oneself (deposit, change, me
         s = 0x04 ‖ HMAC(self, "tacit-evm-pool-s-self-v1" ‖ pk_eph)
 ```
 
-A transaction with a hybrid output makes every output hybrid, so lengths do not tell the payment from the change. An
+A transaction with a hybrid output makes every output hybrid when the sender has a root (its change goes to its own
+ML-KEM key), so lengths do not tell the payment from the change. A sender with no root has no ML-KEM key: its change
+keeps the 65-byte classical form, so there the lengths do tell them apart. Any transaction with a 1,153-byte memo is a
+payment to another address; notes to oneself are 65 bytes. An
 address names the ML-KEM key by `SHA-256("tacit-evm-pool-kem-v1" ‖ ek)` in its `0x10` lane; the key travels in the payment
 link. Everything derives from the root by HMAC (the ML-KEM pair, the self key, the one-time spend keys, the deposit
 addresses, and the seed of whole notes in the Tornado pools), so the 24 words restore a wallet on any device.
@@ -295,8 +306,9 @@ it through the handler a direct request reaches, and seals the answer to the req
 | whatever hosts the relay | the forwarder's address and a sealed envelope |
 
 It hides a caller from the relay only while the forwarder and the relay are not one party: a forwarder run by the relay's
-operator, or one that shares its log with it, hides nothing. Chain reads that go through the route (the page's own `rpc`
-gateway) are reads only, from a fixed list of methods; the public node that answers sees the gateway's request, not yours.
+operator, or one that shares its log with it, hides nothing. In tacit.wei the page's own `rpc` gateway carries only the
+bundler call of a gasless note exit; chain reads go from your browser to the page's nodes (or yours, under Endpoints),
+which see your IP address. tacit.finance/pay/eth also sends its chain reads through the route while it answers.
 
 - **What it carries:** `info`, `head`, `quote`, `events`, `point`, `totals`, `status/<box>`, `relay`, `receive` and `deposit`;
   anything else is refused. It does not carry `reserve`, so a wallet on the route proves against the queue's tail and sends
@@ -312,7 +324,8 @@ gateway) are reads only, from a fixed list of methods; the public node that answ
 - **No direct fallback for these.** A request to the page's own relay or to a RelayRegistry relay that no forwarder can carry
   fails; it is never sent direct, which would show your address. A relay in the TacitPayRegistry `keepers` list has no
   gateway key and is reached directly. The ERC-4337 bundler used for a gasless note exit goes through the route to Pimlico or
-  Candide; any other bundler is reached directly only after you agree. The registry's `forwarders` list names the forwarders
+  Candide. When the route does not carry it, or for any other bundler, the call goes to the bundler directly only after you
+  agree (asked once a visit), and the bundler then sees your IP address. The registry's `forwarders` list names the forwarders
   the page uses beside its own.
 - **Who sees what is limited to the forwarders you choose.** The forwarders the page ships with are run by the project, so they
   hide you from the relay and its host but not from the people who run them; each independent forwarder added to the registry
@@ -321,7 +334,7 @@ gateway) are reads only, from a fixed list of methods; the public node that answ
 
 ## Dependencies are registry-driven
 
-Nothing the page needs is hard-wired to one host. TacitPayRegistry (`0x0000000000029534a955A164223417fc5f4fA405`; its owner is ross.wei) holds bytes32
+Nothing the page needs is hard-wired to one host. TacitPayRegistry (`0x0000000000029534a955A164223417fc5f4fA405`; its owner is the ops multisig) holds bytes32
 service keys, each a list the page reads and caches for 30 minutes:
 
 | Key | What it lists |
@@ -368,7 +381,7 @@ them; or read it yourself: `cast call 0x000000000009dde9bb333bbad42ad74bbacc2bd6
 | | |
 |---|---|
 | Page | 503,436 B, sha256 `c58a4815f9a328856026eaa6b33c61fba16b220c525c6341dc344458d288057b` |
-| Steward | `0x1C0Aa8cCD568d90d61659F060D1bFb1e6f855A20` (ross.wei) |
+| Steward | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` (the ops multisig) |
 | Record | chunk addresses, transactions and checks in the ERC8244/dapps repository, `tacit-wei/deploy/TACIT-WEI.deployed.md` |
 
 A version never redirects: it serves its own bytes forever, so a reader who audited one stays on it. A later version is a
@@ -393,9 +406,9 @@ The pool, router, verifier, zap and the page's chunks are immutable. What can ch
 
 | What | Held by | What it can do |
 |---|---|---|
-| The `tacit.wei` name (WNS) | ross.wei (`0x1C0Aa8cC…5A20`) | point the name at a different page version |
-| The page's lineage (`steward()`) | ross.wei | publish a successor with `deployNext`; every version stays immutable and serves its own bytes |
-| TacitPayRegistry (`owner()`) | ross.wei | change the node, relay, bundler, paymaster, forwarder, gateway and mirror lists the page reads |
+| The `tacit.wei` name (WNS) | the ops multisig (`0x006CD14F…49F2`) | point the name at a different page version |
+| The page's lineage (`steward()`) | the ops multisig | publish a successor with `deployNext`; every version stays immutable and serves its own bytes |
+| TacitPayRegistry (`owner()`) | the ops multisig | change the node, relay, bundler, paymaster, forwarder, gateway and mirror lists the page reads |
 | RelayRegistry (`owner()`) | the Z DAO (`0x5E58BA0e06ED0F5558f83bE732a4b899a674053E`) | set the minimum bond, within fixed bounds; relays list themselves by staking |
 
 None of these can move funds, change a proof or redirect a payment: the proof binds the recipient, amount, relay address and
