@@ -23,7 +23,7 @@ const ASSET = 'f0'.repeat(32), TAC = 100000000n;
 const pw = { addressString: 'bp1qmine', network: 'mainnet' };
 const notes = [{ nf: '01', value: String(30n * TAC), asset: ASSET }, { nf: '02', value: String(20n * TAC), asset: ASSET }];
 const calls = { pay: [], exit: [], shield: [], create: [], sweep: [], hist: [] };
-let histFail = false;
+let histFail = false, joiningNow = 0n;   // what secret.js's pendingView reports as settling: a shield waiting for its block
 const Y = new Date().getUTCFullYear(), noon = (y, m, d) => Date.UTC(y, m, d, 12) / 1000;
 const HIST = [
   { txid: '1a'.repeat(32), height: 973509, time: noon(Y, 0, 15), kind: 'for-sale', delta: -98707564851n, to: 'bc1qzwnfncdgxs0hx0rmsuhd0jhgat37rfvzttg50z' },
@@ -34,14 +34,14 @@ const HIST = [
 const S = {
   TAC_ASSET_MAINNET: ASSET, pool: { id: 'pool' },
   poolWalletFor: (priv) => { assert.ok(priv instanceof Uint8Array, 'the pool wallet is derived from the key’s bytes'); return pw; },
-  pendingView: (ns) => ({ live: ns.filter((n) => !n.spent) }),
+  pendingView: (ns) => ({ live: ns.filter((n) => !n.spent), settling: joiningNow }),
   poolNotes: async () => notes,
   combinePlan: () => null,
   poolClientFor: () => ({ relayInfo: async () => ({ address: 'bp1qrelay', fundAddress: 'bc1qrelayfund', fees: { ['0x' + ASSET]: String(2n * TAC) } }), allNotes: async () => [], walletNotes: async () => notes }),
   poolHistory: async (t, w, ns, o) => { calls.hist.push({ w, n: ns.length, o }); if (histFail) throw new Error('explorer 429'); return HIST; },
   payPrivately: async (t, o) => { calls.pay.push(o); return { revealTxid: 'aa'.repeat(32), relayed: true }; },
   exitToWallet: async (t, o) => { calls.exit.push(o); return { revealTxid: 'bb'.repeat(32) }; },
-  shieldNote: async (t, o) => { calls.shield.push(o); return { revealTxid: 'cc'.repeat(32), poolNote: { value: o.note.amount } }; },
+  shieldNote: async (t, o) => { calls.shield.push(o); joiningNow = BigInt(o.note.amount); return { revealTxid: 'cc'.repeat(32), poolNote: { value: o.note.amount } }; },
   recoverExitOpenings: async () => 0,
 };
 const C = {
@@ -76,7 +76,8 @@ tp.mount(host);
 await settle();
 assert.deepEqual([...host.querySelectorAll('[data-tp]')].map((b) => b.textContent), ['Shield', 'Send', 'Withdraw', 'Receive']);
 assert.match(st('tp-bal'), /50 TAC shielded, in 2 notes/, 'the shielded balance is read for the key');
-assert.deepEqual(tp.totals(), { shielded: 50n * TAC, public: 7n * TAC, forSale: null });
+assert.deepEqual(tp.totals(), { shielded: 50n * TAC, joining: 0n, public: 7n * TAC, forSale: null });
+assert.doesNotMatch(st('tp-bal'), /joining/, 'nothing is joining before a shield');
 {
   // History, read only when asked for: each transaction, when, what it was and what it did to the balance, with its link
   assert.equal($('tp-hist').hidden, true, 'no history until asked for');
@@ -163,6 +164,13 @@ assert.equal(calls.shield[0].note.txid, pubNote.utxo.txid);
 assert.equal(calls.shield[0].note.amount, String(7n * TAC));
 assert.equal(calls.shield[0].note.blinding, '5'.padStart(64, '0'));
 assert.ok(changed.includes('bitcoin'));
+// the shield is in the mempool: its note is out of the public list and not yet in the pool, so the balance says it is joining
+assert.match(st('tp-bal'), /50 TAC shielded, in 2 notes · \+7 TAC joining after one confirmation/, 'a shield waiting for its block shows beside the balance');
+assert.equal(tp.totals().joining, 7n * TAC, 'and the page’s list of where the TAC is gets the amount');
+assert.equal(tp.totals().shielded, 50n * TAC, 'the shielded balance itself does not count it');
+joiningNow = 0n;
+await click('tp-refresh');
+assert.doesNotMatch(st('tp-bal'), /joining/, 'once the pool lists the note it is no longer joining');
 
 // Receive: the page's Tacit address and the key's pool address
 await click('tp-t-receive');
@@ -189,7 +197,7 @@ window.addEventListener('tac:wallet', () => walletEvents++);
 tp.keyChanged();
 await settle();
 assert.equal(walletEvents, 1, 'the To sats panel hears of the key change');
-assert.deepEqual(tp.totals(), { shielded: null, public: null, forSale: null }, 'what was read for the last key is let go of');
+assert.deepEqual(tp.totals(), { shielded: null, joining: 0n, public: null, forSale: null }, 'what was read for the last key is let go of');
 await click('tp-t-send');
 type('tp-send-to', 'tacit1someone'); type('tp-send-amt', '1');
 await click('tp-send-go');

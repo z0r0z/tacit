@@ -220,6 +220,7 @@ export async function shieldNote(tacit, { note, poolWallet, say = () => {} }) {
     inputs: [{ txid: note.txid, vout: note.vout, value: c.value, script: tacit.p2wpkhScript(tacit.wallet.pub) }],
     outputs: [{ value: tacit.DUST, script: tacit.p2wpkhScript(tacit.wallet.pub) }],
   });
+  markShield(poolWallet, r.revealTxid, note.assetId, sh.total);
   return { ...r, poolNote: poolNoteRecord(sh.note, r.revealTxid) };
 }
 
@@ -250,6 +251,7 @@ export async function buyAndShield(tacit, { status, sale, poolWallet, say = () =
       { value: Number(sale.min_price_sats), script: hexToBytes(sale.seller_payout_script) },
     ],
   });
+  markShield(poolWallet, r.revealTxid, assetId, sh.total);
   return { ...r, sale, poolNote: poolNoteRecord(sh.note, r.revealTxid) };
 }
 
@@ -313,6 +315,9 @@ function pendingMark(notes, txid, change, asset, out = 0n, owner = null, { pay =
   if (txid && (change > 0n || out > 0n)) p.change[txid] = { at, v: change.toString(), ...(out > 0n ? { [pay ? 'pay' : 'out']: out.toString() } : {}), asset: String(asset).replace(/^0x/, '').toLowerCase(), ...(owner ? { owner } : {}) };
   try { if (typeof localStorage !== 'undefined') localStorage.setItem(PENDING_KEY, JSON.stringify(p)); } catch {}
 }
+// A shield joins the pool with its block. Until then the note it spent is gone from the public list and the pool's list has nothing of it, so the amount
+// is kept as settling (pendingView) until that list holds a note of the shield's own transaction: the balance can say where the TAC is.
+function markShield(poolWallet, revealTxid, asset, total) { pendingMark([], revealTxid, BigInt(total), asset, 0n, ownerTag(poolWallet)); }
 export function pendingView(notes, asset, poolWallet = null) {
   const p = pendingRead(), seen = new Set(notes.map((n) => n.txid)), owner = ownerTag(poolWallet);
   const live = notes.filter((n) => !n.spent && !(n.nf && p.spent[nfKey(n.nf)]));

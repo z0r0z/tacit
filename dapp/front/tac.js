@@ -573,7 +573,7 @@ function tacPlaceGo(what) {
   load.tac().then(() => rerender('tac')).catch(() => {});
 }
 function tacPool() {
-  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=25c985e5').then((m) => {
+  return (ctx.TPOOL.p ||= import('/tac/pool.js?cb=7b109a20').then((m) => {
     const api = m.makeTacPool({
       key: () => (S.key ? { pubHex: S.key.pubHex } : null),
       priv: () => walletPriv(),
@@ -1205,10 +1205,11 @@ function tcardHead(side) {
   const v = !k ? null : chain ? (ctx.CH.pub === k && ctx.CH.bal != null ? ctx.CH.bal : seenV('chain')) : h.pool ?? seenV('pool'), usd = v != null && v > 0n ? hxUsd('tac', Number(v) / 1e8) : '';
   const shares = chain && k && ctx.TACP.sh?.pub === k ? ctx.TACP.sh.v : null;
   const cs = TPGW.cs, up = cs ? (tpgPrice(cs.pool, cs.shares) - 1) * 100 : null;
+  const joining = !k || chain ? 0n : ctx.TPOOL.api?.totals().joining ?? 0n;
   const pubU = !k ? null : chain ? h.wallet : h.btc, capU = chain && CHAIN_SWEEP.cap != null ? CHAIN_SWEEP.cap : null, over = pubU != null && capU != null && pubU > capU;
   return html`<h2 class="tcd-k" id="tcd-name"><svg class="tk sm" aria-hidden="true"><use href="#tk-tac"/></svg><b>Private TAC</b><span>${chain ? 'on the Tacit chain' : 'on Bitcoin, in the shielded pool'}</span></h2>
     ${!k ? '' : html`<p class="tcd-v num">${v == null ? (chain && ctx.CH.err ? '—' : sk) : fmt(v, 8, 4)}<small>TAC</small></p>
-    <p class="tcd-sub">${[usd && `≈ ${usd}`, shares != null && shares > 0n && `${fmt(shares, 8, 4)} shares`, shares != null && shares > 0n && up != null && up > 0 && html`<span class="tcd-up">each +${up.toFixed(2)}% since the chain began</span>`, chain && ctx.CH.pub === k && (ctx.CH.incoming ?? 0n) > 0n && `+${fmt(ctx.CH.incoming, 8, 4)} TAC incoming`].filter(Boolean).flatMap((x, i) => (i ? [' · ', x] : [x]))}</p>`}
+    <p class="tcd-sub">${[usd && `≈ ${usd}`, shares != null && shares > 0n && `${fmt(shares, 8, 4)} shares`, shares != null && shares > 0n && up != null && up > 0 && html`<span class="tcd-up">each +${up.toFixed(2)}% since the chain began</span>`, chain && ctx.CH.pub === k && (ctx.CH.incoming ?? 0n) > 0n && `+${fmt(ctx.CH.incoming, 8, 4)} TAC incoming`, joining > 0n && `+${fmt(joining, 8, 4)} TAC joining after one confirmation`].filter(Boolean).flatMap((x, i) => (i ? [' · ', x] : [x]))}</p>`}
     ${tcardAll(k, side)}
     ${pubU != null && pubU > 0n ? html`<p class="tcd-nudge">${fmt(pubU, 8, 2)} TAC is public ${chain ? (payer() === 'tacit' && !S.wallet ? 'at this key’s address' : 'in your wallet') : 'at your Bitcoin address'}. <button class="link" type="button" id="tpg-priv">${over ? `Shield ${fmt(capU, 8, 0)} of it` : 'Shield it'}</button></p>` : ''}`;
 }
