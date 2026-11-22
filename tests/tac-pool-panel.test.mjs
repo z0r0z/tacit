@@ -49,9 +49,9 @@ const C = {
   claimPoolWallet: () => ({ addressString: 'bp1qclaim' }),
   claimUrl: (o, p) => `${o}/#tacclaim=${p}`,
   encodeClaim: () => 'p1.x',
-  decodeClaim: (x) => { assert.match(x, /^p1\./); return { secret32: new Uint8Array(32).fill(5), txid: 'dd'.repeat(32), network: 'mainnet', pinned: false }; },
+  decodeClaim: (x) => { assert.match(x, /^p1\./); return { secret32: new Uint8Array(32).fill(5), txid: 'dd'.repeat(32), network: 'mainnet', pinned: false, version: 1 }; },
   readClaim: async () => ({ total: 5n * TAC, seen: 1, indexed: true }),
-  createClaim: async (t, o) => { calls.create.push(o); o.keep({ secret32: new Uint8Array(32).fill(9), pinned: !!o.pin, network: 'mainnet' }); return { revealTxid: 'ee'.repeat(32), link: 'https://tacit.finance/#tacclaim=p1.made' }; },
+  createClaim: async (t, o) => { calls.create.push(o); o.keep({ secret32: new Uint8Array(32).fill(9), pinned: !!o.pin, network: 'mainnet', version: 2 }); return { revealTxid: 'ee'.repeat(32), link: 'https://tacit.finance/#tacclaim=p1.made' }; },
   sweepClaim: async (t, o) => { calls.sweep.push(o); return { revealTxid: 'ff'.repeat(32), relayed: true }; },
 };
 const pubNote = { utxo: { txid: '12'.repeat(32), vout: 1 }, amount: 7n * TAC, blinding: 5n };
@@ -144,6 +144,7 @@ const kept = JSON.parse(localStorage.getItem('tacit-tac-claim-links-v1'));
 assert.equal(kept.length, 1);
 assert.equal(kept[0].link, 'https://tacit.finance/#tacclaim=p1.made');
 assert.equal(kept[0].amount, String(5n * TAC));
+assert.equal(kept[0].v, 2, 'the link is listed with the scheme it was made with');
 assert.equal($('tp-links').hidden, false, 'Links made here shows it');
 assert.match(st('tp-st-claim-make'), /5 TAC is under this link/);
 
@@ -189,6 +190,7 @@ assert.equal(claimBtn.disabled, false);
 claimBtn.click(); await settle();
 assert.equal(calls.sweep.length, 1);
 assert.equal(calls.sweep[0].toAddress, 'bp1qmine', 'claimed into the key’s own pool address');
+assert.equal(calls.sweep[0].version, 1, 'with the scheme the link names');
 assert.match(box.textContent, /Claimed into your shielded TAC on Bitcoin/);
 tp.stopClaim();
 

@@ -558,14 +558,15 @@ export function makeTacPool(ctx) {
     if (rec.pinned && !pin) throw new Error('Enter the PIN you set for this link.');
     const secret32 = fromHex(rec.secret);
     say('tp-st-links', 'Looking for its payment…');
-    const notes = await S.poolNotes(C.claimPoolWallet(S.pool, secret32, { pin, network: rec.network }), S.TAC_ASSET_MAINNET);
+    const version = rec.v === 2 ? 2 : 1;   // a link listed before p2 links were made has no v
+    const notes = await S.poolNotes(await C.claimPoolWallet(S.pool, secret32, { pin, network: rec.network, version }), S.TAC_ASSET_MAINNET);
     const n = notes.find((x) => x.txid && BigInt(x.value) > 0n);
     if (!n) {
       return say('tp-st-links', rec.pinned
         ? 'Nothing under this link yet. Check the PIN, or try again in a few blocks.'
         : 'Nothing under this link yet. Try again in a few blocks. A payment that never went out left the TAC in your shielded balance.');
     }
-    patchClaimLink(rec.secret, { txid: n.txid, link: C.claimUrl(location.origin, C.encodeClaim({ secret32, txid: n.txid, network: rec.network, pinned: rec.pinned })) });
+    patchClaimLink(rec.secret, { txid: n.txid, link: C.claimUrl(location.origin, C.encodeClaim({ secret32, txid: n.txid, network: rec.network, pinned: rec.pinned, version })) });
     say('tp-st-links', 'Found. Copy the link above.');
   }
   async function makeClaimLink() {
@@ -580,9 +581,9 @@ export function makeTacPool(ctx) {
     const r = await C.createClaim(T, {
       S, pool: S.pool, poolWallet: wallet(), amount, asset: S.TAC_ASSET_MAINNET, pin, network: 'mainnet', maxFee: feeCap(),
       say: (m) => say('tp-st-claim-make', m), askSelf: askSelfPost('tp-st-claim-make'),
-      keep: ({ secret32, pinned, network }) => {
+      keep: ({ secret32, pinned, network, version }) => {
         secret = toHex(secret32);
-        putClaimLink({ secret, pinned, network, amount: amount.toString(), at: Date.now() });
+        putClaimLink({ secret, pinned, network, ...(version ? { v: version } : {}), amount: amount.toString(), at: Date.now() });
         if (!claimLinks().some((x) => x.secret === secret)) throw new Error('This browser could not save the link’s key, so nothing was sent. Free some space or allow this site’s data, then try again.');
       },
     }).catch((e) => { if (e?.feeMoved != null && secret) dropClaimLink(secret); feeMoved(e); });
@@ -633,7 +634,7 @@ export function makeTacPool(ctx) {
       let has = false, gone = false, failed = false;
       try {
         const feed = await poolFeed();
-        const r = await C.readClaim(S, S.pool, { secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet', asset: S.TAC_ASSET_MAINNET, feed, txid: parsed.txid });
+        const r = await C.readClaim(S, S.pool, { secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet', version: parsed.version, asset: S.TAC_ASSET_MAINNET, feed, txid: parsed.txid });
         if (mine !== looked || gen !== claimGen) return;
         has = r.total > 0n && !claimed; gone = claimed || (!has && r.seen > 0);
         const why = has ? `${fmt(r.total)} TAC${satsText(r.total) ? ' · ' + satsText(r.total) : ''}` : gone ? 'Already claimed' : r.indexed === false ? 'Not arrived yet' : parsed.pinned ? 'Check the PIN' : r.indexed ? 'Copy the whole link again' : 'Not arrived yet';
@@ -649,7 +650,7 @@ export function makeTacPool(ctx) {
     btn.onclick = () => busy(btn, 'tp-st-claim', async () => {
       try { await ready(); } catch (e) { if (e?.quiet) { st.textContent = 'Open your Tacit wallet, then press Claim it again.'; return; } throw e; }
       const r = await C.sweepClaim(T, {
-        S, pool: S.pool, secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet',
+        S, pool: S.pool, secret32: parsed.secret32, pin: pinField.value.trim(), network: 'mainnet', version: parsed.version,
         asset: S.TAC_ASSET_MAINNET, toAddress: wallet().addressString, fmt, say: (m) => { st.textContent = m; }, askSelf: askSelfPost('tp-st-claim'),
       });
       if (r.wait) { st.textContent = `The note needs ${blocksText(r.wait)} before it can move. Try again after that.`; return; }
@@ -748,7 +749,7 @@ export function makeTacPool(ctx) {
       <div class="lbl tp-sep"><span>Or as a claim link</span></div>
       <p class="note">Anyone with the link can take it. Add a PIN if you share it in the open.</p>
       ${amtRow('tp-claim-amt', 'Amount', 'tp-claim-max')}
-      <div class="lbl"><label for="tp-claim-pin">PIN, shared separately</label></div>
+      <div class="lbl"><label for="tp-claim-pin">PIN of 6 or more digits, shared separately</label></div>
       <div class="amt text"><input id="tp-claim-pin" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" inputmode="numeric" placeholder="none"></div>
       <button class="btn ghost" type="button" id="tp-claim-go">Create a claim link</button>
       <div class="status" id="tp-st-claim-make" role="status"></div>

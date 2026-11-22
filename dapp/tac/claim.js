@@ -8,16 +8,18 @@
 // viewing key, and moves it to a wallet of their own.
 //
 // It reuses claim-link.js's secret and PIN derivation rather than inventing a second scheme, so a PIN
-// behaves identically here: without one the secret is the seed, with one the seed is sha256 over both and
-// a leaked URL alone claims nothing.
+// behaves identically here: without one the secret is the seed, with one the seed is derived from both and
+// a leaked URL alone claims nothing. A p1 link's PIN seed is claimKeyFromSecret's single sha256; a p2 link's
+// is claimKeyFromSecretV2's PBKDF2. Links are made as p2 and both are read.
 //
 // Bearer, and deliberately so: whoever holds the secret can spend the note, the sender included. That is
 // what makes it work for a recipient with nothing, and it is why the claim side sweeps immediately
 // instead of leaving the money sitting under a key two people know.
 
-import { claimKeyFromSecret, genClaimSecret } from '/claim-link.js';
+import { claimKeyFromSecret, claimKeyFromSecretV2, genClaimSecret, pinAcceptable, PIN_MIN_LENGTH } from '/claim-link.js';
 
-const LINK_VERSION = 'p1';
+const LINK_VERSIONS = { p1: 1, p2: 2 };
+export const CLAIM_VERSION = 2;   // the scheme a new link is made with
 const FRAGMENT = 'tacclaim';
 const NETS = new Set(['mainnet', 'signet']);
 const TXID_RE = /^[0-9a-f]{64}$/;
@@ -28,17 +30,21 @@ const unb64url = (s) => {
   return Uint8Array.from(atob(t + '='.repeat((4 - (t.length % 4)) % 4)), (c) => c.charCodeAt(0));
 };
 
-// The throwaway pool wallet a link addresses. Same (secret, pin) on both sides derives the same wallet, and the same object each time it is
-// asked for here: the pool client remembers per wallet object which leaves it has tried, so a panel's re-reads try only the leaves that are new.
+// The throwaway pool wallet a link addresses (a promise of it). Same (secret, pin, version) on both sides derives the same wallet, and the same
+// object each time it is asked for here: the pool client remembers per wallet object which leaves it has tried, so a panel's re-reads try only
+// the leaves that are new. `version` is the link's scheme: 1 for a p1 link, 2 for a p2 link.
 const wallets = new WeakMap();
-export function claimPoolWallet(pool, secret32, { pin = '', network = 'mainnet' } = {}) {
+export function claimPoolWallet(pool, secret32, { pin = '', network = 'mainnet', version = 1 } = {}) {
   let mine = wallets.get(pool);
   if (!mine) wallets.set(pool, (mine = new Map()));
-  const k = `${network}/${Array.from(secret32, (b) => b.toString(16).padStart(2, '0')).join('')}/${pin}`;
+  const v = version === 2 ? 2 : 1;
+  const k = `${network}/${Array.from(secret32, (b) => b.toString(16).padStart(2, '0')).join('')}/${v}/${pin}`;
   let w = mine.get(k);
   if (!w) {
-    const { priv } = claimKeyFromSecret(secret32, pin);   // 32 bytes, PIN-bound exactly as transparent claims are
-    w = pool.walletFromSeed(priv, network);
+    // 32 bytes, PIN-bound exactly as transparent claims are
+    w = (v === 2 ? claimKeyFromSecretV2(secret32, pin) : Promise.resolve(claimKeyFromSecret(secret32, pin)))
+      .then(({ priv }) => pool.walletFromSeed(priv, network));
+    w.catch(() => { if (mine.get(k) === w) mine.delete(k); });
     mine.set(k, w);
     if (mine.size > 8) mine.delete(mine.keys().next().value);   // a PIN typed in steps leaves the wallets of its first digits behind
   }
@@ -49,13 +55,16 @@ const sameAsset = (a, b) => String(a).replace(/^0x/, '').toLowerCase() === Strin
 export { genClaimSecret };
 
 // Wire format, mirroring claim-link.js so the two stay legible side by side:
-//   p1.<network>.<base64url(secret)>.<txid>.<pinFlag>
-export function encodeClaim({ secret32, txid, network, pinned = false }) {
+//   p<version>.<network>.<base64url(secret)>.<txid>.<pinFlag>
+// p1 and p2 differ only in how a PIN is turned into the seed (see claimPoolWallet).
+export function encodeClaim({ secret32, txid, network, pinned = false, version = CLAIM_VERSION }) {
   if (!(secret32 instanceof Uint8Array) || secret32.length !== 32) throw new Error('claim secret must be 32 bytes');
   if (!NETS.has(network)) throw new Error(`unsupported network: ${network}`);
   const tx = String(txid || '').toLowerCase();
   if (!TXID_RE.test(tx)) throw new Error('txid must be 64 hex chars');
-  return [LINK_VERSION, network, b64url(secret32), tx, pinned ? '1' : '0'].join('.');
+  const tag = Object.keys(LINK_VERSIONS).find((t) => LINK_VERSIONS[t] === version);
+  if (!tag) throw new Error(`unsupported claim version: ${version}`);
+  return [tag, network, b64url(secret32), tx, pinned ? '1' : '0'].join('.');
 }
 
 // TAC's page opens the link (one made before, to the front page's #tacclaim=, is taken there too)
@@ -70,7 +79,7 @@ export function decodeClaim(input) {
   const parts = p.split('.');
   if (parts.length !== 5) throw new Error('That does not look like a claim link.');
   const [v, network, secretB64, txid, pinFlag] = parts;
-  if (v !== LINK_VERSION) throw new Error('This claim link is in a format this page does not read.');
+  if (!Object.hasOwn(LINK_VERSIONS, v)) throw new Error('This claim link is in a format this page does not read.');
   if (!NETS.has(network)) throw new Error('That link is for another network.');
   // A link cut short or changed on the way: its transaction id or its secret does not read.
   const partial = 'Part of this claim link is missing or changed. Copy the whole link again.';
@@ -78,31 +87,33 @@ export function decodeClaim(input) {
   let secret32;
   try { secret32 = unb64url(secretB64); } catch { throw new Error(partial); }
   if (secret32.length !== 32) throw new Error(partial);
-  return { secret32, txid, network, pinned: pinFlag === '1' };
+  return { secret32, txid, network, pinned: pinFlag === '1', version: LINK_VERSIONS[v] };
 }
 
 // Sender: pay a fresh throwaway pool wallet, and hand back the link that opens it.
 // `keep` is handed the secret before anything is paid, so the caller can store it first.
 // `askSelf` is payPrivately's: asked before the payment is posted from the sender's own Bitcoin address. `maxFee` is payPrivately's too.
 export async function createClaim(tacit, { S, pool, poolWallet, amount, asset, pin = '', network = 'mainnet', maxFee = null, say = () => {}, keep = () => {}, askSelf = null }) {
+  if (!pinAcceptable(pin)) throw new Error(`Use a PIN of at least ${PIN_MIN_LENGTH} digits, or none.`);
+  const version = CLAIM_VERSION;
   const secret32 = genClaimSecret();
-  const to = claimPoolWallet(pool, secret32, { pin, network });
-  keep({ secret32, pinned: !!pin, network });
+  const to = await claimPoolWallet(pool, secret32, { pin, network, version });
+  keep({ secret32, pinned: !!pin, network, version });
   const r = await S.payPrivately(tacit, { poolWallet, to: to.addressString, amount, asset, maxFee, say, askSelf });
   if (r.wait) return { wait: r.wait, tip: r.tip };
   return {
     ...r,
     secret32,
     // a relayed payment that came back without its id has no link yet: the sender finds it once the pool counts the note
-    link: r.revealTxid ? claimUrl(location.origin, encodeClaim({ secret32, txid: r.revealTxid, network, pinned: !!pin })) : null,
+    link: r.revealTxid ? claimUrl(location.origin, encodeClaim({ secret32, txid: r.revealTxid, network, pinned: !!pin, version })) : null,
   };
 }
 
 // Recipient: what is actually sitting under this link right now. With the pool's note feed in hand (`feed`) the wallet's notes are opened
 // from it, and `indexed` says whether the link's payment (`txid`) is in the pool at all: nothing under the link is then the wrong PIN, or a link
 // changed on the way, and not a payment still on its way.
-export async function readClaim(S, pool, { secret32, pin = '', network = 'mainnet', asset, feed = null, txid = null }) {
-  const w = claimPoolWallet(pool, secret32, { pin, network });
+export async function readClaim(S, pool, { secret32, pin = '', network = 'mainnet', version = 1, asset, feed = null, txid = null }) {
+  const w = await claimPoolWallet(pool, secret32, { pin, network, version });
   const notes = feed
     ? (await S.poolClientFor(network).walletNotes(pool, w, { notes: feed })).filter((n) => !asset || sameAsset(n.asset, asset))
     : await S.poolNotes(w, asset);
@@ -115,9 +126,9 @@ export async function readClaim(S, pool, { secret32, pin = '', network = 'mainne
 // held bitcoin can take delivery — the carrier is paid for out of the note itself, in TAC. The whole link is given up
 // (`deductFee`): the relay's quoted fee comes out of it and nothing is left behind under a key two people know.
 // `askSelf` is payPrivately's: asked before the sweep is posted from the claimer's own Bitcoin address.
-export async function sweepClaim(tacit, { S, pool, secret32, pin = '', network = 'mainnet', asset, toAddress, fmt = String, say = () => {}, askSelf = null }) {
-  const from = claimPoolWallet(pool, secret32, { pin, network });
-  const { total } = await readClaim(S, pool, { secret32, pin, network, asset });
+export async function sweepClaim(tacit, { S, pool, secret32, pin = '', network = 'mainnet', version = 1, asset, toAddress, fmt = String, say = () => {}, askSelf = null }) {
+  const from = await claimPoolWallet(pool, secret32, { pin, network, version });
+  const { total } = await readClaim(S, pool, { secret32, pin, network, version, asset });
   if (total <= 0n) throw new Error(`Nothing is left under this link: it was already claimed${pin ? ', or the PIN is not the one it was made with' : ''}.`);
   try { return await S.payPrivately(tacit, { poolWallet: from, to: toAddress, amount: total, deductFee: true, asset, say, askSelf }); }
   catch (e) {

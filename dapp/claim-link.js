@@ -67,6 +67,30 @@ export function claimKeyFromSecret(secret32, pin = '') {
   return { priv, pub, pubHex: bytesToHex(pub) };
 }
 
+// The second scheme, for links made from here on. Without a PIN it is the first one (the secret is the key). With a PIN the key is
+// PBKDF2-HMAC-SHA256 over the PIN, salted with the domain and the link's secret, at PIN_KDF_ITERATIONS rounds, so each PIN tried costs
+// as much as a passphrase unlock. A new link's PIN has at least PIN_MIN_LENGTH characters. Async: WebCrypto derives the bits.
+const PIN_DOMAIN_V2 = 'tacit-claim-pin-v2';
+export const PIN_KDF_ITERATIONS = 600000;
+export const PIN_MIN_LENGTH = 6;
+export async function claimKeyFromSecretV2(secret32, pin = '') {
+  const s = secret32 instanceof Uint8Array ? secret32 : new Uint8Array(secret32);
+  if (s.length !== 32) throw new Error('claim secret must be 32 bytes');
+  if (!pin) return claimKeyFromSecret(s);
+  const base = await crypto.subtle.importKey('raw', enc.encode(String(pin)), 'PBKDF2', false, ['deriveBits']);
+  const raw = new Uint8Array(await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: concatU8(enc.encode(PIN_DOMAIN_V2), s), iterations: PIN_KDF_ITERATIONS }, base, 256));
+  const priv = toValidScalar(raw);
+  const pub = secp.getPublicKey(priv, true);
+  return { priv, pub, pubHex: bytesToHex(pub) };
+}
+
+// A PIN a new link can be made with: none, or at least PIN_MIN_LENGTH characters.
+export function pinAcceptable(pin = '') {
+  const p = String(pin);
+  return p === '' || p.length >= PIN_MIN_LENGTH;
+}
+
 // Wire format (URL-fragment safe — base64url has no '.'):
 //   v1.<network>.<base64url(secret)>.<txid>.<pinFlag>
 // `pinFlag` is 1 when a PIN is required (the PIN itself is shared out-of-band,
