@@ -101,6 +101,9 @@ test('what is asked of a provider before it starts: private TAC, a fee that is a
   await poor.load();
   assert.equal(poor.$('pv-go').disabled, true, 'too little private TAC for the smallest bridge: there is nothing to start');
   assert.match(text(poor.$('pv-inv')), /Providing takes at least 10 private TAC/);
+  // the way to private TAC is the Shield card for the wallet's TAC (From Wallet TAC), not the Bridge card, which is TAC from Bitcoin
+  assert.equal(poor.$('pv-inv').querySelector('a[href="/#card=shield:wtac:defi"]')?.textContent.startsWith('Make TAC private'), true);
+  assert.equal(poor.$('pv-inv').querySelector('a[href="/#card=bridge"]'), null, 'and no link to the Bridge card for it');
   assert.equal(poor.$('pv-most').value, '5', 'the most offered is what is held');
   const spent = mount({ stub: sessionStub({ pool: 146860000n + 12345n }), kept: [['03' + 'cd'.repeat(32), { feeBps: 30, maxAmount: String(1043867355n) }]] });
   await spent.load();
@@ -266,7 +269,7 @@ test('what the panel tells a provider as it goes: how it earns, that earnings ar
   assert.equal(m.$('pv-run').querySelector('a[href="/#card=bridge"]')?.textContent.startsWith('bring home what the bridge can carry'), true);
   assert.match(text(m.$('pv-inv')), /You have under 10 private TAC free, so new bridges go to other providers/);
   assert.doesNotMatch(text(m.$('pv-inv')), /earnings home/, 'the line about what is lent says nothing of what can come home');
-  assert.equal(m.$('pv-inv').querySelector('a[href="/#card=bridge"]')?.textContent.startsWith('Add TAC'), true);
+  assert.equal(m.$('pv-inv').querySelector('a[href="/#card=shield:wtac:defi"]')?.textContent.startsWith('Add TAC'), true, 'adding TAC is the Shield card for the wallet\'s TAC');
 });
 
 test('/fast/#provide brings the panel into view once it is drawn, not before', async () => {
