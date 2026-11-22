@@ -327,5 +327,17 @@ await test('a stored value that is not an address, or another chain\'s, is not u
   if (!err) throw new Error('should have thrown');
 });
 
+console.log('whole notes from the private balance');
+await test('each relayed spend is capped at the "up to" the form shows, not at a fee read again at the press', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../dapp/fixed-pool-pay.js', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('export function attachIntake('), src.indexOf('\n}\n', src.indexOf('export function attachIntake(')));
+  const shownRow = body.match(/up to \$\{esc\(formatEther\((st\.fee \* 5n \/ 4n)\)\)\}/), cap = body.match(/const maxFee = st\.via === 'wallet' \? null : ([^;]+);/);
+  if (!shownRow || !cap) throw new Error('the form row or the cap is not where it was');
+  eq(cap[1], '(shown * 5n) / 4n', 'the cap');
+  if (!/const shown = st\.fee;/.test(body)) throw new Error('the cap is not taken from the fee the form shows');
+  if (/maxFee[^\n]*await env\.relayFee/.test(body)) throw new Error('the cap is read again at the press');
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

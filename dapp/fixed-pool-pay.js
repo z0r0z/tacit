@@ -839,6 +839,9 @@ export function attachIntake(env) {
     await env.ensureChain(c);
     const total = totalOf(p), have = env.balance?.();
     if (have != null && have < total) throw new Error(`Your private balance holds ${formatEther(have)} ETH, less than the ${formatEther(total)} ETH of notes.`);
+    // each relayed spend is held to the "up to" the form shows: a quarter over the fee read for one note
+    const shown = st.fee;
+    if (st.via !== 'wallet' && shown == null) throw new Error('The relay’s fee is still being read. Nothing was sent; try again in a moment.');
     const flow = flowFor();
     const notes = await flow.prepareNotes(p, { onStep: (s) => step(s.step === 'find' ? 'looking for the next free note number' : `sign for note ${s.i + 1} of ${s.of}`) });
     const groups = st.via === 'wallet' ? [notes] : notes.map((n) => [n]);
@@ -851,7 +854,7 @@ export function attachIntake(env) {
           refund: await env.refundBox(), deadline: BigInt((await env.clock()) + 3600), nonce: rnd(),
         });
         const amount = g.reduce((t, n) => t + n.pool.denomination, 0n), gas = intakeGas(g.length);
-        const maxFee = st.via === 'wallet' ? null : ((await env.relayFee(gas)) * 5n) / 4n;
+        const maxFee = st.via === 'wallet' ? null : (shown * 5n) / 4n;
         // The pool, not the send's answer, says whether the notes are made: a relay's answer can be slow (a mainnet canary waited twelve minutes for one) or
         // lost though its transaction landed in a minute. So the pool is watched while the send is pending: the notes landing ends the wait, a send that
         // fails is believed only if they did not land, and what a send says after that is not shown.
