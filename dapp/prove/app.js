@@ -624,7 +624,7 @@ function askAddress() {
 // Salt mining (worker/src/salt-pool.js): the day's points shared by work, this address's part of them so far, what this computer grinds
 // (tacit-prover's GET /mine `salt`), and the best addresses banked for Tacit's next contracts.
 const HEX40 = /^0x[0-9a-f]{40}$/;
-const cleanFind = (b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true, at: count(b?.at) });
+const cleanFind = (b) => ({ address: HEX40.test(String(b?.address)) ? b.address : null, bits: count(b?.bits), miner: cleanAddress(b?.miner), house: b?.house === true, at: count(b?.at), spent: b?.spent === true });
 const cleanSalts = (s) => (s && typeof s === 'object' ? {
   // the kinds of salt the pool takes (the first is the one to grind) and the shop and market of the vanity kind: all the tab miner needs to follow the pool (tabmine.js termsFrom)
   schemes: (Array.isArray(s.schemes) ? s.schemes : []).filter((x) => x === 'createx' || x === 'market'), shop: HEX40.test(String(s.shop)) ? s.shop : null, market: HEX40.test(String(s.market)) ? s.market : null,
@@ -643,8 +643,7 @@ let bankShown = null, bestShown = null, bestHtmlShown = null;
 // Every banked address (GET /prover/salt/bank: the summary lists only the best ten), and which of them hold a contract now. A banked salt
 // can only be used by Tacit's deployer, so code at its address means it was spent: that deploy is how the work gets used.
 let fullBank = null, bankReadAt = 0;
-const deployed = new Set(), codeChecked = new Map();
-const ETH_RPCS = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org'], RECHECK_MS = 10 * 60_000;
+const deployed = new Set();
 // An address's row: its zero bytes picked out, who found it, and a link to the contract if it was spent.
 const saltRow = (b, cls = '') => {
   const z = Math.floor((b.bits || 0) / 4), used = deployed.has(b.address), c = [cls, used ? 'used' : ''].filter(Boolean).join(' ');
@@ -782,44 +781,24 @@ setInterval(() => { if (tab.state().on) paintTab(); }, 1000);
 // A long list fades at its foot while there is more below it.
 const moreBelow = () => { const b = $('#salt-bank'); b.classList.toggle('more', b.scrollTop + b.clientHeight < b.scrollHeight - 2); };
 $('#salt-bank').addEventListener('scroll', moreBelow, { passive: true });
-// Every banked address, about once a minute (the API caches it that long).
+// Every banked address, about once a minute (the API caches it that long). The pool marks a salt `spent` once its address holds code,
+// which it reads from the chain itself (worker/src/salt-pool.js), so the page has no RPC of its own to ask: a spent one stays spent.
 async function readBank() {
   if (Date.now() - bankReadAt < 55_000) return;
   bankReadAt = Date.now();
   const b = await get(`${API}/prover/salt/bank`);
   if (Array.isArray(b?.bank)) fullBank = b.bank.map(cleanFind).filter((x) => x.address);
-}
-// Which of the banked addresses hold code (one batched eth_getCode): a spent one stays spent, the rest are asked again every ten minutes.
-async function readDeployed() {
-  const now = Date.now(), due = [...new Set((fullBank || salts?.bank || []).map((b) => b.address))].filter((a) => !deployed.has(a) && now - (codeChecked.get(a) || 0) > RECHECK_MS);
-  if (!due.length) return;
-  for (const a of due) codeChecked.set(a, now - RECHECK_MS + 60_000);   // an RPC that fails is tried again in a minute, not every poll
-  const body = JSON.stringify(due.map((a, i) => ({ jsonrpc: '2.0', id: i, method: 'eth_getCode', params: [a, 'latest'] })));
-  for (const url of ETH_RPCS) {
-    try {
-      const j = await (await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal: AbortSignal.timeout(8000) })).json();
-      if (!Array.isArray(j)) continue;
-      for (const x of j) {
-        const a = Number.isInteger(x?.id) ? due[x.id] : null;
-        if (!a || typeof x.result !== 'string' || !/^0x[0-9a-f]*$/i.test(x.result)) continue;
-        codeChecked.set(a, now);
-        if (x.result.length > 2) deployed.add(a);
-      }
-      return;
-    } catch {}
-  }
+  for (const x of fullBank || []) if (x.spent) deployed.add(x.address);
 }
 async function readSalts() {
   const bank = readBank();                                          // asked beside the summary, not after it
   const s = await get(`${API}/prover/salt`); if (s) salts = cleanSalts(s);
   saltsTried = true;
+  for (const x of salts?.bank || []) if (x.spent) deployed.add(x.address);   // the summary's ten carry the same marks
   paintCrowd();                                                     // the floor does not wait for the bank's reading below
   await bank;
   paintSalt(); paintNet(); paintCrowd(); paintFeed();
   saltTop = Math.max(saltTop, goodSalts()[0]?.at || 0);
-  const had = deployed.size;
-  await readDeployed();
-  if (deployed.size !== had) paintSalt();                           // a spent address is marked as soon as the chain says so
 }
 
 async function copy() {

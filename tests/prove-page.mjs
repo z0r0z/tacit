@@ -39,7 +39,8 @@ const check = (ok, what, got = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${w
 const SALT_ADDR = '0x00000000009f12cd34ef56ab78cd90ef12ab34cd', HOUSE = '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7';
 const SALT_FINDS = () => { const at = Date.now() - 90_000; return [{ address: SALT_ADDR, bits: 44, miner: OTHER, at }, { address: SALT_ADDR, bits: 33, miner: OTHER, at },
   { address: SALT_ADDR, bits: 41, miner: HOUSE, at: Date.now() - 150_000, house: true }, { address: SALT_ADDR, bits: 32, miner: '0x' + 'ef'.repeat(20), at: Date.now() - 200_000 }, { address: SALT_ADDR, bits: 56, miner: OTHER, at: Date.now() - 2 * 86400000 }]; };
-// Every banked address (GET /prover/salt/bank), the best of them a contract by now (what an eth_getCode batch to the public RPC answers).
+// Every banked address (GET /prover/salt/bank), the best of them a contract by now which the bank marks `spent` itself
+// (the pool reads the chain, so the page asks no RPC of its own).
 const BANK_AT = Date.now() - 3 * 86400000, DEPLOYED = '0x00000000000a9147ffd8d41d152d730ca5f84e6c';
 const SALT_BANK = () => [{ address: DEPLOYED, bits: 44, miner: OTHER, at: BANK_AT }, { address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER, at: BANK_AT },
   { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: HOUSE, at: BANK_AT, house: true },
@@ -97,10 +98,14 @@ async function open(browser, local, { phone = false, idle = false, busy = false,
     // the salt pool takes the tab miner's shares: each send is kept, and answered as the pool answers (every salt counted)
     if (u.pathname === '/prover/salt/share' && route.request().method() === 'POST') { const b = JSON.parse(route.request().postData() || '{}'); shares.push(b); const n = (b.salts || []).length, total = shares.reduce((a, x) => a + x.salts.length, 0); return json(route, { ok: true, accepted: n, weight: n, rejected: [], today: { shares: total, weight: total * 4000, best: null } }); }
     if (u.pathname === '/prover/salt') return json(route, { recent: SALT_FINDS(), pointsPerDay: busy ? 0 : 1500, minBits, ...(market ? { schemes: ['market', 'createx'], shop: '0x' + 'aa'.repeat(20), market: '0x000000000000b361194cfe6312ee3210d53c15aa', nonceMax: 254 } : {}), today: { miners: 2, shares: 30, weight: 400000 }, top: [{ miner: ADDR, shares: 20, weight: 2200 }], live: [{ miner: OTHER, at: Date.now() - 60_000 }, { miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', at: Date.now() - 30_000, house: true }, ...Array.from({ length: crowd }, (_, k) => ({ miner: '0x' + (k + 1).toString(16).padStart(40, '0'), at: Date.now() - 45_000 }))], rate: 2_400_000, bank: [{ address: '0x0000000000ab12cd34ef56ab78cd90ef12ab34cd', bits: 41, miner: OTHER }, { address: '0x0000000000cd12cd34ef56ab78cd90ef12ab34cd', bits: 40, miner: '0x68575b073de49a94e3e3acf6f3a0d6e3b66267c7', house: true }] });
-    if (u.pathname === '/prover/salt/bank') return noBank ? json(route, {}, 500) : json(route, { bank: SALT_BANK().map((b) => ({ ...b, salt: '0x' + '00'.repeat(32) })) });
+    if (u.pathname === '/prover/salt/bank') {
+      const bank = SALT_BANK().map((b) => ({ ...b, salt: '0x' + '00'.repeat(32), ...(b.address === DEPLOYED ? { spent: true } : {}) }));
+      return noBank ? json(route, {}, 500) : json(route, { bank, free: bank.filter((b) => !b.spent).length });
+    }
     return json(route, {}, 404);
   });
-  // the public RPC: eth_getCode of the banked addresses is batched (the first is a contract); anything else goes to the network as before
+  // the public RPC: the page no longer asks it which banked addresses hold code (the bank marks them), so an eth_getCode batch arriving
+  // here is a regression and `codeReads` catches it; anything else goes to the network as before
   await page.route('https://ethereum-rpc.publicnode.com/**', (route) => {
     const req = route.request();
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'POST', 'access-control-allow-headers': 'content-type' } });
@@ -449,7 +454,7 @@ try {
     await page.locator('#salt-bank').evaluate((el) => { el.scrollTop = el.scrollHeight; });
     await page.waitForFunction(() => !document.querySelector('#salt-bank').classList.contains('more') && document.querySelector('#salt-bank').lastElementChild.getBoundingClientRect().bottom <= document.querySelector('#salt-bank').getBoundingClientRect().bottom + 1);
     check(true, 'scrolled to the end, the last address is in view and the fade is gone');
-    check(codeReads.length === 1 && codeReads[0] === 9, 'the chain is asked once, in one batch, for all the banked addresses', JSON.stringify(codeReads));
+    check(codeReads.length === 0, 'the page asks no RPC which addresses are spent: the bank says so itself', JSON.stringify(codeReads));
     local.v.mine = { ...local.v.mine, job: { id: 'j1', secs: 120, stage: 'shrink', eta: 360 }, proved: 2 };
     await page.waitForFunction(() => document.querySelector('#title').textContent === 'Proving');
     check((await text(page, '#net-join span')) === 'Your node is proving', 'proving: the stage\'s button says so', await text(page, '#net-join span'));

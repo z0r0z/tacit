@@ -6,7 +6,7 @@
 //   (cd contracts && forge build)
 //   node tools/tacit-chain-kit.mjs --bootstrap 0x… --vkey 0x… [--seats-salt 0x… --blocks-salt 0x…] [--rpc URL]
 //
-// Salts default to the two best in the salt bank (GET /prover/salt/bank) whose addresses hold no code yet. Every parameter is printed
+// Salts default to the two best in the salt bank (GET /prover/salt/bank) that it does not mark spent. Every parameter is printed
 // and written into the kit; the page shows them again before anything is sent.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -56,7 +56,6 @@ const rpc = async (method, params) => {
   if (j.error) throw new Error(`${method}: ${j.error.message}`);
   return j.result;
 };
-const codeAt = async (a) => strip(await rpc('eth_getCode', [a, 'latest'])).length > 0;
 const artifact = (name) => {
   const j = JSON.parse(readFileSync(join(ROOT, `contracts/out/${name}.sol/${name}.json`), 'utf8'));
   return strip(j.bytecode.object);
@@ -65,11 +64,15 @@ const artifact = (name) => {
 // the salts: given, or the bank's best two whose addresses are still empty
 let seatsSalt = arg('seats-salt'), blocksSalt = arg('blocks-salt');
 if (!seatsSalt || !blocksSalt) {
-  const { bank } = await (await fetch(`${API}/prover/salt/bank`)).json();
+  // The bank marks a salt `spent` once its address holds code, and counts what is left (worker/src/salt-pool.js), so which are free is
+  // the bank's own answer. An older API that does not say is refused rather than guessed at: guessing would deploy over a spent salt.
+  const { bank, free: freeCount } = await (await fetch(`${API}/prover/salt/bank`)).json();
+  if (!Number.isInteger(freeCount)) fail('the salt bank does not mark spent salts: deploy the API that does, then run this again');
   const free = [];
   for (const b of bank) {
+    if (b.spent === true) continue;
     if (b.salt.slice(2, 42).toLowerCase() !== strip(DEPLOYER) || create3(b.salt) !== b.address.toLowerCase()) continue;
-    if (!(await codeAt(b.address))) free.push(b);
+    free.push(b);
     if (free.length === 2) break;
   }
   if (free.length < 2) fail('the salt bank has fewer than two unused salts');
