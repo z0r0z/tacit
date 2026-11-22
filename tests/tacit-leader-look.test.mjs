@@ -2,6 +2,7 @@
 //   node tests/tacit-leader-look.test.mjs
 import assert from 'node:assert';
 import { makeLooks } from '../tacit-leader/look.mjs';
+import { nodeEnv } from '../tacit-leader/node-env.mjs';
 
 const L = makeLooks({ young: 120_000, mid: 600_000, everyMid: 60_000, everyOld: 300_000 });
 assert.ok(L.due('a', 0) && !L.aged('a', 0), 'a shield not seen yet is looked at, and is not aged');
@@ -28,5 +29,10 @@ assert.equal(L.size, 0, 'only the ids still waiting are kept');
   const steps = 600, mk = makeLooks(); const ids = Array.from({ length: 128 }, (_, i) => 'id' + i); let looks = 0;
   for (let s = 0; s < steps; s++) { const t = s * 6_000; for (const id of ids) if (mk.due(id, t)) { looks++; mk.saw(id, t, false); } }
   assert.ok(looks < 128 * steps * 0.15, `128 unfunded shields cost ${looks} looks in an hour, not ${128 * steps}`);
+}
+// the node is started with its own settings only
+{
+  const e = nodeEnv({ PATH: '/bin', HOME: '/h', TACIT_NODE_ADMIN: 'a', TACIT_NODE_MEMPOOL: '/m', RUST_LOG: 'info', LEADER_KEY: '0x1', LEADER_CHAIN_SEED: '0x2', BOARD_TOKEN: 't', RPC_URL: 'u' }, { TACIT_NODE_ASSET: '0x3' });
+  assert.deepEqual(Object.keys(e).sort(), ['HOME', 'PATH', 'RUST_LOG', 'TACIT_NODE_ADMIN', 'TACIT_NODE_ASSET', 'TACIT_NODE_MEMPOOL']);
 }
 console.log('leader look schedule: all passed');

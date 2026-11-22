@@ -32,6 +32,7 @@ import { feeTerms, readPrice, makeFeeDesk, admitPaying, blockReady, landCover } 
 import { archiveEntry, loadArchive } from './archive.mjs';
 import { hopsIn, hopKey, makeHopLedger, sweepHops } from './hops.mjs';
 import { makeLooks } from './look.mjs';
+import { nodeEnv } from './node-env.mjs';
 import { makeBoardProver } from '../worker-relay/src/lib/board-prover.js';
 
 // one transaction at a time from the leader's key, so the seed's, a sweep's, a landing's and the hops' never take the same nonce
@@ -516,7 +517,7 @@ async function main() {
   log({ leader: me, blocks: BLOCKS, chainHeight: Number(chainHeight) });
   const [lander] = [BLOCKS];
   const [tacAsset] = await view('TAC_ASSET()', ['bytes32']);
-  const child = spawn(NODE_BIN, ['serve', String(num(await rpc.call('eth_chainId'))), `${lander}@${NODE_ADDR}`], { stdio: ['ignore', 'inherit', 'inherit'], env: { ...env, TACIT_NODE_ASSET: tacAsset } });
+  const child = spawn(NODE_BIN, ['serve', String(num(await rpc.call('eth_chainId'))), `${lander}@${NODE_ADDR}`], { stdio: ['ignore', 'inherit', 'inherit'], env: nodeEnv(env, { TACIT_NODE_ASSET: tacAsset }) });
   child.on('exit', (c) => { log({ nodeExited: c }); process.exit(1); });
   const stopNode = () => child.kill();
   process.on('exit', stopNode);
