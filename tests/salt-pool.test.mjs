@@ -364,3 +364,67 @@ test('market named but no shop: nothing of the market is taken, not even a salt 
   assert.equal('marketBank' in (await pool.bank()).body, false);
   assert.equal('shop' in (await pool.summary()).body, false);
 });
+
+test('the bank marks a salt spent once its address holds a contract, and counts the free ones', async () => {
+  let t = 200 * DAY;
+  const kv = kvStore();
+  const asked = [];
+  // the chain: the first address holds code, the second does not, the third cannot be answered for
+  const code = new Map();
+  const codeAt = async (a) => { asked.push(a); return code.has(a) ? code.get(a) : false; };
+  const pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, bankBits: 8, sendEveryMs: 0, spentEveryMs: 1000 }, now: () => t, codeAt });
+  const g = [grind(200, 8), grind(200, 8), grind(200, 8)];
+  await pool.submit({ miner: A, salts: g.map((x) => x.salt), client: 'c1' });
+
+  // nothing is spent yet
+  let b = (await pool.bank()).body;
+  assert.equal(b.bank.length, 3);
+  assert.equal(b.free, 3, 'all three are free');
+  assert.ok(b.bank.every((x) => !x.spent));
+  assert.equal(asked.length, 3, 'each free address is asked about once');
+
+  // one of them gets deployed to
+  code.set(g[0].address, true);
+  t += 2000;                       // past spentEveryMs
+  b = (await pool.bank()).body;
+  assert.equal(b.free, 2, 'the deployed one is no longer free');
+  assert.equal(b.bank.find((x) => x.address === g[0].address).spent, true);
+  assert.ok(b.bank.filter((x) => x.address !== g[0].address).every((x) => !x.spent));
+
+  // a spent salt stays in the bank and is never asked about again; only the free ones are
+  asked.length = 0;
+  t += 2000;
+  await pool.bank();
+  assert.deepEqual(asked.sort(), [g[1].address, g[2].address].sort(), 'only the free addresses are asked about');
+
+  // and not asked again until spentEveryMs has passed
+  asked.length = 0;
+  await pool.bank();
+  assert.equal(asked.length, 0, 'the chain is asked at most every spentEveryMs');
+
+  // the summary agrees and carries the same marks
+  const s = (await pool.summary()).body;
+  assert.equal(s.banked, 3);
+  assert.equal(s.bankFree, 2);
+  assert.equal(s.bank.find((x) => x.address === g[0].address).spent, true);
+});
+
+test('a salt is never called spent on an answer the chain could not give', async () => {
+  let t = 200 * DAY;
+  const kv = kvStore();
+  // every look fails, as a down RPC does
+  const pool = makeSaltPool({ kv, cfg: { ...SALT_POOL, minBits: 8, bankBits: 8, sendEveryMs: 0, spentEveryMs: 0 }, now: () => t, codeAt: async () => null });
+  const g = grind(200, 8);
+  await pool.submit({ miner: A, salts: [g.salt], client: 'c1' });
+  const b = (await pool.bank()).body;
+  assert.equal(b.free, 1, 'an unanswered address stays free');
+  assert.ok(!b.bank[0].spent);
+
+  // a marked salt keeps its mark even when the chain cannot be reached afterwards
+  const kv2 = kvStore();
+  await kv2.put('sl:bank', JSON.stringify([{ address: '0x' + '33'.repeat(20), bits: 40, miner: A, at: t, spent: true }]));
+  const p2 = makeSaltPool({ kv: kv2, cfg: { ...SALT_POOL, spentEveryMs: 0 }, now: () => t, codeAt: async () => { throw new Error('down'); } });
+  const b2 = (await p2.bank()).body;
+  assert.equal(b2.bank[0].spent, true, 'the mark survives');
+  assert.equal(b2.free, 0);
+});

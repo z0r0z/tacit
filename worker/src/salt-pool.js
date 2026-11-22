@@ -24,7 +24,13 @@
 // Who is grinding now (every address that sent shares in the last liveMs, Tacit's own named so) and how fast the network grinds (the shares
 // of the last hour or so, each the 2^minBits salts a share takes on average) are in GET /prover/salt, for the page's live row.
 //
+// A banked salt stays in the bank once it has been deployed with (the work was real and its points are paid), so the bank marks the ones
+// already used: GET /prover/salt/bank gives each `spent: true` when its address holds code, and `free` for how many are left to deploy to.
+// A spent salt is never asked about again; the free ones are asked at most every spentEveryMs, and an RPC that cannot answer leaves the
+// marks as they were, so a free salt is never wrongly called spent.
+//
 // Storage (KV): sl:seen:<salt> (kept 3 days), sl:m:<day>:<miner> ({ shares, weight, best }), sl:miners:<day> ([miner]), sl:bank (best first),
+// sl:bank:looked and sl:bank:market:looked (when the free ones were last asked about),
 // sl:rate:<client> (when it last sent), sl:live ({ miner: { at, house } }), sl:hour:<n> (shares in UTC hour n).
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
@@ -43,7 +49,11 @@ export const SALT_POOL = Object.freeze({
   potPoints: 5000,          // the campaign's daily points when its terms cannot be read (50 TAC at 0.01 TAC a point)
   bankBits: 32,             // SALT_BANK_BITS: the best bankKeep salts at least this good (four zero bytes) are kept for deploys
   bankKeep: 64,
-  goodBits: 32,             // SALT_GOOD_BITS: a find at least this good (four zero bytes) goes on the page's activity feed (about one a minute at today's rate)
+  // A banked salt only Tacit's deployer can use, so code at its address means that salt is spent. The bank keeps a spent salt (the work
+  // was real and its points are paid), so a reader has to know which are still free: the pool marks them from the chain.
+  spentRpcs: Object.freeze(['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org']),   // SALT_SPENT_RPCS
+  spentEveryMs: 10 * 60_000,   // how often the free ones are looked at again; a spent one is never looked at twice
+  goodBits: 32,           // SALT_GOOD_BITS: a find at least this good (four zero bytes) goes on the page's activity feed (about one a minute at today's rate)
   recentKeep: 30,           // the newest good finds kept for that feed
   perCall: 64,              // salts one send may carry
   sendEveryMs: 20_000,      // one send per client this often
@@ -83,6 +93,8 @@ export function saltPoolConfig(env = {}) {
     pointsPerDay: n(env.POINTS_SALT_DAILY, SALT_POOL.pointsPerDay, 0, 1_000_000),
     floorPoints: n(env.POINTS_SALT_FLOOR, SALT_POOL.floorPoints, 0, 1_000_000),
     bankBits: n(env.SALT_BANK_BITS, SALT_POOL.bankBits, 24, 96),
+    spentRpcs: ((us) => (us.length ? Object.freeze(us) : SALT_POOL.spentRpcs))(
+      String(env.SALT_SPENT_RPCS || '').split(',').map((u) => u.trim()).filter((u) => /^https:\/\//.test(u)).slice(0, 4)),
     goodBits: n(env.SALT_GOOD_BITS, SALT_POOL.goodBits, 24, 96),
     ...marketTerms(env),
     house: String(env.SALT_HOUSE || SALT_POOL.deployer).split(',').map((a) => a.trim().toLowerCase()).filter((a) => ADDR.test(a)),
@@ -122,9 +134,30 @@ function makeLock() {
 
 // kv: { get, put(key, value, { expirationTtl }?) }. potPoints() → the campaign's daily points (its terms: daily amount over the most a
 // point earns); proofPoints(day) → the points the day's proofs earned (the proof pool's and the board's tallies). Every call answers
-// { status, body }.
+// { status, body }. `codeAt(address)` → whether an address holds code, for marking a banked salt spent; the default asks cfg.spentRpcs.
 const marketOn = (cfg) => (cfg.schemes || []).includes('market') && ADDR.test(String(cfg.shop || ''));
-export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock = makeLock(), potPoints = async () => cfg.potPoints, proofPoints = async () => 0 }) {
+
+// Does an address hold code? Asks each RPC in turn and gives up quietly: a bank whose spent marks could not be refreshed is served with
+// the marks it already had, never with a free salt wrongly called spent.
+export function makeCodeAt({ rpcs = SALT_POOL.spentRpcs, fetchFn = (...a) => fetch(...a), timeoutMs = 8000 } = {}) {
+  return async (address) => {
+    for (const url of rpcs) {
+      try {
+        const r = await fetchFn(url, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getCode', params: [address, 'latest'] }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!r.ok) continue;
+        const code = (await r.json())?.result;
+        if (typeof code === 'string' && code.startsWith('0x')) return code.length > 2;
+      } catch { /* the next RPC */ }
+    }
+    return null;   // unknown: leave the mark alone
+  };
+}
+
+export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock = makeLock(), potPoints = async () => cfg.potPoints, proofPoints = async () => 0, codeAt = null }) {
   // What a day's salts share: what its proofs leave of the pot, up to pointsPerDay, and at least floorPoints (itself never past pointsPerDay)
   // however much the proofs took. The floor is points on top of the pot: the campaign shares its daily amount over every point of the day.
   // `campaignPot`: the campaign's daily points as the day itself had them (the service that pays the day knows its own terms for it); without it the
@@ -138,6 +171,31 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
   const write = (k, v, secs) => kv.put(k, JSON.stringify(v), secs ? { expirationTtl: secs } : undefined);
   const dayOf = (t) => Math.floor(t / DAY_MS);
   const reply = (status, body) => ({ status, body });
+
+  // The bank, with each salt marked `spent` if its address holds code by now. Spending is one way, so a salt already marked is never
+  // asked about again; the free ones are asked at most every spentEveryMs. An RPC that cannot answer leaves the bank as it stands, so a
+  // salt is called spent only on an answer that says so. Readers pick their next deploy address from the ones left free.
+  const look = codeAt || makeCodeAt({ rpcs: cfg.spentRpcs || SALT_POOL.spentRpcs });
+  async function withSpent(key) {
+    const bank = await read(key, []);
+    if (!Array.isArray(bank) || !bank.length) return bank;
+    const free = bank.filter((b) => !b.spent && ADDR.test(String(b.address || '')));
+    const since = Number(await kv.get(`${key}:looked`)) || 0;
+    if (!free.length || now() - since < (cfg.spentEveryMs ?? SALT_POOL.spentEveryMs)) return bank;
+    // The turn is taken before the chain is asked, so a burst of requests asks once between them, and an RPC that is
+    // down costs one round of calls rather than one per request.
+    await kv.put(`${key}:looked`, String(now()));
+    const seen = await Promise.all(free.map((b) => look(b.address).catch(() => null)));
+    const spent = new Set(free.filter((b, i) => seen[i] === true).map((b) => b.address));
+    if (!spent.size) return bank;
+    return lock(async () => {
+      // re-read inside the lock: a send may have rewritten the bank while the chain was being asked
+      const marked = (await read(key, [])).map((b) => (spent.has(b.address) ? { ...b, spent: true } : b));
+      await write(key, marked);
+      return marked;
+    });
+  }
+  const bankView = ({ address, bits, miner, at, house, spent }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}), ...(spent ? { spent: true } : {}) });
 
   // A send: { miner, salts: [0x…], client } → { accepted, weight, rejected: [{ salt, why }] }.
   async function submit({ miner, salts, client, software, ua }) {
@@ -221,9 +279,9 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
   }
   async function summary() {
     const t = now(), day = dayOf(t), recs = await dayMiners(day);
-    const bank = await read('sl:bank', []);
+    const bank = await withSpent('sl:bank');
     const market = marketOn(cfg);
-    const marketBank = market ? await read('sl:bank:market', []) : [];
+    const marketBank = market ? await withSpent('sl:bank:market') : [];
     // The rate: the last hour's shares and this one's so far, over the time they span, each 2^minBits salts on average.
     const h = Math.floor(t / HOUR_MS), [prev, cur] = await Promise.all([kv.get(`sl:hour:${h - 1}`), kv.get(`sl:hour:${h}`)]);
     const span = HOUR_MS + (t - h * HOUR_MS);
@@ -238,13 +296,21 @@ export function makeSaltPool({ kv, cfg = SALT_POOL, now = () => Date.now(), lock
       deployer: cfg.deployer, createx: cfg.createx, schemes: cfg.schemes || ['createx'], ...(market ? { shop: cfg.shop, market: cfg.market, nonceMax: cfg.nonceMax } : {}), minBits: cfg.minBits, maxWeightBits: cfg.maxWeightBits, bankBits: cfg.bankBits, pointsPerDay: await saltPot(day), day, rate, live, software: Object.fromEntries(Object.entries(software).sort((a, b) => b[1] - a[1])),
       today: { miners: recs.length, shares: recs.reduce((s, r) => s + r.shares, 0), weight: recs.reduce((s, r) => s + r.weight, 0) },
       top: recs.sort((a, b) => b.weight - a.weight).slice(0, 20).map((r) => ({ miner: r.miner, shares: r.shares, weight: r.weight, best: r.best })),
-      bank: bank.slice(0, 10).map(({ address, bits, miner, at, house }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}) })),
-      banked: bank.length,
-      ...(market ? { marketBank: marketBank.slice(0, 10).map(({ address, bits, miner, at, nonce, house }) => ({ address, bits, nonce, miner, at, ...(house ? { house: true } : {}) })), marketBanked: marketBank.length } : {}),
+      bank: bank.slice(0, 10).map(bankView),
+      banked: bank.length, bankFree: bank.filter((b) => !b.spent).length,
+      ...(market ? { marketBank: marketBank.slice(0, 10).map((b) => ({ ...bankView(b), nonce: b.nonce })), marketBanked: marketBank.length, marketBankFree: marketBank.filter((b) => !b.spent).length } : {}),
       recent: (await read('sl:recent', [])).slice(0, 12).map(({ address, bits, miner, at, house }) => ({ address, bits, miner, at, ...(house ? { house: true } : {}) })),
     });
   }
-  async function bankList() { return reply(200, { bank: await read('sl:bank', []), ...(marketOn(cfg) ? { marketBank: await read('sl:bank:market', []) } : {}) }); }
+  // The whole bank, each salt marked `spent` once its address holds code, and how many are still free to deploy to.
+  async function bankList() {
+    const bank = await withSpent('sl:bank');
+    const market = marketOn(cfg) ? await withSpent('sl:bank:market') : null;
+    return reply(200, {
+      bank, free: bank.filter((b) => !b.spent).length,
+      ...(market ? { marketBank: market, marketFree: market.filter((b) => !b.spent).length } : {}),
+    });
+  }
   return { submit, credits, summary, bank: bankList };
 }
 
