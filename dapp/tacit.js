@@ -3491,22 +3491,26 @@ async function getFeeRate(tier = null, opts = {}) {
     if (!Number.isFinite(rate) || rate <= 0) throw new Error('bad shape');
     return rate;
   };
+  // The recommended fees (mempool.space and its mirrors) are the rate, as fee-floor.js has it for the pages that do not load this file. Core's estimates (esplora /fee-estimates) refine it down at the
+  // 1 sat/vB floor below, and stand in only when no recommended fee can be read: racing the two kinds made a quote depend on which host answered first (a next-block estimate of 4.4 against a
+  // recommended 1, the same day), and so the same address short for a bridge's Bitcoin fee one minute and fine the next.
   const attempts = [_mempoolStyle(NET.api)];
   const fractional = [];   // the explorers that answer with Core's fractional estimates (mempool.space's stop at 1)
   // a host the explorers throttle asks the API's chain proxy too (else every source fails and the 15 sat/vB fallback overpays)
   if (_CHAIN_VIA_WORKER && WORKER_BASE) {
     const q = `?network=${encodeURIComponent(net)}`;
     const viaProxy = _blockstreamStyle(`${WORKER_BASE}/chain`, q);
-    attempts.push(_mempoolStyle(`${WORKER_BASE}/chain`, q), viaProxy); fractional.push(viaProxy);
+    attempts.push(_mempoolStyle(`${WORKER_BASE}/chain`, q)); fractional.push(viaProxy);
   }
-  if (NET.api2) { const second = _blockstreamStyle(NET.api2); attempts.push(second); fractional.push(second); }
+  if (NET.api2) fractional.push(_blockstreamStyle(NET.api2));
   if (net === 'mainnet') {
     attempts.push(_mempoolStyle('https://mempool.fra.mempool.space/api'));
     attempts.push(_mempoolStyle('https://mempool.tk7.mempool.space/api'));
   }
+  for (const f of fractional) f.catch(() => {});
   let floorNow = 1;
   try {
-    let rate = await Promise.any(attempts);
+    let rate = await Promise.any(attempts).catch(() => Promise.any(fractional));
     // mempool.space's recommended fees stop at 1 sat/vB: when that is what came back, an explorer with fractional estimates may say less (a backlog of 0.12 sat/vB transactions)
     if (net === 'mainnet' && rate <= 1 && fractional.length) {
       const frac = await Promise.race([Promise.any(fractional).catch(() => null), new Promise((r) => setTimeout(() => r(null), 1200))]);
@@ -29978,6 +29982,17 @@ async function loadUnspentSpCredits(diag = null) {
   return out;
 }
 
+// What sweeping coins (each { value, _sp? }, any order) into one P2WPKH coin comes to at a fee rate: the coins that add more than their own input costs, one fee for all of them, no change.
+// ok when the one coin that results is at least max(DUST, minOut).
+function planSatsSweep(coins, feeRate, minOut = 0) {
+  const list = [...(coins || [])].filter((u) => Number(u?.value) > 0).sort((a, b) => b.value - a.value).slice(0, 400);   // the largest 400: one transaction stays well under the standard size
+  const fee = (n) => feeFor(estSatsSendVb(n, false, false, list.slice(0, n).filter((u) => u._sp).length), feeRate);
+  let n = list.length;
+  while (n > 0 && list[n - 1].value <= fee(n) - fee(n - 1)) n--;
+  const picked = list.slice(0, n), total = picked.reduce((a, u) => a + u.value, 0), f = n ? fee(n) : 0, out = total - f;
+  return { ok: n > 0 && out >= Math.max(DUST, Number(minOut) || 0), n, total, fee: f, out, picked };
+}
+
 function estSatsSendVb(numInputs, hasChange, recipientIsP2tr = false, numP2trInputs = 0) {
   const recipientOutVb = recipientIsP2tr ? p2trOutVbytes : p2wpkhOutVbytes;
   const changeOutVb = hasChange ? p2wpkhOutVbytes : 0;
@@ -29997,8 +30012,11 @@ function buildSatsSendTx({ inputs, recipientScript, recipientValue, changeScript
 
 function satsSendFeeMargin(previewFee) { return Math.max(100, Math.ceil(previewFee / 10)); }
 
-async function buildAndBroadcastSatsSend({ recipientAddr, amountSats, maxFee = null }) {
+// sweep: { minOut } sends every spendable coin worth its own fee (the address's coins and its silent payments) to this key's own address as one coin, after one fee, and refuses a result under minOut;
+// with preview: true it only says what that would be ({ ok, n, total, fee, out }) and signs nothing. A sweep never takes another address: it is the one way to make several small coins into one.
+async function buildAndBroadcastSatsSend({ recipientAddr, amountSats, maxFee = null, sweep = null, preview = false }) {
   await ensurePrivkey();
+  if (sweep) recipientAddr = wallet.address();
   const sp = decodeSilentPaymentAddress(recipientAddr);
   let decoded = null;
   if (sp) {
@@ -30011,9 +30029,11 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats, maxFee = n
   const recipientIsSilent = !!sp;
   const recipientIsP2tr = recipientIsSilent || decoded?.version === 1;
 
-  const amt = Number.isFinite(amountSats) ? Math.floor(amountSats) : NaN;
-  if (!Number.isInteger(amt) || amt <= 0) throw new Error('amount must be a positive integer (sats)');
-  if (amt < DUST) throw new Error(`amount must be at least ${DUST} sats (dust limit)`);
+  let amt = Number.isFinite(amountSats) ? Math.floor(amountSats) : NaN;
+  if (!sweep) {
+    if (!Number.isInteger(amt) || amt <= 0) throw new Error('amount must be a positive integer (sats)');
+    if (amt < DUST) throw new Error(`amount must be at least ${DUST} sats (dust limit)`);
+  }
 
   const holdings = await scanHoldingsOrStale(Infinity);
   if (!holdings || !(holdings instanceof Map)) {
@@ -30063,7 +30083,13 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats, maxFee = n
   const changeScript = p2wpkhScript(wallet.pub);
   let picked = [], total = 0, fee = 0, hasChange = false, change = 0;
   const _numP2tr = () => picked.filter(u => u._sp).length;
-  for (let i = 0; i < allSats.length; i++) {
+  if (sweep) {
+    const plan = planSatsSweep(allSats, feeRate, sweep.minOut);
+    if (preview) { const { picked: used, ...said } = plan; return { ...said, sp: used.filter((u) => u._sp).length }; }   // counts and sats only: the coins carry spending keys
+    if (!plan.ok) throw new Error(`These coins add up to ${plan.total.toLocaleString('en-US')} sats, which leaves ${Math.max(0, plan.out).toLocaleString('en-US')} after the ${plan.fee.toLocaleString('en-US')} sats fee: not enough${sweep.minOut ? ` for one coin of ${Number(sweep.minOut).toLocaleString('en-US')}` : ''}. Nothing was sent.`);
+    picked = plan.picked; total = plan.total; fee = plan.fee; amt = plan.out;
+  }
+  for (let i = 0; !sweep && i < allSats.length; i++) {
     picked.push(allSats[i]); total += allSats[i].value;
     const nP2tr = _numP2tr();
     const feeWithChange = feeFor(estSatsSendVb(picked.length, true, recipientIsP2tr, nP2tr), feeRate);
@@ -62411,7 +62437,7 @@ export {
   hash160, recordOpening,
   p2wpkhScript, TAP_NUMS, modN,
   buildAndBroadcastCXfer, buildAndBroadcastCEtch, buildAndBroadcastCMint,
-  buildAndBroadcastSatsSend, satsSendFeeMargin,
+  buildAndBroadcastSatsSend, planSatsSweep, satsSendFeeMargin,
   ensureSatsFunded,
   _verifyAutoFulfilFundingTx as verifyAutoFulfilFundingTx,
   dropIdFromRevealTxid, dropKernelMsg, dropReclaimMsg,

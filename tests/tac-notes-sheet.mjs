@@ -37,6 +37,7 @@ const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails+
 
 const KEY = '11'.repeat(31) + '22', TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const CORS = { 'access-control-allow-origin': '*', 'content-type': 'application/json' };
+const POSTED = [];   // transactions the page broadcasts (answered with a txid; nothing leaves this machine)
 const H = 900000, PROOF = 900100;
 // the key's TAC on Bitcoin: three notes the proof tracks, two it does not, and one that holds nothing
 const NOTES = [['a1', 600, true], ['a2', 300, true], ['a3', 250, true], ['b1', 120, false], ['b2', 80, false], ['c1', 0, true]]
@@ -71,6 +72,8 @@ try {
     if (LATE && /slipstream\.mara\.com\/api\/rates/.test(u)) return json({ effective_rate: 8, submit_fee_rate: 8, market_rate: 4, multiplier: 2, slipstream_rate: 8, discounted_multiplier: 2 });
     if (LATE && /\/tx\/[0-9a-f]{64}(\?|$)/.test(u)) return json({ status: { confirmed: true, block_height: H, block_time: 1700000000 }, vout: [{ scriptpubkey: OWN_SPK, value: 546 }] });
     if (/\/address\/[^/]+\/utxo/.test(u)) return json(COIN);
+    if (/\/scripthash\/|\/address\/[^/]+\/txs/.test(u)) return json([]);   // the lock sync reads the address's history: none
+    if (r.request().method() === 'POST' && /\/tx$/.test(u)) { POSTED.push(r.request().postData()); return r.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'text/plain' }, body: 'ab'.repeat(32) }); }
     if (/\/v1\/fees\/recommended/.test(u)) return json({ fastestFee: 4, halfHourFee: 3, hourFee: 2, economyFee: 1, minimumFee: 1 });
     if (/\/fee-estimates/.test(u)) return json({ 1: 4, 3: 3, 6: 2, 144: 1 });
     if (/\/blocks\/tip\/height/.test(u)) return r.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'text/plain' }, body: String(PROOF + 30) });
@@ -226,6 +229,20 @@ try {
   const none = await text('#br-rcpt');
   ok(/The move spends one coin whole: this key’s Bitcoin address has no free coin, and this needs one of [\d,]+ sats\. Not counted as free: 0\.000007 BTC in silent payments, which are not coins at this address and 0\.000003 BTC in coins under 546 sats, too small to spend\. Add bitcoin to it/.test(none) && !/holds 0 BTC/.test(none),
     `with no free coin it says so, and says what the address has that does not count: ${none.slice(none.indexOf('The move spends')).slice(0, 420)}`);
+  // three coins none of which is the one the move needs, that add up to it after a fee (and the silent payment above): it offers to make them one coin, and does, to this key's own address
+  COIN = [coin('f1', 0, 3000), coin('f2', 0, 2500), coin('f3', 0, 800)];
+  await page.waitForTimeout(16000);   // the address's coins are kept for 15 s
+  await page.check(`#bridge-body input[value="${'b1'.repeat(32)}:0"]`);
+  await page.waitForSelector('#br-combine', { timeout: 90000 }).catch(() => {});
+  const offer = await text('#br-rcpt');
+  ok(/the largest free coin on this key’s Bitcoin address holds 0\.00003 BTC/.test(offer) && /Your 3 free coins and 1 silent payment hold 0\.00007 BTC between them\. One transaction makes them one coin of 0\.0000\d+ BTC, enough for this; its network fee is about [\d,]+ sats\./.test(offer) && /Combine into one coin/.test(offer),
+    `it offers to combine them, with the fee: ${offer.slice(offer.indexOf('Your 3')).slice(0, 300)}`);
+  POSTED.length = 0;
+  await page.click('#br-combine');
+  await page.waitForFunction(() => /One coin of|err/.test(document.querySelector('#br-status')?.textContent || ''), null, { timeout: 90000 }).catch(() => {});
+  const done = await text('#br-status');
+  ok(/✓ One coin of 0\.0000\d+ BTC at your Bitcoin address/.test(done), `and says what it made: ${done.slice(0, 200)}`);
+  ok(POSTED.length >= 1 && POSTED[0].slice(12, 14) === '04' && POSTED[0].includes(OWN_SPK) && POSTED[0].split(OWN_SPK).length === 2, `it broadcast one transaction, four inputs and a single output to this key (${POSTED.length} posted)`);
   ok(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''}`);
   if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT, fullPage: true });
   await ctx.close();

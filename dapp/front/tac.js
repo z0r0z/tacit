@@ -288,6 +288,7 @@ function renderBridgeIn(el) {
         const have = BigInt(cost.have || 0), arriving = BTC.pub === pub && BTC.pending > 0n ? html` ${fmt(BTC.pending, 8, 8)} BTC is still arriving; once it confirms, check again.` : '';
         warn(rc, one ? html`This key’s Bitcoin address has ${fmt(have, 8, 8)} BTC free for fees, short of the ${sats(cost.need)} this needs.${arriving}${brHeldNote(got.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`
           : html`The move spends one coin whole: ${have ? html`the largest free coin on this key’s Bitcoin address holds ${fmt(have, 8, 8)} BTC` : 'this key’s Bitcoin address has no free coin'}, and this needs one of ${sats(cost.need)}.${coins.length > 1 ? html` The ${coins.length} free coins there hold ${fmt(coins.reduce((n, c) => n + BigInt(c.value || 0), 0n), 8, 8)} BTC in all.` : ''}${arriving}${brHeldNote(got.hold)} <a href="#bitcoin/receive" data-link="bitcoin/receive">Add bitcoin to it</a>`);
+        if (!one) brCombine(rc, pub, cost.need, () => my === seq && rc.isConnected, check);
       }
       if (BR.acked !== rvKey) ack.checked = false;
       if (toWrap) toWrap.hidden = pf.path !== 'reflected';
@@ -394,6 +395,35 @@ async function brSend(run, n, plan = null) {
     dashSoon();
     Promise.allSettled([loadBridge(true), loadBtc(true)]).then(() => rerender('tac'));
   } catch (e) { run.fail(status, brNoSats(e)); }
+}
+// The move spends one coin whole. When this key's coins (and silent payments, which sit apart from the address) add up to what it needs after one fee, say so and offer to make them one coin.
+// The sweep goes to this key's own address and nowhere else; the preview is read first, and the send stops if the fee has risen past it.
+const brSatsText = (v) => `${Number(v).toLocaleString('en-US')} sats`;
+async function brCombine(rc, pub, need, alive, again) {
+  const plan = await withKey((t) => t.buildAndBroadcastSatsSend({ sweep: { minOut: need }, preview: true }), pub).catch(() => null);
+  if (!plan?.ok || !alive() || $('#br-combine', rc)) return;
+  const sp = plan.sp, own = plan.n - sp, only = plan.n === 1;
+  const parts = only ? 'silent payment' : brAnd([own ? `${own} free coin${own === 1 ? '' : 's'}` : '', sp ? `${sp} silent payment${sp === 1 ? '' : 's'}` : ''].filter(Boolean));
+  rc.insertAdjacentHTML('beforeend', html`<p class="note">${only ? html`Your ${parts} holds ${fmt(BigInt(plan.total), 8, 8)} BTC, which is enough for this once it is a coin at your Bitcoin address.` : html`Your ${parts} hold ${fmt(BigInt(plan.total), 8, 8)} BTC between them.`} One transaction ${only ? 'moves it there' : 'makes them one coin'} of ${fmt(BigInt(plan.out), 8, 8)} BTC, enough for this; its network fee is about ${brSatsText(plan.fee)}.</p>
+    <button class="btn ghost" type="button" id="br-combine">${only ? 'Move it to my Bitcoin address' : 'Combine into one coin'}</button>`.s);
+  const btn = $('#br-combine', rc);
+  if (btn) btn.onclick = () => busy(btn, (run) => brCombineGo(run, pub, plan, need, again));
+}
+async function brCombineGo(run, pub, plan, need, again) {
+  const status = $('#br-status');
+  try {
+    run.say(status, 'Combining your coins…');
+    await (await getUx()).syncCbtcLockReservations(walletPriv());
+    const r = await withKey((t) => t.buildAndBroadcastSatsSend({ sweep: { minOut: need }, maxFee: plan.fee }), pub);
+    actBtc(r.txid, plan.n === 1 ? 'Moved to your Bitcoin address' : `Combined ${plan.n} coins into one`);
+    BR.pick = null; BR.rv = null; BR.at = 0;
+    say(status, html`<span class="ok">✓ One coin of ${fmt(BigInt(r.recipientValue), 8, 8)} BTC at your Bitcoin address</span> <a href="${MEMPOOL}/tx/${r.txid}" target="_blank" rel="noopener">${short(r.txid, 6)} ↗</a>. Pick the note again to bridge it.`);
+    dashSoon();
+    Promise.allSettled([loadBridge(true), loadBtc(true)]).then(() => rerender('tac'));
+  } catch (e) {
+    run.fail(status, brNoSats(e));
+    if (e?.feeRose) again();
+  }
 }
 const brNotes = (n) => `${n} note${n === 1 ? '' : 's'}`;
 const brAnd = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
