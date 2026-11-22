@@ -52,6 +52,10 @@ export function makeConfidentialStage({ ux: t, now = () => Math.floor(Date.now()
     const r = String(await t.ethCall(t.cfg.router, t.router.escrowAddressForCalldata(recipe))).replace(/^0x/, '');
     const a = '0x' + r.slice(-40);
     if (r.length < 64 || /^0x0{40}$/.test(a)) throw new Error('The stage’s escrow could not be read, so nothing was sent.');
+    // The same address computed here from the recipe: the router's clone of its executor (created at the router's nonce 1).
+    const router = lc(t.cfg.router).replace(/^0x/, '');
+    const impl = '0x' + Array.from(keccak_256(Uint8Array.from([0xd6, 0x94, ...(router.match(/../g) || []).map((b) => parseInt(b, 16)), 0x01])).slice(12), (b) => b.toString(16).padStart(2, '0')).join('');
+    if (lc(t.router.exitRecipeEscrow(impl, recipe, t.cfg.router)) !== lc(a)) throw new Error('The stage’s escrow does not match its recipe, so nothing was sent.');
     return lc(a);
   };
   // The unwrap's fee floor: its settle, and the relay's activation of the recipe at today's gas price with a third more.
