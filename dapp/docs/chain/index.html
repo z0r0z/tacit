@@ -602,14 +602,14 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 <section class="part" id="start">
   <p class="kick">Use it</p>
   <h2>Get <em>started</em></h2>
-  <p>Go to <a href="/tac/">tacit.finance/tac</a> and sign in with your Ethereum wallet. Signing in creates your Tacit key. The same wallet always creates the same key, so you can sign in again on any device.</p>
+  <p>Go to <a href="/tac/">tacit.finance/tac</a> and sign in with your Ethereum wallet or a passkey. Signing in opens your Tacit key. The same wallet or passkey always opens the same key, so you can sign in again on any device.</p>
   <ol class="steps">
-    <li><b>Shield.</b> Pick an amount of TAC and press Shield. If you have no ETH, you sign once and the leader sends it in for a small fee in TAC. If you hold ETH, you sign and send one transaction yourself, with no fee. Your TAC then shows as private TAC on the Tacit chain. For now, each shield has a limit, which the page shows.</li>
+    <li><b>Shield.</b> Pick an amount of TAC and press Shield. If you have no ETH, you sign once and the leader sends it in for a small fee in TAC. If you hold ETH, you can send it in yourself with one signature and one transaction, and skip that fee. Your TAC then shows as private TAC on the Tacit chain. For now each shield has a limit, which the page shows.</li>
     <li><b>Send.</b> Enter a <code>tacit1…</code> address, a <code>name.wei</code> or an <code>0x…</code> address, and an amount. You see “Sent” within seconds. The payment settles on Ethereum about a minute later. A payment to a tacit1 address or a name stays private. A payment to an 0x address arrives as ordinary public TAC, but no one can see who sent it.</li>
-    <li><b>Get paid.</b> Open the Receive tab. Share your tacit1 address, or a pay link such as <code>tacit.finance/to/yourname/25</code>. You can also show a code to scan. It turns to “Paid” when the money arrives.</li>
-    <li><b>Withdraw.</b> Move TAC out to your wallet as public TAC, into the DeFi pool to swap, farm or borrow privately, or to Bitcoin.</li>
+    <li><b>Get paid.</b> Open the Receive tab. Share your tacit1 address, or a pay link such as <code>tacit.finance/to/yourname/25</code>. You can also show a code to scan. The request shows “Paid” as soon as the payment arrives, and “Settled on Ethereum” about a minute later.</li>
+    <li><b>Withdraw.</b> Choose where the TAC goes: your wallet, as public TAC; the private DeFi pool, to swap, farm or borrow; or Bitcoin.</li>
   </ol>
-  <p class="note">People can pay your tacit1 address on the chain once you have opened your Tacit wallet. If you already have private TAC in the DeFi pool, you can move it onto the chain from the same page.</p>
+  <p class="note">People can pay your tacit1 address on the chain as soon as you have signed in on the chain page. If you already hold private TAC in the DeFi pool, move it onto the chain from the same page.</p>
 </section>
 
 <!-- ─────────────── Fees ─────────────── -->
@@ -620,7 +620,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <div class="tbl"><table>
     <tr><th>Action</th><th>Stays in the pool</th><th>Pays for gas</th></tr>
     <tr><td class="t">Send</td><td>0.002 TAC</td><td>The leader’s fee</td></tr>
-    <tr><td class="t">Shield</td><td>A small margin, now 0.02%</td><td>The leader’s fee, plus sending it in if you signed once</td></tr>
+    <tr><td class="t">Shield</td><td>A small margin, 0.02% at the pool’s size today</td><td>The leader’s fee, plus sending it in if you signed once</td></tr>
     <tr><td class="t">Withdraw</td><td>0.1%, at least 0.002 TAC</td><td>The leader’s fee</td></tr>
   </table></div>
   <p>Your private balance is counted in shares of this pool. The part of each fee that stays in the pool makes every share worth a little more. So when other people pay, what you hold grows slightly. A share never loses value in TAC.</p>
@@ -655,8 +655,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <div class="tbl"><table>
     <tr><th></th><th>Public</th><th>Hidden</th></tr>
     <tr><td class="t">Shield</td><td>Your Ethereum address and the amount</td><td>Who holds it afterwards</td></tr>
-    <tr><td class="t">Send</td><td>That a block landed, and how many notes it made</td><td>Who paid whom, and how much</td></tr>
-    <tr><td class="t">Withdraw</td><td>The amount and the address it goes to</td><td>Who it came from</td></tr>
+    <tr><td class="t">Send</td><td>That a block landed, when, and how many notes it made</td><td>Who paid whom, and how much</td></tr>
+    <tr><td class="t">Withdraw</td><td>The amount, and where it goes: an address, or the DeFi pool</td><td>Who it came from</td></tr>
     <tr><td class="t">Balances</td><td>The total on the chain</td><td>What anyone holds</td></tr>
   </table></div>
   <p>Because the edges are public, a withdrawal of exactly the amount you shielded can be linked to it. Wait a while between the two, and use different amounts.</p>
@@ -669,9 +669,9 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <p>No single party can freeze your money. Here is what happens in each case.</p>
   <ul>
     <li><b>The leader stops.</b> If no block lands for 10 minutes, anyone may land the next one.</li>
-    <li><b>Your payment is left out.</b> Press “Post it to Ethereum yourself” in the app. Blocks must include it within an hour. A posted payment shows on Ethereum which notes it spends and creates, but not the amounts.</li>
-    <li><b>A shield never goes in.</b> After 7 days, press “Take back” in the app. The TAC goes back to your wallet, or into the DeFi pool as private TAC.</li>
-    <li><b>You lose your device.</b> Sign in with the same wallet somewhere else. You get the same key, and the app finds your notes again from the data on Ethereum.</li>
+    <li><b>Your payment is left out.</b> Press “Post it to Ethereum yourself” in the app. Once it has waited an hour, no block can land without it. A posted payment shows on Ethereum which notes it spends and creates, but not the amounts.</li>
+    <li><b>A shield never goes in.</b> After 7 days, press “Take it back” in the app. The TAC comes back as private TAC in the DeFi pool.</li>
+    <li><b>You lose your device.</b> Sign in with the same wallet or passkey somewhere else. You get the same Tacit key and address, and the app finds your notes again from the data on Ethereum. If you have turned on a PQ ID (see Notes and shares), the notes you receive after that open with its passkey or its 24-word backup phrase, not with your wallet alone. Keep one of them.</li>
   </ul>
 </section>
 
@@ -687,7 +687,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </ol>
   <p>Your device makes a zero-knowledge proof. The proof shows that you own the notes you are spending and that the amounts add up, without revealing either. It uses Halo2, the same circuit as the Bitcoin shielded pool.</p>
   <p>The leader checks the proof and adds the payment to the next block. A prover then runs the block program in SP1. The program checks every payment proof in the block in one step and produces a single Groth16 proof for the whole block. The <code>TacitBlocks</code> contract checks that proof on Ethereum and records the block.</p>
-  <p>Checking a block’s proof costs the same on Ethereum whether the block holds one payment or thirty. The payments in a block share that cost, which keeps fees low.</p>
+  <p>Checking a block’s proof costs the same on Ethereum however many payments the block holds. The payments in a block share that cost, and each adds only its own data, which keeps fees low.</p>
 </section>
 
 <!-- ─────────────── Notes ─────────────── -->
@@ -723,7 +723,8 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   <p>Your balance is made of notes. A note is a sealed record of an amount and its owner. The chain stores only the seal, called a commitment, so no one can read the amount or the owner from it.</p>
   <p>To spend notes, your wallet publishes their nullifiers. A nullifier is a tag that only the owner can compute. It marks a note as spent, so the note can’t be spent twice, but it doesn’t reveal which note it was.</p>
   <p>A payment spends up to two notes and creates up to three new ones: one for the person you pay, one for your change, and one for the leader’s fee.</p>
-  <p>Each new note comes with an encrypted memo of 1,152 bytes. Your wallet finds your notes by trying to open the memos with your key. The memos use ML-KEM-768 together with secp256k1, so even a future quantum computer couldn’t read one recorded today.</p>
+  <p>Each new note comes with an encrypted memo of 1,152 bytes. Your wallet finds your notes by trying to open the memos with your keys. The memos use ML-KEM-768, a post-quantum scheme, together with secp256k1.</p>
+  <p>With a <b>PQ ID</b> (still experimental), the keys behind your memos come from a passkey that no published key leads to. Notes sent to you then stay private even against a future quantum computer. Without one, those keys come from your Tacit key, whose public half is in your tacit1 address. Turn on a PQ ID in the Receive tab. It starts with a 24-word backup phrase to write down, and your tacit1 address does not change.</p>
   <p>Notes count shares of the pool. One share is worth <code>(pool + 1) / (shares + 1)</code> TAC. The extra 1 on each side is a virtual TAC that no note holds, so no single deposit can set the price. Shielding buys shares at this rate. Withdrawing sells them back, less the fee.</p>
 </section>
 
@@ -757,11 +758,11 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
     </svg>
     <figcaption>Each letter is a seat. Sixteen slots make an epoch, and Ethereum’s randomness picks which seat leads each slot. Two timers keep blocks coming if a leader goes quiet.</figcaption>
   </figure>
-  <p>Anyone can take a seat by locking 1,000 TAC. If you leave, you get the TAC back 7 days later.</p>
+  <p>Anyone can take a seat by locking 1,000 TAC. A seat counts from the next epoch. If you leave, you get the TAC back 7 days later.</p>
   <p>Time is split into slots of 50 Ethereum blocks, about 10 minutes each. In each slot, one seat leads. While no one holds a seat, the bootstrap leader leads.</p>
-  <p>Every payment includes a fee note for its leader, which pays the gas to land the block. Provers are paid in points.</p>
-  <p>Two rules keep the chain moving. If no block lands for 10 minutes, anyone may land one. And anything posted to the forced queue on Ethereum must be in a block within an hour.</p>
-  <p>To lead, run the node and leader from <a href="https://github.com/src-company/tacit/tree/main/tacit-leader" target="_blank" rel="noopener noreferrer">tacit-leader ↗</a> and call <code>announce(url)</code>. To prove blocks with your GPU, see <a href="/prove/">tacit.finance/prove</a>.</p>
+  <p>Every payment includes a fee note for the leader of the slot it lands in, and that leader pays the gas to land the block. Provers earn points for the blocks they prove.</p>
+  <p>Two rules keep the chain moving. If no block lands for 10 minutes, anyone may land one. And a payment posted to the forced queue on Ethereum must be in a block within an hour: once it has waited that long, no block can land without it.</p>
+  <p>To lead, lock 1,000 TAC with <code>join()</code>, run the node and leader from <a href="https://github.com/src-company/tacit/tree/main/tacit-leader" target="_blank" rel="noopener noreferrer">tacit-leader ↗</a>, and call <code>announce(url)</code> once so wallets know where to send payments for your slots. To prove blocks with your GPU, see <a href="/prove/">tacit.finance/prove</a>.</p>
 </section>
 
 <!-- ─────────────── Trust ─────────────── -->
@@ -777,7 +778,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </table></div>
   <p>The contract has no owner, no upgrade key and no pause. Improvements come as a new chain. Each person moves their own notes to it and keeps their privacy on the way.</p>
   <p>A block’s prover can see which nullifiers and new notes belong to the same payment within that block. It can’t see keys, amounts or owners.</p>
-  <p>The proofs use pairings, like most zk-rollups on Ethereum. The memos are already safe against quantum computers.</p>
+  <p>The proofs use pairings, like most zk-rollups on Ethereum. Notes sealed to a PQ ID can’t be opened by a future quantum computer, even from memos recorded today.</p>
 </section>
 
 <!-- ─────────────── Build ─────────────── -->
@@ -792,8 +793,10 @@ curl https://tacit-chain-leader.onrender.com/fee     <span class="c"># what a pa
     <tr><td class="t"><code>GET /state</code></td><td>Height, note root, counts, the forced queue, pool and shares</td></tr>
     <tr><td class="t"><code>GET /fee</code></td><td>The fee, the shield’s sending fee and limit, and the leader’s chain address</td></tr>
     <tr><td class="t"><code>GET /notes?from=N&amp;limit=M</code></td><td>New notes and their memos, to scan</td></tr>
+    <tr><td class="t"><code>GET /pending-notes</code></td><td>The new notes of payments waiting for a block</td></tr>
     <tr><td class="t"><code>GET /path/N</code></td><td>A note’s Merkle path</td></tr>
     <tr><td class="t"><code>GET /spent/0x…</code></td><td>Whether a nullifier is spent</td></tr>
+    <tr><td class="t"><code>GET /address/key/KEY</code></td><td>The chain address a Tacit key has published, with its signature</td></tr>
     <tr><td class="t"><code>POST /spend</code></td><td>Takes a proved payment. Follow it at <code>/receipt/ID</code>.</td></tr>
     <tr><td class="t"><code>POST /forced</code></td><td>The bytes to post with <code>TacitBlocks.force</code></td></tr>
   </table></div>
@@ -803,6 +806,7 @@ import { tacitChain } from './dapp/tacit-chain-config.js';
 import { makeHalo2System } from './dapp/btc-pool-halo2-prover.js';
 
 <span class="c">// rpcCall(method, params): an Ethereum JSON-RPC call. priv: the Tacit key</span>
+<span class="c">// wasm, params, vk: the prover files that /btc-pool/pin.json names. pinnedVkHash: its vk_hash</span>
 const system = makeHalo2System({ wasm, params, vk, pinnedVkHash });
 const c = makeChainClient({ cfg: tacitChain(), rpcCall, priv, system: () =&gt; system });
 await c.ready();
