@@ -110,6 +110,9 @@ try {
   ok((await page.$$eval('#wbal-box .wbal li', (es) => es.every((e) => e.querySelectorAll('button, a').length <= 1))), 'a row is one press: no button of its own beside it');
   ok(await page.evaluate(() => { const b = document.querySelector('#wbal-box'), a = document.querySelector('#w-tacit'); return !!(b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING); }), 'the balances come before the Tacit address card');
 
+  // the key's backup sits right under the address card, ahead of the rest, and says what to do for a pasted key
+  ok(await page.evaluate(() => { const a = document.querySelector('#w-tacit'), k = document.querySelector('#w-key'), p = document.querySelector('#pay-h'); return !!(a.compareDocumentPosition(k) & Node.DOCUMENT_POSITION_FOLLOWING) && !!(k.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING) && /Back up your key/.test(k.textContent) && /pasted this key in/.test(k.nextElementSibling?.textContent || ''); }), 'Back up your key comes right under the address card and says a pasted key is its own backup');
+
   // the old placeholder row is gone
   ok(!/connects when you lock BTC/.test(await text('#wallet-body')), 'the sheet no longer says the Bitcoin wallet "connects when you lock BTC to borrow"');
 

@@ -227,12 +227,17 @@ render.wallet = () => {
   if (!S.key) {
     const known = knownWallet(), other = otherWallet();
     mount(el, html`${known || other ? '' : html`<p class="lede-s">Your Tacit wallet holds your private balances. Signing in is free and sends nothing, and the same wallet or passkey opens it every time.</p>`}${signIn('ws')}
+      <p class="note">Looking for your key? Sign in first: Back up your key is the first thing under your address. A wallet or passkey sign-in has none to copy, so keep that wallet’s recovery phrase or passkey safe.</p>
       ${S.wallet && S.provider ? html`<div class="wl-foot"><div class="lbl"><span>Connected</span></div>${ethLine(openerOn(known) || openerOn(other))}</div>` : ''}`);
     return wireSignIn(el, 'ws', () => $('#sheet-wallet').close());
   }
   const k = S.key, kept = k.mode === 'ext' || k.mode === 'local', a = S.acct, pays = payer(), btcAddr = ctx.T?.extWallet?.state?.address || (k.mode === 'btc' || k.mode === 'ext' ? k.address : null);
   const btcOther = btcAddr && btcAddr !== k.address;
   const eth = html`<svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>`;
+  // (a wallet or passkey makes the key again at every sign-in, so there is no copy to take: the backup is theirs)
+  const keyHow = kept ? 'Copy it and keep the copy somewhere private, like a password manager. It lives in this browser only, so clearing the browser’s data or switching device loses it. To use it again, sign in and choose Paste a key.'
+    : k.mode === 'key' ? 'You pasted this key in, so your own copy is the backup. This tab holds it until 30 minutes without use, through a reload or a reopened tab.'
+    : `There is nothing to copy: your ${k.mode === 'passkey' ? 'passkey' : 'wallet'} makes this key each time you sign in. ${k.mode === 'passkey' ? 'Keep the passkey synced (iCloud Keychain, Google Password Manager) or its security key safe' : 'Keep the wallet’s recovery phrase safe'}, and signing in with it again brings everything back.`;
   mount(el, html`
     <div id="wbal-box">${walletBalances()}</div>
     <div class="who keyrow" id="w-tacit">
@@ -241,6 +246,9 @@ render.wallet = () => {
       <div class="u">Paid privately on ${chainMarks(['btc', 1])}</div>
       ${k.tacit ? html`<div class="u">ID <b class="num">${addressId(k.tacit)}</b> · a payer sees it too</div>` : ''}
       <div class="u by">Opened with ${viaText(k)} · <button class="link" type="button" id="w-lock">Lock</button></div></div>
+    <div class="lbl sep" id="w-key"><span>Back up your key</span></div>
+    <p class="note">${keyHow} Anyone who has the key holds these funds and the address that goes with it.</p>
+    ${kept ? html`<button class="btn ghost" type="button" id="w-backup">Copy key</button>` : ''}
     <div id="w-keys">${walletKeys()}</div>
     <div class="lbl sep" id="pay-h"><span>Public ETH comes from</span></div>
     <div class="opts" role="radiogroup" aria-labelledby="pay-h">
@@ -256,9 +264,7 @@ render.wallet = () => {
     <div class="status" role="status" id="ac-status"></div>
     ${btcOther || (S.wallet && S.provider) ? html`<div class="lbl sep"><span>Connected</span></div>` : ''}
     ${btcOther ? html`<div class="kv"><span>${chainTag('btc')}</span><b>${viewAddr(btcAddr, 8)}</b></div>` : ''}
-    ${ethLine()}
-    <div class="lbl sep"><span>Your key</span>${kept ? html`<button type="button" id="w-backup">Copy key to back up</button>` : ''}</div>
-    <p class="note">${kept ? 'Kept in this browser only: clearing its data loses it.' : k.mode === 'key' ? 'Pasted and not saved in this browser: this tab holds it until 30 minutes without use, through a reload or a reopened tab.' : 'Your wallet or passkey opens it again: keep that safe.'} Anyone who has the key holds these funds and the address that goes with it.</p>`);
+    ${ethLine()}`);
   $('#w-copy').onclick = () => k.tacit && copy(k.tacit, 'Tacit address copied');
   const ownBtn = $('#w-own'), ownSay = $('#w-own-say');
   const sayOwn = (t, err = false) => { ownSay.textContent = t; ownSay.classList.toggle('err', err); ownSay.hidden = !t; };
