@@ -83,8 +83,13 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
   const mark = () => { if (!dirty) { dirty = true; queueMicrotask(draw); } };
   const nowS = () => (R.chain ? R.chain.t + (Date.now() - R.chain.at) / 1000 : Date.now() / 1000);
   const say = (t) => { el('live').textContent = t; };
+  // GET /pending-notes lists the new notes of the payments the leader holds for a block, and never a shield's: a shield waits on its deposit and
+  // is held out of blocks until it comes. With the list empty, what is pending is shields alone. A leader that does not answer is taken at its count.
+  const notesHeld = async () => { const j = await once(cfg.leader + '/pending-notes'); return Array.isArray(j?.leaves) ? j.leaves.length > 0 : null; };
+  const held = async (s) => { R.notes = Number(s?.pending) > 0 ? await notesHeld() : undefined; return s; };
+  const payments = (state) => { const p = Number(state?.pending || 0); return p > 0 && R.notes === false ? 0 : p; };
   function waiting(state) {
-    const p = Number(state?.pending || 0), h = Number(state?.height);
+    const p = payments(state), h = Number(state?.height);
     if (!p) P.since = 0; else if (!P.since || h !== P.h) P.since = Date.now();
     P.h = h;
   }
@@ -112,7 +117,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
 
   const cell = (name, cls, title, small, brief) => ({ name, cls, title, small, brief });
   function health({ state, board, chain }, now) {
-    const pending = Number(state?.pending || 0), forced = chain ? chain.queued - chain.done : 0, SK = (name) => cell(name, 'sk', '', '', '');
+    const pending = payments(state), forced = chain ? chain.queued - chain.done : 0, SK = (name) => cell(name, 'sk', '', '', '');
     const out = [];
     if (state === undefined) out.push(SK('Payments'));
     else if (!state) out.push(cell('Payments', '', 'Payments unread', 'Read again shortly', 'unread'));
@@ -294,7 +299,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     if (!hist.length) return [1, 2, 3, 4, 5, 6].map(() => '<li class="sl"><span></span></li>').join('');
     const head = chain ? { n: chain.n, t: chain.t + (Date.now() - chain.at) / 1000 } : null, lit = FRESH.h != null && LAND.at && Date.now() - LAND.at < 2600;
     const newest = Math.max(hist[0].height, chain?.height || 0), mine = mineForming();
-    const next = (Number(state?.pending || 0) > 0 && Number(state?.height) <= newest) || mine
+    const next = (payments(state) > 0 && Number(state?.height) <= newest) || mine
       ? `<li class="nx${mine ? ' me' : ''}" title="Block ${int(newest + 1)}, forming${mine ? ', with yours in it' : ''}"><span><b class="num">#${int(newest + 1)}</b><small>${mine ? 'yours' : 'forming'}</small></span></li>` : '';
     return next + hist.slice(0, shown).map((x, i) => {
       const at = head ? head.t - Math.max(0, head.n - x.ethBlock) * 12 : null, me = MINE.heights.has(x.height);
@@ -411,7 +416,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     const now = nowS();
     part(() => {
       const hc = health(R, now), v = verdict(hc), e = el('verdict');
-      put('flow', flow(hc, Number(R.state?.pending || 0) > 0));
+      put('flow', flow(hc, payments(R.state) > 0));
       e.dataset.s = v.s; e.lastElementChild.textContent = v.t; e.firstElementChild.className = `dot ${v.s}`;
       if (said !== v.t) { said = v.t; if (v.t !== 'Reading…') say(v.t); }
     });
@@ -447,6 +452,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     if (document.hidden) return;
     const s = await once(cfg.leader + '/state');
     if (!s) return;
+    await held(s);
     const was = Number(R.state?.height);
     R.state = s; waiting(s); mark();
     if (Number(s.height) > was) { if (busy) stale = true; else refresh(); }
@@ -455,7 +461,7 @@ export function mountChainLive({ top, mid, rest, earn = document.createElement('
     if (busy || document.hidden) return;
     busy = true;
     const src = {
-      state: () => getJson(cfg.leader + '/state'), fee: () => getJson(cfg.leader + '/fee'),
+      state: async () => held(await getJson(cfg.leader + '/state')), fee: () => getJson(cfg.leader + '/fee'),
       blocks: () => getJson(API + '/prover/blocks'), anon: () => getJson(API + '/tacit-chain/anonymity'), board: () => getJson(API + '/prover/board'), chain: () => onchain(),
       ...(cfg.dev ? {} : { lead: () => leadRead() }),
     };
