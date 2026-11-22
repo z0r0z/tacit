@@ -3,9 +3,12 @@
 The TAC vaults' oracle from one SP1 proof per update. The proof reads what the two venue oracles record (each
 50-block interval's RANDAO-picked sample block, the Precision pool's and the confidential pool's end-of-block
 reserves) for every interval the windows need, checks the headers back to a recent block, and commits the answers the
-vaults read. `record` checks the anchor against BLOCKHASH or EIP-2935, verifies the proof and stores them. Every proof
-answers for the same five intervals from its own (X - 1 to X + 3); a view the proofs do not cover is answered by the
-pair oracle the vaults use today (`0x000000cE…1271`).
+vaults read. `record` checks the anchor against BLOCKHASH, verifies the proof and stores them, and takes a proof only
+while its interval X is one of the two newest whose following block exists, so what is stored is at most one interval
+behind. Every proof answers for the same five intervals from its own (X - 1 to X + 3); a view the proofs do not cover
+is answered by the pair oracle the vaults use today (`0x000000cE…1271`), and `latest` also takes that pair's price when
+it is higher, so a record of either venue raises it. The constructor checks that the pair's venues read the same pools,
+slots, pool id and coverage share as the program.
 
 The pair is still recorded the slow way, and through the proven oracle too: a venue oracle's `record` with one more
 `proofB` element, a byte naming the venue (0 the Precision venue, 1 the AMM venue), goes on to that venue. So a
@@ -52,10 +55,11 @@ TacVaultRouter stay as they are: the oracle keeps the venue oracles' `record` se
    (the vault checks the oracle answers every view). Queue it at least an hour ahead; anyone can release it, in the
    same transaction as a proof.
 
-`GRACE` is how many blocks after an interval ends before it counts. A proof can be made once the interval's following
-block is out, so a prover that posts within `GRACE` blocks keeps borrowing open without a pause; prices then lag by
-`GRACE` to `GRACE + 50` blocks. With a proof about three minutes after an interval ends, `GRACE = 30` (six minutes)
-leaves room for a slow node or a busy block.
+`GRACE` is how many blocks after an interval ends before it counts. A proof holds the depth the vault reads for only
+two intervals (X - 1 and X), so borrowing stays open while the proof of each interval lands within `GRACE` blocks of
+that interval's end; a proof can be made once the interval's following block is out. Prices then lag by `GRACE` to
+`GRACE + 50` blocks. With a proof about three minutes after an interval ends, `GRACE = 30` (six minutes) leaves room
+for a slow node or a busy block, but not for a prover that has to start up first: keep one warm.
 
 Recording a proof for every interval costs about 0.3M gas each; between proofs, borrowing rests on borrowers
 recording the pair.

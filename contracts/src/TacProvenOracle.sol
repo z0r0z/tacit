@@ -19,11 +19,14 @@ import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
 ///                    MAX_WINDOW as nine 28-bit floats, 84 bits per window, as TacPairOracle answers when N is the
 ///                    newest interval that counts (intervals after X counted as not recorded); 0 where it reverts
 ///
-///         `record` checks the anchor against BLOCKHASH or EIP-2935, verifies the proof and stores the head and the
-///         words. A view answers from them while the newest interval that counts is one they cover (and depthMin only
-///         at X - 1 and X, the intervals for which every sample is proven); otherwise, or where a word holds no
-///         answer, it passes the call unchanged to FALLBACK, the pair oracle the vaults used before. Every proof
-///         covers COUNT intervals, so a newer proof never covers less than the one it replaces.
+///         `record` checks the anchor against BLOCKHASH, verifies the proof and stores the head and the words. X must
+///         be one of the two newest intervals whose following block exists, so what is stored is at most one interval
+///         behind. A view answers from it while the newest interval that counts is one it covers; depthMin only at
+///         X - 1 and X, the intervals for which every sample is proven, so borrowing stays open while the proof of
+///         each interval lands within GRACE blocks of that interval's end. Otherwise, or where a word holds no
+///         answer, a view passes the call unchanged to FALLBACK, the pair oracle the vaults used before; `latest`
+///         also takes FALLBACK's when it is higher. Every proof covers COUNT intervals, so a newer proof never
+///         covers less than the one it replaces.
 ///
 ///         FALLBACK is still recorded the slow way, and `record` takes those records too: a call that carries storage
 ///         proofs is a venue oracle's record, whose last `proofB` element is one byte naming the venue (0 for FALLBACK's
@@ -78,7 +81,6 @@ contract TacProvenOracle {
 
     uint256 internal constant BLOCK_SECONDS = 12;
     uint256 internal constant WAD = 1e18;
-    address internal constant HISTORY = 0x0000F90827F1C53a10cb7A02335B175320002935;
     /// Answer words kept: a proof covers at most this many intervals.
     uint256 public constant SPAN = 8;
     uint256 internal constant M32 = 0xffffffff;
@@ -97,8 +99,9 @@ contract TacProvenOracle {
     uint256 public immutable SHORT_WINDOW;
     uint256 public immutable WINDOW;
     uint256 public immutable MAX_WINDOW;
-    /// Blocks after an interval ends before it counts. Under STEP, so a proof made once an interval ends lands while
-    /// it covers the newest interval that counts.
+    /// Blocks after an interval ends before it counts, under STEP. A proof holds the depth only for its first two
+    /// intervals, so the proof of each interval has to land within this many blocks of the interval's end for
+    /// borrowing to stay open; FALLBACK's venues count an interval after 10 blocks.
     uint256 public immutable GRACE;
     /// The intervals every proof answers for, from X - 1.
     uint256 public immutable COUNT;
@@ -133,6 +136,7 @@ contract TacProvenOracle {
     error BadBlock();
     error BadValues();
     error AlreadyRecorded();
+    error StaleProof();
     error ProofInvalid();
     error TooFewSamples();
 
@@ -159,7 +163,8 @@ contract TacProvenOracle {
 
     constructor(Config memory c) {
         uint256 stepSeconds = c.step * BLOCK_SECONDS;
-        if (c.step == 0 || c.grace >= c.step || uint256(c.programVKey) >= R) revert BadConfig();
+        // STEP of at most 128 keeps an accepted proof's anchor (at most 2 · STEP blocks old) within BLOCKHASH's 256.
+        if (c.step == 0 || c.step > 128 || c.grace >= c.step || uint256(c.programVKey) >= R) revert BadConfig();
         if (c.count < 2 || c.count > SPAN || c.minCoverageBps == 0 || c.minCoverageBps > 10_000) revert BadConfig();
         if (c.shortWindow < stepSeconds || c.window < c.shortWindow || c.maxWindow < c.window) revert BadConfig();
         (address venueA, address venueB) = (address(0), address(0));
@@ -219,6 +224,7 @@ contract TacProvenOracle {
         uint256 entry = uint256(keccak256(abi.encode(c.poolId, c.mappingSlot)));
         (bytes32 slotA, bytes32 slotB) = (bytes32(entry + 3), bytes32(entry + 4));
         (SLOT_A, SLOT_B) = (slotA, slotB);
+        if (c.fallbackOracle != address(0)) _checkVenues(venueA, venueB, c, slotA, slotB);
         CONFIG = keccak256(
             abi.encode(
                 c.step,
@@ -238,6 +244,20 @@ contract TacProvenOracle {
                 tacScale
             )
         );
+    }
+
+    // FALLBACK's venues read what the program reads, by the same rules: the Precision pool is venue A's and the
+    // confidential pool venue B's, with the same slots, pool id and coverage share.
+    function _checkVenues(address a, address b, Config memory c, bytes32 slotA, bytes32 slotB) internal view {
+        if (a == address(0) || b == address(0)) revert BadConfig();
+        if (IVenue(a).MIN_COVERAGE_BPS() != c.minCoverageBps || IVenue(b).MIN_COVERAGE_BPS() != c.minCoverageBps) {
+            revert BadConfig();
+        }
+        if (IVenue(a).POOL() != c.precision || IVenue(b).POOL() != c.pool) revert BadConfig();
+        if (IAmmVenue(b).POOL_ID() != c.poolId) revert BadConfig();
+        (bytes32 a0, bytes32 a1) = IVenue(a).slots();
+        (bytes32 b0, bytes32 b1) = IVenue(b).slots();
+        if (a0 != RESERVES_SLOT || a1 != SUPPLY_SLOT || b0 != slotA || b1 != slotB) revert BadConfig();
     }
 
     // ─────────────── record ───────────────
@@ -275,13 +295,10 @@ contract TacProvenOracle {
             // The anchor: at or after the block that picks X's sample, before this one, with the committed hash.
             let anchor := and(shr(168, head), M32)
             if or(lt(anchor, mul(add(x, 1), step)), iszero(lt(anchor, number()))) { fail(0xa4b881ea) } // BadBlock()
-            let h := 0
-            switch gt(sub(number(), anchor), 256)
-            case 0 { h := blockhash(anchor) }
-            default {
-                mstore(0, anchor)
-                if staticcall(gas(), HISTORY, 0, 0x20, 0, 0x20) { if eq(returndatasize(), 0x20) { h := mload(0) } }
-            }
+            // X is one of the two newest intervals whose following block exists, so what is stored is at most one
+            // interval behind and the anchor is at most 2 · STEP blocks old, which BLOCKHASH always reaches.
+            if gt(sub(div(sub(number(), 1), step), 1), add(x, 1)) { fail(0x2dd6a7af) } // StaleProof()
+            let h := blockhash(anchor)
             if iszero(h) { fail(0xa4b881ea) }
             mstore(0, h)
             mstore(0x20, config)
@@ -417,8 +434,9 @@ contract TacProvenOracle {
         if (depth == 0) _forward();
     }
 
-    /// The newest proven price, while the proof covers the newest interval that counts (past it, FALLBACK's, which a
-    /// record of either venue moves on).
+    /// The newest proven price while the proof covers the newest interval that counts (past it, FALLBACK's), or
+    /// FALLBACK's when that is higher: a record of either venue then raises it, which only raises what auctions and
+    /// redemptions are priced at.
     function latest() external view returns (uint256 ethPerTac) {
         uint256 head = _head;
         unchecked {
@@ -426,6 +444,17 @@ contract TacProvenOracle {
         }
         ethPerTac = _unpack(head >> 72, 24, M32);
         if (ethPerTac == 0) _forward();
+        uint256 newer = _fallbackLatest();
+        if (newer > ethPerTac) ethPerTac = newer;
+    }
+
+    // FALLBACK's newest recorded price, or 0 where it has none or there is no FALLBACK.
+    function _fallbackLatest() internal view returns (uint256 v) {
+        address f = FALLBACK;
+        if (f == address(0)) return 0;
+        try IFallback(f).latest() returns (uint256 x) {
+            v = x;
+        } catch {}
     }
 
     /// The lower of the two venues' ETH per TAC now.
@@ -548,9 +577,20 @@ contract TacProvenOracle {
     }
 }
 
+interface IVenue {
+    function MIN_COVERAGE_BPS() external view returns (uint256);
+    function POOL() external view returns (address);
+    function slots() external view returns (bytes32, bytes32);
+}
+
+interface IAmmVenue {
+    function POOL_ID() external view returns (bytes32);
+}
+
 interface IFallback {
     function A() external view returns (address);
     function B() external view returns (address);
+    function latest() external view returns (uint256);
     function STEP() external view returns (uint256);
     function SHORT_WINDOW() external view returns (uint256);
     function WINDOW() external view returns (uint256);

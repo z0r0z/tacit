@@ -22,8 +22,9 @@ interface IAmmVenue {
 ///         [SALT=<bytes32: 20 zero bytes, 0x01, any 11>]
 ///         forge script script/DeployTacProvenOracle.s.sol --rpc-url $RPC --broadcast --account <any funded account>
 contract DeployTacProvenOracle is Script {
-    /// Intervals every proof answers for, from X - 1: through X + 3, so a proof keeps answering for three intervals
-    /// after its own, and within the four the shortest window (12 intervals at two thirds) can go unrecorded.
+    /// Intervals every proof answers for, from X - 1: through X + 3, so its prices keep answering for three intervals
+    /// after its own, and within the four the shortest window (12 intervals at two thirds) can go unrecorded. Its depth
+    /// answers for two (X - 1 and X): borrowing needs the proof of each interval within GRACE blocks of its end.
     uint256 internal constant COUNT = 5;
 
     function config(bytes32 vkey, uint256 grace) public pure returns (TacProvenOracle.Config memory) {

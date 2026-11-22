@@ -8,6 +8,8 @@ import {TacVault} from "../src/TacVault.sol";
 import {TacSynth} from "../src/TacSynth.sol";
 import {TacVaultRouter} from "../src/TacVaultRouter.sol";
 import {LiveFeed} from "./TacVaultMocks.sol";
+import {MockPrecision} from "./MockPrecision.sol";
+import {TacMockV1} from "./TacMockV1.sol";
 
 /// The oracle with its proof check skipped, to test what it does with what a proof commits.
 contract ProvenNoVerify is TacProvenOracle {
@@ -29,23 +31,24 @@ contract ProvenProbe is TacProvenOracle {
     }
 }
 
-/// EIP-2935's history contract: a 32-byte block number in, its hash out.
-contract MockHistory {
-    mapping(uint256 => bytes32) internal _h;
-
-    function set(uint256 n, bytes32 h) external {
-        _h[n] = h;
-    }
-
-    fallback(bytes calldata d) external returns (bytes memory) {
-        return abi.encode(_h[abi.decode(d, (uint256))]);
-    }
-}
-
-/// A venue oracle that keeps a hash of the record it decoded and answers (7, 8), or refuses it as already recorded.
+/// A venue oracle that keeps a hash of the record it decoded and answers (7, 8), or refuses it as already recorded. It
+/// reads what the real venues report about themselves (pool, pool id, slots, coverage share).
 contract RecordingVenue {
     bytes32 public got;
     bool public refuse;
+    address public immutable POOL;
+    bytes32 public immutable POOL_ID;
+    bytes32 internal immutable S0;
+    bytes32 internal immutable S1;
+    uint256 public constant MIN_COVERAGE_BPS = 6_600;
+
+    constructor(address pool, bytes32 poolId, bytes32 s0, bytes32 s1) {
+        (POOL, POOL_ID, S0, S1) = (pool, poolId, s0, s1);
+    }
+
+    function slots() external view returns (bytes32, bytes32) {
+        return (S0, S1);
+    }
 
     function setRefuse(bool r) external {
         refuse = r;
@@ -93,7 +96,6 @@ contract RecordingPair {
 contract TacProvenOracleTest is TacLaunchFixture {
     uint256 internal constant G = 30;
     uint256 internal constant OLD_GRACE = 10;
-    address internal constant HISTORY = 0x0000F90827F1C53a10cb7A02335B175320002935;
 
     ProvenNoVerify internal po;
     bytes32 internal cfg;
@@ -266,7 +268,12 @@ contract TacProvenOracleTest is TacLaunchFixture {
             } else {
                 _sameAsPair(abi.encodeCall(TacProvenOracle.depthMin, (21_600)));
             }
-            assertEq(po.latest(), TacProvenPack.unpack(p.head >> 72 & 0xffffffff, 24), "latest");
+            {
+                // the proof's price, or the pair's (not rounded) when that is higher
+                uint256 proven = TacProvenPack.unpack(p.head >> 72 & 0xffffffff, 24);
+                uint256 other = pair.latest();
+                assertEq(po.latest(), other > proven ? other : proven, "latest");
+            }
         }
         // Past what it covers, every view is the pair's, the newest price included.
         _at(x + count - 1);
@@ -476,8 +483,9 @@ contract TacProvenOracleTest is TacLaunchFixture {
     /// A record with storage proofs goes to the venue its last proofB element names, without that element; the
     /// venue's answer comes back, and its AlreadyRecorded too, which the live router lets through.
     function test_aVenueRecordGoesToTheVenueItNames() public {
-        RecordingVenue va = new RecordingVenue();
-        RecordingVenue vb = new RecordingVenue();
+        (bytes32 sa, bytes32 sb) = b.slots();
+        RecordingVenue va = new RecordingVenue(address(prec), bytes32(0), bytes32(0), bytes32(uint256(0x05345cdf77eb68f44c)));
+        RecordingVenue vb = new RecordingVenue(address(v1), POOL_ID, sa, sb);
         ProvenNoVerify o =
             new ProvenNoVerify(_config(bytes32(uint256(1)), G, address(new RecordingPair(address(va), address(vb)))));
         (bytes memory h, bytes memory nx, bytes[] memory acc, bytes[] memory pa, bytes[] memory pb, bytes[] memory t0) =
@@ -544,15 +552,109 @@ contract TacProvenOracleTest is TacLaunchFixture {
         vm.roll(p.anchor);
         vm.expectRevert(TacProvenOracle.BadBlock.selector);
         po.record(_pv(p), new bytes(288), none, none, none);
-        // more than 256 blocks old: EIP-2935, absent then present
+        // far past it: refused as stale, and its anchor is beyond BLOCKHASH's reach anyway
         vm.roll(p.anchor + 300);
-        vm.expectRevert(TacProvenOracle.BadBlock.selector);
+        vm.expectRevert(TacProvenOracle.StaleProof.selector);
         po.record(_pv(p), new bytes(288), none, none, none);
-        vm.etch(HISTORY, address(new MockHistory()).code);
-        MockHistory(HISTORY).set(p.anchor, p.anchorHash);
+        vm.roll(p.anchor + 5);
         po.record(_pv(p), new bytes(288), none, none, none);
         (uint256 cx,,) = po.coverage();
         assertEq(cx, x);
+    }
+
+    /// A proof is taken while X is one of the two newest intervals whose following block exists: the last block of
+    /// that span is (X + 3) · STEP, where its anchor is at most 2 · STEP blocks old.
+    function test_recordTakesAProofOnlyWhileItIsOneIntervalFromTheNewest() public {
+        uint256 x = 519_990;
+        _history(9, x, 1e18);
+        Proof memory p = _expect(x, 5);
+        bytes[] memory none;
+        vm.roll(p.anchor + 5);
+        vm.setBlockhash(p.anchor, p.anchorHash);
+        vm.roll((x + 3) * STEP + 1);
+        vm.expectRevert(TacProvenOracle.StaleProof.selector);
+        po.record(_pv(p), new bytes(288), none, none, none);
+        vm.roll((x + 3) * STEP);
+        assertLe(block.number - p.anchor, 2 * STEP);
+        po.record(_pv(p), new bytes(288), none, none, none);
+        (uint256 cx,,) = po.coverage();
+        assertEq(cx, x);
+    }
+
+    /// `latest` is the proof's price or FALLBACK's, whichever is higher: a record of either venue can raise it and
+    /// nothing lowers it; a FALLBACK that cannot answer leaves the proof's.
+    function test_latestTakesTheHigherOfTheProofAndFallback() public {
+        uint256 x = 519_990;
+        _history(8, x, 1e18);
+        Proof memory p = _expect(x, 5);
+        _record(p);
+        _at(x);
+        uint256 proven = TacProvenPack.unpack(p.head >> 72 & 0xffffffff, 24);
+        uint256 raw = pair.latest();
+        assertGe(raw, proven);
+        assertEq(po.latest(), raw, "no newer venue record: the pair's, the proof's up to its rounding");
+        uint256 top = (block.number - 1) / STEP - 1;
+        _put(address(a), top, proven * 2, 1_000e18);
+        _put(address(b), top, proven * 2, 1_000e18);
+        assertEq(po.latest(), proven * 2, "both venues record a higher price");
+        _put(address(b), top, proven / 2, 1_000e18);
+        assertEq(po.latest(), proven, "one venue lower: the pair's is the lower of the two, and the proof's stays");
+
+        (bytes32 sa, bytes32 sb) = b.slots();
+        RecordingVenue va = new RecordingVenue(address(prec), bytes32(0), bytes32(0), bytes32(uint256(0x05345cdf77eb68f44c)));
+        RecordingVenue vb = new RecordingVenue(address(v1), POOL_ID, sa, sb);
+        ProvenNoVerify o = new ProvenNoVerify(
+            _config(bytes32(uint256(1)), G, address(new RecordingPair(address(va), address(vb))))
+        );
+        bytes[] memory none;
+        o.record(_pv(p), new bytes(288), none, none, none);
+        assertEq(o.latest(), proven, "a FALLBACK with no `latest` leaves the proof's");
+    }
+
+    /// The constructor requires FALLBACK's venues to read what the program reads: the Precision pool as venue A and
+    /// the confidential pool as venue B, with the same slots, pool id and coverage share; and STEP no more than 128.
+    function test_constructorChecksThatFallbackReadsWhatTheProgramReads() public {
+        TacProvenOracle.Config memory c = _config(bytes32(uint256(1)), G, address(pair));
+        new ProvenNoVerify(c);
+
+        c = _config(bytes32(uint256(1)), G, address(pair));
+        c.minCoverageBps = 5_000;
+        vm.expectRevert(TacProvenOracle.BadConfig.selector);
+        new ProvenNoVerify(c);
+
+        c = _config(bytes32(uint256(1)), G, address(pair));
+        c.mappingSlot = 75;
+        vm.expectRevert(TacProvenOracle.BadConfig.selector);
+        new ProvenNoVerify(c);
+
+        c = _config(bytes32(uint256(1)), G, address(pair));
+        c.precision = address(new MockPrecision(address(tac), 3.78e18, 3.78e21, 3e20, 3e18, 3e22));
+        vm.expectRevert(TacProvenOracle.BadConfig.selector);
+        new ProvenNoVerify(c);
+
+        TacMockV1 other = new TacMockV1();
+        other.setAsset(ETH_ASSET, address(0), 1e10);
+        other.setAsset(TAC_ASSET, address(tac), 1e10);
+        other.setPool(POOL_ID, ETH_ASSET, TAC_ASSET, 3e8, 3.2e12);
+        c = _config(bytes32(uint256(1)), G, address(pair));
+        c.pool = address(other);
+        vm.expectRevert(TacProvenOracle.BadConfig.selector);
+        new ProvenNoVerify(c);
+
+        bytes32 id2 = bytes32(uint256(POOL_ID) ^ 1);
+        v1.setPool(id2, ETH_ASSET, TAC_ASSET, 3e8, 3.2e12);
+        c = _config(bytes32(uint256(1)), G, address(pair));
+        c.poolId = id2;
+        vm.expectRevert(TacProvenOracle.BadConfig.selector);
+        new ProvenNoVerify(c);
+
+        // STEP: 128 is the most (a proof's anchor is then at most 256 blocks old), with no FALLBACK to compare with
+        c = _config(bytes32(uint256(1)), 30, address(0));
+        c.step = 128;
+        new ProvenNoVerify(c);
+        c.step = 129;
+        vm.expectRevert(TacProvenOracle.BadConfig.selector);
+        new ProvenNoVerify(c);
     }
 
     // ─────────────── the proof check, on real SP1 v6.1.0 proofs ───────────────
