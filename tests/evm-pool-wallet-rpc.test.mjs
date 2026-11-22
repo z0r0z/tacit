@@ -1,6 +1,6 @@
 // jsonRpc over several nodes, and the wallet's log scan against nodes with different eth_getLogs range limits.
 import assert from 'node:assert/strict';
-import { jsonRpc, makeEvmPoolWallet, evmPoolKeys, recipientOf, logFailure, sealNote, openNote, paymentKey, sealState, openState, mergePlan, feedStart } from '../dapp/evm-pool-wallet.js';
+import { jsonRpc, makeEvmPoolWallet, evmPoolKeys, recipientOf, logFailure, sealNote, openNote, paymentKey, sealState, openState, mergePlan, feedStart, wrapBoxAddress, depositBoxAddress } from '../dapp/evm-pool-wallet.js';
 import { poolAsset, publicAmount } from '../dapp/evm-pool-zk.js';
 import { makeEvmPoolZk } from '../dapp/evm-pool-zk.js';
 import { receiveKeys, receiveBoxAddress, RECEIVE_FEE_BPS } from '../dapp/evm-pool-gateway.js';
@@ -412,20 +412,6 @@ await check('the quote can be priced for a spend that burns more gas, and toV1 h
   assert.ok(urls.includes('/quote?gas=700000'), 'toV1 asked for the quote priced for its own gas');
 });
 
-await check('toV1 counts its hour-long deadline from the chain time it is given', async () => {
-  const POOLA = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9', RELAYER = '0x7c9f8aE4e48Cbb2727F95b6477a1cf92bCFc43D0';
-  const calls = [];
-  const rpc = async (m, p) => { if (m === 'eth_call') calls.push(p[0].data); return m === 'eth_blockNumber' ? '0x64' : m === 'eth_getLogs' ? [] : '0x0'; };
-  const w = makeEvmPoolWallet({
-    zk, keys: evmPoolKeys(zk, new Uint8Array(32).fill(5)), prove: null, store: null, keeper: 'https://k.test',
-    fetchImpl: async () => ({ ok: true, status: 200, headers: new Map(), json: async () => ({ chainId: 1, pool: POOLA, relayer: RELAYER, fee: '5000000000000' }) }),
-    chain: { chainId: 1, pool: POOLA, router: '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5', rpc, deployBlock: 0, confirmations: 0, relayer: RELAYER },
-  });
-  const now = 1_900_000_000;
-  await assert.rejects(() => w.toV1({ amount: 10n ** 12n, commit: '0x' + '11'.repeat(32), via: 'relay', now }), /not enough in the pool/);
-  const box = calls.find((d) => d && d.length === 10 + 64 * 8);                   // wrapBoxOf(the wrap intent, eight words)
-  assert.equal(BigInt('0x' + box.slice(10 + 64 * 6, 10 + 64 * 7)), BigInt(now + 3600), 'the intent\'s deadline is that time plus an hour');
-});
 
 await check('a feed page is kept as soon as it checks, so a feed that fails partway loses only the page it was reading', async () => {
   const POOLA = '0x000000c2A20657CE25f2Ba99737933D031AFBEE9';
@@ -704,14 +690,15 @@ async function quickly(fn) {
 // the k-th read of the chain's tip from now. s.ready() is the wallet's first sync; s.rescans counts the reads from the
 // deploy block after it.
 const RELAYER = '0xfA2afbaB631C7Eda7CeA6AE1440605C504E322Ec';
-function spender(seed, { sealed = false, extra = [] } = {}) {
+function spender(seed, { sealed = false, extra = [], chainId = 8453 } = {}) {
+  const A = chainId === 8453 ? ASSETF : poolAsset({ chainId: BigInt(chainId), pool: POOLF, token: '0x0000000000000000000000000000000000000000' });
   const keys = evmPoolKeys(zk, new Uint8Array(32).fill(seed)), self = { V: keys.V, A: keys.A, N: keys.N };
   const pool = fakePool();
-  const o = sealNote(zk, { to: self, value: 10n ** 16n, asset: ASSETF });
+  const o = sealNote(zk, { to: self, value: 10n ** 16n, asset: A });
   const { firstIndex } = pool.transact({ out: [o.leaf, 21n], memo: [o.memo, null] });
   // further notes of the wallet's, of the values given
-  for (const [i, v] of extra.entries()) { const e = sealNote(zk, { to: self, value: v, asset: ASSETF }); pool.transact({ out: [e.leaf, 40n + BigInt(i)], memo: [e.memo, null] }); }
-  const nf = zk.nullifier(openNote(zk, keys, { memo: o.memo, leaf: o.leaf, asset: ASSETF }).nk, o.leaf, firstIndex);
+  for (const [i, v] of extra.entries()) { const e = sealNote(zk, { to: self, value: v, asset: A }); pool.transact({ out: [e.leaf, 40n + BigInt(i)], memo: [e.memo, null] }); }
+  const nf = zk.nullifier(openNote(zk, keys, { memo: o.memo, leaf: o.leaf, asset: A }).nk, o.leaf, firstIndex);
   const seen = [], inner = nodeOf(pool, seen);
   let proofs = 0, after = 0, base = 0;
   const fromStart = () => seen.filter((f) => Number(f.fromBlock) === 1).length;
@@ -719,7 +706,7 @@ function spender(seed, { sealed = false, extra = [] } = {}) {
     pool, nf, asked: [], calls: [], hosts: {}, inputs: [], feed: null, keeperHeaders: () => null,
     reserve: () => [404, { error: 'this keeper does not queue' }],
     relay: () => [500, { error: 'internal error' }],
-    quote: () => [200, { chainId: 8453, pool: POOLF, relayer: RELAYER, fee: '1000000000000' }],
+    quote: () => [200, { chainId, pool: POOLF, relayer: RELAYER, fee: '1000000000000' }],
     spend: () => pool.transact({ nf: [nf, 0n] }),
     spendAfter: (k) => { after = k; },
     get proofs() { return proofs; },
@@ -748,13 +735,62 @@ function spender(seed, { sealed = false, extra = [] } = {}) {
   s.make = (chainExtra = {}) => (s.w = makeEvmPoolWallet({
     zk, keys, keeper: 'https://k.test', fetchImpl, feed: !!s.feed, store: null,
     prove: async (input) => { if (s.gate) await s.gate; s.inputs.push(input); proofs++; return { proof: { pi_a: ['1', '2'], pi_b: [['1', '2'], ['3', '4']], pi_c: ['1', '2'] }, publicSignals: Array(11).fill('0') }; },
-    chain: { chainId: 8453, pool: POOLF, router: ROUTERF, rpc, deployBlock: 1, confirmations: 0, relayer: RELAYER, ...chainExtra },
+    chain: { chainId, pool: POOLF, router: ROUTERF, rpc, deployBlock: 1, confirmations: 0, relayer: RELAYER, ...chainExtra },
   }));
   return s;
 }
 const TO = '0x' + '22'.repeat(20);
 const slotOf = (pool) => [200, { id: 'a'.repeat(24), root: String(pool.root), size: String(pool.size), pending: [], oldRoot: String(pool.root), start: String(pool.size) }];
 const isSpent = (e) => e.said === true && e.spent === true && e.message === 'Those funds were already spent. Check Activity.';
+
+await check('a move into V1 pays the wrap box computed from its intent (whatever a node answers for a view), with an hour-long deadline from the chain time it is given', async () => {
+  const s = spender(26, { chainId: 1 });
+  let body = null;
+  s.reserve = () => slotOf(s.pool);
+  s.relay = (n, b) => { body = b; return [200, { txHash: s.spend().tx }]; };
+  const WRAP_BOX_OF = topic('wrapBoxOf((bytes32,uint256,uint256,address,bytes32,address,uint64,uint256))').slice(0, 10);
+  s.answer = (m, p) => (m === 'eth_call' && String(p[0]?.data).startsWith(WRAP_BOX_OF) ? '0x' + '00'.repeat(12) + '99'.repeat(20) : undefined);
+  s.make();
+  await s.ready();
+  const now = 1_900_000_000;
+  await quickly(() => s.w.toV1({ amount: 10n ** 15n, commit: '0x' + '11'.repeat(32), via: 'relay', now }));
+  assert.ok(body?.wrap, 'the relay was given the wrap intent');
+  assert.equal(body.wrap.deadline, String(now + 3600), 'the intent\'s deadline is that time plus an hour');
+  const intent = { ...body.wrap, amount: BigInt(body.wrap.amount), tip: 0n, deadline: BigInt(body.wrap.deadline), nonce: BigInt(body.wrap.nonce) };
+  assert.equal(body.tx.recipient.toLowerCase(), wrapBoxAddress(intent, ROUTERF), 'the proof pays wrapBoxOf(intent)');
+  assert.notEqual(body.tx.recipient.toLowerCase(), '0x' + '99'.repeat(20));
+});
+
+await check('a deposit box is computed from its intent and must be the box the relay names', async () => {
+  const OTHER = '0x' + '99'.repeat(20);
+  let posted = null, named = null;
+  const rpc = async (m) => (m === 'eth_blockNumber' ? '0x64' : m === 'eth_getLogs' ? [] : m === 'eth_call' ? '0x' + '00'.repeat(12) + OTHER.slice(2) : '0x0');
+  const w = makeEvmPoolWallet({
+    zk, keys: evmPoolKeys(zk, new Uint8Array(32).fill(6)), prove: null, store: null, keeper: 'https://k.test',
+    fetchImpl: async (url, init) => {
+      if (url.endsWith('/deposit')) { posted = JSON.parse(init.body); return { ok: true, status: 200, headers: new Map(), json: async () => ({ box: named(posted.intent) }) }; }
+      return { ok: true, status: 200, headers: new Map(), json: async () => ({ chainId: 8453, pool: POOLF, relayer: RELAYER, fee: '1' }) };
+    },
+    chain: { chainId: 8453, pool: POOLF, router: ROUTERF, rpc, deployBlock: 0, confirmations: 0, relayer: RELAYER },
+  });
+  const big = (i) => ({ ...i, amount: BigInt(i.amount), outLeaf0: BigInt(i.outLeaf0), outLeaf1: BigInt(i.outLeaf1), deadline: BigInt(i.deadline), nonce: BigInt(i.nonce) });
+  const args = { amount: 10n ** 15n, fee: 10n ** 12n, refund: '0x' + '33'.repeat(20), deadline: 1_900_000_000 };
+  named = (i) => depositBoxAddress(big(i), ROUTERF);
+  const r = await w.depositBox(args);
+  assert.equal(r.box, depositBoxAddress(big(posted.intent), ROUTERF), 'the box is depositBoxOf(intent)');
+  named = () => OTHER;
+  await assert.rejects(() => w.depositBox(args), /did not take this deposit/);
+});
+
+await check('the wrap and deposit boxes computed here are the router’s wrapBoxOf / depositBoxOf (values read from the router on Ethereum)', () => {
+  const R = '0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5', ZERO = '0x0000000000000000000000000000000000000000', REF = '0x2222222222222222222222222222222222222222';
+  const EMPTY = '0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470';
+  assert.equal(wrapBoxAddress({ assetId: '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', amount: 123n * 10n ** 16n, tip: 0n, tipTo: ZERO,
+    commit: '0x' + '11'.repeat(32), refund: REF, deadline: 1790000000n, nonce: 123456789012345678901234567890n }, R), '0xb3e8d8e83680e258ca87eb1b9609b2d6904a2564');
+  const d = { amount: 10n ** 18n, outLeaf0: 12345n, outLeaf1: 0n, memo0Hash: EMPTY, memo1Hash: EMPTY, refund: REF, deadline: 1790000000n, nonce: 77n };
+  assert.equal(depositBoxAddress(d, R), '0x563537209f9952ba8b7b93c5d8d56bb0eb0d9dc5');
+  assert.equal(depositBoxAddress(d, '0x000000fA029Eaf69840C1490Bf9AA6C094794D5a'), '0xb6859e9d2d8dce707e63f37ae11dddf03ce947ff');
+});
 
 await check('a note the relay already queues a spend of: nothing is proved, and once that spend lands the wallet says the funds were spent', async () => {
   const s = spender(21);

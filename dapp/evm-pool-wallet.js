@@ -21,7 +21,7 @@ import { sharedSecrets } from './evm-pool-scan.js';
 import { relaysOf, orderQuotes, QUOTE_MS } from './evm-pool-relays.js';
 import { collectQuotes } from './evm-pool-open-relays.js';
 export { jsonRpc } from './json-rpc.js';
-import { depositIntent, receiveKeys, receivedNote, receiveBoxAddress, sweepWitness, callIntent, callEscrowAddress, callIntentJson, callIntentAbi, CALL_INTENT_SIG, calldata, selector, bridgeEthCall, L2_BRIDGES, RECEIVE_FEE_BPS, RECEIVE_INDEX } from './evm-pool-gateway.js';
+import { depositIntent, receiveKeys, receivedNote, receiveBoxAddress, sweepWitness, callIntent, callEscrowAddress, callIntentJson, callIntentAbi, CALL_INTENT_SIG, calldata, selector, abiEncode, bridgeEthCall, L2_BRIDGES, RECEIVE_FEE_BPS, RECEIVE_INDEX } from './evm-pool-gateway.js';
 
 export const MEMO_LEN = 65;
 const REFUND_GAP = 20;
@@ -301,6 +301,20 @@ const DEPOSIT_TYPES = ['uint256', 'uint256', 'uint256', 'bytes32', 'bytes32', 'a
 const WRAP_TYPES = ['bytes32', 'uint256', 'uint256', 'address', 'bytes32', 'address', 'uint64', 'uint256'];
 const wrapValues = (i) => [i.assetId, i.amount, i.tip, i.tipTo, i.commit, i.refund, i.deadline, i.nonce];
 const withdrawToV1Data = (t, i) => calldata(`withdrawToV1(${TX_SIG},${WRAP_SIG})`, [{ tuple: TX_TYPES }, { tuple: WRAP_TYPES }], [txValues(t), wrapValues(i)]);
+const depositValues = (i) => [i.amount, i.outLeaf0, i.outLeaf1, i.memo0Hash, i.memo1Hash, i.refund, i.deadline, i.nonce];
+const WRAP_TAG = keccak_256(te.encode('tacit-evm-pool-wrap-box-v1'));
+const DEPOSIT_TAG = keccak_256(te.encode('tacit-evm-pool-deposit-box-v1'));
+// The router's box at `salt` (lower-case): solady LibClone.predictDeterministicAddress_PUSH0 of the box implementation, which the
+// router creates at its nonce 1, deployed by the router (as receiveBoxAddress in evm-pool-gateway.js).
+function routerBoxAt(router, salt) {
+  const r = unhex(String(router).toLowerCase());
+  const impl = keccak_256(concatBytes(Uint8Array.of(0xd6, 0x94), r, Uint8Array.of(0x01))).slice(12);
+  const initHash = keccak_256(concatBytes(unhex('602d5f8160095f39f35f5f365f5f37365f73'), impl, unhex('5af43d5f5f3e6029573d5ffd5b3d5ff3')));
+  return hex(keccak_256(concatBytes(Uint8Array.of(0xff), r, salt, initHash)).slice(12));
+}
+// wrapBoxOf(intent) / depositBoxOf(intent) of `router`, computed here from the intent.
+export const wrapBoxAddress = (intent, router) => routerBoxAt(router, keccak_256(abiEncode(['bytes32', { tuple: WRAP_TYPES }], [WRAP_TAG, wrapValues(intent)])));
+export const depositBoxAddress = (intent, router) => routerBoxAt(router, keccak_256(abiEncode(['bytes32', { tuple: DEPOSIT_TYPES }], [DEPOSIT_TAG, depositValues(intent)])));
 // V1's tETH (native ETH) asset id and its unit: a wrap amount is a whole number of 1e10 wei.
 export const V1_TETH_ASSET_ID = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const V1_UNIT = 10n ** 10n;
@@ -1375,7 +1389,7 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
       if (a <= f) throw new Error('the deposit box must hold more than the relay\u2019s fee');
       const n = sealNote(zk, { to: self, value: a - f, asset });
       const { intent, hint } = depositIntent(zk, { asset, amount: a, outputs: [{ v: n.v, npk: n.npk, rho: n.rho }], memo0: n.memo, refund, deadline, nonce });
-      const box = '0x' + String(await chain.rpc('eth_call', [{ to: chain.router, data: calldata(`depositBoxOf(${'(' + DEPOSIT_TYPES.join(',') + ')'})`, [{ tuple: DEPOSIT_TYPES }], [[intent.amount, intent.outLeaf0, intent.outLeaf1, intent.memo0Hash, intent.memo1Hash, intent.refund, intent.deadline, intent.nonce]]) }, 'latest'])).slice(-40);
+      const box = depositBoxAddress(intent, chain.router);
       const str = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'bigint' ? v.toString() : v]));
       const res = await keeperPost('/deposit', { intent: str(intent), hint: { outputs: [{ v: n.v.toString(), npk: n.npk.toString(), rho: n.rho.toString() }, null], memo0: hex(n.memo), memo1: '0x' } });
       if (res.status !== 200 || String(res.body?.box || '').toLowerCase() !== box.toLowerCase()) throw new Error(`The relay did not take this deposit (${res.body?.error || res.status}), so nothing was sent.`);
@@ -1563,7 +1577,8 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         refund: await api.refundBox(),
         deadline: BigInt((now ?? (await chainNow())) + 3600), nonce: BigInt(hex(globalThis.crypto.getRandomValues(new Uint8Array(16)))),
       };
-      const box = '0x' + String(await chain.rpc('eth_call', [{ to: chain.router, data: calldata(`wrapBoxOf(${WRAP_SIG})`, [{ tuple: WRAP_TYPES }], [wrapValues(intent)]) }, 'latest'])).slice(-40);
+      // The proof's recipient: wrapBoxOf(intent), computed here from the intent and the router's address.
+      const box = wrapBoxAddress(intent, chain.router);
       return withRelays(q0, async (q) => {
         const fee = q ? BigInt(q.fee) : 0n;
         const ins = await prepare(a + fee, q, onStep, () => quoteFor(via, null, maxFee));
