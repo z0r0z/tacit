@@ -403,8 +403,8 @@ test('points: each proof the relay takes from a community machine counts for its
 });
 
 test('points config: env sets the points and a count a day, 0 points pays nothing, no count or 0 is no count, nonsense keeps the default', () => {
-  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3, drawPct: 0, drawNew: 15, drawSeats: 3, drawFreshMs: 6000 });
-  assert.deepEqual(proverBoardConfig({}), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
+  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3, drawPct: 0, drawNew: 15, drawSeats: 3, drawFreshMs: 6000, communityFast: 1, communityViewMs: 1000 });
+  assert.deepEqual(proverBoardConfig({}),{ pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10', POINTS_BOARD_BTC_PER_PROOF: '800' }), { pointsPerProof: 50, proofsPerMinerDay: 10, ...btc(800) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0', POINTS_BOARD_BTC_PER_PROOF: '0' }), { pointsPerProof: 0, proofsPerMinerDay: Infinity, ...btc(0) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: 'lots', POINTS_BOARD_DAILY_CAP: '-1' }), { pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
@@ -415,6 +415,8 @@ test('points config: env sets the points and a count a day, 0 points pays nothin
   assert.deepEqual([proverBoardConfig({ PROVER_BOARD_BEST_OF: '1' }).bestOf, proverBoardConfig({ PROVER_BOARD_BEST_OF: '0' }).bestOf], [1, 3], 'at least one machine');
   assert.deepEqual(['5', '0', 'few', '500'].map((v) => proverBoardConfig({ PROVER_BOARD_BLOCK_DRAW_SEATS: v }).drawSeats), [5, 3, 3, 50], 'the newcomers\' seats: at least one, nonsense keeps the default, no more than fifty');
   assert.deepEqual(['3000', '0', '500', 'soon', '40000', '999999'].map((v) => proverBoardConfig({ PROVER_BOARD_BLOCK_DRAW_FRESH_MS: v }).drawFreshMs), [3000, 6000, 6000, 6000, 30_000, 6000], 'how recently a machine must have asked to be drawn: a second at least, nonsense or out of range keeps the default, never past the seen window');
+  assert.deepEqual(['0', '1', '', 'off', '7'].map((v) => proverBoardConfig({ PROVER_BOARD_COMMUNITY_FAST: v }).communityFast), [0, 1, 1, 1, 1], 'only 0 turns the fast ask off');
+  assert.deepEqual(['250', '0', 'long', '999999'].map((v) => proverBoardConfig({ PROVER_BOARD_VIEW_MS: v }).communityViewMs), [250, 0, 1000, 1000], 'how long a look at the open jobs answers asks: 0 is none, nonsense or out of range keeps the default');
 });
 
 test('community first pick: a fresh public job waits for a ready community machine before Tacit\'s worker takes it, private work never waits', async () => {

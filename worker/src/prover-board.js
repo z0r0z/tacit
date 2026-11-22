@@ -108,6 +108,13 @@ export const PROVER_BOARD = Object.freeze({
   // bound on its wait: Tacit's GPU still proves it if no community proof has come by then). Private work is never held.
   communityFirstMs: Object.freeze({ confidential: 20_000, 'tacit-block': 120_000 }), // PROVER_BOARD_FIRST_MS, PROVER_BOARD_BLOCK_FIRST_MS (0: no wait)
   communityKept: 200,                                  // community records kept on the summary (the most recently seen)
+  // A community machine's ask is answered without the board's lock when a look at the open jobs, at most communityViewMs old and made before any
+  // job changed, shows none it could race; its sighting is kept in memory and written to storage every communityFlushMs. PROVER_BOARD_COMMUNITY_FAST=0
+  // sends every ask through the lock.
+  communityFast: 1,
+  communityViewMs: 1_000,                              // PROVER_BOARD_VIEW_MS
+  communityFlushMs: 5_000,
+  communityKeepSeenMs: 10 * 60_000,                    // a sighting kept in memory is dropped after this long unrenewed
   maxCandidatePvBytes: 16 * 1024,                      // a race candidate's public values (a wrap's or a Bitcoin batch's are a few KB)
   pointsPerProof: 20,                                  // POINTS_BOARD_PER_PROOF: for each community proof the relay takes
   // A Bitcoin batch is billions of cycles, tens of minutes on a large GPU: it earns its own.
@@ -136,6 +143,8 @@ export function proverBoardConfig(env = {}) {
     drawNew: Math.min(90, n(env.PROVER_BOARD_BLOCK_DRAW_NEW, PROVER_BOARD.drawNew)),
     drawSeats: Math.min(50, n(env.PROVER_BOARD_BLOCK_DRAW_SEATS, PROVER_BOARD.drawSeats, 1)),
     drawFreshMs: Math.min(PROVER_BOARD.turnSeenMs, n(env.PROVER_BOARD_BLOCK_DRAW_FRESH_MS, PROVER_BOARD.drawFreshMs, 1000)),
+    communityFast: n(env.PROVER_BOARD_COMMUNITY_FAST, PROVER_BOARD.communityFast) === 0 ? 0 : 1,
+    communityViewMs: n(env.PROVER_BOARD_VIEW_MS, PROVER_BOARD.communityViewMs),
   });
 }
 const DAY_MS = 86_400_000;
@@ -215,8 +224,27 @@ function makeLock() {
 // storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job), deleteJob?(id), getWorkers()->{}, putWorkers({}),
 // getDay?(day)->rec|null, putDay?(day, rec), getTrouble?()->{ place: at }, putTrouble?({}) } (without the day records nothing is tallied for
 // points; without the trouble record no place waits behind the others for a turn that went wrong).
-export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD } = {}) {
-  if (!storage) throw new Error('prover-board: storage is required');
+// What a board keeps in memory beside its storage: a count of changes to jobs, the last look at the open jobs, the community machines' sightings
+// not yet written, and the names of machines it has seen. buildProverBoard makes a board for every request, so this is kept per storage, as the lock is.
+export const newBoardMemory = () => ({ epoch: 0, view: null, presence: new Map(), known: new Set(), flushedAt: 0, pending: null });
+
+// The storage with its writes to jobs and to the pending list counted in `mem.epoch`: a look at the open jobs is out of date once the count has moved.
+// The pending list written again as it was last written changes nothing, and is not counted.
+function counted(raw, mem) {
+  const s = { ...raw };
+  for (const name of ['putJob', 'deleteJob']) if (raw[name]) s[name] = (...args) => { mem.epoch++; return raw[name](...args); };
+  if (raw.putPending) s.putPending = (ids) => {
+    const text = JSON.stringify(ids);
+    if (text !== mem.pending) { mem.epoch++; mem.pending = text; }
+    return raw.putPending(ids);
+  };
+  return s;
+}
+
+export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = PROVER_BOARD } = {}) {
+  if (!raw) throw new Error('prover-board: storage is required');
+  const mem = memory || newBoardMemory();
+  const storage = counted(raw, mem);
   const clock = now || (() => Date.now());
   const pay = { pointsPerProof: cfg.pointsPerProof ?? PROVER_BOARD.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay ?? PROVER_BOARD.proofsPerMinerDay,
     pointsByProgram: cfg.pointsByProgram ?? PROVER_BOARD.pointsByProgram };
@@ -240,11 +268,40 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   const sizeOf = (j) => Math.max(0.001, (j.inputBytes || 1e6) / 1e6);
   const exclusive = lock || makeLock();
   const id = hash || ((s) => 'pb_' + s.length.toString(36) + '_' + Array.from(s).reduce((a, c) => ((a * 33) ^ c.charCodeAt(0)) >>> 0, 5381).toString(36));
-  const workers = async () => (await storage.getWorkers()) || {};
+  const fast = (cfg.communityFast ?? PROVER_BOARD.communityFast) !== 0;
+  const viewMs = cfg.communityViewMs ?? PROVER_BOARD.communityViewMs;
+  // The stored records with the community machines' latest sightings laid over them, so every reader sees a machine as seen when it last asked.
+  const workers = async () => seen((await storage.getWorkers()) || {});
+  function seen(ws) {
+    if (!mem.presence.size) return ws;
+    for (const [name, p] of mem.presence) {
+      const w = ws[name] || (ws[name] = { proved: 0, failed: 0, bad: 0, lapsed: 0, lastSeen: 0, firstSeen: p.first, community: true });
+      if (p.at < (w.lastSeen || 0)) continue;                 // a record written later (by another process) is newer than the sighting
+      w.lastSeen = p.at; w.programs = p.programs;
+      w.offered = { ...(w.offered || {}) };
+      for (const [pr, at] of Object.entries(p.offered)) if (at > (w.offered[pr] || 0)) w.offered[pr] = at;
+      if (p.client) w.client = p.client;
+    }
+    return ws;
+  }
+  // A community machine asked: kept in memory (the most recently seen communityKept of them), written out by the next bump.
+  function sighted(worker, programs) {
+    const t = clock(), p = mem.presence.get(worker.name);
+    const offered = { ...(p ? p.offered : {}) };
+    for (const pr of programs) offered[pr] = t;
+    mem.presence.set(worker.name, { at: t, programs, offered, client: worker.client || (p && p.client) || null, first: p ? p.first : t });
+    if (mem.presence.size > PROVER_BOARD.communityKept) {
+      let oldest = null;
+      for (const [name, x] of mem.presence) if (oldest === null || x.at < mem.presence.get(oldest).at) oldest = name;
+      mem.presence.delete(oldest);
+    }
+  }
 
   // Finished and cancelled jobs are dropped from the pending list once kept long enough; the list is read on every call.
+  let retainAt = Infinity;                       // when the soonest finished job still kept will leave the list, as the last sweep read it
   async function sweep(pend) {
     const keep = [];
+    let soonest = Infinity;
     for (const jid of pend) {
       const j = await storage.getJob(jid);
       if (!j) continue;
@@ -252,13 +309,16 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
         if (j.deadline && clock() > j.deadline * 1000) { j.status = 'expired'; await end(j); await storage.putJob(jid, j); }
         else if (j.status === 'claimed' && clock() > j.leaseUntil) { j.status = 'queued'; j.worker = null; j.leaseUntil = 0; j.lapsed = (j.lapsed || 0) + 1; await storage.putJob(jid, j); }
       }
-      if (['queued', 'claimed'].includes(j.status) || clock() - (j.endedAt || 0) < PROVER_BOARD.keepMs) keep.push(jid);
-      else {
+      if (['queued', 'claimed'].includes(j.status) || clock() - (j.endedAt || 0) < PROVER_BOARD.keepMs) {
+        keep.push(jid);
+        if (!['queued', 'claimed'].includes(j.status)) soonest = Math.min(soonest, (j.endedAt || 0) + PROVER_BOARD.keepMs);
+      } else {
         if (storage.deleteJob) await storage.deleteJob(jid);
         if (j.proofKept && storage.deleteProof) await storage.deleteProof(jid);
         if (j.stdinKept && storage.deleteStdin) await storage.deleteStdin(jid);
       }
     }
+    retainAt = soonest;
     return keep;
   }
   const over = (j) => { j.stdin = null; j.sealed = null; j.endedAt = clock(); };
@@ -466,6 +526,7 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
 
   async function bump(name, field, pubkey = null, programs = null, community = false, client = null) {
     const ws = await workers();
+    const mergedAt = clock();
     const w = ws[name] || (ws[name] = { proved: 0, failed: 0, bad: 0, lapsed: 0, lastSeen: 0, firstSeen: clock(), ...(community ? { community: true } : {}) });
     if (field) w[field] = (w[field] || 0) + 1;
     if (field === 'bad') w.lastBadAt = clock();   // the count is lifetime; the monitor warns on a recent one
@@ -484,6 +545,8 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
       for (const [n] of crowd.slice(PROVER_BOARD.communityKept)) delete ws[n];
     }
     await storage.putWorkers(ws);
+    // a sighting is dropped only once a write has carried it, and when it is old
+    for (const [n, p] of mem.presence) if (p.at < mergedAt - PROVER_BOARD.communityKeepSeenMs) mem.presence.delete(n);
   }
 
   // A worker takes the oldest job of a class it may prove, and holds it for the lease. `{}` when there is nothing.
@@ -529,14 +592,44 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   // A community machine joins the race for the oldest public job it is not already racing (unsealed, groth16, a program it says it proves:
   // the pool's settle guest unless it names others). Its answer is taken in `result` while the job is open, whoever else has claimed it.
   // A Bitcoin batch (turnPrograms) is one machine's at a time: it is offered only to the machine whose turn it is (nextTurn).
-  function communityClaim(worker, can = ['confidential']) {
+  // The part of an open job the first checks of a community ask read, kept by a look at the open jobs.
+  const lookAt = (j) => ({ class: j.class, program: j.program, sealed: !!j.sealed, input: !!(j.stdin || j.stdinKept), raced: (j.raced || []).slice(),
+    racers: (j.racers || []).slice(), racedAt: { ...(j.racedAt || {}) }, racerLease: { ...(j.racerLease || {}) }, racedBy: { ...(j.racedBy || {}) } });
+  // A look is good while no job has changed since it was made, it is at most viewMs old (jobs written by another process are read within that), and no open
+  // job has reached its deadline or the end of its claim, and no finished job is due to leave the list (the sweep an ask makes first would end, open or drop it).
+  const lookIsFresh = (v) => !!v && v.epoch === mem.epoch && clock() - v.at < viewMs && clock() <= v.until;
+  // Whether the look shows no job this machine could race: the conditions an ask tries first, read from the look. Any job it cannot rule out goes to the full ask.
+  function nothingToRace(v, worker, races) {
+    const here = (j) => liveRacers(j).includes(worker.name) && placeOf(j, worker.name, worker.client) === worker.client;
+    if (v.open.filter(here).length >= PROVER_BOARD.communityOpen) return true;
+    for (const j of v.open) {
+      if (j.class !== 'public' || j.sealed || !races.includes(j.program || 'confidential') || !j.input) continue;
+      if (j.raced.includes(worker.name) || liveRacers(j).length >= PROVER_BOARD.communityRacers) continue;
+      return false;
+    }
+    return true;
+  }
+  async function communityClaim(worker, can = ['confidential']) {
     const races = can.filter((p) => PROVER_BOARD.communityPrograms.includes(p));
+    // A machine's first ask is written out at once, so its record exists in storage.
+    const first = fast && !mem.known.has(worker.name);
+    if (fast) {
+      mem.known.add(worker.name);
+      if (mem.known.size > 5000) mem.known.delete(mem.known.values().next().value);
+      sighted(worker, races);
+      if (!first && lookIsFresh(mem.view) && nothingToRace(mem.view, worker, races)) return null;
+    }
     return exclusive(async () => {
-      await bump(worker.name, null, null, races, true, worker.client);
+      if (fast && !first && lookIsFresh(mem.view) && nothingToRace(mem.view, worker, races)) return null;   // an ask ahead of this one has just looked
+      if (!fast || first || clock() - mem.flushedAt >= PROVER_BOARD.communityFlushMs) { mem.flushedAt = clock(); await bump(worker.name, null, null, races, true, worker.client); }
       const pend = await sweep(await storage.getPending());
       await storage.putPending(pend);
       const open = [];
       for (const jid of pend) { const j = await storage.getJob(jid); if (j && ['queued', 'claimed'].includes(j.status)) open.push(j); }
+      if (fast) {
+        const until = open.reduce((m, j) => Math.min(m, j.deadline ? j.deadline * 1000 : Infinity, j.status === 'claimed' && j.leaseUntil ? j.leaseUntil : Infinity), Infinity);
+        mem.view = { epoch: mem.epoch, at: clock(), until: Math.min(until, retainAt), open: open.map(lookAt) };
+      }
       const here = (j) => liveRacers(j).includes(worker.name) && placeOf(j, worker.name, worker.client) === worker.client;
       if (open.filter(here).length >= PROVER_BOARD.communityOpen) return null;
       let ws = null, trouble = null;
@@ -808,11 +901,12 @@ export function makeProverBoard({ storage, hash, now, lock, cfg = PROVER_BOARD }
   return { post, status, cancel, claim, result, raceVerdict, summary, credits, standing };
 }
 
-const kvLocks = new WeakMap();
+const kvLocks = new WeakMap(), kvMemory = new WeakMap();
 export function buildProverBoard(env, { hash } = {}) {
   const KV = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!KV) return null;
   if (!kvLocks.has(KV)) kvLocks.set(KV, makeLock());
+  if (!kvMemory.has(KV)) kvMemory.set(KV, newBoardMemory());
   const storage = {
     getPending: async () => { const s = await KV.get('pb:pending'); return s ? JSON.parse(s) : []; },
     putPending: async (ids) => KV.put('pb:pending', JSON.stringify(ids)),
@@ -833,5 +927,5 @@ export function buildProverBoard(env, { hash } = {}) {
     getTrouble: async () => { const s = await KV.get('pb:trouble'); return s ? JSON.parse(s) : {}; },
     putTrouble: async (m) => KV.put('pb:trouble', JSON.stringify(m), { expirationTtl: Math.ceil(PROVER_BOARD.turnTroubleMs / 1000) }),
   };
-  return makeProverBoard({ storage, hash, lock: kvLocks.get(KV), cfg: { ...PROVER_BOARD, ...proverBoardConfig(env) } });
+  return makeProverBoard({ storage, hash, lock: kvLocks.get(KV), memory: kvMemory.get(KV), cfg: { ...PROVER_BOARD, ...proverBoardConfig(env) } });
 }
