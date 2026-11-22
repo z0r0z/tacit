@@ -1300,3 +1300,45 @@ test('draw: the freshness the draw asks for follows the setting, and when no one
   const blk = blockOn(b), j = await blk();
   assert.equal((await askBlock(b, x)).jobId, j.jobId, 'the machine that asks is fresh by asking, so it can be drawn');
 });
+
+// A proof that pins the pool's reserves (a swap, a wrapped swap, an add or removal of liquidity, a `mixed(n)` batch) goes to a GPU before the older prove-only wraps and free relays, and keeps room on a full board:
+// the public AMM moves those reserves every minute or so, so every minute such a proof waits is a likelier refusal at the settle.
+const input = (n) => Buffer.from(`program input ${n}`).toString('base64');
+const postOf = (b, n, label, cls = 'private') => b.post({ class: cls, stdin: input(n), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600, label });
+
+test('a swap or liquidity proof is claimed before older jobs, each kind first in, first out', async () => {
+  const b = makeProverBoard({ storage: store(), now });
+  const ids = {};
+  for (const [n, label] of [[1, 'wrap'], [2, 'unwrap'], [3, 'route'], [4, 'farmharvest'], [5, 'wrapswap'], [6, 'adaptorclaim'], [7, 'lpremove'], [8, 'mixed(3)'], [9, 'market route']]) ids[label] = (await postOf(b, 100 + n, label)).jobId;
+  const order = [];
+  for (let i = 0; i < 9; i++) { const j = await b.claim({ worker: tacit, classes: ['private', 'public'] }); order.push(j.label); await b.result({ worker: tacit, jobId: j.jobId, publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(260) }); }
+  assert.deepEqual(order, ['route', 'wrapswap', 'lpremove', 'mixed(3)', 'wrap', 'unwrap', 'farmharvest', 'adaptorclaim', 'market route'],
+    'the five that pin reserves first in the order they came, then the rest in the order they came ("market route" is not one of them)');
+});
+
+test('a full board still takes a swap or liquidity proof, up to its reserve, and nothing else', async () => {
+  const b = makeProverBoard({ storage: store(), now });
+  for (let i = 0; i < PROVER_BOARD.maxPending; i++) await postOf(b, 1000 + i, 'wrap');
+  await assert.rejects(postOf(b, 5000, 'wrap'), (e) => e.code === 'full', 'a wrap past the limit is refused');
+  await assert.rejects(postOf(b, 5001, 'adaptorclaim'), (e) => e.code === 'full');
+  await assert.rejects(postOf(b, 5002, null), (e) => e.code === 'full', 'a job with no label is an ordinary one');
+  for (let i = 0; i < PROVER_BOARD.urgentReserve; i++) assert.equal((await postOf(b, 6000 + i, ['route', 'wrapswap', 'lp', 'lpbond'][i % 4])).status, 'queued', `reserved place ${i + 1}`);
+  await assert.rejects(postOf(b, 7000, 'route'), (e) => e.code === 'full', 'the reserve is used up');
+  await assert.rejects(postOf(b, 7001, 'mixed(2)'), (e) => e.code === 'full');
+});
+
+test('a mixed batch counts as urgent, a look-alike label does not', async () => {
+  const b = makeProverBoard({ storage: store(), now });
+  for (let i = 0; i < PROVER_BOARD.maxPending; i++) await postOf(b, 2000 + i, 'unwrap');
+  assert.equal((await postOf(b, 8000, 'mixed(2)')).status, 'queued');
+  for (const label of ['mixed()', 'mixed(x)', 'routes', 'route ', 'Route', 'swap2', 'lpremove2']) await assert.rejects(postOf(b, 8100 + label.length + label.charCodeAt(0), label), (e) => e.code === 'full', label);
+});
+
+test('a worker that cannot take the urgent job (it is in a class the worker does not serve) still gets the others', async () => {
+  const b = makeProverBoard({ storage: store(), now });
+  await postOf(b, 301, 'wrap');
+  await postOf(b, 302, 'route', 'public');                  // a public job: a private-only worker is not offered it
+  const j = await b.claim({ worker: { name: 'tacit-b5000', classes: ['private'] }, classes: ['private'] });
+  assert.equal(j.label, 'wrap', 'the private worker takes the private job though a swap waits in a class it does not serve');
+});
+

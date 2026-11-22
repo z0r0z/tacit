@@ -37,6 +37,8 @@ export const PROVER_BOARD = Object.freeze({
   keptInput: Object.freeze(['btc-state']),
   keepMs: 60 * 60_000,                                 // a finished or cancelled job stays readable this long
   maxPending: 64,
+  // Room kept past `maxPending` for a swap or liquidity proof (see urgentLabel): the pool moves under such a proof every minute or so, so a proof that cannot be posted goes to the network, minutes slower.
+  urgentReserve: 16,
   maxStdinBytes: 1024 * 1024,                          // bincode SP1Stdin, uncompressed (a batch of eight ops is well under)
   // eth_prove's input carries one light-client update per sync-committee period since the last landed proof: ~120 KB a cycle,
   // 2 MB from a cold start (34 periods, measured 2026-10-26), so a run of missed landings still fits.
@@ -372,6 +374,9 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
   // The relay posts work. The same input posted twice is one job (its id is the hash of what the worker proves). A job
   // carries either `stdin` (the input, for any worker of its class) or `sealed` (dapp/sealed-input.js: the input encrypted
   // to one named worker's key, which only that worker is offered; the board itself cannot read it).
+  // A proof whose op pins the pool's reserves (a swap, a wrapped swap, an add or a removal of liquidity, or a batch the relay named `mixed(n)`, which may hold one): the public AMM moves those reserves every minute or so, so
+  // the longer such a proof waits behind prove-only wraps and free relays the likelier it is stale when it lands. The relay's label for the job is its op type.
+  const urgentLabel = (label) => /^(route|swap|wrapswap|wraplp|lp|lpbond|lpremove|mixed\(\d+\))$/.test(String(label || ''));
   async function post({ class: cls, program = 'confidential', mode = null, stdin, sealed, cycleLimit, gasLimit, deadline, label = null } = {}) {
     if (!PROVER_BOARD.classes.includes(cls)) throw new Error(`class must be one of ${PROVER_BOARD.classes.join(', ')}`);
     if (!PROVER_BOARD.programs.includes(program)) throw new Error(`program must be one of ${PROVER_BOARD.programs.join(', ')}`);
@@ -393,7 +398,7 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
       const jobId = id(`${program}|${cls}|${sealedOk ? `sealed:${sealed.ct}` : stdin}`);
       const have = await storage.getJob(jobId);
       if (have && ['queued', 'claimed'].includes(have.status)) return { jobId, status: have.status, deduped: true };
-      if (pend.filter((x) => x !== jobId).length >= PROVER_BOARD.maxPending) throw Object.assign(new Error('the board is full'), { code: 'full' });
+      if (pend.filter((x) => x !== jobId).length >= PROVER_BOARD.maxPending + (urgentLabel(label) ? PROVER_BOARD.urgentReserve : 0)) throw Object.assign(new Error('the board is full'), { code: 'full' });
       if (have && have.proofKept && storage.deleteProof) await storage.deleteProof(jobId); // the same input again: the old proof goes
       const job = { id: jobId, class: cls, program, mode: PROVER_BOARD.modes[program], stdin: sealedOk ? null : stdin, sealed: sealedOk ? { worker: sealed.worker, epk: sealed.epk, iv: sealed.iv, ct: sealed.ct } : null,
         cycleLimit: cyc, gasLimit: gas, deadline: dl, label, status: 'queued', postedAt: clock(), inputBytes: sealedOk ? null : b64len(stdin),
@@ -595,8 +600,9 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
       for (const jid of pend) { const j = recs.get(jid); if (j && j.status === 'claimed' && j.worker === worker.name) open++; }
       if (open >= PROVER_BOARD.maxOpenPerWorker) return null;
       let ws = null, live = null;
-      // the pool's own proofs first: a tacit chain block (public work community machines race too) is taken only when no other job waits
-      for (const pass of [0, 1]) for (const jid of pend) {
+      // the pool's own proofs first: a tacit chain block (public work community machines race too) is taken only when no other job waits; and among them a proof that pins the pool's reserves (urgentLabel) goes before the rest, each kind first in, first out
+      const order = [...pend.filter((jid) => urgentLabel(recs.get(jid)?.label)), ...pend.filter((jid) => !urgentLabel(recs.get(jid)?.label))];
+      for (const pass of [0, 1]) for (const jid of order) {
         const j = recs.get(jid);
         if (!j || j.status !== 'queued' || !classes.includes(j.class) || !worker.classes.includes(j.class) || !can.includes(j.program || 'confidential')) continue;
         if (Number((j.program || 'confidential') === 'tacit-block') !== pass) continue;
