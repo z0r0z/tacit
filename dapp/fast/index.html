@@ -24,7 +24,7 @@
 <link rel="preconnect" href="https://tacit-fast-board.onrender.com" crossorigin>
 <!-- preload-roots: /fast/app.js | | /fast/wire.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/fast/app.js?cb=daaf9c79">
+<link rel="modulepreload" href="/fast/app.js?cb=2d70cd12">
 <link rel="modulepreload" href="/trade/btc-session.js?cb=8dbee842">
 <link rel="modulepreload" href="/tab-key.js?cb=ad0c42e2">
 <link rel="modulepreload" href="/prf-wallet.js">
@@ -54,7 +54,8 @@
 <link rel="modulepreload" href="/fast/ladder.js">
 <link rel="modulepreload" href="/fast/provide.js?cb=f205b95a">
 <link rel="modulepreload" href="/fast/bound.js?cb=f0f32804">
-<link rel="modulepreload" href="/fast/discover.js?cb=2390538c">
+<link rel="modulepreload" href="/fast/reverse.js?cb=d5210257">
+<link rel="modulepreload" href="/fast/discover.js?cb=392c9b06">
 <link rel="modulepreload" href="/fastbridge-http.js">
 <link rel="modulepreload" href="/fastbridge-client.js?cb=e5c8e3aa">
 <link rel="modulepreload" href="/fastbridge-bl.js">
@@ -63,7 +64,7 @@
 <link rel="modulepreload" href="/bulletproofs-plus.js">
 <link rel="modulepreload" href="/adaptor-signature.js">
 <link rel="modulepreload" href="/adaptor-btc-lock.js">
-<link rel="modulepreload" href="/fastbridge-mailbox.js?cb=96a024c6">
+<link rel="modulepreload" href="/fastbridge-mailbox.js?cb=b27bb787">
 <link rel="modulepreload" href="/sealed-request.js">
 <link rel="modulepreload" href="/fastbridge-board.js">
 <link rel="modulepreload" href="/fastbridge-board-client.js?cb=850e1c5e">
@@ -233,7 +234,11 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 @media (max-width: 420px) { .bd-note { flex-wrap: wrap; } #ready .bd-note .linkbtn.bd-off { margin-left: auto; } }
 .bd-note .linkbtn, .bd-note > b { margin-left: auto; }
 .bd-note .linkbtn.bd-off { margin-left: 14px; color: var(--mute); }
-#ready .fx-amt { margin-top: 12px; }
+#ready .fx-amt, #send .fx-amt { margin-top: 12px; }
+#send .rv-swap { padding: 8px 0; border-bottom: 1px solid var(--hair-2); }
+#send .rv-swap:last-child { border-bottom: 0; }
+#send .rv-swap .empty { margin-top: 2px; font-size: 12px; overflow-wrap: anywhere; }
+#send .rv-swap .empty a { color: var(--ink); margin-left: 6px; }
 .pv-f { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--hair-2); }
 .pv-f input { width: 14ch; min-width: 0; text-align: right; font: inherit; color: var(--ink); background: transparent; border: 0; outline: 0; padding: 0; }
 .pv-f:focus-within { border-color: var(--ink); }
@@ -565,12 +570,13 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 
     <section class="panel gate" id="gate"></section>
     <section class="lp-tiles" id="fx-tiles" aria-label="Providers online" hidden></section>
+    <details class="panel gate pv" id="send" hidden></details>
     <details class="panel gate pv" id="ready" hidden></details>
     <details class="panel gate pv" id="provide" hidden></details>
   </main>
 <!-- warm:begin -->
 <template id="warm">
-<link rel="modulepreload" href="/fast/wire.js?cb=d9e315a3">
+<link rel="modulepreload" href="/fast/wire.js?cb=2ec42422">
 <link rel="modulepreload" href="/bitcoin-taproot-wallet.js">
 <link rel="modulepreload" href="/adaptor-btc-tx.js">
 <link rel="modulepreload" href="/fastbridge-btc.js?cb=1ad52807">
@@ -580,6 +586,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 <link rel="modulepreload" href="/confidential-adaptor.js">
 <link rel="modulepreload" href="/fastbridge-provider.js?cb=36620f82">
 <link rel="modulepreload" href="/fastbridge-el.js">
+<link rel="modulepreload" href="/fastbridge-reverse-client.js?cb=d3449a87">
 <link rel="modulepreload" href="/btc-bind.js?cb=b686d883">
 <link rel="modulepreload" href="/crossout-notes.js?cb=c8534a8d">
 <link rel="modulepreload" href="/burn-deposit-bitcoin.js">
@@ -618,6 +625,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/fast/app.js?cb=daaf9c79"></script>
+<script type="module" src="/fast/app.js?cb=2d70cd12"></script>
 </body>
 </html>

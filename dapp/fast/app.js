@@ -7,7 +7,8 @@ import { onMainnet, connectedInjected } from '/eth-nodes.js';
 import { mountFast } from '/fast/ui.js?cb=2a73d1e3';
 import { mountProvide } from '/fast/provide.js?cb=f205b95a';
 import { mountBound } from '/fast/bound.js?cb=f0f32804';
-import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=2390538c';
+import { mountReverse } from '/fast/reverse.js?cb=d5210257';
+import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=392c9b06';
 import { makeWants } from '/fast/want.js?cb=de216254';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
@@ -19,7 +20,7 @@ const TACIT_URL = '/tacit.js?cb=a26dbd57';
 // the bridge itself (the lock, the settle, the key's own provider) loads when a key opens; a touch on the page fetches its modules ahead
 let warmed = false;
 const warm = () => { if (warmed) return; warmed = true; const t = document.getElementById('warm'); if (t) document.head.append(t.content.cloneNode(true)); };
-const wire = () => { warm(); return import('/fast/wire.js?cb=d9e315a3'); };
+const wire = () => { warm(); return import('/fast/wire.js?cb=2ec42422'); };
 for (const ev of ['pointerdown', 'focusin']) document.querySelector('main')?.addEventListener(ev, warm, { once: true });
 
 async function lists() {
@@ -107,6 +108,18 @@ mountBound({
   },
 });
 
+// Sending private TAC for TAC on Bitcoin, with a provider whose ad says it sells that way (its `reverse` terms). The panel stays hidden until one does.
+// The boards are read for it at most once a minute.
+let sellers = { at: 0, list: [] };
+const reverseProviders = async () => { if (Date.now() - sellers.at > 60000) sellers = { at: Date.now(), list: await discoverProviders(await LISTS) }; return sellers.list; };
+const send = mountReverse({
+  root: document.getElementById('send'), keyS, signIn, providers: reverseProviders,
+  open: async () => {
+    const pubHex = keyS.key.pubHex, priv = keyS.priv(), [ux, { openReverse }] = await Promise.all([getUx(), wire()]);
+    return TS.withKey((T) => openReverse({ T, withKey: (fn) => TS.withKey(fn, pubHex), ux, priv, pubHex, wallet: sendWallet, ask }), pubHex);
+  },
+});
+
 const provide = mountProvide({
   base: PROVIDER_DEFAULTS, notify, ask: () => wants.ask(), root: document.getElementById('provide'), keyS, hasOpen, settings, waiting: () => wants.waiting(), signIn,
   open: async () => {
@@ -114,5 +127,5 @@ const provide = mountProvide({
     return TS.withKey((T) => openProvider({ T, withKey: (fn) => TS.withKey(fn, pubHex), ux, priv, pubHex, boards, wallet: sendWallet, ask }), pubHex);
   },
 });
-// a page closed while it provides, or while a swap it provides is open, leaves that swap untended
-window.addEventListener('beforeunload', (e) => { if (provide.busy()) { e.preventDefault(); e.returnValue = ''; } });
+// a page closed while it provides, or while a swap it provides is open, leaves that swap untended; so does one closed while TAC is on its way to Bitcoin
+window.addEventListener('beforeunload', (e) => { if (provide.busy() || send.busy()) { e.preventDefault(); e.returnValue = ''; } });

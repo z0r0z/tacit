@@ -196,8 +196,10 @@ address: a quote holds nothing, a start takes the note out of what is offered, a
 | `GET /reverse/swap/:id`, `/offer` | the phase; the provider's lock offer once it is made |
 | `POST /reverse/swap/:id/evm-offer {evmOffer}` | the user's pool lock, kept once it is in the pool and checked against the swap |
 
-Nothing in a page or an ad uses this yet: it is a service a client can call, and it is not listed on the board. The TAC it sells is what sits at that address, so TAC
-that came out of the Bitcoin shielded pool and could not be bridged home is sold on as it is (`anyTac`, as in the forward terms).
+The provider's ad on the board carries a `reverse` member with the terms of this direction (`minAmount`, `maxAmount`, `available`, `feeBps`, `flatFee`, `csvBlocks`,
+`evmWindowSecs`, read from `/reverse/info` every time the ad is posted; a provider with the side off posts the ad it always did), and the /fast/ page shows a "Send TAC to
+Bitcoin" panel only when a provider's ad has one. Requests for it reach the provider through the board like the others. The TAC it sells is what sits at that address, so TAC
+that came out of the Bitcoin shielded pool and could not be bridged home is sold on as it is (`anyTac`, as in the forward terms); the panel says so.
 `--dry-run` leaves it off (the log says so).
 
 ## Watching it

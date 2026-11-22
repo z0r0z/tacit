@@ -14,10 +14,10 @@ import assert from 'node:assert/strict';
 import { tacit as T, fetched } from './lib/btc-sim.mjs';
 import { secp, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
 import { makeBoard } from '../dapp/fastbridge-board.js';
-import { termsOf } from '../dapp/fastbridge-client.js';
+import { termsOf, makeLocalStore } from '../dapp/fastbridge-client.js';
 import { makeBoardHandler } from '../fastbridge-lp/lib/board-http.mjs';
 
-const { openFast, openProvider, discoverProviders, counterFor, notesOf, untrackedFirst, followed, lineageScreen, TAC_ASSET, EXPLORERS } = await import('../dapp/fast/wire.js');
+const { openFast, openReverse, openProvider, discoverProviders, counterFor, notesOf, untrackedFirst, followed, lineageScreen, TAC_ASSET, EXPLORERS } = await import('../dapp/fast/wire.js');
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -503,6 +503,96 @@ test('discovering providers: the ones that serve HTTP are checked against their 
   });
   assert.deepEqual(found.map((p) => [p.name, p.ref.kind, p.terms.feeBps, p.terms.available]).sort(), [['A', 'http', 20, null], ['B', 'http', 20, null]]);
   assert.deepEqual(found.map((p) => p.id).sort(), [claimA, claimB].sort());
+});
+
+test('openReverse: the providers a key has asked are remembered and every one is tended, a swap asked for and not yet locked is listed, and a provider that fails costs the others nothing', async () => {
+  const priv = key(21), pubHex = bytesToHex(secp.getPublicKey(priv, true));
+  openWallet(priv);
+  const mem = new Map();
+  const storage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => { mem.set(k, String(v)); }, removeItem: (k) => { mem.delete(k); }, key: (i) => [...mem.keys()][i] ?? null, get length() { return mem.size; } };
+  const uxR = { cfg: { pool: POOL }, chainBindingHex: () => '0x' + '11'.repeat(32), rpc: async () => '0x0', pool: {}, balance: async () => ({ byAsset: {} }) };
+  const A = { id: '02' + 'aa'.repeat(32), name: 'Alpha', ref: { kind: 'mailbox', boardBase: 'https://b.example', gateway: '02' + 'a1'.repeat(32) } };
+  const B = { id: '03' + 'bb'.repeat(32), name: 'Beta', ref: { kind: 'http', base: 'https://beta.example' } };
+  const log = [];
+  let betaDown = false;
+  const recOf = (id, created, over = {}) => ({ id, phase: 'done', title: 'Done', ended: true, amount: '1000', receive: '990', created, ...over });
+  const clients = {
+    [A.id]: { quote: async (u) => { log.push(['quote', 'A', u]); return { id: 'qa', evmAmount: u }; }, start: async ({ quote }) => { log.push(['start', 'A', quote.id]); return { swapId: '11'.repeat(36) }; }, pump: async () => { log.push(['pump', 'A']); return [recOf('a1', 30)]; }, records: async () => [recOf('a1', 30)] },
+    [B.id]: { quote: async () => ({}), start: async () => ({ swapId: '22'.repeat(36) }), pump: async () => { log.push(['pump', 'B']); if (betaDown) throw new Error('beta is down'); return [recOf('b1', 50)]; }, records: async () => [recOf('b1', 50)] },
+  };
+  const open = () => openReverse({ T, withKey: (fn) => fn(T), ux: uxR, priv, pubHex, hrp: 'tb', storage, now: () => 1000, clientOf: (p) => clients[p.id] });
+  // The user's Bitcoin side must read the notes the provider locks (the chain adapter's note reader, which only `forNotes` builds): the Ethereum-locker machine
+  // asks it whether the lock's notes cross lanes. The fakes here cannot show its absence, so the source is what is held to it.
+  const wireSrc = (await import('node:fs')).readFileSync(new URL('../dapp/fast/wire.js', import.meta.url), 'utf8');
+  assert.match(wireSrc.slice(wireSrc.indexOf('export async function openReverse')), /seedTag: 'tacit-fastbridge-user-reverse-seed', forNotes: true/, 'the key\'s Bitcoin side reads notes, as a provider\'s does');
+  const r = await open();
+  assert.equal(r.address, T.wallet.address());
+  assert.deepEqual(await r.records(), [], 'a key that has asked no provider has nothing to show, and tends nothing');
+  assert.deepEqual(await r.pump(), []); assert.equal(log.length, 0);
+  const q = await r.quote({ provider: A, units: 500n });
+  assert.deepEqual(log.at(-1), ['quote', 'A', 500n]);
+  await r.start({ provider: A, quote: q });
+  await r.start({ provider: A, quote: q });
+  await r.start({ provider: B, quote: { id: 'qb' } });
+  const kept = JSON.parse(mem.get(`tacit-fastbridge-reverse-v1:mainnet:${pubHex}:providers`));
+  assert.deepEqual(kept.map((p) => [p.id, p.name, p.ref.kind]), [[A.id, 'Alpha', 'mailbox'], [B.id, 'Beta', 'http']], 'each provider asked is kept once, with how to reach it');
+  // a page that opens again, from the same storage, tends both without being told of them
+  const again = await open();
+  log.length = 0;
+  const recs = await again.pump();
+  assert.deepEqual(log.map((l) => l.join(':')).sort(), ['pump:A', 'pump:B']);
+  assert.deepEqual(recs.map((x) => [x.id, x.provider]), [['b1', 'Beta'], ['a1', 'Alpha']], 'newest first, each with the provider it is with');
+  // one that fails is skipped, the other still answers
+  betaDown = true;
+  assert.deepEqual((await again.pump()).map((x) => x.id), ['a1']);
+  betaDown = false;
+
+  // asked for, not yet locked: it is in the quote store only
+  const quotesOfA = makeLocalStore(`tacit-fastbridge-reverse-v1:mainnet:${pubHex}:${A.id}:quotes:`, storage);
+  const swapsOfA = makeLocalStore(`tacit-fastbridge-reverse-v1:mainnet:${pubHex}:${A.id}:swaps:`, storage);
+  const waiting = { id: 'q1', swapId: 'cc'.repeat(36), evmAmount: '2000', btcValue: '1990', startedAt: 900 };
+  await quotesOfA.put(waiting);
+  await quotesOfA.put({ id: 'q2', evmAmount: '300', btcValue: '290' });                                              // quoted, never started: not listed
+  await quotesOfA.put({ id: 'q3', swapId: 'dd'.repeat(36), evmAmount: '400', btcValue: '390', startedAt: 880, settled: true });   // its offer was taken: the swap's own record shows
+  await quotesOfA.put({ id: 'q4', swapId: 'ee'.repeat(36), evmAmount: '500', btcValue: '490', startedAt: 850, settled: true, gaveUp: 'the provider never locked' });
+  await quotesOfA.put({ id: 'q5', swapId: 'ff'.repeat(36), evmAmount: '600', btcValue: '590', startedAt: 1000 - 8 * 86400, settled: true, gaveUp: 'the lock is not by the provider\'s key' });   // long ago: not listed
+  const shown = await again.records();
+  const asks = shown.filter((x) => x.id.length === 72);
+  assert.deepEqual(asks.map((x) => [x.id.slice(0, 2), x.phase, x.ended, x.amount, x.receive, x.provider]), [['cc', 'asked', false, '2000', '1990', 'Alpha'], ['ee', 'aborted', true, '500', '490', 'Alpha']], 'the one waiting, and the one the provider never locked for; not the unstarted, the taken, or the old');
+  assert.match(asks.find((x) => x.phase === 'asked').detail, /Your TAC is not locked until it has/);
+  assert.match(asks.find((x) => x.phase === 'aborted').detail, /^the provider never locked\. Nothing of yours was locked\.$/);
+  // the provider locks and its offer is taken: the swap has a record, and the waiting line goes
+  await swapsOfA.put({ id: waiting.swapId, phase: 'accepted' });
+  assert.equal((await again.records()).filter((x) => x.id === waiting.swapId).length, 0, 'the waiting line is gone once the swap has a record of its own (the real client lists that one; this fake client has none)');
+
+  // tended by one pass at a time, and stopped
+  const seen = [];
+  const stop = again.run({ everyMs: 15, onChange: (x) => seen.push(x.map((y) => y.id).join()) });
+  await new Promise((res) => setTimeout(res, 120));
+  stop();
+  const n = log.filter((l) => l[0] === 'pump').length;
+  await new Promise((res) => setTimeout(res, 80));
+  assert.ok(seen.length >= 1 && seen.some((s) => /a1/.test(s)), 'the passes reported the swaps');
+  assert.equal(log.filter((l) => l[0] === 'pump').length, n, 'and none ran after it was stopped');
+});
+
+test('discovering providers on a board: one that sells the other way too is listed with the terms of that direction, one that does not is listed as it always was', async () => {
+  const { signAd } = await import('../dapp/fastbridge-board.js');
+  const { gatewayOf } = await import('../dapp/fastbridge-mailbox.js');
+  const T0 = Math.floor(Date.now() / 1000);
+  const ad = (n, over = {}) => {
+    const p = new Uint8Array(32).fill(n), gw = gatewayOf(p);
+    return signAd({ claimPub: bytesToHex(secp.getPublicKey(p, true)), gateway: bytesToHex(gw.pub), btcAsset: TAC_ASSET, evmAsset: TAC_ASSET, minAmount: '1000000000', maxAmount: '5000000000', available: '2000000000', feeBps: 30, flatFee: '10000000', csvBlocks: 144, evmWindowSecs: 14400, name: 'p' + n, at: T0, until: T0 + 300, ...over }, p);
+  };
+  const reverse = { minAmount: '2000000000', maxAmount: '9000000000', available: null, feeBps: 45, flatFee: '20000000', csvBlocks: 72, evmWindowSecs: 14400 };
+  const ads = [ad(3, { reverse }), ad(4)];
+  const fetchImpl = async (url) => (String(url) === 'https://board.example/ads' ? json({ ads }) : json({ error: 'no' }, 404));
+  const found = await discoverProviders({ providers: [], boards: ['https://board.example'], fetchImpl });
+  const both = found.find((p) => p.name === 'p3'), one = found.find((p) => p.name === 'p4');
+  assert.deepEqual(both.reverse, { feeBps: 45, flatFee: 20000000n, minAmount: 2000000000n, maxAmount: 9000000000n, available: null, csvBlocks: 72, evmWindowSecs: 14400 }, 'its own terms, as numbers the page can compare (null: it could not say what it can take)');
+  assert.equal(both.terms.feeBps, 30, 'the forward terms are the ad\'s own');
+  assert.equal('reverse' in one, false, 'a provider that sells one way has no reverse entry');
+  assert.equal(both.terms.available, 2000000000n);
 });
 
 test('the explorers the page reads are the two it lists for the bridge page', () => {

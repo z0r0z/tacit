@@ -55,6 +55,14 @@ export function checkAd(ad, now) {
   for (const k of ['minAmount', 'maxAmount', 'flatFee']) if (!uint.test(String(ad[k]))) bad(`the ad's ${k} is not an amount`);
   if (ad.available != null && !uint.test(String(ad.available))) bad('the ad\'s available is not an amount');
   for (const [k, max] of [['feeBps', 10000], ['csvBlocks', 4032], ['evmWindowSecs', 86400 * 7]]) if (!Number.isInteger(ad[k]) || ad[k] < 0 || ad[k] > max) bad(`the ad's ${k} is out of range`);
+  // A provider that also sells the other way (TAC on Bitcoin for private TAC in the pool) says so with the terms of that direction. The assets are the ad's own.
+  if (ad.reverse != null) {
+    const r = ad.reverse;
+    if (!r || typeof r !== 'object' || Array.isArray(r)) bad('the ad\'s reverse terms are not terms');
+    for (const k of ['minAmount', 'maxAmount', 'flatFee']) if (!uint.test(String(r[k]))) bad(`the ad's reverse ${k} is not an amount`);
+    if (r.available != null && !uint.test(String(r.available))) bad('the ad\'s reverse available is not an amount');
+    for (const [k, max] of [['feeBps', 10000], ['csvBlocks', 4032], ['evmWindowSecs', 86400 * 7]]) if (!Number.isInteger(r[k]) || r[k] < 0 || r[k] > max) bad(`the ad's reverse ${k} is out of range`);
+  }
   if (JSON.stringify(ad).length > LIMITS.maxAd) bad('the ad is too large');
   if (ad.name != null && (typeof ad.name !== 'string' || ad.name.length > LIMITS.maxName)) bad('the ad\'s name is too long');
   if (!Number.isInteger(ad.at) || !Number.isInteger(ad.until) || ad.until <= ad.at || ad.until - ad.at > LIMITS.adSecs) bad('the ad\'s time is not valid');

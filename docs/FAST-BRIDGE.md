@@ -322,5 +322,9 @@ derives a Bitcoin address of its own from the provider's key, reads the confirme
 answers `/reverse/...` next to the forward routes, and, started with a throwaway key and nothing funded, answers `/reverse/info` (`available: 0`) from that
 address, a different one from its main address. It has not been run against a funded address, a real swap, or the real settle guest.
 
-Not built: the Ethereum to Bitcoin direction as something a person can use. No page has a way in, a provider's ad does not say it sells this way,
-and the board does not carry it. Also not built: the claim prover's options (the relay that is not the provider, the user's device, a prover network).
+A provider that runs it says so in its ad (a `reverse` member with that direction's terms, signed with the rest, read from `/reverse/info`), and the /fast/ page
+(`fast/reverse.js`, wired by `openReverse` in `fast/wire.js`) shows a "Send TAC to Bitcoin" panel only when a listed provider's ad has one: it quotes the cheapest
+provider with room, shows what is sent and what arrives on Bitcoin, starts the swap, and tends every provider it has asked (the providers are remembered in this
+browser, so a swap that outlasts the page is tended again when it opens). Until a provider is switched on and funded, nothing on the page changes.
+
+Not built: the claim prover's options (the relay that is not the provider, the user's device, a prover network).

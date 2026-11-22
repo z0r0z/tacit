@@ -6,6 +6,8 @@
 //   const p = await openProvider({ T, withKey, ux, priv, pubHex, boards, wallet })      providing, for anyone
 //   -> { address, claimPub, inventory(), start(), stop(), status() }
 //   const list = await discoverProviders({ providers, boards })                         who there is to bridge with
+//   const r = await openReverse({ T, withKey, ux, priv, pubHex, wallet })               sending private TAC for TAC on Bitcoin, with a provider that sells that way
+//   -> { address, available(), quote({ provider, units }), start({ provider, quote }), records(), pump(), run() }
 //
 //   T  tacit.js with the key's wallet open     withKey(fn)  a call under that key (tacit-session.js)     ux  the pool module (trade/poolux.js)
 
@@ -16,15 +18,16 @@ import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=a360394a';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=e5c8e3aa';
 import { makeLpService } from '/fastbridge-provider.js?cb=36620f82';
-import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=96a024c6';
+import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=b27bb787';
+import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=d3449a87';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=c8534a8d';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=2390538c';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=392c9b06';
 import { splitAmount, assignNotes } from '/fast/sweep.js?cb=713466b3';
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=2390538c';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=392c9b06';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api'];
@@ -276,6 +279,84 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
       try { await followed([all], pick, (ns) => vet(ns)); return 'all'; } catch (e) { if (e && e.code === 'lineage') return 'any'; throw e; }
     },
     records: market.records, run, recover: market.recover,
+  };
+}
+
+// ── private TAC sent for TAC on Bitcoin: the other direction, with a provider whose ad has `reverse` terms (fastbridge-reverse-client.js) ──
+// The provider locks a Bitcoin note first; the key locks its private TAC in the pool for the provider; the provider claims it, which gives the key
+// what it needs to take the Bitcoin note. One client for each provider (its quotes and swaps are kept apart), and the providers a key has asked are
+// remembered, so a swap that outlasts the page is tended again when the page opens. `clientOf(provider)` is for a test.
+export async function openReverse({ T, withKey, ux, priv, pubHex, pins = {}, wallet = null, ask, fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc', now, call = {}, storage = globalThis.localStorage, clientOf = null }) {
+  const asset = { btcAsset: TAC_ASSET, evmAsset: TAC_ASSET, ...pins };
+  // the user reads the notes the provider locks (it is the Ethereum locker here), so its Bitcoin side reads the pool as a provider's does (forNotes)
+  const { btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-user-reverse-seed', forNotes: true, wallet, ask });
+  const prefix = `tacit-fastbridge-reverse-v1:mainnet:${pubHex}:`;
+  const callOf = (ref) => (ref && ref.kind === 'mailbox'
+    ? makeMailboxCall({ board: makeBoardClient({ base: ref.boardBase, fetchImpl }), gateway: ref.gateway, ...(now ? { now } : {}), ...call })
+    : makeHttpCall({ base: ref && ref.base, fetchImpl }));
+  const readIndex = () => { try { const j = JSON.parse(storage.getItem(prefix + 'providers') || '[]'); return Array.isArray(j) ? j.filter((p) => p && typeof p.id === 'string' && p.ref && typeof p.ref === 'object') : []; } catch { return []; } };
+  const writeIndex = (list) => { try { storage.setItem(prefix + 'providers', JSON.stringify(list)); } catch { /* not kept: the swap is still in its own store */ } };
+  const clients = new Map();
+  const clientFor = (p) => {
+    if (!clients.has(p.id)) {
+      clients.set(p.id, clientOf ? clientOf(p) : makeReverseClient({
+        lp: makeReverseCounter(callOf(p.ref)), btc, evm, seed, ...(now ? { now } : {}),
+        store: makeLocalStore(`${prefix}${p.id}:swaps:`, storage), quoteStore: makeLocalStore(`${prefix}${p.id}:quotes:`, storage),
+        pins: { btcAsset: asset.btcAsset, evmAsset: asset.evmAsset },
+      }));
+    }
+    return clients.get(p.id);
+  };
+  const remember = (p) => { const list = readIndex(); if (!list.some((x) => x.id === p.id)) writeIndex([...list, { id: p.id, name: p.name || 'Provider', ref: p.ref }].slice(-20)); };
+  const newest = (a, b) => (b.created || 0) - (a.created || 0);
+  const clock = () => (now ? now() : Math.floor(Date.now() / 1000));
+  // A swap the key asked a provider for has no record of its own until the provider has locked and its offer is taken: until then (and if the provider never locks)
+  // it is only in the quote store. The panel lists it from there, so a press is never followed by nothing on the page.
+  const asked = async (p) => {
+    const swaps = makeLocalStore(`${prefix}${p.id}:swaps:`, storage), out = [];
+    for (const q of await makeLocalStore(`${prefix}${p.id}:quotes:`, storage).list()) {
+      if (!q.swapId || (q.settled && !q.gaveUp) || await swaps.get(q.swapId)) continue;
+      if (q.gaveUp && clock() - (q.startedAt || 0) > 7 * 86400) continue;
+      out.push({
+        id: q.swapId, phase: q.gaveUp ? 'aborted' : 'asked', title: q.gaveUp ? 'Stopped' : 'Asking the provider', ended: !!q.gaveUp,
+        detail: q.gaveUp ? `${String(q.gaveUp).replace(/\.$/, '')}. Nothing of yours was locked.` : 'The provider is being asked to lock its Bitcoin. Your TAC is not locked until it has.',
+        amount: String(q.evmAmount ?? '0'), receive: String(q.btcValue ?? '0'), created: q.startedAt || 0, provider: p.name,
+      });
+    }
+    return out;
+  };
+  const gather = async (p, swapsOf) => [...(await swapsOf(p)).map((r) => ({ ...r, provider: p.name })), ...(await asked(p).catch(() => []))];
+  const records = async () => {
+    const out = [];
+    for (const p of readIndex()) { try { out.push(...(await gather(p, (x) => clientFor(x).records()))); } catch { /* a store that cannot be read shows nothing */ } }
+    return out.sort(newest);
+  };
+  // one pass over every provider asked (a provider that does not answer is tried again next pass)
+  const pump = async () => {
+    const out = [];
+    for (const p of readIndex()) { try { out.push(...(await gather(p, (x) => clientFor(x).pump()))); } catch { /* the next pass */ } }
+    return out.sort(newest);
+  };
+  // Tended by one page at a time, as the other direction's swaps are (the others show what is stored, and the first of them takes over when it closes)
+  const run = ({ everyMs = 15000, onChange = () => {} } = {}) => {
+    let stopped = false, busy = false;
+    const once = async () => { if (busy || stopped) return; busy = true; try { onChange(await pump()); } catch { /* the next pass */ } finally { busy = false; } };
+    const view = async () => { try { onChange(await records()); } catch { /* the next pass */ } };
+    const locks = typeof navigator !== 'undefined' ? navigator.locks : null;
+    if (!locks || typeof locks.request !== 'function') { once(); const t = setInterval(once, everyMs); return () => { stopped = true; clearInterval(t); }; }
+    let tending = false, release = () => {};
+    view();
+    const timer = setInterval(() => { if (tending) once(); else view(); }, everyMs);
+    locks.request(`tacit-fastbridge-reverse-tend:${pubHex}`, () => new Promise((resolve) => { if (stopped) return resolve(); tending = true; release = resolve; once(); })).catch(() => {});
+    return () => { stopped = true; clearInterval(timer); release(); };
+  };
+  return {
+    address: btc.address,
+    // the private TAC the key can send now (its pool balance less what a lock's note cut costs)
+    available: () => evm.available(),
+    quote: async ({ provider, units }) => clientFor(provider).quote(units),
+    start: async ({ provider, quote }) => { const r = await clientFor(provider).start({ quote }); remember(provider); return r; },
+    records, pump, run,
   };
 }
 

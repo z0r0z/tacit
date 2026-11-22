@@ -124,10 +124,19 @@ export function makeAdPublisher({ board, handle, claimPriv, claimPub, keys, name
     const r = await handle({ method: 'GET', path: '/info', body: null });
     if (r.status !== 200 || !r.body) return null;
     const i = r.body, t = now();
+    // a provider that also sells the other way answers /reverse/info as well; one that does not (or does not answer) posts the ad it always did
+    let ri = null;
+    try {
+      const rr = await handle({ method: 'GET', path: '/reverse/info', body: null });
+      const b = rr && rr.status === 200 ? rr.body : null;
+      if (b && b.direction === 'out' && strip(b.btcAsset) === strip(i.btcAsset) && strip(b.evmAsset) === strip(i.evmAsset)) ri = b;
+    } catch { /* it posts the forward ad alone */ }
     const ad = signAd({
       claimPub, gateway: bytesToHex(keys.pub), btcAsset: strip(i.btcAsset), evmAsset: strip(i.evmAsset), minAmount: String(i.minAmount), maxAmount: String(i.maxAmount),
       available: i.available == null ? null : String(i.available), feeBps: i.feeBps, flatFee: String(i.flatFee), csvBlocks: i.csvBlocks, evmWindowSecs: i.evmWindowSecs,
-      ...(i.anyTac === true ? { anyTac: true } : {}), name: label, at: t, until: t + Math.min(600, Math.max(AD_SECS, 2 * everySecs + 60)),
+      ...(i.anyTac === true ? { anyTac: true } : {}),
+      ...(ri ? { reverse: { minAmount: String(ri.minAmount), maxAmount: String(ri.maxAmount), available: ri.available == null ? null : String(ri.available), feeBps: ri.feeBps, flatFee: String(ri.flatFee), csvBlocks: ri.csvBlocks, evmWindowSecs: ri.evmWindowSecs } } : {}),
+      name: label, at: t, until: t + Math.min(600, Math.max(AD_SECS, 2 * everySecs + 60)),
     }, claimPriv);
     await board.putAd(ad);
     return ad;

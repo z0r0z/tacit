@@ -201,7 +201,7 @@ if (C.boards && C.boards.length) {
     for (const url of C.boards) {
       const board = makeBoardClient({ base: url });
       makeMailboxServer({ board, keys, handle, signReply: (d) => signSchnorr(d, key), pollMs: (C.mailboxPollSecs ?? 3) * 1000, log }).start();
-      makeAdPublisher({ board, handle: service.handle, claimPriv: key, claimPub: config.claimPub, keys, name: C.name || null, everySecs: 60, log }).start();
+      makeAdPublisher({ board, handle, claimPriv: key, claimPub: config.claimPub, keys, name: C.name || null, everySecs: 60, log }).start();
       log({ level: 'info', msg: 'on the board', board: url, gateway: Buffer.from(keys.pub).toString('hex') });
     }
     // bridges waiting for a provider: alerted when a new one appears, so the operator can raise what it takes (or lower its fee, for one that names a price)

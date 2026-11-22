@@ -491,6 +491,44 @@ test('the ads: a provider posts its terms and what it can take now; a user reads
   void ads;
 });
 
+test('a provider that also sells the other way says so in its ad, with the terms of that direction; one that does not posts the ad it always did', async () => {
+  const c = clock(), board = makeBoard({ now: c.now });
+  const info = { btcAsset: 'ab'.repeat(32), evmAsset: '0x' + 'cd'.repeat(32), minAmount: '1000', maxAmount: '50000', available: '7000', feeBps: 25, flatFee: '100', csvBlocks: 144, evmWindowSecs: 14400 };
+  const rev = { v: 1, direction: 'out', lockerPub: '02' + 'ee'.repeat(32), btcAsset: info.btcAsset, evmAsset: info.evmAsset, minAmount: '2000', maxAmount: '30000', available: '4500', feeBps: 40, flatFee: '300', csvBlocks: 72, evmWindowSecs: 14400, maxOpen: 2, open: 0, anyTac: true };
+  let reverse = { status: 200, body: rev };
+  const P = providerOf(1, async (req) => (req.path === '/info' ? { status: 200, body: info } : req.path === '/reverse/info' ? (typeof reverse === 'function' ? reverse() : reverse) : { status: 404, body: {} }), c);
+  const publish = () => makeAdPublisher({ board, handle: P.handle, claimPriv: P.p, claimPub: P.claimPub, keys: P.keys, now: c.now, everySecs: 60 }).publish();
+  const ad = await publish();
+  assert.deepEqual(ad.reverse, { minAmount: '2000', maxAmount: '30000', available: '4500', feeBps: 40, flatFee: '300', csvBlocks: 72, evmWindowSecs: 14400 }, 'its own terms, and not the forward ones (the provider\'s key for the Bitcoin lock, the sends open and the like are not in the ad)');
+  assert.deepEqual([ad.feeBps, ad.flatFee, ad.available], [25, '100', '7000'], 'the forward terms are as they were');
+  assert.ok(JSON.stringify(ad).length < LIMITS.maxAd - 600, `the ad is well inside the board's limit (${JSON.stringify(ad).length} of ${LIMITS.maxAd})`);
+  assert.equal(checkAd(ad, c.now()), ad); assert.equal(board.ads()[0].reverse.minAmount, '2000', 'the board keeps it as it came');
+  const found = await readProviders({ board, now: c.now });
+  assert.equal(found[0].ad.reverse.feeBps, 40, 'a user reads it from the ad that checked out');
+  // the terms are signed with the rest: a board or a stranger that changes them offers a user nothing
+  for (const [k, v] of [['available', '999999'], ['feeBps', 0], ['minAmount', '1']]) assert.match(thrown(() => checkAd({ ...ad, reverse: { ...ad.reverse, [k]: v } }, c.now())).message, /not signed by its key/, k);
+  assert.match(thrown(() => checkAd({ ...ad, reverse: null }, c.now())).message, /not signed by its key/, 'nor can the reverse side be taken off one');
+  // what it posts when it has no reverse side, or one that does not match
+  for (const [why, r] of [['404', { status: 404, body: { error: 'not found' } }], ['a failure', { status: 500, body: null }], ['an answer that is not a reverse one', { status: 200, body: { ...rev, direction: 'in' } }], ['another asset pair', { status: 200, body: { ...rev, evmAsset: '0x' + 'ee'.repeat(20) } }], ['no body', { status: 200, body: null }], ['a throw', () => { throw new Error('down'); }]]) {
+    reverse = r; c.advance(1);
+    const plain = await publish();
+    assert.equal('reverse' in plain, false, `no reverse terms for: ${why}`); assert.equal(checkAd(plain, c.now()), plain);
+  }
+  reverse = { status: 200, body: { ...rev, available: null } };
+  assert.equal((await publish()).reverse.available, null, 'a provider that cannot read its notes says it does not know (null), not 0');
+  // the ad's check: the reverse terms must be whole
+  const T = T0;
+  const good = { minAmount: '1', maxAmount: '2', available: '1', flatFee: '0', feeBps: 0, csvBlocks: 72, evmWindowSecs: 100 };
+  assert.equal(checkAd(adOf(1, T, { reverse: good }), T).reverse.csvBlocks, 72);
+  assert.equal(checkAd(adOf(1, T, { reverse: null }), T).reverse, null, 'null is none');
+  assert.equal(checkAd(adOf(1, T, { reverse: { ...good, maxAmount: 5 } }), T).reverse.maxAmount, 5, 'a number is read as the amount it is');
+  for (const [over, re] of [[{ minAmount: '-1' }, /reverse minAmount is not an amount/], [{ maxAmount: 'x' }, /reverse maxAmount/], [{ flatFee: undefined }, /reverse flatFee/], [{ available: 'lots' }, /reverse available/], [{ feeBps: 10001 }, /reverse feeBps is out of range/], [{ feeBps: 0.5 }, /reverse feeBps/], [{ csvBlocks: 5000 }, /reverse csvBlocks/], [{ csvBlocks: -1 }, /reverse csvBlocks/], [{ evmWindowSecs: 86400 * 8 }, /reverse evmWindowSecs/]]) {
+    assert.match(thrown(() => checkAd(adOf(1, T, { reverse: { ...good, ...over } }), T)).message, re, JSON.stringify(over));
+  }
+  for (const bad of ['terms', 7, [], true]) assert.match(thrown(() => checkAd(adOf(1, T, { reverse: bad }), T)).message, /reverse terms are not terms/, JSON.stringify(bad));
+  assert.match(thrown(() => checkAd(adOf(1, T, { reverse: { ...good, note: 'x'.repeat(2100) } }), T)).message, /too large/, 'the whole ad stays within its bound with it');
+});
+
 test('a provider nobody named is called by its key: two such providers on one board read as two, not as one name', async () => {
   const c = clock(), board = makeBoard({ now: c.now });
   const info = { btcAsset: 'ab'.repeat(32), evmAsset: '0x' + 'cd'.repeat(32), minAmount: '1000', maxAmount: '50000', available: '7000', feeBps: 25, flatFee: '100', csvBlocks: 144, evmWindowSecs: 14400 };

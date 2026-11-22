@@ -5,8 +5,14 @@
 
 import { makeHttpCounter } from '/fastbridge-http.js';
 import { termsOf } from '/fastbridge-client.js?cb=e5c8e3aa';
-import { readProviders } from '/fastbridge-mailbox.js?cb=96a024c6';
+import { readProviders } from '/fastbridge-mailbox.js?cb=b27bb787';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
+
+// The terms of the other direction (private TAC sent for TAC on Bitcoin), from an ad that has them. A provider that sells only the one way has no `reverse`.
+export const reverseTermsOf = (r) => ({
+  feeBps: Number(r.feeBps) || 0, flatFee: BigInt(r.flatFee ?? 0), minAmount: BigInt(r.minAmount), maxAmount: BigInt(r.maxAmount),
+  available: r.available == null ? null : BigInt(r.available), csvBlocks: r.csvBlocks, evmWindowSecs: r.evmWindowSecs,
+});
 
 // Every provider there is to bridge with: the ones that serve HTTP (checked against the key the page pins for each) and the ones on the
 // boards (their ads, checked). One entry for each provider key, the one that serves HTTP first.
@@ -23,7 +29,7 @@ export async function discoverProviders({ providers = [], boards = [], fetchImpl
   await Promise.all(boards.map(async (boardBase) => {
     try {
       for (const p of await readProviders({ board: makeBoardClient({ base: boardBase, fetchImpl }), ...(now ? { now } : {}) })) {
-        out.push({ id: p.id, name: p.name, ref: { kind: 'mailbox', boardBase, gateway: p.ad.gateway, claimPub: p.ad.claimPub }, terms: termsOf(p.ad) });
+        out.push({ id: p.id, name: p.name, ref: { kind: 'mailbox', boardBase, gateway: p.ad.gateway, claimPub: p.ad.claimPub }, terms: termsOf(p.ad), ...(p.ad.reverse ? { reverse: reverseTermsOf(p.ad.reverse) } : {}) });
       }
     } catch { /* a board that does not answer has no providers here */ }
   }));
