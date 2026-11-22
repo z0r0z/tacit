@@ -1213,7 +1213,8 @@ async function cycle() {
       proof = await beating(`proving ${jobId} ${type}`, () => withStageReport(stageReport([jobId]), () => proveSettle({ type, op: job.op, memos, timeoutMs: CFG.settleJobTimeoutSecs * 1000 })));
     } catch (e) {
       log(`job ${jobId} prove failed/timeout: ${e.message}`);
-      noteProveFailure();
+      // A pool that refuses the op as it stands says nothing of the prover (the proof was made and is fine): it is not one of the failures the monitor reads.
+      if (e.code !== 'op_refused') noteProveFailure();
       e = proveFailureForJob(e);
       // A request the prover account could not pay for pauses proving first; the job is failed as any other, so the page
       // waiting on it offers to prove it another way.

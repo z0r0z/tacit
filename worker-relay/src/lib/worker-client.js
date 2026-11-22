@@ -287,8 +287,39 @@ export async function confidentialAck({ jobId, txHash, error, broadcastHashes, s
     } catch { status = 0; }
     if (i < 2) await new Promise((r) => setTimeout(r, 500 * 2 ** i));
   }
+  // An outcome that cost something (a settle that landed, a proof bought) is sent again for a while when the API could not take it: lost, the job is served
+  // again after its claim lapses and the work is done twice.
+  const outcome = !error && !release && (body.txHash || (body.publicValues && body.proof));
+  if (outcome && (status === 0 || status === 429 || status >= 500)) {
+    keepAck(jobId, body);
+    console.error(`CRITICAL: /confidential/ack not taken for job=${jobId} (status ${status}) — kept, and sent again every ${ACK_RESEND_MS / 1000} s for up to ${ACK_KEEP_MS / 60_000} min`);
+    return { ok: false, status, kept: true };
+  }
   console.error(`CRITICAL: /confidential/ack refused for job=${jobId} (status ${status}) — the worker still holds it as proving and will re-serve it after the claim TTL`);
   return { ok: false, status };
+}
+// The acks kept for sending again, by job: an outcome the API did not take is tried every ACK_RESEND_MS until it does, or says no, or ACK_KEEP_MS have passed.
+const ACK_RESEND_MS = Number(process.env.ACK_RESEND_MS) || 20_000, ACK_KEEP_MS = Number(process.env.ACK_KEEP_MS) || 30 * 60_000, ACK_KEPT_MAX = 200;
+const keptAcks = new Map();
+let resendTimer = null;
+function keepAck(jobId, body) {
+  keptAcks.delete(jobId);
+  keptAcks.set(jobId, { body, until: Date.now() + ACK_KEEP_MS });
+  while (keptAcks.size > ACK_KEPT_MAX) keptAcks.delete(keptAcks.keys().next().value);
+  if (!resendTimer) { resendTimer = setInterval(resendAcks, ACK_RESEND_MS); resendTimer.unref?.(); }
+}
+async function resendAcks() {
+  for (const [jobId, k] of [...keptAcks]) {
+    if (Date.now() > k.until) { keptAcks.delete(jobId); console.error(`/confidential/ack for job=${jobId} given up: the API did not take it in ${ACK_KEEP_MS / 60_000} min`); continue; }
+    try {
+      const res = await postJson('/confidential/ack', k.body, { timeoutMs: 15_000 });
+      if (res.ok || (res.status >= 400 && res.status < 500 && res.status !== 429)) {
+        keptAcks.delete(jobId);
+        console.log(`/confidential/ack for job=${jobId} ${res.ok ? 'taken at last' : `answered ${res.status}: not sent again`}`);
+      }
+    } catch { /* the API is still away */ }
+  }
+  if (!keptAcks.size && resendTimer) { clearInterval(resendTimer); resendTimer = null; }
 }
 // Where a job this relay is proving stands at the prover board ('queued', 'starting', 'claimed'), for the page to name the wait (worker/src/confidential-settle.js
 // stageJob). Its own route (/confidential/stage), never a field of an ack: an API without it answers 404, which an ack body it did not know could not be trusted to do.
