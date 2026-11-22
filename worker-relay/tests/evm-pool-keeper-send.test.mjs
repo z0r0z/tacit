@@ -180,8 +180,9 @@ const args = [1n, 25, [[0n, 0n], [[0n, 0n], [0n, 0n]], [0n, 0n], Array(11).fill(
   hold.close();
 }
 // A private endpoint that takes a transaction and never mines it (the case that left a relayed payment unmined): with no receipt after
-// `resendSecs`, the keeper sends the same signed transaction again, to the private endpoint and to the read node, which mines it. A mined
-// transaction is left alone, and with public sends off the read node is not used.
+// `resendSecs`, the keeper sends the same signed transaction again to the private endpoint (and to the read node as well, when the call
+// simulates; an unsimulated send never goes to the read nodes). A mined transaction is left alone, and with public sends off the read node
+// is not used.
 {
   const { keccak256, parseTransaction } = await import('viem');
   const swallow = () => {
@@ -206,14 +207,16 @@ const args = [1n, 25, [[0n, 0n], [[0n, 0n], [0n, 0n]], [0n, 0n], Array(11).fill(
   const before = pubSeen.length;
   const hash = await chain.send('sweepReceive', args, { gas: 300_000n, simulate: false });
   ok(s.held.length === 1 && pubSeen.length === before && !(await receiptOf(hash)), 'the private endpoint takes it and nothing mines it', `held ${s.held.length}`);
-  for (let i = 0; i < 80 && !(await receiptOf(hash)); i++) await sleep(100);
+  // (a send made unsimulated, behind the keeper's own unmined ones, is sent again to the private endpoints only: it cannot be checked
+  // against the chain just now, so it is not put on the read nodes)
+  for (let i = 0; i < 80 && s.held.length < 3; i++) await sleep(100);
+  ok(s.held.length >= 2 && s.held.every((r) => r === s.held[0]), 'with no receipt, it is sent again to the private endpoint, as the same signed transaction', `${s.held.length}`);
+  ok(pubSeen.length === before, 'an unsimulated send is not put on the read node', `${pubSeen.length - before}`);
+  ok(keccak256(s.held[0]) === hash, 'it is the transaction first sent: the same hash');
+  // the endpoint lets it go: it mines, and a mined one is left alone
+  await rpc('eth_sendRawTransaction', [s.held[0]]);
   const rc = await receiptOf(hash);
-  ok(!!rc, 'with no receipt, it is sent again and mined', rc ? `block ${Number(rc.blockNumber)}` : 'no receipt');
-  ok(s.held.length >= 2 && s.held.every((r) => r === s.held[0]), 'to the private endpoint again, as the same signed transaction', `${s.held.length}`);
-  ok(pubSeen.length === before + 1 && pubSeen[before] === s.held[0], 'and to the read node, which got that same transaction', `${pubSeen.length - before}`);
-  ok(keccak256(s.held[0]) === hash && parseTransaction(s.held[0]).nonce === Number((await rpc('eth_getTransactionByHash', [hash])).result.nonce), 'it is the transaction first sent: same hash, same nonce');
-  await sleep(1500);
-  ok(pubSeen.length === before + 1, 'and once mined it is not sent again');
+  ok(!!rc && parseTransaction(s.held[0]).nonce === Number((await rpc('eth_getTransactionByHash', [hash])).result.nonce), 'once the endpoint lets it go it mines at the nonce first used', rc ? `block ${Number(rc.blockNumber)}` : 'no receipt');
   ok(await chain.resend(hash) === false, 'asking to send a mined one again does nothing');
   s.close();
 }
@@ -246,6 +249,52 @@ const args = [1n, 25, [[0n, 0n], [[0n, 0n], [0n, 0n]], [0n, 0n], Array(11).fill(
   await off.send('sweepReceive', args, { gas: 300_000n, simulate: false });
   await sleep(1500);
   ok(held.length === 1, 'and with resendSecs 0 it is never sent again', `${held.length}`);
+  srv.close();
+}
+// A transaction whose nonce another service has taken (the older per-chain keeper signs with the same key and picked the same nonce, its own
+// send out of sight of the read nodes): sending the first again can never mine it, so the keeper signs the same call again with a nonce of
+// its own. That one mines; the first never does; the call is not signed a third time; a send nobody took the nonce from is left alone.
+{
+  const { keccak256, parseTransaction } = await import('viem');
+  const held = [];
+  const srv = http.createServer(async (q, r) => {
+    let body = ''; for await (const c of q) body += c;
+    const req = JSON.parse(body), one = async (x) => {
+      if (x.method !== 'eth_sendRawTransaction') { const f = await rpc(x.method, x.params); return { jsonrpc: '2.0', id: x.id, ...(f.error ? { error: f.error } : { result: f.result }) }; }
+      held.push(x.params[0]);
+      return { jsonrpc: '2.0', id: x.id, result: keccak256(x.params[0]) };
+    };
+    const out = Array.isArray(req) ? await Promise.all(req.map(one)) : await one(req);
+    r.writeHead(200, { 'content-type': 'application/json' }); r.end(JSON.stringify(out));
+  }).listen(0);
+  const url = `http://127.0.0.1:${srv.address().port}/`;
+  const acct = privateKeyToAccount('0x' + '8d'.repeat(32));
+  await rpc('anvil_setBalance', [acct.address, '0x' + (10n ** 18n).toString(16)]);
+  const logs = [];
+  const chain = await makeKeeperChain({ cfg: { ...base, allowPublicSend: false, rpcUrls: [pubUrl], sendRpcUrls: [url], resendSecs: 0.5, resendTries: 4, nonceGraceSecs: 0.3 }, account: acct, log: (l) => logs.push(l) });
+  const hash = await chain.send('sweepReceive', args, { gas: 300_000n, simulate: false });
+  const n = parseTransaction(held[0]).nonce;
+  // the other service's transaction takes that nonce and mines
+  const theirs = await acct.signTransaction({ chainId: 1, type: 'eip1559', to: acct.address, value: 1n, nonce: n, gas: 21_000n, maxFeePerGas: 10n ** 10n, maxPriorityFeePerGas: 10n ** 9n });
+  const took = await rpc('eth_sendRawTransaction', [theirs]);
+  ok(!took.error && Number((await rpc('eth_getTransactionCount', [acct.address, 'latest'])).result) === n + 1, "another transaction from the key takes the send's nonce", took.error?.message || `nonce ${n}`);
+  for (let i = 0; i < 200 && new Set(held).size < 2; i++) await sleep(100);
+  const raws = [...new Set(held)];
+  ok(raws.length === 2 && parseTransaction(raws[1]).nonce === n + 1 && keccak256(raws[1]) !== hash, 'the keeper signs the call again with the next nonce, a new hash', raws.map((r) => parseTransaction(r).nonce).join());
+  ok(logs.some((l) => l.includes('lost its nonce') && l.includes(hash) && l.includes(keccak256(raws[1]))), 'and says which hash took its place', logs.find((l) => l.includes('lost its nonce'))?.slice(0, 120) || 'no log');
+  await rpc('eth_sendRawTransaction', [raws[1]]);
+  const mined = (await rpc('eth_getTransactionReceipt', [keccak256(raws[1])])).result;
+  ok(!!mined && !(await rpc('eth_getTransactionReceipt', [hash])).result, 'the new one mines, the first never does', mined ? `block ${Number(mined.blockNumber)}` : 'no receipt');
+  await sleep(4000);
+  ok(new Set(held).size === 2, 'and the call is not signed again once the new one has mined', `${new Set(held).size} distinct`);
+  // a send whose nonce nobody took is only sent again unchanged, never signed again
+  const acct2 = privateKeyToAccount('0x' + '8e'.repeat(32));
+  await rpc('anvil_setBalance', [acct2.address, '0x' + (10n ** 18n).toString(16)]);
+  held.length = 0;
+  const calm = await makeKeeperChain({ cfg: { ...base, allowPublicSend: false, rpcUrls: [pubUrl], sendRpcUrls: [url], resendSecs: 0.5, resendTries: 3, nonceGraceSecs: 0.3 }, account: acct2 });
+  await calm.send('sweepReceive', args, { gas: 300_000n, simulate: false });
+  for (let i = 0; i < 200 && held.length < 3; i++) await sleep(100);
+  ok(held.length >= 3 && new Set(held).size === 1, 'a swallowed send whose nonce is still free is sent again unchanged, not signed again', `${held.length} sends, ${new Set(held).size} distinct`);
   srv.close();
 }
 pubSrv.close();
