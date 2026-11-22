@@ -122,6 +122,27 @@ try {
   ok(!(await p.$('#ladders [data-btc]')) && (await p.evaluate(() => localStorage.getItem('tacit-trade-btc'))) === '0', '#btc=off takes them away in this browser');
   await r.browser.close();
 
+  // Bitcoin chosen on the chart brings Bitcoin trading with it: the ticket is the Bitcoin one, its Buy opens the market, and Ethereum's ticket comes back
+  r = await openPage({ width: 1280, height: 900 }, { hash: '' });
+  p = r.page;
+  await ladderReady(p);
+  await p.click('[data-lane="btc"]');
+  await until(p, () => /Cheapest ask/.test(document.querySelector('#btc-ticket')?.textContent || ''), null, 3000);   // at the click, not at the next refresh
+  const tk = await p.evaluate(() => ({ title: document.querySelector('#tk-title').textContent, eth: getComputedStyle(document.querySelector('#side-seg')).display, shown: getComputedStyle(document.querySelector('#btc-ticket')).display, panel: document.querySelector('#btc-ticket').innerText.replace(/\s+/g, ' ') }));
+  ok(tk.title === 'Trade TAC on Bitcoin' && tk.shown === 'block' && tk.eth === 'none', `choosing Bitcoin on the chart makes the ticket the Bitcoin one and puts the Ethereum one away (${tk.title})`);
+  ok(/Cheapest ask.*sats.*TAC.*Best bid.*Last trade.*days? ago.*Buy TAC on Bitcoin/.test(tk.panel), `it shows the order book now, the last trade with its age, and a Buy (${tk.panel.slice(0, 160)})`);
+  await p.click('[data-btc-side="sell"]');
+  ok(/Sell TAC on Bitcoin|List TAC for sale on Bitcoin/.test(await text(p, '#btc-ticket [data-btc-go]')) && (await p.evaluate(() => document.querySelector('#side-seg [data-side="sell"]').getAttribute('aria-pressed'))) === 'true', 'Sell turns its button around, and the side is the one the Ethereum ticket holds');
+  await p.click('[data-btc-side="buy"]');
+  await p.click('#btc-ticket [data-btc-go]');
+  await until(p, () => document.querySelector('.bsheet.wide .bm [data-k]'), null, 180000);
+  ok(true, 'its Buy opens the Bitcoin market in the sheet');
+  await p.keyboard.press('Escape');
+  await p.click('[data-btc-eth]');
+  const back = await p.evaluate(() => ({ title: document.querySelector('#tk-title').textContent, eth: getComputedStyle(document.querySelector('#side-seg')).display, lane: document.querySelector('#lane-seg [aria-pressed="true"]')?.dataset.lane }));
+  ok(back.title === 'Trade TAC' && back.eth !== 'none' && back.lane === 'eth', 'Trade on Ethereum instead brings the Ethereum ticket and the Ethereum chart back');
+  await r.browser.close();
+
   r = await openPage({ width: 1280, height: 900 }, { wallet: true });
   p = r.page;
   await until(p, () => document.querySelectorAll('#ladders [data-btc]').length > 0, null, 120000);

@@ -360,7 +360,7 @@ function paintRead(h = null, rows = null) {
   let out = '';
   if (V?.lane === 'cmp') {
     const at = (id) => rows?.find((r) => r.s.id === id)?.b.close, e = h ? at('eth') : V.ethNow, b = h ? at('btc') : V.btcNow, g = e > 0 && b > 0 ? b / e - 1 : null;
-    if (e != null || b != null) out = html`<div class="l"><span class="px num">${g == null ? '—' : esc(pct(g))}</span> <em>${g == null ? '' : 'Bitcoin against Ethereum'} · ${esc(h ? fmtLocalStamp(h.b.t) : 'now')}</em></div> <div class="r"><span>Ethereum <b>${e != null ? readPx(e, 'usd') : '—'}</b></span> <span>Bitcoin <b>${b != null ? readPx(b, 'usd') : '—'}</b></span></div>`;
+    if (e != null || b != null) out = html`<div class="l"><span class="px num">${g == null ? '—' : esc(pct(g))}</span> <em>${g == null ? '' : 'Bitcoin against Ethereum'} · ${esc(h ? fmtLocalStamp(h.b.t) : V.askNow ? 'now, at the cheapest ask' : 'now')}</em></div> <div class="r"><span>Ethereum <b>${e != null ? readPx(e, 'usd') : '—'}</b></span> <span>Bitcoin <b>${b != null ? readPx(b, 'usd') : '—'}</b></span></div>`;
   } else if (V?.bars.length || V?.now != null) {
     const { bars, unit, lane, line } = V, b = h?.b, U = lane === 'btc' ? 'TAC' : 'ETH';
     const nowPx = V.now ?? bars.at(-1).close, start = V.base ?? bars[0]?.close ?? nowPx;
@@ -379,7 +379,7 @@ function paintRead(h = null, rows = null) {
     } else {
       const lows = line ? bars.map((x) => x.close) : bars.map((x) => (x.low > 0 ? x.low : x.close)), highs = line ? bars.map((x) => x.close) : bars.map((x) => x.high);
       const word = V.range ? RANGE_WORDS[V.range] : bars.length ? `all time · since ${fmtLocalTime(bars[0].t, true)}` : 'all time';
-      out = html`<div class="l"><span class="px num">${px(nowPx)}</span> ${chgHtml(nowPx / start - 1)} <em>${esc(word)}</em></div> <div class="r">${summary(Math.min(...lows, nowPx), Math.max(...highs, nowPx), V.vol)}</div>`;
+      out = html`<div class="l"><span class="px num">${px(nowPx)}</span> ${chgHtml(nowPx / start - 1)} <em>${esc(word)}${V.askNow ? ' · last trade price' : ''}</em></div> <div class="r">${summary(Math.min(...lows, nowPx), Math.max(...highs, nowPx), V.vol)}${V.askNow && V.askPx ? html` <span>cheapest ask now <b>${V.askPx}</b> · last trade ${esc(V.lastWords)}</span>` : ''}</div>`;
     }
   }
   if (el.__h !== out) { el.__h = out; el.innerHTML = out; }
@@ -407,13 +407,17 @@ function renderChart() {
   if (line && lane !== 'btc') eth = lineBars(eth, tf, since, since ? ethAt(since) : null, D.perEth);
   const btcFrom = cmp && !since ? eth[0]?.t ?? 0 : since;
   let btc = (D.btc ? candlesFromTrades(D.btc.trades, tf) : []).filter((b) => b.t + tf > btcFrom);
-  if (line && lane !== 'eth') btc = lineBars(btc, tf, btcFrom, btcFrom ? closeAt(trades, btcFrom) : null, D.btc?.mark || 0);
+  // The line holds the last trade's price through a quiet stretch; it is not pushed up to a price that is not a trade when the last trade is old (the tag at the edge says the price now).
+  const lvNow = lastView(), askNow = lvNow.stale && lvNow.source === 'ask';
+  if (line && lane !== 'eth') btc = lineBars(btc, tf, btcFrom, btcFrom ? closeAt(trades, btcFrom) : null, askNow ? 0 : D.btc?.mark || 0);
   const ethBars = eth.map((b) => (unit === 'usd' ? ethLaneUsd(b, D.ethUsd) : invert(b)));
   const btcBars = btc.map((b) => (unit === 'usd' && D.btcUsd ? btcLaneUsd(b, D.btcUsd) : b));
   const series = [], tags = [], legend = [];
   const priv = tacitEth(), deviates = priv != null && priceEth() != null && Math.abs(priv / priceEth() - 1) >= 0.01;
   const ethSpot = unit === 'usd' ? usdOf(priceEth()) : priceEth(), privSpot = unit === 'usd' ? usdOf(priv) : priv;
-  const btcSpot = D.btc?.mark ? (unit === 'usd' ? btcUsdPerTac() : D.btc.mark) : null;
+  // The Bitcoin price now (a recent trade, else the cheapest ask) is what the edge tag, the legend and the comparison read; the last trade's own price is what the held line ends at.
+  const btcLast = D.btc?.mark ? (unit === 'usd' ? btcUsdPerTac() : D.btc.mark) : null;
+  const btcSpot = lvNow.sats ? (unit === 'usd' ? btcNowUsd() : lvNow.sats) : null;
   const tagPx = (v, l) => (unit !== 'usd' && l === 'eth' ? sig(v, 3) : readPx(v, unit, l));
   if (lane === 'eth' || cmp) {
     series.push({ id: 'eth', name: 'Precision pool', color: ETHBLUE, kind: line ? 'line' : 'candles', area: !cmp, bars: ethBars, fmt: priceFmt(unit, 'eth'), tickFmt: tickFmt(unit, 'eth'), volFmt: (v) => `${v.toFixed(3)} ETH` });
@@ -422,26 +426,26 @@ function renderChart() {
   }
   if (lane === 'btc' || cmp) {
     series.push({ id: 'btc', name: 'Bitcoin order book', color: ORANGE, kind: line ? 'line' : 'candles', area: !cmp, bars: btcBars, fmt: priceFmt(unit, 'btc'), tickFmt: tickFmt(unit, 'btc'), volFmt: (v) => `${grp(v, 0)} TAC` });
-    if (btcSpot != null) tags.push({ y: btcSpot, label: tagPx(btcSpot, 'btc'), color: ORANGE });
+    if (btcSpot != null) tags.push({ y: btcSpot, label: tagPx(btcSpot, 'btc') + (askNow ? ' ask' : ''), color: ORANGE });
   }
   const points = cmp ? [] : myTrades(lane).map((p) => ({ ...p, y: lane === 'btc' ? inUnit('btc', unit)(p.px) : inUnit('eth', unit)(1 / p.px) })).filter((p) => p.y > 0 && p.t + tf > since);
   const names = { eth: 'Precision pool on Ethereum', btc: 'Bitcoin order book', cmp: 'Ethereum and Bitcoin, in dollars' };
   const quiet = !cmp && !series[0].bars.length && (lane === 'btc' ? trades.length : D.tape.coarse.length) ? `No trades ${lane === 'btc' ? 'on the Bitcoin order book' : 'in the Precision pool'} in the ${RANGE_WORDS[range] || 'range'}.` : undefined;
   chart.update({ series, tags, period: tf, log: S.log, minSpan: 0.04, readout: true, zoomable: !cmp, points: points.map(({ t, y, up }) => ({ t, y, up })), label: `TAC price, ${names[lane]}, ${sizeName(tf)} ${line ? 'line' : 'candles'}`, empty: chartEmpty(lane) ?? quiet });
   const base = since ? (lane === 'btc' ? closeAt(trades, since) : ethAt(since)) : null;
-  S.view = cmp ? { lane, ethNow: ethSpot, btcNow: btcSpot }
-    : { lane, unit, range, line, tf, points, bars: series[0].bars, base: base ? inUnit(lane, unit)(base) : null, now: lane === 'btc' ? btcSpot : ethSpot,
+  S.view = cmp ? { lane, ethNow: ethSpot, btcNow: btcSpot, askNow }
+    : { lane, unit, range, line, tf, points, bars: series[0].bars, base: base ? inUnit(lane, unit)(base) : null, now: lane === 'btc' ? btcLast : ethSpot, askNow: lane === 'btc' && askNow, askPx: lane === 'btc' && askNow && btcSpot != null ? readPx(btcSpot, unit, 'btc') : null, lastWords: lvNow.words,
       vol: lane === 'btc' ? trades.filter((x) => x.t >= since).reduce((a, x) => a + x.vol, 0) : volumeSince(D.tape, since || (D.tape.coarse[0]?.t ?? 0), now(), fineStart()) };
   paintRead();
   const sw = (c) => `<i class="sw" style="background:${c}"></i>`;
   if (lane !== 'btc') legend.push(`<span>${sw(ETHBLUE)}Precision pool (Ethereum)${ethSpot != null ? ` · ${priceFmt(unit, 'eth')(ethSpot)}` : ''}</span>`);
-  if (lane !== 'eth') legend.push(`<span>${sw(ORANGE)}Bitcoin order book${btcSpot != null ? ` · ${priceFmt(unit, 'btc')(btcSpot)}` : ''}</span>`);
+  if (lane !== 'eth') legend.push(`<span>${sw(ORANGE)}Bitcoin order book${btcSpot != null ? ` · ${askNow ? 'cheapest ask ' : ''}${priceFmt(unit, 'btc')(btcSpot)}` : ''}${askNow && btcLast != null ? ` <span class="mute">(last trade ${priceFmt(unit, 'btc')(btcLast)}, ${esc(lvNow.words)})</span>` : ''}</span>`);
   if (lane !== 'btc' && priv != null) legend.push(`<span>${sw(GREEN)}Tacit pool · ${priceFmt(unit, 'eth')(privSpot)}${deviates ? `, ${pct(priv / priceEth() - 1)} vs Precision` : ', level with Precision'}</span>`);
   $('#legend').innerHTML = lane === 'cmp' ? legend.join('') : points.length ? '<span><b class="up">▲</b><b class="down">▼</b> your purchases and sales</span>' : '';
   const first = D.tape.coarse[0], days = first ? Math.max(1, Math.round((now() - first.t) / 86400)) : 0;
   $('#chart-note').textContent = lane === 'eth'
     ? `Executed prices (fees included) from the Precision pool’s onchain tape. A quiet stretch holds the last price, and the right edge is the price now. Each candle opens where the one before closed. The tape holds a day of 5-minute bars and six weeks of 4-hour bars; this browser keeps what it has read${first ? ` (${days} days so far)` : ''}.`
-    : lane === 'btc' ? `Every trade on the Bitcoin order book since ${D.btc?.firstTrade ? dayFmt(D.btc.firstTrade) : 'it began'}${D.btc?.trades?.length ? ` (${D.btc.trades.length} trades)` : ''}; a stretch with no trades holds the price before it.`
+    : lane === 'btc' ? `Every trade on the Bitcoin order book since ${D.btc?.firstTrade ? dayFmt(D.btc.firstTrade) : 'it began'}${D.btc?.trades?.length ? ` (${D.btc.trades.length} trades)` : ''}; a stretch with no trades holds the price before it.${askNow ? ` The last trade was ${lvNow.words}; the tag at the edge is the cheapest ask now.` : ''}`
     : 'Ethereum and Bitcoin in dollars, at today’s ETH and BTC prices. The figure above is how far Bitcoin sits from Ethereum.';
   if (lane !== 'cmp') $('#chart-note').textContent += ' Drag across the chart to zoom; double-click to zoom out. Your own trades are flagged when a wallet is connected.';
   renderControls();
@@ -587,6 +591,42 @@ function renderBtcAlt(q = S.quote) {
   setHtml(el, h);
   el.hidden = false;
 }
+// Choosing Bitcoin on the chart brings Bitcoin trading with it: the ticket becomes the Bitcoin one (what the order book asks and bids now, and a Buy and a Sell that
+// open the Bitcoin market on that side) and the Ethereum ticket is put away, not lost: a class hides it, and its amount and quote stay as they were. An Ethereum trade
+// under way keeps its ticket on screen.
+function renderBtcTicket() {
+  const box = $('#btc-ticket'), tk = document.querySelector('.p-ticket');
+  if (!box || !tk) return;
+  const on = S.lane === 'btc' && btcOn() && !S.busy;
+  tk.classList.toggle('on-btc', on);
+  const title = $('#tk-title'); if (title) title.textContent = on ? 'Trade TAC on Bitcoin' : 'Trade TAC';
+  if (!on) return;
+  const b = D.book, buy = S.side === 'buy', lv = lastView();
+  const asks = b ? ladderLevels(b.asks, 'ask') : [], bids = b ? ladderLevels(b.bids, 'bid') : [];
+  const a = b && b.bestAsk != null ? { unit: b.bestAsk, tac: Number((asks.find((l) => l.unit === b.bestAsk) || asks[0] || {}).amount || 0) / 1e8 } : null;
+  const bidLv = bids[0], d = b && b.bestBid != null && bidLv ? { unit: bidLv.unit, tac: Number(bidLv.amount) / 1e8, manual: bidLv.flag === 'manual' } : null;
+  const px = (u) => (D.btcUsd ? usd((u * D.btcUsd) / 1e8) : `${satsFmt(u)} sats`);
+  const row = (label, unit, small, cls = '') => html`<div${cls ? ` class="${cls}"` : ''}><dt>${label}</dt><dd><b>${unit != null ? px(unit) : '—'}</b>${small ? html`<small>${small}</small>` : ''}</dd></div>`;
+  const last = D.btc?.mark ? row('Last trade', D.btc.mark, lv.words || '', 'mute') : '';
+  let body, go;
+  if (!b) {
+    body = `<p class="bt-hint">${D.bookFailed ? 'Could not read the Bitcoin order book. It is read again in a minute.' : 'Reading the Bitcoin order book…'}</p>`; go = '';
+  } else {
+    body = html`<dl class="bt">${row('Cheapest ask', a && a.unit, a ? `${satsFmt(a.unit)} sats · ${tacFmt(a.tac)} TAC` : 'nothing for sale')}${row('Best bid', d && d.unit, d ? `${satsFmt(d.unit)} sats · ${tacFmt(d.tac)} TAC${d.manual ? ' · settles when the bidder is online' : ''}` : 'no bids')}${last}</dl>`;
+    const act = buy ? (a ? 'buy' : 'bid') : (d ? 'sell' : 'list');
+    const label = { buy: 'Buy TAC on Bitcoin', bid: 'Place a bid on Bitcoin', sell: 'Sell TAC on Bitcoin', list: 'List TAC for sale on Bitcoin' }[act];
+    const hint = act === 'bid' ? 'Nothing is for sale on Bitcoin right now: say what you would pay.' : act === 'list' ? 'No bids right now: list it at your price.' : '';
+    go = html`${hint ? html`<p class="bt-hint">${hint}</p>` : ''}<button class="btn" type="button" data-btc-go="${act}">${label}</button>`;
+  }
+  setHtml(box, html`<div class="seg big" role="group" aria-label="Buy or sell on Bitcoin"><button type="button" data-btc-side="buy" aria-pressed="${buy}">Buy TAC</button><button type="button" data-btc-side="sell" aria-pressed="${!buy}">Sell TAC</button></div>${body}${go}<p class="bt-note">Paid and received in BTC from your own Tacit key, settled on Bitcoin. A listing is bought whole.</p><p class="bt-note"><button type="button" class="linkbtn" data-btc-eth="1">Trade on Ethereum instead →</button></p>`);
+}
+$('#btc-ticket')?.addEventListener('click', (e) => {
+  const s = e.target.closest('[data-btc-side]');
+  if (s) { document.querySelector(`#side-seg [data-side="${s.dataset.btcSide}"]`)?.click(); renderBtcTicket(); return; }
+  const g = e.target.closest('[data-btc-go]');
+  if (g) { if (g.dataset.btcGo === 'bid') openBitcoin({ side: 'buy', type: 'limit' }); else openBitcoinFor(g.dataset.btcGo, null); return; }
+  if (e.target.closest('[data-btc-eth]')) { chart.zoomOut(); S.lane = 'eth'; keepChart(); renderChart(); renderBtcTicket(); }
+});
 const PRESETS = { buy: [['0.05 ETH', '0.05'], ['0.25 ETH', '0.25'], ['1 ETH', '1']], sell: [['1,000 TAC', '1000'], ['5,000 TAC', '5000'], ['20,000 TAC', '20000']] };
 // With a wallet that holds some of what is paid, the quick amounts are shares of it (the Max beside the balance is the rest); without one, round amounts to see the scale.
 function chipSet() {
@@ -1441,7 +1481,7 @@ const warm = () => getBitcoin().then((b) => b.session.load()).catch(() => {});
 $('#ladders').addEventListener('mouseover', (e) => { if (e.target.closest?.('[data-mine="open"],[data-mine="signin"]')) warm(); });
 $('#ladders').addEventListener('focusin', (e) => { if (e.target.closest?.('[data-mine="open"],[data-mine="signin"]')) warm(); });
 $('#pin').addEventListener('click', (e) => { if (e.target.closest('#unpin') && !S.busy) { S.pin = null; renderPin(); requote(); renderBook(); } });
-$('#lane-seg').addEventListener('click', (e) => { const b = e.target.closest('[data-lane]'); if (b) { chart.zoomOut(); S.lane = b.dataset.lane; keepChart(); renderChart(); } });
+$('#lane-seg').addEventListener('click', (e) => { const b = e.target.closest('[data-lane]'); if (b) { chart.zoomOut(); S.lane = b.dataset.lane; keepChart(); renderChart(); renderBtcTicket(); } });
 $('.p-chart').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b || b.closest('#lane-seg')) return;
@@ -1450,7 +1490,7 @@ $('.p-chart').addEventListener('click', (e) => {
   if (b.dataset.kind) S.kind = b.dataset.kind; else if (b.dataset.unit) S.unit = b.dataset.unit; else if (b.dataset.tf) S.tf[S.lane] = Number(b.dataset.tf); else if (b.dataset.range != null) S.range = Number(b.dataset.range); else if (b.dataset.log) S.log = !S.log;
   keepChart(); renderChart();
 });
-function paintAll() { renderHead(); renderLanes(); renderChart(); renderBook(); renderPin(); renderAbout(); farm.paint(); renderBtcAlt(); if (S.quote) renderVenues(S.quote); }
+function paintAll() { renderHead(); renderLanes(); renderChart(); renderBook(); renderPin(); renderAbout(); farm.paint(); renderBtcAlt(); renderBtcTicket(); if (S.quote) renderVenues(S.quote); }
 renderQuote(null); renderVenues(null); renderControls(); renderAbout(); renderLanes();
 const loads = [loadChain().then(paintAll), loadTapes().then(paintAll), loadBitcoin().then(paintAll), loadBoards().then(paintAll)];
 loads[0].then(() => loadRange().then(renderBook, renderBook), () => { D.rangeDone = true; });

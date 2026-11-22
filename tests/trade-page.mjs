@@ -263,7 +263,7 @@ try {
   });
   ok(tagYs.length === 3 && tagYs.every((y, i) => i === 0 || y - tagYs[i - 1] >= 16), `tags on prices a hair apart do not overlap (${tagYs.map((y) => Math.round(y))})`);
   ok(/Precision pool \(Ethereum\).*Bitcoin order book.*Tacit pool/.test((await text(p, '#legend')).replace(/\s+/g, ' ')), 'the legend names the lanes and the Tacit pool\'s place against Precision');
-  ok(/^[+−]\d[\d.]*% Bitcoin against Ethereum · now Ethereum \$0\.\d{4} Bitcoin \$0\.\d{4}$/.test((await text(p, '#ch-read')).replace(/\s+/g, ' ').trim()), `above the chart, how far Bitcoin sits from Ethereum now, and both prices (${(await text(p, '#ch-read')).replace(/\s+/g, ' ').trim()})`);
+  ok(/^[+−]\d[\d.]*% Bitcoin against Ethereum · now(, at the cheapest ask)? Ethereum \$0\.\d{4} Bitcoin \$0\.\d{4}$/.test((await text(p, '#ch-read')).replace(/\s+/g, ' ').trim()), `above the chart, how far Bitcoin sits from Ethereum now, and both prices (${(await text(p, '#ch-read')).replace(/\s+/g, ' ').trim()})`);
   await p.hover('#chart svg', { position: { x: 400, y: 150 } });
   await until(p, () => /\d{2}:\d{2}/.test(document.querySelector('#ch-read')?.textContent || ''), null, 5000).catch(() => {});
   ok(/Bitcoin against Ethereum · \d+ \w{3} \d{2}:\d{2}/.test(await text(p, '#ch-read')) && (await p.$$eval('#chart .cross .cd[visibility="visible"]', (d) => d.length)) === 2, 'hovering reads the two prices and their gap at that time, with a dot on each line');
