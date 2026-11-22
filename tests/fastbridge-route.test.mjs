@@ -53,6 +53,20 @@ test('a provider that takes the size is the way: the best quote of those that ca
   assert.equal((await routeOf([provider('Big')], session({ minConfs: 2 })).offer(100n * TAC)).minutes, 25, 'a provider that waits for two confirmations takes longer');
 });
 
+test('too big for any one provider but not for the providers that take any TAC together: the answer says the fast page can split it', async () => {
+  const two = [provider('A', { available: 200n * TAC, anyTac: true }), provider('B', { available: 150n * TAC, anyTac: true })];
+  const s = session();
+  const o = await routeOf(two, s).offer(300n * TAC);
+  assert.deepEqual([o.ok, o.why, o.split, o.max], [false, 'size', true, 200n * TAC]);
+  assert.deepEqual(s.calls.asked, [], 'no one was asked for a quote of the whole');
+  assert.deepEqual(whyRow(o), ['Fast bridge', 'no one provider takes this much at once; the fast page can try splitting it across several']);
+  // more than they hold together, or providers that screen, or only one: nothing is said of splitting
+  assert.equal((await routeOf(two, session()).offer(400n * TAC)).split, undefined, '350 is all they hold');
+  assert.equal((await routeOf([provider('A', { available: 200n * TAC }), provider('B', { available: 150n * TAC })], session()).offer(300n * TAC)).split, undefined, 'they screen');
+  assert.equal((await routeOf([provider('A', { available: 200n * TAC, anyTac: true })], session()).offer(300n * TAC)).split, undefined, 'one provider is not a split');
+  assert.deepEqual(whyRow({ ok: false, why: 'size', min: 10n * TAC, max: 200n * TAC }), ['Fast bridge', 'providers take 10 to 200 TAC now'], 'as it was');
+});
+
 test('no provider takes it, and why: none online, none for that size (and what they take), a fee over the limit, none answering', async () => {
   assert.deepEqual(await routeOf([], session()).offer(100n * TAC), { ok: false, why: 'none' });
   const small = await routeOf([provider('A'), provider('B', { minAmount: 50n * TAC, maxAmount: 200n * TAC })], session()).offer(5n * TAC);

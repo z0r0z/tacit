@@ -72,6 +72,8 @@ export function makeBitcoinLocker(ctx) {
       counterClaimPub: hx(counterClaimPub), csvBlocks, takeSats,
       lock: { txid: pair.revealTxid, vout: 0, value: pair.revealTx.outputs[0].value, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex },
       noteInputs: notes.map((n) => ({ txid: n.txid, vout: n.vout })),
+      // the plain-sat coins that paid for the lock's commit: a bridge started right after this one (the parts of one split bridge) leaves them alone
+      feeInputs: pair.commitTx.inputs.map((i) => ({ txid: i.txid, vout: i.vout })),
     };
     return { rec, pair };
   }

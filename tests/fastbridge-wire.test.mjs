@@ -510,6 +510,90 @@ test('the explorers the page reads are the two it lists for the bridge page', ()
   assert.equal(TAC_ASSET, 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b');
 });
 
+// ── a bridge no one provider can take, split across several ──
+
+// three providers that take any TAC, with the room and rate each has; each is asked for a quote of its own part and the amounts asked are logged
+function splitSession(heldTac, { down = new Set() } = {}) {
+  const priv = key(14), pubHex = bytesToHex(secp.getPublicKey(priv, true));
+  openWallet(priv);
+  T._testSetScanHoldingsOverride(() => holdings([[TAC_ASSET, { utxos: heldTac.map((a, i) => ({ utxo: utxo(i + 1), amount: BigInt(a) * TAC, blinding: BigInt(7 + i) })) }]]));
+  const claim = { a: '02' + 'aa'.repeat(32), b: '03' + 'bb'.repeat(32), c: '03' + 'cc'.repeat(32) };
+  const asked = [];
+  const quoteOf = (id, bps) => async (amount) => {
+    asked.push([id, BigInt(amount) / TAC]);
+    if (down.has(id)) throw new Error('the provider did not answer');
+    const fee = (BigInt(amount) * BigInt(bps)) / 10000n;
+    return { id: `q${id}${amount}`.slice(0, 32).padEnd(32, '0'), btcAsset: TAC_ASSET, btcValue: String(amount), evmAsset: '0x' + TAC_ASSET, evmAmount: String(BigInt(amount) - fee), claimPub: claim[id], csvBlocks: 144, evmWindowSecs: 14400, minConfs: id === 'c' ? 2 : 1, created: Math.floor(Date.now() / 1000), validUntil: Math.floor(Date.now() / 1000) + 600 };
+  };
+  const counters = { [claim.a]: { quote: quoteOf('a', 100) }, [claim.b]: { quote: quoteOf('b', 200) }, [claim.c]: { quote: quoteOf('c', 400) } };
+  const terms = (cap, bps, any = true) => ({ feeBps: bps, flatFee: 0n, minAmount: 10n * TAC, maxAmount: 1000n * TAC, available: BigInt(cap) * TAC, anyTac: any });
+  const providers = [{ id: claim.a, name: 'A', ref: { kind: 'http', claimPub: claim.a }, terms: terms(500, 100) }, { id: claim.b, name: 'B', ref: { kind: 'http', claimPub: claim.b }, terms: terms(400, 200) }, { id: claim.c, name: 'C', ref: { kind: 'http', claimPub: claim.c }, terms: terms(300, 400) }];
+  const open = () => openFast({ T, withKey: (fn) => fn(T), ux: { cfg: { pool: POOL } }, priv, pubHex, hrp: 'tb', counterFor: (ref) => (ref ? counters[ref.claimPub] : {}) });
+  return { open, providers, asked, claim };
+}
+
+test('a split bridge: the parts are planned across the providers, each is quoted by its own provider for its own amount, with notes of its own, and what the lot costs is added up', async () => {
+  const w = splitSession([900, 300, 250, 100]);
+  const s = await w.open();
+  s.market.sweepCost = async ({ legs }) => ({ ok: true, legs: legs.map(() => ({ total: 1200, take: 546, fee: 654 })) });
+  const o = await s.sweepOffer(w.providers, 1000n * TAC);
+  assert.equal(o.ok, true);
+  assert.deepEqual(o.legs.map((l) => [l.provider.name, l.amount / TAC]), [['A', 500n], ['B', 400n], ['C', 100n]], 'the cheapest rate is filled first, the dearest takes the rest');
+  assert.deepEqual(w.asked.map(([id, a]) => `${id}${a}`).sort(), ['a500', 'b400', 'c100'], 'each provider was asked about its own part only');
+  assert.equal(o.legs.reduce((sum, l) => sum + l.quote.btcValue, 0n), 1000n * TAC);
+  const used = o.legs.flatMap((l) => l.notes.map((n) => n.txid));
+  assert.equal(new Set(used).size, used.length, 'no note is in two parts');
+  o.legs.forEach((l) => assert.ok(l.notes.reduce((sum, n) => sum + n.amount, 0n) >= l.amount, 'a part\'s notes cover it'));
+  assert.equal(o.fee, 17n * TAC, '1% of 500, 2% of 400 and 4% of 100');
+  assert.equal(o.receive, 983n * TAC);
+  assert.equal(o.minConfs, 2, 'the slowest part sets the time');
+  assert.deepEqual([o.cost.total, o.cost.take, o.cost.short], [3600, 1638, false]);
+  assert.deepEqual(o.high, { fee: false, take: false });
+  T._testSetScanHoldingsOverride(null);
+});
+
+test('a split bridge that cannot be had says why: the providers hold too little together, the notes cannot be shared out, or a provider did not quote and no other split is left', async () => {
+  const w = splitSession([900, 300, 250, 100]);
+  const s = await w.open();
+  s.market.sweepCost = async ({ legs }) => ({ ok: true, legs: legs.map(() => ({ total: 1 })) });
+  assert.deepEqual(await s.sweepOffer(w.providers, 1300n * TAC), { ok: false, why: 'size' }, 'A, B and C hold 1,200 together');
+  // one note of 1,000 funds one lock: two parts cannot both draw on it
+  const one = splitSession([1000]);
+  const t = await one.open();
+  const n = await t.sweepOffer(one.providers, 800n * TAC);
+  assert.deepEqual([n.ok, n.why, n.parts, n.notes, n.held / TAC], [false, 'notes', 2, 1, 1000n]);
+  // a provider that does not answer is left out and the split planned again over the rest; with none left it says so
+  const down = splitSession([900, 300, 250, 100], { down: new Set(['c']) });
+  const d = await down.open();
+  d.market.sweepCost = async ({ legs }) => ({ ok: true, legs: legs.map(() => ({ total: 1 })) });
+  const again = await d.sweepOffer(down.providers, 800n * TAC);
+  assert.equal(again.ok, true, 'A and B can take 800 without C');
+  assert.deepEqual(again.legs.map((l) => l.provider.name).sort(), ['A', 'B']);
+  const stuck = await d.sweepOffer(down.providers, 1000n * TAC);
+  assert.deepEqual([stuck.ok, stuck.why], [false, 'busy'], 'without C the two hold 900');
+  assert.match(stuck.error.message, /did not answer/);
+  // a provider the page was told to leave out is not asked
+  down.asked.length = 0;
+  const left = await d.sweepOffer(down.providers, 800n * TAC, { exclude: new Set([down.claim.b]) });
+  assert.equal(left.ok, false);
+  assert.ok(!down.asked.some(([id]) => id === 'b'));
+  T._testSetScanHoldingsOverride(null);
+});
+
+test('starting a split bridge hands the market the parts as quoted, each with its own notes, and every note of the key', async () => {
+  const w = splitSession([900, 300, 250, 100]);
+  const s = await w.open();
+  s.market.sweepCost = async ({ legs }) => ({ ok: true, legs: legs.map(() => ({ total: 1 })) });
+  const o = await s.sweepOffer(w.providers, 1000n * TAC);
+  let got = null;
+  s.market.sweep = async (a) => { got = a; return { id: 'x', started: [], failed: [] }; };
+  await s.startSweep(o);
+  assert.deepEqual(got.legs.map((l) => [l.provider.name, l.quote.btcValue / TAC]), o.legs.map((l) => [l.provider.name, l.amount / TAC]));
+  assert.deepEqual(got.legs.map((l) => l.notes), o.legs.map((l) => l.notes));
+  assert.equal(got.notes.length, 4, 'every note of the key, so no lock funds itself from one');
+  T._testSetScanHoldingsOverride(null);
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

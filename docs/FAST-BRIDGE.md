@@ -55,7 +55,17 @@ the provider's own:
   answers what a daemon does. A provider that serves HTTP can be listed directly as well.
 - **A choice.** The page asks every provider that can take the amount for a quote, shows the best, and asks the next best
   when the first cannot hold the payout.
-- **A wait.** When no provider online takes the amount, the page keeps a want for the key in the browser and posts it to the
+- **A split.** When no one provider takes the amount whole but the providers that take any TAC hold it between them, the fast page splits
+  it (`dapp/fast/sweep.js`, `sweepOffer` and `startSweep` in `dapp/fast/wire.js`, `sweep` in `dapp/fastbridge-client.js`): at most four parts,
+  planned for the least fee kept (each provider gives its least and the cheapest rate is filled first; a part costs a small fixed amount in the
+  ranking, so a plan with fewer parts wins when it costs almost the same). Each part is a whole swap of its own, quoted by its own provider for its own
+  amount, locked from notes of its own with its own refund, so one that stops costs the others nothing. Every part's payout is held by its
+  provider before the first lock is built, so a provider that cannot hold its share is found out while the TAC is still in hand and nothing has
+  been sent; the page then plans the split again without it. The parts are then locked one at a time, each leaving alone the fee coins the parts
+  before it spent (`feeInputs` on each swap's record). A part that cannot be started after another has been leaves that one under way, and the page
+  says how much was not. Each part is listed as "Part n of m" (`sweep` on the record). A lock spends notes whole and what is left of one comes back
+  unconfirmed, so a split needs a note for each part (the page says so when the key's TAC is in too few) and a confirmed fee coin for each lock.
+- **A wait.** When no provider online takes the amount, and it cannot be split either, the page keeps a want for the key in the browser and posts it to the
   boards, signed by a key made for it alone, for up to a day. Providers see what is waiting (the provider panel, and an alert in
   the daemon); the holder is told on `/fast/`, and on the front page once, when a provider can take it. A want moves nothing.
 
@@ -216,6 +226,10 @@ and advances with `step(record)`.
 
 ## Known limits
 
+- A split goes only to providers that take any TAC (`anyTac`), because a part is not looked at note by note for a history the bridge's proof follows;
+  a provider that screens takes whole bridges only. It is on the fast page: the front page's Bridge tab says the fast page can try splitting
+  an amount that no one provider takes, and leaves the rest to it. The parts are taken from the largest providers' room as advertised, then quoted
+  for real, so a provider that has less than it said is left out and the split planned again (three tries).
 - A provider prices as it likes. A bridger's client quotes a fee up to 90% of the amount and flags one over 5% (`highFee`): the fast page
   says so in the receipt and at the first press, and the front page's Bridge tab keeps the regular bridge as its choice and says the fast
   page can still do it (`dapp/fast/fmt.js`, `route.js`). A fee over 90% is not quoted.

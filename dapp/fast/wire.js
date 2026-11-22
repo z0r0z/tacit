@@ -14,7 +14,7 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=1ad52807';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=a360394a';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=bea8334c';
+import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=e5c8e3aa';
 import { makeLpService } from '/fastbridge-provider.js?cb=36620f82';
 import { makeMailboxCounter, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=96a024c6';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
@@ -22,8 +22,9 @@ import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=c8534a8d';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=fa86cf30';
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=fa86cf30';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=2390538c';
+import { splitAmount, assignNotes } from '/fast/sweep.js?cb=b9f25eb8';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=2390538c';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api'];
@@ -217,9 +218,48 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
     }
     throw last || refused || new Error('the provider cannot hold that amount');
   }
+  // A bridge no one provider can take, split across several (fast/sweep.js). The parts are planned from the providers' terms and the key's notes,
+  // each part is quoted by its own provider, and what the lot costs on Bitcoin is priced. Only providers that take any TAC are asked: a part is not
+  // looked at note by note. `exclude` holds provider ids left out. Resolves to { ok: true, legs, fee, receive, minConfs, cost, high } or
+  // { ok: false, why }: 'size' (the providers hold less together), 'notes' (the key's notes cannot be shared out, one lock to a note), 'busy'
+  // (a provider did not quote its part, and no other split is left).
+  async function sweepOffer(providers, units, { exclude = new Set() } = {}) {
+    const amount = BigInt(units), client = market.clientFor(null), all = await notes(), free = await client.freeNotes(all), skip = new Set(exclude);
+    let busy = null;
+    for (let round = 0; round < 3; round++) {
+      const plans = splitAmount({ amount, providers, exclude: skip });
+      if (!plans.length) return busy || { ok: false, why: 'size' };
+      let chosen = null;
+      for (const plan of plans.slice(0, 12)) {
+        const funded = assignNotes(plan.legs.map((l) => l.amount), free, client.pickNotes);
+        if (funded) { chosen = { plan, funded }; break; }
+      }
+      if (!chosen) return { ok: false, why: 'notes', parts: plans[0].legs.length, notes: free.length, held: free.reduce((s, n) => s + BigInt(n.amount), 0n) };
+      const legs = await Promise.all(chosen.plan.legs.map(async (l, i) => {
+        const r = await market.quoteAll([l.provider], l.amount);
+        return { provider: l.provider, amount: l.amount, notes: chosen.funded[i].notes, quote: r.quotes[0] ? r.quotes[0].quote : null, error: r.failed[0] ? r.failed[0].error : null };
+      }));
+      const bad = legs.filter((l) => !l.quote);
+      if (bad.length) { for (const b of bad) skip.add(b.provider.id); busy = { ok: false, why: 'busy', error: bad[0].error }; continue; }
+      // priced part by part as they are locked; a cost that cannot be read (an explorer is down) is left unsaid, as for a single bridge
+      const priced = await market.sweepCost({ legs, notes: all }).catch(() => null);
+      const sats = (k) => (priced ? priced.legs.reduce((s, c) => s + (c && c[k] ? c[k] : 0), 0) : 0);
+      const stuck = priced && !priced.ok ? priced.legs[priced.at] : null;
+      return {
+        ok: true, amount, legs,
+        fee: legs.reduce((s, l) => s + (l.quote.btcValue - l.quote.evmAmount), 0n), receive: legs.reduce((s, l) => s + l.quote.evmAmount, 0n),
+        minConfs: Math.max(...legs.map((l) => Number(l.quote.minConfs) || 1)),
+        cost: priced ? { total: sats('total'), take: sats('take'), short: !!(stuck && stuck.short), at: priced.ok ? null : priced.at, need: stuck ? stuck.need || null : null, have: stuck ? stuck.have || null : null } : null,
+        high: { fee: legs.some((l) => l.quote.highFee), take: legs.some((l) => l.quote.highTake) },
+      };
+    }
+    return busy || { ok: false, why: 'busy' };
+  }
+  const startSweep = async (offer) => market.sweep({ legs: offer.legs.map(({ provider, quote, notes: legNotes }) => ({ provider, quote, notes: legNotes })), notes: await notes() });
   return {
     address: prims.wallet.address(), notes, balance, market,
     quoteAll: (providers, units, o) => market.quoteAll(providers, units, o),
+    sweepOffer, startSweep,
     // what the lock would cost on Bitcoin for a quote and whether the address can pay it (nothing is stored or sent)
     cost: async ({ quote, provider, only, onProgress }) => {
       const ref = provider ? provider.ref : null, p = provider || { ref };

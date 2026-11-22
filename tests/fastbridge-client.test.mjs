@@ -405,6 +405,125 @@ test('run(): a pass now and one every interval, handed to onChange, until stoppe
   assert.equal(seen.length, n, 'no pass after stop');
 });
 
+test('a part of a split bridge on the real lock: it leaves the coins it is told to alone, keeps its place in the split, and records the coins that paid for it', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(NET, 'net');
+  const s = await serve(w, { config: feeConfig(w) });
+  const fb = clientFor(w, counterAt(s.base));
+  const q = await fb.quote(VALUE);
+  // two plain-sat coins at the key's address, the larger first as the explorer lists them
+  const c1 = { txid: 'c1'.repeat(32), vout: 0, value: 200_000 }, c2 = { txid: 'c2'.repeat(32), vout: 1, value: 150_000 };
+  w.uBtc.satsUtxos = async () => [c1, c2];
+  const mine = new Set([`${w.note.txid}:${w.note.vout}`]);
+  const key = (c) => `${c.txid}:${c.vout}`;
+  assert.deepEqual((await fb.cost({ quote: q, notes: [w.note] })).coins, [{ txid: c1.txid, vout: 0 }], 'the largest coin pays when nothing is to be left alone');
+  assert.deepEqual((await fb.cost({ quote: q, notes: [w.note], avoid: new Set([...mine, key(c1)]) })).coins, [{ txid: c2.txid, vout: 1 }], 'a coin an earlier part spent is not spent again');
+  const short = await fb.cost({ quote: q, notes: [w.note], avoid: new Set([...mine, key(c1), key(c2)]) });
+  assert.equal(short.short, true, 'with both coins spoken for, the address cannot pay');
+  // started with its payout already held, and its place in the split
+  await fb.reserve(q);
+  const rec = await fb.start({ quote: q, notes: [w.note], avoid: new Set([...mine, key(c1)]), reserved: true, meta: { sweep: { id: 'sw9', part: 2, of: 3 } } });
+  assert.deepEqual(rec.sweep, { id: 'sw9', part: 2, of: 3 });
+  assert.deepEqual(rec.feeInputs, [{ txid: c2.txid, vout: 1 }], 'the record names the coin that paid for the lock');
+  const kept = await w.userStore.get(rec.id);
+  assert.deepEqual([kept.sweep, kept.feeInputs], [rec.sweep, rec.feeInputs], 'kept with the swap');
+  assert.deepEqual((await fb.records())[0].sweep, { id: 'sw9', part: 2, of: 3 }, 'and said by the page\'s list');
+  // a lock that is not part of a split carries no place
+  assert.equal(describe({ phase: 'done' }).sweep, null);
+  // the notes it spent are held: a second part cannot start on them
+  await assert.rejects(() => fb.start({ quote: q, notes: [w.note], reserved: true }), /already part of a swap/);
+});
+
+// ── a bridge split across providers: the parts are held, then locked one at a time ──
+
+// providers that log what they are asked, in order; `legs` are the parts [{ provider, quote, notes }]
+function splitWorld({ holdFails = new Set(), startFails = new Set(), stored = false, short = null, valid = 5000 } = {}) {
+  const log = [], seen = {}, store = memStore();
+  const note = (n) => ({ txid: String(n).repeat(64), vout: 0, amount: 100n });
+  const all = [note(1), note(2), note(3), note(4)];
+  const fakes = {};
+  for (const id of ['a', 'b', 'c']) {
+    fakes[id] = {
+      reserve: async (q) => { log.push('reserve:' + id); if (holdFails.has(id)) throw new Error('the provider cannot hold that amount: the provider cannot take that amount right now'); return q; },
+      cost: async ({ quote, avoid }) => { log.push('cost:' + id); seen['cost:' + id] = [...avoid]; return short === id ? { short: true, need: 9000, have: 100 } : { short: false, total: 1200, coins: [{ txid: id.repeat(64), vout: 7 }] }; },
+      start: async (a) => {
+        log.push('start:' + id); seen[id] = a;
+        const rec = { id: 'swap-' + id, feeInputs: [{ txid: id.repeat(64), vout: 7 }], sweep: a.meta.sweep };
+        if (startFails.has(id)) { if (stored) await store.put(rec); throw new Error('the lock could not be built'); }
+        await store.put(rec);
+        return rec;
+      },
+    };
+  }
+  const market = makeFastBridgeMarket({ btc: {}, evm: {}, store, seed: new Uint8Array(32), now: () => 1000, counterFor: () => null, makeClient: ({ provider }) => fakes[provider.id] });
+  const leg = (id, i) => ({ provider: { id, name: id.toUpperCase(), ref: { kind: 'http', id, claimPub: id } }, quote: { id: 'q' + id, btcValue: 100n, evmAmount: 99n, validUntil: valid }, notes: [all[i]] });
+  return { market, log, seen, all, store, legs: ['a', 'b', 'c'].map(leg), leg };
+}
+
+test('a split bridge holds every part\'s payout before it locks anything, then locks the parts one at a time, each with notes of its own', async () => {
+  const w = splitWorld();
+  const r = await w.market.sweep({ legs: w.legs, notes: w.all, id: 'sw1' });
+  assert.deepEqual(w.log, ['reserve:a', 'reserve:b', 'reserve:c', 'start:a', 'start:b', 'start:c'], 'all held first, then locked in turn');
+  assert.deepEqual(r.started.map((s) => [s.provider.id, s.rec.id, s.leg]), [['a', 'swap-a', 0], ['b', 'swap-b', 1], ['c', 'swap-c', 2]]);
+  assert.equal(r.failed.length, 0); assert.equal(r.id, 'sw1');
+  for (const [i, id] of ['a', 'b', 'c'].entries()) {
+    assert.equal(w.seen[id].reserved, true, 'a part does not ask the provider to hold again');
+    assert.deepEqual(w.seen[id].meta, { sweep: { id: 'sw1', part: i + 1, of: 3 } }, 'kept with the swap, so the page can say which part it is');
+    assert.deepEqual(w.seen[id].notes.map((n) => n.txid), [w.all[i].txid], 'only the part\'s own notes');
+  }
+  // a part's lock must not fund itself from a note of the key, nor from the coins an earlier part paid its fee with
+  const key = (n) => `${n.txid}:${n.vout}`, notesAll = w.all.map(key);
+  assert.deepEqual([...w.seen.a.avoid].sort(), notesAll.slice().sort());
+  assert.deepEqual([...w.seen.b.avoid].sort(), [...notesAll, 'a'.repeat(64) + ':7'].sort());
+  assert.deepEqual([...w.seen.c.avoid].sort(), [...notesAll, 'a'.repeat(64) + ':7', 'b'.repeat(64) + ':7'].sort());
+});
+
+test('a provider that cannot hold its part stops the bridge before any lock is built: nothing is sent, and the answer names the provider', async () => {
+  const w = splitWorld({ holdFails: new Set(['b']) });
+  const e = await w.market.sweep({ legs: w.legs, notes: w.all }).catch((x) => x);
+  assert.equal(e.code, 'sweep-hold'); assert.equal(e.leg, 1); assert.equal(e.provider.id, 'b');
+  assert.match(e.message, /^B cannot hold its part of the bridge: the provider cannot take that amount right now$/);
+  assert.ok(!w.log.some((l) => l.startsWith('start:')), 'no lock was built');
+  assert.deepEqual((await w.store.list()), [], 'and nothing was kept');
+  // a quote that is about to run out is refused before anything is held
+  const late = splitWorld({ valid: 1050 });
+  await assert.rejects(() => late.market.sweep({ legs: late.legs, notes: late.all }), /the quote expired/);
+  assert.deepEqual(late.log, [], 'not even a hold was asked');
+  await assert.rejects(() => w.market.sweep({ legs: [], notes: w.all }), /no part to start/);
+});
+
+test('a part that cannot be started after another has been leaves that one under way, and says which parts were not started; if the first cannot, it is an error and nothing started', async () => {
+  const w = splitWorld({ startFails: new Set(['b']) });
+  const r = await w.market.sweep({ legs: w.legs, notes: w.all, id: 'sw2' });
+  assert.deepEqual(r.started.map((s) => s.provider.id), ['a'], 'the first part is under way');
+  assert.deepEqual(r.failed.map((f) => [f.provider.id, f.leg, f.amount]), [['b', 1, 100n], ['c', 2, 100n]], 'the second, and the third that went after it, were not started');
+  assert.match(r.failed[0].error.message, /the lock could not be built/);
+  assert.match(r.failed[1].error.message, /not started: the part before it could not be/);
+  assert.ok(!w.log.includes('start:c'), 'the third was not tried');
+  const first = splitWorld({ startFails: new Set(['a']) });
+  await assert.rejects(() => first.market.sweep({ legs: first.legs, notes: first.all }), /the lock could not be built/);
+  assert.deepEqual(first.log.filter((l) => l.startsWith('start:')), ['start:a'], 'and the others were never started');
+});
+
+test('a part whose lock was stored but could not be sent is kept as started, and the parts after it still go, without its fee coins', async () => {
+  const w = splitWorld({ startFails: new Set(['b']), stored: true });
+  const r = await w.market.sweep({ legs: w.legs, notes: w.all, id: 'sw3' });
+  assert.deepEqual(r.started.map((s) => [s.provider.id, !!s.unsent]), [['a', false], ['b', true], ['c', false]]);
+  assert.equal(r.failed.length, 0);
+  assert.ok(w.seen.c.avoid.has('b'.repeat(64) + ':7'), 'the third leaves the coins the second paid with alone, though its send failed');
+});
+
+test('what a split bridge costs on Bitcoin is priced as the parts are locked, each without the coins the one before it spent; the first part the address cannot pay for is named', async () => {
+  const w = splitWorld();
+  const c = await w.market.sweepCost({ legs: w.legs, notes: w.all });
+  assert.equal(c.ok, true); assert.equal(c.legs.length, 3);
+  assert.deepEqual(w.seen['cost:a'].length, 4); assert.deepEqual(w.seen['cost:b'].length, 5); assert.deepEqual(w.seen['cost:c'].length, 6);
+  const s = splitWorld({ short: 'b' });
+  const d = await s.market.sweepCost({ legs: s.legs, notes: s.all });
+  assert.deepEqual([d.ok, d.at, d.legs.length], [false, 1, 2], 'the second part is the first that cannot be paid for, and the third is not priced');
+  assert.equal(d.legs[1].short, true);
+});
+
 let passed = 0, ran = 0;
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 for (const [name, fn] of tests) {

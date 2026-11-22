@@ -18,6 +18,21 @@ export const DEFAULT_POLICY = {
 export const TAKE_VB = 750, TAKE_DUST = 546, TAKE_FLAG = 2;
 export const fairTakeAt = (feeRate) => TAKE_DUST + Math.ceil(TAKE_VB * feeRate * 2);
 
+// The notes a lock for `amount` spends from `notes`: the smallest one that covers it, else the largest ones together (up to MAX_INPUTS), with
+// what is left over returning to the key as change. null when they do not cover it.
+export function pickNotes(notes, amount) {
+  const want = BigInt(amount), have = notes.map((n) => ({ ...n, amount: BigInt(n.amount) })).filter((n) => n.amount > 0n);
+  const one = have.filter((n) => n.amount >= want).sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0))[0];
+  if (one) return { notes: [one], change: one.amount - want };
+  const picked = []; let sum = 0n;
+  for (const n of have.sort((a, b) => (a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : 0))) {
+    if (picked.length >= MAX_INPUTS) break;
+    picked.push(n); sum += n.amount;
+    if (sum >= want) return { notes: picked, change: sum - want };
+  }
+  return null;
+}
+
 export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, policy: policyIn = {}, provider = null, now = () => Math.floor(Date.now() / 1000) }) {
   const policy = { ...DEFAULT_POLICY, ...policyIn };
   const counter = typeof lp === 'string' ? makeHttpCounter({ base: lp }) : lp;
@@ -58,19 +73,6 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks, takeSats, highFee, highTake };
   }
 
-  function pickNotes(notes, amount) {
-    const want = BigInt(amount), have = notes.map((n) => ({ ...n, amount: BigInt(n.amount) })).filter((n) => n.amount > 0n);
-    const one = have.filter((n) => n.amount >= want).sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0))[0];
-    if (one) return { notes: [one], change: one.amount - want };
-    const picked = []; let sum = 0n;
-    for (const n of have.sort((a, b) => (a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : 0))) {
-      if (picked.length >= MAX_INPUTS) break;
-      picked.push(n); sum += n.amount;
-      if (sum >= want) return { notes: picked, change: sum - want };
-    }
-    return null;
-  }
-
   const outpointsOf = (ns) => new Set(ns.map((n) => `${n.txid}:${n.vout}`));
 
   async function freeNotes(notes) {
@@ -79,15 +81,17 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return held.size ? notes.filter((n) => !held.has(`${n.txid}:${n.vout}`)) : notes;
   }
 
-  async function cost({ quote: q, notes }) {
+  // `avoid` (a Set of "txid:vout") are coins this lock must not fund itself from: by default the notes given, which carry TAC. A part of a split
+  // bridge names more: every note of the key, and the fee coins the parts before it spent.
+  async function cost({ quote: q, notes, avoid = null }) {
     const pick = pickNotes(await freeNotes(notes), q.btcValue);
     if (!pick) return { short: false, noNotes: true };
     const take = Number(q.takeSats ?? 0);
     policy.csvBlocks = q.csvBlocks;
     try {
-      const { pair } = await bl.build({ asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub), evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: take, avoid: outpointsOf(notes) });
+      const { rec, pair } = await bl.build({ asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub), evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: take, avoid: avoid || outpointsOf(notes) });
       const fee = pair.commitFee + pair.revealFee;
-      return { short: false, fee, take, total: fee + take };
+      return { short: false, fee, take, total: fee + take, coins: rec.feeInputs };
     } catch (e) {
       const m = /not enough sats to fund the commit \(need (\d+), have (\d+)\)/.exec(String((e && e.message) || e));
       if (m) return { short: true, need: Number(m[1]), have: Number(m[2]), take };
@@ -95,22 +99,32 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     }
   }
 
-  async function start({ quote: q, notes: all }) {
+  // The provider is asked to hold the payout of a quote before any Bitcoin is locked, so one that cannot is found out while the TAC is in hand
+  // (a provider with no reserve call holds nothing).
+  async function reserve(q) {
+    if (!counter.reserve) return;
+    const r = await counter.reserve({ quoteId: q.id });
+    if (!r || r.ok === false) throw new Error(`the provider cannot hold that amount${r && r.why ? `: ${r.why}` : ''}`);
+  }
+  // `avoid`: coins the lock must not fund itself from (see `cost`). `reserved`: the payout is already held (the parts of a split bridge are all held
+  // before the first lock). `meta.sweep`: { id, part, of }, kept with the swap so the page can say which part of a split bridge it is.
+  async function start({ quote: q, notes: all, avoid = null, reserved = false, meta = null }) {
     if (!(Number(q.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expired');
     const notes = await freeNotes(all);
     const pick = pickNotes(notes, q.btcValue);
     if (!pick) throw new Error(notes.length < all.length ? 'fastbridge: this note is already part of a swap' : 'these notes do not cover the amount');
     if (await store.get(bytesToHex(X.swapIdOf(pick.notes[0].txid, pick.notes[0].vout)))) throw new Error('fastbridge: this note is already part of a swap');
-    if (counter.reserve) {
-      const r = await counter.reserve({ quoteId: q.id });
-      if (!r || r.ok === false) throw new Error(`the provider cannot hold that amount${r && r.why ? `: ${r.why}` : ''}`);
-    }
+    if (!reserved) await reserve(q);
     policy.csvBlocks = q.csvBlocks;
     const rec = await bl.start({
       asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub),
-      evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0, avoid: outpointsOf(all),
+      evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0, avoid: avoid || outpointsOf(all),
     });
-    if (provider) { rec.provider = provider; await store.put(rec); }
+    if (provider || (meta && meta.sweep)) {
+      if (provider) rec.provider = provider;
+      if (meta && meta.sweep) rec.sweep = meta.sweep;
+      await store.put(rec);
+    }
     return bl.step(rec);
   }
 
@@ -156,7 +170,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     return found.map((r) => describe(r, now));
   }
 
-  return { terms, quote, pickNotes, freeNotes, cost, start, tick, run, records, recover, describe, step: (rec) => bl.step(rec) };
+  return { terms, quote, pickNotes, freeNotes, cost, reserve, start, tick, run, records, recover, describe, step: (rec) => bl.step(rec) };
 }
 
 export const QUOTE_WAIT_MS = 12000;
@@ -188,6 +202,61 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
     throw last || new Error('the provider cannot hold that amount');
   }
   const cost = ({ quotes, notes }) => clientFor(quotes[0].provider.ref).cost({ quote: quotes[0].quote, notes });
+
+  // ── a bridge split across providers ──
+  // `legs` are the parts, [{ provider, quote, notes }]: each its own provider, its own quote, and notes of its own (the page gives no note to two
+  // parts). `notes` is every note of the key: none of them is ever a fee coin. Each part is a whole bridge on its own, with its own lock on Bitcoin
+  // and its own refund, so a part that goes wrong costs the others nothing.
+  const outpoint = (x) => `${x.txid}:${x.vout}`;
+  const margin = { ...DEFAULT_POLICY, ...(policy || {}) }.quoteMarginSecs;
+  const clock = now || (() => Math.floor(Date.now() / 1000));
+
+  // What the parts cost on Bitcoin, one after the other as they are locked: a part's lock spends fee coins that the next one cannot, so the second
+  // is priced without the first's. { ok: false, at } names the first part whose lock the address cannot pay for.
+  async function sweepCost({ legs, notes: all }) {
+    const avoid = new Set(all.map(outpoint)), out = [];
+    for (let i = 0; i < legs.length; i++) {
+      const c = await clientFor(legs[i].provider.ref).cost({ quote: legs[i].quote, notes: legs[i].notes, avoid: new Set(avoid) });
+      out.push(c);
+      if (c.short || c.noNotes) return { ok: false, at: i, legs: out };
+      for (const k of c.coins || []) avoid.add(outpoint(k));
+    }
+    return { ok: true, legs: out };
+  }
+
+  // Every part's payout is held before anything is locked: a provider that cannot hold its share is found out while the TAC is still in hand, and
+  // nothing has been sent. Then the parts are locked one at a time. A part that cannot be started after another has been leaves that one under
+  // way, and the answer says which were started and which were not (a part started whose Bitcoin send failed is kept, and sent again by the tend).
+  async function sweep({ legs, notes: all, id = null }) {
+    if (!legs.length) throw new Error('fastbridge: no part to start');
+    for (const l of legs) if (!(Number(l.quote.validUntil) > clock() + margin)) throw new Error('the quote expired');
+    const sweepId = id || (globalThis.crypto && globalThis.crypto.randomUUID ? globalThis.crypto.randomUUID().slice(0, 8) : Math.random().toString(16).slice(2, 10));
+    const held = await Promise.allSettled(legs.map((l) => clientFor(l.provider.ref).reserve(l.quote)));
+    const no = held.findIndex((h) => h.status === 'rejected');
+    if (no >= 0) {
+      const why = String((held[no].reason && held[no].reason.message) || held[no].reason || '');
+      throw Object.assign(new Error(`${legs[no].provider.name || 'a provider'} cannot hold its part of the bridge${why ? `: ${why.replace(/^the provider cannot hold that amount:?\s*/, '')}` : ''}`), { code: 'sweep-hold', leg: no, provider: legs[no].provider });
+    }
+    const avoid = new Set(all.map(outpoint)), started = [];
+    for (let i = 0; i < legs.length; i++) {
+      const l = legs[i], meta = { sweep: { id: sweepId, part: i + 1, of: legs.length } };
+      let rec = null, unsent = false;
+      try {
+        rec = await clientFor(l.provider.ref).start({ quote: l.quote, notes: l.notes, avoid: new Set(avoid), reserved: true, meta });
+      } catch (error) {
+        // the lock was stored and its send failed: it is the swap's own record now, sent again while the page is open
+        rec = (await store.list()).find((r) => r.sweep && r.sweep.id === sweepId && r.sweep.part === i + 1) || null;
+        if (!rec) {
+          if (!started.length) throw error;
+          return { id: sweepId, started, failed: legs.slice(i).map((x, j) => ({ leg: i + j, provider: x.provider, amount: x.quote.btcValue, error: j === 0 ? error : new Error('not started: the part before it could not be') })) };
+        }
+        unsent = true;
+      }
+      started.push({ rec, provider: l.provider, leg: i, ...(unsent ? { unsent } : {}) });
+      for (const k of rec.feeInputs || []) avoid.add(outpoint(k));
+    }
+    return { id: sweepId, started, failed: [] };
+  }
   async function tick() {
     const out = [];
     for (const rec of await store.list()) out.push(TERMINAL.has(rec.phase) ? rec : await clientFor(rec.provider || null).step(rec));
@@ -206,7 +275,7 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   }
   const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map((r) => describe(r, now));
   const recover = (opts) => clientFor(null).recover(opts);
-  return { quoteAll, start, cost, tick, run, records, recover, clientFor };
+  return { quoteAll, start, cost, sweep, sweepCost, tick, run, records, recover, clientFor };
 }
 
 const STEPS = ['Lock on Bitcoin', 'Lock in the pool', 'Claim', 'Done'];
@@ -272,6 +341,7 @@ export function describe(rec, clock = null) {
     at, steps: STEPS, ended, returned: back, amount: rec.amount, receive: back ? '0' : rec.evmAmount, created: rec.created,
     lockTxid: rec.lock?.txid || null, updated: rec.updated || null, error: waitingOnTimelock ? null : (rec.lastError || null), recovered: !!rec.recovered,
     opens: back && !ended ? opensAt(rec) : null,           // when the lock is due back (seconds), for a bridge that did not go through
+    sweep: rec.sweep || null,                              // { id, part, of } for a part of a bridge split across providers
   };
 }
 

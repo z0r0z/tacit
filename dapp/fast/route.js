@@ -18,6 +18,7 @@
 //   fr.run(onChange)        -> stop(): the steps taken while the page is open
 
 import { fmtTac, highFee, highTake, lineageText } from './fmt.js';
+import { sweepRoom } from './sweep.js';
 
 // What a provider takes now: its most, or less when it says so.
 export const capOf = (t) => (t.available != null && t.available < t.maxAmount ? t.available : t.maxAmount);
@@ -46,7 +47,8 @@ export function makeFastRoute({ discover, open, ownId = () => null, refreshMs = 
     const takers = ps.filter((p) => takes(p.terms, u));
     const min = ps.reduce((a, p) => (a == null || p.terms.minAmount < a ? p.terms.minAmount : a), null);
     const max = ps.reduce((a, p) => { const c = capOf(p.terms); return a == null || c > a ? c : a; }, null);
-    if (!takers.length) return { ok: false, why: 'size', min, max };
+    // no one provider takes it whole: the fast page splits an amount across several (fast/sweep.js), which a form with one quote cannot, so it says so
+    if (!takers.length) return { ok: false, why: 'size', min, max, ...(u <= sweepRoom(ps) ? { split: true } : {}) };
     let r;
     try { r = await (await open()).quoteAll(takers, u); } catch (e) { return { ok: false, why: 'error', error: e, min, max }; }
     if (!r.quotes.length) {
@@ -118,7 +120,7 @@ export function shown(o) {
 export function whyRow(o) {
   if (!o || o.ok || o.why === 'none' || o.why === 'error') return null;
   const size = o.min != null && o.max != null && BigInt(o.max) >= BigInt(o.min) ? `providers take ${fmtTac(o.min)} to ${fmtTac(o.max)} TAC now` : 'the providers have no room right now';
-  return ['Fast bridge', o.why === 'size' ? size : o.why === 'dear' ? 'the providers’ fee is over 5% at this size; the fast page can still bridge it'
+  return ['Fast bridge', o.why === 'size' ? (o.split ? 'no one provider takes this much at once; the fast page can try splitting it across several' : size) : o.why === 'dear' ? 'the providers’ fee is over 5% at this size; the fast page can still bridge it'
     : o.why === 'lineage' ? 'the providers online do not take this note’s history' : 'the providers did not answer'];
 }
 

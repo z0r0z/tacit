@@ -1,6 +1,7 @@
 
 import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId, highFee, highTake, keyTag, lineageText } from './fmt.js';
 import { minutesFor } from './route.js';
+import { sweepRoom } from './sweep.js';
 export { fmtTac, parseTac, slowNet, lineageText };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
 const SCAN = 'https://mempool.space/tx/';
@@ -16,7 +17,7 @@ const range = (a, b) => `${fmtTac(a, 2)} to ${fmtTac(b, 2)} TAC`;
 
 export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, pinned = () => null, quoteDelayMs = 350, refreshMs = 30000, retryMs = 15000, say = () => {} }) {
   const doc = root.ownerDocument;
-  const S = { providers: [], empties: 0, loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null, checking: false, anyOnly: null };
+  const S = { providers: [], empties: 0, loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null, checking: false, anyOnly: null, split: null };
   let kept = 0;
   try { kept = Number(doc.defaultView.localStorage.getItem(KEPT)) || 0; } catch { }
 
@@ -41,6 +42,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       <p class="note">You lock TAC on Bitcoin. A liquidity provider pays you the same TAC, less its fee, into your private balance on Tacit (Ethereum’s private pool). It takes minutes; the quote says how many.</p>
       <p class="note">A private balance is not an Ethereum wallet. To hold the TAC in a wallet, withdraw it afterwards: <a href="${WITHDRAW}">Withdraw to Ethereum</a>.</p>
       <p class="note">Use this when the regular bridge cannot take your TAC (a long history, or TAC that came out of Bitcoin’s shielded pool). The regular bridge has no provider fee but takes about 4 hours.</p>
+      <p class="note">When no one provider can take an amount, the page splits it across several. Each part is a bridge of its own, locked from notes of its own with its own fee on Bitcoin, so it needs a note and a coin for each part.</p>
       <p class="note">Keep this page open until it says Done: it claims your TAC at the end. If a bridge cannot finish, your lock returns to your Bitcoin address after about a day, and this page sends it back: open it with your wallet then.</p>
       <p class="note">Closed the page mid-bridge, or cleared your browser? Open your wallet here: the page finds your lock from your key and, once its timelock has passed, sends your TAC back.</p>
       <p class="note">Your Bitcoin address needs a few thousand sats for the Bitcoin fee. The quote shows how many.</p>
@@ -63,8 +65,13 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     const room = ps.filter(hasRoom), from = room.length ? room : ps;
     const mins = from.map((p) => p.terms.minAmount).sort((a, b) => (a < b ? -1 : 1));
     const best = from.reduce((a, b) => (b.terms.feeBps < a.terms.feeBps || (b.terms.feeBps === a.terms.feeBps && b.terms.flatFee < a.terms.flatFee) ? b : a));
-    return { count: ps.length, min: mins[0], max: big(ps, (p) => p.terms.maxAmount), cap: big(room, capOf), best };
+    return { count: ps.length, min: mins[0], max: big(ps, (p) => p.terms.maxAmount), cap: big(room, capOf), together: sweepRoom(ps), best };
   }
+  // A bridge no one provider takes whole is split across several (fast/sweep.js; fast/wire.js sweepOffer): the most that can be had now is then
+  // what the providers that take any TAC hold together. A session that cannot split (and the page before a key opens, which assumes the one
+  // that will) says so by lacking sweepOffer.
+  const splits = () => !S.sess || typeof S.sess.sweepOffer === 'function';
+  const roomNow = (sm) => (sm && splits() && sm.together > sm.cap ? sm.together : sm ? sm.cap : 0n);
 
   function paintProvider() {
     const e = $('fx-lp'), sm = summary();
@@ -73,24 +80,26 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     if (S.loaded && !sm && mine) { e.textContent = 'You are the provider online. Bridgers see your offer; to bridge yourself, use another wallet.'; return; }
     if (S.loaded && !sm) { e.textContent = `No provider is online right now. ${keyS.unlocked ? 'Enter an amount to wait for one, or provide below.' : 'Open your wallet to wait for one, or to provide.'}`; return; }
     if (!sm) { e.textContent = 'Reading the providers…'; return; }
-    const t = sm.best.terms, many = sm.count > 1;
-    e.innerHTML = `<b>${many ? `${sm.count} providers online` : esc(sm.best.name || 'Provider')}</b><span>${many ? 'from ' : ''}${esc(feeLine(t))} fee</span><span>${sm.cap > 0n ? `${esc(range(sm.min, sm.cap))}${sm.cap < sm.max ? ' now' : ''}` : 'full right now'}</span>`;
+    const t = sm.best.terms, many = sm.count > 1, top = roomNow(sm);
+    e.innerHTML = `<b>${many ? `${sm.count} providers online` : esc(sm.best.name || 'Provider')}</b><span>${many ? 'from ' : ''}${esc(feeLine(t))} fee</span><span>${top > 0n ? `${esc(range(sm.min, top))}${top < sm.max ? ' now' : ''}` : 'full right now'}</span>`;
   }
 
   function problem(units) {
-    const sm = summary();
+    const sm = summary(), top = roomNow(sm), most = sm && top > sm.max ? top : sm ? sm.max : 0n;
     if (units == null) return S.amt.trim() ? 'That is not an amount.' : '';
     if (sm && units < sm.min) return `The least is ${fmtTac(sm.min)} TAC.`;
-    if (sm && units > sm.max) return `The most is ${fmtTac(sm.max)} TAC.`;
-    if (sm && units > sm.cap) return sm.cap > 0n ? `${sm.count > 1 ? 'The providers can' : 'The provider can'} take up to ${fmtTac(sm.cap)} TAC right now.` : `${sm.count > 1 ? 'The providers cannot' : 'The provider cannot'} take more right now.`;
+    if (sm && units > most) return `The most is ${fmtTac(most)} TAC.`;
+    if (sm && units > top) return top > 0n ? `${sm.count > 1 ? 'The providers can' : 'The provider can'} take up to ${fmtTac(top)} TAC right now.` : `${sm.count > 1 ? 'The providers cannot' : 'The provider cannot'} take more right now.`;
     if (S.bal != null && units > S.bal) return 'That is more than your TAC on Bitcoin.';
     return '';
   }
 
   const byAmount = (units) => others().filter((p) => units >= p.terms.minAmount && units <= capOf(p));
   const takersOf = (units) => (S.anyOnly === units ? byAmount(units).filter((p) => p.terms.anyTac) : byAmount(units));
+  // no one provider takes this amount whole, and the providers that take any TAC hold it between them: it can be split (and waiting is not the way)
+  const splittable = (units) => { const sm = summary(); return !!(S.sess && typeof S.sess.sweepOffer === 'function' && sm && units != null && !byAmount(units).length && units <= sm.together); };
   const LEAST = 10n * ONE;
-  const waitable = (units) => !!wants && !!S.sess && !S.want && units != null && units >= LEAST && (S.bal == null || units <= S.bal) && !takersOf(units).length;
+  const waitable = (units) => !!wants && !!S.sess && !S.want && units != null && units >= LEAST && (S.bal == null || units <= S.bal) && !takersOf(units).length && !splittable(units);
   const plain = (units) => (units / ONE).toString() + (units % ONE ? '.' + (units % ONE).toString().padStart(DEC, '0').replace(/0+$/, '') : '');
 
   function paintForm() {
@@ -102,11 +111,14 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     wt.hidden = !(signed && S.want);
     if (!wt.hidden) wt.firstElementChild.textContent = `Waiting for a provider for ${fmtTac(S.want.amount)} TAC`;
     if (!signed) { go.textContent = 'Open wallet'; go.disabled = S.busy; recv.hidden = true; out.hidden = true; return; }
-    const units = parseTac(S.amt), bad = problem(units), q = S.quote, wait = waitable(units), short = !!(S.cost && S.cost.short);
-    go.hidden = !!S.want && !q;
+    const units = parseTac(S.amt), bad = problem(units), q = S.quote, wait = waitable(units);
+    // a bridge split across providers has its own offer: a receipt of its parts, in place of a single quote's
+    const sp = !q && S.split && units != null && S.split.amount === units ? S.split : null, short = !!(sp ? sp.cost && sp.cost.short : S.cost && S.cost.short);
+    go.hidden = !!S.want && !q && !sp;
     if (wait) { recv.hidden = true; out.hidden = true; go.textContent = S.busy ? 'Working…' : 'Wait for a provider'; go.disabled = S.busy; paintNote(); return; }
-    out.hidden = !q; recv.hidden = !q;
-    if (q) {
+    out.hidden = !q && !sp; recv.hidden = !q && !sp;
+    if (sp) drawSplit(sp);
+    else if (q) {
       const c = S.cost, sm = summary();
       $('fx-big').textContent = fmtTac(q.evmAmount);
       const btc = c && c.total ? `<div class="kv"><span>Bitcoin fee</span><b class="num">≈ ${esc(c.total.toLocaleString('en-US'))} sats${c.take ? `<small>${esc(c.take.toLocaleString('en-US'))} of it is the provider's take</small>` : ''}</b></div>`
@@ -116,9 +128,23 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
         <p class="status err" role="alert" id="fx-high-take">High Bitcoin fee: this provider asks ${esc(Number(q.takeSats).toLocaleString('en-US'))} sats for its take, well above what it costs at the current rate. Other providers may ask less.</p>` : ''}${highFee(q) ? `
         <p class="status err" role="alert" id="fx-high">High fee: this provider keeps ${esc(fmtTac(q.fee))} TAC (${esc(pct(q.fee, q.btcValue))}) of your ${esc(fmtTac(q.btcValue))} TAC, and you receive ${esc(fmtTac(q.evmAmount))}. A smaller bridge costs more in proportion, a larger one less, and the regular bridge may cost less.</p>` : ''}`;
     }
-    go.textContent = S.busy ? 'Working…' : S.checking ? 'Checking…' : S.sure ? 'Press again to bridge' : 'Bridge';
-    go.disabled = S.busy || S.checking || !!bad || !q || units == null || short;
+    go.textContent = S.busy ? 'Working…' : S.checking ? 'Checking…' : S.sure ? 'Press again to bridge' : sp ? `Bridge in ${sp.legs.length} parts` : 'Bridge';
+    go.disabled = S.busy || S.checking || !!bad || (!q && !sp) || units == null || short;
     paintNote();
+  }
+
+  // The receipt of a split bridge: each part (its provider, its size, the fee it keeps), then the fee, the Bitcoin fee of all the locks, and the time.
+  function drawSplit(sp) {
+    const n = sp.legs.length, c = sp.cost, sats = (v) => `${Number(v).toLocaleString('en-US')} sats`;
+    $('fx-big').textContent = fmtTac(sp.receive);
+    $('fx-recv').innerHTML = `<div class="kv"><span>Split</span><b class="num">${n} parts<small>no one provider takes it whole</small></b></div>`
+      + sp.legs.map((l) => `<div class="kv"><span>${esc(l.provider.name || 'Provider')}</span><b class="num">${esc(fmtTac(l.amount))} TAC<small>fee ${esc(fmtTac(l.quote.fee))} (${esc(pct(l.quote.fee, l.quote.btcValue))}) · ${esc(keyTag(l.provider.id))}</small></b></div>`).join('')
+      + `<div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(sp.fee))} TAC<small>${esc(pct(sp.fee, sp.amount))}</small></b></div>`
+      + (c && c.total ? `<div class="kv"><span>Bitcoin fee</span><b class="num">≈ ${esc(sats(c.total))}<small>${n} locks, each with its own fee${c.take ? `; ${esc(sats(c.take))} of it is the providers' take` : ''}</small></b></div>` : '')
+      + `<div class="kv"><span>Time</span><b class="num">about ${minutesFor(sp.minConfs)} minutes<small>${Math.max(1, Number(sp.minConfs) || 1)} Bitcoin confirmation${(Number(sp.minConfs) || 1) > 1 ? 's' : ''} for the slowest part, then a pool settle</small></b></div>`
+      + `<p class="note">Each part is a bridge of its own, with its own lock on Bitcoin and its own refund: if one stops, the others carry on.</p>`
+      + (sp.high.take ? `<p class="status err" role="alert" id="fx-high-take">High Bitcoin fee: a provider asks well above what its take costs at the current rate. Other providers may ask less.</p>` : '')
+      + (sp.high.fee ? `<p class="status err" role="alert" id="fx-high">High fee: a provider keeps over 5% of its part. The regular bridge may cost less.</p>` : '');
   }
 
   const ago = (sec) => {
@@ -180,7 +206,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     e.hidden = !recs.length;
     e.innerHTML = recs.length ? `<div class="rows-h"><span>Your bridges</span>${open ? '<span class="fx-keep">Keep this page open until it is done</span>' : ''}</div>` + recs.map((r) => `
       <div class="fx-rec" data-id="${esc(r.id)}" data-phase="${esc(r.phase)}">
-        <div class="kv"><b>${esc(r.title)}</b><span class="num">${esc(fmtTac(r.amount))} TAC${r.receive && r.receive !== '0' ? ` → ${esc(fmtTac(r.receive))} TAC` : ''}</span></div>
+        <div class="kv"><b>${r.sweep ? `Part ${esc(r.sweep.part)} of ${esc(r.sweep.of)} · ` : ''}${esc(r.title)}</b><span class="num">${esc(fmtTac(r.amount))} TAC${r.receive && r.receive !== '0' ? ` → ${esc(fmtTac(r.receive))} TAC` : ''}</span></div>
         ${r.returned ? '' : `<ol class="fx-steps" aria-label="Steps">${r.steps.map((s, i) => `<li${i < r.at || r.ended ? ' class="on"' : i === r.at ? ' class="at"' : ''}>${esc(s)}</li>`).join('')}</ol>`}
         <p class="note">${esc(r.detail)}${r.error && !r.ended ? ` <span class="err">${esc(r.error)}</span>` : ''}</p>
         <p class="note fx-meta">${esc(ago(r.created))}${r.lockTxid ? ` · <a href="${SCAN}${esc(r.lockTxid)}" target="_blank" rel="noopener noreferrer">Bitcoin lock ↗</a>` : ''}${r.ended && !r.returned ? ' · <a href="/">Your TAC, on the front page</a>' : ''}</p>
@@ -228,7 +254,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   function reset(text) {
     if (S.stop) { S.stop(); S.stop = null; }
     clearTimeout(S.timer); clearInterval(S.watch); S.seq++;
-    Object.assign(S, { sess: null, pub: null, bal: null, quotes: [], quote: null, best: null, amt: '', recs: [], busy: false, opening: null, want: null, told: false, cost: null, sure: null, checking: false, anyOnly: null });
+    Object.assign(S, { sess: null, pub: null, bal: null, quotes: [], quote: null, best: null, amt: '', recs: [], busy: false, opening: null, want: null, told: false, cost: null, sure: null, checking: false, anyOnly: null, split: null });
     $('fx-amt').value = '';
     note(text || '');
     paint();
@@ -267,7 +293,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   const pinFirst = (quotes) => { const pin = pinned(); return pin ? quotes.slice().sort((a, b) => (pairId(b.provider.id) === pin) - (pairId(a.provider.id) === pin)) : quotes; };
   function typed() {
     readProviders();
-    S.amt = $('fx-amt').value; S.quotes = []; S.quote = null; S.best = null; S.note = ''; S.cost = null; S.sure = null; S.checking = false; S.anyOnly = null;
+    S.amt = $('fx-amt').value; S.quotes = []; S.quote = null; S.best = null; S.note = ''; S.cost = null; S.sure = null; S.checking = false; S.anyOnly = null; S.split = null;
     clearTimeout(S.timer); const seq = ++S.seq;
     const units = parseTac(S.amt);
     paintForm();
@@ -275,7 +301,11 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     S.timer = setTimeout(async () => {
       try {
         const eligible = others().filter((p) => units >= p.terms.minAmount && units <= capOf(p));
-        if (!eligible.length) { if (seq === S.seq) note(problem(units) || 'No provider can take that amount right now.', !wants); return; }
+        if (!eligible.length) {
+          if (splittable(units)) { await offerSplit(units, seq); return; }
+          if (seq === S.seq) note(problem(units) || 'No provider can take that amount right now.', !wants);
+          return;
+        }
         const r = await S.sess.quoteAll(eligible, units);
         if (seq !== S.seq) return;
         if (!r.quotes.length) { note(r.failed[0] ? wording(r.failed[0].error) : 'No provider can take that amount right now.', true); return; }
@@ -306,13 +336,36 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       } catch (e) { if (seq === S.seq) { S.checking = false; note(wording(e), true); paintForm(); } }
     }, quoteDelayMs);
   }
+  // The offer for a bridge split across providers: the parts, each quoted by its own provider, and what the locks cost on Bitcoin.
+  async function offerSplit(units, seq) {
+    const sess = S.sess;
+    S.checking = true; note('Planning the split…'); paintForm();
+    let o;
+    try { o = await sess.sweepOffer(others(), units); } catch (e) { if (seq === S.seq) { S.checking = false; note(wording(e), true); paintForm(); } return; }
+    if (seq !== S.seq || S.sess !== sess) return;
+    S.checking = false;
+    if (!o.ok) { note(splitWhy(o, units), true); paintForm(); return; }
+    S.split = o;
+    if (o.cost && o.cost.short) note(splitShort(o), true); else note('');
+    paintForm();
+  }
+  function splitWhy(o, units) {
+    if (o.why === 'notes') return `Your TAC on Bitcoin is in ${o.notes} note${o.notes === 1 ? '' : 's'}, and a lock spends a note whole, so ${o.parts} parts need ${o.parts} notes. Split a note first (Chains, then Notes), or bridge less.`;
+    if (o.why === 'busy') return 'A provider did not answer with its part, so the split cannot be priced. Try again in a moment.';
+    return `The providers cannot take ${fmtTac(units)} TAC between them right now. Try a smaller amount.`;
+  }
+  const splitShort = (o) => {
+    const c = o.cost, n = o.legs.length, at = c.at == null ? 0 : c.at;
+    return `This key's Bitcoin address can pay the Bitcoin fee for ${at} of the ${n} parts, one coin for each lock. Add some sats from Receive in the Bitcoin tab on the front page${c.need ? ` (about ${c.need.toLocaleString('en-US')} for a part)` : ''}, or bridge less.`;
+  };
+
   $('fx-amt').addEventListener('input', typed);
   $('fx-back').addEventListener('click', async (ev) => {
     if (!ev.target.closest('#fx-back-open')) return;
     try { await signIn(); } catch (e) { if (!e?.unlockCancelled) note(wording(e), true); }
   });
   $('fx-max').addEventListener('click', () => {
-    const sm = summary(), lim = sm && sm.cap > 0n ? sm.cap : S.bal, cap = S.bal > lim ? lim : S.bal;
+    const sm = summary(), top = roomNow(sm), lim = sm && top > 0n ? top : S.bal, cap = S.bal > lim ? lim : S.bal;
     $('fx-amt').value = plain(cap);
     typed();
   });
@@ -364,6 +417,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       return;
     }
     if (!S.sess) { await openSession(); return; }
+    if (!S.quote && S.split && S.split.amount === parseTac(S.amt)) { await goSplit(); return; }
     if (!S.quote && waitable(parseTac(S.amt))) { await wait(parseTac(S.amt)); return; }
     if (!S.quote) return;
     if (S.cost && S.cost.short) { note(shortText(S.cost), true); return; }
@@ -407,7 +461,49 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
   }
   $('fx-go').addEventListener('click', go);
 
-  const shortText = (c) => `This key's Bitcoin address holds ${(c.have || 0).toLocaleString('en-US')} sats for fees and this bridge needs about ${(c.need || c.total || 0).toLocaleString('en-US')}. Add some from Receive in the Bitcoin tab on the front page.`;
+  // The press for a split bridge: the first says what it does and costs, the second goes. Every provider's share is held before the first lock.
+  const sureSplit = (o) => {
+    const names = o.legs.map((l) => l.provider.name || 'a provider').join(', ');
+    S.sure = { key: o.legs.map((l) => `${l.quote.id}|${l.quote.btcValue}`).join(','), at: Date.now() };
+    note(`${o.high.take ? 'High Bitcoin fee: a provider asks well above what its take costs at the current rate. ' : ''}${o.high.fee ? 'High fee: a provider keeps over 5% of its part. ' : ''}This locks ${fmtTac(o.amount)} TAC on Bitcoin in ${o.legs.length} separate locks, one for each of ${names}, until each has paid you its part: ${fmtTac(o.receive)} private TAC in all, in about ${minutesFor(o.minConfs)} minutes. A part that does not go through returns its lock to your address after about a day, and the others carry on. Press again to bridge.`);
+  };
+  async function goSplit() {
+    const o = S.split, n = o.legs.length, sess = S.sess;
+    if (o.cost && o.cost.short) { note(splitShort(o), true); return; }
+    const key = o.legs.map((l) => `${l.quote.id}|${l.quote.btcValue}`).join(',');
+    if (!(S.sure && S.sure.key === key && Date.now() - S.sure.at < 180e3)) { sureSplit(o); paintForm(); return; }
+    S.sure = null;
+    S.busy = true; note('Holding each provider’s share…'); paintForm();
+    let offer = o, again = null;
+    try {
+      // quotes close to running out are asked for again, the split planned as before; a dearer one is shown first and needs another press
+      if (offer.legs.some((l) => Number(l.quote.validUntil) <= Math.floor(Date.now() / 1000) + 150)) {
+        const fresh = await sess.sweepOffer(others(), offer.amount);
+        if (!fresh.ok) throw new Error(splitWhy(fresh, offer.amount));
+        if (fresh.receive < offer.receive || (fresh.cost && fresh.cost.short)) { S.split = fresh; again = 'The quote changed.'; return; }
+        offer = fresh;
+      }
+      const r = await sess.startSweep(offer);
+      if (S.want) { const pub = S.pub; S.want = null; S.told = false; clearInterval(S.watch); wants.stop(pub).catch(() => {}); }
+      S.recs = await sess.records(); S.split = null; S.amt = ''; $('fx-amt').value = '';
+      const unsent = r.started.filter((x) => x.unsent).length;
+      if (!r.failed.length) note(unsent ? `Signed, but Bitcoin has not taken ${unsent} of the ${n} locks yet. They are listed below and sent again by themselves while this page is open.` : `Started in ${n} parts. Each is listed below, and every step is taken as Bitcoin confirms.`);
+      else note(`${r.started.length} of ${n} parts started. The other ${fmtTac(r.failed.reduce((s, f) => s + BigInt(f.amount), 0n))} TAC was not: ${wording(r.failed[0].error)} Bridge it again once the first locks have confirmed.`, true);
+      sess.balance().then((b) => { S.bal = b; paintForm(); }).catch(() => {});
+    } catch (e) {
+      if (e && e.code === 'sweep-hold' && e.provider) {
+        // that provider could not hold its part, and nothing was locked: the split is planned again without it
+        const next = await sess.sweepOffer(others(), offer.amount, { exclude: new Set([e.provider.id]) }).catch(() => null);
+        if (next && next.ok) { S.split = next; again = `${e.provider.name || 'A provider'} could not hold its part, so the split was planned again without it.`; }
+        else note(`${e.message}. Nothing was locked.${next && !next.ok ? ` ${splitWhy(next, offer.amount)}` : ''}`, true);
+      } else note(wording(e), true);
+    } finally {
+      S.busy = false; paint();
+      if (again && S.split) { if (S.split.cost && S.split.cost.short) note(`${again} ${splitShort(S.split)}`, true); else { sureSplit(S.split); note(`${again} ${S.note}`); } paintForm(); }
+    }
+  }
+
+  const shortText =(c) => `This key's Bitcoin address holds ${(c.have || 0).toLocaleString('en-US')} sats for fees and this bridge needs about ${(c.need || c.total || 0).toLocaleString('en-US')}. Add some from Receive in the Bitcoin tab on the front page.`;
 
   function wording(e) {
     const m = e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e || '');

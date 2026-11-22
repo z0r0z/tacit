@@ -4,7 +4,7 @@
 //   const list = await discoverProviders({ providers, boards })                         who there is to bridge with
 
 import { makeHttpCounter } from '/fastbridge-http.js';
-import { termsOf } from '/fastbridge-client.js?cb=bea8334c';
+import { termsOf } from '/fastbridge-client.js?cb=e5c8e3aa';
 import { readProviders } from '/fastbridge-mailbox.js?cb=96a024c6';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 

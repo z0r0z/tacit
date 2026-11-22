@@ -676,6 +676,178 @@ test('the wallet failing to open is said and the page can be pressed again', asy
   await until(() => !m.$('fx-form').hidden, 'the form on the second press');
 });
 
+// ── a bridge no one provider can take, split across several ──
+
+// three providers that take any TAC: A 500 at 1%, B 400 at 2%, C 300 at 4% (and 1 TAC flat each)
+const splitProviders = () => [provider('A', { available: String(500n * TAC), feeBps: 100, anyTac: true }), provider('B', { available: String(400n * TAC), feeBps: 200, anyTac: true }), provider('C', { available: String(300n * TAC), feeBps: 400, anyTac: true })];
+// a session that can split: the offer it gives is the one the test says, its start does what the test says
+function splitSession({ names = ['A', 'B', 'C'], amounts = [500n, 400n, 100n], stale = false, sweepError = null, notes = null, failed = [], unsent = 0, why = null, short = null, dearer = false } = {}) {
+  const base = sessionStub(), calls = { ...base.calls, offers: [], sweeps: [] };
+  const offerFor = (providers, units, over = {}) => {
+    const legs = (over.names || names).map((n, i) => {
+      const p = providers.find((x) => x.name === n), amount = (over.amounts || amounts)[i] * TAC, fee = (amount * BigInt(p.terms.feeBps)) / 10000n + p.terms.flatFee;
+      return { provider: p, amount, notes: [], quote: { id: 'q' + n, btcValue: amount, evmAmount: amount - fee - (dearer && over.fresh ? TAC : 0n), fee: fee + (dearer && over.fresh ? TAC : 0n), validUntil: Math.floor(Date.now() / 1000) + (stale && !over.fresh ? 20 : 600), minConfs: 1 } };
+    });
+    const fee = legs.reduce((s, l) => s + l.quote.fee, 0n);
+    return { ok: true, amount: units, legs, fee, receive: units - fee, minConfs: 1, cost: { total: 1200 * legs.length, take: 546 * legs.length, short: !!short, at: short ? short.at : null, need: short ? 1500 : null, have: short ? 700 : null }, high: { fee: false, take: false } };
+  };
+  const session = {
+    ...base.session,
+    sweepOffer: async (providers, units, o = {}) => {
+      calls.offers.push({ units, exclude: o.exclude ? [...o.exclude] : [] });
+      if (why) return { ok: false, ...why };
+      if (o.exclude && o.exclude.size) return offerFor(providers, units, { names: names.filter((n) => !providers.some((p) => p.name === n && o.exclude.has(p.id))), amounts: [600n, 400n], fresh: true });
+      return offerFor(providers, units, { fresh: calls.offers.length > 1 });
+    },
+    startSweep: async (offer) => {
+      calls.sweeps.push(offer);
+      if (sweepError) throw sweepError;
+      const started = offer.legs.slice(0, offer.legs.length - failed.length).map((l, i) => ({ rec: { id: 'swap' + i }, provider: l.provider, leg: i, ...(i < unsent ? { unsent: true } : {}) }));
+      base.setRecs(started.map((s, i) => rec({ id: String(i + 1).repeat(72).slice(0, 72), phase: 'built', title: 'Locking on Bitcoin', amount: String(offer.legs[i].amount), receive: String(offer.legs[i].quote.evmAmount), sweep: { id: 's1', part: i + 1, of: offer.legs.length } })));
+      return { id: 's1', started, failed: failed.map((error, k) => ({ leg: offer.legs.length - failed.length + k, provider: offer.legs[offer.legs.length - failed.length + k].provider, amount: offer.legs[offer.legs.length - failed.length + k].amount, error })) };
+    },
+  };
+  return { calls, session, setRecs: base.setRecs };
+}
+const waitsStub = () => ({ ask: async () => {}, kept: () => null, start: async () => null, stop: async () => {} });
+
+test('no one provider takes the amount but the providers do between them: the page offers a split, with each part, the fee, the Bitcoin fee and the time, and does not offer to wait', async () => {
+  const st = splitSession(), m = mount({ session: st, providers: splitProviders(), wants: waitsStub() });
+  await signIn(m);
+  assert.match(text(m.$('fx-lp')), /3 providers online.*from 1\.00% \+ 1 TAC fee.*10 to 1,200 TAC$/, 'the line says what can be had by splitting');
+  typeIn(m, '1000');
+  await until(() => !m.$('fx-go').disabled && /parts/.test(m.$('fx-go').textContent), 'the offer');
+  assert.equal(m.$('fx-go').textContent, 'Bridge in 3 parts');
+  assert.deepEqual(st.calls.asked, [], 'no single quote was asked: no provider takes it whole');
+  assert.deepEqual(st.calls.offers, [{ units: 1000n * TAC, exclude: [] }]);
+  const r = text(m.$('fx-recv'));
+  assert.match(r, /Split 3 parts no one provider takes it whole/);
+  for (const [n, a] of [['A', '500'], ['B', '400'], ['C', '100']]) assert.match(r, new RegExp(`${n} ${a} TAC fee \\d+ \\(\\d+\\.\\d\\d%\\) · \\S+`), `${n}'s part, its fee and its key`);
+  assert.ok(!m.$('fx-recv').querySelector('.kv > span small'), 'the key sits on the detail line, where the page styles it, not run into the name');
+  assert.match(r, /Fee 20 TAC/, '5 + 1, 8 + 1 and 4 + 1 TAC'); assert.match(r, /Bitcoin fee ≈ 3,600 sats 3 locks, each with its own fee; 1,638 sats of it is the providers' take/);
+  assert.match(r, /Time about 15 minutes/); assert.match(r, /Each part is a bridge of its own/);
+  assert.equal(m.$('fx-big').textContent, '980', 'what is received is the amount less every part\'s fee');
+  assert.notEqual(m.$('fx-go').textContent, 'Wait for a provider', 'a bridge that can be split is not one to wait for');
+  assert.equal(m.$('fx-recv').hidden, false);
+  m.ui.destroy();
+});
+
+test('pressing a split bridge: the first press says what it locks and what happens if a part stops, the second starts every part, and each is listed as a part of the whole', async () => {
+  const st = splitSession(), m = mount({ session: st, providers: splitProviders() });
+  await signIn(m);
+  typeIn(m, '1000');
+  await until(() => !m.$('fx-go').disabled, 'the offer');
+  m.$('fx-go').click();
+  await until(() => m.$('fx-go').textContent === 'Press again to bridge', 'the confirmation');
+  assert.match(m.$('fx-st').textContent, /locks 1,000 TAC on Bitcoin in 3 separate locks, one for each of A, B, C/);
+  assert.match(m.$('fx-st').textContent, /A part that does not go through returns its lock to your address after about a day, and the others carry on/);
+  assert.equal(st.calls.sweeps.length, 0, 'nothing started on the first press');
+  m.$('fx-go').click();
+  await until(() => st.calls.sweeps.length === 1, 'the start');
+  assert.deepEqual(st.calls.sweeps[0].legs.map((l) => [l.provider.name, l.amount / TAC]), [['A', 500n], ['B', 400n], ['C', 100n]]);
+  await until(() => /Started in 3 parts/.test(m.$('fx-st').textContent), 'the note');
+  assert.equal(m.$('fx-amt').value, '', 'the amount is cleared');
+  await until(() => /Part 1 of 3/.test(text(m.$('fx-list'))), 'the list');
+  const list = text(m.$('fx-list'));
+  assert.match(list, /Part 1 of 3 · Locking on Bitcoin 500 TAC/); assert.match(list, /Part 3 of 3 · Locking on Bitcoin 100 TAC/);
+  m.ui.destroy();
+});
+
+test('a split bridge that could only be started in part says how much was not, and why; one signed but not sent says so', async () => {
+  const st = splitSession({ failed: [new Error('not started: the part before it could not be'), new Error('not started: the part before it could not be')] }), m = mount({ session: st, providers: splitProviders() });
+  // (the first of the two failed parts is the one that errored; the one after it was not tried)
+  await signIn(m); typeIn(m, '1000');
+  await press(m);
+  await until(() => /parts started/.test(m.$('fx-st').textContent), 'the partial note');
+  assert.match(m.$('fx-st').textContent, /^1 of 3 parts started\. The other 500 TAC was not: /);
+  assert.match(m.$('fx-st').textContent, /Bridge it again once the first locks have confirmed/);
+  assert.equal(m.$('fx-st').className, 'status err');
+  m.ui.destroy();
+  const u = splitSession({ unsent: 2 }), n = mount({ session: u, providers: splitProviders() });
+  await signIn(n); typeIn(n, '1000');
+  await press(n);
+  await until(() => /Signed, but Bitcoin has not taken 2 of the 3 locks yet/.test(n.$('fx-st').textContent), 'the unsent note');
+  n.ui.destroy();
+});
+
+test('a provider that cannot hold its part stops the bridge before anything is locked, and the split is planned again without it', async () => {
+  const B = splitProviders()[1];
+  const st = splitSession({ sweepError: Object.assign(new Error('B cannot hold its part of the bridge: the provider cannot take that amount right now'), { code: 'sweep-hold', provider: B }) });
+  const m = mount({ session: st, providers: splitProviders() });
+  await signIn(m); typeIn(m, '1000');
+  await press(m);
+  await until(() => /could not hold its part, so the split was planned again without it/.test(m.$('fx-st').textContent), 'the replan');
+  assert.deepEqual(st.calls.offers.map((o) => o.exclude), [[], [B.id]], 'planned again, with B left out');
+  assert.match(m.$('fx-st').textContent, /^B could not hold its part/);
+  assert.match(m.$('fx-st').textContent, /Press again to bridge/, 'the new split is confirmed before it goes');
+  assert.match(m.$('fx-go').textContent, /Press again to bridge/);
+  assert.doesNotMatch(text(m.$('fx-recv')), /\bB\b.*TAC fee/, 'B is not among the parts now');
+  assert.equal(st.calls.sweeps.length, 1, 'only the first attempt started anything, and it started nothing');
+  m.ui.destroy();
+});
+
+test('quotes that are about to run out are asked for again at the second press; a dearer split is shown first and needs another press', async () => {
+  const st = splitSession({ stale: true }), m = mount({ session: st, providers: splitProviders() });
+  await signIn(m); typeIn(m, '1000');
+  await until(() => !m.$('fx-go').disabled, 'the offer');
+  m.$('fx-go').click(); await until(() => m.$('fx-go').textContent === 'Press again to bridge', 'the confirmation');
+  m.$('fx-go').click();
+  await until(() => st.calls.sweeps.length === 1, 'the start');
+  assert.equal(st.calls.offers.length, 2, 'the split was planned again for fresh quotes');
+  assert.ok(st.calls.sweeps[0].legs.every((l) => l.quote.validUntil > Math.floor(Date.now() / 1000) + 300), 'and it is the fresh one that was started');
+  m.ui.destroy();
+  const d = splitSession({ stale: true, dearer: true }), n = mount({ session: d, providers: splitProviders() });
+  await signIn(n); typeIn(n, '1000');
+  await until(() => !n.$('fx-go').disabled, 'the offer');
+  n.$('fx-go').click(); await until(() => n.$('fx-go').textContent === 'Press again to bridge', 'the confirmation');
+  n.$('fx-go').click();
+  await until(() => /The quote changed\./.test(n.$('fx-st').textContent), 'the changed quote');
+  assert.equal(d.calls.sweeps.length, 0, 'a dearer split is not started on the press that found it');
+  assert.match(n.$('fx-go').textContent, /Press again to bridge/);
+  n.ui.destroy();
+});
+
+test('a split that cannot be had says why in words: the notes cannot be shared out, a provider did not answer, the providers cannot take it, the address cannot pay the fees', async () => {
+  const run = async (opts, re, amount = '1000') => {
+    const m = mount({ session: splitSession(opts), providers: splitProviders(), wants: waitsStub() });
+    await signIn(m); typeIn(m, amount);
+    await until(() => re.test(m.$('fx-st').textContent), String(re));
+    assert.equal(m.$('fx-go').disabled, true, 'it cannot be pressed');
+    assert.notEqual(m.$('fx-go').textContent, 'Wait for a provider', 'waiting would not help: the providers have the room');
+    m.ui.destroy();
+  };
+  await run({ why: { why: 'notes', parts: 3, notes: 1 } }, /Your TAC on Bitcoin is in 1 note, and a lock spends a note whole, so 3 parts need 3 notes\. Split a note first \(Chains, then Notes\), or bridge less\./);
+  await run({ why: { why: 'notes', parts: 2, notes: 1 } }, /in 1 note, .* so 2 parts need 2 notes/);
+  await run({ why: { why: 'busy' } }, /A provider did not answer with its part/);
+  await run({ why: { why: 'size' } }, /The providers cannot take 1,000 TAC between them right now/);
+  await run({ short: { at: 1 } }, /can pay the Bitcoin fee for 1 of the 3 parts, one coin for each lock\. Add some sats from Receive in the Bitcoin tab on the front page \(about 1,500 for a part\), or bridge less\./);
+  // over what the providers hold together: said as it always was, with the sum
+  const m = mount({ session: splitSession(), providers: splitProviders() });
+  await signIn(m); typeIn(m, '1500');
+  await until(() => /The most is 1,200 TAC\./.test(m.$('fx-st').textContent), 'the sum');
+  assert.equal(m.$('fx-go').disabled, true);
+  m.ui.destroy();
+});
+
+test('a session that cannot split, or providers that screen, leave the page as it was: the single provider\'s room is the most, and waiting is offered', async () => {
+  // no sweepOffer: after the key opens the page is the one it always was
+  const m = mount({ providers: splitProviders(), wants: waitsStub() });
+  await signIn(m);
+  assert.match(text(m.$('fx-lp')), /10 to 500 TAC now/);
+  typeIn(m, '1000');
+  await until(() => /take up to 500 TAC right now/.test(m.$('fx-st').textContent), 'the old answer');
+  m.ui.destroy();
+  // providers that screen are not asked to take a part
+  const screening = [provider('A', { available: String(500n * TAC) }), provider('B', { available: String(400n * TAC) })];
+  const st = splitSession(), n = mount({ session: st, providers: screening, wants: waitsStub() });
+  await signIn(n);
+  assert.match(text(n.$('fx-lp')), /10 to 500 TAC now/, 'two that screen cannot be split across');
+  typeIn(n, '800');
+  await until(() => /take up to 500 TAC right now/.test(n.$('fx-st').textContent), 'the single room');
+  assert.deepEqual(st.calls.offers, [], 'no split was planned');
+  n.ui.destroy();
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

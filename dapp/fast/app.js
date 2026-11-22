@@ -4,10 +4,10 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=04a214c9';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=811c62a0';
+import { mountFast } from '/fast/ui.js?cb=7b77225f';
 import { mountProvide } from '/fast/provide.js?cb=b299c2e9';
 import { mountBound } from '/fast/bound.js?cb=f0f32804';
-import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=fa86cf30';
+import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=2390538c';
 import { makeWants } from '/fast/want.js?cb=1ab031d1';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
@@ -19,7 +19,7 @@ const TACIT_URL = '/tacit.js?cb=c17c9ab0';
 // the bridge itself (the lock, the settle, the key's own provider) loads when a key opens; a touch on the page fetches its modules ahead
 let warmed = false;
 const warm = () => { if (warmed) return; warmed = true; const t = document.getElementById('warm'); if (t) document.head.append(t.content.cloneNode(true)); };
-const wire = () => { warm(); return import('/fast/wire.js?cb=586e74a9'); };
+const wire = () => { warm(); return import('/fast/wire.js?cb=3e3c139b'); };
 for (const ev of ['pointerdown', 'focusin']) document.querySelector('main')?.addEventListener(ev, warm, { once: true });
 
 async function lists() {
