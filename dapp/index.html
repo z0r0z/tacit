@@ -16170,7 +16170,7 @@ async function poolOutNow({ run, c, dest, amt, to = null, st, clear, after }) {
     const q = self ? null : dest === 'v1' ? (DEV.gq[V1_MOVE_GAS] = await W.quote(V1_MOVE_GAS).catch(() => null)) : (DEV.quote ||= await W.quote().catch(() => null));
     if (!self && !q) return viaWallet('The relay’s fee could not be read.');
     fee = q ? BigInt(q.fee || 0) : 0n;
-    const maxFee = fee ? (fee * 5n) / 4n : null;
+    const maxFee = q ? (fee * 5n) / 4n : null;
     if (mods.mergePlan(W.notes().map((n) => n.v), amount + fee, fee) == null) {
       throw pre(amount + fee > (DEV.bal ?? 0n) ? `More than your private balance${fee ? ', once the relay fee is counted' : ''}.` : 'More than one withdrawal can take: your private balance is spread over too many notes.');
     }
@@ -16213,7 +16213,7 @@ async function tokOutNow({ run, t, op, amt, raw, st, clear, after }) {
     if (!TK.self && t.keeper) { await keeperRead(t.keeper); if (keeperDown(t.keeper)) TK.self = true; }
     const relay = !!t.keeper && !TK.self, quote = relay ? await W.quote().catch(() => null) : null;
     if (relay && !quote) return viaWallet('The relay’s fee could not be read.');
-    const fee = quote ? BigInt(quote.fee || 0) : 0n, maxFee = fee ? (fee * 5n) / 4n : null;
+    const fee = quote ? BigInt(quote.fee || 0) : 0n, maxFee = quote ? (fee * 5n) / 4n : null;
     if (mods.mergePlan(W.notes().map((n) => n.v), amount + fee, fee) == null) {
       throw pre(amount + fee > (TK.bal ?? 0n) ? `More than your private balance${fee ? ', once the relay fee is counted' : ''}.` : `More than one ${op === 'send' ? 'payment' : 'withdrawal'} can take: your private balance is spread over too many notes.`);
     }

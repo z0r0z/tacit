@@ -125,6 +125,20 @@ await test('sent from the wallet: no quote is read and no fee is capped', async 
   ok(t.log.sends[0].maxFee === null, `cap ${t.log.sends[0].maxFee}`);
 });
 
+await test('a relay fee of 0 is a cap of 0, so a later fee is shown before it is paid', async () => {
+  const t = make();
+  t.DEV.W.quote = async (gas) => { t.log.quotes.push(gas ?? null); return { fee: '0', gas: String(gas ?? PLAIN_GAS) }; };
+  await t.press('addr');
+  ok(t.log.sends[0].maxFee === 0n, `cap ${t.log.sends[0].maxFee}`);
+});
+
+await test('the private-ETH sheets cap a relay fee of 0 at 0 too', () => {
+  const sheets = readFileSync(join(ROOT, 'dapp/front/sheets.js'), 'utf8');
+  const caps = [...sheets.matchAll(/const capOf = \(fee\) => ([^;]+);/g)].map((m) => new Function('fee', `return ${m[1]};`));
+  ok(caps.length >= 2, `capOf found ${caps.length} times`);
+  for (const capOf of caps) ok(capOf(0n) === 0n && capOf(null) === null && capOf(4n) === 5n, String(capOf));
+});
+
 await test('the card\'s fee row shows the relay fee, or that the wallet sends it, or "shown next" until read', () => {
   const t = make();
   const h = { go: 'Move ETH into tETH', rc: [['Arrives', 'tETH'], ['Chain sees', 'no public stop on the way'], ['Relay fee', 'shown next']] };

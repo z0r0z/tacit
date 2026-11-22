@@ -1256,7 +1256,7 @@ function renderDevice(el) {
     }
     return true;
   };
-  const capOf = (fee) => (fee ? (fee * 5n) / 4n : null);
+  const capOf = (fee) => (fee == null ? null : (fee * 5n) / 4n);
   const upEth = (v) => fmt(((v + 10n ** 12n - 1n) / 10n ** 12n) * 10n ** 12n, 18, 6);
   const feeMoved = async (e) => {
     const g = destGas(), q = (await DEV.W?.quote(g || undefined).catch(() => null)) || { ...quoteNow(), fee: String(e.feeMoved) };
@@ -1518,7 +1518,7 @@ function renderTokenPool(el) {
     }
     return !TK.quote;
   };
-  const capOf = (fee) => (fee ? (fee * 5n) / 4n : null);
+  const capOf = (fee) => (fee == null ? null : (fee * 5n) / 4n);
   const selfNote = (out) => (viaRelay()
     ? html`<p class="note">Sent by the relay: ${out ? 'the withdrawal shows its amount and the address it goes to, not who sent it' : 'nothing of yours shows'}. Its fee is paid in ${t.sym} out of your private balance.</p>`
     : html`<p class="note">From ${your()}: no relay fee, the network fee instead. ${out ? `The withdrawal shows its amount, the address it goes to and ${your()} as the sender; which deposit it spends is not shown.` : `${your()} shows as the sender; how much and to whom stay hidden.`}${t.keeper ? html` <button class="link" type="button" id="d-relay">Use the relay</button>` : ''}</p>`);
