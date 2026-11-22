@@ -10,7 +10,9 @@ reads from the chains; the HTTP API only carries the user's offer in and the poo
 ## Run one that stays on
 
 Anyone can provide: from the bridge page (`/fast/`, "Provide liquidity", while the page is open), or with this process, which stays on by itself and
-needs nothing from you but TAC. It is found through the boards, so it needs no public address and no domain: a laptop, a home server or a small host will do.
+needs nothing from you but TAC. It is found through the boards, so it needs no public address and no domain. It does have to be on: it takes the Bitcoin of each bridge within about
+a day of the bridger's lock, before their refund opens, and a bridge it does not finish in time is a bridge it has paid for and not been paid for. So run it on a machine that stays up
+(a home server or a small host, not a laptop that sleeps), and before turning it off set `FB_LP_MAX_AMOUNT=0` and wait for the open swaps to finish.
 
 ```
 git clone https://github.com/src-company/tacit && cd tacit && (cd worker-relay && npm ci)
@@ -19,12 +21,14 @@ export FB_LP_KEY=$(openssl rand -hex 32)                           # keep an off
 node fastbridge-lp/server.mjs                                      # prints the address to fund
 ```
 
-1. **Send it TAC.** The start line shows `poolAccount`: send TAC (the ERC-20, on Ethereum) there, and about 0.01 ETH for gas. Within a minute it
-   shields the TAC into private notes and lends it; send more at any time and it does the same. No other step, no tool to run.
+1. **Send it TAC.** The start line shows `poolAccount`: send TAC (the ERC-20, on Ethereum) there, and about 0.01 ETH for gas. It notices within a minute and
+   shields the TAC into private notes, which takes a little while, and lends it once they are in; send more at any time and it does the same. No other step, no tool to run.
 2. **It takes bridges.** It posts its ad on the board, so `/fast/` and the front page's Bridge tab find it. Each bridge pays you the fee in TAC on Bitcoin
    (at the Bitcoin address of the key).
-3. **Bring it home when it runs low.** Bitcoin TAC builds up as the private TAC drains. Open the front page's Bridge tab with the same key and bridge it
-   back (`tools/fastbridge-lp-bridge-home.mjs` does it from a terminal), then it is lent again. Until then the provider shows "full right now" and bridgers use another.
+3. **Know what comes home.** Bitcoin TAC builds up as the private TAC drains. You can trade it on Bitcoin, or bring home what the regular bridge can carry (the front
+   page's Bridge tab with the same key, or `tools/fastbridge-lp-bridge-home.mjs` from a terminal) and lend it again. The bridge cannot follow TAC whose history passes through
+   Bitcoin's shielded pool, a pool or farm trade, or a very long chain of transfers, and a provider that takes every note is often paid in such TAC: it stays on
+   Bitcoin. The page's "Provide liquidity" panel can refuse it; the daemon takes it (see the last section). Until the private TAC is topped up the provider shows "full right now" and bridgers use another.
 4. **Be told.** Set `FB_LP_ALERT_WEBHOOK` (a Slack or Discord webhook works as it is) and it says when it runs low on TAC or ETH, or a swap waits long.
 
 `FB_LP_MAX_AMOUNT=0` stops new swaps and finishes the open ones; to stop for good, wait for those to finish, then stop the process. One process per key.
@@ -92,7 +96,7 @@ restart, not a new image.
 4. **Go live.** Remove `--dry-run`. It posts its ad on the boards in `config.render.json`, so `/fast/` finds it, and it takes any TAC the validator accepts, TAC out of the Bitcoin shielded pool included (see the last section).
 5. **Watch it.** `/health` is the health check; set `FB_LP_ALERT_WEBHOOK` to be told of a swap that waits long, a failed tick or a lost claim (the alerts are listed under "Watching it").
 6. **Tune it.** `FB_LP_MIN_AMOUNT`, `FB_LP_MAX_AMOUNT`, `FB_LP_FEE_BPS`, `FB_LP_FLAT_FEE`, `FB_LP_NAME`, `FB_LP_BOARDS` (base units; 8 places for TAC), and `FB_LP_MAILBOX_POLL_SECS` (how often it reads the board for requests left for it; a user's quote waits for the next read, so 1 s answers sooner than the default 3 s; not under 1, the board takes 120 reads a minute from one address). `FB_LP_MAX_AMOUNT=0` stops new swaps and finishes the open ones.
-7. **Rebalance by hand.** Bitcoin TAC builds up as the pool TAC drains; move it back from the Bridge tab, signed in with the same key, when the pool balance runs low. Until then the provider shows "full right now" and the page falls back to another provider.
+7. **Rebalance by hand.** Bitcoin TAC builds up as the pool TAC drains; move back what the bridge can carry from the Bridge tab, signed in with the same key, when the pool balance runs low (see "Keeping it safe": not all of it can go). Until then the provider shows "full right now" and the page falls back to another provider.
 
 ## API
 

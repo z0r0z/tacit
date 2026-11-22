@@ -250,20 +250,22 @@ test('what the panel tells a provider as it goes: how it earns, that earnings ar
   const m = mount({ refreshMs: 20 });
   await m.load();
   assert.match(text(m.root), /Lend your private TAC and keep the fee on each fast bridge/);
-  assert.match(text(m.root), /settles both sides or neither/);
+  assert.match(text(m.root), /take the Bitcoin within about a day of their lock, before their refund opens, so keep this page open until each bridge is done/, 'what a provider has to do is said, not that the swap is safe whatever it does');
+  assert.doesNotMatch(text(m.root), /both sides or neither/);
   assert.match(m.root.querySelector('.note a').href, /fastbridge-lp\/README\.md#run-one-that-stays-on$/, 'the always-on path is one link away');
-  assert.doesNotMatch(text(m.$('pv-run')), /Bring it home/, 'nothing to bring home before the first bridge');
+  assert.doesNotMatch(text(m.$('pv-run')), /bring home what the bridge can carry/, 'nothing to bring home before the first bridge');
   m.$('pv-go').click();
   await until(() => m.$('pv-go').textContent === 'Stop providing', 'the switch');
   assert.doesNotMatch(text(m.$('pv-inv')), /free, so new bridges go to other providers/, 'with TAC free it does not say it is used up');
   // a bridge done, the pool all promised: the earnings are on Bitcoin, and new bridges pass it by
   m.stub.st.done = 1; m.stub.st.earned = 3n * TAC; m.stub.st.held = 5000n * TAC;
   m.stub.session.status = async () => ({ ...m.stub.st });
-  await until(() => /Bring it home/.test(text(m.$('pv-run'))), 'the poll');
+  await until(() => /bring home what the bridge can carry/.test(text(m.$('pv-run'))), 'the poll');
   assert.match(text(m.$('pv-run')), /arrives as TAC on Bitcoin/);
-  assert.equal(m.$('pv-run').querySelector('a[href="/#card=bridge"]')?.textContent.startsWith('Bring it home'), true);
+  assert.match(text(m.$('pv-run')), /cannot be bridged home, only traded/, 'not all of it can come home, and the panel says which');
+  assert.equal(m.$('pv-run').querySelector('a[href="/#card=bridge"]')?.textContent.startsWith('bring home what the bridge can carry'), true);
   assert.match(text(m.$('pv-inv')), /You have under 10 private TAC free, so new bridges go to other providers/);
-  assert.match(text(m.$('pv-inv')), /Or bring your earnings home/);
+  assert.doesNotMatch(text(m.$('pv-inv')), /earnings home/, 'the line about what is lent says nothing of what can come home');
   assert.equal(m.$('pv-inv').querySelector('a[href="/#card=bridge"]')?.textContent.startsWith('Add TAC'), true);
 });
 

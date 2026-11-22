@@ -32,7 +32,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
   root.innerHTML = `
     <summary>Provide liquidity<span class="pv-waiting" id="pv-waiting"></span></summary>
     <div class="pv-in">
-      <p class="note">Lend your private TAC and keep the fee on each fast bridge. A bridger locks TAC on Bitcoin, you pay the same TAC, less your fee, into their private balance, and the Bitcoin TAC is yours. Each bridge is a swap that settles both sides or neither. It runs while this page is open; <a href="https://github.com/src-company/tacit/blob/main/fastbridge-lp/README.md#run-one-that-stays-on" target="_blank" rel="noopener noreferrer">run a provider</a> to keep it on without the page: send it TAC and it lends it.</p>
+      <p class="note">Lend your private TAC and keep the fee on each fast bridge. A bridger locks TAC on Bitcoin, you pay the same TAC, less your fee, into their private balance, and the Bitcoin TAC is yours. You have to take the Bitcoin within about a day of their lock, before their refund opens, so keep this page open until each bridge is done, or <a href="https://github.com/src-company/tacit/blob/main/fastbridge-lp/README.md#run-one-that-stays-on" target="_blank" rel="noopener noreferrer">run a provider</a> that stays on: send it TAC and it lends it.</p>
       <div class="kv" id="pv-want" hidden><span>Waiting for a provider</span><b class="num"></b></div>
       <div class="rows flat" id="pv-inv"></div>
       <div id="pv-set" hidden>
@@ -77,7 +77,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
       <div class="kv"><span>Held for bridges under way</span><b class="num">${esc(fmtTac(st.held))} TAC</b></div>
       <div class="kv"><span>Free to lend now</span><b class="num">${esc(fmtTac(inv.pool > st.held ? inv.pool - st.held : 0n))} TAC</b></div>` : ''}${short() ? `
       <p class="empty">Providing takes at least ${esc(fmtTac(MIN_AMOUNT))} private TAC. <a href="/#card=bridge">Make TAC private ↗</a></p>` : ''}${spent() ? `
-      <p class="empty">You have under ${esc(fmtTac(MIN_AMOUNT))} private TAC free, so new bridges go to other providers. <a href="/#card=bridge">Add TAC ↗</a>${st && st.earned > 0n ? ' Or bring your earnings home.' : ''}</p>` : ''}${inv.claimPub ? `
+      <p class="empty">You have under ${esc(fmtTac(MIN_AMOUNT))} private TAC free, so new bridges go to other providers. <a href="/#card=bridge">Add TAC ↗</a></p>` : ''}${inv.claimPub ? `
       <div class="kv"><span>Your link</span><b><button class="linkbtn" type="button" id="pv-link" data-link="${esc(linkOf(pairId(inv.claimPub)))}">copy</button></b></div>` : ''}` : '';
     $('pv-set').hidden = !inv || accepting();
     const run = $('pv-run');
@@ -87,7 +87,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
         <div class="kv"><span>Open bridges</span><b class="num">${st.open}</b></div>
         <div class="kv"><span>Done</span><b class="num">${st.done}</b></div>
         <div class="kv"><span>Earned</span><b class="num">${esc(fmtTac(st.earned))} TAC</b></div>` : ''}${st.done > 0 ? `
-        <p class="note">What bridges paid you arrives as TAC on Bitcoin, at your Bitcoin address. <a href="/#card=bridge">Bring it home ↗</a> to lend it again.</p>` : ''}${st.lastTake ? `
+        <p class="note">What bridges paid you arrives as TAC on Bitcoin, at your Bitcoin address: trade it there, or <a href="/#card=bridge">bring home what the bridge can carry ↗</a> to lend it again. TAC that came out of the shielded pool cannot be bridged home, only traded.</p>` : ''}${st.lastTake ? `
         <div class="kv"><span>Last take</span><b><a href="${SCAN}${esc(st.lastTake)}" target="_blank" rel="noopener noreferrer">Bitcoin transaction ↗</a></b></div>` : ''}`;
     }
     const go = $('pv-go');
