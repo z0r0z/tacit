@@ -10,8 +10,8 @@ import { addrFlat } from '/address-view.js?cb=58dd4914';
 import { makeKeySession, signInSheet, pickWalletSheet } from '/trade/key.js?cb=04a214c9';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=0ba892b7';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
-import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=1fc456f6';
-import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=a947983f';
+import { readRates, readProgram, heldBars, rangesFor, barSize } from '/teth/read.js?cb=3784b81d';
+import { totalsOf, readEngine, sizeBond, coverage, readPools, poolRows, farmApr, readLocks, readLoans, readHeld, readHistory, positionsIn, lockStep, CBTC_ID, ENGINE, WSTETH } from '/cbtc/read.js?cb=ca6e2054';
 import { $, esc, api, now, fmtUnits, parseUnits, grp, usd, short, sig } from '/trade/util.js?cb=9c8b4133';
 
 const SCAN = 'https://etherscan.io/', MEMPOOL = 'https://mempool.space/';

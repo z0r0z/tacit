@@ -1,5 +1,5 @@
 import { keccak_256 } from '/vendor/tacit-deps.min.js';
-import { makeEvmTradeVenues, _internal as V, MULTICALL3, SPLIT_EXTRA_GAS } from '/evm-trade-venues.js?cb=196b14fb';
+import { makeEvmTradeVenues, _internal as V, MULTICALL3, SPLIT_EXTRA_GAS } from '/evm-trade-venues.js?cb=9aac0fac';
 import { UserStopped } from '/trade/wallet.js?cb=ff74eb58';
 import { declinedWords } from '/wallet-prompts.js';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
@@ -781,7 +781,7 @@ const PK = new Proxy({ teth: 'eth', [lc(R.TAC)]: 'tac', [lc(R.CUSD)]: 'cusd', [l
 const POOL_TK = new Proxy({ eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' }, { get: (o, k) => (k in o ? o[k] : ownPool(k)?.ticker) });
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=2ba54b09'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=c94e1a76'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));
@@ -792,7 +792,7 @@ const tipFor = (units) => {
   const k = String(units), c = TIPS.get(k);
   if (c && Date.now() - c.at < 30e3) return c.p;
   for (const [x, v] of TIPS) if (Date.now() - v.at >= 30e3) TIPS.delete(x);
-  const p = import('/teth/read.js?cb=1fc456f6').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => { if (TIPS.get(k)?.p === p) TIPS.delete(k); return null; });
+  const p = import('/teth/read.js?cb=3784b81d').then((m) => m.wrapQuote(units * E10)).then((x) => x.tip, () => { if (TIPS.get(k)?.p === p) TIPS.delete(k); return null; });
   TIPS.set(k, { p, at: Date.now() });
   return p;
 };
@@ -2293,7 +2293,7 @@ async function exitGo() {
 
 let PVP = null, PV = null;
 const pickWallet = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : list[0]?.uuid; };
-const pvLoad = () => (PVP ||= import('/swap/private.js?cb=4442a8b7').then((m) => {
+const pvLoad = () => (PVP ||= import('/swap/private.js?cb=8ef0d5a9').then((m) => {
   PV = m.makePrivate({ getUx, pick: pickWallet, ...H.key, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()), onKey: (why) => { if (why) say(esc(why), 'err', true); else { PV.read().then(paint, () => {}); if (plans().some((x) => x.state === 'waiting')) ltLoad().then(readBlend, () => {}); } paint(); } });
   PV.mod = m;
   return PV;

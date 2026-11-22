@@ -6,7 +6,7 @@ import { sha256, hmac, secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.m
 import { makeKeySession, signInSheet } from '/trade/key.js?cb=04a214c9';
 import { btcWay, btcSeen } from '/trade/btc-way.js?cb=0ba892b7';
 import { getUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
-import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=a947983f';
+import { readLocks, readLoans, readHeld, readEngine, sizeBond, lockStep, ENGINE, WSTETH } from '/cbtc/read.js?cb=ca6e2054';
 import { makeLoans, exactNotes, bondGap, bondCall, bondShareCall, bondBackCall, outpointOf, lockPad, lockRate, loanHealth, liqPhrase, healthLine, loanTag, borrowAt, SAFE_RATIOS } from '/btc-borrow.js?cb=e1f5e408';
 import { makeRunner } from '/activity.js';
 import { relayRefused, relayWords } from '/relay-outcome.js?cb=ad7c898d';

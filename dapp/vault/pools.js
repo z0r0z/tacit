@@ -1,6 +1,6 @@
-import { word, addrWord, wordAt, SEL, encApprove } from '/vault/chain.js?cb=fafa70cd';
+import { word, addrWord, wordAt, SEL, encApprove } from '/vault/chain.js?cb=3c1d1b84';
 import * as M from '/vault/math.js?cb=ac1ed53e';
-import { MULTICALL3, batchSupport, simulateBundle, sendBundle } from '/vault/batch.js?cb=3cd77d4e';
+import { MULTICALL3, batchSupport, simulateBundle, sendBundle } from '/vault/batch.js?cb=4beda57b';
 import { planReopen } from '/vault/reopen.js?cb=40aab9d5';
 
 const WAD = 10n ** 18n, ZERO = '0x0000000000000000000000000000000000000000';

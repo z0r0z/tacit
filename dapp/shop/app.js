@@ -2,7 +2,7 @@ import { makeConnect } from '/trade/connect.js?cb=41394526';
 import { esc } from '/trade/sheet.js?cb=d857446c';
 import { $, rpc } from '/trade/util.js?cb=9c8b4133';
 import { readSpot, readPrecision } from '/trade/farm-read.js?cb=fb6ec72f';
-import { makeEvmTradeVenues, ZROUTER } from '/evm-trade-venues.js?cb=196b14fb';
+import { makeEvmTradeVenues, ZROUTER } from '/evm-trade-venues.js?cb=9aac0fac';
 import { SHOP, MARKET, TAC, TAC_NAME, FROM_BLOCK, TOPICS, foldShelf, sortShelf, filterShelf, zeroTiers, zerosOf, zerosText, zeroBits, addressParts, tacText, usdText, priceUsd, tacUsdFrom, tokenNumber,
   tokenUrl, buyData, buyWithPermitData, approveData, listingsData, balanceOfData, allowanceData, noncesData, ownerOfData, addressOfData, deployData, initcodeOf, parseTokenId, soldTo, forwarderInit,
   forwardRefusal, decodeAddress, decodeListing, decodeWord, refusalWords, deployRefusal, deployFailed, ETH_AT_DEPLOY_ADDRESS, badRecipient, isAddress, ZAP, ZAP_MARGIN_BPS, buyWithEthData, retryAmountIn, pickVenue, ethText } from '/shop/shelf.js?cb=0182afe8';

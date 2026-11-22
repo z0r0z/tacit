@@ -22,8 +22,8 @@ import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=c8534a8d';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=aafa9ca1';
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=aafa9ca1';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=0ea3f784';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=0ea3f784';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api'];
