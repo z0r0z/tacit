@@ -26,7 +26,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from '
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
-import { decode, decodeLand, landCalldata, selector, encode, hexOf, bytesOf } from './abi.mjs';
+import { decode, decodeLand, landInputFromTrace, landCalldata, selector, encode, hexOf, bytesOf } from './abi.mjs';
 import { makeRpc, send as sendTx, addressOf, num, suggestedTip } from './rpc.mjs';
 import { feeTerms, readPrice, makeFeeDesk, admitPaying, blockReady, landCover } from './fees.mjs';
 import { archiveEntry, loadArchive } from './archive.mjs';
@@ -229,7 +229,16 @@ async function sync() {
     const tx = await rpc.call('eth_getTransactionByHash', [lg.transactionHash]);
     // the call that landed is the one the contract's own Landed event describes (state, then note root)
     const data = String(lg.data || '');
-    const call = decodeLand(tx.input, data.length >= 130 ? { state: '0x' + data.slice(2, 66), noteRoot: '0x' + data.slice(66, 130) } : null);
+    const expect = data.length >= 130 ? { state: '0x' + data.slice(2, 66), noteRoot: '0x' + data.slice(66, 130) } : null;
+    let call = decodeLand(tx.input, expect);
+    // landed from a contract whose calldata does not carry the land call as it is: the call itself, from a trace of the transaction (a node
+    // that serves debug_traceTransaction is needed for these)
+    if (!call && expect) {
+      try {
+        const trace = await rpc.call('debug_traceTransaction', [lg.transactionHash, { tracer: 'callTracer' }]);
+        for (const input of landInputFromTrace(trace, BLOCKS)) { call = decodeLand(input, expect); if (call) break; }
+      } catch (e) { log({ landTraceUnread: lg.transactionHash, error: String(e?.message || e).slice(0, 160) }); }
+    }
     if (!call) throw new Error(`block ${height} was landed by a call this leader cannot read (${lg.transactionHash})`);
     let lists = call.lists;
     if (lists.blobs.length) {

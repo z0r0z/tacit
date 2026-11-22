@@ -1,6 +1,6 @@
 // The slice of Solidity's ABI the tacit leader needs: uint256, bytes32, address, bytes, bytes32[] and tuples of them, encoded and decoded.
 // A type is 'uint256' | 'bytes32' | 'address' | 'bytes' | 'bytes32[]' | 'uint256[]' | { tuple: [types] }.
-import { keccak_256, concatBytes } from '../dapp/vendor/tacit-deps.min.js';
+import { keccak_256, sha256, concatBytes } from '../dapp/vendor/tacit-deps.min.js';
 
 const te = new TextEncoder();
 export const hexOf = (b) => '0x' + Buffer.from(b).toString('hex');
@@ -60,14 +60,51 @@ export function landCalldata(publicValues, proof, l) {
   return concatBytes(selector(LAND), encode(['bytes', 'bytes', LISTS], [publicValues, proof, lists]));
 }
 
+// TacitBlocks._listHash: SHA-256(LIST_DOMAIN ‖ tag ‖ count (u64 BE) ‖ items), and the lengths it splits lists by.
+const LIST_DOMAIN = te.encode('tacit-block-list-v1'), MEMO_DOMAIN = te.encode('tacit-block-memo-v1');
+const MEMO_LEN = 1152, HOP_LEN = 96;
+const u64 = (n) => { const o = new Uint8Array(8); let v = BigInt(n); for (let i = 7; i >= 0; i--) { o[i] = Number(v & 0xffn); v >>= 8n; } return o; };
+export const listHash = (tag, count, items) => hexOf(sha256(concatBytes(LIST_DOMAIN, new Uint8Array([tag]), u64(count), items)));
+
+/// Whether a land call's lists are the ones its public values commit (what land() itself checks): the outputs (leaf ‖ memo hash) and
+/// nullifiers when they are in calldata (word 15 zero), and the hops always.
+export function listsMatch(publicValues, l) {
+  try {
+    const w = (i) => hexOf(publicValues.subarray(32 * i, 32 * i + 32));
+    const hops = bytesOf(l.hops);
+    if (hops.length % HOP_LEN !== 0 || listHash(6, hops.length / HOP_LEN, hops) !== w(12)) return false;
+    if (BigInt(w(15)) !== 0n) return true;
+    const leaves = bytesOf(l.leaves), memos = bytesOf(l.memos), n = leaves.length / 32;
+    if (leaves.length % 32 !== 0 || memos.length !== n * MEMO_LEN) return false;
+    const items = new Uint8Array(64 * n);
+    for (let i = 0; i < n; i++) { items.set(leaves.subarray(32 * i, 32 * i + 32), 64 * i); items.set(sha256(concatBytes(MEMO_DOMAIN, memos.subarray(MEMO_LEN * i, MEMO_LEN * (i + 1)))), 64 * i + 32); }
+    if (listHash(1, n, items) !== w(4)) return false;
+    return listHash(2, l.nullifiers.length, concatBytes(...l.nullifiers.map((x) => bytesOf(x)))) === w(5);
+  } catch { return false; }
+}
+
+/// The land call to `blocks` inside a callTracer trace (debug_traceTransaction with { tracer: 'callTracer' }): for a landing made through a
+/// contract whose calldata does not carry the land call as plain bytes. Its input is read as decodeLand reads calldata.
+export function landInputFromTrace(trace, blocks) {
+  const sel = hexOf(selector(LAND)), to = String(blocks).toLowerCase(), found = [];
+  const walk = (c, depth) => {
+    if (!c || typeof c !== 'object' || depth > 64) return;
+    if (String(c.to || '').toLowerCase() === to && String(c.input || '').toLowerCase().startsWith(sel) && !c.error) found.push(c.input);
+    for (const k of Array.isArray(c.calls) ? c.calls : []) walk(k, depth + 1);
+  };
+  walk(trace, 0);
+  return found;
+}
+
 /// The arguments of a land call from its calldata: a direct call, or one made through a contract (anyone may land a block, from any contract:
 /// the land call is then inside the calldata, as the bytes the wrapper passes on, and is found by its selector).
 // `expect` ({ state, noteRoot }, the words the contract put in its Landed event): the call that landed is the one whose public values carry them as
-// words 1 and 3 (what land() stores and emits), so another land-shaped call in the same calldata is passed over. With none, the first is taken.
+// words 1 and 3 (what land() stores and emits) and whose lists are the ones those public values commit, so another land-shaped call in the same
+// calldata is passed over. With none, the first is taken.
 export function decodeLand(input, expect = null) {
   const b = bytesOf(input), sel = hexOf(selector(LAND));
   const want = expect && [hexOf(bytesOf(expect.state)), hexOf(bytesOf(expect.noteRoot))];
-  const landed = (c) => !want || (hexOf(c.publicValues.subarray(32, 64)) === want[0] && hexOf(c.publicValues.subarray(96, 128)) === want[1]);
+  const landed = (c) => !want || (hexOf(c.publicValues.subarray(32, 64)) === want[0] && hexOf(c.publicValues.subarray(96, 128)) === want[1] && listsMatch(c.publicValues, c.lists));
   const at = (i) => {
     try {
       const [publicValues, proof, lists] = decode(['bytes', 'bytes', LISTS], b.subarray(i + 4));
