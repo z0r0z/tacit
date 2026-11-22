@@ -614,6 +614,7 @@ export const CFG = {
   // Under this many days of a wallet's burn the monitor warns: the treasury pass keeps TREASURY_TARGET_DAYS, so a wallet this short means
   // the pass could not keep up.
   runwayDaysWarn: num('RUNWAY_DAYS_WARN', 1.5),
+  runwayDaysCritical: num('RUNWAY_DAYS_CRITICAL', 0.5), // under this many days of its burn, a wallet pages (a critical), where under runwayDaysWarn it only warns
   // Settle-queue health (see lib/queue-health.js). A relayed job is normally picked up in seconds, so a pending job
   // this old means the settle service is down or stuck and a user is waiting.
   queuePendingWarnSec: num('QUEUE_PENDING_WARN_SEC', 300),
