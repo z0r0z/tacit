@@ -48,6 +48,11 @@ const MAX_PENDING_PER_SENDER = 32;
 // rest, which wait only this long behind them (after it a job takes its place in the arrival order, so a stream of swaps cannot hold the others back).
 const PINNED_TYPES = ['route', 'swap', 'wrapswap', 'wraplp', 'lp', 'lpbond'];
 const PINNED_HEAD_START_MS = 120 * 1000;
+// A sender whose swap or liquidity add was refused because the pool had moved has already waited its turn once, and the page builds it again on the pool's
+// reserves at once, so that second job goes before every other: queued behind the rest again it would be stale by the time it was looked at. Each refusal
+// gives its sender one such place, for RETRY_LANE_MS (about the page's own budget for chasing a swap).
+const RETRY_LANE_MS = 10 * 60 * 1000;
+const POOL_MOVED = /pool moved|PoolReserveMismatch|0x29b3c833/i;
 // A prove-only job is one the holder sends themselves, so the relay is paid nothing for it, yet each costs a full proof attempt (minutes of the single settle loop and the
 // proving credit when its op cannot run: 30 such jobs from one network held the relay for most of an afternoon). One sender may have this many waiting that are neither paid
 // nor proved ahead of a press (those are the page's own pre-proving, and a sender's few real ones stay far under it). 0 turns it off (env PROVE_ONLY_PER_SENDER).
@@ -101,8 +106,8 @@ export function makeLock() {
 // `checkOp({ type, op, memos })`: what is missing from an op its prover could never read (worker/src/op-input-check.js), or null; such
 // an op is refused at submit. Without it every op is queued as it comes.
 // `senders`: a Map kept across the settlers built over one store, of each queued job's sender (see servedOrder); a sender never changes, so each is
-// read once. Without it the settler keeps its own. `kinds` is the same for each job's `{ pinned, at }` (whether it pins reserves, and when it was queued).
-export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee, sleep, lock, verifyPosted, expiryOf, refund, checkOp = null, senders = new Map(), kinds = new Map(), maxProveOnlyPerSender = MAX_PROVE_ONLY_PER_SENDER }) {
+// read once. Without it the settler keeps its own. `kinds` is the same for each job's `{ pinned, at }` (whether it pins reserves, and when it was queued). `retries`: a Map kept the same way, of each sender's one place at the head of the queue and when it ends (see RETRY_LANE_MS).
+export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee, sleep, lock, verifyPosted, expiryOf, refund, checkOp = null, senders = new Map(), kinds = new Map(), retries = new Map(), maxProveOnlyPerSender = MAX_PROVE_ONLY_PER_SENDER }) {
   // storage: { getPending()->id[], putPending(id[]), getJob(id)->job|null, putJob(id, job) }
   // feeGate({ type, op }) -> bool : OPTIONAL profitability gate for the relayed (mode:'settle') flow — reject
   //   a fee below the current gas-priced floor (relay-quote.js `passesFloor`) before burning a prove cycle.
@@ -133,15 +138,28 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
   // The queue is served by sender, not only by arrival: every sender's first job in the order they came, then every sender's second, and
   // so on, so a sender who queues many jobs delays only their own. A sender is the submitter's network (worker/src/index.js senderOf); a
   // job queued before senders were kept counts as one shared sender, and a job whose record is gone as one of its own.
+  // A sender's place at the head of the queue, used at most once and only while it lasts.
+  function takeRetry(sender, type) {
+    if (!sender || !PINNED_TYPES.includes(type)) return false;
+    const until = retries.get(sender);
+    if (until === undefined) return false;
+    retries.delete(sender);
+    return until > clock();
+  }
+  function giveRetry(j, error) {
+    if (!j.client || !PINNED_TYPES.includes(j.type) || !POOL_MOVED.test(String(error))) return;
+    if (retries.size > 256) for (const [k, until] of retries) if (until <= clock()) retries.delete(k);
+    retries.set(j.client, clock() + RETRY_LANE_MS);
+  }
   async function senderOfJob(id) {
     if (!senders.has(id) || !kinds.has(id)) {
       const j = await storage.getJob(id);
       senders.set(id, j ? String(j.client || '') : `gone:${id}`);
-      kinds.set(id, { pinned: !!j && PINNED_TYPES.includes(j.type), at: j ? Number(j.createdAt) || 0 : 0 });
+      kinds.set(id, { pinned: !!j && PINNED_TYPES.includes(j.type), at: j ? Number(j.createdAt) || 0 : 0, retry: !!j && !!j.retryLane });
     }
     return senders.get(id);
   }
-  // Within a sender's turns the order is by arrival, but the jobs that pin reserves come first (see PINNED_TYPES), and a job that has waited
+  // Within a sender's turns the order is by arrival, but a job a refusal sent back comes before all (see RETRY_LANE_MS), then the jobs that pin reserves (see PINNED_TYPES), and a job that has waited
   // PINNED_HEAD_START_MS or has no queue time on record is no longer behind them. The rounds are counted within each of the two groups.
   async function servedOrder(pend) {
     await Promise.all(pend.filter((id) => !senders.has(id) || !kinds.has(id)).map(senderOfJob));
@@ -151,7 +169,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     }
     const t = clock(), turn = new Map();
     return pend.map((id, i) => {
-      const s = senders.get(id), k = kinds.get(id), c = k.pinned || !k.at || t - k.at > PINNED_HEAD_START_MS ? 0 : 1, key = `${c}|${s}`, r = turn.get(key) || 0;
+      const s = senders.get(id), k = kinds.get(id), c = k.retry ? -1 : k.pinned || !k.at || t - k.at > PINNED_HEAD_START_MS ? 0 : 1, key = `${c}|${s}`, r = turn.get(key) || 0;
       turn.set(key, r + 1);
       return { id, c, r, i };
     }).sort((a, b) => a.c - b.c || a.r - b.r || a.i - b.i).map((x) => x.id);
@@ -289,8 +307,9 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       }
       // Backpressure: bound the unauthenticated queue (a new, non-deduped op only), and each sender's share of it.
       if (!pend.includes(id)) await roomFor(pend, sender, mode === 'prove' && !paid && !early);
+      if (!pend.includes(id) && takeRetry(sender, type)) job.retryLane = true;
       await storage.putJob(id, job);
-      senders.set(id, sender || ''); kinds.set(id, { pinned: PINNED_TYPES.includes(type), at: job.createdAt });
+      senders.set(id, sender || ''); kinds.set(id, { pinned: PINNED_TYPES.includes(type), at: job.createdAt, retry: !!job.retryLane });
       if (!pend.includes(id)) {
         pend.push(id);
         try { await storage.putPending(pend); }
@@ -465,8 +484,9 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       };
       const pend = await storage.getPending();
       if (!pend.includes(id)) await roomFor(pend, sender);
+      if (!pend.includes(id) && takeRetry(sender, type)) job.retryLane = true;
       await storage.putJob(id, job);
-      senders.set(id, sender || ''); kinds.set(id, { pinned: PINNED_TYPES.includes(type), at: job.createdAt });
+      senders.set(id, sender || ''); kinds.set(id, { pinned: PINNED_TYPES.includes(type), at: job.createdAt, retry: !!job.retryLane });
       if (!pend.includes(id)) { pend.push(id); await storage.putPending(pend); }
       return { jobId: id, status: 'pending' };
     });
@@ -659,6 +679,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     let owed = null;
     if (error) {
       j.status = 'failed'; j.error = scrubPublic(error);
+      giveRetry(j, error);
       if (j.charge && refund && NOT_THE_HOLDERS(String(error))) { owed = j.charge; j.charge = null; }
       // A settle can be given up on and still be included: a private endpoint keeps re-submitting an
       // accepted bundle long after the relay stops waiting. Keeping the hashes on the job is what makes
@@ -818,6 +839,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
 const kvLocks = new WeakMap();
 const kvSenders = new WeakMap();
 const kvKinds = new WeakMap();
+const kvRetries = new WeakMap();
 // A job record lives three days from its last write: past the day an open job can wait and the hours a settle takes (a page follows its job for minutes, and checks the chain itself after), and it is gone after.
 const JOB_TTL_SECS = 3 * 86400;
 // A job that ended failed is looked at for a day or two (its holder reads why, the operator may put it back on the queue, a late ack may promote it), and keeps its op
@@ -831,6 +853,7 @@ export function buildConfidentialSettler(env, { hash, feeGate, priceFee, verifyP
   if (KV && !kvLocks.has(KV)) kvLocks.set(KV, makeLock());
   if (KV && !kvSenders.has(KV)) kvSenders.set(KV, new Map());
   if (KV && !kvKinds.has(KV)) kvKinds.set(KV, new Map());
+  if (KV && !kvRetries.has(KV)) kvRetries.set(KV, new Map());
   const storage = {
     getPending: async () => { const s = await KV.get('cps:pending'); return s ? JSON.parse(s) : []; },
     putPending: async (ids) => KV.put('cps:pending', JSON.stringify(ids)),
@@ -840,5 +863,5 @@ export function buildConfidentialSettler(env, { hash, feeGate, priceFee, verifyP
     putOpen: async (ids) => KV.put('cps:open', JSON.stringify(ids)),
   };
   const proveOnlyCap = /^\d{1,3}$/.test(String(env.PROVE_ONLY_PER_SENDER ?? '')) ? Number(env.PROVE_ONLY_PER_SENDER) : undefined;   // unset or malformed: the default
-  return makeConfidentialSettler({ storage, hash, feeGate, priceFee, verifyPosted, expiryOf, refund, checkOp, lock: kvLocks.get(KV), senders: kvSenders.get(KV), kinds: kvKinds.get(KV), ...(proveOnlyCap != null ? { maxProveOnlyPerSender: proveOnlyCap } : {}) });
+  return makeConfidentialSettler({ storage, hash, feeGate, priceFee, verifyPosted, expiryOf, refund, checkOp, lock: kvLocks.get(KV), senders: kvSenders.get(KV), kinds: kvKinds.get(KV), retries: kvRetries.get(KV), ...(proveOnlyCap != null ? { maxProveOnlyPerSender: proveOnlyCap } : {}) });
 }

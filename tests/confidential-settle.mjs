@@ -566,6 +566,43 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   assert.ok(sw.jobId);
   ok('a job with no queue time on record is not held behind, and a job’s kind is read once across settlers sharing a map');
 
+  // a sender whose swap was refused because the pool moved has one place at the head of the queue for their next swap or add
+  const MOVED = 'swap not proved: the pool moved after this was built, so it was not proved and nothing was spent (0x29b3c833)';
+  const store5 = freshStore(), q5 = makeConfidentialSettler({ storage: store5, hash, now, sleep: instantSleep, senders: new Map(), kinds: new Map(), retries: new Map() });
+  const stale = await q5.submitJob({ type: 'route', op: op('rl-stale'), memos: [], client: 'a/24' });
+  const others = [];
+  for (const [i, c] of ['b/24', 'c/24', 'd/24'].entries()) others.push((await q5.submitJob({ type: i ? 'swap' : 'route', op: op(`rl-o${i}`), memos: [], client: c })).jobId);
+  assert.strictEqual((await q5.nextJob()).jobId, stale.jobId);
+  await q5.ackJob(stale.jobId, { error: MOVED });
+  const again = await q5.submitJob({ type: 'route', op: op('rl-again'), memos: [], client: 'a/24' });
+  assert.strictEqual((await q5.jobStatus(again.jobId)).ahead, 0, 'the sender’s second try is first, ahead of the swaps that were already waiting');
+  const second = await q5.submitJob({ type: 'route', op: op('rl-again2'), memos: [], client: 'a/24' });
+  assert.strictEqual((await q5.jobStatus(second.jobId)).ahead, 4, 'the place was used once: a third job from the sender waits behind the others (and their own first)');
+  const restarted = makeConfidentialSettler({ storage: store5, hash, now, sleep: instantSleep, senders: new Map(), kinds: new Map(), retries: new Map() });
+  assert.strictEqual((await restarted.jobStatus(again.jobId)).ahead, 0, 'the place is on the job’s record: a worker restarted since still has it first');
+  const lane = []; for (let k = 0; k < 5; k++) lane.push((await q5.nextJob()).jobId);
+  assert.deepStrictEqual(lane, [again.jobId, ...others, second.jobId]);
+  ok('a swap refused for a moved pool gives its sender one place at the head of the queue for the next');
+
+  // not for other senders, other refusals, other kinds of job, or after it ends
+  const q6 = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, senders: new Map(), kinds: new Map(), retries: new Map() });
+  const fail = async (type, client, error, n) => { const x = await q6.submitJob({ type, op: op(n), memos: [], client }); const c = await q6.nextJob(); await q6.ackJob(c.jobId, { error }); return x; };
+  await fail('route', 'a/24', MOVED, 'x1');
+  await fail('route', 'e/24', 'swap failed: the relay fee is below the floor', 'x2');
+  await fail('transfer', 'f/24', MOVED, 'x3');
+  await q6.submitJob({ type: 'route', op: op('x-w'), memos: [], client: 'g/24' });
+  const e1 = await q6.submitJob({ type: 'route', op: op('x4'), memos: [], client: 'e/24' });
+  const f1 = await q6.submitJob({ type: 'route', op: op('x5'), memos: [], client: 'f/24' });
+  const a1 = await q6.submitJob({ type: 'route', op: op('x6'), memos: [], client: 'z/24' });
+  assert.strictEqual((await q6.jobStatus(e1.jobId)).ahead, 1, 'another kind of refusal gives no place');
+  assert.strictEqual((await q6.jobStatus(f1.jobId)).ahead, 2, 'a refusal of a transfer gives no place');
+  assert.strictEqual((await q6.jobStatus(a1.jobId)).ahead, 3, 'a stranger gets none');
+  t = t0 + 11 * 60 * 1000;
+  const late = await q6.submitJob({ type: 'route', op: op('x7'), memos: [], client: 'a/24' });
+  assert.strictEqual((await q6.jobStatus(late.jobId)).ahead, 4, 'after ten minutes the place is gone');
+  t = t0;
+  ok('the place is for the same sender, after a pool-moved refusal of a swap or add, and lapses');
+
   // the maps are pruned like the senders one
   const big = new Map(), bigKinds = new Map();
   for (let i = 0; i < 300; i++) { big.set(`x${i}`, 'z'); bigKinds.set(`x${i}`, { pinned: false, at: 0 }); }

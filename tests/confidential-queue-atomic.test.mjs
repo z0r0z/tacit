@@ -77,6 +77,19 @@ await test('per-request settlers over one KV read each queued job once for the o
   ok(reads <= 2, `the order reads no job record (the claim reads one twice): ${reads} reads for four queued jobs`);
 });
 
+await test('a swap refused for a moved pool gives its sender the head of the queue across per-request settlers', async () => {
+  const kv = slowKV();
+  const env = { CONFIDENTIAL_KV: kv };
+  const mk = () => buildConfidentialSettler(env, { hash });
+  const stale = (await mk().submitJob({ type: 'swap', op: opN(1), client: 'a/24' })).jobId;
+  const other = (await mk().submitJob({ type: 'swap', op: opN(2), client: 'b/24' })).jobId;
+  ok((await mk().nextJob()).jobId === stale, 'the first job is claimed');
+  await mk().ackJob(stale, { error: 'swap not proved: the pool moved after this was built, so it was not proved and nothing was spent (0x29b3c833)' });
+  const again = (await mk().submitJob({ type: 'swap', op: opN(3), client: 'a/24' })).jobId;
+  const first = await mk().nextJob(), second = await mk().nextJob();
+  ok(first?.jobId === again && second?.jobId === other, 'the sender’s new job is taken before the one that was waiting');
+});
+
 await test('submit racing a claim keeps both the claim and the new entry', async () => {
   const kv = slowKV(); const q = settlerOver(kv);
   const a = await q.submitJob({ type: 'swap', op: opN(1) });
