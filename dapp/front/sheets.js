@@ -258,7 +258,7 @@ render.wallet = () => {
     ${btcOther ? html`<div class="kv"><span>${chainTag('btc')}</span><b>${viewAddr(btcAddr, 8)}</b></div>` : ''}
     ${ethLine()}
     <div class="lbl sep"><span>Your key</span>${kept ? html`<button type="button" id="w-backup">Copy key to back up</button>` : ''}</div>
-    <p class="note">${kept ? 'Kept in this browser only: clearing its data loses it.' : k.mode === 'key' ? 'Pasted and not saved: closing the tab forgets it.' : 'Your wallet or passkey opens it again: keep that safe.'} Anyone who has the key holds these funds and the address that goes with it.</p>`);
+    <p class="note">${kept ? 'Kept in this browser only: clearing its data loses it.' : k.mode === 'key' ? 'Pasted and not saved in this browser: this tab holds it until 30 minutes without use, through a reload or a reopened tab.' : 'Your wallet or passkey opens it again: keep that safe.'} Anyone who has the key holds these funds and the address that goes with it.</p>`);
   $('#w-copy').onclick = () => k.tacit && copy(k.tacit, 'Tacit address copied');
   const ownBtn = $('#w-own'), ownSay = $('#w-own-say');
   const sayOwn = (t, err = false) => { ownSay.textContent = t; ownSay.classList.toggle('err', err); ownSay.hidden = !t; };

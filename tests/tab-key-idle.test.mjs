@@ -71,5 +71,19 @@ await test('a page that gives no onIdle just has the saved key let go', async ()
   assert.equal(tabKeyRead(), null);
 });
 
+await test('a pasted key is held by the tab like any other until the idle time, and the pages say so', async () => {
+  const { readFileSync } = await import('node:fs');
+  fire('pointerdown');
+  tabKeyWrite({ mode: 'key', priv: PRIV, pubHex: '02' + 'b'.repeat(64) });
+  minutes(10);
+  assert.equal(tabKeyRead()?.mode, 'key', 'a reload within the half hour reads it back');
+  for (const f of ['front/sheets.js', 'pay/index.html', 'pay/eth/index.html']) {
+    const src = readFileSync(new URL('../dapp/' + f, import.meta.url), 'utf8');
+    const line = src.split('\n').find((l) => /k\.mode === 'key' \? '/.test(l)) || '';
+    assert.doesNotMatch(line, /closing the tab forgets/, f);
+    assert.match(line, /30 minutes without use/, f);
+  }
+});
+
 console.log(failed ? `\n${failed} failed` : '\nall tab-key idle checks passed');
 process.exit(failed ? 1 : 0);
