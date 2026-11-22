@@ -158,6 +158,48 @@ It needs ETH at its address for the pull, the deposit and a settle sent from it 
 address (one send at a time, each reading the nonce the one before left), so it does not wait for a quiet hour. An attempt that shielded is followed by the next after `afterShieldSecs` (default 60); one that failed, or found nothing to bring in, after `minIntervalSecs` (default 1800). Neither runs in a dry run, and the second needs a treasury in the config. A deposit whose settle fails stops it for good, with the deposit named in an alert: the TAC is
 in the pool's hands until it is settled. Try it first with a small `chunkTac` (100) and a small approval.
 
+## Selling the other way (off unless switched on)
+
+Everything above takes TAC on Bitcoin and pays TAC in the pool. With `FB_LP_REVERSE=on` the same process also sells the other way: a user sends private
+pool TAC and gets a TAC note on Bitcoin. The machines are the same ones turned around (`dapp/fastbridge-reverse-provider.js`, with `dapp/fastbridge-reverse-client.js`
+as the user's side): the provider holds the secret, so it locks its Bitcoin note first; the user then locks pool TAC against the same secret; the provider's
+claim of that lock shows the secret, and the user takes the Bitcoin note with it. A user that never locks costs the provider the note's time under the timelock (`csvBlocks`,
+72 blocks by default) and the fees of the lock and of taking the note back; there is no bond, so what bounds it is `maxOpen` and `maxTac` (below). The pool TAC it is paid lands at its pool account, where the other direction lends from.
+
+**It sells from a Bitcoin address of its own**, derived from `FB_LP_KEY` and printed at start (`reverseAddress`), and from nothing else. The main address holds
+earnings, take-fee coins and, on a house provider, stock that a market maker lists by outpoint; a lock picks the smallest note that covers it and funds itself
+from the largest plain-sat coins, so on that address it would spend a listed note or a proceeds coin (and the address has so many outputs that explorers refuse to
+list it). The new address has what was put there on purpose and nothing else, so **to fund it, send TAC notes there (an ordinary transfer from any Tacit wallet) and a
+few plain-sat coins for the locks' fees**; it refuses to start if the derived address were the main one. What it can sell is the confirmed TAC at that address.
+The key is derived, so the address comes back from the same `FB_LP_KEY`, and so does the seed of its swaps (apart from the other direction's).
+`tools/fastbridge-lp-reverse-status.mjs` (read only; the key in `FB_LP_KEY`, never printed) prints that address and the TAC notes and plain-sat coins at it, before
+anything is switched on anywhere.
+
+| variable | meaning (default) |
+|---|---|
+| `FB_LP_REVERSE` | `on` or `off` (off) |
+| `FB_LP_REVERSE_FEE_BPS`, `_FLAT_FEE` | what it takes from the pool TAC sent, as the forward terms: a rate (0 to 500) and a flat part in base units (30 and 10000000) |
+| `FB_LP_REVERSE_MIN_AMOUNT`, `_MAX_AMOUNT` | the pool TAC a user may send, base units (1000000000 and 100000000000) |
+| `FB_LP_REVERSE_MAX_OPEN` | sends under way at once, 1 to 20 (2) |
+| `FB_LP_REVERSE_MAX_TAC` | the most TAC out at once whatever is funded, up to 8 places (2000) |
+
+The same keys under `reverse` in the config file work too (`enabled`, `feeBps`, `flatFee`, `minAmount`, `maxAmount`, `maxOpen`, `maxTac`, `csvBlocks`, `anyTac`,
+`refreshSecs`, `validSecs`), and a value in the environment wins. The most a stream of requests can tie up is `maxOpen` sends, within `maxTac`, of what is at the
+address: a quote holds nothing, a start takes the note out of what is offered, and a note in a swap is never lent twice. The records are in `dataDir/reverse/`
+(`swaps`, `quotes`, `offers`, `evm-offers`); back up `reverse/swaps` as `swaps`.
+
+| | |
+|---|---|
+| `GET /reverse/info` | the provider's key for the Bitcoin lock, the terms, `available` (the most pool TAC it can take now; `null` when it could not read its notes) and `open` |
+| `POST /reverse/quote {amount, claimPub}` | what the user sends and the Bitcoin note it gets, fixed for `validSecs`; holds nothing |
+| `POST /reverse/start {quoteId}` | locks the provider's Bitcoin note for the user |
+| `GET /reverse/swap/:id`, `/offer` | the phase; the provider's lock offer once it is made |
+| `POST /reverse/swap/:id/evm-offer {evmOffer}` | the user's pool lock, kept once it is in the pool and checked against the swap |
+
+Nothing in a page or an ad uses this yet: it is a service a client can call, and it is not listed on the board. The TAC it sells is what sits at that address, so TAC
+that came out of the Bitcoin shielded pool and could not be bridged home is sold on as it is (`anyTac`, as in the forward terms).
+`--dry-run` leaves it off (the log says so).
+
 ## Watching it
 
 `/health` for liveness. Alerts go to the log and, if `FB_LP_ALERT_WEBHOOK` is set, are POSTed there as JSON: the alert's own fields, and `text` and `content`, one readable
@@ -170,6 +212,9 @@ line for Slack and Discord incoming webhooks, so one of those can be the webhook
 | `a lock was claimed without revealing t` | a claim spent a lock without the signature that opens the Bitcoin | should not happen; stop quoting and look at the claim's settle before anything else |
 | `a swap record cannot be read` | a file in `swaps/` is torn or corrupt and has no readable backup | restore it from the backup; the other swaps go on |
 | `tick failed` in the log, `/health` 503 | a read of the store failed | the disk; the process retries on the next tick |
+| `a reverse swap is waiting out its timelock to take its Bitcoin note back` | (reverse side) a user did not lock pool TAC for the note the provider locked | nothing: the note comes back to the reverse address after `csvBlocks`; the process takes it |
+| `a reverse swap has waited long in claiming` (or `claimed`) | (reverse side) the user's pool lock is made and the provider's claim of it has not settled | check the relay and the pool account's ETH; the claim must land before the lock's deadline |
+| `reverse: the notes at the reverse address could not be read` in the log | (reverse side) the scan of that address failed, so `/reverse/info` answers `available: null` and quotes are refused | the explorers; it is tried again after ten seconds |
 | `the provider is running out of private TAC to lend` | the TAC held free is under `lowFreeTac` | shield more TAC to the pool account, or set up `refill` (above) |
 | `the provider is running low on ETH for the settles it sends itself` | the ETH at the pool account is under `lowEth` | send ETH to `poolAccount`; if the relay keeps not sending settles, look at its settle wallet and its limits as well |
 | `bridges are waiting for a provider` | a want on a board this process is on, for its asset, that it has not seen before (read every five minutes). `largest` is the biggest; when any names a price, `payUpTo` is the highest and `atYourFee` how many of them (one that names none counts) this provider's fee already meets; `amounts` and `prices` (hundredths of a percent, or null) are in the JSON | raise `quote.maxAmount` or the TAC in the pool if it is more than this process can take; if `atYourFee` is under the count, a lower `feeBps` or flat fee meets the rest |
@@ -202,6 +247,8 @@ The same swap in the log: `swap` lines show each phase change (`accepted`, `lock
 ```
 node tests/fastbridge-sim.test.mjs      # both machines against a simulated Bitcoin and pool
 node tests/fastbridge-lp.test.mjs       # this service: API, quotes, store, explorer adapter, and swaps through all of it
+node tests/fastbridge-reverse-service.test.mjs   # the reverse side: its service and the user's client over the same machines
+node tests/fastbridge-lp-reverse.test.mjs      # what the process puts around it: its key, options, notes and routing
 node tests/fastbridge-fork.mjs          # the Ethereum side against the live pool on a mainnet fork (needs anvil, FORK, EXEC)
 ```
 

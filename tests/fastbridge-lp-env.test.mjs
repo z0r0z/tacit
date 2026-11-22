@@ -48,6 +48,20 @@ test('the Bitcoin explorers can be set: https only, in the order given, a traili
   }
 });
 
+test('the reverse side: off unless asked for, each knob in its own field, a config\'s values kept, and a value that is set and is not valid stops the start', () => {
+  assert.equal('reverse' in applyEnv(BASE, {}), false, 'unset: nothing about it is in the config, so it is off');
+  assert.equal(applyEnv(BASE, { FB_LP_REVERSE: 'off' }).reverse.enabled, false);
+  assert.equal(applyEnv(BASE, { FB_LP_REVERSE: ' ON ' }).reverse.enabled, true);
+  const c = applyEnv(BASE, { FB_LP_REVERSE: 'on', FB_LP_REVERSE_FEE_BPS: '45', FB_LP_REVERSE_FLAT_FEE: '20000000', FB_LP_REVERSE_MIN_AMOUNT: '2000000000', FB_LP_REVERSE_MAX_AMOUNT: '5000000000', FB_LP_REVERSE_MAX_OPEN: '3', FB_LP_REVERSE_MAX_TAC: '1500.5' });
+  assert.deepEqual(c.reverse, { enabled: true, feeBps: 45, flatFee: '20000000', minAmount: '2000000000', maxAmount: '5000000000', maxOpen: 3, maxTac: '1500.5' });
+  assert.deepEqual(c.quote, BASE.quote, 'the forward terms are not the reverse ones');
+  assert.deepEqual(applyEnv({ ...BASE, reverse: { enabled: true, feeBps: 10, maxOpen: 5 } }, { FB_LP_REVERSE_MAX_OPEN: '4' }).reverse, { enabled: true, feeBps: 10, maxOpen: 4 }, 'a knob over a config keeps the config\'s other values, and does not switch it on');
+  for (const [env, name] of [[{ FB_LP_REVERSE: 'yes' }, 'FB_LP_REVERSE'], [{ FB_LP_REVERSE: '1' }, 'FB_LP_REVERSE'], [{ FB_LP_REVERSE_FEE_BPS: '501' }, 'REVERSE_FEE_BPS'], [{ FB_LP_REVERSE_FEE_BPS: '0.5' }, 'REVERSE_FEE_BPS'], [{ FB_LP_REVERSE_FLAT_FEE: '-1' }, 'REVERSE_FLAT_FEE'], [{ FB_LP_REVERSE_MIN_AMOUNT: '1e9' }, 'REVERSE_MIN_AMOUNT'], [{ FB_LP_REVERSE_MAX_AMOUNT: '1.5' }, 'REVERSE_MAX_AMOUNT'], [{ FB_LP_REVERSE_MAX_OPEN: '0' }, 'REVERSE_MAX_OPEN'], [{ FB_LP_REVERSE_MAX_OPEN: '21' }, 'REVERSE_MAX_OPEN'], [{ FB_LP_REVERSE_MAX_OPEN: '2.5' }, 'REVERSE_MAX_OPEN'], [{ FB_LP_REVERSE_MAX_TAC: '0' }, 'REVERSE_MAX_TAC'], [{ FB_LP_REVERSE_MAX_TAC: '-5' }, 'REVERSE_MAX_TAC'], [{ FB_LP_REVERSE_MAX_TAC: '1.123456789' }, 'REVERSE_MAX_TAC'], [{ FB_LP_REVERSE_MAX_TAC: '1,000' }, 'REVERSE_MAX_TAC'], [{ FB_LP_REVERSE_MAX_TAC: 'lots' }, 'REVERSE_MAX_TAC']]) {
+    assert.throws(() => applyEnv(BASE, env), (e) => e.message.includes(name), JSON.stringify(env));
+  }
+  const before = JSON.stringify(BASE); applyEnv(BASE, { FB_LP_REVERSE: 'on' }); assert.equal(JSON.stringify(BASE), before, 'the config handed in is not changed');
+});
+
 let passed = 0;
 for (const [name, fn] of tests) { try { fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; } }
 console.log(`\n${passed}/${tests.length} provider env checks passed`);

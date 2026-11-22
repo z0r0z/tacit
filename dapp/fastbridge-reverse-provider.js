@@ -40,7 +40,7 @@ const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 const key = (n) => `${n.txid}:${n.vout}`;
 const reply = (body, status = 200) => ({ status, body });
 const no = (why, retry = false) => reply({ ok: false, retry, why });
-const MAX_INPUTS = 6, MAX_OFFER_BYTES = 12000;
+const MAX_INPUTS = 6, MAX_OFFER_BYTES = 12000, FAILURE_MEMORY_SECS = 10;
 
 export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmOffers, inventory, config, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   const q = config.quote, min = BigInt(q.minAmount), max = BigInt(q.maxAmount), validSecs = q.validSecs ?? 600;
@@ -80,14 +80,22 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     return lo;
   }
 
-  const inv = { at: -Infinity, notes: [], p: null };
+  // A read that failed is remembered for a few seconds: /reverse/info and the quote read the notes, so without this a stream of requests while an explorer is
+  // down would be a stream of scans of it (one at a time, but without end).
+  const inv = { at: -Infinity, notes: [], p: null, failedAt: -Infinity, failure: null };
   function readNotes(maxAge = refreshSecs) {
     if (now() - inv.at < maxAge) return Promise.resolve(inv.notes);
     if (inv.p) return inv.p;
-    inv.p = (async () => { try { inv.notes = (await inventory.notes()).map((n) => ({ ...n, amount: BigInt(n.amount) })); inv.at = now(); } finally { inv.p = null; } return inv.notes; })();
+    if (now() - inv.failedAt < FAILURE_MEMORY_SECS) return Promise.reject(inv.failure);
+    inv.p = (async () => {
+      try { inv.notes = (await inventory.notes()).map((n) => ({ ...n, amount: BigInt(n.amount) })); inv.at = now(); }
+      catch (e) { inv.failedAt = now(); inv.failure = e; throw e; }
+      finally { inv.p = null; }
+      return inv.notes;
+    })();
     return inv.p;
   }
-  const stale = () => { inv.at = -Infinity; };
+  const stale = () => { inv.at = -Infinity; inv.failedAt = -Infinity; };
 
   // the notes not already in a swap (a note a swap spent is never lent again, whatever the cached list still says), and what the open swaps hold
   async function picture() {

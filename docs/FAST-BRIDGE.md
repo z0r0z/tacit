@@ -317,7 +317,10 @@ bound what a stream of requests can tie up. Not run for this direction: the real
 other direction has (a user silent after the provider locks is covered; slow confirmations, a claim that fails to land, a pool lock
 refunded after the provider claimed late, dishonest offers are not).
 
-Not built: the Ethereum to Bitcoin direction as something a person can use. The two modules above are in no process and no page
-yet: the daemon does not build the reverse service, derive the Bitcoin address it sells from, or scan that address's notes; the
-page has no way in; and a provider's ad does not say it sells this way. Also not built: the claim prover's options (the relay
-that is not the provider, the user's device, a prover network).
+The provider process can run the reverse service (`FB_LP_REVERSE=on`, off by default; `fastbridge-lp/README.md`, "Selling the other way"): it
+derives a Bitcoin address of its own from the provider's key, reads the confirmed TAC at that address, bounds the sends at once and the TAC out at once,
+answers `/reverse/...` next to the forward routes, and, started with a throwaway key and nothing funded, answers `/reverse/info` (`available: 0`) from that
+address, a different one from its main address. It has not been run against a funded address, a real swap, or the real settle guest.
+
+Not built: the Ethereum to Bitcoin direction as something a person can use. No page has a way in, a provider's ad does not say it sells this way,
+and the board does not carry it. Also not built: the claim prover's options (the relay that is not the provider, the user's device, a prover network).

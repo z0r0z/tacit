@@ -47,8 +47,8 @@ function world({ funded = true, maxOpen = 2, maxLocked = null, confs = 1, notes 
   const uElEvm = { ...base, lockOp: uEvm.lockOp, refundOp: uEvm.refundOp, refundKey: uEvm.refundKey, available: uEvm.available };
   const w = { clock, btc, evm, etch, uW, lW, uKeys, lKeys, uEvm, lEvm, uBtc, lBtc, inventory, stores: {} };
   const mk = () => ({ swaps: w.stores.swaps ||= memStore(), quotes: w.stores.quotes ||= memStore(), offers: w.stores.offers ||= memStore(), evmOffers: w.stores.evmOffers ||= memStore() });
-  w.makeService = () => makeReverseService({
-    seed: lKeys.seed, btc: lBtc, evm: lBlEvm, ...mk(), inventory: { notes: async () => inventory }, now: clock.now,
+  w.makeService = (inv) => makeReverseService({
+    seed: lKeys.seed, btc: lBtc, evm: lBlEvm, ...mk(), inventory: inv || { notes: async () => inventory }, now: clock.now,
     config: { quote: { btcAsset: bytesToHex(etch.asset), evmAsset: ASSET, minAmount: 1000n, maxAmount: 1_000_000n, feeBps: 30, flatFee: 200n, validSecs: 600 }, csvBlocks: 144, evmWindowSecs: 4 * 3600, maxOpen, maxLocked, minConfsFor: () => confs, refreshSecs: 0 },
   });
   w.service = w.makeService();
@@ -205,6 +205,38 @@ test('a lock offer that is not by the provider\'s key is not taken on: no swap i
   assert.deepEqual(await w.client.records(), [], 'no swap was started on it');
   assert.equal(w.evm.locks.leaves.length, 0, 'nothing was locked on the pool');
   assert.equal(await w.uEvm.available(), SEND, 'the user\'s private TAC is untouched');
+});
+
+test('a read of its notes that fails is remembered for ten seconds, so a stream of requests while an explorer is down is not a stream of scans, and it never reads as an empty address', async () => {
+  const w = world();
+  let calls = 0, broken = true;
+  const svc = w.makeService({ notes: async () => { calls++; if (broken) throw new Error('explorer down'); return w.inventory; } });
+  const get = async () => (await svc.handle({ method: 'GET', path: '/reverse/info' })).body;
+  const quote = async () => svc.handle({ method: 'POST', path: '/reverse/quote', body: { amount: '3000', claimPub: claimPubOf(w) } });
+  const first = await get();
+  assert.equal(first.available, null, 'not available is not "no TAC" (0)'); assert.equal(first.open, null); assert.equal(calls, 1);
+  for (let i = 0; i < 20; i++) await get();
+  assert.equal(calls, 1, 'twenty more reads inside the window did not ask the explorers');
+  const q = await quote();
+  assert.equal(q.status, 500, 'a quote is not given on a list it could not read'); assert.equal(calls, 1, 'and it did not scan either');
+  w.clock.advance(9); await get(); assert.equal(calls, 1, 'nine seconds on: still remembered');
+  w.clock.advance(2); await get(); assert.equal(calls, 2, 'eleven: it tries again');
+  broken = false; w.clock.advance(11);
+  assert.equal((await get()).available, '5215', 'and when it reads again the notes are there (this world keeps no good read, so each answer reads)');
+  assert.ok(calls >= 3);
+  assert.equal((await quote()).status, 200, 'and a quote is given');
+  // a start (which makes the list stale) does not carry an old failure forward
+  const v = world();
+  let fail = false, n = 0;
+  const svc2 = v.makeService({ notes: async () => { n++; if (fail) throw new Error('down'); return v.inventory; } });
+  const qa = (await svc2.handle({ method: 'POST', path: '/reverse/quote', body: { amount: '3000', claimPub: claimPubOf(v) } })).body;
+  fail = true; v.clock.advance(61);
+  await svc2.handle({ method: 'GET', path: '/reverse/info' });
+  const afterFail = n;
+  fail = false;
+  await svc2.start();
+  assert.equal((await svc2.handle({ method: 'GET', path: '/reverse/info' })).body.available, '5215', 'start() forgets the failure');
+  assert.ok(n > afterFail); assert.ok(qa.id);
 });
 
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;

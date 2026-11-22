@@ -158,7 +158,36 @@ if (C.refill !== false && !DRY) {
   // Reading them a little after start, while nothing is being shielded, leaves the first real shield only the newest blocks. It reserves no index.
   setTimeout(() => { ux.warmWrapLogs({ ticker: 'TAC' }).catch(() => {}); }, (rc.warmSecs ?? 45) * 1000).unref();
 }
-const server = makeHttpServer({ handle: service.handle, origins: C.origins || [], trustProxy: !!C.trustProxy });
+// The reverse side (Ethereum -> Bitcoin), off unless FB_LP_REVERSE=on (lib/reverse.mjs, README "Selling the other way"). It sells TAC held at a Bitcoin address
+// of its own, derived from this key: nothing else of this process, or of anyone who lists from the main address, shares its notes or its coins. The pool side
+// is this provider's own, so what users send for it lands where the forward side lends from.
+let handle = service.handle;
+const { reverseOptions } = await import('./lib/reverse.mjs');
+const ropts = reverseOptions(C);
+if (ropts && DRY) log({ level: 'info', msg: 'dry run: the reverse side is not started' });
+else if (ropts) {
+  const { reverseKeyOf, reverseSeedOf, makeReverseInventory, routed } = await import('./lib/reverse.mjs');
+  const { makeReverseService } = await import('../dapp/fastbridge-reverse-provider.js');
+  const rkey = reverseKeyOf(key);
+  const { prims: rprims } = makeBtcWallet({ priv: rkey, hrp: network === 'mainnet' ? 'bc' : 'tb', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
+  if (rprims.wallet.address() === btc.address) { console.error('the reverse address must not be the provider\'s own address'); process.exit(1); }
+  const rbtc = makeNodeBtcChain({
+    bases: C.btcBases, tacit, prims: rprims, builder: makeAdaptorBtcTx({ prims: rprims, kit: tacitKit(tacit) }), pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]),
+    poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log,
+  });
+  // the notes are read by the module's own scan of the wallet it holds: that is the reverse key's here, and nothing else of this process reads it
+  tacit.wallet.priv = rkey; tacit.wallet.pub = rprims.wallet.pub;
+  const reverse = makeReverseService({
+    seed: reverseSeedOf(key), btc: rbtc, evm, inventory: makeReverseInventory({ tacit, asset: C.btcAsset, log }), config: ropts, log, alert,
+    swaps: makeFileStore(resolve(data, 'reverse/swaps')), quotes: makeFileStore(resolve(data, 'reverse/quotes')), offers: makeFileStore(resolve(data, 'reverse/offers')), evmOffers: makeFileStore(resolve(data, 'reverse/evm-offers')),
+  });
+  await reverse.start();
+  let rbusy = false;
+  setInterval(async () => { if (rbusy) return; rbusy = true; try { await reverse.tick(); } catch (e) { log({ level: 'error', msg: 'reverse tick failed', error: String((e && e.message) || e).slice(0, 200) }); } finally { rbusy = false; } }, (C.tickSecs ?? 15) * 1000);
+  handle = routed(service.handle, reverse.handle);
+  log({ level: 'info', msg: 'the reverse side is on: the TAC and the sats at this Bitcoin address are what it sells and what it pays fees from', reverseAddress: rbtc.address, maxOpen: ropts.maxOpen, maxTac: String(ropts.maxLocked), csvBlocks: ropts.csvBlocks, feeBps: ropts.quote.feeBps });
+}
+const server = makeHttpServer({ handle, origins: C.origins || [], trustProxy: !!C.trustProxy });
 server.listen(C.port ?? 8787, () => log({ level: 'info', msg: 'listening', port: C.port ?? 8787 }));
 
 // Boards the LP is on as well: its ad is posted there and the requests left for it are answered, so a user finds it without its URL.
@@ -171,7 +200,7 @@ if (C.boards && C.boards.length) {
     const keys = gatewayOf(key);
     for (const url of C.boards) {
       const board = makeBoardClient({ base: url });
-      makeMailboxServer({ board, keys, handle: service.handle, signReply: (d) => signSchnorr(d, key), pollMs: (C.mailboxPollSecs ?? 3) * 1000, log }).start();
+      makeMailboxServer({ board, keys, handle, signReply: (d) => signSchnorr(d, key), pollMs: (C.mailboxPollSecs ?? 3) * 1000, log }).start();
       makeAdPublisher({ board, handle: service.handle, claimPriv: key, claimPub: config.claimPub, keys, name: C.name || null, everySecs: 60, log }).start();
       log({ level: 'info', msg: 'on the board', board: url, gateway: Buffer.from(keys.pub).toString('hex') });
     }
