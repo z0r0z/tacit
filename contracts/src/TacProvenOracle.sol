@@ -24,9 +24,8 @@ import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
 ///         behind. A view answers from it while the newest interval that counts is one it covers; depthMin only at
 ///         X - 1 and X, the intervals for which every sample is proven, so borrowing stays open while the proof of
 ///         each interval lands within GRACE blocks of that interval's end. Otherwise, or where a word holds no
-///         answer, a view passes the call unchanged to FALLBACK, the pair oracle the vaults used before; `latest`
-///         also takes FALLBACK's when it is higher. Every proof covers COUNT intervals, so a newer proof never
-///         covers less than the one it replaces.
+///         answer, a view passes the call unchanged to FALLBACK, the pair oracle the vaults used before. Every proof
+///         covers COUNT intervals, so a newer proof never covers less than the one it replaces.
 ///
 ///         FALLBACK is still recorded the slow way, and `record` takes those records too: a call that carries storage
 ///         proofs is a venue oracle's record, whose last `proofB` element is one byte naming the venue (0 for FALLBACK's
@@ -163,10 +162,25 @@ contract TacProvenOracle {
 
     constructor(Config memory c) {
         uint256 stepSeconds = c.step * BLOCK_SECONDS;
-        // STEP of at most 128 keeps an accepted proof's anchor (at most 2 · STEP blocks old) within BLOCKHASH's 256.
-        if (c.step == 0 || c.step > 128 || c.grace >= c.step || uint256(c.programVKey) >= R) revert BadConfig();
-        if (c.count < 2 || c.count > SPAN || c.minCoverageBps == 0 || c.minCoverageBps > 10_000) revert BadConfig();
+        // STEP above the venues' GRACE of 10, so a sample block is picked among enough blocks, and at most 128, which
+        // keeps an accepted proof's anchor (at most 2 · STEP blocks old) within BLOCKHASH's 256.
+        if (c.step <= 10 || c.step > 128 || c.grace >= c.step || uint256(c.programVKey) >= R) revert BadConfig();
+        if (c.count < 3 || c.count > SPAN || c.minCoverageBps == 0 || c.minCoverageBps > 10_000) revert BadConfig();
+        // Windows are whole numbers of intervals, as the venues' ring (128) and the program count them.
         if (c.shortWindow < stepSeconds || c.window < c.shortWindow || c.maxWindow < c.window) revert BadConfig();
+        if (c.shortWindow % stepSeconds != 0 || c.window % stepSeconds != 0 || c.maxWindow % stepSeconds != 0) {
+            revert BadConfig();
+        }
+        if (c.maxWindow / stepSeconds >= 128) revert BadConfig();
+        // The last proof's last answer (N = X + COUNT - 2) has COUNT - 2 intervals after X unrecorded: the shortest
+        // window must still reach the venues' coverage share with the rest, or that answer is empty.
+        {
+            uint256 s = c.shortWindow / stepSeconds;
+            uint256 unrecorded = c.count - 2;
+            if (s <= unrecorded) revert BadConfig();
+            uint256 k = s - unrecorded;
+            if (k * 10_000 < s * c.minCoverageBps || (s - 1) / 2 < s - k || s / 2 >= k) revert BadConfig();
+        }
         (address venueA, address venueB) = (address(0), address(0));
         if (c.fallbackOracle != address(0)) {
             IFallback f = IFallback(c.fallbackOracle);
@@ -434,9 +448,8 @@ contract TacProvenOracle {
         if (depth == 0) _forward();
     }
 
-    /// The newest proven price while the proof covers the newest interval that counts (past it, FALLBACK's), or
-    /// FALLBACK's when that is higher: a record of either venue then raises it, which only raises what auctions and
-    /// redemptions are priced at.
+    /// The newest proven price, the price at X, while the proof covers the newest interval that counts, so at most
+    /// COUNT - 1 intervals old; past that, FALLBACK's.
     function latest() external view returns (uint256 ethPerTac) {
         uint256 head = _head;
         unchecked {
@@ -444,17 +457,6 @@ contract TacProvenOracle {
         }
         ethPerTac = _unpack(head >> 72, 24, M32);
         if (ethPerTac == 0) _forward();
-        uint256 newer = _fallbackLatest();
-        if (newer > ethPerTac) ethPerTac = newer;
-    }
-
-    // FALLBACK's newest recorded price, or 0 where it has none or there is no FALLBACK.
-    function _fallbackLatest() internal view returns (uint256 v) {
-        address f = FALLBACK;
-        if (f == address(0)) return 0;
-        try IFallback(f).latest() returns (uint256 x) {
-            v = x;
-        } catch {}
     }
 
     /// The lower of the two venues' ETH per TAC now.
@@ -590,7 +592,6 @@ interface IAmmVenue {
 interface IFallback {
     function A() external view returns (address);
     function B() external view returns (address);
-    function latest() external view returns (uint256);
     function STEP() external view returns (uint256);
     function SHORT_WINDOW() external view returns (uint256);
     function WINDOW() external view returns (uint256);

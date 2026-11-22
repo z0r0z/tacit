@@ -6,9 +6,10 @@ reserves) for every interval the windows need, checks the headers back to a rece
 vaults read. `record` checks the anchor against BLOCKHASH, verifies the proof and stores them, and takes a proof only
 while its interval X is one of the two newest whose following block exists, so what is stored is at most one interval
 behind. Every proof answers for the same five intervals from its own (X - 1 to X + 3); a view the proofs do not cover
-is answered by the pair oracle the vaults use today (`0x000000cE…1271`), and `latest` also takes that pair's price when
-it is higher, so a record of either venue raises it. The constructor checks that the pair's venues read the same pools,
-slots, pool id and coverage share as the program.
+is answered by the pair oracle the vaults use today (`0x000000cE…1271`). `latest` is the proof's price at X while a proof
+covers the interval that counts, so at most four intervals old. The constructor checks that the pair's venues read the
+same pools, slots, pool id and coverage share as the program, and that STEP, the windows and COUNT are values the
+program and the venues can use together.
 
 The pair is still recorded the slow way, and through the proven oracle too: a venue oracle's `record` with one more
 `proofB` element, a byte naming the venue (0 the Precision venue, 1 the AMM venue), goes on to that venue. So a
@@ -60,6 +61,10 @@ two intervals (X - 1 and X), so borrowing stays open while the proof of each int
 that interval's end; a proof can be made once the interval's following block is out. Prices then lag by `GRACE` to
 `GRACE + 50` blocks. With a proof about three minutes after an interval ends, `GRACE = 30` (six minutes) leaves room
 for a slow node or a busy block, but not for a prover that has to start up first: keep one warm.
+
+A proof whose interval is no longer one of the two newest reverts `StaleProof`. TacVaultRouter lets only
+`AlreadyRecorded` through, so a transaction that carries such a proof reverts as a whole and is rebuilt with a newer
+one; simulate before sending.
 
 Recording a proof for every interval costs about 0.3M gas each; between proofs, borrowing rests on borrowers
 recording the pair.

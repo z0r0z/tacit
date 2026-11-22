@@ -238,3 +238,26 @@ fn out_of_bound_values_are_unrecorded() {
     assert_eq!(amm_read(&c, U256::ZERO, U256::from(1)), None);
     assert_eq!(precision_read(&c, U256::from(5), U256::ZERO), None);
 }
+
+/// CONFIG's layout, pinned by a vector that TacProvenOracle.t.sol asserts too (`test_configLayoutMatchesTheProgramsVector`):
+/// a change on either side fails a test instead of silently making the oracle refuse every proof.
+#[test]
+fn config_digest_vector() {
+    let c = Config {
+        step: 50,
+        short_points: 12,
+        window_points: 18,
+        max_points: 36,
+        min_coverage_bps: 6_600,
+        precision: Address::repeat_byte(0x11),
+        sqrt_p_low: U256::from(3_780_000_000_000_000_000u64),
+        sqrt_p_high: U256::from(3_780_000_000_000_000_000_000u128),
+        pool: Address::repeat_byte(0x22),
+        slot_a: B256::repeat_byte(0xaa),
+        slot_b: B256::repeat_byte(0xbb),
+        eth_scale: U256::from(10_000_000_000u64),
+        tac_scale: U256::from(10_000_000_000u64),
+    };
+    let want: B256 = "0xb05fa1639026eefb26ba5141f3f91d974989fe0b461717976d779424085d5b2d".parse().unwrap();
+    assert_eq!(c.digest(), want);
+}

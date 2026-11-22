@@ -241,7 +241,7 @@ contract TacProvenOracleTest is TacLaunchFixture {
     /// forge-config: default.fuzz.runs = 48
     function testFuzz_answersAsThePairDoesForEveryIntervalItCovers(uint256 seed, uint8 c) public {
         uint256 x = 519_950 + seed % 100;
-        uint256 count = 2 + c % 7;
+        uint256 count = 3 + c % 4; // the counts the constructor accepts for these windows: 3 to 6
         po = new ProvenNoVerify(_configN(bytes32(uint256(1)), G, address(pair), count));
         _history(seed, x, 1e18);
         Proof memory p = _expect(x, count);
@@ -268,12 +268,7 @@ contract TacProvenOracleTest is TacLaunchFixture {
             } else {
                 _sameAsPair(abi.encodeCall(TacProvenOracle.depthMin, (21_600)));
             }
-            {
-                // the proof's price, or the pair's (not rounded) when that is higher
-                uint256 proven = TacProvenPack.unpack(p.head >> 72 & 0xffffffff, 24);
-                uint256 other = pair.latest();
-                assertEq(po.latest(), other > proven ? other : proven, "latest");
-            }
+            assertEq(po.latest(), TacProvenPack.unpack(p.head >> 72 & 0xffffffff, 24), "latest");
         }
         // Past what it covers, every view is the pair's, the newest price included.
         _at(x + count - 1);
@@ -581,34 +576,28 @@ contract TacProvenOracleTest is TacLaunchFixture {
         assertEq(cx, x);
     }
 
-    /// `latest` is the proof's price or FALLBACK's, whichever is higher: a record of either venue can raise it and
-    /// nothing lowers it; a FALLBACK that cannot answer leaves the proof's.
-    function test_latestTakesTheHigherOfTheProofAndFallback() public {
+    /// While a proof covers the newest interval that counts, `latest` is its price and nothing the venues hold moves
+    /// it: an old sample recorded high on both venues floors the pair's `latest`, not this one, and it makes no call
+    /// to them.
+    function test_latestIsTheProofsWhileCoveredWhateverTheVenuesHold() public {
         uint256 x = 519_990;
         _history(8, x, 1e18);
         Proof memory p = _expect(x, 5);
         _record(p);
         _at(x);
         uint256 proven = TacProvenPack.unpack(p.head >> 72 & 0xffffffff, 24);
-        uint256 raw = pair.latest();
-        assertGe(raw, proven);
-        assertEq(po.latest(), raw, "no newer venue record: the pair's, the proof's up to its rounding");
-        uint256 top = (block.number - 1) / STEP - 1;
-        _put(address(a), top, proven * 2, 1_000e18);
-        _put(address(b), top, proven * 2, 1_000e18);
-        assertEq(po.latest(), proven * 2, "both venues record a higher price");
-        _put(address(b), top, proven / 2, 1_000e18);
-        assertEq(po.latest(), proven, "one venue lower: the pair's is the lower of the two, and the proof's stays");
-
-        (bytes32 sa, bytes32 sb) = b.slots();
-        RecordingVenue va = new RecordingVenue(address(prec), bytes32(0), bytes32(0), bytes32(uint256(0x05345cdf77eb68f44c)));
-        RecordingVenue vb = new RecordingVenue(address(v1), POOL_ID, sa, sb);
-        ProvenNoVerify o = new ProvenNoVerify(
-            _config(bytes32(uint256(1)), G, address(new RecordingPair(address(va), address(vb))))
-        );
-        bytes[] memory none;
-        o.record(_pv(p), new bytes(288), none, none, none);
-        assertEq(o.latest(), proven, "a FALLBACK with no `latest` leaves the proof's");
+        assertEq(po.latest(), proven);
+        for (uint256 i; i < 128; ++i) {
+            vm.store(address(a), bytes32(i), 0);
+            vm.store(address(b), bytes32(i), 0);
+        }
+        _put(address(a), x - 5, proven * 3, 1_000e18);
+        _put(address(b), x - 5, proven * 3, 1_000e18);
+        assertEq(pair.latest(), proven * 3, "the pair's latest is the old sample");
+        assertEq(po.latest(), proven, "the proof's is not");
+        uint256 g = gasleft();
+        po.latest();
+        assertLt(g - gasleft(), 30_000, "no scan of the venues");
     }
 
     /// The constructor requires FALLBACK's venues to read what the program reads: the Precision pool as venue A and
@@ -648,13 +637,85 @@ contract TacProvenOracleTest is TacLaunchFixture {
         vm.expectRevert(TacProvenOracle.BadConfig.selector);
         new ProvenNoVerify(c);
 
-        // STEP: 128 is the most (a proof's anchor is then at most 256 blocks old), with no FALLBACK to compare with
+    }
+
+    // A config with no FALLBACK, STEP 128 and windows of 12, 18 and 36 intervals: the limits of what is accepted.
+    function _cfg128() internal view returns (TacProvenOracle.Config memory c) {
         c = _config(bytes32(uint256(1)), 30, address(0));
         c.step = 128;
-        new ProvenNoVerify(c);
+        c.shortWindow = 128 * 12 * 12;
+        c.window = 128 * 12 * 18;
+        c.maxWindow = 128 * 12 * 36;
+    }
+
+    /// Whatever FALLBACK is: STEP above the venues' GRACE of 10 and at most 128 (so an accepted proof's anchor is
+    /// within BLOCKHASH's 256), windows of whole intervals and fewer than 128 of them, COUNT of 3 or more and not
+    /// more than the shortest window can still answer.
+    function test_constructorLimits() public {
+        new ProvenNoVerify(_cfg128());
+
+        TacProvenOracle.Config memory c = _cfg128();
         c.step = 129;
         vm.expectRevert(TacProvenOracle.BadConfig.selector);
         new ProvenNoVerify(c);
+
+        c = _cfg128();
+        c.step = 10;
+        c.shortWindow = 120 * 12;
+        c.window = 120 * 18;
+        c.maxWindow = 120 * 36;
+        vm.expectRevert(TacProvenOracle.BadConfig.selector);
+        new ProvenNoVerify(c);
+
+        c = _cfg128();
+        c.window += 1;
+        vm.expectRevert(TacProvenOracle.BadConfig.selector);
+        new ProvenNoVerify(c);
+
+        c = _cfg128();
+        c.maxWindow = 128 * 12 * 128;
+        vm.expectRevert(TacProvenOracle.BadConfig.selector);
+        new ProvenNoVerify(c);
+
+        // COUNT: 3 is the least; 6 is the most these windows (12 intervals at two thirds) can answer
+        c = _cfg128();
+        c.count = 2;
+        vm.expectRevert(TacProvenOracle.BadConfig.selector);
+        new ProvenNoVerify(c);
+        c = _cfg128();
+        c.count = 3;
+        new ProvenNoVerify(c);
+        c.count = 6;
+        new ProvenNoVerify(c);
+        c.count = 7;
+        vm.expectRevert(TacProvenOracle.BadConfig.selector);
+        new ProvenNoVerify(c);
+    }
+
+    /// The layout of CONFIG, pinned by a vector the program's tests assert too (contracts/sp1/tac-oracle/core,
+    /// `config_digest_vector`): a change on either side fails a test instead of silently refusing every proof.
+    function test_configLayoutMatchesTheProgramsVector() public pure {
+        bytes32 vector = 0xb05fa1639026eefb26ba5141f3f91d974989fe0b461717976d779424085d5b2d;
+        bytes32 got = keccak256(
+            abi.encode(
+                uint256(50),
+                uint256(12),
+                uint256(18),
+                uint256(36),
+                uint256(6_600),
+                address(0x1111111111111111111111111111111111111111),
+                bytes32(0),
+                bytes32(uint256(0x05345cdf77eb68f44c)),
+                uint256(3.78e18),
+                uint256(3.78e21),
+                address(0x2222222222222222222222222222222222222222),
+                bytes32(0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa),
+                bytes32(0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb),
+                uint256(1e10),
+                uint256(1e10)
+            )
+        );
+        assertEq(got, vector);
     }
 
     // ─────────────── the proof check, on real SP1 v6.1.0 proofs ───────────────

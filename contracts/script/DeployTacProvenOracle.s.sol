@@ -66,9 +66,11 @@ contract DeployTacProvenOracle is Script {
         if (!vm.envOr("ALLOW_UNPINNED_VKEY", false)) {
             string memory pin = vm.readFile(string.concat(vm.projectRoot(), "/sp1/tac-oracle/elf-vkey-pin.json"));
             require(vm.parseJsonBytes32(pin, ".program_vkey") == vkey, "PROGRAM_VKEY is not the pinned program's key");
+        } else {
+            console2.log("WARNING: the program key is NOT checked against the pin");
         }
         uint256 grace = vm.envUint("GRACE");
-        require(grace > 0, "GRACE: blocks for a proof to land in");
+        require(grace > 0 && grace < D.ORACLE_STEP, "GRACE: 1 to STEP - 1 blocks for a proof to land in");
         bytes32 salt = vm.envOr("SALT", bytes32(uint256(1) << 88));
         bytes memory init = initCode(vkey, grace);
         address at = predict(salt, keccak256(init));
@@ -83,6 +85,11 @@ contract DeployTacProvenOracle is Script {
         (bytes32 a, bytes32 b) = IAmmVenue(D.AMM_ORACLE).slots();
         require(o.SLOT_A() == a && o.SLOT_B() == b, "slots differ from the venue oracle's");
         require(o.PROGRAM_VKEY() == vkey && o.GRACE() == grace && o.FALLBACK() == D.PAIR_ORACLE, "terms");
+        console2.log("terms the multisig signers commit to: PROGRAM_VKEY, GRACE, COUNT, FALLBACK");
+        console2.logBytes32(o.PROGRAM_VKEY());
+        console2.log("GRACE", o.GRACE());
+        console2.log("COUNT", o.COUNT());
+        console2.log("FALLBACK", o.FALLBACK());
         console2.log("CONFIG");
         console2.logBytes32(o.CONFIG());
 
