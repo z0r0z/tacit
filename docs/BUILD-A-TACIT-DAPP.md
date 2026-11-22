@@ -7,7 +7,7 @@ needs a build step, a framework or a backend. A starting skeleton is
 The protocol itself is in [`SPEC.md`](../SPEC.md); addresses are in [`DEPLOYMENTS.md`](./DEPLOYMENTS.md). Every path on one page,
 with its rules, the relay API, the addresses and the mainnet transactions behind each: [tacit.finance/build](https://tacit.finance/build/).
 
-**Only want private ETH payments, on Ethereum, Base, Robinhood Chain and MegaETH?** That is a separate, smaller pool —
+**Only want private ETH payments, on Ethereum, Base, Robinhood Chain, MegaETH and Fraxtal?** That is a separate, smaller pool —
 one fixed Groth16 circuit, proved on the user's own device, no SP1, no relay witness — with its own guide:
 [`EVM-POOL.md`](./EVM-POOL.md). This guide is for the confidential pool: multi-asset notes, DeFi (swap, LP,
 lend, farm, OTC, bids) and the Bitcoin bridge, all through one SP1 program.
@@ -72,7 +72,7 @@ first step works with nothing but an RPC; the second needs the relay.
 
 Ethereum mainnet. The source of truth is
 [`contracts/deployments/1-createx.json`](../contracts/deployments/1-createx.json); read addresses from it.
-(The EVM pool, a separate Tacit pool on Ethereum, Base, Robinhood Chain and MegaETH, has its own addresses;
+(The EVM pool, a separate Tacit pool on Ethereum, Base, Robinhood Chain, MegaETH and Fraxtal, has its own addresses;
 see §5h.)
 
 | | |
@@ -1192,15 +1192,16 @@ different contract — and it is why the outbox address is not surfaced as a set
 
 ## 5h. The EVM pool: a separate, multichain private-ETH pool
 
-`TacitEvmPool` is Tacit's other pool: native ETH only, one fixed Groth16 circuit proved on the user's own
-device, no SP1, no relay witness, and no state shared with the confidential pool above. It is immutable and
-live, unchanged, at the same addresses on Ethereum mainnet, Base, Robinhood Chain and MegaETH:
+`TacitEvmPool` is Tacit's other pool: the chain's native token only (ETH; frxETH on Fraxtal), one fixed Groth16
+circuit proved on the user's own device, no SP1, no relay witness, and no state shared with the confidential pool
+above. It is immutable and live, unchanged, at the same addresses on Ethereum mainnet, Base, Robinhood Chain, MegaETH
+and Fraxtal:
 
 | | |
 |---|---|
 | `TacitEvmPool` | `0x000000c2A20657CE25f2Ba99737933D031AFBEE9` |
 | `TacitEvmPoolRouter` | `0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5` |
-| Chain ids | Ethereum `1`, Base `8453`, Robinhood Chain `4663`, MegaETH `4326` |
+| Chain ids | Ethereum `1`, Base `8453`, Robinhood Chain `4663`, MegaETH `4326`, Fraxtal `252` |
 | Deploy blocks, transactions | [`contracts/deployments/evm-pool.json`](../contracts/deployments/evm-pool.json) |
 
 On Ethereum the same contracts also run token pools (USDC, USDT, TAC, and the TAC vaults' TACD and TACE) at
@@ -1383,7 +1384,7 @@ client submits the intent; the keeper does not scan for one on its own.
 | `POST /evm-pool/keeper/relay` | `{ tx, call?, wrap? }` — submits a proven transfer, withdrawal, `withdrawAndCall` or `withdrawToV1` |
 
 Live at `https://tacit-evm-pool-keepers.onrender.com/<chainId>/evm-pool/keeper`, with `<chainId>` `1` (Ethereum),
-`8453` (Base), `4663` (Robinhood Chain) or `4326` (MegaETH); each chain's own keeper URL is `keeper` in
+`8453` (Base), `4663` (Robinhood Chain), `4326` (MegaETH) or `252` (Fraxtal); each chain's own keeper URL is `keeper` in
 [`contracts/deployments/evm-pool.json`](../contracts/deployments/evm-pool.json).
 
 ## 7. Iterating on the design

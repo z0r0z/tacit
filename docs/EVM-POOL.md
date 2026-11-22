@@ -7,7 +7,7 @@ upgrade. Design and measurements: [`DESIGN-evm-client-pool.md`](../contracts/sp1
 The app is **tacit.wei**: one HTML file served from contract code on Ethereum, at `https://tacit.wei.limo/`. This guide
 covers what that page does and what an integrator needs to do the same: Ethereum mainnet, ETH (and tokens as ETH),
 nothing else. For DeFi (swap, LP, lend, farm), multi-asset notes or the Bitcoin bridge, see
-[`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md). The same pool is also deployed on Base, Robinhood Chain and MegaETH,
+[`BUILD-A-TACIT-DAPP.md`](./BUILD-A-TACIT-DAPP.md). The same pool is also deployed on Base, Robinhood Chain, MegaETH and Fraxtal,
 with token pools beside it on some chains, and other apps use it (anon.wei, tacit.finance/pay/eth, Secret Sats); their
 chains, addresses and flows are in [`contracts/deployments/evm-pool.json`](../contracts/deployments/evm-pool.json) and are
 not covered here.

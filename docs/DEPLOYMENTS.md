@@ -280,22 +280,23 @@ docs: [tacit.finance/docs/chain](https://tacit.finance/docs/chain/); live view: 
 | Bootstrap leader (`BOOTSTRAP()`, leads while no seat is held) | `0x841d93ae315E3D9AF5Fd98C09299CA62148Ff65d` |
 | Leader API | `https://tacit-chain-leader.onrender.com` |
 
-## EVM pool (Ethereum, Base, Robinhood Chain, MegaETH, Sepolia)
+## EVM pool (Ethereum, Base, Robinhood Chain, MegaETH, Fraxtal, Sepolia)
 
 A separate, smaller pool: one fixed Groth16 circuit, proved on the user's own device — not part of the
-`ConfidentialPool`/SP1 suite above. The native-ETH pool is at the same addresses on all four chains (CreateX CREATE3,
-salts locked to deployer `0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7`). MegaETH has the core (pool, router, verifier,
+`ConfidentialPool`/SP1 suite above. The native-asset pool is at the same addresses on all five chains (CreateX CREATE3,
+salts locked to deployer `0x68575B073DE49a94e3E3ACf6F3A0d6E3b66267C7`); its asset is the chain's native token, which is
+ETH everywhere but Fraxtal, where it is frxETH. MegaETH and Fraxtal have the core (pool, router, verifier,
 PoseidonT5) and no token swaps: zRouter, zQuoter and the zap are not deployed there. On Ethereum the same contracts also
 run ERC-20 pools (TAC, TACD, TACE, USDC, USDT, and any token's pool anyone opens); their addresses are in
 [`EVM-POOL.md`](./EVM-POOL.md#addresses).
 
 | | |
 |---|---|
-| `TacitEvmPool` (native ETH) | `0x000000c2A20657CE25f2Ba99737933D031AFBEE9` |
+| `TacitEvmPool` (native token: ETH, frxETH on Fraxtal) | `0x000000c2A20657CE25f2Ba99737933D031AFBEE9` |
 | `TacitEvmPoolRouter` | `0x0000006C96Afa6f1cD4DF8FE19bc0d8B6A6Cd7B5` |
 | Groth16 verifier (`TransactVerifier`) | `0x000000b1c0e84CEc8AdF8278B90c4d6400DfB153` |
 | PoseidonT5 | `0x555333f3f677Ca3930Bf7c56ffc75144c51D9767` |
-| `TacitEvmPoolZap` (shields a token in one transaction; not on MegaETH) | `0x0000008EbBF2323f95c4fBc18254f3D65C53998c` |
+| `TacitEvmPoolZap` (shields a token in one transaction; not on MegaETH or Fraxtal) | `0x0000008EbBF2323f95c4fBc18254f3D65C53998c` |
 | Ceremony | 176 contributions, sealed with Bitcoin block 968840; vk hash `43d11e6e…5757` |
 
 | Chain | Deploy block | Verified | Keeper |
@@ -304,7 +305,16 @@ run ERC-20 pools (TAC, TACD, TACE, USDC, USDT, and any token's pool anyone opens
 | Base (8453) | 51864014 | Sourcify, Blockscout | `https://tacit-evm-pool-keepers.onrender.com/8453/evm-pool/keeper` |
 | Robinhood Chain (4663) | 73991661 | Etherscan, Sourcify | `https://tacit-evm-pool-keepers.onrender.com/4663/evm-pool/keeper` |
 | MegaETH (4326) | 28397750 | Sourcify, Etherscan | `https://tacit-evm-pool-keepers.onrender.com/4326/evm-pool/keeper` |
+| Fraxtal (252) | 44265340 | Sourcify, Fraxscan | `https://tacit-evm-pool-keepers.onrender.com/252/evm-pool/keeper` |
 | Sepolia (11155111) | 11999020 | Etherscan, Sourcify | none: every spend is sent by the user's own account |
+
+**Fraxtal** (252) is an OP-stack chain whose gas token is frxETH, so its pool holds frxETH: the pool's asset is the zero
+address, the chain's native token. Fraxtal also charges an L1 data fee on top of gas, about 0.0001 frxETH for a pool call
+(measured on 22 November 2026; it follows Ethereum's base fee), far more than the gas itself. The keeper counts it in every
+fee it quotes: a relayed spend pays about 0.0002 frxETH, and a deposit address is swept from about 0.0007 frxETH, the
+keeper paying part of the sweep itself. A smaller balance stays in its address until its owner collects it, which costs only
+the owner's own transaction. zRouter, zQuoter and the zap are not on the chain, so the router was deployed with zRouter set
+to zero and its zap entry points are off for good.
 
 **Sepolia** is the testnet mirror, at the same four addresses, for integrators who want to try the pool
 without mainnet funds. It has no keeper and no V1 pool, so spends are sent by the user's own account and

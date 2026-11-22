@@ -56,7 +56,7 @@ Other AMM identifiers:
 
 ## EVM pool ceremony (Secret Sats EVM pool) — used in production
 
-`transact.circom` backs the EVM pools on Ethereum, Base, Robinhood Chain and MegaETH ([EVM-POOL.md](./EVM-POOL.md)). Its key came from
+`transact.circom` backs the EVM pools on Ethereum, Base, Robinhood Chain, MegaETH and Fraxtal ([EVM-POOL.md](./EVM-POOL.md)). Its key came from
 one open ceremony on 26 and 27 September 2026: 176 contributions from 120 distinct public keys, sealed with the hash of
 Bitcoin block 968,840 as the final beacon.
 
