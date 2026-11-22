@@ -207,6 +207,10 @@ export function loadKeeperConfig(env = process.env) {
     // up to resendTries times (0 seconds = never): an endpoint may take a transaction and never mine it.
     resendSecs: int(env, 'EVM_POOL_KEEPER_RESEND_SECS', 40),
     resendTries: int(env, 'EVM_POOL_KEEPER_RESEND_TRIES', 3),
+    // A send whose nonce another transaction from the same key has since used (a second service signing with it) can never mine: once
+    // the chain's count has passed its nonce and no receipt shows after this many seconds more (a block, for a node that is behind),
+    // it is signed again with a nonce of its own, up to twice.
+    nonceGraceSecs: int(env, 'EVM_POOL_KEEPER_NONCE_GRACE_SECS', 13),
     // The proofs of every pool share one queue; a pool with a priority of 1 goes ahead of the others by a minute of their waiting.
     proofPriority: int(env, 'EVM_POOL_KEEPER_PROOF_PRIORITY', 0),
     // How long a /quote answer is shared by everyone who asks (ms).

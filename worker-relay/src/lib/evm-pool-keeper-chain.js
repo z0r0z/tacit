@@ -255,6 +255,8 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
   const remember = (hash, call) => { sentCalls.set(hash, call); if (sentCalls.size > 64) sentCalls.delete(sentCalls.keys().next().value); };
   // Each time, the call is simulated again first: one that would now revert is not sent again, and one that cannot be simulated just now
   // (a node error, or a call sent unsimulated behind the keeper's own) goes to the private endpoints only.
+  // (a revert is told by the node's own execution-reverted answer: viem reports a node's internal error as a revert too)
+  const reverts = (e) => revertName(e) || e?.walk?.((x) => x?.name === 'ExecutionRevertedError') || /execution reverted/i.test(String(e?.shortMessage || e?.message || ''));
   async function resend(hash) {
     const call = sentCalls.get(hash);
     if (!call || await receiptOf(hash).catch(() => null)) return false;
@@ -262,8 +264,7 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
     if (publicOk) {
       try { await pub.estimateContractGas({ ...target(call.functionName), args: call.args, account }); }
       catch (e) {
-        // (a revert is told by the node's own execution-reverted answer: viem reports a node's internal error as a revert too)
-        if (revertName(e) || e?.walk?.((x) => x?.name === 'ExecutionRevertedError') || /execution reverted/i.test(String(e?.shortMessage || e?.message || ''))) { log(`  ${hash} would not go through now (${safeErr(e)}); not sent again`); sentCalls.delete(hash); return false; }
+        if (reverts(e)) { log(`  ${hash} would not go through now (${safeErr(e)}); not sent again`); sentCalls.delete(hash); return false; }
         publicOk = false;
       }
     }
@@ -273,6 +274,61 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
     }
     return true;
   }
+  // A send whose nonce another transaction has taken can never mine, and sending it again changes nothing. A second service signing with
+  // this key (the older per-chain keeper posts catch-up points from it) picks nonces from a read node that cannot see a private send of the
+  // other's, so the two can pick the same one: the chain's count is past the send's nonce and its hash has no receipt. Seen twice, a
+  // block apart (`nonceGraceSecs`), so a node that is behind on receipts is not taken for the chain. A receipt lookup that fails is no answer.
+  async function nonceLost(hash) {
+    const call = sentCalls.get(hash);
+    if (!call) return false;
+    const gone = async () => {
+      if (await receiptOf(hash).then((x) => x, () => true)) return false;
+      return (await pub.getTransactionCount({ address: account.address, blockTag: 'latest' }).catch(() => 0)) > call.nonce;
+    };
+    if (!(await gone())) return false;
+    await new Promise((r) => { setTimeout(r, Math.round((cfg.nonceGraceSecs ?? 13) * 1000)).unref?.(); });
+    return gone();
+  }
+  // The same call signed again with a nonce of its own (the next the signer has not used), in the queue with every other send; the new
+  // hash is watched in its turn, and a call is signed again at most twice. Simulated first, as a send again is: one that would now revert
+  // is dropped (the spend it carried has landed another way, or its notes are spent), and one that cannot be simulated just now, or was sent
+  // behind the keeper's own unmined ones, goes to the private endpoints only. The callers hold the first hash, which never mines: what they
+  // follow is the pool (the root a slot ends at, a note's nullifier), not the hash. → the new hash, or null.
+  async function recover(hash) {
+    const call = sentCalls.get(hash);
+    if (!call || (call.recovered ?? 0) >= 2) return null;
+    return serial(async () => {
+      if (!sentCalls.has(hash)) return null;
+      let publicOk = call.simulate !== false;
+      if (publicOk) {
+        try { await pub.estimateContractGas({ ...target(call.functionName), args: call.args, account }); }
+        catch (e) {
+          if (reverts(e)) { log(`  ${hash} lost its nonce ${call.nonce} and would not go through now (${safeErr(e)}); not signed again`); sentCalls.delete(hash); return null; }
+          publicOk = false;
+        }
+      }
+      let lastErr;
+      const fail = (e) => { lastErr = e; };
+      for (const urls of [privateUrls, publicUrls]) {
+        if (!urls.length || (urls === publicUrls && !publicOk)) continue;
+        const next = await withNonceRetry(call.functionName, async () => {
+          const [nonce, fee] = await Promise.all([nextNonce(), fees(call.gas)]);
+          const again = { ...call, nonce, fee, recovered: (call.recovered ?? 0) + 1 };
+          const h = await via(again, urls, urls === publicUrls, fail);
+          if (!h) throw lastErr || new Error('no submission endpoint took it');
+          signer.sentNonce = nonce;
+          signer.sentAt = Date.now();
+          sentCalls.delete(hash);
+          remember(h, again);
+          watch(h);
+          return h;
+        }, { log }).catch((e) => { lastErr = e; return null; });
+        if (next) { log(`  ${hash} lost its nonce ${call.nonce} to another transaction from this key; signed again as ${next}`); return next; }
+      }
+      log(`  ${hash} lost its nonce ${call.nonce} and could not be signed again: ${safeErr(lastErr)}`);
+      return null;
+    });
+  }
   function watch(hash) {
     const ms = Math.round((cfg.resendSecs ?? 40) * 1000), tries = cfg.resendTries ?? 3;
     if (!(ms > 0)) return;
@@ -280,6 +336,8 @@ export async function makeKeeperChain({ cfg, account, log = () => {} }) {
       for (let i = 1; i <= tries; i++) {
         await new Promise((r) => { setTimeout(r, ms).unref?.(); });
         if (await receiptOf(hash).catch(() => null)) return;
+        // its nonce taken: sending it again cannot help, a new one is signed (and tried again at the next look if that fails)
+        if (await nonceLost(hash).catch(() => false)) { if (await recover(hash).catch(() => null)) return; continue; }
         log(`  ${hash} not mined after ${Math.round(ms * i / 1000)} s; sending it again`);
         await resend(hash).catch(() => {});
       }
