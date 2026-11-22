@@ -11,8 +11,8 @@ set -u
 BASE=https://github.com/ggml-org/llama.cpp/releases/download/b12211
 # llama.cpp's own Linux build needs glibc 2.38 (Ubuntu 24.04); the same release built on Ubuntu 22.04 (.github/workflows/build-llama-server.yml) serves
 # glibc 2.35 to 2.37, CPU and CUDA backends in one tarball, from Tacit's releases (HELPDESK_LLAMA_BASE is for tests)
-OWN_BASE=${HELPDESK_LLAMA_BASE:-https://github.com/z0r0z/tacit/releases/download/prover-bins-v22}
-OWN_LLAMA="llama-b12211-bin-ubuntu22-x64.tar.gz:ada10e00d6505e1e82fee4fa2e95b372a0ee0dc37e51cb5362c2b94dc5e8e3ae"
+OWN_BASE=${HELPDESK_LLAMA_BASE:-https://github.com/z0r0z/tacit/releases/download/llama-b12211-ubuntu22}
+OWN_LLAMA="llama-b12211-bin-ubuntu22-x64.tar.gz:c88e28eaa11cf5e1b85c761ed220a63e421a828d8cdf4a2c7dc4ce554ec2f0df"
 MODEL_URL=${HELPDESK_MODEL_URL:-https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf}
 MODEL_SHA=${HELPDESK_MODEL_SHA:-00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4}; MODEL_SIZE=${HELPDESK_MODEL_SIZE:-2740937888}   # the three overrides are for tests
 D=${TACIT_PROVER_DIR:-$HOME/.tacit-prover}/helpdesk; mkdir -p "$D"
