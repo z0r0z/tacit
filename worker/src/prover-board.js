@@ -241,7 +241,8 @@ const makeLock = makeBoardLock;
 // points; without the trouble record no place waits behind the others for a turn that went wrong).
 // What a board keeps in memory beside its storage: a count of changes to jobs, the last look at the open jobs, the community machines' sightings
 // not yet written, and the names of machines it has seen. buildProverBoard makes a board for every request, so this is kept per storage, as the lock is.
-export const newBoardMemory = () => ({ epoch: 0, view: null, presence: new Map(), known: new Set(), flushedAt: 0, pending: null });
+export const newBoardMemory = () => ({ epoch: 0, view: null, presence: new Map(), known: new Set(), flushedAt: 0, pending: null,
+  asks: { fast: 0, rechecked: 0, first: 0, stale: 0, maybe: { open: 0, turn: 0, draw: 0 } } });
 
 // The storage with its writes to jobs and to the pending list counted in `mem.epoch`: a look at the open jobs is out of date once the count has moved.
 // The pending list written again as it was last written changes nothing, and is not counted.
@@ -621,33 +622,65 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
   // A Bitcoin batch (turnPrograms) is one machine's at a time: it is offered only to the machine whose turn it is (nextTurn).
   // The part of an open job the first checks of a community ask read, kept by a look at the open jobs.
   const lookAt = (j) => ({ class: j.class, program: j.program, sealed: !!j.sealed, input: !!(j.stdin || j.stdinKept), raced: (j.raced || []).slice(),
-    racers: (j.racers || []).slice(), racedAt: { ...(j.racedAt || {}) }, racerLease: { ...(j.racerLease || {}) }, racedBy: { ...(j.racedBy || {}) } });
+    racers: (j.racers || []).slice(), racedAt: { ...(j.racedAt || {}) }, racerLease: { ...(j.racerLease || {}) }, racedBy: { ...(j.racedBy || {}) },
+    held: drawHeld(j), postedAt: j.postedAt || 0, drawPick: j.drawPick || null, drawn: j.drawn || null, candidates: (j.race || []).map((c) => c.worker) });
   // A look is good while no job has changed since it was made, it is at most viewMs old (jobs written by another process are read within that), and no open
   // job has reached its deadline or the end of its claim, and no finished job is due to leave the list (the sweep an ask makes first would end, open or drop it).
-  const lookIsFresh = (v) => !!v && v.epoch === mem.epoch && clock() - v.at < viewMs && clock() <= v.until;
+  const lookIsFresh = (v) => !!v && v.epoch === mem.epoch && clock() >= v.at && clock() - v.at < viewMs && clock() <= v.until;
   // Whether the look shows no job this machine could race: the conditions an ask tries first, read from the look. Any job it cannot rule out goes to the full ask.
   function nothingToRace(v, worker, races) {
     const here = (j) => liveRacers(j).includes(worker.name) && placeOf(j, worker.name, worker.client) === worker.client;
     if (v.open.filter(here).length >= PROVER_BOARD.communityOpen) return true;
+    const t = clock();
     for (const j of v.open) {
       if (j.class !== 'public' || j.sealed || !races.includes(j.program || 'confidential') || !j.input) continue;
-      if (j.raced.includes(worker.name) || liveRacers(j).length >= PROVER_BOARD.communityRacers) continue;
+      const racers = liveRacers(j);
+      if (j.raced.includes(worker.name) || racers.length >= PROVER_BOARD.communityRacers) continue;
+      if (j.held) {                                                    // a block still held for its draw
+        if (j.drawn) {
+          if (j.candidates.includes(j.drawn)) continue;                // its answer waits on the relay's check
+          const waiting = t - (j.racedAt[j.drawn] || 0) < j.hedgeMs;   // the drawn machine is proving it, inside its time
+          if (!racers.includes(j.drawn) || !waiting) return false;     // otherwise the ask changes the job
+          continue;
+        }
+        if (t - j.postedAt >= PROVER_BOARD.drawOfferMs || !j.drawPick || j.drawPick === worker.name) return false;   // the offer has ended, no one is drawn yet, or this is the one drawn
+        continue;                                                      // drawn: another machine's
+      }
+      if (PROVER_BOARD.turnPrograms.includes(j.program)) { if (racers.length) continue; return false; }   // another machine's turn
       return false;
     }
     return true;
+  }
+  // Which kind of job kept the look from ruling an ask out (for the counts): the first one the opening checks leave.
+  function undecidedKind(v, worker, races) {
+    for (const j of v.open) {
+      if (j.class !== 'public' || j.sealed || !races.includes(j.program || 'confidential') || !j.input) continue;
+      if (j.raced.includes(worker.name) || liveRacers(j).length >= PROVER_BOARD.communityRacers) continue;
+      return j.held ? 'draw' : PROVER_BOARD.turnPrograms.includes(j.program) ? 'turn' : 'open';
+    }
+    return 'open';
+  }
+  // Whether the look rules the ask out. This only saves work, so whatever the look holds it never fails an ask: an error here sends it to the board.
+  function rulesOut(worker, races) {
+    try { return lookIsFresh(mem.view) && nothingToRace(mem.view, worker, races); } catch { return false; }
   }
   async function communityClaim(worker, can = ['confidential']) {
     const races = can.filter((p) => PROVER_BOARD.communityPrograms.includes(p));
     // A machine's first ask is written out at once, so its record exists in storage.
     const first = fast && !mem.known.has(worker.name);
     if (fast) {
-      mem.known.add(worker.name);
-      if (mem.known.size > 5000) mem.known.delete(mem.known.values().next().value);
-      sighted(worker, races);
-      if (!first && lookIsFresh(mem.view) && nothingToRace(mem.view, worker, races)) return null;
+      try {
+        mem.known.add(worker.name);
+        if (mem.known.size > 5000) mem.known.delete(mem.known.values().next().value);
+        sighted(worker, races);
+        if (first) mem.asks.first++;
+        else if (!lookIsFresh(mem.view)) mem.asks.stale++;
+        else if (nothingToRace(mem.view, worker, races)) { mem.asks.fast++; return null; }
+        else mem.asks.maybe[undecidedKind(mem.view, worker, races)]++;
+      } catch { /* the board answers */ }
     }
     return exclusive(async () => {
-      if (fast && !first && lookIsFresh(mem.view) && nothingToRace(mem.view, worker, races)) return null;   // an ask ahead of this one has just looked
+      if (fast && !first && rulesOut(worker, races)) { mem.asks.rechecked++; return null; }   // an ask ahead of this one has just looked
       if (!fast || first || clock() - mem.flushedAt >= PROVER_BOARD.communityFlushMs) { mem.flushedAt = clock(); await bump(worker.name, null, null, races, true, worker.client); }
       const recs = new Map();
       const pend = await sweep(await storage.getPending(), recs);
@@ -655,8 +688,16 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
       const open = [];
       for (const jid of pend) { const j = recs.get(jid); if (j && ['queued', 'claimed'].includes(j.status)) open.push(j); }
       if (fast) {
+        const epoch = mem.epoch, looks = open.map(lookAt);
+        let known = null;                                              // the drawn machine's record sets how long it is left alone with its block
+        for (let i = 0; i < open.length; i++) {
+          if (!looks[i].held || !open[i].drawn) continue;
+          known = known || await workers();
+          const d = known[open[i].drawn];
+          looks[i].hedgeMs = d && d.blocks && d.blockSecs > 0 ? Math.max(PROVER_BOARD.drawHedgeMinMs, PROVER_BOARD.drawHedgeFactor * d.blockSecs * 1000) : PROVER_BOARD.drawNewHedgeMs;
+        }
         const until = open.reduce((m, j) => Math.min(m, j.deadline ? j.deadline * 1000 : Infinity, j.status === 'claimed' && j.leaseUntil ? j.leaseUntil : Infinity), Infinity);
-        mem.view = { epoch: mem.epoch, at: clock(), until: Math.min(until, retainAt), open: open.map(lookAt) };
+        mem.view = { epoch, at: clock(), until: Math.min(until, retainAt), open: looks };
       }
       const here = (j) => liveRacers(j).includes(worker.name) && placeOf(j, worker.name, worker.client) === worker.client;
       if (open.filter(here).length >= PROVER_BOARD.communityOpen) return null;
@@ -882,7 +923,8 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
     // percentile, every wait over five seconds behind work that was not a board job, so the 90th percentile is what a second worker would move.
     const pct = (xs, p) => (xs.length ? Math.round([...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(xs.length * p))]) : null);
     const recent = { n: waits.length, waitP50: pct(waits, 0.5), waitP90: pct(waits, 0.9), proveP50: pct(proves, 0.5), proveP90: pct(proves, 0.9) };
-    return { ...counts, recent, workers: list, lease: PROVER_BOARD.leaseMs / 1000, pay: { pointsPerProof: pay.pointsPerProof, pointsByProgram: pay.pointsByProgram } };
+    return { ...counts, recent, workers: list, lease: PROVER_BOARD.leaseMs / 1000, pay: { pointsPerProof: pay.pointsPerProof, pointsByProgram: pay.pointsByProgram },
+      asks: { ...mem.asks, maybe: { ...mem.asks.maybe } } };
   }
 
   // One machine's standing, for its owner: its records, whether it holds a ticket in the block draw now and, if not, the reason in words, and
