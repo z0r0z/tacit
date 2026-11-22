@@ -246,6 +246,37 @@ test('the key\'s pairing link is offered with what it can provide, and Start pro
   assert.equal(asked, 1);
 });
 
+test('what the panel tells a provider as it goes: how it earns, that earnings arrive on Bitcoin and are brought home to lend again, and when what it can lend is used up', async () => {
+  const m = mount({ refreshMs: 20 });
+  await m.load();
+  assert.match(text(m.root), /Lend your private TAC and keep the fee on each fast bridge/);
+  assert.match(text(m.root), /settles both sides or neither/);
+  assert.match(m.root.querySelector('.note a').href, /fastbridge-lp\/README\.md#run-one-that-stays-on$/, 'the always-on path is one link away');
+  assert.doesNotMatch(text(m.$('pv-run')), /Bring it home/, 'nothing to bring home before the first bridge');
+  m.$('pv-go').click();
+  await until(() => m.$('pv-go').textContent === 'Stop providing', 'the switch');
+  assert.doesNotMatch(text(m.$('pv-inv')), /free, so new bridges go to other providers/, 'with TAC free it does not say it is used up');
+  // a bridge done, the pool all promised: the earnings are on Bitcoin, and new bridges pass it by
+  m.stub.st.done = 1; m.stub.st.earned = 3n * TAC; m.stub.st.held = 5000n * TAC;
+  m.stub.session.status = async () => ({ ...m.stub.st });
+  await until(() => /Bring it home/.test(text(m.$('pv-run'))), 'the poll');
+  assert.match(text(m.$('pv-run')), /arrives as TAC on Bitcoin/);
+  assert.equal(m.$('pv-run').querySelector('a[href="/#card=bridge"]')?.textContent.startsWith('Bring it home'), true);
+  assert.match(text(m.$('pv-inv')), /You have under 10 private TAC free, so new bridges go to other providers/);
+  assert.match(text(m.$('pv-inv')), /Or bring your earnings home/);
+  assert.equal(m.$('pv-inv').querySelector('a[href="/#card=bridge"]')?.textContent.startsWith('Add TAC'), true);
+});
+
+test('/fast/#provide brings the panel into view once it is drawn, not before', async () => {
+  const seen = [];
+  const dom = new JSDOM('<!doctype html><body><details id="pv"></details></body>', { url: 'https://tacit.finance/fast/#provide' });
+  const root = dom.window.document.getElementById('pv');
+  root.scrollIntoView = function () { seen.push(this.hidden); };
+  const key = keyStub();
+  mountProvide({ root, keyS: key, open: async () => sessionStub().session, signIn: async () => {}, settings: { get: () => null, set: () => {} } });
+  assert.deepEqual(seen, [false], 'scrolled once, when the panel was visible');
+});
+
 test('/fast/#provide opens the panel, which reads the key as soon as it is unlocked', async () => {
   const m = mount({ url: 'https://tacit.finance/fast/#provide' });
   assert.equal(m.root.open, true);

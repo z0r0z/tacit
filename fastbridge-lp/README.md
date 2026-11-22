@@ -7,6 +7,29 @@ and takes the Bitcoin once the user's claim shows it the secret. The protocol is
 The process runs the Ethereum-locker machine (`dapp/fastbridge-el.js`) over a durable store. Everything it decides it
 reads from the chains; the HTTP API only carries the user's offer in and the pool lock's offer out.
 
+## Run one that stays on
+
+Anyone can provide: from the bridge page (`/fast/`, "Provide liquidity", while the page is open), or with this process, which stays on by itself and
+needs nothing from you but TAC. It is found through the boards, so it needs no public address and no domain: a laptop, a home server or a small host will do.
+
+```
+git clone https://github.com/src-company/tacit && cd tacit && (cd worker-relay && npm ci)
+cp fastbridge-lp/config.example.json fastbridge-lp/config.json     # name, fee and sizes are yours to set
+export FB_LP_KEY=$(openssl rand -hex 32)                           # keep an offline copy: the funds are only as safe as this key
+node fastbridge-lp/server.mjs                                      # prints the address to fund
+```
+
+1. **Send it TAC.** The start line shows `poolAccount`: send TAC (the ERC-20, on Ethereum) there, and about 0.01 ETH for gas. Within a minute it
+   shields the TAC into private notes and lends it; send more at any time and it does the same. No other step, no tool to run.
+2. **It takes bridges.** It posts its ad on the board, so `/fast/` and the front page's Bridge tab find it. Each bridge pays you the fee in TAC on Bitcoin
+   (at the Bitcoin address of the key).
+3. **Bring it home when it runs low.** Bitcoin TAC builds up as the private TAC drains. Open the front page's Bridge tab with the same key and bridge it
+   back (`tools/fastbridge-lp-bridge-home.mjs` does it from a terminal), then it is lent again. Until then the provider shows "full right now" and bridgers use another.
+4. **Be told.** Set `FB_LP_ALERT_WEBHOOK` (a Slack or Discord webhook works as it is) and it says when it runs low on TAC or ETH, or a swap waits long.
+
+`FB_LP_MAX_AMOUNT=0` stops new swaps and finishes the open ones; to stop for good, wait for those to finish, then stop the process. One process per key.
+Try it first with `--dry-run`: it answers `/info` and `/quote`, takes nothing and shields nothing.
+
 ## What it needs
 
 | | |
@@ -65,7 +88,7 @@ restart, not a new image.
 
 1. **The key.** `openssl rand -hex 32`, set as `FB_LP_KEY` in the dashboard. It is the provider's Bitcoin wallet and pool identity; keep an offline copy, and never put it in a repository, a chat or a log.
 2. **First start.** Run the image once with `node fastbridge-lp/server.mjs --dry-run` as the Docker command (or the same on a machine): it answers `/info` and `/quote`, joins no board and advances no swap, and prints the Bitcoin address, the claim key and the pool account. On an empty disk the first read of the pool takes about two minutes (110 to 147 s measured), and the provider answers `/info` and posts its ad only after it; the scan is kept in `dataDir`, so a restart with the same disk reads in a few seconds (4 s measured). `/health` answers throughout.
-3. **Fund it.** Send TAC (the ERC-20, on Ethereum) and a little ETH for gas to the pool account it printed, then put the TAC into the pool as private notes of the same key with `FB_LP_KEY=<key> node tools/fastbridge-lp-shield.mjs <TAC> --index 0 --send` (without `--send` it only checks, and `EXPECT_ADDRESS=<pool account>` stops a wrong key). Start with a small amount to see the notes arrive, then the rest with the next index (`--index 1`, and so on: a key's deposits are numbered from 0). What the provider holds in the pool is what it can lend. It needs no Bitcoin: each user's lock pays the fee of its take.
+3. **Fund it.** Send TAC (the ERC-20, on Ethereum) and a little ETH for gas to the pool account it printed. Once it is live (step 4) it shields the TAC by itself, a chunk at a time (see "Keeping it filled"), so the same goes for every top-up. To put TAC into the pool by hand instead (`"refill": false`), use `FB_LP_KEY=<key> node tools/fastbridge-lp-shield.mjs <TAC> --index 0 --send` (without `--send` it only checks, and `EXPECT_ADDRESS=<pool account>` stops a wrong key; a key's deposits are numbered from 0). What the provider holds in the pool is what it can lend. It needs no Bitcoin: each user's lock pays the fee of its take.
 4. **Go live.** Remove `--dry-run`. It posts its ad on the boards in `config.render.json`, so `/fast/` finds it, and it takes any TAC the validator accepts, TAC out of the Bitcoin shielded pool included (see the last section).
 5. **Watch it.** `/health` is the health check; set `FB_LP_ALERT_WEBHOOK` to be told of a swap that waits long, a failed tick or a lost claim (the alerts are listed under "Watching it").
 6. **Tune it.** `FB_LP_MIN_AMOUNT`, `FB_LP_MAX_AMOUNT`, `FB_LP_FEE_BPS`, `FB_LP_FLAT_FEE`, `FB_LP_NAME`, `FB_LP_BOARDS` (base units; 8 places for TAC), and `FB_LP_MAILBOX_POLL_SECS` (how often it reads the board for requests left for it; a user's quote waits for the next read, so 1 s answers sooner than the default 3 s; not under 1, the board takes 120 reads a minute from one address). `FB_LP_MAX_AMOUNT=0` stops new swaps and finishes the open ones.
@@ -107,8 +130,9 @@ Keep several coins at the Bitcoin address, or one swap at a time is all it takes
 
 ## Keeping it filled
 
-Each bridge a provider takes moves TAC out of its private pool balance, so it runs out. Left alone it says so (the `capacity` line in the log, and a
-bridge too big for it waits on the board); with `refill` in the config it brings in more itself, in two ways:
+Each bridge a provider takes moves TAC out of its private pool balance, so it runs out. It says so (the `capacity` line in the log, an alert under
+`lowFreeTac`, and a bridge too big for it waits on the board), and it brings in more itself, in two ways. The first is on unless the config says
+`"refill": false`; the second needs a treasury in the config:
 
 ```json
 "refill": { "treasury": "0x…", "lowWaterTac": 3000, "chunkTac": 5000, "maxPerDayTac": 20000 }
@@ -116,15 +140,14 @@ bridge too big for it waits on the board); with `refill` in the config it brings
 
 1. TAC that reaches its own address, from anyone, is shielded whatever it holds free: a chunk at a time, not less than `minShieldTac` (default 100),
    a minute apart until it is all in. TAC at the address lends nothing, and an operator who sent some and went to bed should find it working in
-   the morning (40,000 TAC once sat at the address for twelve hours with nobody to shield it).
+   the morning (40,000 TAC once sat at the address for twelve hours with nobody to shield it). Topping up is sending TAC to the address.
 2. When the TAC it holds free (its pool balance less what is promised) falls under `lowWaterTac` and there is none at the address, a chunk is
    pulled from `treasury` with `transferFrom` and shielded. The treasury has to have approved the provider's address (`poolAccount`, printed at
    start) for an amount of TAC first; the provider can pull nothing beyond it, beyond what the treasury holds, beyond `chunkTac`, or beyond
    `maxPerDayTac` in a day. The treasury takes the permission back at any time with an approval of 0.
 
 It needs ETH at its address for the pull, the deposit and a settle sent from it when the relay is not sending them (enough for about 1.5 million gas at twice the gas price of the moment; `minEth` sets a floor under that). Its sends take turns with the settles the provider sends itself from the same
-address (one send at a time, each reading the nonce the one before left), so it does not wait for a quiet hour. An attempt that shielded is followed by the next after `afterShieldSecs` (default 60); one that failed, or found nothing to bring in, after `minIntervalSecs` (default 1800). It does nothing
-until the config names a treasury, and nothing in a dry run. A deposit whose settle fails stops it for good, with the deposit named in an alert: the TAC is
+address (one send at a time, each reading the nonce the one before left), so it does not wait for a quiet hour. An attempt that shielded is followed by the next after `afterShieldSecs` (default 60); one that failed, or found nothing to bring in, after `minIntervalSecs` (default 1800). Neither runs in a dry run, and the second needs a treasury in the config. A deposit whose settle fails stops it for good, with the deposit named in an alert: the TAC is
 in the pool's hands until it is settled. Try it first with a small `chunkTac` (100) and a small approval.
 
 ## Watching it

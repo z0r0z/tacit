@@ -22,7 +22,7 @@ const P = 10n ** 10n;                                           // token units i
 const min = (...v) => v.reduce((a, b) => (b < a ? b : a));
 const whole = (v) => v - (v % P);                               // the pool takes whole pool units
 
-export function makeRefill({ free, publicTac, allowance, treasuryTac, ethOk, quiet = async () => true, pull, shield, load = async () => ({}), save = async () => {}, now = () => Math.floor(Date.now() / 1000), config, log = () => {}, alert = () => {} }) {
+export function makeRefill({ free, publicTac, allowance, treasuryTac, ethOk, quiet = async () => true, pull, shield, load = async () => ({}), save = async () => {}, now = () => Math.floor(Date.now() / 1000), config, log = () => {}, alert = () => {}, address = null }) {
   const c = { minIntervalSecs: 1800, afterShieldSecs: 60, ...config };
   if (!(c.lowWater > 0n) || !(c.chunk > 0n) || !(c.minShield > 0n) || !(c.maxPerDay >= 0n)) throw new Error('refill: lowWater, chunk and minShield must be more than 0 and maxPerDay not below 0');
   let busy = false, nextAt = -Infinity, halted = null;
@@ -57,7 +57,10 @@ export function makeRefill({ free, publicTac, allowance, treasuryTac, ethOk, qui
         const [allowed, held] = [await allowance(), await treasuryTac()];
         const want = whole(min(c.chunk, allowed, held, room));
         if (want < c.minShield) {
-          sayOnce('none', { level: 'warn', msg: 'refill: private TAC is low and none can be pulled', allowance: String(allowed), treasury: String(held), pulledToday: String(today), maxPerDay: String(c.maxPerDay) });
+          // with no treasury (allowed and held are 0 for want of one) the way to fill it is to send TAC to its address, and the alert says so
+          // and it looks again at the next step, not after the long pause, so TAC sent a minute later is not left waiting half an hour
+          if (allowed === 0n && held === 0n) { nextAt = -Infinity; sayOnce('none', { level: 'warn', msg: `refill: private TAC is low: send TAC to ${address || 'the provider\'s address'} and it is shielded and lent on its own` }); }
+          else sayOnce('none', { level: 'warn', msg: 'refill: private TAC is low and none can be pulled', allowance: String(allowed), treasury: String(held), pulledToday: String(today), maxPerDay: String(c.maxPerDay) });
           return { did: 'none' };
         }
         await pull(want);

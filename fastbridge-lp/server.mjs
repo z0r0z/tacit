@@ -102,14 +102,15 @@ await service.start();
 let busy = false;
 if (!DRY) setInterval(async () => { if (busy) return; busy = true; try { await service.tick(); } finally { busy = false; } }, (C.tickSecs ?? 15) * 1000);
 
-// Keeping the private TAC filled (lib/refill.mjs, README "Keeping it filled"): off unless the config names a treasury. When what the provider holds free
-// falls under `lowWaterTac`, TAC at its own address is shielded, or a chunk is pulled from the treasury (which has approved this key for a limited
+// Keeping the private TAC filled (lib/refill.mjs, README "Keeping it filled"): on unless the config says `"refill": false`. TAC that reaches the
+// provider's own address, from anyone, is shielded and lent, so topping it up is sending TAC to the address it prints. When the config also names a
+// treasury and what the provider holds free falls under `lowWaterTac`, a chunk is pulled from the treasury (which has approved this key for a limited
 // amount, and can take that back with an approval of 0) and shielded. The key can pull nothing the treasury has not approved.
-if (C.refill && !DRY) {
+if (C.refill !== false && !DRY) {
   const { makeRefill } = await import('./lib/refill.mjs');
-  const rc = C.refill;
-  const treasury = String(rc.treasury || '').toLowerCase();
-  if (!/^0x[0-9a-f]{40}$/.test(treasury)) { console.error('refill.treasury must be an Ethereum address'); process.exit(1); }
+  const rc = C.refill && typeof C.refill === 'object' ? C.refill : {};
+  const treasury = rc.treasury == null ? null : String(rc.treasury).toLowerCase();
+  if (treasury != null && !/^0x[0-9a-f]{40}$/.test(treasury)) { console.error('refill.treasury must be an Ethereum address'); process.exit(1); }
   const tacMeta = ux.assetByTicker.TAC;
   if (!tacMeta || !tacMeta.underlying) { console.error('this build of the pool module has no TAC token to refill with'); process.exit(1); }
   const token = tacMeta.underlying;
@@ -123,8 +124,8 @@ if (C.refill && !DRY) {
   const refill = makeRefill({
     free: () => service.free(),
     publicTac: () => readNum('0x70a08231' + word(acct.address)),
-    allowance: () => readNum('0xdd62ed3e' + word(treasury) + word(acct.address)),
-    treasuryTac: () => readNum('0x70a08231' + word(treasury)),
+    allowance: async () => (treasury ? readNum('0xdd62ed3e' + word(treasury) + word(acct.address)) : 0n),
+    treasuryTac: async () => (treasury ? readNum('0x70a08231' + word(treasury)) : 0n),
     ethOk: async () => {
       const [bal, price] = [BigInt(await ux.rpc('eth_getBalance', [acct.address, 'latest'])), BigInt(await ux.rpc('eth_gasPrice', []))];
       const need = REFILL_GAS * (2n * price + 100000000n);         // at twice the gas price of the moment and a 0.1 gwei tip, as a send reserves
@@ -149,9 +150,9 @@ if (C.refill && !DRY) {
     load: async () => { try { return JSON.parse(readF(stateFile, 'utf8')); } catch { return {}; } },
     save: async (s) => writeF(stateFile, JSON.stringify(s)),
     config: { lowWater: wei(rc.lowWaterTac ?? 3000), chunk: wei(rc.chunkTac ?? 5000), minShield: wei(rc.minShieldTac ?? 100), maxPerDay: wei(rc.maxPerDayTac ?? 20000), minIntervalSecs: rc.minIntervalSecs ?? 1800, afterShieldSecs: rc.afterShieldSecs ?? 60 },
-    log, alert,
+    log, alert, address: acct.address,
   });
-  log({ level: 'info', msg: 'refill is on', treasury, lowWaterTac: rc.lowWaterTac ?? 3000, chunkTac: rc.chunkTac ?? 5000, maxPerDayTac: rc.maxPerDayTac ?? 20000 });
+  log({ level: 'info', msg: 'refill is on: TAC sent to the provider\'s address is shielded and lent', address: acct.address, treasury, lowWaterTac: rc.lowWaterTac ?? 3000, chunkTac: rc.chunkTac ?? 5000, maxPerDayTac: rc.maxPerDayTac ?? 20000 });
   setInterval(() => { refill.step().catch(() => {}); }, (rc.everySecs ?? 60) * 1000).unref();
   // The first wrap of a key reads the asset's Wrap logs to find its next unused index (minutes), and keeps the answer in the wallet cache on the data disk.
   // Reading them a little after start, while nothing is being shielded, leaves the first real shield only the newest blocks. It reserves no index.

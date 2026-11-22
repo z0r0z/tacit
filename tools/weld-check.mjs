@@ -871,10 +871,11 @@ await step('hxbridge', async () => {
     const opts = await p.$$eval('#hx-from option', (os) => os.map((o) => `${o.value}:${o.dataset.sub}`).join(' '));
     ok(/btc:to Ethereum, private/.test(opts) && /tac:to Bitcoin/.test(opts) && /ether:to Bitcoin, as tETH/.test(opts), `hxbridge: its From lists what crosses, each with where it goes (${opts})`);
     ok(!!(await p.$('#hx-brl a[href="/fast/"]')), 'hxbridge: TAC from Bitcoin also leads to the fast bridge page');
+    ok(!!(await p.$('#hx-brl a[href="/fast/#provide"]')), 'hxbridge: and to providing liquidity on it, for anyone who holds private TAC');
     await p.click(BRG.flip);
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Bridge TAC to Bitcoin', null, 60000);
     ok((await heldAt(p)) === 'private' && /^Burned on Ethereum > Proven for Bitcoin > Sent to Bitcoin > Arrived$/.test(await steps()) && !!(await p.$('#hx-amt')), `hxbridge: the flip turns it to private TAC to Bitcoin, with the way out's steps (${await steps()})`);
-    ok(await p.$eval('#hx-brl a', (a) => a.getAttribute('href') === '/bridge/') && !(await p.$('#hx-brl a[href="/fast/"]')), 'hxbridge: the line under it leads to the bridge page (the fast bridge is TAC from Bitcoin only)');
+    ok(await p.$eval('#hx-brl a', (a) => a.getAttribute('href') === '/bridge/') && !(await p.$('#hx-brl a[href="/fast/"]')) && !(await p.$('#hx-brl a[href="/fast/#provide"]')), 'hxbridge: the line under it leads to the bridge page (the fast bridge is TAC from Bitcoin only)');
     await p.evaluate(() => { location.hash = ''; });
     await p.click('[data-hxm="swap"]');
     await p.click('.wd-wire[data-hx="shield:btc:eth"]');
@@ -9127,6 +9128,7 @@ await step('earnhere', async () => {
   try {
     await earnCard(p, 'eth', '0');
     await until(p, () => /^Balance 0\.02 · Max/.test(document.querySelector('#hx-bal')?.textContent || ''), null, 420000);
+    ok(await p.$eval('#hx-lpl a', (a) => a.getAttribute('href') === '/fast/#provide' && /provide liquidity/.test(a.textContent)), 'earnhere: the Earn tab leads to providing liquidity on the fast bridge');
     await sheetsSeen(p);
     await p.click('#hx-max');
     await until(p, () => document.querySelector('#hx-go')?.textContent === 'Farm with tETH' && !document.querySelector('#hx-go').disabled && /Relay fee/.test(document.querySelector('#hx-receipt')?.textContent || ''), null, 420000)

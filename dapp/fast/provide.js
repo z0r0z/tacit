@@ -32,7 +32,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
   root.innerHTML = `
     <summary>Provide liquidity<span class="pv-waiting" id="pv-waiting"></span></summary>
     <div class="pv-in">
-      <p class="note">Earn the fee on each bridge. Keep this page open while you provide, or <a href="https://github.com/src-company/tacit/blob/main/fastbridge-lp/README.md" target="_blank" rel="noopener noreferrer">run a provider</a> that stays on.</p>
+      <p class="note">Lend your private TAC and keep the fee on each fast bridge. A bridger locks TAC on Bitcoin, you pay the same TAC, less your fee, into their private balance, and the Bitcoin TAC is yours. Each bridge is a swap that settles both sides or neither. It runs while this page is open; <a href="https://github.com/src-company/tacit/blob/main/fastbridge-lp/README.md#run-one-that-stays-on" target="_blank" rel="noopener noreferrer">run a provider</a> to keep it on without the page: send it TAC and it lends it.</p>
       <div class="kv" id="pv-want" hidden><span>Waiting for a provider</span><b class="num"></b></div>
       <div class="rows flat" id="pv-inv"></div>
       <div id="pv-set" hidden>
@@ -51,14 +51,17 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
   const accepting = () => !!(S.st && S.st.accepting);
 
   // the waiting bridges this key could take: inside its least and what it holds free, and its most per bridge when it has one set
+  const freeNow = () => (!S.inv ? 0n : S.st && S.st.held != null && S.inv.pool > S.st.held ? S.inv.pool - S.st.held : S.st && S.st.held != null ? 0n : S.inv.pool);
   const fitting = (w) => {
     if (!S.inv || !w || !w.items) return [];
-    const free = S.st && S.st.held != null && S.inv.pool > S.st.held ? S.inv.pool - S.st.held : S.st && S.st.held != null ? 0n : S.inv.pool;
+    const free = freeNow();
     const kept = S.pub ? settings.get(S.pub) : null, most = kept && kept.maxAmount != null ? BigInt(kept.maxAmount) : free;
     return w.items.filter((i) => i.amount >= base.minAmount && i.amount <= free && i.amount <= most);
   };
   // too little private TAC for the smallest bridge, and not providing (a provider that is on can always stop)
   const short = () => !!(S.inv && S.inv.pool < MIN_AMOUNT && !accepting());
+  // providing with less free than the smallest bridge: the bridges that come go past it until more is private
+  const spent = () => !!(S.inv && accepting() && freeNow() < MIN_AMOUNT);
   function paint() {
     const locked = !keyS.unlocked;
     root.hidden = locked && !signIn;
@@ -73,7 +76,8 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
       <div class="kv"><span>Your private TAC</span><b class="num">${esc(fmtTac(inv.pool))} TAC</b></div>${st && st.held != null && st.held > 0n ? `
       <div class="kv"><span>Held for bridges under way</span><b class="num">${esc(fmtTac(st.held))} TAC</b></div>
       <div class="kv"><span>Free to lend now</span><b class="num">${esc(fmtTac(inv.pool > st.held ? inv.pool - st.held : 0n))} TAC</b></div>` : ''}${short() ? `
-      <p class="empty">Providing takes at least ${esc(fmtTac(MIN_AMOUNT))} private TAC. <a href="/#card=bridge">Make TAC private ↗</a></p>` : ''}${inv.claimPub ? `
+      <p class="empty">Providing takes at least ${esc(fmtTac(MIN_AMOUNT))} private TAC. <a href="/#card=bridge">Make TAC private ↗</a></p>` : ''}${spent() ? `
+      <p class="empty">You have under ${esc(fmtTac(MIN_AMOUNT))} private TAC free, so new bridges go to other providers. <a href="/#card=bridge">Add TAC ↗</a>${st && st.earned > 0n ? ' Or bring your earnings home.' : ''}</p>` : ''}${inv.claimPub ? `
       <div class="kv"><span>Your link</span><b><button class="linkbtn" type="button" id="pv-link" data-link="${esc(linkOf(pairId(inv.claimPub)))}">copy</button></b></div>` : ''}` : '';
     $('pv-set').hidden = !inv || accepting();
     const run = $('pv-run');
@@ -82,7 +86,8 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
       run.innerHTML = `${st.running ? `<div class="kv"><span>${st.accepting ? 'Providing' : 'Finishing'}</span><b class="num">${st.accepting ? 'on' : 'no new bridges'}</b></div>
         <div class="kv"><span>Open bridges</span><b class="num">${st.open}</b></div>
         <div class="kv"><span>Done</span><b class="num">${st.done}</b></div>
-        <div class="kv"><span>Earned</span><b class="num">${esc(fmtTac(st.earned))} TAC</b></div>` : ''}${st.lastTake ? `
+        <div class="kv"><span>Earned</span><b class="num">${esc(fmtTac(st.earned))} TAC</b></div>` : ''}${st.done > 0 ? `
+        <p class="note">What bridges paid you arrives as TAC on Bitcoin, at your Bitcoin address. <a href="/#card=bridge">Bring it home ↗</a> to lend it again.</p>` : ''}${st.lastTake ? `
         <div class="kv"><span>Last take</span><b><a href="${SCAN}${esc(st.lastTake)}" target="_blank" rel="noopener noreferrer">Bitcoin transaction ↗</a></b></div>` : ''}`;
     }
     const go = $('pv-go');
@@ -223,7 +228,7 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
   if (keyS.unlocked && hasOpen(keyS.key.pubHex)) { root.open = true; load(); }
 
   // /fast/#provide comes straight to this panel: on load, and when a link on the page to it is followed
-  const toLink = () => { if (doc.defaultView?.location.hash === '#provide') root.open = true; };
+  const toLink = () => { if (doc.defaultView?.location.hash === '#provide') { root.open = true; if (!root.hidden && root.scrollIntoView) root.scrollIntoView({ block: 'start' }); } };
   toLink();
   doc.defaultView?.addEventListener('hashchange', toLink);
   // what is waiting for a provider, read now and every minute (a hidden tab with nothing to provide reads it again when it is back)
@@ -245,5 +250,6 @@ export function mountProvide({ base = { minAmount: MIN_AMOUNT, flatFee: 10_000_0
     doc.addEventListener('visibilitychange', () => { if (doc.visibilityState !== 'hidden' && Date.now() - lookedAt >= waitMs) look(); });
   }
   paint();
+  toLink();                       // the panel is drawn now: a link that came for it is brought into view
   return { busy: () => !!(S.st && S.st.running && (S.st.accepting || S.st.open > 0)) };
 }

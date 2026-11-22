@@ -19,7 +19,7 @@ function world(over = {}) {
     free: async () => w.free, publicTac: async () => w.pub, allowance: async () => w.allow, treasuryTac: async () => w.treasury, ethOk: async () => w.eth, quiet: async () => w.quiet,
     pull: async (v) => { w.calls.push(['pull', v]); if (w.pullFails) throw new Error('the pull reverted'); w.allow -= v; w.treasury -= v; w.pub += v; },
     shield: async (v) => { w.calls.push(['shield', v]); if (w.shieldFails) { const e = new Error(w.shieldFails.msg); if (w.shieldFails.deposited) e.deposited = w.shieldFails.deposited; throw e; } w.pub -= v; w.free += v / 10n ** 10n; },
-    load: async () => w.state, save: async (s) => { w.state = s; }, now: () => w.t, config: cfg, log: (o) => w.logs.push(o), alert: (o) => w.alerts.push(o),
+    load: async () => w.state, save: async (s) => { w.state = s; }, now: () => w.t, config: cfg, log: (o) => w.logs.push(o), alert: (o) => w.alerts.push(o), address: '0xPOOLACCOUNT',
   });
   w.r = r; w.advance = (s) => { w.t += s; };
   return w;
@@ -202,9 +202,25 @@ test('settings that could pull nothing, or without limit, are refused when it is
   }
 });
 
-test('the daemon makes it only when the config names a treasury, never in a dry run, and the pull is the standard transferFrom from the treasury to its own address', async () => {
+test('with no treasury, TAC sent to its address is shielded at once, and when it runs low it says where to send TAC and looks again a minute later, not half an hour later', async () => {
+  const w = world({ free: 100n * POOL, allow: 0n, treasury: 0n });
+  assert.equal((await w.r.step()).did, 'none', 'low, nothing at the address, no treasury');
+  assert.match(w.alerts[0].msg, /send TAC to 0xPOOLACCOUNT/, 'the alert names the address');
+  assert.doesNotMatch(w.alerts[0].msg, /pulled/);
+  w.pub = tac(800); w.advance(60);
+  const r = await w.r.step();
+  assert.deepEqual([r.did, r.amount], ['refilled', tac(800)], 'what was sent a minute later is shielded without waiting out the long pause');
+  assert.deepEqual(w.calls, [['shield', tac(800)]], 'and nothing is pulled');
+  // still not told twice in a row while it stays low
+  const q = world({ free: 100n * POOL, allow: 0n, treasury: 0n });
+  await q.r.step(); q.advance(60); await q.r.step(); q.advance(60); await q.r.step();
+  assert.equal(q.alerts.length, 1, 'said once, then again only after the quiet period');
+});
+
+test('the daemon makes it unless the config says refill is false, never in a dry run; a treasury is optional, and the pull is the standard transferFrom from the treasury to its own address', async () => {
   const src = readFileSync(new URL('../fastbridge-lp/server.mjs', import.meta.url), 'utf8');
-  assert.match(src, /if \(C\.refill && !DRY\)/, 'off unless configured, and never in a dry run');
+  assert.match(src, /if \(C\.refill !== false && !DRY\)/, 'on unless switched off, and never in a dry run');
+  assert.match(src, /allowance: async \(\) => \(treasury \?/, 'with no treasury there is nothing to read or pull');
   assert.match(src, /0x23b872dd/, 'transferFrom(address,address,uint256)');
   assert.match(src, /'0x23b872dd' \+ word\(treasury\) \+ word\(acct\.address\) \+ word\(amount\)/, 'from the treasury to its own address, and no other recipient');
   assert.match(src, /ux\.warmWrapLogs\(\{ ticker: 'TAC' \}\)/, 'the wrap logs are read a little after start, so the first real shield is not the slow one');
