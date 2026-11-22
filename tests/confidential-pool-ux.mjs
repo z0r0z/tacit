@@ -1179,6 +1179,108 @@ test('retry policy: the budget runs from the first refusal, so a long wait in th
   assert.equal(await again(settle(GATE)), false);
 });
 
+// Liquidity the pool moved under is built again on the pool as it is now, as a swap is. The relay's check names an add (or a removal) in its own words, the pool's refusal after a proof names the revert.
+const ADD_GATE = 'liquidity add not proved: the pool moved after this was built, so it was not proved and nothing was spent (0x29b3c833)';
+const REMOVE_GATE = 'liquidity removal not proved: the pool moved after this was built, so it was not proved and nothing was spent (0x29b3c833)';
+async function wrapLpFixture(mock) {
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: mock.fetchImpl });
+  const walletPriv = '0x' + '77'.repeat(32);
+  const other = ux.assets.find((a) => a.ticker !== 'cETH' && a.ticker !== 'TAC').ticker;
+  const waitOpts = { intervalMs: 0, sleep: async () => {} };
+  const args = { walletPriv, aTicker: 'cETH', bTicker: other, aAmountWei: '1000000000000000', bAmountWei: '1000000000000000', aIndex: 3, bIndex: 1, maxDonationBps: 10000, waitOpts };
+  return { ux, args };
+}
+
+test('wrapLp: an add the relay refused before any proof because the pool moved is built again on the reserves now', async () => {
+  const mock = movingPool({ moves: 1, fail: ADD_GATE });
+  const { ux, args } = await wrapLpFixture(mock);
+  const said = [];
+  const r = await ux.wrapLp({ ...args, waitOpts: { ...args.waitOpts, onAgain: (x) => said.push(x.cheap) } });
+  assert.equal(mock.captured.length, 2, 'the refused add and the one on the new reserves');
+  assert.equal(String(mock.captured[0].op.reserveBPre), '10000000');
+  assert.equal(String(mock.captured[1].op.reserveBPre), '9500000', 'the second build binds the reserves the pool holds now');
+  assert.deepEqual(said, [true], 'the page was told, once, that it was a cheap refusal');
+  assert.ok(r.dShares > 0n);
+});
+
+test('wrapLp: a refusal that does not name the moved pool is the error it was, and nothing is sent again', async () => {
+  const mock = movingPool({ moves: 1, fail: 'Execution reverted for an unknown reason.' });
+  const { ux, args } = await wrapLpFixture(mock);
+  await assert.rejects(ux.wrapLp(args), /settle failed: Execution reverted for an unknown reason\./);
+  assert.equal(mock.captured.length, 1);
+});
+
+test('wrapLp: a pool that keeps moving ends it after the tries, in words about liquidity, and says nothing was spent', async () => {
+  const mock = movingPool({ moves: 99, failFirst: 99, fail: ADD_GATE });
+  const { ux, args } = await wrapLpFixture(mock);
+  await assert.rejects(ux.wrapLp(args), (e) => /^The pool kept moving while your liquidity was proved, so it did not go through\. Nothing was spent/.test(e.message) && e.poolMoving === true && e.said === true);
+  assert.equal(mock.captured.length, 7, 'the first and six more');
+});
+
+test('lpBond: a bond the pool refused after its proof is built again, twice at most', async () => {
+  const BOARD_REFUSAL = 'lpbond: the pool refused this op as it stands (PoolReserveMismatch 0x29b3c833); it was not proved again and nothing was spent';
+  const mock = movingPool({ moves: 99, failFirst: 99, fail: `settle failed: ${BOARD_REFUSAL}` });
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: mock.fetchImpl });
+  const walletPriv = '0x' + 'c4'.repeat(32), id = ux.identity(walletPriv), pool = ux.pool;
+  const assetLow = '0x0a' + 'a'.repeat(62), assetHigh = '0x' + 'b0'.repeat(32);
+  const tree = new pool.Tree();
+  const mk = (asset, idx) => {
+    const dn = pool.deriveNote(id.priv, asset, idx);
+    const blinding = '0x' + BigInt(dn.blinding).toString(16).padStart(64, '0');
+    const owner = pool.nkToOwner(dn.secret);
+    const c = pool.commitXY(1000n, blinding);
+    const leafIndex = tree.insert(pool.leaf(asset, c.cx, c.cy, owner));
+    return { asset, value: '1000', ...c, owner, secret: dn.secret, blinding, leafIndex };
+  };
+  const aNote = mk(assetLow, 0), bNote = mk(assetHigh, 1);
+  for (const n of [aNote, bNote]) { n.path = tree.rootAndPath(n.leafIndex).path; n.root = tree.root(); }
+  await assert.rejects(ux.lpBond({ walletPriv, controller: '0x' + 'fa'.repeat(20), aNote, bNote, feeBps: 30, maxDonationBps: 10000, waitOpts: { intervalMs: 0, sleep: async () => {} } }), /The pool kept moving while your liquidity was proved/);
+  assert.equal(mock.captured.length, 3, 'the first and two more: a refusal after a proof costs a minute, so it is chased less than one before');
+});
+
+function liquidityNotes(ux, walletPriv) {
+  const id = ux.identity(walletPriv), pool = ux.pool;
+  const assetLow = '0x0a' + 'a'.repeat(62), assetHigh = '0x' + 'b0'.repeat(32);
+  const tree = new pool.Tree();
+  const mk = (asset, idx, value = 1000n) => {
+    const dn = pool.deriveNote(id.priv, asset, idx);
+    const blinding = '0x' + BigInt(dn.blinding).toString(16).padStart(64, '0');
+    const owner = pool.nkToOwner(dn.secret);
+    const c = pool.commitXY(value, blinding);
+    const leafIndex = tree.insert(pool.leaf(asset, c.cx, c.cy, owner));
+    return { asset, value: String(value), ...c, owner, secret: dn.secret, blinding, leafIndex };
+  };
+  return { assetLow, assetHigh, tree, mk, seal: (notes) => { for (const n of notes) { n.path = tree.rootAndPath(n.leafIndex).path; n.root = tree.root(); } return notes; } };
+}
+
+test('lpAdd: an add from notes the relay refused because the pool moved is built again on the reserves now', async () => {
+  const mock = movingPool({ moves: 1, fail: ADD_GATE });
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: mock.fetchImpl });
+  const walletPriv = '0x' + 'c5'.repeat(32), n = liquidityNotes(ux, walletPriv);
+  const [aNote, bNote] = n.seal([n.mk(n.assetLow, 0), n.mk(n.assetHigh, 1)]);
+  const r = await ux.lpAdd({ walletPriv, aNote, bNote, feeBps: 30, maxDonationBps: 10000, waitOpts: { intervalMs: 0, sleep: async () => {} } });
+  assert.equal(mock.captured.length, 2);
+  assert.equal(String(mock.captured[0].op.reserveBPre), '10000000');
+  assert.equal(String(mock.captured[1].op.reserveBPre), '9500000');
+  assert.ok(r);
+});
+
+test('lpRemove: a removal the relay refused because the pool moved is built again on the shares and reserves now', async () => {
+  const mock = movingPool({ moves: 1, fail: REMOVE_GATE });
+  const ux = makeConfidentialPoolUx({ ...deps, network: 'mainnet', fetchImpl: mock.fetchImpl });
+  const { makeConfidentialLp } = await import('../dapp/confidential-lp.js');
+  const walletPriv = '0x' + 'c6'.repeat(32), n = liquidityNotes(ux, walletPriv), feeBps = 30;
+  const lp = makeConfidentialLp({ keccak256: keccak_256, pool: ux.pool });
+  const lpAsset = lp.lpShareId(lp.poolId(n.assetLow, n.assetHigh, feeBps));
+  const note = n.seal([n.mk(lpAsset, 0, 1000n)])[0];
+  const r = await ux.lpRemove({ walletPriv, assetA: n.assetLow, assetB: n.assetHigh, feeBps, shareNote: note, fee: 0n, waitOpts: { intervalMs: 0, sleep: async () => {} } });
+  assert.equal(mock.captured.length, 2, 'the refused removal and the one on the pool now');
+  assert.equal(String(mock.captured[0].op.reserveBPre), '10000000');
+  assert.equal(String(mock.captured[1].op.reserveBPre), '9500000', 'the second build takes its share of the pool as it stands');
+  assert.ok(BigInt(mock.captured[1].op.dB) < BigInt(mock.captured[0].op.dB), 'and so takes less of the leg that fell');
+  assert.ok(r.dB > 0n);
+});
+
 test('route: refused before any proof again and again, it is built again each time and goes through on the sixth', async () => {
   const mock = movingPool({ moves: 5, failFirst: 5, fail: GATE });
   const { ux, args, waitOpts } = await routeFixture(mock);

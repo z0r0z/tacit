@@ -1606,7 +1606,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return { meta, value, blinding, cx, cy, owner, depositId: pool.depositId(meta.assetId, value, cx, cy, owner) };
   }
 
-  async function wrapLp({ walletPriv, aTicker, bTicker, aAmountWei, bAmountWei, feeBps = 30, fee = 0n, deadline = 0n, aIndex = 0, bIndex = 0, selfRelay = false, selfSettle = null, maxDonationBps, waitOpts } = {}) {
+  async function _wrapLpOnce({ walletPriv, aTicker, bTicker, aAmountWei, bAmountWei, feeBps = 30, fee = 0n, deadline = 0n, aIndex = 0, bIndex = 0, selfRelay = false, selfSettle = null, maxDonationBps, waitOpts } = {}) {
     const id = identity(walletPriv);
     let A = _depositLeg({ id, ticker: aTicker, amountWei: aAmountWei, index: aIndex });
     let B = _depositLeg({ id, ticker: bTicker, amountWei: bAmountWei, index: bIndex });
@@ -1945,7 +1945,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     return [a2, b2];
   }
 
-  async function lpBond({ walletPriv, controller, aNote, bNote, feeBps = 30, selfRelay = false, selfSettle = null, maxDonationBps, waitOpts } = {}) {
+  async function _lpBondOnce({ walletPriv, controller, aNote, bNote, feeBps = 30, selfRelay = false, selfSettle = null, maxDonationBps, waitOpts } = {}) {
     if (!controller) throw new Error('lp-bond: farm controller not configured for this network');
     [aNote, bNote] = await sameRoot(walletPriv, aNote, bNote);
     const res = await poolReserves(routePoolId(aNote.asset, bNote.asset, feeBps));
@@ -2268,7 +2268,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     wire.fee = Number(op.fee ?? 0n);
     return wire;
   }
-  async function lpAdd({ walletPriv, aNote, bNote, feeBps = 30, fee = 0n, deadline = 0n, selfRelay = false, selfSettle = null, contributeA = null, contributeB = null, maxDonationBps, waitOpts } = {}) {
+  async function _lpAddOnce({ walletPriv, aNote, bNote, feeBps = 30, fee = 0n, deadline = 0n, selfRelay = false, selfSettle = null, contributeA = null, contributeB = null, maxDonationBps, waitOpts } = {}) {
     if (!aNote || !bNote) throw new Error('lp-add: need an A note and a B note');
     if (BigInt(aNote.asset) === BigInt(bNote.asset)) throw new Error('lp-add: A and B must be different assets');
     [aNote, bNote] = await sameRoot(walletPriv, aNote, bNote);
@@ -2413,7 +2413,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     wire.b = { cx: b.cx, cy: b.cy, owner: b.owner, sigR: bSig.R, sigZ: bSig.z };
     return wire;
   }
-  async function lpRemove({ walletPriv, assetA, assetB, feeBps = 30, shareNote, fee = null, deadline = 0n, selfRelay = false, selfSettle = null, waitOpts } = {}) {
+  async function _lpRemoveOnce({ walletPriv, assetA, assetB, feeBps = 30, shareNote, fee = null, deadline = 0n, selfRelay = false, selfSettle = null, waitOpts } = {}) {
     if (!shareNote) throw new Error('lp-remove: need an LP-share note');
     if (!shareNote.path || shareNote.root == null) throw new Error('lp-remove: share note is missing its membership witness — rescan first');
     const id = identity(walletPriv);
@@ -3170,8 +3170,25 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       return true;
     };
   }
+  // A liquidity add, bond or removal the pool moved under is built again on the pool as it is now, as a swap is. The pool pins an add's reserves and share total exactly and takes a removal only up to its pro-rata share of the
+  // pool as it stands, so a trade landing between the build and the settle refuses either (PoolReserveMismatch): the relay says so before any proof ("… not proved: the pool moved") or the pool does after one. The notes are
+  // unspent either way, and a build reads the pool afresh, so the same press goes again, within swapRetry's counts and budget. Only a refusal that names that revert is chased.
+  async function _againOnMove(waitOpts, run) {
+    const again = swapRetry(waitOpts);
+    for (;;) {
+      try { return await run(); }
+      catch (e) {
+        if (_poolRefusal(e) !== 'named') throw e;
+        if (!(await again(e))) throw _poolKeptMoving(e, ' Nothing was spent; press again for a fresh quote.', 'liquidity');
+      }
+    }
+  }
+  const lpRemove = (args = {}) => _againOnMove(args.waitOpts, () => _lpRemoveOnce(args));
+  const lpAdd = (args = {}) => _againOnMove(args.waitOpts, () => _lpAddOnce(args));
+  const lpBond = (args = {}) => _againOnMove(args.waitOpts, () => _lpBondOnce(args));
+  const wrapLp = (args = {}) => _againOnMove(args.waitOpts, () => _wrapLpOnce(args));
   const _priceMoved = () => Object.assign(new Error('The price moved past what was quoted, so the swap was not sent.'), { moved: true, said: true });
-  const _poolKeptMoving = (cause, tail) => Object.assign(new Error(`The pool kept moving while your swap was proved, so it did not go through.${tail}`), { moved: true, said: true, poolMoving: true, cause });
+  const _poolKeptMoving = (cause, tail, what = 'swap') => Object.assign(new Error(`The pool kept moving while your ${what} was proved, so it did not go through.${tail}`), { moved: true, said: true, poolMoving: true, cause });
   async function route({ walletPriv, inNote, amountIn, path, minOut, fee = 0n, split = null, selfRelay = false, selfSettle = null, waitOpts } = {}) {
     const again = swapRetry(waitOpts);
     for (let first = true; ; first = false) {
