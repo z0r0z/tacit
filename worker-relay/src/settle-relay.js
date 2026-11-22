@@ -670,7 +670,9 @@ async function settleOne(j) {
     const pending = Array.isArray(e.broadcastHashes) && e.broadcastHashes.length
       ? ` — broadcast and possibly still pending: ${e.broadcastHashes.join(', ')}`
       : '';
-    await confidentialAck({ jobId: j.jobId, error: pending ? `${safeErr(e, 200 - pending.length)}${pending}` : safeErr(e), broadcastHashes: e.broadcastHashes });
+    // The revert's selector, in the "(0x…)" form the pages turn into words, as the other two settle paths carry it (a refusal here said only "for an unknown reason").
+    const sel = e.revertSelector ? ` (${e.revertSelector})` : '';
+    await confidentialAck({ jobId: j.jobId, error: `${safeErr(e, 200 - pending.length - sel.length)}${sel}${pending}`, broadcastHashes: e.broadcastHashes });
     abandoned.remember(j, e.broadcastHashes);
   }
 }

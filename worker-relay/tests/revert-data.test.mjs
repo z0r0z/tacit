@@ -34,5 +34,15 @@ ok(opExpiry({ type: 'unwrap', op: { deadline: '0' } }) === 0 && opExpiry({ type:
 ok(opExpiry({ type: 'stealthrefund', op: { deadline: '1700000000' } }) === 0, 'a refund\'s deadline (valid only after it) is never read as an expiry');
 ok(opExpiry({ type: 'bridgemint', op: { deadline: '1700000000' } }) === 0 && opExpiry(null) === 0, 'nor any type outside the list');
 
+// A settle's failed ack carries the revert's selector as " (0x…)", on every path that acks one, for the pages to turn into words. The path of a batch member the chain refused
+// (settleOne) dropped it, and a swap that lost a race to a trade read "Execution reverted for an unknown reason." where the pool had said why.
+{
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../src/settle-relay.js', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('async function settleOne('));
+  const ack = fn.slice(fn.indexOf('const sel = '), fn.indexOf('abandoned.remember'));
+  ok(/e\.revertSelector/.test(ack) && /\$\{sel\}/.test(ack) && /confidentialAck\(/.test(ack), 'a refused batch member\'s ack carries the revert\'s selector');
+}
+
 if (fails) { console.log(`${fails} revert-data check(s) FAILED`); process.exit(1); }
 console.log('all revert-data checks passed');
