@@ -103,3 +103,7 @@ tools/.regen/
 
 # live-check wallets (private keys)
 tools/.live-check-*.json
+
+# a provider run from a checkout: its config and its data (swap records, wallet cache, logs) stay on that machine
+fastbridge-lp/config.json
+fastbridge-lp/data/

@@ -15,7 +15,8 @@ a day of the bridger's lock, before their refund opens, and a bridge it does not
 (a home server or a small host, not a laptop that sleeps), and before turning it off set `FB_LP_MAX_AMOUNT=0` and wait for the open swaps to finish.
 
 ```
-git clone https://github.com/src-company/tacit && cd tacit && (cd worker-relay && npm ci)
+git clone https://github.com/src-company/tacit && cd tacit
+(cd worker-relay && npm ci --omit=dev --ignore-scripts) && (cd worker && npm ci --omit=dev --ignore-scripts)
 cp fastbridge-lp/config.example.json fastbridge-lp/config.json     # name, fee and sizes are yours to set
 export FB_LP_KEY=$(openssl rand -hex 32)                           # keep an offline copy: the funds are only as safe as this key
 node fastbridge-lp/server.mjs                                      # prints the address to fund
@@ -41,7 +42,7 @@ Try it first with `--dry-run`: it answers `/info` and `/quote`, takes nothing an
 | Key | `FB_LP_KEY`, 32 bytes of hex, in the environment only. It is the LP's Bitcoin wallet, its pool identity and the root of its swap secrets. `openssl rand -hex 32` makes one. Keep an offline copy: the funds are only as safe as this key. |
 | Bitcoin | Nothing: each user's lock pays the fee of the LP's take to the address printed at start (`takeSats` in the quote, twice the fee rate of the moment), and the take spends that output. Coins sent there are used as well, as a reserve when fees rise. |
 | Pool | TAC notes owned by the pool identity printed at start (`poolAccount` is its Ethereum address). Shield TAC from that address, or by any route that ends in notes for this identity; the process finds its notes by scanning the pool with its key. A note of exactly the quoted amount is cut from a larger one when there is none, so a few big notes are enough. |
-| Host | Node 22, the repository checked out, `npm ci` in `worker-relay/` (the note validator needs jsdom). One process per key: two would lock the same swap twice. |
+| Host | Node 22, the repository checked out, and its packages installed in both `worker-relay/` (the note validator needs jsdom) and `worker/` (the noble libraries it imports): `npm ci --omit=dev --ignore-scripts` in each, as the image does. One process per key: two would lock the same swap twice. |
 | Network | Outbound to the Bitcoin explorers (`btcBases`), the Ethereum RPCs the pool wallet module uses, and the relay at `api.tacit.finance`. Inbound on `port` for the users' pages. |
 | Disk | `dataDir`: the swap records (`swaps/`), the quotes (`quotes/`), the wallet's scan cache (`wallet-cache.json`, `logs/`). |
 
