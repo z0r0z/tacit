@@ -1124,11 +1124,25 @@ test('retry policy: a swap is not chased past the budget, whatever tries are lef
   let t = 0;
   const again = ux.swapRetry({ sleep: async () => {} }, () => t);
   assert.equal(await again(settle(GATE)), true);
-  t = 120_001;
-  assert.equal(await again(settle(GATE)), false, 'past two minutes');
+  t = 479_999;
+  assert.equal(await again(settle(GATE)), true, 'inside eight minutes of the first refusal');
+  t = 480_001;
+  assert.equal(await again(settle(GATE)), false, 'past eight minutes of the first refusal');
   const noisy = ux.swapRetry({ onAgain: () => { throw new Error('the page broke'); }, sleep: async () => {} });
   assert.equal(await noisy(settle(GATE)), true, 'a throwing page callback does not stop the retry');
   assert.equal(await ux.swapRetry({})(settle(GATE)).catch(() => 'threw'), true, 'no callback, no sleep given: the real pause is used');
+});
+
+test('retry policy: the budget runs from the first refusal, so a long wait in the relay\'s queue before it does not use it up', async () => {
+  const { ux } = await routeFixture(movingPool());
+  let t = 0;
+  const again = ux.swapRetry({ sleep: async () => {} }, () => t);
+  t = 900_000;                                                    // fifteen minutes in the queue, then the relay refuses
+  assert.equal(await again(settle(GATE)), true, 'the first refusal is always chased');
+  t = 900_000 + 300_000;                                          // another queue wait of five minutes, refused again
+  assert.equal(await again(settle(GATE)), true);
+  t = 900_000 + 480_001;
+  assert.equal(await again(settle(GATE)), false);
 });
 
 test('route: refused before any proof again and again, it is built again each time and goes through on the sixth', async () => {

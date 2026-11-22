@@ -3152,15 +3152,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   // The same swap built again on the reserves now, as often as the pool moves under it: the holder's least (minOut) still bounds what it may take, so a price that fell past it stops here.
   // How often depends on what the refusal cost. One BEFORE any proof (the relay's check, "… not proved: the pool moved") cost the relay nothing and the holder some seconds, so it is tried again promptly
   // and several times, after a short pause for the chain to move on. One AFTER the proof (the pool moved while it was proved) cost a proof and about a minute, so it is tried fewer times. A swap is
-  // not chased for longer than the budget either way. `waitOpts.onAgain({ cheap, attempt })` lets a page say that it is happening.
-  const MOVED = { cheap: 6, dear: 2, pauseMs: 1500, budgetMs: 120_000 };
+  // not chased for longer than the budget either way, which runs from the FIRST refusal: the wait in the relay's queue before it (minutes, when it is busy) is not the swap being chased, and each
+  // new try waits its own turn there. `waitOpts.onAgain({ cheap, attempt })` lets a page say that it is happening.
+  const MOVED = { cheap: 6, dear: 2, pauseMs: 1500, budgetMs: 480_000 };
   const _refusedBeforeProof = (e) => /not proved: the pool moved/i.test(String(e?.message || ''));
   const _wait = (ms) => new Promise((r) => setTimeout(r, ms));
   function swapRetry(waitOpts, now = Date.now) {
-    const t0 = now(), used = { cheap: 0, dear: 0 };
+    let t0 = null;
+    const used = { cheap: 0, dear: 0 };
     return async (e) => {                              // -> true: build it again and send it; false: stop
-      const cheap = _refusedBeforeProof(e), kind = cheap ? 'cheap' : 'dear';
-      if (++used[kind] > MOVED[kind] || now() - t0 > MOVED.budgetMs) return false;
+      const cheap = _refusedBeforeProof(e), kind = cheap ? 'cheap' : 'dear', t = now();
+      if (t0 === null) t0 = t;
+      if (++used[kind] > MOVED[kind] || t - t0 > MOVED.budgetMs) return false;
       try { waitOpts?.onAgain?.({ cheap, attempt: used.cheap + used.dear }); } catch { /* a page's wording never stops a swap */ }
       if (cheap) await (waitOpts?.sleep || _wait)(MOVED.pauseMs);
       return true;
