@@ -16,7 +16,7 @@ const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const hardStop = setTimeout(() => { console.log('STOPPED: time limit'); process.exit(3); }, 10 * 60e3); hardStop.unref?.();
 
 const { loadTacit } = await import(REPO + '/worker-relay/src/lib/btc-pool-transparent.js');
-const { secp, sha256, hmac } = await import(REPO + '/dapp/vendor/tacit-deps.min.js');
+const { secp, sha256, hmac, bytesToHex } = await import(REPO + '/dapp/vendor/tacit-deps.min.js');
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 const { setActiveNetwork } = await import(REPO + '/dapp/confidential-deployments.js');
 const { makeBtcWallet } = await import(REPO + '/dapp/bitcoin-taproot-wallet.js');
@@ -27,7 +27,8 @@ const wallet = (priv) => makeBtcWallet({ priv, hrp: 'bc', fetchUtxos: async () =
 const main = wallet(key), rev = wallet(reverseKeyOf(key));
 const addr = rev.wallet.address();
 console.log(`main address      ${main.wallet.address()}   (the provider's earnings, take-fee coins and a maker's stock: not used by the reverse side)`);
-console.log(`reverse address   ${addr}   <- send TAC notes and a few plain-sat coins here`);
+console.log(`reverse address   ${addr}   <- send plain sats here (an ordinary Bitcoin send)`);
+console.log(`reverse public key ${bytesToHex(rev.wallet.pub)}   <- send TAC to THIS: paste it in the wallet's Send box (a plain transfer to the key). Not a tacit1 address: those deliver privately to a one-time address that the reverse side cannot spend`);
 if (addr === main.wallet.address()) { console.log('the two are the same address: do not switch the reverse side on'); process.exit(1); }
 
 // the notes, read the way the daemon reads them (lib/reverse.mjs), with the daemon's set-up: the live pool for notes that came out of it, and no location

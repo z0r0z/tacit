@@ -169,8 +169,10 @@ claim of that lock shows the secret, and the user takes the Bitcoin note with it
 **It sells from a Bitcoin address of its own**, derived from `FB_LP_KEY` and printed at start (`reverseAddress`), and from nothing else. The main address holds
 earnings, take-fee coins and, on a house provider, stock that a market maker lists by outpoint; a lock picks the smallest note that covers it and funds itself
 from the largest plain-sat coins, so on that address it would spend a listed note or a proceeds coin (and the address has so many outputs that explorers refuse to
-list it). The new address has what was put there on purpose and nothing else, so **to fund it, send TAC notes there (an ordinary transfer from any Tacit wallet) and a
-few plain-sat coins for the locks' fees**; it refuses to start if the derived address were the main one. What it can sell is the confirmed TAC at that address.
+list it). The new address has what was put there on purpose and nothing else, so **to fund it, send TAC to the reverse public key (the status tool below prints it: paste it in a Tacit wallet's Send box, which makes a plain transfer to that key) and a
+few plain sats to the reverse address (an ordinary Bitcoin send) for the locks' fees**. Do not send the TAC to a `tacit1` address: that delivers privately to a one-time
+address, which the lock does not sign for and the reverse side does not count. It refuses to start if the derived address were the main one. What it can sell is the
+confirmed, plainly received TAC at that address.
 The key is derived, so the address comes back from the same `FB_LP_KEY`, and so does the seed of its swaps (apart from the other direction's).
 `tools/fastbridge-lp-reverse-status.mjs` (read only; the key in `FB_LP_KEY`, never printed) prints that address and the TAC notes and plain-sat coins at it, before
 anything is switched on anywhere.
