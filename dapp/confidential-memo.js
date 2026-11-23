@@ -59,6 +59,26 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
   // Wire form for the on-chain `bytes` memo: ephemeralPub(33) ‖ ciphertext(136).
   function encodeMemo(memo) { return '0x' + String(memo.ephemeralPub).replace(/^0x/, '') + String(memo.ciphertext).replace(/^0x/, ''); }
 
+  // A settle's memo list is its note leaves' memos and then its lock leaves' (the pool pairs them by place and emits the whole list with LeavesInserted). A batch whose ops went in
+  // an order the pool pairs wrong (an op that makes locks ahead of one that makes notes, before the relay ordered them) left a lock's memo on a note leaf and the notes' memos one place
+  // on, some of them on the lock places. What a memo is can be told by its size alone: a stealth lock's is 145 bytes (the recipient's) or 322 (with the sender's tail), a swap's cut lock
+  // has none, and a note's is neither. So a settle is shifted when a note place holds a stealth-sized or empty memo, or a lock place holds a note-sized one.
+  const STEALTH_MEMO_BYTES = new Set([33 + 112, 33 + 112 + 177]);
+  const memoBytes = (m) => String(m == null ? '' : m).replace(/^0x/, '').length / 2;
+  const isEmptyMemo = (m) => memoBytes(m) === 0;
+  const isStealthMemo = (m) => STEALTH_MEMO_BYTES.has(memoBytes(m));
+  function shiftedMemos(leavesCount, memos) {
+    if (!Array.isArray(memos) || memos.length <= leavesCount) return false;   // no lock places: nothing to have moved across
+    for (let i = 0; i < memos.length; i++) {
+      if (i < leavesCount ? isEmptyMemo(memos[i]) || isStealthMemo(memos[i]) : !isEmptyMemo(memos[i]) && !isStealthMemo(memos[i])) return true;
+    }
+    return false;
+  }
+  // For each leaf of a shifted settle, the other memos of that settle: tried against the leaf after its own place's memo, since the opener checks the leaf and a memo that is not
+  // for it opens nothing. Capped, so a very large batch cannot make one leaf cost a hundred openings.
+  const ALTS_CAP = 48;
+  const altsOf = (memos, own) => memos.filter((m, k) => k !== own && !isEmptyMemo(m)).slice(0, ALTS_CAP);
+
   // Try to open a memo against an on-chain leaf hash with my private key. Returns
   // the recovered opening iff the decrypted fields rehash to `leaf`; else null
   // (not mine / garbage / tampered). The leaf hash is the authenticator for
@@ -94,7 +114,7 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
     const mine = [];
     for (const ev of events) {
       try {
-        const note = openMemo(myPriv, ev && ev.leaf, ev && ev.memo);
+        const note = openOwnOrAlt(myPriv, ev);
         if (!note) continue;
         const nullifier = nullifierOf(note, ev.leaf);
         if (spent.has(nullifier.toLowerCase())) continue;
@@ -102,6 +122,13 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
       } catch { /* an event that cannot be processed is skipped; the rest of the scan continues */ }
     }
     return mine;
+  }
+  // The memo at the leaf's own place first; only when it opens nothing, and the leaf is one of a shifted settle (`alts`), the settle's other memos.
+  function openOwnOrAlt(myPriv, ev) {
+    const note = openMemo(myPriv, ev && ev.leaf, ev && ev.memo);
+    if (note || !ev || !Array.isArray(ev.alts)) return note;
+    for (const a of ev.alts) { const n = openMemo(myPriv, ev.leaf, a); if (n) return n; }
+    return null;
   }
 
   // `scan` in slices: a pool's memos are thousands of point multiplications, so the thread is handed back every `sliceMs`. Whether a
@@ -137,11 +164,14 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
     for (const ev of events) {
       if (Date.now() - t0 > sliceMs) { await handBack(); t0 = Date.now(); }
       try {
-        if (known && ev && Number(ev.leafIndex) < covered.upTo && !known.has(Number(ev.leafIndex))) continue;
+        // a leaf of a shifted settle (it has `alts`) is never skipped for being below a checkpoint: a scan before the alternatives were tried ruled it out on its own place's memo alone
+        const alts = ev && Array.isArray(ev.alts) && ev.alts.length ? ev.alts : null;
+        if (known && ev && !alts && Number(ev.leafIndex) < covered.upTo && !known.has(Number(ev.leafIndex))) continue;
         const m = ev && ev.memo, text = typeof m === 'string' ? m : null;
-        const id = text && text.length > 2 ? bytesToHex(sha256(utf8.encode(String(ev.leaf).toLowerCase() + '|' + text))).slice(0, 32) : null;
+        // what was tried is the leaf with its own memo and, when it has them, the alternatives, so a leaf tried before it had any is tried again
+        const id = (text && text.length > 2) || alts ? bytesToHex(sha256(utf8.encode(String(ev.leaf).toLowerCase() + '|' + String(text || '') + (alts ? '|' + alts.join(',') : '')))).slice(0, 32) : null;
         if (id && tried.get(id) === false) continue;
-        plan.push({ ev, m, text, id, said: -1 });
+        plan.push({ ev, m, text, id, alts, said: -1 });
       } catch { /* an event that cannot be processed is skipped; the rest of the scan continues */ }
     }
     // a frontier is only a frontier when the events come in leaf order, as the indexer gives them
@@ -149,7 +179,7 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
     for (let from = 0; from < plan.length; from += batch) {
       const part = plan.slice(from, from + batch);
       if (filter) {
-        const asked = part.filter((p) => p.id);
+        const asked = part.filter((p) => p.id && !p.alts);   // the filter speaks of a leaf's own memo only; a shifted settle's leaves are opened in full
         if (asked.length) {
           let said = null;
           try { said = await filter(myPriv, asked.map((p) => p.text)); } catch { said = null; }
@@ -161,7 +191,7 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
         try {
           if (id && tried.get(id) === false) continue;
           if (id && said === 0) { tried.set(id, false); continue; }
-          const note = openMemo(myPriv, ev && ev.leaf, m);
+          const note = openOwnOrAlt(myPriv, ev);
           if (id) tried.set(id, !!note);
           if (!note) continue;
           const nullifier = nullifierOf(note, ev.leaf);
@@ -178,5 +208,5 @@ export function makeConfidentialMemo({ secp, sha256, keccak256 }) {
     return mine;
   }
 
-  return { sealMemo, openMemo, scan, scanSliced, commitXY, leafHash, encodeMemo, decodeMemo, receiveSecret };
+  return { sealMemo, openMemo, scan, scanSliced, commitXY, leafHash, encodeMemo, decodeMemo, receiveSecret, shiftedMemos, altsOf };
 }

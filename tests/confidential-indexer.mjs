@@ -92,4 +92,58 @@ const holed = [
 assert.throws(() => idx.recover(holed, myPriv), /leaf gap at index 1/, 'gap detected');
 ok('a missed LeavesInserted event is caught as a tree gap (fail-loud)');
 
-console.log(`\n${n}/5 confidential-indexer checks passed`);
+// ── a settle whose memos sit on the wrong leaves: the notes are still found from the key alone ──
+// A batch whose ops went in an order the pool pairs wrong (an op that makes locks ahead of one that makes notes; seen on mainnet at block 26474996: two note leaves and one lock leaf,
+// memos of 322, 169 and 169 bytes) put a stealth lock's memo on the first note leaf and the transfer's two note memos one place on, the second on the lock's place. The pool emits the
+// whole list with LeavesInserted, so every memo is in the event; the leaves of a shifted settle carry the others and are tried with them after their own.
+{
+  const xN = { value: 7000n, blinding: randomScalar(), secret: '0x' + 'd4'.repeat(32), asset: ASSET, owner: pool.nkToOwner('0x' + 'd4'.repeat(32)) };
+  const yN = { value: 3000n, blinding: randomScalar(), secret: '0x' + 'e5'.repeat(32), asset: ASSET, owner: pool.nkToOwner('0x' + 'e5'.repeat(32)) };
+  const x = emit(xN, myPub), y = emit(yN, myPub);
+  const NOTE_BYTES = (x.memo.length - 2) / 2;
+  assert.ok(NOTE_BYTES !== 145 && NOTE_BYTES !== 322, 'a note memo is not the size of a stealth lock memo');
+  const STEALTH = '0x' + 'ee'.repeat(322);                       // what the lock's op sealed: 322 bytes (recipient + sender tail)
+  const shiftedEv = { type: 'LeavesInserted', firstLeafIndex: 0, leaves: [x.leaf, y.leaf], memos: [STEALTH, x.memo, y.memo] };   // as the chain held it
+  const orderedEv = { type: 'LeavesInserted', firstLeafIndex: 0, leaves: [x.leaf, y.leaf], memos: [x.memo, y.memo, STEALTH] };   // as the relay builds it now
+  const nu = (nn, lf) => pool.nativeNu(nn.owner, nn.secret, lf);
+
+  // the shape check: what is shifted, what is not
+  assert.strictEqual(memo.shiftedMemos(2, shiftedEv.memos), true, 'a stealth-sized memo on a note place is shifted');
+  assert.strictEqual(memo.shiftedMemos(2, orderedEv.memos), false, 'notes first and the lock last is in order');
+  assert.strictEqual(memo.shiftedMemos(2, [x.memo, y.memo]), false, 'no lock places: nothing to have moved across');
+  assert.strictEqual(memo.shiftedMemos(2, [x.memo, y.memo, '0x']), false, 'a swap\'s cut lock has no memo and is in its place');
+  assert.strictEqual(memo.shiftedMemos(2, [x.memo, '0x', y.memo]), true, 'an empty memo on a note place and a note memo on the lock place is shifted');
+  assert.strictEqual(memo.shiftedMemos(1, ['0x', STEALTH]), true, 'a note place without a memo is the shape of a bridge mint: tried with the others, harmlessly');
+  assert.strictEqual(memo.shiftedMemos(2, [x.memo, y.memo, '0x' + 'ee'.repeat(145)]), false, 'a recipient-only stealth memo last is in order');
+  ok('shiftedMemos tells a settle whose notes\' and locks\' memos are on the wrong places from one that is in order, by memo size alone');
+
+  // without the alternatives, the old reading finds nothing of the two notes; with them it finds both
+  const bare = idx.index([shiftedEv]).leaves.map(({ leaf, memo: m, leafIndex }) => ({ leaf, memo: m, leafIndex }));
+  assert.strictEqual(memo.scan(myPriv, bare, [], nu).length, 0, 'one memo per leaf, as before: neither note opens');
+  const found = idx.recover([shiftedEv], myPriv);
+  assert.deepStrictEqual(found.map((f) => [f.leafIndex, f.value]).sort(), [[0, 7000n], [1, 3000n]], 'both notes are found from the key, each on its own leaf');
+  assert.ok(found.every((f) => pool.verifyPath(f.leaf, f.leafIndex, f.path, f.root)), 'with spendable membership paths');
+  assert.deepStrictEqual(found.map((f) => f.nullifier).sort(), [nu({ ...xN }, x.leaf), nu({ ...yN }, y.leaf)].sort(), 'and the nullifiers the chain will record');
+  assert.strictEqual(idx.recover([shiftedEv], sPriv).length, 0, 'a stranger\'s key opens nothing of them');
+  ok('recover: the two notes of a settle with shifted memos are found from the wallet key alone');
+
+  // a settle in order offers nothing more: no alternatives, the same result
+  const inOrder = idx.index([orderedEv]).leaves;
+  assert.ok(inOrder.every((l) => l.alts === undefined), 'a settle in order carries no alternatives, so a scan costs what it did');
+  assert.deepStrictEqual(idx.recover([orderedEv], myPriv).map((f) => f.value).sort(), [3000n, 7000n]);
+  ok('a settle in order is read as it was');
+
+  // the sliced scan the wallet uses: a checkpoint that says everything below leaf 2 was done, and the tried-memo record of an earlier scan, do not hide them
+  const withAlts = idx.index([shiftedEv]).leaves;
+  const earlier = await memo.scanSliced(myPriv, bare, [], nu);
+  assert.strictEqual(earlier.length, 0, 'a scan before the alternatives existed rules both out on their own memos, and keeps that');
+  const again = await memo.scanSliced(myPriv, withAlts, [], nu, { covered: { upTo: 2, mine: [] } });
+  assert.deepStrictEqual(again.map((f) => [f.leafIndex, f.value]).sort(), [[0, 7000n], [1, 3000n]], 'a later scan with the alternatives, over a checkpoint that covers them and a tried record that ruled them out, finds both');
+  const ruledOut = await memo.scanSliced(myPriv, withAlts, [], nu, { filter: async (_k, texts) => new Int8Array(texts.length) });
+  assert.strictEqual(ruledOut.length, 2, 'the prefilter speaks of a leaf\'s own memo only: a shifted settle\'s leaves are opened in full');
+  const ordinary = await memo.scanSliced(myPriv, inOrder, [], nu, { filter: async (_k, texts) => new Int8Array(texts.length) });
+  assert.strictEqual(ordinary.length, 0, 'and a leaf the prefilter rules out, with nothing shifted, stays ruled out');
+  ok('scanSliced: a checkpoint, an earlier tried record and the prefilter do not hide the notes of a shifted settle');
+}
+
+console.log(`\n${n}/9 confidential-indexer checks passed`);

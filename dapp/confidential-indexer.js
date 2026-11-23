@@ -31,8 +31,11 @@ export function makeConfidentialIndexer({ secp, keccak256, sha256 }) {
     for (const ev of events || []) {
       if (ev.type === 'LeavesInserted') {
         const base = Number(ev.firstLeafIndex);
+        // the event carries the settle's whole memo list; when it is one whose notes' memos and locks' memos are not where the pool pairs them (a batch ordered wrong before
+        // 2026-11-23), each leaf carries the settle's other memos too, for the scan to try after its own (see confidential-memo.js shiftedMemos)
+        const shifted = memo.shiftedMemos(ev.leaves.length, ev.memos);
         for (let i = 0; i < ev.leaves.length; i++) {
-          leaves[base + i] = { leaf: ev.leaves[i], memo: ev.memos[i], leafIndex: base + i };
+          leaves[base + i] = { leaf: ev.leaves[i], memo: ev.memos[i], leafIndex: base + i, ...(shifted ? { alts: memo.altsOf(ev.memos, i) } : {}) };
         }
       } else if (ev.type === 'NullifiersSpent') {
         for (const n of ev.nullifiers) spent.add(String(n).toLowerCase());
