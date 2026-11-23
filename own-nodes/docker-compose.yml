@@ -1,0 +1,151 @@
+# Our own Ethereum and Bitcoin nodes behind one read-only gateway. See README.md.
+#
+#   docker compose --profile eth --profile btc up -d --build      # both halves on this machine
+#   docker compose --profile eth up -d --build                    # only Ethereum (set BTC_ESPLORA_UPSTREAM= empty in .env)
+#
+# Only the peer-to-peer ports and 80/443 are published. The nodes' RPC ports (8545, 8551, 5052, 8332, 3000, 50001) stay on the
+# compose network: Docker publishes around the host firewall, so a port that is not listed here is not on the internet.
+name: tacit-nodes
+
+x-logging: &logging
+  driver: local
+  options: { max-size: 20m, max-file: "3" }
+
+services:
+  # ── Ethereum: reth (execution) + lighthouse (consensus) ───────────────────────────────────────────────────────────────────────
+  reth:
+    profiles: [eth]
+    image: ghcr.io/paradigmxyz/reth:v2.11.0
+    restart: unless-stopped
+    stop_grace_period: 5m          # reth flushes on SIGTERM; a kill mid-flush costs a long repair
+    command:
+      - node
+      - --chain=mainnet
+      - --datadir=/data
+      - --config=/etc/reth/reth.toml
+      - --http
+      - --http.addr=0.0.0.0
+      - --http.port=8545
+      - --http.api=eth,net,web3     # no admin, debug, txpool, trace: the gateway refuses them too
+      - --rpc.eth-proof-window=10000
+      - --rpc.max-blocks-per-filter=50000
+      - --rpc.max-logs-per-response=20000
+      - --rpc.max-connections=500
+      - --authrpc.addr=0.0.0.0
+      - --authrpc.port=8551
+      - --authrpc.jwtsecret=/jwt/jwt.hex
+      - --port=30303
+    volumes:
+      - ${CHAIN_DIR:-/srv/chain}/reth:/data
+      - ${CHAIN_DIR:-/srv/chain}/jwt:/jwt:ro
+      - ./reth.toml:/etc/reth/reth.toml:ro
+    ports:
+      - "30303:30303/tcp"
+      - "30303:30303/udp"
+    logging: *logging
+
+  lighthouse:
+    profiles: [eth]
+    image: sigp/lighthouse:v8.3.3
+    restart: unless-stopped
+    depends_on: [reth]
+    command:
+      - lighthouse
+      - bn
+      - --network=mainnet
+      - --datadir=/data
+      - --http
+      - --http-address=0.0.0.0
+      - --http-port=5052
+      - --execution-endpoint=http://reth:8551
+      - --execution-jwt=/jwt/jwt.hex
+      - --checkpoint-sync-url=https://mainnet.checkpoint.sigp.io   # minutes to a synced head, instead of days
+      - --port=9000
+    volumes:
+      - ${CHAIN_DIR:-/srv/chain}/lighthouse:/data
+      - ${CHAIN_DIR:-/srv/chain}/jwt:/jwt:ro
+    ports:
+      - "9000:9000/tcp"
+      - "9000:9000/udp"
+      - "9001:9001/udp"
+    logging: *logging
+
+  # ── Bitcoin: bitcoind (verified build) + electrs (the esplora REST our pages already speak) ──────────────────────────────────
+  bitcoind:
+    profiles: [btc]
+    build: ./bitcoind
+    user: "1000:1000"
+    restart: unless-stopped
+    stop_grace_period: 3m
+    command:
+      - -server=1
+      - -disablewallet=1
+      - -txindex=0                  # electrs keeps its own index; the tweak index reads undo data, which needs the node unpruned, not txindex
+      - -prune=0
+      - -dbcache=${BTC_DBCACHE:-4000}
+      - -listen=1
+      - -maxconnections=40
+      - -printtoconsole=1
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=172.16.0.0/12   # the compose network only
+      - -rpcauth=${BTC_RPCAUTH:?run bootstrap.sh, or fill BTC_RPCAUTH in .env}
+    volumes:
+      - ${CHAIN_DIR:-/srv/chain}/bitcoin:/data
+    ports:
+      - "8333:8333"
+      - "127.0.0.1:8332:8332"      # loopback only, for tools/node-check.mjs --btc-rpc and an ssh tunnel; never the internet
+    logging: *logging
+
+  electrs:
+    profiles: [btc]
+    image: mempool/electrs:v3.3.0
+    restart: unless-stopped
+    depends_on: [bitcoind]
+    command:
+      - -vv
+      - --network=mainnet
+      - --daemon-dir=/bitcoin
+      - --blocks-dir=/bitcoin/blocks   # reads the block files bitcoind wrote: much faster than fetching every block over RPC
+      - --daemon-rpc-addr=bitcoind:8332
+      - --cookie=${BTC_RPC_USER:-tacit}:${BTC_RPC_PASS:?run bootstrap.sh, or fill BTC_RPC_PASS in .env}
+      - --db-dir=/data
+      - --http-addr=0.0.0.0:3000
+      - --electrum-rpc-addr=0.0.0.0:50001
+      - --monitoring-addr=0.0.0.0:4224
+      - --utxos-limit=5000
+      - --electrum-txs-limit=5000
+    volumes:
+      - ${CHAIN_DIR:-/srv/chain}/bitcoin:/bitcoin:ro
+      - ${CHAIN_DIR:-/srv/chain}/electrs:/data
+    logging: *logging
+
+  # ── the front door ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  gateway:
+    build: .
+    restart: unless-stopped
+    environment:
+      ETH_UPSTREAM: ${ETH_UPSTREAM:-}
+      BTC_ESPLORA_UPSTREAM: ${BTC_ESPLORA_UPSTREAM:-}
+      ALLOW_ORIGINS: ${ALLOW_ORIGINS:-https://tacit.finance,https://www.tacit.finance}
+      BUDGET_PER_MIN: ${BUDGET_PER_MIN:-600}
+      LOGS_MAX_SPAN: ${LOGS_MAX_SPAN:-50000}
+      ALLOW_BROADCAST: ${ALLOW_BROADCAST:-0}
+      INTERNAL_KEYS: ${INTERNAL_KEYS:-}
+      INTERNAL_SENDS: ${INTERNAL_SENDS:-0}
+      TRUST_PROXY: "1"
+    logging: *logging
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [gateway]
+    environment:
+      NODE_HOST: ${NODE_HOST:?set NODE_HOST in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${CHAIN_DIR:-/srv/chain}/caddy:/data
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    logging: *logging

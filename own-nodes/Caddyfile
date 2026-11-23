@@ -1,0 +1,20 @@
+# TLS and nothing else: Caddy gets the certificate for NODE_HOST by itself (ports 80 and 443 must reach this machine) and hands every
+# request to the gateway, which does the CORS, the allowlists and the budgets. NO access log: the log is off here and in the gateway,
+# so there is no record of which address asked about which wallet.
+{
+	admin off
+	log {
+		output discard
+	}
+}
+
+{$NODE_HOST} {
+	encode zstd gzip
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy gateway:8080 {
+		# exactly one address, the one that connected to us: a client cannot write itself a fresh budget by sending its own header
+		header_up X-Forwarded-For {remote_host}
+	}
+}

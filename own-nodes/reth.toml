@@ -1,0 +1,18 @@
+# What our Ethereum node keeps. Stated here rather than left to `--full`, so the retention is exactly what our readers need and
+# `tools/node-check.mjs` can prove it (eth-proofs and eth-wide-logs).
+#
+# State history ~40 h: the vault keeper asks for eth_getProof ~8 h back and eth_prove at a recent block; 12,000 blocks covers both
+# with room (the RPC's own window is set to 10,000 in docker-compose.yml, and may not exceed this).
+# Receipts kept from just before the pool's deploy block (25,998,736): the pool, vault and cBTC readers scan logs back to it, which no
+# free public node serves at width. About 626k blocks of receipts, on the order of 10-15 GB; it grows with the chain (see README).
+# All block bodies stay (the transaction hash in a log answer comes from them). Transaction-hash lookup for ~3 months, so
+# eth_getTransactionByHash/Receipt works for anything a wallet recently sent.
+[prune]
+block_interval = 5
+
+[prune.segments]
+sender_recovery = "full"
+transaction_lookup = { distance = 700_000 }
+receipts = { before = 25_998_000 }
+account_history = { distance = 12_000 }
+storage_history = { distance = 12_000 }
