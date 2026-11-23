@@ -1,0 +1,15 @@
+# Bitcoin Core's own script verifier (libbitcoinconsensus, the bitcoinconsensus crate 0.106.0, Bitcoin Core 26, Taproot rules on) over transactions given as
+# text, one case per line. tests/consensus-sats.test.mjs makes the cases from the builders in dapp/adaptor-btc-tx.js and runs this over them.
+#   cargo build --release --manifest-path tests/consensus-sats/Cargo.toml     (CARGO_TARGET_DIR keeps the build out of the tree; the test sets one)
+[package]
+name = "consensus-sats"
+version = "0.1.0"
+edition = "2021"
+[workspace]
+
+[[bin]]
+name = "consensus-sats"
+path = "src/main.rs"
+
+[dependencies]
+bitcoinconsensus = "=0.106.0"
