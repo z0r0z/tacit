@@ -187,6 +187,21 @@ test('whoami: off by default, and when on it tells the caller only its own conne
   } finally { on.stop(); }
 });
 
+test('/health says what is refused by method NAME and range, and nothing about who asked or with what', async () => {
+  const { base, stop } = await start({ trustProxy: true });
+  try {
+    const who = '0x' + 'cd'.repeat(20);
+    await rpc(base, one('eth_sendRawTransaction', ['0x02' + 'ab'.repeat(40)]), { 'x-forwarded-for': '198.51.100.99' });
+    await rpc(base, one('eth_sendRawTransaction', ['0x02']));
+    await rpc(base, one('debug_traceTransaction', [who]));
+    await rpc(base, one('eth_getLogs', [{ fromBlock: '0x1', toBlock: '0x999999', address: who }]));
+    await rpc(base, one('not a method!!', []));
+    const h = await (await fetch(base + '/health')).json();
+    assert.deepEqual(h.refusedBy, { eth_sendRawTransaction: 2, debug_traceTransaction: 1, 'eth_getLogs:range': 1, other: 1 });
+    assert.ok(!/198\.51\.100|cdcdcd|abab/.test(JSON.stringify(h)), 'no address, parameter or client address in it');
+  } finally { stop(); }
+});
+
 test('identical reads in flight share one upstream call; the tip is cached', async () => {
   const { base, stop } = await start();
   try {

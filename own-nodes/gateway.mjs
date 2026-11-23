@@ -63,6 +63,9 @@ export function makeGateway(o = {}) {
   const idKey = crypto.randomBytes(32);
   const buckets = new Map();   // hash -> { tokens, at }
   const counters = { requests: 0, limited: 0, refused: 0, upstreamErrors: 0 };
+  // What we refuse, by method NAME only (never params, addresses or who asked): the vocabulary is fixed, so a name outside it is 'other', and at most 30 are kept.
+  const refusedBy = new Map();
+  const noteRefused = (name) => { const k = /^[A-Za-z0-9_:]{1,40}$/.test(String(name)) ? String(name) : 'other'; if (refusedBy.has(k) || refusedBy.size < 30) refusedBy.set(k, (refusedBy.get(k) || 0) + 1); };
   const cache = new Map();     // key -> { at, value }
   const inflight = new Map();  // key -> Promise (identical reads in flight share one upstream call)
 
@@ -156,7 +159,7 @@ export function makeGateway(o = {}) {
     // Our own relays send through the same URL they read from (viem's one transport), so a holder of an internal key may send when the
     // operator has said so (INTERNAL_SENDS=1). Nobody else can: a visitor's page never sends through us.
     if (r.method === 'eth_sendRawTransaction' && cfg.internalSends && internal) return { cost: 5 };
-    if (!(r.method in READ_METHODS)) return { err: rpcError(r.id, -32601, 'method not available here') };
+    if (!(r.method in READ_METHODS)) { noteRefused(r.method); return { err: rpcError(r.id, -32601, 'method not available here') }; }
     let cost = READ_METHODS[r.method];
     const p = r.params || [];
     if ((r.method === 'eth_getBlockByNumber' || r.method === 'eth_getBlockByHash') && p[1] === true) cost = FULL_TX_COST;
@@ -170,7 +173,7 @@ export function makeGateway(o = {}) {
           if (from == null) from = h;
           if (to == null) to = h;
         }
-        if (from != null && to != null && to - from + 1 > cfg.logsMaxSpan) return { err: rpcError(r.id, -32602, `query exceeds max block range ${cfg.logsMaxSpan}`) };
+        if (from != null && to != null && to - from + 1 > cfg.logsMaxSpan) { noteRefused('eth_getLogs:range'); return { err: rpcError(r.id, -32602, `query exceeds max block range ${cfg.logsMaxSpan}`) }; }
       }
     }
     return { cost };
@@ -313,7 +316,7 @@ export function makeGateway(o = {}) {
   }
 
   async function handleHealth(res) {
-    const out = { ok: true, counters: { ...counters } };
+    const out = { ok: true, counters: { ...counters }, refusedBy: Object.fromEntries(refusedBy) };
     if (cfg.ethUpstream) {
       try {
         const r = await ethCall({ jsonrpc: '2.0', id: 1, method: 'eth_getBlockByNumber', params: ['latest', false] }, 5000);
