@@ -31,7 +31,7 @@ const wordAt = (h, i) => BigInt('0x' + (strip(h).slice(i * 64, (i + 1) * 64) || 
 const addrWord = (a) => strip(a).toLowerCase().padStart(64, '0');
 const lc = (a) => String(a).toLowerCase();
 
-const NODES = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://1.rpc.thirdweb.com'];
+const NODES = ['https://ethereum-rpc.publicnode.com', 'https://eth.drpc.org', 'https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://1.rpc.thirdweb.com', 'https://tacit-node-gw.onrender.com/eth'];
 const SCAN_NODES = ['https://rpc.mevblocker.io', 'https://eth-mainnet.public.blastapi.io', 'https://ethereum-rpc.publicnode.com'];
 const memory = (() => { try { return localStorage; } catch { return null; } })();
 const health = nodeHealth({ store: memory }), scanHealth = nodeHealth({ store: memory, key: 'tacit-rpc-rest-scan-v1', strict: true });

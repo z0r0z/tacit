@@ -69,3 +69,14 @@ test('a node is recognised as light by its published log span, not by name; a ho
   assert.notEqual(await firstAsked('eth_getBalance', [A, 'latest'], [wide, 'https://ethereum-rpc.publicnode.com']), 'x');
   assert.equal(await firstAsked('eth_getBalance', [A, 'latest'], ['https://ethereum-rpc.publicnode.com', wide]), 'ethereum-rpc.publicnode.com', 'no light node in the list: the order is untouched');
 });
+
+test("the swap card's own node list and the price strip's fallbacks name the light node (they keep their own lists, not ETH_NODES)", async () => {
+  const { readFileSync } = await import('node:fs');
+  const card = readFileSync(new URL('../dapp/swap/card.js', import.meta.url), 'utf8');
+  const nodes = card.match(/const NODES = \[([^\]]*)\]/)?.[1] || '';
+  assert.ok(nodes.includes(new URL(OURS).host), 'swap/card.js NODES has the light node: its light() reads are the page\'s cheap reads');
+  assert.ok(!(card.match(/const SCAN_NODES = \[([^\]]*)\]/)?.[1] || '').includes(new URL(OURS).host), 'but SCAN_NODES (log scans) does not: a light node answers 512 blocks a query');
+  const px = readFileSync(new URL('../dapp/px-strip.js', import.meta.url), 'utf8');
+  const hosts = [...(px.match(/const HOSTS = \[([^\]]*)\]/)?.[1] || '').matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.equal(hosts[hosts.length - 1], OURS, 'px-strip.js HOSTS ends with it: its one sequential multicall is not made to wait on a node that might be slower');
+});
