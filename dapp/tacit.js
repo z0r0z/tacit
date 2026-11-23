@@ -601,7 +601,7 @@ function isUnlockCancelled(e) {
   if (e.name === 'NotAllowedError') return true;
   return false;
 }
-function _passphraseModal({ mode, title, reason, errorHint }) {
+function _passphraseModal({ mode, title, reason, errorHint, submitLabel }) {
   return new Promise((resolve, reject) => {
     const modal   = document.getElementById('pass-modal');
     const titleEl = document.getElementById('pass-title');
@@ -637,7 +637,7 @@ function _passphraseModal({ mode, title, reason, errorHint }) {
     input2.autocomplete = 'new-password';
     field2.style.display = isNew ? '' : 'none';
     warn.style.display   = isNew ? '' : 'none';
-    submit.textContent   = isNew ? 'set passphrase' : 'unlock';
+    submit.textContent   = submitLabel || (isNew ? 'set passphrase' : 'unlock');
     submit.disabled = true;
 
     if (errorHint) {
@@ -702,8 +702,8 @@ function _passphraseModal({ mode, title, reason, errorHint }) {
   });
 }
 
-async function _promptNewPassphrase(reason) {
-  return _passphraseModal({ mode: 'new', title: 'set passphrase', reason });
+async function _promptNewPassphrase(reason, notice = null) {
+  return _passphraseModal({ mode: 'new', title: notice?.title || 'set passphrase', reason: notice?.text || reason, submitLabel: notice?.submit });
 }
 
 async function _promptUnlockPassphrase(errorHint) {
@@ -792,7 +792,7 @@ const wallet = {
       const reason = boundExtAddr
         ? `Set a passphrase to encrypt the in-browser tacit signing key linked to ${shorten(boundExtAddr, 8)}. Your connected wallet funds this key but does not sign envelopes.`
         : 'Set a passphrase to encrypt your in-browser tacit signing key. This key signs every confidential envelope you create.';
-      const passphrase = await _promptNewPassphrase(reason);
+      const passphrase = await _promptNewPassphrase(reason, boundExtAddr ? await _emptySlotNotice(boundExtAddr) : null);
       this.priv = secp.utils.randomPrivateKey();
       localStorage.setItem(key, await encryptPrivkey(this.priv, passphrase));
     } else if (shape === 'plaintext') {
@@ -885,6 +885,38 @@ function _slotPubHex(key) {
   try { if (!JSON.parse(raw)?.ct) return null; } catch { return null; }
   const pub = readBlobPub(raw);
   return pub ? bytesToHex(pub) : 'locked';
+}
+// Other keys saved in this browser, for the notice shown before a new key is made for a connected wallet.
+function _savedWalletsElsewhere(skipKey) {
+  const out = [];
+  const base = `${WALLET_KEY_BASE}:${NET.name}`;
+  const open = wallet.pub ? bytesToHex(wallet.pub) : null;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || key === skipKey || (key !== base && !key.startsWith(`${base}:by:`))) continue;
+      const pub = _slotPubHex(key);
+      if (pub === null || pub === open) continue;
+      let address = null;
+      if (pub !== 'locked') { try { address = p2wpkhAddress(hexToBytes(pub)); } catch { continue; } }
+      out.push({ address, boundTo: key === base ? null : key.slice(base.length + 4) });
+    }
+  } catch {}
+  return out;
+}
+async function _emptySlotNotice(extAddr) {
+  try {
+    const m = await import('./empty-slot.js');
+    const log = _activityByWallet(loadActivity());
+    return await m.emptySlotNotice({
+      ext: extAddr,
+      saved: _savedWalletsElsewhere(walletStorageKey(extAddr)),
+      logged: { addrs: [...log.other.keys()], unknown: log.me ? 0 : log.unknown },
+      short: _walletTag,
+      apiJson,
+      apiText,
+    });
+  } catch { return null; }
 }
 function _slotHoldsOtherWallet(key) {
   const slotPub = _slotPubHex(key);
