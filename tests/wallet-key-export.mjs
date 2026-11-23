@@ -4,6 +4,8 @@
 //   · signed in with the wallet, the section sits right under the address card, says the wallet's recovery phrase brings the key back,
 //     says never to send the key to anyone, and has a Copy key button that asks for a second press before it puts 64 hex characters on the clipboard;
 //   · a Show key button, with the same second press, puts the same key on screen without touching the clipboard, and hides it on a second tap or when the sheet closes;
+//   · an Ethereum key and a Bitcoin key (WIF) for another wallet, each with Show and Copy: the Ethereum key is the derived one (not the Tacit key) and
+//     opens the Ethereum address the sheet lists, the WIF is the Tacit key's own and opens the Bitcoin address the sheet lists, a pasted key has them too;
 //   · that key, pasted after Lock, opens the same Tacit address, and the section then says a pasted key is its own backup, with no button.
 //
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/wallet-key-export.mjs
@@ -11,7 +13,9 @@ import { createRequire } from 'node:module';
 import http from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
-import { secp, sha256, hmac, keccak_256, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
+import { secp, sha256, hmac, keccak_256, ripemd160, bech32, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
+import { makeEvmAccount } from '../dapp/evm-account.js';
+import { privFromWif } from '../dapp/key-export.js';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));      // (as tacit.js sets it: the wallet below signs here, in node)
 
@@ -117,7 +121,47 @@ try {
   await page.waitForSelector('#w-secret:not([hidden]) code', { timeout: 15000 });
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.querySelector('#sheet-wallet[open]'), null, { timeout: 15000 });
-  ok(await secretHidden(), 'closing the sheet clears a key that was showing');
+  // (the dialog's close event is a task of its own after it closes, so the key is waited for, not read in the gap)
+  ok(await page.waitForFunction(() => { const e = document.querySelector('#w-secret'); return e.hidden && !e.textContent; }, null, { timeout: 5000 }).then(() => true, () => false), 'closing the sheet clears a key that was showing');
+  await openSheet();
+
+  // ── the keys behind the wallet's own Ethereum and Bitcoin addresses, for another wallet ──
+  const evm = makeEvmAccount({ secp, keccak256: keccak_256, sha256 });
+  const wantEth = evm.deriveEvmAccount(hexToBytes(copied), 'mainnet');
+  const wantBtc = bech32.encode('bc', [0, ...bech32.toWords(ripemd160(sha256(secp.getPublicKey(hexToBytes(copied), true))))]);
+  await page.click('#w-other summary');
+  ok(/Ethereum key/.test(await text('#w-xeth')) && /Bitcoin key \(WIF\)/.test(await text('#w-xbtc')), 'the sheet offers an Ethereum key and a Bitcoin key (WIF) for another wallet');
+  ok(/send any TAC out with Tacit first/.test(await text('#w-xbtc')) && /Tacit key itself opens a different Ethereum address/.test(await text('#w-xeth')), 'and warns where each can go wrong: TAC left at the Bitcoin address, the Tacit key pasted as an Ethereum key');
+  const boxed = (id) => page.$eval(`${id} .keyshow`, (e) => e.hidden && !e.textContent);
+  ok(await boxed('#w-xeth') && await boxed('#w-xbtc'), 'both keys start hidden');
+  await page.click('#w-xeth [data-sec="show"]');
+  ok(/Press again/.test(await text('#w-xeth [data-sec="show"]')) && await boxed('#w-xeth'), 'a wallet sign-in asks for a second press before the Ethereum key shows');
+  await page.click('#w-xeth [data-sec="show"]');
+  await page.waitForSelector('#w-xeth .keyshow:not([hidden]) code', { timeout: 15000 });
+  const ethShown = await text('#w-xeth .keyshow code');
+  ok(ethShown === wantEth.priv && ethShown !== '0x' + copied, 'the Ethereum key shown is the one derived from the Tacit key, and not the Tacit key');
+  await page.click('#w-xbtc [data-sec="show"]'); await page.click('#w-xbtc [data-sec="show"]');
+  await page.waitForSelector('#w-xbtc .keyshow:not([hidden]) code', { timeout: 15000 });
+  const wifShown = await text('#w-xbtc .keyshow code');
+  ok(/^[KL][1-9A-HJ-NP-Za-km-z]{51}$/.test(wifShown) && bytesToHex(privFromWif(wifShown)) === copied, `the Bitcoin key shown is a compressed WIF of the Tacit key (${wifShown.slice(0, 5)}…)`);
+  const pageAddr = (label) => page.evaluate((l) => { for (const r of document.querySelectorAll('#w-keys .keyrow')) if (r.querySelector('.kv span')?.textContent.trim() === l) return (r.querySelector('.full code') || r.querySelector('.addrline code'))?.textContent.trim() || ''; return ''; }, label);
+  await page.waitForFunction(() => [...document.querySelectorAll('#w-keys .keyrow')].some((r) => /^bc1q/.test((r.querySelector('.full code') || r.querySelector('.addrline code'))?.textContent.trim() || '')), null, { timeout: 60000 }).catch(() => {});
+  ok(await pageAddr('Ethereum address') === wantEth.address, `that Ethereum key opens the Ethereum address the sheet lists (${wantEth.address.slice(0, 8)}…)`);
+  ok(await pageAddr('Bitcoin address') === wantBtc, `and the WIF opens the Bitcoin address the sheet lists (${wantBtc.slice(0, 8)}…)`);
+  await page.evaluate(() => navigator.clipboard.writeText('untouched'));
+  await page.click('#w-xeth [data-sec="copy"]');
+  ok((await page.evaluate(() => navigator.clipboard.readText())) === 'untouched', 'the first press of Copy puts nothing on the clipboard');
+  await page.click('#w-xeth [data-sec="copy"]');
+  await page.waitForFunction((w) => navigator.clipboard.readText().then((t) => t === w), wantEth.priv, { timeout: 15000 });
+  ok(true, 'and the second puts the Ethereum key on it');
+  await page.click('#w-xbtc [data-sec="copy"]'); await page.click('#w-xbtc [data-sec="copy"]');
+  await page.waitForFunction((w) => navigator.clipboard.readText().then((t) => t === w), wifShown, { timeout: 15000 });
+  ok(true, 'the Bitcoin key copies as the same WIF it shows');
+  await page.click('#w-xeth [data-sec="show"]');
+  ok(await boxed('#w-xeth') && !(await boxed('#w-xbtc')), 'a tap on Hide clears that key only');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('#sheet-wallet[open]'), null, { timeout: 15000 });
+  ok(await page.waitForFunction(() => { const e = document.querySelector('#w-xbtc .keyshow'); return e.hidden && !e.textContent; }, null, { timeout: 5000 }).then(() => true, () => false), 'closing the sheet clears the Bitcoin key');
   await openSheet();
 
   // ── that key, pasted after Lock, opens the same address ──
@@ -132,6 +176,14 @@ try {
   ok(again === tacit, 'the copied key, pasted, opens the same Tacit address');
   ok(/pasted this key in/.test(await page.evaluate(() => document.querySelector('#w-key').nextElementSibling.textContent)), 'a pasted key says its own copy is the backup');
   ok(!(await page.$('#w-backup')) && !(await page.$('#w-reveal')), 'and has no Copy key or Show key button');
+  // a pasted key is the same wallet, so its own Ethereum and Bitcoin keys are there too, and take a single press
+  await page.click('#w-other summary');
+  await page.click('#w-xeth [data-sec="show"]');
+  await page.waitForSelector('#w-xeth .keyshow:not([hidden]) code', { timeout: 15000 });
+  ok(await text('#w-xeth .keyshow code') === wantEth.priv, 'a pasted key shows the same Ethereum key at one press');
+  await page.click('#w-xbtc [data-sec="show"]');
+  await page.waitForSelector('#w-xbtc .keyshow:not([hidden]) code', { timeout: 15000 });
+  ok(await text('#w-xbtc .keyshow code') === wifShown, 'and the same Bitcoin key');
   ok(!errors.length && !blocked.length, `no page errors or blocked requests (${[...errors, ...blocked].slice(0, 2).join(' | ')})`);
 } finally {
   await browser.close();

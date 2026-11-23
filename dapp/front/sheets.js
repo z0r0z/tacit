@@ -218,6 +218,45 @@ function wbClick(e) {
   $('#sheet-wallet').close();
   dashGo(b);
 }
+// A secret on press, for the key and the keys made from it. Copy puts it on the clipboard; Show puts it on screen, so it need not pass through the
+// clipboard (other apps and clipboard managers can read that). A wallet or passkey sign-in takes a second press within six seconds, so it is never one
+// stray click. A shown secret hides on a second tap, when the sheet closes and after a minute, and is kept nowhere but its box. `value` may be a string
+// or a promise of one; a string keeps the clipboard write inside the press itself, which some browsers insist on.
+function secretControls({ copyBtn, showBtn, box, value, direct, label = 'Key', extra = async () => '' }) {
+  if (!copyBtn || !showBtn || !box) return () => {};
+  const copyName = copyBtn.textContent, showName = showBtn.textContent, hideName = showName.replace(/^Show/, 'Hide');
+  let shownFor = 0;
+  const twice = (btn, name, again) => { let t = 0; return (go) => {
+    if (direct || t) { clearTimeout(t); t = 0; btn.textContent = name; return go(); }
+    btn.textContent = again;
+    t = setTimeout(() => { t = 0; btn.textContent = name; }, 6000);
+  }; };
+  const hide = () => {
+    clearTimeout(shownFor); shownFor = 0;
+    box.hidden = true; box.textContent = '';
+    showBtn.textContent = showName; showBtn.setAttribute('aria-expanded', 'false');
+  };
+  const copyNow = () => {
+    const done = (text) => navigator.clipboard.writeText(text).then(async () => { const more = await extra(); toast(`${label} copied. Keep it somewhere private.${more ? ' ' + more : ''}`); }, () => toast('Could not copy the key: the browser refused clipboard access.', true));
+    const fail = () => toast(`Could not make the ${label.toLowerCase()}.`, true);
+    let v;
+    try { v = value(); } catch { return fail(); }
+    return typeof v === 'string' ? done(v) : v.then(done, fail);
+  };
+  const showNow = async () => {
+    let text, more;
+    try { [text, more] = await Promise.all([value(), extra()]); } catch { return toast(`Could not make the ${label.toLowerCase()}.`, true); }
+    if (!showBtn.isConnected) return;
+    mount(box, html`<code>${text}</code><p class="note">Select it to copy by hand, or write it down. It hides again in a minute.${more ? ' ' + more : ''}</p>`);
+    box.hidden = false; showBtn.textContent = hideName; showBtn.setAttribute('aria-expanded', 'true');
+    clearTimeout(shownFor); shownFor = setTimeout(hide, 60000);
+  };
+  const pressCopy = twice(copyBtn, copyName, 'Press again to copy the key'), pressShow = twice(showBtn, showName, 'Press again to show the key');
+  copyBtn.addEventListener('click', () => pressCopy(copyNow));
+  showBtn.addEventListener('click', () => (box.hidden ? pressShow(showNow) : hide()));
+  $('#sheet-wallet').addEventListener('close', hide, { once: true });
+  return hide;
+}
 const walletKeys = (open = false) => html`<details class="w-acc"${open ? ' open' : ''}><summary>Addresses and public key</summary>
   ${keyRow('Bitcoin address', plainAddr(), 'Bitcoin address', 'Holds your TAC on Bitcoin, and pays Bitcoin fees in sats. Send sats to it from any wallet or exchange.', { qr: true })}
   ${keyRow('Ethereum address', S.acct.address, 'Ethereum address', 'This key’s own. It pays Ethereum gas only if you choose it below: ETH sent here can pay instead of a wallet. A bridge from Bitcoin needs none.')}
@@ -251,6 +290,15 @@ render.wallet = () => {
     <p class="note">${keyHow} Anyone who has the key holds these funds and the address that goes with it. Never send it to anyone, including Tacit support.</p>
     ${k.mode === 'key' ? '' : html`<div class="row2"><button class="btn ghost" type="button" id="w-backup">Copy key</button><button class="btn ghost" type="button" id="w-reveal" aria-expanded="false" aria-controls="w-secret">Show key</button></div>
     <div class="keyshow" id="w-secret" role="region" aria-label="Your key" hidden></div>`}
+    <details class="w-acc" id="w-other"><summary>Use this wallet’s Bitcoin and Ethereum elsewhere</summary>
+      <p class="note">The Bitcoin and Ethereum addresses below are ordinary ones, so another wallet can hold what they hold with the keys here. Your private balances stay in Tacit and move only with your Tacit key above. Never send these keys to anyone, including Tacit support.</p>
+      <div class="keyrow" id="w-xeth"><div class="kv"><span>Ethereum key</span><span class="keyacts"><button class="link" type="button" data-sec="copy">Copy</button><button class="link" type="button" data-sec="show" aria-expanded="false">Show</button></span></div>
+        <p class="note">Import it into MetaMask, Rabby or any Ethereum wallet as a private key. It is made from your Tacit key, so your Tacit key itself opens a different Ethereum address.</p>
+        <div class="keyshow" role="region" aria-label="Your Ethereum key" hidden></div></div>
+      <div class="keyrow" id="w-xbtc"><div class="kv"><span>Bitcoin key (WIF)</span><span class="keyacts"><button class="link" type="button" data-sec="copy">Copy</button><button class="link" type="button" data-sec="show" aria-expanded="false">Show</button></span></div>
+        <p class="note">In Sparrow, Electrum or another Bitcoin wallet, import it as a native segwit (bech32, bc1q) key. It opens your Bitcoin address. A wallet that does not know Tacit can spend an output that holds TAC as plain sats, so send any TAC out with Tacit first.</p>
+        <div class="keyshow" role="region" aria-label="Your Bitcoin key" hidden></div></div>
+    </details>
     <div id="w-keys">${walletKeys()}</div>
     <div class="lbl sep" id="pay-h"><span>Public ETH comes from</span></div>
     <div class="opts" role="radiogroup" aria-labelledby="pay-h">
@@ -282,40 +330,13 @@ render.wallet = () => {
   // (with a PQ ID the key alone does not open the TAC on the Tacit chain: its passkey does too, and the copy says so)
   const pqKept = async () => { try { return !!(await import('/tacit-chain-root.js')).keptRoot(k.priv); } catch { return false; } };
   const PQ_SAID = 'Your TAC on the Tacit chain also needs your PQ ID passkey.';
-  const backup = $('#w-backup'), copyKey = () => navigator.clipboard.writeText(k.priv).then(async () => {
-    toast((await pqKept()) ? `Key copied. Keep it somewhere private. ${PQ_SAID}` : 'Key copied. Keep it somewhere private.');
-  }, () => toast('Could not copy the key: the browser refused clipboard access.', true));
-  // (a wallet or passkey sign-in asks for a second press within six seconds: its key opens the funds without it, so the copy is never one stray click)
-  let armed = 0;
-  backup?.addEventListener('click', () => {
-    if (kept || armed) { clearTimeout(armed); armed = 0; backup.textContent = 'Copy key'; return copyKey(); }
-    backup.textContent = 'Press again to copy the key';
-    armed = setTimeout(() => { armed = 0; backup.textContent = 'Copy key'; }, 6000);
-  });
-  // Show key: the key on screen to read or write down, so it never has to pass through the clipboard (which other apps and a clipboard manager can read).
-  // It takes the same second press, hides on a second tap, on Lock, when the sheet closes and after a minute, and is not kept anywhere but this element.
-  const reveal = $('#w-reveal'), secret = $('#w-secret');
-  let armedShow = 0, shownFor = 0;
-  const hideKey = () => {
-    clearTimeout(shownFor); clearTimeout(armedShow); shownFor = armedShow = 0;
-    if (!secret) return;
-    secret.hidden = true; secret.textContent = '';
-    reveal.textContent = 'Show key'; reveal.setAttribute('aria-expanded', 'false');
-  };
-  const showKey = async () => {
-    const pq = await pqKept();
-    if (!reveal.isConnected) return;
-    mount(secret, html`<code>${k.priv}</code><p class="note">Select it to copy by hand, or write it down. It hides again in a minute. ${pq ? PQ_SAID : ''}</p>`);
-    secret.hidden = false; reveal.textContent = 'Hide key'; reveal.setAttribute('aria-expanded', 'true');
-    shownFor = setTimeout(hideKey, 60000);
-  };
-  reveal?.addEventListener('click', () => {
-    if (!secret.hidden) return hideKey();
-    if (kept || armedShow) { clearTimeout(armedShow); armedShow = 0; return showKey(); }
-    reveal.textContent = 'Press again to show the key';
-    armedShow = setTimeout(() => { armedShow = 0; reveal.textContent = 'Show key'; }, 6000);
-  });
-  $('#sheet-wallet').addEventListener('close', hideKey, { once: true });
+  secretControls({ copyBtn: $('#w-backup'), showBtn: $('#w-reveal'), box: $('#w-secret'), value: () => k.priv, direct: kept, label: 'Key', extra: async () => ((await pqKept()) ? PQ_SAID : '') });
+  // (the keys made from it are the wallet's own, so a pasted key gets them too, and its own copy is no backup of them: it takes a single press)
+  const xdirect = kept || k.mode === 'key', xbox = (id) => ({ copyBtn: $(`${id} [data-sec="copy"]`), showBtn: $(`${id} [data-sec="show"]`), box: $(`${id} .keyshow`), direct: xdirect });
+  secretControls({ ...xbox('#w-xeth'), value: () => a.priv, label: 'Ethereum key' });
+  let KX = null;                       // (loaded as the sheet opens, so the press itself has the WIF in hand)
+  import('/key-export.js').then((m) => { KX = m; }, () => {});
+  secretControls({ ...xbox('#w-xbtc'), value: () => (KX ? KX.wifFromPriv(k.priv) : import('/key-export.js').then((m) => m.wifFromPriv(k.priv))), label: 'Bitcoin key' });
   $('#w-lock').onclick = () => lockWallet();      // (the page's, which the account menu's Sign out also calls)
   const bal = (id, who) => { const e = $('#' + id); if (who && e) rpc('eth_getBalance', [who, 'latest']).then((b) => `${fmt(BigInt(b), 18, 4)} ETH`, () => '—').then((t) => { e.textContent = t; }); };
   bal('ac-abal', a.address); bal('ac-wbal', S.wallet);
