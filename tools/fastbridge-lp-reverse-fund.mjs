@@ -56,12 +56,16 @@ export async function exposeOutpoints({ getJson, address, notes, coin }) {
   return { utxos: [...noteUtxos, c], coin: c };
 }
 
-// A fetch that answers the main address's utxo list with exactly `utxos` and passes everything else through
+// A fetch that answers the main address's utxo list with exactly `utxos`, and the transaction history pages of a script (what the wallet reads to find its own cBTC lock
+// reservations, and which every explorer refuses for this address) with an empty page: every output exposed is a verified unspent plain output of the address, so no cBTC
+// lock is among them. Everything else is passed through.
 export function viewFetch(realFetch, address, utxos) {
-  const re = new RegExp(`/address/${address}/utxo(\\?.*)?$`);
+  const re = new RegExp(`/address/${address}/utxo(\\?.*)?$`), history = /\/scripthash\/[0-9a-f]{64}\/txs(\/chain\/[0-9a-f]{64})?(\?.*)?$/;
+  const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
   return async (input, init) => {
     const url = String((input && input.url) || input);
-    if (re.test(url)) return new Response(JSON.stringify(utxos), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (re.test(url)) return json(utxos);
+    if (history.test(url)) return json([]);
     return realFetch(input, init);
   };
 }

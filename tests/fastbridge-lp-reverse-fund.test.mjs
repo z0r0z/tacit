@@ -74,6 +74,11 @@ test('the wallet\'s view of the address is exactly the outputs named: its utxo l
   for (const url of [`https://mempool.space/api/address/${OTHER}/utxo`, `https://mempool.space/api/address/${HOUSE}/txs`, `https://mempool.space/api/address/${HOUSE}`, `https://mempool.space/api/tx/${id('a')}`, `https://mempool.space/api/address/${HOUSE}/utxo/extra`, `https://x/${HOUSE}/utxo`]) assert.equal(await (await f(url)).json(), 'real', url);
   assert.equal(seen.length, 6, 'all of those went through');
   assert.equal(await (await f(new Request(`https://mempool.space/api/address/${HOUSE}/utxo`))).json().then((j) => j.length), 1, 'a Request object is read the same way');
+  // the history pages of a script, which the wallet reads for its cBTC lock reservations, are answered empty; other scripthash reads are not
+  const h = 'ab'.repeat(32), seenBefore = seen.length;
+  for (const url of [`https://mempool.space/api/scripthash/${h}/txs`, `https://mempool.space/api/scripthash/${h}/txs/chain/${id('c')}`, `https://blockstream.info/api/scripthash/${h}/txs?x=1`]) assert.deepEqual(await (await f(url)).json(), [], url);
+  assert.equal(seen.length, seenBefore, 'those were answered here');
+  for (const url of [`https://mempool.space/api/scripthash/${h}/utxo`, `https://mempool.space/api/scripthash/${h}`, `https://mempool.space/api/scripthash/${h}/txs/mempool`, `https://mempool.space/api/scripthash/zz/txs`, `https://mempool.space/api/address/${HOUSE}/txs`]) assert.equal(await (await f(url)).json(), 'real', url);
 });
 
 // a fake wallet module whose scan finds the notes it is given
