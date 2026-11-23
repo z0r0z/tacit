@@ -36,7 +36,10 @@ export const PROVER_BOARD = Object.freeze({
   // Programs whose input is kept under its own key (pb:stdin:<id>) and read only for the claim that proves it, not on every read of the job.
   keptInput: Object.freeze(['btc-state']),
   keepMs: 60 * 60_000,                                 // a finished or cancelled job stays readable this long
-  maxPending: 64,
+  maxPending: 64,                                      // jobs waiting or being proved, together: a post past this is refused (the relay then goes to the network, minutes slower)
+  // The list also holds the jobs that finished in the last keepMs, and every call reads the whole list; so it has a ceiling of its own, well past what a busy hour adds to it.
+  // (Counting those finished jobs toward maxPending turned a board with nothing waiting into a full one once an hour's proofs reached 64.)
+  maxRetained: 256,
   // Room kept past `maxPending` for a swap or liquidity proof (see urgentLabel): the pool moves under such a proof every minute or so, so a proof that cannot be posted goes to the network, minutes slower.
   urgentReserve: 16,
   maxStdinBytes: 1024 * 1024,                          // bincode SP1Stdin, uncompressed (a batch of eight ops is well under)
@@ -394,11 +397,14 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
     if (!Number.isFinite(dl) || dl * 1000 <= clock()) throw new Error('deadline must be a unix time in the future');
     if (label != null && (typeof label !== 'string' || label.length > 80)) throw new Error('label must be a short string');
     return urgent(async () => {
-      const pend = await sweep(await storage.getPending());
+      const recs = new Map();
+      const pend = await sweep(await storage.getPending(), recs);
       const jobId = id(`${program}|${cls}|${sealedOk ? `sealed:${sealed.ct}` : stdin}`);
       const have = await storage.getJob(jobId);
       if (have && ['queued', 'claimed'].includes(have.status)) return { jobId, status: have.status, deduped: true };
-      if (pend.filter((x) => x !== jobId).length >= PROVER_BOARD.maxPending + (urgentLabel(label) ? PROVER_BOARD.urgentReserve : 0)) throw Object.assign(new Error('the board is full'), { code: 'full' });
+      const others = pend.filter((x) => x !== jobId);
+      const live = others.filter((x) => ['queued', 'claimed'].includes(recs.get(x)?.status)).length;
+      if (live >= PROVER_BOARD.maxPending + (urgentLabel(label) ? PROVER_BOARD.urgentReserve : 0) || others.length >= PROVER_BOARD.maxRetained) throw Object.assign(new Error('the board is full'), { code: 'full' });
       if (have && have.proofKept && storage.deleteProof) await storage.deleteProof(jobId); // the same input again: the old proof goes
       const job = { id: jobId, class: cls, program, mode: PROVER_BOARD.modes[program], stdin: sealedOk ? null : stdin, sealed: sealedOk ? { worker: sealed.worker, epk: sealed.epk, iv: sealed.iv, ct: sealed.ct } : null,
         cycleLimit: cyc, gasLimit: gas, deadline: dl, label, status: 'queued', postedAt: clock(), inputBytes: sealedOk ? null : b64len(stdin),

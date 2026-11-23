@@ -1334,6 +1334,41 @@ test('a mixed batch counts as urgent, a look-alike label does not', async () => 
   for (const label of ['mixed()', 'mixed(x)', 'routes', 'route ', 'Route', 'swap2', 'lpremove2']) await assert.rejects(postOf(b, 8100 + label.length + label.charCodeAt(0), label), (e) => e.code === 'full', label);
 });
 
+// Jobs that have finished stay on the board's list for an hour (keepMs), and the list used to be counted whole against maxPending: a board with nothing waiting read as full once
+// an hour's proofs reached the limit, and every proof after that went to the prover network, minutes slower.
+const finish = async (b, n, label = 'unwrap') => {
+  await postOf(b, n, label);
+  const j = await b.claim({ worker: tacit, classes: ['private', 'public'] });
+  await b.result({ worker: tacit, jobId: j.jobId, publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(260) });
+};
+
+test('finished jobs do not make a board full: only jobs waiting or being proved count toward the limit', async () => {
+  const b = makeProverBoard({ storage: store(), now });
+  for (let i = 0; i < PROVER_BOARD.maxPending + 20; i++) await finish(b, 40_000 + i);
+  assert.equal((await postOf(b, 49_000, 'unwrap')).status, 'queued', 'more than maxPending proofs finished within the hour, and the next is still taken');
+  for (let i = 1; i < PROVER_BOARD.maxPending; i++) await postOf(b, 49_000 + i, 'unwrap');
+  await assert.rejects(postOf(b, 49_900, 'unwrap'), (e) => e.code === 'full', 'maxPending waiting is still full');
+  await assert.rejects(postOf(b, 49_901, 'adaptorclaim'), (e) => e.code === 'full');
+  assert.equal((await postOf(b, 49_902, 'route')).status, 'queued', 'the reserve for a swap is still there');
+});
+
+test('a claimed job counts as live, and a finished one stops counting the moment it finishes', async () => {
+  const b = makeProverBoard({ storage: store(), now });
+  for (let i = 0; i < PROVER_BOARD.maxPending; i++) await postOf(b, 50_000 + i, 'unwrap');
+  const j = await b.claim({ worker: tacit, classes: ['private', 'public'] });
+  await assert.rejects(postOf(b, 50_900, 'unwrap'), (e) => e.code === 'full', 'one of them claimed: still maxPending live');
+  await b.result({ worker: tacit, jobId: j.jobId, publicValues: '0x' + '11'.repeat(64), proof: '0x' + '22'.repeat(260) });
+  assert.equal((await postOf(b, 50_901, 'unwrap')).status, 'queued', 'one finished: a place is free');
+});
+
+test('the list of kept jobs has a ceiling, and it clears as the jobs age out', async () => {
+  const b = makeProverBoard({ storage: store(), now });
+  for (let i = 0; i < PROVER_BOARD.maxRetained; i++) await finish(b, 60_000 + i);
+  await assert.rejects(postOf(b, 69_000, 'unwrap'), (e) => e.code === 'full', 'maxRetained finished jobs kept: the list is at its ceiling');
+  t += PROVER_BOARD.keepMs + 1;
+  assert.equal((await postOf(b, 69_001, 'unwrap')).status, 'queued', 'an hour on they are gone from the list');
+});
+
 test('a worker that cannot take the urgent job (it is in a class the worker does not serve) still gets the others', async () => {
   const b = makeProverBoard({ storage: store(), now });
   await postOf(b, 301, 'wrap');
