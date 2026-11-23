@@ -165,6 +165,12 @@ const isA = (_, tag) => tag === A_CALL;
   const r = await keeper({ RPC: p.url, RPC_FALLBACKS: '', START_RETRY_SECONDS: '1' });
   ok(r.code === 0 && /start check: the endpoint is failing/.test(r.out) && !/does not serve eth_getProof/.test(r.out), `a start that meets dropped connections waits and goes on (exit ${r.code})`);
   p.server.close();
+  // Nodes that disagree on the proof window: the first proofs come back as error 4444 and a later one is served, so the start waits and goes on.
+  let asked = 0;
+  const w = await endpoint({ fail: (j) => (j.method === 'eth_getProof' && ++asked <= 3 ? { error: { code: 4444, message: 'distance to target block exceeds maximum proof window' } } : null) });
+  const rw = await keeper({ RPC: w.url, RPC_FALLBACKS: '', START_RETRY_SECONDS: '1' });
+  ok(rw.code === 0 && /start check: the endpoint is failing[^\n]*maximum proof window/.test(rw.out) && !/does not serve eth_getProof/.test(rw.out), `a proof window that one node refuses and the next serves does not end the start (exit ${rw.code})`);
+  w.server.close();
   const q = await endpoint({ fail: (j) => (j.method === 'eth_getProof' ? { error: { code: -32000, message: 'missing trie node' } } : null) });
   const r2 = await keeper({ RPC: q.url, RPC_FALLBACKS: '', START_RETRY_SECONDS: '1' });
   ok(r2.code === 2 && /does not serve eth_getProof for old blocks/.test(r2.out) && !/start check: the endpoint is failing/.test(r2.out), `an endpoint that cannot serve the proof still ends the start (exit ${r2.code})`);

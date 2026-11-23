@@ -131,6 +131,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const DOWN = /error sending request|Max retries exceeded|HTTP error|deserialization error|error decoding response body|timed out|connection (?:reset|closed|refused)|broken pipe|dns error|unexpected eof|bad gateway|service unavailable|gateway time-?out|too many requests|rate limit/i;
 const stderrOf = (e) => String((e && e.stderr) || '');
 const troubled = (e) => DOWN.test(stderrOf(e)) || /Internal error/i.test(stderrOf(e));
+// A provider's nodes that do not agree on how far back they prove (mevblocker answered the same request for a block 2,550 back with a proof on one try and with
+// error 4444 on the next): the start check asks again, since the next try may reach another node.
+const proofWindow = (e) => /maximum proof window/i.test(stderrOf(e));
 // The chain's answer, which another endpoint would only repeat: a revert, or a call to an address with no code.
 const answered = (e) => /execution reverted|error code 3\b|does not have any code/i.test(stderrOf(e));
 const hostOf = (u) => { try { return new URL(u).host; } catch { return 'rpc'; } };
@@ -732,7 +735,7 @@ async function main() {
         break;
       } catch (e) {
         // A provider in trouble says nothing about what it serves: wait and ask again, as the restart that an exit brings would.
-        if (troubled(e) && tries < START_TRIES) {
+        if ((troubled(e) || proofWindow(e)) && tries < START_TRIES) {
           log('start check: the endpoint is failing (', quiet(e), '); trying again in', String(START_RETRY), 's (', String(tries), 'of', String(START_TRIES), ')');
           await sleep(START_RETRY * 1000);
           continue;
