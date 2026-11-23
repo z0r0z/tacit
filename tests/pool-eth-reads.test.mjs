@@ -41,12 +41,23 @@ const only = (host, f) => Object.fromEntries(ETH_NODES.map((u) => [u, u === host
 
 test('a node that resets is passed over, and rests for the next page: it is asked last there', async () => {
   mem.clear();
+  // a receipt lookup: not one of the cheap latest-state reads that go to a light node first (tests/light-first.test.mjs), so the list order is the plain one
+  const RECEIPT = ['0x' + '11'.repeat(32)];
   const w = world({ ...only(ETH_NODES[1], () => '0x10') });
-  assert.equal(await w.ux().rpc('eth_blockNumber', []), '0x10');
+  assert.equal(await w.ux().rpc('eth_getTransactionReceipt', RECEIPT), '0x10');
   assert.equal(w.asked[0][0], ETH_NODES[0], 'the first node is asked first');
   const w2 = world({ ...only(ETH_NODES[1], () => '0x11') });
-  assert.equal(await w2.ux().rpc('eth_blockNumber', []), '0x11');
+  assert.equal(await w2.ux().rpc('eth_getTransactionReceipt', RECEIPT), '0x11');
   assert.equal(w2.asked[0][0], ETH_NODES[1], 'a new page of the visit starts from the node that answered');
+});
+
+test('a cheap latest-state read is asked of the light node first, and passed on when that node resets', async () => {
+  mem.clear();
+  const light = ETH_NODES.find((u) => u.includes('tacit-node-gw'));
+  const w = world({ ...only(ETH_NODES[0], () => '0x12') });
+  assert.equal(await w.ux().rpc('eth_blockNumber', []), '0x12', 'the light node resets, the first public node answers');
+  assert.equal(w.asked[0][0], light, 'the light node is asked first');
+  assert.ok(w.asked.length >= 2 && w.asked[1][0] === ETH_NODES[0], 'and the read is passed to the next node, as with any node that resets');
 });
 
 test('a revert ends the call at once; a node\'s refusal of a send reaches the caller in its words', async () => {

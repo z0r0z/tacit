@@ -1,11 +1,23 @@
 import { bodyType } from '../rpc-body.js';
-import { refuses } from '../eth-nodes.js';
+import { refuses, logSpan } from '../eth-nodes.js';
 import { pace } from '../rpc-pace.js';
 export { bodyType };
 export const hedgeDelay = (fallback = 2500) => { try { const v = localStorage.getItem('tacit-trade-hedge-ms'); return v == null || v === '' || !Number.isFinite(Number(v)) ? fallback : Math.max(0, Number(v)); } catch { return fallback; } };
 const idOf = (h) => (typeof h === 'string' ? h.replace(/^https?:\/\//, '') : h.id);
 const LIMITED = /rate.?limit|usage limit|too many|\b429\b|compute units|capacity|quota|throttl|slow down/i;
 export const QUOTA = /api usage limit|usage limit|quota|daily limit/i;
+
+// Cheap reads of the LATEST state go to a light node first (ours, or the reader's own at 127.0.0.1): it answers from proofs and its limits are published
+// (eth-nodes.js LIMITS: logs 512, no numbered-block state), so the public nodes keep their per-address budgets for the deep reads only they can serve.
+// Receipts, transactions, blocks and logs are NOT here: a light node has no history index and answers an old transaction with null, which a caller reads as
+// "not there". 'tacit-light-first' = '0' in localStorage turns this off for one browser. A light node is recognised by its published log span, no host named here.
+const SHALLOW = new Set(['eth_chainId', 'eth_blockNumber', 'eth_getBalance', 'eth_getCode', 'eth_getStorageAt', 'eth_getTransactionCount', 'eth_call', 'eth_estimateGas', 'eth_gasPrice', 'eth_maxPriorityFeePerGas']);
+const isLight = (h) => typeof h === 'string' && logSpan(h) === 512;
+const lightFirst = (hosts, method) => {
+  if (!SHALLOW.has(method) || !hosts.some(isLight)) return hosts;
+  try { if (localStorage.getItem('tacit-light-first') === '0') return hosts; } catch { }
+  return [...hosts.filter(isLight), ...hosts.filter((h) => !isLight(h))];
+};
 
 const SHARED = new WeakMap(), PAGE = {};
 export function nodeHealth({ now = () => Date.now(), store = null, key = 'tacit-rpc-rest-v1', strict = false, shared = false } = {}) {
@@ -34,7 +46,7 @@ export function hedgedRpc(hosts, method, params, { hedgeMs = hedgeDelay(), timeo
   return new Promise((resolve, reject) => {
     const usable = hosts.filter((h) => typeof h === 'string' || !h.usable || h.usable(method, params));
     if (!usable.length) return reject(new Error('no RPC answered'));
-    const ordered = health ? health.order(usable) : usable;
+    const ordered = health ? health.order(lightFirst(usable, method)) : lightFirst(usable, method);
     const urls = ordered.filter((h) => typeof h === 'string'), fine = urls.filter((h) => !refuses(h, method, params));
     const list = fine.length ? ordered.filter((h) => typeof h !== 'string' || fine.includes(h)) : ordered;
     const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), ctrls = new Set();
