@@ -36,6 +36,33 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
 import { isHex } from './confidential-open.js';
 import { makeConfidentialPool } from '../../dapp/confidential-pool.js';
+import { CONFIDENTIAL_DEPLOYMENTS } from '../../dapp/confidential-deployments.js';
+
+// The least a wrap can be, per asset, for its proof to earn points, in the units a wrap's program input holds its value in (the asset's tacitDecimals: 8 for the
+// 18-decimal tokens, 6 for cUSDT). `raw` names each asset of the pool's table by ticker with its floor in whole tokens ("cETH=0.01,cTAC=10"), or any asset by its id
+// with its floor in those units ("0x…=5000"); "none" or "off" is no floors, and an entry that does not parse is dropped. An asset with no entry has no floor.
+// → { floors: { [assetId]: bigint }, view: { [ticker or id]: the floor as written } }
+export function parseMinLand(raw, assets = CONFIDENTIAL_DEPLOYMENTS?.mainnet?.assets || []) {
+  const floors = {}, view = {}, s = String(raw ?? '').trim();
+  if (!s || /^(none|off)$/i.test(s)) return { floors, view };
+  for (const part of s.split(',').map((x) => x.trim()).filter(Boolean)) {
+    const m = part.match(/^([A-Za-z0-9]+)\s*=\s*(\d+(?:\.\d+)?)$/);
+    if (!m) continue;
+    const [, key, amount] = m;
+    if (/^0x[0-9a-fA-F]{64}$/.test(key)) {
+      if (/^\d+$/.test(amount)) { floors[key.toLowerCase()] = BigInt(amount); view[key.toLowerCase()] = amount; }
+      continue;
+    }
+    const a = assets.find((x) => x.ticker === key);
+    if (!a) continue;
+    const dec = Number(a.tacitDecimals ?? 8), [whole, frac = ''] = amount.split('.');
+    if (frac.length > dec) continue;
+    floors[String(a.assetId).toLowerCase()] = BigInt(whole + frac.padEnd(dec, '0'));
+    view[key] = amount;
+  }
+  return { floors, view };
+}
+export const DEFAULT_MIN_LAND = 'cETH=0.01,cTAC=10,cBTC=0.0001,cUSD=10,cUSDT=10';
 
 export const PROOF_POOL = Object.freeze({
   types: Object.freeze(['wrap']),
@@ -53,6 +80,8 @@ export const PROOF_POOL = Object.freeze({
   landChecks: Object.freeze([45_000, 180_000, 600_000, 1_800_000, 7_200_000, 21_600_000, 86_400_000, 259_200_000]),
   landPerSweep: 600,                 // looks made in one sweep at most
   landWaitMs: 6000,                  // POOL_LAND_WAIT_MS: the longest a request waits on the chain for this
+  minLand: Object.freeze({}),        // POOL_MIN_LAND: the least a wrap can be, per asset id, for its proof to earn points (see parseMinLand); none unless set here or by proofPoolConfig
+  minLandView: Object.freeze({}),
   pointsPerProof: 20,                // POINTS_MINE_PER_PROOF
   proofsPerMinerDay: Infinity,       // POINTS_MINE_DAILY_CAP: proofs an address is credited for in a UTC day (none: every proof)
   // A proof pays in full when it comes back within payFullSecs of its lease and less the longer it took, down to payFloorPct of the full
@@ -82,8 +111,11 @@ export function proofPoolConfig(env = {}) {
     const x = Number(v);
     return Number.isInteger(x) && x >= lo && x <= hi ? x : dflt;
   };
+  const ml = parseMinLand(env.POOL_MIN_LAND === undefined || env.POOL_MIN_LAND === null || env.POOL_MIN_LAND === '' ? DEFAULT_MIN_LAND : env.POOL_MIN_LAND);
   return Object.freeze({
     ...PROOF_POOL,
+    minLand: Object.freeze(ml.floors),
+    minLandView: Object.freeze(ml.view),
     reqPerClientDay: n(env.POOL_REQ_IP_DAILY, PROOF_POOL.reqPerClientDay, 0, 100_000),
     urgentPerClientDay: n(env.POOL_URGENT_IP_DAILY, PROOF_POOL.urgentPerClientDay, 0, 1000),
     maxPending: n(env.POOL_MAX_PENDING, PROOF_POOL.maxPending, 1, 100_000),
@@ -312,6 +344,17 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
   const dayRec = async (d) => { const r = await read(K.day(d), null); return { done: 0, points: 0, miners: {}, clients: {}, ...(r && typeof r === 'object' ? r : {}) }; };
   const minerIn = (rec, m) => rec.miners[m] || (rec.miners[m] = { proofs: 0, credited: 0, points: 0 });
   const earns = (rec, m) => ((rec.miners[m]?.credited || 0) < cfg.proofsPerMinerDay ? cfg.pointsPerProof : 0);
+  // Whether a job's wrap is smaller than the least that earns points for its asset (cfg.minLand): by the asset and value its request kept, or read from the input of a job
+  // posted before requests kept them. An asset with no floor, or an input that cannot be read, is not below one.
+  function belowMinimum(job) {
+    if (!job || !cfg.minLand || !Object.keys(cfg.minLand).length) return false;
+    let asset = job.asset, value = job.value != null ? BigInt(job.value) : null;
+    if (asset == null || value == null) {
+      try { const w = readWrapStdin(hexToBytes(String(job.stdin).replace(/^0x/, ''))); asset = '0x' + bytesToHex(w.asset); value = w.value; } catch { return false; }
+    }
+    const floor = cfg.minLand[String(asset).toLowerCase()];
+    return floor != null && value < floor;
+  }
 
   // Who is asking for work, by (address, client), kept in memory: a miner asks every few seconds, and a restart only means the next
   // asks fill it again. A new job is held for the asker whose turn for it comes first. A turn belongs to the place (the client): its draw for the
@@ -438,7 +481,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       const d = dayOf(t), n = Number(await kv.get(K.req(d, client))) || 0;
       if (n >= cfg.reqPerClientDay) { await save(); return reply(429, { ok: false, code: 'pool_cap', error: `at most ${cfg.reqPerClientDay} proofs asked for from one place a day; this one can still be proved another way` }); }
       if (q.length + Object.keys(L).length >= cfg.maxPending) { await save(); return reply(429, { ok: false, code: 'pool_full', error: 'the pool is full just now; prove this one another way' }); }
-      await write(K.job(id), { id, type, stdin: stdin.toLowerCase(), expect: want, status: 'open', postedAt: t, opens: true });
+      await write(K.job(id), { id, type, stdin: stdin.toLowerCase(), expect: want, status: 'open', postedAt: t, opens: true, asset: '0x' + bytesToHex(w.asset), value: String(w.value) });
       const u = urgent === true ? Number(await kv.get(K.urg(d, client))) || 0 : 0, mark = urgent === true && u < cfg.urgentPerClientDay;
       q.push({ id, at: t, tries: 0, skip: [], ...(mark ? { urgent: true } : {}) });
       changed = true;
@@ -502,7 +545,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
         L[e.id] = l;
         askers.delete(`${m}|${client}`);          // proving now: not asking again until it asks
         await save();
-        return reply(200, { ok: true, id: e.id, type: job.type, stdin: job.stdin, lease: l.lease, leaseMs: cfg.leaseMs, points: house ? 0 : earns(rec, m) });
+        return reply(200, { ok: true, id: e.id, type: job.type, stdin: job.stdin, lease: l.lease, leaseMs: cfg.leaseMs, points: house || belowMinimum(job) ? 0 : earns(rec, m) });
       }
       // Nothing waiting: Tacit's own prover, free, takes over the lease that has been held the longest past `houseTakeoverMs` without a proof, so a page's wrap does
       // not wait out the whole lease for a miner that is not proving it (a lease taken and sat on). The miner's lease is gone (its late proof is not taken) and the
@@ -588,15 +631,15 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
         await refuse(L, id, l, t, true);
         return { r: reply(400, { ok: false, code: 'bad_proof', error: 'these public values are not this job\'s: they must be exactly its wrap\'s (its deposit, its leaf, its chain binding and memo root, and no root)' }) };
       }
-      return { r: null, dep: String(job.expect?.depositId || '').toLowerCase(), house: !!l.house };
+      return { r: null, dep: String(job.expect?.depositId || '').toLowerCase(), house: !!l.house, small: belowMinimum(job) };
     });
     if (first.r) return first.r;
     let v;
     try { v = await verify({ publicValues, proof }); } catch { v = {}; }
     if (!v || (!v.ok && !v.reverted)) return reply(503, { ok: false, code: 'chain_unreadable', error: 'the verifier could not be asked just now; send it again (the lease still holds)', retryAfter: 30 });
     // Whether this proof's deposit is on the pool already (asked here, outside the lock like the verifier: it is a call to Ethereum, and bounded; Tacit's own
-    // provers earn nothing and are not asked about).
-    const onPool = landing && v.ok && first.dep && !first.house ? (await statusesOf([first.dep], cfg.landWaitMs))[0] : null;
+    // provers earn nothing and are not asked about, nor is a wrap below its asset's minimum).
+    const onPool = landing && v.ok && first.dep && !first.house && !first.small ? (await statusesOf([first.dep], cfg.landWaitMs))[0] : null;
     return exclusive(async () => {
       const t = clock();
       const L = await read(K.leases, {}), l = L[id];
@@ -640,7 +683,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       // A job that came back (a lease ran out or was handed back, so its page has waited) is paid by its age from the page's request, not from the lease that
       // proved it: whoever takes it up after the wait does not earn full speed pay for the page's wait. A job on its first lease is timed from the lease as ever.
       const waited = (l.tries || 0) > 0 ? Math.max(0, Math.round((t - l.at) / 1000)) : 0, paySecs = Math.max(secs, waited);
-      const mr = minerIn(rec, l.miner), points = !again && earns(rec, l.miner) > 0 ? payFor(paySecs, cfg) : 0;
+      const small = belowMinimum(job), mr = minerIn(rec, l.miner), points = !again && !small && earns(rec, l.miner) > 0 ? payFor(paySecs, cfg) : 0;
       mr.proofs++;
       // A proof pays when its deposit has landed on the pool (see PROOF_POOL.landMs): one whose deposit is there already pays now, any other waits in
       // pp:pend:<deposit> until a look at the pool (check) finds it there, and lapses after landMs. A deposit whose status could not be read waits too.
@@ -650,7 +693,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       await write(K.day(d), rec, cfg.daySecs);
       const extra = waited > secs ? { waited } : {};
       if (!again) await made({ miner: l.miner, points, ...extra }, waiting ? { miner: l.miner, points: 0, pending: points, ...extra } : undefined);
-      return reply(200, { ok: true, points, ...(waiting ? { pending: true } : {}) });
+      return reply(200, { ok: true, points, ...(waiting ? { pending: true } : {}), ...(small ? { belowMinimum: true } : {}) });
     });
   }
 
@@ -805,7 +848,9 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs,
         pay: { fullSecs: cfg.payFullSecs, floorSecs: cfg.payFloorSecs, floorPct: cfg.payFloorPct }, takeoverSecs: Math.round(cfg.houseTakeoverMs / 1000), ticketsPerAddress: cfg.ticketsPerAddress,
         // a proof earns its points when its deposit lands on the pool, if that is within windowSecs of the proof (absent: it earns them at the proof)
-        ...(landing ? { landing: { windowSecs: Math.round(Math.min(cfg.landMs, cfg.landChecks[cfg.landChecks.length - 1]) / 1000) } } : {}) },
+        ...(landing ? { landing: { windowSecs: Math.round(Math.min(cfg.landMs, cfg.landChecks[cfg.landChecks.length - 1]) / 1000) } } : {}),
+        // the least a wrap can be, per asset, for its proof to earn points (absent: no floors)
+        ...(Object.keys(cfg.minLandView || {}).length ? { minLand: cfg.minLandView } : {}) },
     });
   }
 

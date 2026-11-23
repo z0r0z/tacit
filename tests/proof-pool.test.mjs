@@ -12,7 +12,8 @@ import * as secp from '@noble/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
-import { makeProofPool, buildProofPool, payFactor, payFor, drawOf, readWrapStdin, wrapExpect, wrapOpens, proofFits, verifyCalldata, proofPoolConfig, clientOf, PROOF_POOL } from '../worker/src/proof-pool.js';
+import { makeProofPool, buildProofPool, payFactor, payFor, drawOf, readWrapStdin, wrapExpect, wrapOpens, proofFits, verifyCalldata, proofPoolConfig, clientOf, PROOF_POOL, parseMinLand, DEFAULT_MIN_LAND } from '../worker/src/proof-pool.js';
+import { CONFIDENTIAL_DEPLOYMENTS } from '../dapp/confidential-deployments.js';
 import { stdinFor } from '../dapp/sp1-stdin.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
 import worker, { ethCallVerdict, simulateSettle, poolChain, encodeStatusCalls, decodeStatusResults } from '../worker/src/index.js';
@@ -117,7 +118,8 @@ test('config: the environment sets each number within its bounds, and a bad valu
   const c = proofPoolConfig({ POOL_REQ_IP_DAILY: '4', POOL_MAX_PENDING: '10', POOL_LEASE_MS: '600000', POOL_KEEP_MS: 'soon', POINTS_MINE_PER_PROOF: '25', POINTS_MINE_DAILY_CAP: '-1' });
   assert.equal(c.reqPerClientDay, 4); assert.equal(c.maxPending, 10); assert.equal(c.leaseMs, 600_000);
   assert.equal(c.keepMs, PROOF_POOL.keepMs); assert.equal(c.pointsPerProof, 25); assert.equal(c.proofsPerMinerDay, PROOF_POOL.proofsPerMinerDay);
-  assert.deepEqual(proofPoolConfig({}), { ...PROOF_POOL });
+  assert.deepEqual({ ...proofPoolConfig({}), minLand: 0, minLandView: 0 }, { ...PROOF_POOL, minLand: 0, minLandView: 0 }, 'an empty environment is the pool\'s own numbers, but for the floors');
+  assert.ok(Object.keys(proofPoolConfig({}).minLand).length >= 4, 'which come with defaults');
   assert.equal(proofPoolConfig({ POOL_TURN_MS: '0' }).turnMs, 0, 'POOL_TURN_MS=0 puts first-to-ask back');
   assert.equal(proofPoolConfig({ POOL_TURN_MS: '45000' }).turnMs, 45_000);
   assert.equal(proofPoolConfig({ POOL_TURN_MS: '-5' }).turnMs, PROOF_POOL.turnMs);
@@ -1340,4 +1342,89 @@ test('landing config: each term is read within its bounds, and a bad one keeps t
   assert.equal(proofPoolConfig({ POOL_LAND_WAIT_MS: '2000' }).landWaitMs, 2000);
   assert.equal(proofPoolConfig({ POOL_LAND_WAIT_MS: '5' }).landWaitMs, PROOF_POOL.landWaitMs);
   assert.deepEqual([...PROOF_POOL.landChecks], [...PROOF_POOL.landChecks].sort((a, b) => a - b), 'the looks come at growing ages');
+});
+
+// ── a least size for the wraps that earn points: per asset, in the units a wrap's input holds its value in ──
+
+const TEST_ASSET = WRAP_OP.asset.toLowerCase();   // wrapJob(i) wraps 1500 + i of this asset
+
+test('minimum: a wrap below its asset\'s floor earns nothing, one at the floor earns in full, and an asset with no floor is not held to one', async () => {
+  const h = harness({ cfg: { minLand: { [TEST_ASSET]: 1600n } } });
+  const small = wrapJob(0), atFloor = wrapJob(100), big = wrapJob(500);        // 1500, 1600, 2000
+  assert.deepEqual((await proveFor(h, small)).body, { ok: true, points: 0, belowMinimum: true }, 'below: proved, kept for the page, paid nothing');
+  assert.deepEqual((await proveFor(h, atFloor)).body, { ok: true, points: 20 }, 'at the floor: paid');
+  assert.deepEqual((await proveFor(h, big)).body, { ok: true, points: 20 });
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [{ miner: MINER, proofs: 3, points: 40 }], 'all three count as work, two are paid');
+  assert.equal((await h.pool.results([small.id])).body.results[small.id].status, 'done', 'and the small one\'s proof is there for its page');
+  const other = harness({ cfg: { minLand: { ['0x' + 'bb'.repeat(32)]: 10n ** 12n } } });   // a floor on some other asset
+  assert.deepEqual((await proveFor(other, small)).body, { ok: true, points: 20 }, 'a wrap of an asset with no floor is paid as before');
+});
+
+test('minimum: the lease says a wrap below the floor would earn nothing, and the request keeps each wrap\'s asset and value', async () => {
+  const h = harness({ cfg: { minLand: { [TEST_ASSET]: 1600n } } });
+  const small = wrapJob(0), big = wrapJob(500);
+  await h.pool.request({ type: 'wrap', stdin: small.stdin, expect: small.expect, client: 'p1' });
+  await h.pool.request({ type: 'wrap', stdin: big.stdin, expect: big.expect, client: 'p2' });
+  const kept = JSON.parse(h.store.m.get(`pp:job:${small.id}`));
+  assert.deepEqual([kept.asset, kept.value], [TEST_ASSET, '1500']);
+  let l = (await h.pool.lease({ miner: MINER, client: 'm1' })).body;
+  assert.deepEqual([l.id, l.points], [small.id, 0], 'the oldest job is the small one: it would earn nothing');
+  await h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(small.expect), proof: PROOF });
+  l = (await h.pool.lease({ miner: MINER, client: 'm1' })).body;
+  assert.deepEqual([l.id, l.points], [big.id, 20]);
+});
+
+test('minimum: a job posted before requests kept the asset and value is sized from its input', async () => {
+  const h = harness({ cfg: { minLand: { [TEST_ASSET]: 1600n } } });
+  const small = wrapJob(0);
+  await h.pool.request({ type: 'wrap', stdin: small.stdin, expect: small.expect, client: 'p1' });
+  const rec = JSON.parse(h.store.m.get(`pp:job:${small.id}`));
+  delete rec.asset; delete rec.value;
+  h.store.m.set(`pp:job:${small.id}`, JSON.stringify(rec));
+  const l = (await h.pool.lease({ miner: MINER, client: 'm1' })).body;
+  assert.equal(l.points, 0);
+  assert.deepEqual((await h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(small.expect), proof: PROOF })).body, { ok: true, points: 0, belowMinimum: true });
+});
+
+test('minimum: a wrap below the floor is not waited on or asked about, with landing on; Tacit\'s own prover is unchanged', async () => {
+  const chain = fakeChain(), h = harness({ chain, cfg: { minLand: { [TEST_ASSET]: 1600n } } });
+  assert.deepEqual((await proveFor(h, wrapJob(0))).body, { ok: true, points: 0, belowMinimum: true });
+  assert.equal(chain.reads, 0, 'no read of the chain for a proof that earns nothing');
+  assert.equal(pendKeys(h).length + chkKeys(h).length, 0, 'and nothing waits');
+  assert.equal((await proveFor(h, wrapJob(500))).body.pending, true, 'a wrap above it waits as any other');
+  const hs = harness({ cfg: { minLand: { [TEST_ASSET]: 1600n } } });
+  const a = wrapJob(0);
+  await hs.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'page' });
+  const l = (await hs.pool.lease({ house: 'gpu', client: 'h' })).body;
+  assert.deepEqual((await hs.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(a.expect), proof: PROOF })).body, { ok: true, points: 0 }, 'the house earns nothing either way, and says nothing of a floor');
+});
+
+test('minimum: the stats name the floors only when there are some', async () => {
+  const view = { cETH: '0.01' };
+  const h = harness({ cfg: { minLand: { [TEST_ASSET]: 1600n }, minLandView: view } });
+  assert.deepEqual((await h.pool.stats()).body.terms.minLand, view);
+  assert.equal('minLand' in (await harness().pool.stats()).body.terms, false);
+});
+
+test('minimum config: floors are named by ticker in whole tokens, or by asset id in the input\'s units, and converted by each asset\'s decimals; a bad entry is dropped; none turns them off', () => {
+  const id = (t) => CONFIDENTIAL_DEPLOYMENTS.mainnet.assets.find((a) => a.ticker === t).assetId.toLowerCase();
+  const { floors, view } = parseMinLand('cETH=0.01,cUSDT=10,cTAC=10,cBTC=0.0001,cUSD=2.5');
+  assert.equal(floors[id('cETH')], 1_000_000n, '0.01 ETH in 8-decimal units');
+  assert.equal(floors[id('cUSDT')], 10_000_000n, '10 USDT in 6-decimal units');
+  assert.equal(floors[id('cTAC')], 1_000_000_000n);
+  assert.equal(floors[id('cBTC')], 10_000n);
+  assert.equal(floors[id('cUSD')], 250_000_000n);
+  assert.deepEqual(view, { cETH: '0.01', cUSDT: '10', cTAC: '10', cBTC: '0.0001', cUSD: '2.5' });
+  const X = '0x' + 'ab'.repeat(32);
+  assert.deepEqual(parseMinLand(`${X.toUpperCase().replace('0X', '0x')}=5000`).floors, { [X]: 5000n }, 'by asset id, in the input\'s units');
+  assert.deepEqual(parseMinLand(`${X}=1.5,cNOPE=3,cETH=0.123456789,cETH,=4,cUSDT=abc,garbage`).floors, {}, 'a fraction of a unit, an unknown ticker, no amount, no name: all dropped');
+  assert.deepEqual(Object.keys(parseMinLand(`cNOPE=3,cETH=1,garbage`).floors), [id('cETH')], 'and the good entries beside them stay');
+  for (const none of ['none', 'NONE', 'off', '', '  ', undefined, null]) assert.deepEqual(parseMinLand(none).floors, {}, `${none}`);
+  // through the environment
+  assert.equal(Object.keys(proofPoolConfig({}).minLand).length, 5, 'the defaults name the five assets of the pool\'s table');
+  assert.deepEqual(proofPoolConfig({}).minLandView, parseMinLand(DEFAULT_MIN_LAND).view);
+  assert.deepEqual(Object.keys(proofPoolConfig({ POOL_MIN_LAND: 'cETH=1' }).minLand), [id('cETH')]);
+  assert.equal(proofPoolConfig({ POOL_MIN_LAND: 'cETH=1' }).minLand[id('cETH')], 100_000_000n);
+  assert.deepEqual(proofPoolConfig({ POOL_MIN_LAND: 'none' }).minLand, {});
+  assert.equal(Object.keys(proofPoolConfig({ POOL_MIN_LAND: '' }).minLand).length, 5, 'an empty value is the default');
 });
