@@ -44,6 +44,16 @@ test('with a webhook it is logged and posted: its own fields, and the readable l
   assert.deepEqual([body.level, body.msg, body.free, body.held], ['warn', 'the provider is running out of private TAC to lend', '757', '1754']);
 });
 
+test('a post names no one to mention: text in a line (a name, an error) cannot ping a channel, and an alert\'s own fields cannot change that', async () => {
+  const posts = [];
+  const alert = makeAlert({ log: () => {}, webhook: 'https://hooks.example/x', fetchImpl: async (url, init) => { posts.push(JSON.parse(init.body)); return { ok: true }; } });
+  alert({ level: 'warn', msg: 'a provider @everyone <@123456789> said hello', name: '@here' });
+  alert({ level: 'warn', msg: 'm', allowed_mentions: { parse: ['everyone', 'users', 'roles'] } });
+  assert.equal(posts.length, 2);
+  for (const b of posts) assert.deepEqual(b.allowed_mentions, { parse: [] });
+  assert.match(posts[0].content, /@everyone/, 'the words stay as they were: they are shown, not acted on');
+});
+
 test('a webhook that rejects, throws at once, or answers with something that is not a promise never reaches the provider', async () => {
   const logs = [];
   for (const fetchImpl of [async () => { throw new Error('down'); }, () => { throw new Error('threw at once'); }, () => Promise.reject(new Error('rejected')), () => 7]) {

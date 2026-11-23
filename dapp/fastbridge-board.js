@@ -31,6 +31,18 @@ const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 // own members only, whatever their names: `a[k] = v` for a member called __proto__ would set a prototype and leave the member out of what is signed
 const canonical = (o) => JSON.stringify(Object.fromEntries(Object.keys(o).sort().map((k) => [k, o[k]])));
 
+// The members an ad, its reverse terms and a want may have, and no others: the board and every page that reads an ad check them (checkAd, checkWant), so a
+// signed ad with a member of its own (a name like __proto__, junk, a field no reader looks for) is not listed, and a new member reaches the board and the pages
+// that read it together. A provider whose ad carries one a page does not yet know is not shown by that page until it is updated.
+export const AD_MEMBERS = ['v', 'claimPub', 'gateway', 'btcAsset', 'evmAsset', 'minAmount', 'maxAmount', 'available', 'feeBps', 'flatFee', 'csvBlocks', 'evmWindowSecs', 'anyTac', 'reverse', 'name', 'at', 'until', 'sig'];
+export const REVERSE_MEMBERS = ['minAmount', 'maxAmount', 'available', 'feeBps', 'flatFee', 'csvBlocks', 'evmWindowSecs'];
+export const WANT_MEMBERS = ['v', 'pub', 'btcAsset', 'amount', 'maxFeeBps', 'at', 'until', 'sig'];
+// a name is shown as it is written: no markup brackets and no control, line or paragraph separator characters
+const NAME_OK = /^[^<>\p{Cc}\p{Zl}\p{Zp}]*$/u;
+const onlyMembers = (o, allowed, what, bad) => {
+  for (const k of Object.keys(o)) if (!allowed.includes(k)) bad(`${what} has a member it does not take${/^\w{1,24}$/.test(k) ? `: ${k}` : ''}`);
+};
+
 // what an ad says (everything but its signature), as the bytes that are signed
 export const adDigest = (ad) => { const { sig, ...body } = ad; return sha256(concatBytes(te.encode('tacit-fast-ad-v1'), te.encode(canonical(body)))); };
 export const wantDigest = (w) => { const { sig, ...body } = w; return sha256(concatBytes(te.encode('tacit-fast-want-v1'), te.encode(canonical(body)))); };
@@ -64,7 +76,10 @@ export function checkAd(ad, now) {
     for (const [k, max] of [['feeBps', 10000], ['csvBlocks', 4032], ['evmWindowSecs', 86400 * 7]]) if (!Number.isInteger(r[k]) || r[k] < 0 || r[k] > max) bad(`the ad's reverse ${k} is out of range`);
   }
   if (JSON.stringify(ad).length > LIMITS.maxAd) bad('the ad is too large');
+  onlyMembers(ad, AD_MEMBERS, 'the ad', bad);
+  if (ad.reverse != null) onlyMembers(ad.reverse, REVERSE_MEMBERS, 'the ad\'s reverse terms', bad);
   if (ad.name != null && (typeof ad.name !== 'string' || ad.name.length > LIMITS.maxName)) bad('the ad\'s name is too long');
+  if (ad.name != null && !NAME_OK.test(ad.name)) bad('the ad\'s name has characters a name may not');
   if (!Number.isInteger(ad.at) || !Number.isInteger(ad.until) || ad.until <= ad.at || ad.until - ad.at > LIMITS.adSecs) bad('the ad\'s time is not valid');
   if (ad.until <= now) bad('the ad has run out');
   if (ad.at > now + LIMITS.skewSecs) bad('the ad is from the future');
@@ -88,6 +103,7 @@ export function signWant(want, priv) {
 export function checkWant(w, now, wantSecs = LIMITS.wantSecs) {
   const bad = (m) => { throw new BoardError(400, m); };
   if (!w || typeof w !== 'object' || w.v !== 1) bad('not a want');
+  onlyMembers(w, WANT_MEMBERS, 'the want', bad);
   if (!hex(66).test(String(w.pub))) bad('the want\'s pub is not a key');
   if (!hex(64).test(strip(w.btcAsset || ''))) bad('the want\'s btcAsset is not an asset');
   if (!uint.test(String(w.amount))) bad('the want\'s amount is not an amount');

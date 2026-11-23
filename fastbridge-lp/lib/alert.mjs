@@ -1,6 +1,7 @@
 // Alerts: each goes to the log and, when a webhook is set, is POSTed there as JSON. The body carries the alert's own fields, and two more that put
 // one readable line where a chat service looks for it: `text` (Slack and the services that copy it) and `content` (Discord), so a channel's incoming
-// webhook can be pointed at the provider with nothing between them. A webhook that does not answer costs the provider nothing.
+// webhook can be pointed at the provider with nothing between them. `allowed_mentions` is empty so no text in a line (a name, an error) can ping a channel.
+// A webhook that does not answer costs the provider nothing.
 
 const MAX_LINE = 1800;                                           // Discord takes 2000 characters of content
 
@@ -21,7 +22,7 @@ export function makeAlert({ log, webhook = null, name, fetchImpl = (...a) => fet
     if (!webhook) return;
     const line = alertLine(o, name);
     try {
-      Promise.resolve(fetchImpl(webhook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...o, text: line, content: line }) })).catch(() => {});
+      Promise.resolve(fetchImpl(webhook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...o, text: line, content: line, allowed_mentions: { parse: [] } }) })).catch(() => {});
     } catch { /* a webhook that cannot be reached is not the provider's trouble */ }
   };
 }

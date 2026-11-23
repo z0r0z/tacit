@@ -47,7 +47,10 @@ the provider's own:
 
 - **An ad.** A provider signs an ad with its claim key: its terms (fee, limits, timelock), what it can take now, and the gateway
   key requests are sealed to. An ad stands for a few minutes and is posted again every minute. A user's page checks each
-  ad's signature itself, whoever delivered it.
+  ad's signature itself, whoever delivered it. An ad has the members `AD_MEMBERS` lists (`dapp/fastbridge-board.js`) and no
+  others, and a name of plain text (no `<` or `>`, no control characters): the board and every page refuse one that does not, so
+  a program that reads the board's `/ads` can rely on that, though it should still escape what it shows. A new member goes in
+  that list first, and a provider posts it once the board and the pages know it.
 - **A board.** The ads are posted to a small board, which also carries requests and answers: a request is sealed to the
   provider's gateway key and an answer to the request's one-time key (the private route's sealing, `dapp/sealed-request.js`),
   and only the provider the request was for can post its answer. The board can drop or delay a message and can read, change

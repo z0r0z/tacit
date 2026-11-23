@@ -14,9 +14,9 @@ export async function resolve(spec, ctx, next) {
 import assert from 'node:assert/strict';
 import { realFetch } from './lib/real-fetch.mjs';
 import { secp, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
-import { signSchnorr } from '../dapp/bulletproofs.js';
+import { signSchnorr, verifySchnorr } from '../dapp/bulletproofs.js';
 import { sealRequest } from '../dapp/sealed-request.js';
-import { makeBoard, signAd, checkAd, signWant, checkWant, replyDigest, messageId, LIMITS } from '../dapp/fastbridge-board.js';
+import { makeBoard, signAd, checkAd, signWant, checkWant, adDigest, wantDigest, replyDigest, messageId, LIMITS, AD_MEMBERS, REVERSE_MEMBERS } from '../dapp/fastbridge-board.js';
 import { gatewayOf, makeMailboxCall, makeMailboxServer, makeAdPublisher, makeProvider, readProviders, defaultAdName } from '../dapp/fastbridge-mailbox.js';
 import { makeFastBridgeClient } from '../dapp/fastbridge-client.js';
 import { makeBoardClient } from '../dapp/fastbridge-board-client.js';
@@ -342,13 +342,92 @@ test('a want that was taken down stays down: the original, which is public, cann
   assert.equal(board.putWant(signWant({ pub: pubOf(priv(2)), btcAsset: 'ab'.repeat(32), amount: '5', at: T0 - 1, until: T0 + 60 }, priv(2))).ok, true, 'nothing was remembered for a want that was never taken');
 });
 
-test('an ad is bounded in size, and a member named __proto__ cannot be added to a signed ad without breaking its signature', () => {
+test('an ad is bounded in size, and a member named __proto__ cannot be added to a signed ad: it is not one an ad has, and it is part of what is signed', () => {
   const a = adOf(1, T0);
   assert.equal(checkAd(a, T0), a);
   assert.match(thrown(() => checkAd({ ...a, extra: 'x'.repeat(3000) }, T0)).message, /too large/);
   const sneaky = JSON.parse(JSON.stringify(a).replace(/}$/, ',"__proto__":{"x":1}}'));
-  assert.match(thrown(() => checkAd(sneaky, T0)).message, /not signed by its key/, 'the member is part of what is signed');
+  assert.match(thrown(() => checkAd(sneaky, T0)).message, /member it does not take: __proto__/);
+  assert.notDeepEqual(adDigest(sneaky), adDigest(a), 'the member is part of what is signed');
   assert.equal(makeBoard({ now: () => T0 }).putAd(a).ok, true);
+});
+
+// an own member that JSON names __proto__ (an object literal with that name would set a prototype and not be a member)
+const asJson = (body, tail) => JSON.parse(JSON.stringify(body).replace(/}$/, `,${tail}}`));
+const unsignedAd = (n, over = {}) => { const { sig, ...body } = adOf(n, T0, over); void sig; return body; };
+const signedBy = (digest, sig, pub33) => verifySchnorr(hexToBytes(sig), digest, hexToBytes(pub33).slice(1));
+
+test('an ad has only the members it defines: one signed with a member of its own (a __proto__, junk, a field nothing reads) is refused by checkAd, the board, its HTTP face and a page that reads a board that lists it', async () => {
+  const good = adOf(1, T0), clean = adOf(2, T0), body = unsignedAd(1);
+  const probes = {
+    ['__proto__']: signAd(asJson(body, '"__proto__":{"feeBps":0,"available":"999999999999","name":"POLLUTED"}'), priv(1)),   // computed: a literal __proto__ would set probes' prototype
+    constructor: signAd(asJson(body, '"constructor":{"prototype":{"polluted":1}}'), priv(1)),
+    zzz: signAd({ ...body, zzz: 'junk' }, priv(1)),
+    onclick: signAd({ ...body, onclick: 'alert(1)' }, priv(1)),
+  };
+  const board = makeBoard({ now: () => T0 }), handle = makeBoardHandler(board);
+  for (const [k, ad] of Object.entries(probes)) {
+    assert.ok(Object.prototype.hasOwnProperty.call(ad, k), `${k} is a member of the ad itself`);
+    assert.ok(signedBy(adDigest(ad), ad.sig, ad.claimPub), `${k}: the ad is signed by its provider's key, so it is the member that is refused`);
+    assert.match(thrown(() => checkAd(ad, T0)).message, new RegExp(`^the ad has a member it does not take: ${k}$`), k);
+    assert.match(thrown(() => makeBoard({ now: () => T0 }).putAd(ad)).message, /member it does not take/, `${k}: the board does not keep it`);
+    const r = await handle({ method: 'PUT', path: '/ad', body: JSON.parse(JSON.stringify(ad)), client: null });
+    assert.equal(r.status, 400, `${k}: over HTTP`); assert.match(r.body.error, /member it does not take/);
+  }
+  assert.deepEqual(board.ads(), [], 'none of them is listed');
+  assert.equal((await handle({ method: 'PUT', path: '/ad', body: good, client: null })).status, 200);
+  assert.deepEqual((await handle({ method: 'GET', path: '/ads' })).body.ads.map((a) => a.name), ['p1']);
+  // a page does not take a board's word for it: an ad a board lists anyway is not shown
+  const found = await readProviders({ board: { ads: async () => [probes.__proto__, probes.zzz, clean, good] }, now: () => T0 });
+  assert.deepEqual(found.map((p) => p.name).sort(), ['p1', 'p2']);
+  // a member named with markup is refused without its name in the answer
+  assert.equal(thrown(() => checkAd(signAd({ ...body, '<img src=x onerror=probe5>': 1 }, priv(1)), T0)).message, 'the ad has a member it does not take');
+  assert.equal(thrown(() => checkAd(signAd({ ...body, ['x'.repeat(30)]: 1 }, priv(1)), T0)).message, 'the ad has a member it does not take', 'nor a long one');
+});
+
+test('the reverse terms of an ad have only theirs, and every member the provider posts is one the board takes, so the lists cannot drift from the publisher', async () => {
+  const rev = { minAmount: '2000', maxAmount: '30000', available: '4500', feeBps: 40, flatFee: '300', csvBlocks: 72, evmWindowSecs: 14400 };
+  assert.equal(checkAd(adOf(1, T0, { reverse: rev }), T0).reverse.feeBps, 40);
+  assert.match(thrown(() => checkAd(adOf(1, T0, { reverse: { ...rev, note: 'x' } }), T0)).message, /^the ad's reverse terms has a member it does not take: note$/);
+  assert.match(thrown(() => checkAd(adOf(1, T0, { reverse: asJson(rev, '"__proto__":{"feeBps":0}') }), T0)).message, /reverse terms has a member it does not take: __proto__/);
+  // the ad a provider with both sides and TAC from any note posts, from the publisher itself
+  const c = clock(), board = makeBoard({ now: c.now });
+  const info = { btcAsset: 'ab'.repeat(32), evmAsset: '0x' + 'cd'.repeat(32), minAmount: '1000', maxAmount: '50000', available: '7000', feeBps: 25, flatFee: '100', csvBlocks: 144, evmWindowSecs: 14400, anyTac: true };
+  const reverse = { v: 1, direction: 'out', lockerPub: '02' + 'ee'.repeat(32), btcAsset: info.btcAsset, evmAsset: info.evmAsset, ...rev, maxOpen: 2, open: 0, anyTac: true };
+  const P = providerOf(1, async (req) => (req.path === '/info' ? { status: 200, body: info } : req.path === '/reverse/info' ? { status: 200, body: reverse } : { status: 404, body: {} }), c);
+  const ad = await makeAdPublisher({ board, handle: P.handle, claimPriv: P.p, claimPub: P.claimPub, keys: P.keys, name: 'Fast one', now: c.now, everySecs: 60 }).publish();
+  assert.ok(ad.anyTac === true && ad.reverse && ad.name, 'it posts every optional part');
+  assert.equal(checkAd(ad, c.now()), ad); assert.equal(board.ads().length, 1);
+  assert.deepEqual(Object.keys(ad).filter((k) => !AD_MEMBERS.includes(k)), [], 'nothing it posts is a member the board refuses');
+  assert.deepEqual(Object.keys(ad.reverse).filter((k) => !REVERSE_MEMBERS.includes(k)), []);
+  assert.deepEqual(AD_MEMBERS.filter((k) => !(k in ad)), [], 'and the list has no member the publisher never posts');
+  assert.deepEqual(REVERSE_MEMBERS.filter((k) => !(k in ad.reverse)), []);
+});
+
+test('an ad\'s name is plain text: no markup brackets, no control, line or paragraph separator characters; the names people give a provider pass', () => {
+  for (const name of ['<img src=x onerror=probe5>', '<svg/onload=probe3>', '<b id=probe1>x</b>', 'a>b', 'two\nlines', 'a\tb', '\r', 'nul\u0000', 'del\u007f', 'c1\u0085', 'a b', 'a b']) {
+    assert.match(thrown(() => checkAd(adOf(1, T0, { name }), T0)).message, /^the ad's name has characters a name may not$/, JSON.stringify(name));
+  }
+  for (const name of ['Tacit', 'home-only', 'Anna\'s LP', 'Provider 02ab3c', 'R&D "fast" lane', 'LP «fast»', 'Fast ⚡', '日本の橋', 'x'.repeat(40), '', null]) {
+    assert.equal(checkAd(adOf(1, T0, { name }), T0).name, name, JSON.stringify(name));
+  }
+  assert.equal(makeBoard({ now: () => T0 }).putAd(adOf(1, T0)).ok, true);
+  assert.match(thrown(() => makeBoard({ now: () => T0 }).putAd(adOf(1, T0, { name: '<b>x</b>' }))).message, /name has characters/, 'and the board does not keep one that is not');
+});
+
+test('a want has only the members it defines: one signed with a member of its own is refused by checkWant, the board and its HTTP face', async () => {
+  const body = { v: 1, pub: pubOf(priv(1)), btcAsset: 'ab'.repeat(32), amount: '100000000000', at: T0, until: T0 + 86400 };
+  for (const w of [signWant(body, priv(1)), signWant({ ...body, maxFeeBps: 50 }, priv(1))]) assert.equal(checkWant(w, T0), w);
+  const board = makeBoard({ now: () => T0 }), handle = makeBoardHandler(board);
+  for (const [k, w] of [['__proto__', signWant(asJson(body, '"__proto__":{"amount":"1"}'), priv(1))], ['zzz', signWant({ ...body, zzz: 'junk' }, priv(1))]]) {
+    assert.ok(Object.prototype.hasOwnProperty.call(w, k) && signedBy(wantDigest(w), w.sig, w.pub), `${k}: a member of a want that is signed`);
+    assert.match(thrown(() => checkWant(w, T0)).message, new RegExp(`^the want has a member it does not take: ${k}$`), k);
+    assert.match(thrown(() => board.putWant(w)).message, /member it does not take/);
+    const r = await handle({ method: 'PUT', path: '/want', body: JSON.parse(JSON.stringify(w)) });
+    assert.equal(r.status, 400, `${k}: over HTTP`);
+  }
+  assert.deepEqual(board.wants(), []);
+  assert.equal((await handle({ method: 'PUT', path: '/want', body: signWant(body, priv(1)) })).status, 200);
 });
 
 test('a board that restarts does not leave a provider deaf: the provider reads again from the start when the board\'s run changes', async () => {
