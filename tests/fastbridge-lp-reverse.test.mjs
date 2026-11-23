@@ -40,7 +40,7 @@ test('the defaults are the cautious ones, and are the forward side\'s own window
   const o = reverseOptions({ ...FULL, reverse: { enabled: true } });
   assert.deepEqual(o.quote, { btcAsset: FULL.btcAsset, evmAsset: FULL.evmAsset, minAmount: '1000000000', maxAmount: '100000000000', feeBps: 30, flatFee: '10000000', validSecs: 600 });
   assert.equal(o.maxOpen, 2); assert.equal(o.maxLocked, 2000n * 10n ** 8n, 'at most 2,000 TAC out at once');
-  assert.equal(o.csvBlocks, 72); assert.equal(o.evmWindowSecs, 14400); assert.equal(o.anyTac, true); assert.equal(o.refreshSecs, 60);
+  assert.equal(o.csvBlocks, 96, 'a lock of 96 blocks leaves the user\'s lock room at once: 72 left no margin at the moment the lock confirms (see fastbridge-el.js)'); assert.equal(o.evmWindowSecs, 14400); assert.equal(o.anyTac, true); assert.equal(o.refreshSecs, 60);
   assert.deepEqual(o.policy, { minClaimSecs: 3600, offerWaitSecs: 7200, maxEvmWindowSecs: 21600 });
   assert.equal(o.alertSecs, 3600);
 });
@@ -55,6 +55,23 @@ test('the terms and the ceiling follow what is set; more confirmations for a lar
   assert.equal(reverseOptions({ ...FULL, reverse: { enabled: true, maxTac: '12' } }).maxLocked, 1200000000n);
   const c = o.minConfsFor, T = 10n ** 8n;
   assert.deepEqual([c(1n), c(999n * T), c(1000n * T), c(9999n * T), c(10000n * T), c('10000' + '00000000')], [1, 1, 2, 2, 3, 3]);
+});
+
+// The user's lock follows the provider's once the user's client is satisfied that the Bitcoin refund opens two hours after the Ethereum deadline, counting blocks at five minutes (adaptor-xswap.js
+// checkEvmDeadline). The deadline is the window after the lock's block; at 72 blocks the refund is 71 * 300 s away at that moment, 300 s short of window + two hours, so the lock waited some minutes for time to pass (the
+// swap of 11-23 was ended by this check before the machine waited for it).
+test('the default lock length leaves the user\'s lock room the moment the provider\'s lock confirms (72 blocks was 300 s short)', async () => {
+  const X = await import('../dapp/adaptor-xswap.js'), { lockDeadline } = await import('../dapp/fastbridge-el.js');
+  const o = reverseOptions({ ...FULL, reverse: { enabled: true } });
+  const blockTime = 1_800_000_123, lockHeight = 100_000;
+  const margin = (csvBlocks) => {
+    const deadline = lockDeadline({ blockTime, windowSecs: o.evmWindowSecs, roundSecs: 600 });
+    const opens = X.btcRefundOpensAt({ lockHeight, csvBlocks, tipHeight: lockHeight, nowSecs: blockTime });
+    return { reasons: X.checkEvmDeadline({ deadline, nowSecs: blockTime, btcRefundOpens: opens, minClaimSecs: 3600, claimSlackSecs: 7200 }), by: opens - (deadline + 7200) };
+  };
+  assert.deepEqual(margin(o.csvBlocks).reasons, [], 'the default passes at the moment the lock confirms, by ' + margin(o.csvBlocks).by + ' s');
+  assert.ok(margin(o.csvBlocks).by >= 3600, 'with an hour to spare, so a late look does not fail it either');
+  assert.equal(margin(72).reasons.length, 1, '72 blocks does not (the reason is the refund margin)');
 });
 
 const ASSET = 'cc'.repeat(32);

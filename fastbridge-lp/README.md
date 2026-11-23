@@ -164,7 +164,7 @@ Everything above takes TAC on Bitcoin and pays TAC in the pool. With `FB_LP_REVE
 pool TAC and gets a TAC note on Bitcoin. The machines are the same ones turned around (`dapp/fastbridge-reverse-provider.js`, with `dapp/fastbridge-reverse-client.js`
 as the user's side): the provider holds the secret, so it locks its Bitcoin note first; the user then locks pool TAC against the same secret; the provider's
 claim of that lock shows the secret, and the user takes the Bitcoin note with it. A user that never locks costs the provider the note's time under the timelock (`csvBlocks`,
-72 blocks by default) and the fees of the lock and of taking the note back; there is no bond, so what bounds it is `maxOpen` and `maxTac` (below). The pool TAC it is paid lands at its pool account, where the other direction lends from.
+96 blocks by default, about 16 hours) and the fees of the lock and of taking the note back (96 and not fewer: the user's client wants the Bitcoin refund to open at least two hours after the Ethereum deadline it locks to, which is 72 blocks and not one more at five-minute blocks, so a lock of 72 had no margin when it confirmed and the user's lock waited for it); there is no bond, so what bounds it is `maxOpen` and `maxTac` (below). The pool TAC it is paid lands at its pool account, where the other direction lends from.
 
 **It sells from a Bitcoin address of its own**, derived from `FB_LP_KEY` and printed at start (`reverseAddress`), and from nothing else. The main address holds
 earnings, take-fee coins and, on a house provider, stock that a market maker lists by outpoint; a lock picks the smallest note that covers it and funds itself

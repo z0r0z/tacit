@@ -36,7 +36,7 @@ export function reverseOptions(C) {
   const ceiling = r.maxTac == null ? 2000n * 10n ** 8n : tacUnits(r.maxTac);
   return {
     quote: { btcAsset: C.btcAsset, evmAsset: C.evmAsset, minAmount: String(r.minAmount ?? '1000000000'), maxAmount: String(r.maxAmount ?? '100000000000'), feeBps: r.feeBps ?? 30, flatFee: String(r.flatFee ?? '10000000'), validSecs: r.validSecs ?? 600 },
-    csvBlocks: r.csvBlocks ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, maxOpen: r.maxOpen ?? 2, maxLocked: ceiling, minConfsFor: confsFor,
+    csvBlocks: r.csvBlocks ?? 96, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, maxOpen: r.maxOpen ?? 2, maxLocked: ceiling, minConfsFor: confsFor,
     anyTac: r.anyTac !== false, alertSecs: C.alertSecs ?? 3600, refreshSecs: r.refreshSecs ?? 60,
     policy: { minClaimSecs: C.policy.minClaimSecs ?? 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600 },
   };

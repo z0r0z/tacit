@@ -57,7 +57,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
   };
   const bl = makeBitcoinLocker({
     seed, now, store: swaps, btc, evm, counter,
-    policy: { csvBlocks: config.csvBlocks ?? 72, minClaimSecs: pol.minClaimSecs ?? 3600, offerWaitSecs: pol.offerWaitSecs ?? 2 * 3600, maxEvmWindowSecs: pol.maxEvmWindowSecs ?? 6 * 3600, claimMarginSecs: pol.claimMarginSecs ?? 600 },
+    policy: { csvBlocks: config.csvBlocks ?? 96, minClaimSecs: pol.minClaimSecs ?? 3600, offerWaitSecs: pol.offerWaitSecs ?? 2 * 3600, maxEvmWindowSecs: pol.maxEvmWindowSecs ?? 6 * 3600, claimMarginSecs: pol.claimMarginSecs ?? 600 },
   });
 
   let chain = Promise.resolve();
@@ -130,7 +130,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     const p = await picture().catch(() => null), a = await availableAmount();
     return {
       v: 1, direction: 'out', lockerPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(min), maxAmount: String(max), available: a == null ? null : String(a),
-      feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks ?? 72, evmWindowSecs: config.evmWindowSecs, minClaimSecs: pol.minClaimSecs ?? 3600,
+      feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks ?? 96, evmWindowSecs: config.evmWindowSecs, minClaimSecs: pol.minClaimSecs ?? 3600,
       maxOpen, open: p ? p.open : null, anyTac: config.anyTac !== false,
     };
   }
@@ -143,7 +143,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     if (why) throw Object.assign(new Error(why), { status: 503, retry: true });
     const rec = {
       id: randomHex(16), direction: 'out', btcAsset: q.btcAsset, btcValue: String(btcValue), evmAsset: q.evmAsset, evmAmount: String(evmAmount), claimPub: String(claimPub).toLowerCase(),
-      lockerPub, lockerXonly: lockerPub.slice(2), csvBlocks: config.csvBlocks ?? 72, evmWindowSecs: config.evmWindowSecs, minConfs: config.minConfsFor ? config.minConfsFor(btcValue) : 1,
+      lockerPub, lockerXonly: lockerPub.slice(2), csvBlocks: config.csvBlocks ?? 96, evmWindowSecs: config.evmWindowSecs, minConfs: config.minConfsFor ? config.minConfsFor(btcValue) : 1,
       takeSats: await takeSats(), created: now(), validUntil: now() + validSecs,
     };
     await quotes.put(rec);
