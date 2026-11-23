@@ -462,11 +462,9 @@ main:focus { outline: none; }
 @media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
 @media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
 @media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
-:where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 580px; }
-@media (max-width: 640px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 370px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 356px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 338px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 602px; } }
+:where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 598px; }
+/* (on a phone the card is one height down to 320 px: the steps under the button close up on a narrow card rather than wrap, see .hx-path below) */
+@media (max-width: 640px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 595px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -2152,32 +2150,62 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .sk { background: var(--skel); }
 }
-/* ───────────────────────────── Graphite, the default skin: the hero and the card's frame ─────────────────────────────
-   Built around privacy. One light thing on a screen: the button. What is chosen is a raised grey plate, not a
-   highlight. Words are in the grotesk, figures in the mono, the headline in the serif with its second word in quiet italics.
-   The rules here restyle the ones above (the tab strip's sliding line is put away, not removed: the strip is a plate now). */
+/* ───────────────────────────── Twin glow, the default skin: the ground, the hero and the card ─────────────────────────────
+   Two soft lights sit behind the card, Bitcoin's orange to its left and a violet to its right, with Ethereum's indigo low on the page. The card is
+   frosted glass on them with a rim that runs from one colour to the other. What is chosen is a pill in the two colours, and the one button that acts
+   is the gradient itself. The rules here restyle the ones above at a higher weight (the tab strip's sliding line becomes the sliding pill). */
 html:not([data-page="spx"]) {
-  & .hero h1 { font: 400 clamp(44px, 12vw, 68px)/1.02 var(--serif); letter-spacing: -.025em; }
-  & .hero h1 .hero-w2 { font-style: italic; color: var(--mute); }
+  /* the ground: the lights are on <html> (the glyph field lies over them, chrome.css), fixed to the window so the card always sits between them */
+  background: radial-gradient(520px 520px at calc(50% - 330px) 330px, color-mix(in srgb, var(--orange) 46%, transparent), transparent 70%),
+    radial-gradient(560px 560px at calc(50% + 330px) 470px, color-mix(in srgb, var(--violet) 42%, transparent), transparent 70%),
+    radial-gradient(900px 520px at 50% 110%, color-mix(in srgb, var(--blue) 22%, transparent), transparent 70%), var(--paper);
+  background-attachment: fixed;
+  @media (max-width: 640px) {
+    background: radial-gradient(300px 300px at 0 300px, color-mix(in srgb, var(--orange) 42%, transparent), transparent 70%),
+      radial-gradient(320px 340px at 100% 560px, color-mix(in srgb, var(--violet) 40%, transparent), transparent 70%),
+      radial-gradient(520px 360px at 50% 105%, color-mix(in srgb, var(--blue) 18%, transparent), transparent 70%), var(--paper);
+    background-attachment: fixed;
+  }
+  & .hero h1 { font: 400 clamp(44px, 12vw, 70px)/1.02 var(--serif); letter-spacing: -.035em; }
+  & .hero h1 .hero-w2 { font-style: italic; color: var(--violet); background: linear-gradient(100deg, var(--orange), var(--violet) 60%, var(--blue)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; padding-right: .06em; }
   & .hero .sub { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
   & .hero .sub b { font: 400 .88em var(--mono); color: var(--ink); }
   & .hero-t { margin-bottom: 26px; }
-  & .hx { border-radius: 20px; border-color: var(--hair); background: linear-gradient(180deg, color-mix(in srgb, var(--card) 93%, #fff) 0, var(--card) 140px); }
-  /* the tabs: one plate, the chosen tab raised on it */
-  & .hx-h { margin: 12px 12px 4px; padding: 3px; border: 0; border-radius: 12px; background: var(--field); }
-  & .hx-h::after { display: none; }
-  & .hx-h button { padding: 10px 0; border-radius: 9px; font: 500 14px/1 var(--sans); letter-spacing: 0; transition: background-color .2s, color .2s; }
-  & .hx-h button[aria-selected="true"] { background: var(--raise); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
-  & .hx-sk .t { height: 40px; margin: 0 -4px 6px; }
+  /* the card: glass over the lights, its rim the two colours (the rim's gradient lies under the whole card and tints the glass a little, as light does) */
+  & .hx { border: 1px solid transparent; border-radius: 36px; background: linear-gradient(var(--glass), var(--glass)) padding-box, var(--glow-rim) border-box;
+    -webkit-backdrop-filter: blur(30px) saturate(1.5); backdrop-filter: blur(30px) saturate(1.5);
+    box-shadow: 0 40px 100px -44px color-mix(in srgb, var(--violet) 65%, transparent), -30px 0 80px -54px var(--orange), inset 0 1px 0 rgba(255,255,255,.3); }
+  /* the tabs: a pill track, the chosen tab a gradient pill that springs from tab to tab (its place is the line's old --bl and --bw: the line sat at
+     30% of its tab and was 40% of it wide, so the tab itself starts .75 of a width to its left and is 2.5 widths wide) */
+  & .hx-h { --hp: 5px; margin: 12px 12px 4px; padding: 5px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--field) 72%, transparent); box-shadow: inset 0 0 0 1px var(--hair); }
+  & .hx-h::after { top: 5px; bottom: 5px; height: auto; z-index: 0; border-radius: 999px; background: var(--glow-pill);
+    box-shadow: 0 10px 24px -8px color-mix(in srgb, var(--violet) 75%, transparent), 0 4px 14px -8px var(--orange);
+    width: calc((100% - 2 * var(--hp)) * var(--bw, calc(.4 / var(--n))) * 2.5);
+    left: calc(var(--hp) + (100% - 2 * var(--hp)) * (var(--bl, calc((var(--i) + .3) / var(--n))) - .75 * var(--bw, calc(.4 / var(--n))))); }
+  & .hx-h:not(:has(> button[aria-selected="true"]))::after { opacity: 0; }
+  & .hx-h button { position: relative; z-index: 1; padding: 12px 0; border-radius: 999px; font: 600 15px/1 var(--sans); letter-spacing: -.005em; transition: color .25s var(--spring); }
+  & .hx-h button[aria-selected="true"] { color: #fff; }
+  @media (hover: hover) { & .hx-h button[aria-selected="true"]:hover { color: #fff; } }
+  & .hx-h button:focus-visible { outline-offset: 1px; }
+  & .hx-h button[data-due] .w::after { box-shadow: 0 0 0 2px var(--paper); }
+  & .hx-sk .t { height: 44px; margin: 0 -4px 6px; border-radius: 999px; }
+  & .hx-sk i { border-radius: 24px; }
+  & .hx-sk .g { border-radius: 22px; background: color-mix(in srgb, var(--violet) 14%, transparent); }
+  & .hx-lead { margin: 2px 4px 12px; font: italic 400 16px/1.35 var(--serif); letter-spacing: 0; color: var(--mute); }
   & .hx-path { font-family: var(--sans); font-size: 12.5px; }
-  /* a choice of two in the card (Send or Request, Farm or LP only, from the wallet or from Bitcoin): the tab strip's plate, smaller */
-  & .hx-mode { background: var(--field); border-radius: 10px; }
-  & .hx-mode button { border-radius: 8px; font: 500 13px var(--sans); }
-  & .hx-mode button[aria-checked="true"] { background: var(--raise); }
-  /* Bridge and Borrow: two words with a rule under the chosen one, not a second row of plates */
+  /* a narrow card: the steps close up so they stay one row (wrapped, they would make the card taller than the skeleton that holds its place) */
+  @media (max-width: 360px) { & .hx-path { gap: 6px 10px; font-size: 12px; } & .hx-path li { gap: 5px; } }
+  @media (max-width: 335px) { & .hx-path { gap: 6px 7px; font-size: 11.5px; } & .hx-path li { gap: 4px; } & .hx-path li::before { width: 16px; height: 16px; } }
+  & .hx-path li.on::before { color: #fff; background: var(--glow-pill); border-color: transparent; }
+  /* a choice of two in the card (Send or Request, Farm or LP only, from the wallet or from Bitcoin): the tab strip's track, smaller, the choice raised */
+  & .hx-mode { background: color-mix(in srgb, var(--field) 72%, transparent); box-shadow: inset 0 0 0 1px var(--hair); }
+  & .hx-mode button { font: 500 13px var(--sans); transition: background-color .25s var(--spring), color .2s; }
+  & .hx-mode button[aria-checked="true"] { color: var(--ink); background: var(--raise); box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--violet) 70%, transparent); }
+  /* Bridge and Borrow: two words with the two colours under the chosen one */
   & .hx-more { display: flex; gap: 18px; margin: 6px 4px 12px; padding: 0; background: none; border-bottom: 1px solid var(--hair); border-radius: 0; }
-  & .hx-more button { flex: none; margin-bottom: -1px; padding: 8px 2px 10px; border-bottom: 2px solid transparent; border-radius: 0; font: 500 14px var(--sans); }
-  & .hx-more button[aria-selected="true"] { background: none; box-shadow: none; border-bottom-color: var(--ink); }
+  & .hx-more button { flex: none; margin-bottom: -1px; padding: 8px 2px 10px; border: 0; border-radius: 0; font: 500 14px var(--sans);
+    background: linear-gradient(90deg, var(--orange), var(--violet)) bottom / 0 2px no-repeat; transition: background-size .3s var(--spring), color .15s; }
+  & .hx-more button[aria-selected="true"] { color: var(--ink); background-size: 100% 2px; box-shadow: none; }
   /* a bridge's steps: a rail that runs from one chain's colour to the other's, a ring at each step between its ends */
   & .hx-brs { margin: 18px 4px 4px; font: 400 12px/1.35 var(--sans); }
   & .hx-brs li { padding-top: 22px; }
@@ -2186,16 +2214,28 @@ html:not([data-page="spx"]) {
   & .hx-brs .dot { box-sizing: border-box; width: 14px; height: 14px; background: var(--card); border: 2px solid color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)); }
   & .hx-brs li:first-child .dot { background: var(--from); }
   & .hx-brs li:last-child .dot { background: var(--to); border-color: var(--to); }
+  /* Borrow's panel and its steps */
+  & .hx-bw-p { border-radius: 20px; background: var(--soft); }
+  & .hx-st li.now span { color: #fff; background: var(--glow-pill); border-color: transparent; }
+  & .hx-bw-m i { background: linear-gradient(90deg, var(--orange), var(--violet)); }
   /* the two ways on from a bridge, as chips */
   & #hx-brl { gap: 8px; margin-top: 14px; }
-  & .hx #hx-brl a { padding: 7px 13px; border: 1px solid var(--hair); border-radius: 999px; font: 400 12.5px var(--sans); text-decoration: none; }
-  @media (hover: hover) { & .hx #hx-brl a:hover { border-color: var(--hair-2); } }
-  & .hx .lede-s, & .hx .hx-hv, & .hx-lead { font-family: var(--sans); }
+  & .hx #hx-brl a { padding: 7px 13px; border: 1px solid var(--hair); border-radius: 999px; font: 400 12.5px var(--sans); text-decoration: none; background: var(--soft); }
+  @media (hover: hover) { & .hx #hx-brl a:hover { border-color: color-mix(in srgb, var(--violet) 55%, transparent); } }
+  & .hx .lede-s, & .hx .hx-hv { font-family: var(--sans); }
+  /* the card's buttons: the main one is the gradient and lifts a little on a pointer; one that cannot be pressed yet is a pale wash of it with words that read */
+  & .hx .btn:not(.ghost) { color: #fff; background: var(--glow-go); border-color: transparent; border-radius: 22px; font: 600 16px/1.2 var(--sans); box-shadow: var(--glow-shadow); }
+  @media (hover: hover) { & .hx .btn:not(.ghost):hover:not(:disabled) { color: #fff; background: var(--glow-go); transform: translateY(-2px); box-shadow: var(--glow-shadow), 0 0 0 4px color-mix(in srgb, var(--violet) 18%, transparent); } }
+  & .hx .btn:not(.ghost):disabled { color: var(--mute); background: var(--glow-off); box-shadow: inset 0 0 0 1px var(--hair); }
+  & .hx .btn.ghost { border-radius: 22px; }
+  /* the hints under the card: glass pills */
+  & .hint { border-radius: 999px; background: var(--glass); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); border-color: var(--hair); }
+  & .hint:focus-visible { outline-color: var(--focus); }
   /* the page under the card: every section it had, quieter, so the card stays the page's subject. Less air between sections, smaller headings, the
      line under a heading in the grotesk, the asset tabs and figures in the card's own hands (grotesk for names, mono for numbers), the coin smaller */
   & .sx { padding-top: 88px; }
   & .sx-h { margin-bottom: 32px; }
-  & .sx-h h2 { font-size: clamp(28px, 3.4vw, 38px); }
+  & .sx-h h2 { font-size: clamp(28px, 3.4vw, 38px); letter-spacing: -.03em; }
   & .sx-h p { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
   & .tc .sx-h { margin-bottom: 20px; }
   & .tc-stage { height: 112px; margin-bottom: 8px; }
@@ -2207,7 +2247,24 @@ html:not([data-page="spx"]) {
   @media (min-width: 641px) { & .tc-facts { gap: 14px 48px; } }
   @media (max-width: 640px) { & .tc-facts dd { font-size: clamp(13px, 4.1vw, 17px); } }   /* three figures to a row on a phone: the mono is wider than the serif was, so it is set to fit its column */
   & .tc-links { margin-top: 26px; }
-  & .tc-links .btn { border-radius: 12px; }
+  & .tc-links .btn { border-radius: 999px; }
+  /* the sheets: the same glass family, opaque enough to read, with the card's rim and a rounder corner; their switch is the card's pill track */
+  & dialog.sheet { border: 1px solid transparent; border-radius: 28px; background: linear-gradient(var(--card), var(--card)) padding-box, var(--glow-rim) border-box; }
+  & dialog.sheet::backdrop { -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+  & .sheet-head h2 { font-style: italic; letter-spacing: -.02em; }
+  & .seg { border-radius: 999px; background: var(--field); box-shadow: inset 0 0 0 1px var(--hair); }
+  & .seg button { border-radius: 999px; transition: background-color .25s var(--spring), color .2s; }
+  & .seg button:is([aria-selected="true"], [aria-checked="true"]) { background: var(--raise); box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--violet) 70%, transparent); }
+  & .seg.sub, & .seg.sub button { border-radius: 999px; }
+  & .opt, & .way { border-radius: 20px; }
+  & .opt.main { border-color: color-mix(in srgb, var(--violet) 60%, transparent); }
+  @media (hover: hover) { & .opt:hover:not(:disabled) { border-color: color-mix(in srgb, var(--violet) 60%, transparent); } }
+  & .amt { border-radius: 18px; }
+  & .amt:focus-within { border-color: var(--violet); }
+  & .btn { border-radius: 18px; }
+  & .btn:not(.ghost):not(:disabled) { color: #fff; background: var(--glow-go); border-color: transparent; }
+  @media (hover: hover) { & .btn:not(.ghost):hover:not(:disabled) { box-shadow: 0 0 0 4px color-mix(in srgb, var(--violet) 22%, transparent); } }
+  @media (max-width: 640px) { & dialog.sheet { border-width: 1px 0 0; border-radius: 28px 28px 0 0; } }
   /* the glyph layer (glyphs.js). The field is fixed behind the whole page (chrome.css), which is why the page's ground is on <html> and <body> is clear; the stamp
      lies behind its side's own words; and a rule of glyphs thins out to dots between the headline and the card. */
   & body { background: transparent; }
@@ -2217,14 +2274,14 @@ html:not([data-page="spx"]) {
   & #sheet-wallet .sheet-in { position: relative; isolation: isolate; }
   & #sheet-wallet canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: .34; pointer-events: none; transition: opacity .15s ease; }
   & #sheet-wallet .sheet-in:not(:has(#ws-in)) canvas.gx-stamp { display: none; }
-  & #ws-in .opt { --tone: transparent; background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), color-mix(in srgb, var(--field) 58%, transparent); }
+  & #ws-in .opt { --tone: transparent; background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 16%, transparent), transparent 72%), color-mix(in srgb, var(--field) 58%, transparent); }
   & #ws-in .opt:has(use[href="#tk-eth"]) { --tone: #627EEA; }
   & #ws-in .opt:has(use[href="#tk-btc"]), & #ws-in .opt:has(use[href="#i-key"]) { --tone: #F7931A; }
   /* a way pointed at or focused carries its own mark, struck across its row alone (glyphs.js), as the card's "To" side carries its asset's; the
      row is solid while it does, so the sheet's own mark does not show through it */
   & #ws-in .opt { position: relative; isolation: isolate; }
   & #ws-in .opt canvas.gx-way { border-radius: inherit; opacity: .4; }
-  & #ws-in .opt:has(> canvas.gx-way) { background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), var(--field); }
+  & #ws-in .opt:has(> canvas.gx-way) { background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 16%, transparent), transparent 72%), var(--field); }
   @media (prefers-reduced-motion: reduce) { & #sheet-wallet canvas.gx-stamp { transition: none; } }
 }
 </style>
