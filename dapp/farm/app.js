@@ -431,7 +431,7 @@ const GET = {
   TAC: [['Buy TAC', 'swap:ether:tac:private', 'ETH swapped for private TAC']],
   cBTC: [['Lock BTC for cBTC', 'borrow:cbtc', 'Bitcoin locked at an address only your key spends mints cBTC one for one. A refundable wstETH bond backs the lock, and Bitcoin’s proof takes a few hours.'],
     ['Bridge cBTC from Bitcoin', 'bridge:kb', 'cBTC you already hold on Bitcoin, brought here']],
-  cUSD: [['Borrow cUSD', 'borrow:cusd', 'Lock bitcoin and borrow dollars against it, or borrow against cBTC you hold']],
+  cUSD: [['Lock BTC and borrow cUSD', 'borrow:cusd', 'One press starts it: it locks your bitcoin, posts the bond (one wallet confirmation), then mints cBTC and borrows dollars against it by itself, over a few hours. Or borrow against cBTC you hold']],
 };
 // A private coin held on its own goes in as a single-sided farm on the front page's Earn card (half is swapped inside the pool).
 const ALONE = { tETH: 'earn:eth', TAC: 'earn:tac' };

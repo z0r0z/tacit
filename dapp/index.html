@@ -6,7 +6,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-V9vMkRR4PUL6T6hBNzir3qtf2L0kEmjIHZdtGCjAd5s=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-DZ++62FjbO0ykJBXTFmu7AAZwMePrsluyliQYDNoP3U=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -34,7 +34,7 @@
 <meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
+<!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
 <link rel="modulepreload" href="/storage-fallback.js">
 <link rel="modulepreload" href="/vendor/tacit-deps.min.js" fetchpriority="high">
@@ -62,6 +62,7 @@
 <link rel="modulepreload" href="/trade/farm-read.js?cb=fb6ec72f">
 <link rel="modulepreload" href="/bridge-all.js?cb=45f85325">
 <link rel="modulepreload" href="/lp-zap.js?cb=1be67604">
+<link rel="modulepreload" href="/lockmint-auto.js?cb=596b11e2">
 <link rel="modulepreload" href="/farm-ops.js?cb=c5192cc4">
 <link rel="modulepreload" href="/relay-outcome.js?cb=ad7c898d">
 <link rel="modulepreload" href="/btc-borrow.js?cb=2a2d543f">
@@ -2989,6 +2990,7 @@ import { balanceRows } from '/wallet-balances.js?cb=1cd3e7a4';
 import { portfolio, byAsset } from '/portfolio.js?cb=fcadbdb8';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=d4520508';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapPlanExt, zapPlanExtFor, addRoute, zapWorth, foundingPlan, zapEntry, farmPick, offMarket, ackFor, pairCost } from '/lp-zap.js?cb=1be67604';
+import { newIntent, autoNext, afterStep, stageOf, autoLine } from '/lockmint-auto.js?cb=596b11e2';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
 import * as GR from '/gas-relay.js?cb=d87b3b06';
 import { netPicker } from '/net-pick.js?cb=9229f173';
@@ -13341,7 +13343,7 @@ function hxJoinSay(p, jq) {
 const hxPair = (on) => { HX.pair = on; if (on && HX.from === 'tac') { HX.ern = 'eth'; HX.amt = ''; } HX.q = null; HX.jq = null; paintHx(); };
 // Where the coin a pool pairs with comes from, as the card's side links, for a holder with none of it: adding both coins swaps nothing.
 // cBTC is minted one for one against bitcoin locked at the key's own address (or bridged in from Bitcoin); cUSD is borrowed against it.
-const HX_GETS = { cbtc: [['Lock BTC for cBTC', 'borrow:cbtc'], ['Bridge cBTC from Bitcoin', 'bridge:kb']], cusd: [['Borrow cUSD', 'borrow:cusd']], tac: [['Buy TAC', 'swap:ether:tac:private']], eth: [['Shield ETH', 'shield:ether:defi']] };
+const HX_GETS = { cbtc: [['Lock BTC for cBTC', 'borrow:cbtc'], ['Bridge cBTC from Bitcoin', 'bridge:kb']], cusd: [['Lock BTC and borrow cUSD', 'borrow:cusd']], tac: [['Buy TAC', 'swap:ether:tac:private']], eth: [['Shield ETH', 'shield:ether:defi']] };
 const hxGetAlts = (k) => (HX_GETS[String(k).toLowerCase()] || []).map(([label, spec]) => ({ label, go: () => hxPreset(spec, undefined, true) }));
 async function hxPubQuote(units) {
   const mode = HX.from === 'wtac' ? 'tac' : 'eth', who = S.address, amt = units * E10;
@@ -13990,9 +13992,16 @@ async function hxBorrowQuote(units) {
   const q = await hxBorrowTerms(units), st = S.key ? LOCK.state : null;
   if (!st || !units) return st ? { ...q, go: units ? q.go : 'Lock BTC' } : { ...q, go: S.key ? q.go : 'Open your Tacit wallet to borrow' };
   const need = units + (pad || 0n), ready = st.sats != null ? st.sats - st.pendingSats : null;
-  const go = ready != null && ready >= need ? `Lock ${fmt(units, 8, 8)} BTC` : st.sats != null && st.sats >= need ? 'Waiting for your BTC to confirm' : 'Send BTC to lock';
+  const auto = HX.bwAuto !== false, cb = HX.bm === 'cbtc', more = cb ? ' and mint' : ' and borrow', it = autoGet();
+  const go = ready != null && ready >= need ? `Lock ${fmt(units, 8, 8)} BTC${auto ? more : ''}` : st.sats != null && st.sats >= need ? 'Waiting for your BTC to confirm' : auto ? `Send BTC, then lock${more}` : 'Send BTC to lock';
   const at = st.sats == null ? ['Your Bitcoin address', 'could not be read', 'warn'] : ['Your Bitcoin address', `holds ${fmt(st.sats, 8, 8)} BTC${st.pendingSats ? `, ${fmt(st.pendingSats, 8, 8)} unconfirmed` : ''}`];
-  return { ...q, go, wait: go === 'Waiting for your BTC to confirm', rc: [...q.rc, at, ['This lock needs', `about ${fmt(need, 8, 8)} BTC with its fees`]] };
+  // one press does it all: the card says what comes after the lock and how long it takes, and keeps the way to do the steps by hand
+  const ratio = Number(HX.bwr || 200), usd = TPX.v?.usdBtc, loan = usd ? Number(units) / 1e8 * usd * 100 / ratio : 0;
+  const plan = !auto ? [] : [['Then, by itself', cb ? 'post the bond, then mint cBTC once Bitcoin’s proof reaches your lock' : `post the bond, mint cBTC, borrow ${loan ? `about $${Math.round(loan).toLocaleString('en-US')}` : 'cUSD'} at ${ratio}%`],
+    ['Takes', 'a few hours: Bitcoin confirms, then its proof reaches Ethereum. You can leave and come back.']];
+  const alt = it ? { label: 'Stop autopilot', go: () => { autoSet(null); HX.q = null; hxQuote(); } }
+    : auto ? { label: 'Only lock; I do the rest myself', go: () => { HX.bwAuto = false; HX.q = null; hxQuote(); } } : { label: 'Carry on by itself after the lock', go: () => { HX.bwAuto = true; HX.q = null; hxQuote(); } };
+  return { ...q, go, alt, wait: go === 'Waiting for your BTC to confirm', rc: [...q.rc, at, ['This lock needs', `about ${fmt(need, 8, 8)} BTC with its fees`], ...plan, ...(it ? [['Autopilot', autoText(autoNext(autoCtx(st, it)), it), 'warn']] : [])] };
 }
 const HX_BWR = [['250', 'At 250%', 'safest'], ['200', 'At 200%', 'balanced'], ['175', 'At 175%', 'the most']];
 async function hxHeldQuote(units) {
@@ -14145,7 +14154,70 @@ function hxBwMark() {
   bt.toggleAttribute('data-due', due);
   if (due) bt.setAttribute('aria-description', 'A step of your lock waits for you'); else bt.removeAttribute('aria-description');
 }
+// ── one press from BTC to cUSD (dapp/lockmint-auto.js) ──
+// The Borrow card's "Lock BTC and borrow" runs the card's own steps in turn: the lock, the bond (inside the press: a wallet asks), then, with no wallet, the mint once Bitcoin's proof
+// has reached the lock, and the loan. The intent is kept for the key; autoTick asks lockmint-auto.js what is next, runs it through BWX, reads the lock again and records whether it went
+// anywhere. It runs from the press, after every card update and once a minute, so a tab left open carries on and a tab reopened picks up where the chain is.
+const AUTO = { busy: false, btn: null, say: null, at: 0, timer: 0 };
+const autoKey = () => (S.key ? `tacit-lockmint-auto-v1:${S.key.pubHex}` : null);
+const autoGet = () => { const k = autoKey(), v = k ? store.get(k) : null; return v?.v === 1 ? v : null; };
+const autoSet = (v) => { const k = autoKey(); if (k) store.set(k, v); };
+const autoStart = (units) => autoSet(newIntent({ sats: units, ratio: Number(HX.bwr || 200), until: HX.bm === 'cbtc' ? 'cbtc' : 'cusd', before: LOCK.list.map(lockId), now: Date.now() }));
+const autoSay = () => $('#hx-bw-s') || (AUTO.say ||= document.createElement('p'));
+const autoCtx = (st, it, gesture = false) => ({ st, intent: it, pad: HXP.v || 0n, idOf: lockId, listed: new Set(LOCK.list.map(lockId)), flight: !!(st?.rec && [2, 3, 4].some((k) => hxBwInflight(st, k))), gesture, now: Date.now() });
+const autoText = (n, it) => autoLine(n, it, { fmt: (v) => fmt(v, 8, 8) });
+async function autoStep(n, it, st) {
+  HX.bwBusy = (HX.bwBusy || 0) + 1;
+  try {
+    await busy(AUTO.btn ||= document.createElement('button'), async (run) => {
+      delete FLASH['hx-bw-s']; say($('#hx-bw-s'), '');
+      if (n.act === 'lock') await BWX.lock(autoSay, BigInt(it.sats));
+      else if (n.act === 'bond') await BWX.bond(run, autoSay, bwCanWst(st) ? 'wst' : 'eth');
+      else if (n.act === 'mint') await BWX.mint(run, autoSay);
+      else await BWX.borrow(run, autoSay, n.debt, false);
+    });
+  } finally { HX.bwBusy--; const box = $('#hx-bw'); if (box) box.__h = ''; }
+}
+async function autoTick({ gesture = false, force = false } = {}) {
+  let it = autoGet();
+  if (!it || AUTO.busy || !S.key || HX.bwBusy > 0) return;
+  if (!force && !gesture && Date.now() - AUTO.at < 20e3) return;
+  const pub = S.key.pubHex, mine = () => S.key?.pubHex === pub;
+  AUTO.busy = true; AUTO.at = Date.now();
+  try {
+    for (let i = 0; i < 6 && mine(); i++) {
+      it = autoGet();
+      if (!it) break;
+      if (!LOCK.state || i > 0 || Date.now() - (LOCK.state.at || 0) > 20e3) await loadBorrow(true).catch(() => {});
+      const st = LOCK.state, n = autoNext({ ...autoCtx(st, it, gesture), pad: await hxPad().catch(() => 0n) });
+      if (n.adopt && !it.lock) { it = { ...it, lock: n.adopt }; autoSet(it); }
+      if (n.act === 'done') { autoSet(null); break; }
+      if (n.act === 'pick') { LOCK.pick = n.id; await loadBorrow(true).catch(() => {}); continue; }
+      if (!['lock', 'bond', 'mint', 'borrow'].includes(n.act)) break;
+      const before = stageOf({ st, intent: it, idOf: lockId });
+      await autoStep(n, it, st);
+      await loadBorrow(true).catch(() => {});
+      const cur = autoGet();
+      if (!cur || !mine()) break;
+      const after = stageOf({ st: LOCK.state, intent: cur, idOf: lockId });
+      autoSet(afterStep(cur, { before, after, now: Date.now(), say: autoSay().textContent }));
+      if (after <= before) break;
+    }
+  } finally { AUTO.busy = false; rerender('borrow'); hxBwUpdate(); }
+}
+const autoSoon = () => { if (AUTO.timer || !S.key || !autoGet()) return; AUTO.timer = setTimeout(() => { AUTO.timer = 0; autoTick(); }, 1500); };
+setInterval(() => { if (S.key && autoGet()) autoTick(); }, 60e3);
+// the card's line for the intent: what it is waiting for, with Stop (or Resume, once it has stopped)
+function autoNote(st) {
+  const it = autoGet();
+  if (!it || !S.key) return html``;
+  const n = autoNext(autoCtx(st, it));
+  if (n.act === 'none' || n.act === 'done') return html``;
+  const stopped = n.act === 'stopped';
+  return html`<p class="hx-bw-n hx-auto${stopped ? ' err' : ''}" role="status">${autoText(n, it)}${stopped ? html` <button class="link" type="button" data-hxbw="autogo">Resume</button>` : ''} <button class="link" type="button" data-hxbw="autostop">${stopped ? 'Clear it' : 'Stop'}</button></p>`;
+}
 function hxBwUpdate() {
+  autoSoon();
   hxBwMark();
   hxBwList();
   if (hxRdOn()) return hxRdPaint();
@@ -14223,7 +14295,7 @@ function hxBwView(st) {
     cusd != null ? ['cUSD', `${fmt(cusd, 8, 2)} private`] : null, s4 ? ['Debt', `${fmt(st.borrowed, 8, 2)} cUSD`] : null,
     st.sats != null ? ['At your Bitcoin address', `${fmt(st.sats, 8, 8)} BTC${st.pendingSats ? ` (${fmt(st.pendingSats, 8, 8)} unconfirmed)` : ''}`] : null].filter(Boolean);
   const note = bondNotes()[0];
-  return html`${head}${stepper}<div class="hx-bw-p">${panel}</div>
+  return html`${head}${stepper}${autoNote(st)}<div class="hx-bw-p">${panel}</div>
     ${note ? html`<p class="hx-bw-n ${note.kind === 'take' ? '' : 'err'}">${bondText(note)} <button class="link" type="button" data-hxbw="sheet">See your bonds</button></p>` : ''}
     <div class="hx-bw-b">${rows.map(([k, v]) => html`<div><span>${k}</span><b>${v}</b></div>`)}</div>
     <p class="hx-q" id="hx-bw-s" aria-live="polite"></p>
@@ -14265,23 +14337,33 @@ function hxBwPaint() {
     if (k === 'mint') return go((run) => BWX.mint(run, where));
     if (k === 'borrow') return go((run) => BWX.borrow(run, where, parseUnits(HX.bwDebt || $('#hx-bw-debt')?.placeholder || '', 8), false));
     if (k === 'repay') return go((run) => BWX.repay(run, where, b));
+    if (k === 'autostop') { autoSet(null); box.__h = ''; return hxBwUpdate(); }
+    if (k === 'autogo') { const it = autoGet(); if (it) autoSet({ ...it, fails: 0, failAt: 0, stop: null, last: '' }); return void autoTick({ gesture: true, force: true }); }
     if (k === 'reload') return hxBwLoad(true);
     if (k === 'sheet') return openLink('borrow');
     if (k === 'more') { HX.bwMore = true; delete FLASH['hx-bw-s']; paintHx(); $('#hx-amt')?.focus(); return; }
   };
 }
 async function hxBwStart() {
-  const st = LOCK.state, units = hxUnits(), b = $('#hx-go'), where = () => $('#hx-bw-s');
+  const st = LOCK.state, units = hxUnits(), b = $('#hx-go'), where = () => $('#hx-bw-s'), auto = HX.bwAuto !== false;
   if (!st) { hxBwLoad(true); return say(where(), 'Reading your Bitcoin address first…'); }
   if (!units) { $('#hx-amt')?.focus(); return say(where(), 'Enter the BTC to lock.'); }
-  if (HX.q?.wait) return say(where(), 'Your BTC is on its way to your address. Lock it once it confirms; this updates on its own.');
+  if (auto && AUTO.busy) return say(where(), 'Autopilot is working on your last press. Give it a moment.');
+  const cur = auto ? autoGet() : null;
+  if (cur?.lock && autoNext(autoCtx(st, cur)).act !== 'stopped') return say(where(), 'Autopilot is still carrying your last lock. Stop it from the card, or lock without it.');
+  if (HX.q?.wait) {
+    if (auto && !cur) { autoStart(units); hxBwUpdate(); return say(where(), 'Your BTC is on its way to your address. Autopilot locks it once it confirms, then carries on.'); }
+    return say(where(), 'Your BTC is on its way to your address. Lock it once it confirms; this updates on its own.');
+  }
   await busy(b, async () => {
     delete FLASH['hx-bw-s'];
-    const need = units + await hxPad();
-    if (st.sats != null && st.sats - st.pendingSats >= need) { await BWX.lock(where, units); if (LOCK.state?.rec) HX.bwMore = false; }
+    const need = units + await hxPad(), ready = st.sats != null && st.sats - st.pendingSats >= need;
+    if (auto) { autoStart(units); if (!ready) await BWX.fund(where, units); }
+    else if (ready) { await BWX.lock(where, units); if (LOCK.state?.rec) HX.bwMore = false; }
     else await BWX.fund(where, units);
   });
   hxBwUpdate();
+  if (auto && autoGet()) { await autoTick({ gesture: true, force: true }); if (LOCK.state?.rec && autoGet()?.lock) HX.bwMore = false; hxBwUpdate(); }
 }
 function hxKeepAmt(change) {
   hxNorm();

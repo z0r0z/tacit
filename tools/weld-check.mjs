@@ -28,6 +28,7 @@
 //   hxborrow the card's Borrow tab with a key open: the lock it follows step by step with what the key holds, and the bond posted from
 //           the card with wstETH already held (a permit and the post in one transaction), after which the lock waits to mint
 //   hxheld  the Borrow tab on cBTC already held: three ratios, where it liquidates, and the press borrows through the sheet's steps (a note cut first)
+//   hxauto  one press from BTC to cUSD: the lock face says what the press does and how long it takes (with the way to lock only), and a followed lock shows the autopilot's line at the bond, while it waits, and Stop
 //   hxborrowback a return visit with a bond still on its way (in Activity): the Borrow tab says so in place of its button, and the
 //           dashboard's cBTC opens that tab
 //   hxteth  a key holding private tETH: Shield says so with Send, Swap and Back to ETH a press away; Back to ETH and Send quote their relay
@@ -1954,6 +1955,65 @@ await step('hxborrowback', async () => {
     await until(p, () => document.querySelector('[data-hxm="borrow"]')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('#hx-bw'), null, 60000);
     ok(!(await p.$('dialog.sheet[open]')), "hxborrowback: the dashboard's cBTC opens the card's Borrow tab, where the lock is followed");
     if (r.errors.length) { fails++; console.log('FAIL hxborrowback page errors: ' + r.errors.slice(0, 3).join(' | ')); }
+  } finally { await r.browser.close(); }
+});
+
+// One press from BTC to cUSD: the lock face says what the press does and what comes after it, with the way to lock only; a lock followed with an intent kept for the key shows the
+// autopilot's line at the bond (which needs a press), says what it waits for once the bond is in, and Stop clears it.
+await step('hxauto', async () => {
+  const r = await openPage({ account: A0, key: K0 });
+  const p = r.page, card = async () => (await text(p, '#hx-bw')).replace(/\s+/g, ' ');
+  const clickText = (re) => p.evaluate((src) => [...document.querySelectorAll('#hx button, #hx a')].find((b) => new RegExp(src).test(b.textContent))?.click(), re);
+  // the key is opened from the wallet sheet, as the bonds and bondadd steps do it
+  const openKey = async () => {
+    await p.waitForSelector('#wallet-body [data-in], #wallet-dot.on', { state: 'attached', timeout: 60000 });
+    if (!(await p.$('#wallet-dot.on'))) {
+      await p.click((await p.$('#wallet-body [data-in="known"]')) ? '#wallet-body [data-in="known"]' : '#wallet-body [data-in="eth"]');
+      await until(p, () => !!document.querySelector('#wallet-dot.on'), null, 60000);
+    }
+    await p.keyboard.press('Escape');
+    await p.evaluate(() => { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); history.replaceState(null, '', location.pathname); });
+  };
+  try {
+    await p.goto(r.url + '#wallet');
+    await openKey();
+    const pub = await p.evaluate(() => localStorage.getItem(Object.keys(localStorage).find((k) => k.startsWith('tacit-eth-identity-anchor:'))));
+    await tabClick(p, 'borrow');
+    await p.fill('#hx-amt', '0.001');
+    await until(p, () => /^(Send BTC, then lock and borrow|Lock [\d.]+ BTC and borrow)$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 300000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | go: ${await text(p, '#hx-go')} | ${(await text(p, '#hx-receipt')).replace(/\s+/g, ' ').slice(0, 200)}`); });
+    const rc = (await text(p, '#hx-receipt')).replace(/\s+/g, ' ');
+    ok(/Then, by itself\s*post the bond, mint cBTC, borrow about \$[\d,]+ at 200%/.test(rc) && /Takes\s*a few hours/.test(rc), `hxauto: the lock face says what comes after the lock and how long it takes (${rc.slice(0, 240)})`);
+    ok(/Only lock; I do the rest myself/.test(await text(p, '#hx')), 'hxauto: with the way to lock only');
+    await clickText('Only lock; I do the rest myself');
+    await until(p, () => /^(Send BTC to lock|Lock [\d.]+ BTC)$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 60000);
+    ok(!/Then, by itself/.test(await text(p, '#hx-receipt')) && /Carry on by itself after the lock/.test(await text(p, '#hx')), 'hxauto: choosing to lock only brings the old button back, with the way to carry on');
+    await clickText('Carry on by itself after the lock');
+    await until(p, () => /and borrow$/.test(document.querySelector('#hx-go')?.textContent || ''), null, 60000);
+    // a lock of its own and the intent kept for the key, as a press would leave them: at the bond
+    const id = `${'d1'.repeat(32)}:1`;
+    await p.evaluate(([x, lock]) => {
+      localStorage.setItem(`tacit-lite-cbtc-v1:${x}`, JSON.stringify({ lockTxid: 'd1'.repeat(32), lockVout: 1, vBtc: '20000', anchor: { txid: 'd2'.repeat(32), vout: 0 }, at: Date.now() }));
+      localStorage.setItem(`tacit-lockmint-auto-v1:${x}`, JSON.stringify({ v: 1, sats: '20000', ratio: 200, until: 'cusd', before: [], lock, at: Date.now(), fails: 0, failAt: 0, last: '', stop: null }));
+    }, [pub, id]);
+    await p.goto(r.url + '#wallet');
+    await p.reload();
+    await openKey();
+    await tabClick(p, 'borrow');
+    await until(p, () => !!document.querySelector('#hx-bw [data-hxbw="bond-eth"], #hx-bw [data-hxbw="bond-wst"]'), null, 300000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await card().catch(() => '?')}`); });
+    ok(/Autopilot needs you for the bond: one wallet confirmation, then it carries on by itself\./.test(await card()) && !!(await p.$('#hx-bw [data-hxbw="autostop"]')), `hxauto: at the bond the card says the autopilot needs the press, with Stop (${(await card()).slice(0, 220)})`);
+    await p.click('#hx-bw [data-hxbw="bond-eth"]');
+    await until(p, () => /Bond posted/.test(document.querySelector('#hx-bw-s')?.textContent || '') || /err/.test(document.querySelector('#hx-bw-s')?.innerHTML || ''), null, 300000);
+    ok(/Bond posted/.test(await text(p, '#hx-bw-s')), `hxauto: the bond posts from the card (${(await text(p, '#hx-bw-s')).slice(0, 100)})`);
+    // the card's state is read again after the bond lands: through a cold fork that takes minutes
+    await until(p, () => /Autopilot is waiting for (your lock to confirm on Bitcoin|Bitcoin’s proof)/.test(document.querySelector('#hx-bw .hx-auto')?.textContent || ''), null, 900000)
+      .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await card().catch(() => '?')}`); });
+    ok(true, `hxauto: with the bond in, the autopilot says what it waits for (${(await text(p, '#hx-bw .hx-auto')).replace(/\s+/g, ' ').slice(0, 120)})`);
+    await p.click('#hx-bw [data-hxbw="autostop"]');
+    await until(p, () => !document.querySelector('#hx-bw .hx-auto'), null, 60000);
+    ok((await p.evaluate((x) => localStorage.getItem(`tacit-lockmint-auto-v1:${x}`), pub)) === null, 'hxauto: Stop clears the intent and the line');
+    if (r.errors.length) { fails++; console.log('FAIL hxauto page errors: ' + r.errors.slice(0, 3).join(' | ')); }
   } finally { await r.browser.close(); }
 });
 
