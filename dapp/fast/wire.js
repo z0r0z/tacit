@@ -334,7 +334,11 @@ export async function openReverse({ T, withKey, ux, priv, pubHex, pins = {}, wal
   // one pass over every provider asked (a provider that does not answer is tried again next pass)
   const pump = async () => {
     const out = [];
-    for (const p of readIndex()) { try { out.push(...(await gather(p, (x) => clientFor(x).pump()))); } catch { /* the next pass */ } }
+    for (const p of readIndex()) {
+      try { out.push(...(await gather(p, (x) => clientFor(x).pump()))); }
+      // a pass that fails (an explorer that refuses, a provider that does not answer) still shows what is kept for this provider, so a swap does not vanish from the list while it goes on: the next pass tries again
+      catch { try { out.push(...(await gather(p, (x) => clientFor(x).records()))); } catch { /* a store that cannot be read shows nothing */ } }
+    }
     return out.sort(newest);
   };
   // Tended by one page at a time, as the other direction's swaps are (the others show what is stored, and the first of them takes over when it closes)

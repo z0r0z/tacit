@@ -542,9 +542,11 @@ test('openReverse: the providers a key has asked are remembered and every one is
   const recs = await again.pump();
   assert.deepEqual(log.map((l) => l.join(':')).sort(), ['pump:A', 'pump:B']);
   assert.deepEqual(recs.map((x) => [x.id, x.provider]), [['b1', 'Beta'], ['a1', 'Alpha']], 'newest first, each with the provider it is with');
-  // one that fails is skipped, the other still answers
+  // one that fails shows what is kept for it, and the other still answers (a pass that throws, an explorer that refuses, must not empty the list while a swap goes on)
   betaDown = true;
-  assert.deepEqual((await again.pump()).map((x) => x.id), ['a1']);
+  const during = await again.pump();
+  assert.deepEqual(during.map((x) => x.id).sort(), ['a1', 'b1'], 'the failed provider\'s kept swaps are still listed, the other provider answers');
+  assert.equal(during.find((x) => x.id === 'b1').provider, 'Beta');
   betaDown = false;
 
   // asked for, not yet locked: it is in the quote store only

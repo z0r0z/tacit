@@ -20,7 +20,7 @@ const TACIT_URL = '/tacit.js?cb=99af66cd';
 // the bridge itself (the lock, the settle, the key's own provider) loads when a key opens; a touch on the page fetches its modules ahead
 let warmed = false;
 const warm = () => { if (warmed) return; warmed = true; const t = document.getElementById('warm'); if (t) document.head.append(t.content.cloneNode(true)); };
-const wire = () => { warm(); return import('/fast/wire.js?cb=2ec42422'); };
+const wire = () => { warm(); return import('/fast/wire.js?cb=6e53becd'); };
 for (const ev of ['pointerdown', 'focusin']) document.querySelector('main')?.addEventListener(ev, warm, { once: true });
 
 async function lists() {
