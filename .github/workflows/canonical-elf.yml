@@ -156,7 +156,7 @@ jobs:
       - name: Docker rebuild matches the pin
         working-directory: contracts/sp1/tac-oracle/program
         run: |
-          cargo prove build --docker --tag v6.2.2 2>&1 | tail -20
+          cargo prove build --docker --tag v6.2.2 --workspace-directory .. 2>&1 | tail -20
           ELF=$(find elf target -type f -name tac_oracle -newer Cargo.toml 2>/dev/null | head -1)
           R_SHA=$(sha256sum "$ELF" | awk '{print $1}')
           echo "rebuilt $R_SHA"
