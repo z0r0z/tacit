@@ -234,7 +234,7 @@ export function makeAdaptorBtcTx({ prims, kit }) {
   // The first coin names the swap (its outpoint is the swap id), which is why the caller picks before it derives the lock.
   function pickSats({ amount, satsUtxos, feeRate }) {
     const value = satsValue(amount);
-    const probe = prims.p2trScript(wallet.xonly()), hint = new Uint8Array(49);
+    const probe = prims.p2trScript(wallet.xonly()), hint = new Uint8Array(45);   // the size of the bare recovery hint
     const picked = [];
     let total = 0;
     for (const c of satsUtxos.filter((u) => u.value > DUST)) {
@@ -259,13 +259,14 @@ export function makeAdaptorBtcTx({ prims, kit }) {
   }
 
   // One transaction that spends the whole lock output to the wallet, its fee taken from the output.
-  function sweepSats({ lockOut, lock, sequence, witnessSizes, sign, feeRate }) {
+  function sweepSats({ lockOut, lock, sequence, witnessSizes, sign, feeRate, maxFee = null }) {
     const value = Number(lockOut.value);
     if (!Number.isSafeInteger(value) || value <= DUST) throw new Error('adaptor-btc-tx: the lock output carries no spendable amount');
     const shape = (out) => ({ version: 2, locktime: 0, inputs: [{ txid: lockOut.txid, vout: lockOut.vout, sequence, witness: [] }], outputs: [{ value: out, script: own }] });
     const sized = shape(DUST);
     sized.inputs[0].witness = witnessSizes.map((n) => new Uint8Array(n));
-    const fee = prims.feeFor(vsizeOf(sized), feeRate);
+    // `maxFee` keeps a fee that is raised again and again from eating the lock: the fee is the rate's, or this, whichever is less
+    const fee = Math.min(prims.feeFor(vsizeOf(sized), feeRate), maxFee ?? Infinity);
     if (value - fee < DUST) throw new Error(`adaptor-btc-tx: the lock output (${value} sats) does not cover the fee of spending it (${fee}) and leave more than dust`);
     const tx = shape(value - fee);
     tx.inputs[0].witness = sign(tx, 0, [{ value, script: lock.spk }]);
@@ -273,8 +274,8 @@ export function makeAdaptorBtcTx({ prims, kit }) {
   }
 
   // CLAIM: by key path with the secret `sk` that opens the lock (claimSecret).
-  function claimSats({ lockOut, lock, sk, feeRate }) {
-    return sweepSats({ lockOut, lock, sequence: SEQ, witnessSizes: [64], sign: keyPathSigner(sk, lock.outputXonly), feeRate });
+  function claimSats({ lockOut, lock, sk, feeRate, maxFee = null }) {
+    return sweepSats({ lockOut, lock, sequence: SEQ, witnessSizes: [64], sign: keyPathSigner(sk, lock.outputXonly), feeRate, maxFee });
   }
 
   // REFUND: by the script path, once the output is `lock.csvBlocks` old.

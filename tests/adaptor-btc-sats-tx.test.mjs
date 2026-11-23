@@ -33,9 +33,45 @@ const coins = [coin('user-a', 180_000)];
 const swapId = X.swapIdOf(coins[0].txid, coins[0].vout);
 const sec = X.deriveSwapSecrets({ seed: userSeed, swapId });
 const lock = deriveLock({ prims: userPrims, claimerPub: lpPub, T: sec.T, lockerXonly: userXonly, csvBlocks: CSV });
-const hint = X.lockHintScript({ seed: userSeed, swapId, claimerPub: lpPub, csvBlocks: CSV, value: VALUE });
+const hint = X.lockHintScript({ seed: userSeed, swapId, claimerPub: lpPub, csvBlocks: CSV, value: VALUE, bare: true });
 const lockPair = user.lockSats({ lock, amount: VALUE, hint, coins, feeRate: FEE_RATE });
 const lockOut = { txid: lockPair.revealTxid, vout: 0, value: VALUE };
+
+test('the recovery hint of a sats lock carries no fixed marker and no fixed bytes: nothing in the transaction says it is a Tacit lock', () => {
+  const marked = X.lockHintScript({ seed: userSeed, swapId, claimerPub: lpPub, csvBlocks: CSV, value: VALUE });
+  assert.equal(hint.length, 45, '0x6a, the length, and 43 sealed bytes');
+  assert.equal(hint[0], 0x6a); assert.equal(hint[1], 43);
+  assert.ok(!bytesToHex(hint).includes(bytesToHex(te('TXS1'))), 'no TXS1');
+  assert.equal(marked.length, 49, 'a note\'s hint keeps its marker');
+  assert.ok(bytesToHex(marked).includes(bytesToHex(te('TXS1'))));
+  // two locks of one key share nothing but the push opcode and the length
+  const otherId = X.swapIdOf(coin('user-b', 1).txid, 0);
+  const other = X.lockHintScript({ seed: userSeed, swapId: otherId, claimerPub: lpPub, csvBlocks: CSV, value: VALUE, bare: true });
+  let same = 0;
+  for (let i = 2; i < hint.length; i++) if (hint[i] === other[i]) same++;
+  assert.ok(same < 6, `the sealed bytes of two locks agree in ${same} of 43 places, as random bytes would`);
+  // opened by the key and the swap id, the hint says the same either way; under another swap id or key it does not
+  for (const h of [hint, marked]) {
+    const got = X.readLockHint({ seed: userSeed, swapId, script: h });
+    assert.equal(got.claimerPub, bytesToHex(lpPub)); assert.equal(got.csvBlocks, CSV); assert.equal(got.value, BigInt(VALUE));
+  }
+  assert.equal(X.readLockHint({ seed: userSeed, swapId: otherId, script: hint })?.claimerPub === bytesToHex(lpPub), false);
+  assert.equal(X.readLockHint({ seed: sha256(te('someone else')), swapId, script: hint })?.claimerPub === bytesToHex(lpPub), false);
+  assert.equal(X.readLockHint({ seed: userSeed, swapId, script: new Uint8Array(45) }), null, 'a script that is not the hint\'s shape');
+});
+
+test('a stranger\'s OP_RETURN of the hint\'s size is never taken for a lock: it has to name an output that is in the transaction', () => {
+  const junk = new Uint8Array(45); junk[0] = 0x6a; junk[1] = 43;
+  for (let i = 0; i < 300; i++) { junk.set(sha256(te('junk' + i)).subarray(0, 32), 2); junk.set(sha256(te('more' + i)).subarray(0, 11), 34);
+    const got = X.recoverBtcLock({ prims: userPrims, seed: userSeed, swapId, lockerXonly: userXonly, outputs: [{ script: junk }, { script: lock.spk }] });
+    assert.equal(got, null); }
+  // a hint that opens under this key and names a perfectly good lock, which is not among the outputs: nothing is found
+  const names = X.lockHintScript({ seed: userSeed, swapId, claimerPub: userPrims.wallet.pub, csvBlocks: 10, value: VALUE, bare: true });
+  const named = X.recoverBtcLock({ prims: userPrims, seed: userSeed, swapId, lockerXonly: userXonly, outputs: [{ script: names }, { script: lock.spk }] });
+  assert.equal(named, null, 'a hint is believed only when the lock it names is there');
+  const outs = [{ script: lock.spk }, { script: hint }];
+  assert.equal(X.recoverBtcLock({ prims: userPrims, seed: userSeed, swapId, lockerXonly: userXonly, outputs: outs }).vout, 0, 'while the real one is found');
+});
 
 test('the lock is one ordinary transaction: the lock output first, the recovery hint behind it, the rest back to the wallet, no commit', () => {
   assert.equal(lockPair.commitHex, null);

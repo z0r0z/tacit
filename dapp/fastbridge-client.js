@@ -151,21 +151,28 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
   async function recover({ pages = 4 } = {}) {
     const known = new Set((await store.list()).map((r) => r.id)), found = [];
     for (const tx of await btc.history(btc.address, pages)) {
-      if (!tx.vin || tx.vin.length < 2 || !tx.status?.confirmed) continue;
-      let swapId;
-      try { swapId = X.swapIdFromLockTx(tx); } catch { continue; }
-      const id = bytesToHex(swapId);
-      if (known.has(id)) continue;
-      const lock = X.recoverBtcLock({ prims: btc.prims, seed, swapId, lockerXonly: btc.wallet.xonly, outputs: tx.vout });
-      if (!lock) continue;
-      const rec = {
-        v: 1, role: 'bl', id, phase: 'refund-wait', why: 'found from the key', created: now(), updated: now(), quoteId: null,
-        asset: pinned('btcAsset') || '', amount: String(lock.value), evmAsset: pinned('evmAsset') || '', evmAmount: '0',
-        counterClaimPub: lock.claimerPub, csvBlocks: lock.csvBlocks, lock: { txid: tx.txid, vout: lock.vout, value: tx.vout[lock.vout].value },
-        noteInputs: tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout })), recovered: true,
-      };
-      await store.put(rec);
-      known.add(id); found.push(rec);
+      if (!tx.vin || !tx.vin.length || !tx.status?.confirmed) continue;
+      // A lock of a Tacit note spends the note as its second input (the first is its commit); a lock of plain sats has no commit and is named
+      // by its first input. Either is found only when the hint opens under this key and the output it names is in the transaction.
+      for (const sats of [false, true]) {
+        if (!sats && tx.vin.length < 2) continue;
+        let swapId;
+        try { swapId = X.swapIdFromLockTx(tx, { sats }); } catch { continue; }
+        const id = bytesToHex(swapId);
+        if (known.has(id)) continue;
+        const lock = X.recoverBtcLock({ prims: btc.prims, seed, swapId, lockerXonly: btc.wallet.xonly, outputs: tx.vout });
+        if (!lock) continue;
+        const rec = {
+          v: 1, role: 'bl', id, phase: 'refund-wait', why: 'found from the key', created: now(), updated: now(), quoteId: null,
+          asset: sats ? X.SATS_ASSET : pinned('btcAsset') || '', amount: String(lock.value), evmAsset: pinned('evmAsset') || '', evmAmount: '0',
+          counterClaimPub: lock.claimerPub, csvBlocks: lock.csvBlocks, lock: { txid: tx.txid, vout: lock.vout, value: tx.vout[lock.vout].value },
+          noteInputs: sats ? [] : tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout })),
+          ...(sats ? { feeInputs: tx.vin.map((i) => ({ txid: i.txid, vout: i.vout })) } : {}), recovered: true,
+        };
+        await store.put(rec);
+        known.add(id); found.push(rec);
+        break;
+      }
     }
     return found.map((r) => describe(r, now));
   }

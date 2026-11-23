@@ -90,7 +90,8 @@ export function makeBitcoinLocker(ctx) {
     const sec = X.deriveSwapSecrets({ seed, swapId });
     const csvBlocks = policy.csvBlocks;
     const lock = deriveLock({ prims: btc.prims, claimerPub: counterClaimPub, T: sec.T, lockerXonly: btc.wallet.xonly, csvBlocks });
-    const hint = X.lockHintScript({ seed, swapId, claimerPub: counterClaimPub, csvBlocks, value: amount });
+    // (the hint carries no fixed marker: nothing in the transaction says it is a Tacit lock)
+    const hint = X.lockHintScript({ seed, swapId, claimerPub: counterClaimPub, csvBlocks, value: amount, bare: true });
     const pair = btc.tx.lockSats({ lock, amount, hint, coins: picked, feeRate });
     const rec = {
       v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId,

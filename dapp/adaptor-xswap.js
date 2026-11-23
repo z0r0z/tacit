@@ -97,22 +97,31 @@ function hintStream(seed, swapId) {
 }
 const xor = (a, b) => a.map((x, i) => x ^ b[i]);
 
-export function lockHintScript({ seed, swapId, claimerPub, csvBlocks, value }) {
+// A lock of plain sats has no Tacit envelope around it, so a fixed "TXS1" marker would be the one thing that tells an observer the
+// transaction is a Tacit swap lock. Its hint ({ bare: true }) is the sealed 43 bytes alone: 0x6a ‖ 43 ‖ sealed. The key finds it by
+// opening it and checking that the lock it names is in the transaction, which is stronger than a marker, and a stranger's data that
+// happens to open to a valid key and timelock still has to name an output that is there.
+export function lockHintScript({ seed, swapId, claimerPub, csvBlocks, value, bare = false }) {
   const cp = typeof claimerPub === 'string' ? bx(claimerPub) : claimerPub;
   if (cp.length !== 33) throw new Error('xswap: claimerPub must be 33 bytes');
   const plain = concatBytes(cp, beN(csvBlocks, 2), beN(value, 8));
-  const data = concatBytes(HINT_MAGIC, xor(plain, hintStream(seed, swapId)));
+  const sealed = xor(plain, hintStream(seed, swapId));
+  const data = bare ? sealed : concatBytes(HINT_MAGIC, sealed);
   return concatBytes(Uint8Array.of(0x6a, data.length), data);
 }
 
 export function readLockHint({ seed, swapId, script }) {
   const s = typeof script === 'string' ? bx(script) : script;
-  if (s.length !== 2 + HINT_MAGIC.length + HINT_LEN || s[0] !== 0x6a || s[1] !== HINT_MAGIC.length + HINT_LEN) return null;
-  if (hx(s.slice(2, 6)) !== hx(HINT_MAGIC)) return null;
-  const plain = xor(s.slice(6), hintStream(seed, swapId));
+  let sealed;
+  if (s.length === 2 + HINT_MAGIC.length + HINT_LEN && s[0] === 0x6a && s[1] === HINT_MAGIC.length + HINT_LEN && hx(s.slice(2, 6)) === hx(HINT_MAGIC)) sealed = s.slice(6);
+  else if (s.length === 2 + HINT_LEN && s[0] === 0x6a && s[1] === HINT_LEN) sealed = s.slice(2);
+  else return null;
+  const plain = xor(sealed, hintStream(seed, swapId));
   const claimerPub = hx(plain.slice(0, 33));
   if (!pointOk(claimerPub)) return null;
-  return { claimerPub, csvBlocks: Number(fromBe(plain.slice(33, 35))), value: fromBe(plain.slice(35, 43)) };
+  const csvBlocks = Number(fromBe(plain.slice(33, 35)));
+  if (csvBlocks < 1) return null;
+  return { claimerPub, csvBlocks, value: fromBe(plain.slice(35, 43)) };
 }
 
 // Find a lock this key made, from the transaction that spent the note `swapId` names. `outputs` are that

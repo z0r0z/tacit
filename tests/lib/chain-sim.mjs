@@ -36,7 +36,7 @@ export function makeClock(start = 1_800_000_000) {
 
 // ── Bitcoin ──
 export function makeBitcoinSim(clock, { baseHeight = 800_000 } = {}) {
-  const sim = { tip: baseHeight, txs: new Map(), mempool: [], spends: new Map(), blockTimes: new Map([[baseHeight, clock.now()]]), consumed: new Set(), broadcasts: [] };
+  const sim = { tip: baseHeight, txs: new Map(), mempool: [], spends: new Map(), blockTimes: new Map([[baseHeight, clock.now()]]), consumed: new Set(), broadcasts: [], replaced: [], rbf: false, holdBack: null };
   const confirmed = (txid) => sim.txs.get(txid)?.height ?? null;
   sim.addConfirmed = (op) => { sim.txs.set(op.txid, { esplora: op.esplora, height: sim.tip }); for (const i of op.esplora.vin) sim.spends.set(`${i.txid}:${i.vout}`, op.txid); };
   sim.fetchTx = async (txid) => {
@@ -55,9 +55,19 @@ export function makeBitcoinSim(clock, { baseHeight = 800_000 } = {}) {
   });
   sim.broadcast = async (pair) => {
     if (sim.txs.has(pair.revealTxid)) return;
+    const replaces = new Set();
     for (const i of pair.revealTx.inputs) {
       const by = sim.spends.get(`${i.txid}:${i.vout}`);
-      if (by && by !== pair.revealTxid) throw new Error(`bad-txns-inputs-missingorspent: ${i.txid}:${i.vout} is spent by ${by}`);
+      if (!by || by === pair.revealTxid) continue;
+      // opt-in replacement by fee (`sim.rbf`): a spender that has not confirmed gives way to a transaction that pays more
+      const old = sim.txs.get(by);
+      if (sim.rbf && old && old.height == null && (fees.get(pair.revealTxid)?.fee ?? 0) > (fees.get(by)?.fee ?? 0)) { replaces.add(by); continue; }
+      throw new Error(`bad-txns-inputs-missingorspent: ${i.txid}:${i.vout} is spent by ${by}`);
+    }
+    for (const by of replaces) {
+      sim.txs.delete(by);
+      for (const [k, v] of [...sim.spends]) if (v === by) sim.spends.delete(k);
+      sim.replaced.push(by);
     }
     // a relative timelock is enforced the way consensus does it
     // (a reveal's first input is its commit, which never has a timelock; a sats transaction's first input may be the lock)
@@ -74,7 +84,13 @@ export function makeBitcoinSim(clock, { baseHeight = 800_000 } = {}) {
     for (let k = 0; k < n; k++) {
       if (advance) clock.advance(600);
       sim.tip += 1; sim.blockTimes.set(sim.tip, clock.now());
-      for (const e of sim.txs.values()) if (e.height == null) e.height = sim.tip;
+      // `sim.holdBack(txid, satPerVb)` (opt-in) keeps a transaction in the mempool this block: a fee too low to be mined
+      for (const [id, e] of sim.txs) {
+        if (e.height != null) continue;
+        const f = fees.get(id);
+        if (sim.holdBack && sim.holdBack(id, f ? f.fee / f.vsize : Infinity)) continue;
+        e.height = sim.tip;
+      }
     }
   };
   // The note the validator derives from an output, as the Ethereum locker reads it.
@@ -107,8 +123,9 @@ export function makeBitcoinSim(clock, { baseHeight = 800_000 } = {}) {
 
 // A stored pair is hex; the sim keeps the decoded reveal each builder produced, keyed by its txid.
 const pairs = new Map();
+const fees = new Map();   // txid -> { fee, vsize } of what a builder made, for the sim's opt-in fee rules
 function recordingBuilder(builder) {
-  const wrap = (fn) => (...a) => { const p = fn(...a); pairs.set(p.revealTxid, p.revealTx); return p; };
+  const wrap = (fn) => (...a) => { const p = fn(...a); pairs.set(p.revealTxid, p.revealTx); fees.set(p.revealTxid, { fee: p.revealFee, vsize: builder.vsizeOf(p.revealTx) }); return p; };
   return {
     ...builder,
     lockTransfer: wrap(builder.lockTransfer), claimTransfer: wrap(builder.claimTransfer), refundTransfer: wrap(builder.refundTransfer),

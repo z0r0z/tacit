@@ -12,6 +12,7 @@ import { makeBtcWallet } from '../dapp/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx } from '../dapp/adaptor-btc-tx.js';
 import { makeBitcoinLocker } from '../dapp/fastbridge-bl.js';
 import { makeEthereumLocker } from '../dapp/fastbridge-el.js';
+import { makeFastBridgeClient } from '../dapp/fastbridge-client.js';
 import { bigintToBytes32 } from '../dapp/bulletproofs.js';
 import { bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { te, scalar, fetched } from './lib/btc-sim.mjs';
@@ -25,7 +26,7 @@ const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 const SATS = 100_000n, OUT = 3_700_000n;
 const CSV = 144;
 
-function satsWorld({ confs = 1 } = {}) {
+function satsWorld({ confs = 1, lp: lpOver = {} } = {}) {
   const clock = makeClock(), btc = makeBitcoinSim(clock), evm = makeEvmSim(clock);
   const wallet = (name) => makeBtcWallet({ priv: bigintToBytes32(scalar(name + '/btc-wallet')), hrp: 'tb', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('offline'); }, fetchFeeRate: async () => 3 });
   const uW = wallet('user'), lW = wallet('lp'), stranger = wallet('stranger');
@@ -41,6 +42,13 @@ function satsWorld({ confs = 1 } = {}) {
   const lBtc = btc.adapter({ prims: lW.prims, builder: makeAdaptorBtcTx({ prims: lW.prims }), sats: () => { calls.lpCoins++; return coin(); } });
   lBtc.resolveNote = async () => { calls.lpNote++; throw new Error('a lock of sats has no note to resolve'); };
   lBtc.crossLaneBlocked = async () => { calls.lpGuard++; throw new Error('a lock of sats has no note to find consumed'); };
+  // the fee rate the LP's explorers estimate, which a test can move
+  const market = { feeNow: 3 };
+  lBtc.feeRate = async () => market.feeNow;
+  // the LP's takes, so that a test can hold them back the way a fee that is too low is
+  const takeIds = new Set();
+  const claimSats = lBtc.tx.claimSats;
+  lBtc.tx.claimSats = (...a) => { const p = claimSats(...a); takeIds.add(p.revealTxid); return p; };
   // a party whose explorers all refuse for a while: what it built stays as it is and is sent again
   const down = { user: false, lp: false };
   for (const [side, adapter] of [['user', uBtc], ['lp', lBtc]]) {
@@ -54,11 +62,13 @@ function satsWorld({ confs = 1 } = {}) {
 
   const quote = { id: 'q1', btcAsset: X.SATS_ASSET, btcValue: SATS, evmAsset: ASSET, evmAmount: OUT, validUntil: clock.now() + 3600 };
   const offers = new Map();
-  const w = { clock, btc, evm, quote, calls, down, uW, lW, stranger, uKeys, lKeys, uBtc, lBtc, userStore: memStore(), lpStore: memStore(), lpUp: true, userUp: true, tamper: null };
+  const w = { clock, btc, evm, quote, calls, down, takeIds, market, uW, lW, stranger, uKeys, lKeys, uBtc, lBtc, uEvmCtx, userStore: memStore(), lpStore: memStore(), lpUp: true, userUp: true, tamper: null };
   const toLp = { sendOffer: async (msg) => { if (!w.lpUp) throw new Error('the liquidity provider is unreachable'); return w.lpEl.receive(w.tamper ? w.tamper(msg) : msg); }, getEvmOffer: async (id) => offers.get(id) || null };
   const toUser = { publishEvmOffer: async (id, o) => { offers.set(id, o); } };
+  w.toLp = toLp;
   const blPolicy = { csvBlocks: CSV, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600 };
-  const elPolicy = { minCsv: 72, minConfsFor: () => confs, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, minAmount: 20_000, maxAmount: 10_000_000, roundSecs: 600 };
+  w.blPolicy = blPolicy;
+  const elPolicy = { minCsv: 72, minConfsFor: () => confs, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, minAmount: 20_000, maxAmount: 10_000_000, roundSecs: 600, ...lpOver };
   w.boot = () => {
     w.userBl = makeBitcoinLocker({ seed: uKeys.seed, now: clock.now, policy: blPolicy, store: w.userStore, btc: uBtc, evm: uEvmCtx, counter: toLp });
     w.lpEl = makeEthereumLocker({ seed: lKeys.seed, now: clock.now, policy: elPolicy, store: w.lpStore, quotes: { get: async (id) => (id === quote.id ? quote : null) }, btc: lBtc, evm: lEvmCtx, counter: toUser });
@@ -107,6 +117,8 @@ test('sats for a pool asset: the user ends with the pool note and the LP with th
 
   // Bitcoin: the LP's take is one key-path spend of the lock, paying its own address the sats less its fee
   assert.equal(lp.take.commitTxid, null);
+  assert.equal(lp.take.bumps, 0, 'a take that confirms is never replaced');
+  assert.equal(lp.take.feeRate, Math.ceil(3 * 1.5), 'and it starts above the explorers\' estimate, which is 3 sat/vB here');
   assert.equal(user.takenBy, lp.take.txid, 'the user saw the LP take the lock');
   assert.equal(w.btc.spends.get(`${rec.lock.txid}:0`), lp.take.txid);
   const take = await w.btc.fetchTx(lp.take.txid);
@@ -118,6 +130,9 @@ test('sats for a pool asset: the user ends with the pool note and the LP with th
   assert.equal(take.vin[0].witness[0].length, 128, 'a 64-byte Schnorr signature');
   assert.equal(w.btc.broadcasts.length, 2, 'the lock and the take, and no commit transaction');
   assert.equal(lp.lockValue, Number(SATS));
+  const onChainHint = (await w.btc.fetchTx(rec.lock.txid)).vout[1].scriptpubkey;
+  assert.equal(onChainHint.length, 90, 'the lock\'s recovery hint is 45 bytes');
+  assert.ok(!onChainHint.includes('54585331'), 'and carries no TXS1 marker: nothing on the chain says this is a Tacit lock');
   // the take is exactly the spend of the lock that t opens, at the rate asked for: a signature is deterministic, so the same inputs give the same transaction
   const sec = X.deriveSwapSecrets({ seed: w.uKeys.seed, swapId: hexToBytes(rec.id) });
   const lock = w.lockOf(rec);
@@ -266,6 +281,109 @@ test('explorers refuse the user\'s refund for a while: the refund it built is ke
   w.down.user = false;
   await w.run(async () => (await w.user())?.phase === 'refunded');
   assert.equal(w.btc.spends.get(`${rec.lock.txid}:0`), built.txid);
+});
+
+test('a take that is too cheap to be mined is replaced by one that pays more, again and again, and the swap ends on whichever lands, once', async () => {
+  const w = satsWorld();
+  w.btc.rbf = true;
+  w.btc.holdBack = (id, rate) => w.takeIds.has(id) && rate < 20;        // the market has moved above what the first takes pay
+  const rec = await w.start();
+  await w.run(async () => (await w.lp())?.phase === 'done');
+  const lp = await w.lp();
+  assert.ok(lp.take.bumps >= 3, `the take was replaced ${lp.take.bumps} times`);
+  assert.equal(lp.takes.length, lp.take.bumps + 1, 'every take it made is kept');
+  assert.equal(w.btc.replaced.length, lp.take.bumps, 'and each one that was replaced is gone from the mempool');
+  assert.equal(w.btc.spends.get(`${rec.lock.txid}:0`), lp.take.txid, 'the lock was spent by the last take');
+  assert.ok(lp.take.feeRate >= 20, 'which pays at least what the market asks');
+  const fees = lp.takes.map((id) => w.btc.txs.get(id)).filter(Boolean);
+  assert.equal(fees.length, 1, 'only one take is on the chain');
+  const spentBy = await w.btc.fetchTx(lp.take.txid);
+  assert.ok(Number(SATS) - spentBy.vout[0].value <= Number(SATS) / 2, 'and the fee stays under the share of the lock that the policy allows');
+  assert.deepEqual(w.evm.submitted.map((j) => j.type), ['adaptorlock', 'adaptorclaim']);
+});
+
+test('when the market is so quiet that the wallet\'s fee floor sets the fee, a take is still raised until it pays more, and lands once the market has moved', async () => {
+  const w = satsWorld();
+  w.market.feeNow = 1;                                                     // the floor (500 sats) is above what the rate gives
+  w.btc.rbf = true;
+  w.btc.holdBack = (id, rate) => w.takeIds.has(id) && rate < 12;
+  await w.start();
+  await w.run(async () => (await w.lp())?.phase === 'done');
+  const lp = await w.lp();
+  assert.ok(lp.take.bumps >= 2, `replaced ${lp.take.bumps} times`);
+  const feesPaid = lp.takes.map((id) => id);
+  assert.equal(feesPaid.length, lp.take.bumps + 1);
+  assert.ok(lp.take.fee > 500, 'the last take pays more than the floor');
+});
+
+test('a take that lands as an earlier one while its replacement is refused still ends the swap', async () => {
+  const w = satsWorld();
+  w.btc.rbf = false;                                                       // the node refuses to replace: the earlier take is the one that can confirm
+  let release = false;
+  w.btc.holdBack = (id) => !release && w.takeIds.has(id);                  // no take is mined until released
+  await w.start();
+  await w.run(async () => (await w.lp())?.take != null && (await w.lp()).take.bumps >= 1);   // a replacement was built, and no node would take it
+  release = true;                                                          // now the first take is mined
+  await w.run(async () => (await w.lp())?.phase === 'done');
+  const lp = await w.lp();
+  assert.ok(lp.takes.length >= 2);
+  assert.equal(w.btc.spends.get(`${(await w.user()).lock.txid}:0`), lp.takes[0], 'the first take is the one on the chain');
+  assert.notEqual(lp.take.txid, lp.takes[0], 'while the record\'s current take is a later one');
+});
+
+test('the fee a take may pay is capped, and the bumping stops there instead of spending the lock on fees', async () => {
+  const w = satsWorld({ lp: { takeMaxFeeShare: 0.02 } });                  // at most 2% of the lock: 2,000 sats
+  w.btc.rbf = true;
+  w.btc.holdBack = (id) => w.takeIds.has(id);                              // nothing the LP can pay is enough
+  await w.start();
+  await w.run(async () => ((await w.lp())?.take?.bumps ?? 0) >= 8, 600);   // 8 is where it gives up, by its count or by the cap
+  const lp = await w.lp();
+  assert.equal(lp.take.fee, 2000, 'the fee stops at the share of the lock the policy allows');
+  const last = await w.btc.fetchTx(lp.take.txid);
+  assert.equal(last.vout[0].value + lp.take.fee, Number(SATS), 'and what is left is still the lock less that fee');
+  const n = lp.takes.length;
+  for (let i = 0; i < 60; i++) { await w.step(); w.clock.advance(60); }
+  assert.equal((await w.lp()).takes.length, n, 'no more takes are made once the cap holds');
+  assert.notEqual((await w.lp()).phase, 'done');
+});
+
+test('the user\'s refund lands first because the LP could not send its take for hours: the LP is told it lost, not that it took', async () => {
+  const w = satsWorld();
+  const rec = await w.start();
+  await w.run(async () => (await w.lp())?.phase === 'taking');
+  w.down.lp = true;                                                        // every explorer refuses the LP until long after the timelock
+  await w.run(async () => (await w.lp())?.phase === 'lost');
+  const lp = await w.lp(), user = await w.user();
+  assert.match(lp.why, /spent by another transaction/);
+  assert.equal(w.btc.spends.get(`${rec.lock.txid}:0`), user.refund?.txid ?? user.takenBy, 'the lock went back to the user, who had also claimed on the pool');
+  assert.ok(!lp.takes.includes(w.btc.spends.get(`${rec.lock.txid}:0`)));
+  assert.equal(w.evm.lockSpent.size, 1, 'and the pool lock was claimed: this is the loss a stuck take costs, which is why it is replaced and watched');
+});
+
+test('a sats lock the browser has no record of is found again from the key, and taken back on its timelock', async () => {
+  const w = satsWorld();
+  w.lpUp = false;
+  const rec = await w.start();
+  await w.run(async () => !!(await w.user())?.confirmedAt);
+  const fresh = memStore();
+  const fb = makeFastBridgeClient({ lp: w.toLp, btc: w.uBtc, evm: w.uEvmCtx, store: fresh, seed: w.uKeys.seed, policy: w.blPolicy, now: w.clock.now });
+  assert.deepEqual(await fb.records(), []);
+  const found = await fb.recover();
+  assert.equal(found.length, 1, 'a lock with one input and no commit is found');
+  assert.equal(found[0].id, rec.id);
+  assert.equal(found[0].recovered, true);
+  const stored = (await fresh.list())[0];
+  assert.equal(stored.asset, X.SATS_ASSET);
+  assert.equal(stored.amount, String(SATS));
+  assert.deepEqual(stored.noteInputs, []);
+  assert.equal((await fb.recover()).length, 0, 'the second look finds nothing new');
+  const expected = w.uBtc.tx.refundSats({ lockOut: { txid: rec.lock.txid, vout: 0, value: rec.lock.value }, lock: w.lockOf(rec), dLocker: w.uW.prims.wallet.priv, feeRate: 3 });
+  w.btc.mine(143);
+  for (let i = 0; i < 40 && (await fresh.list())[0].phase !== 'refunded'; i++) { await fb.tick(); w.btc.mine(1); w.clock.advance(60); }
+  const done = (await fresh.list())[0];
+  assert.equal(done.phase, 'refunded');
+  assert.equal(done.refund.txid, expected.revealTxid, 'by the refund the key and the chain alone make, to the byte');
+  assert.equal(w.btc.spends.get(`${rec.lock.txid}:0`), expected.revealTxid);
 });
 
 test('a swap of sats refuses what it cannot build: an amount too small to claim or refund, and too few sats in the wallet', async () => {

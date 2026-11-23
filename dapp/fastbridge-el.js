@@ -203,12 +203,28 @@ export function makeEthereumLocker(ctx) {
         return rec;
       }
       case 'taking': {
-        if (!rec.take && X.isSats(rec.offer.btc.asset)) {
-          // a lock of plain sats: the take is one transaction that pays its own fee out of the lock output, so no coin of this side's is needed
+        // A lock of plain sats: the take is one transaction that pays its own fee out of the lock output, so no coin of this side's is needed.
+        // It is also the one thing that must beat the user's refund once the timelock has run, and the fee can be raised at will (the input
+        // signals replacement), so a take that has not confirmed is replaced by one that pays more, up to a share of the lock (takeMaxFeeShare),
+        // and starts above the explorers' estimate (takeFeeFactor). takeBumpSecs is how long a take waits before it is replaced.
+        const satsTake = X.isSats(rec.offer.btc.asset);
+        const buildSatsTake = async (feeRate) => {
           const lock = deriveLock({ prims: btc.prims, claimerPub: btc.wallet.pub, T: secretsOf(rec).T, lockerXonly: hexToBytes(strip(rec.offer.btc.lockerXonly)), csvBlocks: rec.csvBlocks });
           const sk = claimSecret({ dClaimer: btc.wallet.priv, t: BigInt(rec.t), lock });
-          const pair = btc.tx.claimSats({ lockOut: { txid: rec.lockTxid, vout: rec.lockVout, value: rec.lockValue }, lock, sk, feeRate: await btc.feeRate() });
-          await save(rec, { take: { txid: pair.revealTxid, commitTxid: null, commitHex: null, revealHex: pair.revealHex, at: ctx.now() } });
+          return btc.tx.claimSats({ lockOut: { txid: rec.lockTxid, vout: rec.lockVout, value: rec.lockValue }, lock, sk, feeRate, maxFee: Math.floor(rec.lockValue * (policy.takeMaxFeeShare ?? 0.5)) });
+        };
+        const takeRecord = (pair, feeRate, bumps) => ({ txid: pair.revealTxid, commitTxid: null, commitHex: null, revealHex: pair.revealHex, at: ctx.now(), feeRate, fee: pair.revealFee, vsize: btc.tx.vsizeOf(pair.revealTx), bumps });
+        if (satsTake && !rec.take) {
+          const feeRate = Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5));
+          const pair = await buildSatsTake(feeRate);
+          await save(rec, { take: takeRecord(pair, feeRate, 0), takes: [pair.revealTxid] });
+        }
+        if (satsTake) {
+          // the lock spent by a transaction that is none of ours, and confirmed: the user's refund won the race. Said as it is, not as a take that landed.
+          const spent = await btc.outspend(rec.lockTxid, rec.lockVout).catch(() => null);
+          if (spent && !(rec.takes || []).includes(spent) && ((await btc.status(spent).catch(() => null)) || {}).confirmations) {
+            return save(rec, { phase: 'lost', why: 'the lock was spent by another transaction (its refund, once the timelock had run) before a take confirmed' });
+          }
         }
         if (!rec.take) {
           const lock = deriveLock({ prims: btc.prims, claimerPub: btc.wallet.pub, T: secretsOf(rec).T, lockerXonly: hexToBytes(strip(rec.offer.btc.lockerXonly)), csvBlocks: rec.csvBlocks });
@@ -234,7 +250,11 @@ export function makeEthereumLocker(ctx) {
         // A take that has confirmed is done, and is not sent again: its commit's output is spent by its reveal, so a node refuses the commit as having no inputs
         // (bad-txns-inputs-missingorspent), which is no failure. Asked after the send as well, for a take that confirmed between the two reads. A status that cannot
         // be read is not a take that is not there: it goes on to the send, as it always did.
-        const confirmed = async () => !!((await btc.status(rec.take.txid).catch(() => null)) || {}).confirmations;
+        // (a sats take that was replaced by a higher fee may have confirmed as an earlier one: any of this swap's takes landing ends it)
+        const confirmed = async () => {
+          for (const id of satsTake ? rec.takes || [rec.take.txid] : [rec.take.txid]) if (((await btc.status(id).catch(() => null)) || {}).confirmations) return true;
+          return false;
+        };
         if (await confirmed()) return save(rec, { phase: 'done' });
         try { await btc.broadcast(rec.take, null); } catch (e) {
           if (await confirmed()) return save(rec, { phase: 'done' });
@@ -242,6 +262,17 @@ export function makeEthereumLocker(ctx) {
           throw e;
         }
         if (await confirmed()) return save(rec, { phase: 'done' });
+        if (satsTake && (rec.take.bumps || 0) < (policy.takeMaxBumps ?? 8) && ctx.now() - rec.take.at > (policy.takeBumpSecs ?? 1200)) {
+          // A replacement must pay at least a relay increment (1 sat/vB of its size) more than the take it replaces, and the wallet's fee has a floor, so
+          // a higher rate alone can leave the fee where it was: the rate is also raised until the fee is higher. The market may have moved since too.
+          const prev = rec.take.feeRate, vsize = rec.take.vsize || 100;
+          const feeRate = Math.max(Math.ceil(prev * 1.5), prev + 2, Math.ceil(await btc.feeRate()), Math.ceil((rec.take.fee + vsize + 1) / vsize));
+          const pair = await buildSatsTake(feeRate);
+          if (pair.revealFee > rec.take.fee) {
+            await save(rec, { take: takeRecord(pair, feeRate, (rec.take.bumps || 0) + 1), takes: [...(rec.takes || []), pair.revealTxid] });
+            await btc.broadcast(rec.take, null);
+          } else await save(rec, { take: { ...rec.take, bumps: policy.takeMaxBumps ?? 8 } });     // the cap holds the fee where it was: a replacement would pay no more
+        }
         return rec;
       }
       case 'refunding': {
