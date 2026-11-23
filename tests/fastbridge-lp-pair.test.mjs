@@ -22,6 +22,23 @@ test('the example config is a valid pair config, and the assets are the sats ass
   assert.equal(isPair({ pair: 'tac' }), false);
 });
 
+test('the Render config is a valid pair config on the Render disk, canary-sized, with the reverse side off until it is switched on', () => {
+  const R = JSON.parse(readFileSync(new URL('../fastbridge-lp/config.btc-eth.render.json', import.meta.url), 'utf8'));
+  const C = pairConfig(R);
+  assert.equal(C.btcAsset, SATS_ASSET); assert.equal(C.evmAsset, ETH_ASSET); assert.equal(C.refill, false);
+  assert.equal(C.dataDir, '/var/lib/tacit-fastbridge-pair', 'a disk of its own, not the house provider\'s');
+  assert.equal(C.port, 10000);
+  assert.deepEqual([C.quote.minAmount, C.quote.maxAmount], ['50000', '300000'], 'a canary: 0.0005 to 0.003 BTC');
+  assert.equal(C.reverse.enabled, false);
+  assert.deepEqual([C.reverse.maxSats, C.reverse.maxOpen], ['300000', 1]);
+  assert.deepEqual(applyEnv(R, { FB_LP_REVERSE: 'on' }).reverse.enabled, true, 'switched on by the environment, without a new image');
+  assert.equal(applyEnv(R, { FB_LP_MAX_AMOUNT: '0' }).quote.maxAmount, '0', 'and stopped the way the TAC provider is');
+  // not the house provider's: its config names TAC and no pair
+  const house = JSON.parse(readFileSync(new URL('../fastbridge-lp/config.render.json', import.meta.url), 'utf8'));
+  assert.notEqual(R.dataDir, house.dataDir);
+  assert.equal(house.pair, undefined);
+});
+
 test('defaults fill what is left out, and a value that is not valid stops the process in a sentence', () => {
   const C = pairConfig({ pair: PAIR, policy: {} });
   assert.deepEqual([C.quote.minAmount, C.quote.maxAmount, C.quote.feeBps, C.quote.flatFee, C.quote.validSecs], ['50000', '5000000', 30, '1000', 300]);

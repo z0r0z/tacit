@@ -1,0 +1,76 @@
+{
+  "pair": "btc-eth",
+  "network": "mainnet",
+  "dataDir": "/var/lib/tacit-fastbridge-pair",
+  "port": 10000,
+  "name": "Bitcoin and ETH",
+  "boards": [
+    "https://tacit-fast-board.onrender.com"
+  ],
+  "origins": [
+    "https://tacit.finance"
+  ],
+  "trustProxy": true,
+  "tickSecs": 15,
+  "alertSecs": 3600,
+  "lowFreeEth": "0.01",
+  "lowEth": "0.002",
+  "btcBases": [
+    "https://mempool.space/api",
+    "https://blockstream.info/api",
+    "https://mempool.emzy.de/api",
+    "https://mempool.bitaroo.net/api"
+  ],
+  "poolAddress": "0x000000000Ed1eabD231Be41d93b719056F7febFC",
+  "csvBlocks": 144,
+  "reserve": {
+    "reserveSecs": 300,
+    "extendSecs": 7200,
+    "maxUnbackedShare": 0.5
+  },
+  "inventory": {
+    "refreshSecs": 60
+  },
+  "quote": {
+    "minAmount": "50000",
+    "maxAmount": "300000",
+    "feeBps": 30,
+    "flatFee": "1000",
+    "validSecs": 300,
+    "graceSecs": 21600
+  },
+  "rate": {
+    "sources": ["chainlink", "coinbase", "kraken"],
+    "minSources": 2,
+    "maxSpreadBps": 100,
+    "maxAgeSecs": 180,
+    "everySecs": 30
+  },
+  "policy": {
+    "minCsv": 72,
+    "evmWindowSecs": 14400,
+    "minClaimSecs": 3600,
+    "claimSlackSecs": 7200,
+    "roundSecs": 600,
+    "refundMarginSecs": 600,
+    "maxOfferAgeSecs": 7200,
+    "holdAgeSecs": 3600,
+    "confs": [
+      ["0", 1],
+      ["1000000", 2],
+      ["10000000", 3],
+      ["100000000", 6]
+    ]
+  },
+  "reverse": {
+    "enabled": false,
+    "minAmount": "1000000",
+    "maxAmount": "10000000",
+    "feeBps": 30,
+    "flatFee": "20000",
+    "maxOpen": 1,
+    "maxSats": "300000",
+    "lockFeeReserve": "20000"
+  },
+  "mailboxPollSecs": 1
+}
