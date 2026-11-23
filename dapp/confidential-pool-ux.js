@@ -3453,10 +3453,33 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const scale = 10n ** (digits - 2n);
     return ((x + scale - 1n) / scale) * scale;
   };
+  // A token the pool holds by registration (SPX …) has no row in the table of assets a fee is paid in, but the relay still prices it, through the pool that pairs it with
+  // tETH (the ratio of the two reserves, less 20%), and holds a relayed route or withdrawal to the same gas floor as any asset. Offered nothing, the job is turned back
+  // ("relay fee below the current floor"), after a note may already have been combined for it. So its fee is the tETH fee for the same op, in the token at that price with the
+  // 20% put back. A transfer stays free (the relay carries a fee-less one), and a token no pool pairs with tETH keeps the 0 it had.
+  const TOKEN_FEE_KINDS = new Set(['route', 'unwrap', 'sendunwrap']);
+  const TOKEN_FEE_TIERS = [30, 5, 100, 1];
+  const AMM_HAIRCUT_BPS = 2000n;
+  async function tokenMinFee(meta, opKind) {
+    const eth = assetByTicker.cETH;
+    if (!eth || !meta.assetId || lc(meta.assetId) === lc(eth.assetId)) return 0n;
+    const tokLo = BigInt(meta.assetId) <= BigInt(eth.assetId);
+    const [ethFee, reads] = await Promise.all([gasAwareMinFee('cETH', opKind), Promise.all(TOKEN_FEE_TIERS.map((f) => poolReserves(routePoolId(meta.assetId, eth.assetId, f)).catch(() => null)))]);
+    let low = null;                                          // the lowest tETH-per-token reading across the tiers that hold both: the relay takes the lowest too
+    for (const r of reads) {
+      if (!r) continue;
+      const rTok = tokLo ? r.reserveA : r.reserveB, rEth = tokLo ? r.reserveB : r.reserveA;
+      if (rTok > 0n && rEth > 0n && (low == null || rEth * low[1] < low[0] * rTok)) low = [rEth, rTok];
+    }
+    if (!low) return 0n;
+    const num = BigInt(ethFee) * low[1] * 10000n, den = low[0] * (10000n - AMM_HAIRCUT_BPS);
+    return _ladderFee((num + den - 1n) / den);
+  }
   async function gasAwareMinFee(ticker, opKind) {
     const staticFloor = relayMinFee(ticker);
     const pol = RELAY_FEE_ASSETS[ticker];
     const meta = assetByTicker[ticker];
+    if (!pol && meta && TOKEN_FEE_KINDS.has(opKind)) return tokenMinFee(meta, opKind).catch(() => staticFloor);
     if (!pol || !meta) return staticFloor;
     let gwei; try { gwei = BigInt((await _gasPriceNow()) || '0'); } catch { return staticFloor; }
     if (gwei <= 0n) return staticFloor;

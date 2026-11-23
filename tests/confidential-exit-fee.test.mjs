@@ -149,3 +149,87 @@ test('the cETH floor follows the gas price, and is held to a thousand times the 
   const huge = await at(1_000_000n).quoteOpFee('cETH', 'sendunwrap');
   assert.ok(huge >= cap && huge <= cap + cap / 10n, `at a million gwei the floor (${huge}) is held near ${cap}`);
 });
+
+// A token the pool holds by registration (SPX): the relay prices it through the pool that pairs it with tETH (the ratio of the reserves, less 20%) and refuses a relayed route or
+// withdrawal that offers less than the gas floor. The page used to quote such a token 0 (it is in no fee table), so a person's SPX swap was combined, then turned back at submit:
+// "relay fee below the current floor". Found by swapping a real SPX note to ETH with a real wallet on 2026-11-23.
+const SPX_ID = '0x45addc633189749428e8fc36ea4ca067fcb4b0c7abc186a095360db10dbe0b48', SPX_ADDR = '0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c';
+const R_ETH = 231_430_000n, R_SPX = 1_397_460_000_000n;                                  // 2.3143 tETH against 13,974.6 SPX, in pool units (the pool the live card quoted)
+const word = (n) => BigInt(n).toString(16).padStart(64, '0');
+// the pools(bytes32) read the SDK makes: init, assetA, assetB, reserveA, reserveB, feeBps, totalShares
+const poolHex = (ux, rEth, rTok, feeBps) => {
+  const eth = ux.assetByTicker.cETH.assetId.toLowerCase(), spxLow = BigInt(SPX_ID) <= BigInt(eth), [a, b] = spxLow ? [SPX_ID, eth] : [eth, SPX_ID], [ra, rb] = spxLow ? [rTok, rEth] : [rEth, rTok];
+  return '0x' + word(1) + a.replace(/^0x/, '') + b.replace(/^0x/, '') + word(ra) + word(rb) + word(feeBps) + word(10n ** 12n);
+};
+function tokenUx({ pools = {}, need = 0n } = {}) {
+  const fees = [], ref = {};
+  const fetchImpl = async (url, opts) => {
+    const body = opts && opts.body ? JSON.parse(opts.body) : {};
+    if (String(url).endsWith('/confidential/submit')) {
+      const fee = BigInt(body.op.fee); fees.push(fee);
+      if (fee < need) return { ok: false, status: 400, statusText: 'Bad Request', text: async () => JSON.stringify({ error: 'submitJob: relay fee below the current floor — re-quote higher or self-settle' }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ jobId: 'j' + fees.length, status: 'pending' }) };
+    }
+    const one = (b) => {
+      let result = '0x0';
+      if (b.method === 'eth_call') {
+        const data = String(b.params?.[0]?.data || '');
+        if (data.length === 74) {                                                         // pools(bytes32): the selector and one word
+          const id = ('0x' + data.slice(10)).toLowerCase();
+          for (const [tier, st] of Object.entries(pools)) if (id === ref.ux.routePoolId(SPX_ID, ref.ux.assetByTicker.cETH.assetId, Number(tier)).toLowerCase()) result = poolHex(ref.ux, st[0], st[1], Number(tier));
+        }
+      }
+      return { jsonrpc: '2.0', id: b.id ?? 1, result };
+    };
+    const obj = Array.isArray(body) ? body.map(one) : one(body);
+    return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+  };
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl });
+  ref.ux = ux;
+  ux.addAsset({ ticker: ux.tokenTicker(SPX_ADDR), assetId: SPX_ID, unitScale: '10000000000', decimals: 18 });
+  return { ux, fees, ticker: ux.tokenTicker(SPX_ADDR) };
+}
+const ladder = (x) => { let d = 0n, t = x; while (t > 0n) { t /= 10n; d++; } if (d <= 2n) return x; const s = 10n ** (d - 2n); return ((x + s - 1n) / s) * s; };
+
+test('a registered token is quoted a relay fee in the token, worth the tETH fee after the relay\'s 20% off a pool price', async () => {
+  const { ux, ticker } = tokenUx({ pools: { 30: [R_ETH, R_SPX] } });
+  const ethFee = await ux.quoteOpFee('cETH', 'route');                                  // gas reads 0 here: the static floor
+  for (const kind of ['route', 'unwrap', 'sendunwrap']) {
+    const fee = await ux.quoteOpFee(ticker, kind), tETH = await ux.quoteOpFee('cETH', kind);
+    assert.ok(fee > 0n, `${kind}: the token's fee is not the 0 it was`);
+    assert.ok(fee * R_ETH * 8000n >= BigInt(tETH) * R_SPX * 10000n, `${kind}: ${fee} units of the token are worth the ${tETH} units of tETH even at the relay's 20% haircut`);
+    assert.ok(fee <= ladder((BigInt(tETH) * R_SPX * 10000n + R_ETH * 8000n - 1n) / (R_ETH * 8000n)), `${kind}: and no more than that, to the ladder's rounding`);
+  }
+  assert.equal(ethFee, 10000n, 'the static cETH floor the others are built on');
+});
+
+test('a transfer of the token stays free, as the relay carries a fee-less one', async () => {
+  const { ux, ticker } = tokenUx({ pools: { 30: [R_ETH, R_SPX] } });
+  assert.equal(await ux.quoteOpFee(ticker, 'transfer'), 0n);
+});
+
+test('a token no pool pairs with tETH keeps the 0 it had: there is nothing to value it by, for the relay either', async () => {
+  const { ux, ticker } = tokenUx({ pools: {} });
+  assert.equal(await ux.quoteOpFee(ticker, 'route'), 0n);
+  assert.equal(await ux.quoteOpFee(ticker, 'unwrap'), 0n);
+});
+
+test('where several fee tiers hold the pair, the lowest tETH-per-token reading sets the fee, as the relay takes the lowest', async () => {
+  const one = tokenUx({ pools: { 30: [R_ETH, R_SPX] } }), two = tokenUx({ pools: { 30: [R_ETH, R_SPX], 5: [R_ETH, R_SPX * 3n] } });   // the 5 bps pool pays three times the tokens per tETH
+  const f1 = await one.ux.quoteOpFee(one.ticker, 'route'), f2 = await two.ux.quoteOpFee(two.ticker, 'route');
+  assert.ok(f2 > f1 * 2n, `the cheaper reading (${f2}) is used, not the first (${f1})`);
+});
+
+test('a relay that holds the token to the gas floor takes the first submit: a withdrawal of a small SPX note is no longer turned back', async () => {
+  const need = (10000n * R_SPX * 10000n + R_ETH * 8000n - 1n) / (R_ETH * 8000n);        // the floor in the token: 10,000 units of tETH at the pool's price less 20%
+  const { ux, fees } = tokenUx({ pools: { 30: [R_ETH, R_SPX] }, need });
+  const ticker = ux.tokenTicker(SPX_ADDR);
+  const value = 5_435_491_969n;                                                          // the 54.35 SPX note: its old 0.3% fee (16.3 million units) is under the floor (75 million)
+  assert.ok((value * 30n + 9999n) / 10000n < need, 'the fee it was given before is under the floor');
+  const w = ux.buildWrap({ walletPriv, amountWei: (value * 10n ** 10n).toString(), ticker, index: 0 });
+  const note = ux.indexer.recover([{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }], walletPriv)[0];
+  const r = await ux.unwrap({ note, walletPriv, wait: false });
+  assert.equal(fees.length, 1, 'accepted first time');
+  assert.ok(fees[0] >= need, `the fee (${fees[0]}) clears the floor (${need})`);
+  assert.ok(r.jobId);
+});
