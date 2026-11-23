@@ -2,7 +2,7 @@
 # Runs one of the reverse-side tools of the house fast bridge provider with the provider's key. The key is read from the macOS keychain item `tacit-fastbridge-lp`
 # in here, handed to the tool in its environment only, and never printed or passed on a command line. Only the five tools named below can be run through it.
 #
-#   tools/lp-run.sh status [--address-only] [--copy]                       the reverse address, its tacit1 address, what is at it (reads only)
+#   tools/lp-run.sh status [--address-only] [--copy] [--via-proxy]                     the reverse address, its tacit1 address, what is at it (reads only)
 #   tools/lp-run.sh normalize --txid <id> [--send --confirm <token>]       moves TAC sent silently (to the reverse tcs1 address) onto the plain address:
 #                                                                          without --send it only says what it would do
 #   tools/lp-run.sh fund --tac 3 --note <txid:vout> --coin <txid:vout> [--mode silent|plain] [--send --confirm <token>]

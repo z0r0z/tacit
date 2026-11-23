@@ -15,6 +15,8 @@ if (!bases.length || bases.some((b) => !/^https:\/\/[^\s/][^\s]*$/.test(b))) { c
 const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const hardStop = setTimeout(() => { console.log('STOPPED: time limit'); process.exit(3); }, 10 * 60e3); hardStop.unref?.();
 
+// --via-proxy: read Bitcoin the way the daemon on Render does (through the Tacit API's chain proxy, not the public explorers), to see what it sees
+if (process.argv.includes('--via-proxy')) { globalThis.__TACIT_WORKER_BASE__ = process.env.TACIT_WORKER_BASE || 'https://api.tacit.finance'; globalThis.__TACIT_CHAIN_VIA_WORKER__ = true; }
 const { loadTacit } = await import(REPO + '/worker-relay/src/lib/btc-pool-transparent.js');
 const { secp, sha256, hmac, bytesToHex } = await import(REPO + '/dapp/vendor/tacit-deps.min.js');
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
