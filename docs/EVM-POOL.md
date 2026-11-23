@@ -375,14 +375,15 @@ the point and reads from the first block. Older notes are not shown until the ba
 
 ## About the page itself
 
-tacit.wei is generation 1 of its own lineage. `TacitPay8244` is an ERC-8244 contract: `html()` returns the page, which is
-stored in 21 chunk contracts of up to 24,575 bytes, and `PAGE_HASH` is the keccak256 of those bytes. A gateway such as
+tacit.wei is generation 2 of its own lineage. `TacitPay8244` is an ERC-8244 contract: `html()` returns the page, which is
+stored in 22 chunk contracts of up to 24,575 bytes, and `PAGE_HASH` is the keccak256 of those bytes. A gateway such as
 `https://tacit.wei.limo/` (the name `tacit.wei` resolves in WNS to the wrapper) or `https://<wrapper>.w4eth.io/` serves
-them; or read it yourself: `cast call 0x000000000009dde9bb333bbad42ad74bbacc2bd6 "html()(string)" --rpc-url <rpc>`.
+them; or read it yourself: `cast call 0x0000000066cAa35D1719e251D36B550508B51427 "html()(string)" --rpc-url <rpc>`.
 
 | | |
 |---|---|
-| Page | 503,436 B, sha256 `c58a4815f9a328856026eaa6b33c61fba16b220c525c6341dc344458d288057b` |
+| Wrapper | `0x0000000066cAa35D1719e251D36B550508B51427` (generation 2; deployed 2026-11-22 as the successor of generation 1, `0x000000000009dde9bb333bbad42ad74bbacc2bd6`, which still serves its own page) |
+| Page | 538,182 B, sha256 `2f42e7e467a0bce4966e143d7a7bbd5ca4063160f3e0b3f87bbfeb8dfd505097` |
 | Steward | `0x006CD14F36F65eCbB29b2519cCBe63A0DC8549F2` (the ops multisig) |
 | Record | chunk addresses, transactions and checks in the ERC8244/dapps repository, `tacit-wei/deploy/TACIT-WEI.deployed.md` |
 
