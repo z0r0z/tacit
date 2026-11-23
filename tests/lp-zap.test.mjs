@@ -3,7 +3,7 @@
 // remove): with nothing in between, it mints exactly the shares its note commits to; with any trade, add or remove landing first, it mints at
 // most that many, so with minShares set to them the transaction mints exactly them or reverts, and no deposit is left a note cannot open.
 //   node tests/lp-zap.test.mjs
-import { zapPlan, zapPlanFor, zapSplitPlan, zapSplitSearch, zapWorth, zapCalldata, zapSettleCalldata, ammOut, addShares, foundingPlan, zapEntry, farmPick } from '../dapp/lp-zap.js';
+import { zapPlan, zapPlanFor, zapSplitPlan, zapSplitSearch, zapWorth, zapCalldata, zapSettleCalldata, ammOut, addShares, foundingPlan, zapEntry, farmPick, offMarket, ackFor, OFF_MARKET } from '../dapp/lp-zap.js';
 
 let n = 0; const ok = (c, m) => { if (c) { n++; } else { console.error('FAIL -', m); process.exitCode = 1; } };
 let seed = 7n; const rnd = () => { seed = (seed * 6364136223846793005n + 1442695040888963407n) & ((1n << 64n) - 1n); return seed >> 11n; };
@@ -375,6 +375,24 @@ ok(exact > 0 && reverted > 0, `with something landing first a zap is exact or re
     }
   }
   ok(searched > 50000 && over === 0, `no trade landing first made the settling legs mint more than the shares proved (${over} of ${searched} cases)`);
+}
+
+// ── a pool priced away from the market is held to a tick and a typed number sooner ──
+{
+  const same = (a, b, m) => ok(JSON.stringify(a) === JSON.stringify(b), `${m}: ${JSON.stringify(a)}`);
+  ok(OFF_MARKET === 0.1, 'a pool is off the market from 10% away');
+  same([offMarket(1), offMarket(1.05), offMarket(0.95), offMarket(1.0999), offMarket(0.9001)], [null, null, null, null, null], 'within 10% either way it is on the market');
+  same(offMarket(1.1), { gap: offMarket(1.1).gap, dear: true }, 'a pool pricing the coin 10% over is off, dear');
+  ok(Math.abs(offMarket(1.1).gap - 0.1) < 1e-9 && offMarket(0.9) && offMarket(0.9).dear === false && Math.abs(offMarket(0.9).gap - 0.1) < 1e-9, '10% under is off too, not dear (floats at the edge do not flip it)');
+  same([offMarket(null), offMarket(undefined), offMarket(0), offMarket(-1), offMarket(NaN), offMarket('x')], [null, null, null, null, null, null], 'no market price, no verdict');
+  const e = offMarket(1.41);
+  ok(Math.abs(e.gap - 0.41) < 1e-9 && e.dear, 'the gap is the share of the market’s price, and dear says which way');
+  same([ackFor(0), ackFor(14.9), ackFor(15), ackFor(29.9), ackFor(30), ackFor(99)], [null, null, 'box', 'box', 'type', 'type'], 'an ordinary pool: a tick from 15%, a number from 30%');
+  const off = offMarket(1.41);
+  same([ackFor(0, off), ackFor(4.9, off), ackFor(5, off), ackFor(14.9, off), ackFor(15, off), ackFor(99, off)], [null, null, 'box', 'box', 'type', 'type'], 'an off-market pool: a tick from 5%, a number from 15%');
+  same([ackFor(undefined), ackFor(NaN), ackFor(null, off), ackFor(undefined, off)], [null, null, null, null], 'no cost, nothing asked');
+  const rank = (k) => (k === 'type' ? 2 : k === 'box' ? 1 : 0);
+  for (let c = 0; c <= 100; c += 0.5) ok(rank(ackFor(c, off)) >= rank(ackFor(c)), `at ${c}% an off-market pool asks for at least what an ordinary one does`);
 }
 
 console.log(`${n} checks`);

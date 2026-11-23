@@ -5,7 +5,7 @@
 // Whatever stops it after the transaction leaves a private share note in the key's balance, which `bondShare` farms later.
 // The front page's Earn card has more ways in (a proof kept ready, a swap split with the Precision pool, your own prover, LP only);
 // this is the one path a page with a wallet and a key needs. Everything it calls is the pool module's (confidential-pool-ux.js).
-import { zapPlan, zapPlanFor, zapPlanExt, zapPlanExtFor, addRoute, zapSettleCalldata } from '/lp-zap.js?cb=041bcb7f';
+import { zapPlan, zapPlanFor, zapPlanExt, zapPlanExtFor, addRoute, zapSettleCalldata, offMarket, ackFor } from '/lp-zap.js?cb=548798cd';
 import { relayedOrOwn } from '/farm-ops.js?cb=c5192cc4';
 
 export const PUBLIC_AMM = '0x00000000E36C7EC997CC59DCda9E03673B448119';
@@ -63,6 +63,13 @@ export function marketOf(pair, { tacEth = 0, ethUsd = 0, btcUsd = 0 } = {}) {
   return m > 0 ? m : null;
 }
 
+// The pool's price for its other coin over the market's (above 1 where the pool prices the coin dear), from the reserves in the coins' own units (tETH's
+// unit is 1e-8 ETH; the other coin's is `unitB` of its smallest). null when the market's price is not known.
+export function poolRatio({ res, market = null, unitB = 10n ** 10n, decimals = 18 }) {
+  const rate = Number(res.reserveA) / 1e8 / (Number(res.reserveB) * Number(unitB) / 10 ** decimals);
+  return market > 0 && rate > 0 && Number.isFinite(rate) ? rate / market : null;
+}
+
 // What `wei` of ETH becomes in this pool as its reserves stand: the plan (the swap, the legs, the shares), the swap's own price impact
 // (of the half swapped), and what the deposit gives up against the market when the pool's price sits away from it (of the deposit). `cost`
 // is what the deposit gives up, as a share of the deposit, the figure it is held to: the larger of the swap's impact over the part of the
@@ -103,14 +110,15 @@ export async function zapQuote({ pool, wei, reserves, gasPrice = async () => 0n,
   const m = (await outsidePlan({ res, wei, m: m0, unitB, decimals, market, gp, token: row?.underlying || null, outside })) || m0;
   if (!m) return { pid: pool.pid, wei, plan: null, at: Date.now() };
   const bonded = BigInt(pool.totalShares || 0), day = live ? Number(pool.tacPerDayForPool) * Number(m.plan.shares) / Number(bonded + m.plan.shares) : 0;
-  const eth = Number(m.plan.value) / 1e18, fee = ZAP_GAS * gp * 3n / 2n;
-  return { pid: pool.pid, wei, ...m, res, gp, fee, bal, day, apr: day > 0 && tacEth > 0 && eth > 0 ? day * 365 * tacEth / eth * 100 : null,
+  const eth = Number(m.plan.value) / 1e18, fee = ZAP_GAS * gp * 3n / 2n, ratio = poolRatio({ res, market, unitB, decimals });
+  return { pid: pool.pid, wei, ...m, ratio, off: offMarket(ratio), res, gp, fee, bal, day, apr: day > 0 && tacEth > 0 && eth > 0 ? day * 365 * tacEth / eth * 100 : null,
     over: bal != null && m.plan.value + fee > bal, unitB, decimals, token: row?.underlying || null, at: Date.now() };
 }
 
 // What a quote asks of the person before a press: a number typed for a deposit that gives up 30% or more of itself, a tick for 15% or more or for a
-// pool whose price could not be checked against the market, nothing below that.
-export const ackKind = (q) => (!q?.plan ? null : q.cost >= 30 ? 'type' : q.cost >= 15 || !q.checked ? 'box' : null);
+// pool whose price could not be checked against the market, nothing below that. A pool priced 10% or more away from the market (`off`) asks sooner,
+// a tick from 5% and a number from 15% (lp-zap.js ackFor).
+export const ackKind = (q) => (!q?.plan ? null : ackFor(q.cost, q.off) || (!q.checked ? 'box' : null));
 // Whether the price at the press asks more than what was acknowledged for the quote on screen: an acknowledgement of its kind or stronger (a typed number
 // stands for a tick) at the same whole percent. A price that crosses 15% or 30% while rounding to the same percent still asks it again.
 export const askedMore = (was, now) => {

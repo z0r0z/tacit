@@ -13,7 +13,7 @@ export async function resolve(spec, ctx, next) {
 import assert from 'node:assert/strict';
 
 const { readReserves, marketOf, otherOf, zapMath, zapQuote, zapProve, zapSend, zapRun, shareNote, bondShare, looseOf, declined, assetRow, publicRate, ackKind, askedMore, ZQUOTER, ZAP_GAS, PUBLIC_AMM } = await import('../dapp/farm/zap.js');
-const { zapPlan, zapPlanFor } = await import('../dapp/lp-zap.js');
+const { zapPlan, zapPlanFor, ackFor } = await import('../dapp/lp-zap.js');
 
 const W = (v) => BigInt(v).toString(16).padStart(64, '0'), E18 = 10n ** 18n;
 const CETH = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', A_TAC = '0x' + 'f0'.repeat(32), A_USD = '0x' + '8f'.repeat(32);
@@ -80,6 +80,31 @@ const pool = { pid: 0, pair: 'TAC/cETH', poolId: '0x' + '01'.repeat(32), lpAsset
   ok(!askedMore(q(20), q(20.3)) && !askedMore(q(32), q(32.4)) && !askedMore(q(5, false), q(5, false)), 'the same percent, with what it asked, stands');
   ok(!askedMore(q(30.4), q(29.6)), 'a typed number stands for a tick at the same percent');
   ok(!askedMore(q(20), q(14)) && !askedMore(q(40), q(0)), 'a price that fell under what asked for anything needs nothing');
+}
+
+// ── a pool priced away from the market asks sooner, and says why ──
+{
+  const q = (cost, off = null, checked = true) => ({ plan: {}, cost, checked, off });
+  const off = { gap: 0.4, dear: true };
+  eq([ackKind(q(4.9, off)), ackKind(q(5, off)), ackKind(q(14.9, off)), ackKind(q(15, off)), ackKind(q(3, off, false)), ackKind(q(14.9)), ackKind(q(15))],
+    [null, 'box', 'box', 'type', 'box', null, 'box'], 'a pool off the market: a tick from 5%, a number from 15%; a pool on it keeps 15% and 30%');
+  ok(askedMore(q(10), q(10, off)), 'a pool that is off the market at the press asks for the tick it was not given');
+  ok(askedMore(q(16, { gap: 0.12, dear: false }), q(16, off)) === false, 'off at the quote and at the press at the same percent stands');
+  ok(askedMore(q(10, off), q(16, off)), 'and a price that crosses 15% there asks for the number');
+
+  // the pool as it stood before the 1 ETH zap of 11-22 (cETH/cUSD, 2.1 tETH against 2,340 cUSD, ETH at about 1,563 dollars): the swap sells 0.45 ETH at about 911 dollars
+  const A_CUSD = '0x' + '8f'.repeat(32), RES_CUSD = { assetA: CETH, assetB: A_CUSD, reserveA: 210800571n, reserveB: 233977873019n, feeBps: 30, totalShares: 6981411077n };
+  const cusd = { pid: 1, pair: 'cETH/cUSD', totalShares: '8667504254', tacPerDayForPool: '332', lockSeconds: 0, feeBps: 30 };
+  const at = (market) => zapQuote({ pool: cusd, wei: E18, reserves: async () => RES_CUSD, market, tacEth: 0.0007 });
+  const hot = await at(1 / 1563);
+  ok(Math.abs(hot.ratio - 1.408) < 0.002 && hot.off && Math.abs(hot.off.gap - 0.408) < 0.002 && hot.off.dear, `the pool prices cUSD ${(hot.ratio * 100 - 100).toFixed(0)}% over the market: off the market, dear`);
+  ok(hot.cost > 18 && hot.cost < 20 && ackKind(hot) === 'type', `a deposit of 1 ETH gives up ${hot.cost.toFixed(1)}%, which asked a tick under the old 30% and asks the number now`);
+  eq([Number(hot.plan.swapIn) / 1e18, Number(hot.plan.out) / 1e18], [0.4523005, 412.32088372], 'the swap is the one the chain made for that deposit');
+  const calm = await at(1 / 1110 * 0.98);
+  ok(calm.off === null && calm.ratio > 0.97 && calm.ratio < 1.03, 'priced within 3% of the pool, it is not off the market');
+  ok((await at(null)).off === null && (await at(null)).ratio === null && ackKind(await at(null)) === 'box', 'with no market price there is no verdict on the pool, and the tick for an unchecked price stands');
+  const small = await zapQuote({ pool: cusd, wei: E18 / 100n, reserves: async () => RES_CUSD, market: 1 / 1563 });
+  ok(small.off && Math.abs(small.cost - 14.7) < 0.1 && ackFor(small.cost) === null && ackKind(small) === 'box', `a deposit of 0.01 ETH into it gives up ${small.cost.toFixed(1)}%: nothing was asked under the old 15%, a tick is now`);
 }
 
 // ── the steps ──

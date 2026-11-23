@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-UyvGpw7TUZWdXaUow2nXDD+pt7xxwxMvD6QcbypawMw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-N02tLoWyx28tfxvBh3HX22hBd2P1LLGIa5SjLtJEByk=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -21,7 +21,7 @@
 <link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-<script defer src="/front-route.js?cb=8b35b185"></script>
+<script defer src="/front-route.js?cb=a84abe67"></script>
 <title>tacit TAC</title>
 <link rel="canonical" href="https://tacit.finance/tac/">
 <meta name="description" content="The Tacit chain: stake TAC privately, earn from every payment and pay in about a minute. A zk-rollup settled on Ethereum, connected to Bitcoin by proof.">
@@ -62,7 +62,7 @@
 <link rel="modulepreload" href="/portfolio.js?cb=fcadbdb8">
 <link rel="modulepreload" href="/trade/farm-read.js?cb=fb6ec72f">
 <link rel="modulepreload" href="/bridge-all.js?cb=45f85325">
-<link rel="modulepreload" href="/lp-zap.js?cb=041bcb7f">
+<link rel="modulepreload" href="/lp-zap.js?cb=548798cd">
 <link rel="modulepreload" href="/farm-ops.js?cb=c5192cc4">
 <link rel="modulepreload" href="/relay-outcome.js?cb=ad7c898d">
 <link rel="modulepreload" href="/btc-borrow.js?cb=2a2d543f">
@@ -387,6 +387,7 @@ main:focus { outline: none; }
 .fms b { font-weight: 500; color: var(--ok); }
 .fms small { font: 500 11px var(--mono); letter-spacing: .06em; }
 .fms .fms-thin { font-style: normal; font-weight: 400; letter-spacing: 0; }
+.fms .fms-off { color: var(--err); font-weight: 500; }
 @media (hover: hover) { .fms a:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); } .fms a:hover small { color: var(--ink); } }
 @media (hover: none) { .fms a { border-color: color-mix(in srgb, var(--hair) 40%, transparent); } }
 .fms a:active { transform: scale(.98); }
@@ -2979,7 +2980,7 @@ import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { balanceRows } from '/wallet-balances.js?cb=1cd3e7a4';
 import { portfolio, byAsset } from '/portfolio.js?cb=fcadbdb8';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=d4520508';
-import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapPlanExt, zapPlanExtFor, addRoute, zapWorth, foundingPlan, zapEntry, farmPick } from '/lp-zap.js?cb=041bcb7f';
+import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapPlanExt, zapPlanExtFor, addRoute, zapWorth, foundingPlan, zapEntry, farmPick, offMarket, ackFor } from '/lp-zap.js?cb=548798cd';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
 import * as GR from '/gas-relay.js?cb=d87b3b06';
 import { netPicker } from '/net-pick.js?cb=9229f173';
@@ -3430,12 +3431,15 @@ function amountHint(i, text) {
 const tooFine = (rc, text, units, dec) => { if (units != null || parseUnits(text, 64) == null) return false; mount(rc, html``); warn(rc, `Up to ${dec} decimals.`); return true; };
 
 const acked = {};
-function lossGate(id, pct, what) {
-  if (!(pct >= 15)) return html``;
-  const n = Math.round(pct), prior = acked[id] === n;
-  return pct >= 30
-    ? html`<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this ${what} to the pool’s price move.</span><input id="${id}" inputmode="numeric" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Type ${n} to accept" value="${prior ? n : ''}"></label>`
-    : html`<label class="ack"><input type="checkbox" id="${id}" ${prior ? 'checked' : ''}><span>I accept losing about ${n}% of this ${what} to the pool’s price move.</span></label>`;
+// `off` is a pool priced away from the market ({ gap, dear }, lp-zap.js offMarket): its deposits are held to a tick from 5% and a typed number from 15%,
+// and the line says why.
+function lossGate(id, pct, what, off = null) {
+  const kind = ackFor(pct, off);
+  if (!kind) return html``;
+  const n = Math.round(pct), prior = acked[id] === n, why = off ? html`: this pool is priced ${pctFmt(off.gap * 100)} off the market` : html` to the pool’s price move`;
+  return kind === 'type'
+    ? html`<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this ${what}${why}.</span><input id="${id}" inputmode="numeric" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Type ${n} to accept" value="${prior ? n : ''}"></label>`
+    : html`<label class="ack"><input type="checkbox" id="${id}" ${prior ? 'checked' : ''}><span>I accept losing about ${n}% of this ${what}${why}.</span></label>`;
 }
 function wireAck(box, id, pct, then) {
   const el = box.querySelector('input');
@@ -3444,11 +3448,12 @@ function wireAck(box, id, pct, then) {
   const on = () => { acked[id] = (el.type === 'checkbox' ? el.checked : el.value.trim() === String(n)) ? n : null; then(); };
   el.addEventListener('input', on); el.addEventListener('change', on);
 }
-function lossOk(box, pct) {
-  if (!(pct >= 15)) return true;
+function lossOk(box, pct, off = null) {
+  const kind = ackFor(pct, off);
+  if (!kind) return true;
   const el = box.querySelector('input');
   if (!el) return false;
-  return pct >= 30 ? el.value.trim() === String(Math.round(pct)) : el.checked;
+  return kind === 'type' ? el.value.trim() === String(Math.round(pct)) : el.checked;
 }
 
 const RPC_HEALTH = nodeHealth({ store: (() => { try { return localStorage; } catch { return null; } })() });
@@ -4712,10 +4717,10 @@ const tacWarm = (e) => { if (!TAC_CODE && e.target.closest?.('a[href^="/tac/"], 
 for (const t of ['pointerover', 'focusin']) document.addEventListener(t, tacWarm, { passive: true });
 // The sheets' code is front/sheets.js: it loads when a sheet first opens, on the first press or key, or once the page is idle.
 // front-sheets:begin
-const sheetsCtx = () => ({ $, $$, OWNNODE, ACT, ADDR, ASSET_SEND_SATS, BASE_NODES, BF, BR_DONE, BTC, BTC_NOTE_ASSETS, BTC_TOKENS, BWB, BWX, CETH_ID, CHAIN_ASSETS, CHAIN_META, CSEND, CS_ASSETS, DEV, DEVICE_CHAINS, DEV_JOB, DEV_PREF, DISTRIBUTOR, E10, ETHERSCAN, ETH_DP, ETH_LOG_NODES, EVM_POOL, EVM_ROUTER, EXIT_AHEAD, FARM, FLASH, HARVEST_WORTH, HOLD, HOLD_CONSENT, HX, HX_FLIGHT, JOBS, JOIN, KEEP_READY, KEPT, L2BAL, LK, LOCAL, LOCK, LOGO, farmIcons, icoHtml, LP_KEEP_ETH, MEMPOOL, NOTIFY_KEY, OFFERED, OPENISH, OPEN_OFFERED, OUT, P, PGM, POOL_TK, PTS, PTS_BOARD, REDEEM, RETRY, REVERTS, REWARD_PAID, RS, RUNS, Raw, S, SATS_DUST, SEALED, SEL, SELF, SELFDO, SP, SP_PREF, SP_SEAL, SWAP_ASSETS, TAB, TAC_BTC_ID, TAC_DP, TK, TOKEN_POOLS, US, V1, VOUCH, WAIT_WHY, WAL, WNS, WTAC, XA, XA_REDEEM, XO_AT, XO_STEPS, ZAP_SETTLE_GAS, ZROUTER, ZSWAP, aFor, aboutEth, acked, actBridge, actBtc, actDone, actGet, actSave, addrFlat, addrWord, addressFor, addressId, ago, alts, aprLong, aprOf, aprShort, assetById, assetSendForm, bFor, badStatus, big, bondAck, bondDue, bondElsewhere, bondFunds, bondNoWallet, bondNotes, bondVia, bondsNow, brJournal, btcQr, btcRouteM, btcSendNow, busy, bwCanWst, byValue, bytesToHex, chainFull, chainMark, chainMarks, chainNow, chainRpc, chainTag, clearField, clock, concatBytes, connect, copy, cutAhead, dashGo, dashSoon, dayFmt, dayShort, deadline, debounce, depositCallout, devBal, devDepositSend, devNow, devOn, devOutSend, devProver, devResolve, devSaid, deviceSync, deviceWallet, dfmt, earnRows, earnedNow, ended, errText, etaWords, ethBalance, ethBase, ethCall, ethKeep, ethOfTac, evm, exitAheadFor, exitGo, exitKind, exitPosition, failText, farmLinkOf, feeRoom, feesLine, fmt, freeNotes, getDeviceMods, getUx, heldLabel, hexToBytes, hmac, holdBehind, holdConsented, holdPayTo, holderTier, holdingRound, html, hxBwInflight, hxDraft, hxLive, hxPts, hxWarmWrap, idRow, inUse, joinAhead, joinMax, joinNow, joinOnePlan, joinPairPlan, joinSides, joinTerms, kLock, kNote, kOfAsset, kPos, keccak_256, keep, keepKey, keepReady, keepSizes, keeperDown, keeperRead, keeperTrouble, keeperTx, keyRow, knownWallet, lastEnd, lastSeen, leftWords, linkNote, linked, listed, loadBonds, loadBorrow, loadBtc, loadFarms, loadHeld, loadLocks, loadPoints, loadPositions, loadUnified, loadUsdtBal, lockAhead, lockId, lockLine, lockList, lockNext, lossGate, lossOk, lpCost, lpKeep, lpPoolFor, lpSays, lpSendNow, lpShare, lpTicker, lsKv, maxAria, lockWallet, midAction, mine, mount, multicall, needKey, nfmt, noRelayFee, noteFor, noteKeep, now, offerMore, offerSelf, okStatus, onEdit, onTheWay, opParts, openLink, openOf, openProve, openSheet, openerOn, otherKey, otherSelf, otherWallet, overBalance, ownAccount, ownJob, ownNow, ownOn, ownWord, paceOf, paintAct, paintProve, paintSp, paintWallet, paintWalletBal, pairName, parseUnits, payFrom, payFromTok, payer, payingAccount, pct, pctFmt, pendingFor, pendingSent, perProof, permitSig, plain, pointsWho, poolLine, poolMaking, poolVsMarket, poolWorth, potTac, precisionApr, privateOf, proofsBusy, proofsFor, proveAhead, proveFmt, proveFor, proveOr, proveOwn, prover, provingNote, ptChain, ptsDays, ptsEnd, ptsFmt, ptsWhy, pubExitSend, pubOutData, pubPreview, pubSend, quoteErr, rankRows, rateStr, reProve, readOutlook, readPublicTac, readRow, readWrapTip, recipientOf, redeemBuild, redeemOn, redeemRefresh, redeemSend, redeemSent, redeemStep, refreshAll, refreshFarm, refreshWalletBal, relayDeposit, relayProving, relayWhy, render, rerender, resetPrivate, resolveToM, revertText, rewardPop, rewardWorth, rpc, running, samePos, say, sayErr, sayLive, scanIfNew, scanPrivate, scanShielded, scheduled, sealOn, secp, segSub, selfDo, selfOffer, selfWork, sendTx, setDeviceChain, setNotify, setPayer, settleBorrow, shLookingNote, sha256, sharePct, sharesEth, sheetOf, shieldedApr, short, shown, shownAs, sig, signIn, sizesNow, sleep, spApply, spMod, spOn, spRead, spSaid, spendable, stealthSendNow, stepBond, stepHarvest, stepLi, stepOf, stepRedeem, stepTakeOut, stepUnbond, store, strip, swapAsset, syncAccount, syncLink, tacOf, tacShort, tacitShort, takeBond, takeDraft, takenByOther, tickerOf, lockDec, tkPin, toSelf, toast, tokDepositSend, tokRecipient, tokenSync, tokenWallet, tooFine, txFail, txLink, txMark, txSite, txUrl, unharvested, unitOf, unwrapNow, usdtExitFee, usdtOwner, usdtWrapNow, utcDay, viaText, viewAddr, vouchers, waitRanOut, waitTx, walletBalances, walletPriv, warn, wireAck, wireFinish, wireSignIn, wireSub, withKey, word, wordAt, wrapMax, wrapNow, wtacHere, xaOf, xbHeld, xbOf, xoCovered, xoDue, xoErr, xoFundRow, xoJournal, xoKeyOpen, xoLink, xoNoteText, xoOut, xoRecords, xoShown, your, zapAhead, zapNow, zapQuote, zapUnit, zapsFinish, zapsMine, zapsRead, get PTSINFO() { return PTSINFO; }, get T() { return T; }, get UNI() { return UNI; } });
+const sheetsCtx = () => ({ $, $$, OWNNODE, ACT, ADDR, ASSET_SEND_SATS, BASE_NODES, BF, BR_DONE, BTC, BTC_NOTE_ASSETS, BTC_TOKENS, BWB, BWX, CETH_ID, CHAIN_ASSETS, CHAIN_META, CSEND, CS_ASSETS, DEV, DEVICE_CHAINS, DEV_JOB, DEV_PREF, DISTRIBUTOR, E10, ETHERSCAN, ETH_DP, ETH_LOG_NODES, EVM_POOL, EVM_ROUTER, EXIT_AHEAD, FARM, FLASH, HARVEST_WORTH, HOLD, HOLD_CONSENT, HX, HX_FLIGHT, JOBS, JOIN, KEEP_READY, KEPT, L2BAL, LK, LOCAL, LOCK, LOGO, farmIcons, icoHtml, LP_KEEP_ETH, MEMPOOL, NOTIFY_KEY, OFFERED, OPENISH, OPEN_OFFERED, OUT, P, PGM, POOL_TK, PTS, PTS_BOARD, REDEEM, RETRY, REVERTS, REWARD_PAID, RS, RUNS, Raw, S, SATS_DUST, SEALED, SEL, SELF, SELFDO, SP, SP_PREF, SP_SEAL, SWAP_ASSETS, TAB, TAC_BTC_ID, TAC_DP, TK, TOKEN_POOLS, US, V1, VOUCH, WAIT_WHY, WAL, WNS, WTAC, XA, XA_REDEEM, XO_AT, XO_STEPS, ZAP_SETTLE_GAS, ZROUTER, ZSWAP, aFor, aboutEth, acked, actBridge, actBtc, actDone, actGet, actSave, addrFlat, addrWord, addressFor, addressId, ago, alts, aprLong, aprOf, aprShort, assetById, assetSendForm, bFor, badStatus, big, bondAck, bondDue, bondElsewhere, bondFunds, bondNoWallet, bondNotes, bondVia, bondsNow, brJournal, btcQr, btcRouteM, btcSendNow, busy, bwCanWst, byValue, bytesToHex, chainFull, chainMark, chainMarks, chainNow, chainRpc, chainTag, clearField, clock, concatBytes, connect, copy, cutAhead, dashGo, dashSoon, dayFmt, dayShort, deadline, debounce, depositCallout, devBal, devDepositSend, devNow, devOn, devOutSend, devProver, devResolve, devSaid, deviceSync, deviceWallet, dfmt, earnRows, earnedNow, ended, errText, etaWords, ethBalance, ethBase, ethCall, ethKeep, ethOfTac, evm, exitAheadFor, exitGo, exitKind, exitPosition, failText, farmLinkOf, feeRoom, feesLine, fmt, freeNotes, getDeviceMods, getUx, heldLabel, hexToBytes, hmac, holdBehind, holdConsented, holdPayTo, holderTier, holdingRound, html, hxBwInflight, hxDraft, hxLive, hxPts, hxWarmWrap, idRow, inUse, joinAhead, joinMax, joinNow, joinOnePlan, joinPairPlan, joinSides, joinTerms, kLock, kNote, kOfAsset, kPos, keccak_256, keep, keepKey, keepReady, keepSizes, keeperDown, keeperRead, keeperTrouble, keeperTx, keyRow, knownWallet, lastEnd, lastSeen, leftWords, linkNote, linked, listed, loadBonds, loadBorrow, loadBtc, loadFarms, loadHeld, loadLocks, loadPoints, loadPositions, loadUnified, loadUsdtBal, lockAhead, lockId, lockLine, lockList, lockNext, lossGate, lossOk, lpCost, lpKeep, lpPoolFor, lpSays, lpSendNow, lpShare, lpTicker, lsKv, maxAria, lockWallet, midAction, mine, mount, multicall, needKey, nfmt, noRelayFee, noteFor, noteKeep, now, offerMore, offerSelf, okStatus, onEdit, onTheWay, opParts, openLink, openOf, openProve, openSheet, openerOn, otherKey, otherSelf, otherWallet, overBalance, ownAccount, ownJob, ownNow, ownOn, ownWord, paceOf, paintAct, paintProve, paintSp, paintWallet, paintWalletBal, pairName, parseUnits, payFrom, payFromTok, payer, payingAccount, pct, pctFmt, pendingFor, pendingSent, perProof, permitSig, plain, pointsWho, poolLine, poolMaking, poolVsMarket, poolWorth, potTac, precisionApr, privateOf, proofsBusy, proofsFor, proveAhead, proveFmt, proveFor, proveOr, proveOwn, prover, provingNote, ptChain, ptsDays, ptsEnd, ptsFmt, ptsWhy, pubExitSend, pubOutData, pubPreview, pubSend, quoteErr, rankRows, rateStr, reProve, readOutlook, readPublicTac, readRow, readWrapTip, recipientOf, redeemBuild, redeemOn, redeemRefresh, redeemSend, redeemSent, redeemStep, refreshAll, refreshFarm, refreshWalletBal, relayDeposit, relayProving, relayWhy, render, rerender, resetPrivate, resolveToM, revertText, rewardPop, rewardWorth, rpc, running, samePos, say, sayErr, sayLive, scanIfNew, scanPrivate, scanShielded, scheduled, sealOn, secp, segSub, selfDo, selfOffer, selfWork, sendTx, setDeviceChain, setNotify, setPayer, settleBorrow, shLookingNote, sha256, sharePct, sharesEth, sheetOf, shieldedApr, short, shown, shownAs, sig, signIn, sizesNow, sleep, spApply, spMod, spOn, spRead, spSaid, spendable, stealthSendNow, stepBond, stepHarvest, stepLi, stepOf, stepRedeem, stepTakeOut, stepUnbond, store, strip, swapAsset, syncAccount, syncLink, tacOf, tacShort, tacitShort, takeBond, takeDraft, takenByOther, tickerOf, lockDec, tkPin, toSelf, toast, tokDepositSend, tokRecipient, tokenSync, tokenWallet, tooFine, txFail, txLink, txMark, txSite, txUrl, unharvested, unitOf, unwrapNow, usdtExitFee, usdtOwner, usdtWrapNow, utcDay, viaText, viewAddr, vouchers, waitRanOut, waitTx, walletBalances, walletPriv, warn, wireAck, wireFinish, wireSignIn, wireSub, withKey, word, wordAt, wrapMax, wrapNow, wtacHere, xaOf, xbHeld, xbOf, xoCovered, xoDue, xoErr, xoFundRow, xoJournal, xoKeyOpen, xoLink, xoNoteText, xoOut, xoRecords, xoShown, your, zapAhead, zapNow, zapQuote, zapUnit, zapsFinish, zapsMine, zapsRead, offMarket, offSay, offRow, get PTSINFO() { return PTSINFO; }, get T() { return T; }, get UNI() { return UNI; } });
 // front-sheets:end
 let SHEET_CODE = null;
-const sheetsReady = lazy(() => import('/front/sheets.js?cb=0a7c041a').then((m) => { SHEET_CODE ||= m.default(sheetsCtx()); }));
+const sheetsReady = lazy(() => import('/front/sheets.js?cb=342d4e7d').then((m) => { SHEET_CODE ||= m.default(sheetsCtx()); }));
 const withSheets = (f) => (SHEET_CODE ? f() : sheetsReady().then(f, () => {}));
 for (const k of ["wallet","eth","usdt","btc","pts","farm","borrow"]) render[k] = () => { if (!SHEET_CODE) withSheets(() => rerender(k)); };
 function renderProve(...a) { if (SHEET_CODE) return SHEET_CODE.renderProve(...a); withSheets(() => { if ($('#sheet-prove').open) reProve(); }); }
@@ -10692,7 +10697,7 @@ function hintGo(id) {
 function paintFarmChips(pools) {
   const el = $('#fms'), chips = pools.filter(({ p }) => !p.idle && String(p.reserves?.assetA).toLowerCase() === CETH_ID && Number(p.reserves?.lpTotalShares)).map(({ p, apr }) => ({
     spec: `p${p.pid}`, poolId: p.poolId, href: `#farm/private-${p.pid}`, name: pairName(p.pair), apr, kind: 'private farm',
-    impact: zapImpact(p, Number(HINT_ETH), { split: true }),
+    impact: zapImpact(p, Number(HINT_ETH), { split: true }), off: offMarket(poolVsMarket(p)?.ratio),
     icons: farmIcons(p) }));
   const pub = FARM.top?.apr;
   if (pub != null) chips.push({ spec: 'public', href: '#farm/public', name: 'TAC / ETH', apr: pub, kind: 'public farm', icons: ['tk-tac', 'tk-eth'] });
@@ -10701,7 +10706,7 @@ function paintFarmChips(pools) {
   HINT_POOL = hintFarm(pools) || (best ? { spec: best.spec, poolId: best.poolId, apr: best.apr, icons: best.icons, name: best.name } : null);
   paintHints();
   if (!el) return;
-  const view = html`<span class="fms-k" aria-hidden="true">Farms</span>${chips.map((c) => html`<a href="${c.href}" data-hx="earn:ether:${c.spec}" title="${c.name}, ${c.kind}: put ETH in with one transaction${c.impact >= 0.05 ? `. A small pool: a ${HINT_ETH} ETH deposit moves its price ${pctFmt(c.impact * 100)}` : ''}"><span class="pair">${c.icons.map((i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`)}</span><b class="num">${c.apr >= 10000 ? '10,000+' : Math.round(c.apr).toLocaleString('en-US')}%</b><small>APR${c.impact >= 0.05 ? html` · <i class="fms-thin">small pool</i>` : ''}</small></a>`)}`;
+  const view = html`<span class="fms-k" aria-hidden="true">Farms</span>${chips.map((c) => html`<a href="${c.href}" data-hx="earn:ether:${c.spec}" title="${c.name}, ${c.kind}: put ETH in with one transaction${c.off ? `. Off the market: its price for the other coin is ${pctFmt(c.off.gap * 100)} ${c.off.dear ? 'above' : 'below'} the market’s, and a zap swaps half of the deposit at it` : c.impact >= 0.05 ? `. A small pool: a ${HINT_ETH} ETH deposit moves its price ${pctFmt(c.impact * 100)}` : ''}"><span class="pair">${c.icons.map((i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`)}</span><b class="num">${c.apr >= 10000 ? '10,000+' : Math.round(c.apr).toLocaleString('en-US')}%</b><small>APR${c.off ? html` · <i class="fms-thin fms-off">off the market</i>` : c.impact >= 0.05 ? html` · <i class="fms-thin">small pool</i>` : ''}</small></a>`)}`;
   if (el.__h !== view.s) { el.__h = view.s; mount(el, view); }
   el.classList.toggle('on', chips.length > 0);
 }
@@ -10929,6 +10934,10 @@ function poolVsMarket(p) {
   if (!(market > 0)) return null;
   return { unit: shownAs(other), pool: a / b, market, ratio: a / b / market };
 }
+// A pool priced away from the market (lp-zap.js offMarket), said as a line and as a row of the card's receipt: what its price is against the market's, and what that does to a deposit.
+const poolPx = (v) => (v >= 100 ? Math.round(v).toLocaleString('en-US') : sig(v, 4));
+const offSay = (pm, off) => `This pool is off the market: its price for ${pm.unit} is ${pctFmt(off.gap * 100)} ${off.dear ? 'above' : 'below'} the market’s. Half of a deposit is swapped at that price, and what stays in the pool is what traders take when they bring the price back.`;
+const offRow = (pm) => ['Pool price', `1 ETH = ${poolPx(1 / pm.pool)} ${pm.unit} here, ${poolPx(1 / pm.market)} on the market`, 'err'];
 const aprShort = (a) => (a == null ? '' : a >= 10000 ? '10,000%+ APR' : `${Math.round(a).toLocaleString('en-US')}% APR`);
 const aprLong = (a) => (a >= 100000 ? 'over 100,000%' : `about ${Math.round(a).toLocaleString('en-US')}%`);
 
@@ -11170,7 +11179,7 @@ async function zapQuote(p, wei, { splitting = null } = {}) {
   // (`impact`, the figure the loss acknowledgement is held to) is a share of the deposit, so the swap's impact counts for the part of it that is swapped.
   const dep = Number(wei) / 1e18;
   return { pid: p.pid, wei, plan, sp, gas, gp, res, have, loss, mkt, impact: Math.max(dep > 0 ? loss * y / dep : 0, mkt), paid, back: paid - plan.bLeg, ready,
-    over: !fits(ready ? readyCost(ready) : plan.value + gas), at: Date.now() };
+    off: offMarket(pm?.ratio), pm, over: !fits(ready ? readyCost(ready) : plan.value + gas), at: Date.now() };
 }
 function zapAhead(p, z, still) {
   clearTimeout(VOUCH.zapTyping);
@@ -11525,7 +11534,7 @@ function joinOnePlan(t, p, j, sd, Zin, gasShort = false) {
   }
   // the swap's own price impact is on the part swapped, the price against the market on the deposit: what the deposit gives up is the larger, as a share of it
   const worst = Math.max(Zin > 0n ? z.impact * Number(z.y) / Number(Zin) : 0, mkt);
-  return { q: { kind: 'one', x: z.x, fr, out: z.out, minOut: z.out * 99n / 100n, path: [{ assetNext: P.scan[kO].id, feeBps }], split: z.split || null, k: kS, add: z.add, impact: worst, over: false, gasShort, at: Date.now() }, z, s1, s2, reuse, a, b, shares, mkt, pm, fr };
+  return { q: { kind: 'one', x: z.x, fr, out: z.out, minOut: z.out * 99n / 100n, path: [{ assetNext: P.scan[kO].id, feeBps }], split: z.split || null, k: kS, add: z.add, impact: worst, off: offMarket(pm?.ratio), over: false, gasShort, at: Date.now() }, z, s1, s2, reuse, a, b, shares, mkt, pm, fr };
 }
 function joinPairPlan(t, p, j, sd, a, gasShort = false) {
   const { kA, kB } = sd, res = j.res, b = bFor(a, res);
@@ -13302,15 +13311,16 @@ function hxJoinSay(p, jq) {
       alt: [{ label: 'Swap half instead', go: () => hxPair(false) },
         ...(q.over ? [...(jq.a + jq.fA > spendable(sd.kA) ? hxGetAlts(sd.kA) : []), ...(jq.b + jq.fB > spendable(sd.kB) ? hxGetAlts(sd.kB) : [])] : [])] };
   }
-  const { z, s1, s2, mkt, pm, fr, reuse } = jq, worst = q.impact, other2 = spendable(kO) > 0n, costly = mkt >= 5 || z.impact >= 5, gets = !other2 && costly ? hxGetAlts(kO) : [];
+  const { z, s1, s2, mkt, pm, fr, reuse } = jq, worst = q.impact, other2 = spendable(kO) > 0n, costly = mkt >= 5 || z.impact >= 5, gets = !other2 && costly ? hxGetAlts(kO) : [], off = offMarket(pm?.ratio);
   const base = q.gasShort ? low
     : fr * 20n >= z.x ? `The relay fee is ${pctFmt(Number((fr * 1000n) / z.x) / 10)} of the swap: a larger deposit spreads it.`
+    : off ? `${offSay(pm, off)}${other2 ? ` Adding your ${unit[kO]} too needs no swap.` : ''}`
     : mkt >= 5 ? `This pool’s price for ${pm.unit} is ${pctFmt(Math.abs(pm.ratio - 1) * 100)} ${pm.ratio > 1 ? 'above' : 'below'} the market’s, and the swap is made at it${other2 ? `. Adding your ${unit[kO]} too needs no swap` : ''}.`
     : z.impact >= 5 ? `The swap inside the pool costs a lot at this size. A smaller deposit costs less${other2 ? `, and so does adding your ${unit[kO]} too` : ''}.` : '';
   const line = gets.length && !q.gasShort ? `${base}${base ? ' ' : ''}Bringing ${unit[kO]} too needs no swap: get it below.` : base;      // with none of the other coin, the way to get it is said whichever line leads
-  return { go: `Farm with ${unit[kS]}`, day, line, warn: !!line, gate: worst,
+  return { go: `Farm with ${unit[kS]}`, day, line, warn: !!line, gate: worst, gateOff: off,
     rc: [adds, ['Chain sees', 'a deposit, not whose'], ['Relay fee', `${fmt(fr + s1 + s2, 8, dp[kS])} ${unit[kS]}`, '', s1 + s2 ? 'The swap, and cutting your notes to size' : 'The swap'], gas,
-      z.impact >= 0.5 ? ['Price impact', pctFmt(z.impact), z.impact >= 5 ? 'err' : ''] : null, mkt >= 1 ? ['Against the market', `${pctFmt(mkt)} of this deposit`, mkt >= 5 ? 'err' : ''] : null,
+      off ? offRow(pm) : null, z.impact >= 0.5 ? ['Price impact', pctFmt(z.impact), z.impact >= 5 ? 'err' : ''] : null, mkt >= 1 ? ['Against the market', `${pctFmt(mkt)} of this deposit`, mkt >= 5 ? 'err' : ''] : null,
       reuse ? ['Notes', 'made already: nothing is split again'] : null, ...(sm?.rows || []), ['Time', `${z.split ? 'about a minute: the swap, then the entry' : 'a few minutes a step, up to four'}${sm?.time || ''}`]],
     alt: other2 && !p.standalone ? { label: `Add your ${unit[kO]} too: no swap`, go: () => hxPair(true) } : gets.length ? gets : null };
 }
@@ -13369,7 +13379,7 @@ async function hxFarms(amt) {
     if (src === 'wtac' || (src === 'tac' && !String(p.pair).split('/').includes('TAC'))) continue;
     const half = amt / 2, entry = tacSrc ? zapEntry(half > 0 && Number(r.reserveB) > 0 ? half / (Number(r.reserveB) / 1e8 + half) : 0) : zapEntryOf(p, amt, { split: zapping });
     out.push({ k: String(p.pid), name: pairName(p.pair), note: 'private', icons: farmIcons(p),
-      ...(lpOnly ? { dry: false, apr: await feeAprOf(p).then((v) => (v == null ? null : v * 100)), day: 0 } : { dry: !live, apr: live ? shieldedApr(p) : null, day: live ? farmDay(p, eth) : 0 }), ...entry });
+      ...(lpOnly ? { dry: false, apr: await feeAprOf(p).then((v) => (v == null ? null : v * 100)), day: 0 } : { dry: !live, apr: live ? shieldedApr(p) : null, day: live ? farmDay(p, eth) : 0 }), ...entry, off: offMarket(poolVsMarket(p)?.ratio) });
   }
   if (lpOnly) out.push(...xtEarnRows());
   if (src === 'eth' && !lpOnly) out.push(...xtEarnRows().filter((x) => x.k.startsWith('xs:') && spendable(`xp${x.k.slice(3)}`) > 0n).map((x) => ({ ...x, note: 'no pool yet · start it from your private coins' })));
@@ -14547,12 +14557,13 @@ async function hxQuote() {
       const jq = jp ? await hxJoinQuote(jp, units).catch((e) => ({ err: e })) : null, pq = pa ? await hxPubQuote(units).catch((e) => ({ err: e })) : null;
       if (my !== HX.seq) return;
       Object.assign(HX, { jq, jqFor: jp ? `${jp.pid}:${units}:${hxJoinModeOf(jp)}` : null, pq, pqFor: pa ? `${HX.from === 'wtac' ? 'tac' : 'eth'}:${units}:${S.address}` : null });
-      for (const r of rows) { r.show = r.apr == null ? '—' : r.apr >= 10 ? Math.round(r.apr).toLocaleString('en-US') + '%' : pctFmt(r.apr); if (r.k !== 'precision' && !r.solo && !/^x[as]:/.test(r.k)) r.note = `private${r.dry ? ' · between reward periods' : ''}${hxEarnHow(units) === 'wrap' ? ' · 2 steps' : ''}${r.impact >= 0.01 ? ` · ${pctFmt(r.impact * 100)} impact` : r.small ? ' · small pool' : ''}`; }
+      for (const r of rows) { r.show = r.apr == null ? '—' : r.apr >= 10 ? Math.round(r.apr).toLocaleString('en-US') + '%' : pctFmt(r.apr); if (r.k !== 'precision' && !r.solo && !/^x[as]:/.test(r.k)) r.note = `private${r.dry ? ' · between reward periods' : ''}${hxEarnHow(units) === 'wrap' ? ' · 2 steps' : ''}${r.off ? ` · off the market, ${pctFmt(r.off.gap * 100)} ${r.off.dear ? 'above' : 'below'}` : r.impact >= 0.01 ? ` · ${pctFmt(r.impact * 100)} impact` : r.small ? ' · small pool' : ''}`; }
       if (/^x[as]:/.test(pick.k)) return done({ ...(await xtEarnQuote(pick, units).catch(() => ({ out: null, warn: true, line: 'This pool could not be read. Try again in a moment.' }))), rows, pick: pick.k });
       const js = jq ? hxJoinSay(jp, jq) : null, ps = pq ? hxPubSay(pq) : null, ex = js || ps;
       const zapGets = zap && pp && !(HX.lp && HX.from === 'ether') && (HX.zq?.loss >= 5 || HX.zq?.mkt >= 5) ? hxGetAlts(zapTkB(pp)) : [];
       const zline = pp && !zq ? 'The zap could not be priced. Try again in a moment.' : zq && !zq.plan ? 'Enter a larger amount: this one is too small to make a share of the pool.'
         : HX.zq?.over ? `More ETH than ${your()} holds, with the network fee. Try Max.`
+        : HX.zq?.off ? `${offSay(HX.zq.pm, HX.zq.off)}${zapGets.length ? ` Holding ${shownAs(zapTkB(pp))} too needs no swap: get it below.` : ''}`
         : zapGets.length ? `Half of this is swapped inside a pool this thin. Holding ${shownAs(zapTkB(pp))} too needs no swap: get it below.` : '';
       zapsRead();
       const waiting = S.key ? zapsKept().filter((z) => z.pub === S.key.pubHex) : [], wp = waiting.length && FARM.program?.pools?.find((x) => x.pid === waiting[0].pid);
@@ -14571,11 +14582,12 @@ async function hxQuote() {
           HX.zq?.sp ? ['Where', `${Math.round(Number(HX.zq.plan.ammIn) * 100 / Number(HX.zq.plan.swapIn))}% in this pool, the rest in the Precision pool`] : null,
           HX.zq ? proofRow(HX.zq.ready) : null,
           HX.zq ? ['Network fee', `about ${fmt(HX.zq.ready ? ZAP_SETTLE_GAS * HX.zq.gp * 3n / 2n : HX.zq.gas, 18, 5)} ETH`] : null,
+          !pub && !js && HX.zq?.off ? offRow(HX.zq.pm) : null,
           !pub && !js && (HX.zq ? HX.zq.loss >= 5 : pick.impact >= 0.05) ? ['Price impact', pctFmt(HX.zq ? HX.zq.loss : pick.impact * 100), 'err'] : null,
           !pub && !js && HX.zq?.mkt >= 5 ? ['Against the market', `${pctFmt(HX.zq.mkt)} of this deposit`, 'err'] : null,
           ...(ex?.rc || [])],
         alt: wp ? { label: `Finish your zap into ${pairName(wp.pair)}`, go: () => hxFinishZap(wp) } : js?.alt || (!two || lpOnly ? null : [zap ? { label: 'Earn points too: shield ETH first', go: way('wrap') } : { label: 'Zap in one transaction instead', go: way(null) }, ...zapGets]),
-        gate: ex ? ex.gate : HX.zq?.impact >= 15 ? HX.zq.impact : 0,
+        gate: ex ? ex.gate : ackFor(HX.zq?.impact, HX.zq?.off) ? HX.zq.impact : 0, gateOff: ex ? ex.gateOff : HX.zq?.off || null,
         warn: !!pick.dry || !!wp || !!ex?.warn || !!zline, line: wp ? 'A zap of yours is waiting to be farmed.' : ex?.line || zline || (pick.dry ? 'Between reward periods: nothing streams until the next one starts.' : '') });
     }
     if (m === 'btc' && HX.from === 'tac') {
@@ -15128,7 +15140,7 @@ function paintHxQ() {
   if (ack && !q.busy) {
     const ctx = [HX.pool, HX.from, HX.lp, HX.amt].join('|');
     if (HX.ackFor !== ctx) { HX.ackFor = ctx; ack.__h = null; delete acked['hx-ackv']; }
-    const g = q.gate >= 15 ? q.gate : 0, view = g ? lossGate('hx-ackv', g, 'deposit') : html``;
+    const g = ackFor(q.gate, q.gateOff) ? q.gate : 0, view = g ? lossGate('hx-ackv', g, 'deposit', q.gateOff) : html``;
     ack.hidden = !g;
     if (ack.__h !== view.s) { ack.__h = view.s; mount(ack, view); if (g) wireAck(ack, 'hx-ackv', g, hxGateSync); }
     hxGateSync();
@@ -15288,7 +15300,7 @@ function hxQuoteThen(tried, failed = false) {
   if (HX.q?.busy || (tried && !(failed && !HX.replay))) return;
   HX.q = { ...(HX.q || {}), busy: true }; paintHxQ(); HX.goNext = true; hxQuote();
 }
-const hxGateOk = () => { const g = HX.q?.gate, box = $('#hx-ack'); return !(g >= 15) || (!!box && lossOk(box, g)); };
+const hxGateOk = () => { const g = HX.q?.gate, off = HX.q?.gateOff, box = $('#hx-ack'); return !ackFor(g, off) || (!!box && lossOk(box, g, off)); };
 function hxGateSay() {
   const l = $('#hx-q');
   if (l) { l.textContent = 'Accept the loss above to go on.'; l.classList.add('warn'); }

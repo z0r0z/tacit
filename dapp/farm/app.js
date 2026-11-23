@@ -14,9 +14,9 @@ import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=02c84743';
 import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=c5192cc4';
 import { quoteEthToToken } from '/swap/route.js?cb=0affad24';
-import { zapPlanExt } from '/lp-zap.js?cb=041bcb7f';
+import { zapPlanExt, offMarket, ackFor } from '/lp-zap.js?cb=548798cd';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, ackKind, askedMore, CETH, ZAP_GAS } from '/farm/zap.js?cb=5eb1c492';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, ackKind, askedMore, poolRatio, CETH, ZAP_GAS } from '/farm/zap.js?cb=e7508499';
 
 try { sessionStorage.removeItem('tacit-farm-back-v1'); } catch { /* the front page's way back to a farm: this page is where it goes, so it is spent */ }
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992';
@@ -118,6 +118,19 @@ const marketFor = (pool) => marketOf(pool.pair, { tacEth: tacEth(), ethUsd: S.px
 const unitsFor = (pool) => { const m = mkOf(pool); return m ? { unitB: m.unitB, decimals: m.decimals } : {}; };
 // ETH goes into a pool with tETH on one side, in one transaction. A pool without (SPX / TAC) takes its two coins from the private balance.
 const hasEth = (f) => /\btETH\b/.test(String(f?.name || ''));
+// Whether a pool's price for its other coin is 10% or more away from the market's: { gap, dear } or null (also null where the market is not known or the
+// pool has not been read). Read from the program's reserves, so it is there before any amount is typed.
+function offOf(f) {
+  const r = f?.pool?.reserves;
+  if (f?.kind !== 'private' || !r || !Number(r.reserveB) || !hasEth(f)) return null;
+  const m = marketFor(f.pool);
+  return offMarket(poolRatio({ res: { reserveA: r.reserveA, reserveB: r.reserveB }, market: m, ...unitsFor(f.pool) }));
+}
+// The sentence that says a pool is off the market, for the line under a tile and the form: what its price is against the market's and what that does to a deposit.
+function offSaid(f, off) {
+  const other = otherOf(f.pool.pair);
+  return `This pool is off the market: its price for ${other} is ${pctTxt(off.gap * 100)} ${off.dear ? 'above' : 'below'} the market’s. Half of a deposit of ETH is swapped at that price, and what stays in the pool is what traders take when they bring the price back.`;
+}
 // What a tenth of an ETH gives up on its way into a farm, in percent: the swap of half of it, and for a pool priced away from the market, that.
 function entryCost(f) {
   if (f.kind === 'public') { const r0 = Number(S.pub?.r0 || 0) / 1e18, half = Number(HINT) / 2e18; return r0 > 0 ? half / (r0 + half) * 50 : null; }          // the swap moves the price by half/(r0+half), on the half of the deposit that is swapped
@@ -186,7 +199,7 @@ function farms() {
     const pool = pools.find((p) => slug(pairName(p.pair)) === f.id);
     Object.assign(f, { read: true, pool: pool || null, pid: pool ? Number(pool.pid) : null, gone: !pool });
   }
-  for (const f of list) { f.cost = entryCost(f); f.yours = f.kind === 'public' ? stakeHeld() : S.mine.has(f.pid); }
+  for (const f of list) { f.cost = entryCost(f); f.off = offOf(f); f.yours = f.kind === 'public' ? stakeHeld() : S.mine.has(f.pid); }
   return list.filter((f) => !f.gone);
 }
 const pairName = (pair) => { const k = String(pair).split('/').map((x) => (x === 'cETH' ? 'tETH' : x)); if (k[1] === 'tETH') k.reverse(); return k.join(' / '); };
@@ -258,6 +271,7 @@ function paintTiles() {
     flag(a, 'yours', f.yours ? 'Yours' : '');
     const dear = f.cost != null && f.cost >= 5;
     flag($('.sub', a), 'cost', dear ? `0.1 ETH entry −${pctTxt(f.cost)}` : '', dear ? costWhy(f) : '');
+    flag($('.sub', a), 'offm', f.off ? `Off the market · ${pctTxt(f.off.gap * 100)} ${f.off.dear ? 'above' : 'below'}` : '', f.off ? offSaid(f, f.off) : '');
   }
 }
 // a line a tile has only when there is something to say
@@ -271,7 +285,8 @@ function flag(a, cls, text, title = '') {
 function costWhy(f) {
   if (f.kind !== 'private' || !f.pool) return 'A small pool: half of a deposit of ETH is swapped inside it, which moves its price.';
   const r = f.pool.reserves, m = marketFor(f.pool), ratio = m ? Number(r.reserveA) / Number(r.reserveB) / m : 1, other = otherOf(f.pool.pair);
-  return ratio - 1 >= 0.05 ? `This pool’s price for ${other} is ${pctTxt((ratio - 1) * 100)} above the market’s, and half of a deposit of ETH is swapped at it.`
+  return f.off ? offSaid(f, f.off)
+    : ratio - 1 >= 0.05 ? `This pool’s price for ${other} is ${pctTxt((ratio - 1) * 100)} above the market’s, and half of a deposit of ETH is swapped at it.`
     : 'A small pool: half of a deposit of ETH is swapped inside it, which moves its price.';
 }
 function paintMarkets() {
@@ -466,6 +481,9 @@ function paintPrivate() {
       + cell('Stream ends', f.live && f.finish ? dayFmt(f.finish) : '—', f.live && f.finish ? fundedNote(f) : '');
   if ($('#pz-stats').__h !== stats) { $('#pz-stats').__h = stats; $('#pz-stats').innerHTML = stats; }
   $('#pz-both').textContent = `${f.name.split(' / ')[0] || 'tETH'} + ${f.name.split(' / ')[1] || 'TAC'}`;
+  const offNow = hasEth(f) && f.off ? offSaid(f, f.off) : '', offEl = $('#pz-off');          // a pool off the market is said before any amount is typed
+  offEl.hidden = !offNow;
+  if (offEl.textContent !== offNow) offEl.textContent = offNow;
   $('#pz-mode').hidden = !(hasEth(f) && bothOk(f));                              // two ways in only where there are two
   setMode(Z.pref);
   maxLine();
@@ -535,16 +553,17 @@ function paintQuote() {
   const row = (k, v, cls = '', title = '') => `<div class="kv"><span>${k}</span><b${cls ? ` class="${cls}"` : ''}${title ? ` title="${esc(title)}"` : ''}>${v}</b></div>`;
   const dayUsd = eu && tacEth() ? usd(q.day * tacEth() * eu) : '', feeEth = Number(ZAP_GAS * q.gp) / 1e18, fee = eu ? (feeEth * eu < 0.01 ? 'under $0.01' : `≈ $${(feeEth * eu).toFixed(2)}`) : `≈ ${feeEth.toPrecision(2)} ETH`;
   // the pool's price for the coin, in ETH a coin, from the reserves in the coins' own units (tETH's unit is 1e-8 ETH; the other coin's is `unitB` of its smallest)
-  const other = otherOf(f.pool.pair), m = marketFor(f.pool), poolRate = Number(q.res.reserveA) / 1e8 / (Number(q.res.reserveB) * Number(q.unitB) / 10 ** q.decimals), ratio = m ? poolRate / m : 1, n = Math.round(q.cost), key = `${f.id}|${q.wei}|${n}`;
+  const other = otherOf(f.pool.pair), ratio = q.ratio ?? 1, n = Math.round(q.cost), key = `${f.id}|${q.wei}|${n}`;
   const line = q.over ? 'More ETH than this wallet holds, with the network fee.'
-    : q.against >= 5 ? `This pool’s price for ${esc(other)} is ${pctTxt(Math.abs(ratio - 1) * 100)} ${ratio > 1 ? 'above' : 'below'} the market’s, and half of the deposit is swapped at it.`
+    : q.against >= 5 && !q.off ? `This pool’s price for ${esc(other)} is ${pctTxt(Math.abs(ratio - 1) * 100)} ${ratio > 1 ? 'above' : 'below'} the market’s, and half of the deposit is swapped at it.`
     : q.impact >= 5 ? 'The swap inside the pool costs a lot at this size. A smaller deposit costs less.'
     : !f.live ? 'Between reward periods: nothing streams until the next one starts.' : '';
   // a pool this thin takes a real swap at this size: the other way in swaps nothing, and the links say where the other coin comes from
   const skip = q.cost >= 5 && bothOk(f) ? `<p class="note">Skip the swap: <button class="linkbtn" type="button" data-alt="both">add the ${esc(f.name.split(' / ')[0] || 'tETH')} and ${esc(other)} you already hold</button>${GET[other] ? `, or get ${esc(other)} first.</p>${getRow(other)}` : '.</p>'}` : '';
   // with no market price to check against (its read failed), the pool's own price is all there is: said, and held to a tick
-  const ack = q.cost >= 30 ? `<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this deposit to the pool’s price.</span><input id="pz-ack" inputmode="numeric" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Type ${n} to accept" value="${Z.ack === key ? n : ''}"></label>`
-    : q.cost >= 15 ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>I accept losing about ${n}% of this deposit to the pool’s price.</span></label>`
+  const kind = ackFor(q.cost, q.off), why = q.off ? `: this pool is priced ${pctTxt(q.off.gap * 100)} off the market` : ' to the pool’s price';
+  const ack = kind === 'type' ? `<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this deposit${why}.</span><input id="pz-ack" inputmode="numeric" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Type ${n} to accept" value="${Z.ack === key ? n : ''}"></label>`
+    : kind === 'box' ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>I accept losing about ${n}% of this deposit${why}.</span></label>`
     : !q.checked ? `<label class="ack"><input type="checkbox" id="pz-ack"${Z.ack === key ? ' checked' : ''}><span>The market’s price for ${esc(other)} could not be read, so this pool’s price is not checked against it. I accept that.</span></label>` : '';
   rcpt.innerHTML = (f.live ? row('Earns about', `${tacTxt(q.day)} TAC a day${dayUsd ? ` · ${dayUsd}` : ''}`) + row('APR', q.apr == null ? '—' : aprText(q.apr)) : '')
     + (q.plan.shareOfPool > 0 ? row('Your share', `${sharePct(q.plan.shareOfPool)} of the pool`, '', 'What this deposit would be of the pool once it is in, counting its own shares. The farm’s TAC is shared in proportion, and a deposit that is a big part of the pool moves its price on the way in and out.') : '')

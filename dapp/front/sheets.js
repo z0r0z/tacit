@@ -1,7 +1,7 @@
 // The front page's sheets. index.html imports this when one first opens, or once the page is idle, and calls install() with
 // what this code reads from its module: let and var bindings are read as ctx.X, so their changes there are seen here.
 export default function install(ctx) {
-const { $, $$, OWNNODE, ACT, ADDR, ASSET_SEND_SATS, BASE_NODES, BF, BR_DONE, BTC, BTC_NOTE_ASSETS, BTC_TOKENS, BWB, BWX, CETH_ID, CHAIN_ASSETS, CHAIN_META, CSEND, CS_ASSETS, DEV, DEVICE_CHAINS, DEV_JOB, DEV_PREF, DISTRIBUTOR, E10, ETHERSCAN, ETH_DP, ETH_LOG_NODES, EVM_POOL, EVM_ROUTER, EXIT_AHEAD, FARM, FLASH, HARVEST_WORTH, HOLD, HOLD_CONSENT, HX, HX_FLIGHT, JOBS, JOIN, KEEP_READY, KEPT, L2BAL, LK, LOCAL, LOCK, LOGO, farmIcons, icoHtml, LP_KEEP_ETH, MEMPOOL, NOTIFY_KEY, OFFERED, OPENISH, OPEN_OFFERED, OUT, P, PGM, POOL_TK, PTS, PTS_BOARD, REDEEM, RETRY, REVERTS, REWARD_PAID, RS, RUNS, Raw, S, SATS_DUST, SEALED, SEL, SELF, SELFDO, SP, SP_PREF, SP_SEAL, SWAP_ASSETS, TAB, TAC_BTC_ID, TAC_DP, TK, TOKEN_POOLS, US, V1, VOUCH, WAIT_WHY, WAL, WNS, WTAC, XA, XA_REDEEM, XO_AT, XO_STEPS, ZAP_SETTLE_GAS, ZROUTER, ZSWAP, aFor, aboutEth, acked, actBridge, actBtc, actDone, actGet, actSave, addrFlat, addrWord, addressFor, addressId, ago, alts, aprLong, aprOf, aprShort, assetById, assetSendForm, bFor, badStatus, big, bondAck, bondDue, bondElsewhere, bondFunds, bondNoWallet, bondNotes, bondVia, bondsNow, brJournal, btcQr, btcRouteM, btcSendNow, busy, bwCanWst, byValue, bytesToHex, chainFull, chainMark, chainMarks, chainNow, chainRpc, chainTag, clearField, clock, concatBytes, connect, copy, cutAhead, dashGo, dashSoon, dayFmt, dayShort, deadline, debounce, depositCallout, devBal, devDepositSend, devNow, devOn, devOutSend, devProver, devResolve, devSaid, deviceSync, deviceWallet, dfmt, earnRows, earnedNow, ended, errText, etaWords, ethBalance, ethBase, ethCall, ethKeep, ethOfTac, evm, exitAheadFor, exitGo, exitKind, exitPosition, failText, farmLinkOf, feeRoom, feesLine, fmt, freeNotes, getDeviceMods, getUx, heldLabel, hexToBytes, hmac, holdBehind, holdConsented, holdPayTo, holderTier, holdingRound, html, hxBwInflight, hxDraft, hxLive, hxPts, hxWarmWrap, idRow, inUse, joinAhead, joinMax, joinNow, joinOnePlan, joinPairPlan, joinSides, joinTerms, kLock, kNote, kOfAsset, kPos, keccak_256, keep, keepKey, keepReady, keepSizes, keeperDown, keeperRead, keeperTrouble, keeperTx, keyRow, knownWallet, lastEnd, lastSeen, leftWords, linkNote, linked, listed, loadBonds, loadBorrow, loadBtc, loadFarms, loadHeld, loadLocks, loadPoints, loadPositions, loadUnified, loadUsdtBal, lockAhead, lockId, lockLine, lockList, lockNext, lossGate, lossOk, lpCost, lpKeep, lpPoolFor, lpSays, lpSendNow, lpShare, lpTicker, lsKv, maxAria, lockWallet, midAction, mine, mount, multicall, needKey, nfmt, noRelayFee, noteFor, noteKeep, now, offerMore, offerSelf, okStatus, onEdit, onTheWay, opParts, openLink, openOf, openProve, openSheet, openerOn, otherKey, otherSelf, otherWallet, overBalance, ownAccount, ownJob, ownNow, ownOn, ownWord, paceOf, paintAct, paintProve, paintSp, paintWallet, paintWalletBal, pairName, parseUnits, payFrom, payFromTok, payer, payingAccount, pct, pctFmt, pendingFor, pendingSent, perProof, permitSig, plain, pointsWho, poolLine, poolMaking, poolVsMarket, poolWorth, potTac, precisionApr, privateOf, proofsBusy, proofsFor, proveAhead, proveFmt, proveFor, proveOr, proveOwn, prover, provingNote, ptChain, ptsDays, ptsEnd, ptsFmt, ptsWhy, pubExitSend, pubOutData, pubPreview, pubSend, quoteErr, rankRows, rateStr, reProve, readOutlook, readPublicTac, readRow, readWrapTip, recipientOf, redeemBuild, redeemOn, redeemRefresh, redeemSend, redeemSent, redeemStep, refreshAll, refreshFarm, refreshWalletBal, relayDeposit, relayProving, relayWhy, render, rerender, resetPrivate, resolveToM, revertText, rewardPop, rewardWorth, rpc, running, samePos, say, sayErr, sayLive, scanIfNew, scanPrivate, scanShielded, scheduled, sealOn, secp, segSub, selfDo, selfOffer, selfWork, sendTx, setDeviceChain, setNotify, setPayer, settleBorrow, shLookingNote, sha256, sharePct, sharesEth, sheetOf, shieldedApr, short, shown, shownAs, sig, signIn, sizesNow, sleep, spApply, spMod, spOn, spRead, spSaid, spendable, stealthSendNow, stepBond, stepHarvest, stepLi, stepOf, stepRedeem, stepTakeOut, stepUnbond, store, strip, swapAsset, syncAccount, syncLink, tacOf, tacShort, tacitShort, takeBond, takeDraft, takenByOther, tickerOf, lockDec, tkPin, toSelf, toast, tokDepositSend, tokRecipient, tokenSync, tokenWallet, tooFine, txFail, txLink, txMark, txSite, txUrl, unharvested, unitOf, unwrapNow, usdtExitFee, usdtOwner, usdtWrapNow, utcDay, viaText, viewAddr, vouchers, waitRanOut, waitTx, walletBalances, walletPriv, warn, wireAck, wireFinish, wireSignIn, wireSub, withKey, word, wordAt, wrapMax, wrapNow, wtacHere, xaOf, xbHeld, xbOf, xoCovered, xoDue, xoErr, xoFundRow, xoJournal, xoKeyOpen, xoLink, xoNoteText, xoOut, xoRecords, xoShown, your, zapAhead, zapNow, zapQuote, zapUnit, zapsFinish, zapsMine, zapsRead } = ctx;
+const { $, $$, OWNNODE, ACT, ADDR, ASSET_SEND_SATS, BASE_NODES, BF, BR_DONE, BTC, BTC_NOTE_ASSETS, BTC_TOKENS, BWB, BWX, CETH_ID, CHAIN_ASSETS, CHAIN_META, CSEND, CS_ASSETS, DEV, DEVICE_CHAINS, DEV_JOB, DEV_PREF, DISTRIBUTOR, E10, ETHERSCAN, ETH_DP, ETH_LOG_NODES, EVM_POOL, EVM_ROUTER, EXIT_AHEAD, FARM, FLASH, HARVEST_WORTH, HOLD, HOLD_CONSENT, HX, HX_FLIGHT, JOBS, JOIN, KEEP_READY, KEPT, L2BAL, LK, LOCAL, LOCK, LOGO, farmIcons, icoHtml, LP_KEEP_ETH, MEMPOOL, NOTIFY_KEY, OFFERED, OPENISH, OPEN_OFFERED, OUT, P, PGM, POOL_TK, PTS, PTS_BOARD, REDEEM, RETRY, REVERTS, REWARD_PAID, RS, RUNS, Raw, S, SATS_DUST, SEALED, SEL, SELF, SELFDO, SP, SP_PREF, SP_SEAL, SWAP_ASSETS, TAB, TAC_BTC_ID, TAC_DP, TK, TOKEN_POOLS, US, V1, VOUCH, WAIT_WHY, WAL, WNS, WTAC, XA, XA_REDEEM, XO_AT, XO_STEPS, ZAP_SETTLE_GAS, ZROUTER, ZSWAP, aFor, aboutEth, acked, actBridge, actBtc, actDone, actGet, actSave, addrFlat, addrWord, addressFor, addressId, ago, alts, aprLong, aprOf, aprShort, assetById, assetSendForm, bFor, badStatus, big, bondAck, bondDue, bondElsewhere, bondFunds, bondNoWallet, bondNotes, bondVia, bondsNow, brJournal, btcQr, btcRouteM, btcSendNow, busy, bwCanWst, byValue, bytesToHex, chainFull, chainMark, chainMarks, chainNow, chainRpc, chainTag, clearField, clock, concatBytes, connect, copy, cutAhead, dashGo, dashSoon, dayFmt, dayShort, deadline, debounce, depositCallout, devBal, devDepositSend, devNow, devOn, devOutSend, devProver, devResolve, devSaid, deviceSync, deviceWallet, dfmt, earnRows, earnedNow, ended, errText, etaWords, ethBalance, ethBase, ethCall, ethKeep, ethOfTac, evm, exitAheadFor, exitGo, exitKind, exitPosition, failText, farmLinkOf, feeRoom, feesLine, fmt, freeNotes, getDeviceMods, getUx, heldLabel, hexToBytes, hmac, holdBehind, holdConsented, holdPayTo, holderTier, holdingRound, html, hxBwInflight, hxDraft, hxLive, hxPts, hxWarmWrap, idRow, inUse, joinAhead, joinMax, joinNow, joinOnePlan, joinPairPlan, joinSides, joinTerms, kLock, kNote, kOfAsset, kPos, keccak_256, keep, keepKey, keepReady, keepSizes, keeperDown, keeperRead, keeperTrouble, keeperTx, keyRow, knownWallet, lastEnd, lastSeen, leftWords, linkNote, linked, listed, loadBonds, loadBorrow, loadBtc, loadFarms, loadHeld, loadLocks, loadPoints, loadPositions, loadUnified, loadUsdtBal, lockAhead, lockId, lockLine, lockList, lockNext, lossGate, lossOk, lpCost, lpKeep, lpPoolFor, lpSays, lpSendNow, lpShare, lpTicker, lsKv, maxAria, lockWallet, midAction, mine, mount, multicall, needKey, nfmt, noRelayFee, noteFor, noteKeep, now, offerMore, offerSelf, okStatus, onEdit, onTheWay, opParts, openLink, openOf, openProve, openSheet, openerOn, otherKey, otherSelf, otherWallet, overBalance, ownAccount, ownJob, ownNow, ownOn, ownWord, paceOf, paintAct, paintProve, paintSp, paintWallet, paintWalletBal, pairName, parseUnits, payFrom, payFromTok, payer, payingAccount, pct, pctFmt, pendingFor, pendingSent, perProof, permitSig, plain, pointsWho, poolLine, poolMaking, poolVsMarket, poolWorth, potTac, precisionApr, privateOf, proofsBusy, proofsFor, proveAhead, proveFmt, proveFor, proveOr, proveOwn, prover, provingNote, ptChain, ptsDays, ptsEnd, ptsFmt, ptsWhy, pubExitSend, pubOutData, pubPreview, pubSend, quoteErr, rankRows, rateStr, reProve, readOutlook, readPublicTac, readRow, readWrapTip, recipientOf, redeemBuild, redeemOn, redeemRefresh, redeemSend, redeemSent, redeemStep, refreshAll, refreshFarm, refreshWalletBal, relayDeposit, relayProving, relayWhy, render, rerender, resetPrivate, resolveToM, revertText, rewardPop, rewardWorth, rpc, running, samePos, say, sayErr, sayLive, scanIfNew, scanPrivate, scanShielded, scheduled, sealOn, secp, segSub, selfDo, selfOffer, selfWork, sendTx, setDeviceChain, setNotify, setPayer, settleBorrow, shLookingNote, sha256, sharePct, sharesEth, sheetOf, shieldedApr, short, shown, shownAs, sig, signIn, sizesNow, sleep, spApply, spMod, spOn, spRead, spSaid, spendable, stealthSendNow, stepBond, stepHarvest, stepLi, stepOf, stepRedeem, stepTakeOut, stepUnbond, store, strip, swapAsset, syncAccount, syncLink, tacOf, tacShort, tacitShort, takeBond, takeDraft, takenByOther, tickerOf, lockDec, tkPin, toSelf, toast, tokDepositSend, tokRecipient, tokenSync, tokenWallet, tooFine, txFail, txLink, txMark, txSite, txUrl, unharvested, unitOf, unwrapNow, usdtExitFee, usdtOwner, usdtWrapNow, utcDay, viaText, viewAddr, vouchers, waitRanOut, waitTx, walletBalances, walletPriv, warn, wireAck, wireFinish, wireSignIn, wireSub, withKey, word, wordAt, wrapMax, wrapNow, wtacHere, xaOf, xbHeld, xbOf, xoCovered, xoDue, xoErr, xoFundRow, xoJournal, xoKeyOpen, xoLink, xoNoteText, xoOut, xoRecords, xoShown, your, zapAhead, zapNow, zapQuote, zapUnit, zapsFinish, zapsMine, zapsRead, offMarket, offSay, offRow } = ctx;
 const flatAddr = (a, n = 4) => new Raw(addrFlat(a, n));
 const chainTab = (id, name) => html`${chainMark(id)}<span class="cn">${name}</span>`;
 const sayRetry = (el, e, name) => say(el, html`<span class="err">${errText(e)}</span> <button class="link" type="button" data-retry="${name}">Try again</button>`);
@@ -2799,10 +2799,10 @@ function renderShielded(el, p) {
   if (!p) return;
   const r = p.reserves || {};
   const mine = (FARM.positions || []).filter((x) => Number(x.pid) === Number(p.pid));
-  const pm = poolVsMarket(p), off = pm && Math.abs(pm.ratio - 1) >= 0.05;
+  const pm = poolVsMarket(p), off = pm && Math.abs(pm.ratio - 1) >= 0.05, far = offMarket(pm?.ratio);
   const facts = html`
     <div class="kv"><span>In the pool</span><b>${lpWorth(p, r.lpTotalShares) || ''}${lpWorth(p, r.lpTotalShares) ? ' · ' : ''}${pctFmt(Number(p.totalShares) * 100 / Math.max(1, Number(r.lpTotalShares || 1)))} bonded</b></div>
-    ${off ? html`<div class="kv"><span>Price in the pool</span><b>1 ETH = ${priceFmt(1 / pm.pool)} ${pm.unit} · market ${priceFmt(1 / pm.market)}</b></div>` : ''}
+    ${off ? html`<div class="kv"><span>Price in the pool</span><b class="${far ? 'err' : ''}">1 ETH = ${priceFmt(1 / pm.pool)} ${pm.unit} · market ${priceFmt(1 / pm.market)}${far ? ' · off the market' : ''}</b></div>` : ''}
     <div class="kv"><span>${epochOf(p)?.active ? 'Stream ends' : 'Stream'}</span><b>${epochOf(p)?.active ? dayFmt(epochOf(p).periodFinish) : p.standalone ? 'not started yet' : 'between reward periods'}</b></div>
     ${epochOf(p)?.active ? aprRow(shieldedApr(p)) : ''}`;
   mount(el, html`
@@ -2908,7 +2908,7 @@ function farmZap(el, p, status, has, top) {
     sizesEl.querySelectorAll('[data-size]').forEach((b) => { b.onclick = () => { aIn.value = plain(BigInt(b.dataset.size) / zapUnit * zapUnit, 18); aIn.dispatchEvent(new Event('input')); }; });
   };
   if (sizesEl) { paintSizes().catch(() => {}); const tick = setInterval(() => { if (!sizesEl.isConnected) clearInterval(tick); else paintSizes().catch(() => {}); }, 30e3); }
-  const gateOk = () => { go.disabled = !q || q.over || !lossOk(ackBox, q.impact || 0); };
+  const gateOk = () => { go.disabled = !q || q.over || !lossOk(ackBox, q.impact || 0, q.off); };
   ethBalance().then((b) => { bal = b; if (balEl.isConnected) balEl.textContent = b == null ? '' : `${payName()} ${fmt(b, 18, 4)}`; noEthYet($(`#sz-fund-${pid}`), b, '', 'zap it into the farm'); });
   const requote = debounce(async () => {
     const my = ++seq, wei = (parseUnits(aIn.value, 18) || 0n) / zapUnit * zapUnit;
@@ -2919,23 +2919,25 @@ function farmZap(el, p, status, has, top) {
       const z = await zapQuote(p, wei, { splitting: () => { if (my === seq && go.isConnected) mount(rc, html`<p class="note">Pricing the swap in this pool and the Precision pool…</p>`); } });
       if (my !== seq || !go.isConnected) return;
       if (!z.plan) { mount(rc, html``); warn(rc, 'Enter a larger amount: this one is too small to make a share of the pool.'); return; }
-      const { plan, sp, gas, gp, loss: impact, mkt, paid, back, ready, have } = z;
+      const { plan, sp, gas, gp, loss: impact, mkt, paid, back, ready, have, off, pm } = z;
       q = z;
       mount(rc, html`
         <div class="kv"><span>Swaps</span><b>${fmt(plan.swapIn, 18, 6)} ETH for about ${fmt(paid, 18, dpB)} ${other}</b></div>
         ${sp ? html`<div class="kv"><span>Where</span><b>${Math.round(Number(plan.ammIn) * 100 / Number(plan.swapIn))}% in this pool, the rest in the Precision pool</b></div>` : ''}
         <div class="kv"><span>Then adds</span><b>${fmt(plan.ethLeg, 18, 6)} ETH + ${fmt(plan.bLeg, 18, dpB)} ${other}</b></div>
+        ${off ? html`<div class="kv"><span>${offRow(pm)[0]}</span><b class="err">${offRow(pm)[1]}</b></div>` : ''}
         ${lossLine(impact)}
         ${mkt >= 1 ? html`<div class="kv"><span>Against the market</span><b class="${mkt >= 5 ? 'err' : ''}">${pctFmt(mkt)} of this deposit</b></div>` : ''}
         ${joinYield(p, plan.shares, plan.ethLeg / zapUnit)}
         ${back >= 10n ** BigInt(18 - dpB) ? html`<div class="kv"><span>Back to ${your()}</span><b>about ${fmt(back, 18, dpB)} ${other}</b></div>` : ''}
         <div class="kv"><span>Network fee, from ${your()}</span><b>about ${fmt(ready ? ZAP_SETTLE_GAS * gp * 3n / 2n : gas, 18, 5)} ETH</b></div>
         <div class="kv"><span>Then</span><b>${ownNow(['farmbond']) && devOn() ? 'the relay makes your share private, then this computer puts it in the farm' : 'the relay makes your share private and farms it, a few minutes'}</b></div>`);
-      mount(ackBox, lossGate(`sz-ackv-${pid}`, q.impact, 'deposit'));
+      mount(ackBox, lossGate(`sz-ackv-${pid}`, q.impact, 'deposit', q.off));
       wireAck(ackBox, `sz-ackv-${pid}`, q.impact, gateOk);
       if (ready) rc.insertAdjacentHTML('beforeend', html`<div class="kv"><span>Proof</span><b>ready now: one transaction, ${fmt(ready.plan.value, 18, 6)} ETH and about ${fmt(ZAP_SETTLE_GAS * gp * 3n / 2n, 18, 5)} ETH in network fees</b></div>`.s);
       zapAhead(p, z, () => q?.wei === wei && aIn.isConnected);
       if (q.over) warn(rc, have != null && (have === 0n || plan.value <= have) ? lowEth() : 'More ETH than you hold, with the network fee. Try Max.');
+      else if (off) warn(rc, offSay(pm, off));
     } catch (e) { if (my === seq) quoteErr(rc, e); }
     gateOk();
   }, 250);
@@ -2948,7 +2950,7 @@ function farmZap(el, p, status, has, top) {
   takeDraft('zap', aIn, (x) => x.pid === pid);
   go.onclick = () => busy(go, async (run) => {
     const z = q;
-    if (!z || z.over || !lossOk(ackBox, z.impact || 0)) return;
+    if (!z || z.over || !lossOk(ackBox, z.impact || 0, z.off)) return;
     await zapNow({ run, p, z, status, clear: () => clearField(aIn), moved: requote, again: async () => {
       const now = () => $(`#sz-go-${pid}`);
       for (let i = 0; i < 120 && (!now() || now().disabled || now().getAttribute('aria-busy') === 'true'); i++) await sleep(1000);
@@ -3004,7 +3006,7 @@ function farmJoin(el, p, status, has) {
   const aIn = $(`#sj-a-${pid}`), bIn = $(`#sj-b-${pid}`), sIn = mode === 'b' ? bIn : aIn, go = $(`#sj-go-${pid}`), rc = $(`#sj-rcpt-${pid}`), ackBox = $(`#sj-ack-${pid}`);
   let q = null, seq = 0;
   const reading = () => { mount(rc, html`<p class="note">Reading the pool and the relay’s fees…</p>`); rc.hidden = false; };
-  const gateOk = () => { go.disabled = !q || q.over || q.gasShort || !lossOk(ackBox, q.impact || 0); };
+  const gateOk = () => { go.disabled = !q || q.over || q.gasShort || !lossOk(ackBox, q.impact || 0, q.off); };
   const yieldRows = (shares, a) => joinYield(p, shares, a);
   const gasRow = (j) => html`<div class="kv"><span>Network fee, from ${your()}</span><b>about ${fmt(j.gas, 18, 5)} ETH</b></div>`;
   const quotePair = async (e, my, t, j) => {
@@ -3051,10 +3053,11 @@ function farmJoin(el, p, status, has) {
       ${s1 + s2 ? html`<div class="kv"><span>Relay fee to split your notes</span><b>${fmt(s1 + s2, 8, dp[kS])} ${unit[kS]}</b></div>` : ''}
       ${reuse ? html`<p class="note">Uses the two notes already made for this: nothing is split again.</p>` : ''}
       ${gasRow(j)}`);
-    mount(ackBox, lossGate(`sj-ackv-${pid}`, worst, 'deposit'));
+    mount(ackBox, lossGate(`sj-ackv-${pid}`, worst, 'deposit', q.off));
     wireAck(ackBox, `sj-ackv-${pid}`, worst, gateOk);
     if (q.gasShort) warn(rc, lowEth());
     else if (fr * 20n >= z.x) warn(rc, `The relay fee is ${pctFmt(Number((fr * 1000n) / z.x) / 10)} of the swap: a larger deposit spreads it.`);
+    else if (q.off) warn(rc, offSay(pm, q.off));
     else if (mkt >= 5) warn(rc, html`This pool’s price for ${pm.unit} is ${pctFmt(Math.abs(pm.ratio - 1) * 100)} ${pm.ratio > 1 ? 'above' : 'below'} the market’s, and the swap is made at it${spendable(kO) > 0n ? html`. <button class="link" type="button" data-join-one="pair">Adding ${unit[kO]} too</button> needs no swap` : ''}.`);
     else if (z.impact >= 5) warn(rc, html`The swap inside the pool costs a lot at this size. A smaller deposit costs less${spendable(kO) > 0n ? html`, and so does <button class="link" type="button" data-join-one="pair">adding ${unit[kO]} too</button>` : ''}.`);
     rc.querySelector('[data-join-one]')?.addEventListener('click', () => { if (running('farm')) return; FARM.jm[pid] = 'pair'; keep($('#sheet-farm'), render.farm); });
@@ -3087,7 +3090,7 @@ function farmJoin(el, p, status, has) {
   else if (!has && !FARM.auto[autoKey]) { FARM.auto[autoKey] = true; fillMax(true); }
   go.onclick = () => busy(go, async (run) => {
     const z = q;
-    if (!z || z.over || z.gasShort || !lossOk(ackBox, z.impact || 0)) return;
+    if (!z || z.over || z.gasShort || !lossOk(ackBox, z.impact || 0, z.off)) return;
     await joinNow({ run, p, z, sd, btn: 'Add and farm', line: () => $(`#sf-status-${pid}`) || status, moved: () => requote({}), swapped: () => { FARM.jm[pid] = 'pair'; },
       clear: () => { [aIn, bIn].filter(Boolean).forEach(clearField); delete acked[`sj-ackv-${pid}`]; }, after: () => rerender('farm') });
   });

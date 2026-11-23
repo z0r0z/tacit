@@ -295,6 +295,22 @@ export function zapEntry(d, ratio = null) {
   return { impact: Math.max(d, shortfall), loss: Math.max(0, shortfall) };
 }
 
+// A pool whose price for its other coin sits this far from the market's (a share of the market's) is off the market: a zap swaps half of the deposit at the
+// pool's price, and what stays in the pool is what the traders who bring the price back take from.
+export const OFF_MARKET = 0.1;
+// `ratio` is the pool's price for the coin over the market's (above 1 where the pool prices it dear). { gap, dear } while the pool is off the market, else null
+// (also null where the market's price is not known).
+export function offMarket(ratio) {
+  const r = Number(ratio);
+  return r > 0 && Math.abs(r - 1) >= OFF_MARKET - 1e-9 ? { gap: Math.abs(r - 1), dear: r > 1 } : null;
+}
+// What a deposit's cost (percent of it) is held to before it is sent: 'type' (a typed number), 'box' (a tick) or null. From 30% and 15%, and from 15% and 5%
+// in a pool off the market, where the swap is made at a price the market does not give.
+export function ackFor(cost, off = null) {
+  const hi = off ? 15 : 30, lo = off ? 5 : 15;
+  return cost >= hi ? 'type' : cost >= lo ? 'box' : null;
+}
+
 // The pool a deposit goes in best: of the calm ones (`impact` under 5%) the one that pays most TAC over a week once its way in is paid (`loss`
 // of the deposit `amt`, in ETH, or in TAC when the deposit is TAC), else the pool that gives up least of the deposit. Rows carry `apr`, `day`
 // (TAC a day for this deposit), `impact` and `loss`; `tacEth` prices a loss in TAC. With no amount it is the best APR of the calm ones.

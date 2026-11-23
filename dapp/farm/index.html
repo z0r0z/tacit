@@ -32,7 +32,7 @@
 <link rel="preconnect" href="https://tacit-points.onrender.com" crossorigin>
 <!-- preload-roots: /farm/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/farm/app.js?cb=2d5e9d09">
+<link rel="modulepreload" href="/farm/app.js?cb=c5436cd6">
 <link rel="modulepreload" href="/trade/connect.js?cb=41394526">
 <link rel="modulepreload" href="/walletconnect.js?cb=843803d6">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
@@ -51,9 +51,9 @@
 <link rel="modulepreload" href="/farm-ops.js?cb=c5192cc4">
 <link rel="modulepreload" href="/swap/route.js?cb=0affad24">
 <link rel="modulepreload" href="/zrouter-guard.js">
-<link rel="modulepreload" href="/lp-zap.js?cb=041bcb7f">
+<link rel="modulepreload" href="/lp-zap.js?cb=548798cd">
 <link rel="modulepreload" href="/relay-outcome.js?cb=ad7c898d">
-<link rel="modulepreload" href="/farm/zap.js?cb=5eb1c492">
+<link rel="modulepreload" href="/farm/zap.js?cb=e7508499">
 <!-- preload:end -->
 <style>
 @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-mono-400-latin.woff2') format('woff2'); }
@@ -177,6 +177,7 @@ html[data-view="farm"] .menu { display: none; }
 /* under the APR: what the farm pays a day, and for a pool that is dear to enter with ETH, what the way in costs */
 .dish .sub { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 10px; align-self: stretch; min-height: 17px; margin: 3px 0 12px; font-size: 11.5px; line-height: 1.5; color: var(--mute); text-align: left; }
 .dish .sub .cost { color: var(--warn); }
+.dish .sub .offm { color: var(--err); font-weight: 500; flex-basis: 100%; }
 .dish .tag { position: absolute; top: 0; left: 50%; transform: translate(-50%, -50%); padding: 3px 10px; font: 500 10.5px/1.4 var(--mono); letter-spacing: .04em; white-space: nowrap; color: var(--warn); border: 1px solid color-mix(in srgb, var(--orange) 70%, var(--card)); border-radius: 999px; background: color-mix(in srgb, var(--orange) 12%, var(--card)); }
 .dish .yours { position: absolute; top: 12px; right: 12px; display: inline-flex; align-items: center; gap: 6px; font: 500 10.5px/1.4 var(--mono); letter-spacing: .04em; color: var(--ok); }
 .dish .yours::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
@@ -702,6 +703,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
               <h3 id="pz-h">Farm privately</h3>
               <div class="seg big" id="pz-mode" role="group" aria-label="Deposit with"><button type="button" data-pm="eth" aria-pressed="true">ETH</button><button type="button" data-pm="both" aria-pressed="false" id="pz-both">tETH + TAC</button></div>
               <p class="note fm-how" id="pz-how"></p>
+              <p class="note err fm-off" id="pz-off" role="status" hidden></p>
               <div id="pz-eth">
               <div class="lbl"><span>ETH</span><button class="linkbtn" type="button" id="pz-max" hidden></button></div>
               <div class="amt"><input id="pz-amt" inputmode="decimal" placeholder="0.00" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="ETH to deposit"><span class="u"><svg class="tk sm" aria-hidden="true"><use href="#tk-eth"/></svg>ETH</span></div>
@@ -751,6 +753,6 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/farm/app.js?cb=2d5e9d09"></script>
+<script type="module" src="/farm/app.js?cb=c5436cd6"></script>
 </body>
 </html>
