@@ -28,7 +28,8 @@ const main = wallet(key), rev = wallet(reverseKeyOf(key));
 const addr = rev.wallet.address();
 console.log(`main address      ${main.wallet.address()}   (the provider's earnings, take-fee coins and a maker's stock: not used by the reverse side)`);
 console.log(`reverse address   ${addr}   <- send plain sats here (an ordinary Bitcoin send)`);
-console.log(`reverse public key ${bytesToHex(rev.wallet.pub)}   <- send TAC to THIS: paste it in the wallet's Send box (a plain transfer to the key). Not a tacit1 address: those deliver privately to a one-time address that the reverse side cannot spend`);
+const { unifiedAddress } = await import(REPO + '/dapp/tacit-unified.js');
+console.log(`reverse tacit1    ${unifiedAddress(reverseKeyOf(key)).address}\n                  ^ the address a Tacit wallet sends TAC to. It arrives privately, at a one-time address of this key, which the reverse side cannot sell from as it is:\n                  after it confirms, run tools/fastbridge-lp-reverse-normalize.mjs with the id of that transaction (it moves the TAC onto the reverse address above).`);
 if (addr === main.wallet.address()) { console.log('the two are the same address: do not switch the reverse side on'); process.exit(1); }
 
 // the notes, read the way the daemon reads them (lib/reverse.mjs), with the daemon's set-up: the live pool for notes that came out of it, and no location
@@ -40,7 +41,7 @@ const all = (h instanceof Map && h.get(TAC) && h.get(TAC).utxos) || [];
 const notes = await makeReverseInventory({ tacit: { scanHoldings: async () => h }, asset: TAC }).notes();
 const tac = (v) => { const s = BigInt(v).toString().padStart(9, '0'); return `${s.slice(0, -8)}.${s.slice(-8)}`.replace(/\.?0+$/, ''); };
 const total = notes.reduce((s, n) => s + n.amount, 0n);
-console.log(`\nTAC at it         ${notes.length} confirmed note${notes.length === 1 ? '' : 's'}, ${tac(total)} TAC in all${all.length > notes.length ? `  (+${all.length - notes.length} not confirmed yet, or not spendable by the lock: not counted)` : ''}`);
+console.log(`\nTAC at it         ${notes.length} confirmed note${notes.length === 1 ? '' : 's'}, ${tac(total)} TAC in all${all.length > notes.length ? `  (+${all.length - notes.length} not confirmed yet, or received privately and not moved yet: not counted)` : ''}`);
 for (const n of [...notes].sort((a, b) => (a.amount < b.amount ? 1 : -1)).slice(0, 12)) console.log(`  ${tac(n.amount).padStart(14)} TAC   ${n.txid.slice(0, 12)}…:${n.vout}   ${n.value} sats`);
 if (notes.length > 12) console.log(`  … and ${notes.length - 12} more`);
 
