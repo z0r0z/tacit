@@ -133,7 +133,13 @@ export function makeEthereumLocker(ctx) {
         const tip = await btc.tip();
         const opens = X.btcRefundOpensAt({ lockHeight: st.height, csvBlocks: rec.csvBlocks, tipHeight: tip, nowSecs });
         const bad = X.checkEvmDeadline({ deadline, nowSecs, btcRefundOpens: opens, minClaimSecs: policy.minClaimSecs, claimSlackSecs: policy.claimSlackSecs });
-        if (bad.length) return save(rec, { phase: 'aborted', why: bad.join('; ') });
+        if (bad.length) {
+          // With time left to claim, the refund margin is the only thing that can be short, and it is short for the moment: it is measured from now and from the blocks the refund is
+          // still away, so it grows as time passes. A lock of 72 blocks is short of its two hours by a few minutes at the first look and has them soon after (the page's reverse swap
+          // of 11-23 was ended by that first look). Wait for it; once the deadline itself is too near, or the lock is spent, the swap ends as before.
+          if (deadline - nowSecs >= (policy.minClaimSecs ?? 1800)) return rec;
+          return save(rec, { phase: 'aborted', why: bad.join('; ') });
+        }
         return save(rec, { phase: 'locking', deadline, lockHeight: st.height });
       }
       case 'locking': {

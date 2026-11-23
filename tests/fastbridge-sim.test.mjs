@@ -32,6 +32,30 @@ test('Bitcoin -> Ethereum: the LP ends with the Bitcoin note and the user with t
   assert.deepEqual(w.evm.submitted.map((j) => j.type), ['adaptorlock', 'adaptorclaim']);
 });
 
+test('a Bitcoin lock whose refund leaves too little margin only for the moment is waited for, not ended: the Ethereum lock follows once it has room', async () => {
+  // the margin is measured from now and from the blocks the refund is still away, so it grows as time passes: a lock of 70 blocks is short of the two hours the deadline needs at the first
+  // look and has them half an hour on. A swap ended by that first look (the page's reverse swap was, 11-23: short by under six minutes, and nothing could be done but start again) is a swap lost for nothing.
+  const w = world({ lp: { minCsv: 60 }, user: { csvBlocks: 70 } });
+  await w.start();
+  const first = [];
+  await w.run(async () => { const r = await w.lp(); if (r && !first.length) first.push(r.phase); return (await w.user())?.phase === 'done' && r?.phase === 'done'; }, 3000);
+  const lp = await w.lp(), user = await w.user();
+  assert.equal(lp.phase, 'done', 'the LP locked once the margin was there and the swap ran to its end (it was: ' + lp.phase + (lp.why ? ' - ' + lp.why : '') + ')');
+  assert.equal(user.phase, 'done');
+  assert.equal(w.evm.locks.leaves.length, 1, 'one lock for one swap');
+});
+
+test('a Bitcoin lock whose refund is near for good is never answered: it is waited on while the deadline leaves time, and the swap ends with no Ethereum lock made', async () => {
+  const w = world({ lp: { minCsv: 10 }, user: { csvBlocks: 12 } });
+  await w.start();
+  await w.run(async () => ['aborted', 'refund-wait', 'done'].includes((await w.lp())?.phase), 3000);
+  const lp = await w.lp();
+  assert.equal(lp.phase, 'aborted', 'a lock that can be refunded within the window is never answered, however long it waits');
+  // it ends by the deadline leaving too little time, or by the locker's own refund spending the lock while it waited (a 12-block lock opens its refund in about two hours)
+  assert.match(lp.why, /refunded too soon|too little time|spent before it could be answered/);
+  assert.equal(w.evm.locks.leaves.length, 0, 'no Ethereum lock was made');
+});
+
 test('the LP is unreachable: the user takes its Bitcoin note back once the timelock runs', async () => {
   const w = world();
   w.lpUp = false; w.lpOnline = false;

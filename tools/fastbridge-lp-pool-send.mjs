@@ -6,6 +6,7 @@
 //
 //   FB_LP_KEY=$(security find-generic-password -s tacit-fastbridge-lp -w) node tools/fastbridge-lp-pool-send.mjs --tac 1.6 --to <66-hex Tacit identity public key>
 //   … --tac 1.6 --to <pub> --send --confirm <the token the line above printed>
+//   … --list      says what private TAC the account holds (note sizes) and sends nothing
 //
 // Node 22; from the repository root.
 
@@ -53,7 +54,8 @@ async function main() {
   const keyHex = String(process.env.FB_LP_KEY || '').trim().replace(/^0x/, '');
   if (!/^[0-9a-f]{64}$/i.test(keyHex)) { console.log('no key in the environment (FB_LP_KEY, 64 hex characters)'); process.exit(1); }
   delete process.env.FB_LP_KEY;
-  const amount = parseTac(arg('--tac')), toPub = parsePub(arg('--to'));
+  const listOnly = process.argv.includes('--list');
+  const amount = listOnly ? 0n : parseTac(arg('--tac')), toPub = listOnly ? null : parsePub(arg('--to'));
   const hardStop = setTimeout(() => { console.log('STOPPED: time limit'); process.exit(3); }, 40 * 60e3); hardStop.unref?.();
   const { secp, sha256, keccak_256, hmac } = await import(REPO + '/dapp/vendor/tacit-deps.min.js');
   secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
@@ -63,6 +65,13 @@ async function main() {
   const key = Uint8Array.from(keyHex.match(/../g).map((x) => parseInt(x, 16)));
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
   const from = ux.account(key).address;
+  if (listOnly) {
+    const b = await ux.balance(key, { cbtc: false, bridge: false });
+    const tac = Object.values((b && b.byAsset) || {}).find((a) => a.ticker === 'TAC');
+    const vals = ((tac && tac.notes) || []).map((n) => BigInt(n.value)).sort((x, y) => (x < y ? 1 : -1));
+    console.log(`the provider's pool account ${from} holds ${vals.length} private TAC note${vals.length === 1 ? '' : 's'}: ${vals.map(tacText).join(' + ') || 'none'} (${tacText(vals.reduce((a, v) => a + v, 0n))} TAC in all)`);
+    process.exit(0);
+  }
   const plan = await planSend({ ux, key, amount, toPub });
   console.log(describePlan(plan, from));
   const token = sendToken(plan);
