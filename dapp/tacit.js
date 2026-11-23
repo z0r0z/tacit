@@ -16477,7 +16477,9 @@ async function _scanHoldingsImpl() {
     try { setStatus('#holdings-status', msg, true); } catch {}
   });
   _holdingsTruncatedScan = !!(utxos && utxos._truncated);
-  const utxoSig = utxos.map(u => `${u.txid}:${u.vout}`).sort().join(',');
+  // What the last scan may be reused for: the same outputs in the same state. A note read while its transaction was unconfirmed keeps that state in the result, so an output that
+  // has since confirmed must make a new scan, not return the old one (a long-running reader, such as the fast bridge provider, saw its change note as unconfirmed for as long as it ran).
+  const utxoSig = utxos.map(u => `${u.txid}:${u.vout}:${u.status && u.status.confirmed ? 1 : 0}`).sort().join(',');
   if (_holdingsOwnedNow(_lastFullScan) && _lastFullScan.utxoSig === utxoSig && !_lastFullScan.hasUnresolved) {
     return _lastFullScan.holdings;
   }
