@@ -14,6 +14,7 @@ import { makeRunner } from '/activity.js';
 import { walletSettle, ownWhy, canHarvest, canUnbond, unharvested, locked, harvest, unbond, rewardNotes, relayable, redeem, wtacWithdrawCall, wtacBalanceCall, worthHarvesting, lpNotes, takeOut, HARVEST_WORTH, UNBOND_DUST, bFor, aFor, joinTerms, notesOf, exactOf, cutPick, cutSized, bond, coinNames, poolMoved, openProofMoved } from '/farm-ops.js?cb=c5192cc4';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
 import { esc, wordAt, parseUnits, rpc } from '/trade/util.js?cb=9c8b4133';
+import { holdingOf, pctText, unitsText } from '/farm/holdings.js';
 
 const API = 'https://api.tacit.finance';
 const day = (sec) => new Date(sec * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
@@ -57,7 +58,7 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
       const ux = await getUx(), [list, bal, wt, clock] = await Promise.all([ux.farmPositions({ walletPriv: priv }), ux.balance(priv).catch(() => null), walletWtac(ux), chainNow(ux).catch(() => null)]);
       if (my !== seq || key.key?.pubHex !== pub) return;
       const cur = D?.pub === pub ? D : null;                                         // what was typed, said or started while this was read is kept
-      D = { pub, list: Array.isArray(list) ? list : [], notes: bal?.notes || [], notesOk: !!bal, wtac: wt, clock: clock || cur?.clock || null, said: cur?.said || null, sayAt: cur?.sayAt || null, form: cur?.form || wanted || {}, terms: cur?.terms || {}, busy: cur?.busy || null };
+      D = { pub, list: Array.isArray(list) ? list : [], hold: holdings(ux, Array.isArray(list) ? list : []), notes: bal?.notes || [], notesOk: !!bal, wtac: wt, clock: clock || cur?.clock || null, said: cur?.said || null, sayAt: cur?.sayAt || null, form: cur?.form || wanted || {}, terms: cur?.terms || {}, busy: cur?.busy || null };
       try { onRead(D.list); } catch { /* the page's own note of them */ }
     } catch (e) { if (my === seq) D = { pub, err: String(e?.message || e).slice(0, 160) }; }
     paint();
@@ -183,6 +184,22 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
 
   // ── joining ──
   // the farms open to join, and the one picked
+  // What each position holds, from the pool the page has already read: its share of the pool and the two coins that share is worth at the pool's reserves now, by pool.
+  // A position the page has no pool for (a stand-alone farm's) shows what it did before. Never throws: a row without it is the row as it was.
+  function holdings(ux, list) {
+    const out = new Map();
+    for (const pos of list) {
+      try {
+        const pool = (program()?.pools || []).find((p) => Number(p.pid) === Number(pos.pid)), res = pool?.reserves;
+        const h = res && holdingOf({ shares: pos.shares, reserves: res });
+        if (!h) continue;
+        const nameOf = (id) => { const tk = ux.poolTickerOf(String(id).toLowerCase()); return tk ? tkName(tk) : null; };
+        const [tkA, tkB] = coinNames(nameOf(res.assetA), nameOf(res.assetB), pool.pair);
+        out.set(`${pos.pid}:${pos.receiptIndex}`, { ...h, tkA, tkB });
+      } catch { /* the row without it */ }
+    }
+    return out;
+  }
   const openFarms = () => (program()?.pools || []).filter((p) => p.reserves?.assetA && Number(p.tacPerDayForPool) > 0);
   const chosen = () => { const fs = openFarms(), pid = String(D?.form?.pool ?? fs[0]?.pid); return fs.find((p) => String(p.pid) === pid) || (joinAt ? null : fs[0]) || null; };
   // The pool's terms, kept for QUOTE_FRESH while the form is in use: what the form quotes is what a press is held to.
@@ -358,8 +375,9 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
     else if (D.err) h = `<p class="more err">${esc(D.err)} <button class="linkbtn" type="button" data-pf="again">Try again</button></p>`;
     else {
       const rows = D.list.map((pos, i) => {
-        const b = D.busy, tac = Number(pos.pendingTac || 0), lk = locked(pos, now());
-        return `<dl class="kv"><div><dt>${pair(pos.pid)}${esc(name(pos))}</dt><dd class="num">${esc(tac.toLocaleString('en-US', { maximumFractionDigits: 4 }))} TAC earned</dd></div>${lk ? `<div><dt>Bonded until</dt><dd>${esc(day(Number(pos.unlockAt)))}</dd></div>` : ''}</dl>
+        const b = D.busy, tac = Number(pos.pendingTac || 0), lk = locked(pos, now()), hd = D.hold?.get(`${pos.pid}:${pos.receiptIndex}`);
+        const holds = hd ? `<div><dt>Your share</dt><dd class="num">${esc(pctText(hd.pct))} of the pool</dd></div><div><dt>Holds about</dt><dd class="num">${esc(unitsText(hd.a))} ${esc(hd.tkA)} + ${esc(unitsText(hd.b))} ${esc(hd.tkB)}</dd></div>` : '';
+        return `<dl class="kv"><div><dt>${pair(pos.pid)}${esc(name(pos))}</dt><dd class="num">${esc(tac.toLocaleString('en-US', { maximumFractionDigits: 4 }))} TAC earned</dd></div>${holds}${lk ?`<div><dt>Bonded until</dt><dd>${esc(day(Number(pos.unlockAt)))}</dd></div>` : ''}</dl>
           <div class="acts">
             <button type="button" data-pf="harvest" data-i="${i}"${b || !canHarvest(pos) ? ' disabled' : ''}>${b === `harvest:${i}` ? 'Harvesting…' : 'Harvest'}</button>
             <button type="button" data-pf="unbond" data-i="${i}"${b || !canUnbond(pos, now()) ? ' disabled' : ''}>${b === `unbond:${i}` ? 'Unbonding…' : 'Unbond'}</button>
