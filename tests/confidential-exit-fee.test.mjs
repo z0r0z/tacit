@@ -236,8 +236,9 @@ test('a relay that holds the token to the gas floor takes the first submit: a wi
 
 // The floor comes from the gas price, and the ten nodes the page asks do not agree on it (on 2026-11-23 the project's own gateway said 0.20 to 0.31 gwei while the public nodes said 0.14 to 0.16,
 // and the first to answer wins): quoted twice a moment apart the relay fee came out 0.00023 to 0.00042 ETH with nothing changed, so a press that held the fee it was shown against a fresh quote
-// stopped on the difference ("the relay's fee moved … press once more"), about one withdrawal in two. The quote is now the highest reading of the last three minutes: a lower reading changes
-// nothing, so a figure a card showed is never undercut and then overtaken by the next read.
+// stopped on the difference ("the relay's fee moved … press once more"), about one withdrawal in two. Each read of the gas price is now the second highest of up to five nodes (one wild node, as
+// one was at 12:23 that day when the chain's base fee never left 0.19 gwei, is outvoted) and the quote is the highest reading of the last ninety seconds: a lower reading changes nothing, so a
+// figure a card showed is not undercut and then overtaken by the next read.
 const gasUx = (wei, need = 0n) => {
   const ref = { wei }, fees = [];
   const fetchImpl = async (url, opts) => {
@@ -258,7 +259,7 @@ const gasUx = (wei, need = 0n) => {
 const withClock = async (fn) => { const real = Date.now; let t = real(); Date.now = () => t; try { return await fn({ advance: (ms) => { t += ms; } }); } finally { Date.now = real; } };
 const GWEI = 10n ** 9n;
 
-test('the quote is the highest reading of the last three minutes: lower reads change nothing, a higher one is followed at once, and the high ones age out', async () => {
+test('the quote is the highest reading of the last ninety seconds: lower reads change nothing, a higher one is followed at once, and the high ones age out', async () => {
   await withClock(async ({ advance }) => {
     const { ux, ref } = gasUx(50n * GWEI);
     const q0 = await ux.quoteOpFee('cETH', 'unwrap');
@@ -276,7 +277,7 @@ test('the quote is the highest reading of the last three minutes: lower reads ch
     const up = await ux.quoteOpFee('cETH', 'unwrap');
     assert.ok(up * 10n > top * 11n, `a real rise (${top} to ${up}) is followed at once`);
     ref.wei = 20n * GWEI; advance(9000);
-    assert.equal(await ux.quoteOpFee('cETH', 'unwrap'), up, 'a real fall is not followed inside the three minutes');
+    assert.equal(await ux.quoteOpFee('cETH', 'unwrap'), up, 'a real fall is not followed inside the ninety seconds');
     advance(181000);
     const down = await ux.quoteOpFee('cETH', 'unwrap');
     assert.ok(down * 10n < up * 9n, `once the high readings have aged out the quote comes down (${up} to ${down}): it does not stay behind the market for good`);
@@ -325,27 +326,26 @@ test('a fee the relay refuses lets go of the held readings, so the next quote is
   });
 });
 
-test('the gas price is the highest of the nodes asked, so a read is not quoted lower than the next because a different node answered first', async () => {
+test('the gas price is the second highest of the nodes asked: one node out of line, high or low, is outvoted, and two that agree are believed', async () => {
   await withClock(async () => {
-    const urls = gasUx(50n * GWEI).ux.cfg.rpcs.map((u) => (typeof u === 'string' ? u : u.url)).slice(0, 4);
-    assert.ok(urls.length >= 3, 'the page asks several nodes');
-    const mixed = gasUx(50n * GWEI);                                                    // three nodes say 15 to 16 gwei, one says 50: the gateway's kind of answer
-    mixed.ref.per = { [urls[0]]: 15n * GWEI, [urls[1]]: 16n * GWEI, [urls[2]]: 50n * GWEI, [urls[3]]: 15n * GWEI };
-    const high = await gasUx(50n * GWEI).ux.quoteOpFee('cETH', 'unwrap'), low = await gasUx(15n * GWEI).ux.quoteOpFee('cETH', 'unwrap'), got = await mixed.ux.quoteOpFee('cETH', 'unwrap');
-    assert.equal(got, high, 'four nodes, one of them high: the fee is the one the high node gives');
-    assert.ok(got > low, 'and not what the low nodes give');
+    const urls = gasUx(50n * GWEI).ux.cfg.rpcs.map((u) => (typeof u === 'string' ? u : u.url)).slice(0, 5);
+    assert.ok(urls.length >= 4, 'the page asks several nodes');
+    const quoteAt = async (per) => { const u = gasUx(15n * GWEI); u.ref.per = Object.fromEntries(urls.map((url, k) => [url, per[k] * GWEI])); return u.ux.quoteOpFee('cETH', 'unwrap'); };
+    const at = (g) => gasUx(g * GWEI).ux.quoteOpFee('cETH', 'unwrap');
+    assert.equal(await quoteAt([15n, 16n, 130n, 15n, 15n]), await at(16n), 'one node saying a wild 130 gwei is outvoted: the quote is the 16 gwei one (the chain\'s base fee never left 0.19 that minute)');
+    assert.equal(await quoteAt([15n, 16n, 50n, 48n, 15n]), await at(48n), 'two nodes that agree on a high price are believed: the second highest, 48');
+    assert.equal(await quoteAt([15n, 1n, 15n, 16n, 15n]), await at(15n), 'and one node out of line the other way changes nothing');
+    assert.ok(await at(48n) > await at(16n), 'the two prices really are different quotes');
   });
 });
 
-test('a node that does not answer is left out of the gas read, and none answering leaves the usual race to find a price', async () => {
+test('a node that does not answer is left out of the gas read; with two answers the highest; with none the usual race finds a price', async () => {
   await withClock(async () => {
-    const urls = gasUx(50n * GWEI).ux.cfg.rpcs.map((u) => (typeof u === 'string' ? u : u.url)).slice(0, 4);
-    const quiet = gasUx(50n * GWEI);
-    quiet.ref.per = { [urls[0]]: 15n * GWEI, [urls[1]]: 16n * GWEI, [urls[2]]: 50n * GWEI, [urls[3]]: 15n * GWEI };
-    quiet.ref.down = new Set([urls[2]]);                                                // the high node is down
-    assert.equal(await quiet.ux.quoteOpFee('cETH', 'unwrap'), await gasUx(16n * GWEI).ux.quoteOpFee('cETH', 'unwrap'), 'the others decide');
-    const none = gasUx(20n * GWEI);
-    none.ref.down = new Set(urls);                                                      // all four asked are down: the race over every node still answers
-    assert.equal(await none.ux.quoteOpFee('cETH', 'unwrap'), await gasUx(20n * GWEI).ux.quoteOpFee('cETH', 'unwrap'), 'with none of the four answering the quote still comes');
+    const urls = gasUx(50n * GWEI).ux.cfg.rpcs.map((u) => (typeof u === 'string' ? u : u.url)).slice(0, 5);
+    const run = async (per, down) => { const u = gasUx(20n * GWEI); u.ref.per = Object.fromEntries(urls.map((url, k) => [url, per[k] * GWEI])); u.ref.down = new Set(down.map((k) => urls[k])); return u.ux.quoteOpFee('cETH', 'unwrap'); };
+    const at = (g) => gasUx(g * GWEI).ux.quoteOpFee('cETH', 'unwrap');
+    assert.equal(await run([15n, 16n, 50n, 15n, 15n], [2]), await at(15n), 'the wild node is down: four answer, the second highest of 16, 15, 15, 15 is 15');
+    assert.equal(await run([15n, 16n, 50n, 15n, 15n], [2, 3, 4]), await at(16n), 'only two answer (15 and 16): the highest');
+    assert.equal(await run([15n, 16n, 50n, 15n, 15n], [0, 1, 2, 3, 4]), await at(20n), 'none of the five answers: the usual race over every node still finds a price (here 20 gwei, what the rest say)');
   });
 });

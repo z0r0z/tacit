@@ -3438,11 +3438,13 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
   let _gp = null;
   // The nodes the page asks do not agree on the gas price (the project's own gateway said 0.20 to 0.31 gwei while the public nodes said 0.14 to 0.16, and the first to answer wins), so one read
-  // quoted a relay fee 30% different from the next. The price is the highest of up to four nodes asked at once; one that does not answer in four seconds is left out, and if none does the usual race runs.
+  // quoted a relay fee 30% different from the next, and now and then one node said something wild (1.3 gwei at a minute when the chain's base fee never left 0.19) that the whole quote followed.
+  // Up to five nodes are asked at once and the price is the second highest answer when three or more came (one node out of line, high or low, is outvoted; the highest of two), a node that
+  // does not answer in four seconds is left out, and if none does the usual race runs.
   const _gasReads = async () => {
-    const urls = (cfg.rpcs || []).map((u) => (typeof u === 'string' ? u : u && u.url)).filter(Boolean).slice(0, 4);
-    const got = (await Promise.allSettled(urls.map((url) => _postNow({ url }, 'eth_gasPrice', [], 4000)))).filter((x) => x.status === 'fulfilled' && /^0x[0-9a-f]+$/i.test(String(x.value))).map((x) => BigInt(x.value));
-    return got.length ? '0x' + got.reduce((m, v) => (v > m ? v : m), 0n).toString(16) : rpc('eth_gasPrice', []);
+    const urls = (cfg.rpcs || []).map((u) => (typeof u === 'string' ? u : u && u.url)).filter(Boolean).slice(0, 5);
+    const got = (await Promise.allSettled(urls.map((url) => _postNow({ url }, 'eth_gasPrice', [], 4000)))).filter((x) => x.status === 'fulfilled' && /^0x[0-9a-f]+$/i.test(String(x.value))).map((x) => BigInt(x.value)).sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
+    return got.length ? '0x' + (got.length >= 3 ? got[1] : got[0]).toString(16) : rpc('eth_gasPrice', []);
   };
   const _gasPriceNow = () => {
     if (_gp && Date.now() - _gp.at < 8e3) return _gp.p;
@@ -3484,10 +3486,11 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
   // The floor comes from the gas price, which the ten nodes the page asks do not agree on (the project's own gateway said 0.20 to 0.31 gwei while the public nodes said 0.14 to 0.16, and the
   // first to answer wins), so quoted twice a moment apart it came out 0.00023 to 0.00042 ETH with nothing changed; a press that held the fee it was shown against a fresh one was stopped
-  // on the difference, one press in two. The quote is now the highest of the last three minutes' readings: a reading below it changes nothing, so what a card shows cannot be undercut and
-  // then overtaken by the next read; it rises at once when a reading is higher and falls only when the high readings age out. The relay's own floor sits several times under the quote at
-  // today's gas, so the extra is the price of a figure that holds still. A fee the relay refuses lets go of the history (_floorRefused).
-  const _held = new Map(), HOLD_MS = 180000;
+  // on the difference, one press in two. The quote is now the highest of the last ninety seconds' readings (each reading itself the second highest of several nodes, _gasReads, so one wild node
+  // does not set it): a reading below it changes nothing, so what a card shows cannot be undercut and then overtaken by the next read; it rises at once when a reading is higher and falls only when
+  // the high readings age out. The relay's own floor sits several times under the quote at today's gas, so the extra is the price of a figure that holds still. A fee the relay refuses lets go
+  // of the history (_floorRefused).
+  const _held = new Map(), HOLD_MS = 90000;
   const _steady = (key, v) => {
     const t = Date.now(), seen = (_held.get(key) || []).filter((x) => t - x.t < HOLD_MS);
     seen.push({ t, v });
