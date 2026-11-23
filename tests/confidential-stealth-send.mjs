@@ -46,13 +46,13 @@ function encodeSettleCalldata({ publicValues, proof, memos }) {
   const offPv = 3 * 32, offProof = offPv + pvEnc.length / 2, offMemos = offProof + proofEnc.length / 2;
   return '0x' + selector('settle(bytes,bytes,bytes[])') + word(offPv) + word(offProof) + word(offMemos) + pvEnc + proofEnc + memosEnc;
 }
-// PublicValues prefix (fields 0..17) for a PURE LOCK settle: leaves=[] (no note leaf), given lockLeaves.
-function encodePublicValuesForLock(lockLeaves, nullifiers = []) {
+// PublicValues prefix (fields 0..17) for a PURE LOCK settle: leaves=[] (no note leaf), given lockLeaves. `leaves` is for a settle that carries other ops' notes too.
+function encodePublicValuesForLock(lockLeaves, nullifiers = [], leaves = []) {
   const zero32 = bytes32('0x' + '00'.repeat(32));
   const FIELDS = [
     { static: word(1) }, { static: zero32 }, { static: zero32 },
     { dynEnc: encBytes32Array(nullifiers) }, // 3 nullifiers — a real lock spends its funding note
-    { dynEnc: encBytes32Array([]) },       // 4 leaves — EMPTY: a pure lock mints no note leaf
+    { dynEnc: encBytes32Array(leaves) },   // 4 leaves — EMPTY for a pure lock: it mints no note leaf
     { dynEnc: encBytes32Array([]) }, { dynEnc: word(0) }, { dynEnc: word(0) },
     { dynEnc: encBytes32Array([]) }, { dynEnc: word(0) }, { dynEnc: encBytes32Array([]) },
     { static: zero32 }, { static: zero32 }, { dynEnc: word(0) }, { dynEnc: word(0) },
@@ -118,12 +118,13 @@ const OUTSIDER = '0x' + '53'.repeat(32);
 const AMOUNT_WEI = '1000000000000000'; // 0.001 ETH
 
 let capturedSubmit = null;
+let submitTxHash = null;   // when set, the relay's answer to a submit names the settle that carried it
 function mockFetch(txByHash, lockState = null) {
   return async (urlStr, opts = {}) => {
     const reply = (obj) => ({ ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) });
     if (String(urlStr).includes('/confidential/submit')) {
       capturedSubmit = JSON.parse(opts.body);
-      return reply({ ok: true, jobId: 'job-' + Math.random().toString(36).slice(2), status: 'settled' });
+      return reply({ ok: true, jobId: 'job-' + Math.random().toString(36).slice(2), status: 'settled', ...(submitTxHash ? { txHash: submitTxHash } : {}) });
     }
     const body = JSON.parse(opts.body);
     const m = body.method;
@@ -150,7 +151,7 @@ function mockFetch(txByHash, lockState = null) {
     }
     if (m === 'eth_getTransactionByHash') {
       const tx = txByHash[body.params[0]];
-      return reply({ result: tx ? { input: tx.input } : null });
+      return reply({ result: tx ? { input: typeof tx.input === 'function' ? tx.input() : tx.input } : null });
     }
     return reply({ result: '0x0' });
   };
@@ -323,6 +324,61 @@ let scanned, txByHash;
   const missing = await uxS2.stealthLockPosition({ lockLeaf: '0x' + 'ff'.repeat(32) });
   assert.strictEqual(missing, null, 'a lock leaf that was never mined resolves to null, not a crash or a bogus index');
   ok('stealthLockPosition: reconstructs a known lock\'s membership witness from chain data alone, enabling a refund built purely from onBuilt\'s record');
+}
+
+// ───────────────── 6. A lock whose memo sits on a note leaf of its settle ─────────────────
+// A batch whose ops went in an order the pool pairs wrong put a stealth send's memo on the note leaf of the transfer that rode in the same settle, and that
+// transfer's memos one place on (seen on mainnet: a settle of two note leaves and one lock leaf carrying memos of 322, 169 and 169 bytes). Nothing is lost: the memo is
+// in the settle, only not on the lock. The send's own check must not call that a lock the recipient may miss, and both ends' scans must find the lock where the memo is.
+{
+  const uxS = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch({}) });
+  const note = wrapFixture(uxS, SENDER, AMOUNT_WEI);
+  const recipientPubHex = uxS.identity(RECIPIENT).pubHex;
+  const spent = scanPool.nullifier(scanPool.leaf(note.asset, note.cx, note.cy, note.owner));
+  const noteLeaves = ['0x' + 'a1'.repeat(32), '0x' + 'a2'.repeat(32)];
+  const noteMemos = ['0x' + 'c1'.repeat(169), '0x' + 'c2'.repeat(169)];
+  const TX = '0x' + '77'.repeat(32);
+  // the settle as the chain holds it: the stealth op's memo first (on the first note leaf), the transfer's two note memos behind it (the last one on the lock)
+  const settleOf = (order) => encodeSettleCalldata({
+    publicValues: encodePublicValuesForLock([capturedSubmit.op.lockLeaf], [spent], noteLeaves),
+    proof: '0x' + 'aa'.repeat(32),
+    memos: order === 'right' ? [...noteMemos, capturedSubmit.memos[0]] : [capturedSubmit.memos[0], ...noteMemos],
+  });
+
+  submitTxHash = TX;
+  let send;
+  try {
+    const uxSend = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch({ [TX]: { input: () => settleOf('wrong') } }) });
+    send = await uxSend.stealthSend({ walletPriv: SENDER, recipientPubHex, notes: [note], amount: note.value });
+  } finally { submitTxHash = null; }
+  assert.strictEqual(send.memoCheck && send.memoCheck.ok, true, 'a memo that is in the settle, only on another leaf, is not a lock the recipient may miss');
+  assert.deepStrictEqual(send.memoCheck.moved, [0], 'and the check says the memo moved');
+  ok('stealthSend: a lock memo that landed on another leaf of its settle is reported as moved, not as one the recipient may not find');
+
+  const at = { transactionHash: TX, blockNumber: '0x' + (DEPLOY_BLOCK + 5).toString(16), address: '0x' + '00'.repeat(20) };
+  const chainOf = (order) => ({ [TX]: {
+    input: settleOf(order),
+    log: [
+      { ...encodeNullifiersSpentLog([spent]), ...at, logIndex: '0x0' },
+      { ...encodeLockLeavesInsertedLog({ firstLockIndex: 0, lockLeaves: [send.lockLeaf] }), ...at, logIndex: '0x1' },
+      { ...encodeLeavesInsertedLog({ firstLeafIndex: 0, leaves: noteLeaves, memos: (order === 'right' ? [...noteMemos, send.memo] : [send.memo, ...noteMemos]).slice(0, noteLeaves.length) }), ...at, logIndex: '0x2' },
+    ],
+  } });
+  for (const order of ['wrong', 'right']) {
+    const chain = chainOf(order);
+    const uxR = makeConfidentialPoolUx({ ...deps, fetchImpl: mockFetch(chain, lockStateOf([send.lockLeaf])) });
+    const recipient = await uxR.scanStealthLocks({ walletPriv: RECIPIENT });
+    assert.strictEqual(recipient.mine.length, 1, `the recipient finds the lock (memo on the ${order === 'wrong' ? 'first note leaf' : 'lock'})`);
+    assert.strictEqual(recipient.mine[0].leaf.toLowerCase(), send.lockLeaf.toLowerCase());
+    assert.strictEqual(BigInt(recipient.mine[0].amount), BigInt(note.value), 'for the amount that was sent');
+    assert.ok(recipient.mine[0].oneTimePriv, 'with the key to claim it');
+    const sender = await uxR.scanSentLocks({ walletPriv: SENDER });
+    assert.strictEqual(sender.sent.length, 1, `the sender finds it in the sent list too (${order})`);
+    assert.strictEqual(sender.sent[0].leaf.toLowerCase(), send.lockLeaf.toLowerCase());
+    const outsider = await uxR.scanStealthLocks({ walletPriv: OUTSIDER });
+    assert.strictEqual(outsider.mine.length, 0, 'a third party opens nothing from the extra memos');
+  }
+  ok('scanStealthLocks / scanSentLocks: a lock whose memo sits on a note leaf of its settle is found by the recipient and by the sender, as one in its right place is');
 }
 
 console.log(`\n${n}/${n} confidential-stealth-send checks passed`);

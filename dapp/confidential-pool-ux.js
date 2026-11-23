@@ -2748,12 +2748,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       if (got.length !== want.length || got.some((lf, i) => lf !== want[i])) continue;
       if (call.memos.length !== fields.leavesCount + fields.lockLeaves.length) continue;
       const tail = call.memos.slice(fields.leavesCount);
-      const mismatched = [];
-      memos.forEach((m, i) => { if (norm(tail[i]) !== norm(m)) mismatched.push({ index: i, lockLeaf: lockLeaves[i], expected: norm(m), emitted: tail[i] == null ? null : norm(tail[i]) }); });
+      const mismatched = [], moved = [];
+      memos.forEach((m, i) => {
+        if (norm(tail[i]) === norm(m)) return;
+        // The memo is in this settle, only not where the pool pairs it for the lock (a batch whose ops went in an order that pairs wrong). The lock scan offers the settle's other
+        // stealth-sized memos for a lock, so the recipient and the sender still find it: that is not a lock the recipient may miss.
+        if (call.memos.some((x) => norm(x) === norm(m))) { moved.push(i); return; }
+        mismatched.push({ index: i, lockLeaf: lockLeaves[i], expected: norm(m), emitted: tail[i] == null ? null : norm(tail[i]) });
+      });
       if (mismatched.length && typeof saveMismatchedMemos === 'function') {
         try { await saveMismatchedMemos({ txHash, leaves: lockLeaves, memos, memoCheck: { ok: false, mismatched } }); } catch { }
       }
-      return { ok: mismatched.length === 0, mismatched };
+      return { ok: mismatched.length === 0, mismatched, ...(moved.length ? { moved } : {}) };
     }
     return { ok: null, mismatched: [], reason: 'this settle carries no matching lock-leaf set — the lock memo was not checked' };
   }

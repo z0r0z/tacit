@@ -521,4 +521,38 @@ function encodePublicValuesPrefix({ leaves, lockSetRoot, lockLeaves, nullifiers 
   ok('scanLockLeaves: transactions are read a few at a time, in the same order, with a gap or a failed read handled as before');
 }
 
+// ── 10. A lock's memo that sits on another leaf of its settle (a batch whose ops went in an order the pool pairs wrong): the memos of a stealth lock's size in the same settle are
+// offered for the lock, after its own place's memo; an ordinary settle offers nothing more ──
+{
+  const zero = '0x' + '00'.repeat(32);
+  const N = ['0x' + 'a1'.repeat(32), '0x' + 'a2'.repeat(32)], L = ['0x' + '8b'.repeat(32)];
+  const STEALTH = '0x' + '5e'.repeat(322), RECIPIENT_ONLY = '0x' + '5f'.repeat(145);
+  const NOTE1 = '0x' + 'c1'.repeat(169), NOTE2 = '0x' + 'c2'.repeat(169);
+  const settle = (memos) => encodeSettleCall({ publicValues: encodePublicValuesPrefix({ leaves: N, lockSetRoot: zero, lockLeaves: L, nullifiers: ['0x' + 'd3'.repeat(32)] }), proof: '0x01', memos });
+  const lockEv = { type: 'LockLeavesInserted', txHash: '0xm', blockNumber: 70, logIndex: 1, firstLockIndex: 0, lockLeaves: L };
+  const leavesEv = (memos) => ({ type: 'LeavesInserted', txHash: '0xm', blockNumber: 70, logIndex: 2, firstLeafIndex: 0, leaves: N, memos: memos.slice(0, N.length) });
+  const nullEv = { type: 'NullifiersSpent', txHash: '0xm', blockNumber: 70, logIndex: 0, nullifiers: ['0x' + 'd3'.repeat(32)] };
+  const lowerAll = (r) => r.map((c) => c.map((m) => m.toLowerCase()));
+
+  // as the chain held one: the stealth memo on the first note leaf, two note memos behind it, the last on the lock
+  const wrong = [STEALTH, NOTE1, NOTE2];
+  const viaIndex = await scan.scanLockLeaves({ events: [nullEv, lockEv, leavesEv(wrong)], getTxInput: async () => settle(wrong) });
+  assert.deepStrictEqual(lowerAll(viaIndex.lockMemoCandidates), [[NOTE2, STEALTH].map((m) => m.toLowerCase())], 'the memo at the lock\'s place first, then the stealth-sized memo found on a note leaf');
+  assert.strictEqual(viaIndex.lockMemos[0], NOTE2, 'lockMemos stays the memo at the lock\'s own place');
+  const viaCalldata = await scan.scanLockLeaves({ events: [nullEv, leavesEv(wrong)], getTxInput: async () => settle(wrong) });
+  assert.deepStrictEqual(lowerAll(viaCalldata.lockMemoCandidates), [[NOTE2, STEALTH].map((m) => m.toLowerCase())], 'the same when the lock leaves are read from the calldata');
+
+  // in its right place: nothing more is offered, and a note-sized memo is never offered
+  const right = [NOTE1, NOTE2, STEALTH];
+  const ordinary = await scan.scanLockLeaves({ events: [nullEv, lockEv, leavesEv(right)], getTxInput: async () => settle(right) });
+  assert.deepStrictEqual(lowerAll(ordinary.lockMemoCandidates), [[STEALTH.toLowerCase()]], 'an ordinary settle offers only the memo at the lock\'s place');
+
+  // a recipient-only memo (145 bytes) counts as a stealth memo too; an empty memo is never offered
+  const own = '0x' + '77'.repeat(5);
+  const mixed = [RECIPIENT_ONLY, '0x', own];
+  const small = await scan.scanLockLeaves({ events: [nullEv, lockEv, leavesEv(mixed)], getTxInput: async () => settle(mixed) });
+  assert.deepStrictEqual(lowerAll(small.lockMemoCandidates), [[own, RECIPIENT_ONLY].map((m) => m.toLowerCase())], 'the 145-byte memo is offered after the lock\'s own; the empty one is not');
+  ok('scanLockLeaves: a stealth-sized memo on another leaf of the settle is offered for the lock after its own place\'s memo; an ordinary settle offers nothing more');
+}
+
 console.log(`\n${n}/${n} confidential-lock-scan checks passed`);

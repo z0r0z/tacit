@@ -13,6 +13,14 @@ export function makeConfidentialLockScan({ pool }) {
   const hexWord = (data, byteOff) => (data.slice(byteOff * 2, byteOff * 2 + 64) || '').padEnd(64, '0');
   const u256At = (data, byteOff) => BigInt('0x' + hexWord(data, byteOff));
 
+  // A lock's memo sits where the pool pairs it, after the note memos. A batch whose ops went in an order the pool pairs wrong (an op that makes locks ahead of one that makes notes)
+  // left a lock's memo on a note's place in the same settle, and the note memos one place on. The other memos of that settle are offered for the lock too: the openers check the
+  // lock's own leaf, so a memo that is not for it opens nothing. Only a memo of a stealth lock's size is offered (the recipient's 145 bytes, or with the sender's tail 322), which a
+  // note's memo is not, so an ordinary settle offers nothing more and a scan of the whole set costs no more than before.
+  const STEALTH_MEMO_BYTES = new Set([33 + 112, 33 + 112 + 177]);
+  const strayLockMemos = (memos, own) => (memos || []).filter((m, k) => k !== own && m != null && STEALTH_MEMO_BYTES.has(strip0x(m).length / 2));
+  const addCandidate = (list, m) => { if (m != null && !list.some((c) => String(c).toLowerCase() === String(m).toLowerCase())) list.push(m); };
+
   function decodeSettleCalldata(inputHex) {
     const data = strip0x(inputHex).slice(8);
     const readBytes = (byteOff) => {
@@ -213,8 +221,8 @@ export function makeConfidentialLockScan({ pool }) {
             if (!sameArray(fields.lockLeaves, e.lockLeaves) || decoded.memos.length !== fields.leavesCount + fields.lockLeaves.length) continue;
             const tail = decoded.memos.slice(fields.leavesCount);
             e.lockLeaves.forEach((_, i) => {
-              const m = tail[i];
-              if (m != null && !candidates[i].some((c) => String(c).toLowerCase() === String(m).toLowerCase())) candidates[i].push(m);
+              addCandidate(candidates[i], tail[i]);
+              for (const m of strayLockMemos(decoded.memos, fields.leavesCount + i)) addCandidate(candidates[i], m);
             });
           }
         }
@@ -263,7 +271,8 @@ export function makeConfidentialLockScan({ pool }) {
           }
           if (!landed) continue;
           const lockMemos = fields.lockLeaves.map((_, i) => (tail[i] != null ? tail[i] : null));
-          found.push({ txHash: g.txHash, trusted: info.trusted, lockLeaves: fields.lockLeaves, lockMemos, lockMemoCandidates: lockMemos.map((m) => (m != null ? [m] : [])) });
+          const lockMemoCandidates = lockMemos.map((m, i) => { const list = []; addCandidate(list, m); for (const s of strayLockMemos(decoded.memos, fields.leavesCount + i)) addCandidate(list, s); return list; });
+          found.push({ txHash: g.txHash, trusted: info.trusted, lockLeaves: fields.lockLeaves, lockMemos, lockMemoCandidates });
         }
       }
     }
