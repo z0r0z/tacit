@@ -92,7 +92,7 @@ test('a settle on the open board is marked competitive, and nothing else is', ()
   const open = calls.filter((l) => /competitive: true/.test(l));
   assert.equal(open.length, 1, `only the open-board send is competitive: ${open.length}`);
   assert.match(open[0], /job\.publicValues/, 'and it is the one that sends the open board\'s proof');
-  assert.match(relay, /async function submitSettle\(proof, memos, label, \{ competitive = false \} = \{\}\)/);
+  assert.match(relay, /async function submitSettle\(proof, memos, label, \{ competitive = false, jobs = \[\] \} = \{\}\)/);
 });
 
 test('the public mempool is off for a settle that is not safe for the unprotected routes', () => {

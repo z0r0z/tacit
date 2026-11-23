@@ -33,6 +33,7 @@ import { makeGasSolver } from './lib/gas-solver.js';
 import { abi as GAS_ABI, executeCall } from './lib/gas-calls.js';
 import { notExecuted } from './lib/stdin-prover.js';
 import { assertMemosMatchProof } from './lib/memo-root.js';
+import { assertMemoPairing, memoClassOrderProblem } from './lib/memo-pairing.js';
 import { consumedInput, consumedAck, unlandedDeposits, spentInputsOf, noteNullifier } from './lib/spent-precheck.js';
 import { findCarrier, isRevert, isPendingRevert, isRateLimited, errDetail, holdPendingRevert, splitRoutes, looseAllowed } from './lib/landed-elsewhere.js';
 import { cbtcMintBlocker } from './lib/cbtc-mint-precheck.js';
@@ -198,10 +199,12 @@ async function liveGasGwei() {
 // handled work. Anything that isn't batchable falls through to the single-job path untouched.
 // Build, price and submit a settle. Shared by the single and batched paths so both get identical fee
 // pricing and the same endpoint fall-through. Returns the tx hash; throws if every endpoint refused.
-async function submitSettle(proof, memos, label, { competitive = false } = {}) {
+async function submitSettle(proof, memos, label, { competitive = false, jobs = [] } = {}) {
   // The memos shipped with the settle must be the ones the proof commits to; the pool rejects any other set, so
   // a divergence is caught here before a settle is paid for.
   assertMemosMatchProof(proof.publicValues, memos);
+  // And they must land on the leaves they were sealed for: the pool pairs the list by place and takes any order that hashes right (lib/memo-pairing.js).
+  assertMemoPairing(proof.publicValues, memos, jobs);
   // Whoever lands this proof settles the op (see lib/landed-elsewhere.js), so a transaction carrying these public
   // values is this job's result even when another sender landed it first.
   const fromBlock = (await publicClient.getBlockNumber()) - LANDED_MARGIN_BLOCKS;
@@ -678,7 +681,7 @@ async function settleOne(j) {
   try {
     const proof = await beating(`proving ${j.jobId} ${j.type}`, () => withStageReport(stageReport([j.jobId]), () => proveSettle({ type: j.type, op: j.op, memos: j.memos || [], timeoutMs: CFG.settleJobTimeoutSecs * 1000 })))
       .catch(async (e) => { await pauseOn(e); throw e; });
-    const txHash = await submitSettle(proof, j.memos || [], `job ${j.jobId}`);
+    const txHash = await submitSettle(proof, j.memos || [], `job ${j.jobId}`, { jobs: [j] });
     await confidentialAck({ jobId: j.jobId, txHash, lane: proof.lane });
     log(`settled: job=${j.jobId} tx=${txHash}`);
     bookSettled([j], txHash);
@@ -810,7 +813,7 @@ async function batchCycle() {
       return true;
     }
     try {
-      const txHash = await submitSettle(proof, memos, `batch(${jobs.length})`);
+      const txHash = await submitSettle(proof, memos, `batch(${jobs.length})`, { jobs });
       for (const id of ids) await confidentialAck({ jobId: id, txHash, lane: proof.lane });
       log(`batch settled: n=${jobs.length} tx=${txHash}`);
       bookSettled(jobs, txHash);
@@ -842,6 +845,13 @@ async function settleMixed(claimed) {
 async function settleMixedBatch(jobs) {
   const ids = jobs.map((j) => j.jobId);
   const memos = jobs.flatMap((j) => (Array.isArray(j.memos) ? j.memos : []));
+  // The order is the rule's (lib/memo-order.js); this reads the memos themselves, so a batch the rule got wrong is not paid to prove.
+  const misordered = memoClassOrderProblem(memos);
+  if (misordered) {
+    log(`NOT batching ${jobs.length} ops (${jobs.map((j) => j.type).join(', ')}): ${misordered}; settling them one by one`);
+    for (const j of jobs) await settleOne(j);
+    return true;
+  }
   log(`batching ${jobs.length} ops (${jobs.map((j) => j.type).join(', ')}) into one settle: ${ids.map((i) => i.slice(0, 10)).join(' ')}`);
   let proof;
   try {
@@ -857,7 +867,7 @@ async function settleMixedBatch(jobs) {
     return true;
   }
   try {
-    const txHash = await submitSettle(proof, memos, `batch(${jobs.length})`);
+    const txHash = await submitSettle(proof, memos, `batch(${jobs.length})`, { jobs });
     for (const id of ids) await confidentialAck({ jobId: id, txHash, lane: proof.lane });
     log(`mixed batch settled: n=${jobs.length} tx=${txHash}${proof.private === false ? ' (public input)' : ''}`);
     bookSettled(jobs, txHash);
