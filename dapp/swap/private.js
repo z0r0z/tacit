@@ -21,6 +21,7 @@ const API = 'https://api.tacit.finance';
 const lc = (s) => String(s || '').toLowerCase();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const floorMiss = (e) => /fee below the current floor/i.test(String(e?.message || ''));
+const FLOOR_TRIES = 2;
 const pending = (e) => !!e?.open || /settle timed out|status polling for job|prove timed out|waiting for a sender|settle held/i.test(String(e?.message || ''));
 const IN_USE_MS = 20 * 60e3;
 const mayGoThrough = (words, cause) => Object.assign(new Error(`${words} Your swap may still go through: check your private balance in a few minutes before swapping again.`), { pending: true, cause });
@@ -406,14 +407,18 @@ export function makePrivate({ getUx, pick, onKey = () => {}, session = null, ope
     }
     if (!r) say('route');
     try {
-      if (!r) try { r = await send(fee); }
-      catch (e) {
-        if (heldNow(e)) { SELF = true; r = await send(fee); }
-        else {
-          if (!floorMiss(e)) throw e;
-          const one = BigInt(await t.quoteOpFee(ticker, 'route')), now = path.length > 1 ? twoDigits((one * 14n) / 10n) : one, f2 = now > fee ? now : t.ladderFee(fee * 2n);
-          q = await priced(f2);
-          r = await send(f2);
+      // A relay that turns the fee back is asked again at the fresh quote, or twice the last fee when that is not higher: up to twice more, as gas can climb past a quote between one try and the next
+      // (a refusal costs nothing, it comes before anything is proved). Each new fee is priced again first, so a swap whose fee has grown past what the holder will take stops there.
+      for (let f = fee, tries = 0, sent = !!r; !sent; tries++) {
+        try { r = await send(f); sent = true; }
+        catch (e) {
+          if (heldNow(e)) { SELF = true; r = await send(f); sent = true; }
+          else {
+            if (!floorMiss(e) || tries >= FLOOR_TRIES) throw e;
+            const one = BigInt(await t.quoteOpFee(ticker, 'route')), now = path.length > 1 ? twoDigits((one * 14n) / 10n) : one;
+            f = now > f ? now : t.ladderFee(f * 2n);
+            q = await priced(f);
+          }
         }
       }
     } catch (e) { if (pending(e)) busy.set(lc(note.leaf), Date.now()); throw e; }

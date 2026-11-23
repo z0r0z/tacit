@@ -293,6 +293,19 @@ test('the relay’s floor moved: sent once more at its new fee, priced again', a
   assert.strictEqual(r.txHash, '0xswap');
 });
 
+test('a relay that turns the fee back twice (gas climbing past each quote) takes the third: the fresh quote, then twice that', async () => {
+  const { M, ux } = setup({ notes: [note('0xn', 1000)], routeErr: ['relay 400: fee below the current floor', 'relay 400: fee below the current floor'], fee: 25n });
+  const r = await run(await load(ux), plan());
+  assert.deepStrictEqual(M.routes.map((x) => x.fee), [10n, 25n, 50n]);
+  assert.strictEqual(r.txHash, '0xswap');
+});
+
+test('a fee turned back three times stops there: three sends, and the floor error is the one the holder is shown', async () => {
+  const { M, ux } = setup({ notes: [note('0xn', 1000)], routeErr: Array(3).fill('relay 400: fee below the current floor'), fee: 25n });
+  await assert.rejects(run(await load(ux), plan()), (e) => /fee below the current floor/.test(e.message));
+  assert.strictEqual(M.routes.length, 3);
+});
+
 test('over two pools the new floor is the one-pool fee and 40% more, in two figures', async () => {
   const { M, ux } = setup({ notes: [note('0xn', 1000)], routeErr: ['fee below the current floor'], fee: 123n });
   await run(await load(ux), plan({ fee: 100n, path: [{ assetNext: ETH, feeBps: 30 }, { assetNext: TAC, feeBps: 30 }] }));

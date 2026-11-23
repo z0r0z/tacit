@@ -75,7 +75,7 @@ test('the farm reward (wTAC) exits at TAC\'s fee: the 2 TAC floor, not the ETH f
   await assert.rejects(ux.unwrap({ note: small, walletPriv, wait: false }), /./, 'a reward under the floor is refused before anything is sent');
 });
 
-test('a refused fee is quoted once more at twice the floor; refused again, the user gets plain words', async () => {
+test('a refused fee is quoted again at twice the floor, up to twice more; refused every time, the user gets plain words', async () => {
   const twice = stubRelay(TAC_FLOOR * 2n);
   const ux = makeConfidentialPoolUx({ ...deps, fetchImpl: twice.fetchImpl });
   const note = tacNote(ux);
@@ -83,10 +83,15 @@ test('a refused fee is quoted once more at twice the floor; refused again, the u
   assert.deepEqual(twice.fees, [TAC_FLOOR, TAC_FLOOR * 2n], 'second try at twice the floor');
   assert.equal(r.jobId, 'j2');
 
+  const four = stubRelay(TAC_FLOOR * 4n), ux4 = makeConfidentialPoolUx({ ...deps, fetchImpl: four.fetchImpl });
+  const r4 = await ux4.unwrap({ note: tacNote(ux4), walletPriv, wait: false });
+  assert.deepEqual(four.fees, [TAC_FLOOR, TAC_FLOOR * 2n, TAC_FLOOR * 4n], 'a relay that wants four times the floor is met on the third try');
+  assert.equal(r4.jobId, 'j3');
+
   const never = stubRelay(10n ** 12n);
   const ux2 = makeConfidentialPoolUx({ ...deps, fetchImpl: never.fetchImpl });
   await assert.rejects(ux2.unwrap({ note: tacNote(ux2), walletPriv, wait: false }), (e) => e.code === 'FEE_MOVED' && /network fee rose/.test(e.message));
-  assert.equal(never.fees.length, 2, 'no more than one retry');
+  assert.equal(never.fees.length, 3, 'no more than two retries');
 
   // A floor the caller set is never raised behind its back.
   const pinned = stubRelay(TAC_FLOOR * 2n);

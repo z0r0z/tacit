@@ -3667,16 +3667,15 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
 
   const _floorRefused = (e) => { const hit = /fee below the current floor/i.test(String((e && e.message) || e)); if (hit) _held.clear(); return hit; };
+  // A fee the relay turns back is sent again at twice the last, up to twice more (a refusal costs nothing: it comes before anything is proved), as gas can climb past a quote between one try and the next.
   async function _withFloorRetry(ticker, opKind, feeOpts, run) {
-    const minFee = await gasAwareMinFee(ticker, opKind);
-    try { return await run({ ...feeOpts, minFee }); }
-    catch (e) {
-      if (!_floorRefused(e)) throw e;
-      const higher = (minFee > 0n ? minFee : relayMinFee(ticker)) * 2n;
-      try { return await run({ ...feeOpts, minFee: higher }); }
-      catch (e2) {
-        if (_floorRefused(e2)) throw Object.assign(new Error('The network fee rose while this was being sent. Try again in a minute; the fee is worked out again each time.'), { code: 'FEE_MOVED', cause: e2 });
-        throw e2;
+    let minFee = await gasAwareMinFee(ticker, opKind);
+    for (let tries = 0; ; tries++) {
+      try { return await run({ ...feeOpts, minFee }); }
+      catch (e) {
+        if (!_floorRefused(e)) throw e;
+        if (tries >= 2) throw Object.assign(new Error('The network fee rose while this was being sent. Try again in a minute; the fee is worked out again each time.'), { code: 'FEE_MOVED', cause: e });
+        minFee = (minFee > 0n ? minFee : relayMinFee(ticker)) * 2n;
       }
     }
   }
