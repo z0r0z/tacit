@@ -17752,7 +17752,7 @@ async function hxBtcMarket(addr) {
   const r = xtOf(addr), b = r && xtBridge(r);
   if (!b) return;
   try {
-    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=a1ece943')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
+    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=b7447bbe')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
     await BTC_MKT.get(b.hex).open();
   } catch (e) { toast(`The ${b.name} market on Bitcoin did not open: ${errText(e)}`, true); }
 }

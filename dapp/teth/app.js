@@ -1,11 +1,11 @@
 import '/relay-route.js?cb=9ec0eab1';
 import { mountChart, fmtLocalStamp, fmtLocalTime } from '/trade/chart.js?cb=c0b1d232';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=41394526';
-import { makeKeySession, signInSheet, pickWalletSheet, Cancelled } from '/trade/key.js?cb=04a214c9';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=ece074e4';
+import { makeKeySession, signInSheet, pickWalletSheet, Cancelled } from '/trade/key.js?cb=33a567fa';
 import { readPool, heldHistory, heldBars, rangesFor, barSize, recentMoves, movedSince, readRates, readProgram, poolRows, positionsIn, programEnds, wrapQuote, shown, POOL, WRAP_TIP } from '/teth/read.js?cb=3784b81d';
 import { wrapEth, wrapFirst, settle, readHeld, finish, wrapIssue, relayWords, selfable, selfFinish, settleCost, proveOwn, ownWords, ownable, deviceWords, relayState, relayStopped, forgetUx, getUx } from '/teth/wrap.js?cb=ce5e16c2';
 import { ownPref, setOwnPref, devicePref, setDevicePref, deviceProver, proverFor, readCredit, proofsFor, fundFromWallet, quoteEth, quoteEthFor, fundWithEth, loadSelfProver, tokenBalance } from '/teth/prover.js?cb=f9644c86';
-import { overlay } from '/trade/sheet.js?cb=d857446c';
+import { overlay } from '/trade/sheet.js?cb=ea7101c8';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
 import { mountDepth } from '/trade/depth.js?cb=4f87419e';
 import { candlesFromTrades, closeAt } from '/trade/tape.js?cb=7b013b52';
@@ -183,7 +183,7 @@ function notify(msg, kind = '', ms = 5000) {
 }
 async function openBitcoin(prime = null) {
   try {
-    bitcoin ||= (await import('/trade/btc.js?cb=a1ece943')).makeBitcoin({ notify, onTraded: () => loadMarket().then(paintAll).catch(() => {}),
+    bitcoin ||= (await import('/trade/btc.js?cb=b7447bbe')).makeBitcoin({ notify, onTraded: () => loadMarket().then(paintAll).catch(() => {}),
       asset: { id: BTC_ID, title: 'tETH on Bitcoin', ticker: 'tETH', decimals: 8, bound: true, after: 'tETH reaches Bitcoin through the bridge: <a href="/#private/bitcoin/out">Bridge →</a>' } });
     await bitcoin.open(prime);
   } catch (e) { notify(`Could not open the Bitcoin market: ${e?.message || e}`, 'error', 9000); }
