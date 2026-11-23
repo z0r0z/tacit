@@ -177,6 +177,16 @@ test('CLIENT_IP_HEADER: the budget key is that header alone (a proxy that varies
   } finally { stop(); }
 });
 
+test('whoami: off by default, and when on it tells the caller only its own connection facts', async () => {
+  const off = await start();
+  try { assert.equal((await fetch(off.base + '/whoami')).status, 404); } finally { off.stop(); }
+  const on = await start({ whoami: true });
+  try {
+    const j = await (await fetch(on.base + '/whoami', { headers: { 'x-forwarded-for': '203.0.113.5, 10.1.1.1', 'cf-connecting-ip': '203.0.113.5' } })).json();
+    assert.deepEqual(Object.keys(j).sort(), ['cf', 'realIp', 'remote', 'trueClient', 'xff']); assert.equal(j.xff, '203.0.113.5, 10.1.1.1'); assert.equal(j.cf, '203.0.113.5');
+  } finally { on.stop(); }
+});
+
 test('identical reads in flight share one upstream call; the tip is cached', async () => {
   const { base, stop } = await start();
   try {

@@ -54,7 +54,7 @@ export function makeGateway(o = {}) {
     ethUpstream: o.ethUpstream, btcUpstream: o.btcUpstream, btcRpcUrl: o.btcRpcUrl || '', btcRpcAuth: o.btcRpcAuth || '',
     origins: new Set(o.origins || []), anyOrigin: (o.origins || []).includes('*'),
     internalKeys: (o.internalKeys || []).map((k) => crypto.createHash('sha256').update(k).digest()),
-    trustProxy: !!o.trustProxy, clientIpHeader: String(o.clientIpHeader || '').toLowerCase(), allowBroadcast: !!o.allowBroadcast, internalSends: !!o.internalSends,
+    trustProxy: !!o.trustProxy, whoami: !!o.whoami, clientIpHeader: String(o.clientIpHeader || '').toLowerCase(), allowBroadcast: !!o.allowBroadcast, internalSends: !!o.internalSends,
     budget: o.budgetPerMin ?? 600, internalBudget: o.internalBudgetPerMin ?? 60_000,
     maxBatch: o.maxBatch ?? 20, maxBody: o.maxBody ?? 256 * 1024, maxTxBody: o.maxTxBody ?? 1024 * 1024,
     logsMaxSpan: o.logsMaxSpan ?? 50_000, headMs: o.headMs ?? 1500, tipMs: o.tipMs ?? 5000,
@@ -344,6 +344,8 @@ export function makeGateway(o = {}) {
       const url = new URL(req.url, 'http://x');
       let path = url.pathname;
       if (path === '/health' && req.method === 'GET') return await handleHealth(res);
+      // Off unless WHOAMI=1: tells the CALLER how the proxy chain in front of us presents it (its own address and headers, nobody else's), to pick CLIENT_IP_HEADER.
+      if (path === '/whoami' && cfg.whoami) return send(res, 200, { remote: req.socket.remoteAddress, xff: req.headers['x-forwarded-for'] ?? null, cf: req.headers['cf-connecting-ip'] ?? null, trueClient: req.headers['true-client-ip'] ?? null, realIp: req.headers['x-real-ip'] ?? null });
       let internal = isInternal(req);
       // Our own services (cast, the prover host, the relays) can set a URL and not a header: /k/<secret>/eth and /k/<secret>/btc/api/…
       const km = path.match(/^\/k\/([A-Za-z0-9_-]{16,128})(\/.*)$/);
@@ -365,7 +367,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { server } = makeGateway({
     ethUpstream: e.ETH_UPSTREAM || '', btcUpstream: (e.BTC_ESPLORA_UPSTREAM || '').replace(/\/$/, ''), btcRpcUrl: e.BTC_RPC_URL || '', btcRpcAuth: e.BTC_RPC_AUTH || '',
     origins: list(e.ALLOW_ORIGINS || 'https://tacit.finance,https://www.tacit.finance'),
-    internalKeys: list(e.INTERNAL_KEYS), trustProxy: e.TRUST_PROXY === '1', clientIpHeader: e.CLIENT_IP_HEADER || '', allowBroadcast: e.ALLOW_BROADCAST === '1', internalSends: e.INTERNAL_SENDS === '1',
+    internalKeys: list(e.INTERNAL_KEYS), trustProxy: e.TRUST_PROXY === '1', clientIpHeader: e.CLIENT_IP_HEADER || '', whoami: e.WHOAMI === '1', allowBroadcast: e.ALLOW_BROADCAST === '1', internalSends: e.INTERNAL_SENDS === '1',
     budgetPerMin: Number(e.BUDGET_PER_MIN) || undefined, internalBudgetPerMin: Number(e.INTERNAL_BUDGET_PER_MIN) || undefined,
     logsMaxSpan: Number(e.LOGS_MAX_SPAN) || undefined,
   });
