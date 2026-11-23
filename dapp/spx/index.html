@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-X/rPecHNkNki0fd0vJSVw4M9bKUwHmfjHnWTi0LgSoI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-suTdBiumLrEFwagp/JFDYG5P+LvPrdgSbZKUTCZTkK8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -3125,7 +3125,7 @@ const SEL = {
   reserve0: '443cb4bc', reserve1: '5a76f25e', totalSupply: '18160ddd', sqrtPrice: '2af1f249', balanceOf: '70a08231', allowance: 'dd62ed3e',
   totalStaked: '817b1cd2', rewardRate: '7b0a47ee', periodFinish: 'ebe2b12b', staked: '98807d84', earned: '008cc262',
   previewZap: 'e7cddab0', previewAdd: 'e03ec807', zapETH: '8703a0d8', addAndStake: '6d15c09b', addAndStakeWithPermit: 'ddd9f3fb',
-  claim: '4e71d92d', exitAndRemove: 'bccbe38a', aggregate3: '82ad56cb', timestamp: '0f28c97d',
+  claim: '4e71d92d', exitAndRemove: 'bccbe38a', aggregate3: '82ad56cb', timestamp: '0f28c97d', blockNumber: '42cbb15c',
   wtacWithdraw: '00f714ce', transfer: 'a9059cbb', cbtcLockRedeemed: 'b5229671', escrowSlashed: 'f2d02700', helperEscrowOf: '78808388', reclaimEscrow: 'c5211d27', zapToken: '9376f34e', zapTokenWithPermit: '51291e77', withdrawAndRemove: 'bd8196a9', withdrawTo: '47d1eebd', exitTo: '6ae36ea7', stake: 'a694fc3a', stakeWithPermit: 'ecd9ba82',
   wrapWithTip: 'fc24c435', postEscrowWithETH: 'c0e2d9a1', postEscrowWithPermit: '20ef3f6b', requiredEscrow: '034448ed', stEthPerWst: 'bb2952fc', wstEthForBtc: '7dd55c2b', tacitQuote: '3bc1414a',
   escrowSufficient: '058e18b0', escrowTotal: 'e06e89c9', cbtcLockVBtc: '7cea1c1a', cbtcMinted: 'e2c2a40c', btcToUsd: 'd5901347', cdpRatioBps: '4827ecb3', liqRatioBps: '1432d93f', rate: '2c4e722e',
@@ -3545,13 +3545,31 @@ async function rpc(method, params, urls = RPCS) {
   try { return await hedgedRpc(mainnet ? [...urls, WALLET_NODE] : urls, method, params, { health: RPC_HEALTH, hedgeMs: 1500, timeoutMs: 30e3, lastTimeoutMs: 60e3 }); }
   catch (e) { if (e.revert) throw e; throw Object.assign(new Error(e?.message && !/no RPC answered/.test(e.message) ? e.message : 'Ethereum is unreachable'), { cause: e }); }
 }
-const ethCall = (to, data, extra = {}) => rpc('eth_call', [{ to, data: '0x' + strip(data), ...extra }, 'latest']);
+const ethCall = (to, data, extra = {}, block = 'latest') => rpc('eth_call', [{ to, data: '0x' + strip(data), ...extra }, block]);
+// The nodes that answer a read are not all at the chain's newest block: straight after a transaction the first to answer can be a block or two behind and give the state from before it (a stake just
+// withdrawn still listed on the card). The project's own light node is first for a read of the newest state and is always a block or two behind; the receipt came from a node that is not. The block a
+// transaction this page sent was mined in is kept for two minutes, and a read of what it changed (`readFrom`) that comes from before it is asked again at that block.
+const SEEN = { block: 0, at: 0 };
+const blockOf = (rc) => { try { return Number(BigInt(rc?.blockNumber ?? 0)); } catch { return 0; } };
+const sawBlock = (rc) => { const n = blockOf(rc); if (n && (n > SEEN.block || Date.now() - SEEN.at > 120e3)) { SEEN.block = n; SEEN.at = Date.now(); } };
+const seenFloor = () => (Date.now() - SEEN.at < 120e3 ? SEEN.block : 0);
+// `read(block)` gives { at, ... }: the block it was answered from (null when that is not known), asked at `block`. The first read is of the newest block ('latest'). When it comes from before `floor`
+// the next is of block `floor` itself: a node still short of it answers with an error and the read goes on to the next node, and the light node takes no read of a numbered block, so the answer
+// comes from a node that has it, at once. If no node takes that read, the newest block is asked for again, a moment apart. After `tries` it hands back the last answer it got rather than none.
+async function readFrom(floor, read, { tries = 8, wait = 1500 } = {}) {
+  let got = await read('latest'), pinned = !!floor;
+  for (let i = 0; floor && got.at != null && got.at < floor && i < tries; i++) {
+    if (i) await sleep(wait);
+    got = await read(pinned ? '0x' + floor.toString(16) : 'latest').catch(() => { pinned = false; return got; });
+  }
+  return got;
+}
 
-async function multicall(calls) {
+async function multicall(calls, block = 'latest') {
   const bodies = calls.map(({ to, data }) => { const d = strip(data); return addrWord(to) + word(1) + word(0x60) + word(d.length / 2) + d.padEnd(Math.ceil(d.length / 64) * 64, '0'); });
   let off = calls.length * 32;
   const heads = bodies.map((b) => { const o = word(off); off += b.length / 2; return o; });
-  const out = strip(await ethCall(ADDR.multicall, SEL.aggregate3 + word(0x20) + word(calls.length) + heads.join('') + bodies.join('')));
+  const out = strip(await ethCall(ADDR.multicall, SEL.aggregate3 + word(0x20) + word(calls.length) + heads.join('') + bodies.join(''), {}, block));
   const arr = Number(wordAt(out, 0)) / 32;
   return calls.map((_, i) => {
     const e = arr + 1 + Number(wordAt(out, arr + 1 + i)) / 32;
@@ -3614,7 +3632,7 @@ function receipt(hash, chainId = 1, note = {}) {
     const t0 = Date.now(), st = { ...note };
     for (;;) {
       const r = await receiptNow(hash, chainId, st);
-      if (r) return r;
+      if (r) { if (chainId === 1) sawBlock(r); return r; }
       if (Date.now() - t0 > 30 * 60e3) return null;
       await sleep(Date.now() - t0 < 300e3 ? 3000 : 12000);
     }
@@ -10881,7 +10899,9 @@ async function loadPrecision() {
   const holders = who ? [...new Set([S.wallet, S.acct?.address].filter(Boolean).map((a) => a.toLowerCase()))] : [];
   for (const token of [ADDR.tac, ADDR.tacbtc, ADDR.tacusd, ADDR.tacd, ADDR.tace]) for (const a of holders) calls.push({ to: token, data: SEL.balanceOf + addrWord(a) });
   const balAt = who ? calls.push({ to: ADDR.multicall, data: '4d2301cc' + addrWord(who) }) - 1 : -1, gp = who ? gasNow() : null;
-  const r = await multicall(calls);
+  const blkAt = calls.push({ to: ADDR.multicall, data: SEL.blockNumber }) - 1;
+  // straight after a transaction of ours the first node to answer can be a block or two behind it: asked again at its block when that happens (see `readFrom`)
+  const { r } = await readFrom(seenFloor(), async (block) => { const r = await multicall(calls, block); return { r, at: r[blkAt] ? Number(wordAt(r[blkAt], 0)) : null }; });
   const w = (i) => r[i] ? wordAt(r[i], 0) : 0n;
   const x = { who, r0: w(0), r1: w(1), supply: w(2), sp: w(3), totalStaked: w(4), rate: w(5), finish: Number(w(6)), t: Number(w(7)) || now(), staked: w(8), earned: w(9), tac: w(10), allowance: w(11), lp: w(12), lpAllow: w(13), at: Date.now() };
   x.live = x.t < x.finish;
