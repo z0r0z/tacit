@@ -17,6 +17,7 @@ import { mountFarm } from '/trade/farm.js?cb=431619ca';
 import { grp, sig, group, satsFmt, day as dayFmt, warm as warmFormatters } from '/trade/fmt.js?cb=172824e5';
 import { makePointsNote } from '/points-note.js?cb=40738db7';
 import { addrFlat } from '/address-view.js?cb=58dd4914';
+import { count as metric, SOURCES } from '/metrics.js?cb=48a20c0d';
 
 const API = 'https://api.tacit.finance';
 const TAC_BTC_ID = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
@@ -70,6 +71,17 @@ try {
   if (v.tf) S.tf = { eth: size('eth', v.tf.eth), btc: size('btc', v.tf.btc) };
   if (['eth', 'btc'].includes(v.book)) S.book = v.book;                                              // the book last looked at: Ethereum's or Bitcoin's
 } catch { }
+// A link can open the page on a venue: /trade/tac/?lane=btc is the Bitcoin order book (the chart, the ticket and the book below it), ?lane=eth the Ethereum pools, ?lane=cmp both.
+// It is what the link asks for, whatever this browser chose last. ?src=menu, chip, lander, assets or share says which link it was (counted, nothing else).
+const LANES = { eth: 'eth', ethereum: 'eth', btc: 'btc', bitcoin: 'btc', cmp: 'cmp', compare: 'cmp' };
+const FROM_LINK = (() => {
+  try {
+    const q = new URLSearchParams(location.search), h = new URLSearchParams(location.hash.replace(/^#/, ''));
+    const lane = LANES[String(q.get('lane') ?? h.get('lane') ?? '').toLowerCase()] || null, src = String(q.get('src') ?? h.get('src') ?? '').toLowerCase();
+    return { lane, src: SOURCES.includes(src) ? src : null };
+  } catch { return { lane: null, src: null }; }
+})();
+if (FROM_LINK.lane) { S.lane = FROM_LINK.lane; if (FROM_LINK.lane === 'btc') S.book = 'btc'; }
 const keepChart = () => { try { localStorage.setItem(CHART_KEY, JSON.stringify({ lane: S.lane, range: S.range, kind: S.kind, unit: S.unit, log: S.log, tf: S.tf, book: ['eth', 'btc'].includes(S.book) ? S.book : null })); } catch { } };
 
 async function loadChain() {
@@ -379,7 +391,16 @@ function paintRead(h = null, rows = null) {
     } else {
       const lows = line ? bars.map((x) => x.close) : bars.map((x) => (x.low > 0 ? x.low : x.close)), highs = line ? bars.map((x) => x.close) : bars.map((x) => x.high);
       const word = V.range ? RANGE_WORDS[V.range] : bars.length ? `all time · since ${fmtLocalTime(bars[0].t, true)}` : 'all time';
-      out = html`<div class="l"><span class="px num">${px(nowPx)}</span> ${chgHtml(nowPx / start - 1)} <em>${esc(word)}${V.askNow ? ' · last trade price' : ''}</em></div> <div class="r">${summary(Math.min(...lows, nowPx), Math.max(...highs, nowPx), V.vol)}${V.askNow && V.askPx ? html` <span>cheapest ask now <b>${V.askPx}</b> · last trade ${esc(V.lastWords)}</span>` : ''}</div>`;
+      const T = lane === 'btc' ? V.top : null, depth = (x) => `${px(x.px)} · ${tacFmt(x.tac)} TAC`;
+      const range = summary(Math.min(...lows, nowPx), Math.max(...highs, nowPx), V.vol);
+      if (T?.ask && V.stale) {
+        // The last trade is old: the price the page leads with is what the book asks now, with the TAC behind it, and the last trade is small and dated beside it.
+        out = html`<div class="l"><span class="px num">${px(T.ask.px)}</span> <em>cheapest ask now · ${tacFmt(T.ask.tac)} TAC for sale</em></div> <div class="r"><span>${T.bid ? html`best bid <b>${depth(T.bid)}</b>` : 'no bids'}</span> <span class="mute">last trade <b>${px(nowPx)}</b>, ${esc(V.lastWords)}</span> ${range}</div>`;
+      } else {
+        const book = T ? html` <span>${T.ask ? html`ask <b>${depth(T.ask)}</b>` : 'nothing for sale'}</span> <span>${T.bid ? html`bid <b>${depth(T.bid)}</b>` : 'no bids'}</span>` : '';
+        const old = V.stale && !V.askNow && V.lastWords ? ` · last trade ${V.lastWords}` : '';
+        out = html`<div class="l"><span class="px num">${px(nowPx)}</span> ${V.stale ? '' : chgHtml(nowPx / start - 1)} <em>${esc(word)}${V.askNow ? ' · last trade price' : ''}${esc(old)}</em></div> <div class="r">${range}${book}${!T && V.askNow && V.askPx ? html` <span>cheapest ask now <b>${V.askPx}</b> · last trade ${esc(V.lastWords)}</span>` : ''}</div>`;
+      }
     }
   }
   if (el.__h !== out) { el.__h = out; el.innerHTML = out; }
@@ -434,7 +455,7 @@ function renderChart() {
   chart.update({ series, tags, period: tf, log: S.log, minSpan: 0.04, readout: true, zoomable: !cmp, points: points.map(({ t, y, up }) => ({ t, y, up })), label: `TAC price, ${names[lane]}, ${sizeName(tf)} ${line ? 'line' : 'candles'}`, empty: chartEmpty(lane) ?? quiet });
   const base = since ? (lane === 'btc' ? closeAt(trades, since) : ethAt(since)) : null;
   S.view = cmp ? { lane, ethNow: ethSpot, btcNow: btcSpot, askNow }
-    : { lane, unit, range, line, tf, points, bars: series[0].bars, base: base ? inUnit(lane, unit)(base) : null, now: lane === 'btc' ? btcLast : ethSpot, askNow: lane === 'btc' && askNow, askPx: lane === 'btc' && askNow && btcSpot != null ? readPx(btcSpot, unit, 'btc') : null, lastWords: lvNow.words,
+    : { lane, unit, range, line, tf, points, bars: series[0].bars, base: base ? inUnit(lane, unit)(base) : null, now: lane === 'btc' ? btcLast : ethSpot, askNow: lane === 'btc' && askNow, askPx: lane === 'btc' && askNow && btcSpot != null ? readPx(btcSpot, unit, 'btc') : null, lastWords: lvNow.words, stale: lane === 'btc' && lvNow.stale, top: lane === 'btc' ? bookTop(unit) : null,
       vol: lane === 'btc' ? trades.filter((x) => x.t >= since).reduce((a, x) => a + x.vol, 0) : volumeSince(D.tape, since || (D.tape.coarse[0]?.t ?? 0), now(), fineStart()) };
   paintRead();
   const sw = (c) => `<i class="sw" style="background:${c}"></i>`;
@@ -561,7 +582,7 @@ function openBitcoinFor(act, q = S.quote) {
     : { side: 'sell', type: 'limit', sellBase: base });
 }
 $('#venues').addEventListener('click', (e) => { const b = e.target.closest('[data-btc-row]'); if (b && S.quote) openBitcoinFor(b.dataset.btcRow); const r = e.target.closest('[data-route]'); if (r) setVia(r.dataset.route); });
-$('#btc-alt')?.addEventListener('click', (e) => { const b = e.target.closest('[data-btc-alt]'); if (b) openBitcoinFor(b.dataset.btcAlt); });
+$('#btc-alt')?.addEventListener('click', (e) => { const b = e.target.closest('[data-btc-alt]'); if (b) { metric('btc_alt_click'); openBitcoinFor(b.dataset.btcAlt); } });
 // The ticket trades on Ethereum; the same TAC trades for sats on Bitcoin. The line under the ticket says what the order book does with this amount, and opens it there.
 // The page is sent with it drawn (the general sentence, which is what it says until the book is read), so the book arriving moves nothing: it is taken away only
 // when the book is read and empty, or cannot be read.
@@ -591,6 +612,26 @@ function renderBtcAlt(q = S.quote) {
   setHtml(el, h);
   el.hidden = false;
 }
+// What the Bitcoin order book offers now: the cheapest ask and the best bid, each with the TAC behind that price (null for the book itself until it is read; a side with nothing is null).
+function topOfBook() {
+  const b = D.book;
+  if (!b) return null;
+  const asks = ladderLevels(b.asks, 'ask'), bids = ladderLevels(b.bids, 'bid'), bl = bids[0];
+  const a = b.bestAsk != null ? { unit: b.bestAsk, tac: Number((asks.find((l) => l.unit === b.bestAsk) || asks[0] || {}).amount || 0) / 1e8 } : null;
+  const d = b.bestBid != null && bl ? { unit: bl.unit, tac: Number(bl.amount) / 1e8, manual: bl.flag === 'manual' } : null;
+  return { a, d };
+}
+// The same, in the chart's unit (dollars or sats): what the chart's headline reads. A book that was read and is empty says so (a side is null); one not read yet is null.
+const bookTop = (unit) => {
+  const t = topOfBook(), f = inUnit('btc', unit);
+  return t ? { ask: t.a && { px: f(t.a.unit), tac: t.a.tac }, bid: t.d && { px: f(t.d.unit), tac: t.d.tac } } : null;
+};
+// One way to change the chart's venue (the chart's own buttons, the ticket's venue switch, and "Trade on Ethereum instead"), so each does all of it and is counted the same.
+function setLane(lane) {
+  if (!['eth', 'btc', 'cmp'].includes(lane)) return;
+  if (lane !== S.lane) metric({ btc: 'lane_btc', eth: 'lane_eth', cmp: 'lane_cmp' }[lane]);
+  chart.zoomOut(); S.lane = lane; keepChart(); renderChart(); renderBtcTicket();
+}
 // Choosing Bitcoin on the chart brings Bitcoin trading with it: the ticket becomes the Bitcoin one (what the order book asks and bids now, and a Buy and a Sell that
 // open the Bitcoin market on that side) and the Ethereum ticket is put away, not lost: a class hides it, and its amount and quote stay as they were. An Ethereum trade
 // under way keeps its ticket on screen.
@@ -600,11 +641,16 @@ function renderBtcTicket() {
   const on = S.lane === 'btc' && btcOn() && !S.busy;
   tk.classList.toggle('on-btc', on);
   const title = $('#tk-title'); if (title) title.textContent = on ? 'Trade TAC on Bitcoin' : 'Trade TAC';
+  // The venue switch at the top of the ticket: Ethereum or Bitcoin, wherever the chart is below it (on a phone the ticket comes first). Not shown where Bitcoin trading is off in this
+  // browser; put away while an Ethereum trade is under way (its ticket stays on screen until it ends).
+  const venue = $('#tk-venue');
+  if (venue) {
+    venue.hidden = !btcOn();
+    const at = S.lane === 'btc' ? 'btc' : 'eth';
+    venue.querySelectorAll('button').forEach((x) => { x.setAttribute('aria-pressed', String(x.dataset.venue === at)); x.disabled = !!S.busy; });
+  }
   if (!on) return;
-  const b = D.book, buy = S.side === 'buy', lv = lastView();
-  const asks = b ? ladderLevels(b.asks, 'ask') : [], bids = b ? ladderLevels(b.bids, 'bid') : [];
-  const a = b && b.bestAsk != null ? { unit: b.bestAsk, tac: Number((asks.find((l) => l.unit === b.bestAsk) || asks[0] || {}).amount || 0) / 1e8 } : null;
-  const bidLv = bids[0], d = b && b.bestBid != null && bidLv ? { unit: bidLv.unit, tac: Number(bidLv.amount) / 1e8, manual: bidLv.flag === 'manual' } : null;
+  const buy = S.side === 'buy', lv = lastView(), b = D.book, { a, d } = topOfBook() || { a: null, d: null };
   const px = (u) => (D.btcUsd ? usd((u * D.btcUsd) / 1e8) : `${satsFmt(u)} sats`);
   const row = (label, unit, small, cls = '') => html`<div${cls ? ` class="${cls}"` : ''}><dt>${label}</dt><dd><b>${unit != null ? px(unit) : '—'}</b>${small ? html`<small>${small}</small>` : ''}</dd></div>`;
   const last = D.btc?.mark ? row('Last trade', D.btc.mark, lv.words || '', 'mute') : '';
@@ -624,8 +670,14 @@ $('#btc-ticket')?.addEventListener('click', (e) => {
   const s = e.target.closest('[data-btc-side]');
   if (s) { document.querySelector(`#side-seg [data-side="${s.dataset.btcSide}"]`)?.click(); renderBtcTicket(); return; }
   const g = e.target.closest('[data-btc-go]');
-  if (g) { if (g.dataset.btcGo === 'bid') openBitcoin({ side: 'buy', type: 'limit' }); else openBitcoinFor(g.dataset.btcGo, null); return; }
-  if (e.target.closest('[data-btc-eth]')) { chart.zoomOut(); S.lane = 'eth'; keepChart(); renderChart(); renderBtcTicket(); }
+  if (g) { metric(`${g.dataset.btcGo}_btc_click`); if (g.dataset.btcGo === 'bid') openBitcoin({ side: 'buy', type: 'limit' }); else openBitcoinFor(g.dataset.btcGo, null); return; }
+  if (e.target.closest('[data-btc-eth]')) setLane('eth');
+});
+// The venue switch above the ticket. Ethereum puts the chart back on Ethereum only from Bitcoin: from the comparison it leaves the chart as it is (the ticket is Ethereum's already).
+$('#tk-venue')?.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-venue]');
+  if (!b || S.busy) return;
+  if (b.dataset.venue === 'btc') setLane('btc'); else if (S.lane === 'btc') setLane('eth');
 });
 const PRESETS = { buy: [['0.05 ETH', '0.05'], ['0.25 ETH', '0.25'], ['1 ETH', '1']], sell: [['1,000 TAC', '1000'], ['5,000 TAC', '5000'], ['20,000 TAC', '20000']] };
 // With a wallet that holds some of what is paid, the quick amounts are shares of it (the Max beside the balance is the rest); without one, round amounts to see the scale.
@@ -767,12 +819,13 @@ function notify(msg, kind = '', ms = 5000) {
 const pageWallet = () => (W.account && W.prov && !W.prov.isWalletConnect ? { uuid: W.uuid, address: W.account } : null);
 let bitcoinP = null;
 function getBitcoin() {
-  return (bitcoinP ||= import('/trade/btc.js?cb=8bfb5e60').then((m) => (bitcoin = m.makeBitcoin({
+  return (bitcoinP ||= import('/trade/btc.js?cb=7c60d23e').then((m) => (bitcoin = m.makeBitcoin({
     notify, wallet: pageWallet, onChange: () => syncMe(),
     onTraded: (t) => { noteBitcoinTrade(t); loadBitcoin().then(paintAll).catch(() => {}); },
   }))).catch((e) => { bitcoinP = null; throw e; }));
 }
 async function openBitcoin(prime = null) {
+  metric('btc_sheet_open');
   try { await (await getBitcoin()).open(prime); } catch (e) { notify(`Could not open the Bitcoin market: ${e?.message || e}`, 'error', 9000); }
 }
 const lc = (s) => String(s || '').toLowerCase();
@@ -1481,7 +1534,7 @@ const warm = () => getBitcoin().then((b) => b.session.load()).catch(() => {});
 $('#ladders').addEventListener('mouseover', (e) => { if (e.target.closest?.('[data-mine="open"],[data-mine="signin"]')) warm(); });
 $('#ladders').addEventListener('focusin', (e) => { if (e.target.closest?.('[data-mine="open"],[data-mine="signin"]')) warm(); });
 $('#pin').addEventListener('click', (e) => { if (e.target.closest('#unpin') && !S.busy) { S.pin = null; renderPin(); requote(); renderBook(); } });
-$('#lane-seg').addEventListener('click', (e) => { const b = e.target.closest('[data-lane]'); if (b) { chart.zoomOut(); S.lane = b.dataset.lane; keepChart(); renderChart(); renderBtcTicket(); } });
+$('#lane-seg').addEventListener('click', (e) => { const b = e.target.closest('[data-lane]'); if (b) setLane(b.dataset.lane); });
 $('.p-chart').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b || b.closest('#lane-seg')) return;
@@ -1491,6 +1544,9 @@ $('.p-chart').addEventListener('click', (e) => {
   keepChart(); renderChart();
 });
 function paintAll() { renderHead(); renderLanes(); renderChart(); renderBook(); renderPin(); renderAbout(); farm.paint(); renderBtcAlt(); renderBtcTicket(); if (S.quote) renderVenues(S.quote); }
+metric('trade_view', { once: true });
+if (FROM_LINK.src) metric(`trade_via_${FROM_LINK.src}`, { once: true });
+if (FROM_LINK.lane === 'btc') metric('lane_btc_link', { once: true });
 renderQuote(null); renderVenues(null); renderControls(); renderAbout(); renderLanes();
 const loads = [loadChain().then(paintAll), loadTapes().then(paintAll), loadBitcoin().then(paintAll), loadBoards().then(paintAll)];
 loads[0].then(() => loadRange().then(renderBook, renderBook), () => { D.rangeDone = true; });

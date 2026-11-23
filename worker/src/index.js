@@ -95,6 +95,7 @@ import { handleFarm, farmActivityTick } from './farm-program.js';
 import { buildConfidentialSettler, FREE_POSTED_TYPES } from './confidential-settle.js';
 import { pvDeadline, pvFees, settleCalldata as openSettleCalldata, carriesPublicValues, checkPostedShape } from './confidential-open.js';
 import { passesFloor, feeAssetOf, floorInFeeUnits, totalFee, decodePoolState, ammUsdPerUnitBest, AMM_PRICE_DEFAULTS, FEELESS_TYPES } from './relay-quote.js';
+import { makeMetrics, handleMetricEvent, handleMetricsGet } from './metrics.js';
 import { makeConfidentialIndex } from './confidential-index.js';
 import { makePoolAnonymity } from './pool-anonymity.js';
 import { makeChainAnonymity } from './chain-anonymity.js';
@@ -665,7 +666,10 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify', '/metrics', '/metrics/event']);
+// Usage counts (worker/src/metrics.js): one instance per environment, writing to the same store as the rest.
+const _metricsOfEnv = new WeakMap();
+function metricsOf(env) { let m = _metricsOfEnv.get(env); if (!m) { m = makeMetrics({ kv: env.REGISTRY_KV }); _metricsOfEnv.set(env, m); } return m; }
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -28869,6 +28873,8 @@ async function _routeFetch(req, env, ctx) {
 
     if (url.pathname === '/stats' && req.method === 'GET') return handleStats(env, cors, url);
     if (url.pathname === '/flow' && req.method === 'GET') return handleFlow(env, cors);
+    if (url.pathname === '/metrics/event' && req.method === 'POST') return handleMetricEvent(req, metricsOf(env), cors);
+    if (url.pathname === '/metrics' && req.method === 'GET') return handleMetricsGet(url, metricsOf(env), cors);
     if (url.pathname === '/relay/economics' && req.method === 'GET') return handleRelayEconomics(env, cors);
 
     if (url.pathname === '/health' && req.method === 'GET') {
@@ -31060,6 +31066,7 @@ async function _routeFetch(req, env, ctx) {
     const mps = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/preauth-sales$/);
     if (mps && req.method === 'POST')                          return _mutateAndBustPreauthSales(mps[1], () => handlePreauthSalePost(mps[1], req, env, network, cors));
     if (mps && req.method === 'GET') {
+      if (url.searchParams.get('view') === 'book') metricsOf(env).record('book_load', { fromClient: false });
       const whole = await _swrServePerAsset(preauthSalesCacheKey(network, mps[1]), PREAUTH_SALES_CACHE_FRESH_MS, PREAUTH_SALES_CACHE_STALE_MS, () => preauthSalesComputeAndCache(env, network, mps[1]));
       if (url.searchParams.get('view') !== 'book' || whole.status !== 200) return whole;
       // `?view=book`: what an order book is drawn from, without the signatures and outpoints a buyer reads (worker/src/book-views.js). A body

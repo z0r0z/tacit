@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-HH5E4L7iihGt+WlsCwW5JAnZqMnqToO3D6dkiR6uYB4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-UyvGpw7TUZWdXaUow2nXDD+pt7xxwxMvD6QcbypawMw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -78,7 +78,7 @@
 <link rel="modulepreload" href="/eth-nodes.js">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-pace.js">
-<link rel="modulepreload" href="/swap/card.js?cb=4ea87e6b">
+<link rel="modulepreload" href="/swap/card.js?cb=c77df63e">
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
@@ -2461,7 +2461,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 @font-face { font-family: 'Instrument Serif Fallback N'; src: local('Noto Serif'), local('NotoSerif'); size-adjust: 70.5%; ascent-override: 140.4%; descent-override: 44%; line-gap-override: 0%; }
 @font-face { font-family: 'Instrument Serif Fallback N'; font-style: italic; src: local('Noto Serif Italic'), local('NotoSerif-Italic'); size-adjust: 76.3%; ascent-override: 129.7%; descent-override: 40.6%; line-gap-override: 0%; }
 </style>
-<script src="/chrome.js?cb=d95a5b2b" defer></script>
+<script src="/chrome.js?cb=de37249f" defer></script>
 <!-- chrome:head:end -->
 <link rel="preload" href="/fonts/orbitron-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/space-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -2525,6 +2525,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
             <hr class="pr">
             <a href="/assets/"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.1 9.3h7.2"/><path d="M13 6.1L10 16.3Q10 17.9 13.3 17.2"/></svg>Assets</a>
             <a href="/tac/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/></svg>TAC</a>
+            <a href="/trade/tac/?src=menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17l5-6 4 4 7-8"/><path d="M15 7h5v5"/></svg>Trade</a>
             <a href="/pay/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5L3 9.5z"/></svg>Pay pool</a>
             <a href="/bridge/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18"/><path d="M5 17v-3a7 7 0 0 1 14 0v3"/><path d="M9 17v-4.5M15 17v-4.5M12 17v-6"/></svg>Bridges</a>
             <a href="/etch/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4.2-1 10.6-10.6a2.1 2.1 0 0 0-3-3L5.2 16z"/><path d="M13.6 7.4l3 3"/></svg>Etch</a>
@@ -2766,7 +2767,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <div><dt>wallets airdropped, both chains</dt><dd class="num">14,000+</dd></div>
         <div><dt>sale or VC</dt><dd>None</dd></div>
       </dl>
-      <div class="tc-links"><button class="btn" type="button" data-hx="swap:ether:tac">Buy TAC</button><a class="tl" href="/tac/">Stake and pay →</a><a class="tl" href="/trade/tac/">Trade and chart →</a></div>
+      <div class="tc-links"><button class="btn" type="button" data-hx="swap:ether:tac">Buy TAC</button><a class="tl" href="/tac/">Stake and pay →</a><a class="tl" href="/trade/tac/?src=lander">Trade and chart →</a></div>
       <p class="tc-more"><button type="button" data-asset="tac">About TAC</button></p>
     </div>
     <div class="tc-set" id="tc-teth" role="tabpanel" aria-labelledby="tc-t-teth">
@@ -5056,7 +5057,7 @@ const chainSaid = (m) => Object.assign(new Error(m), { said: true });
 const CHAIN_PROVE_S = globalThis.crossOriginIsolated ? 8 : 30;
 const chainProveSay = () => (globalThis.crossOriginIsolated ? 'a few seconds' : 'about half a minute');
 
-const TACIT_URL = '/tacit.js?cb=69210a53';
+const TACIT_URL = '/tacit.js?cb=99af66cd';
 let T = null;
 const TS = makeTacitSession({ url: TACIT_URL, key: () => S.key, secp, bytesToHex, hexToBytes, onLoad: (m) => { T = m; try { xtEngines(m); } catch { } } });
 const loadTacit = TS.load, tacitTurn = TS.turn, withKey = TS.withKey, dropTacitKey = TS.drop, tPriv = TS.tPriv;
@@ -10709,7 +10710,9 @@ function paintHints() {
   const el = $('#hints');
   if (!el) return;
   const pair = (ic) => html`<span class="pair">${ic.map((i) => html`<svg class="tk" aria-hidden="true"><use href="#${i}"/></svg>`)}</span>`;
-  const mine = [!$('#dash')?.hidden && ['bal', 'My balances', 'M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11M16 14h.01'], !$('#act')?.hidden && ['act', 'Activity', 'M3 12h4l3-7 4 14 3-7h4']].filter(Boolean);
+  const held = [!$('#dash')?.hidden && ['bal', 'My balances', 'M3 7h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11M16 14h.01'], !$('#act')?.hidden && ['act', 'Activity', 'M3 12h4l3-7 4 14 3-7h4']].filter(Boolean);
+  // Trade TAC sits with them: the way to buy or sell TAC is a click from the first screen, for a visitor with a wallet open as for one without
+  const mine = held.length ? [...held, ['trade', 'Trade TAC', 'M4 17l5-6 4 4 7-8M15 7h5v5']] : held;
   if (mine.length) {
     const own = html`${mine.map(([id, t, d], i) => html`<button type="button" class="hint own" data-hint="${id}" style="--i:${i}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${t}</span></button>`)}`;
     if (el.__h !== own.s) { el.__h = own.s; mount(el, own); }
@@ -10720,6 +10723,7 @@ function paintHints() {
     { id: 'shield', ic: ['tk-eth', 'tk-teth'], lead: 'Shield ', amt: `${HINT_ETH} ETH`, rest: '', tip: 'Put ETH in the pool, then swap, farm and send from there. Earns points' },
     { id: 'pswap', ic: ['tk-eth', 'tk-usdc'], lead: 'Swap ', amt: `${HINT_ETH} ETH`, rest: ' to USDC privately', tip: 'ETH goes into the private pool and the relay swaps and sends USDC out: nothing on chain links them' },
     { id: 'send', ic: ['tk-usdc', 'tk-teth'], lead: 'Pay ', amt: '25 USDC', rest: ' privately', tip: 'Paid from your wallet into their private balance: the deposit shows, not whose it is' },
+    { id: 'buytac', ic: ['tk-btc', 'tk-tac'], lead: 'Buy ', amt: 'TAC', rest: ' with BTC', tip: 'The Bitcoin order book: listings priced in sats, paid from your own key and settled on Bitcoin. Nothing to connect first' },
     HINT_POOL && { id: 'zap', ic: ['tk-teth', ...HINT_POOL.icons.slice(1)], lead: 'Farm ', amt: `${HINT_ETH} ETH`, rest: ` in ${HINT_POOL.name}`, tip: `The best farm for this amount now (${HINT_POOL.name}): one transaction puts ETH in and your share is farmed` },
   ].filter(Boolean);
   const view = html`<span class="hints-k" aria-hidden="true">Try</span>${hs.map((h, i) => html`<button type="button" class="hint" data-hint="${h.id}" title="${h.tip}" style="--i:${i}">${pair(h.ic)}<span>${h.lead}<b>${h.amt}</b>${h.rest}</span><i class="pf" role="img" aria-hidden="true"></i><i class="go" aria-hidden="true">→</i></button>`)}`;
@@ -10738,6 +10742,8 @@ async function hintsReady() {
   mark('zap', HINT_POOL ? state(v.list(pub, lpTicker(HINT_POOL.poolId)), (x) => x.size === size) : '');
 }
 function hintGo(id) {
+  if (id === 'buytac') { location.href = '/trade/tac/?lane=btc&src=chip'; return; }       // the trade page opens on the Bitcoin order book, and counts that a chip brought the visitor
+  if (id === 'trade') { location.href = '/trade/tac/?src=chip'; return; }
   if (id === 'bal') { openPortfolio(); return; }
   if (id === 'act') { openAct(); return; }
   if (S.wallet && !S.key && !signing) { signing = true; open.eth({ address: S.wallet }).catch(() => {}).finally(() => { signing = false; if (S.key) { try { hxQuote(); } catch { } } }); }
@@ -16772,7 +16778,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=4ea87e6b').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=c77df63e').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {
@@ -17391,7 +17397,7 @@ async function hxBtcMarket(addr) {
   const r = xtOf(addr), b = r && xtBridge(r);
   if (!b) return;
   try {
-    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=8bfb5e60')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
+    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=7c60d23e')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
     await BTC_MKT.get(b.hex).open();
   } catch (e) { toast(`The ${b.name} market on Bitcoin did not open: ${errText(e)}`, true); }
 }

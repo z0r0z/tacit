@@ -1,11 +1,13 @@
-import { makeBtcSession, short } from '/trade/btc-session.js?cb=4e279b9d';
+import { makeBtcSession, short } from '/trade/btc-session.js?cb=9749c0c9';
 import { overlay, esc } from '/trade/sheet.js?cb=d857446c';
 import { signInSheet, pickWalletSheet } from '/trade/sign-in.js?cb=7e9e64d2';
+import { count } from '/metrics.js?cb=48a20c0d';
 
 const MARKET_URL = '/btc-market.js', CSS_URL = '/trade/btc-market.css?cb=ac513811';
 const TAC = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const TAC_ASSET = { id: TAC, title: 'TAC on Bitcoin', after: 'To sell TAC you hold on Ethereum, bridge it to Bitcoin first. <a href="/#bridge">Bridge →</a>' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Counted for TAC's own market only (a count with no one in it: what happened, not who), as the trade page counts what the sheet does: a lot checked, and a trade done.
 
 export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange = () => {}, wallet = () => null, asset = TAC_ASSET, purpose = 'trade on Bitcoin', prefer = '' } = {}) {
   const AID = asset.id;
@@ -176,7 +178,8 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
     const base = T._btcMarketCtx(AID);
     if (!base.asset()?.ticker || base.asset().ticker === '?') throw new Error('the market data did not load');
     const logo = (h) => (typeof h === 'string' ? h.replace('src="tac-logo.png"', 'src="/tac-logo.png"') : h);
-    const settled = (fn, kind) => async (...a) => { try { await fn?.(...a); } finally { try { await refreshMe({ blank: true }); } catch { } onTraded({ kind, ...(a[0] || {}) }); } };
+    const tally = (name) => { if (AID === TAC) count(name); };
+    const settled = (fn, kind) => async (...a) => { try { await fn?.(...a); tally(`btc_${kind}`); } finally { try { await refreshMe({ blank: true }); } catch { } onTraded({ kind, ...(a[0] || {}) }); } };
     return {
       ...base,
       mountEth: null, initialLane: 'btc', onLane: null,
@@ -185,6 +188,8 @@ export function makeBitcoin({ notify = () => {}, onTraded = () => {}, onChange =
       friendlyError: (...a) => { const m = base.friendlyError?.(...a); return typeof m === 'string' ? m.replace('retry with the Swap tile or pick another row', 'try again or pick another row') : m; },
       unlock, feeRate: () => T.getFeeRate(), fundSats: (o) => fund({ fiat: (n) => { const px = Number(base.btcUsd?.() || 0); return px > 0 ? `$${((n / 1e8) * px).toFixed(2)}` : ''; }, ...(o || {}) }),
       confirm: confirmDialog,
+      // the lot checks the sheet watches: begun, and how each ended (the listener is single, so a check the sheet is not watching is not counted)
+      onLotCheck: base.onLotCheck ? (fn) => base.onLotCheck((e) => { if (e.phase === 'start') tally('lot_check_start'); else if (e.phase === 'end') tally(e.ok ? 'lot_check_pass' : 'lot_check_fail'); fn(e); }) : undefined,
       toast: (m, k, ms) => notify(m, k, ms),
       onError: (e) => { recovery(e).catch(() => {}); },
       goBack: () => main?.close(),

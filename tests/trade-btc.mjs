@@ -58,7 +58,7 @@ async function stubWallet(ctx) {
   return log;
 }
 
-async function openPage(viewport, { wallet = false, hash = '#btc=on', utxos = [], delay = 0, utxoHold = 0, taprootCoin = false } = {}) {
+async function openPage(viewport, { wallet = false, hash = '#btc=on', query = '', utxos = [], delay = 0, utxoHold = 0, taprootCoin = false, stored = null, live = false, fresh = false, empty = false } = {}) {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport, colorScheme: 'light' });
   const walletLog = wallet ? await stubWallet(ctx) : null;
@@ -70,11 +70,11 @@ async function openPage(viewport, { wallet = false, hash = '#btc=on', utxos = []
     const u = new URL(route.request().url()), path = u.pathname;
     seen.api.add(`${route.request().method()} ${path}`);
     if (route.request().method() !== 'GET') { seen.posts.push(`${path}`); return route.fulfill(ok200({ error: 'not served in this test' })); }
-    if (/preauth-sales$/.test(path)) return route.fulfill(ok200(sales));
-    if (/bid-intents$/.test(path)) return route.fulfill(ok200(bids));
+    if (/preauth-sales$/.test(path)) return route.fulfill(ok200(empty ? { ...sales, sales: [] } : sales));
+    if (/bid-intents$/.test(path)) return route.fulfill(ok200(empty ? { ...bids, intents: [] } : bids));
     if (path === '/market') return route.fulfill(ok200(market));
     if (path === '/petch-assets') return route.fulfill(ok200(petch));
-    if (path === `/assets/${AID}`) return route.fulfill(ok200(asset));
+    if (path === `/assets/${AID}`) { const t = Math.floor(Date.now() / 1000) - 90; return route.fulfill(ok200(fresh ? { ...asset, last_trade: { ...(asset.last_trade || {}), ts: t }, mark_price: { ...(asset.mark_price || {}), ts: t } } : asset)); }
     seen.unmatched.add(`api ${path}`);
     return route.fulfill({ status: 404, headers: { 'access-control-allow-origin': '*' }, body: '{"error":"not found"}' });
   });
@@ -100,8 +100,27 @@ async function openPage(viewport, { wallet = false, hash = '#btc=on', utxos = []
   const page = await ctx.newPage(), errors = [], blocked = [];
   page.on('pageerror', (e) => errors.push(String(e.message || e)));
   page.on('console', (m) => { if (m.type() === 'error') { const t = m.text(); if (/Content Security Policy|Refused to/i.test(t)) blocked.push(t); else if (!/Failed to load resource/.test(t)) errors.push(t); } });
-  await page.goto(`http://127.0.0.1:${WEB}/trade/tac/${hash}`);
-  return { browser, page, errors, blocked, seen, walletLog };
+  // what this browser chose last, set before the page runs (a link must win over it)
+  if (stored) await ctx.addInitScript((v) => { try { localStorage.setItem('tacit-trade-chart-v1', JSON.stringify(v)); } catch { } }, stored);
+  // the page's beacons go to the API: they are caught here and kept, so what a visit counts can be read
+  const beacons = [];
+  await ctx.route(/^https:\/\/api\.tacit\.finance\/metrics\/event/, (route) => { beacons.push(route.request().postData()); return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*' } }); });
+  // `live`: the page is served as tacit.finance over https, in a browser that does not say it is automated, because that is where the counters send (they stay quiet anywhere else): `'dnt'` is
+  // the same browser asking not to be tracked
+  if (live) {
+    await ctx.addInitScript(() => { Object.defineProperty(navigator, 'webdriver', { get: () => false }); });
+    if (live === 'dnt') await ctx.addInitScript(() => { Object.defineProperty(navigator, 'doNotTrack', { get: () => '1' }); });
+    await ctx.route(/^https:\/\/tacit\.finance\//, (route) => {
+      const u = new URL(route.request().url()), pth = decodeURIComponent(u.pathname);
+      let f = join(DAPP, pth);
+      if (existsSync(f) && statSync(f).isDirectory()) f = join(f, 'index.html');
+      if (!existsSync(f) && !extname(pth)) f = join(DAPP, 'index.html');
+      if (!existsSync(f)) return route.fulfill({ status: 404, body: 'not found' });
+      return route.fulfill({ status: 200, contentType: TYPES[extname(f)] || 'application/octet-stream', body: readFileSync(f) });
+    });
+  }
+  await page.goto(`${live ? 'https://tacit.finance' : `http://127.0.0.1:${WEB}`}/trade/tac/${query}${hash}`);
+  return { browser, page, errors, blocked, seen, walletLog, beacons };
 }
 const ladderReady = (p) => until(p, () => document.querySelectorAll('#ladders .ob-row').length >= 4, null, 120000);
 
@@ -298,6 +317,95 @@ try {
   ok(r.errors.length === 0 && r.blocked.length === 0, `no page errors or blocked requests (${[...r.errors, ...r.blocked].slice(0, 2).join(' | ')})`);
   await r.browser.close();
 
+  // A link opens the page on the Bitcoin order book (?lane=btc), whatever this browser chose last; the chart's headline then leads with what the book asks now, with the TAC behind it,
+  // and the last trade (days old in these fixtures) is small and dated; the ticket's venue switch says Bitcoin and the book below is Bitcoin's.
+  r = await openPage({ width: 1280, height: 900 }, { query: '?lane=btc&src=chip', hash: '', stored: { lane: 'eth', book: 'eth' }, live: true });
+  p = r.page;
+  await until(p, () => /Cheapest ask/.test(document.querySelector('#btc-ticket')?.textContent || '') && document.querySelector('#ch-read')?.textContent, null, 120000);
+  const dl = await p.evaluate(() => ({ lane: document.querySelector('#lane-seg [aria-pressed="true"]')?.dataset.lane, on: document.querySelector('.p-ticket').classList.contains('on-btc'), venue: [...document.querySelectorAll('#tk-venue button')].map((b) => `${b.dataset.venue}:${b.getAttribute('aria-pressed')}`).join(), book: document.querySelector('#book-seg [aria-pressed="true"]')?.dataset.book, read: document.querySelector('#ch-read').innerText.replace(/\s+/g, ' ') }));
+  ok(dl.lane === 'btc' && dl.on && dl.venue === 'eth:false,btc:true' && dl.book === 'btc', `?lane=btc opens the chart, the ticket and the book on Bitcoin though the browser last chose Ethereum (${JSON.stringify({ ...dl, read: '' })})`);
+  ok(/^\$?[\d.,]+ (sats )?cheapest ask now · [\d.,]+ TAC for sale/.test(dl.read) && /best bid .*TAC/.test(dl.read) && /last trade .*(day|week|month)s? ago/.test(dl.read) && !/%/.test(dl.read), `the chart's headline is the cheapest ask now with its TAC, the best bid, and the old last trade dated, with no change chip (${dl.read.slice(0, 200)})`);
+  await p.waitForTimeout(400);
+  ok(r.beacons.includes('trade_view') && r.beacons.includes('trade_via_chip') && r.beacons.includes('lane_btc_link'), `the visit is counted as a view, from the chip, onto the Bitcoin lane (${r.beacons.join(',')})`);
+  ok(r.beacons.every((b) => /^[a-z_]{1,32}$/.test(b)), 'and what is sent is a name and nothing else');
+  await p.click('#tk-venue [data-venue="eth"]');
+  const back2 = await p.evaluate(() => ({ lane: document.querySelector('#lane-seg [aria-pressed="true"]')?.dataset.lane, title: document.querySelector('#tk-title').textContent, venue: document.querySelector('#tk-venue [aria-pressed="true"]')?.dataset.venue, eth: getComputedStyle(document.querySelector('#side-seg')).display }));
+  ok(back2.lane === 'eth' && back2.title === 'Trade TAC' && back2.venue === 'eth' && back2.eth !== 'none', 'the venue switch\'s Ethereum brings the Ethereum chart and ticket back');
+  await p.click('#tk-venue [data-venue="btc"]');
+  const fwd = await p.evaluate(() => ({ lane: document.querySelector('#lane-seg [aria-pressed="true"]')?.dataset.lane, title: document.querySelector('#tk-title').textContent, shown: getComputedStyle(document.querySelector('#btc-ticket')).display, venue: getComputedStyle(document.querySelector('#tk-venue')).display }));
+  ok(fwd.lane === 'btc' && fwd.title === 'Trade TAC on Bitcoin' && fwd.shown === 'block' && fwd.venue !== 'none', 'and its Bitcoin does the same the other way, with the switch still on screen');
+  await p.waitForTimeout(300);
+  ok(r.beacons.filter((b) => b === 'lane_eth').length === 1 && r.beacons.filter((b) => b === 'lane_btc').length === 1, 'each choice of venue is counted once');
+  await p.click('#lane-seg [data-lane="btc"]'); await p.click('#tk-venue [data-venue="btc"]');
+  await p.waitForTimeout(300);
+  ok(r.beacons.filter((b) => b === 'lane_btc').length === 1, 'and pressing the venue the chart is already on counts nothing');
+  await p.click('#btc-ticket [data-btc-go]');
+  await until(p, () => document.querySelector('.bsheet.wide .bm [data-k]'), null, 180000);
+  ok(r.beacons.includes('buy_btc_click') && r.beacons.includes('btc_sheet_open'), `the Buy press and the sheet opening are counted (${r.beacons.filter((b) => /click|sheet/.test(b)).join(',')})`);
+  ok(r.errors.length === 0 && r.blocked.length === 0, `no page errors or blocked requests (${[...r.errors, ...r.blocked].slice(0, 3).join(' | ')})`);
+  await r.browser.close();
+  // A recent trade keeps the headline (its price and move) and the book's ask and bid sit beside it; with nothing for sale and no bids, the old last trade stays the headline, dated
+  r = await openPage({ width: 1280, height: 900 }, { query: '?lane=btc', hash: '', fresh: true });
+  p = r.page;
+  await until(p, () => /Cheapest ask/.test(document.querySelector('#btc-ticket')?.textContent || '') && /TAC/.test(document.querySelector('#ch-read')?.textContent || ''), null, 120000);
+  const fr = (await p.evaluate(() => document.querySelector('#ch-read').innerText)).replace(/\s+/g, ' ');
+  ok(/^150 sats \d(\.\d)?%/.test(fr) && !/cheapest ask now/.test(fr) && /ask 157 sats · 319 TAC/.test(fr) && /bid 210 sats · 154 TAC/.test(fr), `with a trade a minute old the headline is its price, with the book's ask and bid beside it (${fr.slice(0, 190)})`);
+  await r.browser.close();
+  r = await openPage({ width: 1280, height: 900 }, { query: '?lane=btc', hash: '', empty: true });
+  p = r.page;
+  await until(p, () => /nothing for sale/.test(document.querySelector('#btc-ticket')?.textContent || '') && /last trade/.test(document.querySelector('#ch-read')?.textContent || ''), null, 120000);
+  const em = (await p.evaluate(() => document.querySelector('#ch-read').innerText)).replace(/\s+/g, ' ');
+  ok(/^150 sats/.test(em) && /last trade 42 days ago/.test(em) && /nothing for sale/.test(em) && /no bids/.test(em) && !/cheapest ask now/.test(em) && !/%/.test(em), `with an empty book the old last trade stays the headline, dated, with no change chip (${em.slice(0, 190)})`);
+  await r.browser.close();
+  // the other link forms, and a link that names nothing known
+  for (const [q, h, want] of [['', '#lane=btc', 'btc'], ['?lane=bitcoin', '', 'btc'], ['?lane=cmp', '', 'cmp'], ['?lane=nonsense', '', 'eth'], ['', '', 'eth']]) {
+    r = await openPage({ width: 1280, height: 900 }, { query: q, hash: h });
+    await r.page.waitForSelector('#lane-seg [aria-pressed="true"]', { timeout: 60000 });
+    const got = await r.page.evaluate(() => document.querySelector('#lane-seg [aria-pressed="true"]')?.dataset.lane);
+    ok(got === want, `${q || '(no query)'}${h} opens the ${want} chart (${got})`);
+    if (want === 'cmp') {
+      await r.page.waitForSelector('#tk-venue [data-venue="eth"]');
+      await r.page.click('#tk-venue [data-venue="eth"]');
+      ok((await r.page.evaluate(() => document.querySelector('#lane-seg [aria-pressed="true"]')?.dataset.lane)) === 'cmp', 'the switch\'s Ethereum, pressed while the chart compares the two, leaves the comparison as it is');
+    }
+    await r.browser.close();
+  }
+  // a browser that asked not to be tracked is not counted at all; one that did not is counted from the menu's link
+  r = await openPage({ width: 1280, height: 900 }, { query: '?src=menu', hash: '', live: 'dnt' });
+  await r.page.waitForSelector('#lane-seg [aria-pressed="true"]', { timeout: 60000 });
+  await r.page.click('#tk-venue [data-venue="btc"]');
+  await r.page.waitForTimeout(1500);
+  ok(r.beacons.length === 0, `a browser that sends Do Not Track is not counted, whatever it does (${r.beacons.join(',')})`);
+  await r.browser.close();
+  r = await openPage({ width: 1280, height: 900 }, { query: '?src=menu', hash: '', live: true });
+  await r.page.waitForSelector('#lane-seg [aria-pressed="true"]', { timeout: 60000 });
+  await r.page.waitForTimeout(1500);
+  ok(r.beacons.includes('trade_via_menu') && !r.beacons.includes('lane_btc_link'), `a link from the menu is counted as such (${r.beacons.join(',')})`);
+  await r.browser.close();
+  r = await openPage({ width: 1280, height: 900 }, { query: '?src=nonsense', hash: '', live: true });
+  await r.page.waitForSelector('#lane-seg [aria-pressed="true"]', { timeout: 60000 });
+  await r.page.waitForTimeout(1500);
+  ok(r.beacons.join() === 'trade_view', `a source that is not one of the five counts only the view (${r.beacons.join(',')})`);
+  await r.browser.close();
+  // Bitcoin off in this browser: the venue switch is not offered
+  r = await openPage({ width: 1280, height: 900 }, { hash: '#btc=off' });
+  await r.page.waitForSelector('#lane-seg [aria-pressed="true"]', { timeout: 60000 });
+  await r.page.waitForTimeout(800);
+  ok(await r.page.evaluate(() => getComputedStyle(document.querySelector('#tk-venue')).display === 'none'), 'with Bitcoin trading off in the browser, the ticket offers no venue switch');
+  await r.browser.close();
+
+  // on a phone the ticket comes first, and its venue switch is on the first screen with Bitcoin one tap away
+  r = await openPage({ width: 390, height: 844 }, { hash: '' });
+  p = r.page;
+  await until(p, () => document.querySelectorAll('#tk-venue button').length === 2 && document.querySelector('#lane-seg [aria-pressed="true"]'), null, 120000);
+  await p.waitForTimeout(1500);
+  const ph = await p.evaluate(() => { const v = document.querySelector('#tk-venue').getBoundingClientRect(), t = document.querySelector('#side-seg').getBoundingClientRect(), a = document.querySelector('#tk-venue [data-venue="btc"]').getBoundingClientRect(); return { top: v.top, bottom: v.bottom, sideTop: t.top, w: v.width, btcW: a.width, vh: innerHeight, over: document.documentElement.scrollWidth - innerWidth }; });
+  ok(ph.bottom < ph.vh && ph.top < ph.sideTop && ph.btcW > 80 && ph.over <= 1, `on a phone the Ethereum | Bitcoin switch is on the first screen above the Buy/Sell choice, wide enough to tap (${JSON.stringify(ph)})`);
+  await p.click('#tk-venue [data-venue="btc"]');
+  await until(p, () => /Cheapest ask/.test(document.querySelector('#btc-ticket')?.textContent || ''), null, 30000);
+  const phb = await p.evaluate(() => ({ title: document.querySelector('#tk-title').textContent, venue: getComputedStyle(document.querySelector('#tk-venue')).display, v: document.querySelector('#tk-venue').getBoundingClientRect().bottom, vh: innerHeight, go: document.querySelector('#btc-ticket [data-btc-go]').getBoundingClientRect().top }));
+  ok(phb.title === 'Trade TAC on Bitcoin' && phb.venue !== 'none' && phb.v < phb.vh && phb.go < phb.vh + 400, `one tap on Bitcoin makes the ticket the Bitcoin one, the switch staying where it was (${JSON.stringify(phb)})`);
+  await r.browser.close();
   // a phone
   r = await openPage({ width: 390, height: 844 }, { wallet: true });
   p = r.page;

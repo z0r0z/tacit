@@ -44,6 +44,7 @@ const G = {
   chains: '<path d="M9 12h6"/><path d="M7 8a4 4 0 0 0 0 8"/><path d="M17 8a4 4 0 0 1 0 8"/>',
   menu: '<path d="M5 7h14M5 12h14M5 17h14"/>',
   tasks: '<path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/>',
+  trade: '<path d="M4 17l5-6 4 4 7-8"/><path d="M15 7h5v5"/>',
   build: '<path d="M8 7l-5 5 5 5"/><path d="M16 7l5 5-5 5"/><path d="M14 4l-4 16"/>',
   stats: '<path d="M5 20v-6"/><path d="M12 20V5"/><path d="M19 20v-10"/>',
   prove: '<rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/>',
@@ -62,11 +63,12 @@ const svg = (k) => `<svg viewBox="0 0 24 24"${FILLED.has(k) ? ' class="fill"' : 
 // The sections of the app, always in the header: what you hold, paying, DeFi, moving between chains, borrowing, and what there is to claim. A wide
 // header names them, a narrower one shows their glyphs, and on a phone they are the bar at the foot of the window (its fifth entry is the More page).
 // Payments, DeFi and Chains are views of the front page (its card, TAC's page and its sheets, each cut to the one thing); Borrow and Rewards are pages
-// of their own. The menu holds the pages no section is, in order by kind and with no divider: the holder's own (Assets, TAC, Pay pool, Bridges),
+// of their own. The menu holds the pages no section is, in order by kind and with no divider: the holder's own (Assets, TAC, Trade, Pay pool, Bridges),
 // then the builder's (Etch makes a token, the Shop sells an address to deploy a contract to, Prove is mining, Tasks pay for small jobs), then
-// FACE. Build and Stats are in every page's footer, and Trade is linked from the pages that show TAC's price, so the menu does not repeat them.
+// FACE. Build and Stats are in every page's footer. Trade is in the menu as well as linked from the pages that show TAC's price: that is where a visitor who wants to buy or sell
+// TAC looks first, and the link says (?src=menu) which door it was, which the page counts and nothing else.
 const MAIN = [['portfolio', '/#portfolio', 'Portfolio'], ['payments', '/#/payments', 'Payments'], ['defi', '/#/defi', 'DeFi'], ['chains', '/#/chains', 'Chains'], ['borrow', '/vault/', 'Borrow'], ['rewards', '/rewards/', 'Rewards']];
-const MORE = [['assets', '/assets/', 'Assets'], ['tac', '/tac/', 'TAC'], ['pay', '/pay/', 'Pay pool'], ['bridge', '/bridge/', 'Bridges'],
+const MORE = [['assets', '/assets/', 'Assets'], ['tac', '/tac/', 'TAC'], ['trade', '/trade/tac/?src=menu', 'Trade'], ['pay', '/pay/', 'Pay pool'], ['bridge', '/bridge/', 'Bridges'],
   ['etch', '/etch/', 'Etch'], ['shop', '/shop/', 'Shop'], ['prove', '/prove/', 'Prove'], ['tasks', '/tasks/', 'Tasks'], ['face', '/face/', 'FACE']];
 const BAR = 4;   // how many of the sections the phone's bar holds before More; the rest are first in the menu there
 

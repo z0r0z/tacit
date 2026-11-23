@@ -15283,10 +15283,10 @@ function _crossCheckedFetcher(onRead = null) {
 let _tradeCheckInFlight = 0, _lotCheckListener = null;
 async function requireValidatedLot(txidHex, vout, label = "the seller's lot") {
   _tradeCheckInFlight++;
-  let n = 0;
-  const say = (phase) => { try { _lotCheckListener?.({ phase, n }); } catch { } };
+  let n = 0, good = false;
+  const say = (phase) => { try { _lotCheckListener?.({ phase, n, ...(phase === 'end' ? { ok: good } : {}) }); } catch { } };      // the end tells whether the lot passed
   say('start');
-  try { return await _requireValidatedLot(txidHex, vout, label, () => { n++; say('read'); }); } finally { _tradeCheckInFlight--; say('end'); }
+  try { const r = await _requireValidatedLot(txidHex, vout, label, () => { n++; say('read'); }); good = true; return r; } finally { _tradeCheckInFlight--; say('end'); }
 }
 // What a purchase's check has proved, kept for the page session so the next lot (and the purchase after a lot checked ahead) does not read and prove
 // the same ancestors again: only outpoints that this check proved from two sources, and only when every transaction it read is confirmed and of a type

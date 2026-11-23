@@ -839,6 +839,8 @@ await step('hints', async () => {
     ok(names.includes('pswap') && names.includes('shield'), `hints: quick starts show above the card (${names.join(' ')})`);
     ok(await p.$$eval('#hints .hint', (bs) => bs.every((b) => b.querySelectorAll('svg.tk').length >= 2 && b.textContent.trim().length > 10)), 'hints: each carries its token marks and says what it does');
     ok(names.includes('send'), 'hints: a Send start is among them');
+    ok(names.includes('buytac') && names.indexOf('buytac') === names.indexOf('send') + 1, `hints: a Buy TAC with BTC start follows Send (${names.join(' ')})`);
+    ok(await p.$eval('#hints [data-hint="buytac"]', (b) => b.querySelectorAll('svg.tk').length === 2 && /Buy\s*TAC\s*with BTC/.test(b.textContent)), 'hints: and says what it does, with BTC and TAC marks');
     await p.click('#hints [data-hint="send"]');
     ok(await p.waitForFunction(() => document.querySelector('#hx-sa')?.value === 'wusdc' && document.querySelector('#hx-amt')?.value === '25' && document.activeElement?.id === 'hx-rcpt', null, { timeout: 30000 }).then(() => true, () => false), 'hints: the Send start opens Send on the wallet\'s USDC with 25 in and the recipient asked for');
     await p.click('[data-hxm="swap"]');
@@ -849,6 +851,10 @@ await step('hints', async () => {
     ok(await p.waitForFunction(() => /private=to/.test(location.search) && /to=USDC/.test(location.search), null, { timeout: 30000 }).then(() => true, () => false), 'hints: asking for the private way (the card\'s own link grammar)');
     await p.click('#hints [data-hint="shield"]');
     ok(await p.waitForFunction(() => document.querySelector('#hx-swap #amt')?.value === '0.01' && /Private|private|DeFi/.test(document.querySelector('#hx-swap')?.textContent || ''), null, { timeout: 30000 }).then(() => true, () => false), 'hints: the shield start opens the way to the private pool with 0.01');
+    // the Bitcoin start leaves the front page for the trade page, open on the Bitcoin order book and naming itself
+    const gone = p.waitForURL(/\/trade\/tac\/\?lane=btc&src=chip$/, { timeout: 30000 }).then(() => true, () => false);
+    await p.click('#hints [data-hint="buytac"]');
+    ok(await gone, 'hints: the Buy TAC with BTC start goes to the trade page on the Bitcoin order book (?lane=btc&src=chip)');
   } finally { await r.browser.close(); }
 });
 
@@ -11004,7 +11010,7 @@ await step('tradelinks', async () => {
       const seen = await p.evaluate(() => {
         const vis = (s) => { const e = document.querySelector(s); if (!e) return false; const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && b.left >= 0 && b.right <= window.innerWidth + 1; };
         const list = (s) => [...document.querySelectorAll(s)].map((a) => `${a.textContent.trim()}:${a.getAttribute('href')}`).join(' ');
-        return { sections: vis('.sn > a[href="/#/defi"]') && vis('.sn > a[href="/rewards/"]'), bar: [...document.querySelectorAll('nav.bn a')].filter((a) => a.getBoundingClientRect().width > 0).map((a) => `${a.textContent.trim()}:${a.getAttribute('href')}`).join(' '), menu: vis('.sn .sm > summary'), order: list('.sn > a:not(.sa)'), more: list('.sm-p a:not(.pr)'), all: list('.sm-p a'), tile: !!document.querySelector('#tac a[href="/trade/tac/"]'),
+        return { sections: vis('.sn > a[href="/#/defi"]') && vis('.sn > a[href="/rewards/"]'), bar: [...document.querySelectorAll('nav.bn a')].filter((a) => a.getBoundingClientRect().width > 0).map((a) => `${a.textContent.trim()}:${a.getAttribute('href')}`).join(' '), menu: vis('.sn .sm > summary'), order: list('.sn > a:not(.sa)'), more: list('.sm-p a:not(.pr)'), all: list('.sm-p a'), tile: !!document.querySelector('#tac a[href^="/trade/tac/"]'),
           chip: (() => { const l = document.getElementById('wallet-label'); return !!l && l.scrollWidth <= l.clientWidth + 1 && l.clientWidth >= 30; })(), foot: [...document.querySelectorAll('footer.sf nav a')].map((a) => a.getAttribute('aria-label')).join(', '),
           scroll: document.documentElement.scrollWidth > window.innerWidth + 1 };
       });
@@ -11012,7 +11018,7 @@ await step('tradelinks', async () => {
       const SECTIONS = 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains Borrow:/vault/ Rewards:/rewards/';
       if (name === 'desktop') ok(seen.sections && seen.order === SECTIONS, `tradelinks (${name}): and the six sections beside it (${seen.order})`);
       else ok(!seen.sections && seen.bar === 'Portfolio:/#portfolio Payments:/#/payments DeFi:/#/defi Chains:/#/chains More:/#/menu' && seen.all.startsWith('Borrow:/vault/ Rewards:/rewards/ Assets:/assets/ '), `tradelinks (${name}): four sections and More are the bar at the foot, the other two first in the menu (${seen.bar} | ${seen.all})`);
-      ok(seen.more === 'Assets:/assets/ TAC:/tac/ Pay pool:/pay/ Bridges:/bridge/ Etch:/etch/ Shop:/shop/ Prove:/prove/ Tasks:/tasks/ FACE:/face/', `tradelinks (${name}): and, under the menu, the pages no section is (${seen.more})`);
+      ok(seen.more === 'Assets:/assets/ TAC:/tac/ Trade:/trade/tac/?src=menu Pay pool:/pay/ Bridges:/bridge/ Etch:/etch/ Shop:/shop/ Prove:/prove/ Tasks:/tasks/ FACE:/face/', `tradelinks (${name}): and, under the menu, the pages no section is (${seen.more})`);
       await p.click('.sn .sm > summary');
       ok(await p.evaluate(() => [...document.querySelectorAll('.sm-p a.pr')].some((a) => a.getBoundingClientRect().width > 0)) === (name === 'phone'), `tradelinks (${name}): the menu lists Borrow and Rewards only where the header has not`);
       await p.keyboard.press('Escape');

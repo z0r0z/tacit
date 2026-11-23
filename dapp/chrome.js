@@ -168,7 +168,7 @@
     "rewards": ["Rewards", "Your airdrop, your points and the leaderboard.", []]
   };
   // the More page's line for each page of the menu
-  const ABOUT = { '/assets/': 'TAC, tETH, cBTC, cUSD and how each is backed', '/tac/': 'the Tacit chain: stake, pay, bridge', '/pay/': 'BTC, TAC and ETH paid privately from one key', '/bridge/': 'every way between Bitcoin and Ethereum',
+  const ABOUT = { '/assets/': 'TAC, tETH, cBTC, cUSD and how each is backed', '/tac/': 'the Tacit chain: stake, pay, bridge', '/trade/tac/?src=menu': 'buy and sell TAC: Ethereum pools, a Bitcoin order book', '/pay/': 'BTC, TAC and ETH paid privately from one key', '/bridge/': 'every way between Bitcoin and Ethereum',
     '/etch/': 'issue your own asset', '/shop/': 'addresses that start with zeros, for TAC', '/prove/': 'run a prover, send waiting settles', '/tasks/': 'small jobs paid in TAC', '/face/': 'buy TAC: the biggest buyer wins the address' };
   // the mock-up's addresses for what is a page, a sheet or another address here
   const ELSE = { '#/portfolio': '/#portfolio', '#/defi/earn': '/#card=earn', '#/borrow': '/vault/', '#/borrow/btc': '/vault/#btc', '#/borrow/tac': '/vault/', '#/rewards': '/rewards/', '#/more': '/#/menu', '#/activity': '/#activity',
