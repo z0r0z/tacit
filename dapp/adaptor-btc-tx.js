@@ -6,6 +6,9 @@
 // signers. Outputs to the wallet itself use the wallet's own change blinding and amount keystream, so the wallet
 // finds them again by scanning like any other note of its own.
 //
+// A swap of plain sats (no note) uses the plain-sats builders at the end (pickSats, lockSats, claimSats, refundSats): the
+// same lock and the same two ways out, as single transactions, with no commit and no Tacit kit.
+//
 // Pure: no network, no storage. The wallet's primitives (dapp/bitcoin-taproot-wallet.js `prims`) and Tacit's
 // transfer codec (tacitKit) come in as arguments. A caller stores `commitHex` and `revealHex` before it sends
 // either, and sends them with broadcastPair, so a restart between the two sends resumes with the reveal.
@@ -199,16 +202,99 @@ export function makeAdaptorBtcTx({ prims, kit }) {
     return { revealTx: tx, revealJson: txToJson(tx), revealHex: bytesToHex(prims.serializeTx(tx)) };
   }
 
-  // Commit first, then the reveal, which retries while the commit propagates. `onStage` hears 'commit' then 'reveal'.
+  // ── plain sats ──
+  // The same lock for sats that carry no note (a swap of Bitcoin itself): the lock is the funding transaction, the claim and
+  // the refund each one transaction that spends the lock output, and there is no commit/reveal pair, no payload and no Tacit
+  // kit. Each returns the shape of a pair with nothing to commit (`commitHex` null, the transaction as `revealTx` / `revealHex`),
+  // so a record and a broadcast treat it as they do a pair. The fee of a claim or a refund comes out of the lock output itself:
+  // the claimer needs no coin of its own, and a refund needs none either.
+  const SATS_LOCK_MIN = 20_000;   // below this a claim or a refund at 100 sat/vB would leave less than dust
+  const satsValue = (amount) => {
+    const v = Number(amount);
+    if (!Number.isSafeInteger(v) || v < SATS_LOCK_MIN) throw new Error(`adaptor-btc-tx: a sats lock holds at least ${SATS_LOCK_MIN} sats`);
+    return v;
+  };
+  const satsPair = (tx, fee) => ({
+    commitTx: null, commitTxid: null, commitHex: null, commitFee: 0,
+    revealTx: tx, revealTxid: prims.txid(tx), revealHex: bytesToHex(prims.serializeTx(tx)), revealFee: fee, kernelSig: null,
+  });
+  const lockShape = (coins, value, lockSpk, hint, change) => ({
+    version: 2, locktime: 0,
+    inputs: coins.map((c) => ({ txid: c.txid, vout: c.vout, sequence: SEQ, witness: [] })),
+    outputs: [{ value, script: lockSpk }, ...(hint ? [{ value: 0, script: hint }] : []), ...(change > DUST ? [{ value: change, script: own }] : [])],
+  });
+  const lockFee = (coins, value, lockSpk, hint, feeRate) => {
+    const sized = lockShape(coins, value, lockSpk, hint, DUST + 1);
+    sized.inputs.forEach((i) => { i.witness = [new Uint8Array(72), new Uint8Array(33)]; });
+    return prims.feeFor(vsizeOf(sized), feeRate);
+  };
+
+  // The coins to lock `amount` from, in the order given (largest first, as the wallet lists them): the fewest that cover the
+  // amount and the fee of the lock with its recovery hint. A coin of dust size may carry a note, so only larger coins are used.
+  // The first coin names the swap (its outpoint is the swap id), which is why the caller picks before it derives the lock.
+  function pickSats({ amount, satsUtxos, feeRate }) {
+    const value = satsValue(amount);
+    const probe = prims.p2trScript(wallet.xonly()), hint = new Uint8Array(49);
+    const picked = [];
+    let total = 0;
+    for (const c of satsUtxos.filter((u) => u.value > DUST)) {
+      picked.push(c); total += c.value;
+      if (total >= value + lockFee(picked, value, probe, hint, feeRate)) return picked;
+    }
+    const need = value + lockFee(picked.length ? picked : [{ txid: '00'.repeat(32), vout: 0 }], value, probe, hint, feeRate);
+    throw new Error(`adaptor-btc-tx: not enough sats for the lock (need ${need}, have ${total})`);
+  }
+
+  // LOCK: `amount` sats from `coins` (the wallet's own P2WPKH coins, from pickSats) into the lock output (vout 0), the recovery hint
+  // behind it, the rest back to the wallet.
+  function lockSats({ lock, amount, hint = null, coins, feeRate }) {
+    const value = satsValue(amount);
+    if (!coins.length) throw new Error('adaptor-btc-tx: a lock needs a coin to spend');
+    const total = coins.reduce((s, c) => s + c.value, 0);
+    const fee = lockFee(coins, value, lock.spk, hint, feeRate);
+    if (total < value + fee) throw new Error(`adaptor-btc-tx: not enough sats for the lock (need ${value + fee}, have ${total})`);
+    const tx = lockShape(coins, value, lock.spk, hint, total - value - fee);
+    tx.inputs.forEach((i, k) => { i.witness = prims.signP2wpkhInput(tx, k, coins[k].value); });
+    return satsPair(tx, total - tx.outputs.reduce((s, o) => s + o.value, 0));
+  }
+
+  // One transaction that spends the whole lock output to the wallet, its fee taken from the output.
+  function sweepSats({ lockOut, lock, sequence, witnessSizes, sign, feeRate }) {
+    const value = Number(lockOut.value);
+    if (!Number.isSafeInteger(value) || value <= DUST) throw new Error('adaptor-btc-tx: the lock output carries no spendable amount');
+    const shape = (out) => ({ version: 2, locktime: 0, inputs: [{ txid: lockOut.txid, vout: lockOut.vout, sequence, witness: [] }], outputs: [{ value: out, script: own }] });
+    const sized = shape(DUST);
+    sized.inputs[0].witness = witnessSizes.map((n) => new Uint8Array(n));
+    const fee = prims.feeFor(vsizeOf(sized), feeRate);
+    if (value - fee < DUST) throw new Error(`adaptor-btc-tx: the lock output (${value} sats) does not cover the fee of spending it (${fee}) and leave more than dust`);
+    const tx = shape(value - fee);
+    tx.inputs[0].witness = sign(tx, 0, [{ value, script: lock.spk }]);
+    return satsPair(tx, fee);
+  }
+
+  // CLAIM: by key path with the secret `sk` that opens the lock (claimSecret).
+  function claimSats({ lockOut, lock, sk, feeRate }) {
+    return sweepSats({ lockOut, lock, sequence: SEQ, witnessSizes: [64], sign: keyPathSigner(sk, lock.outputXonly), feeRate });
+  }
+
+  // REFUND: by the script path, once the output is `lock.csvBlocks` old.
+  function refundSats({ lockOut, lock, dLocker, feeRate }) {
+    return sweepSats({ lockOut, lock, sequence: lock.csvBlocks, witnessSizes: [64, lock.leaf.length, lock.controlBlock.length], sign: refundSigner(dLocker, lock), feeRate });
+  }
+
+  // Commit first, then the reveal, which retries while the commit propagates. `onStage` hears 'commit' then 'reveal'. A pair
+  // with nothing to commit (a sats transaction) is the reveal alone.
   async function broadcastPair(pair, { onStage = null } = {}) {
-    if (onStage) onStage('commit');
-    await prims.broadcast(pair.commitHex);
+    if (pair.commitHex) {
+      if (onStage) onStage('commit');
+      await prims.broadcast(pair.commitHex);
+    }
     if (onStage) onStage('reveal');
     await prims.broadcastWithRetry(pair.revealHex);
     return { commitTxid: pair.commitTxid, revealTxid: pair.revealTxid };
   }
 
-  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, withKeyPathSig, broadcastPair, vsizeOf };
+  return { transfer, lockTransfer, claimTransfer, refundTransfer, jointClaimTransfer, withKeyPathSig, pickSats, lockSats, claimSats, refundSats, broadcastPair, vsizeOf };
 }
 
 // A transaction as JSON a record can keep (bytes as hex), and back.

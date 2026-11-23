@@ -182,9 +182,9 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     }
     if (!took) throw new Error(`broadcast refused: ${last}`);
   }
-  // the commit first, then the reveal, which is asked again while the commit spreads
+  // the commit first, then the reveal, which is asked again while the commit spreads (a sats transaction has no commit: it is the reveal alone)
   async function broadcast(pair) {
-    await post(pair.commitHex);
+    if (pair.commitHex) await post(pair.commitHex);
     let last;
     for (let i = 0; i < 6; i++) {
       try { await post(pair.revealHex); return; } catch (e) { last = e; await new Promise((r) => setTimeout(r, retryMs * (i + 1))); }

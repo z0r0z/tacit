@@ -1,5 +1,6 @@
 // The Bitcoin locker of a fast bridge swap: the party that holds the swap secret t, locks its Bitcoin note first and
 // claims the Ethereum lock. In Bitcoin -> Ethereum this is the user; in Ethereum -> Bitcoin it is the liquidity provider.
+// The Bitcoin side is a Tacit note or, with asset X.SATS_ASSET, plain sats (the lock is one ordinary transaction).
 //
 // One record per swap, persisted before each step that sends something, advanced by step(). Everything the record
 // does not hold is derived again from the seed and the chain (dapp/adaptor-xswap.js), so a lost record costs the
@@ -56,6 +57,7 @@ export function makeBitcoinLocker(ctx) {
   // 33-byte Bitcoin key the counterparty committed to before this call, `takeSats` the fee of its take, which the lock pays
   // to that key's address so a counterparty needs no coins of its own on Bitcoin.
   async function build({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0, avoid = null }) {
+    if (X.isSats(asset)) return buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId, avoid });
     if (!notes.length) throw new Error('fastbridge: no note to lock');
     const swapId = X.swapIdOf(notes[0].txid, notes[0].vout), id = hx(swapId);
     const sec = X.deriveSwapSecrets({ seed, swapId });
@@ -77,7 +79,37 @@ export function makeBitcoinLocker(ctx) {
     };
     return { rec, pair };
   }
+  // The same lock for plain sats (asset X.SATS_ASSET): the wallet's own coins, picked here, go into the lock output of one ordinary
+  // transaction, and the first coin's outpoint is the swap id. No note, no commit, no coin kept for the fee of the counterparty's
+  // take: a take or a refund pays its fee out of the lock output.
+  async function buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId = null, avoid = null }) {
+    const feeRate = await btc.feeRate();
+    const coins = (await btc.satsUtxos()).filter((u) => !avoid || !avoid.has(`${u.txid}:${u.vout}`));
+    const picked = btc.tx.pickSats({ amount, satsUtxos: coins, feeRate });
+    const swapId = X.swapIdOf(picked[0].txid, picked[0].vout), id = hx(swapId);
+    const sec = X.deriveSwapSecrets({ seed, swapId });
+    const csvBlocks = policy.csvBlocks;
+    const lock = deriveLock({ prims: btc.prims, claimerPub: counterClaimPub, T: sec.T, lockerXonly: btc.wallet.xonly, csvBlocks });
+    const hint = X.lockHintScript({ seed, swapId, claimerPub: counterClaimPub, csvBlocks, value: amount });
+    const pair = btc.tx.lockSats({ lock, amount, hint, coins: picked, feeRate });
+    const rec = {
+      v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId,
+      asset: hx(asset), amount: String(amount), evmAsset: strip(evmAsset), evmAmount: String(evmAmount),
+      counterClaimPub: hx(counterClaimPub), csvBlocks, takeSats: 0,
+      lock: { txid: pair.revealTxid, vout: 0, value: pair.revealTx.outputs[0].value, commitTxid: null, commitHex: null, revealHex: pair.revealHex },
+      noteInputs: [],
+      // the coins that funded the lock: a swap started before it confirms must not pick them again
+      feeInputs: picked.map((c) => ({ txid: c.txid, vout: c.vout })),
+    };
+    return { rec, pair };
+  }
   async function start(args) {
+    if (X.isSats(args.asset)) {
+      const { rec } = await buildSats(args);
+      if (await store.get(rec.id)) throw new Error('fastbridge: this coin is already part of a swap');
+      await store.put(rec);
+      return rec;
+    }
     if (!args.notes.length) throw new Error('fastbridge: no note to lock');
     if (await store.get(hx(X.swapIdOf(args.notes[0].txid, args.notes[0].vout)))) throw new Error('fastbridge: this note is already part of a swap');
     const { rec } = await build(args);
@@ -95,15 +127,19 @@ export function makeBitcoinLocker(ctx) {
     if (tip < st.height + rec.csvBlocks - 1) return null;
     if (!rec.refund) {
       const lock = lockOf(rec), sec = secrets(rec);
-      const pair = btc.tx.refundTransfer({
-        asset: hexToBytes(rec.asset), lockOut: { txid: rec.lock.txid, vout: rec.lock.vout, value: rec.lock.value ?? 546 }, lock, dLocker: btc.wallet.priv,
-        amount: BigInt(rec.amount), rLock: sec.rLock, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate(),
-      });
+      const lockOut = { txid: rec.lock.txid, vout: rec.lock.vout, value: rec.lock.value ?? 546 };
+      const pair = X.isSats(rec.asset)
+        ? btc.tx.refundSats({ lockOut, lock, dLocker: btc.wallet.priv, feeRate: await btc.feeRate() })
+        : btc.tx.refundTransfer({
+          asset: hexToBytes(rec.asset), lockOut, lock, dLocker: btc.wallet.priv,
+          amount: BigInt(rec.amount), rLock: sec.rLock, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate(),
+        });
       await save(rec, { refund: { txid: pair.revealTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, commitTxid: pair.commitTxid, at: ctx.now() } });
     }
     try { await btc.broadcast(rec.refund, null); } catch (e) {
       // as the take: a pair whose funding coin was spent elsewhere is built again once it has had time to spread
-      if (rec.refund.at != null && ctx.now() - rec.refund.at > 600 && (rec.refundRebuilds || 0) < 5 && btc.fetchTx && !(await btc.fetchTx(rec.refund.commitTxid).catch(() => true))) await save(rec, { refund: null, refundRebuilds: (rec.refundRebuilds || 0) + 1 });
+      // (a sats refund has no commit, so no funding coin that could have been spent elsewhere)
+      if (rec.refund.commitTxid && rec.refund.at != null && ctx.now() - rec.refund.at > 600 && (rec.refundRebuilds || 0) < 5 && btc.fetchTx && !(await btc.fetchTx(rec.refund.commitTxid).catch(() => true))) await save(rec, { refund: null, refundRebuilds: (rec.refundRebuilds || 0) + 1 });
       throw e;
     }
     return null;
@@ -142,7 +178,7 @@ export function makeBitcoinLocker(ctx) {
         if (!rec.confirmedAt) await save(rec, { confirmedAt: ctx.now(), lockHeight: st.height, lockAt: btc.blockTime ? await btc.blockTime(st.height).catch(() => null) : null });
         const sec = secrets(rec), recipient = await evm.recipient(rec.id);
         const offer = X.makeBtcLockOffer({
-          swapId: hexToBytes(rec.id), asset: rec.asset, value: BigInt(rec.amount), rLock: sec.rLock, txid: rec.lock.txid, vout: rec.lock.vout,
+          swapId: hexToBytes(rec.id), asset: rec.asset, value: BigInt(rec.amount), rLock: X.isSats(rec.asset) ? null : sec.rLock, txid: rec.lock.txid, vout: rec.lock.vout,
           csvBlocks: rec.csvBlocks, lockerXonly: btc.wallet.xonly, T: sec.T, claimerPub: rec.counterClaimPub,
           evm: { asset: rec.evmAsset, amount: BigInt(rec.evmAmount), recipient: hx(recipient.xonly), rOut: sec.rOut },
         });

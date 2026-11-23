@@ -58,16 +58,20 @@ export function makeEthereumLocker(ctx) {
     if (!out || !Number.isInteger(out.value) || out.value < DUST_P2TR) return reject('the lock output carries no spendable amount');
     const st = await btc.status(offer.btc.txid);
     if (!(st.confirmations > 0)) return reject('the lock has no confirmation yet', true);
-    const note = await btc.resolveNote(offer.btc.txid, offer.btc.vout);
+    // plain sats (X.SATS_ASSET) have no note to resolve, screen or find consumed on Ethereum: the lock is judged by its script and its value,
+    // and the swap is named by the first coin the lock spends. Which of the two it is is this side's own quote, not the offer's word
+    // (an offer that names the other is refused below, as the Bitcoin side differing from the quote)
+    const sats = X.isSats(quote.btcAsset);
+    const note = sats ? null : await btc.resolveNote(offer.btc.txid, offer.btc.vout);
     if (st.confirmations > 0 && ctx.now() - (await btc.blockTime(st.height)) > maxOfferAge) return reject('the offer arrived too late to be answered');
-    if (policy.screen) {
+    if (policy.screen && !sats) {
       let s;
       try { s = await policy.screen(tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout }))); } catch { return reject('the history of the notes could not be read just now', true); }
       if (s) return reject(s.why, s.retry === true);
     }
     const chain = {
-      spk: out.scriptpubkey, commitment: note ? hx(note.commitment) : '', validNote: !!note && strip(note.assetIdHex) === strip(offer.btc.asset),
-      confirmations: st.confirmations, noteInputs: tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout })),
+      spk: out.scriptpubkey, commitment: note ? hx(note.commitment) : '', validNote: !!note && strip(note.assetIdHex) === strip(offer.btc.asset), value: out.value,
+      confirmations: st.confirmations, noteInputs: tx.vin.slice(sats ? 0 : 1).map((i) => ({ txid: i.txid, vout: i.vout })),
     };
     const v = X.verifyBtcLockOffer(offer, {
       prims: btc.prims, myClaimerPub: btc.wallet.pub,
@@ -77,7 +81,7 @@ export function makeEthereumLocker(ctx) {
     if (!v.ok) return reject(v.reasons.join('; '));
     const takeSats = Number(quote.takeSats ?? 0), own = hx(btc.prims.p2wpkhScript(btc.wallet.pub));
     if (takeSats > 0 && !tx.vout.some((o) => strip(o.scriptpubkey) === own && o.value >= takeSats)) return reject('the lock does not pay the fee of the take');
-    const consumed = await btc.crossLaneBlocked(tx);
+    const consumed = sats ? null : await btc.crossLaneBlocked(tx);
     if (consumed) return reject('a spent note is already consumed on Ethereum: ' + consumed);
     const rec = {
       v: 1, role: 'el', id, phase: 'accepted', created: ctx.now(), updated: ctx.now(), quoteId, offer,
@@ -125,7 +129,7 @@ export function makeEthereumLocker(ctx) {
           return rec;
         }
         if (await btc.outspend(rec.lockTxid, rec.lockVout)) return save(rec, { phase: 'aborted', why: 'the lock output was spent before it could be answered' });
-        const consumed = await btc.crossLaneBlocked(await btc.fetchTx(rec.lockTxid));
+        const consumed = X.isSats(rec.offer.btc.asset) ? null : await btc.crossLaneBlocked(await btc.fetchTx(rec.lockTxid));
         if (consumed) return save(rec, { phase: 'aborted', why: 'a spent note is already consumed on Ethereum: ' + consumed });
         const confirmedAt = await btc.blockTime(st.height + need - 1);
         const deadline = lockDeadline({ blockTime: confirmedAt, windowSecs: policy.evmWindowSecs, roundSecs: policy.roundSecs });
@@ -199,6 +203,13 @@ export function makeEthereumLocker(ctx) {
         return rec;
       }
       case 'taking': {
+        if (!rec.take && X.isSats(rec.offer.btc.asset)) {
+          // a lock of plain sats: the take is one transaction that pays its own fee out of the lock output, so no coin of this side's is needed
+          const lock = deriveLock({ prims: btc.prims, claimerPub: btc.wallet.pub, T: secretsOf(rec).T, lockerXonly: hexToBytes(strip(rec.offer.btc.lockerXonly)), csvBlocks: rec.csvBlocks });
+          const sk = claimSecret({ dClaimer: btc.wallet.priv, t: BigInt(rec.t), lock });
+          const pair = btc.tx.claimSats({ lockOut: { txid: rec.lockTxid, vout: rec.lockVout, value: rec.lockValue }, lock, sk, feeRate: await btc.feeRate() });
+          await save(rec, { take: { txid: pair.revealTxid, commitTxid: null, commitHex: null, revealHex: pair.revealHex, at: ctx.now() } });
+        }
         if (!rec.take) {
           const lock = deriveLock({ prims: btc.prims, claimerPub: btc.wallet.pub, T: secretsOf(rec).T, lockerXonly: hexToBytes(strip(rec.offer.btc.lockerXonly)), csvBlocks: rec.csvBlocks });
           const sk = claimSecret({ dClaimer: btc.wallet.priv, t: BigInt(rec.t), lock });
@@ -227,7 +238,7 @@ export function makeEthereumLocker(ctx) {
         if (await confirmed()) return save(rec, { phase: 'done' });
         try { await btc.broadcast(rec.take, null); } catch (e) {
           if (await confirmed()) return save(rec, { phase: 'done' });
-          if (rec.take.at != null && ctx.now() - rec.take.at > 600 && (rec.takeRebuilds || 0) < 5 && !(await btc.fetchTx(rec.take.commitTxid).catch(() => true))) await save(rec, { take: null, takeRebuilds: (rec.takeRebuilds || 0) + 1 });
+          if (rec.take.commitTxid && rec.take.at != null && ctx.now() - rec.take.at > 600 && (rec.takeRebuilds || 0) < 5 && !(await btc.fetchTx(rec.take.commitTxid).catch(() => true))) await save(rec, { take: null, takeRebuilds: (rec.takeRebuilds || 0) + 1 });
           throw e;
         }
         if (await confirmed()) return save(rec, { phase: 'done' });

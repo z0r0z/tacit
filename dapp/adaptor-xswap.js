@@ -72,12 +72,18 @@ export function evmLockBlinding({ seed, swapId, T }) {
 }
 
 // The swap id of a Bitcoin lock transaction as the chain shows it: the first note input (vin[1]; vin[0] is the
-// envelope's commit output). `tx` is an esplora transaction.
-export function swapIdFromLockTx(tx) {
-  const i = tx?.vin?.[1];
-  if (!i) throw new Error('xswap: the lock transaction spends no note');
+// envelope's commit output). `tx` is an esplora transaction. A lock of plain sats ({ sats: true }) has no commit, and
+// its first input is the coin that names the swap.
+export function swapIdFromLockTx(tx, { sats = false } = {}) {
+  const i = tx?.vin?.[sats ? 0 : 1];
+  if (!i) throw new Error(sats ? 'xswap: the lock transaction spends no coin' : 'xswap: the lock transaction spends no note');
   return swapIdOf(i.txid, i.vout);
 }
+
+// The Bitcoin side of a swap of plain sats (no Tacit note) is named by this asset id, which no note has: the quote, the
+// offer and the checks carry it as they carry a note's asset, and the lock's amount is its value in sats.
+export const SATS_ASSET = '00'.repeat(32);
+export const isSats = (asset) => hs(asset) === SATS_ASSET;
 
 // ── recovery hint ──
 // An OP_RETURN in the lock transaction carrying the claimer key, the CSV and the value, sealed to the locker:
@@ -146,9 +152,11 @@ export function checkEvmDeadline({ deadline, nowSecs, btcRefundOpens, minClaimSe
 // What the Bitcoin locker sends once its lock is broadcast: the lock's terms and opening, and what it wants on
 // Ethereum (its claim key and the blinding of the output it will claim into).
 export function makeBtcLockOffer({ swapId, asset, value, rLock, txid, vout, csvBlocks, lockerXonly, T, claimerPub, evm }) {
+  // plain sats have no note and so no blinding to open
+  const opening = isSats(asset) ? {} : { rLock: hx(bigintToBytes32(toBig(rLock))) };
   return {
     v: 1, swapId: hx(swapId),
-    btc: { asset: hs(asset), value: String(value), rLock: hx(bigintToBytes32(toBig(rLock))), txid: strip(txid), vout, csvBlocks, lockerXonly: hs(lockerXonly) },
+    btc: { asset: hs(asset), value: String(value), ...opening, txid: strip(txid), vout, csvBlocks, lockerXonly: hs(lockerXonly) },
     T: hx(T.toRawBytes(true)), claimerPub: hs(claimerPub),
     evm: { asset: hs(evm.asset), amount: String(evm.amount), recipient: hs(evm.recipient), rOut: hx(bigintToBytes32(toBig(evm.rOut))) },
   };
@@ -156,7 +164,9 @@ export function makeBtcLockOffer({ swapId, asset, value, rLock, txid, vout, csvB
 
 // The Ethereum locker's check of a Bitcoin lock offer. `chain` holds what it read itself: the output's
 // scriptPubKey and Tacit commitment, whether the validator accepts it as a note of the offered asset, its
-// confirmations, and the outpoints the lock transaction spends as notes (`noteInputs`, in order). `expect` is its
+// confirmations, and the outpoints the lock transaction spends as notes (`noteInputs`, in order). For a lock of plain
+// sats (asset SATS_ASSET) there is no note: `chain.value` is the output's sats and `noteInputs` the transaction's inputs
+// from the first, whose outpoint names the swap. `expect` is its
 // own quote. Every field of `chain` is read from the chain by the caller; nothing in the offer stands in for one.
 export function verifyBtcLockOffer(offer, opts) {
   try { return checkBtcLockOffer(offer, opts); } catch (err) { return { ok: false, reasons: ['malformed offer: ' + String((err && err.message) || err).slice(0, 120)], lock: null }; }
@@ -172,7 +182,8 @@ function offerShape(o) {
   if (!HEX(72).test(strip(o.swapId || ''))) bad.push('swap id');
   if (!HEX(64).test(strip(b.txid || '')) || !Number.isInteger(b.vout) || b.vout < 0) bad.push('lock outpoint');
   if (!HEX(64).test(strip(b.asset || '')) || !/^\d+$/.test(String(b.value))) bad.push('Bitcoin side');
-  if (!scalarOk(b.rLock || '')) bad.push('lock blinding');
+  // a lock of plain sats opens no note: it names no blinding, and a note's lock names one
+  if (isSats(b.asset || '') ? b.rLock !== undefined : !scalarOk(b.rLock || '')) bad.push('lock blinding');
   if (!Number.isInteger(b.csvBlocks) || b.csvBlocks < 1 || b.csvBlocks > 0xffff) bad.push('timelock');
   if (!HEX(64).test(strip(b.lockerXonly || '')) || !xonlyOk(b.lockerXonly)) bad.push('refund key');
   if (!HEX(64).test(strip(e.asset || '')) || !/^\d+$/.test(String(e.amount))) bad.push('Ethereum side');
@@ -199,8 +210,13 @@ function checkBtcLockOffer(offer, { prims, myClaimerPub, expect, chain, minConfs
     try { lock = deriveLock({ prims, claimerPub: o.claimerPub, T: pt(o.T), lockerXonly: bx(b.lockerXonly), csvBlocks: b.csvBlocks }); } catch (err) { reasons.push(err.message); }
   }
   if (lock && hx(lock.spk) !== hs(chain.spk)) reasons.push('the output does not pay the lock these terms make');
-  if (hx(pedersenCommit(BigInt(b.value), toBig(b.rLock)).toRawBytes(true)) !== hs(chain.commitment)) reasons.push('the opening does not match the note');
-  if (chain.validNote !== true) reasons.push('the output is not a valid note of the asset');
+  if (isSats(b.asset)) {
+    // sats: the output holds what the quote says, to the satoshi, since the claim sweeps the whole output
+    if (!(Number.isSafeInteger(chain.value) && BigInt(chain.value) === BigInt(b.value))) reasons.push('the output does not hold the quoted amount of sats');
+  } else {
+    if (hx(pedersenCommit(BigInt(b.value), toBig(b.rLock)).toRawBytes(true)) !== hs(chain.commitment)) reasons.push('the opening does not match the note');
+    if (chain.validNote !== true) reasons.push('the output is not a valid note of the asset');
+  }
   if (!(chain.confirmations >= minConfs)) reasons.push(`fewer than ${minConfs} confirmation(s)`);
   const first = chain.noteInputs && chain.noteInputs[0];
   if (!first) reasons.push('the lock transaction\'s note inputs were not read');

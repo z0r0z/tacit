@@ -60,8 +60,9 @@ export function makeBitcoinSim(clock, { baseHeight = 800_000 } = {}) {
       if (by && by !== pair.revealTxid) throw new Error(`bad-txns-inputs-missingorspent: ${i.txid}:${i.vout} is spent by ${by}`);
     }
     // a relative timelock is enforced the way consensus does it
-    for (const [k, i] of pair.revealTx.inputs.entries()) {
-      if (k === 0 || i.sequence >= 0xfffffffd) continue;
+    // (a reveal's first input is its commit, which never has a timelock; a sats transaction's first input may be the lock)
+    for (const i of pair.revealTx.inputs) {
+      if (i.sequence >= 0xfffffffd) continue;
       const parent = sim.txs.get(i.txid);
       if (!parent || parent.height == null || sim.tip + 1 < parent.height + i.sequence) throw new Error('non-BIP68-final');
     }
@@ -108,7 +109,11 @@ export function makeBitcoinSim(clock, { baseHeight = 800_000 } = {}) {
 const pairs = new Map();
 function recordingBuilder(builder) {
   const wrap = (fn) => (...a) => { const p = fn(...a); pairs.set(p.revealTxid, p.revealTx); return p; };
-  return { ...builder, lockTransfer: wrap(builder.lockTransfer), claimTransfer: wrap(builder.claimTransfer), refundTransfer: wrap(builder.refundTransfer) };
+  return {
+    ...builder,
+    lockTransfer: wrap(builder.lockTransfer), claimTransfer: wrap(builder.claimTransfer), refundTransfer: wrap(builder.refundTransfer),
+    lockSats: wrap(builder.lockSats), claimSats: wrap(builder.claimSats), refundSats: wrap(builder.refundSats),
+  };
 }
 
 // ── Ethereum ──
