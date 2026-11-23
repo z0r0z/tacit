@@ -4,12 +4,12 @@
 // reading and uses the hint only to send the reads that follow them in the same request; a vault that answers otherwise (the owner swapped the oracle or the
 // feed) is read again from its own answers, so a hint that has gone out of date costs one more request and nothing else.
 // `router`: the TacVaultRouter built for these two vaults, once deployed (empty until then: the page does without it).
-// `proofUrls`: where provers post their newest proof for a TacProvenOracle (tac-oracle-host's proof.json), asked in order when a vault's oracle is one and
-// its prices need a newer proof.
+// `proofUrls`: where provers' newest proof for a TacProvenOracle is kept (tac-oracle-host's proof.json; the API checks it with the verifier contract,
+// worker/src/oracle-proof.js), asked in order when a vault's oracle is one and its prices need a newer proof. Not asked while the vaults use the pair oracle.
 export const DEPLOYMENTS = Object.freeze({
   chainId: 1,
   router: '0x000000F9ab49650502BeC910D13b4717F0082598',
-  proofUrls: Object.freeze([]),
+  proofUrls: Object.freeze(['https://api.tacit.finance/oracle/proof']),
   // The markets where a vault's token sells: Precision pools that anyone can open (dapp/vault/pools.js). `factory`: the Precision pool factory. `quotes`: what a token sells for.
   // `markets`: the ones worth opening, in the order the page lists them (the first is the one it opens on). Each is `{ vault, quote, tier, fee, low, high }`: the token of that
   // vault against the asset it tracks; `fee` in pips (500 = 0.05%); `low` and `high` the ends of the price band it trades in (a swap that would leave it is refused), as multiples

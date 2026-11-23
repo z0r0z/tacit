@@ -5,7 +5,7 @@
 import { ethCall, api, $ } from '/trade/util.js?cb=9c8b4133';
 import { aprText, readPrecision, privateFarms } from '/trade/farm-read.js?cb=fb6ec72f';
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
-import { DEPLOYMENTS } from '/vault/deployments.js?cb=d9fa3344';
+import { DEPLOYMENTS } from '/vault/deployments.js?cb=02c84743';
 
 const joinAt = (pid) => `/#card=earn:ether:${pid == null ? 'public' : `p${pid}`}`;
 const perDay = (n) => `APR · ${Math.round(n).toLocaleString('en-US')} TAC a day`;
