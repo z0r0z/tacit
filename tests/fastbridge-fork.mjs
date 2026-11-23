@@ -49,7 +49,9 @@ const SETTLER = '0x00000000000000000000000000000000005e771e', FROM = '0x00000000
 const ETH_ID = '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const E10 = 10n ** 10n;
 let n = 0, fails = 0;
-const runs = (s) => !process.env.SCENARIOS || process.env.SCENARIOS.split(',').includes(s);     // SCENARIOS=E runs only E (default: every scenario)
+// SCENARIOS=A,B runs those; unset runs A, B and C. E (Ethereum -> Bitcoin) is run only when named: it has not yet been run to the end against the fork (the pool's history is now
+// large enough that a cold run reads hundreds of MB through a public node: use the default FORK, the Tenderly gateway, and let FORK_CACHE warm over a few runs).
+const runs = (s) => (process.env.SCENARIOS ? process.env.SCENARIOS.split(',').includes(s) : s !== 'E');
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const hex = (v) => '0x' + BigInt(v).toString(16);
