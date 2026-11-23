@@ -404,7 +404,9 @@ async function step() {
     view('queueDone()', ['uint256']), view('queued()', ['uint256']), view('lastLanded()', ['uint256']), view('WINDOW()', ['uint256']), view('FORCE_DELAY()', ['uint256']),
   ]).then((r) => r.map((x) => Number(x[0])));
   const ids = (await node('GET', '/mempool')).spends;
-  if (desk) await admitPaying({ desk, node, paying, ids, log });
+  const pendingOf = (d) => view('pending(bytes32)', ['address', 'uint256', 'uint256'], [hexOf(keccak_256(bytesOf(d.deposit)))]);
+  // (a deposit already on Ethereum is not refused for a fee that moved a little: see fees.mjs desk.check)
+  if (desk) await admitPaying({ desk, node, paying, ids, funded: async (d) => BigInt((await pendingOf(d))[0]) !== 0n, log });
   const pool = await node('POST', '/pending', {});
   // the launch cap, before any inbox is swept for a shield over it
   const over = SHIELD_CAP > 0n ? pool.spends.filter((d) => d.deposit && BigInt('0x' + String(d.deposit).replace(/^0x/, '').slice(320, 384)) > SHIELD_CAP).map((d) => d.id) : [];
@@ -416,7 +418,6 @@ async function step() {
   const fees = desk ? { only: pool.spends.map((s) => s.id).filter((id) => paying.has(id)) } : {};
   // a spend that takes a deposit in lands only if that deposit is waiting on Ethereum (and not queued behind a forced entry the block does not reach)
   const exclude = [];
-  const pendingOf = (d) => view('pending(bytes32)', ['address', 'uint256', 'uint256'], [hexOf(keccak_256(bytesOf(d.deposit)))]);
   const t0 = Date.now(), shields = pool.spends.filter((d) => d.deposit);
   // (one not looked at this step is unfunded as far as this step goes, and stays held out of the block)
   const toLook = pickLooks(looks, shields, t0, LOOKS_PER_STEP);

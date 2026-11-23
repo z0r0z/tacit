@@ -72,6 +72,12 @@ export function feeOf(terms, baseFee, price, tip = null) {
   return units > terms.min ? units : terms.min;
 }
 
+/// The least a spend whose deposit is already on Ethereum may pay: a quote with the margin it adds taken off, which is what landing it costs.
+/// The leader that swept a deposit in has taken the TAC out of its holder's hands; one that then refused the spend (a restart empties the
+/// quotes it remembers, so its only quote is the newest, and a fee that rose by a hair refused every spend the old process had admitted)
+/// left the TAC in the contract until it went back, a week on.
+export const fundedFloor = (quote, terms) => ceilDiv(BigInt(quote) * 10_000n, 10_000n + terms.marginBps);
+
 /// The units of `notes` (as a waiting spend's detail gives them: each output slot's leaf and memo) that are this leader's, by opening each
 /// memo with its keys and checking the leaf it gives is the slot's.
 export function paidIn(desk, detail) {
@@ -120,19 +126,25 @@ export function makeFeeDesk({ seed, chain, asset, terms }) {
     const live = quoted.filter((q) => q.at >= now - terms.window);
     return live.length ? live.reduce((m, q) => (q.fee < m ? q.fee : m), live[0].fee) : null;
   };
-  /// Whether a waiting spend pays: what its notes to the leader are worth at `rate` against the least accepted now.
-  desk.check = (detail, rate, now) => {
-    const need = desk.accepted(now);
+  /// Whether a waiting spend pays: what its notes to the leader are worth at `rate` against the least accepted now. A spend whose deposit
+  /// is already on Ethereum (`funded`: its TAC has left the depositor's hands, so refusing it strands the TAC for RECLAIM_AFTER) is held to
+  /// the landing's cost without the quote's margin (fundedFloor): a fee that moved since it was made no longer refuses it.
+  desk.judge = (paid, now, { funded = false } = {}) => {
+    const quote = desk.accepted(now);
+    const need = quote != null && funded ? fundedFloor(quote, terms) : quote;
+    return { ok: need != null && paid >= need, paid, need };
+  };
+  desk.check = (detail, rate, now, o) => {
     const shares = paidIn(desk, detail);
-    const paid = worthOf(shares, rate);
-    return { ok: need != null && paid >= need, paid, need, shares };
+    return { ...desk.judge(worthOf(shares, rate), now, o), shares };
   };
   return desk;
 }
 
 /// Checks the waiting spends `ids` the leader has not seen pay yet: each that pays joins `paying`; each that pays less is dropped from the
-/// node's mempool, refused for good with its receipt saying why. `node(method, path, body)` calls the leader's node (its own routes).
-export async function admitPaying({ desk, node, paying, ids, now = Math.floor(Date.now() / 1000), log = () => {} }) {
+/// node's mempool, refused for good with its receipt saying why. `node(method, path, body)` calls the leader's node (its own routes);
+/// `funded(spend)` says whether the spend's deposit is already on Ethereum (see desk.check), which a read that fails answers no to.
+export async function admitPaying({ desk, node, paying, ids, funded = null, now = Math.floor(Date.now() / 1000), log = () => {} }) {
   for (const id of [...paying]) if (!ids.includes(id)) paying.delete(id);
   const fresh = ids.filter((id) => !paying.has(id));
   if (!fresh.length) return [];
@@ -140,7 +152,7 @@ export async function admitPaying({ desk, node, paying, ids, now = Math.floor(Da
   const rate = { pool: BigInt(st.pool), shares: BigInt(st.shares) };
   const refused = [];
   for (const s of detail.spends.filter((x) => fresh.includes(x.id) && x.memos)) {
-    const r = desk.check(s, rate, now);
+    const r = desk.check(s, rate, now, { funded: !!(funded && s.deposit && (await Promise.resolve(funded(s)).catch(() => false))) });
     if (r.need == null) continue;
     if (r.ok) { paying.add(s.id); continue; }
     await node('POST', '/drop', { ids: [s.id], reason: `it pays this leader ${r.paid} units, less than its fee of ${r.need}: ask for the fee again (GET /fee) and add it` });
