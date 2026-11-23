@@ -5,10 +5,20 @@ They rate-limit, drop connections, cap `eth_getLogs`, and refuse old `eth_getPro
 **in front of** those, so a public outage costs a fallback. Everything below
 is built so that nothing depends on the new nodes: each consumer keeps its public fallbacks, and taking our nodes out is deleting one URL.
 
-**Not a light node.** The Ethereum light client answers `eth_getLogs` only 512 blocks back, and the pool, vault and cBTC readers scan
-10k–50k-block chunks from the pool's deploy block. A pruned or SPV Bitcoin node cannot serve an old transaction by txid, and the
-site's reads are esplora-shaped (history by address, raw transactions by txid). What serves them is a **full** reth (pruned the way
-`reth.toml` says) and an **unpruned** bitcoind with electrs.
+**Two profiles: light first, full where history is needed.**
+
+- **Light** (`light/`, about a small machine's worth: 8+ cores, 16 GB RAM, 150 GB SSD; hours to sync Ethereum, a day or two for Bitcoin).
+  Nethermind's light client (release 1.0.1, still experimental) verifies state itself over P2P and serves balances, `eth_call`,
+  `eth_getProof` at the head, blocks, receipts and `eth_getLogs` in 512-block windows, in about 650 MB of RAM. It keeps no history:
+  state is 32 blocks deep, logs 512 blocks per query. Bitcoin is a **pruned** bitcoind that validates the whole chain and serves the tip,
+  headers, fee estimates, the mempool and broadcast; the gateway puts esplora-shaped paths on it for exactly those, answers 501 for the rest,
+  and 503 while it is still syncing. What the light profile does NOT serve: the vault keeper's 8-hour-old `eth_getProof`, the pool/vault/cBTC
+  history scans, and anything that needs an old Bitcoin transaction or an address's history. Those keep their current sources, or use the full profile.
+- **Full** (the compose files below): a pruned reth (state history ~40 h, receipts from the pool's deploy block) with lighthouse, and an
+  unpruned bitcoind with electrs. ~3.84 TB of NVMe per chain, a dedicated machine, and it serves everything the light profile cannot.
+
+Both sit behind the same gateway and are judged by the same `tools/node-check.mjs` (`--light` and `--btc-pruned` score the light profile on what it
+can honestly serve, and report the rest as NOT PROVIDED, never as a pass).
 
 ```
  browsers / our services ──https──▶ Caddy (TLS) ──▶ gateway.mjs ──▶ reth ◀── lighthouse        (Ethereum, /eth)
@@ -21,6 +31,7 @@ site's reads are esplora-shaped (history by address, raw transactions by txid). 
 | file | what |
 |---|---|
 | `gateway.mjs` + `Dockerfile` | the only thing on the internet: read-method allowlist, CORS for tacit.finance, text/plain bodies, per-visitor budget, getLogs span cap, esplora read paths, **no access log**. Tests: `tests/own-node-gateway.test.mjs` |
+| `light/` | the light profile for a host that cannot run Docker: unpacks the light client from the published image by digest (every layer hash-checked), installs the verified bitcoind, the gateway and supervisor config. Scripts 01–04, `onstart.sh` |
 | `docker-compose.yml`, `reth.toml`, `Caddyfile`, `env.example` | reth + lighthouse (profile `eth`), bitcoind + electrs (profile `btc`), gateway, Caddy |
 | `bitcoind/Dockerfile` | Bitcoin Core built from the release tarball; the build **fails** unless the sha256 matches and ≥5 builder signatures verify (the Docker Hub images are unofficial) |
 | `bootstrap.sh` | fresh Ubuntu 24.04 → nodes syncing behind the gateway (Docker, firewall, secrets, directories) |
@@ -37,7 +48,28 @@ site's reads are esplora-shaped (history by address, raw transactions by txid). 
   Check the provider's page when ordering. Not a metered or shared host: the sync moves hundreds of GB and the node has to stay up.
 - **Time**: Ethereum is usable within hours once checkpoint-synced and caught up; Bitcoin takes days (bitcoind, then electrs).
 
-## Bring-up
+## Light profile: what it serves and who may use it
+
+| Consumer | Light profile | Why |
+|---|---|---|
+| Relays, keepers: latest-state reads, receipts, recent logs | yes, as an early fallback behind the primary | `eth-reads` PASS |
+| Bitcoin lane's `eth_prove` proof at a recent block | yes (`eth-proofs-head`) | the beacon API is not fronted, so `SOURCE_CONSENSUS_RPC` stays public |
+| Vault keeper's start check (proof ~8 h back) | **no** | state is 32 blocks deep |
+| Pool / vault / cBTC history scans | **no** | logs are 512 blocks per query |
+| Header relay (`tools/advance-header-relay.mjs --esplora`) | yes, once `btc-pruned-node` PASSES | tip, block-by-height and headers are exactly what it reads |
+| Anything that looks up an old Bitcoin transaction or an address's history | **no** (501) | a pruned node has no index; never put the shim in a list used for that |
+| Browsers | not yet | a container host gives plain HTTP on a mapped port; pages need an HTTPS hostname |
+
+```
+node tools/node-check.mjs --eth http://<host>:<port>/eth --light
+node tools/node-check.mjs --btc-rpc http://tacit:<pass>@127.0.0.1:8332 --btc-pruned     # on the box, once bitcoind has caught up
+```
+
+Bring up on a Docker-less host: copy this directory to it and run `bash light/run-all.sh` as root (or the numbered scripts one at a time).
+The light client's own trust assumption is a checkpoint from a provider (Sigma Prime by default) and the beacon light-client protocol: say
+"checked against consensus from a checkpoint", not "trustless". Sends through it are not enabled (`INTERNAL_SENDS=0`): it relays to its P2P peers directly.
+
+## Bring-up (full profile)
 
 1. Order the machine(s), Ubuntu 24.04, SSH key only. One per chain, or both on one big machine.
 2. One DNS A record per machine at the registrar (e.g. `node.tacit.finance`, or `eth-node.` / `btc-node.` with two machines).

@@ -237,4 +237,114 @@ test('no trace: a request writes nothing to stdout or stderr, and /health carrie
   assert.ok(!out.join('').match(/198\.51\.100|bc1qar0|abab|eth_getBalance/), 'nothing about the request was printed');
 });
 
-test.after(() => { ethNode.close(); btcNode.close(); });
+
+// ── the pruned-bitcoind shim ──────────────────────────────────────────────────────────────────────────────────────────────────────
+const bd = { calls: [], authSeen: new Set(), ibd: false, ageSec: 60, pruned: true };
+const BLOCK = '00'.repeat(31) + '01', TXID = 'cd'.repeat(32), HDR = '01000000' + 'ee'.repeat(76);
+const bdNode = http.createServer(async (req, res) => {
+  bd.authSeen.add(req.headers.authorization);
+  const q = JSON.parse(await body(req));
+  bd.calls.push(q.method);
+  const err = (code, message) => ({ result: null, error: { code, message }, id: 1 });
+  let out;
+  switch (q.method) {
+    case 'getblockchaininfo': out = { result: { initialblockdownload: bd.ibd, time: Math.floor(Date.now() / 1000) - bd.ageSec, blocks: 900000, headers: 900000, verificationprogress: bd.ibd ? 0.31 : 0.99999, pruned: bd.pruned }, error: null }; break;
+    case 'getblockcount': out = { result: 900000, error: null }; break;
+    case 'getbestblockhash': out = { result: BLOCK, error: null }; break;
+    case 'getblockhash': out = q.params[0] > 900000 ? err(-8, 'Block height out of range') : { result: BLOCK, error: null }; break;
+    case 'getblockheader': out = q.params[0] !== BLOCK ? err(-5, 'Block not found') : q.params[1] === false ? { result: HDR, error: null } : { result: { height: 899990, confirmations: 11, nextblockhash: 'ab'.repeat(32) }, error: null }; break;
+    case 'getblock': out = q.params[0] !== BLOCK ? err(-5, 'Block not found') : { result: 'aabbcc', error: null }; break;
+    case 'getrawtransaction': out = q.params[0] === TXID ? { result: '0200000001' + 'ab'.repeat(60), error: null } : err(-5, 'No such mempool transaction. Use -txindex or provide a block hash'); break;
+    case 'estimatesmartfee': out = q.params[0] === 1008 ? { result: { errors: ['Insufficient data'], blocks: 0 }, error: null } : { result: { feerate: 0.00002 * (q.params[0] === 1 ? 2 : 1), blocks: q.params[0] }, error: null }; break;
+    case 'sendrawtransaction': out = q.params[0].startsWith('ff') ? err(-26, 'min relay fee not met') : { result: TXID, error: null }; break;
+    default: out = err(-32601, 'Method not found');
+  }
+  res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ...out, id: q.id }));
+});
+const bdPort = await listen(bdNode);
+const startShim = async (o = {}) => {
+  const g = makeGateway({ btcRpcUrl: `http://127.0.0.1:${bdPort}`, btcRpcAuth: 'tacit:pw', origins: ['https://tacit.finance'], ...o });
+  const port = await listen(g.server);
+  return { base: `http://127.0.0.1:${port}`, stop: () => g.server.close() };
+};
+const txt = async (u, init) => { const r = await fetch(u, init); return [r.status, await r.text()]; };
+
+test('shim: the paths a pruned node can answer return esplora\'s own shapes; the RPC call carries the credentials', async () => {
+  const { base, stop } = await startShim();
+  try {
+    bd.calls.length = 0;
+    assert.deepEqual(await txt(base + '/btc/api/blocks/tip/height'), [200, '900000']);
+    assert.deepEqual(await txt(base + '/btc/api/blocks/tip/hash'), [200, BLOCK]);
+    assert.deepEqual(await txt(base + '/btc/api/block-height/899000'), [200, BLOCK]);
+    assert.deepEqual(await txt(base + `/btc/api/block/${BLOCK}/header`), [200, HDR]);
+    assert.deepEqual(JSON.parse((await txt(base + `/btc/api/block/${BLOCK}/status`))[1]), { in_best_chain: true, height: 899990, next_best: 'ab'.repeat(32) });
+    const raw = await fetch(base + `/btc/api/block/${BLOCK}/raw`);
+    assert.equal(raw.headers.get('content-type'), 'application/octet-stream'); assert.deepEqual([...Buffer.from(await raw.arrayBuffer())], [0xaa, 0xbb, 0xcc]);
+    assert.match((await txt(base + `/btc/api/tx/${TXID}/hex`))[1], /^0200000001/);
+    assert.deepEqual([...bd.authSeen], ['Basic ' + Buffer.from('tacit:pw').toString('base64')]);
+    const ok = new Set(['getblockchaininfo', 'getblockcount', 'getbestblockhash', 'getblockhash', 'getblockheader', 'getblock', 'getrawtransaction', 'estimatesmartfee', 'sendrawtransaction']);
+    assert.ok(bd.calls.every((m) => ok.has(m)), 'only read RPCs: ' + [...new Set(bd.calls)]);
+  } finally { stop(); }
+});
+
+test('shim: an unknown block or transaction is a 404, an out-of-range height too, a node that errors is a 502', async () => {
+  const { base, stop } = await startShim();
+  try {
+    assert.equal((await txt(base + `/btc/api/block/${'11'.repeat(32)}/header`))[0], 404);
+    assert.equal((await txt(base + '/btc/api/block-height/999999999'))[0], 404, 'the node said height out of range');
+    assert.equal((await txt(base + `/btc/api/tx/${'22'.repeat(32)}/hex`))[0], 404, 'not in the mempool and no index: not found, as a pruned node can only say');
+  } finally { stop(); }
+  const dead = http.createServer(); const dp = await listen(dead); await new Promise((r) => dead.close(r));
+  const g = makeGateway({ btcRpcUrl: `http://127.0.0.1:${dp}`, btcRpcAuth: 'x:y' }); const port = await listen(g.server);
+  try { assert.equal((await txt(`http://127.0.0.1:${port}/btc/api/blocks/tip/height`))[0], 502); } finally { g.server.close(); }
+});
+
+test('shim: fee estimates are sat/vB by target, a target with no estimate is left out, and one round of calls serves many requests', async () => {
+  const { base, stop } = await startShim();
+  try {
+    bd.calls.length = 0;
+    const a = JSON.parse((await txt(base + '/btc/api/fee-estimates'))[1]);
+    await txt(base + '/btc/api/fee-estimates'); await txt(base + '/btc/api/fee-estimates');
+    assert.equal(a['1'], 4, '0.00004 BTC/kvB = 4 sat/vB'); assert.equal(a['2'], 2); assert.equal(a['1008'], undefined);
+    assert.equal(bd.calls.filter((m) => m === 'estimatesmartfee').length, 9, 'nine targets, once');
+  } finally { stop(); }
+});
+
+test('shim: what a pruned node cannot know is 501, never a misleading 404 or an empty list', async () => {
+  const { base, stop } = await startShim();
+  try {
+    for (const p of ['/address/bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq/txs', '/address/bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq/utxo', `/tx/${TXID}`, `/tx/${TXID}/status`, '/mempool/recent', `/block/${BLOCK}/txids`, '/blocks']) {
+      assert.equal((await txt(base + '/btc/api' + p))[0], 501, p);
+    }
+    assert.equal((await txt(base + '/btc/api/admin'))[0], 404, 'and what is not an esplora read at all');
+  } finally { stop(); }
+});
+
+test('shim: a node that is syncing, or whose newest block is hours old, answers 503 and says so on /health', async () => {
+  bd.ibd = true;
+  const a = await startShim();
+  try {
+    const r = await fetch(a.base + '/btc/api/blocks/tip/height'); assert.equal(r.status, 503); assert.equal(r.headers.get('retry-after'), '60');
+    const h = await (await fetch(a.base + '/health')).json();
+    assert.equal(h.ok, false); assert.equal(h.btc.syncing, true); assert.equal(h.btc.progress, 0.31);
+  } finally { bd.ibd = false; a.stop(); }
+  bd.ageSec = 5 * 3600;
+  const b = await startShim();
+  try { assert.equal((await fetch(b.base + '/btc/api/blocks/tip/hash')).status, 503, 'a tip five hours old is not the chain\'s tip'); } finally { bd.ageSec = 60; b.stop(); }
+  const c = await startShim();
+  try { assert.equal((await fetch(c.base + '/health')).status, 200); } finally { c.stop(); }
+});
+
+test('shim: POST /tx is refused unless broadcast is on; then the node\'s refusal reaches the caller in esplora\'s words', async () => {
+  const hex = '02000000' + 'ab'.repeat(100);
+  const off = await startShim();
+  try { assert.equal((await fetch(off.base + '/btc/api/tx', { method: 'POST', body: hex })).status, 403); } finally { off.stop(); }
+  const on = await startShim({ allowBroadcast: true });
+  try {
+    assert.deepEqual(await txt(on.base + '/btc/api/tx', { method: 'POST', body: hex }), [200, TXID]);
+    assert.deepEqual(await txt(on.base + '/btc/api/tx', { method: 'POST', body: 'ff' + 'ab'.repeat(100) }), [400, 'sendrawtransaction RPC error -26: min relay fee not met']);
+    assert.equal((await fetch(on.base + '/btc/api/tx', { method: 'POST', body: 'zz' })).status, 400);
+  } finally { on.stop(); }
+});
+
+test.after(() => { ethNode.close(); btcNode.close(); bdNode.close(); });

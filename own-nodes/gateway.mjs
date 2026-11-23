@@ -3,6 +3,9 @@
 //   POST /eth             JSON-RPC to the Ethereum node: an allowlist of read methods, no sends (but see INTERNAL_SENDS), no admin/debug/txpool/trace
 //   GET  /btc/api/<path>  Esplora REST to the Bitcoin indexer: an allowlist of read paths (POST /btc/api/tx only when ALLOW_BROADCAST=1)
 //   GET  /health          head and tip freshness plus aggregate counters (no addresses, no client data)
+//   /btc/api/… can instead be served from a PRUNED bitcoind's RPC (BTC_RPC_URL + BTC_RPC_AUTH, no BTC_ESPLORA_UPSTREAM): only what a pruned
+//                         node can answer truthfully (tip, block by height, headers, fee estimates, a transaction that is in the mempool, and
+//                         POST /tx), 501 for the rest, and 503 while the node is still syncing. Never a list for old transactions or address history.
 //   /k/<secret>/eth, /k/<secret>/btc/api/…   the same, for our own services: an INTERNAL_KEYS secret lifts the per-client budget
 //                         (for a caller that can set a URL and not a header; `x-tacit-key: <secret>` does the same)
 //
@@ -48,7 +51,7 @@ const num = (t) => (typeof t === 'string' && /^0x[0-9a-f]+$/i.test(t) ? parseInt
 
 export function makeGateway(o = {}) {
   const cfg = {
-    ethUpstream: o.ethUpstream, btcUpstream: o.btcUpstream,
+    ethUpstream: o.ethUpstream, btcUpstream: o.btcUpstream, btcRpcUrl: o.btcRpcUrl || '', btcRpcAuth: o.btcRpcAuth || '',
     origins: new Set(o.origins || []), anyOrigin: (o.origins || []).includes('*'),
     internalKeys: (o.internalKeys || []).map((k) => crypto.createHash('sha256').update(k).digest()),
     trustProxy: !!o.trustProxy, allowBroadcast: !!o.allowBroadcast, internalSends: !!o.internalSends,
@@ -204,7 +207,73 @@ export function makeGateway(o = {}) {
     return send(res, 200, batch ? out : out[0]);
   }
 
+  // ── a pruned bitcoind behind the esplora paths that it can answer truthfully ───────────────────────────────────────────────────────
+  const btcRpc = async (method, params = []) => {
+    const r = await cfg.fetchImpl(cfg.btcRpcUrl, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Basic ' + Buffer.from(cfg.btcRpcAuth).toString('base64') },
+      body: JSON.stringify({ jsonrpc: '1.0', id: 1, method, params }), signal: AbortSignal.timeout(cfg.timeoutMs),
+    });
+    const j = await r.json().catch(() => ({ error: { code: -32603, message: 'bad answer' } }));
+    if (j.error) throw Object.assign(new Error(j.error.message), { code: j.error.code });
+    return j.result;
+  };
+  // A node that is still syncing, or whose newest block is hours old, must not answer a tip: the header relay would read a stale one as the chain's.
+  const btcFresh = () => cached('btc:fresh', 10_000, async () => {
+    const i = await btcRpc('getblockchaininfo');
+    return { ok: !i.initialblockdownload && Date.now() / 1000 - i.time < 3 * 3600, blocks: i.blocks, headers: i.headers, progress: i.verificationprogress };
+  });
+  const FEE_TARGETS = [1, 2, 3, 4, 6, 10, 20, 144, 1008];
+  async function handleBtcShim(req, res, internal, path) {
+    const text = (body, status = 200) => send(res, status, String(body), 'text/plain');
+    if (req.method === 'POST') {
+      if (path !== '/tx' || !cfg.allowBroadcast) return send(res, 403, { error: 'read-only' });
+      let hex;
+      try { hex = (await readBody(req, cfg.maxTxBody)).trim(); } catch { return send(res, 413, { error: 'request too large' }); }
+      if (!/^[0-9a-f]{120,}$/i.test(hex) || hex.length % 2) return text('invalid transaction hex', 400);
+      const wait = spend(req, internal, 5);
+      if (wait) { counters.limited++; return send(res, 429, { error: 'rate limit exceeded' }, 'application/json', { 'retry-after': String(wait) }); }
+      try { const txid = await btcRpc('sendrawtransaction', [hex]); counters.requests++; return text(txid); }
+      catch (e) { if (e.code !== undefined && e.code !== -32603) return text(`sendrawtransaction RPC error ${e.code}: ${e.message}`, 400); counters.upstreamErrors++; return text('node unavailable', 502); }
+    }
+    const m = path.match(/^\/(blocks\/tip\/(height|hash)|block-height\/(\d+)|block\/([0-9a-f]{64})\/(header|raw|status)|tx\/([0-9a-f]{64})\/(hex|raw)|fee-estimates)$/);
+    if (!ESPLORA_GET.some((re) => re.test(path))) { counters.refused++; return send(res, 404, { error: 'not available here' }); }
+    if (!m) { counters.refused++; return send(res, 501, { error: 'not provided by this node (pruned: no history index)' }); }
+    const wait = spend(req, internal, m[5] === 'raw' || m[7] === 'raw' ? 3 : m[1] === 'fee-estimates' ? 3 : 1);
+    if (wait) { counters.limited++; return send(res, 429, { error: 'rate limit exceeded' }, 'application/json', { 'retry-after': String(wait) }); }
+    try {
+      if (!(await btcFresh()).ok) return send(res, 503, { error: 'node is syncing' }, 'application/json', { 'retry-after': '60' });
+      counters.requests++;
+      if (m[2] === 'height') return text(await cached('btc:tip:h', cfg.tipMs, () => btcRpc('getblockcount')));
+      if (m[2] === 'hash') return text(await cached('btc:tip:x', cfg.tipMs, () => btcRpc('getbestblockhash')));
+      if (m[3] !== undefined) return text(await btcRpc('getblockhash', [Number(m[3])]));
+      if (m[4] && m[5] === 'header') return text(await btcRpc('getblockheader', [m[4], false]));
+      if (m[4] && m[5] === 'status') {
+        const h = await btcRpc('getblockheader', [m[4], true]);
+        return send(res, 200, { in_best_chain: h.confirmations >= 0, height: h.height, next_best: h.nextblockhash ?? null });
+      }
+      if (m[4] && m[5] === 'raw') return send(res, 200, Buffer.from(await btcRpc('getblock', [m[4], 0]), 'hex'), 'application/octet-stream');
+      if (m[6]) {
+        const hexTx = await btcRpc('getrawtransaction', [m[6], false]);
+        return m[7] === 'hex' ? text(hexTx) : send(res, 200, Buffer.from(hexTx, 'hex'), 'application/octet-stream');
+      }
+      if (m[1] === 'fee-estimates') {
+        const fe = await cached('btc:fees', 20_000, async () => {
+          const out = {};
+          for (const t of FEE_TARGETS) { try { const r = await btcRpc('estimatesmartfee', [t]); if (r.feerate > 0) out[String(t)] = Number((r.feerate * 1e5).toFixed(3)); } catch { /* a target the node has no estimate for is left out, as esplora does */ } }
+          return out;
+        });
+        return send(res, 200, fe);
+      }
+    } catch (e) {
+      // -5 (no such block/transaction) and -8 (height out of range) are real answers; anything else is the node being unwell
+      if (e.code === -5 || e.code === -8) return send(res, 404, 'Not found', 'text/plain');
+      counters.upstreamErrors++; return send(res, 502, { error: 'node unavailable' });
+    }
+    return send(res, 404, { error: 'not available here' });
+  }
+
   async function handleBtc(req, res, internal, path, search) {
+    if (!cfg.btcUpstream && cfg.btcRpcUrl) return handleBtcShim(req, res, internal, path);
     const isTx = path === '/tx';
     if (req.method === 'POST') {
       if (!isTx || !cfg.allowBroadcast) return send(res, 403, { error: 'read-only' });
@@ -247,7 +316,10 @@ export function makeGateway(o = {}) {
         if (out.eth.ageSec == null || out.eth.ageSec > 120) out.ok = false;
       } catch { out.eth = { error: 'unreachable' }; out.ok = false; }
     }
-    if (cfg.btcUpstream) {
+    if (!cfg.btcUpstream && cfg.btcRpcUrl) {
+      try { const b = await btcFresh(); out.btc = { tip: b.blocks, syncing: !b.ok, ...(b.ok ? {} : { headers: b.headers, progress: Number(b.progress.toFixed(4)) }) }; if (!b.ok) out.ok = false; }
+      catch { out.btc = { error: 'unreachable' }; out.ok = false; }
+    } else if (cfg.btcUpstream) {
       try {
         const r = await cfg.fetchImpl(cfg.btcUpstream + '/blocks/tip/height', { signal: AbortSignal.timeout(5000) });
         out.btc = { tip: r.ok ? Number(await r.text()) : null };
@@ -271,7 +343,7 @@ export function makeGateway(o = {}) {
       const km = path.match(/^\/k\/([A-Za-z0-9_-]{16,128})(\/.*)$/);
       if (km) { if (!keyOk(km[1])) return send(res, 403, { error: 'bad key' }); internal = true; path = km[2]; }
       if (path === '/eth' && req.method === 'POST' && cfg.ethUpstream) return await handleEth(req, res, internal);
-      if (path.startsWith('/btc/api/') && cfg.btcUpstream) return await handleBtc(req, res, internal, path.slice('/btc/api'.length), url.search);
+      if (path.startsWith('/btc/api/') && (cfg.btcUpstream || cfg.btcRpcUrl)) return await handleBtc(req, res, internal, path.slice('/btc/api'.length), url.search);
       return send(res, 404, { error: 'not found' });
     } catch { try { send(res, 500, { error: 'error' }); } catch { /* already sent */ } }
   });
@@ -285,11 +357,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const e = process.env;
   const list = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
   const { server } = makeGateway({
-    ethUpstream: e.ETH_UPSTREAM || '', btcUpstream: (e.BTC_ESPLORA_UPSTREAM || '').replace(/\/$/, ''),
+    ethUpstream: e.ETH_UPSTREAM || '', btcUpstream: (e.BTC_ESPLORA_UPSTREAM || '').replace(/\/$/, ''), btcRpcUrl: e.BTC_RPC_URL || '', btcRpcAuth: e.BTC_RPC_AUTH || '',
     origins: list(e.ALLOW_ORIGINS || 'https://tacit.finance,https://www.tacit.finance'),
     internalKeys: list(e.INTERNAL_KEYS), trustProxy: e.TRUST_PROXY === '1', allowBroadcast: e.ALLOW_BROADCAST === '1', internalSends: e.INTERNAL_SENDS === '1',
     budgetPerMin: Number(e.BUDGET_PER_MIN) || undefined, internalBudgetPerMin: Number(e.INTERNAL_BUDGET_PER_MIN) || undefined,
     logsMaxSpan: Number(e.LOGS_MAX_SPAN) || undefined,
   });
-  server.listen(Number(e.PORT) || 8080, '0.0.0.0', () => console.log(`gateway up (eth ${e.ETH_UPSTREAM ? 'on' : 'off'}, btc ${e.BTC_ESPLORA_UPSTREAM ? 'on' : 'off'})`));
+  server.listen(Number(e.PORT) || 8080, '0.0.0.0', () => console.log(`gateway up (eth ${e.ETH_UPSTREAM ? 'on' : 'off'}, btc ${e.BTC_ESPLORA_UPSTREAM ? 'esplora' : e.BTC_RPC_URL ? 'pruned-rpc' : 'off'})`));
 }

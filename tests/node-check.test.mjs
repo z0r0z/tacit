@@ -24,14 +24,15 @@ const ethStub = (b = {}) => http.createServer(async (req, res) => {
     switch (q.method) {
       case 'eth_chainId': return { result: b.chain || '0x1' };
       case 'eth_blockNumber': return { result: '0x' + head.toString(16) };
-      case 'eth_getBalance': return { result: '0x' + (10n ** 18n + BigInt(q.params[1] === 'latest' ? head : n(q.params[1]))).toString(16) };
+      case 'eth_getBalance': if (b.light && q.params[1] !== 'latest' && head - n(q.params[1]) > 32) return { error: { code: -32001, message: 'state unavailable' } }; return { result: '0x' + (10n ** 18n + BigInt(q.params[1] === 'latest' ? head : n(q.params[1]))).toString(16) };
       case 'eth_getLogs': {
         const { fromBlock, toBlock } = q.params[0];
+        if (b.light && n(toBlock) - n(fromBlock) + 1 > 512) return { error: { code: -32602, message: 'log queries accept at most 512 blocks' } };
         if (b.prunedReceipts && n(fromBlock) < head - 20_000) return { result: [] };
         const k = Math.max(0, Math.floor((n(toBlock) - n(fromBlock)) / 10_000));
         return { result: Array.from({ length: k }, (_, i) => ({ transactionHash: '0x' + (n(fromBlock) + i).toString(16).padStart(64, '0') })) };
       }
-      case 'eth_getProof': return b.noOldProofs && n(q.params[2]) < head - 200 ? { error: { code: -32000, message: 'distance to target block exceeds maximum proof window' } } : { result: { accountProof: ['0x01', '0x02'], storageHash: '0x' + '22'.repeat(32) } };
+      case 'eth_getProof': return (b.noOldProofs || b.light) && n(q.params[2]) < head - (b.light ? 32 : 200) ? { error: { code: -32000, message: 'distance to target block exceeds maximum proof window' } } : { result: { accountProof: ['0x01', '0x02'], storageHash: '0x' + '22'.repeat(32) } };
       case 'admin_nodeInfo': case 'txpool_content': return b.adminOpen ? { result: {} } : { error: { code: -32601, message: 'method not found' } };
       case 'debug_traceBlockByNumber': return b.adminOpen ? { result: [] } : { error: { code: -32601, message: 'method not found' } };
       default: return { error: { code: -32601, message: 'method not found' } };
@@ -66,11 +67,27 @@ const bitcoindStub = (b = {}) => http.createServer(async (req, res) => {
   res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ result, error: null, id: 1 }));
 });
 
+const prunedStub = (b = {}) => http.createServer(async (req, res) => {
+  const q = JSON.parse(await readBody(req));
+  const ok = (result) => ({ result, error: null });
+  const bad = (code, message) => ({ result: null, error: { code, message } });
+  const out = {
+    getblockchaininfo: () => ok({ chain: 'main', blocks: BTC_TIP, initialblockdownload: !!b.ibd, verificationprogress: b.ibd ? 0.4 : 0.99999, pruned: b.pruned === false ? false : true, pruneheight: BTC_TIP - (b.keep ?? 20_000), bestblockhash: '11'.repeat(32) }),
+    getblockhash: () => ok('00'.repeat(31) + (b.badHash ? 'ff' : '01')),
+    getblock: () => ok({ tx: [{ vin: [{ coinbase: '00' }] }, { vin: [{ txid: 'aa'.repeat(32), prevout: b.noPrevout ? undefined : { scriptPubKey: { hex: '0014' } } }] }] }),
+    estimatesmartfee: () => ok(b.noFees ? { errors: ['Insufficient data'], blocks: 0 } : { feerate: 0.00002, blocks: 2 }),
+    getmempoolinfo: () => ok({ loaded: b.mempoolNotLoaded ? false : true, size: 5000 }),
+    testmempoolaccept: () => (b.acceptsGarbage ? ok([{ allowed: true }]) : bad(-22, 'TX decode failed')),
+  }[q.method];
+  res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ...(out ? out() : bad(-32601, 'Method not found')), id: q.id }));
+});
+
 const servers = [];
 const up = async (s) => { servers.push(s); return `http://127.0.0.1:${await listen(s)}`; };
 const refEth = await up(ethStub()), refBtc = await up(btcStub());
 const refs = { ethRefs: [refEth], btcRefs: [refBtc], fromBlock: FROM, timeoutMs: 5000 };
 const run = async ({ eth, btc, rpc } = {}) => runChecks({ ...refs, eth: eth && (await up(ethStub(eth))), btc: btc && (await up(btcStub(btc))), btcRpc: rpc && (await up(bitcoindStub(rpc))).replace('http://', 'http://u:p@'), broadcastPath: true });
+const runPruned = async (rpc) => runChecks({ ...refs, btcRpc: (await up(prunedStub(rpc))).replace('http://', 'http://u:p@'), btcPruned: true });
 const verdicts = (r) => Object.fromEntries(r.summary.map((s) => [s.role, s.verdict]));
 const failed = (r) => r.checks.filter((c) => c.status === 'fail').map((c) => c.id);
 
@@ -120,6 +137,39 @@ test('a reference that does not answer makes a role UNVERIFIED, never PASS', asy
   const r = await runChecks({ eth: await up(ethStub()), ethRefs: [url], fromBlock: FROM, timeoutMs: 3000 });
   assert.equal(r.ok, true, 'nothing failed');
   assert.equal(verdicts(r)['eth-reads'], 'UNVERIFIED'); assert.equal(verdicts(r)['eth-wide-logs'], 'UNVERIFIED');
+});
+
+test('light client: judged on what it can serve (state 32 blocks, logs 512), and what it cannot is NOT PROVIDED rather than failed', async () => {
+  const r = await runChecks({ ...refs, light: true, eth: await up(ethStub({ light: true })) });
+  assert.equal(r.ok, true, JSON.stringify(failed(r)));
+  assert.deepEqual(verdicts(r), { 'eth-reads': 'PASS', 'eth-proofs': 'NOT PROVIDED', 'eth-proofs-head': 'PASS', 'eth-wide-logs': 'NOT PROVIDED', 'eth-browser': 'PASS' });
+  const names = r.checks.map((c) => c.id);
+  assert.ok(names.includes('old state (16 blocks back)') && names.includes('logs, last 501 blocks'));
+});
+
+test('the same light client judged as a full node FAILS: the profile is not a way to pass', async () => {
+  const r = await runChecks({ ...refs, eth: await up(ethStub({ light: true })) });
+  assert.equal(r.ok, false);
+  for (const id of ['old state (500 blocks back)', 'logs, last 10,000 blocks', 'eth_getProof 2,400 blocks back']) assert.ok(failed(r).includes(id), id + ' should fail: ' + failed(r));
+});
+
+test('light profile still fails a node that is behind or whose logs are wrong', async () => {
+  const behind = await runChecks({ ...refs, light: true, eth: await up(ethStub({ light: true, lag: 20 })) });
+  assert.deepEqual(failed(behind), ['head in step']);
+});
+
+test('pruned bitcoind: judged on headers, fees, mempool, broadcast and recent blocks; a full node or a syncing one is not a pruned node', async () => {
+  const good = await runPruned({});
+  assert.equal(good.ok, true, JSON.stringify(failed(good)));
+  assert.deepEqual(verdicts(good), { 'btc-pruned-node': 'PASS' });
+  assert.deepEqual(failed(await runPruned({ pruned: false })), ['pruned, with the recent blocks kept']);
+  assert.deepEqual(failed(await runPruned({ keep: 100 })), ['pruned, with the recent blocks kept']);
+  assert.deepEqual(failed(await runPruned({ ibd: true })), ['mainnet, synced']);
+  assert.deepEqual(failed(await runPruned({ badHash: true })), ['block hash 10 back equals the public one']);
+  assert.deepEqual(failed(await runPruned({ noPrevout: true })), ['recent block with prevouts (getblock verbosity 3)']);
+  assert.deepEqual(failed(await runPruned({ noFees: true })), ['fee estimate']);
+  assert.deepEqual(failed(await runPruned({ mempoolNotLoaded: true })), ['mempool loaded']);
+  assert.deepEqual(failed(await runPruned({ acceptsGarbage: true })), ["broadcast path answers a malformed transaction with the node's reason"]);
 });
 
 test.after(() => servers.forEach((s) => s.close()));

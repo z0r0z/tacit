@@ -5,6 +5,10 @@
 //   node tools/node-check.mjs --eth https://node.tacit.finance/eth --btc https://node.tacit.finance/btc/api \
 //        [--origin https://tacit.finance] [--btc-rpc http://user:pass@127.0.0.1:8332] [--broadcast-path]
 //        [--from-block 25998736] [--eth-ref url,url] [--btc-ref url,url] [--json]
+//        [--light]        the Ethereum node is a LIGHT client (Nethermind): state history 32 blocks, getLogs 512 blocks. The depths are scaled to
+//                         that, and what it cannot give (old proofs, wide logs) is reported "NOT PROVIDED" instead of failed, so nobody reads a
+//                         pass as covering the keeper's 8-hour-old proofs.
+//        [--btc-pruned]   the --btc-rpc node is a PRUNED bitcoind: judged on headers, fees, mempool, broadcast and recent blocks, not on history.
 //
 // Exit 0 when every role that could be checked passed; 1 when one failed. A role whose references all failed to answer is
 // "unverified", never "pass".
@@ -47,18 +51,19 @@ export async function runChecks(o) {
     } catch (e) { add(R, 'reachable', 'fail', e.message); }
 
     if (head != null) {
-      const at = hex(head - 500);
+      const stateBack = o.light ? 16 : 500, logSpan = o.light ? 500 : 9999;
+      const at = hex(head - stateBack);
       try {
         const mine = await rpc(o.eth, 'eth_getBalance', [DEPOSIT, at]);
         const ref = await firstRef(o.ethRefs || ETH_REFS, (u) => rpc(u, 'eth_getBalance', [DEPOSIT, at]));
-        add(R, 'old state (500 blocks back)', !ref ? 'warn' : ref.v === mine ? 'pass' : 'fail', ref ? `${num(mine)} vs ${new URL(ref.u).host}` : 'no reference served it');
-      } catch (e) { add(R, 'old state (500 blocks back)', 'fail', e.message); }
+        add(R, `old state (${stateBack} blocks back)`, !ref ? 'warn' : ref.v === mine ? 'pass' : 'fail', ref ? `${num(mine)} vs ${new URL(ref.u).host}` : 'no reference served it');
+      } catch (e) { add(R, `old state (${stateBack} blocks back)`, 'fail', e.message); }
 
       try {
-        const mine = await rpc(o.eth, 'eth_getLogs', [{ fromBlock: hex(head - 9999), toBlock: hex(head), address: DEPOSIT }]);
-        const ref = await firstRef(o.ethRefs || ETH_REFS, (u) => rpc(u, 'eth_getLogs', [{ fromBlock: hex(head - 9999), toBlock: hex(head), address: DEPOSIT }]));
-        add(R, 'logs, last 10,000 blocks', !ref ? 'warn' : ref.v.length === mine.length ? 'pass' : 'fail', `${mine.length} logs${ref ? ` (${new URL(ref.u).host}: ${ref.v.length})` : ''}`);
-      } catch (e) { add(R, 'logs, last 10,000 blocks', 'fail', e.message); }
+        const mine = await rpc(o.eth, 'eth_getLogs', [{ fromBlock: hex(head - logSpan), toBlock: hex(head), address: DEPOSIT }]);
+        const ref = await firstRef(o.ethRefs || ETH_REFS, (u) => rpc(u, 'eth_getLogs', [{ fromBlock: hex(head - logSpan), toBlock: hex(head), address: DEPOSIT }]));
+        add(R, `logs, last ${(logSpan + 1).toLocaleString('en-US')} blocks`, !ref ? 'warn' : ref.v.length === mine.length ? 'pass' : 'fail', `${mine.length} logs${ref ? ` (${new URL(ref.u).host}: ${ref.v.length})` : ''}`);
+      } catch (e) { add(R, `logs, last ${(logSpan + 1).toLocaleString('en-US')} blocks`, 'fail', e.message); }
 
       try {
         const batch = await f(o.eth, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Array.from({ length: 10 }, (_, i) => ({ jsonrpc: '2.0', id: i, method: 'eth_getBalance', params: [DEPOSIT, 'latest'] }))), signal: AbortSignal.timeout(timeout) });
@@ -67,17 +72,19 @@ export async function runChecks(o) {
       } catch (e) { add(R, 'batch of 10', 'fail', e.message); }
 
       // the keeper checks ~8 h back (2,400 blocks); eth_prove asks at a recent block; public nodes mostly serve neither
-      for (const back of [2400, 2]) {
+      if (o.light) add('eth-proofs', 'eth_getProof 2,400 blocks back', 'skip', 'a light client keeps 32 blocks of state: the keeper must keep a node that serves old proofs');
+      for (const back of o.light ? [2] : [2400, 2]) {
         const id = `eth_getProof ${back === 2400 ? '2,400' : back} blocks back`;
         try {
           const p = await rpc(o.eth, 'eth_getProof', [WETH, [], hex(head - back)]);
-          add('eth-proofs', id, Array.isArray(p?.accountProof) && p.accountProof.length && /^0x[0-9a-f]{64}$/.test(p.storageHash || '') ? 'pass' : 'fail', `${p?.accountProof?.length ?? 0} proof nodes`);
-        } catch (e) { add('eth-proofs', id, 'fail', e.message); }
+          add(o.light ? 'eth-proofs-head' : 'eth-proofs', id, Array.isArray(p?.accountProof) && p.accountProof.length && /^0x[0-9a-f]{64}$/.test(p.storageHash || '') ? 'pass' : 'fail', `${p?.accountProof?.length ?? 0} proof nodes`);
+        } catch (e) { add(o.light ? 'eth-proofs-head' : 'eth-proofs', id, 'fail', e.message); }
       }
 
       // the pool scans start at its deploy block, so receipts must reach that far, and match what an archive says
       const from = o.fromBlock ?? 25_998_736;
-      if (head - from > 0) {
+      if (o.light) add('eth-wide-logs', `logs from the pool's deploy block (${from})`, 'skip', 'a light client answers 512 blocks a query: history scans keep using an archive-capable node');
+      else if (head - from > 0) {
         try {
           const q = { fromBlock: hex(from), toBlock: hex(from + 44_999), address: DEPOSIT };
           const mine = await rpc(o.eth, 'eth_getLogs', [q]);
@@ -163,7 +170,39 @@ export async function runChecks(o) {
     } catch (e) { add('btc-browser', 'CORS on a read', 'fail', e.message); }
   }
 
-  if (o.btcRpc) {
+  if (o.btcRpc && o.btcPruned) {
+    const R = 'btc-pruned-node';
+    try {
+      const u = new URL(o.btcRpc); const auth = 'Basic ' + Buffer.from(`${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`).toString('base64'); u.username = ''; u.password = '';
+      const call = async (method, params = []) => { const r = await f(u.toString(), { method: 'POST', headers: { 'content-type': 'application/json', authorization: auth }, body: JSON.stringify({ jsonrpc: '1.0', id: 1, method, params }), signal: AbortSignal.timeout(timeout) }); const j = await r.json(); if (j.error) throw Object.assign(new Error(j.error.message), { code: j.error.code }); return j.result; };
+      const info = await call('getblockchaininfo');
+      add(R, 'mainnet, synced', info.chain === 'main' && !info.initialblockdownload && info.verificationprogress > 0.9999 ? 'pass' : 'fail', `${info.chain}, ${info.blocks} blocks, ${(info.verificationprogress * 100).toFixed(3)}%`);
+      add(R, 'pruned, with the recent blocks kept', info.pruned === true && info.blocks - info.pruneheight > 1000 ? 'pass' : 'fail', `pruneheight ${info.pruneheight}, tip ${info.blocks}`);
+      const refs = o.btcRefs || BTC_REFS;
+      try {
+        const mine = await call('getblockhash', [info.blocks - 10]);
+        const ref = await firstRef(refs, async (b) => { const r = await f(`${b}/block-height/${info.blocks - 10}`, { signal: AbortSignal.timeout(timeout) }); if (!r.ok) throw new Error('x'); return (await r.text()).trim(); });
+        add(R, 'block hash 10 back equals the public one', !ref ? 'warn' : ref.v === mine ? 'pass' : 'fail', mine.slice(0, 16) + '…');
+      } catch (e) { add(R, 'block hash 10 back equals the public one', 'fail', e.message); }
+      try {
+        const blk = await call('getblock', [info.bestblockhash, 3]);
+        const spend = blk.tx.find((t, i) => i > 0 && t.vin?.length);
+        add(R, 'recent block with prevouts (getblock verbosity 3)', spend && spend.vin[0].prevout?.scriptPubKey ? 'pass' : 'fail', spend ? 'prevout present' : 'block had no spend');
+      } catch (e) { add(R, 'recent block with prevouts (getblock verbosity 3)', 'fail', e.message); }
+      try {
+        const fee = await call('estimatesmartfee', [2]);
+        add(R, 'fee estimate', fee.feerate > 0 ? 'pass' : 'fail', fee.feerate ? `${(fee.feerate * 1e5).toFixed(2)} sat/vB for 2 blocks` : (fee.errors || []).join('; '));
+      } catch (e) { add(R, 'fee estimate', 'fail', e.message); }
+      try {
+        const mp = await call('getmempoolinfo');
+        add(R, 'mempool loaded', mp.loaded ? 'pass' : 'fail', `${mp.size} transactions`);
+      } catch (e) { add(R, 'mempool loaded', 'fail', e.message); }
+      try {
+        let code = null; try { await call('testmempoolaccept', [['00'.repeat(60)]]); } catch (e) { code = e.code; }
+        add(R, 'broadcast path answers a malformed transaction with the node\'s reason', code === -22 ? 'pass' : 'fail', `rpc code ${code}`);
+      } catch (e) { add(R, 'broadcast path', 'fail', e.message); }
+    } catch (e) { add(R, 'bitcoind rpc', 'fail', e.message.replace(/\/\/[^@/]*@/, '//***@')); }
+  } else if (o.btcRpc) {
     const R = 'btc-tweak-index';
     try {
       const u = new URL(o.btcRpc); const auth = 'Basic ' + Buffer.from(`${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`).toString('base64'); u.username = ''; u.password = '';
@@ -178,8 +217,8 @@ export async function runChecks(o) {
   }
 
   const roles = {};
-  for (const c of out) { const r = roles[c.role] ||= { pass: 0, fail: 0, warn: 0 }; r[c.status]++; }
-  const summary = Object.entries(roles).map(([role, n]) => ({ role, verdict: n.fail ? 'FAIL' : n.warn ? 'UNVERIFIED' : 'PASS', ...n }));
+  for (const c of out) { const r = roles[c.role] ||= { pass: 0, fail: 0, warn: 0, skip: 0 }; r[c.status]++; }
+  const summary = Object.entries(roles).map(([role, n]) => ({ role, verdict: n.fail ? 'FAIL' : n.warn ? 'UNVERIFIED' : n.pass ? 'PASS' : 'NOT PROVIDED', ...n }));
   return { checks: out, summary, ok: summary.every((s) => s.verdict !== 'FAIL') };
 }
 
@@ -190,16 +229,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const o = {
     eth: val('--eth'), btc: val('--btc'), origin: val('--origin'), btcRpc: val('--btc-rpc') || process.env.BTC_RPC,
     broadcastPath: a.includes('--broadcast-path'), fromBlock: val('--from-block') ? Number(val('--from-block')) : undefined,
-    ethRefs: list('--eth-ref'), btcRefs: list('--btc-ref'),
+    ethRefs: list('--eth-ref'), btcRefs: list('--btc-ref'), light: a.includes('--light'), btcPruned: a.includes('--btc-pruned'),
   };
   if (!o.eth && !o.btc && !o.btcRpc) { console.error('give --eth <url> and/or --btc <esplora base> and/or --btc-rpc <url> (see the header of this file)'); process.exit(2); }
   const res = await runChecks(o);
   if (a.includes('--json')) console.log(JSON.stringify(res, null, 2));
   else {
-    const mark = { pass: '✓', fail: '✗', warn: '?' };
+    const mark = { pass: '✓', fail: '✗', warn: '?', skip: '–' };
     let role = '';
     for (const c of res.checks) { if (c.role !== role) { role = c.role; console.log(`\n${role}`); } console.log(`  ${mark[c.status]} ${c.id}${c.note ? ' — ' + c.note : ''}`); }
-    console.log('\n' + res.summary.map((s) => `${s.verdict.padEnd(10)} ${s.role}`).join('\n'));
+    console.log('\n' + res.summary.map((s) => `${s.verdict.padEnd(12)} ${s.role}`).join('\n'));
   }
   process.exit(res.ok ? 0 : 1);
 }
