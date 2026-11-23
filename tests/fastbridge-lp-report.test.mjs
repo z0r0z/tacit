@@ -3,14 +3,14 @@
 //   node tests/fastbridge-lp-report.test.mjs        (Node 22)
 
 import assert from 'node:assert/strict';
-import { tac, parseLines, summarize, render, fetchLogs, HOUSE } from '../tools/fastbridge-lp-report.mjs';
+import { tac, tacWei, parseLines, summarize, render, fetchLogs, HOUSE } from '../tools/fastbridge-lp-report.mjs';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 const T0 = Date.parse('2026-11-23T06:00:00Z');
 const at = (min) => new Date(T0 + min * 60e3).toISOString();
 const line = (min, o) => ({ timestamp: at(min), message: JSON.stringify({ ts: at(min), level: 'info', ...o }) });
-const ONE = 10n ** 8n;
+const ONE = 10n ** 8n, WEI = 10n ** 18n;       // the pool counts in 8 places, the refill's log lines in the token's 18
 const swap = (min, id, from, to, extra = {}) => line(min, { msg: 'swap', id, from, to, ...extra });
 const idOf = (c) => c.repeat(72);
 
@@ -18,6 +18,11 @@ test('TAC as people read it: base units with 8 places, grouped, two places at mo
   assert.equal(tac('0'), '0'); assert.equal(tac(String(ONE)), '1'); assert.equal(tac(String(2536n * ONE)), '2,536'); assert.equal(tac(String(1000n * ONE + 5n * ONE / 10n)), '1,000.5');
   assert.equal(tac(String(ONE / 100n)), '0.01'); assert.equal(tac(String(ONE / 1000n)), '0', 'under two places shows as 0');
   assert.equal(tac(String(123456789n * ONE)), '123,456,789'); assert.equal(tac(null), '?'); assert.equal(tac('lots'), '?');
+});
+
+test('the refill\'s amounts are the token\'s own 18 places: 2,536 TAC reads as 2,536, not as a number ten digits larger', () => {
+  assert.equal(tacWei(String(2536n * WEI)), '2,536'); assert.equal(tacWei(String(WEI / 2n)), '0.5'); assert.equal(tacWei('0'), '0'); assert.equal(tacWei(null), '?'); assert.equal(tacWei('lots'), '?');
+  assert.notEqual(tac(String(2536n * WEI)), '2,536', 'read as pool units it is the wrong number: the two are not interchangeable');
 });
 
 test('parsing: the provider\'s JSON lines are kept with their fields, text that is not JSON is kept as it is, and the lines come out in time order', () => {
@@ -31,7 +36,7 @@ test('parsing: the provider\'s JSON lines are kept with their fields, text that 
 
 const SAMPLE = [
   line(0, { msg: 'capacity', held: String(2536n * ONE), promised: '0', open: 0, holds: 0 }),
-  line(1, { msg: 'refill: shielded', amount: String(2536n * ONE), pulled: false }),
+  line(1, { msg: 'refill: shielded', amount: String(2536n * WEI), pulled: false }),
   swap(10, idOf('a'), 'none', 'accepted'), swap(12, idOf('a'), 'accepted', 'locking'), swap(40, idOf('a'), 'locked', 'offered'), swap(50, idOf('a'), 'taking', 'done'),
   swap(11, idOf('b'), 'none', 'accepted'), swap(100, idOf('b'), 'taking', 'done'),
   swap(20, idOf('c'), 'none', 'accepted'), swap(30, idOf('c'), 'locked', 'offered'),
@@ -44,7 +49,7 @@ const SAMPLE = [
   line(70, { msg: 'swap step failed', level: 'warn', id: idOf('c'), phase: 'offered', error: 'the explorer did not answer' }), line(71, { msg: 'swap step failed', level: 'warn', id: idOf('c'), error: 'the explorer is rate limited' }),
   line(120, { msg: 'a swap has waited long in taking', level: 'alert', id: idOf('c') }),
   { timestamp: at(130), message: 'Error: socket hang up' },
-  line(210, { msg: 'refill: shielded', amount: String(5000n * ONE), pulled: false }),
+  line(210, { msg: 'refill: shielded', amount: String(5000n * WEI), pulled: false }),
 ];
 
 test('the swaps: how many were seen, how each ended, how many are still open and where, and how long the finished ones took', () => {
@@ -56,10 +61,21 @@ test('the swaps: how many were seen, how each ended, how many are still open and
   assert.deepEqual(r.swaps.notDone.map((n) => [n.id[0], n.phase, n.why]), [['d', 'refunded', 'the user never claimed']], 'the ones that did not go through are listed with why (a rejected one is the user\'s own, not listed)');
 });
 
+test('the swaps not over are listed, the longest in their phase first, each with the last error it was given', () => {
+  const r = summarize(parseLines(SAMPLE), { hours: 12 });
+  assert.deepEqual(r.swaps.openList, [{ id: idOf('c'), phase: 'offered', since: T0 + 30 * 60e3, error: 'the explorer is rate limited' }]);
+  const more = summarize(parseLines([swap(5, idOf('p'), 'none', 'accepted'), swap(9, idOf('q'), 'none', 'locking'), swap(7, idOf('r'), 'none', 'taking'), line(8, { msg: 'swap step failed', level: 'warn', id: idOf('r'), error: 'broadcast refused: x' }), line(20, { msg: 'swap step failed', level: 'warn', id: idOf('r'), error: 'broadcast refused: y' }), swap(30, idOf('s'), 'taking', 'done')]), {});
+  assert.deepEqual(more.swaps.openList.map((o) => [o.id[0], o.phase, o.error]), [['p', 'accepted', null], ['r', 'taking', 'broadcast refused: y'], ['q', 'locking', null]], 'oldest first; the latest error of each; a finished swap is not listed');
+  const text = render(r);
+  assert.match(text, /not over \(longest in its phase first\):\n\s+offered\s+cccccccccccc…\s+since 06:30 UTC\s+last error: the explorer is rate limited/);
+  const many = summarize(parseLines(Array.from({ length: 15 }, (_, i) => swap(i, String.fromCharCode(97 + i).repeat(72), 'none', 'taking'))), {});
+  assert.match(render(many), /… and 3 more/);
+});
+
 test('capacity, what the provider shielded, the offers it took and declined', () => {
   const r = summarize(parseLines(SAMPLE), { hours: 12 });
   assert.equal(r.capacity.samples, 3); assert.equal(r.capacity.first.held, String(2536n * ONE)); assert.equal(r.capacity.last.held, String(17n * ONE)); assert.equal(r.capacity.lowestHeld, 17n * ONE);
-  assert.deepEqual(r.refills.map((x) => [x.amount, x.pulled]), [[String(2536n * ONE), false], [String(5000n * ONE), false]]);
+  assert.deepEqual(r.refills.map((x) => [x.amount, x.pulled]), [[String(2536n * WEI), false], [String(5000n * WEI), false]]);
   assert.equal(r.offers.accepted, 2);
   assert.deepEqual(r.offers.declined, [['the lock has no confirmation yet', 2], ['a note it cannot read', 1]], 'most common first');
 });

@@ -209,7 +209,7 @@ line for Slack and Discord incoming webhooks, so one of those can be the webhook
 
 | alert | what it means | what to do |
 |---|---|---|
-| `a swap has waited long in taking` | the user's claim showed the secret, and the LP's Bitcoin take has not landed | check the explorers, the fee coins at the Bitcoin address and the fee rate. The take has to land before the user's timelock opens (about a day after its lock); the process keeps trying every tick |
+| `a swap has waited long in taking` | the user's claim showed the secret, and the LP's Bitcoin take has not landed | check the explorers, the fee coins at the Bitcoin address and the fee rate. The take has to land before the user's timelock opens (about a day after its lock); the process keeps trying every tick, and a take that has confirmed ends the swap on the next one, so an alert means the take has not confirmed. `tools/fastbridge-lp-report.mjs` (run it yourself; it reads the Render logs) lists each swap not over with its last error |
 | `a swap has waited long in refunding` | the LP's lock is past its deadline and the refund has not landed | check the relay and the node's connection; the note is the LP's own and waits safely |
 | `a lock was claimed without revealing t` | a claim spent a lock without the signature that opens the Bitcoin | should not happen; stop quoting and look at the claim's settle before anything else |
 | `a swap record cannot be read` | a file in `swaps/` is torn or corrupt and has no readable backup | restore it from the backup; the other swaps go on |

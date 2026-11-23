@@ -214,11 +214,17 @@ export function makeEthereumLocker(ctx) {
           }
           await save(rec, { take: { txid: pair.revealTxid, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, at: ctx.now() } });
         }
+        // A take that has confirmed is done, and is not sent again: its commit's output is spent by its reveal, so a node refuses the commit as having no inputs
+        // (bad-txns-inputs-missingorspent), which is no failure. Asked after the send as well, for a take that confirmed between the two reads. A status that cannot
+        // be read is not a take that is not there: it goes on to the send, as it always did.
+        const confirmed = async () => !!((await btc.status(rec.take.txid).catch(() => null)) || {}).confirmations;
+        if (await confirmed()) return save(rec, { phase: 'done' });
         try { await btc.broadcast(rec.take, null); } catch (e) {
+          if (await confirmed()) return save(rec, { phase: 'done' });
           if (rec.take.at != null && ctx.now() - rec.take.at > 600 && (rec.takeRebuilds || 0) < 5 && !(await btc.fetchTx(rec.take.commitTxid).catch(() => true))) await save(rec, { take: null, takeRebuilds: (rec.takeRebuilds || 0) + 1 });
           throw e;
         }
-        if ((await btc.status(rec.take.txid)).confirmations) return save(rec, { phase: 'done' });
+        if (await confirmed()) return save(rec, { phase: 'done' });
         return rec;
       }
       case 'refunding': {

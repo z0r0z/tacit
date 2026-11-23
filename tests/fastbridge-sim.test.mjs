@@ -382,6 +382,43 @@ test('a take whose commit cannot be read (every explorer limits the LP) is not b
   assert.equal((await w.lp()).phase, 'done');
 });
 
+// The simulated chain sends a pair again with no complaint; a node does not. Once a take has confirmed, its commit's output is spent by its reveal, and a node refuses the commit
+// as having no inputs (bad-txns-inputs-missingorspent). A live provider's swaps all sat in `taking` for hours for this: the take had landed, the step sent it again every tick,
+// threw at the refusal, and never reached the check that ends the swap (two ended only when a block came between the send and the check).
+const refusesConfirmed = (w) => {
+  const real = w.lBtc.broadcast, log = { sentUnconfirmed: 0, afterConfirm: 0 };
+  w.lBtc.broadcast = async (pair, ...rest) => {
+    if ((await w.lBtc.status(pair.txid)).confirmations) { log.afterConfirm++; throw new Error('broadcast refused: sendrawtransaction RPC error: {"code":-25,"message":"bad-txns-inputs-missingorspent"}'); }
+    log.sentUnconfirmed++;
+    return real(pair, ...rest);
+  };
+  return log;
+};
+
+test('a take that has confirmed is not sent again, and the swap ends: a node refuses it as missing its inputs, which is no failure, while one not yet confirmed is still sent each step', async () => {
+  const w = world();
+  const sends = refusesConfirmed(w);
+  await w.start();
+  await w.run(async () => (await w.user())?.phase === 'done' && (await w.lp())?.phase === 'done');
+  const lp = await w.lp();
+  assert.equal(lp.phase, 'done'); assert.ok(lp.take && !lp.lastError, 'the LP took the Bitcoin and ended without an error standing');
+  assert.ok(await w.noteOf(lp.take.txid, 0), 'its Bitcoin note is valid');
+  assert.ok(sends.sentUnconfirmed >= 2, `the take was sent again while it waited for a block (${sends.sentUnconfirmed} sends), so a dropped one is not lost`);
+  assert.equal(sends.afterConfirm, 0, 'and not once after it had confirmed');
+});
+
+test('a take whose status cannot be read just now is still sent, and the swap ends once it can be read', async () => {
+  const w = world();
+  const sends = refusesConfirmed(w);
+  const realStatus = w.lBtc.status;
+  let unreadable = 0;
+  w.lBtc.status = async (txid) => { const t = (await w.lp())?.take?.txid; if (t && txid === t && unreadable < 6) { unreadable++; throw new Error('the explorer did not answer'); } return realStatus(txid); };
+  await w.start();
+  await w.run(async () => (await w.user())?.phase === 'done' && (await w.lp())?.phase === 'done');
+  assert.equal((await w.lp()).phase, 'done'); assert.equal(unreadable, 6, 'the status failed as often as it was made to');
+  assert.ok(sends.sentUnconfirmed >= 1);
+});
+
 let passed = 0, ran = 0;
 const ONLY = process.env.ONLY ? new RegExp(process.env.ONLY) : null;
 for (const [name, fn] of tests) {

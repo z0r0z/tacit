@@ -21,6 +21,8 @@ export function tac(v) {
   const whole = n / ONE, frac = (n % ONE).toString().padStart(8, '0').slice(0, 2).replace(/0+$/, '');
   return `${whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${frac ? '.' + frac : ''}`;
 }
+// the refill's amounts are the token's own (18 places), not the pool's (8)
+export function tacWei(v) { try { return tac(BigInt(v) / 10n ** 10n); } catch { return '?'; } }
 const mins = (ms) => (ms < 90 * 60e3 ? `${Math.round(ms / 60e3)} min` : `${Math.floor(ms / 3600e3)} h ${Math.round((ms % 3600e3) / 60e3)} min`);
 const hhmm = (ms) => new Date(ms).toISOString().slice(11, 16);
 
@@ -42,7 +44,7 @@ const median = (a) => { const s = a.slice().sort((x, y) => x - y); return s.leng
 const bump = (m, k, by = 1) => m.set(k, (m.get(k) || 0) + by);
 
 export function summarize(entries, { hours = null } = {}) {
-  const swaps = new Map(), capacity = [], refills = [], offers = { accepted: 0, declined: new Map() }, trouble = new Map(), troubleLast = new Map();
+  const swaps = new Map(), capacity = [], refills = [], offers = { accepted: 0, declined: new Map() }, trouble = new Map(), troubleLast = new Map(), swapErrors = new Map();
   let first = null, last = null;
   for (const e of entries) {
     if (e.at != null) { first = first == null ? e.at : Math.min(first, e.at); last = last == null ? e.at : Math.max(last, e.at); }
@@ -57,6 +59,7 @@ export function summarize(entries, { hours = null } = {}) {
     if (e.level === 'error' || e.level === 'alert' || e.level === 'warn') {
       const k = e.msg === 'unstructured' ? `unstructured: ${String(e.raw).slice(0, 60)}` : e.msg || '(no message)';
       bump(trouble, k); troubleLast.set(k, { at: e.at, error: e.error || e.why || e.raw || null, id: e.id || null });
+      if (e.id && e.error) swapErrors.set(e.id, { error: String(e.error).slice(0, 160), at: e.at });      // the last error a swap was given
     }
   }
   const all = [...swaps.values()];
@@ -70,7 +73,9 @@ export function summarize(entries, { hours = null } = {}) {
   return {
     window: { from: first, to: last, hours, lines: entries.length },
     swaps: { seen: all.length, ended, open, openCount: all.length - Object.values(ended).reduce((a, b) => a + b, 0), medianMs: median(taken), slowestMs: taken.length ? Math.max(...taken) : null, finished: taken.length,
-      notDone: lost.slice(-8).map((s) => ({ id: s.id, phase: s.phase, why: s.why })) },
+      notDone: lost.slice(-8).map((s) => ({ id: s.id, phase: s.phase, why: s.why })),
+      // the swaps not over, longest in their phase first, each with the last error it was given
+      openList: all.filter((s) => !TERMINAL.has(s.phase)).sort((a, b) => (a.lastAt ?? 0) - (b.lastAt ?? 0)).map((s) => ({ id: s.id, phase: s.phase, since: s.lastAt, error: (swapErrors.get(s.id) || {}).error || null })) },
     capacity: { samples: capacity.length, first: capacity[0] || null, last: capacity.at(-1) || null,
       lowestHeld: capacity.reduce((m, c) => { try { const v = BigInt(c.held); return m == null || v < m ? v : m; } catch { return m; } }, null) },
     refills, offers: { accepted: offers.accepted, declined: [...offers.declined].sort((a, b) => b[1] - a[1]) },
@@ -86,10 +91,15 @@ export function render(r) {
   L.push(`\nSwaps seen: ${s.seen}. Ended: ${endedTxt}.${s.openCount ? ` Still open: ${s.openCount} (${openTxt}).` : ''}`);
   if (s.finished) L.push(`  finished ones took a median of ${mins(s.medianMs)} from the first log line to done (slowest ${mins(s.slowestMs)})`);
   for (const n of s.notDone) L.push(`  ${n.phase}: ${n.id.slice(0, 12)}…${n.why ? ` (${n.why})` : ''}`);
+  if (s.openList.length) {
+    L.push('  not over (longest in its phase first):');
+    for (const o of s.openList.slice(0, 12)) L.push(`    ${o.phase.padEnd(9)} ${o.id.slice(0, 12)}…  since ${o.since ? hhmm(o.since) : '?'} UTC${o.error ? `  last error: ${o.error}` : ''}`);
+    if (s.openList.length > 12) L.push(`    … and ${s.openList.length - 12} more`);
+  }
   const c = r.capacity;
   if (c.samples) L.push(`\nCapacity (the 'capacity' lines, ${c.samples} of them): first held ${tac(c.first.held)} TAC, promised ${tac(c.first.promised)} TAC, ${c.first.open} open${c.samples > 1 ? `; last held ${tac(c.last.held)} TAC, promised ${tac(c.last.promised)} TAC, ${c.last.open} open, ${c.last.holds} holds; lowest held ${tac(c.lowestHeld)} TAC` : ''}`);
   else L.push('\nCapacity: no capacity lines in the window.');
-  L.push(r.refills.length ? `Shielded by the provider itself: ${r.refills.map((x) => `${tac(x.amount)} TAC at ${hhmm(x.at)}`).join(', ')}` : 'Shielded by the provider itself: nothing in the window.');
+  L.push(r.refills.length ? `Shielded by the provider itself: ${r.refills.map((x) => `${tacWei(x.amount)} TAC at ${hhmm(x.at)}`).join(', ')}` : 'Shielded by the provider itself: nothing in the window.');
   L.push(`\nOffers: ${r.offers.accepted} accepted${r.offers.declined.length ? `, ${r.offers.declined.reduce((a, [, n]) => a + n, 0)} declined (${r.offers.declined.slice(0, 4).map(([why, n]) => `${n}x ${why}`).join('; ')})` : ', none declined'}`);
   if (r.trouble.length) {
     L.push('\nWarnings and errors (count, what, the last one):');
