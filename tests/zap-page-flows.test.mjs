@@ -67,7 +67,7 @@ test('the relay choice is offered only where the zap can be sent first', () => {
   const src = cut('function zapWay(', "\ndocument.addEventListener('click'");
   const html_ = (s, ...v) => s.reduce((a, x, i) => a + x + (v[i] ?? ''), '');
   const told = [];
-  const { zapWay } = make(src, ['ZAPWAY', 'html'], { ZAPWAY: { cb: null, then: null, id: 0 }, html: html_ }, 'zapWay');
+  const { zapWay } = make(src, ['ZAPWAY', 'html', 'VOUCH'], { ZAPWAY: { cb: null, then: null, id: 0 }, html: html_, VOUCH: {} }, 'zapWay');
   zapWay({ tell: (m) => told.push(m) }); zapWay({ tell: (m) => told.push(m), relay: false });
   assert.match(told[0], /data-zapway="own"/); assert.match(told[0], /data-zapway="relay"/, 'the farm zap offers the relay to finish it');
   assert.match(told[1], /data-zapway="own"/); assert.doesNotMatch(told[1], /data-zapway="relay"/); assert.match(told[1], /keep waiting/, 'the SPX zaps offer to wait');
