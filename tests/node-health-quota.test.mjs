@@ -11,8 +11,8 @@ const A = 'https://a.example', B = 'https://b.example';
 const mem = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), m }; };
 
 await test('what counts as a used-up quota', () => {
-  for (const msg of ['You have reached the maximum API usage limit of public. If you need more, upgrade', 'Daily limit exceeded', 'quota exhausted', 'API usage limit']) assert.ok(QUOTA.test(msg), msg);
-  for (const msg of ['service temporarily unavailable', 'execution reverted', 'ranges over 10000 blocks are not supported', 'Archive requests require a personal token']) assert.ok(!QUOTA.test(msg), msg);
+  for (const msg of ['You have reached the maximum API usage limit of public. If you need more, upgrade', 'Daily limit exceeded', 'quota exhausted', 'API usage limit', 'Rate limit exceeded: 4,000 request units per hour for origin tacit.finance; retry in ~2000 s']) assert.ok(QUOTA.test(msg), msg);
+  for (const msg of ['Too many requests in a short time for this IP; retry in 1 s', 'service temporarily unavailable', 'execution reverted', 'ranges over 10000 blocks are not supported', 'Archive requests require a personal token']) assert.ok(!QUOTA.test(msg), msg);
 });
 
 await test('readers that share a key have one record: a node one found refusing is asked last by the other', () => {

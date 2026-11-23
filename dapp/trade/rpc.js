@@ -5,7 +5,8 @@ export { bodyType };
 export const hedgeDelay = (fallback = 2500) => { try { const v = localStorage.getItem('tacit-trade-hedge-ms'); return v == null || v === '' || !Number.isFinite(Number(v)) ? fallback : Math.max(0, Number(v)); } catch { return fallback; } };
 const idOf = (h) => (typeof h === 'string' ? h.replace(/^https?:\/\//, '') : h.id);
 const LIMITED = /rate.?limit|usage limit|too many|\b429\b|compute units|capacity|quota|throttl|slow down/i;
-export const QUOTA = /api usage limit|usage limit|quota|daily limit/i;
+// a used-up allowance, as opposed to a busy moment: 'request units per hour for origin …' is BuidlGuidl's cap on every visitor of this site together, which no retry in the next minutes can clear
+export const QUOTA = /api usage limit|usage limit|quota|daily limit|request units per hour|units per hour for origin/i;
 
 // Cheap reads of the LATEST state go to a light node first (ours, or the reader's own at 127.0.0.1): it answers from proofs and its limits are published
 // (eth-nodes.js LIMITS: logs 512, no numbered-block state), so the public nodes keep their per-address budgets for the deep reads only they can serve.
