@@ -11,6 +11,8 @@
 //   * a Bitcoin keeper wallet (pool relayer, bridge relay) short of sats or coins — lib/btc-keeper-coins.js
 //   * reflection lag (relay tip - attested Bitcoin height) > N blocks
 //   * the API's Bitcoin block scan trailing the chain tip (BTC_SCAN_LAG_WARN_BLOCKS / _CRITICAL_BLOCKS) — lib/scan-lag.js
+//   * the Bitcoin pool's replay service halted or behind the chain (mainnet): wallets then answer "the pool replay is paused" to every
+//     shield, send and withdraw — lib/pool-replay-health.js; BTC_POOL_URL overrides the service, BTC_POOL_CHECK=off skips it
 //   * reflection snapshot size > warn threshold — the one cumulative resource
 //   * reflection stalled: no successful attest for REFLECTION_STALL_HOURS with blocks waiting, or the API's cursor
 //     off the pool's digest on two consecutive runs (a lost ack) — lib/reflection-stall.js
@@ -44,6 +46,7 @@ import { poolBooks } from './lib/evm-pool-solvency.js';
 import { readTacSupply } from './lib/tac-supply.js';
 import { keeperCoinsVerdict, BTC_KEEPERS_MAINNET } from './lib/btc-keeper-coins.js';
 import { scanLagVerdict } from './lib/scan-lag.js';
+import { poolReplayVerdict } from './lib/pool-replay-health.js';
 import { boardVerdict, runpodVerdict, vastVerdict } from './lib/board-health.js';
 import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, readReflectionDigest, HEADER_RELAY, RELAY_ABI, POOL } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
@@ -567,6 +570,25 @@ async function checkBitcoinScan() {
   await alert(v.level, `${v.why}: wallets keep the outputs whose credit rests on it pending until it moves`, { scanned, tip, lag: v.lag });
 }
 
+// The Bitcoin pool's replay service. A read that fails is read once more before it pages, so one dropped request cannot.
+const BTC_POOL_URL = (process.env.BTC_POOL_URL || 'https://tacit-btc-pool-mainnet.onrender.com').replace(/\/$/, '');
+async function checkPoolReplay() {
+  if (CFG.network !== 'mainnet' || process.env.BTC_POOL_CHECK === 'off') return;
+  const read = async () => {
+    const r = await fetch(`${BTC_POOL_URL}/btc-pool/status`, { signal: AbortSignal.timeout(20_000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  };
+  let status;
+  try { status = await read(); } catch (e1) {
+    await new Promise((r) => setTimeout(r, 15_000));
+    try { status = await read(); } catch (e2) { await alert('critical', `the Bitcoin pool's replay service is not answering (${BTC_POOL_URL}): ${safeErr(e2)}. Wallets cannot read their notes or spend until it is back`, { url: BTC_POOL_URL }); return; }
+  }
+  const v = poolReplayVerdict(status);
+  if (v.level === 'ok' || v.level === 'unknown') { log(`bitcoin pool replay: ${v.why}`); return; }
+  await alert(v.level, `${v.why}: wallets answer "the pool replay is paused" to shield, send and withdraw until it moves (the service keeps its place; read the tacit-btc-pool-mainnet log)`, { height: status.height, tip: status.tip, lag: v.lag, halted: status.halted?.height ?? null });
+}
+
 // Mainnet only: the pool-minted tokens beside TAC (tacBTC, tacUSD), the wTAC wrapper, and a retired TAC token with the
 // supply it ended at.
 const TAC_SUPPLY_WATCH = {
@@ -744,7 +766,7 @@ async function checkVast() {
 
 async function main() {
   log(`monitor run — worker=${CFG.workerBase} relay=${relayWallet ? relayWallet.account.address : '(no key on this service — watching by address)'}`);
-  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkVast(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkBtcKeepers(), checkProverBoard(), checkTacitChain()]);
+  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkVast(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkBtcKeepers(), checkProverBoard(), checkTacitChain(), checkPoolReplay()]);
   for (const r of results) if (r.status === 'rejected') log('check threw:', r.reason?.message || r.reason);
   log(`monitor done — ${criticals} critical${criticals === 1 ? '' : 's'}`);
   // Exit non-zero so the cron run is marked failed even with no webhook configured. A check that THREW is

@@ -26,6 +26,28 @@ export class ChainIntegrityError extends Error {
   constructor(msg) { super(msg); this.name = 'ChainIntegrityError'; }
 }
 
+// Public esplora sources. Mainnet always carries every one of these, whatever BTC_POOL_ESPLORA lists first (set
+// BTC_POOL_ESPLORA_ONLY=1 to use exactly the list): one operator limiting this host must not stop the replay.
+const MAINNET_ESPLORA = ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api'];
+export function esploraSources(network, env = {}) {
+  const set = String(env.BTC_POOL_ESPLORA || '').split(',').map((x) => x.trim().replace(/\/$/, '')).filter(Boolean);
+  if (network === 'signet') return set.length ? set : ['https://mempool.space/signet/api'];
+  const first = set.length ? set : String(env.BTC_ESPLORA || '').split(',').map((x) => x.trim().replace(/\/$/, '')).filter(Boolean);
+  if (env.BTC_POOL_ESPLORA_ONLY === '1' && first.length) return first;
+  return [...first, ...MAINNET_ESPLORA.filter((b) => !first.includes(b))];
+}
+
+// How long the service waits before its next pass. Quick while it has blocks to catch up on, slow when idle, and
+// slower the more passes in a row failed (5 s doubling to 2 min), at least as long as the sources ask (`restMs`),
+// with a little jitter so two services do not ask in step.
+export const MAX_BACKOFF_MS = 120000;
+export function nextDelayMs({ failures = 0, behind = false, pollMs = 30000, restMs = 0, rnd = Math.random } = {}) {
+  let ms = behind ? 1000 : pollMs;
+  if (failures > 0) ms = Math.max(ms, Math.min(MAX_BACKOFF_MS, 5000 * 2 ** Math.min(failures - 1, 8)));
+  if (restMs > 0) ms = Math.max(ms, Math.min(restMs + 500, MAX_BACKOFF_MS));
+  return Math.round(ms * (0.85 + 0.3 * rnd()));
+}
+
 // `resolveShieldInput` defaults to the canonical transparent validator (lib/btc-pool-transparent.js).
 // `chain` ({ powLimitBits, checkpoint: { height, hash } | null }) defaults to CHAIN_PARAMS[network].
 export function createIndexer({ store, esplora, verifier, network, startHeight, confirmations = 1, log = console.log, resolveShieldInput = null, aheadDepth = 12, chain = null }) {
@@ -294,6 +316,7 @@ export function createIndexer({ store, esplora, verifier, network, startHeight, 
       halted: self.halted,
       shieldInputValidation: 'canonical',
       lastError: self.lastError,
+      sources: typeof esplora.health === 'function' ? esplora.health() : null,
     };
   };
   return self;
@@ -392,14 +415,9 @@ async function main() {
   const network = env.BTC_POOL_NETWORK || 'signet';
   if (network !== 'signet' && network !== 'mainnet') throw new Error('BTC_POOL_NETWORK must be signet or mainnet');
   const startHeight = Number(env.BTC_POOL_START_HEIGHT);
-  let esploraBases = env.BTC_POOL_ESPLORA;
-  if (!esploraBases) {
-    // Mainnet falls back to the relay's own esplora list (lib/config.js btcEsplora); config.js itself is not
-    // imported because it demands relay env this service does not carry.
-    esploraBases = network === 'signet'
-      ? 'https://mempool.space/signet/api'
-      : (env.BTC_ESPLORA || 'https://mempool.space/api,https://blockstream.info/api,https://mempool.emzy.de/api');
-  }
+  // Mainnet falls back to the relay's own esplora list (lib/config.js btcEsplora) and always carries the public
+  // sources in MAINNET_ESPLORA; config.js itself is not imported because it demands relay env this service does not carry.
+  const esploraBases = esploraSources(network, env);
   const confirmations = Number(env.BTC_POOL_CONFIRMATIONS || (network === 'signet' ? 1 : 3));
   const pollMs = Number(env.BTC_POOL_POLL_SECS || 30) * 1000;
   const log = (...a) => console.log(`[btc-pool ${network} ${new Date().toISOString()}]`, ...a);
@@ -419,23 +437,31 @@ async function main() {
   const verifier = makeBtcPoolVerifier({ network, log: (...a) => console.error(...a) });
   // Load the wasm and params up front, so a broken image fails here rather than at the first envelope.
   if (verifier.enabled) await verifier.ready().catch((e) => console.error(`!!! btc-pool: verifier failed to load: ${e.message}`));
-  const ix = createIndexer({ store, esplora: makeEsplora(esploraBases, { hashQuorum }), verifier, network, startHeight, confirmations, log, chain });
+  const ix = createIndexer({ store, esplora: makeEsplora(esploraBases, { hashQuorum, log }), verifier, network, startHeight, confirmations, log, chain });
   log(`resuming at ${ix.state.tip ?? `(empty, start ${startHeight})`}; verifier ${verifier.enabled ? 'enabled' : `DISABLED: ${verifier.reason}`}`);
 
-  let handler = await withRelayer(createHandler(ix, store), { ix, store, verifier, network, esploraBases, log });
+  let handler = await withRelayer(createHandler(ix, store), { ix, store, verifier, network, esploraBases: esploraBases.join(','), log });
   if (env.BTC_POOL_SP_HINTS === '1') handler = (await import('./lib/sp-hints.js')).makeSpHints({ db: store.db }).wrap(handler);
   createServer(handler).listen(Number(env.PORT || 10000), () => log(`listening on ${env.PORT || 10000}`));
 
+  let failures = 0;
   for (;;) {
+    const before = ix.state.tip;
+    let restMs = 0;
     try {
       await ix.syncOnce({ maxBlocks: 500 });
       ix.lastError = null;
+      failures = 0;
     } catch (e) {
       ix.lastError = String(e?.message || e);
+      // A pass that got blocks in before it failed made progress: the next one starts the count again.
+      failures = ix.state.tip !== before ? 1 : failures + 1;
+      restMs = Number(e?.restMs) || 0;
       if (e instanceof VerifierUnavailableError) console.error(`!!! btc-pool halted at ${ix.halted?.height} (${ix.halted?.txid}): proof verifier unavailable`);
-      else log(`sync failed: ${ix.lastError}`);
+      else log(`sync failed (${failures} in a row): ${ix.lastError}`);
     }
-    await new Promise((r) => setTimeout(r, ix.state.tip !== null && ix.chainTip !== null && ix.state.tip < ix.chainTip - confirmations ? 1000 : pollMs));
+    const behind = ix.state.tip !== null && ix.chainTip !== null && ix.state.tip < ix.chainTip - confirmations;
+    await new Promise((r) => setTimeout(r, nextDelayMs({ failures, behind, pollMs, restMs })));
   }
 }
 

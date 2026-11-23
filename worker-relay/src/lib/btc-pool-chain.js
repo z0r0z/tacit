@@ -241,31 +241,130 @@ export function txEnvelopes(tx) {
 }
 
 // ── esplora ──
+// Reads go to several independent public sources and none is asked for more than it will give:
+//  - a source that limits us (429, 403), errors (5xx), drops the connection or times out rests, for as long as it
+//    asks (Retry-After) or 20 s doubling to 5 min, and is asked again only once it is back. A burst of failures
+//    counts once: a walk keeps dozens of reads out, and they must not push the rest to its cap;
+//  - at most `maxInflight` reads are out at once and a source gets one new read per `gapMs`, so a long ancestry
+//    walk is a stream, not a burst; identical reads in flight share one request;
+//  - when every source is resting nothing is sent: the read fails at once with `restMs`, the wait until the first
+//    is back, so the caller waits instead of hammering;
+//  - what cannot change is kept: a transaction's status once it is confirmed `statusDepth` blocks under the tip;
+//  - a failed read says what each source answered, never only the last one's error;
+//  - transaction reads start at a rotating source (they are immutable and checked against their txid); tip and
+//    block reads keep to the first source that is up, so the sources are not mixed along a chain.
 // `hashQuorum` > 1 asks every source for a height's block hash and requires that many to agree, with none
-// disagreeing.
-export function makeEsplora(bases, { fetchImpl = fetch, timeoutMs = 20000, hashQuorum = 1 } = {}) {
+// disagreeing. `health()` lists each source's rest and last error.
+export function makeEsplora(bases, {
+  fetchImpl = fetch, timeoutMs = 20000, hashQuorum = 1, nowMs = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  coolMs = 20000, coolMaxMs = 5 * 60000, maxInflight = 6, gapMs = 120, statusDepth = 100, statusCacheSize = 20000, log = () => {},
+} = {}) {
   const list = (Array.isArray(bases) ? bases : String(bases).split(',')).map((s) => s.trim().replace(/\/$/, '')).filter(Boolean);
   if (!list.length) throw new Error('no esplora base');
   if (!Number.isInteger(hashQuorum) || hashQuorum < 1 || hashQuorum > list.length) throw new Error(`hash quorum ${hashQuorum} needs as many esplora bases`);
-  // Throws on failure; the error carries notFound when every source answered 404.
-  async function get(path, kind) {
-    let lastErr, notFound = true;
-    for (const base of list) {
-      try {
-        const r = await fetchImpl(base + path, { signal: AbortSignal.timeout(timeoutMs) });
-        if (r.ok) return kind === 'bytes' ? new Uint8Array(await r.arrayBuffer()) : (await r.text()).trim();
-        if (r.status !== 404) notFound = false;
-        lastErr = new Error(`${base}${path} -> ${r.status}`);
-      } catch (e) { notFound = false; lastErr = e; }
-    }
-    lastErr.notFound = notFound;
-    throw lastErr;
+  const name = (b) => b.replace(/^https?:\/\//, '');
+  const state = new Map(list.map((b) => [b, { until: 0, fails: 0, last: null, nextAt: 0 }]));
+
+  const causeOf = (e) => {
+    if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) return 'timed out';
+    const c = e && e.cause;
+    return (c && (c.code || (c.errors && c.errors[0] && c.errors[0].code) || c.message)) || (e && e.message) || String(e);
+  };
+  const retryAfterMs = (r) => {
+    const v = r && r.headers && typeof r.headers.get === 'function' ? r.headers.get('retry-after') : null;
+    if (!v) return 0;
+    const n = Number(v);
+    if (Number.isFinite(n)) return Math.min(Math.max(n, 0), 600) * 1000;
+    const d = Date.parse(v);
+    return Number.isFinite(d) ? Math.min(Math.max(d - nowMs(), 0), 600000) : 0;
+  };
+  // A source that answered is healthy again; one that did not rests (a repeat while it already rests only extends).
+  const healed = (b) => { const h = state.get(b); h.fails = 0; h.last = null; };
+  function cool(b, askedMs, why) {
+    const h = state.get(b), t = nowMs(), resting = h.until > t;
+    h.last = why;
+    if (resting) { h.until = Math.max(h.until, t + askedMs); return; }
+    h.fails++;
+    h.until = t + Math.max(askedMs, Math.min(coolMaxMs, coolMs * 2 ** (h.fails - 1)));
+    log(`esplora source ${name(b)} rests ${Math.round((h.until - t) / 1000)} s: ${why}`);
   }
+  let cursor = 0;
+  function order(rotate) {
+    const t = nowMs();
+    const ready = list.filter((b) => state.get(b).until <= t);
+    const resting = list.filter((b) => state.get(b).until > t).sort((a, b) => state.get(a).until - state.get(b).until);
+    if (rotate && ready.length > 1) ready.push(...ready.splice(0, cursor++ % ready.length));
+    return { ready, resting };
+  }
+  const restingError = (path, resting) => {
+    const t = nowMs();
+    const e = new Error(`${path}: every source is resting (${resting.map((b) => `${name(b)} ${Math.ceil((state.get(b).until - t) / 1000)} s: ${state.get(b).last}`).join('; ')})`);
+    e.notFound = false;
+    e.restMs = Math.max(0, state.get(resting[0]).until - t);
+    return e;
+  };
+  // The next free slot of a source's read schedule, so reads of one source are `gapMs` apart.
+  function reserve(b) {
+    const h = state.get(b), t = nowMs(), at = Math.max(t, h.nextAt);
+    h.nextAt = at + gapMs;
+    return at - t;
+  }
+  let inflight = 0;
+  const queue = [];
+  const acquire = () => (inflight < maxInflight ? (inflight++, Promise.resolve()) : new Promise((res) => queue.push(res)));
+  const release = () => { const next = queue.shift(); if (next) next(); else inflight--; };
+
+  // Throws on failure; the error carries notFound only when every source answered 404, and restMs when all rest.
+  async function attempt(path, kind) {
+    const { ready, resting } = order(path.startsWith('/tx/'));
+    if (!ready.length) throw restingError(path, resting);
+    const said = [];
+    let n404 = 0;
+    for (const b of ready) {
+      if (state.get(b).until > nowMs()) { said.push(`${name(b)} resting`); continue; } // rested by a read that overtook this one
+      const wait = reserve(b);
+      if (wait > 0) await sleep(wait);
+      try {
+        const r = await fetchImpl(b + path, { signal: AbortSignal.timeout(timeoutMs) });
+        if (r.ok) {
+          const out = kind === 'bytes' ? new Uint8Array(await r.arrayBuffer()) : (await r.text()).trim();
+          healed(b);
+          return out;
+        }
+        if (r.status === 404) { n404++; said.push(`${name(b)} 404`); healed(b); continue; }
+        said.push(`${name(b)} HTTP ${r.status}`);
+        if (r.status === 429 || r.status === 403 || r.status >= 500) cool(b, retryAfterMs(r), `HTTP ${r.status}`);
+      } catch (e) {
+        const why = causeOf(e);
+        said.push(`${name(b)} ${why}`);
+        cool(b, 0, why);
+      }
+    }
+    const e = new Error(`${path}: ${said.join('; ')}`);
+    e.notFound = n404 === list.length;
+    throw e;
+  }
+  const shared = new Map();
+  function get(path, kind) {
+    const key = `${kind || 'text'} ${path}`;
+    let p = shared.get(key);
+    if (!p) {
+      p = (async () => { await acquire(); try { return await attempt(path, kind); } finally { release(); } })();
+      shared.set(key, p);
+      const drop = () => { shared.delete(key); };
+      p.then(drop, drop);
+    }
+    return p;
+  }
+
+  let lastTip = null;
+  const statuses = new Map();
   return {
     tipHeight: async () => {
       const t = await get('/blocks/tip/height');
       if (!/^\d+$/.test(t)) throw new Error(`bad tip height ${t}`);
-      return Number(t);
+      lastTip = Number(t);
+      return lastTip;
     },
     blockHash: async (h) => {
       if (hashQuorum === 1) {
@@ -273,12 +372,16 @@ export function makeEsplora(bases, { fetchImpl = fetch, timeoutMs = 20000, hashQ
         if (!/^[0-9a-f]{64}$/.test(t)) throw new Error(`bad block hash for ${h}`);
         return t;
       }
-      const answers = await Promise.all(list.map(async (base) => {
+      const { ready, resting } = order(false);
+      if (ready.length < hashQuorum) throw resting.length ? restingError(`/block-height/${h}`, resting) : new Error(`block ${h}: ${ready.length} of ${hashQuorum} sources up`);
+      const answers = await Promise.all(ready.map(async (b) => {
         try {
-          const r = await fetchImpl(`${base}/block-height/${h}`, { signal: AbortSignal.timeout(timeoutMs) });
-          const t = r.ok ? (await r.text()).trim() : null;
-          return t && /^[0-9a-f]{64}$/.test(t) ? t : null;
-        } catch { return null; }
+          const r = await fetchImpl(`${b}/block-height/${h}`, { signal: AbortSignal.timeout(timeoutMs) });
+          if (!r.ok) { if (r.status === 429 || r.status === 403 || r.status >= 500) cool(b, retryAfterMs(r), `HTTP ${r.status}`); return null; }
+          const t = (await r.text()).trim();
+          healed(b);
+          return /^[0-9a-f]{64}$/.test(t) ? t : null;
+        } catch (e) { cool(b, 0, causeOf(e)); return null; }
       }));
       const got = answers.filter(Boolean);
       if (new Set(got).size > 1) throw new Error(`esplora sources disagree on block ${h}`);
@@ -288,6 +391,16 @@ export function makeEsplora(bases, { fetchImpl = fetch, timeoutMs = 20000, hashQ
     header: async (hash) => hexToBytes(await get(`/block/${hash}/header`)),
     rawBlock: (hash) => get(`/block/${hash}/raw`, 'bytes'),
     rawTx: async (txid) => hexToBytes(await get(`/tx/${txid}/hex`)),
-    txStatus: async (txid) => JSON.parse(await get(`/tx/${txid}/status`)),
+    txStatus: async (txid) => {
+      const hit = statuses.get(txid);
+      if (hit) return { ...hit };
+      const s = JSON.parse(await get(`/tx/${txid}/status`));
+      if (lastTip !== null && s && s.confirmed === true && Number.isInteger(s.block_height) && lastTip - s.block_height >= statusDepth) {
+        statuses.set(txid, s);
+        if (statuses.size > statusCacheSize) statuses.delete(statuses.keys().next().value);
+      }
+      return s;
+    },
+    health: () => list.map((b) => { const h = state.get(b), t = nowMs(); return { source: name(b), restingSecs: h.until > t ? Math.ceil((h.until - t) / 1000) : 0, fails: h.fails, last: h.last }; }),
   };
 }

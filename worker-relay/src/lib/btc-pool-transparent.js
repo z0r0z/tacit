@@ -145,7 +145,7 @@ function makeFetchTx(esplora, rawTx, height) {
 // null when it is not one; throws TransparentUnavailableError when the answer cannot be determined now.
 // `height` is the block being replayed. `exits()` returns the replay's live exit map
 // ("txid:vout" → { txid, vout, asset, cx, cy }).
-export function makeShieldInputResolver({ esplora, network, exits, cacheSize = 5000 }) {
+export function makeShieldInputResolver({ esplora, network, exits, cacheSize = 10000 }) {
   const rawTx = makeRawSource(esplora, cacheSize);
   return async function resolveShieldInput(txid, vout, { height = null } = {}) {
     const own = exits().get(`${txid}:${vout}`);
