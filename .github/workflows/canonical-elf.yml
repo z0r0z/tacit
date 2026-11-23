@@ -20,6 +20,10 @@ on:
       - 'contracts/sp1/program/**'
       - 'contracts/sp1/tree/**'
       - 'contracts/sp1/elf-vkey-pin.json'
+      - 'contracts/sp1/tac-oracle/core/**'
+      - 'contracts/sp1/tac-oracle/program/**'
+      - 'contracts/sp1/tac-oracle/elf/**'
+      - 'contracts/sp1/tac-oracle/elf-vkey-pin.json'
       - '.github/workflows/canonical-elf.yml'
   pull_request:
     branches: [main]
@@ -27,6 +31,10 @@ on:
       - 'contracts/sp1/program/**'
       - 'contracts/sp1/tree/**'
       - 'contracts/sp1/elf-vkey-pin.json'
+      - 'contracts/sp1/tac-oracle/core/**'
+      - 'contracts/sp1/tac-oracle/program/**'
+      - 'contracts/sp1/tac-oracle/elf/**'
+      - 'contracts/sp1/tac-oracle/elf-vkey-pin.json'
       - '.github/workflows/canonical-elf.yml'
   workflow_dispatch:
   schedule:
@@ -118,3 +126,38 @@ jobs:
           name: canonical-elf-${{ steps.rebuilt.outputs.rebuilt_sha }}
           path: contracts/sp1/program/elf/teth-pool-prover
           retention-days: 90
+
+  tac-oracle:
+    name: TacProvenOracle program (Docker rebuild)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install sp1up
+        run: |
+          curl -L https://sp1.succinct.xyz | bash
+          echo "$HOME/.sp1/bin" >> $GITHUB_PATH
+
+      - name: Install cargo-prove toolchain
+        run: |
+          sp1up
+          cargo prove --version
+
+      - name: Committed ELF matches its pin
+        id: pin
+        run: |
+          PIN_SHA=$(python3 -c "import json; print(json.load(open('contracts/sp1/tac-oracle/elf-vkey-pin.json'))['elf_sha256'])")
+          C_SHA=$(sha256sum contracts/sp1/tac-oracle/elf/tac_oracle | awk '{print $1}')
+          echo "pin_sha=$PIN_SHA" >> $GITHUB_OUTPUT
+          echo "pinned $PIN_SHA, committed $C_SHA"
+          [ "$PIN_SHA" = "$C_SHA" ] || { echo "::error::the committed tac_oracle ELF is not the pinned one"; exit 1; }
+
+      - name: Docker rebuild matches the pin
+        working-directory: contracts/sp1/tac-oracle/program
+        run: |
+          cargo prove build --docker --tag v6.2.2 2>&1 | tail -20
+          ELF=$(find elf target -type f -name tac_oracle -newer Cargo.toml 2>/dev/null | head -1)
+          R_SHA=$(sha256sum "$ELF" | awk '{print $1}')
+          echo "rebuilt $R_SHA"
+          [ "$R_SHA" = "${{ steps.pin.outputs.pin_sha }}" ] || { echo "::error::the Docker rebuild of the TacProvenOracle program differs from the pin: rerun contracts/sp1/tac-oracle/build-program.sh and redeploy with its PROGRAM_VKEY"; exit 1; }

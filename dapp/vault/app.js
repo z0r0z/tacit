@@ -1,10 +1,10 @@
-import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
+import { DEPLOYMENTS } from '/vault/deployments.js?cb=d9fa3344';
 import { addrView } from '/address-view.js?cb=58dd4914';
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeRpc, RPCS, ARCHIVE, HISTORY, makeReader, QUEUE_EXPIRY } from '/vault/chain.js?cb=3c1d1b84';
-import { makeFeed } from '/vault/feed.js?cb=fc5d774f';
+import { makeFeed } from '/vault/feed.js?cb=bd584ab8';
 import { makePools } from '/vault/pools.js?cb=32f5128e';
-import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=585fe423';
+import { makeVaultEngine, KIND, BATCH_MAX, StopWaiting } from '/vault/engine.js?cb=9a968a9d';
 import { makeConnect, UserStopped } from '/trade/connect.js?cb=41394526';
 import { tabKeyRead } from '/tab-key.js?cb=ad0c42e2';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
@@ -355,6 +355,7 @@ const feed = makeFeed({
   rpc,
   headerRpc: makeRpc([walletNode({ prefer: true }), ...HISTORY], { spread: true, onWait: busyNote }),
   proofRpc: makeRpc([walletNode({ prefer: true }), ...ARCHIVE], { spread: true, onWait: busyNote }),
+  proofUrls: DEPLOYMENTS.proofUrls || [],
 });
 // `ticket`: the recording under way was started from the ticket, which shows its progress too
 // the vaults' engine (vault/engine.js), with this page's state, wallet and markup; what it says lands in the ticket's status line and the feed's
@@ -382,7 +383,7 @@ function drawFeed() {
   const carried = V && st && !st.ready && st.missing > 0 && st.missing <= BATCH_MAX && !!viaOf(V) && !F.busy && !F.note;
   if (!VS.length || !st || carried || (st.ready && !F.busy && !F.note)) { el.hidden = true; return; }
   el.hidden = false;
-  const rows = st.venues.map((v, i) => `<div class="vn"><div class="kv"><span>${esc(VENUE[i] || `Venue ${i + 1}`)}</span><b class="num">${v.counted} of ${v.points}</b></div><i class="mt" aria-hidden="true"><b style="width:${v.points ? Math.min(100, Math.round(v.counted * 100 / v.points)) : 0}%"></b></i></div>`).join('');
+  const rows = st.venues.map((v, i) => `<div class="vn"><div class="kv"><span>${esc(v.proven ? 'Proof of both venues' : VENUE[i] || `Venue ${i + 1}`)}</span><b class="num">${v.counted} of ${v.points}</b></div><i class="mt" aria-hidden="true"><b style="width:${v.points ? Math.min(100, Math.round(v.counted * 100 / v.points)) : 0}%"></b></i></div>`).join('');
   setHtml(el, `<p class="eyebrow" id="feed-h"><span>Price feed</span><span class="who st${st.ready ? ' s-open' : ''}"><i class="sd"></i>${st.ready ? 'up to date' : `${st.missing} to record`}</span></p>
     <div class="rows flat">${rows}</div>
     ${st.missing ? `<p class="note">Anyone can record them. ${esc(recordHint(st.missing))}</p>

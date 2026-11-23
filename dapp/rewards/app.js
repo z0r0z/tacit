@@ -11,7 +11,7 @@ import { rememberOwed } from '/trade/rewards-dot.js?cb=31450ff3';
 import { readTasks } from '/rewards/earn.js?cb=74689244';
 import { addrView, addrFlat } from '/address-view.js?cb=58dd4914';
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
-import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
+import { DEPLOYMENTS } from '/vault/deployments.js?cb=d9fa3344';
 
 const NO_SEND = ['0x0000000000000000000000000000000000000000', '0xa1313eb9f3a445606d9583bcac3ebeb56a858279', '0x000000c918e44a3a443937fa7594ea4f7c95d6b9', '0x4b4cb98d0c836c2783ac46f0078b904dab533ae8'];
 const API = 'https://api.tacit.finance', DISTRIBUTOR = '0x000000C918e44A3a443937fA7594eA4f7C95D6b9', BOARD = 500, KEEP = 60e3, RECENT = 'tacit-rewards-recent-v1', PENDING = 'tacit-rewards-pending-v1';
@@ -391,7 +391,7 @@ const a0 = (s) => (s && s.claimed && s.amountWei ? BigInt(s.amountWei) : 0n);
 const p0 = (v) => (v && !v.error && v.claimed > 0n ? v.claimed : 0n);
 const rpcOf = (method, params) => (method === 'eth_call' ? call(params[0]) : Promise.reject(new Error(`${method} is not read here`)));
 function quoteFor(wei) {
-  return keepFor(bwQuotes, String(wei), () => (bwMod ||= import('/vault/quote.js?cb=3b7b9a88').catch((e) => { bwMod = null; throw e; })).then((m) => m.quoteBorrow({ tac: wei, rpc: rpcOf })));
+  return keepFor(bwQuotes, String(wei), () => (bwMod ||= import('/vault/quote.js?cb=23cc6415').catch((e) => { bwMod = null; throw e; })).then((m) => m.quoteBorrow({ tac: wei, rpc: rpcOf })));
 }
 function keepFor(map, key, make) {
   const hit = map.get(key);

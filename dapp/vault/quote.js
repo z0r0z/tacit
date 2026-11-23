@@ -2,7 +2,7 @@
 // the rewards page). One Multicall3 read of the few figures a borrow is tested against, and the vault page's own arithmetic (math.js): the figure is
 // the most the vault would lend for that TAC (with the account's own vault, when one is named), rounded down, so the Borrow box it links to accepts
 // it. When a vault cannot lend now (no recorded price, no room, an auction on the account's vault) it gives no figure, only why.
-import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
+import { DEPLOYMENTS } from '/vault/deployments.js?cb=d9fa3344';
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeRpc, RPCS, makeReader, staticCalls, dynamicCalls, parseDynamic, wordAt } from '/vault/chain.js?cb=3c1d1b84';
 

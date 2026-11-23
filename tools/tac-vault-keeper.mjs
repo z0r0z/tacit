@@ -13,6 +13,11 @@
 // when that is less, so the wallet needs gasLimit x that to send (a few thousandths of an ETH at today's base fee), not gasLimit x MAX_GWEI; when it holds
 // less, the keeper raises an ALERT naming what it holds and what the send needs instead of failing at the node on every cycle.
 //
+// With PROVEN set (a TacProvenOracle), one proof records every interval its windows need: when a newer interval than the one it holds can be proven, the
+// keeper takes a proof from PROOF_URL (a GET answering tac-oracle-host's proof.json, { publicValues, proof }) or from PROOF_CMD (a shell command that prints
+// it, such as `tac-oracle-host input --oracle $PROVEN --dir d && tac-oracle-host prove --elf <elf> --dir d >/dev/null && cat d/proof.json`), checks it
+// is newer than what the oracle holds and sends it. A proof is made while the keeper goes on with its other work.
+//
 // RECORD_MODE=demand (needs VAULTS) stops the round-the-clock recording, which is the keeper's only running cost. Recording an interval later proves the
 // same storage the same way (the ring keeps about 21 hours), so a late record is as good as a prompt one and nothing is lost by waiting; a borrower who
 // finds prices missing records them in their own transaction (the router), and so does a withdrawal with a debt; a liquidator records first. The keeper then records only
@@ -42,7 +47,7 @@
 //
 // Usage:
 //   KEEPER_ACCOUNT=<cast keystore name> [KEEPER_PASSWORD_FILE=..] RPC=<archive endpoint>
-//   [ORACLE=0xvenue1,0xvenue2] [VAULTS=0xusd,0xeth FROM_BLOCK=<vault deploy block>] [SEND_RPC=https://...]
+//   [ORACLE=0xvenue1,0xvenue2] [PROVEN=0xoracle PROOF_URL=https://... | PROOF_CMD='...' [PROOF_TIMEOUT_SECONDS=1800]] [VAULTS=0xusd,0xeth FROM_BLOCK=<vault deploy block>] [SEND_RPC=https://...]
 //   [RPC_FALLBACKS=https://...,https://...] [RPC_COOLDOWN_SECONDS=120] [START_TRIES=30] [START_RETRY_SECONDS=20]
 //   [MAX_GWEI=1] [RECORD_TIP_GWEI=0.001] [URGENT_MAX_GWEI=25] [URGENT_TIP_GWEI=0.1] [URGENT_AFTER_BLOCKS=5]
 //   [ACTION_MAX_GWEI=100] [ACTION_TIP_GWEI=0.1] [RECORD_POLL_SECONDS=12] [FULL_SWEEP_SECONDS=300] [SCAN_SECONDS=60]
@@ -50,15 +55,24 @@
 //   node tools/tac-vault-keeper.mjs
 // KEEPER_PRIV=0x.. works too, but the key is then visible to every local process in the command line of each send.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
 
 const KEEPER_PRIV = process.env.KEEPER_PRIV;
 const KEEPER_ACCOUNT = process.env.KEEPER_ACCOUNT;
 const ORACLES = (process.env.ORACLE || '').split(',').map((s) => s.trim()).filter(Boolean);
 const VAULTS = (process.env.VAULTS || '').split(',').map((s) => s.trim()).filter(Boolean);
+const PROVEN = (process.env.PROVEN || '').trim();
+const PROOF_URL = process.env.PROOF_URL || '';
+const PROOF_CMD = process.env.PROOF_CMD || '';
+// How long a proof may take before the attempt is given up (and alerted), so a stuck prover never holds the next one back.
+const PROOF_TIMEOUT = Number(process.env.PROOF_TIMEOUT_SECONDS || 1800);
 const RPC = process.env.RPC;
-if (!(KEEPER_PRIV || KEEPER_ACCOUNT) || !RPC || !(VAULTS.length || ORACLES.length) || (VAULTS.length && !process.env.FROM_BLOCK)) {
-  console.error('set KEEPER_ACCOUNT (or KEEPER_PRIV), RPC, and ORACLE and/or VAULTS with FROM_BLOCK');
+if (!(KEEPER_PRIV || KEEPER_ACCOUNT) || !RPC || !(VAULTS.length || ORACLES.length || PROVEN) || (VAULTS.length && !process.env.FROM_BLOCK)) {
+  console.error('set KEEPER_ACCOUNT (or KEEPER_PRIV), RPC, and ORACLE, PROVEN and/or VAULTS with FROM_BLOCK');
+  process.exit(2);
+}
+if (PROVEN && !(PROOF_URL || PROOF_CMD)) {
+  console.error('PROVEN needs PROOF_URL or PROOF_CMD');
   process.exit(2);
 }
 const SEND_RPC = process.env.SEND_RPC || RPC;
@@ -419,6 +433,78 @@ function submit(due, baseFee) {
   return missed;
 }
 
+// The proven oracle: its interval and grace, read once; the proof being made, if any.
+let proven;
+let proving = null;
+// The last proof found no newer than the oracle's, said once.
+let staleSeen = null;
+
+// The newest interval whose following block exists, X the oracle holds and its first interval; null when nothing newer can be proven.
+function provenDue() {
+  if (!proven) proven = { step: num(call(PROVEN, 'STEP()(uint256)')), grace: num(call(PROVEN, 'GRACE()(uint256)')) };
+  const [x, first] = call(PROVEN, 'coverage()(uint256,uint256,uint256)').split('\n').map(num);
+  const top = head();
+  const provable = (top - 1n) / proven.step - 1n;
+  if (provable <= x) return null;
+  // Borrowing needs the depth, which the oracle holds for its first two intervals: past them a proof is urgent.
+  const counting = (top - 1n - proven.grace) / proven.step - 1n;
+  return { x, provable, urgent: counting - first >= 2n };
+}
+
+function proofJson() {
+  if (PROOF_URL) {
+    return fetch(PROOF_URL).then((r) => {
+      if (!r.ok) throw new Error(`PROOF_URL answered ${r.status}`);
+      return r.json();
+    });
+  }
+  return new Promise((resolve, reject) => {
+    execFile('sh', ['-c', PROOF_CMD], { encoding: 'utf8', maxBuffer: 1 << 24, timeout: PROOF_TIMEOUT * 1000, killSignal: 'SIGKILL' }, (e, out, err) => {
+      if (e?.killed) return reject(new Error(`PROOF_CMD took over ${PROOF_TIMEOUT} s and was stopped`));
+      if (e) return reject(new Error(String(err || e.message).trim().split('\n').pop()));
+      try {
+        resolve(JSON.parse(out.slice(out.indexOf('{'))));
+      } catch (x) {
+        reject(new Error(`PROOF_CMD did not print a proof: ${x.message}`));
+      }
+    });
+  });
+}
+
+// Starts a proof when a newer interval can be proven and none is being made; sends one that has come back newer than what the oracle holds.
+function provenTick() {
+  if (proving) return;
+  const due = provenDue();
+  if (!due) return;
+  proving = proofJson()
+    .then((p) => {
+      // X is the low 32 bits of the public values' second word.
+      const x = BigInt('0x' + p.publicValues.slice(2 + 128 - 8, 2 + 128));
+      const now = provenDue();
+      if (!now || x <= now.x) {
+        if (staleSeen !== x) log(PROVEN, 'proof of', String(x), 'is not newer than what the oracle holds');
+        staleSeen = x;
+        return;
+      }
+      const args = [p.publicValues, p.proof, '[]', '[]', '[]'];
+      const sim = simulate(PROVEN, RECORD_SIG, ...args);
+      if (!sim.ok) {
+        if (sim.reason.includes(alreadyRecorded)) return;
+        throw new Error(`the proof of ${x} would fail: ${sim.reason}`);
+      }
+      const hash = send(PROVEN, RECORD_SIG, args, now.urgent ? URGENT_CAP : RECORD_CAP, now.urgent ? URGENT_TIP : RECORD_TIP);
+      log(PROVEN, 'proven', String(x), hash);
+      clearAlert('proven');
+    })
+    .catch((e) => {
+      noteAfford(e);
+      alertOnce('proven', `${PROVEN}: no proof recorded (${String(e.message || e).split('\n')[0]}); borrowing and liquidation read the pair until one is`);
+    })
+    .finally(() => {
+      proving = null;
+    });
+}
+
 // A venue whose price is more than 40% under its longest window's upper median, or 60% over its lower one, is worth
 // a look: the vaults price from medians, so a move this size either holds (and moves the views) or is traded back.
 function checkVenues() {
@@ -440,7 +526,7 @@ function checkVenues() {
 // A vault whose owner swaps the oracle (announced ORACLE_DELAY ahead) prices from venues this keeper may not be
 // recording: its ORACLE env names the venues, and a new pair needs its own intervals recorded or its prices lapse.
 function checkVaultOracles() {
-  const known = new Set(ORACLES.map((o) => o.toLowerCase()));
+  const known = new Set([...ORACLES, ...(PROVEN ? [PROVEN] : [])].map((o) => o.toLowerCase()));
   for (const vault of VAULTS) {
     try {
       // An oracle that answers A() and B() with a revert is its own venue. A read that failed says nothing about its venues, so it ends the
@@ -644,7 +730,11 @@ async function main() {
   for (;;) {
     // A node that drops one request (a reset connection, a rate limit) must not end the keeper: that cycle is skipped and the next one tries again.
     try {
-      if (ORACLES.length) {
+      if (ORACLES.length || PROVEN) {
+        const record = () => {
+          if (ORACLES.length) sampleAll();
+          if (PROVEN) provenTick();
+        };
         if (RECORD_MODE === 'demand' && VAULTS.length) {
           // Judged once in SCAN_SECONDS; a vault that has just come near the line starts with a full sweep, since the history behind it is unrecorded.
           if (Date.now() - lastRiskCheck >= SCAN_SECONDS * 1000 || ONCE) {
@@ -653,9 +743,9 @@ async function main() {
             lastRiskCheck = Date.now();
             if (lastRisk && !was) lastFull = 0;
           }
-          if (lastRisk) sampleAll();
+          if (lastRisk) record();
         } else {
-          sampleAll();
+          record();
         }
       }
       if (Date.now() - lastScan >= SCAN_SECONDS * 1000 || ONCE) {
@@ -669,7 +759,10 @@ async function main() {
       if (ONCE) throw e;
       log('cycle failed, trying again in', String(RECORD_POLL), 's:', errLine(e));
     }
-    if (ONCE) return;
+    if (ONCE) {
+      if (proving) await proving;
+      return;
+    }
     await new Promise((r) => setTimeout(r, RECORD_POLL * 1000));
   }
 }

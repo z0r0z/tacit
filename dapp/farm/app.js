@@ -11,7 +11,7 @@ import { batchReads } from '/trade/batch.js';
 import { day as dayFmt } from '/trade/fmt.js?cb=172824e5';
 import { aprText, readPrecision, readSpot, readStake, privateFarms, poolWorthEth } from '/trade/farm-read.js?cb=fb6ec72f';
 import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1c942';
-import { DEPLOYMENTS } from '/vault/deployments.js?cb=4af96594';
+import { DEPLOYMENTS } from '/vault/deployments.js?cb=d9fa3344';
 import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=c5192cc4';
 import { quoteEthToToken } from '/swap/route.js?cb=0affad24';
 import { zapPlanExt } from '/lp-zap.js?cb=041bcb7f';

@@ -6,7 +6,7 @@
 import * as M from '/vault/math.js?cb=ac1ed53e';
 import { makeReader, staticCalls, parseStatic, dynamicCalls, parseDynamic, timestampCall, refusal, decString, SEL, wordAt, addrWord,
   encDeposit, encWithdraw, encBorrow, encRepay, encCancel, encApprove, encPermit, encMulticall } from '/vault/chain.js?cb=3c1d1b84';
-import { RECORD_GAS, PER_TX, GAS_ROOM, encBatch, MULTICALL3 } from '/vault/feed.js?cb=fc5d774f';
+import { RECORD_GAS, PER_TX, GAS_ROOM, encBatch, MULTICALL3 } from '/vault/feed.js?cb=bd584ab8';
 import { simulateBundle, sendBundle, batchSupport, readMixed } from '/vault/batch.js?cb=4beda57b';
 import { ROUTER_SEL, encRouterRecords, encRouterBorrow, encRouterWithdraw, encRouterDeposit, encRouterRepay, encRouterPermitSynth, borrowTyped, withdrawTyped } from '/vault/router.js?cb=21df6509';
 
@@ -448,9 +448,11 @@ export function makeVaultEngine({ S, VS, ROUTER, rpc, feed, wallet, W, who, canA
       PREP.last = { key: missingKey(st), at: now() };
       if (!st.missing || st.missing > BATCH_MAX) { V.post = null; return false; }
       const part = feed.nextBatch(st, BATCH_MAX), keyOf = (v, k) => `${v.oracle}:${k}`;
-      const kept = new Map((V.post?.recs || []).map((r) => [`${r.to}:${r.k}`, r]));
+      // A record names the venue it is for (`venue`, when it is sent through another oracle) or is sent to it.
+      const recKey = (r) => `${r.venue || r.to}:${r.k}`;
+      const kept = new Map((V.post?.recs || []).map((r) => [recKey(r), r]));
       const fresh = part.filter(([v, k]) => !kept.has(keyOf(v, k)));
-      (fresh.length ? await feed.build(fresh) : []).forEach((r) => kept.set(`${r.to}:${r.k}`, r));
+      (fresh.length ? await feed.build(fresh) : []).forEach((r) => kept.set(recKey(r), r));
       const recs = part.map(([v, k]) => kept.get(keyOf(v, k)));
       const checked = await verifiedRecords(part, recs, () => {});
       if (!checked) { console.warn('price records: others recorded some while this was built'); return false; }
