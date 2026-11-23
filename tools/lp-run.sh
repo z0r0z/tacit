@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs one of the reverse-side tools of the house fast bridge provider with the provider's key. The key is read from the macOS keychain item `tacit-fastbridge-lp`
-# in here, handed to the tool in its environment only, and never printed or passed on a command line. Only the six tools named below can be run through it.
+# in here, handed to the tool in its environment only, and never printed or passed on a command line. Only the seven tools named below can be run through it.
 #
 #   tools/lp-run.sh status [--address-only] [--copy] [--via-proxy]                     the reverse address, its tacit1 address, what is at it (reads only)
 #   tools/lp-run.sh normalize --txid <id> [--send --confirm <token>]       moves TAC sent silently (to the reverse tcs1 address) onto the plain address:
@@ -13,6 +13,8 @@
 #                                                                          sends a little private TAC (at most 5) from the provider's pool account to a test identity: without --send it only says what it would do
 #   tools/lp-run.sh send-sats --to <bc1q address> --sats 3000 [--send --confirm <token>]
 #                                                                          sends 1,000 to 5,000 sats of the reverse key's fee coin to a test wallet (it needs sats to send its TAC on): without --send it only says what it would do
+#   tools/lp-run.sh topup --coin <txid:vout> [--send --confirm <token>]
+#                                                                          moves one named plain coin (10,000 to 200,000 sats) of the main address to the reverse address, for the sats its locks cost: without --send it only says what it would do
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 case "${1:-}" in
@@ -22,7 +24,8 @@ case "${1:-}" in
   bump) tool=fastbridge-lp-reverse-bump.mjs ;;
   pool-send) tool=fastbridge-lp-pool-send.mjs ;;
   send-sats) tool=fastbridge-lp-reverse-sats.mjs ;;
-  *) echo "usage: lp-run.sh status|normalize|fund|bump|pool-send|send-sats [arguments of that tool]" >&2; exit 2 ;;
+  topup) tool=fastbridge-lp-reverse-topup.mjs ;;
+  *) echo "usage: lp-run.sh status|normalize|fund|bump|pool-send|send-sats|topup [arguments of that tool]" >&2; exit 2 ;;
 esac
 shift
 # the tools need Node 22: the newest 22 under nvm if there is one, else the node on the PATH
