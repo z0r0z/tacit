@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-SNQYnOu2g8nuccdjXO6Ye/QgT2/rYL+GyIwn+FTZOqM=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-Wmc0CCCBP9diLgTPXiusR0Vq7Polx6kbIth4OToJAOE=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -2954,7 +2954,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 for (const u of ["/weld/stats/read.js?cb=1df039da","/trade/lp-campaign.js?cb=8da1c942","/trade/batch.js","/tacit-chain-config.js?cb=74171404"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
 // preload-later:end
 // preload-intent:begin
-const WARM_MODULES = ["/confidential-pool-ux.js?cb=2d975c08","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/confidential-tree-core.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-memo-probe.js","/confidential-memo-workers.js","/worker-start.js","/confidential-bridge-workers.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-tree-workers-shared.js","/confidential-tree-workers.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-bridge-walk.js","/point-multiples.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
+const WARM_MODULES = ["/confidential-pool-ux.js?cb=1e6df6d6","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/confidential-tree-core.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-memo-probe.js","/confidential-memo-workers.js","/worker-start.js","/confidential-bridge-workers.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-tree-workers-shared.js","/confidential-tree-workers.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-bridge-walk.js","/point-multiples.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
 // preload-intent:end
 import '/storage-fallback.js';
 import * as OWNNODE from '/own-node.js?cb=ed1de110';
@@ -6046,7 +6046,7 @@ function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.oncl
 const warmPool = (() => { let on = false; return () => { if (on) return; on = true; for (const u of WARM_MODULES) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u })); }; })();
 const getUx = lazy(async () => {
   warmPool();
-  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=2d975c08'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=1e6df6d6'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   setExternalTacHolders(() => (S.wallet ? [S.wallet] : []));
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });
@@ -6587,15 +6587,20 @@ async function stealthSendNow({ run, k, label, w, raw, units, field, status, lin
   after();
   if (r?.memoCheck?.ok === false) run.warn(line(), 'Sent, but the relay published a different note than was built, so the recipient may not find it. If it goes unclaimed, take it back in the classic app after the deadline; its refund record is saved in this browser.');
 }
+// The relay's fee is worked out from the gas price and the cost of the proof, which move a little every few seconds, so the figure a person was shown and the one asked for a moment later can
+// differ by a step with nothing changed, and a press used to stop on it (a withdrawal after a paid combine step, one press in two). A rise of up to a quarter is paid at the figure that was
+// shown, which is what they agreed to and sits well over the relay's own floor; only more than that stops to ask again. The fee to build with: the fresh one when it is no higher, the shown
+// one within the quarter, null beyond it.
+const feeAgreed = (now, shown) => (shown == null || now <= shown ? now : BigInt(now) <= BigInt(shown) + BigInt(shown) / 4n ? shown : null);
 async function assetOutNow({ run, k, label, units, recipient, as, fee = null, own = false, status, line, sheet = 'eth', clear, after, proveAfter }) {
   run.go({ label, status: line, clear, steps: 2, doing: 'Sending it out of the pool' });
   const t = await getUx(), priv = walletPriv();
   const note = await noteFor(run, t, priv, units, (n) => BigInt(n.value) >= units, status, k);
   let feeOpts = null;
   if (fee != null && !own) {
-    const tk = POOL_TK[k], minFee = await t.quoteOpFee(tk, BigInt(note.value) === units ? 'unwrap' : 'sendunwrap'), now = t.quoteUnwrapFee(units, tk, { minFee }).fee;
-    if (now > fee) throw Object.assign(new Error(`The relay fee is now ${fmt(now, 8, 8)} ${shownAs(tk)}, up from ${fmt(fee, 8, 8)}. Your note is ready: check the new fee and press again.`), { said: true, feeMoved: true });
-    feeOpts = { minFee };
+    const tk = POOL_TK[k], minFee = await t.quoteOpFee(tk, BigInt(note.value) === units ? 'unwrap' : 'sendunwrap'), now = t.quoteUnwrapFee(units, tk, { minFee }).fee, agreed = feeAgreed(now, fee);
+    if (agreed == null) throw Object.assign(new Error(`The relay fee is now ${fmt(now, 8, 8)} ${shownAs(tk)}, up from ${fmt(fee, 8, 8)}. Your note is ready: check the new fee and press again.`), { said: true, feeMoved: true });
+    feeOpts = { minFee: agreed < now ? agreed : minFee };
   }
   run.say(status, `The relay is proving your transfer, which arrives as ${as}…`);
   await proveOr({ run, types: ['sendunwrap', 'unwrap'], exit: true, go: exitGo(note, recipient, units), ...(k === 'tac' ? { anyoneK: k, anyone: anyoneExit(note, recipient, units) } : {}), label, sheet, ...(proveAfter ? { after: proveAfter } : {}), status: line,
@@ -6615,9 +6620,9 @@ async function unwrapNow({ run, x, raw, status, line, sheet = 'eth', clear, move
     const note = await noteFor(run, t, priv, x.units, (n) => BigInt(n.value) >= x.units, status);
     let feeOpts = null;
     if (!x.own) {
-      const minFee = await t.quoteOpFee('cETH', BigInt(note.value) === x.units ? 'unwrap' : 'sendunwrap'), fee = t.quoteUnwrapFee(x.units, 'cETH', { minFee }).fee;
-      if (fee > x.fee) throw Object.assign(new Error(`The relay fee is now ${fmt(fee, 8, 8)} ETH, up from ${fmt(x.fee, 8, 8)}. Your note is ready: check the new fee and press again.`), { said: true, feeMoved: true });
-      feeOpts = { minFee };
+      const minFee = await t.quoteOpFee('cETH', BigInt(note.value) === x.units ? 'unwrap' : 'sendunwrap'), fee = t.quoteUnwrapFee(x.units, 'cETH', { minFee }).fee, agreed = feeAgreed(fee, x.fee);
+      if (agreed == null) throw Object.assign(new Error(`The relay fee is now ${fmt(fee, 8, 8)} ETH, up from ${fmt(x.fee, 8, 8)}. Your note is ready: check the new fee and press again.`), { said: true, feeMoved: true });
+      feeOpts = { minFee: agreed < fee ? agreed : minFee };
     }
     const exit = { to: recipient, units: String(x.units), note: kNote(note), from: 'eth', sheet: 'eth' };
     const ahead = !x.own && !sealOn() ? await exitAheadReady(x.units, raw, note) : null, aheadAt = EXIT_AHEAD.at;
@@ -8401,11 +8406,11 @@ async function hxXOutGo(units) {
   return busy(go, async (run) => {
     try {
       if (!P.scan) await scanPrivate().catch(() => {});
-      const raw = await payingAccount(), q = await xtOutQuote(units);
+      const raw = await payingAccount(), q = await xtOutQuote(units), agreed = feeAgreed(q.fee, shown);
       if (q.warn) { say(st, html`<span class="err">${q.line}</span>`); return; }
-      if (shown != null && q.fee > shown) { say(st, 'The relay’s fee moved while this was open. It is shown again: check it and press once more.'); HX.q = null; hxQuote(); return; }
+      if (agreed == null) { say(st, 'The relay’s fee moved while this was open. It is shown again: check it and press once more.'); HX.q = null; hxQuote(); return; }
       say(st, '');
-      await assetOutNow({ run, k, label: `Withdraw ${fmt(units, r.tdec, 6)} ${r.sym}`, units, recipient: recipientOf(raw), as: `${r.sym} in your wallet`, fee: q.fee, own: ownNow(['sendunwrap', 'unwrap']),
+      await assetOutNow({ run, k, label: `Withdraw ${fmt(units, r.tdec, 6)} ${r.sym}`, units, recipient: recipientOf(raw), as: `${r.sym} in your wallet`, fee: agreed, own: ownNow(['sendunwrap', 'unwrap']),
         status: st, line: () => st, sheet: '', clear: () => SWC.card?.clear?.(), after: hxMoveAfter });
     } catch (e) { run.fail(st, e); }
   }).finally(() => SWC.card?.working?.(false));
@@ -13864,11 +13869,12 @@ async function hxSendPoolGo(k, units, raw, out) {
       const q = await hxSendQuote(units);
       if (q.warn) { say(st, html`<span class="err">${q.line || overBalance()}</span>`); return; }
       if (out) {
-        if (shown != null && q.fee > shown) { say(st, 'The relay’s fee moved while this was open. It is shown again: check it and press once more.'); HX.q = null; hxQuote(); return; }
-        if (k === 'eth') await unwrapNow({ run, x: { units, fee: q.fee, minFee: q.minFee, own: q.own }, raw, status: st, line: () => st, sheet: '', clear: hxSendClear, moved: () => { HX.q = null; hxQuote(); }, after: hxSendAfter });
+        const agreed = feeAgreed(q.fee, shown);
+        if (agreed == null) { say(st, 'The relay’s fee moved while this was open. It is shown again: check it and press once more.'); HX.q = null; hxQuote(); return; }
+        if (k === 'eth') await unwrapNow({ run, x: { units, fee: agreed, minFee: q.minFee, own: q.own }, raw, status: st, line: () => st, sheet: '', clear: hxSendClear, moved: () => { HX.q = null; hxQuote(); }, after: hxSendAfter });
         else {
           const as = { tac: 'TAC', cusd: 'tacUSD', cbtc: 'tacBTC', rtac: 'wTAC' }[k] || xtOf(k)?.sym;
-          await assetOutNow({ run, k, label: `Send ${fmt(units, d8, dp)} ${unit} to ${short(raw, 6)} as ${as}`, units, recipient: recipientOf(raw), as, fee: q.fee, own: q.own, status: st, line: () => st, sheet: '', clear: hxSendClear, after: hxSendAfter });
+          await assetOutNow({ run, k, label: `Send ${fmt(units, d8, dp)} ${unit} to ${short(raw, 6)} as ${as}`, units, recipient: recipientOf(raw), as, fee: agreed, own: q.own, status: st, line: () => st, sheet: '', clear: hxSendClear, after: hxSendAfter });
         }
         return;
       }
@@ -15662,9 +15668,10 @@ async function hxUnwrapGo(units) {
       const size = own || notes.some((n) => BigInt(n.value) >= units) ? 0n : BigInt(await t.quoteOpFee('cETH', 'transfer'));
       if (units + size > held) { say(st, html`<span class="err">${feeRoom(units, size, held, P.scan?.eth.notes, (v) => `${fmt(v, 8, 6)} tETH`) || overBalance()}</span>`); return; }
       if (units <= fee) { say(st, html`<span class="err">Take out more than ${fmt(fee, 8, 6)} tETH: the relay fee comes out of it.</span>`); return; }
-      if (shown != null && fee > shown) { say(st, 'The relay’s fee moved while this was open. It is shown again: check it and press once more.'); HX.q = null; hxQuote(); return; }
+      const agreed = feeAgreed(fee, shown);
+      if (agreed == null) { say(st, 'The relay’s fee moved while this was open. It is shown again: check it and press once more.'); HX.q = null; hxQuote(); return; }
       say(st, '');
-      await unwrapNow({ run, x: { units, fee, minFee, own }, raw, status: st, line: () => st, sheet: '', clear: () => SWC.card?.clear?.(), moved: () => { HX.q = null; hxQuote(); }, after: hxMoveAfter });
+      await unwrapNow({ run, x: { units, fee: agreed, minFee, own }, raw, status: st, line: () => st, sheet: '', clear: () => SWC.card?.clear?.(), moved: () => { HX.q = null; hxQuote(); }, after: hxMoveAfter });
     } catch (e) { run.fail(st, e); }
   }).finally(() => SWC.card?.working?.(false));
 }
@@ -16809,7 +16816,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=8d1bd828').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=c4a8875d').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {

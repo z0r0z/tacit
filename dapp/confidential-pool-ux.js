@@ -3475,6 +3475,16 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const num = BigInt(ethFee) * low[1] * 10000n, den = low[0] * (10000n - AMM_HAIRCUT_BPS);
     return _ladderFee((num + den - 1n) / den);
   }
+  // The floor comes from the gas price and the prove cost, which move a little every few seconds: quoted twice a moment apart it came out a step or two different (0.00019 to 0.00024 ETH
+  // inside an hour) with nothing changed, and a press that held the fee it was shown against a fresh one was stopped on the difference. A quote stays where it was while the fresh figure is
+  // within a tenth of it, for up to three minutes; a bigger move is followed at once, up or down, and a fee the relay refuses lets go of it (_floorRefused).
+  const _held = new Map();
+  const _steady = (key, v) => {
+    const h = _held.get(key), t = Date.now();
+    if (h && t - h.at < 180000 && v * 10n >= h.v * 9n && v * 10n <= h.v * 11n) return h.v;
+    _held.set(key, { v, at: t });
+    return v;
+  };
   async function gasAwareMinFee(ticker, opKind) {
     const staticFloor = relayMinFee(ticker);
     const pol = RELAY_FEE_ASSETS[ticker];
@@ -3503,7 +3513,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     } else {
       return staticFloor;
     }
-    return _ladderFee(floor > staticFloor ? floor : staticFloor);
+    return _steady(`${ticker}:${opKind}`, _ladderFee(floor > staticFloor ? floor : staticFloor));
   }
 
   async function quoteTransferFee(amount, ticker = 'cETH', { minFee } = {}) {
@@ -3637,7 +3647,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     } finally { stop = true; }
   }
 
-  const _floorRefused = (e) => /fee below the current floor/i.test(String((e && e.message) || e));
+  const _floorRefused = (e) => { const hit = /fee below the current floor/i.test(String((e && e.message) || e)); if (hit) _held.clear(); return hit; };
   async function _withFloorRetry(ticker, opKind, feeOpts, run) {
     const minFee = await gasAwareMinFee(ticker, opKind);
     try { return await run({ ...feeOpts, minFee }); }

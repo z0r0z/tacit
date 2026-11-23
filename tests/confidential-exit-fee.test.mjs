@@ -233,3 +233,74 @@ test('a relay that holds the token to the gas floor takes the first submit: a wi
   assert.ok(fees[0] >= need, `the fee (${fees[0]}) clears the floor (${need})`);
   assert.ok(r.jobId);
 });
+
+// The floor comes from the gas price and the prove cost, which move a little every few seconds: quoted twice a moment apart it came out a ladder step or two different (0.00019 to 0.00024 ETH
+// inside an hour on 2026-11-23) with nothing changed, so a press that held the fee it was shown against a fresh quote stopped on the difference ("the relay's fee moved … press once more"),
+// about one withdrawal in two. A quote now stays where it was while the fresh figure is within a tenth of it (three minutes at most); a real move is followed at once.
+const gasUx = (wei, need = 0n) => {
+  const ref = { wei }, fees = [];
+  const fetchImpl = async (url, opts) => {
+    const body = opts && opts.body ? JSON.parse(opts.body) : {};
+    if (String(url).endsWith('/confidential/submit')) {
+      const fee = BigInt(body.op.fee); fees.push(fee);
+      if (fee < need) return { ok: false, status: 400, statusText: 'Bad Request', text: async () => JSON.stringify({ error: 'submitJob: relay fee below the current floor — re-quote higher or self-settle' }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ jobId: 'j' + fees.length, status: 'pending' }) };
+    }
+    const one = (b) => ({ jsonrpc: '2.0', id: b.id ?? 1, result: b.method === 'eth_gasPrice' ? '0x' + ref.wei.toString(16) : '0x0' });
+    const obj = Array.isArray(body) ? body.map(one) : one(body);
+    return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+  };
+  return { ux: makeConfidentialPoolUx({ ...deps, fetchImpl }), ref, fees };
+};
+const withClock = async (fn) => { const real = Date.now; let t = real(); Date.now = () => t; try { return await fn({ advance: (ms) => { t += ms; } }); } finally { Date.now = real; } };
+const GWEI = 10n ** 9n;
+
+test('the quote holds still while gas jitters within a tenth, follows a real move at once, and lets go after three minutes', async () => {
+  await withClock(async ({ advance }) => {
+    const { ux, ref } = gasUx(50n * GWEI);
+    const q0 = await ux.quoteOpFee('cETH', 'unwrap');
+    for (const g of [53n, 48n, 54n, 46n, 51n]) {
+      ref.wei = g * GWEI; advance(9000);                                                // the page's gas read is kept 8 s: each one is a fresh read
+      assert.equal(await ux.quoteOpFee('cETH', 'unwrap'), q0, `at ${g} gwei the quote is still ${q0}`);
+    }
+    ref.wei = 80n * GWEI; advance(9000);
+    const q1 = await ux.quoteOpFee('cETH', 'unwrap');
+    assert.ok(q1 * 10n > q0 * 11n, `a real rise (${q0} to ${q1}) is followed at once`);
+    ref.wei = 20n * GWEI; advance(9000);
+    const q2 = await ux.quoteOpFee('cETH', 'unwrap');
+    assert.ok(q2 * 10n < q1 * 9n, `and a real fall (${q1} to ${q2})`);
+    ref.wei = 21_600_000_000n; advance(9000);
+    assert.equal(await ux.quoteOpFee('cETH', 'unwrap'), q2, 'an 8% drift inside the three minutes holds');
+    advance(181000);
+    const q3 = await ux.quoteOpFee('cETH', 'unwrap');
+    assert.ok(q3 > q2, `the same drift after three minutes is followed (${q2} to ${q3}): the quote does not stay behind the market for good`);
+  });
+});
+
+test('each kind of op holds its own quote, and a ticker\'s other kinds are not dragged along', async () => {
+  await withClock(async ({ advance }) => {
+    const { ux, ref } = gasUx(50n * GWEI);
+    const u0 = await ux.quoteOpFee('cETH', 'unwrap'), s0 = await ux.quoteOpFee('cETH', 'sendunwrap');
+    assert.ok(s0 > u0, 'a withdrawal with change costs more than a whole note');
+    ref.wei = 53n * GWEI; advance(9000);
+    assert.equal(await ux.quoteOpFee('cETH', 'unwrap'), u0);
+    assert.equal(await ux.quoteOpFee('cETH', 'sendunwrap'), s0);
+  });
+});
+
+test('a fee the relay refuses lets go of the held quote, so the next quote is the fresh one', async () => {
+  await withClock(async ({ advance }) => {
+    const { ux, ref, fees } = gasUx(50n * GWEI, 3_000_000n);                           // the relay wants more than the 2.6 million the quote gives
+    const q0 = await ux.quoteOpFee('cETH', 'unwrap');
+    const w = ux.buildWrap({ walletPriv, amountWei: (10n ** 17n).toString(), ticker: 'cETH', index: 0 });
+    const note = ux.indexer.recover([{ type: 'LeavesInserted', firstLeafIndex: 0, leaves: [w.leaf], memos: [w.memo] }], walletPriv)[0];
+    ref.wei = 54n * GWEI; advance(9000);
+    assert.equal(await ux.quoteOpFee('cETH', 'unwrap'), q0, 'inside the band, before any refusal, the held quote stands');
+    const r = await ux.unwrap({ note, walletPriv, wait: false });
+    assert.deepEqual(fees, [q0, q0 * 2n], 'refused at the held quote, then sent at twice it');
+    assert.ok(r.jobId);
+    advance(9000);
+    const after = await ux.quoteOpFee('cETH', 'unwrap');
+    assert.ok(after > q0, `after the refusal the quote is the fresh one (${after}), not the held ${q0}`);
+  });
+});
