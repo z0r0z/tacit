@@ -4,17 +4,25 @@ export const takeSatsAt = (feeRate) => 546 + Math.ceil(TAKE_VB * feeRate * 2);
 const FEE_WARM_MS = 30000;
 
 import { makeEthereumLocker } from './fastbridge-el.js';
+import { isSats } from './adaptor-xswap.js';
 
 const randomHex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 export function makeQuoter({ store, now, params }) {
   const p = params;
   const min = BigInt(p.minAmount), max = BigInt(p.maxAmount), flat = BigInt(p.flatFee ?? 0), bps = BigInt(p.feeBps ?? 0);
-  const num = BigInt(p.rate?.num ?? 1), den = BigInt(p.rate?.den ?? 1);
+  // `rate` is { num, den } (what the provider's side pays for one unit of what it takes), or a function that gives that now (dapp/fastbridge-rate.js feed.rate):
+  // a price that moves with the market. A function that has none (its sources are down or disagree) means no quote, and the page is told to ask again.
+  const rateNow = () => {
+    const r = typeof p.rate === 'function' ? p.rate() : p.rate;
+    if (typeof p.rate === 'function' && !r) throw Object.assign(new Error('the provider has no price for this pair right now'), { status: 503, retry: true });
+    return { num: BigInt(r?.num ?? 1), den: BigInt(r?.den ?? 1) };
+  };
 
   function price(amount) {
     const a = BigInt(amount);
     if (a < min || a > max) throw Object.assign(new Error(`the amount must be between ${min} and ${max}`), { status: 400 });
+    const { num, den } = rateNow();
     const fee = (a * bps) / 10000n + flat;
     const out = ((a - fee) * num) / den;
     if (a <= fee || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
@@ -49,7 +57,9 @@ const isId = (v) => /^[0-9a-f]{32}$/.test(String(v));
 const cannotTake = () => Object.assign(new Error('the provider cannot take that amount right now'), { status: 400 });
 
 export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
-  const takeSats = btc.feeRate ? async () => takeSatsAt(await btc.feeRate()) : null;
+  // a lock of plain sats pays no coin to the provider for its take: the take's fee comes out of the lock itself (dapp/adaptor-btc-tx.js claimSats)
+  const sats = isSats(config.quote.btcAsset);
+  const takeSats = btc.feeRate && !sats ? async () => takeSatsAt(await btc.feeRate()) : null;
   const quoter = makeQuoter({ store: quoteStore, now, params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats } });
   const hold = { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 0.5, ...(config.reserve || {}) };
   const refreshSecs = config.inventory?.refreshSecs ?? 60;
@@ -304,12 +314,15 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           if (r.txid && r.txid !== body.txid) return no('this reservation is held for another transaction');
           if (r.txid === body.txid) return reply({ ok: true, until: r.until });
           if (!tx) return no('the lock transaction is not visible yet', true);
-          if (!tx.vin || tx.vin.length < 2) return no('that is not a lock transaction');
+          // a lock of a note spends the note as its second input (the first is its commit); a lock of plain sats is an ordinary transaction
+          if (!tx.vin || tx.vin.length < (sats ? 1 : 2)) return no('that is not a lock transaction');
           const q = await quoter.get(body.quoteId), take = Number((q && q.takeSats) || 0);
           if (take > 0 && btc.prims && btc.wallet) {
             const own = [...btc.prims.p2wpkhScript(btc.wallet.pub)].map((b) => b.toString(16).padStart(2, '0')).join('');
             if (!(tx.vout || []).some((o) => String(o.scriptpubkey || '').toLowerCase() === own && o.value >= take)) return no('that transaction does not pay the fee of the take');
           }
+          // a hold of up to two hours is for a lock, so the transaction must pay the quoted amount to a Taproot output (any other would hold the payout for nothing)
+          if (sats && !(tx.vout || []).some((o) => /^5120[0-9a-f]{64}$/i.test(String(o.scriptpubkey || '')) && q && o.value === Number(q.btcValue))) return no('that transaction does not pay the quoted amount to a Taproot lock');
           for (const [id, other] of reservations) if (id !== body.quoteId && other.txid === body.txid) return no('that transaction already holds another reservation');
           for (const rec of await swaps.list()) if (rec.lockTxid === body.txid) return no('that transaction is already a swap');
           r.txid = body.txid; r.until = Math.max(r.until, now() + hold.extendSecs);

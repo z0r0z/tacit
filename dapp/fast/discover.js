@@ -16,20 +16,33 @@ export const reverseTermsOf = (r) => ({
 
 // Every provider there is to bridge with: the ones that serve HTTP (checked against the key the page pins for each) and the ones on the
 // boards (their ads, checked). One entry for each provider key, the one that serves HTTP first.
-export async function discoverProviders({ providers = [], boards = [], fetchImpl = (...a) => fetch(...a), now }) {
+// What a provider swaps is named by its ad (or its /info): the asset it takes on Bitcoin and the one it pays in the pool. The bridge page lists only providers of TAC for TAC
+// (the default `assets`), so a provider of another pair on the same board (Bitcoin for ETH, dapp/fastbridge-pair.js) is never taken for one that bridges TAC, with its
+// amounts read in the wrong unit; a page of another pair names its own. A provider that names no asset (an ad from before they were named) is taken as TAC's.
+export const TAC_PAIR = { btcAsset: 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b', evmAsset: 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b' };
+const bare = (h) => String(h == null ? '' : h).replace(/^0x/, '').toLowerCase();
+const assetsOf = (x, want) => {
+  const a = { btcAsset: bare(x.btcAsset), evmAsset: bare(x.evmAsset) };
+  return (!a.btcAsset || a.btcAsset === bare(want.btcAsset)) && (!a.evmAsset || a.evmAsset === bare(want.evmAsset)) ? { btcAsset: a.btcAsset || bare(want.btcAsset), evmAsset: a.evmAsset || bare(want.evmAsset) } : null;
+};
+
+export async function discoverProviders({ providers = [], boards = [], fetchImpl = (...a) => fetch(...a), now, assets = TAC_PAIR }) {
   const out = [];
   await Promise.all(providers.map(async (p) => {
     try {
       const i = await makeHttpCounter({ base: p.base, fetchImpl }).info();
-      const claimPub = String(i.claimPub || '').toLowerCase();
+      const claimPub = String(i.claimPub || '').toLowerCase(), a = assetsOf(i, assets);
       if (p.claimPub && p.claimPub.toLowerCase() !== claimPub) return;
-      out.push({ id: claimPub, name: p.name || 'Provider', ref: { kind: 'http', base: p.base, claimPub }, terms: termsOf(i), http: true });
+      if (!a) return;
+      out.push({ id: claimPub, name: p.name || 'Provider', ref: { kind: 'http', base: p.base, claimPub }, terms: termsOf(i), assets: a, http: true });
     } catch { /* a provider that does not answer is not listed */ }
   }));
   await Promise.all(boards.map(async (boardBase) => {
     try {
       for (const p of await readProviders({ board: makeBoardClient({ base: boardBase, fetchImpl }), ...(now ? { now } : {}) })) {
-        out.push({ id: p.id, name: p.name, ref: { kind: 'mailbox', boardBase, gateway: p.ad.gateway, claimPub: p.ad.claimPub }, terms: termsOf(p.ad), ...(p.ad.reverse ? { reverse: reverseTermsOf(p.ad.reverse) } : {}) });
+        const a = assetsOf(p.ad, assets);
+        if (!a) continue;
+        out.push({ id: p.id, name: p.name, ref: { kind: 'mailbox', boardBase, gateway: p.ad.gateway, claimPub: p.ad.claimPub }, terms: termsOf(p.ad), assets: a, ...(p.ad.reverse ? { reverse: reverseTermsOf(p.ad.reverse) } : {}) });
       }
     } catch { /* a board that does not answer has no providers here */ }
   }));

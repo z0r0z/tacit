@@ -48,7 +48,18 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
   const refreshSecs = config.refreshSecs ?? 60, alertSecs = config.alertSecs ?? 3600;
   const pol = config.policy || {};
   const lockerPub = bytesToHex(btc.wallet.pub);
-  const takeSats = btc.feeRate ? async () => takeSatsAt(await btc.feeRate()) : async () => 0;
+  // Plain sats instead of a Tacit note (btcAsset X.SATS_ASSET): the provider sells the sats at its dedicated address for pool ETH. Its inventory is that address's
+  // coins (`inventory.notes()` lists them with `amount` = their value), a lock is built from coins picked then (dapp/fastbridge-bl.js buildSats), nothing is paid to
+  // the user's key for a take (its fee comes out of the lock), and the price is the rate in `quote.rate` ({ num, den } pool units per satoshi, or a function that
+  // gives it: dapp/fastbridge-rate.js). `lockFeeReserve` is what the coins must cover beyond the amount, for the lock's own fee.
+  const sats = X.isSats(q.btcAsset);
+  const lockFeeReserve = BigInt(config.lockFeeReserve ?? 20_000);
+  const takeSats = btc.feeRate && !sats ? async () => takeSatsAt(await btc.feeRate()) : async () => 0;
+  const rateNow = () => {
+    const r = typeof q.rate === 'function' ? q.rate() : q.rate;
+    if (!r) throw Object.assign(new Error('the provider has no price for this pair right now'), { status: 503, retry: true });
+    return { num: BigInt(r.num), den: BigInt(r.den) };
+  };
 
   // sendOffer is the machine telling its counterparty the lock is confirmed: here that is keeping the offer for the user to fetch
   const counter = {
@@ -67,8 +78,10 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
   function price(amount) {
     const a = BigInt(amount);
     if (a < min || a > max) throw Object.assign(new Error(`the amount must be between ${min} and ${max}`), { status: 400 });
-    const fee = feeOf(q, a), out = a - fee;
-    if (out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
+    const fee = feeOf(q, a);
+    let out = a - fee;
+    if (sats && out > 0n) { const { num, den } = rateNow(); out = (out * den) / num; }   // the fee is in pool units; what is left buys sats at the rate
+    if (a - fee <= 0n || out <= 0n) throw Object.assign(new Error('the amount does not cover the fee'), { status: 400 });
     return { evmAmount: a, btcValue: out, fee };
   }
   // the most a user can send for a Bitcoin note of at most `btcMax`
@@ -108,19 +121,25 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
       for (const c of r.feeInputs || []) feeCoins.add(key(c));
     }
     const all = await readNotes();
-    return { free: all.filter((n) => !spent.has(key(n))), all, open, locked, feeCoins };
+    // (a coin a lock of sats was funded from is held by that swap until it ends, whatever the cached list says)
+    return { free: all.filter((n) => !spent.has(key(n)) && !(sats && feeCoins.has(key(n)))), all, open, locked, feeCoins };
   }
+  // what the free coins can lock: the largest few together, less the lock's own fee
+  const satsHeld = (free) => {
+    const held = free.map((n) => n.amount).sort((a, b) => (a > b ? -1 : a < b ? 1 : 0)).slice(0, MAX_INPUTS).reduce((s, v) => s + v, 0n);
+    return held > lockFeeReserve ? held - lockFeeReserve : 0n;
+  };
   const roomFor = (p, btcValue) => {
     if (p.open >= maxOpen) return 'the provider has all the sends it takes at once';
-    if (maxLocked != null && p.locked + btcValue > maxLocked) return 'the provider has all the TAC it puts out at once';
-    if (!pickNotes(p.free, btcValue)) return 'the provider has no TAC on Bitcoin for that amount right now';
+    if (maxLocked != null && p.locked + btcValue > maxLocked) return `the provider has all the ${sats ? 'Bitcoin' : 'TAC'} it puts out at once`;
+    if (sats ? satsHeld(p.free) < btcValue : !pickNotes(p.free, btcValue)) return `the provider has no ${sats ? '' : 'TAC on '}Bitcoin for that amount right now`;
     return null;
   };
   async function availableAmount() {
     try {
       const p = await picture();
       if (p.open >= maxOpen) return 0n;
-      let held = p.free.map((n) => n.amount).sort((a, b) => (a > b ? -1 : a < b ? 1 : 0)).slice(0, MAX_INPUTS).reduce((s, v) => s + v, 0n);
+      let held = sats ? satsHeld(p.free) : p.free.map((n) => n.amount).sort((a, b) => (a > b ? -1 : a < b ? 1 : 0)).slice(0, MAX_INPUTS).reduce((s, v) => s + v, 0n);
       if (maxLocked != null) { const left = maxLocked > p.locked ? maxLocked - p.locked : 0n; if (left < held) held = left; }
       return maxInFor(held);
     } catch { return null; }
@@ -160,17 +179,18 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
       if (now() > rec.validUntil) return no('quote expired');
       const p = await picture(), btcValue = BigInt(rec.btcValue), why = roomFor(p, btcValue);
       if (why) return no(why, true);
-      const pick = pickNotes(p.free, btcValue);
-      const avoid = new Set([...p.all.map(key), ...p.feeCoins]);
+      // a lock of sats picks its own coins, from the address's, leaving alone those that open swaps hold; a lock of a note is built from the notes picked here
+      const pick = sats ? null : pickNotes(p.free, btcValue);
+      const avoid = sats ? new Set(p.feeCoins) : new Set([...p.all.map(key), ...p.feeCoins]);
       let swap;
       try {
         swap = await bl.start({
-          asset: hexToBytes(rec.btcAsset), amount: btcValue, notes: pick.notes, counterClaimPub: hexToBytes(rec.claimPub),
+          asset: hexToBytes(rec.btcAsset), amount: btcValue, notes: pick ? pick.notes : [], counterClaimPub: hexToBytes(rec.claimPub),
           evmAsset: rec.evmAsset, evmAmount: BigInt(rec.evmAmount), quoteId: rec.id, takeSats: Number(rec.takeSats ?? 0), avoid,
         });
       } catch (e) {
         const m = String((e && e.message) || e);
-        if (/not enough sats to fund the commit/.test(m)) { alert({ level: 'warn', msg: 'the reverse side has too few sats at its address to lock', error: m.slice(0, 160) }); return no('the provider cannot pay the Bitcoin fee of the lock right now', true); }
+        if (/not enough sats (to fund the commit|for the lock)/.test(m)) { alert({ level: 'warn', msg: 'the reverse side has too few sats at its address to lock', error: m.slice(0, 160) }); return no('the provider cannot pay the Bitcoin fee of the lock right now', true); }
         if (/already part of a swap/.test(m)) return no('that note is already in a swap', true);
         throw e;
       }

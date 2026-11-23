@@ -109,7 +109,10 @@ export function describe(rec) {
 
 // ── the user's side as a whole ──
 
-export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins = {}, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000) }) {
+// `confsOf(value)`: the confirmations the user wants on the provider's lock, by its value (default: TAC's). `valueCheck({ evmAmount, btcValue })`: for a pair whose two
+// sides are not the same unit (the provider pays sats for pool ETH), the judgement of the amounts that replaces the same-unit one: it throws a reason the page can show, or
+// returns { fee (in the user's units), highFee }. Both default to the TAC bridge's own rules, byte for byte.
+export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins = {}, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), confsOf = confsFor, valueCheck = null }) {
   const policy = { ...REVERSE_POLICY, ...policyIn };
   const claimPub = () => bytesToHex(btc.wallet.pub);
   const pinned = (a) => (pins[a] ? strip(pins[a]) : null);
@@ -120,7 +123,7 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
   const el = makeEthereumLocker({
     seed, now, store, quotes, btc, evm,
     counter: { publishEvmOffer: async (id, offer) => { const r = await lp.postEvmOffer(id, offer); if (r && r.ok === false) throw new Error(`the provider did not take the pool offer: ${r.why}`); } },
-    policy: { minCsv: policy.minCsv, minConfsFor: confsFor, evmWindowSecs: policy.evmWindowSecs, roundSecs: policy.roundSecs, minClaimSecs: policy.minClaimSecs, claimSlackSecs: policy.claimSlackSecs, refundMarginSecs: policy.refundMarginSecs, maxOfferAgeSecs: policy.maxOfferAgeSecs, minAmount: 1n, maxAmount: 10n ** 18n, maxLockFailures: policy.maxLockFailures },
+    policy: { minCsv: policy.minCsv, minConfsFor: confsOf, evmWindowSecs: policy.evmWindowSecs, roundSecs: policy.roundSecs, minClaimSecs: policy.minClaimSecs, claimSlackSecs: policy.claimSlackSecs, refundMarginSecs: policy.refundMarginSecs, maxOfferAgeSecs: policy.maxOfferAgeSecs, minAmount: 1n, maxAmount: 10n ** 18n, maxLockFailures: policy.maxLockFailures },
   });
 
   // The provider's quote for sending `amount` of the user's private TAC, checked before the user sees it: for this key and these assets, the amounts, the
@@ -134,16 +137,24 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
     if (strip(r.claimPub || '') !== claimPub()) throw new Error('the quote is for another key');
     const evmAmount = big(r.evmAmount, 'amount'), btcValue = big(r.btcValue, 'payout');
     if (evmAmount !== want) throw new Error('the quote is for a different amount');
-    if (btcValue <= 0n || btcValue > evmAmount) throw new Error('the quote\'s payout is out of range');
     const csvBlocks = Number(r.csvBlocks);
-    if (!Number.isInteger(csvBlocks) || csvBlocks < policy.minCsv || csvBlocks > policy.maxCsv) throw new Error('the quote\'s timelock is out of range');
-    const fee = evmAmount - btcValue;
-    if (fee * 10000n > evmAmount * BigInt(policy.maxFeeBps)) throw new Error('the quote\'s fee is above the limit this page accepts');
+    let fee, highFee;
+    if (valueCheck) {
+      if (btcValue <= 0n) throw new Error('the quote\'s payout is out of range');
+      if (!Number.isInteger(csvBlocks) || csvBlocks < policy.minCsv || csvBlocks > policy.maxCsv) throw new Error('the quote\'s timelock is out of range');
+      ({ fee, highFee } = valueCheck({ evmAmount, btcValue }));
+    } else {
+      if (btcValue <= 0n || btcValue > evmAmount) throw new Error('the quote\'s payout is out of range');
+      if (!Number.isInteger(csvBlocks) || csvBlocks < policy.minCsv || csvBlocks > policy.maxCsv) throw new Error('the quote\'s timelock is out of range');
+      fee = evmAmount - btcValue;
+      if (fee * 10000n > evmAmount * BigInt(policy.maxFeeBps)) throw new Error('the quote\'s fee is above the limit this page accepts');
+      highFee = fee * 10000n > evmAmount * BigInt(policy.warnFeeBps);
+    }
     if (!(Number(r.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expires too soon to use');
     const takeSats = Number(r.takeSats ?? 0);
     if (!Number.isInteger(takeSats) || (takeSats !== 0 && (takeSats < 546 || takeSats > policy.maxTakeSats))) throw new Error('the quote\'s Bitcoin fee is out of range');
     await quoteStore.put({ ...r, id: r.id, btcAsset: strip(r.btcAsset), evmAsset: strip(r.evmAsset), claimPub: claimPub(), takeSats });
-    return { ...asQuote(r), btcAsset: strip(r.btcAsset), evmAsset: strip(r.evmAsset), csvBlocks, takeSats, highFee: fee * 10000n > evmAmount * BigInt(policy.warnFeeBps) };
+    return { ...asQuote(r), fee, btcAsset: strip(r.btcAsset), evmAsset: strip(r.evmAsset), csvBlocks, takeSats, highFee };
   }
 
   // The user asks the provider to lock. The user's private TAC covers the amount first (a user who cannot lock would only tie up the provider's note)
