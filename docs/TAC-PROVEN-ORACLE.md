@@ -47,6 +47,8 @@ TacVaultRouter stay as they are: the oracle keeps the venue oracles' `record` se
    ```
    On an RTX 4090: the input (2,450 headers and 98 proofs from public nodes) about 80 s, the proof 79 s.
    Send `d/proof.json` to `record`, refreshed as each interval ends.
+   To keep one ready, run `ORACLE=<oracle> ELF=<ELF> host/serve-proofs.py` on the box: it proves each interval as it becomes provable and
+   serves the newest at `GET /proof.json` (and `/status`), holding no key. The keeper reads it with `PROOF_URL=http://<box>:8787/proof.json`.
 3. Deploy: `PROGRAM_VKEY=<pin's program_vkey> GRACE=<blocks, 1 to 49> forge script script/DeployTacProvenOracle.s.sol
    --rpc-url $RPC --broadcast --account <funded account>`. It refuses a key that is not the pin's, and prints the
    oracle, its CONFIG and the multisig calls.
