@@ -207,6 +207,24 @@ Bitcoin" panel only when a provider's ad has one. Requests for it reach the prov
 that came out of the Bitcoin shielded pool and could not be bridged home is sold on as it is (`anyTac`, as in the forward terms); the panel says so.
 `--dry-run` leaves it off (the log says so).
 
+## A provider of Bitcoin for ETH (pair mode)
+
+`"pair": "btc-eth"` in the config (or `FB_LP_PAIR=btc-eth`) makes the process a provider of plain Bitcoin against private ETH in the pool, and nothing else: its ad
+names the sats asset and the pool's ETH, which is how the swap tile finds it (`config.btc-eth.example.json`). Run it as a process of its own with a key of its
+own; the TAC provider is not changed by it.
+
+- **Forward, ETH for sats** (always on): a user locks sats in one ordinary transaction, the provider locks pool ETH for it, the user claims, the provider takes the
+  sats. Its terms are in SATS (`quote.minAmount`, `maxAmount`, `flatFee`; `feeBps` of the amount). What it lends is its private ETH in the pool: shield ETH for the
+  key and that is the inventory (`lowFreeEth` alerts before it runs short). A lock waits for the confirmations in `policy.confs`, a schedule in sats.
+- **Reverse, sats for ETH** (`reverse.enabled`, off until switched on): the provider locks sats first from an address of its own, derived from the key, and the user
+  locks pool ETH. Its terms are in pool ETH units (1e-8 ETH): the amount a user locks. Fund the address it prints with the plain coins it may sell
+  (`maxSats` caps what is out at once, `maxOpen` the sends under way, `lockFeeReserve` what its coins must hold beyond an amount for the lock's fee).
+- **The price** is not a number in the config. Both directions price from ETH per BTC, read every `rate.everySecs` from Chainlink's ETH / BTC aggregator (through the pool's
+  RPC) and public exchange tickers, which must agree within `rate.maxSpreadBps`; the fee is on top. With no price (sources down or disagreeing) the provider quotes
+  nothing and alerts, and a page checks every quote against its own reading of the market, so a mispriced provider is blocked by the page as well.
+- A swap's take comes out of the lock itself, and a take that is slow is replaced by one that pays more (`policy.takeFeeFactor`, `takeBumpSecs`, `takeMaxFeeShare`).
+- `--dry-run` answers `/info` and `/quote` and checks offers, sends nothing.
+
 ## Watching it
 
 `/health` for liveness. Alerts go to the log and, if `FB_LP_ALERT_WEBHOOK` is set, are POSTed there as JSON: the alert's own fields, and `text` and `content`, one readable

@@ -18,8 +18,11 @@ process.on('unhandledRejection', (e) => console.log(JSON.stringify({ ts: new Dat
 const DRY = process.argv.includes('--dry-run');
 const cfgPath = resolve(process.env.FB_LP_CONFIG || 'fastbridge-lp/config.json');
 const { applyEnv } = await import('./lib/env-config.mjs');
+const pairLib = await import('./lib/pair.mjs');
 let C;
-try { C = applyEnv(JSON.parse(readFileSync(cfgPath, 'utf8'))); } catch (e) { console.error(String((e && e.message) || e)); process.exit(1); }
+try { C = applyEnv(JSON.parse(readFileSync(cfgPath, 'utf8'))); if (pairLib.isPair(C)) C = pairLib.pairConfig(C); } catch (e) { console.error(String((e && e.message) || e)); process.exit(1); }
+// BTC-ETH pair mode (lib/pair.mjs): a provider of Bitcoin for ETH and ETH for Bitcoin, priced from a feed of ETH per BTC, with a key of its own
+const PAIR = pairLib.isPair(C);
 const keyHex = String(process.env.FB_LP_KEY || '').trim().replace(/^0x/, '');
 if (!/^[0-9a-f]{64}$/i.test(keyHex)) { console.error('FB_LP_KEY must be 64 hex characters (set it in the environment)'); process.exit(1); }
 const log = (o) => console.log(JSON.stringify({ ts: new Date().toISOString(), ...o }));
@@ -80,14 +83,23 @@ const btc = makeNodeBtcChain({
   poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log,
 });
 
+// the price: read now and again every `rate.everySecs`; with none the provider quotes nothing and says so (a provider never prices from a feed it cannot read)
+let rateFeed = null;
+if (PAIR) {
+  rateFeed = pairLib.pairFeed({ call: (to, data) => ux.rpc('eth_call', [{ to, data }, 'latest']), fetchImpl: (u, o) => fetch(u, o), log, C });
+  await rateFeed.refresh().catch(() => {});
+  setInterval(() => { rateFeed.refresh().catch(() => {}); }, (C.rate?.everySecs ?? 30) * 1000).unref();
+  log({ level: 'info', msg: 'pair provider: Bitcoin for ETH', price: rateFeed.current(), sats: { min: C.quote.minAmount, max: C.quote.maxAmount }, reverse: !!(C.reverse && C.reverse.enabled) });
+}
+
 const confs = (C.policy.confs || [['0', 1]]).map(([from, n]) => [BigInt(from), n]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
 // TAC with up to 8 places, as the pool's units (8 places) and as the token's wei (18)
 const tacUnits = (t) => { const [whole, frac = ''] = String(t).split('.'); return BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8)); };
 const config = {
   claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
-  lowFree: C.lowFreeTac != null ? tacUnits(C.lowFreeTac) : null,
+  lowFree: (PAIR ? C.lowFreeEth : C.lowFreeTac) != null ? tacUnits(PAIR ? C.lowFreeEth : C.lowFreeTac) : null,    // what is left to lend, an amount with up to 8 places (TAC, or ETH for a pair provider)
   lowEth: C.lowEth != null ? tacUnits(C.lowEth) * 10n ** 10n : null,        // an ETH amount ("0.002") in wei: the units helper reads up to 8 places
-  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset },
+  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(PAIR ? { rate: () => rateFeed.rate() } : {}) },
   policy: {
     minCsv: C.policy.minCsv ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, minClaimSecs: C.policy.minClaimSecs ?? 3600, claimSlackSecs: C.policy.claimSlackSecs ?? 7200,
     roundSecs: C.policy.roundSecs ?? 600, refundMarginSecs: C.policy.refundMarginSecs ?? 600, maxOfferAgeSecs: C.policy.maxOfferAgeSecs ?? 3600, holdAgeSecs: C.policy.holdAgeSecs,
@@ -97,6 +109,16 @@ const config = {
 };
 const data = resolve(C.dataDir || 'fastbridge-lp/data');
 const alert = makeAlert({ log, webhook: process.env.FB_LP_ALERT_WEBHOOK || null, name: C.name || undefined });
+// a pair provider with no price quotes nothing: said, and again each alertSecs while it stays so, and once when the price is back
+if (PAIR) {
+  let priced = true, saidAt = -Infinity;
+  setInterval(() => {
+    const now = Math.floor(Date.now() / 1000), ok = !!rateFeed.current();
+    if (!ok && (priced || now - saidAt >= (C.alertSecs ?? 3600))) { alert({ level: 'alert', msg: 'the provider has no price for Bitcoin against ETH: its sources are down or disagree, so it quotes nothing' }); saidAt = now; }
+    if (ok && !priced) alert({ level: 'info', msg: 'the provider has its price again' });
+    priced = ok;
+  }, 60_000).unref();
+}
 // a dry run keeps its swaps and quotes in memory, so a later live run starts from nothing it did not choose
 const swapStore = DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'swaps'));
 const service = makeLpService({ seed, btc, evm, swaps: swapStore, quoteStore: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'quotes')), config, log, alert });
@@ -167,7 +189,7 @@ if (C.refill !== false && !DRY) {
 // is this provider's own, so what users send for it lands where the forward side lends from.
 let handle = service.handle;
 const { reverseOptions } = await import('./lib/reverse.mjs');
-const ropts = reverseOptions(C);
+const ropts = PAIR ? pairLib.pairReverseOptions(C, rateFeed) : reverseOptions(C);
 if (ropts && DRY) log({ level: 'info', msg: 'dry run: the reverse side is not started' });
 else if (ropts) {
   const { reverseKeyOf, reverseSeedOf, makeReverseInventory, routed } = await import('./lib/reverse.mjs');
@@ -180,9 +202,10 @@ else if (ropts) {
     poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log,
   });
   // the notes are read by the module's own scan of the wallet it holds: that is the reverse key's here, and nothing else of this process reads it
-  tacit.wallet.priv = rkey; tacit.wallet.pub = rprims.wallet.pub;
+  // (a pair provider sells plain coins, which it lists from the address itself)
+  if (!PAIR) { tacit.wallet.priv = rkey; tacit.wallet.pub = rprims.wallet.pub; }
   const reverse = makeReverseService({
-    seed: reverseSeedOf(key), btc: rbtc, evm, inventory: makeReverseInventory({ tacit, asset: C.btcAsset, log }), config: ropts, log, alert,
+    seed: reverseSeedOf(key), btc: rbtc, evm, inventory: PAIR ? pairLib.satsInventory(rbtc) : makeReverseInventory({ tacit, asset: C.btcAsset, log }), config: ropts, log, alert,
     swaps: makeFileStore(resolve(data, 'reverse/swaps')), quotes: makeFileStore(resolve(data, 'reverse/quotes')), offers: makeFileStore(resolve(data, 'reverse/offers')), evmOffers: makeFileStore(resolve(data, 'reverse/evm-offers')),
   });
   await reverse.start();

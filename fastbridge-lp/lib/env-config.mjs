@@ -17,6 +17,8 @@
 //   FB_LP_REVERSE_FEE_BPS, FB_LP_REVERSE_FLAT_FEE, FB_LP_REVERSE_MIN_AMOUNT, FB_LP_REVERSE_MAX_AMOUNT   its terms, as the forward ones (base units)
 //   FB_LP_REVERSE_MAX_OPEN   sends under way at once (1 to 20; 2 when unset)
 //   FB_LP_REVERSE_MAX_TAC    the most TAC out at once, whatever is funded (a decimal, up to 8 places; 2000 when unset)
+//   FB_LP_PAIR           btc-eth or off (off when unset): a provider of Bitcoin for ETH and ETH for Bitcoin (lib/pair.mjs), a process and a key of its own
+//   FB_LP_REVERSE_MAX_SATS   in that mode, the most sats out at once, whatever is funded (a whole number)
 
 const uint = (name, v) => { if (!/^\d{1,30}$/.test(v)) throw new Error(`${name} must be a whole number (got "${v}")`); return v; };
 
@@ -37,8 +39,9 @@ export function applyEnv(C, env = process.env) {
     if (!bases.length || bases.some((b) => !/^https:\/\/[^\s/][^\s]*$/.test(b))) throw new Error('FB_LP_BTC_BASES must be https URLs, comma separated');
     out.btcBases = bases;
   }
+  if (has('FB_LP_PAIR')) { const v = String(env.FB_LP_PAIR).trim().toLowerCase(); if (v !== 'btc-eth' && v !== 'off') throw new Error(`FB_LP_PAIR must be btc-eth or off (got "${env.FB_LP_PAIR}")`); if (v === 'btc-eth') out.pair = 'btc-eth'; else delete out.pair; }
   // the reverse side: off unless asked for, and every value that is set must be valid (the process does not start on a guess)
-  if (has('FB_LP_REVERSE') || ['FEE_BPS', 'FLAT_FEE', 'MIN_AMOUNT', 'MAX_AMOUNT', 'MAX_OPEN', 'MAX_TAC'].some((k) => has('FB_LP_REVERSE_' + k))) {
+  if (has('FB_LP_REVERSE') || ['FEE_BPS', 'FLAT_FEE', 'MIN_AMOUNT', 'MAX_AMOUNT', 'MAX_OPEN', 'MAX_TAC', 'MAX_SATS'].some((k) => has('FB_LP_REVERSE_' + k))) {
     const r = { ...(C.reverse || {}) };
     if (has('FB_LP_REVERSE')) { const v = String(env.FB_LP_REVERSE).trim().toLowerCase(); if (v !== 'on' && v !== 'off') throw new Error(`FB_LP_REVERSE must be on or off (got "${env.FB_LP_REVERSE}")`); r.enabled = v === 'on'; }
     if (has('FB_LP_REVERSE_FEE_BPS')) { const b = Number(env.FB_LP_REVERSE_FEE_BPS); if (!Number.isInteger(b) || b < 0 || b > 500) throw new Error(`FB_LP_REVERSE_FEE_BPS must be 0 to 500 (got "${env.FB_LP_REVERSE_FEE_BPS}")`); r.feeBps = b; }
@@ -47,6 +50,7 @@ export function applyEnv(C, env = process.env) {
     if (has('FB_LP_REVERSE_MAX_AMOUNT')) r.maxAmount = uint('FB_LP_REVERSE_MAX_AMOUNT', String(env.FB_LP_REVERSE_MAX_AMOUNT).trim());
     if (has('FB_LP_REVERSE_MAX_OPEN')) { const n = Number(env.FB_LP_REVERSE_MAX_OPEN); if (!Number.isInteger(n) || n < 1 || n > 20) throw new Error(`FB_LP_REVERSE_MAX_OPEN must be 1 to 20 (got "${env.FB_LP_REVERSE_MAX_OPEN}")`); r.maxOpen = n; }
     if (has('FB_LP_REVERSE_MAX_TAC')) { const t = String(env.FB_LP_REVERSE_MAX_TAC).trim(); if (!/^\d{1,12}(\.\d{1,8})?$/.test(t) || Number(t) <= 0) throw new Error(`FB_LP_REVERSE_MAX_TAC must be a positive amount of TAC (got "${t.slice(0, 20)}")`); r.maxTac = t; }
+    if (has('FB_LP_REVERSE_MAX_SATS')) r.maxSats = uint('FB_LP_REVERSE_MAX_SATS', String(env.FB_LP_REVERSE_MAX_SATS).trim());
     out.reverse = r;
   }
   return out;
