@@ -74,10 +74,12 @@ const hrefOf = (e) => (fromWallet(e) ? CARD.shield : e.inbox ? CARD.inbox : e.ki
 export function keptView(e, now = Date.now()) {
   const what = whatOf(e), href = hrefOf(e);
   if (e.unswept) return { what, say: 'is on its way to the Tacit chain.', links: e.paid ? [{ label: 'Send it in', href }] : [] };
+  // (stale: the pool's rate has passed the deposit, so no block can take it in and posting it is passed over: it can only go back, at once)
+  if (e.stale) return { what, say: `can no longer land: the pool’s share price moved after it was made.${e.forced ? ' The chain passed over the one posted to Ethereum.' : ''}`, links: [{ label: 'Take it back', href }] };
   const links = [];
-  if (!e.forced) links.push({ label: 'Post it to Ethereum', href });
+  if (!e.forced && !e.passed) links.push({ label: 'Post it to Ethereum', href });
   if (e.deposit && e.backAt && now / 1000 >= e.backAt) links.push({ label: 'Take it back', href });
-  return { what, say: `has not landed.${e.forced ? ' Posted to Ethereum.' : ''}`, links };
+  return { what, say: `has not landed.${e.passed ? ' Posted to Ethereum, and the chain passed it over.' : e.forced ? ' Posted to Ethereum.' : ''}`, links };
 }
 /// A landed hop not sent on into the private pool: shown once it has waited a while.
 export function hopView(h) {

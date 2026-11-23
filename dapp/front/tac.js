@@ -1867,7 +1867,7 @@ function tpgWhyRead(force = false) {
   if (!chainOn() || (!force && (TPGW.p || Date.now() - TPGW.at < 60e3))) return TPGW.p || Promise.resolve();
   TPGW.at = Date.now();
   return (TPGW.p = Promise.all([
-    Promise.all([import('/tacit-chain-config.js?cb=74171404'), import('/chain/ui.js?cb=345c9adc'), import('/tacit-chain-wallet.js')])
+    Promise.all([import('/tacit-chain-config.js?cb=74171404'), import('/chain/ui.js?cb=68464685'), import('/tacit-chain-wallet.js')])
       .then(([cf, ui, w]) => { TPGW.ui = ui; TPGW.w = w; return tpgStatus(cf.tacitChain()); }).then((s) => { TPGW.cs = s; }, () => {}),
   ]).finally(() => { TPGW.p = null; tpgActionsSoft(); rerender('tac'); }));
 }

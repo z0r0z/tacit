@@ -1,6 +1,6 @@
 import { sha256, keccak_256, hmac, concatBytes, secp } from './vendor/tacit-deps.min.js';
 import { poseidon2, poseidon3, poseidon4, poseidon5 } from './vendor/tacit-poseidon.min.js';
-import { makeChainWallet, hopOp, poolOp, worthOf, sharesFor, sharesToPay, poolShare } from './tacit-chain-wallet.js';
+import { makeChainWallet, hopOp, poolOp, worthOf, sharesFor, sharesToPay, poolShare, VIRTUAL } from './tacit-chain-wallet.js';
 import { makeChainMemoWorkers } from './confidential-chain-memo-workers.js';
 import { chainSeed, rootSeed, keptRoot, keepRoot } from './tacit-chain-lane.js';
 
@@ -31,6 +31,10 @@ export function sharesWorth(units, rate) {
   while (worthOf(n, rate) < BigInt(units)) n += 1n;
   return n;
 }
+
+/// Whether a deposit's `amount` no longer buys its `shares` at `rate` (the contract's `_stale`): every later block prices at that rate or a higher one,
+/// so no block can take the deposit in (a posted spend is passed over too) and the contract sends it back at once instead of after RECLAIM_AFTER.
+export const depositStale = (d, rate) => BigInt(d.amount) * (BigInt(rate.shares) + VIRTUAL) < BigInt(d.shares) * (BigInt(rate.pool) + VIRTUAL);
 
 export function forcedBytes(submission, hints) {
   const publics = hexBytes(submission.publics), proof = hexBytes(submission.proof), data = hexBytes(submission.data), h = hints instanceof Uint8Array ? hints : hexBytes(hints);
@@ -474,8 +478,8 @@ export function makeChainClient({ cfg, rpcCall, priv, system, root = undefined, 
     async depositState(d) {
       await ready();
       const k = hx(keccak_256(hexBytes(assetHex + word(d.shares) + strip(d.cx) + strip(d.cy) + strip(d.body) + word(d.amount))));
-      const r = await call('pending(bytes32)', strip(k));
-      return { from: '0x' + r.slice(24, 64), at: Number(big(r.slice(64, 128))), forced: Number(big(r.slice(128, 192))) };
+      const [r, rt, done] = await Promise.all([call('pending(bytes32)', strip(k)), rate().catch(() => null), call('queueDone()').then(big, () => null)]);
+      return { from: '0x' + r.slice(24, 64), at: Number(big(r.slice(64, 128))), forced: Number(big(r.slice(128, 192))), stale: !!rt && depositStale(d, rt), done: done == null ? null : Number(done) };
     },
     reclaimAfter: async () => Number(big(await call('RECLAIM_AFTER()'))),
     reclaimCalldata: (d) => '0x' + sel('reclaim(uint256,uint256,bytes32,bytes32,bytes32)') + depWords(d),

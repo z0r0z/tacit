@@ -150,6 +150,17 @@ test('kept spends: what each is called, what it says and where its links go', ()
   // swept, not landed: post it, or (once due) take it back into the pool
   v = keptView({ kind: 'shield', units: '4800000000', deposit: dep, inbox: '0x' + 'ab'.repeat(20), backAt: old }, now);
   assert.deepEqual(v.links, [{ label: 'Post it to Ethereum', href: CARD.inbox }, { label: 'Take it back', href: CARD.inbox }]);
+  // swept, and the pool's rate has passed it (2026-11-17: 360 TAC, a posting passed over): it can only go back, now, with no posting offered
+  v = keptView({ kind: 'shield', units: '36056009626', deposit: dep, inbox: '0x' + 'ab'.repeat(20), stale: true, backAt: old }, now);
+  assert.match(v.say, /^can no longer land: the pool’s share price moved/);
+  assert.deepEqual(v.links, [{ label: 'Take it back', href: CARD.inbox }]);
+  v = keptView({ kind: 'shield', units: '36056009626', deposit: dep, inbox: '0x' + 'ab'.repeat(20), stale: true, forced: { tx: '0x1', at: 1 }, backAt: old }, now);
+  assert.match(v.say, /The chain passed over the one posted to Ethereum\.$/);
+  assert.deepEqual(v.links.map((l) => l.label), ['Take it back']);
+  // a posting the chain read and left: no second posting, and the way back once due
+  v = keptView({ kind: 'shield', units: '4800000000', deposit: dep, inbox: '0x' + 'ab'.repeat(20), forced: { tx: '0x1', at: 1 }, passed: true, backAt: now / 1000 + 3600 }, now);
+  assert.equal(v.say, 'has not landed. Posted to Ethereum, and the chain passed it over.');
+  assert.deepEqual(v.links, []);
   // a payment, posted to Ethereum already
   v = keptView({ kind: 'pay', units: '1000000000', forced: { tx: '0x' + '9'.repeat(64), at: 1 } }, now);
   assert.equal(v.what, 'A payment of 10 TAC');
