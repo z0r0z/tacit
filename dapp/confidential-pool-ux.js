@@ -3437,9 +3437,16 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     } catch { return _proveCost.v || PROVE_COST_WEI; }
   }
   let _gp = null;
+  // The nodes the page asks do not agree on the gas price (the project's own gateway said 0.20 to 0.31 gwei while the public nodes said 0.14 to 0.16, and the first to answer wins), so one read
+  // quoted a relay fee 30% different from the next. The price is the highest of up to four nodes asked at once; one that does not answer in four seconds is left out, and if none does the usual race runs.
+  const _gasReads = async () => {
+    const urls = (cfg.rpcs || []).map((u) => (typeof u === 'string' ? u : u && u.url)).filter(Boolean).slice(0, 4);
+    const got = (await Promise.allSettled(urls.map((url) => _postNow({ url }, 'eth_gasPrice', [], 4000)))).filter((x) => x.status === 'fulfilled' && /^0x[0-9a-f]+$/i.test(String(x.value))).map((x) => BigInt(x.value));
+    return got.length ? '0x' + got.reduce((m, v) => (v > m ? v : m), 0n).toString(16) : rpc('eth_gasPrice', []);
+  };
   const _gasPriceNow = () => {
     if (_gp && Date.now() - _gp.at < 8e3) return _gp.p;
-    const p = Promise.resolve(rpc('eth_gasPrice', []));
+    const p = Promise.resolve(_gasReads());
     _gp = { at: Date.now(), p };
     p.catch(() => { if (_gp && _gp.p === p) _gp = null; });
     return p;
@@ -3475,15 +3482,18 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const num = BigInt(ethFee) * low[1] * 10000n, den = low[0] * (10000n - AMM_HAIRCUT_BPS);
     return _ladderFee((num + den - 1n) / den);
   }
-  // The floor comes from the gas price and the prove cost, which move a little every few seconds: quoted twice a moment apart it came out a step or two different (0.00019 to 0.00024 ETH
-  // inside an hour) with nothing changed, and a press that held the fee it was shown against a fresh one was stopped on the difference. A quote stays where it was while the fresh figure is
-  // within a tenth of it, for up to three minutes; a bigger move is followed at once, up or down, and a fee the relay refuses lets go of it (_floorRefused).
-  const _held = new Map();
+  // The floor comes from the gas price, which the ten nodes the page asks do not agree on (the project's own gateway said 0.20 to 0.31 gwei while the public nodes said 0.14 to 0.16, and the
+  // first to answer wins), so quoted twice a moment apart it came out 0.00023 to 0.00042 ETH with nothing changed; a press that held the fee it was shown against a fresh one was stopped
+  // on the difference, one press in two. The quote is now the highest of the last three minutes' readings: a reading below it changes nothing, so what a card shows cannot be undercut and
+  // then overtaken by the next read; it rises at once when a reading is higher and falls only when the high readings age out. The relay's own floor sits several times under the quote at
+  // today's gas, so the extra is the price of a figure that holds still. A fee the relay refuses lets go of the history (_floorRefused).
+  const _held = new Map(), HOLD_MS = 180000;
   const _steady = (key, v) => {
-    const h = _held.get(key), t = Date.now();
-    if (h && t - h.at < 180000 && v * 10n >= h.v * 9n && v * 10n <= h.v * 11n) return h.v;
-    _held.set(key, { v, at: t });
-    return v;
+    const t = Date.now(), seen = (_held.get(key) || []).filter((x) => t - x.t < HOLD_MS);
+    seen.push({ t, v });
+    if (seen.length > 64) seen.splice(0, seen.length - 64);
+    _held.set(key, seen);
+    return seen.reduce((m, x) => (x.v > m ? x.v : m), 0n);
   };
   async function gasAwareMinFee(ticker, opKind) {
     const staticFloor = relayMinFee(ticker);
