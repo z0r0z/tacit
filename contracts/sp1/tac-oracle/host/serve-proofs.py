@@ -65,12 +65,34 @@ def provable_now(step):
     return (head - 1) // step - 1
 
 
+def reap_gpu_servers():
+    """Stops every sp1-gpu-server on this box. tac-oracle-host leaves the GPU server it started running when it exits (its client is
+    deliberately not dropped), and each one keeps its share of the GPU's memory, so after a few proofs the next one cannot start. Proofs run
+    one at a time here, so none is in use between them."""
+    try:
+        pids = [int(d) for d in os.listdir("/proc") if d.isdigit()]
+    except OSError:
+        return
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                if f.read().strip() == "sp1-gpu-server":
+                    os.kill(pid, 9)
+        except (OSError, ValueError):
+            pass
+    time.sleep(2)  # the memory is given back
+
+
 def make_proof():
     os.makedirs(DIR, exist_ok=True)
     env = dict(os.environ, SP1_PROVER=os.environ.get("SP1_PROVER", "cuda"))
     t0 = time.time()
     subprocess.run([HOST, "input", "--oracle", ORACLE, "--dir", DIR], check=True, env=env, stdout=subprocess.DEVNULL, timeout=1500)
-    subprocess.run([HOST, "prove", "--elf", ELF, "--dir", DIR], check=True, env=env, stdout=subprocess.DEVNULL, timeout=3000)
+    reap_gpu_servers()
+    try:
+        subprocess.run([HOST, "prove", "--elf", ELF, "--dir", DIR], check=True, env=env, stdout=subprocess.DEVNULL, timeout=3000)
+    finally:
+        reap_gpu_servers()
     with open(os.path.join(DIR, "proof.json")) as f:
         p = json.load(f)
     return p, time.time() - t0
