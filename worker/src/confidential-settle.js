@@ -48,6 +48,10 @@ const MAX_PENDING_PER_SENDER = 32;
 // rest, which wait only this long behind them (after it a job takes its place in the arrival order, so a stream of swaps cannot hold the others back).
 const PINNED_TYPES = ['route', 'swap', 'wrapswap', 'wraplp', 'lp', 'lpbond', 'lpremove'];
 const PINNED_HEAD_START_MS = 120 * 1000;
+// Proofs a person is not watching a spinner for: a bridge mint (the Bitcoin burn behind it took an hour to confirm) and the fast bridge's pool lock, claim and refund (a bridge takes minutes
+// whichever way it goes, and each has hours of margin on its deadline). They are taken behind the ops a person is waiting on (an unwrap, a send, a wrap), for the same two minutes the
+// others are held behind a swap, and after that by arrival: a run of them cannot be held back, and a run of them cannot hold back a person's unwrap either.
+const PATIENT_TYPES = ['bridgemint', 'bridgestealthmint', 'adaptorlock', 'adaptorclaim', 'adaptorrefund'];
 // A sender whose swap or liquidity add was refused because the pool had moved has already waited its turn once, and the page builds it again on the pool's
 // reserves at once, so that second job goes before every other: queued behind the rest again it would be stale by the time it was looked at. Each refusal
 // gives its sender one such place, for RETRY_LANE_MS (about the page's own budget for chasing a swap).
@@ -155,12 +159,12 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     if (!senders.has(id) || !kinds.has(id)) {
       const j = await storage.getJob(id);
       senders.set(id, j ? String(j.client || '') : `gone:${id}`);
-      kinds.set(id, { pinned: !!j && PINNED_TYPES.includes(j.type), at: j ? Number(j.createdAt) || 0 : 0, retry: !!j && !!j.retryLane });
+      kinds.set(id, { pinned: !!j && PINNED_TYPES.includes(j.type), patient: !!j && PATIENT_TYPES.includes(j.type), at: j ? Number(j.createdAt) || 0 : 0, retry: !!j && !!j.retryLane });
     }
     return senders.get(id);
   }
   // Within a sender's turns the order is by arrival, but a job a refusal sent back comes before all (see RETRY_LANE_MS), then the jobs that pin reserves (see PINNED_TYPES), and a job that has waited
-  // PINNED_HEAD_START_MS or has no queue time on record is no longer behind them. The rounds are counted within each of the two groups.
+  // PINNED_HEAD_START_MS or has no queue time on record is no longer behind them. The jobs nobody is watching (PATIENT_TYPES) come after the other fresh ones. The rounds are counted within each group.
   async function servedOrder(pend) {
     await Promise.all(pend.filter((id) => !senders.has(id) || !kinds.has(id)).map(senderOfJob));
     if (senders.size > 2 * pend.length + 64 || kinds.size > 2 * pend.length + 64) {
@@ -169,7 +173,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
     }
     const t = clock(), turn = new Map();
     return pend.map((id, i) => {
-      const s = senders.get(id), k = kinds.get(id), c = k.retry ? -1 : k.pinned || !k.at || t - k.at > PINNED_HEAD_START_MS ? 0 : 1, key = `${c}|${s}`, r = turn.get(key) || 0;
+      const s = senders.get(id), k = kinds.get(id), c = k.retry ? -1 : k.pinned || !k.at || t - k.at > PINNED_HEAD_START_MS ? 0 : k.patient ? 2 : 1, key = `${c}|${s}`, r = turn.get(key) || 0;
       turn.set(key, r + 1);
       return { id, c, r, i };
     }).sort((a, b) => a.c - b.c || a.r - b.r || a.i - b.i).map((x) => x.id);
@@ -309,7 +313,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       if (!pend.includes(id)) await roomFor(pend, sender, mode === 'prove' && !paid && !early);
       if (!pend.includes(id) && takeRetry(sender, type)) job.retryLane = true;
       await storage.putJob(id, job);
-      senders.set(id, sender || ''); kinds.set(id, { pinned: PINNED_TYPES.includes(type), at: job.createdAt, retry: !!job.retryLane });
+      senders.set(id, sender || ''); kinds.set(id, { pinned: PINNED_TYPES.includes(type), patient: PATIENT_TYPES.includes(type), at: job.createdAt, retry: !!job.retryLane });
       if (!pend.includes(id)) {
         pend.push(id);
         try { await storage.putPending(pend); }
@@ -486,7 +490,7 @@ export function makeConfidentialSettler({ storage, hash, now, feeGate, priceFee,
       if (!pend.includes(id)) await roomFor(pend, sender);
       if (!pend.includes(id) && takeRetry(sender, type)) job.retryLane = true;
       await storage.putJob(id, job);
-      senders.set(id, sender || ''); kinds.set(id, { pinned: PINNED_TYPES.includes(type), at: job.createdAt, retry: !!job.retryLane });
+      senders.set(id, sender || ''); kinds.set(id, { pinned: PINNED_TYPES.includes(type), patient: PATIENT_TYPES.includes(type), at: job.createdAt, retry: !!job.retryLane });
       if (!pend.includes(id)) { pend.push(id); await storage.putPending(pend); }
       return { jobId: id, status: 'pending' };
     });

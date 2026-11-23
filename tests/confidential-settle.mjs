@@ -613,6 +613,50 @@ const routeOp = { asset0: 'aa', assetFinal: 'bb', hops: [{ reserveAPre: '1000', 
   ok('the sender and kind maps drop jobs that left the queue');
 }
 
+// ───────────────── 25b. the proofs nobody watches (a bridge mint, the fast bridge's lock, claim and refund) wait behind the ops a person is waiting on, for two minutes ─────────────────
+{
+  const t0 = t;
+  const op = (k) => ({ chainBinding: '0xcb', spendRoot: '0xr', fee: 0, n: k });
+  const mk = () => makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, senders: new Map(), kinds: new Map() });
+  // a run of bridge mints and fast-bridge proofs came first; a person's unwrap, send and wrap came after, and a swap came last
+  const q = mk();
+  const m1 = await q.submitJob({ type: 'bridgemint', op: op('pt-m1'), memos: [], client: 'a/24' });
+  const l1 = await q.submitJob({ type: 'adaptorlock', op: op('pt-l1'), memos: [], client: 'b/24' });
+  const c1 = await q.submitJob({ type: 'adaptorclaim', op: op('pt-c1'), memos: [], client: 'c/24' });
+  const u1 = await q.submitJob({ type: 'unwrap', op: op('pt-u1'), memos: [], client: 'd/24' });
+  const tr = await q.submitJob({ type: 'transfer', op: op('pt-t1'), memos: [], client: 'e/24' });
+  const w1 = await q.submitJob({ type: 'wrap', op: op('pt-w1'), memos: [], client: 'f/24' });
+  const sw = await q.submitJob({ type: 'swap', op: op('pt-s1'), memos: [], client: 'g/24' });
+  assert.strictEqual((await q.jobStatus(m1.jobId)).ahead, 4, 'the bridge mint queued first has the swap and the three ops a person waits on ahead of it');
+  const got = [];
+  for (let k = 0; k < 7; k++) got.push((await q.nextJob()).jobId);
+  assert.deepStrictEqual(got, [sw.jobId, u1.jobId, tr.jobId, w1.jobId, m1.jobId, l1.jobId, c1.jobId],
+    'the swap first, then what a person waits on in arrival order, then the patient ones in arrival order');
+  ok('a bridge mint and the fast bridge\'s proofs are taken after the unwrap, send and wrap that arrived behind them');
+
+  // a patient job that has waited the head start is back in its place by arrival: a run of unwraps cannot hold a bridge mint back
+  const q2 = mk();
+  t = t0 + 1000;
+  const old = await q2.submitJob({ type: 'bridgemint', op: op('pa-m'), memos: [], client: 'a/24' });
+  t = t0 + 1000 + 100_000;
+  const u2 = await q2.submitJob({ type: 'unwrap', op: op('pa-u1'), memos: [], client: 'b/24' });
+  assert.strictEqual((await q2.jobStatus(old.jobId)).ahead, 1, 'inside the two minutes the mint is behind the unwrap');
+  t = t0 + 1000 + 125_000;
+  const u3 = await q2.submitJob({ type: 'unwrap', op: op('pa-u2'), memos: [], client: 'c/24' });
+  assert.strictEqual((await q2.jobStatus(old.jobId)).ahead, 0, 'past them it is first again, by its arrival');
+  const order = [];
+  for (let k = 0; k < 3; k++) order.push((await q2.nextJob()).jobId);
+  assert.deepStrictEqual(order, [old.jobId, u2.jobId, u3.jobId]);
+  t = t0;
+  ok('a bridge mint that has waited two minutes goes back to its place by arrival, so a run of unwraps cannot hold it back');
+
+  // alone, a patient job is taken at once: nothing is held for the others
+  const q3 = mk();
+  const only = await q3.submitJob({ type: 'adaptorclaim', op: op('pl-c'), memos: [], client: 'a/24' });
+  assert.strictEqual((await q3.nextJob()).jobId, only.jobId);
+  ok('a patient job with nothing else waiting is taken at once');
+}
+
 // ───────────────── 26. the queue says how many swaps and liquidity adds wait for the relay (it does not hold them for company or a prove-only job) ─────────────────
 {
   const q = makeConfidentialSettler({ storage: freshStore(), hash, now, sleep: instantSleep, senders: new Map(), kinds: new Map(), retries: new Map() });
