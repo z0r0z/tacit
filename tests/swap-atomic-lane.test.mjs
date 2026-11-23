@@ -190,7 +190,7 @@ console.log('a provider: the switch appears, and the lane opens');
   ok(q.dir === 'b2e' && q.amount === '1000000', `the quote was asked for b2e and 1,000,000 sats (${JSON.stringify(q)})`);
   const r = await text(page, '#a-rcpt');
   ok(/Price\s*1 BTC = 30\.4 ETH/.test(r) && /Market\s*1 BTC = 30\.62 ETH/.test(r) && /You get\s*0\.72% less than the market price/.test(r), `the price, the market and the comparison are shown (${r.slice(0, 200)})`);
-  ok(/Provider\s*Test provider, fee 0\.40%/.test(r) && /Bitcoin fee\s*about 1,200 sats/.test(r) && /Time\s*about 13 minutes/.test(r) && /If it stops\s*your BTC returns to you/.test(r), 'the provider and fee, the Bitcoin fee, the time and what happens if it stops');
+  ok(/Provider\s*Test provider(?!,)/.test(r) && /Bitcoin fee\s*about 1,200 sats/.test(r) && /Time\s*about 13 minutes/.test(r) && /If it stops\s*your BTC returns to you/.test(r), 'the provider and fee, the Bitcoin fee, the time and what happens if it stops');
   ok(/^Swap BTC → ETH$/.test(await text(page, '#a-go')) && !(await page.$eval('#a-go', (e) => e.disabled)), 'the button says what it does');
   await SHOT(page, 'lane-quote');
   await atom(page, '(A.mode = "blocked", 0)');

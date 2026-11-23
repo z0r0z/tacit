@@ -229,20 +229,22 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       if (versus < -policy.maxWorseBps) blocked = `the provider quotes ${(-versus / 100).toFixed(1)}% under the market`;
       else if (versus < -policy.warnWorseBps) warnings.push(`this is ${(-versus / 100).toFixed(1)}% worse than the market price`);
     } else blocked = 'the market price could not be read, so this quote cannot be checked';
-    let networkFeeSats = null;
+    // `short` is a Bitcoin address that cannot pay the amount and the fee of the lock: not a price that is wrong, so it is not `blocked` (the page offers to add sats), and `start` still refuses it
+    let networkFeeSats = null, short = null;
     if (dir === 'b2e') {
       const c = await lockCost(best).catch(() => null);
-      if (c && c.short) blocked ||= `your Bitcoin address holds ${c.short.have} sats and this needs ${c.short.need}, the amount and the network fee`;
+      if (c && c.short) { short = c.short; networkFeeSats = Number(c.short.need - best.pay); }
       else if (c) networkFeeSats = c.fee;
     }
     return {
       dir, provider: { id: best.p.id, name: best.p.name }, pay: best.pay, get: best.get, rate, market: market ? market.ethPerBtc : null, vsMarketBps: versus,
-      feeBps: versus == null ? 0 : Math.max(0, -versus), etaSecs: dir === 'b2e' ? 1500 : 1800, networkFeeSats, expiresAt: Number(best.r.validUntil), warnings, blocked, ref: best,
+      feeBps: versus == null ? 0 : Math.max(0, -versus), etaSecs: dir === 'b2e' ? 1500 : 1800, networkFeeSats, expiresAt: Number(best.r.validUntil), warnings, blocked, short, ref: best,
     };
   }
 
   async function start(q) {
     if (q.blocked) throw new Error(q.blocked);
+    if (q.short) throw new Error(`your Bitcoin address holds ${q.short.have} sats and this needs ${q.short.need}, the amount and the network fee`);
     if (!(q.expiresAt > now() + policy.quoteMarginSecs)) throw new Error('the quote expired: ask again');
     if (q.dir === 'b2e') {
       const b = await balances();

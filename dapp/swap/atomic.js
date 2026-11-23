@@ -11,7 +11,6 @@
 import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=a1ece943';
-const PAIR_MODULE = '/fast/pair-wire.js';                 // (no cache token: the page's import map gives each module its own)
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const DEC = 8, POLL_MS = 5000, QUOTE_MS = 300, REFRESH_MS = 15000, BAL_MS = 45000;
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
@@ -70,7 +69,8 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import(PAIR_MODULE);
+      // (a literal, so that the build finds this module and the ones it imports, and the page's import map gives each its cache token)
+      const wire = await import('/fast/pair-wire.js');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },
@@ -194,7 +194,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       ['Price', L.dir === 'b2e' ? rateText(q.rate) : `1 ETH = ${tidy((1 / q.rate).toFixed(6))} BTC`, ''],
       ['Market', q.market ? (L.dir === 'b2e' ? rateText(q.market) : `1 ETH = ${tidy((1 / q.market).toFixed(6))} BTC`) : 'not available', q.market ? '' : 'warn'],
       ...(mk ? [['You get', mk, q.blocked ? 'err' : q.vsMarketBps < -100 ? 'warn' : '']] : []),
-      ['Provider', `${q.provider?.name || 'Provider'}, fee ${(Number(q.feeBps) / 100).toFixed(2)}%`, ''],
+      // (what a quote costs against the market is the row above: the engine's feeBps is that, not a fee the provider named, so it is not called one here)
+      ['Provider', q.provider?.name || 'Provider', ''],
       ...(Number(q.networkFeeSats) > 0 ? [['Bitcoin fee', `about ${Number(q.networkFeeSats).toLocaleString('en-US')} sats`, '']] : []),
       ['Time', etaText(q.etaSecs), ''],
       ['If it stops', L.dir === 'b2e' ? 'your BTC returns to you' : 'your ETH returns to your private balance', ''],
