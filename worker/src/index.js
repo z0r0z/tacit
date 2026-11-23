@@ -138,6 +138,7 @@ import { buildProofPool, verifyCalldata, clientOf, PROOF_POOL } from './proof-po
 import { makeChain } from './tacit-chain.js';
 import { makePoolSnapshotJob } from './pool-snapshot-job.js';
 import { buildSaltPool } from './salt-pool.js';
+import { buildOracleProof } from './oracle-proof.js';
 import { ETH_LOG_NODES } from '../../dapp/eth-nodes.js';
 import { makeGasBoard, GAS_RELAY, GAS_RELAY_ADDR } from './gas-relay-queue.js';
 import { SWAP_BATCH_VK } from '../../dapp/confidential-swapbatch-vk.js';
@@ -664,7 +665,7 @@ const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; 
 // caller (curl, another server) could already do. This is what lets a third-party page with no fixed
 // origin (an IPFS/web3-gateway-hosted frontend, e.g.) use the relay directly from a browser instead of
 // needing its own backend proxy or a per-deploy entry in ALLOWED_ORIGINS.
-const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
+const OPEN_ORIGIN_PATHS = new Set(['/stats', '/flow', '/relay/economics', '/bridge/recover', '/reflection/proof', '/confidential/submit', '/confidential/status', '/confidential/open', '/confidential/landed', '/confidential/quote', '/confidential/index', '/confidential/relay', '/reflection/dump', '/reflection/live', '/reflection/status', '/reflection/note-witness', '/reflection/wait', '/reflection/burndep', '/reflection/eth-state/covers', '/reflection/eth-state/proof', '/reflection/open', '/reflection/open/job', '/reflection/landed', '/reflection/burndep-list', '/crossout/minted', '/farm/program', '/farm/health', '/prover/upload', '/prover/download', '/prover/board', '/prover/board/credits', '/prover/community/claim', '/prover/community/result', '/prover/pool', '/prover/pool/request', '/prover/pool/lease', '/prover/pool/hold', '/prover/pool/submit', '/prover/pool/result', '/prover/pool/credits', '/prover/pool/recent', '/prover/blocks', '/prover/rollup', '/pool/snapshot', '/prover/salt', '/prover/salt/share', '/prover/salt/credits', '/prover/salt/bank', '/oracle/proof', '/gas/order', '/gas/orders', '/gas/done', '/outpoints/classify']);
 function corsHeaders(env, reqOrigin, openOrigin) {
   const list = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
   const allow = openOrigin || list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
@@ -4235,6 +4236,24 @@ async function handleSaltPool(req, env, url, cors) {
   try { b = await req.json(); } catch { b = null; }
   if (!b || typeof b !== 'object' || Array.isArray(b)) return jsonResponse({ ok: false, error: 'bad json' }, 400, nostore);
   return send(await pool.submit({ miner: b.miner, salts: b.salts, client: clientOf(req.headers.get('CF-Connecting-IP') || 'anon', env), software: b.client, ua: req.headers.get('User-Agent') || '' }));
+}
+
+// GET /oracle/proof, POST /oracle/proof { publicValues, proof }: the verifier contract checks a posted proof (an eth_call of verifyProof, as the proof
+// pool does), against the program key the oracles are deployed with.
+async function handleOracleProof(req, env, cors) {
+  const nostore = { ...cors, 'Cache-Control': 'no-store' };
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+  const op = buildOracleProof(env, {
+    verify: ({ publicValues, proof, vkey, verifier }) => ethCallVerdict(env, [{ to: verifier, data: verifyCalldata({ vkey, publicValues, proof }) }, 'latest']),
+  });
+  if (!op) return jsonResponse({ error: 'not found' }, 404, cors);
+  if (req.method === 'GET') { const r = await op.get(); return jsonResponse(r.body, r.status, r.status === 200 ? { ...cors, 'Cache-Control': 'max-age=5' } : nostore); }
+  if (req.method !== 'POST') return jsonResponse({ error: 'method' }, 405, nostore);
+  let b;
+  try { b = await req.json(); } catch { b = null; }
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return jsonResponse({ ok: false, error: 'bad json' }, 400, nostore);
+  const r = await op.submit({ publicValues: b.publicValues, proof: b.proof, client: clientOf(req.headers.get('CF-Connecting-IP') || 'anon', env) });
+  return jsonResponse(r.body, r.status, nostore);
 }
 
 async function handleProofPool(req, env, url, cors) {
@@ -28828,6 +28847,8 @@ async function _routeFetch(req, env, ctx) {
     if (url.pathname === '/prover/pool' || url.pathname.startsWith('/prover/pool/')) return handleProofPool(req, env, url, cors);
     // Salt mining (worker/src/salt-pool.js), also open: provers send the CREATE3 salts they ground between proofs.
     if (url.pathname === '/prover/salt' || url.pathname.startsWith('/prover/salt/')) return handleSaltPool(req, env, url, cors);
+    // The newest TacProvenOracle proof (worker/src/oracle-proof.js): the prover box posts it, the keeper and the vault page read it.
+    if (url.pathname === '/oracle/proof') return handleOracleProof(req, env, cors);
     if (url.pathname === '/prover/blocks' && req.method === 'GET') return handleChainBlocks(req, env, url, cors);
     if (url.pathname === '/prover/rollup' && req.method === 'GET') return handleRollup(req, env, url, cors);
     if (url.pathname === '/pool/snapshot' && req.method === 'GET') return handlePoolSnapshot(req, env, url, cors);

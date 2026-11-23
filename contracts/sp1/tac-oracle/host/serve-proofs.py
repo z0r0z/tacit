@@ -11,11 +11,12 @@ whoever records the proof (the keeper, a page) checks it on chain.
     GET /proof.json   the newest proof ({ vkey, publicValues, proof, proofBytes }), 503 until there is one
     GET /status       { x, madeAt, provable, proving, lastError, lastSeconds }
 
-The keeper reads it with PROOF_URL=http://<box>:<PORT>/proof.json. Environment: ORACLE (required), ELF, HOST (default
+With PUSH_URL (https://api.tacit.finance/oracle/proof) it also posts each new proof there, where the API checks it with the verifier contract
+and serves it over https to the keeper (PROOF_URL) and the vault page; a box that cannot be reached from outside needs nothing else. Environment: ORACLE (required), ELF, HOST (default
 ./target/release/tac-oracle-host), DIR (work directory, default ./proofs), PORT (8787), POLL (15), RPC (comma list; default two public
-nodes), SP1_PROVER (default cuda), BIND (default 0.0.0.0).
+nodes), SP1_PROVER (default cuda), BIND (default 0.0.0.0), PUSH_URL (unset: nothing is posted).
 """
-import json, os, subprocess, sys, threading, time, urllib.request
+import json, os, subprocess, sys, threading, time, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ORACLE = os.environ.get("ORACLE", "").strip()
@@ -26,9 +27,11 @@ PORT = int(os.environ.get("PORT", "8787"))
 POLL = int(os.environ.get("POLL", "15"))
 BIND = os.environ.get("BIND", "0.0.0.0")
 RPCS = [u.strip() for u in os.environ.get("RPC", "https://ethereum-rpc.publicnode.com,https://eth.drpc.org").split(",") if u.strip()]
+PUSH_URL = os.environ.get("PUSH_URL", "").strip()
 STEP_SEL = "0x53d0f255"  # STEP()
 
-state = {"proof": None, "x": -1, "madeAt": None, "proving": False, "lastError": None, "lastSeconds": None, "provable": None}
+state = {"proof": None, "x": -1, "madeAt": None, "proving": False, "lastError": None, "lastSeconds": None, "provable": None,
+         "pushedX": -1, "pushError": None}
 lock = threading.Lock()
 
 
@@ -73,6 +76,30 @@ def make_proof():
     return p, time.time() - t0
 
 
+def push():
+    """Posts the newest proof to PUSH_URL once; 409 (the API holds this interval or a newer one) counts as done."""
+    with lock:
+        p, x = state["proof"], state["x"]
+    if not PUSH_URL or p is None or x <= state["pushedX"]:
+        return
+    body = json.dumps({"publicValues": p["publicValues"], "proof": p["proof"]}).encode()
+    req = urllib.request.Request(PUSH_URL, body, {"content-type": "application/json", "user-agent": "tac-oracle-prover"})
+    try:
+        urllib.request.urlopen(req, timeout=30).read()
+        done = True
+    except urllib.error.HTTPError as e:
+        done = e.code == 409
+        err = f"HTTP {e.code} {e.read()[:120]!r}"
+    except Exception as e:
+        done, err = False, f"{type(e).__name__}: {e}"[:200]
+    with lock:
+        if done:
+            state.update(pushedX=x, pushError=None)
+        else:
+            state["pushError"] = err
+    log("pushed interval", x) if done else log("push failed:", err)
+
+
 def worker():
     step = None
     while True:
@@ -99,7 +126,9 @@ def worker():
                         log("proof for interval", x, "ready in", round(secs), "s")
                     else:
                         log("proof for interval", x, "is not newer than", state["x"])
+                push()
                 continue  # the next interval may already be due: look again at once
+            push()  # a proof that did not go out is sent again
         except Exception as e:
             with lock:
                 state["proving"] = False
