@@ -2210,6 +2210,8 @@ function _apiCanServeStaleOnError(e) {
     .test(String(e?.message || e || ''));
 }
 
+// What a node says when a transaction pays under its minimum fee: "min relay fee not met, 31 < 100", "mempool min fee not met, ...".
+const _FEE_NOT_MET = /min(imum)?( relay)? fee not met/i;
 function _rebroadcastToOtherBases(path, opts, acceptedBase, allBases) {
   if (path !== '/tx' || String(opts.method || 'GET').toUpperCase() !== 'POST') return;
   for (const base of allBases) {
@@ -2294,7 +2296,7 @@ async function _apiFetchUncached(path, opts = {}) {
 
     let lastErr = null;
     let lastRes = null;
-    let notFound404 = null, saw404 = 0;
+    let notFound404 = null, saw404 = 0, feeRefused = null;
     for (const base of order) {
       let r;
       let _slotReleased = false;
@@ -2350,6 +2352,12 @@ async function _apiFetchUncached(path, opts = {}) {
             notFound404 ||= new Error(`API 404: ${t.slice(0, 240)}`);
             continue;
           }
+          // A node refuses a transaction under its own minimum fee, and nodes differ: most take 0.1 sat/vB now and some still hold 1. A refusal for the fee is not the last word
+          // while the other explorers have not been asked; if none takes it, the node's own words are what is thrown.
+          if (_isPost && path === '/tx' && _FEE_NOT_MET.test(t)) {
+            feeRefused ||= new Error(`API ${r.status}: ${t.slice(0, 240)}`);
+            continue;
+          }
           throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
         }
         return r;
@@ -2357,6 +2365,7 @@ async function _apiFetchUncached(path, opts = {}) {
         _releaseOnce();
       }
     }
+    if (feeRefused) throw feeRefused;
     if (notFound404) throw notFound404;
     if (lastRes && lastRes.status === 429) {
       throw new Error(_API_RATE_LIMITED_MSG);
