@@ -60,6 +60,22 @@ test('a cheap latest-state read is asked of the light node first, and passed on 
   assert.ok(w.asked.length >= 2 && w.asked[1][0] === ETH_NODES[0], 'and the read is passed to the next node, as with any node that resets');
 });
 
+test('a log node that says its allowance is spent for hours is not asked again by the next scans of the visit, and the rest is remembered', async () => {
+  mem.clear();
+  const head = 30_000_000, spent = { error: { code: -32005, message: 'Rate limit exceeded: 40,000 request units per day for origin tacit.finance; retry in 51528 s', data: { retryAfter: 51528 } } };
+  let dead = null;
+  const w = world(Object.fromEntries(ETH_LOG_NODES.map((u) => [u, (method) => (method === 'eth_blockNumber' ? '0x' + head.toString(16) : method === 'eth_getLogs' ? ((dead ||= u) === u ? spent : []) : '0x0')])));
+  const ux = w.ux();
+  await ux.fetchEvents({ fromBlock: head - 3_000, toBlock: head });
+  const afterFirst = w.asked.filter(([u, m]) => u === dead && m === 'eth_getLogs').length;
+  assert.ok(dead && afterFirst >= 1, 'the first node asked said its allowance is spent');
+  await ux.fetchEvents({ fromBlock: head - 9_000, toBlock: head - 3_001 });
+  await ux.fetchEvents({ fromBlock: head - 15_000, toBlock: head - 9_001 });
+  assert.equal(w.asked.filter(([u, m]) => u === dead && m === 'eth_getLogs').length, afterFirst, 'two more windows, and that node was not asked again');
+  const stored = JSON.parse(mem.get('tacit-pool-rpc-logrest-v1:1') || '{}');
+  assert.ok(Object.keys(stored).some((k) => k.startsWith('t!')), 'the rest it named is carried to the next page as a told rest: ' + Object.keys(stored).join());
+});
+
 test('a revert ends the call at once; a node\'s refusal of a send reaches the caller in its words', async () => {
   mem.clear();
   const w = world(Object.fromEntries(ETH_NODES.map((u) => [u, () => ({ error: { code: 3, message: 'execution reverted' } })])));

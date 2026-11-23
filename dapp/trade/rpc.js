@@ -5,8 +5,8 @@ export { bodyType };
 export const hedgeDelay = (fallback = 2500) => { try { const v = localStorage.getItem('tacit-trade-hedge-ms'); return v == null || v === '' || !Number.isFinite(Number(v)) ? fallback : Math.max(0, Number(v)); } catch { return fallback; } };
 const idOf = (h) => (typeof h === 'string' ? h.replace(/^https?:\/\//, '') : h.id);
 const LIMITED = /rate.?limit|usage limit|too many|\b429\b|compute units|capacity|quota|throttl|slow down/i;
-// a used-up allowance, as opposed to a busy moment: 'request units per hour for origin …' is BuidlGuidl's cap on every visitor of this site together, which no retry in the next minutes can clear
-export const QUOTA = /api usage limit|usage limit|quota|daily limit|request units per hour|units per hour for origin/i;
+// a used-up allowance, as opposed to a busy moment: '… request units per day for origin …' is BuidlGuidl's cap on every visitor of this site together, which no retry in the next minutes can clear
+export const QUOTA = /api usage limit|usage limit|quota|daily limit|request units per (?:hour|day)/i;
 
 // Cheap reads of the LATEST state go to a light node first (ours, or the reader's own at 127.0.0.1): it answers from proofs and its limits are published
 // (eth-nodes.js LIMITS: logs 512, no numbered-block state), so the public nodes keep their per-address budgets for the deep reads only they can serve.
@@ -20,19 +20,22 @@ const lightFirst = (hosts, method) => {
   return [...hosts.filter(isLight), ...hosts.filter((h) => !isLight(h))];
 };
 
+// A node that says when its allowance comes back ('retry in 51528 s', data.retryAfter) is believed, up to an hour: BuidlGuidl's cap is on every visitor of this site together, so a
+// probe every few minutes from every browser can only fail. Not exported: this file is served without a cache token, and a page may hold it older than the one that imports it.
+const toldMs = (e) => { const s = Number(e?.data?.retryAfter) || Number(/retry in ~?(\d+)\s*s\b/i.exec(String(e?.message || ''))?.[1]); return Number.isFinite(s) && s > 0 ? s * 1000 : null; };
 const SHARED = new WeakMap(), PAGE = {};
 export function nodeHealth({ now = () => Date.now(), store = null, key = 'tacit-rpc-rest-v1', strict = false, shared = false } = {}) {
   const scope = shared ? (typeof shared === 'object' || typeof shared === 'function' ? shared : PAGE) : null;
   const records = scope ? SHARED.get(scope) || SHARED.set(scope, new Map()).get(scope) : null;
   if (records?.has(key)) return records.get(key);
-  const REST = { limited: 15e3, slow: 20e3, down: 30e3, quota: 60e3 }, LONGEST = 120e3, QUOTA_LONGEST = 300e3, until = new Map(), strikes = new Map(), quota = new Set();
-  try { for (const [k, t] of Object.entries(JSON.parse(store?.getItem(key) || 'null') || {})) { const q = k.startsWith('q!'), id = q ? k.slice(2) : k; if (t > now()) { until.set(id, Math.min(t, now() + (q ? QUOTA_LONGEST : LONGEST))); if (q) quota.add(id); } } } catch { }
-  const save = () => { try { store?.setItem(key, JSON.stringify(Object.fromEntries([...until].filter(([, t]) => t > now()).map(([id, t]) => [quota.has(id) ? 'q!' + id : id, t])))); } catch { } };
+  const REST = { limited: 15e3, slow: 20e3, down: 30e3, quota: 60e3 }, LONGEST = 120e3, QUOTA_LONGEST = 300e3, TOLD_LONGEST = 3600e3, until = new Map(), strikes = new Map(), quota = new Set(), told = new Set();
+  try { for (const [k, t] of Object.entries(JSON.parse(store?.getItem(key) || 'null') || {})) { const q = k.startsWith('q!'), tq = k.startsWith('t!'), id = q || tq ? k.slice(2) : k; if (t > now()) { until.set(id, Math.min(t, now() + (tq ? TOLD_LONGEST : q ? QUOTA_LONGEST : LONGEST))); if (q || tq) quota.add(id); if (tq) told.add(id); } } } catch { }
+  const save = () => { try { store?.setItem(key, JSON.stringify(Object.fromEntries([...until].filter(([, t]) => t > now()).map(([id, t]) => [told.has(id) ? 't!' + id : quota.has(id) ? 'q!' + id : id, t])))); } catch { } };
   const health = {
     strict,
     order(hosts) { const t = now(), tired = (h) => (until.get(idOf(h)) || 0) > t; return [...hosts.filter((h) => !tired(h)), ...hosts.filter(tired)]; },
-    fail(h, kind = 'down') { const id = idOf(h), n = Math.min((strikes.get(id) || 0) + 1, 4); strikes.set(id, n); if (kind === 'quota') quota.add(id); else quota.delete(id); until.set(id, now() + Math.min(REST[kind] * 2 ** (n - 1), kind === 'quota' ? QUOTA_LONGEST : LONGEST)); save(); },
-    ok(h) { const id = idOf(h); strikes.delete(id); quota.delete(id); if (until.delete(id)) save(); },
+    fail(h, kind = 'down', toldFor = null) { const id = idOf(h), n = Math.min((strikes.get(id) || 0) + 1, 4); strikes.set(id, n); if (kind === 'quota') quota.add(id); else quota.delete(id); const tell = kind === 'quota' && toldFor > 0; if (tell) told.add(id); else told.delete(id); until.set(id, now() + (tell ? Math.min(Math.max(toldFor, REST.quota), TOLD_LONGEST) : Math.min(REST[kind] * 2 ** (n - 1), kind === 'quota' ? QUOTA_LONGEST : LONGEST))); save(); },
+    ok(h) { const id = idOf(h); strikes.delete(id); quota.delete(id); told.delete(id); if (until.delete(id)) save(); },
     quotaRest(h) { const id = idOf(h); return quota.has(id) && (until.get(id) || 0) > now(); },
   };
   records?.set(key, health);
@@ -70,7 +73,7 @@ export function hedgedRpc(hosts, method, params, { hedgeMs = hedgeDelay(), timeo
         (e) => {
           clearTimeout(timer); ctrls.delete(ctrl); live--; if (over) return;
           if (e.revert) return finish(reject, e);
-          if (health && (!e.rpc || health.strict || LIMITED.test(e.message))) health.fail(h, ctrl.timedOut ? 'slow' : QUOTA.test(e.message) ? 'quota' : e.status === 429 || LIMITED.test(e.message) ? 'limited' : 'down');
+          if (health && (!e.rpc || health.strict || LIMITED.test(e.message))) { const kind = ctrl.timedOut ? 'slow' : QUOTA.test(e.message) ? 'quota' : e.status === 429 || LIMITED.test(e.message) ? 'limited' : 'down'; health.fail(h, kind, kind === 'quota' ? toldMs(e) : null); }
           last = e; if (next < list.length) launch(); else if (!live) finish(reject, last);
         },
       );

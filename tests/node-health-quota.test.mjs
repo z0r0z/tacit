@@ -105,5 +105,45 @@ await test('hedgedRpc rests a node that says its usage limit is reached, so the 
   assert.deepEqual(asked, [A, B], 'a minute later it is asked again');
 });
 
+await test('the per-day wording is a used-up quota too, and a bare per-IP burst is not', () => {
+  assert.ok(QUOTA.test('Rate limit exceeded: 40,000 request units per day for origin tacit.finance; retry in 51528 s'));
+  assert.ok(!QUOTA.test('Too many requests in a short time for this IP; retry in 1 s'));
+});
+
+await test('a node that says when its allowance returns rests that long (a minute at least, an hour at most), is remembered under its own marker, and is forgiven when it answers', () => {
+  let t = 0; const now = () => t; const wrote = mem();
+  const h = nodeHealth({ now, store: wrote, key: 'k-told' });
+  h.fail(A, 'quota', 51528e3);                       // 14 hours, as BuidlGuidl says
+  t = 3599e3; assert.equal(h.order([A, B])[0], B, 'rests 59 minutes');
+  t = 3600e3; assert.equal(h.order([A, B])[0], A, 'but never past an hour');
+  h.ok(A);
+  t = 0; h.fail(B, 'quota', 90e3); t = 89e3; assert.equal(h.order([B, A])[0], A, 'told 90 s: 90 s'); t = 90e3; assert.equal(h.order([B, A])[0], B);
+  t = 0; h.fail(B, 'quota', 5e3); t = 59e3; assert.equal(h.order([B, A])[0], A, 'told 5 s: not less than a minute'); t = 60e3; assert.equal(h.order([B, A])[0], B);
+  const plain = nodeHealth({ now, key: 'k-plain' }); t = 0; plain.fail(B, 'quota'); t = 59e3; assert.equal(plain.order([B, A])[0], A); t = 60e3; assert.equal(plain.order([B, A])[0], B, 'a quota that says nothing keeps the old minute');
+  const stored = JSON.parse(wrote.getItem('k-told'));
+  assert.ok(Object.keys(stored).some((k) => k.startsWith('t!')), 'a told rest is stored as its own kind: ' + Object.keys(stored));
+  t = 1000; h.fail(A, 'quota', 51528e3);
+  const next = nodeHealth({ now, store: wrote, key: 'k-told', shared: false });
+  t = 1000 + 3599e3; assert.equal(next.order([A, B])[0], B, 'the next page still rests it');
+  assert.equal(next.quotaRest(A), true);
+  t = 1000 + 3601e3; assert.equal(next.order([A, B])[0], A, 'and not past the hour');
+  t = 2000; h.fail(A, 'quota', 51528e3); h.ok(A); assert.equal(h.order([A, B])[0], A, 'forgiven when it answers');
+  // a stored rest of the old kind is still cut to five minutes (the existing rule is unchanged)
+  const old = mem(); old.setItem('k-old', JSON.stringify({ 'q!a.example': 3600e3 }));
+  t = 0; const loaded = nodeHealth({ now, store: old, key: 'k-old' }); assert.equal(loaded.order([A, B])[0], B, 'resting at load'); t = 299e3; assert.equal(loaded.order([A, B])[0], B); t = 301e3; assert.equal(loaded.order([A, B])[0], A, 'cut to five minutes, not an hour');
+});
+
+await test('hedgedRpc believes the node: one answer saying "retry in 51528 s" takes it out for an hour, and other nodes carry the calls', async () => {
+  let t = 0; const now = () => t; const health = nodeHealth({ now, key: 'k-hedge' }); const asked = [];
+  const spent = { jsonrpc: '2.0', id: 1, error: { code: -32005, message: 'Rate limit exceeded: 40,000 request units per day for origin tacit.finance; retry in 51528 s', data: { retryAfter: 51528 } } };
+  const fetchImpl = async (u) => { asked.push(u); return new Response(JSON.stringify(u === A ? spent : { jsonrpc: '2.0', id: 1, result: 'ok' }), { status: u === A ? 429 : 200, headers: { 'content-type': 'application/json' } }); };
+  assert.equal(await hedgedRpc([A, B], 'eth_blockNumber', [], { fetchImpl, hedgeMs: 0, health }), 'ok');
+  asked.length = 0; t = 30 * 60e3;
+  for (let i = 0; i < 5; i++) await hedgedRpc([A, B], 'eth_blockNumber', [], { fetchImpl, hedgeMs: 0, health });
+  assert.deepEqual(asked, [B, B, B, B, B], 'half an hour later A has not been asked once');
+  t = 61 * 60e3; asked.length = 0; await hedgedRpc([A, B], 'eth_blockNumber', [], { fetchImpl, hedgeMs: 0, health });
+  assert.deepEqual(asked, [A, B], 'past the hour it is asked again');
+});
+
 if (failed) { console.log(`\n${failed} failed`); process.exit(1); }
 console.log('\nall passed');

@@ -297,7 +297,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     try { j = await r.json(); } catch { }
     if (j && j.error) {
       const msg = String(j.error.message || 'rpc error');
-      throw Object.assign(new Error(msg), { kind: r.status === 429 || /rate limit|too many requests|usage limit|requests per/i.test(msg) ? 'busy' : 'rpc', quota: QUOTA.test(msg) });
+      throw Object.assign(new Error(msg), { kind: r.status === 429 || /rate limit|too many requests|usage limit|requests per/i.test(msg) ? 'busy' : 'rpc', quota: QUOTA.test(msg), retryMs: (Number(j.error.data?.retryAfter) || Number(/retry in ~?(\d+)\s*s\b/i.exec(msg)?.[1]) || 0) * 1000 });
     }
     if (!r.ok || !j) throw Object.assign(new Error(`rpc ${r.status}`), { kind: r.status === 429 ? 'busy' : 'http' });
     return j.result;
@@ -351,7 +351,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
               const wide = !narrow(ep);
               if (wide || !lastWide) { lastErr = e; lastWide = wide; }
               const n = _narrower(e, span);
-              if (!n) { _logHealth.fail(ep.url, e.quota ? 'quota' : e.kind === 'busy' ? 'limited' : e.timeout ? 'slow' : 'down'); break; }
+              if (!n) { _logHealth.fail(ep.url, e.quota ? 'quota' : e.kind === 'busy' ? 'limited' : e.timeout ? 'slow' : 'down', e.quota ? e.retryMs : null); break; }
               if (n.cap && n.cap < ep.span) { ep.span = n.cap; _keepSpan(ep); }
               span = n.span;
             }
