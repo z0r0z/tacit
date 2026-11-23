@@ -67,4 +67,5 @@ test('the positions panel draws it: a share line and a holds line under the earn
   assert.match(src, /Your share<\/dt>/);
   assert.match(src, /Holds about<\/dt>/);
   assert.match(src, /of the pool/);
+  assert.match(src, /x === 'cTAC' \? 'TAC' : x/, 'the private TAC coin reads TAC, as the row\'s title does');
 });

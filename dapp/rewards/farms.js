@@ -195,7 +195,8 @@ export function mountFarms(root, { pick, names = () => new Map(), pair = () => '
         if (!h) continue;
         const nameOf = (id) => { const tk = ux.poolTickerOf(String(id).toLowerCase()); return tk ? tkName(tk) : null; };
         const [tkA, tkB] = coinNames(nameOf(res.assetA), nameOf(res.assetB), pool.pair);
-        out.set(`${pos.pid}:${pos.receiptIndex}`, { ...h, tkA, tkB });
+        const shown = (x) => (x === 'cTAC' ? 'TAC' : x);                              // the row's title says TAC for the private coin
+        out.set(`${pos.pid}:${pos.receiptIndex}`, { ...h, tkA: shown(tkA), tkB: shown(tkB) });
       } catch { /* the row without it */ }
     }
     return out;
