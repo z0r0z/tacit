@@ -102,7 +102,7 @@ const campaign = (over = {}) => ({
   ...over,
 });
 
-const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'mainnet.rpc.buidlguidl.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', 'rpc.mevblocker.io', 'eth-mainnet.nodereal.io', '1.rpc.thirdweb.com', 'rpc.flashbots.net', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io'];
+const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'mainnet.rpc.buidlguidl.com', 'tacit-node-gw.onrender.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', 'rpc.mevblocker.io', 'eth-mainnet.nodereal.io', '1.rpc.thirdweb.com', 'rpc.flashbots.net', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io'];
 const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
 
 // What the chain answers. `st` is a scenario's own state: the program (the pools' reserves are read from it, so a scenario can move a
