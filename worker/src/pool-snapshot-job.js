@@ -5,8 +5,9 @@
 //
 // The header relay points snapshot.tacit.wei at the manifest once its roots check out on chain (worker-relay/src/lib/snapshot-pointer.js).
 //
-// Storage (KV): snap:state ({ v, to, pieces: [{ cid, n, from, to }], frontiers, at }), snap:pub ({ cid, to, at, trees }: the newest manifest).
-import { SNAPSHOT, cutPieces, encodePiece, unpackPiece, gunzip, fetchBlock, emptyFrontiers, addToFrontiers, treesOfFrontiers, byChainOrder, rawCid } from '../../dapp/pool-snapshot.js';
+// Storage (KV): snap:state ({ v, to, pieces: [{ cid, n, from, to }], frontiers, at }), snap:pub ({ cid, to, at, trees }: the newest manifest),
+// snap:txin ({ v, scanned, hashes, inputs, pinned }: the calldata of the transactions that inserted lock leaves, see dapp/pool-snapshot.js `txInputs`).
+import { SNAPSHOT, cutPieces, encodePiece, unpackPiece, gunzip, fetchBlock, emptyFrontiers, addToFrontiers, treesOfFrontiers, byChainOrder, rawCid, cutInputs, encodeInputs } from '../../dapp/pool-snapshot.js';
 
 export const SNAPSHOT_JOB = Object.freeze({
   final: 64,            // blocks behind the head the snapshot stops at
@@ -15,6 +16,8 @@ export const SNAPSHOT_JOB = Object.freeze({
   budgetMs: 90_000,     // wall clock per run; the next run resumes from the stored block
   everyMs: 60 * 60_000, // once caught up, a run at most this often
   cutChars: SNAPSHOT.cutChars,
+  inputsConcurrency: 4, // eth_getTransactionByHash reads at a time for the lock transactions' inputs
+  inputCutChars: undefined, // characters of input per piece before encoding (the default is TXIN.cutChars); small only in tests
 });
 
 // kv: { get, put }. rpcs: [(method, params) → result, throwing on any error]. pin(bytes) → its raw CID (Filebase), throwing on failure.
@@ -22,7 +25,7 @@ export const SNAPSHOT_JOB = Object.freeze({
 // checkpoint(to) → the cross-chain checkpoint at the snapshot's block, or null: Ethereum's block and hash, the tacit chain's tip as of
 // that block, and the Bitcoin side as the pool sees it (the light relay's tip, the reflected spent root). It rides in the manifest, so
 // snapshot.tacit.wei names a checkpoint of the whole pool each day; anyone can rebuild every part of it from Ethereum.
-export function makePoolSnapshotJob({ kv, rpcs, pin, fetchImpl, sha256, keccak256, decodeLogs, pool, manager, deployBlock, topics, chainId = 1, checkpoint = null, now = Date.now, cfg = SNAPSHOT_JOB }) {
+export function makePoolSnapshotJob({ kv, rpcs, pin, fetchImpl, sha256, keccak256, decodeLogs, pool, manager, deployBlock, topics, lockTopic = null, chainId = 1, checkpoint = null, now = Date.now, cfg = SNAPSHOT_JOB }) {
   const addresses = [pool, ...(manager ? [manager] : [])];
   const read = async (k) => { const s = await kv.get(k); try { return s == null ? null : JSON.parse(s); } catch { return null; } };
   let tail = null; // { cid, logs }: the last piece's logs, kept between runs in this process
@@ -48,6 +51,38 @@ export function makePoolSnapshotJob({ kv, rpcs, pin, fetchImpl, sha256, keccak25
       }
     }
     return { logs: out, to };
+  }
+  // The calldata of every transaction that inserted lock leaves (lockTopic), in the order first seen, as pieces of their own. Sealed pieces are scanned for those
+  // transactions once, a few per run if the budget is short; the logs of this run are added after; inputs are read from the nodes for the ones not held yet. A run that
+  // cannot finish publishes what it has: the page reads the rest from the nodes. Pieces already pinned are not pinned again.
+  const lc = (x) => String(x ?? '').toLowerCase();
+  const lockHashes = (logs) => [...new Set(logs.filter((l) => lc((l.topics || [])[0]) === lc(lockTopic)).map((l) => lc(l.transactionHash)))];
+  async function updateInputs(sealedPieces, tailLogsNow, until) {
+    if (!lockTopic) return null;
+    const t = (await read('snap:txin')) || { v: 1, scanned: 0, hashes: [], inputs: {}, pinned: [] };
+    const seen = new Set(t.hashes);
+    const add = (hs) => { for (const h of hs) if (!seen.has(h)) { seen.add(h); t.hashes.push(h); } };
+    while (t.scanned < sealedPieces.length && now() < until) {
+      const logs = unpackPiece(await gunzip(await fetchBlock(sealedPieces[t.scanned].cid, { fetchImpl, sha256 })));
+      add(lockHashes(logs)); t.scanned++;
+    }
+    if (t.scanned >= sealedPieces.length) add(lockHashes(tailLogsNow));
+    const missing = t.hashes.filter((h) => !t.inputs[h]);
+    let k = 0;
+    await Promise.all(Array.from({ length: Math.min(cfg.inputsConcurrency || 4, missing.length) }, async () => {
+      while (k < missing.length && now() < until) {
+        const h = missing[k++];
+        try { const tx = await call('eth_getTransactionByHash', [h]); if (tx && typeof tx.input === 'string' && tx.input.length > 2) t.inputs[h] = lc(tx.input); } catch { /* read again next run */ }
+      }
+    }));
+    const rows = t.hashes.filter((h) => t.inputs[h]).map((h) => [h, t.inputs[h]]);
+    const pieces = [];
+    for (const g of cutInputs(rows, cfg.inputCutChars)) pieces.push(...await encodeInputs(g, sha256));
+    const known = new Set(t.pinned);
+    for (const p of pieces) if (!known.has(p.cid)) { const cid = await pin(p.bytes); if (cid !== p.cid) throw new Error(`pin gave ${cid} for ${p.cid}`); known.add(p.cid); }
+    t.pinned = [...known];
+    await kv.put('snap:txin', JSON.stringify(t));
+    return { pieces: pieces.map(({ cid, n }) => ({ cid, n })), count: rows.length, locks: t.hashes.length };
   }
   async function tailLogs(piece) {
     if (!piece) return [];
@@ -82,8 +117,9 @@ export function makePoolSnapshotJob({ kv, rpcs, pin, fetchImpl, sha256, keccak25
     await kv.put('snap:state', JSON.stringify(next));
     if (got.to < head - 300) return { status: 'behind', to: got.to };
     const trees = treesOfFrontiers(next.frontiers);
+    const txin = await updateInputs(sealed, all, until).catch(() => null);   // optional: the snapshot is still made without it
     const cp = checkpoint ? await checkpoint(next.to).catch(() => null) : null;
-    const manifest = new TextEncoder().encode(JSON.stringify({ v: SNAPSHOT.version, chainId, pool, addresses, topics, deployBlock: Number(deployBlock), to: next.to, pieces: next.pieces, trees, ...(cp ? { checkpoint: cp } : {}), at: next.at }));
+    const manifest = new TextEncoder().encode(JSON.stringify({ v: SNAPSHOT.version, chainId, pool, addresses, topics, deployBlock: Number(deployBlock), to: next.to, pieces: next.pieces, trees, ...(txin && txin.count ? { txInputs: txin } : {}), ...(cp ? { checkpoint: cp } : {}), at: next.at }));
     const cid = await pin(manifest);
     if (cid !== rawCid(manifest, sha256)) throw new Error(`pin gave ${cid} for the manifest`);
     await kv.put('snap:pub', JSON.stringify({ v: 1, cid, to: next.to, at: next.at, trees, ...(cp ? { checkpoint: cp } : {}) }));

@@ -117,6 +117,33 @@ export async function encodePiece(logs, addresses, sha256, maxPiece = SNAPSHOT.m
   return [...await encodePiece(logs.slice(0, mid), addresses, sha256, maxPiece), ...await encodePiece(logs.slice(mid), addresses, sha256, maxPiece)];
 }
 
+// ── the calldata of the transactions that inserted lock leaves ────────────────────────────────────────────────────────────────────────────
+// The stealth-lock scan (confidential-lock-scan.js) reads the settle calldata of EVERY transaction that inserted lock leaves, about 350 reads of public chain
+// data from the nodes on a first visit, and the lock tree's count and root on chain (storage slots 84, 85) check what it builds from them. They are part of the
+// snapshot as pieces of their own, listed in the manifest as `txInputs` (optional: a page that does not know the field, or cannot reach a piece, reads them
+// from the nodes as before). Rows are [transaction hash, input], in the order the transactions were first seen, so a growing set changes only its last piece.
+export const TXIN = Object.freeze({ cutChars: 450_000 });   // characters of input per piece before it is encoded; split again if it still packs over maxPiece
+const HEX32 = /^0x[0-9a-f]{64}$/, HEXBYTES = /^0x(?:[0-9a-f]{2})+$/;
+export function packInputs(rows) { return JSON.stringify({ v: SNAPSHOT.version, kind: 'txin', rows: rows.map(([h, i]) => [lc(h), lc(i)]) }); }
+export function unpackInputs(text) {
+  const p = JSON.parse(text);
+  if (!p || p.v !== SNAPSHOT.version || p.kind !== 'txin' || !Array.isArray(p.rows)) throw new Error('pool-snapshot: not a piece of transaction inputs');
+  return p.rows.map((r) => { if (!Array.isArray(r) || !HEX32.test(r[0]) || !HEXBYTES.test(r[1])) throw new Error('pool-snapshot: a malformed input row'); return [r[0], r[1]]; });
+}
+export function cutInputs(rows, cutChars = TXIN.cutChars) {
+  const out = []; let cur = [], chars = 0;
+  for (const r of rows) { cur.push(r); chars += r[1].length + 70; if (chars >= cutChars) { out.push(cur); cur = []; chars = 0; } }
+  if (cur.length) out.push(cur);
+  return out;
+}
+export async function encodeInputs(rows, sha256, maxPiece = SNAPSHOT.maxPiece) {
+  const bytes = await gzip(packInputs(rows));
+  if (bytes.length <= maxPiece) return [{ cid: rawCid(bytes, sha256), bytes, n: rows.length }];
+  if (rows.length < 2) throw new Error('pool-snapshot: one transaction\'s input packs over a piece');
+  const mid = rows.length >> 1;
+  return [...await encodeInputs(rows.slice(0, mid), sha256, maxPiece), ...await encodeInputs(rows.slice(mid), sha256, maxPiece)];
+}
+
 // The three trees the logs build, before their roots are asked for. Leaves must arrive at the positions their logs name, or this throws.
 function treesBuilt(logs, { decodeLogs, Tree, pool }) {
   const t = { note: new Tree(), lock: new Tree(), cdp: new Tree() };
@@ -238,7 +265,15 @@ export async function loadSnapshot(cid, { fetchImpl, sha256, gateways, expect })
   const logs = pieces.flat();
   for (let i = 1; i < logs.length; i++) if (byChainOrder(logs[i - 1], logs[i]) >= 0) throw new Error('pool-snapshot: logs out of chain order');
   if (logs.length && blockOf(logs[logs.length - 1]) > m.to) throw new Error('pool-snapshot: a log past the manifest\'s block');
-  return { manifest: m, logs };
+  // The transaction inputs the manifest lists, if it lists any: optional, so a piece that cannot be had, or is not what it says, costs the page nothing but the reads it was saving.
+  let txInputs = null;
+  if (m.txInputs && Array.isArray(m.txInputs.pieces) && m.txInputs.pieces.length) {
+    try {
+      const got = await Promise.all(m.txInputs.pieces.map(async (p) => unpackInputs(await gunzip(await fetchBlock(p.cid, { fetchImpl, sha256, gateways })))));
+      txInputs = new Map(got.flat());
+    } catch { txInputs = null; }
+  }
+  return { manifest: m, logs, txInputs };
 }
 
 // The logs of `logs` an eth_getLogs with `params` ({ address, topics }) would return.

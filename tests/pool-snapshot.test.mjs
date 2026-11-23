@@ -13,7 +13,7 @@ import * as secp from '../node_modules/@noble/secp256k1/index.js';
 import { hmac } from '../node_modules/@noble/hashes/hmac.js';
 import { sha256 as nobleSha256 } from '../node_modules/@noble/hashes/sha2.js';
 import { ETH_NODES, ETH_LOG_NODES } from '../dapp/eth-nodes.js';
-import { SNAPSHOT, rawCid, cidSha, packPiece, unpackPiece, cutPieces, encodePiece, treesOf, poolTrees, sameTrees, loadSnapshot, pointerCall, readPointer, selectLogs, TREE_SLOTS } from '../dapp/pool-snapshot.js';
+import { SNAPSHOT, rawCid, cidSha, packPiece, unpackPiece, cutPieces, encodePiece, packInputs, unpackInputs, cutInputs, encodeInputs, gunzip, treesOf, poolTrees, sameTrees, loadSnapshot, pointerCall, readPointer, selectLogs, TREE_SLOTS } from '../dapp/pool-snapshot.js';
 
 const mem = new Map();
 globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
@@ -105,13 +105,15 @@ function storageFor(t) {
 }
 
 // A snapshot of `logs` up to `to`, served by gateways: { cid, files }.
-async function snapshotOf(logs, to) {
+async function snapshotOf(logs, to, inputs = null) {
   const addresses = [cfg.pool, cfg.farm.manager];
   const pieces = [];
   for (const p of cutPieces(logs, 3000)) pieces.push(...await encodePiece(p, addresses, sha256));
   const topics = [T.LeavesInserted, T.NullifiersSpent, T.LockLeavesInserted, T.Wrap, T.CdpPositionInserted, T.CrossOutRecorded, T.Bonded, T.Harvested];
-  const manifest = enc.encode(JSON.stringify({ v: 1, chainId: 1, pool: cfg.pool, addresses, topics, deployBlock: Number(cfg.deployBlock), to, pieces: pieces.map(({ cid, n, from, to: t }) => ({ cid, n, from, to: t })), trees: treesFor(logs) }));
-  const files = new Map(pieces.map((p) => [p.cid, p.bytes]));
+  const inPieces = [];
+  if (inputs) for (const g of cutInputs(inputs, 600)) inPieces.push(...await encodeInputs(g, sha256));
+  const manifest = enc.encode(JSON.stringify({ v: 1, chainId: 1, pool: cfg.pool, addresses, topics, deployBlock: Number(cfg.deployBlock), to, pieces: pieces.map(({ cid, n, from, to: t }) => ({ cid, n, from, to: t })), trees: treesFor(logs), ...(inputs ? { txInputs: { pieces: inPieces.map(({ cid, n }) => ({ cid, n })), count: inputs.length, locks: inputs.length } } : {}) }));
+  const files = new Map([...pieces, ...inPieces].map((p) => [p.cid, p.bytes]));
   const cid = rawCid(manifest, sha256);
   files.set(cid, manifest);
   return { cid, files };
@@ -146,14 +148,15 @@ test('the record is read from the WNS text record', () => {
 });
 
 // The page, its nodes and gateways stood in for. `chain`: every log on chain; `snap`: what the snapshot holds (up to snapTo); `storage`: the pool's words.
-function page({ chain, head, snap, snapTo, storage, lie = false }) {
-  const asked = [];
+function page({ chain, head, snap, snapTo, storage, lie = false, txs = null }) {
+  const asked = [], txAsked = [];
   const record = snap ? (() => { const v = enc.encode(JSON.stringify({ v: 1, cid: snap.cid, to: snapTo })); return '0x' + W(32) + W(v.length) + hex(v).padEnd(Math.ceil(v.length / 32) * 64, '0'); })() : '0x' + W(32) + W(0);
   const node = (method, params) => {
     if (method === 'eth_blockNumber') return '0x' + head.toString(16);
     if (method === 'eth_call' && String(params[0].to).toLowerCase() === SNAPSHOT.wns.toLowerCase()) return record;
     if (method === 'eth_call') return '0x' + W(treesFor(chain).note.count);
     if (method === 'eth_getStorageAt') return storage[params[1]] ?? '0x' + W(0);
+    if (method === 'eth_getTransactionByHash') { txAsked.push(params[0]); const i = txs && txs(params[0]); return i ? { hash: params[0], input: i } : null; }
     if (method === 'eth_getLogs') {
       const a = parseInt(params[0].fromBlock, 16), b = parseInt(params[0].toBlock, 16);
       asked.push([a, b]);
@@ -170,7 +173,7 @@ function page({ chain, head, snap, snapTo, storage, lie = false }) {
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: out }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet', fetchImpl, logStore: null, snapshotOpts: { auditMs: 0 } });
-  return { ux, asked };
+  return { ux, asked, txAsked };
 }
 const settle = () => new Promise((r) => setTimeout(r, 50));
 
@@ -315,4 +318,197 @@ test('the manifest carries the cross-chain checkpoint at its block; one that can
   const r2 = await w2.job(() => Date.now()).run();
   assert.equal(r2.status, 'published');
   assert.equal(JSON.parse(new TextDecoder().decode(w2.files.get(r2.cid))).checkpoint, undefined);
+});
+
+// ── the calldata of the lock transactions, as a part of the snapshot ──────────────────────────────────────────────────────────────────────────────
+const inputFor = (hash) => '0xdeadbeef' + hash.slice(2);                       // a stand-in for a transaction's input: even hex, tied to the hash
+const lockTxs = (logs) => [...new Set(logs.filter((l) => l.topics[0] === T.LockLeavesInserted).map((l) => l.transactionHash))];
+const rowsOf = (logs) => lockTxs(logs).map((h) => [h, inputFor(h)]);
+
+test('inputs pack, cut and encode the same each time, a growing set changes only its last piece, and a row that is not a transaction is refused', async () => {
+  const noise = (k, n) => { let s = ''; for (let i = 0; s.length < n * 2; i++) s += hex(sha256(enc.encode(`${k}:${i}`))); return '0x' + s.slice(0, n * 2); };
+  const rows = Array.from({ length: 40 }, (_, k) => [h32(100 + k), noise(k, 900 + k)]);
+  assert.deepEqual(unpackInputs(packInputs(rows)), rows);
+  const a = cutInputs(rows, 20_000), b = cutInputs([...rows, [h32(999), noise(999, 900)]], 20_000);
+  assert.ok(a.length > 2, 'several pieces');
+  assert.deepEqual(b.slice(0, a.length - 1), a.slice(0, -1), 'earlier pieces unchanged by a new row');
+  const enc1 = await encodeInputs(a[0], sha256), enc2 = await encodeInputs(a[0], sha256);
+  assert.deepEqual(enc1.map((p) => p.cid), enc2.map((p) => p.cid), 'the same rows, the same CID');
+  assert.equal(enc1[0].cid, rawCid(enc1[0].bytes, sha256));
+  const split = await encodeInputs(a[0], sha256, 2500);
+  assert.ok(split.length > 1 && split.every((p) => p.bytes.length <= 2500), 'a piece over the limit is split');
+  assert.deepEqual((await Promise.all(split.map(async (p) => unpackInputs(await gunzip(p.bytes))))).flat(), a[0], 'and loses nothing');
+  for (const bad of [{ v: 1, kind: 'logs', rows: [] }, { v: 2, kind: 'txin', rows: [] }, { v: 1, kind: 'txin', rows: [['0x12', '0xab']] }, { v: 1, kind: 'txin', rows: [[h32(1), '0xabc']] }, { v: 1, kind: 'txin', rows: [[h32(1), 'ab']] }, { v: 1, kind: 'txin', rows: 'x' }])
+    assert.throws(() => unpackInputs(JSON.stringify(bad)), /not a piece|malformed/, JSON.stringify(bad).slice(0, 60));
+});
+
+test('a snapshot loads with its transaction inputs; one it cannot reach, or one that is not what it says, costs only those', async () => {
+  const logs = history(60), rows = rowsOf(logs);
+  const expect = { chainId: 1, pool: cfg.pool, addresses: [cfg.pool, cfg.farm.manager], topics: [T.LeavesInserted, T.NullifiersSpent] };
+  const snap = await snapshotOf(logs, 30_000_000, rows);
+  const got = await loadSnapshot(snap.cid, { fetchImpl: gatewayFetch(snap.files), sha256, expect });
+  assert.equal(got.txInputs.size, rows.length); assert.equal(got.txInputs.get(rows[3][0]), rows[3][1]);
+  assert.equal(got.logs.length, logs.length);
+  // no field: null
+  const plain = await snapshotOf(logs, 30_000_000);
+  assert.equal((await loadSnapshot(plain.cid, { fetchImpl: gatewayFetch(plain.files), sha256, expect })).txInputs, null);
+  // one input piece missing: the logs still load
+  const man = JSON.parse(new TextDecoder().decode(snap.files.get(snap.cid)));
+  const lost = new Map(snap.files); lost.delete(man.txInputs.pieces[1].cid);
+  const g2 = await loadSnapshot(snap.cid, { fetchImpl: gatewayFetch(lost), sha256, expect });
+  assert.equal(g2.logs.length, logs.length); assert.equal(g2.txInputs, null);
+  // a piece of the wrong kind under a right CID (a log piece listed as inputs): ignored, logs load
+  const wrong = JSON.parse(JSON.stringify(man)); wrong.txInputs.pieces = [{ cid: man.pieces[0].cid, n: 1 }];
+  const wb = enc.encode(JSON.stringify(wrong)), wf = new Map(snap.files); wf.set(rawCid(wb, sha256), wb);
+  const g3 = await loadSnapshot(rawCid(wb, sha256), { fetchImpl: gatewayFetch(wf), sha256, expect });
+  assert.equal(g3.logs.length, logs.length); assert.equal(g3.txInputs, null);
+  // a malformed section: ignored
+  const mal = JSON.parse(JSON.stringify(man)); mal.txInputs = { pieces: 'x' };
+  const mb = enc.encode(JSON.stringify(mal)), mf = new Map(snap.files); mf.set(rawCid(mb, sha256), mb);
+  assert.equal((await loadSnapshot(rawCid(mb, sha256), { fetchImpl: gatewayFetch(mf), sha256, expect })).txInputs, null);
+});
+
+// the job over a stood-in chain that also knows transactions
+function jobWorld2(chain, { cfg: over = {}, failHash = null } = {}) {
+  const kvm = new Map(), files = new Map(), pinned = [], txCalls = [];
+  let head = 0;
+  const rpc = async (method, params) => {
+    if (method === 'eth_blockNumber') return '0x' + head.toString(16);
+    if (method === 'eth_getLogs') { const a = parseInt(params[0].fromBlock, 16), b = parseInt(params[0].toBlock, 16); return selectLogs(chain, params[0]).filter((l) => { const n = Number(BigInt(l.blockNumber)); return n >= a && n <= b; }); }
+    if (method === 'eth_getTransactionByHash') { txCalls.push(params[0]); if (failHash && failHash(params[0])) throw new Error('node down'); return { input: inputFor(params[0]) }; }
+    throw new Error(method);
+  };
+  const topics = [T.LeavesInserted, T.NullifiersSpent, T.LockLeavesInserted, T.Wrap, T.CdpPositionInserted, T.CrossOutRecorded, T.Bonded, T.Harvested];
+  const job = (now, o = {}) => makePoolSnapshotJob({
+    kv: { get: async (k) => kvm.get(k) ?? null, put: async (k, v) => { kvm.set(k, v); } }, rpcs: [rpc],
+    pin: async (b) => { const c = rawCid(b, sha256); files.set(c, b); pinned.push(c); return c; },
+    fetchImpl: gatewayFetch(files), sha256, keccak256: keccak_256, decodeLogs: evmLog.decodeLogs,
+    pool: cfg.pool, manager: cfg.farm.manager, deployBlock: Number(cfg.deployBlock), topics, now, lockTopic: o.lockTopic === undefined ? T.LockLeavesInserted : o.lockTopic,
+    cfg: { ...SNAPSHOT_JOB, final: 0, span: 200, cutChars: 3000, ...over, ...(o.cfg || {}) },
+  });
+  return { kvm, files, pinned, txCalls, job, setHead: (h) => { head = h; } };
+}
+const expectFor = { chainId: 1, pool: cfg.pool, addresses: [cfg.pool, cfg.farm.manager], topics: [T.LeavesInserted, T.NullifiersSpent, T.LockLeavesInserted, T.Wrap, T.CdpPositionInserted, T.CrossOutRecorded, T.Bonded, T.Harvested] };
+
+test('the job lists the calldata of the lock transactions it holds, adds the new ones each run, reads each from the nodes once, and pins only the pieces that changed', async () => {
+  const chain = history(400);
+  const mid = Number(BigInt(chain[300].blockNumber)), end = Number(BigInt(chain[chain.length - 1].blockNumber));
+  const w = jobWorld2(chain, { cfg: { inputCutChars: 1500 } });
+  w.setHead(mid + 400);
+  const t0 = Date.now();
+  const a = await w.job(() => t0).run();
+  assert.equal(a.status, 'published');
+  const got = await loadSnapshot(a.cid, { fetchImpl: gatewayFetch(w.files), sha256, expect: expectFor });
+  const held = lockTxs(chain.filter((l) => Number(BigInt(l.blockNumber)) <= a.to));
+  assert.deepEqual([...got.txInputs.keys()], held, 'every lock transaction, in the order first seen');
+  for (const [h, i] of got.txInputs) assert.equal(i, inputFor(h));
+  assert.equal(w.txCalls.length, held.length, 'each read once');
+  const pinnedBefore = new Set(w.pinned);
+  w.setHead(end + 400); w.txCalls.length = 0; w.pinned.length = 0;
+  const b = await w.job(() => t0 + 2 * 3600_000).run();
+  const got2 = await loadSnapshot(b.cid, { fetchImpl: gatewayFetch(w.files), sha256, expect: expectFor });
+  const all = lockTxs(chain);
+  assert.deepEqual([...got2.txInputs.keys()], all);
+  assert.equal(w.txCalls.length, all.length - held.length, 'only the new ones read');
+  const m1 = JSON.parse(new TextDecoder().decode(w.files.get(a.cid))).txInputs.pieces, m2 = JSON.parse(new TextDecoder().decode(w.files.get(b.cid))).txInputs.pieces;
+  assert.ok(m1.length > 2, `several input pieces (${m1.length})`);
+  assert.deepEqual(m2.slice(0, m1.length - 1), m1.slice(0, -1), 'earlier input pieces kept');
+  const repinned = w.pinned.filter((c) => pinnedBefore.has(c));
+  assert.equal(repinned.length, 0, 'nothing pinned twice');
+});
+
+test('a job started on a snapshot that predates the feature backfills the lock transactions from its sealed pieces, and a run cut short resumes where it stopped', async () => {
+  const chain = history(300), end = Number(BigInt(chain[chain.length - 1].blockNumber));
+  const w = jobWorld2(chain, { cfg: { budgetMs: 4_000, inputsConcurrency: 1 } });
+  w.setHead(end + 400);
+  const t0 = Date.now();
+  await w.job(() => t0, { lockTopic: null, cfg: { budgetMs: 90_000 } }).run();     // the old job: no inputs
+  assert.equal(JSON.parse(new TextDecoder().decode(w.files.get(JSON.parse(w.kvm.get('snap:pub')).cid))).txInputs, undefined);
+  { let k = 0; const first = await w.job(() => t0 + 2 * 3600_000 + (k++) * 100, { cfg: { budgetMs: 1 } }).run(); void first; const st = JSON.parse(w.kvm.get('snap:txin')), sealed = JSON.parse(w.kvm.get('snap:state')).pieces.length - 1; assert.ok(st.scanned < sealed, `a run with no time left scans only part of the sealed pieces (${st.scanned} of ${sealed})`); }
+  let clock = t0, runs = 0, last = null;
+  const ticking = () => (clock += 100);
+  do { clock = t0 + (++runs + 1) * 2 * 3600_000; const base = clock; let n = 0; last = await w.job(() => base + (n++) * 100).run(); }
+  while ((JSON.parse(new TextDecoder().decode(w.files.get(last.cid))).txInputs?.count ?? 0) < lockTxs(chain).length && runs < 60);
+  void ticking;
+  const m = JSON.parse(new TextDecoder().decode(w.files.get(last.cid)));
+  assert.ok(runs > 1, `the budget forced several runs (${runs})`);
+  assert.equal(m.txInputs.count, lockTxs(chain).length); assert.equal(m.txInputs.locks, lockTxs(chain).length);
+  assert.equal(new Set(w.txCalls).size, w.txCalls.length, 'no transaction read twice across runs');
+  const got = await loadSnapshot(last.cid, { fetchImpl: gatewayFetch(w.files), sha256, expect: expectFor });
+  assert.deepEqual([...got.txInputs.keys()], lockTxs(chain));
+});
+
+test('inputs the nodes cannot give are left out and read again next run; the snapshot is made regardless, and without lockTopic nothing changes', async () => {
+  const chain = history(120), end = Number(BigInt(chain[chain.length - 1].blockNumber));
+  let down = true;
+  const lockSet = lockTxs(chain), bad = new Set(lockSet.slice(0, 5));
+  const w = jobWorld2(chain, { failHash: (h) => down && bad.has(h) });
+  w.setHead(end + 400);
+  const t0 = Date.now();
+  const a = await w.job(() => t0).run();
+  assert.equal(a.status, 'published');
+  const m = JSON.parse(new TextDecoder().decode(w.files.get(a.cid)));
+  assert.equal(m.txInputs.count, lockSet.length - 5); assert.equal(m.txInputs.locks, lockSet.length, 'it says how many lock transactions there are');
+  down = false;
+  const b = await w.job(() => t0 + 2 * 3600_000).run();
+  const m2 = JSON.parse(new TextDecoder().decode(w.files.get(b.cid)));
+  assert.equal(m2.txInputs.count, lockSet.length, 'the five came with the next run');
+  const off = jobWorld2(chain); off.setHead(end + 400);
+  const c = await off.job(() => t0, { lockTopic: null }).run();
+  assert.equal(JSON.parse(new TextDecoder().decode(off.files.get(c.cid))).txInputs, undefined);
+  assert.equal(off.txCalls.length, 0);
+});
+
+test('the page takes the snapshot\'s transaction inputs after a few of them match a node, and then reads none of those from the nodes', async () => {
+  mem.clear();
+  const chain = history(120), head = Number(BigInt(chain[chain.length - 1].blockNumber)) + 500;
+  const snapTo = Number(BigInt(chain[Math.floor(chain.length * 0.7)].blockNumber));
+  const onSnap = chain.filter((l) => Number(BigInt(l.blockNumber)) <= snapTo);
+  const snap = await snapshotOf(onSnap, snapTo, rowsOf(onSnap));
+  const inSnap = new Set(lockTxs(onSnap)), tail = lockTxs(chain).filter((h) => !inSnap.has(h));
+  const { ux, txAsked } = page({ chain, head, snap, snapTo, storage: storageFor(treesFor(chain)), txs: inputFor });
+  await ux.fetchEvents();
+  await ux.scanStealthLocks({ walletPriv: new Uint8Array(32).fill(7) }).catch(() => {});
+  const fromSnap = txAsked.filter((h) => inSnap.has(h));
+  assert.ok(fromSnap.length >= 1 && fromSnap.length <= 3, `only the spot check reads from the snapshot's set (${fromSnap.length} of ${inSnap.size})`);
+  assert.ok(tail.every((h) => txAsked.includes(h)), 'what came after the snapshot is read from the nodes');
+});
+
+test('a snapshot whose inputs differ from what a node says, or that no node can check, is not trusted: every lock transaction is read from the nodes', async () => {
+  mem.clear();
+  const chain = history(80), head = Number(BigInt(chain[chain.length - 1].blockNumber)) + 500;
+  const snapTo = Number(BigInt(chain[Math.floor(chain.length * 0.7)].blockNumber));
+  const onSnap = chain.filter((l) => Number(BigInt(l.blockNumber)) <= snapTo);
+  const snap = await snapshotOf(onSnap, snapTo, rowsOf(onSnap));
+  const n = lockTxs(chain).length;
+  for (const [name, txs] of [['a node that disagrees', (h) => '0xfeed' + h.slice(2)], ['no node that knows the transaction', () => null]]) {
+    mem.clear();
+    const p = page({ chain, head, snap, snapTo, storage: storageFor(treesFor(chain)), txs });
+    await p.ux.fetchEvents();
+    await p.ux.scanStealthLocks({ walletPriv: new Uint8Array(32).fill(7) }).catch(() => {});
+    assert.equal(new Set(p.txAsked).size, n, `${name}: all ${n} lock transactions asked of the nodes (${new Set(p.txAsked).size})`);
+  }
+  mem.clear();
+  const plain = await snapshotOf(onSnap, snapTo);
+  const q = page({ chain, head, snap: plain, snapTo, storage: storageFor(treesFor(chain)), txs: inputFor });
+  await q.ux.fetchEvents(); await q.ux.scanStealthLocks({ walletPriv: new Uint8Array(32).fill(7) }).catch(() => {});
+  assert.equal(new Set(q.txAsked).size, n, 'a snapshot with no inputs: as before');
+});
+
+test('one draw that disagrees with a node stops the inputs of the snapshot being taken, even when the other draws agree', async () => {
+  mem.clear();
+  const chain = history(80), head = Number(BigInt(chain[chain.length - 1].blockNumber)) + 500;
+  const snapTo = Number(BigInt(chain[Math.floor(chain.length * 0.7)].blockNumber));
+  const onSnap = chain.filter((l) => Number(BigInt(l.blockNumber)) <= snapTo);
+  const rows = rowsOf(onSnap);
+  const snap = await snapshotOf(onSnap, snapTo, rows);
+  const wrongFor = rows[2][0];                                  // the third draw lands on this one
+  const was = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: { getRandomValues: (a) => { a[0] = 0; a[1] = 1; a[2] = 2; return a; } } });
+  try {
+    const p = page({ chain, head, snap, snapTo, storage: storageFor(treesFor(chain)), txs: (h) => (h === wrongFor ? '0xfeed' + h.slice(2) : inputFor(h)) });
+    await p.ux.fetchEvents();
+    await p.ux.scanStealthLocks({ walletPriv: new Uint8Array(32).fill(7) }).catch(() => {});
+    assert.equal(new Set(p.txAsked).size, lockTxs(chain).length, 'two draws agreed and one did not: nothing taken, every lock transaction read from the nodes');
+  } finally { if (was) Object.defineProperty(globalThis, 'crypto', was); }
 });

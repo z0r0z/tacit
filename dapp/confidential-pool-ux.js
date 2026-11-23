@@ -414,6 +414,31 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       return sameTrees(mine, await poolTrees((slot) => rpc('eth_getStorageAt', [cfg.pool, slot, tag])));
     } catch { return false; }
   }
+  // The snapshot's transaction inputs (the settle calldata of the transactions that inserted lock leaves, which the lock scan would read one by one from the
+  // nodes) are taken into the cache the scan reads first, but only after a few of them, drawn at random, are found equal to what a node says: a snapshot that
+  // lied about one would be found out with the first draws, and the scan's own check (the lock tree's count and root on chain, strict) stands behind the rest.
+  // A draw no node can answer proves nothing; with none proved, nothing is taken and the scan reads from the nodes as before.
+  async function _seedTxInputs(snap) {
+    const held = snap && snap.txInputs;
+    if (!(held instanceof Map) || !held.size) return 0;
+    try {
+      const keys = [...held.keys()], draws = new Set(), r = new Uint32Array(Math.min(3, keys.length));
+      (globalThis.crypto || {}).getRandomValues ? globalThis.crypto.getRandomValues(r) : r.forEach((_, i) => { r[i] = Math.floor(Math.random() * 2 ** 32); });
+      for (const x of r) draws.add(keys[x % keys.length]);
+      let proved = 0;
+      for (const h of draws) {
+        let t = null;
+        try { t = await rpc('eth_getTransactionByHash', [h]); } catch { continue; }
+        if (!t || !t.input) continue;
+        if (String(t.input).toLowerCase() !== held.get(h)) return 0;
+        proved++;
+      }
+      if (!proved) return 0;
+      let n = 0;
+      for (const [h, i] of held) if (!_txInputs.has(h)) { _txInputs.set(h, i); n++; }
+      return n;
+    } catch { return 0; }
+  }
   const _audits = new Set();
   function _auditSnapshot(params, from, snapTo, key) {
     if (_audits.has(key)) return;
@@ -456,7 +481,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     let snapTo = cached ? cached.snapTo || null : null;
     if (!cached && from <= Number(cfg.deployBlock || 0) && _snapFits(params)) {
       const s = await _snapshot();
-      if (s && s.manifest.to < to) { snapTo = s.manifest.to; cached = { toBlock: snapTo + FINAL, logs: selectLogs(s.logs, params), stored: true, snap: true }; }
+      if (s && s.manifest.to < to) { snapTo = s.manifest.to; cached = { toBlock: snapTo + FINAL, logs: selectLogs(s.logs, params), stored: true, snap: true }; await _seedTxInputs(s); }
     }
     const walkFrom = cached ? Math.max(from, cached.toBlock - FINAL + 1) : from;
     const prog = { next: walkFrom, logs: [] };
