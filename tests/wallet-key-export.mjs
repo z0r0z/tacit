@@ -3,6 +3,7 @@
 //   · signed out, the sheet says where the key is once signed in;
 //   · signed in with the wallet, the section sits right under the address card, says the wallet's recovery phrase brings the key back,
 //     says never to send the key to anyone, and has a Copy key button that asks for a second press before it puts 64 hex characters on the clipboard;
+//   · a Show key button, with the same second press, puts the same key on screen without touching the clipboard, and hides it on a second tap or when the sheet closes;
 //   · that key, pasted after Lock, opens the same Tacit address, and the section then says a pasted key is its own backup, with no button.
 //
 //   PLAYWRIGHT=/Users/z/zFi/node_modules/playwright-core node tests/wallet-key-export.mjs
@@ -99,6 +100,26 @@ try {
   ok(/^[0-9a-f]{64}$/.test(copied), 'the second press puts the 64-character key on the clipboard');
   ok(await text('#w-backup') === 'Copy key', 'and the button goes back to Copy key');
 
+  // ── Show key: the same key on screen, so it never has to pass through the clipboard ──
+  const secretHidden = () => page.$eval('#w-secret', (e) => e.hidden && !e.textContent);
+  await page.evaluate(() => navigator.clipboard.writeText('untouched'));
+  ok(!!(await page.$('#w-reveal')) && await secretHidden(), 'a wallet sign-in has a Show key button, and the key starts hidden');
+  await page.click('#w-reveal');
+  ok(/Press again/.test(await text('#w-reveal')) && await secretHidden(), 'the first press shows nothing and asks for a second');
+  await page.click('#w-reveal');
+  await page.waitForSelector('#w-secret:not([hidden]) code', { timeout: 15000 });
+  ok((await text('#w-secret code')) === copied, 'the second press shows the same 64-character key the copy gave');
+  ok(await text('#w-reveal') === 'Hide key' && (await page.$eval('#w-reveal', (e) => e.getAttribute('aria-expanded'))) === 'true', 'and the button turns to Hide key');
+  ok((await page.evaluate(() => navigator.clipboard.readText())) === 'untouched', 'showing the key puts nothing on the clipboard');
+  await page.click('#w-reveal');
+  ok(await secretHidden() && await text('#w-reveal') === 'Show key', 'a tap on Hide key clears the key from the page');
+  await page.click('#w-reveal'); await page.click('#w-reveal');
+  await page.waitForSelector('#w-secret:not([hidden]) code', { timeout: 15000 });
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('#sheet-wallet[open]'), null, { timeout: 15000 });
+  ok(await secretHidden(), 'closing the sheet clears a key that was showing');
+  await openSheet();
+
   // ── that key, pasted after Lock, opens the same address ──
   await page.click('#w-lock');
   await page.waitForFunction(() => !document.querySelector('#sheet-wallet #w-key'), null, { timeout: 15000 });
@@ -110,7 +131,7 @@ try {
   const again = (await page.evaluate(() => document.querySelector('#w-tacit .full code')?.textContent || '')).trim();
   ok(again === tacit, 'the copied key, pasted, opens the same Tacit address');
   ok(/pasted this key in/.test(await page.evaluate(() => document.querySelector('#w-key').nextElementSibling.textContent)), 'a pasted key says its own copy is the backup');
-  ok(!(await page.$('#w-backup')), 'and has no Copy key button');
+  ok(!(await page.$('#w-backup')) && !(await page.$('#w-reveal')), 'and has no Copy key or Show key button');
   ok(!errors.length && !blocked.length, `no page errors or blocked requests (${[...errors, ...blocked].slice(0, 2).join(' | ')})`);
 } finally {
   await browser.close();

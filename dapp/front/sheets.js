@@ -249,7 +249,8 @@ render.wallet = () => {
       <div class="u by">Opened with ${viaText(k)} · <button class="link" type="button" id="w-lock">Lock</button></div></div>
     <div class="lbl sep" id="w-key"><span>Back up your key</span></div>
     <p class="note">${keyHow} Anyone who has the key holds these funds and the address that goes with it. Never send it to anyone, including Tacit support.</p>
-    ${k.mode === 'key' ? '' : html`<button class="btn ghost" type="button" id="w-backup">Copy key</button>`}
+    ${k.mode === 'key' ? '' : html`<div class="row2"><button class="btn ghost" type="button" id="w-backup">Copy key</button><button class="btn ghost" type="button" id="w-reveal" aria-expanded="false" aria-controls="w-secret">Show key</button></div>
+    <div class="keyshow" id="w-secret" role="region" aria-label="Your key" hidden></div>`}
     <div id="w-keys">${walletKeys()}</div>
     <div class="lbl sep" id="pay-h"><span>Public ETH comes from</span></div>
     <div class="opts" role="radiogroup" aria-labelledby="pay-h">
@@ -279,10 +280,10 @@ render.wallet = () => {
   loadBtc().then(paintWalletBal, paintWalletBal);
   $('#wbal-box').onclick = wbClick;
   // (with a PQ ID the key alone does not open the TAC on the Tacit chain: its passkey does too, and the copy says so)
+  const pqKept = async () => { try { return !!(await import('/tacit-chain-root.js')).keptRoot(k.priv); } catch { return false; } };
+  const PQ_SAID = 'Your TAC on the Tacit chain also needs your PQ ID passkey.';
   const backup = $('#w-backup'), copyKey = () => navigator.clipboard.writeText(k.priv).then(async () => {
-    let pq = false;
-    try { pq = !!(await import('/tacit-chain-root.js')).keptRoot(k.priv); } catch { }
-    toast(pq ? 'Key copied. Keep it somewhere private. Your TAC on the Tacit chain also needs your PQ ID passkey.' : 'Key copied. Keep it somewhere private.');
+    toast((await pqKept()) ? `Key copied. Keep it somewhere private. ${PQ_SAID}` : 'Key copied. Keep it somewhere private.');
   }, () => toast('Could not copy the key: the browser refused clipboard access.', true));
   // (a wallet or passkey sign-in asks for a second press within six seconds: its key opens the funds without it, so the copy is never one stray click)
   let armed = 0;
@@ -291,6 +292,30 @@ render.wallet = () => {
     backup.textContent = 'Press again to copy the key';
     armed = setTimeout(() => { armed = 0; backup.textContent = 'Copy key'; }, 6000);
   });
+  // Show key: the key on screen to read or write down, so it never has to pass through the clipboard (which other apps and a clipboard manager can read).
+  // It takes the same second press, hides on a second tap, on Lock, when the sheet closes and after a minute, and is not kept anywhere but this element.
+  const reveal = $('#w-reveal'), secret = $('#w-secret');
+  let armedShow = 0, shownFor = 0;
+  const hideKey = () => {
+    clearTimeout(shownFor); clearTimeout(armedShow); shownFor = armedShow = 0;
+    if (!secret) return;
+    secret.hidden = true; secret.textContent = '';
+    reveal.textContent = 'Show key'; reveal.setAttribute('aria-expanded', 'false');
+  };
+  const showKey = async () => {
+    const pq = await pqKept();
+    if (!reveal.isConnected) return;
+    mount(secret, html`<code>${k.priv}</code><p class="note">Select it to copy by hand, or write it down. It hides again in a minute. ${pq ? PQ_SAID : ''}</p>`);
+    secret.hidden = false; reveal.textContent = 'Hide key'; reveal.setAttribute('aria-expanded', 'true');
+    shownFor = setTimeout(hideKey, 60000);
+  };
+  reveal?.addEventListener('click', () => {
+    if (!secret.hidden) return hideKey();
+    if (kept || armedShow) { clearTimeout(armedShow); armedShow = 0; return showKey(); }
+    reveal.textContent = 'Press again to show the key';
+    armedShow = setTimeout(() => { armedShow = 0; reveal.textContent = 'Show key'; }, 6000);
+  });
+  $('#sheet-wallet').addEventListener('close', hideKey, { once: true });
   $('#w-lock').onclick = () => lockWallet();      // (the page's, which the account menu's Sign out also calls)
   const bal = (id, who) => { const e = $('#' + id); if (who && e) rpc('eth_getBalance', [who, 'latest']).then((b) => `${fmt(BigInt(b), 18, 4)} ETH`, () => '—').then((t) => { e.textContent = t; }); };
   bal('ac-abal', a.address); bal('ac-wbal', S.wallet);

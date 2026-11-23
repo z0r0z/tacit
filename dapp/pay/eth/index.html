@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-tJ4/n+aV+hs6Y+iVqTvjoKr0oz2hKap7xX4bpsjUDBI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-NzvMQTNf06U5xhd0V55cPL+tZco2X3Wn9r/dXyVIX2E=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' http://*.onion https://api.0xbow.io https://api.routescan.io https://fastrelay.xyz https://v1.privacypools.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://api.tacit.finance https://aggregator-api.kyberswap.com https://tacit-points.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://ethereum-rpc.publicnode.com https://mainnet.gateway.tenderly.co https://eth.drpc.org https://1rpc.io https://rpc.flashbots.net https://mainnet.base.org https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com wss://relay.primal.net wss://nos.lol wss://offchain.pub https://public.pimlico.io https://api.candide.dev https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preload" href="/fonts/instrument-serif-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/instrument-serif-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -347,6 +347,10 @@ input::placeholder { color: var(--mute); opacity: 1; }
 @keyframes pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .opt[aria-busy="true"] .opt-t::after { animation-duration: 1.8s; } .way[aria-busy="true"] .tk { animation: none; } }
 .more { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 18px; margin: 6px 0 0; }
+.keyshow { margin-top: 10px; padding: 12px; border: 1px solid var(--hair); border-radius: 10px; }
+.keyshow[hidden] { display: none; }
+.keyshow code { display: block; font: 500 12.5px/1.5 var(--mono); color: var(--ink); overflow-wrap: anywhere; user-select: all; }
+.keyshow .note { margin-top: 8px; }
 .opts-err { margin: 2px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--err); }
 
 /* ── device and recovery ── */
@@ -4603,10 +4607,21 @@ function renderWalletSheet() {
     <div class="kv"><span>Pays the network fee when you send it yourself</span>${S.wallet ? html`<b>${viewAddr(S.wallet, 6)} <button class="link" type="button" id="w-wc-change">Change account</button> <button class="link" type="button" id="w-wc-off">Disconnect</button></b>` : html`<button class="link" type="button" id="w-conn">Connect wallet</button>`}</div>
     ${routeAvailable() ? html`<p class="more">Your address is hidden from the relay: every request to it goes through a forwarder. The nodes you read the chain through still see it.</p>` : ''}
     <div id="w-up"></div>
-    ${kept ? html`<p class="more"><button class="link" type="button" id="w-backup">Copy key to back up</button></p>` : ''}
+    ${kept ? html`<p class="more"><button class="link" type="button" id="w-backup">Copy key to back up</button><button class="link" type="button" id="w-reveal" aria-expanded="false" aria-controls="w-secret">Show key</button></p><div class="keyshow" id="w-secret" role="region" aria-label="Your key" hidden></div>` : ''}
     <p class="note">${kept ? 'This key is kept in this browser only, so clearing the browser’s data loses it. Copy it somewhere private: anyone who has it controls these funds, and pasting it back opens them again.' : k.mode === 'key' ? 'You pasted this key and it is not saved in this browser. This tab holds it until 30 minutes without use, through a reload or a reopened tab. Keep your own copy somewhere private: anyone who has it controls these funds.' : 'Your wallet or passkey is the only way back to these funds: keep it safe.'} The key stays in this tab, and locks after 30 minutes without use; payments to your addresses reach you here and everywhere on tacit.finance.</p>`);
   $('#w-copy').onclick = () => copy(UNIFIED_LIVE ? shownAddress() : k.bp, 'Address copied');
   $('#w-backup')?.addEventListener('click', () => navigator.clipboard.writeText(k.priv).then(() => toast('Key copied. Keep it somewhere private.'), () => toast('Could not copy the key: the browser refused clipboard access.', true)));
+  // Show key: on screen to read or write down, so it never passes through the clipboard; hides on a second tap, on Lock, when the sheet closes and after a minute
+  const reveal = $('#w-reveal'), secret = $('#w-secret');
+  let shownFor = 0;
+  const hideKey = () => { clearTimeout(shownFor); shownFor = 0; if (!secret) return; secret.hidden = true; secret.textContent = ''; reveal.textContent = 'Show key'; reveal.setAttribute('aria-expanded', 'false'); };
+  reveal?.addEventListener('click', () => {
+    if (!secret.hidden) return hideKey();
+    mount(secret, html`<code>${k.priv}</code><p class="note">Select it to copy by hand, or write it down. It hides again in a minute.</p>`);
+    secret.hidden = false; reveal.textContent = 'Hide key'; reveal.setAttribute('aria-expanded', 'true');
+    shownFor = setTimeout(hideKey, 60000);
+  });
+  $('#sheet-wallet')?.addEventListener('close', hideKey, { once: true });
   nameUpgrade().then((plan) => { const el = $('#w-up'); if (plan && el?.isConnected) { mount(el, upgradeView(plan)); wireUpgrade(el, plan, () => mount(el, html``)); } });
   $('#w-lock').onclick = () => { if (paying()) return toast('Finish the payment in progress first.', true); lock(); renderWalletSheet(); };
   $('#w-conn')?.addEventListener('click', () => connectWallet().then(renderWalletSheet).catch((e) => toast(errText(e), true)));
