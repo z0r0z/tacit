@@ -12,7 +12,7 @@
 //   * reflection lag (relay tip - attested Bitcoin height) > N blocks
 //   * the API's Bitcoin block scan trailing the chain tip (BTC_SCAN_LAG_WARN_BLOCKS / _CRITICAL_BLOCKS) — lib/scan-lag.js
 //   * the Bitcoin pool's replay service halted or behind the chain (mainnet): wallets then answer "the pool replay is paused" to every
-//     shield, send and withdraw — lib/pool-replay-health.js; BTC_POOL_URL overrides the service, BTC_POOL_CHECK=off skips it
+//     shield, send and withdraw — lib/pool-replay-health.js; BTC_POOL_URL and BTC_POOL_RELAY_URL override the two services, BTC_POOL_CHECK=off skips it
 //   * reflection snapshot size > warn threshold — the one cumulative resource
 //   * reflection stalled: no successful attest for REFLECTION_STALL_HOURS with blocks waiting, or the API's cursor
 //     off the pool's digest on two consecutive runs (a lost ack) — lib/reflection-stall.js
@@ -570,23 +570,30 @@ async function checkBitcoinScan() {
   await alert(v.level, `${v.why}: wallets keep the outputs whose credit rests on it pending until it moves`, { scanned, tip, lag: v.lag });
 }
 
-// The Bitcoin pool's replay service. A read that fails is read once more before it pages, so one dropped request cannot.
-const BTC_POOL_URL = (process.env.BTC_POOL_URL || 'https://tacit-btc-pool-mainnet.onrender.com').replace(/\/$/, '');
+// The Bitcoin pool's two replay services: the public one wallets read their notes from, and the relayer's own, which checks the
+// spends it carries against its replay. A read that fails is read once more before it pages, so one dropped request cannot.
+const BTC_POOLS = [
+  ['pool replay', (process.env.BTC_POOL_URL || 'https://tacit-btc-pool-mainnet.onrender.com').replace(/\/$/, '')],
+  ['pool relay replay', (process.env.BTC_POOL_RELAY_URL || 'https://tacit-btc-pool-relay-mainnet.onrender.com').replace(/\/$/, '')],
+];
 async function checkPoolReplay() {
   if (CFG.network !== 'mainnet' || process.env.BTC_POOL_CHECK === 'off') return;
-  const read = async () => {
-    const r = await fetch(`${BTC_POOL_URL}/btc-pool/status`, { signal: AbortSignal.timeout(20_000) });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json();
-  };
-  let status;
-  try { status = await read(); } catch (e1) {
-    await new Promise((r) => setTimeout(r, 15_000));
-    try { status = await read(); } catch (e2) { await alert('critical', `the Bitcoin pool's replay service is not answering (${BTC_POOL_URL}): ${safeErr(e2)}. Wallets cannot read their notes or spend until it is back`, { url: BTC_POOL_URL }); return; }
+  for (const [label, url] of BTC_POOLS) {
+    if (/^(off|none|0|false)$/i.test(url)) continue;
+    const read = async () => {
+      const r = await fetch(`${url}/btc-pool/status`, { signal: AbortSignal.timeout(20_000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    };
+    let status;
+    try { status = await read(); } catch (e1) {
+      await new Promise((r) => setTimeout(r, 15_000));
+      try { status = await read(); } catch (e2) { await alert('critical', `the Bitcoin ${label} service is not answering (${url}): ${safeErr(e2)}. Wallets cannot read their notes or spend until it is back`, { url }); continue; }
+    }
+    const v = poolReplayVerdict(status);
+    if (v.level === 'ok' || v.level === 'unknown') { log(`bitcoin ${label}: ${v.why}`); continue; }
+    await alert(v.level, `Bitcoin ${label}: ${v.why}: wallets answer "the pool replay is paused" to shield, send and withdraw until it moves (the service keeps its place; read its Render log)`, { url, height: status.height, tip: status.tip, lag: v.lag, halted: status.halted?.height ?? null });
   }
-  const v = poolReplayVerdict(status);
-  if (v.level === 'ok' || v.level === 'unknown') { log(`bitcoin pool replay: ${v.why}`); return; }
-  await alert(v.level, `${v.why}: wallets answer "the pool replay is paused" to shield, send and withdraw until it moves (the service keeps its place; read the tacit-btc-pool-mainnet log)`, { height: status.height, tip: status.tip, lag: v.lag, halted: status.halted?.height ?? null });
 }
 
 // Mainnet only: the pool-minted tokens beside TAC (tacBTC, tacUSD), the wTAC wrapper, and a retired TAC token with the
