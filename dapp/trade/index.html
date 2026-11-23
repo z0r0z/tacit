@@ -554,9 +554,11 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 .sn > a { display: none; }
 .sn > a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { color: var(--ink); background: var(--hair); }
+.sn > a, .sn summary { border-radius: 999px; }
+.sn > a[aria-current="page"], .sn summary.here { background: color-mix(in srgb, var(--violet, var(--ink)) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--violet, var(--ink)) 22%, transparent); }
 @media (hover: hover) { .sn > a:hover, .sn summary:hover { color: var(--ink); background: var(--hair); } }
 .sn > a:active, .sn summary:active { transform: scale(.93); }
-.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--focus, var(--orange)); outline-offset: 1px; }
 @container top (min-width: 540px) { .sn > a { display: inline-flex; } }
 .sn > a[href="/rewards/"], .sn .sm > summary { position: relative; }
 .sn[data-owed] > a[href="/rewards/"]::after, .sn[data-owed] .sm > summary::after { content: ''; position: absolute; top: 8px; left: 26px; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--paper, transparent); }
@@ -588,7 +590,7 @@ header.top .chip {
   font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
-header.top .chip { background: var(--card, transparent); border-radius: 10px; font: 500 14px/1 var(--sans, var(--mono)); }
+header.top .chip { background: color-mix(in srgb, var(--card, transparent) 70%, transparent); border-radius: 999px; font: 500 14px/1 var(--sans, var(--mono)); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
 header.top .chip .dot.on { background: var(--ok); }
@@ -598,7 +600,7 @@ header.top .chip.act { background: transparent; }
 header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
 @media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
 header.top .chip:active { transform: scale(.97); }
-header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+header.top .chip:focus-visible { outline: 2px solid var(--focus, var(--orange)); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
 /* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
@@ -619,8 +621,9 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
     background: color-mix(in srgb, var(--paper, var(--bg, #fff)) 92%, transparent); border-top: 1px solid var(--hair); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
   .bn a { display: grid; justify-items: center; gap: 3px; min-height: 44px; padding: 5px 2px 3px; border-radius: 12px; color: var(--mute); font: 500 10.5px/1.1 var(--mono); text-decoration: none; -webkit-tap-highlight-color: transparent; }
   .bn a svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-  .bn a[aria-current="page"] { color: var(--ink); background: var(--hair); }
-  .bn a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+  .bn a[aria-current="page"] { color: var(--ink); background: color-mix(in srgb, var(--violet, var(--ink)) 14%, transparent); }
+  .bn a { border-radius: 16px; }
+  .bn a:focus-visible { outline: 2px solid var(--focus, var(--orange)); outline-offset: -2px; }
   footer.sf { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
   #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
   /* what a page pins to the foot of the window stands on the bar (57 px: its padding and a 44 px row), not under it: the buy bar of cBTC, tETH and
@@ -638,7 +641,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh-t { display: inline-grid; grid-auto-flow: column; grid-auto-columns: minmax(96px, 1fr); gap: 2px; margin: 18px auto 0; padding: 3px; max-width: 100%; border-radius: 15px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .sh-t a { display: flex; align-items: center; justify-content: center; min-height: 38px; padding: 6px 16px; border-radius: 12px; color: var(--mute); font: 500 13px/1.2 var(--mono); text-decoration: none; white-space: nowrap; transition: background-color .15s, color .15s; }
 .sh-t a[aria-current="page"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
-.sh-t a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+.sh-t a:focus-visible { outline: 2px solid var(--focus, var(--orange)); outline-offset: 1px; }
 /* the pill under the current tab: chrome.js places it and, between two views of one document, slides it; unplaced, the tab wears it itself */
 .sh-t { position: relative; }
 .sh-t a { position: relative; }
@@ -656,10 +659,10 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh-more a b { grid-column: 2; font-weight: 500; } .sh-more a small { grid-column: 2; font-size: 12px; color: var(--mute); } .sh-more a i { grid-column: 3; grid-row: 1 / span 2; font-style: normal; color: var(--mute); }
 /* in Graphite the sections' words are set in the grotesk, as the header's are; a page that has no --sans keeps its own face */
 .sh p, .sh-t a, .sh-more a, .bn a { font-family: var(--sans, var(--mono)); }
-.sh-t { border-radius: 10px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); }
-.sh-t a { border-radius: 8px; }
+.sh-t { border-radius: 999px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); box-shadow: inset 0 0 0 1px var(--hair); }
+.sh-t a { border-radius: 999px; }
 .sh-t a[aria-current="page"] { background: var(--raise, var(--card)); }
-.sh-t .sh-i { border-radius: 8px; background: var(--raise, var(--card)); }
+.sh-t .sh-i { border-radius: 999px; background: var(--raise, var(--card)); box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--violet, #000) 70%, transparent); transition-timing-function: var(--spring, cubic-bezier(.2,.7,.2,1)); }
 /* each page of its own, as the view of its section: its own heading (and the switch the section's tabs now are) gives way to the section's head; everything
    else the page has stays, its notes, explainers and status lines included, and what belongs to the other view is out of the way */
 /* (the vault is stamped with its section alone, data-sec="borrow", until chrome.js names the side from the address; the page's own rules already keep
@@ -681,16 +684,16 @@ html[data-sec="rewards/"] #find-h { display: none !important; }
 .sm-p {
   position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
   width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
-  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px;
-  box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
+  border: 1px solid transparent; border-radius: 22px; background: linear-gradient(var(--card), var(--card)) padding-box, var(--glow-rim, var(--hair-2, var(--hair))) border-box;
+  box-shadow: 0 30px 60px -30px color-mix(in srgb, var(--violet, #000) 50%, rgba(0,0,0,.5)), 0 2px 8px rgba(0,0,0,.06);
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 .sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
-.sm-p a { font: 400 14px/1 var(--sans, var(--mono)); }
+.sm-p a { font: 400 14px/1 var(--sans, var(--mono)); border-radius: 14px; }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
 .sm-p a[aria-current="page"] { background: var(--hair); }
-.sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+.sm-p a:focus-visible { outline: 2px solid var(--focus, var(--orange)); outline-offset: -2px; }
 .sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
@@ -711,7 +714,8 @@ canvas.gx-field { position: fixed; top: 0; left: 0; z-index: -1; max-width: 100%
    places that have a mark of their own are that mark; in a narrow one every place is an icon that says its name on hover and to a screen reader (they narrow a little on a small
    phone before they would run off the page) */
 footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
-footer.sf { font: 400 13px/1.4 var(--sans, var(--mono)); }
+footer.sf { font: 400 13px/1.4 var(--sans, var(--mono)); border-image: linear-gradient(90deg, color-mix(in srgb, var(--orange) 45%, var(--hair)), var(--hair) 30% 70%, color-mix(in srgb, var(--violet, var(--orange)) 45%, var(--hair))) 1; }
+footer.sf nav a { border-radius: 999px; }
 footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
 footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); text-decoration: none; transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
 footer.sf nav a:active { transform: scale(.92); }
@@ -735,22 +739,31 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 .sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
 @media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
 
-/* Graphite's palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
+/* Twin glow's palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
    its head, so the one block recolours them all and a page's own styles are untouched. The values are the front page's (index.html keeps them with the rest of its
-   tokens). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and are left out: the SPX page, by
-   its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the build gives it. */
+   tokens, with the skin's gradients beside them). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and
+   are left out: the SPX page, by its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the
+   build gives it. */
 :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-  --paper: #E6E6E4; --bg: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --ink: #17181B; --mute: #5C5D62;
-  --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24); --hair-strong: rgba(23,24,27,.24); --skel: rgba(23,24,27,.08);
+  --paper: #F4F1FB; --bg: #F4F1FB; --card: #FDFCFF; --field: #F2EEFA; --ink: #15121F; --mute: #575170;
+  --hair: rgba(21,18,31,.09); --hair-2: rgba(21,18,31,.22); --hair-strong: rgba(21,18,31,.22); --skel: rgba(21,18,31,.07);
+  --violet: #8B5CF6; --focus: #6D3FE0;
+  --glow-pill: linear-gradient(120deg, #D9690B, #7C3AED);
+  --glow-go: linear-gradient(110deg, #DE6C0C, #7C3AED 52%, #4D5DD3);
+  --glow-off: linear-gradient(110deg, color-mix(in srgb, #F7931A 16%, var(--field)), color-mix(in srgb, #8B5CF6 16%, var(--field)) 52%, color-mix(in srgb, #627EEA 16%, var(--field)));
+  --glow-shadow: 0 16px 36px -16px color-mix(in srgb, #8B5CF6 85%, transparent), 0 6px 18px -12px #F7931A;
+  --glow-rim: linear-gradient(140deg, color-mix(in srgb, #F7931A 80%, transparent), rgba(255,255,255,.3) 45%, color-mix(in srgb, #8B5CF6 80%, transparent));
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-    --paper: #131417; --bg: #131417; --card: #1A1B1F; --field: #15161A; --ink: #E4E4E1; --mute: #9A9BA1;
-    --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22); --hair-strong: rgba(228,228,225,.22); --skel: rgba(228,228,225,.07);
+    --paper: #07060D; --bg: #07060D; --card: #16131F; --field: #100E19; --ink: #F1EEFA; --mute: #A9A2C0;
+    --hair: rgba(241,238,250,.09); --hair-2: rgba(241,238,250,.22); --hair-strong: rgba(241,238,250,.22); --skel: rgba(241,238,250,.07);
+    --focus: #B9A2FF;
+    --glow-rim: linear-gradient(140deg, color-mix(in srgb, #F7931A 75%, transparent), rgba(255,255,255,.12) 45%, color-mix(in srgb, #8B5CF6 80%, transparent));
   }
 }
 
-/* Graphite's grotesk, for the header, the menu and the footer of every page that wears them (the front page names it in its own head as well, for its first paint), and a
+/* The skin's grotesk, for the header, the menu and the footer of every page that wears them (the front page names it in its own head as well, for its first paint), and a
    local face scaled to its width and line metrics that shows until it arrives; the same for Newsreader, the front page's serif. Measured against each font's own
    advances. */
 @font-face { font-family: 'Schibsted Grotesk'; font-weight: 400 600; font-display: swap; src: url('/fonts/schibsted-grotesk-latin.woff2') format('woff2'); }
