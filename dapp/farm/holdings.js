@@ -5,7 +5,8 @@
 // → { a, b, pct } (a and b in the pool's units, pct in percent), or null when the position or the pool cannot be read as numbers.
 export function holdingOf({ shares, reserves } = {}) {
   try {
-    const sh = BigInt(shares), tot = BigInt(reserves.totalShares), ra = BigInt(reserves.reserveA), rb = BigInt(reserves.reserveB);
+    // the pool reads of the farm pages name the pool's liquidity shares `lpTotalShares` (the farm's own bonded count is another figure), the pool contract's own read `totalShares`
+    const sh = BigInt(shares), tot = BigInt(reserves.lpTotalShares ?? reserves.totalShares), ra = BigInt(reserves.reserveA), rb = BigInt(reserves.reserveB);
     if (!(sh > 0n) || !(tot > 0n) || ra < 0n || rb < 0n) return null;
     const own = sh > tot ? tot : sh;                       // a read of the pool from before the position's own shares were counted never says more than all of it
     return { a: (ra * own) / tot, b: (rb * own) / tot, pct: Number((own * 1_000_000n) / tot) / 10_000 };

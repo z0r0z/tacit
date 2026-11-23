@@ -22,6 +22,12 @@ test('a real position: its share of the pool and the two coins that share is wor
   assert.equal(unitsText(h.b), '448.346');
 });
 
+test('the pool as the farm pages hold it: `lpTotalShares` is the total (read from the live page: assetA, assetB, reserveA, reserveB, lpTotalShares)', () => {
+  const page = { assetA: '0x3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34', assetB: '0xd608b0c3806e782cc213e2d52245c3c2fbef455a10410a1f5ccc61ba45262571', reserveA: 292396557n, reserveB: 260203937871n, lpTotalShares: 8667505254n };
+  assert.deepEqual(holdingOf({ shares: 1493460173n, reserves: page }), holdingOf({ shares: 1493460173n, reserves: POOL }));
+  assert.equal(holdingOf({ shares: 1493460173n, reserves: { ...page, lpTotalShares: undefined } }), null, 'no total, no figure');
+});
+
 test('shares and reserves as strings, numbers or bigints give the same answer', () => {
   const want = holdingOf({ shares: 1493460173n, reserves: POOL });
   const s = holdingOf({ shares: '1493460173', reserves: { totalShares: '8667505254', reserveA: '292396557', reserveB: '260203937871' } });
