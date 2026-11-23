@@ -105,7 +105,7 @@ const TETH = { sym: 'tETH', name: 'Ether, private', addr: 'teth', dec: 18, icon:
 const CUSTOM_KEY = 'tacit-swap-tokens-v1';
 const S = {
   toTacit: null, toTacitBad: '', toTacitBusy: false, toName: null, toBusy: false,
-  inP: false, outP: false, btc: false, at: { pay: null, get: null }, mk: null, mq: null, pay: lc(R.ZERO), get: lc(R.TAC), amt: '', slip: 50, pick: null, hold: false, q: null, seq: 0, busy: false, ack: false,
+  inP: false, outP: false, btc: false, atomic: false, at: { pay: null, get: null }, mk: null, mq: null, pay: lc(R.ZERO), get: lc(R.TAC), amt: '', slip: 50, pick: null, hold: false, q: null, seq: 0, busy: false, ack: false,
   custom: [], bal: {}, px: {}, gasPrice: null, chainT: 0, chainAt: 0, farms: null, lastBuy: null, note: '', ackKey: '', to: null, toOpen: false, toBad: '', ammRoute: null,
 };
 let ROOT = null, H = {}, wallet = null, W = {};
@@ -565,7 +565,7 @@ function syncMove() {
 let qTimer = 0;
 function requote(now_ = false) {
   clearTimeout(qTimer);
-  if (S.btc) return;
+  if (S.btc || S.atomic) return;
   if (hopDefault()) { changed(); paint(); }
   const mk = syncMove();
   if (mk) {
@@ -869,7 +869,8 @@ function paintNudge() {
 function paintMode() {
   const k = kindOf(S.pay, S.get), slips = (k && k !== 'private' && !(k === 'pout' && isEth(S.get))) || (exiting() && S.pay !== S.get);
   ROOT.classList.toggle('btc', S.btc); if ($('#btc')) $('#btc').hidden = !S.btc; $('.sw-foot').hidden = !slips;
-  ROOT.querySelectorAll('.mode [data-mode]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === 'bitcoin' ? S.btc : !S.btc)));
+  ROOT.classList.toggle('atom', S.atomic); if ($('#atomic')) $('#atomic').hidden = !S.atomic;
+  ROOT.querySelectorAll('.mode [data-mode]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === 'bitcoin' ? S.btc : b.dataset.mode === 'atomic' ? S.atomic : !S.btc && !S.atomic)));
 }
 const shownAt = (k, at) => { const t = tokenOf(k, at === 'defi'); return at === 'chain' && t ? { ...t, pvt: true } : at === 'pay' && t ? (isEth(k) ? { ...t, icon: 'peth' } : { ...t, pvt: true }) : at === 'defi' && t && (k === lc(R.TAC) || ownForm(k)) ? { ...t, pvt: true } : t; };
 let PAYWARM = 0;
@@ -2761,6 +2762,7 @@ async function readFarms() {
 }
 
 function params() {
+  if (S.atomic) return atomicParams();
   const p = new URLSearchParams(), sym = (k) => { const t = tokenOf(k); return t?.custom || (t?.addr && listed().filter((x) => nameIs(x, lc(t.sym))).length > 1) ? t.addr : t?.sym; };
   if (S.btc && !moving()) return p;
   if (S.pay !== lc(R.ZERO)) p.set('from', sym(S.pay));
@@ -2772,6 +2774,10 @@ function params() {
   return p;
 }
 function applyParams(p) {
+  // a link that names BTC and ETH opens the Bitcoin and Ethereum lane when providers of it exist; until the boards have been read it is kept, and with none it is read as it always was
+  const ax = atomicAsk(p);
+  if (ax && ATOM.avail && $('#atomic')) { enterAtomic(ax); return; }
+  ATOM.waitP = ax ? p : null;
   const find = (v) => { if (!v) return null; const x = linkName(v); return x === 'teth' ? 'teth' : (listed().find((t) => nameIs(t, x) || t.addr === x)?.addr) || null; };
   const pv = p.get('private'), f = find(p.get('from')), t = find(p.get('to'));
   const fa = p.get('from-at'), ta = p.get('to-at');
@@ -2803,6 +2809,7 @@ function applyParams(p) {
 let ASKED = null;
 function load(p, { fresh = true } = {}) {
   if (S.busy) return false;
+  if (S.atomic && !atomicAsk(p)) setAtomic(false);
   if (fresh) { S.inP = false; S.outP = false; S.at = { pay: null, get: null }; S.mq = null; S.pay = lc(R.ZERO); S.get = lc(R.TAC); S.amt = ''; LATER.on = false; clearTo(); }
   S.note = ''; applyParams(p);
   if (FLOW && !flowFit()) { S.inP = false; S.outP = false; S.at = { pay: null, get: null }; S.amt = ''; applyParams(new URLSearchParams(FLOW_PAIR[FLOW])); flowFit(); }
@@ -2881,6 +2888,58 @@ function setBtc(on) {
   if (S.btc === on || !$('#btc')) return;
   S.btc = on; changed(); paint();
   if (on) openLane(); else lane?.hide();
+}
+// The Bitcoin and Ethereum lane (swap/atomic.js): BTC for ETH and back, swapped with a provider. Its switch stays hidden until the boards show a provider of the pair
+// (swap/atomic-probe.js, read once when the card is idle and kept), so a page with none is the page it was. A link that names BTC and ETH opens it once it is there.
+const ATOM = { avail: false, probing: null, ask: null, waitP: null };
+let atomic = null, atomicP = null;
+function atomicAsk(p) {
+  const f = String(p.get('from') || '').toUpperCase(), t = String(p.get('to') || '').toUpperCase(), a = p.get('amt') || '';
+  const dir = f === 'BTC' && t === 'ETH' ? 'b2e' : f === 'ETH' && t === 'BTC' ? 'e2b' : null;
+  return dir ? { dir, amt: /^\d{0,12}(?:\.\d{1,8})?$/.test(a) ? a : '' } : null;
+}
+function atomicParams() {
+  const p = new URLSearchParams(), st = atomic?.state() || ATOM.ask || { dir: 'b2e', amt: '' };
+  if (st.dir === 'e2b') { p.set('from', 'ETH'); p.set('to', 'BTC'); p.set('to-at', 'btc'); } else { p.set('from', 'BTC'); p.set('to', 'ETH'); p.set('from-at', 'btc'); }
+  if (st.amt) p.set('amt', st.amt);
+  return p;
+}
+// The switch and the lane's place are made only once a provider is found, so a card with none has the markup it had.
+function paintAtomic() {
+  const mode = $('.mode'), after = $('#btc');
+  if (!ATOM.avail || !mode || !after) return;
+  if (!$('#atomic')) {
+    mode.insertAdjacentHTML('beforeend', '<button type="button" role="radio" data-mode="atomic" aria-checked="false" aria-label="Bitcoin and Ethereum" title="Bitcoin and Ethereum"><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg><svg class="tk" aria-hidden="true"><use href="#tk-teth"/></svg></button>');
+    after.insertAdjacentHTML('afterend', '<div id="atomic" hidden></div>');
+  }
+  ROOT.classList.add('ab');
+  paintMode();
+}
+async function openAtomic() {
+  try {
+    atomicP ||= import('/swap/atomic.js?cb=81ec371a').then((mod) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir })));
+    await atomicP;
+    if (S.atomic) { if (ATOM.ask) { atomic.set(ATOM.ask); ATOM.ask = null; } await atomic.show(); }
+  } catch (e) { $('#atomic').innerHTML = `<p class="q err">Could not load the Bitcoin and Ethereum lane: ${esc(e?.message || e)}</p>`; atomic = atomicP = null; }
+}
+function setAtomic(on) {
+  if (S.atomic === on || !$('#atomic') || (on && !ATOM.avail)) return;
+  if (on && S.btc) { if (moving()) return; setBtc(false); }
+  S.atomic = on; changed(); paint();
+  if (on) openAtomic(); else atomic?.hide();
+}
+function enterAtomic(ax) {
+  ATOM.ask = ax;
+  if (S.atomic) { atomic?.set(ax); ATOM.ask = null; changed(); } else setAtomic(true);
+}
+function probeAtomic() {
+  if (ATOM.probing || !$('.mode') || (typeof navigator !== 'undefined' && navigator.connection?.saveData)) return;
+  ATOM.probing = import('/swap/atomic-probe.js?cb=7812db92').then((m) => m.probeAtomic()).catch(() => false).then((yes) => {
+    if (!yes) return;
+    ATOM.avail = true; paintAtomic();
+    // a link that named the pair before the boards were read: opened now, if the card is still on that link
+    if (ATOM.waitP && ASKED?.p === ATOM.waitP && !S.busy && !S.atomic) { const ax = atomicAsk(ATOM.waitP); ATOM.waitP = null; if (ax) enterAtomic(ax); }
+  });
 }
 function arrows(box, attr) {
   box.addEventListener('keydown', (e) => {
@@ -3053,6 +3112,8 @@ function wire() {
   $('#ackbox').addEventListener('change', (e) => { if (e.target.id === 'ack') { S.ack = e.target.checked; S.ackGap = S.gapNow; paintQuote(); } });
   $('.mode')?.addEventListener('click', (e) => {
     const b = e.target.closest('[data-mode]'); if (!b) return;
+    if (b.dataset.mode === 'atomic') { setAtomic(!S.atomic); return; }
+    if (S.atomic) setAtomic(false);
     if (moving()) { if (b.dataset.mode !== 'bitcoin' && S.btc) load(new URLSearchParams()); return; }
     if (b.dataset.mode === 'bitcoin') { setBtc(!S.btc); return; }
     if (S.btc) setBtc(false);
@@ -3081,6 +3142,7 @@ export function mountSwapCard(root, host = {}) {
     if (`${S.pay}>${S.get}` !== ASKED.pair) { S.q = null; paint(); readBalances().then(paintSides); if (S.amt) requote(true); }
   });
   checkExits().catch(() => {});
+  (typeof requestIdleCallback === 'function' ? (f) => requestIdleCallback(f, { timeout: 5000 }) : (f) => setTimeout(f, 2000))(probeAtomic);
   paintSteps();
   if (plans().some((p) => p.state === 'waiting')) ltLoad().then(readBlend, () => {});
   PN.load().then(() => { if (S.q?.rows && !S.q.busy) paintQuote(); }, () => {});
@@ -3105,6 +3167,9 @@ export function mountSwapCard(root, host = {}) {
     params,
     get lane() { return S.btc; },
     setLane: (on) => setBtc(!!on),
+    get atomic() { return S.atomic; },
+    get atomicAvailable() { return ATOM.avail; },
+    setAtomic: (on) => setAtomic(!!on),
     walletChanged,
     keyChanged: () => { PV?.reset(); paint(); privUp(); },
     // private funds just moved (a shield landed, a take-out went): read the private balance again, and a few more times while it has not changed yet

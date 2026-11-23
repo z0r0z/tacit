@@ -30,7 +30,7 @@
 .swc .mode button[data-mode="bitcoin"][data-nudge]::after { content: ''; position: absolute; top: 3px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--card); }
 .swc.btc > :not(.mode):not(#btc):not(.sr) { display: none; }
 /* the front page's card reaches the lane by its places: the switch shows only in the lane, as the way back */
-.swc.mv:not(.btc) > .mode { display: none; }
+.swc.mv:not(.btc):not(.ab):not(.atom) > .mode { display: none; }
 .swc .tk.xs { width: 14px; height: 14px; }
 .swc #btc .coin { cursor: default; } .swc #btc .ack label { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--mute); }
 .swc .brd { display: grid; gap: 6px; margin: 10px 2px 0; font-size: 12px; line-height: 1.5; color: var(--mute); } .swc .brd em { font-style: normal; color: var(--warn); }
@@ -44,6 +44,19 @@
 @media (prefers-reduced-motion: reduce) { .swc .snt .wait .dot { animation: none; } }
 .swc .snt button.link { padding: 0 2px; font: 14px/1 var(--mono); color: var(--mute); background: none; border: 0; cursor: pointer; }
 @media (pointer: coarse) { .swc .mode button { min-height: 38px; } }
+/* the Bitcoin and Ethereum lane (swap/atomic.js): a third switch with the two marks, made once the boards name a provider of the pair (the card gets .ab); in the front page's card, whose
+   switch is otherwise out of sight, it shows with Ethereum alone, as the way in and back; the lane is drawn with the fields, receipt and list of the Bitcoin lane's */
+.swc .mode button[data-mode="atomic"] { gap: 0; padding: 2px 10px; } .swc .mode button[data-mode="atomic"] .tk + .tk { margin-left: -5px; }
+.swc.mv:not(.btc) .mode button[data-mode="bitcoin"], .swc.mv.btc .mode button[data-mode="atomic"] { display: none; }
+.swc.atom > :not(.mode):not(#atomic):not(.sr) { display: none; }
+.swc #atomic .coin { cursor: default; }
+.swc .snt.atm .stp { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 4px 0 2px; padding: 0; list-style: none; }
+.swc .snt.atm .stp li { display: grid; align-content: start; gap: 6px; font-size: 11.5px; line-height: 1.3; color: var(--mute); }
+.swc .snt.atm .stp li i { height: 3px; border-radius: 2px; background: color-mix(in srgb, var(--ink) 14%, transparent); }
+.swc .snt.atm .stp li.done, .swc .snt.atm .stp li.active { color: var(--ink); } .swc .snt.atm .stp li.done i { background: var(--ok); }
+.swc .snt.atm .stp li.active i { background: var(--orange); animation: swc-snt-pulse 1.8s ease-in-out infinite; }
+@media (max-width: 420px) { .swc .snt.atm .stp { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (prefers-reduced-motion: reduce) { .swc .snt.atm .stp li.active i { animation: none; } }
 .swc .f { padding: 12px 14px 10px; background: var(--field); border: 1px solid color-mix(in srgb, var(--ink) 4%, transparent); border-radius: 16px; transition: border-color .15s, box-shadow .15s; }
 .swc .f:focus-within { border-color: color-mix(in srgb, var(--ink) 16%, transparent); }
 .swc .fh, .swc .ff { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-height: 22px; font-size: 12px; color: var(--mute); }

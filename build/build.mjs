@@ -219,7 +219,7 @@ const LARGE_POOL_CB_FILES = ['fixed-pool-notes.js', 'fixed-pool-flow.js', 'fixed
 const BRIDGE_CB_FILES = ['bridge/track.js', 'bridge/mover.js', 'bridge/app.js', 'bridge/index.html'];
 // dapp/swap/ is the swap card the front page's Swap tab draws (its own address only forwards there): its routes first (and the aggregated route
 // over them), the private swaps (later.js reads the aggregated route), then the card.
-const SWAP_CB_FILES = ['gas-relay.js', 'swap/route.js', 'swap/aggregate.js', 'swap/solvers.js', 'swap/bitcoin.js', 'swap/private.js', 'swap/later.js', 'swap/link.js', 'swap/route-name.js', 'swap/card.js'];
+const SWAP_CB_FILES = ['gas-relay.js', 'swap/route.js', 'swap/aggregate.js', 'swap/solvers.js', 'swap/bitcoin.js', 'swap/atomic-probe.js', 'swap/atomic.js', 'swap/private.js', 'swap/later.js', 'swap/link.js', 'swap/route-name.js', 'swap/card.js'];
 // tests/swap-harness/ is the swap card's test page. It names the card's modules by their tokens, which must be the ones the card's own imports carry or the page
 // loads a second copy of each module, so it is swept last, after every file it names has its own.
 const HARNESS_CB_FILES = ['../tests/swap-harness/app.js', '../tests/swap-harness/index.html'];
