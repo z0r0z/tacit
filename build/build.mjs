@@ -195,7 +195,7 @@ const DISCORD_CB_FILES = ['discord/message.js', 'discord/holdings.js', 'discord/
 const SHOP_CB_FILES = ['shop/shelf.js', 'shop/app.js', 'shop/index.html'];
 const FACE_CB_FILES = ['face/config.js', 'face/pixel.js', 'face/catchup.js', 'face/app.js', 'face/index.html'];
 // dapp/fast/ is where TAC on Bitcoin goes to the private balance through a provider: its wiring and its page logic first, then app.js, then the page.
-const FAST_CB_FILES = ['fastbridge-price.js', 'fastbridge-reverse-client.js', 'fast/want.js', 'fast/discover.js', 'fast/sweep.js', 'fast/wire.js', 'fast/ui.js', 'fast/provide.js', 'fast/reverse.js', 'fast/app.js', 'fast/index.html'];
+const FAST_CB_FILES = ['fastbridge-price.js', 'fastbridge-reverse-client.js', 'fast/want.js', 'fast/discover.js', 'fast/sweep.js', 'fast/wire.js', 'fast/pair-wire.js', 'fast/ui.js', 'fast/provide.js', 'fast/reverse.js', 'fast/app.js', 'fast/index.html'];
 // dapp/chain/: the old /chain/ address, which app.js sends on to TAC's page, and live.js and ui.js, which TAC's page reads.
 const CHAIN_CB_FILES = ['chain/ui.js', 'chain/live.js', 'chain/app.js', 'chain/index.html'];
 // dapp/prove/ starts and pauses proving on this computer: its words, then app.js (which also takes community-prove.js), then the page.
