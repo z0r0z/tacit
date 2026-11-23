@@ -6,7 +6,8 @@
 //   node tests/btc-pool-esplora.test.mjs
 
 import assert from 'node:assert/strict';
-import { makeEsplora } from '../worker-relay/src/lib/btc-pool-chain.js';
+import { makeEsplora, parseTx } from '../worker-relay/src/lib/btc-pool-chain.js';
+import { openBtcPoolStore } from '../worker-relay/src/lib/btc-pool-store.js';
 import { nextDelayMs, esploraSources, MAX_BACKOFF_MS } from '../worker-relay/src/btc-pool-indexer.js';
 
 const tid = (n) => n.toString(16).padStart(64, '0');
@@ -224,16 +225,119 @@ test('the delay before the next pass: quick while catching up, slow when idle, b
 test('mainnet always carries the public sources, in the order set first; signet and an explicit ONLY list are left alone', () => {
   const three = 'https://mempool.space/api,https://blockstream.info/api,https://mempool.emzy.de/api';
   assert.deepEqual(esploraSources('mainnet', { BTC_POOL_ESPLORA: three }), [
-    'https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api',
+    'https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api', 'https://mempool.bullbitcoin.com/api',
   ]);
   assert.deepEqual(esploraSources('mainnet', { BTC_POOL_ESPLORA: 'https://own.test/api/, https://mempool.space/api' }), [
-    'https://own.test/api', 'https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api',
+    'https://own.test/api', 'https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api', 'https://mempool.bullbitcoin.com/api',
   ], 'our own source first, no duplicates, trailing slash dropped');
   assert.deepEqual(esploraSources('mainnet', { BTC_POOL_ESPLORA: 'https://own.test/api', BTC_POOL_ESPLORA_ONLY: '1' }), ['https://own.test/api']);
-  assert.equal(esploraSources('mainnet', {}).length, 4);
+  assert.equal(esploraSources('mainnet', {}).length, 5);
   assert.deepEqual(esploraSources('signet', {}), ['https://mempool.space/signet/api']);
   assert.deepEqual(esploraSources('signet', { BTC_POOL_ESPLORA: 'https://s.test/api' }), ['https://s.test/api']);
 });
+
+
+test('a source that is back from a rest is tried by one read first, and the reads that come with it go to the sources that are up', async () => {
+  let a = 'down';
+  const { esplora, seen, later } = rig(['a.test', 'b.test'], async (u) => {
+    if (u.hostname === 'a.test') { await new Promise((r) => setTimeout(r, 20)); return a === 'down' ? res('no', 503) : res('0123'); }
+    return res('0123');
+  }, { gapMs: 0, coolMs: 1000 });
+  await Promise.all([esplora.rawTx(tid(1)), esplora.rawTx(tid(2))]);
+  later(5000);                                         // its rest is over, and it is still down
+  seen.length = 0;
+  await Promise.all(Array.from({ length: 8 }, (_, n) => esplora.rawTx(tid(10 + n))));
+  assert.equal(hostsAsked(seen).filter((h) => h === 'a.test').length, 1, 'one read was spent finding out');
+  assert.equal(esplora.health()[0].fails, 2, 'and it failed again');
+  later(120_000); a = 'up'; seen.length = 0;
+  await Promise.all(Array.from({ length: 8 }, (_, n) => esplora.rawTx(tid(30 + n))));
+  for (let n = 0; n < 6; n++) await esplora.rawTx(tid(50 + n));
+  assert.equal(esplora.health()[0].fails, 0, 'a good answer clears it');
+  assert.ok(hostsAsked(seen).filter((h) => h === 'a.test').length >= 3, 'and it takes its share again');
+});
+
+test('the reads out at once follow the sources: four for each, never fewer than six', async () => {
+  const peakOf = async (n) => {
+    const hosts = Array.from({ length: n }, (_, i) => `h${i}.test`);
+    const r = rig(hosts, async () => { await new Promise((x) => setTimeout(x, 4)); return res('0123'); }, { gapMs: 0 });
+    await Promise.all(Array.from({ length: 60 }, (_, i) => r.esplora.rawTx(tid(i))));
+    return r.peak();
+  };
+  assert.ok((await peakOf(1)) <= 6);
+  const five = await peakOf(5);
+  assert.ok(five > 6 && five <= 20, `five sources: ${five}`);
+});
+
+test('a source that answers a bad request while it is being tried is not left out for good', async () => {
+  let a = 'down';
+  const { esplora, seen, later } = rig(['a.test', 'b.test'], (u) => (u.hostname === 'a.test' ? (a === 'down' ? res('no', 503) : res('bad request', 400)) : res('0123')), { gapMs: 0, coolMs: 1000 });
+  await esplora.rawTx(tid(1)).catch(() => {}); await esplora.rawTx(tid(2)).catch(() => {});
+  later(5000); a = 'up';
+  for (let n = 0; n < 6; n++) await esplora.rawTx(tid(10 + n)).catch(() => {});
+  seen.length = 0;
+  for (let n = 0; n < 6; n++) await esplora.rawTx(tid(30 + n)).catch(() => {});
+  assert.ok(hostsAsked(seen).includes('a.test'), 'still asked');
+});
+
+// ── what is kept across a restart ──
+const RAW_HEX = '01000000' + '01' + 'aa'.repeat(32) + '00000000' + '00' + 'ffffffff' + '01' + '0100000000000000' + '01' + '51' + '00000000';
+const RAW_TXID = parseTx(Uint8Array.from(Buffer.from(RAW_HEX, 'hex'))).tx.txid;
+const memoryKeep = () => { const m = new Map(); return { m, get: (kind, k) => m.get(`${kind}:${k}`) ?? null, put: (kind, k, v) => { m.set(`${kind}:${k}`, v); } }; };
+
+test('a transaction whose bytes hash to its txid is kept, and a restart reads it from the cache, not the network', async () => {
+  const keep = memoryKeep();
+  const first = rig(['a.test'], () => res(RAW_HEX), { keep });
+  assert.equal(Buffer.from(await first.esplora.rawTx(RAW_TXID)).toString('hex'), RAW_HEX);
+  assert.equal(first.seen.length, 1);
+  assert.equal(keep.m.get(`hex:${RAW_TXID}`), RAW_HEX);
+  const second = rig(['a.test'], () => { throw new Error('the network must not be asked'); }, { keep });
+  assert.equal(Buffer.from(await second.esplora.rawTx(RAW_TXID)).toString('hex'), RAW_HEX);
+  assert.equal(second.seen.length, 0);
+});
+
+test('bytes that do not hash to the txid asked for are never kept, so a bad answer cannot outlive a restart', async () => {
+  const keep = memoryKeep();
+  const { esplora } = rig(['a.test'], () => res(RAW_HEX), { keep });
+  await esplora.rawTx(tid(5));                       // the source answered with another transaction: the caller refuses it
+  assert.equal(keep.m.size, 0, 'nothing kept');
+  const junk = rig(['a.test'], () => res('zz'), { keep });
+  await junk.esplora.rawTx(tid(6)).catch(() => {});
+  assert.equal(keep.m.size, 0);
+});
+
+test('a status deep under the tip is kept and read back after a restart; a shallow one is not kept', async () => {
+  const keep = memoryKeep();
+  const answers = (u) => (u.pathname === '/api/blocks/tip/height' ? res('1000') : u.pathname.includes(tid(1)) ? res(status(500)) : res(status(990)));
+  const a = rig(['a.test'], answers, { keep, gapMs: 0 });
+  await a.esplora.tipHeight(); await a.esplora.txStatus(tid(1)); await a.esplora.txStatus(tid(2));
+  assert.deepEqual([...keep.m.keys()], [`status:${tid(1)}`], 'only the deep one');
+  const b = rig(['a.test'], () => { throw new Error('the network must not be asked'); }, { keep });
+  assert.equal((await b.esplora.txStatus(tid(1))).block_height, 500);
+  assert.equal(b.seen.length, 0);
+});
+
+test('a cache that throws never fails a read', async () => {
+  const bad = { get() { throw new Error('disk gone'); }, put() { throw new Error('disk full'); } };
+  const lines = [];
+  const { esplora } = rig(['a.test'], () => res(RAW_HEX), { keep: bad, log: (m) => lines.push(m) });
+  assert.equal(Buffer.from(await esplora.rawTx(RAW_TXID)).toString('hex'), RAW_HEX);
+  assert.ok(lines.some((l) => /cache write failed: disk full/.test(l)), 'said so');
+});
+
+test('the store keeps what it is given, ignores a repeat, survives a replay wipe, and drops the oldest tenth when over its limit', () => {
+  const store = openBtcPoolStore(':memory:');
+  assert.equal(store.cacheGet('hex', 'x'), null);
+  store.cachePut('hex', 'x', 'one'); store.cachePut('hex', 'x', 'two');
+  assert.equal(store.cacheGet('hex', 'x'), 'one', 'a transaction does not change');
+  assert.equal(store.cacheGet('status', 'x'), null, 'by kind');
+  store.wipe();
+  assert.equal(store.cacheGet('hex', 'x'), 'one', 'a rescan does not touch it');
+  for (let i = 0; i < 60400; i++) store.cachePut('hex', `k${i}`, 'v');
+  const n = store.db.prepare('SELECT count(*) AS n FROM chain_cache').get().n;
+  assert.ok(n < 60400 && n > 50000, `pruned to ${n}`);
+  assert.equal(store.cacheGet('hex', 'x'), null, 'the oldest went first');
+  assert.equal(store.cacheGet('hex', 'k60399'), 'v', 'the newest stayed');
+}, 60);
 
 let passed = 0;
 for (const [name, fn] of tests) {

@@ -12,6 +12,8 @@ const TABLES = ['blocks', 'leaves', 'nullifiers', 'exits', 'envelopes'];
 // Relayer state has its own version; replay rescans and rollbacks leave it alone.
 const RELAY_SCHEMA = '1';
 const RELAY_TABLES = ['relay_payloads', 'relay_carriers'];
+const CACHE_MAX = 60000;
+let puts = 0;
 const RELAY_TERMINAL = "('confirmed', 'dropped', 'rejected', 'replayed-elsewhere', 'empty', 'cancelled')";
 
 export function openBtcPoolStore(dbPath) {
@@ -37,6 +39,9 @@ export function openBtcPoolStore(dbPath) {
     CREATE TABLE IF NOT EXISTS relay_payloads (id TEXT PRIMARY KEY, state TEXT NOT NULL, updated INTEGER NOT NULL, rec TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS relay_carriers (id TEXT PRIMARY KEY, state TEXT NOT NULL, updated INTEGER NOT NULL, rec TEXT NOT NULL);
   `);
+  // Reads of Bitcoin that cannot change (a transaction by txid, a deep-confirmed status), kept so a restart or a redeploy does not
+  // read them again. Not replay state: a rescan or a schema change leaves it alone.
+  db.exec('CREATE TABLE IF NOT EXISTS chain_cache (kind TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, PRIMARY KEY (kind, k))');
   db.exec(`
     CREATE TABLE IF NOT EXISTS blocks (height INTEGER PRIMARY KEY, hash TEXT NOT NULL, root TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS leaves (
@@ -60,6 +65,10 @@ export function openBtcPoolStore(dbPath) {
   const st = {
     getMeta: db.prepare('SELECT v FROM meta WHERE k = ?'),
     setMeta: db.prepare('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v'),
+    cacheGet: db.prepare('SELECT v FROM chain_cache WHERE kind = ? AND k = ?'),
+    cachePut: db.prepare('INSERT OR IGNORE INTO chain_cache (kind, k, v) VALUES (?, ?, ?)'),
+    cacheCount: db.prepare('SELECT count(*) AS n FROM chain_cache'),
+    cachePrune: db.prepare('DELETE FROM chain_cache WHERE rowid IN (SELECT rowid FROM chain_cache ORDER BY rowid LIMIT ?)'),
     tip: db.prepare('SELECT height, hash, root FROM blocks ORDER BY height DESC LIMIT 1'),
     block: db.prepare('SELECT height, hash, root FROM blocks WHERE height = ?'),
     insBlock: db.prepare('INSERT INTO blocks (height, hash, root) VALUES (?, ?, ?)'),
@@ -115,6 +124,12 @@ export function openBtcPoolStore(dbPath) {
     db,
     meta: (k) => st.getMeta.get(k)?.v ?? null,
     setMeta: (k, v) => st.setMeta.run(k, String(v)),
+    cacheGet: (kind, k) => st.cacheGet.get(kind, k)?.v ?? null,
+    // At most CACHE_MAX rows: when it is over, the oldest tenth goes.
+    cachePut: (kind, k, v) => {
+      st.cachePut.run(kind, k, String(v));
+      if (++puts % 200 === 0) { const n = st.cacheCount.get().n; if (n > CACHE_MAX) st.cachePrune.run(Math.ceil(n / 10)); }
+    },
     tip: () => st.tip.get() || null,
     block: (height) => st.block.get(height) || null,
     commitBlock,

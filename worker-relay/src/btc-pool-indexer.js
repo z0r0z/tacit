@@ -28,7 +28,7 @@ export class ChainIntegrityError extends Error {
 
 // Public esplora sources. Mainnet always carries every one of these, whatever BTC_POOL_ESPLORA lists first (set
 // BTC_POOL_ESPLORA_ONLY=1 to use exactly the list): one operator limiting this host must not stop the replay.
-const MAINNET_ESPLORA = ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api'];
+const MAINNET_ESPLORA = ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api', 'https://mempool.bullbitcoin.com/api'];
 export function esploraSources(network, env = {}) {
   const set = String(env.BTC_POOL_ESPLORA || '').split(',').map((x) => x.trim().replace(/\/$/, '')).filter(Boolean);
   if (network === 'signet') return set.length ? set : ['https://mempool.space/signet/api'];
@@ -437,7 +437,7 @@ async function main() {
   const verifier = makeBtcPoolVerifier({ network, log: (...a) => console.error(...a) });
   // Load the wasm and params up front, so a broken image fails here rather than at the first envelope.
   if (verifier.enabled) await verifier.ready().catch((e) => console.error(`!!! btc-pool: verifier failed to load: ${e.message}`));
-  const ix = createIndexer({ store, esplora: makeEsplora(esploraBases, { hashQuorum, log }), verifier, network, startHeight, confirmations, log, chain });
+  const ix = createIndexer({ store, esplora: makeEsplora(esploraBases, { hashQuorum, log, keep: { get: store.cacheGet, put: store.cachePut } }), verifier, network, startHeight, confirmations, log, chain });
   log(`resuming at ${ix.state.tip ?? `(empty, start ${startHeight})`}; verifier ${verifier.enabled ? 'enabled' : `DISABLED: ${verifier.reason}`}`);
 
   let handler = await withRelayer(createHandler(ix, store), { ix, store, verifier, network, esploraBases: esploraBases.join(','), log });

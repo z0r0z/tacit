@@ -250,6 +250,8 @@ export function txEnvelopes(tx) {
 //  - when every source is resting nothing is sent: the read fails at once with `restMs`, the wait until the first
 //    is back, so the caller waits instead of hammering;
 //  - what cannot change is kept: a transaction's status once it is confirmed `statusDepth` blocks under the tip;
+//  - what cannot change also goes to `keep` ({ get(kind, key), put(kind, key, value) }, best effort) when one is given, so a restart
+//    does not read it again; a transaction is kept only once its bytes hash to its txid;
 //  - a failed read says what each source answered, never only the last one's error;
 //  - transaction reads start at a rotating source (they are immutable and checked against their txid); tip and
 //    block reads keep to the first source that is up, so the sources are not mixed along a chain.
@@ -257,13 +259,14 @@ export function txEnvelopes(tx) {
 // disagreeing. `health()` lists each source's rest and last error.
 export function makeEsplora(bases, {
   fetchImpl = fetch, timeoutMs = 20000, hashQuorum = 1, nowMs = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-  coolMs = 20000, coolMaxMs = 5 * 60000, maxInflight = 6, gapMs = 120, statusDepth = 100, statusCacheSize = 20000, log = () => {},
+  coolMs = 20000, coolMaxMs = 5 * 60000, maxInflight = null, gapMs = 120, statusDepth = 100, statusCacheSize = 20000, log = () => {}, keep = null,
 } = {}) {
   const list = (Array.isArray(bases) ? bases : String(bases).split(',')).map((s) => s.trim().replace(/\/$/, '')).filter(Boolean);
   if (!list.length) throw new Error('no esplora base');
   if (!Number.isInteger(hashQuorum) || hashQuorum < 1 || hashQuorum > list.length) throw new Error(`hash quorum ${hashQuorum} needs as many esplora bases`);
   const name = (b) => b.replace(/^https?:\/\//, '');
-  const state = new Map(list.map((b) => [b, { until: 0, fails: 0, last: null, nextAt: 0 }]));
+  const state = new Map(list.map((b) => [b, { until: 0, fails: 0, last: null, nextAt: 0, probing: false }]));
+  const cap = maxInflight || Math.max(6, 4 * list.length);
 
   const causeOf = (e) => {
     if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) return 'timed out';
@@ -279,10 +282,11 @@ export function makeEsplora(bases, {
     return Number.isFinite(d) ? Math.min(Math.max(d - nowMs(), 0), 600000) : 0;
   };
   // A source that answered is healthy again; one that did not rests (a repeat while it already rests only extends).
-  const healed = (b) => { const h = state.get(b); h.fails = 0; h.last = null; };
+  const healed = (b) => { const h = state.get(b); h.fails = 0; h.last = null; h.probing = false; };
   function cool(b, askedMs, why) {
     const h = state.get(b), t = nowMs(), resting = h.until > t;
     h.last = why;
+    h.probing = false;
     if (resting) { h.until = Math.max(h.until, t + askedMs); return; }
     h.fails++;
     h.until = t + Math.max(askedMs, Math.min(coolMaxMs, coolMs * 2 ** (h.fails - 1)));
@@ -291,7 +295,8 @@ export function makeEsplora(bases, {
   let cursor = 0;
   function order(rotate) {
     const t = nowMs();
-    const ready = list.filter((b) => state.get(b).until <= t);
+    // A source that has failed and is back from its rest is tried by one read first; the others go to the sources that are up.
+    const ready = list.filter((b) => state.get(b).until <= t && !state.get(b).probing);
     const resting = list.filter((b) => state.get(b).until > t).sort((a, b) => state.get(a).until - state.get(b).until);
     if (rotate && ready.length > 1) ready.push(...ready.splice(0, cursor++ % ready.length));
     return { ready, resting };
@@ -311,17 +316,22 @@ export function makeEsplora(bases, {
   }
   let inflight = 0;
   const queue = [];
-  const acquire = () => (inflight < maxInflight ? (inflight++, Promise.resolve()) : new Promise((res) => queue.push(res)));
+  const acquire = () => (inflight < cap ? (inflight++, Promise.resolve()) : new Promise((res) => queue.push(res)));
   const release = () => { const next = queue.shift(); if (next) next(); else inflight--; };
 
   // Throws on failure; the error carries notFound only when every source answered 404, and restMs when all rest.
   async function attempt(path, kind) {
     const { ready, resting } = order(path.startsWith('/tx/'));
-    if (!ready.length) throw restingError(path, resting);
+    if (!ready.length) {
+      if (!resting.length) { const e = new Error(`${path}: every source is being tried by another read`); e.notFound = false; e.restMs = 1000; throw e; }
+      throw restingError(path, resting);
+    }
     const said = [];
     let n404 = 0;
     for (const b of ready) {
-      if (state.get(b).until > nowMs()) { said.push(`${name(b)} resting`); continue; } // rested by a read that overtook this one
+      const h = state.get(b);
+      if (h.until > nowMs() || h.probing) { said.push(`${name(b)} resting`); continue; } // rested, or being tried, by a read that overtook this one
+      if (h.fails > 0) h.probing = true;
       const wait = reserve(b);
       if (wait > 0) await sleep(wait);
       try {
@@ -334,6 +344,7 @@ export function makeEsplora(bases, {
         if (r.status === 404) { n404++; said.push(`${name(b)} 404`); healed(b); continue; }
         said.push(`${name(b)} HTTP ${r.status}`);
         if (r.status === 429 || r.status === 403 || r.status >= 500) cool(b, retryAfterMs(r), `HTTP ${r.status}`);
+        else h.probing = false;                              // the source answered, only not with this
       } catch (e) {
         const why = causeOf(e);
         said.push(`${name(b)} ${why}`);
@@ -357,6 +368,13 @@ export function makeEsplora(bases, {
     return p;
   }
 
+  const kept = (kind, k) => { try { return keep ? keep.get(kind, k) : null; } catch { return null; } };
+  const keepPut = (kind, k, v) => { try { if (keep) keep.put(kind, k, v); } catch (e) { log(`esplora cache write failed: ${e && e.message}`); } };
+  let reads = 0, fromKeep = 0;
+  const counted = (fromDisk) => {
+    if (fromDisk) fromKeep++; else reads++;
+    if ((reads + fromKeep) % 500 === 0) log(`esplora: ${reads} transaction reads sent, ${fromKeep} answered from the cache`);
+  };
   let lastTip = null;
   const statuses = new Map();
   return {
@@ -390,14 +408,29 @@ export function makeEsplora(bases, {
     },
     header: async (hash) => hexToBytes(await get(`/block/${hash}/header`)),
     rawBlock: (hash) => get(`/block/${hash}/raw`, 'bytes'),
-    rawTx: async (txid) => hexToBytes(await get(`/tx/${txid}/hex`)),
+    rawTx: async (txid) => {
+      const have = kept('hex', txid);
+      if (have) { counted(true); return hexToBytes(have); }
+      const text = await get(`/tx/${txid}/hex`);
+      counted(false);
+      const raw = hexToBytes(text);
+      let ok = false;
+      try { ok = parseTx(raw).tx.txid === txid; } catch { /* not kept; the caller refuses it */ }
+      if (ok) keepPut('hex', txid, text);
+      return raw;
+    },
     txStatus: async (txid) => {
       const hit = statuses.get(txid);
       if (hit) return { ...hit };
+      const have = kept('status', txid);
+      if (have) {
+        try { const k = JSON.parse(have); statuses.set(txid, k); return { ...k }; } catch { /* read it again */ }
+      }
       const s = JSON.parse(await get(`/tx/${txid}/status`));
       if (lastTip !== null && s && s.confirmed === true && Number.isInteger(s.block_height) && lastTip - s.block_height >= statusDepth) {
         statuses.set(txid, s);
         if (statuses.size > statusCacheSize) statuses.delete(statuses.keys().next().value);
+        keepPut('status', txid, JSON.stringify(s));
       }
       return s;
     },
