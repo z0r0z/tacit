@@ -29,8 +29,15 @@ const addr = rev.wallet.address();
 console.log(`main address      ${main.wallet.address()}   (the provider's earnings, take-fee coins and a maker's stock: not used by the reverse side)`);
 console.log(`reverse address   ${addr}   <- send plain sats here (an ordinary Bitcoin send)`);
 const { unifiedAddress } = await import(REPO + '/dapp/tacit-unified.js');
-console.log(`reverse tacit1    ${unifiedAddress(reverseKeyOf(key)).address}\n                  ^ the address a Tacit wallet sends TAC to. It arrives privately, at a one-time address of this key, which the reverse side cannot sell from as it is:\n                  after it confirms, run tools/fastbridge-lp-reverse-normalize.mjs with the id of that transaction (it moves the TAC onto the reverse address above).`);
+const tacit1 = unifiedAddress(reverseKeyOf(key)).address;
+console.log(`reverse tacit1    ${tacit1}\n                  ^ the address a Tacit wallet sends TAC to. It arrives privately, at a one-time address of this key, which the reverse side cannot sell from as it is:\n                  after it confirms, run tools/fastbridge-lp-reverse-normalize.mjs with the id of that transaction (it moves the TAC onto the reverse address above).`);
 if (addr === main.wallet.address()) { console.log('the two are the same address: do not switch the reverse side on'); process.exit(1); }
+// --copy puts the tacit1 address on the clipboard (macOS) and says so; --address-only stops here, with no reads of the chain at all
+if (process.argv.includes('--copy')) {
+  try { (await import('node:child_process')).execFileSync('pbcopy', { input: tacit1 }); console.log(`\ncopied: the reverse tacit1 address (${tacit1.length} characters) is on your clipboard`); }
+  catch (e) { console.log(`\nnot copied (${String((e && e.message) || e).slice(0, 80)}): select the tacit1 line above`); }
+}
+if (process.argv.includes('--address-only')) process.exit(0);
 
 // the notes, read the way the daemon reads them (lib/reverse.mjs), with the daemon's set-up: the live pool for notes that came out of it, and no location
 const tacit = await loadTacit('mainnet', { livePool: true });
