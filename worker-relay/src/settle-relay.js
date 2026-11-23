@@ -23,6 +23,7 @@
 import { CFG, ADDR, OP_GAS, DEFAULT_OP_GAS, OP_PROVE } from './lib/config.js';
 import { confidentialJob, confidentialWake, confidentialBatch, confidentialAck, confidentialStage, confidentialRefresh, confidentialActivateAck, confidentialOpenList, confidentialOpenJob, gasOrders, gasClear, confidentialQueue, heartbeat, heartbeatIdle, setHeartbeatLedger, relayBooks, quoteAsset } from './lib/worker-client.js';
 import { makeBatchWindow } from './lib/batch-window.js';
+import { memoSafeOrder } from './lib/memo-order.js';
 import { makeJobPicker } from './lib/job-picker.js';
 import { proveSettle, proveMixed, proveSealed, proveStdin, boardAlive, withStageReport } from './lib/prover.js';
 import { makeSerial } from './lib/serial.js';
@@ -823,11 +824,22 @@ async function batchCycle() {
   }
 }
 
-// Several claimed ops of different types in one proof and one settle. Their memos go with the settle in op order, as the
-// proof commits to them. A proof that fails leaves each member to settle on its own (settleOne, with its own credit check:
-// a request over several ops needs more credit on hand than one over a single op, so a batch the account could not cover
-// is not a reason to pause); a settle that fails does the same.
-async function settleMixed(jobs) {
+// Several claimed ops of different types in one proof and one settle. The ops go in the order whose memo list the pool pairs right with the leaves
+// (lib/memo-order.js: notes only, then at most one op that makes notes and locks, then locks only); an op that cannot share the batch in that order
+// settles on its own once the batch is done.
+async function settleMixed(claimed) {
+  const { batch, alone } = memoSafeOrder(claimed);
+  if (alone.length) log(`${alone.length} op(s) that make lock leaves settle on their own: a batch takes one, and the memos of the locks come after those of every note`);
+  if (batch.length === 1) await settleOne(batch[0]);
+  else await settleMixedBatch(batch);
+  for (const j of alone) await settleOne(j);
+  return true;
+}
+
+// Their memos go with the settle in op order, as the proof commits to them. A proof that fails leaves each member to settle on its own
+// (settleOne, with its own credit check: a request over several ops needs more credit on hand than one over a single op, so a batch the
+// account could not cover is not a reason to pause); a settle that fails does the same.
+async function settleMixedBatch(jobs) {
   const ids = jobs.map((j) => j.jobId);
   const memos = jobs.flatMap((j) => (Array.isArray(j.memos) ? j.memos : []));
   log(`batching ${jobs.length} ops (${jobs.map((j) => j.type).join(', ')}) into one settle: ${ids.map((i) => i.slice(0, 10)).join(' ')}`);
