@@ -8038,7 +8038,7 @@ await step('hxpos', async () => {
     await until(p, () => document.querySelector('[data-hxm="earn"]')?.getAttribute('aria-selected') === 'true' && !document.querySelector('#hx-pos')?.hidden, null, 60000);
     ok(true, 'hxpos: its Private farms press opens the Earn tab on your positions');
     await p.click('#hx-pos [data-pharv="0"]');
-    await until(p, () => /Harvested to a wTAC note/.test(document.querySelector('#hx-pos-s')?.textContent || ''), null, 120000)
+    await until(p, () => /Harvested( \+[\d.,]+ TAC)? to a wTAC note/.test(document.querySelector('#hx-pos-s')?.textContent || ''), null, 120000)
       .catch(async (e) => { throw new Error(`${e.message.split('\n')[0]} | ${await text(p, '#hx-pos-s')}`); });
     ok((await p.evaluate(() => window.__farmCalls)).some((c) => c.startsWith('harvest:')) && !!(await p.$('#hx-pos-s [data-pturn]')), 'hxpos: Harvest runs the farm\'s harvest and offers turning it into TAC there');
     if (r.errors.length) { fails++; console.log('FAIL hxpos page errors: ' + r.errors.slice(0, 3).join(' | ')); }
