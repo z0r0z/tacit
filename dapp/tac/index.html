@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5o/yMiRow8GWfiCLvE3xAPguUmuROJkUOvbNckZupTw=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-WHgb3hv6NeFS074+PxAl6FglenAvHeFiNUiqDKli5D0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -11813,6 +11813,8 @@ function loadBonds(fresh = false) {
   p.catch(() => {});
   return p;
 }
+// a bond that can be taken back while its lock is still pending is the one the person has just posted: it is not news, here or in the toast
+const bondQuiet = (n) => n.kind === 'take' && n.l.state === 'pending';
 function bondNotes(r = bondsNow()) {
   const out = [];
   for (const l of r?.locks || []) {
@@ -11828,7 +11830,7 @@ const bondText = (n) => (n.kind === 'take' ? `A bond of ${fmt(n.amt, 18, 5)} wst
   : n.kind === 'lost' ? `A lock was spent on Bitcoin before its cBTC was redeemed, so its ${fmt(n.amt, 18, 5)} wstETH bond goes to the insurance reserve.`
   : `A bond is ${fmt(n.amt, 18, 5)} wstETH short of what the engine asks for. Top it up${n.l.health.due ? ` by ${bondDue(n.l.health.due)}` : ''}, or it can go to the insurance reserve.`);
 function bondNews(r) {
-  const seen = new Set(store.get(bondSeen())?.ids || []), fresh = bondNotes(r).filter((n) => !seen.has(n.id) && !(n.kind === 'take' && n.l.state === 'pending'));
+  const seen = new Set(store.get(bondSeen())?.ids || []), fresh = bondNotes(r).filter((n) => !seen.has(n.id) && !bondQuiet(n));
   if (!fresh.length) return;
   for (const n of fresh) {
     toast(bondText(n), n.kind !== 'take', 12000);
@@ -14329,7 +14331,7 @@ function hxBwView(st) {
   const rows = [['Locked', `${fmt(vBtc, 8, 8)} BTC`], st.have ? ['Bond', `${fmt(st.have, 18, 5)} wstETH`] : null, cbtc != null ? ['cBTC', `${fmt(cbtc, 8, 8)} private`] : null,
     cusd != null ? ['cUSD', `${fmt(cusd, 8, 2)} private`] : null, s4 ? ['Debt', `${fmt(st.borrowed, 8, 2)} cUSD`] : null,
     st.sats != null ? ['At your Bitcoin address', `${fmt(st.sats, 8, 8)} BTC${st.pendingSats ? ` (${fmt(st.pendingSats, 8, 8)} unconfirmed)` : ''}`] : null].filter(Boolean);
-  const note = bondNotes()[0];
+  const note = bondNotes().find((n) => !bondQuiet(n));
   return html`${head}${stepper}${autoNote(st)}<div class="hx-bw-p">${panel}</div>
     ${note ? html`<p class="hx-bw-n ${note.kind === 'take' ? '' : 'err'}">${bondText(note)} <button class="link" type="button" data-hxbw="sheet">See your bonds</button></p>` : ''}
     <div class="hx-bw-b">${rows.map(([k, v]) => html`<div><span>${k}</span><b>${v}</b></div>`)}</div>
