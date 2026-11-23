@@ -26,23 +26,25 @@ const key = Uint8Array.from(keyHex.match(/../g).map((x) => parseInt(x, 16)));
 const wallet = (priv) => makeBtcWallet({ priv, hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 }).prims;
 const main = wallet(key), rev = wallet(reverseKeyOf(key));
 const addr = rev.wallet.address();
-console.log(`main address      ${main.wallet.address()}   (the provider's earnings, take-fee coins and a maker's stock: not used by the reverse side)`);
-console.log(`reverse address   ${addr}   <- send plain sats here (an ordinary Bitcoin send)`);
-const { unifiedAddress } = await import(REPO + '/dapp/tacit-unified.js');
-const tacit1 = unifiedAddress(reverseKeyOf(key)).address;
-console.log(`reverse tacit1    ${tacit1}\n                  ^ the address a Tacit wallet sends TAC to. It arrives privately, at a one-time address of this key, which the reverse side cannot sell from as it is:\n                  after it confirms, run tools/fastbridge-lp-reverse-normalize.mjs with the id of that transaction (it moves the TAC onto the reverse address above).`);
-if (addr === main.wallet.address()) { console.log('the two are the same address: do not switch the reverse side on'); process.exit(1); }
-// --copy puts the tacit1 address on the clipboard (macOS) and says so; --address-only stops here, with no reads of the chain at all
-if (process.argv.includes('--copy')) {
-  try { (await import('node:child_process')).execFileSync('pbcopy', { input: tacit1 }); console.log(`\ncopied: the reverse tacit1 address (${tacit1.length} characters) is on your clipboard`); }
-  catch (e) { console.log(`\nnot copied (${String((e && e.message) || e).slice(0, 80)}): select the tacit1 line above`); }
-}
-if (process.argv.includes('--address-only')) process.exit(0);
-
-// the notes, read the way the daemon reads them (lib/reverse.mjs), with the daemon's set-up: the live pool for notes that came out of it, and no location
+// the wallet module as the daemon loads it (the live pool for notes that came out of it, no location): its own encoders give the two TAC addresses below
 const tacit = await loadTacit('mainnet', { livePool: true });
 delete globalThis.location;
 tacit.wallet.priv = reverseKeyOf(key); tacit.wallet.pub = rev.wallet.pub;
+const { unifiedAddress } = await import(REPO + '/dapp/tacit-unified.js');
+const tacit1 = unifiedAddress(reverseKeyOf(key)).address;
+const tcs1 = tacit.encodeStealthAddress({ network: 'mainnet', recipientPub: rev.wallet.pub });
+console.log(`main address      ${main.wallet.address()}   (the provider's earnings, take-fee coins and a maker's stock: not used by the reverse side)`);
+console.log(`reverse address   ${addr}   <- send plain sats here (an ordinary Bitcoin send)`);
+console.log(`reverse tacit1    ${tacit1}\n                  ^ TAC on Bitcoin sent to this by a wallet's unified send is a plain transfer to this key's own address: the reverse side can sell it as it arrives (no move step)`);
+console.log(`reverse tcs1      ${tcs1}\n                  ^ a shielded (silent) address: TAC sent to it lands at a one-time address of this key; once it has confirmed, run tools/lp-run.sh normalize --txid <id> to move it onto the reverse address.\n                  Not the Pay page for either: its TAC goes into the shielded pool, which comes out as pool-exit TAC (not bridgeable home).`);
+if (addr === main.wallet.address()) { console.log('the two are the same address: do not switch the reverse side on'); process.exit(1); }
+// --copy puts the tacit1 address on the clipboard (macOS), --copy-silent the tcs1 one, and says so; --address-only stops here, with no reads of the chain at all
+for (const [flag, name, value] of [['--copy', 'tacit1', tacit1], ['--copy-silent', 'tcs1', tcs1]]) {
+  if (!process.argv.includes(flag)) continue;
+  try { (await import('node:child_process')).execFileSync('pbcopy', { input: value }); console.log(`\ncopied: the reverse ${name} address (${value.length} characters) is on your clipboard`); }
+  catch (e) { console.log(`\nnot copied (${String((e && e.message) || e).slice(0, 80)}): select the ${name} line above`); }
+}
+if (process.argv.includes('--address-only')) process.exit(0);
 const h = await tacit.scanHoldings(true);
 const all = (h instanceof Map && h.get(TAC) && h.get(TAC).utxos) || [];
 const notes = await makeReverseInventory({ tacit: { scanHoldings: async () => h }, asset: TAC }).notes();

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Moves TAC that was sent to the reverse side's tacit1 address onto the reverse address itself. A tacit1 address is paid privately: the TAC sits at a one-time address of
-// the reverse key, which the lock does not sign for and the reverse side does not count. This spends those notes (found again from the key and the transaction that paid
+// Moves TAC that was sent silently to the reverse side's tcs1 (shielded) address onto the reverse address itself. A silent send lands at a one-time address of the
+// reverse key, which the lock does not sign for and the reverse side does not count. (TAC sent to its tacit1 address by a wallet's Bitcoin-lane send is already a plain note.) This spends those notes (found again from the key and the transaction that paid
 // them, with the wallet's own private-payment discovery) in one transfer to the reverse key's plain address, where the reverse side sells from. The same steps
 // worker-relay/src/bridge-recover.js takes to send on TAC it was paid privately. The destination is the reverse key itself, derived from FB_LP_KEY, never typed in.
 //
