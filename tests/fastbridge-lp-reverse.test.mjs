@@ -3,6 +3,7 @@
 //   node tests/fastbridge-lp-reverse.test.mjs        (Node 22)
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { reverseKeyOf, reverseSeedOf, reverseOptions, makeReverseInventory, routed } from '../fastbridge-lp/lib/reverse.mjs';
 import { SECP_N } from '../dapp/bulletproofs.js';
 import { hmac, sha256 } from '../dapp/vendor/tacit-deps.min.js';
@@ -96,6 +97,19 @@ test('/reverse/ goes to the reverse service and everything else to the one it ha
   assert.equal(h({ path: '/reversed/x' }), 'F'); assert.equal(h({ path: '/x/reverse/info' }), 'F');
   assert.equal(h({ path: undefined }), 'F'); assert.equal(h({}), 'F'); assert.equal(h(null), 'F');
   assert.deepEqual(seen.filter(([w]) => w === 'rev').length, 2);
+});
+
+// The reverse side reads its notes with the wallet module. Loaded in the daemon, the module treats the Tacit API's chain proxy as unusable unless it is told it is a headless host
+// (before it loads), and then reads the public explorers directly: from Render's shared address every one of those reads was refused "rate limited", so the reverse side could
+// not read its own notes ("available: null") for as long as it ran. Measured: flag off, 16 reads to mempool.space and blockstream; flag on, none, all through the proxy.
+test('the daemon tells the wallet module it is a headless host, before the module loads and only when the reverse side is on', () => {
+  const src = readFileSync(new URL('../fastbridge-lp/server.mjs', import.meta.url), 'utf8');
+  const set = src.indexOf('__TACIT_CHAIN_VIA_WORKER__ = true'), load = src.indexOf('await loadTacit(');
+  assert.ok(set > 0 && load > 0 && set < load, 'set before the module is loaded (it reads the flag once, as it loads)');
+  const line = src.slice(src.lastIndexOf('\n', set) + 1, src.indexOf('\n', set));
+  assert.match(line, /^if \(C\.reverse && C\.reverse\.enabled === true\) \{/, 'only for the reverse side, which is the one thing here that reads through the module');
+  assert.match(line, /__TACIT_WORKER_BASE__ = process\.env\.TACIT_WORKER_BASE \|\| 'https:\/\/api\.tacit\.finance'/);
+  assert.equal(src.split('__TACIT_CHAIN_VIA_WORKER__').length - 1, 1, 'set once, nowhere else');
 });
 
 let passed = 0;

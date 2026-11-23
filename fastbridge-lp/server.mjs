@@ -47,6 +47,10 @@ const key = hexToBytes(keyHex);
 const hmacSha256 = (k, m) => hmac(sha256, k, m);
 const seed = hmacSha256(key, new TextEncoder().encode('tacit-fastbridge-lp-seed'));
 
+// The reverse side reads its notes with the wallet module, which reads Bitcoin from the public explorers unless told it is a headless host: and the explorers throttle this
+// host's shared address (every read of the reverse address failed "rate limited" on Render). Such a host sets these before the module loads (the module's own setting for it,
+// as the hosted watchtower does) and reads through the Tacit API's chain proxy first. Only when the reverse side is on: nothing else here reads through the module.
+if (C.reverse && C.reverse.enabled === true) { globalThis.__TACIT_WORKER_BASE__ = process.env.TACIT_WORKER_BASE || 'https://api.tacit.finance'; globalThis.__TACIT_CHAIN_VIA_WORKER__ = true; }
 // The live pool: a note that came out of the Bitcoin shielded pool is told from the pool service, as a page tells it. Without this the validator
 // asks a replay's (empty) exit set, and every such note, which the fast bridge exists to move, reads as not valid.
 const tacit = await loadTacit(network, { livePool: true });
