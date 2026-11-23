@@ -220,9 +220,10 @@ services:
         value: "1"
       # A lone op waits for company at most this long, and only while jobs have been arriving faster than that (the wait is the
       # expected gap to the next job, less what the op already waited; two queued halve it). Shared proof and gas, and company
-      # in the settle. 0 disables the wait.
+      # in the settle. 0 disables the wait. 15 since 2026-11-23: at 50 to 120 settles an hour the gap to the next job is 30 to 70 s, so a 90 s cap held
+      # nearly every op for about the gap (an unwrap sat 46 s before it was offered to a GPU) for a saving of one settle's gas on the few that did share one.
       - key: SETTLE_BATCH_WAIT_MAX_SECS
-        value: "90"
+        value: "15"
       # How long a submitted settle is given to land before the next round repeats it with three times the tip. Measured over
       # 37 settles (2026-10-16): the ones that land at the first tip do so inside ~50 s, the rest sat out the whole 90 s and
       # landed within seconds of the repeat, so a shorter round brings a third of settles forward by ~40 s for the few that
