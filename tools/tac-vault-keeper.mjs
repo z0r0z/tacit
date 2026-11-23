@@ -261,10 +261,10 @@ const recorded = (oracle, k) => {
 const configs = new Map();
 // An oracle that takes a proof where the venues take a record (TacProvenOracle: its own A() and B(), no `slots()`) is made by a prover, not by this keeper. It
 // stays in ORACLE, so that a vault pricing from it is not reported as unrecorded, and is left out of what this keeper records; it holds the others up no more.
-const proven = new Set();
+const takesProofs = new Set();
 
 function readConfig(oracle) {
-  if (configs.has(oracle) || proven.has(oracle)) return true;
+  if (configs.has(oracle) || takesProofs.has(oracle)) return true;
   try {
     const step = num(call(oracle, 'STEP()(uint256)'));
     let slotA, slotB;
@@ -273,7 +273,7 @@ function readConfig(oracle) {
     } catch (e) {
       // A revert says there are no slots to prove; a read that failed says nothing, and goes to the handler below.
       if (!answered(e)) throw e;
-      proven.add(oracle);
+      takesProofs.add(oracle);
       log(oracle, 'takes proofs and not records: a prover keeps it, this keeper only watches it');
       return true;
     }
