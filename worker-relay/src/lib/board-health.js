@@ -28,9 +28,18 @@ export function boardVerdict(s, { quietSecs, badWindowSecs, waitWarnSecs }) {
   if (r && r.n >= 10 && Number(r.waitP90) > waitWarnSecs) {
     alerts.push({ level: 'warning', msg: `prover board: a user's proof waited ${r.waitP90} s for a free GPU at the 90th percentile (${r.waitP50} s at the median, ${r.n} jobs in the last hour, ${r.proveP50} s to prove): the worker is busy with other work; a second worker would cut the wait`, extra: { recent: r } });
   }
+  // The board refuses a job when LIVE_CAP are waiting or being proved, or when its list of kept jobs reaches KEPT_CAP (the board's maxPending and maxRetained, pinned equal by
+  // a test). A refused job goes to the prover network instead: 90 to 170 s where the board takes about 50, and paid for. Until 2026-11-23 the finished jobs counted toward the first
+  // limit, so a board with nothing waiting refused every job for hours and nothing said so; this speaks while there is still room.
+  const liveNow = Number(s.queued || 0) + Number(s.claimed || 0);
+  const kept = liveNow + Number(s.proved || 0) + Number(s.failed || 0);
+  if (liveNow >= BOARD_LIVE_CAP * BOARD_WARN_SHARE || kept >= BOARD_KEPT_CAP * BOARD_WARN_SHARE) {
+    alerts.push({ level: 'warning', msg: `prover board: ${liveNow} jobs waiting or being proved and ${kept - liveNow} finished ones kept; it refuses new jobs at ${BOARD_LIVE_CAP} waiting or ${BOARD_KEPT_CAP} kept, and a refused job goes to the prover network (about twice as slow, and paid)`, extra: { liveNow, kept } });
+  }
   const line = `prover board: ${live.map((w) => `${w.name} seen ${w.lastSeenSeconds}s ago, proved ${w.proved}${Number(w.bad) > 0 ? `, refused ${w.bad}${w.lastBadSeconds != null ? ` (last ${Math.round(Number(w.lastBadSeconds) / 60)} min ago)` : ''}` : ''}`).join('; ')}; queued ${s.queued}, claimed ${s.claimed}${r && r.n ? `; last hour: ${r.n} jobs, waited ${r.waitP50}/${r.waitP90} s (median/90th), proved in ${r.proveP50}/${r.proveP90} s` : ''}`;
   return { alerts, log: line };
 }
+export const BOARD_LIVE_CAP = 64, BOARD_KEPT_CAP = 256, BOARD_WARN_SHARE = 0.75;
 
 // The RunPod account's rent: RunPod stops a pod at a zero balance. Hours left = balance over the running pods' hourly cost; a warning under
 // RUNPOD_HOURS_WARN, critical under RUNPOD_HOURS_CRITICAL. No pod running is only logged: the board check above pages when no worker polls, wherever

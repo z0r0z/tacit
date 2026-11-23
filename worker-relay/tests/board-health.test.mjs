@@ -3,7 +3,8 @@
 // Run: node --test tests/board-health.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boardVerdict, runpodVerdict, vastVerdict } from '../src/lib/board-health.js';
+import { boardVerdict, runpodVerdict, vastVerdict, BOARD_LIVE_CAP, BOARD_KEPT_CAP } from '../src/lib/board-health.js';
+import { PROVER_BOARD } from '../../worker/src/prover-board.js';
 
 const cfg = { quietSecs: 600, badWindowSecs: 600, waitWarnSecs: 60 };
 const box = (o = {}) => ({ name: 'tacit-a5000', proved: 7761, failed: 0, bad: 90, lastBadSeconds: 86_400, lastSeenSeconds: 0, ...o });
@@ -82,4 +83,29 @@ test('vast: hours of rent left warn or page, zero credit pages naming every inst
   assert.match(parked.log, /no instance running/);
   assert.equal(vastVerdict(null, [], lim).log, 'vast: credit unreadable');
   assert.equal(vastVerdict({ credit: 3 }, null, lim).alerts.length, 0);
+});
+
+// The board refuses a job at maxPending waiting-or-proving or at maxRetained kept, and a refused job goes to the slower paid network. Until 2026-11-23 the finished jobs counted toward
+// the first limit and a board with nothing waiting refused everything for hours without a word: this warns while there is room.
+test('the monitor\'s limits are the board\'s', () => {
+  assert.equal(BOARD_LIVE_CAP, PROVER_BOARD.maxPending);
+  assert.equal(BOARD_KEPT_CAP, PROVER_BOARD.maxRetained);
+});
+
+test('a board with room says nothing: a normal hour of finished jobs and a few waiting', () => {
+  const v = boardVerdict(board([box({ bad: 0, lastBadSeconds: null })], { queued: 3, claimed: 2, proved: 90, failed: 1 }), cfg);
+  assert.deepEqual(v.alerts, []);
+});
+
+test('a board near its waiting limit warns, with the numbers and what a refusal costs', () => {
+  const v = boardVerdict(board([box({ bad: 0, lastBadSeconds: null })], { queued: 40, claimed: 8, proved: 20 }), cfg);
+  assert.equal(v.alerts.length, 1);
+  assert.equal(v.alerts[0].level, 'warning');
+  assert.match(v.alerts[0].msg, /48 jobs waiting or being proved and 20 finished ones kept; it refuses new jobs at 64 waiting or 256 kept.*prover network/);
+});
+
+test('a board near the ceiling on its kept list warns even with nothing waiting', () => {
+  const v = boardVerdict(board([box({ bad: 0, lastBadSeconds: null })], { queued: 0, claimed: 1, proved: 150, failed: 45 }), cfg);
+  assert.equal(v.alerts.length, 1);
+  assert.match(v.alerts[0].msg, /1 jobs waiting or being proved and 195 finished ones kept/);
 });
