@@ -163,6 +163,20 @@ test('the budget limits one client, not another; an internal key lifts it', asyn
   } finally { stop(); }
 });
 
+test('CLIENT_IP_HEADER: the budget key is that header alone (a proxy that varies X-Forwarded-For cannot split a client\'s budget, nor a client write itself a new one)', async () => {
+  const { base, stop } = await start({ budgetPerMin: 30, trustProxy: true, clientIpHeader: 'CF-Connecting-IP' });
+  try {
+    const as = (ip, xff) => rpc(base, one('eth_call'), { 'cf-connecting-ip': ip, 'x-forwarded-for': xff });
+    const seen = [];
+    // same client, a different X-Forwarded-For every time (what a proxy chain with varying edge addresses does): ONE budget
+    for (let i = 0; i < 8; i++) seen.push((await as('198.51.100.7', `10.0.0.${i}`)).status);
+    assert.deepEqual(seen.slice(0, 6), [200, 200, 200, 200, 200, 200]); assert.equal(seen[6], 429, 'the 7th call of 5 units is over 30');
+    assert.equal((await as('198.51.100.8', '10.0.0.1')).status, 200, 'another client has its own');
+    // a request without the header falls back to the forwarded address, then to the socket
+    assert.equal((await rpc(base, one('eth_call'), { 'x-forwarded-for': '198.51.100.9' })).status, 200);
+  } finally { stop(); }
+});
+
 test('identical reads in flight share one upstream call; the tip is cached', async () => {
   const { base, stop } = await start();
   try {

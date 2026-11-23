@@ -54,7 +54,7 @@ export function makeGateway(o = {}) {
     ethUpstream: o.ethUpstream, btcUpstream: o.btcUpstream, btcRpcUrl: o.btcRpcUrl || '', btcRpcAuth: o.btcRpcAuth || '',
     origins: new Set(o.origins || []), anyOrigin: (o.origins || []).includes('*'),
     internalKeys: (o.internalKeys || []).map((k) => crypto.createHash('sha256').update(k).digest()),
-    trustProxy: !!o.trustProxy, allowBroadcast: !!o.allowBroadcast, internalSends: !!o.internalSends,
+    trustProxy: !!o.trustProxy, clientIpHeader: String(o.clientIpHeader || '').toLowerCase(), allowBroadcast: !!o.allowBroadcast, internalSends: !!o.internalSends,
     budget: o.budgetPerMin ?? 600, internalBudget: o.internalBudgetPerMin ?? 60_000,
     maxBatch: o.maxBatch ?? 20, maxBody: o.maxBody ?? 256 * 1024, maxTxBody: o.maxTxBody ?? 1024 * 1024,
     logsMaxSpan: o.logsMaxSpan ?? 50_000, headMs: o.headMs ?? 1500, tipMs: o.tipMs ?? 5000,
@@ -72,7 +72,13 @@ export function makeGateway(o = {}) {
   }, 60_000);
   sweep.unref?.();
 
+  // CLIENT_IP_HEADER names the one header a proxy we trust sets to the connecting client (Render sits behind Cloudflare: cf-connecting-ip). It is read
+  // only when set, and only that header: a client cannot choose its own budget key unless the proxy lets it, and Cloudflare overwrites this one.
   const ipOf = (req) => {
+    if (cfg.clientIpHeader) {
+      const v = String(req.headers[cfg.clientIpHeader] || '').split(',')[0].trim();
+      if (v) return v;
+    }
     if (cfg.trustProxy) {
       const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
       if (xff.length) return xff[xff.length - 1];
@@ -359,7 +365,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { server } = makeGateway({
     ethUpstream: e.ETH_UPSTREAM || '', btcUpstream: (e.BTC_ESPLORA_UPSTREAM || '').replace(/\/$/, ''), btcRpcUrl: e.BTC_RPC_URL || '', btcRpcAuth: e.BTC_RPC_AUTH || '',
     origins: list(e.ALLOW_ORIGINS || 'https://tacit.finance,https://www.tacit.finance'),
-    internalKeys: list(e.INTERNAL_KEYS), trustProxy: e.TRUST_PROXY === '1', allowBroadcast: e.ALLOW_BROADCAST === '1', internalSends: e.INTERNAL_SENDS === '1',
+    internalKeys: list(e.INTERNAL_KEYS), trustProxy: e.TRUST_PROXY === '1', clientIpHeader: e.CLIENT_IP_HEADER || '', allowBroadcast: e.ALLOW_BROADCAST === '1', internalSends: e.INTERNAL_SENDS === '1',
     budgetPerMin: Number(e.BUDGET_PER_MIN) || undefined, internalBudgetPerMin: Number(e.INTERNAL_BUDGET_PER_MIN) || undefined,
     logsMaxSpan: Number(e.LOGS_MAX_SPAN) || undefined,
   });
