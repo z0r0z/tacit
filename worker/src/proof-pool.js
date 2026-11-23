@@ -11,7 +11,8 @@
 // Each proof is checked before it is kept: its public values must be exactly this input's (the deposit it consumes, the leaf it inserts,
 // the chain it is bound to and its memo root, every one read from the input itself, so a page cannot name a deposit its input does
 // not prove, and nothing else: no root, no payment), and the live SP1 verifier must take it. A proof that passes is kept for the page and earns its miner's address points
-// for the UTC day, for every proof it makes (no count a day unless one is set: the campaign's daily pot already bounds what is paid, and
+// once its deposit has landed on the pool (the points are for the UTC day the landing is seen, and a proof whose deposit has not landed within landMs earns none),
+// for every proof it makes (no count a day unless one is set: the campaign's daily pot already bounds what is paid, and
 // a count per address only holds back the provers who give the most, since anyone may name more addresses); the points service's mining campaign pays those points in TAC from a pocket of its
 // own once the day is over, reading the day's tally from GET /prover/pool/credits. A proof that fails goes back to the queue for
 // someone else and, when the answer is certain, is a strike against the client that leased it; three strikes in a day and that client
@@ -44,6 +45,14 @@ export const PROOF_POOL = Object.freeze({
   maxPending: 2000,                  // POOL_MAX_PENDING: queued and leased together
   leaseMs: 45 * 60_000,              // POOL_LEASE_MS: a laptop proves a wrap in about 15 minutes
   keepMs: 7 * 86_400_000,            // POOL_KEEP_MS: how long a finished proof stays readable
+  // A proof pays when its deposit has landed on the pool (the pool's depositStatus is not 0), if that is within landMs of the proof (0: pay at the proof, as
+  // before). The deposit is looked for at each of landChecks' ages after the proof, every look one batched read of the chain, and a proof not found by the last
+  // look earns nothing. It needs a chain to ask (makeProofPool's `chain`).
+  landMs: 7 * 86_400_000,            // POOL_LAND_MS
+  landSweepMs: 20_000,               // POOL_LAND_SWEEP_MS: how often the looks that are due are made
+  landChecks: Object.freeze([45_000, 180_000, 600_000, 1_800_000, 7_200_000, 21_600_000, 86_400_000, 259_200_000]),
+  landPerSweep: 600,                 // looks made in one sweep at most
+  landWaitMs: 6000,                  // POOL_LAND_WAIT_MS: the longest a request waits on the chain for this
   pointsPerProof: 20,                // POINTS_MINE_PER_PROOF
   proofsPerMinerDay: Infinity,       // POINTS_MINE_DAILY_CAP: proofs an address is credited for in a UTC day (none: every proof)
   // A proof pays in full when it comes back within payFullSecs of its lease and less the longer it took, down to payFloorPct of the full
@@ -83,6 +92,9 @@ export function proofPoolConfig(env = {}) {
     holdMs: n(env.POOL_HOLD_MS, PROOF_POOL.holdMs, 0, 600_000),
     holdMaxMs: n(env.POOL_HOLD_MAX_MS, PROOF_POOL.holdMaxMs, 0, 86_400_000),
     keepMs: n(env.POOL_KEEP_MS, PROOF_POOL.keepMs, 60_000, 30 * 86_400_000),
+    landMs: n(env.POOL_LAND_MS, PROOF_POOL.landMs, 0, 30 * 86_400_000),
+    landSweepMs: n(env.POOL_LAND_SWEEP_MS, PROOF_POOL.landSweepMs, 1000, 600_000),
+    landWaitMs: n(env.POOL_LAND_WAIT_MS, PROOF_POOL.landWaitMs, 500, 60_000),
     pointsPerProof: n(env.POINTS_MINE_PER_PROOF, PROOF_POOL.pointsPerProof, 0, 100_000),
     proofsPerMinerDay: n(env.POINTS_MINE_DAILY_CAP, PROOF_POOL.proofsPerMinerDay, 1, 100_000),
     payFullSecs: n(env.POOL_PAY_FULL_SECS, PROOF_POOL.payFullSecs, 0, 86_400),
@@ -284,13 +296,17 @@ const same = (a, b) => {
 // verify({ publicValues, proof }) → { ok } when the verifier takes the proof, { reverted, definite } when it refuses it, and
 // neither when it could not be asked (index.js ethCallVerdict).
 // Every call answers { status, body }; 204 has no body.
-export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random, registry } = {}) {
+// `chain` (optional) reads the pool's side of Ethereum: depositStatuses(depositIds) the pool's depositStatus of each (0 none, 1 pending, 2 consumed), an array in the
+// same order with null for one that could not be read, or null when none could. With one, and landMs set, a proof pays when its deposit lands (see PROOF_POOL.landMs);
+// without one a proof pays at once.
+export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random, registry, chain } = {}) {
   if (!kv) throw new Error('proof-pool: kv is required');
   if (typeof verify !== 'function') throw new Error('proof-pool: verify is required');
+  const landing = !!chain && cfg.landMs > 0;
   const clock = now || (() => Date.now());
   const exclusive = lock || makeLock();
   const token = random || (() => bytesToHex(crypto.getRandomValues(new Uint8Array(16))));
-  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, urg: (d, c) => `pp:urg:${d}:${c}`, minerSeen: 'pp:miner-seen', hold: 'pp:hold', mined: (leaf) => `pp:mined:${leaf}`, paid: (dep) => `pp:paid:${dep}`, recent: 'pp:recent' };
+  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, urg: (d, c) => `pp:urg:${d}:${c}`, minerSeen: 'pp:miner-seen', hold: 'pp:hold', mined: (leaf) => `pp:mined:${leaf}`, paid: (dep) => `pp:paid:${dep}`, recent: 'pp:recent', pend: (dep) => `pp:pend:${dep}`, got: (dep) => `pp:got:${dep}`, chk: (slot) => `pp:chk:${slot}`, chkAt: 'pp:chkat' };
   const read = async (key, dflt) => { const s = await kv.get(key); if (s == null) return dflt; try { return JSON.parse(s); } catch { return dflt; } };
   const write = (key, v, ttlSecs) => kv.put(key, JSON.stringify(v), ttlSecs ? { expirationTtl: ttlSecs } : undefined);
   const dayRec = async (d) => { const r = await read(K.day(d), null); return { done: 0, points: 0, miners: {}, clients: {}, ...(r && typeof r === 'object' ? r : {}) }; };
@@ -306,7 +322,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
   // `registry` is where they are kept: the route builds a pool afresh for every request, so a registry made inside one would hold only the asker of that request, who
   // would always be the one whose turn it is (that is how the turn rule went unused in production from 11-14 until it was found: the tests reuse one pool). buildProofPool
   // gives every pool on a KV the same registry.
-  const reg = registry || { askers: new Map(), holders: new Map(), sweptAt: 0 }, askers = reg.askers, holders = reg.holders;
+  const reg = registry || { askers: new Map(), holders: new Map(), sweptAt: 0, landAt: 0 }, askers = reg.askers, holders = reg.holders;
   // `lapses`: leases this client has let run out or handed back today. Such a client's turn comes after every other asker's: a place that takes a lease and
   // sits on it (so the job waits out the whole lease for whoever asks first) must not win the next turn too, and can only pick up what nobody else is asking for.
   function noteAsker(m, client, t, lapses = 0) {
@@ -572,12 +588,15 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
         await refuse(L, id, l, t, true);
         return { r: reply(400, { ok: false, code: 'bad_proof', error: 'these public values are not this job\'s: they must be exactly its wrap\'s (its deposit, its leaf, its chain binding and memo root, and no root)' }) };
       }
-      return { r: null };
+      return { r: null, dep: String(job.expect?.depositId || '').toLowerCase(), house: !!l.house };
     });
     if (first.r) return first.r;
     let v;
     try { v = await verify({ publicValues, proof }); } catch { v = {}; }
     if (!v || (!v.ok && !v.reverted)) return reply(503, { ok: false, code: 'chain_unreadable', error: 'the verifier could not be asked just now; send it again (the lease still holds)', retryAfter: 30 });
+    // Whether this proof's deposit is on the pool already (asked here, outside the lock like the verifier: it is a call to Ethereum, and bounded; Tacit's own
+    // provers earn nothing and are not asked about).
+    const onPool = landing && v.ok && first.dep && !first.house ? (await statusesOf([first.dep], cfg.landWaitMs))[0] : null;
     return exclusive(async () => {
       const t = clock();
       const L = await read(K.leases, {}), l = L[id];
@@ -600,10 +619,11 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       // Who made the note, for the block it lands in (tacit-chain.js), and the newest proofs: a community prover by its address,
       // Tacit's own provers as the house, which earns nothing and is never in the tally.
       const leaf = String(job.expect?.leaf || '').toLowerCase(), secs = Math.max(0, Math.round((t - (l.until - cfg.leaseMs)) / 1000));
-      const made = async (who) => {
+      // `shown` is what the feed says when that differs from what the note keeps: a proof waiting for its deposit shows no points until it lands.
+      const made = async (who, shown = who) => {
         if (leaf) await write(K.mined(leaf), { ...who, at: t }, cfg.daySecs);
         const feed = await read(K.recent, []);
-        await write(K.recent, [...feed, { at: t, ...who, secs }].slice(-cfg.top * 2));
+        await write(K.recent, [...feed, { at: t, ...shown, secs }].slice(-cfg.top * 2));
       };
       if (l.house) {
         rec.house = (rec.house || 0) + 1;
@@ -622,11 +642,108 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       const waited = (l.tries || 0) > 0 ? Math.max(0, Math.round((t - l.at) / 1000)) : 0, paySecs = Math.max(secs, waited);
       const mr = minerIn(rec, l.miner), points = !again && earns(rec, l.miner) > 0 ? payFor(paySecs, cfg) : 0;
       mr.proofs++;
-      if (points > 0) { mr.credited++; mr.points += points; rec.points += points; }
+      // A proof pays when its deposit has landed on the pool (see PROOF_POOL.landMs): one whose deposit is there already pays now, any other waits in
+      // pp:pend:<deposit> until a look at the pool (check) finds it there, and lapses after landMs. A deposit whose status could not be read waits too.
+      const waiting = landing && !!dep && points > 0 && !(onPool >= 1);
+      if (points > 0 && !waiting) { mr.credited++; mr.points += points; rec.points += points; if (landing) rec.landed = (rec.landed || 0) + 1; }
+      if (waiting) { await write(K.pend(dep), { miner: l.miner, points, at: t }, Math.ceil(cfg.landMs / 1000) + 3600); await enqueue(dep, 0, t, t); }
       await write(K.day(d), rec, cfg.daySecs);
-      if (!again) await made({ miner: l.miner, points, ...(waited > secs ? { waited } : {}) });
-      return reply(200, { ok: true, points });
+      const extra = waited > secs ? { waited } : {};
+      if (!again) await made({ miner: l.miner, points, ...extra }, waiting ? { miner: l.miner, points: 0, pending: points, ...extra } : undefined);
+      return reply(200, { ok: true, points, ...(waiting ? { pending: true } : {}) });
     });
+  }
+
+  // What `p` answers if it does so within `ms` (and does not throw), else null (it is left to finish, its answer dropped).
+  const within = (ms, p) => new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    p.then((v) => { clearTimeout(timer); resolve(v); }, () => { clearTimeout(timer); resolve(null); });
+  });
+
+  // The pool's depositStatus of each deposit (0 none, 1 pending, 2 consumed), in order, null for one that could not be read: one batched read of the chain, bounded.
+  async function statusesOf(deps, ms) {
+    if (!deps.length) return [];
+    const r = await within(ms, Promise.resolve().then(() => chain.depositStatuses(deps)));
+    return Array.isArray(r) && r.length === deps.length ? r.map((x) => (Number.isInteger(x) && x >= 0 ? x : null)) : deps.map(() => null);
+  }
+
+  // A deposit is looked for at each of landChecks' ages after its proof: `n` is the look, `at` the proof's time. The looks are kept by the minute they fall due
+  // (pp:chk:<minute>), never earlier than `delay` from now. Under the lock.
+  async function enqueue(dep, n, at, now, delay = 1000) {
+    if (n >= cfg.landChecks.length) return;
+    const due = Math.max(at + cfg.landChecks[n], now + delay);
+    if (due - at > cfg.landMs) return;
+    if (await read(K.chkAt, null) == null) await write(K.chkAt, Math.floor(now / 60_000) - 1);
+    const key = K.chk(Math.floor(due / 60_000)), list = await read(key, []);
+    list.push([dep, n]);
+    await write(key, list, Math.ceil(cfg.landMs / 1000) + 7200);
+  }
+
+  // The proofs whose deposits have landed, each paid on the day this runs (a day that is over never changes), if it has not lapsed and its address still earns that
+  // day; one that waited is shown in the feed with its points from then. The day's tally and the feed are written first and the waiting records cleared after, so
+  // a failure part-way loses nothing (pp:got:<deposit> keeps the retry from paying twice). Under the lock.
+  async function land(deps, t) {
+    const d = dayOf(t), paid = [], clear = [];
+    let rec = null, feed = null;
+    for (const dep of new Set(deps)) {
+      const p = await read(K.pend(dep), null);
+      if (!p || typeof p.miner !== 'string') continue;
+      if (await read(K.got(dep), null) != null) { clear.push(dep); continue; }
+      clear.push(dep);
+      if (t - p.at > cfg.landMs) continue;
+      rec = rec || await dayRec(d);
+      if (earns(rec, p.miner) <= 0) continue;
+      const mr = minerIn(rec, p.miner);
+      mr.credited++; mr.points += p.points; rec.points += p.points; rec.landed = (rec.landed || 0) + 1; paid.push(dep);
+      feed = feed || await read(K.recent, []);
+      const e = feed.find((x) => x.at === p.at && x.miner === p.miner && x.pending != null);
+      if (e) { e.points = e.pending; delete e.pending; }
+    }
+    if (rec) await write(K.day(d), rec, cfg.daySecs);
+    if (feed) await write(K.recent, feed);
+    for (const dep of paid) await write(K.got(dep), t, Math.ceil(cfg.landMs / 1000) + 86_400);
+    for (const dep of clear) await kv.delete(K.pend(dep));
+    return paid.length;
+  }
+
+  // The looks that are due, from the last one made up to the current minute: the deposits asked about in one batched read of the chain; one found on the pool is paid, any
+  // other is looked for again at its next age (a proof not found by the last age earns nothing), one that could not be read again in two minutes. A chain that cannot be
+  // read at all leaves the looks where they are.
+  async function check(t) {
+    const nowSlot = Math.floor(t / 60_000);
+    const cur = await read(K.chkAt, null);
+    if (!Number.isSafeInteger(cur)) { await write(K.chkAt, nowSlot - 1); return; }
+    const slots = [], lists = [];
+    let n = 0;
+    for (let s = cur + 1; s < nowSlot && s <= cur + 60; s++) {   // only minutes that are over: a look is never early, and one queued now never falls in a slot cleared below
+      const list = await read(K.chk(s), []);
+      if (n > 0 && n + list.length > cfg.landPerSweep) break;
+      slots.push(s); lists.push(list); n += list.length;
+    }
+    if (!slots.length) return;
+    const entries = lists.flat(), deps = entries.map(([dep]) => dep);
+    const st = await statusesOf(deps, cfg.landWaitMs * 4);
+    if (deps.length && st.every((x) => x === null)) return;
+    await exclusive(async () => {
+      const now = clock();
+      await land(deps.filter((_, i) => st[i] >= 1), now);
+      for (let i = 0; i < entries.length; i++) {
+        if (st[i] >= 1) continue;
+        const [dep, k] = entries[i], p = await read(K.pend(dep), null);
+        if (!p) continue;
+        if (st[i] === null) await enqueue(dep, k, p.at, now, 120_000);
+        else await enqueue(dep, k + 1, p.at, now);
+      }
+      for (const s of slots) await kv.delete(K.chk(s));
+      await write(K.chkAt, slots[slots.length - 1]);
+    });
+  }
+
+  // Make the looks that are due, at most every landSweepMs. Nothing here throws: a store or chain that cannot be reached just now leaves the looks for the next time.
+  async function sweep() {
+    if (!landing || clock() - (reg.landAt || 0) < cfg.landSweepMs) return;
+    reg.landAt = clock();
+    try { await check(clock()); } catch { /* the same looks are made next time */ }
   }
 
   // Where each job stands, with the proof once there is one. An id the pool does not hold (never posted, dropped, or kept past
@@ -661,6 +778,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
 
   // For anyone: how much is waiting, who proved most today, and the last 24 hours' proofs and provers. No inputs, no proofs, no clients.
   async function stats() {
+    await within(cfg.landWaitMs, sweep());
     const t = clock(), q = await read(K.queue, []), L = await read(K.leases, {}), rec = await dayRec(dayOf(t));
     const live = Object.values(L).filter((l) => l.until > t).length;
     const miners = Object.entries(rec.miners).filter(([, m]) => m.proofs > 0);
@@ -677,13 +795,17 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       lapsedToday: Object.values(rec.lapses || {}).reduce((a, n) => a + n, 0), lapsedPlacesToday: Object.keys(rec.lapses || {}).length,
       // proofs Tacit's own prover made today (the backstop: nobody else took the job in time) and the leases it took over from a miner that sat on them
       houseToday: rec.house || 0, takeoversToday: rec.takeovers || 0,
+      // proofs paid today because their deposit landed on the pool (they may be earlier days' proofs)
+      ...(landing ? { landedToday: rec.landed || 0 } : {}),
       // who is asking for work as this process sees it, for the last `turnMs` (the pool keeps it in memory, per process): places and addresses registered, how many
       // tickets they count for once an address is held to `ticketsPerAddress`, and the addresses with the most places (an address is already public on the board)
       askers: askerView(t),
       top: miners.map(([miner, m]) => ({ miner, proofs: m.proofs })).sort((a, b) => b.proofs - a.proofs || (a.miner < b.miner ? -1 : 1)).slice(0, cfg.top),
       // pointsPerProof is the most a proof earns; `pay` says how it falls with the time a proof took (payFor, payFactor)
       terms: { pointsPerProof: cfg.pointsPerProof, proofsPerMinerDay: cfg.proofsPerMinerDay, leaseMs: cfg.leaseMs,
-        pay: { fullSecs: cfg.payFullSecs, floorSecs: cfg.payFloorSecs, floorPct: cfg.payFloorPct }, takeoverSecs: Math.round(cfg.houseTakeoverMs / 1000), ticketsPerAddress: cfg.ticketsPerAddress },
+        pay: { fullSecs: cfg.payFullSecs, floorSecs: cfg.payFloorSecs, floorPct: cfg.payFloorPct }, takeoverSecs: Math.round(cfg.houseTakeoverMs / 1000), ticketsPerAddress: cfg.ticketsPerAddress,
+        // a proof earns its points when its deposit lands on the pool, if that is within windowSecs of the proof (absent: it earns them at the proof)
+        ...(landing ? { landing: { windowSecs: Math.round(Math.min(cfg.landMs, cfg.landChecks[cfg.landChecks.length - 1]) / 1000) } } : {}) },
     });
   }
 
@@ -692,6 +814,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
   async function credits(day) {
     const t = clock();
     if (!Number.isSafeInteger(day) || day < 0 || day > dayOf(t)) return reply(400, { ok: false, error: 'day must be a UTC day number, today or before' });
+    await within(cfg.landWaitMs, sweep());
     const rec = await dayRec(day);
     const miners = Object.entries(rec.miners).filter(([, m]) => m.points > 0).map(([miner, m]) => ({ miner, proofs: m.proofs, points: m.points }))
       .sort((a, b) => (a.miner < b.miner ? -1 : 1));
@@ -717,10 +840,10 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
 }
 
 const kvLocks = new WeakMap(), kvRegistries = new WeakMap();
-export function buildProofPool(env, { verify } = {}) {
+export function buildProofPool(env, { verify, chain } = {}) {
   const kv = env.CONFIDENTIAL_KV || env.REGISTRY_KV;
   if (!kv) return null;
   if (!kvLocks.has(kv)) kvLocks.set(kv, makeLock());
-  if (!kvRegistries.has(kv)) kvRegistries.set(kv, { askers: new Map(), holders: new Map(), sweptAt: 0 });
-  return makeProofPool({ kv, cfg: proofPoolConfig(env), verify, lock: kvLocks.get(kv), registry: kvRegistries.get(kv) });
+  if (!kvRegistries.has(kv)) kvRegistries.set(kv, { askers: new Map(), holders: new Map(), sweptAt: 0, landAt: 0 });
+  return makeProofPool({ kv, cfg: proofPoolConfig(env), verify, chain, lock: kvLocks.get(kv), registry: kvRegistries.get(kv) });
 }

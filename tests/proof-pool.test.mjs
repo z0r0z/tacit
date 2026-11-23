@@ -15,7 +15,7 @@ import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
 import { makeProofPool, buildProofPool, payFactor, payFor, drawOf, readWrapStdin, wrapExpect, wrapOpens, proofFits, verifyCalldata, proofPoolConfig, clientOf, PROOF_POOL } from '../worker/src/proof-pool.js';
 import { stdinFor } from '../dapp/sp1-stdin.js';
 import { makeConfidentialPool } from '../dapp/confidential-pool.js';
-import worker, { ethCallVerdict, simulateSettle } from '../worker/src/index.js';
+import worker, { ethCallVerdict, simulateSettle, poolChain, encodeStatusCalls, decodeStatusResults } from '../worker/src/index.js';
 
 const FIX = new URL('./fixtures/sp1-stdin/', import.meta.url);
 const WRAP_OP = JSON.parse(readFileSync(new URL('wrap.op.json', FIX), 'utf8'));
@@ -54,10 +54,10 @@ const kv = () => { const m = new Map(); return { m, async get(k) { return m.has(
 const T0 = Date.UTC(2026, 9, 26, 1), DAY0 = Math.floor(T0 / 86_400_000);
 
 // A pool on a fake KV and clock, with a verifier that answers `verdict` (default: takes every proof) and counts its calls.
-function harness({ cfg = {}, verdict = () => ({ ok: true }) } = {}) {
+function harness({ cfg = {}, verdict = () => ({ ok: true }), chain } = {}) {
   const h = { t: T0, calls: 0, store: kv(), verdict };
   let n = 0;
-  h.pool = makeProofPool({ kv: h.store, cfg: { ...PROOF_POOL, turnMs: 0, ...cfg }, now: () => h.t, random: () => `lease-${++n}`, verify: async (p) => { h.calls++; return h.verdict(p); } });
+  h.pool = makeProofPool({ kv: h.store, cfg: { ...PROOF_POOL, turnMs: 0, ...cfg }, now: () => h.t, random: () => `lease-${++n}`, verify: async (p) => { h.calls++; return h.verdict(p); }, chain });
   return h;
 }
 
@@ -532,13 +532,20 @@ test('urgent: the size a page expects to press first is taken by Tacit\'s own pr
 });
 
 test('routes: open to any origin; a page requests, a miner leases and submits (the verifier asked over eth_call), the page reads the proof', async () => {
-  const env = { REGISTRY_KV: kv(), POOL_TURN_MS: '0' };
+  const env = { REGISTRY_KV: kv(), POOL_TURN_MS: '0', POOL_LAND_SWEEP_MS: '1000' };
   const seen = [];
   const realFetch = globalThis.fetch;
+  // The nodes: the verifier takes everything; the pool's depositStatus of each deposit is `eth.status` (none is 0), answered through Multicall3 as the pool asks.
+  const eth = { status: {} };
   globalThis.fetch = async (url, init) => {
     const body = JSON.parse(init.body);
-    seen.push({ url: String(url), call: body.params[0] });
-    return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    seen.push({ url: String(url), call: body.params[0], method: body.method });
+    let result = '0x';
+    if (body.method === 'eth_call' && String(body.params[0]?.to).toLowerCase() === '0xca11bde05977b3631167028862be2a173976ca11') {
+      const deps = [...String(body.params[0].data).matchAll(/7da9874f([0-9a-f]{64})/g)].map((m) => '0x' + m[1]);
+      result = agg3Answer(deps.map((d) => eth.status[d] ?? 0));
+    }
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   try {
     const call = (path, init = {}, ip = '203.0.113.7') => worker.fetch(new Request(`https://api.tacit.finance${path}`, { ...init, headers: { Origin: 'https://tacit.finance', 'CF-Connecting-IP': ip, ...(init.headers || {}) } }), env, { waitUntil() {} });
@@ -557,7 +564,9 @@ test('routes: open to any origin; a page requests, a miner leases and submits (t
     r = await call('/prover/pool/lease', post({ miner: MINER2 }), '198.51.100.10');
     assert.equal(r.status, 204); assert.equal(r.headers.get('access-control-allow-origin'), '*');
     r = await call('/prover/pool/submit', post({ id: a.id, lease: l.lease, publicValues: pvFor(a.expect), proof: PROOF }), '198.51.100.9');
-    assert.deepEqual(await r.json(), { ok: true, points: 20 });
+    assert.deepEqual(await r.json(), { ok: true, points: 20, pending: true }, 'its deposit is not on the pool: the proof waits for it');
+    assert.ok(seen.some((s) => s.method === 'eth_call' && String(s.call?.to).toLowerCase() === '0xca11bde05977b3631167028862be2a173976ca11' && String(s.call?.data).includes('7da9874f' + depOf(a.expect).slice(2))), 'the pool was asked about the proof\'s deposit, through Multicall3');
+    assert.equal([...env.REGISTRY_KV.m.keys()].filter((k) => k.startsWith('pp:chk:')).length, 1, 'and a look at it is waiting');
     // A board worker's token leases as Tacit's own prover; any other token is refused.
     const tok = 'w'.repeat(24);
     env.PROVER_WORKER_TOKENS = `a5000:${tok}`;
@@ -577,6 +586,12 @@ test('routes: open to any origin; a page requests, a miner leases and submits (t
     assert.equal(r.headers.get('cache-control'), 'max-age=10');
     const s = await r.json();
     assert.equal(s.doneToday, 1); assert.deepEqual(s.top, [{ miner: MINER, proofs: 1 }]);
+    // The deposit lands. The look for it falls due in a minute or two; to see it made without waiting, its minute is moved into the past. The next call after the
+    // wait between sweeps makes the look, through the route's own chain reads, and the proof is paid.
+    eth.status[depOf(a.expect)] = 2;
+    const chk = [...env.REGISTRY_KV.m.keys()].find((k) => k.startsWith('pp:chk:')), past = Math.floor(Date.now() / 60_000) - 2;
+    env.REGISTRY_KV.m.set(`pp:chk:${past}`, env.REGISTRY_KV.m.get(chk)); env.REGISTRY_KV.m.delete(chk); env.REGISTRY_KV.m.set('pp:chkat', String(past - 1));
+    await new Promise((res) => setTimeout(res, 1100));
     r = await call(`/prover/pool/credits?day=${Math.floor(Date.now() / 86_400_000)}`);
     assert.deepEqual((await r.json()).miners, [{ miner: MINER, proofs: 1, points: 20 }]);
     assert.equal((await call('/prover/pool/lease', { method: 'GET' })).status, 404);
@@ -986,4 +1001,343 @@ test('pay: the points a proof earns follow the time from its lease; the tally, t
   assert.deepEqual(c.miners.map((m) => [m.miner, m.proofs, m.points]).sort(), [[MINER, 1, 20], [MINER2, 2, 25]].sort());
   const feed = (await h.pool.recent()).body.proofs;
   assert.deepEqual(feed.map((e) => [e.secs, e.points]), [[900, 10], [330, 15], [8, 20]], 'the feed shows what each earned and how long it took');
+});
+
+// ── pay on landing: a proof earns its points when its deposit has landed on the pool ──
+
+// A Multicall3 aggregate3 answer ((bool success, bytes returnData)[]) for these statuses: a number is a call that returned that word, null a call that failed.
+const w32 = (n) => BigInt(n).toString(16).padStart(64, "0");
+function agg3Answer(statuses) {
+  const n = statuses.length;
+  const els = statuses.map((s) => (s === null ? w32(0) + w32(0x40) + w32(0) : w32(1) + w32(0x40) + w32(32) + w32(s)));
+  let off = n * 32;
+  const offs = els.map((e) => { const o = off; off += e.length / 2; return w32(o); });
+  return "0x" + w32(0x20) + w32(n) + offs.join("") + els.join("");
+}
+
+// The pool's side of Ethereum as the pool reads it: `status` maps a deposit id to its depositStatus (none is 0); `down` fails every read, `partial` names deposits whose read
+// fails alone, `delay` (ms) makes a read slow; `asked` is every deposit asked about, `batches` how many each read asked about.
+function fakeChain({ status = {} } = {}) {
+  const c = { status, down: false, partial: new Set(), delay: 0, reads: 0, asked: [], batches: [],
+    async depositStatuses(deps) {
+      c.reads++; c.batches.push(deps.length); c.asked.push(...deps);
+      if (c.delay) await new Promise((r) => setTimeout(r, c.delay));
+      if (c.down) return null;
+      return deps.map((d) => (c.partial.has(d) ? null : c.status[d] ?? 0));
+    } };
+  return c;
+}
+const depOf = (e) => e.depositId.toLowerCase();
+async function proveFor(h, job, miner = MINER, client = 'm1') {
+  await h.pool.request({ type: 'wrap', stdin: job.stdin, expect: job.expect, client: `page${job.id}` });
+  const l = (await h.pool.lease({ miner, client })).body;
+  assert.equal(l.id, job.id);
+  return h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(job.expect), proof: PROOF });
+}
+const chkKeys = (h) => [...h.store.m.keys()].filter((k) => k.startsWith('pp:chk:'));
+const pendKeys = (h) => [...h.store.m.keys()].filter((k) => k.startsWith('pp:pend:'));
+// Time on by `jump`, then sweeps (each past landSweepMs) until every look that is due has been made: a look is made once its minute is over.
+async function lookNow(h, jump = 0) {
+  h.t += jump;
+  for (let i = 0; i < 400; i++) {
+    h.t += 21_000;
+    await h.pool.credits(DAY0);
+    const cur = h.store.m.has('pp:chkat') ? JSON.parse(h.store.m.get('pp:chkat')) : null;
+    if (cur == null || cur >= Math.floor(h.t / 60_000) - 1) return;
+  }
+}
+
+test('landing: a proof whose deposit is not on the pool waits; a look at the pool finds the deposit by its status alone (no event) and pays it once, on the day it is found', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const a = wrapJob(0), dep = depOf(a.expect);
+  const r = await proveFor(h, a);                                        // no look has been made yet: the proof itself starts the looks
+  assert.deepEqual(r, { status: 200, body: { ok: true, points: 20, pending: true } }, 'the answer still says what it will earn, and that it waits');
+  assert.deepEqual(chain.asked, [dep], 'the deposit was asked about once, at the proof');
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [], 'nothing is credited to the day yet');
+  let feed = (await h.pool.recent()).body.proofs;
+  assert.deepEqual({ points: feed[0].points, pending: feed[0].pending }, { points: 0, pending: 20 }, 'and the feed shows no points yet');
+  assert.deepEqual(await h.pool.minedBy([a.expect.leaf]), { [a.expect.leaf.toLowerCase()]: { miner: MINER, points: 20 } }, 'the note names its prover as ever');
+  assert.ok(h.store.m.has(`pp:pend:${dep}`) && chkKeys(h).length === 1);
+  h.t += 30_000; await h.pool.credits(DAY0);
+  assert.deepEqual(chain.asked, [dep], 'no look is due inside the first minute');
+  chain.status[dep] = 1;                                                 // registered by a share deposit, which emits no Wrap event
+  await lookNow(h, 90_000);
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [{ miner: MINER, proofs: 1, points: 20 }]);
+  assert.equal(pendKeys(h).length, 0, 'its wait is cleared');
+  assert.equal(chkKeys(h).length, 0, 'and so are the looks');
+  assert.ok(h.store.m.has(`pp:got:${dep}`));
+  feed = (await h.pool.recent()).body.proofs;
+  assert.deepEqual({ points: feed[0].points, pending: feed[0].pending }, { points: 20, pending: undefined }, 'the feed shows its points once it lands');
+  assert.equal((await h.pool.stats()).body.landedToday, 1);
+  const asked = chain.asked.length;
+  await lookNow(h, 600_000);
+  assert.equal(chain.asked.length, asked, 'nothing more is asked once it is paid');
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [{ miner: MINER, proofs: 1, points: 20 }], 'and it is not paid twice');
+});
+
+test('landing: the looks start with the first proof, not with the first sweep: a proof made long before anything looked is still looked for', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const a = wrapJob(0);
+  await proveFor(h, a);                                                   // no stats, no tally, no sweep yet
+  chain.status[depOf(a.expect)] = 2;
+  await lookNow(h, 600_000);                                              // ten minutes on: the first sweep of all
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [{ miner: MINER, proofs: 1, points: 20 }]);
+});
+
+test('landing: a deposit that is on the pool when the proof comes pays at once, whether pending or consumed, and waits for nothing', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const a = wrapJob(0), b = wrapJob(1);
+  chain.status[depOf(a.expect)] = 1; chain.status[depOf(b.expect)] = 2;
+  assert.deepEqual((await proveFor(h, a)).body, { ok: true, points: 20 });
+  assert.deepEqual((await proveFor(h, b, MINER2, 'm2')).body, { ok: true, points: 20 });
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners.map((m) => [m.miner, m.points]), [[MINER, 20], [MINER2, 20]]);
+  assert.equal(pendKeys(h).length + chkKeys(h).length, 0, 'nothing waits');
+  assert.equal((await h.pool.stats()).body.landedToday, 2);
+});
+
+test('landing: a deposit that lands later is found at a later look: the looks come at growing ages, and a deposit found at the third is paid then', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const a = wrapJob(0), dep = depOf(a.expect);
+  await proveFor(h, a);
+  h.t = T0 + 70_000; await lookNow(h);
+  assert.equal(chain.asked.filter((d) => d === dep).length, 2, 'the first look comes after 45 s');
+  h.t = T0 + 150_000; await lookNow(h);
+  assert.equal(chain.asked.filter((d) => d === dep).length, 2, 'the second is not due until three minutes');
+  h.t = T0 + 250_000; await lookNow(h);
+  assert.equal(chain.asked.filter((d) => d === dep).length, 3);
+  chain.status[dep] = 2;
+  h.t = T0 + 700_000; await lookNow(h);
+  assert.equal(chain.asked.filter((d) => d === dep).length, 4, 'the third, at ten minutes, finds it');
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [{ miner: MINER, proofs: 1, points: 20 }]);
+});
+
+test('landing: the day a landing is found is the day it pays: a day that is over never changes', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  h.t = (DAY0 + 1) * 86_400_000 - 30_000;
+  const a = wrapJob(0);
+  await proveFor(h, a);
+  chain.status[depOf(a.expect)] = 2;
+  await lookNow(h, 120_000);
+  const [d0, d1] = [(await h.pool.credits(DAY0)).body, (await h.pool.credits(DAY0 + 1)).body];
+  assert.deepEqual([d0.over, d0.miners], [true, []], 'the proof\'s own day is over and stays as it was');
+  assert.deepEqual(d1.miners, [{ miner: MINER, proofs: 0, points: 20 }], 'the day it was found pays it');
+});
+
+test('landing: a proof whose deposit is never found earns nothing, and the looks for it stop after the last age', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const a = wrapJob(0), dep = depOf(a.expect);
+  await proveFor(h, a);
+  for (const age of PROOF_POOL.landChecks) { h.t = T0 + age + 70_000; await lookNow(h); }
+  assert.equal(chain.asked.filter((d) => d === dep).length, 1 + PROOF_POOL.landChecks.length, 'the proof\'s own read and one look at each age');
+  assert.equal(chkKeys(h).length, 0, 'and no look is left');
+  const asked = chain.asked.length;
+  chain.status[dep] = 2;                                                  // a deposit that lands after the last look is not paid
+  await lookNow(h, 8 * 86_400_000);
+  assert.equal(chain.asked.length, asked);
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, []);
+  assert.equal(JSON.parse(h.store.m.get(`pp:day:${DAY0}`)).done, 1, 'the proof still counts as work done on its day');
+});
+
+test('landing: the proof within landMs is all that pays: a shorter window drops the looks past it', async () => {
+  const chain = fakeChain(), h = harness({ chain, cfg: { landMs: 400_000 } });
+  const a = wrapJob(0), dep = depOf(a.expect);
+  await proveFor(h, a);
+  chain.status[dep] = 2;
+  await lookNow(h, 1_000_000);
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [], 'found only after its time: not paid');
+  assert.equal(pendKeys(h).length, 0, 'and its wait is cleared');
+});
+
+test('landing: a chain that cannot be read changes nothing and the looks wait; a deposit that cannot be read alone is looked for again in two minutes', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const a = wrapJob(0), b = wrapJob(1), c = wrapJob(2);
+  chain.down = true;
+  assert.deepEqual((await proveFor(h, a)).body, { ok: true, points: 20, pending: true }, 'a deposit that cannot be asked about waits');
+  h.t += 120_000;
+  const at0 = h.store.m.get('pp:chkat');
+  assert.equal((await h.pool.credits(DAY0)).status, 200, 'a failing read does not fail the call');
+  assert.equal(h.store.m.get('pp:chkat'), at0, 'the looks did not move on');
+  assert.equal(chkKeys(h).length, 1, 'and the look is still there');
+  chain.down = false; chain.status[depOf(a.expect)] = 1;
+  h.t += 25_000;
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [{ miner: MINER, proofs: 1, points: 20 }], 'the next look pays it');
+  // two deposits together, one of which cannot be read: the other is paid, that one is looked for again soon
+  await proveFor(h, b, MINER2, 'm2'); await proveFor(h, c, MINER3, 'm3');
+  chain.status[depOf(b.expect)] = 2; chain.partial.add(depOf(c.expect));
+  h.t += 120_000; await h.pool.credits(DAY0);
+  let paid = (await h.pool.credits(DAY0)).body.miners.map((m) => m.miner).sort();
+  assert.deepEqual(paid, [MINER, MINER2].sort(), 'the one that read is paid');
+  assert.equal(pendKeys(h).length, 1, 'the other still waits');
+  chain.partial.clear(); chain.status[depOf(c.expect)] = 1;
+  await lookNow(h, 180_000);
+  paid = (await h.pool.credits(DAY0)).body.miners.map((m) => m.miner).sort();
+  assert.deepEqual(paid, [MINER, MINER2, MINER3].sort(), 'and is paid when it reads');
+});
+
+test('landing: a deposit is paid for once: the second proof of it waits for nothing and the first prover is paid', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const a = wrapJob(0), b = wrapJob(0, null, 0x99n);
+  assert.deepEqual((await proveFor(h, a)).body, { ok: true, points: 20, pending: true });
+  assert.deepEqual((await proveFor(h, b, MINER2, 'm2')).body, { ok: true, points: 0 }, 'the same deposit again is kept for the page, not waited on');
+  chain.status[depOf(a.expect)] = 2;
+  await lookNow(h, 90_000);
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners.map((m) => [m.miner, m.points]), [[MINER, 20]]);
+});
+
+test('landing: the daily cap holds at the landing: an address is paid for the proofs it lands up to it', async () => {
+  const chain = fakeChain(), h = harness({ chain, cfg: { proofsPerMinerDay: 1 } });
+  const a = wrapJob(0), b = wrapJob(1);
+  assert.equal((await proveFor(h, a)).body.pending, true);
+  assert.equal((await proveFor(h, b)).body.pending, true, 'both wait: neither has landed to count against the cap');
+  chain.status[depOf(a.expect)] = 2; chain.status[depOf(b.expect)] = 2;
+  await lookNow(h, 90_000);
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners.map((m) => [m.miner, m.points]), [[MINER, 20]], 'one of the two is paid');
+  assert.equal(pendKeys(h).length, 0, 'and neither is left waiting');
+});
+
+test('landing: a write that fails part-way loses nothing: the waiting record stays, and the retry pays the proof once', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const a = wrapJob(0), dep = depOf(a.expect);
+  await proveFor(h, a);
+  chain.status[dep] = 2;
+  const put = h.store.put;
+  let fail = true;
+  h.store.put = async (k, v, o) => { if (fail && k.startsWith('pp:day:')) { fail = false; throw new Error('the store is down'); } return put.call(h.store, k, v, o); };
+  h.t += 120_000;
+  assert.equal((await h.pool.credits(DAY0)).status, 200, 'the failure is not the caller\'s');
+  assert.ok(h.store.m.has(`pp:pend:${dep}`), 'the waiting record was not cleared before the credit was written');
+  assert.equal(chkKeys(h).length, 1, 'nor was the look');
+  h.t += 25_000;
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [{ miner: MINER, proofs: 1, points: 20 }], 'the retry pays it');
+  await lookNow(h, 600_000);
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [{ miner: MINER, proofs: 1, points: 20 }], 'once');
+});
+
+test('landing: a retry after the credit was written but the record was not cleared does not pay twice', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const a = wrapJob(0), dep = depOf(a.expect);
+  await proveFor(h, a);
+  chain.status[dep] = 2;
+  const del = h.store.delete;
+  let fail = true;
+  h.store.delete = async (k) => { if (fail && k === `pp:pend:${dep}`) { fail = false; throw new Error('the store is down'); } return del.call(h.store, k); };
+  h.t += 120_000;
+  await h.pool.credits(DAY0);
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [{ miner: MINER, proofs: 1, points: 20 }], 'it was paid');
+  assert.ok(h.store.m.has(`pp:pend:${dep}`), 'but its record is still there');
+  h.t += 25_000;
+  await h.pool.credits(DAY0);
+  assert.deepEqual((await h.pool.credits(DAY0)).body.miners, [{ miner: MINER, proofs: 1, points: 20 }], 'the retry sees it is paid and only clears it');
+  assert.equal(pendKeys(h).length, 0);
+});
+
+test('landing: Tacit\'s own prover is never paid and never asks the chain about a deposit', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const a = wrapJob(0);
+  await h.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'page' });
+  const l = (await h.pool.lease({ house: 'gpu', client: 'h' })).body;
+  assert.deepEqual((await h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(a.expect), proof: PROOF })).body, { ok: true, points: 0 });
+  assert.equal(chain.reads, 0);
+  assert.equal(pendKeys(h).length + chkKeys(h).length, 0);
+});
+
+test('landing: the looks that are due are one batched read, however many proofs wait', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const jobs = [wrapJob(0), wrapJob(1), wrapJob(2)];
+  for (const j of jobs) await proveFor(h, j);
+  const before = chain.reads;
+  await lookNow(h, 90_000);
+  assert.equal(chain.reads, before + 1, 'one read');
+  assert.equal(chain.batches[chain.batches.length - 1], 3, 'for all three');
+});
+
+test('landing: a chain that hangs holds neither a proof, nor the stats, nor the tally past the wait the pool allows', async () => {
+  const chain = fakeChain(), h = harness({ chain, cfg: { landWaitMs: 500 } });
+  chain.delay = 1500;
+  const a = wrapJob(0);
+  let t0 = Date.now();
+  const r = await proveFor(h, a);
+  assert.deepEqual(r.body, { ok: true, points: 20, pending: true }, 'a deposit that cannot be read in time waits');
+  assert.ok(Date.now() - t0 < 1200, `the proof was not held for the chain (${Date.now() - t0} ms)`);
+  h.t += 120_000;
+  t0 = Date.now();
+  assert.equal((await h.pool.stats()).status, 200);
+  assert.ok(Date.now() - t0 < 1200, `stats were not held for the chain (${Date.now() - t0} ms)`);
+  await new Promise((res) => setTimeout(res, 1500));
+});
+
+test('landing: with landMs 0, or no chain, a proof pays at the proof and the chain is never asked', async () => {
+  const chain = fakeChain(), h = harness({ chain, cfg: { landMs: 0 } });
+  assert.deepEqual((await proveFor(h, wrapJob(0))).body, { ok: true, points: 20 });
+  await h.pool.stats(); await h.pool.credits(DAY0);
+  assert.equal(chain.reads, 0);
+  const s = (await h.pool.stats()).body;
+  assert.equal('landedToday' in s || 'landing' in s.terms, false, 'and the answers say nothing of landing');
+  const h2 = harness();
+  assert.deepEqual((await proveFor(h2, wrapJob(0))).body, { ok: true, points: 20 });
+});
+
+test('landing: the looks are made at most every landSweepMs, and the stats say landing is on', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const a = wrapJob(0);
+  await proveFor(h, a);
+  h.t += 120_000; await h.pool.stats();
+  const r0 = chain.reads;
+  h.t += 1000; await h.pool.stats(); await h.pool.credits(DAY0); await h.pool.stats();
+  assert.equal(chain.reads, r0, 'calls inside the wait make no look');
+  const s = (await h.pool.stats()).body;
+  assert.deepEqual([s.landedToday, s.terms.landing], [0, { windowSecs: 259_200 }], 'the window is the last look\'s age');
+});
+
+test('landing, the pool\'s chain read: statuses go through Multicall3 a hundred to a call, an answer that is not well formed is skipped for the next node, and what cannot be read is null', async () => {
+  const realFetch = globalThis.fetch;
+  const seen = [];
+  const answer = (list) => { let i = 0; seen.length = 0; globalThis.fetch = async (url, init) => { seen.push(JSON.parse(init.body)); const a = list[Math.min(i++, list.length - 1)]; return typeof a === 'number' ? new Response('busy', { status: a }) : new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, ...a }), { status: 200, headers: { 'content-type': 'application/json' } }); }; };
+  const chain = poolChain({});
+  const dep = (i) => '0x' + (i + 1).toString(16).padStart(2, '0').repeat(32);
+  try {
+    // the calldata: aggregate3 of depositStatus(dep) calls to the pool, each allowed to fail; and an answer built the way Multicall3 answers
+    const pool = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
+    const data = encodeStatusCalls(pool, [dep(0), dep(1)]);
+    assert.equal(data.slice(0, 10), '0x82ad56cb');
+    assert.equal((data.match(/7da9874f/g) || []).length, 2, 'one depositStatus call each');
+    assert.ok(data.includes(dep(0).slice(2)) && data.includes(dep(1).slice(2)));
+    assert.equal((data.length - 10) / 2, 32 + 32 + 2 * 32 + 2 * 192, 'head, length, two offsets, two calls of 192 bytes');
+    assert.deepEqual(decodeStatusResults(agg3Answer([2, 0, null]), 3), [2, 0, null], 'a failed call is null');
+    assert.equal(decodeStatusResults(agg3Answer([2, 0]), 3), null, 'an answer for another number of calls is none');
+    for (const junk of ['0x', '0x12', '0xzz', 'nope', '0x' + '00'.repeat(40)]) assert.equal(decodeStatusResults(junk, 1), null, `junk ${junk.slice(0, 8)}`);
+    // through the nodes
+    answer([500, { result: agg3Answer([2, 0]) }]);
+    assert.deepEqual(await chain.depositStatuses([dep(0), dep(1)]), [2, 0], 'a node that fails is skipped');
+    assert.equal(seen[0].method, 'eth_call');
+    assert.equal(seen[0].params[0].to.toLowerCase(), '0xca11bde05977b3631167028862be2a173976ca11', 'Multicall3');
+    assert.equal(seen[0].params[0].data, data, 'the calldata is exactly the encoding');
+    answer([{ result: '0x' }, { result: agg3Answer([1]) }]);
+    assert.deepEqual(await chain.depositStatuses([dep(2)]), [1], 'a node that answers with nothing usable is skipped for one that does');
+    answer([{ error: { code: -32005, message: 'rate limited' } }]);
+    assert.deepEqual(await chain.depositStatuses([dep(0), dep(1)]), [null, null], 'none answering: all null');
+    answer([{ result: agg3Answer([1, 1]) }]);
+    assert.deepEqual(await chain.depositStatuses([dep(0), '0x12']), [null, null], 'an id that is not an id spoils its read, and nothing is asked');
+    assert.equal(seen.length, 0);
+    assert.deepEqual(await chain.depositStatuses([]), []);
+    // past a hundred it takes two reads, and a read that fails leaves only its own deposits null
+    const many = Array.from({ length: 130 }, (_, i) => dep(i));
+    answer([{ result: agg3Answer(Array(100).fill(2)) }, { error: { code: -32000, message: 'busy' } }]);
+    const out = await chain.depositStatuses(many);
+    assert.equal(seen.length > 2, true, 'two reads, the second tried on every node');
+    assert.deepEqual([out.slice(0, 100).every((x) => x === 2), out.slice(100).every((x) => x === null)], [true, true]);
+    assert.equal(seen[0].params[0].data.split('7da9874f').length - 1, 100);
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test('landing config: each term is read within its bounds, and a bad one keeps the default', () => {
+  assert.equal(proofPoolConfig({}).landMs, PROOF_POOL.landMs);
+  assert.equal(proofPoolConfig({ POOL_LAND_MS: '0' }).landMs, 0, '0 is the way back to paying at the proof');
+  assert.equal(proofPoolConfig({ POOL_LAND_MS: 'soon' }).landMs, PROOF_POOL.landMs);
+  assert.equal(proofPoolConfig({ POOL_LAND_MS: String(31 * 86_400_000) }).landMs, PROOF_POOL.landMs);
+  assert.equal(proofPoolConfig({ POOL_LAND_SWEEP_MS: '5000' }).landSweepMs, 5000);
+  assert.equal(proofPoolConfig({ POOL_LAND_SWEEP_MS: '10' }).landSweepMs, PROOF_POOL.landSweepMs);
+  assert.equal(proofPoolConfig({ POOL_LAND_WAIT_MS: '2000' }).landWaitMs, 2000);
+  assert.equal(proofPoolConfig({ POOL_LAND_WAIT_MS: '5' }).landWaitMs, PROOF_POOL.landWaitMs);
+  assert.deepEqual([...PROOF_POOL.landChecks], [...PROOF_POOL.landChecks].sort((a, b) => a - b), 'the looks come at growing ages');
 });

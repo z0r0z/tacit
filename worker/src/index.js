@@ -3661,6 +3661,67 @@ async function ethCallVerdict(env, call) {
   }
   return { ok: false };
 }
+// The proof pool's read of Ethereum (proof-pool.js `chain`), for paying a proof when its deposit has landed on the confidential pool: the pool's depositStatus
+// (0 none, 1 pending, 2 consumed) of many deposits in one eth_call through Multicall3, a hundred to a call. Each call is asked of the nodes in turn, an answer that is
+// not well formed counts as none, and a deposit that could not be read is null.
+const DEPOSIT_STATUS_SELECTOR = '0x7da9874f';                          // depositStatus(bytes32)
+const MULTICALL3 = '0xcA11bde05977b3631167028862bE2a173976CA11';      // the same address on every chain
+const AGGREGATE3_SELECTOR = '0x82ad56cb';                              // aggregate3((address target, bool allowFailure, bytes callData)[])
+const STATUS_CALLS_PER_READ = 100;
+const word32 = (n) => BigInt(n).toString(16).padStart(64, '0');
+// aggregate3 calldata asking the pool for depositStatus(dep) of each deposit id (0x + 64 hex), each call allowed to fail.
+function encodeStatusCalls(pool, deps) {
+  const n = deps.length, target = String(pool).slice(2).toLowerCase().padStart(64, '0');
+  const call = (dep) => target + word32(1) + word32(0x60) + word32(36) + DEPOSIT_STATUS_SELECTOR.slice(2) + String(dep).slice(2).toLowerCase() + '00'.repeat(28);
+  return AGGREGATE3_SELECTOR + word32(0x20) + word32(n) + deps.map((_, i) => word32(n * 32 + i * 192)).join('') + deps.map(call).join('');
+}
+// The statuses in aggregate3's answer ((bool success, bytes returnData)[]) for `n` calls: a number for each call that returned a word, null for one that failed; null when the
+// answer is not that of `n` calls.
+function decodeStatusResults(hex, n) {
+  try {
+    const b = String(hex).replace(/^0x/, '');
+    if (!/^[0-9a-fA-F]*$/.test(b) || b.length % 2) return null;
+    const at = (off) => { const s = b.slice(off * 2, off * 2 + 64); if (s.length < 64) throw new Error('short'); return BigInt('0x' + s); };
+    const arr = Number(at(0));
+    if (Number(at(arr)) !== n) return null;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const el = arr + 32 + Number(at(arr + 32 + i * 32)), dataOff = Number(at(el + 32)), len = Number(at(el + dataOff));
+      out.push(at(el) === 1n && len === 32 ? Number(at(el + dataOff + 32)) : null);
+    }
+    return out;
+  } catch { return null; }
+}
+function poolChain(env) {
+  const pool = confPool(env);
+  if (!pool) return null;
+  const rpcs = [env.CONFIDENTIAL_SIM_RPC, ..._TETH_ETH_RPCS.mainnet, 'https://mainnet.gateway.tenderly.co'].filter(Boolean);
+  // `valid(result)` decides whether a node's answer counts: one that does not (a node that answers '0x' for what it cannot serve) is skipped for the next node.
+  const ask = async (method, params, valid) => {
+    for (const rpc of rpcs) {
+      try {
+        const r = await fetch(rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(5000) });
+        if (!r.ok) continue;
+        const j = await r.json();
+        if (j && j.result != null && !j.error && valid(j.result)) return j.result;
+      } catch { /* next node */ }
+    }
+    return null;
+  };
+  return {
+    async depositStatuses(deps) {
+      const out = deps.map(() => null);
+      for (let i = 0; i < deps.length; i += STATUS_CALLS_PER_READ) {
+        const chunk = deps.slice(i, i + STATUS_CALLS_PER_READ);
+        if (!chunk.every((d) => /^0x[0-9a-fA-F]{64}$/.test(String(d)))) continue;
+        const r = await ask('eth_call', [{ to: MULTICALL3, data: encodeStatusCalls(pool, chunk) }, 'latest'], (x) => decodeStatusResults(x, chunk.length) !== null);
+        const d = r == null ? null : decodeStatusResults(r, chunk.length);
+        if (d) d.forEach((s, j) => { out[i + j] = s; });
+      }
+      return out;
+    },
+  };
+}
 // eth_call of settle(publicValues, proof, memos) at the latest block: { ok } when the pool would take it now, { reverted }
 // when it would refuse it, and neither when no node answered.
 async function simulateSettle(env, { publicValues, proof, memos }) {
@@ -4213,7 +4274,7 @@ async function reviewPointsOf(env, day) {
   return points;
 }
 async function proofPointsOf(env, day) {
-  const pool = buildProofPool(env, { verify: async () => ({}) }), board = buildProverBoard(env);
+  const pool = buildProofPool(env, { verify: async () => ({}), chain: poolChain(env) }), board = buildProverBoard(env);
   const [p, b, review] = await Promise.all([pool ? pool.credits(day) : null, board ? board.credits(day) : null, reviewPointsOf(env, day).catch(() => 0)]);
   const sum = (r) => (r && r.status === 200 && Array.isArray(r.body?.miners) ? r.body.miners.reduce((s, m) => s + (Number(m.points) || 0), 0) : 0);
   return sum(p) + sum(b) + review;
@@ -4265,6 +4326,7 @@ async function handleProofPool(req, env, url, cors) {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
   const pool = buildProofPool(env, {
     verify: ({ publicValues, proof }) => ethCallVerdict(env, [{ to: POOL_SP1_VERIFIER, data: verifyCalldata({ vkey: POOL_PROGRAM_VKEY, publicValues, proof }) }, 'latest']),
+    chain: poolChain(env),
   });
   if (!pool) return jsonResponse({ error: 'not found' }, 404, cors);
   const ip = req.headers.get('CF-Connecting-IP') || 'anon', client = clientOf(ip, env);
@@ -28517,7 +28579,7 @@ export {
   // The forward scan, so a test can hand it one block and see what it keeps (the Tacit transaction archive among it).
   scanForEtches,
   // The eth_call verdict the proof pool's verifier check and the open board's settle simulation share, so a test can hand it node answers.
-  ethCallVerdict, simulateSettle,
+  ethCallVerdict, simulateSettle, poolChain, encodeStatusCalls, decodeStatusResults,
 };
 
 // ============== DISCORD TOKEN-GATE HANDLERS ==============
