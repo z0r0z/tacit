@@ -42,6 +42,10 @@ const soon = Math.floor(Date.now() / 1000) + 7 * 86400;
 sales.sales = sales.sales.map((x) => ({ ...x, expiry: soon, expired: false, seller_pubkey: '02' + 'ab'.repeat(32) }));
 const bids = JSON.parse(readFileSync(join(FX, 'tac-bids-2026-10-12.json'), 'utf8'));              // the 14 standing bids the API listed, their expiry moved forward
 bids.intents = bids.intents.map((x) => ({ ...x, expiry: soon }));
+// The fixtures were captured on 2026-10-12. Their last trade is moved to an hour ago, as the listings' expiry is moved forward: the page names a last trade over a day old by its age and
+// does not set it against Ethereum's price, which is what the lanes and the line under them are checked for here (the old-trade wording has its own checks in trade-btc.mjs).
+const recent = Math.floor(Date.now() / 1000) - 3600;
+asset.last_trade = { ...asset.last_trade, ts: recent }; asset.mark_price = { ...asset.mark_price, ts: recent };
 const apiBody = (url) => (/preauth-sales/.test(url) ? sales : /bid-intents/.test(url) ? bids : asset);
 const RPC_HOSTS = ['ethereum-rpc.publicnode.com', 'mainnet.rpc.buidlguidl.com', 'tacit-node-gw.onrender.com', 'eth.drpc.org', '1rpc.io', 'mainnet.gateway.tenderly.co', 'rpc.mevblocker.io', 'eth-mainnet.nodereal.io', '1.rpc.thirdweb.com', 'rpc.flashbots.net', 'eth-mainnet.public.blastapi.io', 'ethereum-json-rpc.stakely.io'];
 
@@ -157,16 +161,18 @@ try {
   ok(!(await p.$('p.eyebrow')) && (await p.$$eval('h2.eyebrow', (h) => h.length)) >= 4 && (await p.$$eval('h1, h2, h3', (h) => h.map((x) => +x.tagName[1]).every((n, i, a) => i === 0 || n - a[i - 1] <= 1))), 'the panels are titled by headings, and the heading levels step down one at a time');
   ok((await contrast(p, '.assets a:not([aria-current])')) >= 4.5 && (await p.$$eval('footer nav a', (a) => a.every((x) => x.getBoundingClientRect().height >= 23.9))), `the inactive asset links read at 4.5:1 or more on their pill (${(await contrast(p, '.assets a:not([aria-current])')).toFixed(2)}) and the footer links are 24px high`);
   const head = (await text(p, '#px-usd')).trim(), sub = (await text(p, '#px-sub')).replace(/\s+/g, ' ');
-  ok(/^\$0\.\d{2,}/.test(head), `the head shows TAC's price in dollars (${head})`);
+  // What an amount of ETH buys follows the pool's price on the day (the fork is the chain's own): at least 80% of the amount at that price, which leaves room for the impact and the fee of 2 ETH.
+  const ethPerTac = Number((sub.match(/1 TAC = ([\d.]+) ETH/) || [])[1]), minTac = (eth) => Math.floor((eth / ethPerTac) * 0.8);
+  ok(/^\$\d+\.\d{2,}/.test(head), `the head shows TAC's price in dollars (${head})`);
   ok(/1 TAC = [\d.]+ ETH/.test(sub) && /24h volume [\d.,]+ ETH/.test(sub), `and in ETH and the day's volume, each figure with its name (${sub.slice(0, 120)})`);
   const lanes = await p.$$eval('#lanes .lane', (ls) => ls.map((l) => l.textContent.replace(/\s+/g, ' ').trim()));
-  ok(lanes.length === 4 && /Precision pool.*\$0\.\d+.*ETH.*the reference/.test(lanes[0]) && /Tacit pool.*\$0\.\d+.*ETH.*vs Precision/.test(lanes[1]) && /Bitcoin · last trade.*\$0\.\d+.*150 sats/.test(lanes[2]) && /Bitcoin · cheapest ask.*\$0\.\d+.*157 sats/.test(lanes[3]), `four prices, each in dollars with ETH or sats and its gap against Precision (${lanes.map((l) => l.slice(0, 60)).join(' | ')})`);
+  ok(lanes.length === 4 && /Precision pool.*\$\d+\.\d+.*ETH.*the reference/.test(lanes[0]) && /Tacit pool.*\$\d+\.\d+.*ETH.*vs Precision/.test(lanes[1]) && /Bitcoin · last trade.*\$0\.\d+.*150 sats/.test(lanes[2]) && /Bitcoin · cheapest ask.*\$0\.\d+.*157 sats/.test(lanes[3]), `four prices, each in dollars with ETH or sats and its gap against Precision (${lanes.map((l) => l.slice(0, 60)).join(' | ')})`);
   ok(/^On Bitcoin, the last trade was (level with|\d+% (above|below)) Ethereum’s price(, (and|but) the cheapest ask is (level with|\d+% (above|below)) it)?\.$/.test((await text(p, '#gapnote')).trim()), `Bitcoin's last trade and its cheapest ask are each set against Ethereum's price in words (${(await text(p, '#gapnote')).slice(0, 160)})`);
 
   // the chart: a line by default, as the Bitcoin market draws it, and candles a press away
   ok(!!(await p.$('#chart .line')) && !!(await p.$('#chart polygon.area')) && !!(await p.$('#chart .lastdot')) && (await candles(p)) === 0 && !!(await p.$('[data-kind="candles"]')), 'the Ethereum lane draws the Precision pool\'s price as a shaded line with its last price marked');
   const rd = (await text(p, '#ch-read')).replace(/\s+/g, ' ');
-  ok(/^\$0\.\d{4}.*(all time|past month).*low \$0\.\d+.*high \$0\.\d+.*ETH \(\$[\d.,]+[kM]?\) traded/.test(rd), `a line above the chart gives the price, its move over the range, the low, the high and the volume (${rd.slice(0, 120)})`);
+  ok(/^\$\d+\.\d{2,4}.*(all time|past month).*low \$\d+\.\d+.*high \$\d+\.\d+.*ETH \(\$[\d.,]+[kM]?\) traded/.test(rd), `a line above the chart gives the price, its move over the range, the low, the high and the volume (${rd.slice(0, 120)})`);
   ok((await p.$$eval('#chart .mark', (m) => m.length)) === 2 && (await p.$eval('#tf-seg', (e) => e.hidden)) === true, 'the high and the low are named on the line, and a line has no candle size to choose');
   const lineN = await p.$eval('#chart polyline', (l) => l.getAttribute('points').split(' ').length);
   await p.click('[data-range="1"]'); await until(p, () => document.querySelector('#chart polyline') && document.querySelector('#chart polyline').getAttribute('points').split(' ').length < 120 && /past day/.test(document.querySelector('#ch-read')?.textContent || ''));
@@ -179,9 +185,9 @@ try {
   ok(/1h\s*[+−]?[\d.]+%/.test(sub2) && /24h\s*[+−]?[\d.]+%/.test(sub2) && /Liquidity \$[\d.,]+[kM]?/.test(sub2) && /FDV \$[\d.,]+[kM]?/.test(sub2), `the headline gives the move over 1h, 6h, 24h and 7d, the pool's liquidity and the fully diluted value (${sub2.slice(0, 150)})`);
   await p.hover('#chart svg', { position: { x: 300, y: 150 } });
   await until(p, () => /\d{2}:\d{2}/.test(document.querySelector('#ch-read')?.textContent || ''), null, 10000);
-  ok(await p.$eval('#chart .cross .cd', (c) => c.getAttribute('visibility') === 'visible') && (await p.$eval('.chart-tip', (e) => e.hidden)) && /^\$0\.\d{4}/.test(await text(p, '#ch-read')), 'a pointer on the line reads the price and time at that bar in the line above, with a dot on the line and no box over it');
+  ok(await p.$eval('#chart .cross .cd', (c) => c.getAttribute('visibility') === 'visible') && (await p.$eval('.chart-tip', (e) => e.hidden)) && /^\$\d+\.\d{2,4}/.test(await text(p, '#ch-read')), 'a pointer on the line reads the price and time at that bar in the line above, with a dot on the line and no box over it');
   const axisRead = await p.$$eval('#chart .cross .clabt', (t) => t.map((x) => x.textContent));
-  ok(axisRead.length === 2 && /^\$0\.\d+$/.test(axisRead[0]) && /^\d+ \w{3}( \d{2}:\d{2})?$/.test(axisRead[1]), `and its price and time sit on the axes (${axisRead.join(' | ')})`);
+  ok(axisRead.length === 2 && /^\$\d+\.\d+$/.test(axisRead[0]) && /^\d+ \w{3}( \d{2}:\d{2})?$/.test(axisRead[1]), `and its price and time sit on the axes (${axisRead.join(' | ')})`);
   await p.mouse.move(5, 5); await until(p, () => /all time/.test(document.querySelector('#ch-read')?.textContent || ''), null, 10000);
   ok((await p.$$eval('#chart .cross .cd[visibility="visible"]', (d) => d.length)) === 0, 'and the pointer leaving the chart takes the dot with it');
   // the keys read the chart too: an arrow steps through the bars, Escape lets go
@@ -200,7 +206,7 @@ try {
   await until(p, () => !!document.querySelector('#ch-read [data-zoomout]'), null, 10000).catch(() => {});
   const zoomedRead = (await text(p, '#ch-read')).replace(/\s+/g, ' ').trim(), zoomedLabel = await p.$eval('#chart svg', (e) => e.getAttribute('aria-label'));
   const spanOf = (t) => (t.match(/\d+ \w{3} \d{2}:\d{2} to (\d+ \w{3} )?\d{2}:\d{2} · \d+ (days|h|min)/) || [])[0];
-  ok(band === 'visible' && !!spanOf(measuring) && /low \$0\.\d+ high \$0\.\d+/.test(measuring), `dragging across the chart reads the stretch: its move, its times and length, its low and high (${measuring.slice(0, 120)})`);
+  ok(band === 'visible' && !!spanOf(measuring) && /low \$\d+\.\d+ high \$\d+\.\d+/.test(measuring), `dragging across the chart reads the stretch: its move, its times and length, its low and high (${measuring.slice(0, 120)})`);
   ok(spanOf(zoomedRead) === spanOf(measuring) && /Zoom out/.test(zoomedRead) && /zoomed in/.test(zoomedLabel), `letting go zooms into that stretch and offers to zoom out (${zoomedRead.slice(0, 90)})`);
   await p.click('#ch-read [data-zoomout]');
   await until(p, () => /all time/.test(document.querySelector('#ch-read')?.textContent || ''), null, 10000);
@@ -225,7 +231,7 @@ try {
   await p.click('[data-range="0"]');
   await p.click('[data-log="1"]'); await until(p, () => document.querySelector('[data-log="1"]').getAttribute('aria-pressed') === 'true');
   const logAxis = await p.$$eval('#chart .axis:not(.mid)', (t) => t.map((x) => x.textContent));
-  ok(logAxis.length >= 3 && logAxis.every((x) => /^\$0\.\d+$/.test(x)) && logAxis.some((x) => /^\$0\.[1-9]00?$|^\$0\.[1-9]$|^\$0\.\d{1,2}0?$/.test(x)), `the log axis names round dollar prices (${logAxis.join(' ')})`);
+  ok(logAxis.length >= 3 && logAxis.every((x) => /^\$\d+\.\d+$/.test(x)) && logAxis.some((x) => /^\$0\.[1-9]00?$|^\$0\.[1-9]$|^\$0\.\d{1,2}0?$/.test(x)), `the log axis names round dollar prices (${logAxis.join(' ')})`);
   await p.click('[data-log="1"]');
   await p.click('[data-tf="86400"]'); await until(p, () => document.querySelectorAll('#chart .body').length > 5 && document.querySelectorAll('#chart .body').length < 400);   // one a day since TAC began trading (a month on 2026-10-22), so no fixed ceiling near it
   const c1d = await candles(p);
@@ -236,8 +242,8 @@ try {
   await p.click('[data-tf="3600"]'); await until(p, () => document.querySelector('[data-tf="3600"]')?.getAttribute('aria-pressed') === 'true');
   ok((await candles(p)) > 0 && (await candles(p)) <= 25, `the past day offers 5-minute to 1-hour candles, from the 5-minute tape (${await candles(p)} hourly)`);
   await p.hover('#chart svg', { position: { x: 300, y: 120 } });
-  await until(p, () => /O \$0\.\d+.*H \$0\.\d+.*L \$0\.\d+/.test(document.querySelector('#ch-read')?.textContent.replace(/\s+/g, ' ') || ''), null, 10000).catch(() => {});
-  ok(/O \$0\.\d+.*H \$0\.\d+.*L \$0\.\d+/.test((await text(p, '#ch-read')).replace(/\s+/g, ' ')) && (await p.$eval('.chart-tip', (e) => e.hidden)), `a pointer on a candle reads its open, high, low and close in the line above (${(await text(p, '#ch-read')).replace(/\s+/g, ' ').slice(0, 100)})`);
+  await until(p, () => /O \$\d+\.\d+.*H \$\d+\.\d+.*L \$\d+\.\d+/.test(document.querySelector('#ch-read')?.textContent.replace(/\s+/g, ' ') || ''), null, 10000).catch(() => {});
+  ok(/O \$\d+\.\d+.*H \$\d+\.\d+.*L \$\d+\.\d+/.test((await text(p, '#ch-read')).replace(/\s+/g, ' ')) && (await p.$eval('.chart-tip', (e) => e.hidden)), `a pointer on a candle reads its open, high, low and close in the line above (${(await text(p, '#ch-read')).replace(/\s+/g, ' ').slice(0, 100)})`);
   await p.mouse.move(5, 5);
   await p.click('[data-range="0"]');
   await p.click('[data-unit="native"]'); await until(p, () => /ETH/.test(document.querySelector('#chart .axis')?.textContent || ''));
@@ -263,7 +269,7 @@ try {
   });
   ok(tagYs.length === 3 && tagYs.every((y, i) => i === 0 || y - tagYs[i - 1] >= 16), `tags on prices a hair apart do not overlap (${tagYs.map((y) => Math.round(y))})`);
   ok(/Precision pool \(Ethereum\).*Bitcoin order book.*Tacit pool/.test((await text(p, '#legend')).replace(/\s+/g, ' ')), 'the legend names the lanes and the Tacit pool\'s place against Precision');
-  ok(/^[+−]\d[\d.]*% Bitcoin against Ethereum · now(, at the cheapest ask)? Ethereum \$0\.\d{4} Bitcoin \$0\.\d{4}$/.test((await text(p, '#ch-read')).replace(/\s+/g, ' ').trim()), `above the chart, how far Bitcoin sits from Ethereum now, and both prices (${(await text(p, '#ch-read')).replace(/\s+/g, ' ').trim()})`);
+  ok(/^[+−]\d[\d.]*% Bitcoin against Ethereum · now(, at the cheapest ask)? Ethereum \$\d+\.\d{2,4} Bitcoin \$\d+\.\d{2,4}$/.test((await text(p, '#ch-read')).replace(/\s+/g, ' ').trim()), `above the chart, how far Bitcoin sits from Ethereum now, and both prices (${(await text(p, '#ch-read')).replace(/\s+/g, ' ').trim()})`);
   await p.hover('#chart svg', { position: { x: 400, y: 150 } });
   await until(p, () => /\d{2}:\d{2}/.test(document.querySelector('#ch-read')?.textContent || ''), null, 5000).catch(() => {});
   ok(/Bitcoin against Ethereum · \d+ \w{3} \d{2}:\d{2}/.test(await text(p, '#ch-read')) && (await p.$$eval('#chart .cross .cd[visibility="visible"]', (d) => d.length)) === 2, 'hovering reads the two prices and their gap at that time, with a dot on each line');
@@ -284,14 +290,14 @@ try {
   await p.click('#cmp > summary');
   ok((await p.inputValue('#amt')) === '0.25' && (await p.getAttribute('#chips [data-amt="0.25"]', 'aria-pressed')) === 'true' && (await p.$eval('#cmp', (e) => e.hidden)) === false, 'pressing one fills the amount, quotes it and shows the quotes');
   await p.fill('#amt', '2');
-  await until(p, () => /Split across/.test(document.querySelector('#route')?.textContent || '') && !document.querySelector('#out').classList.contains('ph') && !document.querySelector('.p-ticket').classList.contains('stale') && Number(document.querySelector('#out').textContent.replace(/,/g, '')) > 5000, null, 240000);
+  await until(p, (min) => /Split across/.test(document.querySelector('#route')?.textContent || '') && !document.querySelector('#out').classList.contains('ph') && !document.querySelector('.p-ticket').classList.contains('stale') && Number(document.querySelector('#out').textContent.replace(/,/g, '')) > min, minTac(2), 240000);
   const route = (await text(p, '#route')).replace(/\s+/g, ' ');
   ok((await contrast(p, '.splitbar .pp')) >= 4.5 && (await contrast(p, '.splitbar .tp')) >= 4.5, `the split bar's labels read on the colours behind them (${(await contrast(p, '.splitbar .pp')).toFixed(2)}, ${(await contrast(p, '.splitbar .tp')).toFixed(2)})`);
   ok(/Split across two pools \+[\d.]+%/.test(route) && /Precision \d+%\s*Tacit \d+%/.test(route) && !!(await p.$('#route .splitbar')), `2 ETH is quoted as a split, drawn as a bar of the two pools with what it gains (${route.slice(0, 160)})`);
   await until(p, () => /Points\s*[\d,]+\+ points/.test(document.querySelector('#route')?.textContent || ''), null, 60000);
   const earned = Number(((await text(p, '#route')).match(/Points\s*([\d,]+)\+ points/) || [])[1]?.replace(/,/g, ''));
   ok(earned > 0 && earned < 2000, `a split earns on its Precision leg only: ${earned}+ points for 2 ETH, under the 2,000 a whole buy through the Precision pool would`);
-  ok(/^[\d,]+(\.\d+)?$/.test((await text(p, '#out')).trim()) && Number((await text(p, '#out')).replace(/,/g, '')) > 2 * 3000, `with the TAC it pays (${await text(p, '#out')}: at least 3,000 TAC to the ETH even after the price impact of 2 ETH)`);
+  ok(/^[\d,]+(\.\d+)?$/.test((await text(p, '#out')).trim()) && Number((await text(p, '#out')).replace(/,/g, '')) > minTac(2), `with the TAC it pays (${await text(p, '#out')}: at least ${minTac(2).toLocaleString('en-US')}, 80% of 2 ETH at the pool's price, even after the price impact)`);
   const rows = await p.$$eval('#venues tbody tr', (t) => t.map((x) => x.textContent.replace(/\s+/g, ' ').trim()));
   ok(rows.length >= 5 && rows.length <= 7, `the quotes table holds the places that quote: the pools, the split, the private swap and the Bitcoin book (${rows.length} rows)`);
   ok(rows.some((x) => /^Precision pool.*fee 0\.30%/.test(x)) && rows.some((x) => /^Tacit pool.*public swap/.test(x)) && rows.some((x) => /^Both, split.*best/.test(x)), 'the pools and the split are there (the Precision fee as 0.30%), the split tagged best');
@@ -373,9 +379,9 @@ try {
   await until(p, () => document.querySelectorAll('#ladders .ob.pools [data-pool]').length >= 8, null, 150000);
   const pool = await p.$$eval('#ladders .ob.pools [data-pool]', (r) => r.map((x) => ({ side: x.dataset.pool, amt: x.dataset.amt, step: x.querySelector('.p small')?.textContent, label: x.getAttribute('aria-label'), peek: x.dataset.peek })));
   const pmid = (await text(p, '#ladders .ob.pools .ob-spread')).replace(/\s+/g, ' ');
-  ok(pool.filter((x) => x.side === 'buy').length === 8 && pool.filter((x) => x.side === 'sell').length === 8 && /^\$0\.\d+ ?the pools’ price ?(spread \d\.\d%|pools \d+\.\d% apart)$/.test(pmid) && !!(await p.$('#depth-note a[href^="https://zswap"]')) && !(await p.$('#ladders .ob.boards')),
+  ok(pool.filter((x) => x.side === 'buy').length === 8 && pool.filter((x) => x.side === 'sell').length === 8 && /^\$\d+\.\d+ ?the pools’ price ?(spread \d\.\d%|pools \d+\.\d% apart)$/.test(pmid) && !!(await p.$('#depth-note a[href^="https://zswap"]')) && !(await p.$('#ladders .ob.boards')),
     `the Ethereum tab draws the two pools as a ladder around their price, eight prices a side, and says where to place an order (${pmid})`);
-  ok(pool.every((x) => (x.side === 'buy' ? /^Buy [\d,.]+ TAC in all, up to \$0\.\d+ each$/ : /^Sell [\d,.]+ TAC in all, down to \$0\.\d+ each$/).test(x.label)) && pool.every((x) => /^(Buy|Sell) [\d,.]+ TAC for [\d.]+ ETH · about \$[\d,.]+ · \$0\.\d+ each$/.test(x.peek)),
+  ok(pool.every((x) => (x.side === 'buy' ? /^Buy [\d,.]+ TAC in all, up to \$\d+\.\d+ each$/ : /^Sell [\d,.]+ TAC in all, down to \$\d+\.\d+ each$/).test(x.label)) && pool.every((x) => /^(Buy|Sell) [\d,.]+ TAC for [\d.]+ ETH · about \$[\d,.]+ · \$\d+\.\d+ each$/.test(x.peek)),
     `each row says what a press takes: everything up to its price, what it costs and its average price (${pool[0].peek})`);
   ok((await p.$$eval('#depthchart path.dep-ask:not(.take)', (x) => x.length)) === 1 && (await p.$$eval('#depthchart path.dep-bid:not(.take)', (x) => x.length)) === 1 && !(await p.$eval('#depthchart', (e) => e.hidden)), 'and the depth chart draws what the pools sell and take');
   // A row put in the ticket: the amount that reaches it, and the quote for that amount is what the row holds, since the pools read as a book are the
@@ -512,13 +518,15 @@ try {
 
     // a purchase that splits
     await q.evaluate(() => { window.__go = new Set(); new MutationObserver(() => window.__go.add(document.querySelector('#go').textContent)).observe(document.querySelector('#go'), { childList: true, characterData: true, subtree: true }); });
-    // 3 ETH: an amount that moves the price well over 10% in pools this size, so the acceptance box is asked for (2 ETH did until the pools grew past it)
-    await q.fill('#amt', '3');
+    // 6 ETH: an amount that moves the price well over 10% in pools this size (about 2% an ETH on 2026-11-23), so the acceptance box is asked for (2 ETH did until the pools grew past it, then 3).
+    // The wallet holds 10.
+    const BIG_ETH = 6;
+    await q.fill('#amt', String(BIG_ETH));
     await until(q, () => /Split across/.test(document.querySelector('#route')?.textContent || '') && /buy TAC/i.test(document.querySelector('#go')?.textContent || ''), null, 240000);
     ok(await q.evaluate(() => window.__go.has('Updating the quote…')), `while a new amount is quoted the button says so and waits (${await q.evaluate(() => [...window.__go].join(' / '))})`);
     if (SHOTS) await q.locator('.p-ticket').screenshot({ path: join(SHOTS, 'ticket-quoted.png') });
     const rv = (await text(q, '#route')).replace(/\s+/g, ' ');
-    ok(/Split across two pools/.test(rv) && /Price impact\d+%/.test(rv) && /At least[\d,.]+ TAC/.test(rv) && /Slippage/.test(rv) && !!(await q.$('#slip-seg')) && /checked before it is sent/.test(await text(q, '#tk-note')) && !(await q.$('#review')), `the quote itself says the route, the price impact and the least it takes, with slippage in it and no review step (${rv.slice(0, 200)})`);
+    ok(/Split across two pools/.test(rv) && /Price impact\d+(\.\d)?%/.test(rv) && /At least[\d,.]+ TAC/.test(rv) && /Slippage/.test(rv) && !!(await q.$('#slip-seg')) && /checked before it is sent/.test(await text(q, '#tk-note')) && !(await q.$('#review')), `the quote itself says the route, the price impact and the least it takes, with slippage in it and no review step (${rv.slice(0, 200)})`);
     ok(/Network fee(≈ \$\d+\.\d\d|under \$0\.01)/.test(rv) && /gas at [\d.]+ gwei/.test(await q.$eval('#route .kv b[title*="gas at"]', (b) => b.title)), `the quote says what the network takes, at the gas price now (${(rv.match(/Network fee[^S]*/) || [''])[0]})`);
     const floorTxt = (rv.match(/At least([\d,.]+) TAC/) || [])[1];
     ok(await q.$eval('#go', (b) => b.disabled) && /I accept losing about \d+%/.test(await text(q, '#route')), 'a purchase that moves the price over 10% waits for the box to be ticked');
@@ -553,9 +561,9 @@ try {
     await q.click('#add-tac');
     await until(q, () => /Added to your wallet/.test(document.querySelector('#status')?.textContent || ''), null, 10000);
     ok(w.walletLog.watched?.[0]?.options?.address === TACADDR && w.walletLog.watched[0].options.symbol === 'TAC' && w.walletLog.watched[0].options.decimals === 18 && (await q.evaluate(() => localStorage.getItem('tacit-trade-tac-added'))) === '1', 'the wallet is asked to list TAC at its address, and the page does not offer it again');
-    ok(/Bought\. Received [\d,.]+ TAC/.test(await text(q, '#status')) && Number(got / 10n ** 16n) / 100 >= floor, `3 ETH bought through the split: ${Number(got / 10n ** 16n) / 100} TAC, at least the ${floorTxt} it showed (${(await text(q, '#status')).slice(0, 80)})`);
+    ok(/Bought\. Received [\d,.]+ TAC/.test(await text(q, '#status')) && Number(got / 10n ** 16n) / 100 >= floor, `${BIG_ETH} ETH bought through the split: ${Number(got / 10n ** 16n) / 100} TAC, at least the ${floorTxt} it showed (${(await text(q, '#status')).slice(0, 80)})`);
     ok(BigInt(await rpcA('eth_getTransactionCount', [me.account, 'latest'])) === n0 + 1n && w.walletLog.sends.length === 1 && w.walletLog.sends[0].to.toLowerCase() === ROUTER.toLowerCase(), 'in one transaction, sent to zRouter');
-    ok(e0 - (await ethBal(me.account)) >= 3n * E18 && e0 - (await ethBal(me.account)) < 3n * E18 + E18 / 50n && (await tacBal(MC3)) === mc0 && (await ethBal(ROUTER)) === rt0, 'the ETH spent is the 3 ETH and its gas, and nothing is left in Multicall3 or the router');
+    ok(e0 - (await ethBal(me.account)) >= BigInt(BIG_ETH) * E18 && e0 - (await ethBal(me.account)) < BigInt(BIG_ETH) * E18 + E18 / 50n && (await tacBal(MC3)) === mc0 && (await ethBal(ROUTER)) === rt0, `the ETH spent is the ${BIG_ETH} ETH and its gas, and nothing is left in Multicall3 or the router`);
     ok(/Balance [\d.,]+ ETH/.test(await text(q, '#in-bal')) && (await q.inputValue('#amt')) === '', 'the balance and the form are refreshed');
     ok(!!(await q.$('#status #farm-it')), 'a purchase offers to farm it');
     await q.click('#farm-it');
@@ -574,7 +582,7 @@ try {
     await until(q, () => document.querySelectorAll('#ladders table.yours.recent tbody tr').length >= 1, null, 60000);
     await q.waitForTimeout(4000);
     const mrows = await q.$$eval('#ladders table.yours.recent tbody tr', (r) => r.map((x) => x.textContent.replace(/\s+/g, ' ').trim()));
-    ok(w.seen.rpc.filter((x) => x.method === 'eth_getLogs').length > logs0 && mrows.length === 1 && /Bought [\d,]+ TAC for 3 ETH/.test(mrows[0]), `Yours reads the pool's swaps for the account and lists the purchase once (${mrows.length} row: ${mrows[0]?.slice(0, 60)})`);
+    ok(w.seen.rpc.filter((x) => x.method === 'eth_getLogs').length > logs0 && mrows.length === 1 && new RegExp(`Bought [\\d,]+ TAC for ${BIG_ETH} ETH`).test(mrows[0]), `Yours reads the pool's swaps for the account and lists the purchase once (${mrows.length} row: ${mrows[0]?.slice(0, 60)})`);
     ok(/^[\d.]+ ETH · [\d,.]+ TAC on Ethereum$/.test((await text(q, '.mine-eth')).trim()), `with what the wallet holds on Ethereum above it (${(await text(q, '.mine-eth')).trim()})`);
     await q.click('[data-book="trades"]');
     await q.waitForSelector('#ladders table.trades small.you', { timeout: 60000 }).catch(() => null);
@@ -584,7 +592,7 @@ try {
     await q.click('[data-book="btc"]'); await q.click('[data-book="mine"]');
     await until(q, () => document.querySelectorAll('#ladders table.yours.recent tbody tr').length >= 1, null, 60000);
     const crow = (await q.$$eval('#ladders table.yours.recent tbody tr', (r) => r.map((x) => x.textContent.replace(/\s+/g, ' ').trim())))[0];
-    ok(/Bought [\d,]+ TAC for [\d.]+ ETH/.test(crow) && !/for 3 ETH/.test(crow), `with no record in this browser the purchase is listed from the pool's swap to the account (its Precision share: ${crow.slice(0, 60)})`);
+    ok(/Bought [\d,]+ TAC for [\d.]+ ETH/.test(crow) && !new RegExp(`for ${BIG_ETH} ETH`).test(crow), `with no record in this browser the purchase is listed from the pool's swap to the account (its Precision share: ${crow.slice(0, 60)})`);
     await q.click('[data-book="btc"]');
 
     // a sale that splits: the permit is signed in the wallet, then one transaction
@@ -629,19 +637,21 @@ try {
     await rf.browser.close();
 
     // a small balance: the fee row says about two cents, so 0.0013 ETH buys 0.0001 ETH of TAC and is not told to leave 0.004 ETH behind
-    const small = await fundedWallet(13n * 10n ** 14n, 1000n * E18), sm = await openPage({ width: 1280, height: 900 }, small);
+    // The fork keeps mainnet's gas price (a small ETH balance must cover the fee the page keeps back, which follows it: about the split route's gas, twice, with half again for room), so the balance
+    // is 0.0013 ETH when gas is cheap and a little over the fee when it is dear (at 2 gwei 0.0013 ETH no longer covers it).
+    const forkGas = BigInt((await (await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"jsonrpc":"2.0","id":1,"method":"eth_gasPrice","params":[]}' })).json()).result);
+    const keepWei = 261000n * forkGas * 2n * 3n / 2n, smallWei = 13n * 10n ** 14n > keepWei + 3n * 10n ** 14n ? 13n * 10n ** 14n : keepWei + 3n * 10n ** 14n, smallEth = String(Number(smallWei) / 1e18);
+    const small = await fundedWallet(smallWei, 1000n * E18), sm = await openPage({ width: 1280, height: 900 }, small);
     await until(sm.page, () => /^\$/.test(document.querySelector('#px-usd')?.textContent || ''), null, 240000);
     await sm.page.click('#go'); await until(sm.page, () => /Balance/.test(document.querySelector('#in-bal')?.textContent || ''), null, 60000);
     await sm.page.fill('#amt', '0.0001'); await until(sm.page, () => /Buy TAC|Leave ETH/.test(document.querySelector('#go')?.textContent || ''), null, 240000);
-    ok((await text(sm.page, '#go')) === 'Buy TAC' && !(await sm.page.$eval('#go', (b) => b.disabled)), `0.0001 ETH from a 0.0013 ETH balance can be sent (${await text(sm.page, '#go')})`);
-    await sm.page.click('#in-bal'); await until(sm.page, () => Number(document.querySelector('#amt').value) > 0 && Number(document.querySelector('#amt').value) < 0.0013, null, 10000);
+    ok((await text(sm.page, '#go')) === 'Buy TAC' && !(await sm.page.$eval('#go', (b) => b.disabled)), `0.0001 ETH from a ${smallEth} ETH balance can be sent (${await text(sm.page, '#go')})`);
+    await sm.page.click('#in-bal'); await until(sm.page, (max) => Number(document.querySelector('#amt').value) > 0 && Number(document.querySelector('#amt').value) < max, Number(smallEth), 10000);
     await until(sm.page, () => /Buy TAC|Leave ETH/.test(document.querySelector('#go')?.textContent || '') && !document.querySelector('.p-ticket').classList.contains('stale'), null, 240000);
-    // what Max keeps back follows the fork's own gas price (1 gwei on an anvil fork, far under it on mainnet): it must be about the fee (the split
-    // route's gas, twice, with half again for room), whatever the price, and never the old flat 0.004 ETH
-    const forkGas = BigInt((await (await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"jsonrpc":"2.0","id":1,"method":"eth_gasPrice","params":[]}' })).json()).result);
-    const keepMax = Number(261000n * forkGas * 2n) / 1e18 * 1.5, maxAmt = Number(await sm.page.inputValue('#amt'));
-    ok(maxAmt > 0.0013 - keepMax && maxAmt < 0.0013 && (await text(sm.page, '#go')) === 'Buy TAC', `Max keeps back about the fee, not 0.004 ETH, and what it fills in can be sent (${maxAmt}, ${await text(sm.page, '#go')})`);
-    await sm.page.fill('#amt', '0.0013'); await until(sm.page, () => /Leave ETH|Not enough/.test(document.querySelector('#go')?.textContent || ''), null, 240000);
+    // what Max keeps back follows the fork's own gas price: it must be about the fee (the split route's gas, twice, with half again for room), whatever the price, and never the old flat 0.004 ETH
+    const keepMax = Number(keepWei) / 1e18, maxAmt = Number(await sm.page.inputValue('#amt'));
+    ok(maxAmt > Number(smallEth) - keepMax && maxAmt < Number(smallEth) && (await text(sm.page, '#go')) === 'Buy TAC', `Max keeps back about the fee, not 0.004 ETH, and what it fills in can be sent (${maxAmt}, ${await text(sm.page, '#go')})`);
+    await sm.page.fill('#amt', smallEth); await until(sm.page, () => /Leave ETH|Not enough/.test(document.querySelector('#go')?.textContent || ''), null, 240000);
     ok((await text(sm.page, '#go')) === 'Leave ETH for the network fee' && (await sm.page.$eval('#go', (b) => b.disabled)), 'all of the balance leaves nothing for the fee and says so');
     await sm.page.click('[data-side="sell"]'); await sm.page.fill('#amt', '100');
     await until(sm.page, () => /Sell TAC|Add ETH/.test(document.querySelector('#go')?.textContent || '') && !document.querySelector('.p-ticket').classList.contains('stale'), null, 240000);
@@ -698,7 +708,7 @@ try {
     const asks = await askRows(), bids = await lad('#ladders .ob.boards .ob-bids .ob-row');
     ok((await q.$$eval('#ladders .ob.pools [data-pool]', (x) => x.length)) >= 8 && /Orders on zSwap’s boards/.test(await text(q, '#ladders .ob-sub')), 'the pools\' ladder stays, with the orders on zSwap\'s boards listed under it');
     ok(asks.length === 4 && bids.length === 1, `the Ethereum tab opens with orders: ${asks.length} to sell, ${bids.length} to buy (${asks[0].slice(0, 90)})`);
-    ok(/^\$0\.\d+.*1,000.*0\.01.*Swapboard v1.*whole only/.test(asks[0]) || /^\$0\.\d+.*1,000.*0\.01.*Swapboard v1/.test(asks.find((x) => /Swapboard v1/.test(x)) || ''), 'each with its price, size, the ETH it takes, the board and what it allows');
+    ok(/^\$\d+\.\d+.*1,000.*0\.01.*Swapboard v1.*whole only/.test(asks[0]) || /^\$\d+\.\d+.*1,000.*0\.01.*Swapboard v1/.test(asks.find((x) => /Swapboard v1/.test(x)) || ''), 'each with its price, size, the ETH it takes, the board and what it allows');
     ok(asks.some((x) => /Dutchboard.*price changes with time/.test(x)) && asks.some((x) => /Swapboard v2.*part fills ok/.test(x)) && /Swapboard v2/.test(bids[0]), 'a Dutchboard lot, a partial v2 order and the v2 bid are all there');
     ok((await q.$$eval('#depthchart path.dep-ask', (x) => x.length)) >= 1 && (await q.$$eval('#depthchart path.dep-bid', (x) => x.length)) >= 1, 'and drawn as a depth chart of both sides');
     ok(!(await askRows()).some((x) => /yours/.test(x)), 'before a wallet is connected no order is marked as the account\'s');
@@ -757,6 +767,9 @@ try {
     // an order filled by someone else between the quote and the press stops the trade: nothing is sent
     await q.click(`[data-fill="${dutchKey}"]`);
     await until(q, () => /buy TAC/i.test(document.querySelector('#go')?.textContent || '') && !document.querySelector('#out').classList.contains('ph') && !document.querySelector('.p-ticket').classList.contains('stale'), null, 240000);
+    // The page re-reads the boards on its own each minute, and a read that lands between the fill and the press lets go of the lot by itself (right, but not what this checks: the press then buys on the
+    // best route). The tab is made hidden for this stretch, which is what stops that refresh, so the press is the first to see the fill. (Slow machines made the stretch long enough to be hit.)
+    await q.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); });
     const rival = await fundedWallet(10n * E18, 0n);
     await sendTx(rival.account, DU, 'fill(uint256,uint128,address,uint256)', [idDu, tac(1000), rival.account, eth(40)], eth(40));
     const before = w.walletLog.sends.length;
@@ -764,6 +777,7 @@ try {
     await q.click('#go');
     await until(q, () => /filled or cancelled/.test(document.querySelector('#status')?.textContent || ''), null, 120000);
     ok(/Nothing was sent/.test(await text(q, '#status')) && w.walletLog.sends.length === before, 'a lot someone else fills after the quote stops the trade with nothing sent');
+    await q.evaluate(() => { delete document.hidden; });
     await until(q, (k) => !document.querySelector(`[data-fill="${k}"]`) && document.querySelector('#pin').hidden, dutchKey, 120000);
     ok(true, 'and the filled lot leaves the book and the pin');
     ok(w.errors.length === 0 && w.blocked.length === 0, `no page errors or blocked requests with the boards (${[...w.errors, ...w.blocked].slice(0, 2).join(' | ')})`);
@@ -826,7 +840,7 @@ try {
   await r.browser.close();
   r = await openPage({ width: 1280, height: 900 }, null, '', '/trade/', { hedge: '1200', hangFirst: true });
   const tH = Date.now();
-  await until(r.page, () => /^\$0\.\d/.test(document.querySelector('#px-usd')?.textContent || ''), null, 120000);
+  await until(r.page, () => /^\$\d/.test(document.querySelector('#px-usd')?.textContent || ''), null, 120000);
   ok(Date.now() - tH < 11000, `with the first node never answering the price is read from the next (${Date.now() - tH} ms, not the 12 s the first node's timeout would cost)`);
   await r.browser.close();
   // a phone
@@ -844,7 +858,7 @@ try {
   const subh = await m.$eval('#px-sub', (e) => e.getBoundingClientRect().height);
   ok(subh >= parseFloat(await m.$eval('#px-sub', (e) => getComputedStyle(e).minHeight)) - 1 && (await m.$$eval('#px-sub .st', (a) => a.every((x) => x.getBoundingClientRect().height < 26))), `the headline's figures are one line each, in a block that holds its height (${subh}px)`);
   const hs = await m.$eval('#hints-sum', (e) => ({ h: e.getBoundingClientRect().height, t: e.textContent.replace(/\s+/g, ' ').trim() }));
-  ok(hs.h < 32 && /Ethereum \$0\.\d+/.test(hs.t) && /Bitcoin \$0\.\d+/.test(hs.t), `the prices under the headline are one line on a phone, the chains' names kept for a screen reader (${Math.round(hs.h)}px: ${hs.t})`);
+  ok(hs.h < 32 && /Ethereum \$\d+\.\d+/.test(hs.t) && /Bitcoin \$0\.\d+/.test(hs.t), `the prices under the headline are one line on a phone, the chains' names kept for a screen reader (${Math.round(hs.h)}px: ${hs.t})`);
   const shift = await m.evaluate(() => new Promise((done) => { let v = 0; new PerformanceObserver((l) => { for (const e of l.getEntries()) if (!e.hadRecentInput) v += e.value; }).observe({ type: 'layout-shift', buffered: true }); setTimeout(() => done(v), 100); }));
   ok(shift < 0.05, `nothing moves as the page's figures arrive (layout shift ${shift.toFixed(4)})`);
   if (SHOTS) await m.screenshot({ path: join(SHOTS, 'trade-phone.png'), fullPage: true });
