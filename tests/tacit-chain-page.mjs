@@ -411,6 +411,7 @@ try {
     const own = await shieldQuote(page, '250'), picked = () => page.$eval('#tcd-q [data-tcd-way][aria-pressed="true"]', (b) => b.dataset.tcdWay).catch(() => null);
     ok(/^≈ 249\.\d+ TAC, private$/.test(own.Arrives) && own.Gas === 'your ETH, no fee' && (await picked()) === 'own' && (await text(page, '#tcd-have')) === '1,000 in this key’s address',
       `with ETH in the account a shield pays its own gas (${JSON.stringify(own)}, ${await text(page, '#tcd-have')})`);
+    ok(/^[\d.,]+ TAC \([\d.,]+ stays with the chain’s holders, [\d.,]+ to the leader that lands it\)$/.test(own.Fee || ''), `the shield names what comes off it, in TAC, whichever way the gas is paid (${own.Fee})`);
     await page.click('#tcd-q [data-tcd-way="permit"]');
     await page.waitForFunction(() => document.querySelector('#tcd-q [data-tcd-way="permit"]')?.getAttribute('aria-pressed') === 'true', null, { timeout: 10000 }).catch(() => {});
     const relayed = await quoteRows(page);

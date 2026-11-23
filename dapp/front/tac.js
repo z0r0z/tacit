@@ -1634,7 +1634,9 @@ async function tcardShieldSay(units) {
   tcdHave(held != null ? `${fmt(held, 18, 2)} in ${payer() === 'tacit' ? 'this key’s address' : 'your wallet'}` : '');
   if (TCD_FILL.at && held != null) { const fresh = Date.now() - TCD_FILL.at < 20e3; TCD_FILL.at = 0; if (fresh) tcardStakeFill().then(tcardStakeFocus, () => {}); }
   if (held === 0n) return [html`No TAC in ${your()}. <button class="link" type="button" data-hx="swap:ether:tac">Buy with ETH</button> · <a class="link" href="/trade/tac/#btc=buy">Buy with sats</a> · <a class="link" href="/rewards/">Claim your airdrop</a>`, false];
-  const rows = (arrives) => tcdRows(tcdRow('Arrives', arrives), tcdRow('Earns', ctx.TACP.yld ? html`<span class="tcd-up num">${tpgYield(ctx.TACP.yld)}</span> <span class="mute">${ctx.TACP.yld.young ? 'so far' : 'from fees'}, no lock</span>` : html`<span class="mute">a share of every fee, no lock</span>`), key ? tcdGas(way, sf, units) : tcdRow('Gas', html`<span><span class="num">${t4(sf)}</span> TAC, or your own ETH</span>`), tcdRow('Takes', html`${key ? tcdTakes(way) : 'One signature'} · about a minute`));
+  // what comes off the shield, named: the chain's holders keep a small margin and the leader that lands it takes its fee, in TAC whichever way the gas is paid
+  const feeRow = (q) => (q?.holders != null && q?.fee != null ? tcdRow('Fee', html`<span><span class="num">${fmt(q.holders + q.fee, 8, 4)}</span> TAC <span class="mute">(${fmt(q.holders, 8, 4)} stays with the chain’s holders, ${fmt(q.fee, 8, 4)} to the leader that lands it)</span></span>`) : null);
+  const rows = (arrives, q = null) => tcdRows(tcdRow('Arrives', arrives), feeRow(q), tcdRow('Earns', ctx.TACP.yld ? html`<span class="tcd-up num">${tpgYield(ctx.TACP.yld)}</span> <span class="mute">${ctx.TACP.yld.young ? 'so far' : 'from fees'}, no lock</span>` : html`<span class="mute">a share of every fee, no lock</span>`), key ? tcdGas(way, sf, units) : tcdRow('Gas', html`<span><span class="num">${t4(sf)}</span> TAC, or your own ETH</span>`), tcdRow('Takes', html`${key ? tcdTakes(way) : 'One signature'} · about a minute`));
   if (!units) return [html`${rows(html`<span class="mute">private, on the Tacit chain</span>`)}${cap != null && held != null && held > cap * E10 ? html`<p class="tcd-cap">Up to ${fmt(cap, 8, 0)} TAC a shield for now.</p>` : ''}`, true];
   if (cap != null && units > cap) return [tcdErr(chainCapLine(cap)), false];
   const total = units * E10 + sf;
@@ -1647,7 +1649,7 @@ async function tcardShieldSay(units) {
   const q = key ? await chainQuote('shield', units).catch(() => null) : tpgShieldEst(units);
   if (chainOverCap(q, units)) return [tcdErr(chainCapLine(q.cap)), false];
   if (key && q) chainShieldAhead(units);
-  return [rows(q ? html`<span><b class="num">≈ ${fmt(q.arrives, 8, 4)} TAC</b>, private</span>` : 'a little less, private'), true];
+  return [rows(q ? html`<span><b class="num">≈ ${fmt(q.arrives, 8, 4)} TAC</b>, private</span>` : 'a little less, private', q), true];
 }
 function tcardMove(need) {
   const h = tpgHave(), t = (v) => fmt(v * E10, 18, 2), has = (v) => (v || 0n) >= need;
