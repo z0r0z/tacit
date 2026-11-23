@@ -21,7 +21,7 @@ process.on('exit', () => anvil.kill('SIGKILL'));
 const rpc = async (method, params = []) => (await (await fetch(ANVIL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json()).result;
 for (let i = 0; ; i++) { try { await rpc('eth_chainId'); break; } catch { if (i > 60) throw new Error('anvil did not start'); await new Promise((r) => setTimeout(r, 250)); } }
 
-for (let i = 0; i < 6; i++) await rpc('evm_mine');   // the start check proves a block at least 1 deep
+await rpc('anvil_mine', ['0x12c']);   // the start check proves a block at least 1 deep, and an oracle's interval (100 blocks here) has to have ended for there to be one to look at
 
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
@@ -168,6 +168,30 @@ const isA = (_, tag) => tag === A_CALL;
   const q = await endpoint({ fail: (j) => (j.method === 'eth_getProof' ? { error: { code: -32000, message: 'missing trie node' } } : null) });
   const r2 = await keeper({ RPC: q.url, RPC_FALLBACKS: '', START_RETRY_SECONDS: '1' });
   ok(r2.code === 2 && /does not serve eth_getProof for old blocks/.test(r2.out) && !/start check: the endpoint is failing/.test(r2.out), `an endpoint that cannot serve the proof still ends the start (exit ${r2.code})`);
+  q.server.close();
+}
+
+// 8. An oracle that takes a proof (no slots(): TacProvenOracle) is named in ORACLE: the keeper says it only watches it and still goes on to the oracle it records (listed after
+// it, so that an abort at the first would never reach it). A slots() read that merely failed is not taken for that.
+{
+  const VP = addr(0xa6);
+  const two = (a, b) => ({ result: word(a) + word(b).slice(2) });
+  const fake = {
+    ...FAKE,
+    [key(PAIR, 'A()')]: OK(VP), [key(PAIR, 'B()')]: OK(VA),
+    [key(VP, 'STEP()')]: OK(50), [key(VP, 'MAX_WINDOW()')]: OK(28800), [key(VP, 'POOL()')]: OK(POOL), [key(VP, 'slots()')]: REVERT,
+    [key(VA, 'slots()')]: two(1, 2), [key(VA, 'sampleOf(uint256)')]: two(1, 1),
+  };
+  const sampleVA = `eth_call ${VA.toLowerCase()}:${sel('sampleOf(uint256)')}`;
+  const p = await endpoint({ fake });
+  const r = await keeper({ RPC: p.url, RPC_FALLBACKS: '', ORACLE: `${VP},${VA}` });
+  ok(r.code === 0 && !alerts(r.out).length && !/oracle read failed/.test(r.out), `a proven oracle in ORACLE raises no alert and no read failure (exit ${r.code}; ${alerts(r.out).join(' | ') || 'no alerts'})`);
+  ok(new RegExp(`${VP} takes proofs and not records`).test(r.out) && (r.out.match(/takes proofs and not records/g) || []).length === 1, 'the keeper says once that it only watches it');
+  ok(count(p.hits, sampleVA) >= 1, `and it went on to record-check the other oracle (${count(p.hits, sampleVA)} sampleOf reads)`);
+  p.server.close();
+  const q = await endpoint({ fake, fail: (j, tag) => (tag === `eth_call ${VA.toLowerCase()}:${sel('slots()')}` ? 'drop' : null) });
+  const r2 = await keeper({ RPC: q.url, RPC_FALLBACKS: '', ORACLE: `${VP},${VA}` });
+  ok(new RegExp(`${VA} oracle read failed`, 'i').test(r2.out) && !new RegExp(`${VA} takes proofs`, 'i').test(r2.out), 'a slots() read that dropped is a failed read, not a proven oracle');
   q.server.close();
 }
 

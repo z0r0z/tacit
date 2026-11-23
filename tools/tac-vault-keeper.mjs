@@ -34,6 +34,9 @@
 // actions pay at most ACTION_MAX_GWEI, since a liquidation must not wait out a gas spike. A transaction that mines
 // but reverts is reported. Anyone can run one.
 //
+// An oracle that takes a proof where the venues take a record (TacProvenOracle, its own A() and B(), no `slots()`) is made by a prover: name it in ORACLE all the
+// same, so that a vault pricing from it is not reported as unrecorded; this keeper says once that it only watches it and records the others as before.
+//
 // Reads go to RPC. When it fails the way a provider does (a dropped connection, a rate limit, an HTML error page, an "Internal error"),
 // the same read goes to RPC_FALLBACKS (SEND_RPC when unset), which are then tried first for RPC_COOLDOWN_SECONDS (120) so that a dead
 // endpoint does not hold up every call. A fallback that cannot serve a read (the proof of an old block) changes nothing: RPC is tried
@@ -256,12 +259,24 @@ const recorded = (oracle, k) => {
 
 // Each venue oracle: the contract whose storage it proves, the two slots, its interval and how many to keep.
 const configs = new Map();
+// An oracle that takes a proof where the venues take a record (TacProvenOracle: its own A() and B(), no `slots()`) is made by a prover, not by this keeper. It
+// stays in ORACLE, so that a vault pricing from it is not reported as unrecorded, and is left out of what this keeper records; it holds the others up no more.
+const proven = new Set();
 
 function readConfig(oracle) {
-  if (configs.has(oracle)) return true;
+  if (configs.has(oracle) || proven.has(oracle)) return true;
   try {
     const step = num(call(oracle, 'STEP()(uint256)'));
-    const [slotA, slotB] = call(oracle, 'slots()(bytes32,bytes32)').split('\n');
+    let slotA, slotB;
+    try {
+      [slotA, slotB] = call(oracle, 'slots()(bytes32,bytes32)').split('\n');
+    } catch (e) {
+      // A revert says there are no slots to prove; a read that failed says nothing, and goes to the handler below.
+      if (!answered(e)) throw e;
+      proven.add(oracle);
+      log(oracle, 'takes proofs and not records: a prover keeps it, this keeper only watches it');
+      return true;
+    }
     configs.set(oracle, {
       pool: call(oracle, 'POOL()(address)'),
       slots: [slotA, slotB],
@@ -313,15 +328,17 @@ function buildRecord(oracle, c, k, top) {
 function sampleAll() {
   const full = Date.now() - lastFull >= FULL_SWEEP * 1000;
   for (const oracle of ORACLES) if (!readConfig(oracle)) return;
+  const mine = ORACLES.filter((o) => configs.has(o));                                                  // those this keeper records
+  if (!mine.length) return;
   const top = head();
   const baseFee = num(rd(['base-fee']));
-  const stepMax = Math.max(...ORACLES.map((o) => Number(configs.get(o).step)));
-  const depth = full ? Math.max(...ORACLES.map((o) => Number(configs.get(o).intervals))) : Math.max(3, Number(DEFER_BLOCKS) / stepMax + 3);
+  const stepMax = Math.max(...mine.map((o) => Number(configs.get(o).step)));
+  const depth = full ? Math.max(...mine.map((o) => Number(configs.get(o).intervals))) : Math.max(3, Number(DEFER_BLOCKS) / stepMax + 3);
   let missed = 0;
   const all = [];                                                                                      // everything due, newest interval first
   for (let i = 0; i < depth; i++) {
     const due = [];
-    for (const oracle of ORACLES) {
+    for (const oracle of mine) {
       const c = configs.get(oracle);
       if (BigInt(i) >= c.intervals) continue;
       // The newest interval whose following block exists, then i back.
