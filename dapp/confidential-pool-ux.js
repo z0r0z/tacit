@@ -3503,6 +3503,12 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     const pol = RELAY_FEE_ASSETS[ticker];
     const meta = assetByTicker[ticker];
     if (!pol && meta && TOKEN_FEE_KINDS.has(opKind)) return tokenMinFee(meta, opKind).catch(() => staticFloor);
+    // TAC has no price feed, so its fee was the flat floor whatever the gas was. At 6 gwei the relay's floor for a TAC route is about 6 TAC and the page offered 2, so every TAC swap and
+    // exit was turned back and quoting again changed nothing. It is priced like a registered token, from the pool that pairs it with tETH, and never under its flat floor.
+    if (pol && !pol.usd && meta) {
+      const priced = await tokenMinFee(meta, opKind).catch(() => 0n);
+      return priced > staticFloor ? (staticFloor > 0n && priced > staticFloor * 50n ? _ladderFee(staticFloor * 50n) : priced) : staticFloor;
+    }
     if (!pol || !meta) return staticFloor;
     let gwei; try { gwei = BigInt((await _gasPriceNow()) || '0'); } catch { return staticFloor; }
     if (gwei <= 0n) return staticFloor;

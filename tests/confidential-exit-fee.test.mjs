@@ -349,3 +349,76 @@ test('a node that does not answer is left out of the gas read; with two answers 
     assert.equal(await run([15n, 16n, 50n, 15n, 15n], [0, 1, 2, 3, 4]), await at(20n), 'none of the five answers: the usual race over every node still finds a price (here 20 gwei, what the rest say)');
   });
 });
+
+// TAC has no price feed, so its fee was the flat 2 TAC at any gas. On 2026-11-23 gas stood at 5.5 to 7.9 gwei (about 0.2 on a quiet day): the relay's floor for a TAC route was about 6 TAC, so
+// every TAC swap and exit was turned back with "relay fee below the current floor", and quoting again changed nothing because the quote did not move. TAC is now priced as a registered token is,
+// from the pool that pairs it with tETH, so its fee follows the gas like tETH's does. The numbers here are the live ones of that day: 6.2 gwei, 19.39 tETH against 37,820 TAC.
+const R_TETH_FOR_TAC = 1_938_634_140n, R_TAC_UNITS = 3_782_076_227_058n, SPIKE = 6_199_148_333n;
+function tacGasUx({ gas, pool = [R_TETH_FOR_TAC, R_TAC_UNITS], need = 0n } = {}) {
+  const fees = [], ref = {};
+  const fetchImpl = async (url, opts) => {
+    const body = opts && opts.body ? JSON.parse(opts.body) : {};
+    if (String(url).endsWith('/confidential/submit')) {
+      const fee = BigInt(body.op.fee); fees.push(fee);
+      if (fee < need) return { ok: false, status: 400, statusText: 'Bad Request', text: async () => JSON.stringify({ error: 'submitJob: relay fee below the current floor — re-quote higher or self-settle' }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ jobId: 'j' + fees.length, status: 'pending' }) };
+    }
+    const one = (b) => {
+      let result = '0x0';
+      if (b.method === 'eth_gasPrice') result = '0x' + gas.toString(16);
+      else if (b.method === 'eth_call') {
+        const data = String(b.params?.[0]?.data || '');
+        const ux = ref.ux, eth = ux.assetByTicker.cETH.assetId, tac = ux.assetByTicker.cTAC.assetId;
+        if (pool && data.length === 74 && ('0x' + data.slice(10)).toLowerCase() === ux.routePoolId(tac, eth, 30).toLowerCase()) {
+          const tacLow = BigInt(tac) <= BigInt(eth), [a, b2] = tacLow ? [tac, eth] : [eth, tac], [ra, rb] = tacLow ? [pool[1], pool[0]] : [pool[0], pool[1]];
+          result = '0x' + word(1) + a.replace(/^0x/, '') + b2.replace(/^0x/, '') + word(ra) + word(rb) + word(30) + word(10n ** 12n);
+        }
+      }
+      return { jsonrpc: '2.0', id: b.id ?? 1, result };
+    };
+    const obj = Array.isArray(body) ? body.map(one) : one(body);
+    return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+  };
+  const ux = makeConfidentialPoolUx({ ...deps, fetchImpl });
+  ref.ux = ux;
+  return { ux, fees };
+}
+// the relay's submit-time floor for one fee leg, in TAC units: (300,000 + 30,000 x 2) gas at the gas price plus 10%, at the pool's TAC price less 20%
+const relayTacFloor = (gas) => { const wei = (360000n * gas * 11n) / 10n, perUnit = (R_TETH_FOR_TAC * 10n ** 10n * 8000n) / (R_TAC_UNITS * 10000n); return (wei + perUnit - 1n) / perUnit; };
+
+test('at a gas spike a TAC route is quoted past the relay\'s floor, which the flat 2 TAC was not', async () => {
+  const need = relayTacFloor(SPIKE);
+  assert.ok(need > TAC_FLOOR * 2n, `the relay wanted ${need} units (${Number(need) / 1e8} TAC), well over the flat ${TAC_FLOOR}`);
+  const { ux } = tacGasUx({ gas: SPIKE });
+  for (const kind of ['route', 'unwrap', 'sendunwrap', 'transfer', 'lp']) {
+    const fee = await ux.quoteOpFee('cTAC', kind);
+    assert.ok(fee >= need, `${kind}: the quote (${fee}) clears the relay's floor (${need})`);
+  }
+});
+
+test('the TAC quote follows the gas: it falls back to the flat 2 TAC when gas is low, and rises with it', async () => {
+  const flat = await tacGasUx({ gas: 150_000_000n }).ux.quoteOpFee('cTAC', 'route');
+  assert.equal(flat, TAC_FLOOR, 'at 0.15 gwei the gas cost is under the flat floor, so the flat floor stays');
+  const mid = await tacGasUx({ gas: 2n * GWEI }).ux.quoteOpFee('cTAC', 'route'), high = await tacGasUx({ gas: SPIKE }).ux.quoteOpFee('cTAC', 'route');
+  assert.ok(mid > flat && high > mid, `${flat} < ${mid} < ${high}`);
+});
+
+test('without a pool to price TAC by, or a gas read, the TAC quote stays the flat floor', async () => {
+  assert.equal(await tacGasUx({ gas: SPIKE, pool: null }).ux.quoteOpFee('cTAC', 'route'), TAC_FLOOR);
+  assert.equal(await tacGasUx({ gas: 0n }).ux.quoteOpFee('cTAC', 'unwrap'), TAC_FLOOR);
+});
+
+test('a TAC exit at a gas spike is taken by a relay that holds it to the floor, first time', async () => {
+  const need = relayTacFloor(SPIKE);
+  const { ux, fees } = tacGasUx({ gas: SPIKE, need });
+  const note = tacNote(ux);
+  const r = await ux.unwrap({ note, walletPriv, wait: false });
+  assert.equal(fees.length, 1, 'accepted first time, not doubled to 4 TAC and turned back again');
+  assert.ok(fees[0] >= need);
+  assert.ok(r.jobId);
+});
+
+test('the TAC fee is held to fifty times the flat floor, as the other assets are', async () => {
+  const f = await tacGasUx({ gas: 5_000n * GWEI }).ux.quoteOpFee('cTAC', 'route');
+  assert.ok(f <= TAC_FLOOR * 50n + TAC_FLOOR / 2n, `${f} units at five thousand gwei`);
+});

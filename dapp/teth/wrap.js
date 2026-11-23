@@ -133,6 +133,7 @@ export function relayWords(e) {
   const m = String(e?.message || e || ''), code = e?.code;
   if (code === 'open' || e?.open || /settle held|waiting for a sender/i.test(m)) return 'Your note is proved and waiting to be sent. Anyone can send it, and it goes through on its own once a relay does.';
   if (/29b3c833|PoolReserveMismatch/i.test(m)) return 'The pool moved while this was being proved. Nothing was spent; press again for a fresh quote.';
+  if (/fee below the current floor/i.test(m) || code === 'FEE_MOVED') return 'Ethereum gas is high right now and the network fee rose past the one offered. Press again for a fresh quote, or wait for gas to ease.';
   if (code === 'prove_budget') return 'Today’s relay proofs are taken. Try again after midnight UTC. Your deposit is safe and waits to be finished.';
   if (code === 'relay_paused') return `${e.proving ? 'The relay can’t send this one right now.' : 'The relay isn’t proving right now.'} ${e.queued ? 'Your deposit is safe and keeps its place in line: it goes through once the relay is back.' : 'Your deposit is safe and waits to be finished.'}`;
   if (code === 'relay_held' && e.queued) return 'The relay can’t send this one right now. It still proves it, so your wallet can send the settle.';
