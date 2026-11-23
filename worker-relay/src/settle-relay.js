@@ -1005,7 +1005,7 @@ const beat = (detail) => sendBeat(withFailures(standing || detail));
 // relay's insides in it. The full error is in the log either way.
 function proveFailureForJob(e) {
   const m = String(e && e.message || e);
-  if (/unexecutable|execution failed|failed to execute|exceeded cycle limit|VKEY|stale|refused|did not pass/i.test(m)) return e;
+  if (/unexecutable|execution failed|failed to execute|exceeded cycle limit|VKEY|stale|refused|did not pass|not an op the prover can read/i.test(m)) return e;
   const out = new Error('the relay’s prover could not make this proof just now; nothing was spent — try again in a few minutes, or prove it yourself');
   out.creditShort = e && e.creditShort === true;
   return out;

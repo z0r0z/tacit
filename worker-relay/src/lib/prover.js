@@ -657,7 +657,8 @@ export async function proveSettle({ type, op, memos = [], timeoutMs }) {
       // executor and say so (a burst of such farmunbond jobs held the whole relay for 35 minutes on 2026-11-16). The builder names the field; the job fails now.
       // Anything else the builder throws (not a complaint about the op) still leaves the binary to try.
       if (CFG.proverFailFastBadOp && String(e?.message || '').startsWith(`sp1-stdin ${type}:`)) {
-        throw new Error(`exec:${type} — not an op the prover can read (${String(e.message).slice(`sp1-stdin ${type}:`.length).trim()})`);
+        // Code 'op_refused': a verdict on the op (the settle relay keeps its reason for the holder and does not count it as a prover failure).
+        throw Object.assign(new Error(`exec:${type} — not an op the prover can read (${String(e.message).slice(`sp1-stdin ${type}:`.length).trim()})`), { code: 'op_refused' });
       }
       console.log(`[prover] ${type}: no board input (${e.message}); the binary proves it`);
     }

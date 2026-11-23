@@ -16,7 +16,7 @@ const fixture = (f) => JSON.parse(readFileSync(new URL(`../contracts/sp1/confide
 test('an op with a field missing fails at once, naming the field', async () => {
   const t0 = Date.now();
   await assert.rejects(proveSettle({ type: 'farmunbond', op: {}, memos: [], timeoutMs: 5000 }),
-    (e) => /^exec:farmunbond — not an op the prover can read \(chainBinding is missing\)$/.test(e.message));
+    (e) => /^exec:farmunbond — not an op the prover can read \(chainBinding is missing\)$/.test(e.message) && e.code === 'op_refused');
   assert.ok(Date.now() - t0 < 3000, 'it did not wait for a binary');
 });
 

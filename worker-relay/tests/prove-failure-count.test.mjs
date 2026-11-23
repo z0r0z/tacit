@@ -15,3 +15,11 @@ test('the single path counts a prove failure unless the pool refused the op as i
 test('the board prover marks such a refusal with that code', () => {
   assert.match(readFileSync(new URL('../src/lib/board-prover.js', import.meta.url), 'utf8'), /code: 'op_refused'/);
 });
+
+test('an op the input builder cannot read is a verdict on the op as well: not counted, and its reason reaches the holder', () => {
+  const prover = readFileSync(new URL('../src/lib/prover.js', import.meta.url), 'utf8');
+  assert.match(prover, /not an op the prover can read[^\n]*\), \{ code: 'op_refused' \}\)/);
+  const m = /function proveFailureForJob\(e\) \{[\s\S]*?\n\}/.exec(src);
+  assert.ok(m, 'proveFailureForJob is in the relay');
+  assert.match(m[0], /not an op the prover can read/, 'the reason is passed on, not replaced by "try again in a few minutes"');
+});
