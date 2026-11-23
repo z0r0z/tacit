@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { ackFor, offMarket } from '../dapp/lp-zap.js';
+import { ackFor, offMarket, pairCost } from '../dapp/lp-zap.js';
 
 const page = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8'), sheets = readFileSync(new URL('../dapp/front/sheets.js', import.meta.url), 'utf8');
 const cut = (src, a, b) => { const s = src.indexOf(a), e = src.indexOf(b, s + a.length); assert.ok(s >= 0 && e > s, `the source has ${a}`); return src.slice(s, e); };
@@ -51,12 +51,16 @@ test('wireAck keeps what was accepted for the same percent and clears it when th
 test('the pool is said as a line and a row of the receipt, with the pool’s price against the market’s', () => {
   const src = `${cut(page, 'function poolVsMarket(p) {', '\nconst aprShort')}`;
   const ethUsd = 1563, TPX = { v: { usdBtc: 80000, ethBtc: 80000 / ethUsd, mid: 0.0001 } }, CETH_ID = '0x' + 'c3'.repeat(32);
-  const f = make(src, ['TPX', 'CETH_ID', 'shownAs', 'pctFmt', 'sig'], { TPX, CETH_ID, shownAs: (k) => k, pctFmt, sig: (v) => String(v) }, 'poolVsMarket, offSay, offRow');
+  const f = make(src, ['TPX', 'CETH_ID', 'shownAs', 'pctFmt', 'sig', 'pairCost'], { TPX, CETH_ID, shownAs: (k) => k, pctFmt, sig: (v) => String(v), pairCost }, 'poolVsMarket, offSay, offRow, offBetter');
   // cETH/cUSD as it stood before the 1 ETH zap of 11-22: 2.108 tETH against 2,340 cUSD
   const pm = f.poolVsMarket({ pair: 'cETH/cUSD', reserves: { assetA: CETH_ID, reserveA: 210800571, reserveB: 233977873019 } }), off = offMarket(pm.ratio);
   assert.ok(off && off.dear && Math.abs(off.gap - 0.408) < 0.002, `the pool prices cUSD ${Math.round((pm.ratio - 1) * 100)}% over`);
   assert.equal(f.offSay(pm, off), 'This pool is off the market: its price for cUSD is 41% above the market’s. Half of a deposit is swapped at that price, and what stays in the pool is what traders take when they bring the price back.');
   assert.deepEqual(f.offRow(pm), ['Pool price', '1 ETH = 1,110 cUSD here, 1,563 on the market', 'err']);
+  assert.equal(f.offBetter(pm, off, 18.85, true), 'A cheaper way in is to add cUSD together with ETH: nothing is swapped, and it gives up about 1.4% instead of about 19%. Lock bitcoin and borrow it below.', 'the better way is named, with what it costs against the zap, and where cUSD comes from');
+  assert.match(f.offBetter({ ...pm, unit: 'cBTC' }, off, 18.85, true), /Lock bitcoin to mint it below\.$/);
+  assert.doesNotMatch(f.offBetter(pm, off, 18.85, false), /below/, 'with the coin in hand there is no link to point to');
+  assert.doesNotMatch(f.offBetter(pm, off, 0.5, true), /instead of/, 'a way that costs more than the zap is not set against it');
   const under = f.poolVsMarket({ pair: 'cETH/cUSD', reserves: { assetA: CETH_ID, reserveA: 210800571, reserveB: 233977873019 * 2 } });
   assert.match(f.offSay(under, offMarket(under.ratio)), /its price for cUSD is \d+% below the market’s/, 'a pool pricing the coin under the market says below');
 });
@@ -72,6 +76,11 @@ test('every place that holds a deposit to its cost passes the pool’s verdict',
   assert.match(page, /HX\.zq\?\.off \? `\$\{offSay\(HX\.zq\.pm, HX\.zq\.off\)\}/, 'the card says the pool is off before the zap is sent');
   assert.match(page, /\.\.\.entry, off: offMarket\(poolVsMarket\(p\)\?\.ratio\) \}\);/, 'the pool list knows which pools are off');
   assert.match(page, /c\.off \? html` · <i class="fms-thin fms-off">off the market<\/i>`/, 'a farm chip says so');
+  assert.match(page, /HX\.zq\?\.off \? `\$\{offSay\(HX\.zq\.pm, HX\.zq\.off\)\} \$\{offBetter\(HX\.zq\.pm, HX\.zq\.off, HX\.zq\.impact, zapGets\.length > 0\)\}`/, 'the zap line names the cheaper way and points to the links');
+  assert.match(page, /\(HX\.zq\?\.loss >= 5 \|\| HX\.zq\?\.mkt >= 5 \|\| HX\.zq\?\.off\) \? hxGetAlts\(zapTkB\(pp\)\)/, 'a pool off the market always offers where to get the coin');
+  assert.match(page, /off = offMarket\(pm\?\.ratio\), worst = q\.impact, other2 = spendable\(kO\) > 0n, costly = mkt >= 5 \|\| z\.impact >= 5 \|\| !!off, gets = !other2 && costly \? hxGetAlts\(kO\) : \[\];/, 'so does the private join');
+  assert.match(page, /const line = gets\.length && !q\.gasShort && !off \?/, 'and its line does not say it twice');
+  assert.match(sheets, /else if \(q\.off\) warn\(rc, html`\$\{offSay\(pm, q\.off\)\} \$\{offBetter\(pm, q\.off, worst, false\)\}\$\{spendable\(kO\) > 0n \? html` <button class="link" type="button" data-join-one="pair">/, 'the join sheet keeps its button to add both coins for a pool off the market');
   for (const [what, re] of [['the zap sheet’s button', /lossOk\(ackBox, q\.impact \|\| 0, q\.off\); \};\n[\s\S]*?const \{ plan, sp, gas, gp/], ['the zap sheet’s line', /lossGate\(`sz-ackv-\$\{pid\}`, q\.impact, 'deposit', q\.off\)/], ['the zap sheet’s press', /!lossOk\(ackBox, z\.impact \|\| 0, z\.off\)\) return;\n    await zapNow/],
     ['the join sheet’s button', /q\.gasShort \|\| !lossOk\(ackBox, q\.impact \|\| 0, q\.off\)/], ['the join sheet’s line', /lossGate\(`sj-ackv-\$\{pid\}`, worst, 'deposit', q\.off\)/], ['the join sheet’s press', /z\.gasShort \|\| !lossOk\(ackBox, z\.impact \|\| 0, z\.off\)\) return;/]]) assert.match(sheets, re, what);
   assert.doesNotMatch(sheets, /lossOk\(ackBox, (q|z)\.impact \|\| 0\)/, 'no deposit sheet is left holding the old rule');

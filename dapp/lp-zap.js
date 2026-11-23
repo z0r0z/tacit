@@ -299,16 +299,23 @@ export function zapEntry(d, ratio = null) {
 // pool's price, and what stays in the pool is what the traders who bring the price back take from.
 export const OFF_MARKET = 0.1;
 // `ratio` is the pool's price for the coin over the market's (above 1 where the pool prices it dear). { gap, dear } while the pool is off the market, else null
-// (also null where the market's price is not known).
+// (also null where the market's price is not known); `ratio` is the one given.
 export function offMarket(ratio) {
   const r = Number(ratio);
-  return r > 0 && Math.abs(r - 1) >= OFF_MARKET - 1e-9 ? { gap: Math.abs(r - 1), dear: r > 1 } : null;
+  return r > 0 && Math.abs(r - 1) >= OFF_MARKET - 1e-9 ? { gap: Math.abs(r - 1), dear: r > 1, ratio: r } : null;
 }
 // What a deposit's cost (percent of it) is held to before it is sent: 'type' (a typed number), 'box' (a tick) or null. From 30% and 15%, and from 15% and 5%
 // in a pool off the market, where the swap is made at a price the market does not give.
 export function ackFor(cost, off = null) {
   const hi = off ? 15 : 30, lo = off ? 5 : 15;
   return cost >= hi ? 'type' : cost >= lo ? 'box' : null;
+}
+// What a deposit of BOTH coins, put in at the pool's own ratio (nothing swapped), gives up when the pool's price is brought back to the market's, in percent of the
+// deposit: the pool's price for the coin over the market's (`ratio`, as for offMarket) is the price move the deposit meets, and a liquidity provider gives up
+// 1 - 2√r / (1 + r) of its value to it. 0 where the market's price is not known.
+export function pairCost(ratio) {
+  const r = Number(ratio);
+  return r > 0 ? (1 - 2 * Math.sqrt(r) / (1 + r)) * 100 : 0;
 }
 
 // The pool a deposit goes in best: of the calm ones (`impact` under 5%) the one that pays most TAC over a week once its way in is paid (`loss`

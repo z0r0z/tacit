@@ -3,7 +3,7 @@
 // remove): with nothing in between, it mints exactly the shares its note commits to; with any trade, add or remove landing first, it mints at
 // most that many, so with minShares set to them the transaction mints exactly them or reverts, and no deposit is left a note cannot open.
 //   node tests/lp-zap.test.mjs
-import { zapPlan, zapPlanFor, zapSplitPlan, zapSplitSearch, zapWorth, zapCalldata, zapSettleCalldata, ammOut, addShares, foundingPlan, zapEntry, farmPick, offMarket, ackFor, OFF_MARKET } from '../dapp/lp-zap.js';
+import { zapPlan, zapPlanFor, zapSplitPlan, zapSplitSearch, zapWorth, zapCalldata, zapSettleCalldata, ammOut, addShares, foundingPlan, zapEntry, farmPick, offMarket, ackFor, pairCost, OFF_MARKET } from '../dapp/lp-zap.js';
 
 let n = 0; const ok = (c, m) => { if (c) { n++; } else { console.error('FAIL -', m); process.exitCode = 1; } };
 let seed = 7n; const rnd = () => { seed = (seed * 6364136223846793005n + 1442695040888963407n) & ((1n << 64n) - 1n); return seed >> 11n; };
@@ -382,7 +382,7 @@ ok(exact > 0 && reverted > 0, `with something landing first a zap is exact or re
   const same = (a, b, m) => ok(JSON.stringify(a) === JSON.stringify(b), `${m}: ${JSON.stringify(a)}`);
   ok(OFF_MARKET === 0.1, 'a pool is off the market from 10% away');
   same([offMarket(1), offMarket(1.05), offMarket(0.95), offMarket(1.0999), offMarket(0.9001)], [null, null, null, null, null], 'within 10% either way it is on the market');
-  same(offMarket(1.1), { gap: offMarket(1.1).gap, dear: true }, 'a pool pricing the coin 10% over is off, dear');
+  same(offMarket(1.1), { gap: offMarket(1.1).gap, dear: true, ratio: 1.1 }, 'a pool pricing the coin 10% over is off, dear, and the verdict carries the ratio it was given');
   ok(Math.abs(offMarket(1.1).gap - 0.1) < 1e-9 && offMarket(0.9) && offMarket(0.9).dear === false && Math.abs(offMarket(0.9).gap - 0.1) < 1e-9, '10% under is off too, not dear (floats at the edge do not flip it)');
   same([offMarket(null), offMarket(undefined), offMarket(0), offMarket(-1), offMarket(NaN), offMarket('x')], [null, null, null, null, null, null], 'no market price, no verdict');
   const e = offMarket(1.41);
@@ -391,6 +391,13 @@ ok(exact > 0 && reverted > 0, `with something landing first a zap is exact or re
   const off = offMarket(1.41);
   same([ackFor(0, off), ackFor(4.9, off), ackFor(5, off), ackFor(14.9, off), ackFor(15, off), ackFor(99, off)], [null, null, 'box', 'box', 'type', 'type'], 'an off-market pool: a tick from 5%, a number from 15%');
   same([ackFor(undefined), ackFor(NaN), ackFor(null, off), ackFor(undefined, off)], [null, null, null, null], 'no cost, nothing asked');
+  // what a deposit of both coins at the pool's own ratio gives up when the pool is brought back to the market: against a constant-product pool moved by arbitrage
+  const sim = (r) => { const m = 1, q0 = r * m, a0 = 1, b0 = a0 / q0, nominal = a0 + b0 * m, a1 = a0 * Math.sqrt(m / q0), b1 = b0 * Math.sqrt(q0 / m); return (1 - (a1 + b1 * m) / nominal) * 100; };
+  for (const r of [1, 1.05, 1.1, 1.41, 1.94, 3, 0.9, 0.7, 0.5, 0.25]) ok(Math.abs(pairCost(r) - sim(r)) < 1e-9, `pairCost(${r}) is what the pool's move to the market takes: ${pairCost(r).toFixed(3)}% against ${sim(r).toFixed(3)}%`);
+  ok(pairCost(1) === 0 && Math.abs(pairCost(2) - pairCost(0.5)) < 1e-12, 'no price move, nothing given up; a coin dear by a half and cheap by a half cost the same');
+  ok(Math.abs(pairCost(1.94) - 5.25) < 0.01 && Math.abs(pairCost(1.408) - 1.45) < 0.01, 'the 11-23 cETH/cUSD pool: about 5% now, about 1.5% when it was zapped into');
+  same([pairCost(null), pairCost(undefined), pairCost(0), pairCost(-2), pairCost(NaN)], [0, 0, 0, 0, 0], 'no market price, no cost');
+  for (let r = 1.01; r < 5; r += 0.01) ok(pairCost(r + 0.01) > pairCost(r) && pairCost(r) < zapEntry(0.1, r).loss * 100, `the further off, the more it gives up, and under a zap's at ${r.toFixed(2)}`);
   const rank = (k) => (k === 'type' ? 2 : k === 'box' ? 1 : 0);
   for (let c = 0; c <= 100; c += 0.5) ok(rank(ackFor(c, off)) >= rank(ackFor(c)), `at ${c}% an off-market pool asks for at least what an ordinary one does`);
 }

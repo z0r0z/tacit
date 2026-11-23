@@ -14,9 +14,9 @@ import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=02c84743';
 import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=c5192cc4';
 import { quoteEthToToken } from '/swap/route.js?cb=0affad24';
-import { zapPlanExt, offMarket, ackFor } from '/lp-zap.js?cb=548798cd';
+import { zapPlanExt, offMarket, ackFor, pairCost } from '/lp-zap.js?cb=1be67604';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, ackKind, askedMore, poolRatio, CETH, ZAP_GAS } from '/farm/zap.js?cb=e7508499';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, ackKind, askedMore, poolRatio, CETH, ZAP_GAS } from '/farm/zap.js?cb=20fdcb0a';
 
 try { sessionStorage.removeItem('tacit-farm-back-v1'); } catch { /* the front page's way back to a farm: this page is where it goes, so it is spent */ }
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992';
@@ -131,6 +131,11 @@ function offSaid(f, off) {
   const other = otherOf(f.pool.pair);
   return `This pool is off the market: its price for ${other} is ${pctTxt(off.gap * 100)} ${off.dear ? 'above' : 'below'} the market’s. Half of a deposit of ETH is swapped at that price, and what stays in the pool is what traders take when they bring the price back.`;
 }
+// The cheaper way into a pool that is off the market: both coins together at its own ratio, nothing swapped (what that gives up is lp-zap.js pairCost), and where the coin comes from.
+const betterSaid = (f, off) => {
+  const other = otherOf(f.pool.pair);
+  return `A cheaper way in is to add ${other} together with ETH: nothing is swapped, and it gives up about ${pctTxt(pairCost(off.ratio))}.${GET[other] ? ` To get ${other}, use the links below.` : ''}`;
+};
 // What a tenth of an ETH gives up on its way into a farm, in percent: the swap of half of it, and for a pool priced away from the market, that.
 function entryCost(f) {
   if (f.kind === 'public') { const r0 = Number(S.pub?.r0 || 0) / 1e18, half = Number(HINT) / 2e18; return r0 > 0 ? half / (r0 + half) * 50 : null; }          // the swap moves the price by half/(r0+half), on the half of the deposit that is swapped
@@ -481,9 +486,12 @@ function paintPrivate() {
       + cell('Stream ends', f.live && f.finish ? dayFmt(f.finish) : '—', f.live && f.finish ? fundedNote(f) : '');
   if ($('#pz-stats').__h !== stats) { $('#pz-stats').__h = stats; $('#pz-stats').innerHTML = stats; }
   $('#pz-both').textContent = `${f.name.split(' / ')[0] || 'tETH'} + ${f.name.split(' / ')[1] || 'TAC'}`;
-  const offNow = hasEth(f) && f.off ? offSaid(f, f.off) : '', offEl = $('#pz-off');          // a pool off the market is said before any amount is typed
+  const offNow = hasEth(f) && f.off ? `${offSaid(f, f.off)} ${betterSaid(f, f.off)}` : '', offEl = $('#pz-off');          // a pool off the market is said before any amount is typed
   offEl.hidden = !offNow;
   if (offEl.textContent !== offNow) offEl.textContent = offNow;
+  const getEl = $('#pz-offget'), gets = offNow && GET[otherOf(f.pool.pair)] ? getRow(otherOf(f.pool.pair)) : '';        // and where to get the other coin, for a holder with none of it
+  getEl.hidden = !gets;
+  if (getEl.__h !== gets) { getEl.__h = gets; getEl.innerHTML = gets; }
   $('#pz-mode').hidden = !(hasEth(f) && bothOk(f));                              // two ways in only where there are two
   setMode(Z.pref);
   maxLine();
@@ -559,7 +567,7 @@ function paintQuote() {
     : q.impact >= 5 ? 'The swap inside the pool costs a lot at this size. A smaller deposit costs less.'
     : !f.live ? 'Between reward periods: nothing streams until the next one starts.' : '';
   // a pool this thin takes a real swap at this size: the other way in swaps nothing, and the links say where the other coin comes from
-  const skip = q.cost >= 5 && bothOk(f) ? `<p class="note">Skip the swap: <button class="linkbtn" type="button" data-alt="both">add the ${esc(f.name.split(' / ')[0] || 'tETH')} and ${esc(other)} you already hold</button>${GET[other] ? `, or get ${esc(other)} first.</p>${getRow(other)}` : '.</p>'}` : '';
+  const skip = (q.cost >= 5 || q.off) && bothOk(f) ? `<p class="note">${q.off ? `A cheaper way in: both coins together, nothing swapped, about ${pctTxt(pairCost(q.off.ratio))} instead of ${pctTxt(q.cost)}. ` : ''}Skip the swap: <button class="linkbtn" type="button" data-alt="both">add the ${esc(f.name.split(' / ')[0] || 'tETH')} and ${esc(other)} you already hold</button>${GET[other] ? `, or get ${esc(other)} first.</p>${getRow(other)}` : '.</p>'}` : '';
   // with no market price to check against (its read failed), the pool's own price is all there is: said, and held to a tick
   const kind = ackFor(q.cost, q.off), why = q.off ? `: this pool is priced ${pctTxt(q.off.gap * 100)} off the market` : ' to the pool’s price';
   const ack = kind === 'type' ? `<label class="ack"><span>Type <b>${n}</b> to accept losing about ${n}% of this deposit${why}.</span><input id="pz-ack" inputmode="numeric" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore="true" data-form-type="other" aria-label="Type ${n} to accept" value="${Z.ack === key ? n : ''}"></label>`
