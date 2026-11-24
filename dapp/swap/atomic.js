@@ -69,7 +69,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import('/fast/pair-wire.js?cb=53d8174d');
+      const wire = await import('/fast/pair-wire.js?cb=dfeac976');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },

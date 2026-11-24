@@ -2917,7 +2917,7 @@ function paintAtomic() {
 }
 async function openAtomic() {
   try {
-    atomicP ||= import('/swap/atomic.js?cb=51dab5a1').then((mod) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir })));
+    atomicP ||= import('/swap/atomic.js?cb=752538fa').then((mod) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir })));
     await atomicP;
     if (S.atomic) { if (ATOM.ask) { atomic.set(ATOM.ask); ATOM.ask = null; } await atomic.show(); }
   } catch (e) { $('#atomic').innerHTML = `<p class="q err">Could not load the Bitcoin and Ethereum lane: ${esc(e?.message || e)}</p>`; atomic = atomicP = null; }
