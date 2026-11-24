@@ -69,19 +69,49 @@ const chainlinkRpc = async (m, p) => (m === 'eth_call' ? (p[0].data === '0x313ce
 const mem = new Map();
 const storage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => { mem.set(k, String(v)); }, removeItem: (k) => { mem.delete(k); }, key: (i) => [...mem.keys()][i] ?? null, get length() { return mem.size; } };
 
-test('openPair: the page\'s own price is Chainlink read through the pool\'s RPC, the providers are the pair\'s, and the Bitcoin address is the key\'s', async () => {
+// the public nodes, each answering the aggregator at the block asked (a node may be made to answer another round)
+const NODES = ['https://node-a.example', 'https://node-b.example', 'https://node-c.example'];
+const nodeServe = (rounds = {}, asked = []) => async (url, init) => {
+  const u = String(url);
+  if (!NODES.includes(u)) return null;
+  const b = JSON.parse(init.body);
+  asked.push([u, b.method, b.params]);
+  if (rounds[u] === 'down') return json({ error: 'down' }, 503);
+  if (b.method === 'eth_blockNumber') return json({ jsonrpc: '2.0', id: b.id, result: '0x1500000' });
+  if (b.method === 'eth_call') return json({ jsonrpc: '2.0', id: b.id, result: b.params[0].data === '0x313ce567' ? '0x' + '0'.repeat(63) + '8' : (rounds[u] || freshRound)() });
+  return json({ jsonrpc: '2.0', id: b.id, error: { code: -32601, message: 'no' } });
+};
+// the same round with another answer (BTC per ETH), as a node that answers wrongly would give
+const roundWith = (answer) => () => { const r = freshRound(); return r.slice(0, 2 + 64) + BigInt(answer).toString(16).padStart(64, '0') + r.slice(2 + 128); };
+
+test('openPair: the page\'s own price is Chainlink read at one block from several nodes that agree, the providers are the pair\'s, and the Bitcoin address is the key\'s', async () => {
   const priv = key(31), pubHex = bytesToHex(secp.getPublicKey(priv, true));
   openWallet(priv);
-  const fetchImpl = async (url) => (String(url) === 'https://board.example/ads' ? json({ ads: [ad(3), pairAd(4, { reverse })] }) : json({ error: 'no' }, 404));
-  const { pair, address, lists } = await openPair({ T, ux: uxFor(chainlinkRpc), priv, pubHex, hrp: 'tb', storage, fetchImpl, now: () => T0, lists: { providers: [], boards: ['https://board.example'] } });
+  const asked = [], nodes = nodeServe({}, asked);
+  const fetchImpl = async (url, init) => (await nodes(url, init)) || (String(url) === 'https://board.example/ads' ? json({ ads: [ad(3), pairAd(4, { reverse })] }) : json({ error: 'no' }, 404));
+  const { pair, address, lists } = await openPair({ T, ux: uxFor(chainlinkRpc), priv, pubHex, hrp: 'tb', storage, fetchImpl, now: () => T0, priceNodes: NODES, lists: { providers: [], boards: ['https://board.example'] } });
   assert.equal(address, T.wallet.address());
   assert.deepEqual(lists.boards, ['https://board.example']);
   const ref = await pair.reference();
   assert.ok(Math.abs(ref.ethPerBtc - 1 / 0.02807678) < 1e-9);
-  assert.equal(ref.source, '1 source');
+  assert.equal(ref.source, '3 sources');
+  const calls = asked.filter(([, m, p]) => m === 'eth_call' && p[0].data === '0xfeaf968c');
+  assert.deepEqual([...new Set(calls.map(([u]) => u))].sort(), NODES, 'each node is asked');
+  assert.ok(calls.every(([, , p]) => p[1] === '0x' + (0x1500000 - 2).toString(16)), 'all at one block a little behind the tip');
   const ps = await pair.providers();
   assert.deepEqual(ps.map((p) => [p.id, p.dirs, p.minSats, p.maxSats]), [[pairAd(4).claimPub, ['b2e', 'e2b'], 50000n, 5000000n]], 'the TAC provider on the same board is not offered Bitcoin for ETH');
   assert.deepEqual(await pair.records(), [], 'a key that has swapped nothing has nothing to show');
+});
+
+test('the market price is not taken on one node\'s word: a node that answers another price leaves no price, and the quote is blocked; one node alone is not enough either', async () => {
+  const priv = key(35), pubHex = bytesToHex(secp.getPublicKey(priv, true));
+  openWallet(priv);
+  const discover = async () => [];
+  const off = roundWith(BigInt('0x2ad77e') * 110n / 100n);
+  const one = await openPair({ T, ux: uxFor(chainlinkRpc), priv, pubHex, hrp: 'tb', storage, fetchImpl: nodeServe({ [NODES[1]]: off }), now: () => T0, priceNodes: NODES, discover, lists: { providers: [], boards: [] } });
+  assert.equal(await one.pair.reference(), null, 'nodes that disagree give no price');
+  const solo = await openPair({ T, ux: uxFor(chainlinkRpc), priv, pubHex, hrp: 'tb', storage, fetchImpl: nodeServe({ [NODES[0]]: 'down', [NODES[2]]: 'down' }), now: () => T0, priceNodes: NODES, discover, lists: { providers: [], boards: [] } });
+  assert.equal(await solo.pair.reference(), null, 'one node that answers alone gives no price');
 });
 
 test('openPair refuses a key whose Bitcoin address is not the one the wallet reads, before anything is built that could spend from the wrong one', async () => {

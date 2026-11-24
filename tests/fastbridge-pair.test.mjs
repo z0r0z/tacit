@@ -112,6 +112,35 @@ test('the same for ETH for Bitcoin: a provider that thinks BTC dear is blocked, 
   assert.ok(c.vsMarketBps > 0 && c.blocked === null, String(c.vsMarketBps));
 });
 
+test('a market price that rests on one source is not used to judge a quote: the quote is blocked, whatever that source says', async () => {
+  const w = pairWorld({ providerMarket: 35.6, clientMarket: 35.6 });
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  for (const read of [35.6, 33]) {
+    const pair = w.makePair({ feed: makeRateFeed({ sources: [async () => read], minSources: 1, now: w.clock.now }) });
+    const q = await pair.quote({ dir: 'b2e', amount: SATS });
+    assert.match(q.blocked || '', /could not be confirmed by more than one source/, `a single source reading ${read}`);
+    assert.equal(q.vsMarketBps, null);
+    await assert.rejects(() => pair.start(q), /more than one source/);
+  }
+  assert.equal(w.btc.broadcasts.length, 0, 'nothing was sent');
+});
+
+test('a market price far from the last good one is not used until it holds: the quote is blocked, and the last reading is kept across clients', async () => {
+  const w = pairWorld({ providerMarket: 35.6, clientMarket: 35.6 });
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  let kept = null;
+  const memo = { get: () => kept, put: (m) => { kept = m; } };
+  const feedAt = (v) => makeRateFeed({ sources: [async () => v, async () => v], now: w.clock.now });
+  assert.equal((await w.makePair({ feed: feedAt(35.6), memo }).quote({ dir: 'b2e', amount: SATS })).blocked, null);
+  assert.equal(kept.ethPerBtc, 35.6);
+  const far = await w.makePair({ feed: feedAt(29), memo }).quote({ dir: 'b2e', amount: SATS });
+  assert.match(far.blocked || '', /far from the last one/);
+  const near = await w.makePair({ feed: feedAt(35.2), memo }).quote({ dir: 'b2e', amount: SATS });
+  assert.equal(near.blocked, null, 'a move of about one percent is taken');
+});
+
 test('a quote between 1% and 3% under the market is allowed with a warning that says how far', async () => {
   const w = pairWorld({ providerMarket: 35.0, clientMarket: 35.6 });    // 1.7% under, and 0.8% more of fees
   await w.ready();

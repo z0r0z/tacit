@@ -9,8 +9,7 @@
 //   estimate(m, dir, amount) -> { get, provider } | null       what the best provider would give for `amount`, before its own quote
 
 import { discoverProviders } from '/fast/discover.js?cb=cf4a0fcc';
-import { makeRateFeed, chainlinkEthBtc } from '/fastbridge-rate.js?cb=0385e0ce';
-import { ethCall } from '/trade/util.js?cb=9c8b4133';
+import { makeRateFeed, chainlinkEthBtc, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
 import { SATS_ASSET_ID, ETH_ASSET_ID } from '/swap/atomic-probe.js?cb=590d41c3';
 
 const loadLists = async (fetchImpl) => {
@@ -30,8 +29,12 @@ const totalOf = (ss) => {
 };
 
 let feed = null;
-export async function readMarket({ fetchImpl = (...a) => fetch(...a), lists = null, call = ethCall, now } = {}) {
-  feed ||= makeRateFeed({ sources: [chainlinkEthBtc({ call, ...(now ? { now } : {}) })], minSources: 1, maxAgeSecs: 600, ...(now ? { now } : {}) });
+// (the market is read as the pair client reads it: the aggregator at one block from nodes of separate operators, two or more agreeing; `call` reads it through one
+// caller's eth_call instead)
+export async function readMarket({ fetchImpl = (...a) => fetch(...a), lists = null, call = null, now, nodes = PRICE_NODES } = {}) {
+  feed ||= call
+    ? makeRateFeed({ sources: [chainlinkEthBtc({ call, ...(now ? { now } : {}) })], minSources: 1, maxAgeSecs: 600, ...(now ? { now } : {}) })
+    : makeRateFeed({ sources: chainlinkNodes({ nodes, fetchImpl, ...(now ? { now } : {}) }), minSources: 2, maxSpreadBps: 1, unanimous: true, maxAgeSecs: 600, ...(now ? { now } : {}) });
   const l = lists || (await loadLists(fetchImpl));
   const [found, rate] = await Promise.all([
     discoverProviders({ ...l, fetchImpl, assets: { btcAsset: SATS_ASSET_ID, evmAsset: ETH_ASSET_ID }, ...(now ? { now } : {}) }).catch(() => []),

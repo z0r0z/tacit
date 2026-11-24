@@ -21,6 +21,7 @@
 //   counterFor(ref)   -> the b2e counter (dapp/fastbridge-http.js makeCounter over a transport)   reverseCallFor(ref) -> a (method, path, body) transport for e2b
 //   feed              dapp/fastbridge-rate.js makeRateFeed: { refresh(), current() }
 //   tend(work, passive)   runs `work` (a pass that steps the swaps) when this page is the one that tends the key's swaps (one tab at a time), else `passive` (the records only). Default: always work
+//   memo              { get(), put({ ethPerBtc, at }) }: the last good market reading, kept across visits (a page's localStorage); default: this client's own
 
 import { makeBitcoinLocker } from './fastbridge-bl.js';
 import { makeFastBridgeClient } from './fastbridge-client.js';
@@ -35,6 +36,9 @@ export const ETH_ASSET = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d
 export const PAIR_POLICY = {
   csvBlocks: 144, minCsv: 72, maxCsv: 288, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600, quoteMarginSecs: 120,
   askMs: 12000, warnWorseBps: 100, maxWorseBps: 300, referenceFreshSecs: 120,
+  // the market reading a quote is judged against: from at least this many sources that agree, and no further than maxMarketJumpBps from the last good reading of
+  // the past marketMemoSecs (ETH / BTC does not move that far in a day; a reading that does is taken for a wrong one until it holds for that long)
+  minMarketSources: 2, maxMarketJumpBps: 1500, marketMemoSecs: 86400,
 };
 // The confirmations the user wants on a provider's lock of sats before it locks pool ETH against it: more for a larger amount
 export const confsForSats = (value) => { const v = BigInt(value); return v >= 100_000_000n ? 6 : v >= 10_000_000n ? 3 : v >= 1_000_000n ? 2 : 1; };
@@ -134,7 +138,7 @@ const noCounter = () => { const no = async () => { throw new Error('this swap wa
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('the provider did not answer in time')), ms))]);
 
 // `ethAsset` is the pool's asset for ETH (a test's pool has a stand-in)
-export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), ethAsset = ETH_ASSET }) {
+export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), ethAsset = ETH_ASSET, memo = null }) {
   const policy = { ...PAIR_POLICY, ...policyIn };
   const ETH = strip(ethAsset);
   const isPairProvider = (p) => !!p && !!p.assets && strip(p.assets.btcAsset || '') === SATS_ASSET && strip(p.assets.evmAsset || '') === ETH;
@@ -144,7 +148,19 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   async function reference() {
     let c = feed.current();
     if (!c || now() - c.at > policy.referenceFreshSecs) { try { await feed.refresh(); } catch { /* read again next time */ } c = feed.current(); }
-    return c ? { ethPerBtc: c.ethPerBtc, at: c.at, source: `${c.n} source${c.n === 1 ? '' : 's'}` } : null;
+    return c ? { ethPerBtc: c.ethPerBtc, at: c.at, n: c.n, source: `${c.n} source${c.n === 1 ? '' : 's'}` } : null;
+  }
+  // Why a market reading cannot be used to judge a quote, or null: too few sources behind it, or too far from the last good one
+  let lastGood = null;
+  const memoGet = () => { try { const m = memo ? memo.get() : lastGood; return m && Number(m.ethPerBtc) > 0 && Number.isFinite(Number(m.at)) ? { ethPerBtc: Number(m.ethPerBtc), at: Number(m.at) } : null; } catch { return lastGood; } };
+  const memoPut = (m) => { lastGood = m; try { if (memo) memo.put(m); } catch { /* kept in this client */ } };
+  function unusable(market) {
+    if (!market) return 'the market price could not be read, so this quote cannot be checked';
+    if (!(Number(market.n) >= policy.minMarketSources)) return 'the market price could not be confirmed by more than one source, so this quote cannot be checked';
+    const last = memoGet();
+    if (last && now() - last.at <= policy.marketMemoSecs && Math.abs(market.ethPerBtc / last.ethPerBtc - 1) * 10000 > policy.maxMarketJumpBps) return 'the market price read now is far from the last one, so this quote cannot be checked';
+    memoPut({ ethPerBtc: market.ethPerBtc, at: now() });
+    return null;
   }
   async function providers() {
     const all = (await discover()).filter(isPairProvider);
@@ -266,12 +282,12 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     if (!good.length) throw new Error(String((got[0] && got[0].error && got[0].error.message) || 'no provider could quote that amount'));
     const best = good[0], rate = rateOf(dir === 'b2e' ? best.get : best.pay, dir === 'b2e' ? best.pay : best.get);
     const warnings = [];
-    let blocked = null, versus = null;
-    if (market) {
+    let blocked = unusable(market), versus = null;
+    if (!blocked) {
       versus = vsMarketBps(dir, rate, market.ethPerBtc);
       if (versus < -policy.maxWorseBps) blocked = `the provider quotes ${(-versus / 100).toFixed(1)}% under the market`;
       else if (versus < -policy.warnWorseBps) warnings.push(`this is ${(-versus / 100).toFixed(1)}% worse than the market price`);
-    } else blocked = 'the market price could not be read, so this quote cannot be checked';
+    }
     // `short` is a Bitcoin address that cannot pay the amount and the fee of the lock: not a price that is wrong, so it is not `blocked` (the page offers to add sats), and `start` still refuses it
     let networkFeeSats = null, short = null;
     if (dir === 'b2e') {
@@ -289,7 +305,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       } catch { takeFeeSats = null; }
     }
     return {
-      dir, provider: { id: best.p.id, name: best.p.name }, pay: best.pay, get: best.get, takeFeeSats, rate, market: market ? market.ethPerBtc : null, vsMarketBps: versus,
+      dir, provider: { id: best.p.id, name: best.p.name }, pay: best.pay, get: best.get, takeFeeSats, rate, market: market && versus != null ? market.ethPerBtc : null, vsMarketBps: versus,
       feeBps: versus == null ? 0 : Math.max(0, -versus), etaSecs: dir === 'b2e' ? 1500 : 1800, networkFeeSats, expiresAt: Number(best.r.validUntil), warnings, blocked, short, ref: best,
     };
   }

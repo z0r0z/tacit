@@ -96,7 +96,8 @@ async function wire(page, { ads, boardDelayMs = 0 }) {
     if (url === `${BOARD}/ads`) { if (boardDelayMs) await sleep(boardDelayMs); return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ ads }) }).catch(() => {}); }
     if (req.method() === 'POST' && /publicnode|drpc|1rpc|tenderly|mevblocker|blastapi|buidlguidl|thirdweb|stakely|nodereal|flashbots|tacit-node-gw/.test(url)) {
       let body = {}; try { body = JSON.parse(req.postData() || '{}'); } catch { /* not JSON */ }
-      const one = (x) => (x.method === 'eth_call' && String(x.params?.[0]?.to || '').toLowerCase() === CHAINLINK ? { jsonrpc: '2.0', id: x.id, result: chainlink(String(x.params[0].data)) } : { jsonrpc: '2.0', id: x.id, error: { code: -32000, message: 'offline in this test' } });
+      const one = (x) => (x.method === 'eth_call' && String(x.params?.[0]?.to || '').toLowerCase() === CHAINLINK ? { jsonrpc: '2.0', id: x.id, result: chainlink(String(x.params[0].data)) }
+        : x.method === 'eth_blockNumber' ? { jsonrpc: '2.0', id: x.id, result: '0x1500000' } : { jsonrpc: '2.0', id: x.id, error: { code: -32000, message: 'offline in this test' } });
       return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(Array.isArray(body) ? body.map(one) : one(body)) });
     }
     return route.abort();

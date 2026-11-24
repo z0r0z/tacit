@@ -38,6 +38,34 @@ export function chainlinkEthBtc({ call, address = CHAINLINK_ETH_BTC, maxAgeSecs 
   };
 }
 
+// Public nodes of separate operators that a page's CSP reaches, for reading the aggregator more than once (chainlinkNodes)
+export const PRICE_NODES = Object.freeze(['https://ethereum-rpc.publicnode.com', 'https://rpc.mevblocker.io', 'https://eth.drpc.org', 'https://eth-mainnet.public.blastapi.io', 'https://1rpc.io/eth']);
+
+// The same aggregator read from several nodes, each one a source: a page with no exchange on its CSP still takes the price on more than one node's word. Every
+// node is asked at one block a little behind the tip (the median of the heights they give, less `behind`), so nodes that agree give the very same answer, and a
+// feed made `unanimous` has no price while any node that answers says something else. `nodes`: RPC URLs, each asked with a plain POST.
+export function chainlinkNodes({ nodes, fetchImpl = (...a) => fetch(...a), timeoutMs = 8000, behind = 2, pinMs = 15000, address = CHAINLINK_ETH_BTC, maxAgeSecs, now, nowMs = () => Date.now() }) {
+  const post = async (url, method, params) => {
+    const r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(timeoutMs) });
+    const j = await r.json();
+    if (!j || j.error || typeof j.result !== 'string') throw new Error('rpc: no result');
+    return j.result;
+  };
+  let pin = null;
+  const block = () => {
+    if (pin && nowMs() - pin.at < pinMs) return pin.p;
+    const p = (async () => {
+      const hs = (await Promise.all(nodes.map((u) => post(u, 'eth_blockNumber', []).then((h) => Number(BigInt(h)), () => null)))).filter((h) => Number.isSafeInteger(h) && h > 0).sort((a, b) => a - b);
+      if (hs.length < 2) throw new Error('chainlink: too few nodes gave a height');
+      return '0x' + (hs[(hs.length - 1) >> 1] - behind).toString(16);
+    })();
+    pin = { at: nowMs(), p };
+    p.catch(() => { if (pin && pin.p === p) pin = null; });
+    return p;
+  };
+  return nodes.map((u) => chainlinkEthBtc({ address, ...(maxAgeSecs ? { maxAgeSecs } : {}), ...(now ? { now } : {}), call: async (to, data) => post(u, 'eth_call', [{ to, data }, await block()]) }));
+}
+
 const pos = (x) => { const v = Number(x); if (!(Number.isFinite(v) && v > 0)) throw new Error('not a price'); return v; };
 // Coinbase's ETH-BTC ticker (BTC per ETH) and Kraken's ETHXBT (the last trade): public, server-side
 export function coinbaseEthBtc({ fetchImpl = (...a) => fetch(...a), timeoutMs = 8000 }) {
@@ -62,7 +90,8 @@ const median = (xs) => { const s = [...xs].sort((a, b) => a - b), m = s.length >
 
 // `minSources` must answer and agree within `maxSpreadBps` (of the median) for a read to count: with more than two, a source off by more is dropped as an
 // outlier and the rest stand if there are still enough; with two that disagree there is no price. `maxAgeSecs` is how long a good read stands.
-export function makeRateFeed({ sources, now = () => Math.floor(Date.now() / 1000), minSources = 2, maxSpreadBps = 100, maxAgeSecs = 180, log = () => {} }) {
+// `unanimous`: every source that answers must agree (none is dropped as an outlier), as for one aggregator read from several nodes at one block.
+export function makeRateFeed({ sources, now = () => Math.floor(Date.now() / 1000), minSources = 2, maxSpreadBps = 100, maxAgeSecs = 180, unanimous = false, log = () => {} }) {
   // a feed that needs no source to answer would take no answer for a price: it needs at least one, and has one to ask
   if (!Array.isArray(sources) || !sources.length) throw new Error('rate: a feed needs a source');
   if (!(Number.isInteger(minSources) && minSources >= 1 && minSources <= sources.length)) throw new Error('rate: minSources must be from 1 to the number of sources');
@@ -73,7 +102,7 @@ export function makeRateFeed({ sources, now = () => Math.floor(Date.now() / 1000
       const got = (await Promise.all(sources.map(async (s, i) => { try { return { i, v: pos(await s()) }; } catch (e) { log({ level: 'warn', msg: 'a price source gave nothing', source: i, error: String((e && e.message) || e).slice(0, 120) }); return null; } }))).filter(Boolean);
       if (got.length < minSources) { log({ level: 'warn', msg: 'too few price sources answered', answered: got.length, need: minSources }); return last && now() - last.at <= maxAgeSecs ? last : null; }
       const m = median(got.map((g) => g.v)), within = got.filter((g) => Math.abs(g.v - m) * 10000 <= m * maxSpreadBps);
-      if (within.length < minSources || (got.length <= 2 && within.length < got.length)) {
+      if (within.length < minSources || ((unanimous || got.length <= 2) && within.length < got.length)) {
         log({ level: 'warn', msg: 'the price sources disagree', values: got.map((g) => g.v) });
         last = null;                                  // a price that was good before the sources split is not kept: it may be the one that is wrong
         return null;
