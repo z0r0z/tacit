@@ -216,6 +216,55 @@ footer a:hover { color: var(--ink); }
     </p>
   </div>
 
+  <div class="section" id="emissions">
+    <h2>Emissions: how TAC left the 21,000,000</h2>
+    <p>
+      The supply is fixed at the etch; everything below only moves existing TAC to people. Two airdrops and two
+      launch programs, all with fixed terms and all open-source.
+    </p>
+    <p>
+      <b>First airdrop (Bitcoin).</b> The initial distribution, fixed by a snapshot of holders of the two zOrg DeFi DAO
+      tokens on Ethereum,
+      <a href="https://etherscan.io/token/0x00a6ba94bbb5474725515de88fe04f854f2dcb12" rel="noopener">0x00a6…cb12</a> and
+      <a href="https://etherscan.io/token/0xe9b1cfea55baa219e34301f2f31b9fd0921664ed" rel="noopener">0xe9b1…64ed</a>.
+      Eligibility was earned by spending ETH (share purchases, protocol fees or LP farming), and claimants were paid
+      on Bitcoin. The holder lists are published as
+      <a href="https://github.com/src-company/tacit/tree/main/airdrop" rel="noopener">airdrop/</a>.
+    </p>
+    <p>
+      <b>Second airdrop (Ethereum).</b> 999,999 TAC to 8,652 addresses holding any of seven tokens, snapshotted at
+      Ethereum block 26,028,062 (2026-09-21). The tokens are ranked and share the pool in equal steps (25% down to 3.57%);
+      inside a token, each holder takes its balance over the token&rsquo;s eligible supply, and holdings add up across tokens.
+      Pool, router, vault, exchange and burn addresses are excluded. One claim per address, open until 2026-12-20 21:50 UTC,
+      through
+      <a href="https://etherscan.io/address/0x4b4cb98D0C836c2783Ac46f0078b904dab533AE8#code" rel="noopener">TacAirdrop</a>.
+      The root is fixed in the contract and anyone can rebuild it from the
+      <a href="https://github.com/src-company/tacit/blob/main/airdrop/v1/README.md" rel="noopener">published snapshot</a>.
+    </p>
+    <p>
+      <b>Points.</b> 100,000 TAC over 90 days (2026-09-23 to 2026-12-21 UTC). Each day&rsquo;s pot, up to about 1,111 TAC, is split
+      by that day&rsquo;s points, capped at 0.03 TAC per point, so a quiet day pays out less. Points come from using the protocol
+      (wrapping ETH, swaps, names, cBTC and cUSD), with an early bonus and boosts for holding TAC. A new merkle root is published about
+      daily and claims run through
+      <a href="https://etherscan.io/address/0x000000C918e44A3a443937fA7594eA4f7C95D6b9#code" rel="noopener">PointsDistributor</a>.
+      Rules in the <a href="https://github.com/src-company/tacit#points-and-farms" rel="noopener">README</a>.
+    </p>
+    <p>
+      <b>Farms.</b> LP positions earn TAC for as long as they stay staked. Confidential pools:
+      99,700 TAC over 90 days from 2026-09-20 (to 2026-12-19), split 50 / 30 / 20 across three pools by
+      <a href="https://etherscan.io/address/0x000031C47Cb61faB1CE2790a69625FABB71EDE24#code" rel="noopener">FarmManager</a>.
+      The public TAC/ETH pair pays about 554 TAC a day through
+      <a href="https://etherscan.io/address/0x0000003bF4BA0B21f5e0d35119b337F4d4CF82E0#code" rel="noopener">PrecisionFarm</a>.
+      Details in <a href="https://github.com/src-company/tacit/blob/main/docs/FARMS.md" rel="noopener">FARMS.md</a>.
+    </p>
+    <p>
+      The Ethereum TAC is
+      <a href="https://etherscan.io/token/0xA1313eb9f3A445606D9583bcAc3ebeB56a858279" rel="noopener">0xA131…8279</a>.
+      The ops multisig is the guardian of the airdrop and points contracts (it can pause and sweep unclaimed TAC) and the governor of
+      the farms (it can change pool weights within on-chain bounds). It cannot claim for anyone.
+    </p>
+  </div>
+
   <footer>
     <span>tacit verify</span>
     <nav aria-label="More">
