@@ -863,7 +863,13 @@ test('a provider is shown by a label of its key and name; only the site\'s own k
     assert.equal(adLabel({ claimPub: k, name: 'Bitcoin and ETH' }), 'Tacit');
     assert.equal(adLabel({ claimPub: `0x${k.toUpperCase()}`, name: 'anything' }), 'Tacit', 'with 0x and capitals, the same key');
   }
-  assert.match(adLabel({ claimPub: pubOf(priv(9)), name: 'Tacit' }), /^Provider [0-9a-f]{6}$/, 'another key that names itself Tacit gets a label');
+  assert.match(adLabel({ claimPub: pubOf(priv(9)), name: 'Tacit' }), /^Provider [0-9a-f]{12}$/, 'another key that names itself Tacit gets a label, of 12 hex digits');
+  // a name found to give the first hex of another key's label still gives a different label
+  const target = adLabel({ claimPub: pubOf(priv(10)), name: 'community' }).slice(-12), other = pubOf(priv(11));
+  let n = 0;
+  for (; n < 2e6 && adLabel({ claimPub: other, name: `n${n}` }).slice(-12, -8) !== target.slice(0, 4); n++);
+  assert.ok(n < 2e6);
+  assert.notEqual(adLabel({ claimPub: other, name: `n${n}` }), adLabel({ claimPub: pubOf(priv(10)), name: 'community' }));
   assert.notEqual(adLabel({ claimPub: pubOf(priv(9)), name: 'Tacit' }), adLabel({ claimPub: pubOf(priv(9)), name: 'Other' }));
 });
 
