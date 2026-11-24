@@ -150,6 +150,40 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     }
     return out;
   }
+  // The lock as two explorers that answer both see it, before this side locks anything against it: the transaction (its inputs and outputs), the block
+  // it is in, the tip, and whether the lock output is spent. Ordinary reads take the first explorer that answers; this one does not, since a transaction or a
+  // confirmation that one explorer alone shows is not yet one to pay against. With one explorer configured, that one is the source. Throws (to be asked
+  // again) while fewer than two agree.
+  async function lockAgreed(txid, vout) {
+    need(txid);
+    const want = Math.min(2, list.length);
+    const one = async (b) => {
+      const get = async (p) => {
+        const r = await fetchImpl(b + p, { signal: AbortSignal.timeout(timeoutMs) });
+        if (!r.ok) throw Object.assign(new Error(`${p} -> ${r.status}`), { status: r.status });
+        return (await r.text()).trim();
+      };
+      const tx = JSON.parse(await get(`/tx/${txid}`));
+      if (!tx || tx.txid !== txid || !tx.status || !tx.status.confirmed) return null;
+      const out = (tx.vout || [])[vout];
+      if (!out) return null;
+      const tipH = Number(await get('/blocks/tip/height'));
+      const sp = JSON.parse(await get(`/tx/${txid}/outspend/${Number(vout) >>> 0}`));
+      const spent = !!(sp && sp.spent);
+      return {
+        key: JSON.stringify([tx.status.block_hash, tx.status.block_height, (tx.vin || []).map((i) => `${i.txid}:${i.vout}`), (tx.vout || []).map((o) => `${o.value}:${o.scriptpubkey}`), spent]),
+        height: tx.status.block_height, tip: tipH, value: out.value, scriptpubkey: out.scriptpubkey, spent,
+      };
+    };
+    const seen = (await Promise.all(list.map((b) => one(b).catch(() => null)))).filter(Boolean);
+    const groups = new Map();
+    for (const s of seen) groups.set(s.key, [...(groups.get(s.key) || []), s]);
+    const best = [...groups.values()].sort((a, b) => b.length - a.length)[0] || [];
+    if (best.length < want) throw Object.assign(new Error(`the lock is not yet seen alike by ${want} explorers (${seen.length} answered, ${groups.size} views)`), { transient: true });
+    const tipH = Math.min(...best.map((s) => s.tip));
+    return { confirmations: tipH - best[0].height + 1, height: best[0].height, value: best[0].value, scriptpubkey: best[0].scriptpubkey, spent: best[0].spent, agreed: best.length };
+  }
+
   // plain-sat coins only: a coin of dust size may carry a note
   async function satsCoins() {
     const all = await getJson(`/address/${address}/utxo`);
@@ -205,14 +239,25 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
   // restarted it, so the offer that was being judged started over. So each read gives the loop a real turn, and what is proved valid is kept for the
   // life of the process (a confirmed transaction's note does not change), so a history shared with an earlier lock is not walked again.
   const turn = () => new Promise((r) => (typeof setImmediate === 'function' ? setImmediate(r) : setTimeout(r, 0)));
+  // A note made by a bind (T_CXFER_BOUND) is a note only while the pool has not spent it, which can change at any time: an output of such a
+  // transaction is never kept as proved (as tacit.js keeps it out of its own cache), and neither is one whose transaction this walk did not read.
+  const T_CXFER_BOUND = 0x39;
   const proved = new Map();
   const validate = async (a, b, c, f) => {
     // (not the note being asked about: its own reads, the pool service's answer on an exit among them, are made again, so that a service that has
     // gone away is seen as one to ask again and not taken for a note that is not valid)
     for (const k of proved.keys()) if (k !== `${a}:${b}`) c.set(k, true);
+    const before = new Set(c.keys()), read = new Map();
     const reasons = new Map();
-    const ok = await tacit.validateOutpoint(a, b, c, async (t) => { const r = await f(t); await turn(); return r; }, 0, null, null, null, reasons);
-    for (const [k, v] of c) if (v === true) proved.set(k, true);
+    const ok = await tacit.validateOutpoint(a, b, c, async (t) => { const r = await f(t); if (r && r.txid) read.set(r.txid, r); await turn(); return r; }, 0, null, null, null, reasons);
+    const lasting = (k) => {
+      if (before.has(k) && proved.has(k)) return true;
+      const tx = read.get(String(k).split(':')[0]);
+      if (!tx) return false;
+      let env = null; try { env = tacit.txOutputEnvelope(tx); } catch { return false; }
+      return !(env && env.opcode === T_CXFER_BOUND);
+    };
+    for (const [k, v] of c) if (v === true && lasting(k)) proved.set(k, true);
     while (proved.size > 4000) proved.delete(proved.keys().next().value);
     if (ok !== true && reasons.get(`${a}:${b}`) === 'fetch-failed') throw Object.assign(new Error(`the note ${String(a).slice(0, 8)}…:${b} could not be read just now`), { transient: true });
     // a verdict that a note is not valid says where in its history: the first outpoint the walk rejected (its parents were judged before it), and what the reads gave
@@ -247,5 +292,5 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     return null;
   }
 
-  return { prims, wallet, tx: builder, address, satsUtxos, satsCoins, coinsIn, feeRate, broadcast, fetchTx, status, tip, blockTime, outspend, history, resolveNote, crossLaneBlocked };
+  return { prims, wallet, tx: builder, address, satsUtxos, satsCoins, coinsIn, feeRate, broadcast, fetchTx, status, tip, blockTime, outspend, lockAgreed, history, resolveNote, crossLaneBlocked };
 }

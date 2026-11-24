@@ -131,6 +131,49 @@ test('a note of the exact size is cut with no fee first, from one note or severa
   await assert.rejects(prep, /relay did not take the job/);
 });
 
+test('a take of a note that waits is replaced from the same coins at a rate that outpays the pair, once the refund is near and not before', async () => {
+  const { makeEthereumLocker } = await import('../dapp/fastbridge-el.js');
+  const { makeBtcWallet } = await import('../dapp/bitcoin-taproot-wallet.js');
+  const adaptor = await import('../dapp/adaptor-signature.js');
+  const { prims } = makeBtcWallet({ priv: new Uint8Array(32).fill(9), hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => {}, fetchFeeRate: async () => 1 });
+  const t = 0x4242n, T = adaptor.adaptorPoint(t);
+  let tip = 900000, n = 0;
+  const built = [], sent = [];
+  const c1 = { txid: 'c1'.repeat(32), vout: 0, value: 20000 }, c2 = { txid: 'c2'.repeat(32), vout: 1, value: 90000 };
+  const btc = {
+    prims, wallet: { pub: prims.wallet.pub, priv: prims.wallet.priv, xonly: prims.wallet.pub.slice(1) },
+    tip: async () => tip, status: async () => ({ confirmations: 0, height: 0 }), feeRate: async () => 10, satsUtxos: async () => [c2], coinsIn: async () => [],
+    fetchTx: async () => ({}), broadcast: async (p) => { sent.push(p.txid); },
+    tx: {
+      vsizeOf: () => 150,
+      claimTransfer: ({ satsUtxos, feeRate }) => { n++; built.push({ feeRate, first: satsUtxos[0].txid }); return { commitTx: { inputs: [{ txid: satsUtxos[0].txid, vout: satsUtxos[0].vout }] }, commitTxid: 'aa'.repeat(31) + String(n).padStart(2, '0'), revealTxid: 'bb'.repeat(31) + String(n).padStart(2, '0'), commitHex: '00', revealHex: '00', commitFee: 150 * feeRate, revealFee: 600 * feeRate }; },
+    },
+  };
+  const recs = new Map();
+  const store = { get: async (id) => (recs.has(id) ? JSON.parse(JSON.stringify(recs.get(id))) : null), put: async (r) => { recs.set(r.id, JSON.parse(JSON.stringify(r))); }, list: async () => [...recs.values()] };
+  let clock = 10000;
+  const el = makeEthereumLocker({ seed: new Uint8Array(32), now: () => clock, policy: {}, store, quotes: { get: async () => null }, btc, evm: { now: async () => clock }, counter: {} });
+  const id = 'cd'.repeat(36);
+  const rec = {
+    v: 1, role: 'el', id, phase: 'taking', created: 1, updated: 1, t: '0x' + t.toString(16), lockTxid: 'dd'.repeat(32), lockVout: 0, lockValue: 546, csvBlocks: 144, lockHeight: 899900,
+    offer: { T: '0x' + T.toHex(true), btc: { asset: 'ab'.repeat(32), lockerXonly: '11'.repeat(32), value: '1000', rLock: '05' } },
+    take: { txid: 'bb'.repeat(32), commitTxid: 'aa'.repeat(32), commitHex: '00', revealHex: '00', at: 0, feeRate: 10, fee: 7500, commitVsize: 150, bumps: 0, coins: [c1] }, takes: ['bb'.repeat(32)],
+  };
+  await store.put(rec);
+  let r = await el.step(rec);
+  assert.equal(built.length, 0, 'with the refund 43 blocks away a slow take is left to confirm');
+  tip = 899900 + 144 - 1 - 30;
+  r = await el.step(r);
+  assert.equal(built.length, 1, 'with the refund 30 blocks away it is replaced');
+  assert.equal(built[0].first, c1.txid, 'from the coin the waiting commit spent first, so the new commit replaces it');
+  assert.ok(built[0].feeRate * 150 >= 7500 + 150, 'the new commit alone pays more than the pair it replaces');
+  assert.deepEqual(r.takes.length, 2, 'both takes are watched: either landing ends the swap');
+  assert.equal(sent.at(-1), r.take.txid);
+  clock += 100;
+  r = await el.step(r);
+  assert.equal(built.length, 1, 'a replacement waits takeBumpSecs before the next');
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

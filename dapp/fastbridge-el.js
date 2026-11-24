@@ -76,6 +76,8 @@ export function makeEthereumLocker(ctx) {
     const quote = await quotes.get(quoteId, { offer });
     if (!quote) return reject('unknown quote');
     if (ctx.now() > quote.validUntil) return reject('quote expired');
+    // a quote is the price of one swap: a second lock against it is not answered at that price
+    if ((await store.list()).some((r) => r.quoteId === quoteId)) return reject('this quote was used for another swap');
     let value, amount;
     try { value = BigInt(offer.btc.value); amount = BigInt(offer.evm.amount); } catch { return reject('malformed offer'); }
     if (!/^[0-9a-f]{64}$/.test(String(offer.btc.txid)) || !Number.isInteger(offer.btc.vout) || offer.btc.vout < 0 || offer.btc.vout > 0xffff) return reject('malformed offer: the lock outpoint');
@@ -114,7 +116,7 @@ export function makeEthereumLocker(ctx) {
     if (consumed) return reject('a spent note is already consumed on Ethereum: ' + consumed);
     const rec = {
       v: 1, role: 'el', id, phase: 'accepted', created: ctx.now(), updated: ctx.now(), quoteId, offer,
-      lockTxid: offer.btc.txid, lockVout: offer.btc.vout, lockValue: out.value, csvBlocks: offer.btc.csvBlocks,
+      lockTxid: offer.btc.txid, lockVout: offer.btc.vout, lockValue: out.value, lockSpk: strip(out.scriptpubkey), csvBlocks: offer.btc.csvBlocks,
     };
     await store.put(rec);
     return { ok: true, rec };
@@ -161,13 +163,23 @@ export function makeEthereumLocker(ctx) {
           return rec;
         }
         if (await btc.outspend(rec.lockTxid, rec.lockVout)) return save(rec, { phase: 'aborted', why: 'the lock output was spent before it could be answered' });
+        // Before anything is locked against it, the lock is read again from every explorer, and two that answer must show the same transaction in the
+        // same block, its output unspent; the height they agree on is the one the windows count from. Until they agree, the swap waits.
+        let height = st.height;
+        if (btc.lockAgreed) {
+          const a = await btc.lockAgreed(rec.lockTxid, rec.lockVout);
+          if (a.spent) return save(rec, { phase: 'aborted', why: 'the lock output was spent before it could be answered' });
+          if (a.value !== rec.lockValue || (rec.lockSpk && strip(a.scriptpubkey) !== strip(rec.lockSpk))) return save(rec, { phase: 'aborted', why: 'the explorers do not show the lock this offer named' });
+          if (a.confirmations < need) return rec;
+          height = a.height;
+        }
         const consumed = X.isSats(rec.offer.btc.asset) ? null : await btc.crossLaneBlocked(await btc.fetchTx(rec.lockTxid));
         if (consumed) return save(rec, { phase: 'aborted', why: 'a spent note is already consumed on Ethereum: ' + consumed });
-        const confirmedAt = await btc.blockTime(st.height + need - 1);
+        const confirmedAt = await btc.blockTime(height + need - 1);
         const deadline = lockDeadline({ blockTime: confirmedAt, windowSecs: policy.evmWindowSecs, roundSecs: policy.roundSecs });
         const nowSecs = await evm.now();
         const tip = await btc.tip();
-        const opens = X.btcRefundOpensAt({ lockHeight: st.height, csvBlocks: rec.csvBlocks, tipHeight: tip, nowSecs });
+        const opens = X.btcRefundOpensAt({ lockHeight: height, csvBlocks: rec.csvBlocks, tipHeight: tip, nowSecs });
         const bad = X.checkEvmDeadline({ deadline, nowSecs, btcRefundOpens: opens, minClaimSecs: policy.minClaimSecs, claimSlackSecs: policy.claimSlackSecs });
         if (bad.length) {
           // With time left to claim, the refund margin is the only thing that can be short, and it is short for the moment: it is measured from now and from the blocks the refund is
@@ -176,7 +188,7 @@ export function makeEthereumLocker(ctx) {
           if (deadline - nowSecs >= (policy.minClaimSecs ?? 1800)) return rec;
           return save(rec, { phase: 'aborted', why: bad.join('; ') });
         }
-        return save(rec, { phase: 'locking', deadline, lockHeight: st.height });
+        return save(rec, { phase: 'locking', deadline, lockHeight: height });
       }
       case 'locking': {
         const { T, rEvmLock } = secretsOf(rec);
@@ -212,7 +224,8 @@ export function makeEthereumLocker(ctx) {
         }
         const st = await evm.jobStatus(rec.lock.jobId, { type: 'adaptorlock', bundle: rec.lock.op });
         if (st === 'failed') {
-          if ((rec.lockFailures || 0) + 1 >= (policy.maxLockFailures ?? 3)) return save(rec, { phase: 'aborted', why: 'the lock failed repeatedly' });
+          // a job the relay calls failed can still land: the last one is watched to the deadline (no offer is made for it) and refunded if it did
+          if ((rec.lockFailures || 0) + 1 >= (policy.maxLockFailures ?? 3)) return save(rec, { phase: 'offered', noOffer: true, why: 'the lock failed repeatedly' });
           return save(rec, { lock: null, lockFailures: (rec.lockFailures || 0) + 1 });
         }
         return rec;
@@ -263,33 +276,43 @@ export function makeEthereumLocker(ctx) {
             return save(rec, { phase: 'lost', why: 'the lock was spent by another transaction (its refund, once the timelock had run) before a take confirmed' });
           }
         }
-        if (!rec.take) {
+        // A take of a note is a commit (funded from this address's coins) and a reveal that spends the lock. Its record keeps the coins the commit spent,
+        // its rate and fee, so a take that waits can be replaced by a pair spending the same coins at a higher rate (below).
+        const claim = (coins, feeRate) => {
           const lock = deriveLock({ prims: btc.prims, claimerPub: btc.wallet.pub, T: secretsOf(rec).T, lockerXonly: hexToBytes(strip(rec.offer.btc.lockerXonly)), csvBlocks: rec.csvBlocks });
           const sk = claimSecret({ dClaimer: btc.wallet.priv, t: BigInt(rec.t), lock });
-          const claim = (coins, feeRate) => btc.tx.claimTransfer({
+          return btc.tx.claimTransfer({
             asset: hexToBytes(strip(rec.offer.btc.asset)), lockOut: { txid: rec.lockTxid, vout: rec.lockVout, value: rec.lockValue }, lock, sk,
             amount: BigInt(rec.offer.btc.value), rLock: BigInt('0x' + strip(rec.offer.btc.rLock)), satsUtxos: coins, feeRate,
           });
+        };
+        const noteTake = (pair, coins, feeRate, bumps) => ({
+          txid: pair.revealTxid, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, at: ctx.now(),
+          feeRate, fee: pair.commitFee + pair.revealFee, commitVsize: btc.tx.vsizeOf(pair.commitTx), bumps,
+          coins: pair.commitTx.inputs.map((i) => coins.find((c) => c.txid === i.txid && c.vout === i.vout)).filter(Boolean),
+        });
+        if (!rec.take) {
           const feeRate = await btc.feeRate();
           // The lock paid the fee of this take to this address: that coin is read from the lock's own transaction and tried first, so the take does not wait
           // on the address's whole coin list (which explorers refuse for a busy address and rate limit hardest). The list is asked for only when it is not enough.
           const own = typeof btc.coinsIn === 'function' ? await btc.coinsIn(rec.lockTxid).catch(() => []) : [];
-          let pair = null;
+          let pair = null, used = own;
           if (own.length) {
             try { pair = claim(own, feeRate); } catch (e) { if (!/not enough sats to fund the commit/.test(String((e && e.message) || e))) throw e; }
           }
           if (!pair) {
             const listed = await btc.satsUtxos();
-            pair = claim([...own, ...listed.filter((c) => !own.some((o) => o.txid === c.txid && o.vout === c.vout))], feeRate);
+            used = [...own, ...listed.filter((c) => !own.some((o) => o.txid === c.txid && o.vout === c.vout))];
+            pair = claim(used, feeRate);
           }
-          await save(rec, { take: { txid: pair.revealTxid, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, at: ctx.now() } });
+          await save(rec, { take: noteTake(pair, used, feeRate, 0), takes: [...(rec.takes || []), pair.revealTxid] });
         }
         // A take that has confirmed is done, and is not sent again: its commit's output is spent by its reveal, so a node refuses the commit as having no inputs
         // (bad-txns-inputs-missingorspent), which is no failure. Asked after the send as well, for a take that confirmed between the two reads. A status that cannot
         // be read is not a take that is not there: it goes on to the send, as it always did.
         // (a sats take that was replaced by a higher fee may have confirmed as an earlier one: any of this swap's takes landing ends it)
         const confirmed = async () => {
-          for (const id of satsTake ? rec.takes || [rec.take.txid] : [rec.take.txid]) if (((await btc.status(id).catch(() => null)) || {}).confirmations) return true;
+          for (const id of new Set([...(rec.takes || []), rec.take.txid])) if (((await btc.status(id).catch(() => null)) || {}).confirmations) return true;
           return false;
         };
         if (await confirmed()) return save(rec, { phase: 'done' });
@@ -309,6 +332,29 @@ export function makeEthereumLocker(ctx) {
             await save(rec, { take: takeRecord(pair, feeRate, (rec.take.bumps || 0) + 1), takes: [...(rec.takes || []), pair.revealTxid] });
             await btc.broadcast(rec.take, null);
           } else await save(rec, { take: { ...rec.take, bumps: policy.takeMaxBumps ?? 8 } });     // the cap holds the fee where it was: a replacement would pay no more
+        }
+        // A take of a note that waits is replaced too, while its commit has not confirmed: a new pair spends the same coins (so its commit replaces the
+        // old one, and the old reveal with it) at a rate whose commit alone pays more than the whole pair it replaces, as a replacement must. It is the
+        // take that must land before the user's refund opens. A replacement costs several times the pair, so it is made only once the refund is near
+        // (takeBumpBlocks); until then a slow take is left to confirm. A take whose commit has confirmed keeps its reveal; the alert for a long take says so.
+        const refundNear = async () => rec.lockHeight == null || rec.lockHeight + rec.csvBlocks - 1 - (await btc.tip()) <= (policy.takeBumpBlocks ?? 36);
+        if (!satsTake && rec.take.fee != null && Array.isArray(rec.take.coins) && rec.take.coins.length && (rec.take.bumps || 0) < (policy.takeMaxBumps ?? 8)
+          && ctx.now() - rec.take.at > (policy.takeBumpSecs ?? 1200) && (await refundNear()) && !((await btc.status(rec.take.commitTxid).catch(() => null)) || {}).confirmations) {
+          const prev = rec.take.feeRate || 1, cv = rec.take.commitVsize || 150;
+          const feeRate = Math.max(Math.ceil(prev * 1.5), prev + 2, Math.ceil(await btc.feeRate()), Math.ceil((rec.take.fee + cv + 1) / cv));
+          const extra = (await btc.satsUtxos().catch(() => [])).filter((c) => !rec.take.coins.some((o) => o.txid === c.txid && o.vout === c.vout));
+          const coins = [...rec.take.coins, ...extra];
+          let pair;
+          try { pair = claim(coins, feeRate); } catch (e) {
+            await save(rec, { take: { ...rec.take, at: ctx.now() }, why: 'the take waits and its fee cannot be raised: ' + String((e && e.message) || e).slice(0, 160) });
+            return rec;
+          }
+          if (pair.commitFee + pair.revealFee > (policy.takeMaxFeeSats ?? 200000)) {
+            await save(rec, { take: { ...rec.take, bumps: policy.takeMaxBumps ?? 8 }, why: 'the take waits and its fee is at the most it may pay' });
+            return rec;
+          }
+          await save(rec, { take: noteTake(pair, coins, feeRate, (rec.take.bumps || 0) + 1), takes: [...(rec.takes || []), pair.revealTxid] });
+          await btc.broadcast(rec.take, null);
         }
         return rec;
       }

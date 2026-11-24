@@ -195,6 +195,61 @@ test('coinsIn: a coin whose spend cannot be read is left out, not guessed to be 
   assert.deepEqual(await btc.coinsIn(tid(50)), [{ txid: tid(50), vout: 0, value: 2046 }], 'the coin whose outspend failed is not offered');
 });
 
+// lockAgreed: the read a provider makes before it locks pool TAC against a lock
+const agreeTx = (txid, over = {}) => ({ txid, vin: [{ txid: tid(1), vout: 0 }], vout: [{ value: 546, scriptpubkey: '5120' + 'aa'.repeat(32) }], status: { confirmed: true, block_height: 900000, block_hash: 'bb'.repeat(32) }, ...over });
+const explorer = (view) => (u) => {
+  const p = pathOf(u);
+  if (p === '/blocks/tip/height') return json(String(view.tip ?? 900002));
+  if (/outspend\/0$/.test(p)) return json({ spent: !!view.spent });
+  if (p === `/tx/${tid(60)}`) return view.tx ? json(view.tx) : gone();
+  return gone();
+};
+test('lockAgreed: two explorers that show the same lock in the same block agree, and the confirmations count from the lower tip', async () => {
+  const views = { 'a.test': { tx: agreeTx(tid(60)), tip: 900002 }, 'b.test': { tx: agreeTx(tid(60)), tip: 900001 }, 'c.test': { tx: null } };
+  const { btc } = chainOf(Object.keys(views), (u) => explorer(views[u.hostname])(u));
+  const a = await btc.lockAgreed(tid(60), 0);
+  assert.deepEqual([a.confirmations, a.height, a.value, a.spent, a.agreed], [2, 900000, 546, false, 2]);
+});
+test('lockAgreed: a lock that only one explorer shows is not agreed (it is asked again), and neither is one two explorers show differently', async () => {
+  const one = { 'a.test': { tx: agreeTx(tid(60)) }, 'b.test': { tx: null }, 'c.test': { tx: null } };
+  const { btc } = chainOf(Object.keys(one), (u) => explorer(one[u.hostname])(u));
+  await assert.rejects(() => btc.lockAgreed(tid(60), 0), (e) => e.transient === true && /not yet seen alike by 2 explorers/.test(e.message));
+  const split = { 'a.test': { tx: agreeTx(tid(60)) }, 'b.test': { tx: agreeTx(tid(60), { vout: [{ value: 999, scriptpubkey: '5120' + 'aa'.repeat(32) }] }) } };
+  const two = chainOf(Object.keys(split), (u) => explorer(split[u.hostname])(u));
+  await assert.rejects(() => two.btc.lockAgreed(tid(60), 0), /not yet seen alike/);
+  const unconfirmed = { 'a.test': { tx: agreeTx(tid(60), { status: { confirmed: false } }) }, 'b.test': { tx: agreeTx(tid(60), { status: { confirmed: false } }) } };
+  const three = chainOf(Object.keys(unconfirmed), (u) => explorer(unconfirmed[u.hostname])(u));
+  await assert.rejects(() => three.btc.lockAgreed(tid(60), 0), /not yet seen alike/, 'a lock in no block is not one to pay against');
+});
+test('lockAgreed: with one explorer configured, that one is the source', async () => {
+  const { btc } = chainOf(['own.test'], (u) => explorer({ tx: agreeTx(tid(60)), spent: true })(u));
+  const a = await btc.lockAgreed(tid(60), 0);
+  assert.deepEqual([a.agreed, a.spent], [1, true]);
+});
+
+test('a note made by a bind is never kept as proved: the next walk reads it again, while an ordinary note is kept', async () => {
+  const BOUND = 0x39, XFER = 0x31;
+  const txOf = (n, opcode) => ({ txid: tid(n), opcode, vin: [], vout: [{ value: 546, scriptpubkey: '5120' + 'aa'.repeat(32) }], status: { confirmed: true } });
+  const txs = new Map([[tid(70), txOf(70, BOUND)], [tid(71), txOf(71, XFER)], [tid(72), txOf(72, XFER)]]);
+  const walks = [];
+  const tacit = {
+    txOutputEnvelope: (tx) => ({ opcode: tx.opcode }),
+    getParentEnvelopeData: async () => null,
+    // the walk of 72 reads its two parents, 70 (bound) and 71, and finds all three valid; what it was handed as known is recorded
+    validateOutpoint: async (txid, vout, c, f) => {
+      walks.push({ root: txid, known: [...c.keys()] });
+      for (const t of [tid(70), tid(71), txid]) { await f(t); c.set(`${t}:0`, true); }
+      return true;
+    },
+  };
+  const { btc } = chainOf(['a.test'], (u) => { const m = /^\/tx\/([0-9a-f]{64})$/.exec(pathOf(u)); return m && txs.has(m[1]) ? json(txs.get(m[1])) : gone(); }, { tacit });
+  await btc.resolveNote(tid(72), 0);
+  await btc.resolveNote(tid(72), 1);
+  const known = walks[1].known;
+  assert.ok(known.includes(`${tid(71)}:0`), 'the ordinary parent is kept from the first walk');
+  assert.ok(!known.includes(`${tid(70)}:0`), 'the bound parent is not: its standing on Ethereum can change');
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }
