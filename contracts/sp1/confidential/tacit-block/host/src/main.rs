@@ -5,6 +5,9 @@
 //! tacit-block measure N...   per N: one block of N spends (two inputs, three outputs each); prints the block
 //!                            guest's cycles, its cycles by section, and btc-pool-agg's for the same proofs, as
 //!                            JSON lines
+//! tacit-block forced N...    per N: one block that takes N posted spends, each with one proof value changed, then the other shapes a
+//!                            queue can hold, a block of own spends beside the most such entries, and the same entries with their proofs
+//!                            as made; cycles and sections as JSON lines (N = 0 is a block with nothing posted)
 //! tacit-block test           a chain where a note received in block 1 is spent in block 2 and an older root is
 //!                            listed as an anchor, a shield and an exit, each block's next state rebuilt from what
 //!                            it publishes alone, then the blocks the guest must refuse: openings, addresses and
@@ -760,6 +763,74 @@ fn measure(sizes: &[usize]) {
     }
 }
 
+/// What the queue costs a block, one JSON line per block: N posted spends over fresh notes, each with one evaluation of its proof changed,
+/// then the other shapes a queue can hold (bytes passed over at once, a spend passed over for its body, a claim passed over for its
+/// signature), then a block of its own spends beside the most such entries, and the same entries with their proofs as made.
+fn forced(sizes: &[usize]) {
+    use blk::lock::{claim_message, Lock, Settle, SETTLE_CLAIM, SETTLE_MARK};
+    use k256::ProjectivePoint;
+    let k = keys();
+    let block_elf = elf("TACIT_BLOCK_ELF", BLOCK_ELF);
+    let show = |shape: &str, entries: usize, own: usize, run: Result<Landed, String>| match run {
+        Ok(l) => println!(
+            "{}",
+            json!({ "shape": shape, "entries": entries, "own_spends": own, "cycles": l.cycles, "sections": l.sections, "taken": l.data.nullifiers.len(),
+                    "stdin_bytes": l.stdin_bytes, "execute_secs": l.secs })
+        ),
+        Err(e) => println!("{}", json!({ "shape": shape, "entries": entries, "own_spends": own, "error": e })),
+    };
+    let most = sizes.iter().copied().max().unwrap_or(16);
+    let counts: Vec<usize> = sizes.iter().copied().filter(|n| *n > 0).collect();
+
+    // the shortest spend-shaped payload, both points at the identity
+    let mut bytes = vec![0u8; blk::FORCED_REST_AT + 54];
+    bytes[319] = 1;
+    bytes[383] = 1;
+    // a claim of the contract's length at the chain's root, with a signature that is not the recipient's
+    let mut c = Chain::new(8);
+    c.mint(&[(1, secret(140, 0, 0), 1_000 * TAC)]);
+    let a = c.asset_f;
+    let d = schnorr::scalar("a recipient");
+    let (recipient, _) = schnorr::key(d);
+    let (claim_to, memo) = c.note_to(2, &secret(141, 0, 0), "claim");
+    let (refund_to, _) = c.note_to(1, &secret(141, 0, 1), "refund");
+    let lock = Lock { recipient, deadline: c.time + 100_000, claim_to, refund_to };
+    let value = 1_000 * TAC;
+    let tree = Tree::new(&c.leaves);
+    let (rx, _) = schnorr::pre_sign(d, ProjectivePoint::GENERATOR * schnorr::scalar("a secret"), &claim_message(&c.state.chain, &lock.leaf(&a, value)), "a nonce");
+    let claim = Settle { kind: SETTLE_CLAIM, asset: a, value, lock, index: 0, root: tree.root, path: tree.path(0), sig: Some(schnorr::sig(&rx, &schnorr::scalar("not a signature"))) };
+    let claim_bytes = [SETTLE_MARK.to_vec(), claim.to_bytes(), memo].concat();
+    println!("{}", json!({ "payload_bytes": { "spend_shaped": bytes.len(), "claim": claim_bytes.len() } }));
+    let bad_body = bad_memo_like(&c, &k);
+    let cheap = [("plain bytes", junk(bytes)), ("a spend passed over for its body", bad_body), ("a claim with another signature", junk(claim_bytes))];
+    for (shape, post) in &cheap {
+        for &n in &counts {
+            show(shape, n, 0, c.clone().land_with(&block_elf, &k, &[], &vec![post.clone(); n]));
+        }
+    }
+
+    // real spends over fresh notes: the last `most` are posted with one proof value changed, the first four are the block's own
+    let mut c = Chain::new(8);
+    let t = Instant::now();
+    let all = spends_of(&mut c, &k, most + 4, 30);
+    eprintln!("{} spends proved in {:.0} s", all.len(), t.elapsed().as_secs_f64());
+    let bad: Vec<Post> = all[4..]
+        .iter()
+        .map(|p| {
+            let mut b = p.clone();
+            b.proof[576 + 13 * 32] ^= 1;
+            post(&b)
+        })
+        .collect();
+    show("no entries", 0, 0, c.land_with(&block_elf, &k, &[], &[]));
+    for &n in &counts {
+        show("spends with a changed proof", n, 0, c.land_with(&block_elf, &k, &[], &bad[..n.min(most)]));
+    }
+    show("spends with a changed proof, beside own spends", most, 4, c.land_with(&block_elf, &k, &all[..4], &bad));
+    let good: Vec<Post> = all[4..].iter().map(post).collect();
+    show("the same spends, proofs as made", most, 0, c.land_with(&block_elf, &k, &[], &good));
+}
+
 /// Writes one block of N spends as the guest's stdin (u32 LE count, then each buffer as a u32 LE length and its
 /// bytes) for tacit-block-gpu, after checking here that the guest takes it.
 fn dump(n: usize, path: &str) {
@@ -1305,6 +1376,10 @@ fn main() {
             let sizes: Vec<usize> = args[1..].iter().map(|s| s.parse().unwrap_or_else(|_| fail("sizes are numbers"))).collect();
             measure(if sizes.is_empty() { &[10] } else { &sizes });
         }
+        Some("forced") => {
+            let sizes: Vec<usize> = args[1..].iter().map(|s| s.parse().unwrap_or_else(|_| fail("sizes are numbers"))).collect();
+            forced(if sizes.is_empty() { &[0, 1, 4, 8, 16] } else { &sizes });
+        }
         Some("test") => test(),
         Some("pin") => pin(args.iter().any(|a| a == "--check")),
         Some("fixture") if args.len() == 2 => fixture(&args[1], FIXTURE_CHAIN_ID, FIXTURE_LANDER),
@@ -1315,7 +1390,7 @@ fn main() {
         }
         Some("lock-vectors") if args.len() == 2 => lock_vectors(&args[1]),
         Some("dump") if args.len() == 3 => dump(args[1].parse().unwrap_or_else(|_| fail("N is a number")), &args[2]),
-        _ => fail("usage: tacit-block measure N... | test | dump N FILE | fixture FILE | pin [--check]"),
+        _ => fail("usage: tacit-block measure N... | forced N... | test | dump N FILE | fixture FILE | pin [--check]"),
     }
 }
 

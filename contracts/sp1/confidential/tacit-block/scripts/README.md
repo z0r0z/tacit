@@ -10,3 +10,5 @@ blocks as guest inputs (`FILE.b<i>.stdin`). To make the real proofs the fork tes
 3. `cargo prove vkey --elf elf/tacit-block` gives the program's key for `TacitBlocksFork.t.sol`'s `BLOCK_VKEY`.
 
 Any change to the program, the contract's public words or the memo size changes the inputs: regenerate the fixture and prove again.
+
+`tacit-block forced 0 1 4 8 16` (host crate, executor only, no GPU) prints the guest's cycles for a block that takes N posted spends with one proof value changed, for the other shapes a queue can hold, and for the same entries with their proofs as made.
