@@ -522,7 +522,10 @@ function relayAcct(make = false) {
   if (!/^0x[0-9a-f]{64}$/.test(priv || '')) {
     if (!make) return null;
     priv = '0x' + evmAcct.toValidScalar(crypto.getRandomValues(new Uint8Array(32))).toString(16).padStart(64, '0');
+    // Never hand out an address whose key was not kept: ETH sent to it would be lost. Read it back before using it.
     ls.set(RELAY_KEY, priv);
+    if (ls.get(RELAY_KEY) !== priv) throw new Error('This browser would not keep the relay account’s key (private window or blocked site data), so no account was made. Use a normal window, then try again.');
+    navigator.storage?.persist?.().catch(() => {});
   }
   A.acct = { priv, address: evmAcct.addressFromPriv(priv) };
   return A.acct;
@@ -547,9 +550,10 @@ async function paintAuto(read = true) {
   if (a && read) A.bal = await rpc('eth_getBalance', [a.address, 'latest']).then(BigInt, () => A.bal);
   const t = a ? autoRelay().today() : null;
   box.innerHTML = a ? `<p>Relay account <b>${addrView(a.address, 4)}</b> <button class="link" type="button" data-auto-copy>copy</button> · ${A.bal == null ? '—' : `${esc(ethText(A.bal))} ETH`}`
+      + ` · <button class="link" type="button" data-auto-key>Copy key</button> · <button class="link" type="button" data-auto-import>Use a saved key</button>`
       + ` · <button class="link" type="button" data-auto-add${A.adding ? ' disabled' : ''}>Add 0.01 ETH</button>${A.bal > 0n ? ` · <button class="link" type="button" data-auto-out${A.taking ? ' disabled' : ''}>Take out</button>` : ''}</p>`
       + `<p>Today: ${esc(plural(t.sent, 'settle'))} sent · earned ${esc(ethText(BigInt(t.earnedWei)))} ETH · gas ${esc(ethText(BigInt(t.gasWei)))} ETH</p>`
-    : '<p>Start makes a relay account in this browser. Add a little ETH to it for gas; keep only that much there.</p>';
+    : '<p>Start makes a relay account in this browser. Add a little ETH to it for gas; keep only that much there. Copy its key once it exists: clearing this browser’s data loses it.</p><p><button class="link" type="button" data-auto-import>Use a saved key</button></p>';
   btn.textContent = A.on ? 'Stop' : 'Start';
   btn.setAttribute('aria-pressed', String(A.on));
   const low = A.on && A.bal != null && A.bal < AUTO_RESERVE_WEI * 2n;
@@ -571,7 +575,7 @@ async function autoTick() {
 function autoSet(on) {
   A.on = on; ls.set(AUTO_ON, on ? '1' : null);
   A.said = on ? 'Watching the board…' : 'Stopped.';
-  if (on) { relayAcct(true); autoTick(); }
+  if (on) { try { relayAcct(true); } catch (e) { A.on = false; ls.set(AUTO_ON, null); A.said = String(e.message); paintAuto().catch(() => {}); return; } autoTick(); }
   paintAuto().catch(() => {});
 }
 // One add at a time: the box is drawn again while it waits (a fresh button each time), so the add in flight is kept here, not on the button.
@@ -631,6 +635,22 @@ $('#auto-box')?.addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b) return;
   if (b.matches('[data-auto-copy]')) { navigator.clipboard?.writeText(relayAcct()?.address || '').then(() => toast('Address copied'), () => {}); return; }
+  if (b.matches('[data-auto-key]')) {
+    const k = relayAcct()?.priv;
+    if (k) navigator.clipboard?.writeText(k).then(() => toast('Key copied. Keep it private: it controls this account'), () => toast('Could not copy the key'));
+    return;
+  }
+  if (b.matches('[data-auto-import]')) {
+    if (A.on || A.running || inFlight()) { toast('Stop the relay and let any settle land first'); return; }
+    const k = (prompt('Paste the relay account’s saved key (0x and 64 hex digits). It replaces the account in this browser; copy the current key first if it holds ETH.') || '').trim().toLowerCase();
+    if (!k) return;
+    if (!/^0x[0-9a-f]{64}$/.test(k)) { toast('That is not a key'); return; }
+    ls.set(RELAY_KEY, k);
+    if (ls.get(RELAY_KEY) !== k) { toast('This browser would not keep it'); return; }
+    A.acct = null; A.relay = null; A.bal = null;
+    paintAuto();
+    return;
+  }
   if (b.matches('[data-auto-add]')) busy(b, autoAdd).then(() => paintAuto());
   if (b.matches('[data-auto-out]')) busy(b, autoOut).then(() => paintAuto());
 });
