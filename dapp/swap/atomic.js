@@ -78,6 +78,8 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
   return {
     load,
     get unlocked() { return !!bitcoin?.session.unlocked; },
+    // which key is open: the pair client is one key's, and is dropped when another opens
+    get pubHex() { return bitcoin?.session.unlocked ? bitcoin.session.key?.pubHex || null : null; },
     async signIn() { await load(); await bitcoin.signIn(); },
     fund(o) { bitcoin?.fund(o); },
     async open() {
@@ -92,9 +94,9 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
 }
 
 export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, provider = () => null, getUx = null, door = null, onState = () => {}, dir = 'b2e', now = nowSecs, recsHost = null, market = null, onRecs = () => {} }) {
-  const D = door || bitcoinDoor({ notify, wallet, provider, getUx, onChange: () => { if (L.open) { L.unlocked = D.unlocked; paint(); begin(); } } });
+  const D = door || bitcoinDoor({ notify, wallet, provider, getUx, onChange: () => keyChanged() });
   const L = { dir: dir === 'e2b' ? 'e2b' : 'b2e', amt: '', q: null, qErr: '', bal: { sats: null, eth: null, ethHeld: null, pending: 0n }, recs: [], busy: false, open: false, line: '', cls: '', unlocked: false, loaded: false, terms: null, mk: null, fits: null };
-  let fundAsk = null, pair = null, pairP = null, opened = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, marketTimer = 0, recovered = false, recovering = null, lookFailed = false, reading = null, began = null;
+  let fundAsk = null, pair = null, pairP = null, pairKey = null, gen = 0, opened = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, marketTimer = 0, recovered = false, recovering = null, lookFailed = false, reading = null, began = null;
   const readMarket = market || (() => import(MARKET_MODULE).then((M) => M.readMarket().then((m) => ({ ...m, estimate: (d, a) => M.estimate(m, d, a) }))));
   const known = new Map();
   const $ = (id) => host.querySelector(`#${id}`);
@@ -135,7 +137,36 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   const coin = (c) => `<svg class="tk" aria-hidden="true"><use href="#${c.mark}"/></svg>${c.sym}`;
 
   // ── the pair client and what it reads ──
-  const getPair = () => (pairP ||= Promise.resolve(D.open()).then((o) => { opened = o && o.pair ? o : null; return (pair = o && o.pair ? o.pair : o); }).catch((e) => { pairP = null; throw e; }));
+  // The pair client is the open key's: it is made for that key (pairKey) and dropped when the wallet locks or another key opens (keyChanged), so nothing of one
+  // key's (its pair client, balances, swaps or quote) is used or shown under another.
+  const keyOf = () => (D.unlocked ? (D.pubHex === undefined ? 'open' : D.pubHex) : null);
+  const getPair = () => {
+    if (pairP && pairKey !== keyOf()) dropPair();
+    const g = gen;
+    return (pairP ||= (pairKey = keyOf(), Promise.resolve(D.open()).then((o) => {
+      if (g !== gen) throw new Error('Your Tacit wallet changed. Open it again.');
+      opened = o && o.pair ? o : null; return (pair = o && o.pair ? o.pair : o);
+    }).catch((e) => { if (g === gen) { pairP = null; pairKey = null; } throw e; })));
+  };
+  function dropPair() {
+    gen++;
+    pair = null; pairP = null; pairKey = null; opened = null; began = null; recovered = false; recovering = null; lookFailed = false; reading = null;
+    clearInterval(refreshTimer); clearTimeout(poll); clearTimeout(qTimer);
+    seq++; known.clear();
+    L.bal = { sats: null, eth: null, ethHeld: null, pending: 0n }; L.recs = []; L.q = null; L.qErr = ''; L.unread = null; L.fits = null; L.terms = null; L.busy = false;
+  }
+  // The wallet locked, or opened with a key: a key other than the pair client's drops it, and its swaps are no longer listed or stepped. A swap of the key that
+  // was under way is not stepped by another: the page says to open that key again (its records are kept under it, and are found again when it opens).
+  function keyChanged() {
+    const k = keyOf();
+    if (pairKey !== null && k !== pairKey) {
+      const wasWorking = L.recs.some((r) => r.state === 'working');
+      dropPair();
+      L.sticky = wasWorking;
+      if (mounted) { paint(); say(wasWorking ? esc(k ? 'A swap of the wallet that was open is under way. Open that wallet again to finish it.' : 'A swap is under way. Open the same Tacit wallet again to finish it.') : '', wasWorking ? 'warn' : ''); }
+    }
+    if (L.open) { L.unlocked = D.unlocked; paint(); begin(); }
+  }
   // the providers and the market, read with no wallet open: limits and an estimate to show before the quote (read again each minute until the pair client has its own)
   function readMk() {
     clearTimeout(marketTimer);
@@ -146,17 +177,19 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   function readMe(quiet = false) {
     if (!pair || !D.unlocked) return Promise.resolve();
     if (reading) return reading;
+    const g = gen, p = pair;
     reading = (async () => {
       try {
-        const b = await pair.balances();
+        const b = await p.balances();
+        if (g !== gen) return;
         if (b) L.bal = { sats: b.sats ?? null, eth: b.eth ?? null, ethHeld: b.ethHeld ?? null, pending: b.pendingSats ?? 0n };
         // a side the explorers or nodes did not answer for is said as such (the lane's refresh reads it again), not left as 'reading'
         L.unread = { btc: !b || b.sats == null, eth: !b || b.eth == null };
         paint();
       }
       // (a read that throws leaves both sides unread: the button offers to read again, and the lane's refresh tries again by itself)
-      catch (e) { L.unread = { btc: L.bal.sats == null, eth: L.bal.eth == null }; paint(); if (!quiet) say(esc(plainError(e)), 'err'); }
-      finally { reading = null; }
+      catch (e) { if (g !== gen) return; L.unread = { btc: L.bal.sats == null, eth: L.bal.eth == null }; paint(); if (!quiet) say(esc(plainError(e)), 'err'); }
+      finally { if (g === gen) reading = null; }
     })();
     return reading;
   }
@@ -168,11 +201,17 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (recovering) return recovering;
     lookFailed = false;
     let live = true;
-    const peek = setInterval(() => { pair.records().then((rs) => { if (live && Array.isArray(rs)) { L.recs = rs; paintRecs(); } }, () => {}); }, PEEK_MS);
+    const g = gen, p = pair;
+    const peek = setInterval(() => { if (g !== gen) { clearInterval(peek); return; } p.records().then((rs) => { if (live && g === gen && Array.isArray(rs)) { L.recs = rs; paintRecs(); } }, () => {}); }, PEEK_MS);
     recovering = (async () => {
-      try { await pair.recover(); recovered = true; } catch { lookFailed = true; }
+      let ok = false;
+      try { await p.recover(); ok = true; } catch { /* looked for again by the refresh */ }
       finally { live = false; clearInterval(peek); }
-      L.recs = await pair.records().catch(() => L.recs);
+      if (g !== gen) return;
+      recovered = ok; lookFailed = !ok;
+      const recs = await p.records().catch(() => L.recs);
+      if (g !== gen) return;
+      L.recs = recs;
       recovering = null;
       paint(); follow(1000);
     })();
@@ -182,21 +221,25 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   // The key is open: the pair client is made, the swaps this browser keeps are listed, those of an earlier visit are looked for, and what is under way is shown.
   function begin() {
     if (!D.unlocked || !L.open) return Promise.resolve();
+    const g = gen;
     return (began ||= (async () => {
       try {
-        say('');
+        if (!L.sticky) say('');
         await getPair();
+        if (g !== gen) return;
         L.unlocked = true;
         // the balance is read while the swaps of an earlier visit are looked for, not after: the two read the same pool history, and the button waits on the balance
         paint(); readMe(); requote(true);
-        L.recs = await pair.records().catch(() => L.recs);
-        pair.providers().then((ps) => { L.terms = ps; paint(); }, () => {});
+        const p = pair, recs = await p.records().catch(() => L.recs);
+        if (g !== gen) return;
+        L.recs = recs;
+        p.providers().then((ps) => { if (g === gen) { L.terms = ps; paint(); } }, () => {});
         paint();
         clearInterval(refreshTimer);
         refreshTimer = setInterval(() => { if (!document.hidden && L.open) { readMe(true); if (!recovered) findPast(); if (L.q && !L.busy && L.q.expiresAt - now() < 30) requote(true, true); } }, REFRESH_MS);
         if (recovered) follow(1000); else await findPast();
-      } catch (e) { say(esc(plainError(e)), 'err'); }
-      finally { began = null; }
+      } catch (e) { if (g === gen) say(esc(plainError(e)), 'err'); }
+      finally { if (g === gen) began = null; }
     })());
   }
 
@@ -208,12 +251,14 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const amount = amountBase();
     if (!keep || !amount || !pair) { L.q = null; L.qErr = ''; }
     if (!amount || !pair || !D.unlocked) { paint(); return; }
+    const p = pair;
     const run = async () => {
+      if (p !== pair) return;
       const my = ++seq, dirNow = L.dir;
       try {
         // more than `available` says (it keeps back the fee of a cut) can still be locked from a note of exactly the amount: asked of the pool side, not guessed
-        if (dirNow === 'e2b' && pair.covers && L.bal.eth != null && amount > L.bal.eth) { const ok = await pair.covers(amount).catch(() => false); if (my !== seq) return; L.fits = { amt: amount, ok: !!ok }; }
-        const q = await pair.quote({ dir: dirNow, amount });
+        if (dirNow === 'e2b' && p.covers && L.bal.eth != null && amount > L.bal.eth) { const ok = await p.covers(amount).catch(() => false); if (my !== seq) return; L.fits = { amt: amount, ok: !!ok }; }
+        const q = await p.quote({ dir: dirNow, amount });
         if (my !== seq) return;
         L.q = q; L.qErr = '';
       } catch (e) { if (my !== seq) return; L.q = null; L.qErr = plainError(e); }
@@ -345,34 +390,41 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   // ── actions ──
   async function unlock() {
     try { await D.signIn(); } catch (e) { if (!e?.unlockCancelled) say(esc(plainError(e)), 'err'); return; }
-    L.unlocked = D.unlocked; say(''); paint(); await begin();
+    L.unlocked = D.unlocked; if (!L.sticky) say(''); paint(); await begin();
   }
   async function swap() {
     const q = L.q; if (!q || q.blocked || L.busy) return;
     if (q.expiresAt - now() < 5) { say('That quote has run out. Getting a new one.'); requote(true); return; }
     L.busy = true; L.sticky = false; say('Starting the swap…'); paint();
+    const g = gen, p = pair;
     try {
-      const r = await pair.start(q);
+      const r = await p.start(q);
+      if (g !== gen) return;
       L.amt = ''; $('a-amt').value = ''; L.q = null; L.qErr = '';
       say('');
-      L.recs = await (recovering ? Promise.reject() : pair.pump()).catch(async () => pair.records().catch(() => L.recs));
+      const recs = await (recovering ? Promise.reject() : p.pump()).catch(async () => p.records().catch(() => L.recs));
+      if (g !== gen) return;
+      L.recs = recs;
       known.set(r.id, 'working');
       onState();
       follow(POLL_MS);
-    } catch (e) { say(esc(plainError(e)), 'err'); L.sticky = true; }
-    finally { L.busy = false; paint(); }
-    readMe(true);
+    } catch (e) { if (g === gen) { say(esc(plainError(e)), 'err'); L.sticky = true; } }
+    finally { if (g === gen) { L.busy = false; paint(); } }
+    if (g === gen) readMe(true);
   }
   // Swaps under way are stepped while the lane is open, the tab seen or hidden (hidden, less often: the browser runs a hidden tab's timers about once a minute anyway,
   // and a claim or a take that waited for the tab to be seen again could miss its window); one that ends is said once.
   function follow(wait = POLL_MS) {
     clearTimeout(poll);
     if (!pair || !L.open || !L.recs.some((r) => r.state === 'working')) return;
+    const g = gen, p = pair;
     poll = setTimeout(async () => {
+      if (g !== gen) return;
       // (a look for earlier swaps steps what it finds itself: the two do not step the same swap at once, so a pass waits for it to end)
       if (recovering) { follow(POLL_MS); return; }
       try {
-        const next = await pair.pump();
+        const next = await p.pump();
+        if (g !== gen) return;
         for (const r of next) {
           const was = known.get(r.id);
           if (was === 'working' && r.state !== 'working') { notify(r.state === 'done' ? 'Swap done' : 'Swap returned'); readMe(true); }
@@ -380,7 +432,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         }
         L.recs = next; paintRecs();
       } catch { /* the next pass */ }
-      follow(document.hidden ? HIDDEN_POLL_MS : POLL_MS);
+      if (g === gen) follow(document.hidden ? HIDDEN_POLL_MS : POLL_MS);
     }, wait);
   }
   // leaving the page while a swap is under way stops its steps: the browser asks first
@@ -426,6 +478,6 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     records: () => L.recs.slice(),
     keep: () => opened?.keep || null,
     // after a copy is read back: the swaps are found and stepped again
-    reread: async () => { if (!pair) return; L.recs = await pair.records().catch(() => L.recs); paint(); follow(1000); },
+    reread: async () => { if (!pair) return; const g = gen, recs = await pair.records().catch(() => L.recs); if (g !== gen) return; L.recs = recs; paint(); follow(1000); },
   };
 }

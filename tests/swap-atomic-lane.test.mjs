@@ -47,10 +47,14 @@ const ad = ({ btcAsset = SATS, evmAsset = ETH, sign = true } = {}) => {
 
 // stand-in for /trade/btc.js: the lane's door to the Tacit key
 const BTC_STUB = `
-const W = window.__btc = { unlocked: false, signIns: 0, funds: 0 };
+const W = window.__btc = { unlocked: false, signIns: 0, funds: 0, pub: '02' + 'ab'.repeat(32) };
 const T = { wallet: { priv: new Uint8Array(32).fill(7), address: () => 'bc1qtestaddress0000000000000000000000000' } };
-const session = { get unlocked() { return W.unlocked; }, get key() { return W.unlocked ? { pubHex: '02' + 'ab'.repeat(32) } : null; }, get T() { return T; }, load: async () => T, turn: async (fn) => fn() };
-export function makeBitcoin({ onChange }) { return { session, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: (o) => { W.funds++; W.fundAsk = o || null; } }; }`;
+const session = { get unlocked() { return W.unlocked; }, get key() { return W.unlocked ? { pubHex: W.pub } : null; }, get T() { return T; }, load: async () => T, turn: async (fn) => fn() };
+export function makeBitcoin({ onChange }) {
+  W.lock = () => { W.unlocked = false; onChange?.(); };
+  W.openAs = (pub) => { W.pub = pub; W.unlocked = true; onChange?.(); };
+  return { session, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: (o) => { W.funds++; W.fundAsk = o || null; } };
+}`;
 const WIRE_STUB = `export async function openPair(o) { window.__atom.opened.push({ pubHex: o.pubHex, priv: o.priv instanceof Uint8Array && o.priv.length === 32, hasT: !!(o.T && o.T.wallet && typeof o.T.wallet.address === 'function'), hasUx: !!o.ux, walletIsGetter: typeof o.wallet }); return { pair: window.__atom.pair, address: () => ({ btc: 'bc1qtest' }), run: () => () => {} }; }`;
 // the pair client, as fastbridge-pair.js shapes it
 const FAKE = `
@@ -304,6 +308,34 @@ console.log('a failed start, and the key not open');
   await page.waitForFunction(() => /The provider cannot hold that amount\./.test(document.querySelector('#a-q').textContent), null, { timeout: 5000 });
   ok((await page.$eval('#a-q', (e) => e.classList.contains('err'))) && (await atom(page, 'A.calls.start.length')) === 1 && !(await page.$eval('#a-go', (e) => e.disabled)), 'a start the provider refuses is said in its words, nothing is listed, and the button is ready again');
   ok((await page.inputValue('#a-amt')) === '0.01' && (await page.$('#a-sent:not([hidden])')) === null, 'the amount stays so that it can be tried again');
+  await page.close();
+}
+
+console.log('the wallet locks, and another key opens in the same tab');
+{
+  const { page } = await fresh({ ads: [ad()] });
+  await open(page);
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__btc.unlocked && /Balance 0\.5 BTC/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
+  await type(page, '0.01');
+  await page.click('#a-go');
+  await page.waitForFunction(() => document.querySelectorAll('#a-sent [data-rec]').length === 1, null, { timeout: 8000 });
+  await page.evaluate(() => window.__btc.lock());
+  await page.waitForFunction(() => /Open your Tacit wallet/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
+  const pumps = await atom(page, 'A.calls.pump');
+  ok(/Open the same Tacit wallet again to finish it/.test(await text(page, '#a-q')), `a swap under way when the wallet locks: the page asks for the same wallet again (${await text(page, '#a-q')})`);
+  ok((await page.$$('#a-sent [data-rec]')).length === 0 && (await text(page, '#a-bal')) === '' && (await text(page, '#a-out')) === '0', 'the locked wallet\'s swaps, balance and quote are no longer shown');
+  await sleep(6500);
+  ok((await atom(page, 'A.calls.pump')) === pumps, 'and its swaps are not stepped while it is locked');
+  await atom(page, '(A.bal.sats = 70000000n, 0)');
+  await page.evaluate(() => window.__btc.openAs('02' + 'cd'.repeat(32)));
+  await page.waitForFunction(() => /Balance 0\.7 BTC/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
+  const opened = await atom(page, 'A.opened');
+  ok(opened.length === 2 && opened[1].pubHex === '02' + 'cd'.repeat(32), `another key opens its own pair client (${opened.map((o) => o.pubHex.slice(0, 6)).join(', ')})`);
+  ok(/Open the same Tacit wallet again|Open that wallet again/.test(await text(page, '#a-q')), `the page still says the other wallet has a swap to finish (${await text(page, '#a-q')})`);
+  await page.evaluate(() => window.__btc.openAs('02' + 'ef'.repeat(32)));
+  await page.waitForFunction(() => window.__atom.opened.length === 3, null, { timeout: 8000 });
+  ok((await atom(page, 'A.opened.at(-1).pubHex')) === '02' + 'ef'.repeat(32), 'a key that replaces the open one without a lock gets its own pair client too');
   await page.close();
 }
 
