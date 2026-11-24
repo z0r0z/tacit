@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { ackFor, offMarket, pairCost } from '../dapp/lp-zap.js';
+import { ackFor, offMarket, pairCost, payback, streamDays } from '../dapp/lp-zap.js';
 
 const page = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8'), sheets = readFileSync(new URL('../dapp/front/sheets.js', import.meta.url), 'utf8');
 const cut = (src, a, b) => { const s = src.indexOf(a), e = src.indexOf(b, s + a.length); assert.ok(s >= 0 && e > s, `the source has ${a}`); return src.slice(s, e); };
@@ -84,4 +84,31 @@ test('every place that holds a deposit to its cost passes the pool’s verdict',
   for (const [what, re] of [['the zap sheet’s button', /lossOk\(ackBox, q\.impact \|\| 0, q\.off\); \};\n[\s\S]*?const \{ plan, sp, gas, gp/], ['the zap sheet’s line', /lossGate\(`sz-ackv-\$\{pid\}`, q\.impact, 'deposit', q\.off\)/], ['the zap sheet’s press', /!lossOk\(ackBox, z\.impact \|\| 0, z\.off\)\) return;\n    await zapNow/],
     ['the join sheet’s button', /q\.gasShort \|\| !lossOk\(ackBox, q\.impact \|\| 0, q\.off\)/], ['the join sheet’s line', /lossGate\(`sj-ackv-\$\{pid\}`, worst, 'deposit', q\.off\)/], ['the join sheet’s press', /z\.gasShort \|\| !lossOk\(ackBox, z\.impact \|\| 0, z\.off\)\) return;/]]) assert.match(sheets, re, what);
   assert.doesNotMatch(sheets, /lossOk\(ackBox, (q|z)\.impact \|\| 0\)/, 'no deposit sheet is left holding the old rule');
+});
+
+test('a zap’s receipt says how many days the farm’s TAC takes to make up its way in, on the card, the zap sheet and the farm page', () => {
+  const day = 86400, now = Date.now() / 1000, TAC = 0.7636 / 1715.58, off = offMarket(1.2);
+  const card = make(cut(page, 'const paybackRow = (zq, pk, day) => {', '\nconst aprShort'), ['payback', 'streamDays', 'farmEpoch', 'FARM'], { payback, streamDays, farmEpoch: (p) => p?.epoch, FARM: { precision: { tacEth: TAC } } }, 'paybackRow');
+  const pool = (o) => ({ epoch: { active: true, periodFinish: now + 26 * day, fundedRunwaySeconds: 0, ...o } }), zq = { plan: { value: 10n ** 18n }, impact: 13.4, off };
+  const row = card.paybackRow(zq, pool(), 49.13);
+  assert.deepEqual(row.slice(0, 3), ['Rewards make it up', 'about 6 days at today’s rate', ''], 'the 1 ETH zap into cETH/cUSD: about six days of its rewards');
+  assert.match(row[3], /others joining the pool share them, and TAC’s price moves them/, 'and the line says what it rests on');
+  const late = card.paybackRow({ ...zq, impact: 15.7 }, pool({ fundedRunwaySeconds: 20.5 * day }), 10.5);
+  assert.deepEqual(late.slice(0, 3), ['Rewards make it up', 'about 34 days, but the farm streams 20 more days', 'err'], 'a payback past the stream (here its funding, which runs out first) is flagged');
+  assert.equal(card.paybackRow({ ...zq, impact: 2, off: null }, pool(), 49.13), null, 'a cost under what is warned of says nothing');
+  assert.equal(card.paybackRow({ ...zq, plan: null }, pool(), 49.13), null, 'no quote, no line');
+  assert.equal(card.paybackRow(zq, null, 49.13), null, 'no farm, no line');
+  assert.equal(card.paybackRow(zq, pool({ active: false }), 49.13), null, 'between reward periods nothing streams, so nothing pays it back');
+  assert.equal(card.paybackRow(zq, pool(), 0), null, 'a deposit that earns nothing says nothing');
+  // the rows are drawn where a zap is quoted: after the price against the market, only for a zap (not a private join, not LP-only), with the quote's own day figure
+  assert.match(page, /\['Against the market', `\$\{pctFmt\(HX\.zq\.mkt\)\} of this deposit`, 'err'\] : null,\n\s+!pub && !js && !lpOnly \? paybackRow\(HX\.zq, FARM\.program\?\.pools\?\.find\(\(x\) => String\(x\.pid\) === pick\.k\), pick\.day\) : null,/, 'the card');
+  assert.match(sheets, /payback\(\{ cost: z\.impact, eth: Number\(plan\.value\) \/ 1e18, day: Number\(p\.tacPerDayForPool\) \* Number\(plan\.shares\) \/ Number\(BigInt\(p\.totalShares \|\| 0\) \+ BigInt\(plan\.shares\)\), tacEth: FARM\.precision\?\.tacEth \|\| 0, off, left: streamDays\(\{ end: ep\.periodFinish, run: ep\.fundedRunwaySeconds \}\) \}\)/, 'the zap sheet works it from its own quote');
+  assert.match(sheets, /\$\{joinYield\(p, plan\.shares, plan\.ethLeg \/ zapUnit\)\}\n\s+\$\{pb \? html`<div class="kv"><span>Rewards make it up<\/span><b class="\$\{pb\.past \? 'err' : ''\}" title="\$\{pb\.note\}">\$\{pb\.text\}<\/b><\/div>` : ''\}/, 'and draws it under the yield');
+  const farm = readFileSync(new URL('../dapp/farm/app.js', import.meta.url), 'utf8');
+  assert.match(farm, /const pb = f\.live \? payback\(\{ cost: q\.cost, eth: Number\(q\.plan\.value\) \/ 1e18, day: q\.day, tacEth: tacEth\(\), off: q\.off, left: streamDays\(\{ end: f\.finish, run: f\.epoch\?\.fundedRunwaySeconds \}\) \}\) : null;/, 'the farm page works it from the quote');
+  assert.match(farm, /\(pb \? row\('Rewards make it up', pb\.text, pb\.past \? 'err' : '', pb\.note\) : ''\)/, 'and draws it as a row of the receipt');
+  // the sheets are handed the two helpers by the page, which imports them from lp-zap.js
+  assert.match(page, /offRow, offBetter, payback, streamDays, get PTSINFO\(\)/, 'the page passes them');
+  assert.match(sheets, /offRow, offBetter, payback, streamDays \} = ctx;/, 'the sheets read them');
+  for (const [name, src] of [['the page', page], ['the farm page', farm]]) assert.match(src, /import \{[^}]*\bpayback, streamDays\b[^}]*\} from '\/lp-zap\.js\?cb=/, `${name} imports them`);
 });

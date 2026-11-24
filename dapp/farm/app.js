@@ -14,9 +14,9 @@ import { readCampaign, bestApr, notTrading } from '/trade/lp-campaign.js?cb=8da1
 import { DEPLOYMENTS } from '/vault/deployments.js?cb=02c84743';
 import { exitSaid, walletSettle, ownWhy } from '/farm-ops.js?cb=c5192cc4';
 import { quoteEthToToken } from '/swap/route.js?cb=0affad24';
-import { zapPlanExt, offMarket, ackFor, pairCost } from '/lp-zap.js?cb=1be67604';
+import { zapPlanExt, offMarket, ackFor, pairCost, payback, streamDays } from '/lp-zap.js?cb=1cc6342a';
 import { relayWords } from '/relay-outcome.js?cb=ad7c898d';
-import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, ackKind, askedMore, poolRatio, CETH, ZAP_GAS } from '/farm/zap.js?cb=20fdcb0a';
+import { readReserves, marketOf, otherOf, zapMath, zapQuote, zapRun, bondShare, readNotes, looseOf, declined, assetRow, publicRate, ackKind, askedMore, poolRatio, CETH, ZAP_GAS } from '/farm/zap.js?cb=a9471e7a';
 
 try { sessionStorage.removeItem('tacit-farm-back-v1'); } catch { /* the front page's way back to a farm: this page is where it goes, so it is spent */ }
 const API = 'https://api.tacit.finance', POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC', ROUTER = '0x000000005dA3E3B73726af3c774Deeb9472D4992';
@@ -562,6 +562,8 @@ function paintQuote() {
   const dayUsd = eu && tacEth() ? usd(q.day * tacEth() * eu) : '', feeEth = Number(ZAP_GAS * q.gp) / 1e18, fee = eu ? (feeEth * eu < 0.01 ? 'under $0.01' : `≈ $${(feeEth * eu).toFixed(2)}`) : `≈ ${feeEth.toPrecision(2)} ETH`;
   // the pool's price for the coin, in ETH a coin, from the reserves in the coins' own units (tETH's unit is 1e-8 ETH; the other coin's is `unitB` of its smallest)
   const other = otherOf(f.pool.pair), ratio = q.ratio ?? 1, n = Math.round(q.cost), key = `${f.id}|${q.wei}|${n}`;
+  // what the farm's TAC makes up of the way in, over the days the stream still pays (lp-zap.js payback)
+  const pb = f.live ? payback({ cost: q.cost, eth: Number(q.plan.value) / 1e18, day: q.day, tacEth: tacEth(), off: q.off, left: streamDays({ end: f.finish, run: f.epoch?.fundedRunwaySeconds }) }) : null;
   const line = q.over ? 'More ETH than this wallet holds, with the network fee.'
     : q.against >= 5 && !q.off ? `This pool’s price for ${esc(other)} is ${pctTxt(Math.abs(ratio - 1) * 100)} ${ratio > 1 ? 'above' : 'below'} the market’s, and half of the deposit is swapped at it.`
     : q.impact >= 5 ? 'The swap inside the pool costs a lot at this size. A smaller deposit costs less.'
@@ -577,6 +579,7 @@ function paintQuote() {
     + (q.plan.shareOfPool > 0 ? row('Your share', `${sharePct(q.plan.shareOfPool)} of the pool`, '', 'What this deposit would be of the pool once it is in, counting its own shares. The farm’s TAC is shared in proportion, and a deposit that is a big part of the pool moves its price on the way in and out.') : '')
     + (q.impact >= 0.5 ? row('Price impact', pctTxt(q.impact), q.impact >= 5 ? 'err' : '') : '')
     + (q.against >= 1 ? row('Against the market', `${pctTxt(q.against)} of this deposit`, q.against >= 5 ? 'err' : '') : '')
+    + (pb ? row('Rewards make it up', pb.text, pb.past ? 'err' : '', pb.note) : '')
     + row('You hold', `a private ${esc(f.name)} position`)
     + row('Exit', esc(exitSaid(f.pool.lockSeconds, f.name) || 'any time'))
     + row('Chain sees', 'ETH in, private after', '', 'The deposit is public: your wallet, the amount and the swap. The position it makes, what it earns and its exit are private.')

@@ -3,7 +3,7 @@
 // remove): with nothing in between, it mints exactly the shares its note commits to; with any trade, add or remove landing first, it mints at
 // most that many, so with minShares set to them the transaction mints exactly them or reverts, and no deposit is left a note cannot open.
 //   node tests/lp-zap.test.mjs
-import { zapPlan, zapPlanFor, zapSplitPlan, zapSplitSearch, zapWorth, zapCalldata, zapSettleCalldata, ammOut, addShares, foundingPlan, zapEntry, farmPick, offMarket, ackFor, pairCost, OFF_MARKET } from '../dapp/lp-zap.js';
+import { zapPlan, zapPlanFor, zapSplitPlan, zapSplitSearch, zapWorth, zapCalldata, zapSettleCalldata, ammOut, addShares, foundingPlan, zapEntry, farmPick, offMarket, ackFor, pairCost, OFF_MARKET, payback, streamDays, PAYBACK_FROM } from '../dapp/lp-zap.js';
 
 let n = 0; const ok = (c, m) => { if (c) { n++; } else { console.error('FAIL -', m); process.exitCode = 1; } };
 let seed = 7n; const rnd = () => { seed = (seed * 6364136223846793005n + 1442695040888963407n) & ((1n << 64n) - 1n); return seed >> 11n; };
@@ -400,6 +400,36 @@ ok(exact > 0 && reverted > 0, `with something landing first a zap is exact or re
   for (let r = 1.01; r < 5; r += 0.01) ok(pairCost(r + 0.01) > pairCost(r) && pairCost(r) < zapEntry(0.1, r).loss * 100, `the further off, the more it gives up, and under a zap's at ${r.toFixed(2)}`);
   const rank = (k) => (k === 'type' ? 2 : k === 'box' ? 1 : 0);
   for (let c = 0; c <= 100; c += 0.5) ok(rank(ackFor(c, off)) >= rank(ackFor(c)), `at ${c}% an off-market pool asks for at least what an ordinary one does`);
+}
+
+// what the farm's TAC makes up of a deposit's way in: the days it takes at the rate and pool size now, against the days the stream still pays
+{
+  const same = (a, b, m) => ok(JSON.stringify(a) === JSON.stringify(b), `${m}: ${JSON.stringify(a)}`);
+  const TAC = 0.7636 / 1715.58, off = offMarket(1.2);                // ETH a TAC at the 11-24 prices the page was checked against
+  // 1 ETH into cETH/cUSD (13.4% given up, 49.1 TAC a day) and into cETH/cBTC (15.7%, 21 TAC a day), as the live pools stood
+  const usd = payback({ cost: 13.4, eth: 1, day: 49.13, tacEth: TAC, left: 26, off }), btc = payback({ cost: 15.7, eth: 1, day: 21.02, tacEth: TAC, left: 26, off });
+  same([usd.text, usd.past, Math.round(usd.days)], ['about 6 days at today’s rate', false, 6], 'the cUSD pool pays it back in about six days');
+  same([btc.text, btc.past, Math.round(btc.days)], ['about 17 days at today’s rate', false, 17], 'the cBTC pool in about seventeen');
+  // the same deposit once the pool's stake has doubled (half the TAC a day): past the 26 days the farm is funded for
+  const dil = payback({ cost: 15.7, eth: 1, day: 21.02 / 2, tacEth: TAC, left: 26.3, off });
+  same([dil.text, dil.past], ['about 34 days, but the farm streams 26 more days', true], 'a payback longer than the stream says the stream stops first');
+  ok(payback({ cost: 15.7, eth: 1, day: 21.02 / 2, tacEth: TAC, left: 26.3, off }).days === dil.days && payback({ cost: 15.7, eth: 1, day: 21.02, tacEth: TAC * 0.5, left: 26.3, off }).past, 'half the TAC price is the same as half the TAC a day');
+  same([payback({ cost: 10, eth: 1, day: 20, tacEth: TAC, left: 1.5 }).text, payback({ cost: 10, eth: 1, day: 1, tacEth: TAC, left: 0.4 }).text, payback({ cost: 10, eth: 1, day: 1, tacEth: TAC, left: 1 }).text],
+    ['about 11 days, but the farm streams 1 more day', 'more than 100 days, but the farm streams under a day more', 'more than 100 days, but the farm streams 1 more day'], 'what is left of the stream is said in days, a day, or under a day');
+  const sp = (days) => payback({ cost: 10, eth: 1, day: 0.1 / TAC / days, tacEth: TAC }).text.replace(' at today’s rate', '');
+  same([sp(0.5), sp(1), sp(1.4), sp(2), sp(99.4), sp(101), sp(400)], ['under a day', 'about a day', 'about a day', 'about 2 days', 'about 99 days', 'more than 100 days', 'more than 100 days'], 'the span is said plainly at each size');
+  same(payback({ cost: 13.4, eth: 1, day: 49.13, tacEth: TAC }).past, false, 'with the stream’s end not known it is not called past');
+  // when it is shown: from the cost a deposit is warned of, or any cost in a pool off the market
+  same([payback({ cost: 4.9, eth: 1, day: 50, tacEth: TAC }), payback({ cost: 0, eth: 1, day: 50, tacEth: TAC, off })], [null, null], 'under 5%, or nothing given up, there is no line');
+  ok(payback({ cost: 5, eth: 1, day: 50, tacEth: TAC }) && PAYBACK_FROM === 5, 'from 5% in an ordinary pool');
+  ok(payback({ cost: 3, eth: 1, day: 50, tacEth: TAC, off }) && !payback({ cost: 3, eth: 1, day: 50, tacEth: TAC }), 'an off-market pool says it for any cost');
+  same([payback({ cost: 13, eth: 1, day: 0, tacEth: TAC }), payback({ cost: 13, eth: 1, day: 50, tacEth: 0 }), payback({ cost: 13, eth: 0, day: 50, tacEth: TAC }), payback({ cost: NaN, eth: 1, day: 50, tacEth: TAC }), payback({ cost: 13, eth: 1, day: undefined, tacEth: TAC })],
+    [null, null, null, null, null], 'where nothing streams, TAC has no price, or the cost is not a number, there is no line');
+  // the days a stream still pays: to its end, or to where its funding runs out when that comes first
+  const at = 1_000_000, d = 86400;
+  same([streamDays({ end: at + 10 * d, run: 0, at }), streamDays({ end: at + 10 * d, run: 5 * d, at }), streamDays({ end: at + 10 * d, run: 50 * d, at }), streamDays({ end: at + 10 * d, at })], [10, 5, 10, 10], 'the earlier of the end and the funded runway');
+  same([streamDays({ end: at - 1, run: 5 * d, at }), streamDays({ end: 0, at }), streamDays({ end: NaN, at }), streamDays({ end: undefined, run: 5 * d, at })], [null, null, null, null], 'a stream that is over, or has no end, has no days');
+  ok(Math.abs(streamDays({ end: Date.now() / 1000 + 3 * d }) - 3) < 0.01, 'now is the clock when none is given');
 }
 
 console.log(`${n} checks`);

@@ -24,7 +24,7 @@ const { privateFarms, aprText, poolWorthEth } = await import('../dapp/trade/farm
 const { usd } = await import('../dapp/trade/util.js');
 const { campaignRate, campaignApr } = await import('../dapp/trade/lp-campaign.js');
 const { zapMath, marketOf } = await import('../dapp/farm/zap.js');
-const { zapPlanFor } = await import('../dapp/lp-zap.js');
+const { zapPlanFor, payback, streamDays } = await import('../dapp/lp-zap.js');
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || '/Users/z/zFi/node_modules/playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname, SHOTS = process.env.SHOTS || null, WEB = 24000 + Math.floor(Math.random() * 1000);
 const ONLY = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null, runs = (k) => !ONLY || ONLY.has(k);
@@ -464,7 +464,7 @@ try {
       ok(await quoted(page), 'with no wallet a deposit is still priced');
       const rc = await text(page, '#pz-rcpt');
       ok(new RegExp(`Earns about${day0.toFixed(2)} TAC a day`).test(rc) && /You holda private tETH \/ TAC position/.test(rc) && /Exitany time, as private tETH and TAC/.test(rc) && /Chain seesETH in, private after/.test(rc) && /Network fee≈ \$/.test(rc), `the receipt: ${rc}`);
-      ok(!/Price impact|Against the market/.test(rc), `a deposit that moves the pool ${m0.impact.toFixed(2)}% says nothing of it`);
+      ok(!/Price impact|Against the market|Rewards make it up/.test(rc), `a deposit that moves the pool ${m0.impact.toFixed(2)}% says nothing of it`);
       ok(await text(page, '#pz-go') === 'Connect wallet', 'and the button connects');
       const rcptSays = (re) => until(page, (s) => new RegExp(s).test(document.querySelector('#pz-rcpt').textContent), re.source, 8000);
       await page.fill('#pz-amt', '0.123456789');
@@ -483,9 +483,11 @@ try {
       await until(page, () => /Enter an amount/.test(document.querySelector('#pz-go').textContent));
       await page.click('#pz .quick [data-q="0.1"]'); await quoted(page);
       const rc = await text(page, '#pz-rcpt');
-      ok(new RegExp(`Against the market${pctTxt(m1.against)} of this deposit`).test(rc) && /price for cUSD is \d+% above the market’s/.test(rc), `what the pool’s price costs is said (${m1.against.toFixed(2)}%): ${rc.slice(0, 220)}`);
-      ok(m1.cost >= 15 && await page.evaluate(() => !!document.querySelector('#pz-ack') && document.querySelector('#pz-go').disabled && document.querySelector('#pz-go').textContent === 'Farm privately'), 'at 15% or more the button waits for the loss to be accepted');
-      await page.check('#pz-ack');
+      const back = payback({ cost: m1.cost, eth: Number(m1.plan.value) / 1e18, day: 300 * Number(m1.plan.shares) / (8000000000 + Number(m1.plan.shares)), tacEth: TAC_ETH, left: streamDays({ end: FINISH }) });
+      ok(back && rc.includes(`Rewards make it up${back.text}`), `the receipt says how long the farm's TAC takes to make up the way in (${back?.text}): ${rc.slice(0, 400)}`);
+      ok(new RegExp(`Against the market${pctTxt(m1.against)} of this deposit`).test(rc) && /price for cUSD is \d+% above the market’s/.test(await text(page, '#pz-off')), `what the pool’s price costs is said (${m1.against.toFixed(2)}%): ${rc.slice(0, 220)}`);      // a pool off the market says so above the form, before any amount
+      ok(m1.cost >= 15 && await page.evaluate(() => document.querySelector('#pz-ack')?.type === 'text' && document.querySelector('#pz-go').disabled && document.querySelector('#pz-go').textContent === 'Farm privately'), 'in a pool off the market the button waits from 15% for the number of the loss to be typed');
+      await page.fill('#pz-ack', String(Math.round(m1.cost)));
       ok(await until(page, () => !document.querySelector('#pz-go').disabled), 'and is ready once it is');
       ok(await page.evaluate(() => !!document.querySelector('#pz-rcpt [data-alt="both"]') && [...document.querySelectorAll('#pz-rcpt .getrow a')].map((a) => a.getAttribute('href')).join() === '/#card=borrow:cusd&back=teth-cusd'), 'a costly pool offers the way in that swaps nothing, and where to borrow the cUSD for it, with the way back to this farm');
       await shot(page, 'private-dear');

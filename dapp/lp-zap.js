@@ -317,6 +317,28 @@ export function pairCost(ratio) {
   const r = Number(ratio);
   return r > 0 ? (1 - 2 * Math.sqrt(r) / (1 + r)) * 100 : 0;
 }
+// A deposit's way in against what the farm pays it: `cost` is what it gives up (percent of `eth`, the deposit), `day` the TAC a day it earns, `tacEth` the price of a TAC in ETH, `left` the days
+// the stream still pays (streamDays; null when not known), `off` the pool's verdict (offMarket). { days, past, text, note } with the days the rewards take to make up the cost at the
+// rate and the pool's size now, or null under the cost a deposit is warned of (PAYBACK_FROM percent, or any in a pool off the market) and where nothing streams. `past` is a payback
+// longer than the stream: the rewards stop before they make it up.
+export const PAYBACK_FROM = 5;
+export function payback({ cost, eth, day, tacEth, left = null, off = null }) {
+  if (!(Number(cost) >= PAYBACK_FROM || (off && Number(cost) > 0))) return null;
+  const lost = Number(cost) / 100 * Number(eth), earns = Number(day) * Number(tacEth);
+  if (!(lost > 0 && earns > 0)) return null;
+  const days = lost / earns, stream = left == null ? NaN : Number(left), past = stream >= 0 && days > stream;
+  const span = days < 0.75 ? 'under a day' : days < 1.5 ? 'about a day' : days < 100 ? `about ${Math.round(days)} days` : 'more than 100 days';
+  const more = stream < 1 ? 'under a day more' : `${Math.floor(stream)} more day${Math.floor(stream) === 1 ? '' : 's'}`;
+  return { days, past, text: past ? `${span}, but the farm streams ${more}` : `${span} at today’s rate`,
+    note: 'What the farm’s TAC earns this deposit a day, set against what it gave up on the way in. It holds while the rewards keep their size: others joining the pool share them, and TAC’s price moves them.' };
+}
+// The days a farm's stream still pays: to its end, or to where its funding runs out when that comes first (`end` and `run` are the epoch's periodFinish and fundedRunwaySeconds, `at` is now,
+// in seconds). null when the stream is over or has no end.
+export function streamDays({ end, run = 0, at = Date.now() / 1000 }) {
+  end = Number(end); run = Number(run); at = Number(at);
+  if (!(end > at)) return null;
+  return ((run > 0 ? Math.min(end, at + run) : end) - at) / 86400;
+}
 
 // The pool a deposit goes in best: of the calm ones (`impact` under 5%) the one that pays most TAC over a week once its way in is paid (`loss`
 // of the deposit `amt`, in ETH, or in TAC when the deposit is TAC), else the pool that gives up least of the deposit. Rows carry `apr`, `day`
