@@ -31,6 +31,9 @@ test('the Render config is a valid pair config on the Render disk, canary-sized,
   assert.deepEqual([C.quote.minAmount, C.quote.maxAmount], ['50000', '300000'], 'a canary: 0.0005 to 0.003 BTC');
   assert.equal(C.reverse.enabled, false);
   assert.deepEqual([C.reverse.maxSats, C.reverse.maxOpen], ['300000', 1]);
+  // reverse terms are in pool ETH units (1e-8 ETH): 0.0078 to 0.0085 ETH, from a few thousand sats of coins
+  const rv = pairConfig({ ...R, reverse: { ...R.reverse, enabled: true } }).reverse;
+  assert.deepEqual([rv.minAmount, rv.maxAmount, rv.lockFeeReserve], ['780000', '850000', '1500']);
   assert.deepEqual(applyEnv(R, { FB_LP_REVERSE: 'on' }).reverse.enabled, true, 'switched on by the environment, without a new image');
   assert.equal(applyEnv(R, { FB_LP_MAX_AMOUNT: '0' }).quote.maxAmount, '0', 'and stopped the way the TAC provider is');
   // not the house provider's: its config names TAC and no pair

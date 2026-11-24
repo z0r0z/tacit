@@ -64,13 +64,13 @@
   },
   "reverse": {
     "enabled": false,
-    "minAmount": "1000000",
-    "maxAmount": "10000000",
+    "minAmount": "780000",
+    "maxAmount": "850000",
     "feeBps": 30,
     "flatFee": "20000",
     "maxOpen": 1,
     "maxSats": "300000",
-    "lockFeeReserve": "20000"
+    "lockFeeReserve": "1500"
   },
   "mailboxPollSecs": 1
 }
