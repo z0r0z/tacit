@@ -11,9 +11,9 @@
 //   board   { post(gateway, bytes), reply(id), inbox(gateway, after), putReply(id, bytes, sig), putAd(ad), ads() }: a Board object
 //           (fastbridge-board.js), or the same calls over HTTP (makeBoardClient)
 
-import { sealRequest, openRequest, gatewayKeys } from './sealed-request.js';
+import { sealRequest, openRequest, gatewayKeys, SealedError } from './sealed-request.js';
 import { makeCounter } from './fastbridge-http.js';
-import { checkAd, messageId, replyDigest, signAd, adLabel } from './fastbridge-board.js';
+import { checkAd, messageId, replyDigest, dropDigest, signAd, adLabel } from './fastbridge-board.js';
 import { signSchnorr, bigintToBytes32 } from './bulletproofs.js';
 import { hmac, sha256, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 
@@ -28,16 +28,18 @@ export const gatewayOf = (claimPriv) => gatewayKeys(bytesToHex(hmac(sha256, scal
 
 // ── the user's side ──
 
-export function makeMailboxCall({ board, gateway, now, pollMs = 1500, timeoutMs = 45000, sleep = sleepMs, clock = () => Date.now() }) {
+// `claimPub`: the provider the page chose, so the board takes the request for that provider's ad alone.
+export function makeMailboxCall({ board, gateway, claimPub = null, now, pollMs = 1500, timeoutMs = 45000, sleep = sleepMs, clock = () => Date.now() }) {
   return async (method, path, body) => {
     const sealed = await sealRequest(gateway, { method, path, body: body === undefined ? null : body }, now ? { now } : undefined);
-    const { id } = await board.post(gateway, sealed.bytes);
+    const { id } = await (claimPub ? board.post(gateway, sealed.bytes, claimPub) : board.post(gateway, sealed.bytes));
     if (id !== messageId(sealed.bytes)) throw new Error('the board kept the request under another name');
     for (const start = clock(); clock() - start < timeoutMs;) {
       await sleep(pollMs);
       const bytes = await board.reply(id);
       if (!bytes) continue;
-      const out = await sealed.open(bytes);
+      // a provider's answer is never compressed, so one that says it is is not opened
+      const out = await sealed.open(bytes, { inflate: false });
       let json = null;
       try { json = JSON.parse(td.decode(out.body)); } catch { /* an answer with no body */ }
       return { status: out.status, body: json };
@@ -53,7 +55,7 @@ export async function readProviders({ board, now = () => Math.floor(Date.now() /
   const out = [];
   for (const ad of await board.ads()) {
     try { checkAd(ad, now()); } catch { continue; }
-    out.push({ id: ad.claimPub, kind: 'mailbox', name: adLabel(ad), ad, counter: makeMailboxCounter({ board, gateway: ad.gateway, now, ...call }) });
+    out.push({ id: ad.claimPub, kind: 'mailbox', name: adLabel(ad), ad, counter: makeMailboxCounter({ board, gateway: ad.gateway, claimPub: ad.claimPub, now, ...call }) });
   }
   return out;
 }
@@ -90,7 +92,12 @@ export function makeMailboxServer({ board, keys, handle, signReply, now = () => 
         for (let m = items[i++]; m; m = items[i++]) {
           n++;
           try {
-            const req = await openRequest(keys, m.bytes, { now, seen: fresh });
+            let req;
+            try { req = await openRequest(keys, m.bytes, { now, seen: fresh }); } catch (e) {
+              // a request this gateway cannot open can never be answered: it is set aside so it does not wait in the queue (a board without `drop` keeps it)
+              if (e instanceof SealedError && board.drop) await Promise.resolve(board.drop(m.id, bytesToHex(signReply(dropDigest(m.id))))).catch(() => {});
+              throw e;
+            }
             const out = await handle({ method: req.method, path: req.path, body: req.body });
             const bytes = await req.reply(out.status, {}, te.encode(JSON.stringify(out.body)));
             await board.putReply(m.id, bytes, bytesToHex(signReply(replyDigest(m.id, bytes))));

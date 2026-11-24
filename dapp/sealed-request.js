@@ -45,6 +45,8 @@ export const MAX_BATCH = 24;
 export const REQUEST_OVERHEAD = 1 + 4 + 33 + 16 + 16;
 export const MAX_REQUEST = REQUEST_SIZES[REQUEST_SIZES.length - 1] + REQUEST_OVERHEAD;
 export const CLOCK_WINDOW = 300;
+// the most a compressed body of a reply may come to when it is opened
+export const MAX_INFLATE = 32 * MAX_REPLY;
 
 const fail = (why) => { throw new SealedError(why); };
 const random = (n) => globalThis.crypto.getRandomValues(new Uint8Array(n));
@@ -108,15 +110,25 @@ export async function sealRequest(gatewayPubHex, req, { now = () => Math.floor(D
   pt.set(json, 4);
   const head = concatBytes(Uint8Array.of(VERSION), kidOf(pub), E, nonce);
   const bytes = concatBytes(head, await encrypt(keyOf(1, s, E, nonce), ivOf(2, s, E, nonce), head, pt));
-  return { bytes, open: (reply) => openReply(s, E, nonce, reply, many ? req.length : 0) };
+  // open(reply, { inflate }): `inflate` is the most a compressed body may come to (MAX_INFLATE), or false for an answer that is never compressed
+  return { bytes, open: (reply, { inflate = MAX_INFLATE } = {}) => openReply(s, E, nonce, reply, many ? req.length : 0, inflate === false ? 0 : inflate) };
 }
 
-async function gunzip(bytes) {
-  const r = new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip')));
-  return new Uint8Array(await r.arrayBuffer());
+async function gunzip(bytes, max) {
+  const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+  const parts = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.length;
+    if (n > max) { reader.cancel().catch(() => {}); fail('the reply is too large'); }
+    parts.push(value);
+  }
+  return concatBytes(...parts);
 }
 
-async function openReply(s, E, nonce, bytes, count) {
+async function openReply(s, E, nonce, bytes, count, inflate = MAX_INFLATE) {
   if (!(bytes instanceof Uint8Array) || bytes.length < 1 + 16 + REPLY_SIZES[0] + 16 || bytes[0] !== VERSION) fail('not a reply');
   const rn = bytes.subarray(1, 17);
   const pt = await decrypt(keyOf(3, s, E, nonce, rn), ivOf(4, s, E, nonce, rn), bytes.subarray(0, 17), bytes.subarray(17));
@@ -133,7 +145,7 @@ async function openReply(s, E, nonce, bytes, count) {
     if (!m || !Number.isInteger(m.s) || !Number.isInteger(m.l) || m.l < 0 || at + m.l > pt.length) fail('not a reply');
     let body = pt.subarray(at, at + m.l);
     at += m.l;
-    if (m.z) body = await gunzip(body);
+    if (m.z) { if (!inflate) fail('not a reply'); body = await gunzip(body, inflate); }
     out.push({ status: m.s, headers: m.h && typeof m.h === 'object' ? m.h : {}, body });
   }
   return count ? out : out[0];

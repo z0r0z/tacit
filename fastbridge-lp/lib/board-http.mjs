@@ -1,7 +1,8 @@
 // The board (dapp/fastbridge-board.js) over HTTP: the handler a server mounts, and the client a provider or a user's page uses.
 // Bodies are JSON with the sealed bytes in base64.
 //
-//   GET  /health   GET /ads   PUT /ad {ad}   POST /m/<gateway> {b}   GET /m/<gateway>/<after>   PUT /r/<id> {b, sig}   GET /r/<id>
+//   GET  /health   GET /ads   PUT /ad {ad}   POST /m/<gateway> {b, k?}   GET /m/<gateway>/<after>   PUT /r/<id> {b, sig}   GET /r/<id>
+//   PUT  /d/<id> {sig}   (a request the provider could not open leaves its queue; `k` on a request names the provider it is for)
 //   GET  /wants    PUT /want {want}
 
 import { BoardError } from '../../dapp/fastbridge-board.js';
@@ -37,12 +38,13 @@ export function makeBoardHandler(board, { adKeysPerClient = 3, now = () => Math.
       if (method === 'GET' && path === '/wants') return reply({ wants: board.wants() });
       if (method === 'PUT' && path === '/want') return reply(board.putWant(body));
       let m;
-      if (method === 'POST' && (m = /^\/m\/([0-9a-f]{66})$/.exec(path))) return reply(board.post(m[1], unb64(body && body.b)));
+      if (method === 'POST' && (m = /^\/m\/([0-9a-f]{66})$/.exec(path))) return reply(board.post(m[1], unb64(body && body.b), { claimPub: body && body.k != null ? body.k : null, client }));
       if (method === 'GET' && (m = /^\/m\/([0-9a-f]{66})\/(\d{1,12})$/.exec(path))) {
         const r = board.inbox(m[1], Number(m[2]));
         return reply({ boot: r.boot, next: r.next, items: r.items.map((x) => ({ seq: x.seq, id: x.id, b: b64(x.bytes) })) });
       }
       if (method === 'PUT' && (m = /^\/r\/([0-9a-f]{32})$/.exec(path))) return reply(board.putReply(m[1], unb64(body && body.b), body && body.sig));
+      if (method === 'PUT' && (m = /^\/d\/([0-9a-f]{32})$/.exec(path))) return reply(board.drop(m[1], body && body.sig));
       if (method === 'GET' && (m = /^\/r\/([0-9a-f]{32})$/.exec(path))) { const r = board.reply(m[1]); return r ? reply({ b: b64(r) }) : reply({ error: 'no answer yet' }, 404); }
       return reply({ error: 'not found' }, 404);
     } catch (e) {
