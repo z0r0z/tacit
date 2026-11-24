@@ -3067,6 +3067,8 @@ await step('selflocks', async () => {
       }
       return ux;
     }` }));
+  // the page claims payments sent to its key by itself; this step presses Claim itself, so that is off
+  await r.page.addInitScript(() => { try { localStorage.setItem('tacit-auto-claim-v1', 'off'); } catch {} });
   try {
     await r.page.goto(r.url + '#wallet');
     await pasteWay(r.page, '#wallet-body');

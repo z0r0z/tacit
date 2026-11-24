@@ -108,7 +108,7 @@ test('a zap’s receipt says how many days the farm’s TAC takes to make up its
   assert.match(farm, /const pb = f\.live \? payback\(\{ cost: q\.cost, eth: Number\(q\.plan\.value\) \/ 1e18, day: q\.day, tacEth: tacEth\(\), off: q\.off, left: streamDays\(\{ end: f\.finish, run: f\.epoch\?\.fundedRunwaySeconds \}\) \}\) : null;/, 'the farm page works it from the quote');
   assert.match(farm, /\(pb \? row\('Rewards make it up', pb\.text, pb\.past \? 'err' : '', pb\.note\) : ''\)/, 'and draws it as a row of the receipt');
   // the sheets are handed the two helpers by the page, which imports them from lp-zap.js
-  assert.match(page, /offRow, offBetter, payback, streamDays, get PTSINFO\(\)/, 'the page passes them');
-  assert.match(sheets, /offRow, offBetter, payback, streamDays \} = ctx;/, 'the sheets read them');
+  assert.match(page, /offRow, offBetter, payback, streamDays[,} ]/, 'the page passes them');
+  assert.match(sheets, /offRow, offBetter, payback, streamDays[,} ]/, 'the sheets read them');
   for (const [name, src] of [['the page', page], ['the farm page', farm]]) assert.match(src, /import \{[^}]*\bpayback, streamDays\b[^}]*\} from '\/lp-zap\.js\?cb=/, `${name} imports them`);
 });

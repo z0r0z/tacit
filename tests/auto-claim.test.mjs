@@ -1,0 +1,163 @@
+// Payments sent to an open key are claimed for it without a press (dapp/auto-claim.js decides which, dapp/front/sheets.js autoClaim does it, dapp/index.html asks for it when
+// payments have been read). The decision is tested on its own; the real autoClaim is cut out of the sheets module and run against stand-ins for the page's names (the technique of
+// tests/zap-page-flows.test.mjs); the wiring is read from the source.
+//   node --test tests/auto-claim.test.mjs
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { autoClaimPick, autoClaimOff, AUTO_CLAIM_SHARE, AUTO_CLAIM_MAX, AUTO_CLAIM_KEY } from '../dapp/auto-claim.js';
+
+const page = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8'), sheets = readFileSync(new URL('../dapp/front/sheets.js', import.meta.url), 'utf8');
+const cut = (src, a, b) => { const s = src.indexOf(a), e = src.indexOf(b, s + a.length); assert.ok(s >= 0 && e > s, `the source has ${a}`); return src.slice(s, e); };
+
+const lock = (n, amount = 200000n, deadline = 4102444800n + BigInt(n)) => ({ leaf: '0x' + String(n).padStart(2, '0').repeat(32), asset: '0xc0', amount: String(amount), deadline: String(deadline) });
+const feeOf = (f) => () => f;
+
+test('what is claimed unasked: a payment the fee takes a small share of, or none, and nothing else', () => {
+  // the 11-24 test payment: 0.002 tETH (8 decimals) against a relay fee of 0.00023
+  const a = lock(1, 200000n);
+  assert.deepEqual(autoClaimPick({ locks: [a], fee: feeOf(23000n) }), { claim: [a], held: [] }, 'an 11.5% fee is claimed');
+  assert.deepEqual(autoClaimPick({ locks: [a], fee: feeOf(0n) }).claim, [a], 'a claim that costs nothing (own prover, liquidity shares) is claimed');
+  assert.equal(AUTO_CLAIM_SHARE, 15, 'the share is 15 percent');
+  assert.deepEqual(autoClaimPick({ locks: [a], fee: feeOf(30000n) }).claim, [a], 'exactly 15% is claimed');
+  const over = autoClaimPick({ locks: [a], fee: feeOf(30001n) });
+  assert.deepEqual([over.claim.length, over.held[0].why], [0, 'fee'], 'a hair over 15% is left to the Claim button');
+  assert.equal(autoClaimPick({ locks: [a], fee: feeOf(200000n) }).held[0].why, 'small', 'a fee that is the whole payment is not claimed');
+  assert.equal(autoClaimPick({ locks: [a], fee: feeOf(500000n) }).held[0].why, 'small', 'nor one that is more');
+  assert.equal(autoClaimPick({ locks: [a], fee: feeOf(null) }).held[0].why, 'unknown', 'a fee that could not be read is not guessed');
+  assert.equal(autoClaimPick({ locks: [a], fee: feeOf(undefined) }).held[0].why, 'unknown');
+  assert.deepEqual(autoClaimPick({ locks: [a], fee: feeOf(23000) }).claim, [a], 'a plain number is read too');
+});
+
+test('each payment is tried once a sitting, the most four are claimed, the soonest to lapse first', () => {
+  const ls = [lock(1, 200000n, 500), lock(2, 200000n, 100), lock(3, 200000n, 300), lock(4, 200000n, 200), lock(5, 200000n, 400), lock(6, 200000n, 600)];
+  const r = autoClaimPick({ locks: ls, fee: feeOf(1000n) });
+  assert.equal(AUTO_CLAIM_MAX, 4);
+  assert.deepEqual(r.claim.map((l) => l.deadline), ['100', '200', '300', '400'], 'four, the soonest deadlines first');
+  assert.deepEqual(r.held.map((h) => [h.why, h.lock.deadline]), [['limit', '500'], ['limit', '600']], 'the rest wait for the button');
+  const tried = new Set([r.claim[0].leaf.toLowerCase()]);
+  const again = autoClaimPick({ locks: ls, fee: feeOf(1000n), tried });
+  assert.ok(!again.claim.some((l) => l.leaf === r.claim[0].leaf) && again.held.some((h) => h.why === 'tried' && h.lock.leaf === r.claim[0].leaf), 'one already tried is not claimed again');
+  assert.deepEqual(autoClaimPick({ locks: ls, fee: feeOf(1000n), max: 1 }).claim.length, 1, 'the most is a setting');
+  assert.deepEqual(autoClaimPick({ locks: [], fee: feeOf(0n) }), { claim: [], held: [] }, 'nothing waiting, nothing to do');
+  const upper = { ...lock(9), leaf: '0x' + 'AB'.repeat(32) };
+  assert.equal(autoClaimPick({ locks: [upper], fee: feeOf(0n), tried: new Set(['0x' + 'ab'.repeat(32)]) }).held[0].why, 'tried', 'a leaf is matched without its case');
+});
+
+test('the switch: off in this browser stops it, anything else leaves it on, a browser with no storage leaves it on', () => {
+  assert.equal(AUTO_CLAIM_KEY, 'tacit-auto-claim-v1');
+  assert.equal(autoClaimOff((k) => (k === AUTO_CLAIM_KEY ? 'off' : null)), true);
+  assert.equal(autoClaimOff(() => null), false);
+  assert.equal(autoClaimOff(() => 'on'), false);
+  assert.equal(autoClaimOff(() => { throw new Error('SecurityError'); }), false, 'a private window has no storage: it is on');
+});
+
+// the real autoClaim, run against stand-ins
+const html = (strings, ...vals) => strings.reduce((a, s, i) => a + s + (i < vals.length ? vals[i] : ''), '');
+function harness({ locks = [lock(1)], fee = 23000n, self = false, off = false, lp = false, settle = null, loadSwitchesKey = false } = {}) {
+  const log = { settle: [], toasts: [], fails: [], ended: 0, loads: 0, rerenders: 0, runs: [], quotes: 0 };
+  const ctx = {
+    S: { key: { pubHex: '02aa' } }, LK: { pub: '02aa', mine: locks },
+    lockList: () => ctx.LK.mine, loadLocks: async () => { log.loads++; if (loadSwitchesKey) ctx.LK.pub = 'other'; return ctx.LK; },
+    getUx: async () => ({ quoteOpFee: async () => { log.quotes++; return fee; } }), proveOwn: async () => self, tickerOf: (t, asset) => (lp ? null : 'cETH'), lpPoolFor: async () => (lp ? { pid: 1 } : null),
+    newRun: (sheet) => { const r = { sheet, away: false, fail: (el, e) => log.fails.push(e.message) }; log.runs.push(r); return r; }, endRun: () => { log.ended++; },
+    toast: (m) => log.toasts.push(String(m)), html, lockWhat: (ls) => ls.map((l) => `${Number(l.amount) / 1e8} tETH`).join(' and '), rerender: () => { log.rerenders++; },
+    autoClaimPick, autoClaimOff: (read) => (off ? true : autoClaimOff(read)),
+    document: { getElementById: () => null, createElement: () => ({ setAttribute() {} }), body: { append() {} } }, localStorage: { getItem: () => null },
+  };
+  const settleStub = async (run, kind, status, only) => { log.settle.push({ run, kind, only: [...only] }); if (settle) return settle(run); return { ok: only.size, offered: false }; };
+  const src = cut(sheets, 'const ACLAIM = { busy: false, tried: new Set() };', 'return { renderProve, renderAct, autoClaim };');
+  const names = Object.keys(ctx);
+  const fn = new Function(...names, 'settleLocksReal', `const settleLocks = settleLocksReal;\n${src}\nreturn { autoClaim, ACLAIM };`)(...names.map((k) => ctx[k]), settleStub);
+  return { ...fn, ctx, log };
+}
+
+test('autoClaim: a payment the fee takes a small share of is claimed for the key, away from any sheet, and said in a note', async () => {
+  const h = harness();
+  await h.autoClaim();
+  assert.equal(h.log.settle.length, 1);
+  assert.deepEqual(h.log.settle[0].only, [lock(1).leaf.toLowerCase()], 'only that payment');
+  assert.equal(h.log.settle[0].kind, 'claim');
+  assert.deepEqual([h.log.runs[0].away, typeof h.log.runs[0].release, h.log.runs[0].sheet], [true, 'function', 'eth'], 'a run nobody watches: progress is in Activity');
+  assert.deepEqual(h.log.toasts, ['Claimed 0.002 tETH sent to you, less the relay fee.']);
+  assert.equal(h.log.ended, 1, 'the run is ended');
+  assert.ok(h.log.rerenders >= 1);
+  await h.autoClaim();
+  assert.equal(h.log.settle.length, 1, 'tried once: the same payment is not claimed again in this sitting');
+});
+
+test('autoClaim: where the claim costs nothing the note does not mention a fee; liquidity shares and the key\'s own prover are free', async () => {
+  const own = harness({ self: true, fee: 999999999n });
+  await own.autoClaim();
+  assert.deepEqual(own.log.toasts, ['Claimed 0.002 tETH sent to you.'], 'own prover: claimed whatever the relay would ask');
+  assert.equal(own.log.quotes, 0, 'and the relay is not asked its fee');
+  const lp = harness({ lp: true, fee: 999999999n });
+  await lp.autoClaim();
+  assert.equal(lp.log.settle.length, 1);
+  assert.deepEqual(lp.log.toasts, ['Claimed 0.002 tETH sent to you.'], 'liquidity shares carry no relay fee');
+});
+
+test('autoClaim: a payment the fee takes much of is left to the Claim button, and nothing runs', async () => {
+  const h = harness({ fee: 100000n });
+  await h.autoClaim();
+  assert.deepEqual([h.log.settle.length, h.log.runs.length, h.log.toasts.length], [0, 0, 0]);
+  const h2 = harness({ fee: null });
+  await h2.autoClaim();
+  assert.equal(h2.log.settle.length, 0, 'a fee that could not be read: not guessed');
+});
+
+test('autoClaim: off in this browser, another wallet opened meanwhile, no key, or nothing waiting: nothing is claimed', async () => {
+  const off = harness({ off: true });
+  await off.autoClaim();
+  assert.deepEqual([off.log.loads, off.log.settle.length], [0, 0], 'off: nothing is even read');
+  const sw = harness({ loadSwitchesKey: true });
+  await sw.autoClaim();
+  assert.equal(sw.log.settle.length, 0, 'the locks read belong to another key');
+  const nokey = harness(); nokey.ctx.S.key = null;
+  await nokey.autoClaim();
+  assert.equal(nokey.log.loads, 0);
+  const none = harness({ locks: [] });
+  await none.autoClaim();
+  assert.equal(none.log.settle.length, 0);
+});
+
+test('autoClaim: a claim that fails says so once, ends its run, and is not run again unasked; one the relay cannot take now is offered, not announced as claimed', async () => {
+  const bad = harness({ settle: () => { throw new Error('relay refused'); } });
+  await bad.autoClaim();
+  assert.deepEqual(bad.log.fails, ['relay refused']);
+  assert.equal(bad.log.ended, 1);
+  assert.equal(bad.log.toasts.length, 0, 'no "claimed"');
+  await bad.autoClaim();
+  assert.equal(bad.log.settle.length, 1, 'a failed one is left to the button, not retried');
+  const offered = harness({ settle: () => ({ ok: 0, offered: true }) });
+  await offered.autoClaim();
+  assert.equal(offered.log.toasts.length, 0, 'offered to be sent from the account: not "claimed"');
+  assert.equal(offered.log.ended, 1);
+});
+
+test('autoClaim: one at a time', async () => {
+  let release; const gate = new Promise((r) => { release = r; });
+  const h = harness({ settle: async () => { await gate; return { ok: 1, offered: false }; } });
+  const first = h.autoClaim();
+  await new Promise((r) => setTimeout(r, 20));
+  await h.autoClaim();
+  assert.equal(h.log.settle.length, 1, 'a second call while one is running does nothing');
+  release(); await first;
+  assert.equal(h.ACLAIM.busy, false, 'and the flag is cleared afterwards');
+});
+
+test('the wiring: the page asks when payments have been read, the sheets module claims only the picked ones, and both lists of names carry what it needs', () => {
+  assert.match(page, /import \{ autoClaimPick, autoClaimOff \} from '\/auto-claim\.js\?cb=/, 'the page imports the decision');
+  assert.match(page, /<!-- preload-roots:[^>]* \/lockmint-auto\.js \/auto-claim\.js /, 'and preloads it');
+  const ask = cut(page, 'let autoClaimT = 0;', 'const isRwd');
+  assert.match(ask, /if \(!S\.key \|\| LK\.pub !== S\.key\.pubHex \|\| !LK\.mine\.length \|\| autoClaimOff\(\(k\) => localStorage\.getItem\(k\)\)\) return;/, 'it asks only for the open key, with payments waiting, and not when switched off');
+  assert.match(ask, /Promise\.resolve\(autoClaim\(\)\)/, 'the page asks its autoClaim');
+  assert.match(page, /function autoClaim\(\.\.\.a\) \{ if \(SHEET_CODE\) return SHEET_CODE\.autoClaim\(\.\.\.a\); return withSheets\(\(\) => SHEET_CODE\?\.autoClaim\?\.\(\.\.\.a\)\); \}/, 'which is the sheets module\'s once it is loaded');
+  assert.match(page, /runsPrune\(\);\n {4}autoClaimSoon\(\);\n {4}return LK;/, 'asked for each time payments are read');
+  assert.match(sheets, /async function settleLocks\(run, kind, status, only = null\) \{/, 'the claim can be limited to some payments');
+  assert.match(sheets, /mine = lockList\(kind\)\.filter\(\(l\) => !only \|\| only\.has\(String\(l\.leaf\)\.toLowerCase\(\)\)\)/);
+  assert.match(sheets, /return \{ renderProve, renderAct, autoClaim \};/, 'and autoClaim is offered to the page');
+  const names = 'newRun, endRun, autoClaimPick, autoClaimOff, lockWhat';
+  assert.ok(page.includes(`pubHexOf, ${names}, get PTSINFO()`), 'the page hands the sheets module its names');
+  assert.ok(sheets.includes(`pubHexOf, ${names} } = ctx;`), 'and the sheets module takes them');
+});
