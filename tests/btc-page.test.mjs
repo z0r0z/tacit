@@ -6,6 +6,12 @@
 //   checks: the page (title, the two marks, one line, the lane), the providers (each way's limits, what is available, the fee, the totals), becoming a provider,
 //   an estimate before the wallet opens, the swaps after it opens (steps, when to be back, a copy to save), links (?dir=e2b&amt=, ?from=ETH&to=BTC) and the address,
 //   stepping while the tab is hidden, the leave guard, a phone width and the dark scheme; the front page's ?from=BTC&to=ETH&from-at=btc opens the lane.
+//   Add ETH (btc/add-eth.js, the real module, over stand-ins of the deposit (teth/wrap.js), the relay's quote (teth/read.js) and the Ethereum wallet (trade/wallet.js)):
+//   the shortfall as the button, one wallet transaction, its steps, the balance read until the swap can be made, a wallet that holds too little (and says how much it
+//   holds), a declined transaction, no wallet at all, and a deposit kept across a reload that is finished. Send BTC (btc/panel.js and btc/send.js, the real modules,
+//   signing with a test key that holds nothing): addresses refused and why, the fee choices, Max, the review, the signed transaction's outputs, coins of a swap under
+//   way left out, a refused broadcast, the sent list across a reload. And, with no browser, btc/send.js: address checksums (BIP 173 and 350 vectors, base58check),
+//   the coins a send may take, the fee and Max, the transaction signed, and the ETH a swap is short of.
 //
 //   node tests/btc-page.test.mjs        (SHOTS=<dir> saves screenshots; PLAYWRIGHT=<path to playwright-core>)
 import { createRequire } from 'node:module';
@@ -14,7 +20,10 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { signAd } from '../dapp/fastbridge-board.js';
 import { G } from '../dapp/bulletproofs.js';
-import { bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
+import { bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
+import * as SEND from '../dapp/btc/send.js';
+import { makeBtcWallet } from '../dapp/bitcoin-taproot-wallet.js';
+import { makePairClient } from '../dapp/fastbridge-pair.js';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT || 'playwright-core');
 const DAPP = new URL('../dapp/', import.meta.url).pathname;
@@ -52,17 +61,54 @@ const chainlink = (data) => {
 };
 
 const BTC_STUB = `
-const W = window.__btc = { unlocked: false, signIns: 0, funds: 0, fundAsk: null };
+const W = window.__btc = { unlocked: false, signIns: 0, funds: 0, fundAsk: null, mode: 'eth' };
 const T = { wallet: { priv: new Uint8Array(32).fill(7), address: () => 'bc1qtestaddress0000000000000000000000000' } };
-const session = { get unlocked() { return W.unlocked; }, get key() { return W.unlocked ? { pubHex: '02' + 'ab'.repeat(32) } : null; }, get T() { return T; }, load: async () => T, turn: async (fn) => fn() };
+const session = { get unlocked() { return W.unlocked; }, get key() { return W.unlocked ? { pubHex: '02' + 'ab'.repeat(32), mode: W.mode, address: W.mode === 'eth' ? '0x' + '12'.repeat(20) : undefined } : null; }, get T() { return T; }, load: async () => T, turn: async (fn) => fn() };
 export function makeBitcoin({ onChange }) { return { session, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: (o) => { W.funds++; W.fundAsk = o || null; } }; }`;
-const WIRE_STUB = `export async function openPair(o) { window.__atom.opened.push(o.pubHex); return { pair: window.__atom.pair, address: () => ({ btc: 'bc1qtest' }), run: () => () => {}, keep: { save: () => ({ v: 1, kind: 'tacit-btc-eth-swaps', prefix: 'p', at: 1, items: { 'p:sw1': '{}' } }), load: () => 1 } }; }`;
+// (the address's own sats: a test key that holds nothing signs, the real signer; coins, the swaps' held coins, locks, fee rates and the broadcast are the test's)
+const WIRE_STUB = `import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
+const { prims } = makeBtcWallet({ priv: new Uint8Array(32).fill(7), hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('not used'); }, fetchFeeRate: async () => 1 });
+const B = window.__bit;
+const bitcoin = { address: prims.wallet.address(), prims, coins: async () => ({ coins: B.coins, pending: 0 }), held: async () => B.held.slice(), locks: async () => B.locks, holdings: async () => B.holdings,
+  feeRates: async () => B.rates, broadcast: async (hex) => { B.posted.push(hex); if (B.refuse) throw new Error('broadcast refused: min relay fee not met'); }, status: async (txid) => { B.status.push(txid); return { confirmations: B.confirmed ? 1 : 0, height: 0 }; } };
+export async function openPair(o) { window.__atom.opened.push(o.pubHex); return { pair: window.__atom.pair, address: () => ({ btc: 'bc1qtest' }), run: () => () => {}, keep: { save: () => ({ v: 1, kind: 'tacit-btc-eth-swaps', prefix: 'p', at: 1, items: { 'p:sw1': '{}' } }), load: () => 1 }, bitcoin }; }`;
+// stand-ins under btc/add-eth.js: the deposit and its relay (teth/wrap.js), the relay's quote (teth/read.js), the Ethereum wallet (trade/wallet.js)
+const WRAP_STUB = `
+const A = window.__add;
+export async function wrapEth({ priv, wei, tip, to, from, wallet, say }) {
+  A.wraps.push({ wei: String(wei), tip: String(tip), to, from, priv: priv().length });
+  say('prepare');
+  const hash = await wallet.sendTx({ to: '0x000000D218B03db5837943b0b05DeA2965AE956e', data: '0xfc24c435' + '11'.repeat(96), value: wei + tip, from });
+  say('sent', hash);
+  await wallet.receipt(hash);
+  say('proving', hash);
+  if (A.hold) await new Promise((r) => { A.release = r; });
+  window.__atom.bal.eth += wei / 10000000000n;
+  return { hash, built: {} };
+}
+export async function readHeld() { return { pending: A.pending || [] }; }
+export async function finish({ pending }) { A.finished.push(pending.length); for (const p of pending) window.__atom.bal.eth += p.value; return { done: pending.length, err: null, left: [] }; }
+export const relayWords = (e) => String(e && e.message || e);`;
+const READ_STUB = `export async function wrapQuote(wei) { window.__add.quotes.push(String(wei)); return { tip: 100000000000000n, proveTip: 100000000000000n, to: '0xf5eBBE5Db610F64D29A0dC5e9534074Af12834F9', floor: 0n }; }`;
+const WALLET_STUB = `
+const A = window.__add;
+export class UserStopped extends Error { constructor() { super('Nothing was sent.'); this.userStopped = true; } }
+export function makeWallet() {
+  const state = { account: null };
+  return { state, restore: async () => false, available: () => (A.noWallet ? [] : [{ info: { name: 'Test wallet', uuid: 'w1' }, provider: {} }]),
+    connect: async () => { state.account = A.account; A.connects++; return true; },
+    sendTx: async (tx) => { A.asked.push({ to: tx.to, value: String(tx.value), from: tx.from }); if (A.reject) throw new UserStopped(); return '0x' + 'ab'.repeat(32); },
+    receipt: async (h) => ({ status: '0x1', transactionHash: h }) };
+}`;
 const FAKE = `
 (() => {
   const now = () => Math.floor(Date.now() / 1000);
   const calls = { quote: [], start: [], pump: 0, records: 0, recover: 0 };
   const TITLES = { b2e: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'], e2b: ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'] };
   const steps = (dir, at, state) => TITLES[dir].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: state === 'done' ? 'done' : i < at ? 'done' : i === at && state === 'working' ? 'active' : 'todo' }));
+  window.__add = { wraps: [], quotes: [], asked: [], finished: [], connects: 0, account: '0x' + '12'.repeat(20), reject: false, noWallet: false, hold: false, pending: [] };
+  window.__bit = { coins: [{ txid: 'a1'.repeat(32), vout: 0, value: 30000000 }, { txid: 'b2'.repeat(32), vout: 1, value: 19000000 }, { txid: 'd4'.repeat(32), vout: 0, value: 1000000 }, { txid: 'c3'.repeat(32), vout: 2, value: 546 }],
+    held: ['d4'.repeat(32) + ':0'], locks: [{ spk: '512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798' }], holdings: new Map(), rates: { fast: 12, normal: 6, slow: 2 }, posted: [], status: [], confirmed: false, refuse: false };
   const S = window.__atom = { calls, opened: [], bal: { sats: 50000000n, eth: 400000000n },
     recs: [
       { id: 'sw1', dir: 'b2e', state: 'working', title: 'Claiming your ETH', detail: 'Your claim is being settled in the pool.', pay: 1000000n, get: 30400000n, steps: steps('b2e', 2, 'working'), etaSecs: 120, at: now() - 900, refundAt: now() + 86000, backBy: now() + 3 * 3600 },
@@ -85,10 +131,77 @@ const FAKE = `
 let n = 0, fails = 0;
 const ok = (c, s) => { if (c) { n++; console.log('  ok   ' + s); } else { fails++; console.log('FAIL   ' + s); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+console.log('btc/send.js: addresses (BIP 173 and 350 vectors, base58check), mainnet only');
+{
+  const P = SEND.parseAddress, spk = (a) => { const r = P(a); return r.ok ? `${r.type}:${SEND.scriptHex(r.script)}` : `no:${r.why}`; };
+  ok(spk('BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4') === 'p2wpkh:0014751e76e8199196d454941c45d1b3a323f1433bd6', 'a P2WPKH address in capitals (BIP 173)');
+  ok(spk('bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3') === 'p2wsh:00201863143c14c5166804bd19203356da136c985678cd4d27a1b8c6329604903262', 'a P2WSH address');
+  ok(spk('bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0') === 'p2tr:512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798', 'a Taproot address (bech32m, BIP 350/86)');
+  ok(spk('1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2') === 'p2pkh:76a91477bff20c60e522dfaa3350c39b030a5d004e839a88ac' && spk('3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy') === 'p2sh:a914b472a266d0bd89c13706a4132ccfb16f7c3b9fcb87', 'P2PKH and P2SH (base58check)');
+  ok(spk('bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4?amount=0.1').startsWith('p2wpkh:'), 'a bitcoin: link is read for its address');
+  const why = (a) => P(a).why || '';
+  ok(/checksum/.test(why('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5')) && /checksum/.test(why('1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3')), 'one wrong character fails the checksum, bech32 and base58');
+  ok(/checksum/.test(why('bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297'.replace('p5d7', 'p5d8'))), 'a Taproot address with a wrong character');
+  ok(/checksum/.test(why('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kemeawh')) && /checksum/.test(why('bc1p38j9r5y49hruaue7wxjce0updqjuyyx0kh56v8s25huc6995vvpql3jow4')), 'a v0 program in bech32m, and a v1 in bech32, are refused (BIP 350)');
+  ok(/checksum/.test(why('bc1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4')), 'mixed case is refused');
+  ok(/test-network/.test(why('tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx')) && /test-network/.test(why('mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn')) && /test-network/.test(why('2MzQwSSnBHWHqSAqtTVQ6v47XtaisrJa1Vc')), 'testnet addresses are refused: bech32, P2PKH and P2SH');
+  ok(/does not send to that kind/.test(why('bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7kt5nd6y')) && /does not send to that kind/.test(why('BC1SW50QGDZ25J')), 'a later segwit version (or a v1 program not of 32 bytes) is not sent to');
+  ok(/Ethereum/.test(why('0x' + 'ab'.repeat(20))) && /Lightning/.test(why('lnbc1500n1p')) && /Enter a Bitcoin address/.test(why('  ')), 'an Ethereum address, an invoice, nothing: each said');
+}
+
+console.log('btc/send.js: the coins a send may take, the fee and Max, in integer sats');
+{
+  const c = (t, v, value) => ({ txid: t.repeat(32), vout: v, value });
+  const coins = [c('b2', 1, 50000), c('a1', 0, 100000), c('c3', 2, 546), c('d4', 0, 70000), c('e5', 0, 600)];
+  const held = new Set(['d4'.repeat(32) + ':0']), notes = SEND.holdingOutpoints(Object.assign(new Map([['x', { utxos: [{ utxo: { txid: 'e5'.repeat(32), vout: 0 } }] }]]), { unclassified: new Set() }));
+  const sp = SEND.spendable(coins, { held, holdings: notes });
+  ok(JSON.stringify(sp.map((x) => x.value)) === '[100000,50000]', `a swap's coin, a coin with a note, and a dust coin are never taken; the rest largest first (${sp.map((x) => x.value)})`);
+  ok(SEND.vsizeOf(1, [22, 22]) === 141 && SEND.vsizeOf(2, [22]) === 178 && SEND.vsizeOf(1, [34, 22]) === 153, 'the vsize of one input and two outputs is 141 vB, as measured; a Taproot output 12 more');
+  const a = SEND.planSend({ coins: sp, amount: 120000n, rate: 10, scriptLen: 22 });
+  ok(a.inputs.length === 2 && a.fee === 2090n && a.change === 27910n && a.send + a.fee + a.change === 150000n && typeof a.fee === 'bigint', `120,000 sats at 10 sat/vB: both coins, 2,090 fee, 27,910 change, all BigInt (${a.fee}, ${a.change})`);
+  const nochange = SEND.planSend({ coins: [c('a1', 0, 100000)], amount: 98500n, rate: 10, scriptLen: 22 });
+  ok(nochange.change === 0n && nochange.fee === 1500n && nochange.extra === 400n, `change of dust size is not made: it goes to the fee, and is said (${nochange.fee}, extra ${nochange.extra})`);
+  const max = SEND.planSend({ coins: [...sp, c('f6', 0, 600)], max: true, rate: 10, scriptLen: 22 });
+  ok(max.inputs.length === 2 && max.send === 150000n - 1780n && max.change === 0n, `Max: all the coins worth spending, one output, less the fee (${max.send})`);
+  ok(SEND.planSend({ coins: sp, amount: 545n, rate: 2, scriptLen: 22 }).error === 'dust' && SEND.planSend({ coins: sp, amount: 149000n, rate: 10, scriptLen: 22 }).error === 'short', 'an amount under dust, and more than the coins pay with the fee, are refused');
+  ok(SEND.planSend({ coins: sp, amount: 1000n, rate: 1.5, scriptLen: 22 }).error === 'rate' && SEND.planSend({ coins: [c('a1', 0, 700)], max: true, rate: 10, scriptLen: 22 }).error === 'short', 'a rate that is not a whole number, and a Max that is all fee, are refused');
+}
+
+console.log('btc/send.js: the transaction, signed by the key\'s P2WPKH signer');
+{
+  const { prims } = makeBtcWallet({ priv: new Uint8Array(32).fill(7), hrp: 'bc', fetchUtxos: async () => [], broadcastTx: async () => {}, fetchFeeRate: async () => 1 });
+  const to = SEND.parseAddress('bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0');
+  const plan = SEND.planSend({ coins: [{ txid: 'a1'.repeat(32), vout: 3, value: 100000 }, { txid: 'b2'.repeat(32), vout: 0, value: 50000 }], amount: 120000n, rate: 7, scriptLen: to.script.length });
+  const s = SEND.signSend({ prims, plan, script: to.script });
+  const raw = hexToBytes(s.hex);
+  ok(SEND.outputScript(s.hex, 0) === SEND.scriptHex(to.script) && SEND.outputScript(s.hex, 1) === bytesToHex(prims.p2wpkhScript(prims.wallet.pub)), 'the recipient first, the change to the key\'s own address');
+  ok(s.tx.outputs[0].value + s.tx.outputs[1].value + Number(plan.fee) === 150000 && s.tx.inputs.every((i) => i.sequence === SEND.RBF_SEQ) && s.tx.version === 2, 'what goes in is what comes out plus the fee; every input signals replacement; version 2');
+  ok(s.vsize <= plan.vsize && Math.ceil(Number(plan.fee) / s.vsize) >= 7 && s.tx.inputs.every((i) => i.witness.length === 2 && i.witness[1].length === 33), `the signed transaction (${s.vsize} vB) is no heavier than planned (${plan.vsize} vB), so its rate is at least the one chosen`);
+  ok(/^[0-9a-f]{64}$/.test(s.txid) && raw[4] === 0 && raw[5] === 1, 'a segwit transaction with its id');
+  let thrown = '';
+  try { SEND.signSend({ prims, plan: { ...plan, fee: plan.fee + 1n }, script: to.script }); } catch (e) { thrown = e.message; }
+  ok(/do not add up/.test(thrown), 'a plan whose amounts do not add up is not signed');
+  try { thrown = ''; SEND.signSend({ prims, plan: { ...plan, send: 500n, change: plan.change + plan.send - 500n }, script: to.script }); } catch (e) { thrown = e.message; }
+  ok(/dust/.test(thrown), 'an output under dust is not signed');
+
+  console.log('fastbridge-pair.js: the coins a swap under way holds, and the key\'s own swap locks');
+  const mem = (rs) => ({ list: async () => rs, get: async () => null, put: async () => {} });
+  const pc = makePairClient({ btc: { wallet: { pub: new Uint8Array(33) } }, evm: {}, seed: new Uint8Array(32), discover: async () => [], counterFor: () => null, reverseCallFor: () => null, feed: {},
+    stores: { fwd: mem([{ id: 'f1', phase: 'broadcast', feeInputs: [{ txid: 'aa'.repeat(32), vout: 1 }], lock: { txid: s.txid, vout: 0, revealHex: s.hex } }, { id: 'f0', phase: 'done', feeInputs: [{ txid: 'bb'.repeat(32), vout: 0 }] }]),
+      index: mem([]), swaps: (id) => mem(id === 'recovered' ? [{ id: 'r1', lockSpk: '0x5120' + 'cd'.repeat(32) }] : []), quotes: () => mem([]) } });
+  const heldNow = await pc.heldCoins(), locksNow = (await pc.lockOutputs()).map((l) => l.spk || SEND.outputScript(l.hex, l.vout));
+  ok(JSON.stringify(heldNow) === JSON.stringify(['aa'.repeat(32) + ':1']), `a swap under way holds its coins; a finished one does not (${heldNow})`);
+  ok(locksNow.length === 2 && locksNow[0] === SEND.scriptHex(to.script) && locksNow[1] === '5120' + 'cd'.repeat(32), 'the lock of a swap of BTC (read from its kept transaction) and the provider\'s lock of a swap of ETH');
+}
+
 const b = await chromium.launch();
 const text = async (page, sel) => ((await page.innerText(sel).catch(() => '')) || '').replace(/\s+/g, ' ').trim();
 const SHOT = async (page, name, full = true) => { if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/${name}.png`, fullPage: full }); };
 
+// what the public nodes say of the Ethereum wallet (a test sets it): its balance, the gas price and the deposit's gas, a deposit's receipt
+const RPCV = { balance: 10n ** 18n, receipt: { status: '0x1' } };
+const hex = (v) => '0x' + BigInt(v).toString(16);
 // the network: the board and the public nodes are answered here, everything else off the machine is refused
 async function wire(page, { ads, boardDelayMs = 0 }) {
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -96,8 +209,9 @@ async function wire(page, { ads, boardDelayMs = 0 }) {
     if (url === `${BOARD}/ads`) { if (boardDelayMs) await sleep(boardDelayMs); return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ ads }) }).catch(() => {}); }
     if (req.method() === 'POST' && /publicnode|drpc|1rpc|tenderly|mevblocker|blastapi|buidlguidl|thirdweb|stakely|nodereal|flashbots|tacit-node-gw/.test(url)) {
       let body = {}; try { body = JSON.parse(req.postData() || '{}'); } catch { /* not JSON */ }
+      const answer = { eth_getBalance: () => hex(RPCV.balance), eth_gasPrice: () => hex(10n ** 9n), eth_estimateGas: () => hex(120000n), eth_getTransactionReceipt: () => RPCV.receipt, eth_getTransactionByHash: () => ({ hash: '0x' }), eth_blockNumber: () => '0x1500000' };
       const one = (x) => (x.method === 'eth_call' && String(x.params?.[0]?.to || '').toLowerCase() === CHAINLINK ? { jsonrpc: '2.0', id: x.id, result: chainlink(String(x.params[0].data)) }
-        : x.method === 'eth_blockNumber' ? { jsonrpc: '2.0', id: x.id, result: '0x1500000' } : { jsonrpc: '2.0', id: x.id, error: { code: -32000, message: 'offline in this test' } });
+        : answer[x.method] ? { jsonrpc: '2.0', id: x.id, result: answer[x.method]() } : { jsonrpc: '2.0', id: x.id, error: { code: -32000, message: 'offline in this test' } });
       return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(Array.isArray(body) ? body.map(one) : one(body)) });
     }
     return route.abort();
@@ -113,6 +227,9 @@ async function fresh({ path = '/btc/', ads = [ad()], viewport = { width: 1200, h
   if (init) await page.addInitScript(init);
   await page.route(/\/trade\/btc\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: BTC_STUB }));
   await page.route(/\/fast\/pair-wire\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: WIRE_STUB }));
+  await page.route(/\/teth\/wrap\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: WRAP_STUB }));
+  await page.route(/\/teth\/read\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: READ_STUB }));
+  await page.route(/\/trade\/wallet\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: WALLET_STUB }));
   await page.goto(`${BASE}${path}`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => document.querySelector('#a-go') && document.querySelector('#a-go').textContent !== 'Loading…', null, { timeout: 30000 });
   return { page, errs, csp };
@@ -269,6 +386,139 @@ for (const scheme of ['light', 'dark']) {
   await SHOT(page, `phone-${scheme}`);
   if (scheme === 'dark') { await page.setViewportSize({ width: 1200, height: 1000 }); await SHOT(page, 'desktop-dark'); }
   ok(errs.length === 0 && csp.length === 0, `${scheme}: no page errors or CSP violations (${errs.concat(csp).join(' | ')})`);
+  await page.close();
+}
+
+console.log('Add ETH: a swap of ETH the private balance is short of');
+{
+  const { page, errs, csp } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', init: 'window.__atom.bal.eth = 0n;' });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Add 0\.05 ETH$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  ok(!(await page.$eval('#a-go', (e) => e.disabled)), 'with no private ETH the button adds the amount itself, as one note of exactly it');
+  ok(/deposit from your wallet is public\. The swap and your Bitcoin address are not linked to it on chain\./.test(await text(page, '#a-q')), 'what the deposit shows on chain is said under the button');
+  const unit = await page.evaluate(async () => { const m = await import('/btc/add-eth.js'); const a = await import('/swap/atomic.js'); return [m.addUnits(5000000n, 0n), m.addUnits(5000000n, 3000000n), m.addUnits(5000000n, 5000000n), m.addUnits(5000000n, null), a.addUnits(5000000n, 1n), m.leastFor(100000000000000n)].map(String); });
+  ok(JSON.stringify(unit) === JSON.stringify(['5000000', '2000000', '0', '5000000', '4999999', '200000']), `the shortfall math: the amount with nothing available, else what is short, nothing when covered; the lane's copy agrees; the least deposit a tip allows (${unit})`);
+  await SHOT(page, 'add-eth-ask');
+  await page.evaluate(() => { window.__add.hold = true; });
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__add.release, null, { timeout: 15000 });
+  ok(/^Adding ETH to your private balance…$/.test(await text(page, '#a-go')) && await page.$eval('#a-go', (e) => e.disabled), 'while it lands the button says so and waits');
+  ok(/The relay is finishing it/.test(await text(page, '#a-q')) && (await page.$$('#a-q a[href^="https://etherscan.io/tx/0xabab"]')).length === 1, 'the line says where it is, with the deposit linked');
+  const add = await page.evaluate(() => window.__add);
+  ok(add.wraps.length === 1 && add.wraps[0].wei === '50000000000000000' && add.wraps[0].tip === '100000000000000' && add.wraps[0].priv === 32 && add.asked.length === 1 && add.asked[0].value === '50100000000000000', `one wallet transaction: 0.05 ETH and the relay's tip, from the key the lane opened (${JSON.stringify(add.asked)})`);
+  ok(await page.evaluate(() => !!localStorage.getItem('tacit-btc-add-eth-v1:02' + 'ab'.repeat(32))), 'the deposit is kept in this browser while it lands');
+  await SHOT(page, 'add-eth-landing');
+  await page.evaluate(() => window.__add.release());
+  await page.waitForFunction(() => /^Swap ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 20000 });
+  ok(!(await page.evaluate(() => localStorage.getItem('tacit-btc-add-eth-v1:02' + 'ab'.repeat(32)))) && /Balance 0\.05 ETH/.test(await text(page, '#a-bal')), 'once it lands the balance is read again and the button swaps; the kept deposit is let go');
+  ok(errs.length === 0 && csp.length === 0, `no page errors or CSP violations (${errs.concat(csp).join(' | ')})`);
+  await page.close();
+}
+{
+  // some private ETH already: the shortfall only, which brings what can be locked to the amount
+  const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', init: 'window.__atom.bal.eth = 3000000n;' });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Add 0\.02 ETH$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  ok(true, 'with 0.03 ETH available the button adds 0.02 ETH');
+  RPCV.balance = 10n ** 16n;
+  await page.click('#a-go');
+  await page.waitForFunction(() => document.querySelector('#a-q').classList.contains('err'), null, { timeout: 15000 });
+  const said = await text(page, '#a-q');
+  ok(/Your wallet 0x1212…1212 holds 0\.01 ETH\. This needs 0\.0201 ETH and about 0\.00012 ETH network fee\. Nothing was sent\./.test(said), `a wallet that holds too little: how much it holds, and what this needs (${said})`);
+  ok((await page.evaluate(() => window.__add.asked.length)) === 0 && /^Add 0\.02 ETH$/.test(await text(page, '#a-go')), 'the wallet was never asked, and the button offers it again');
+  RPCV.balance = 10n ** 18n;
+  await page.evaluate(() => { window.__add.reject = true; });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Nothing was sent\.$/.test(document.querySelector('#a-q').textContent), null, { timeout: 15000 });
+  ok((await page.evaluate(() => window.__add.asked.length)) === 1 && !(await page.evaluate(() => localStorage.getItem('tacit-btc-add-eth-v1:02' + 'ab'.repeat(32)))), 'declined in the wallet: nothing was sent, nothing is kept');
+  await page.close();
+}
+{
+  const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', init: 'window.__atom.bal.eth = 0n; window.__add.noWallet = true;' });
+  await page.evaluate(() => { window.__btc.mode = 'passkey'; });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Add 0\.05 ETH$/.test(document.querySelector('#a-go').textContent), null, { timeout: 15000 });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /no Ethereum wallet/.test(document.querySelector('#a-q').textContent), null, { timeout: 15000 });
+  ok(/Your Tacit wallet opened with a passkey, and this browser has no Ethereum wallet to add ETH from\. Open this page in your wallet app’s browser, or shield ETH into this same Tacit wallet on the tETH page/.test(await text(page, '#a-q')) && (await page.$$('#a-q a[href="/teth/"]')).length === 1, 'a passkey wallet with no Ethereum wallet here: the way to add ETH, linked');
+  await SHOT(page, 'add-eth-passkey');
+  await page.close();
+}
+{
+  // a reload while the relay finished the deposit: the kept deposit is found among the key's and finished
+  const pub = '02' + 'ab'.repeat(32), hash = '0x' + 'cd'.repeat(32);
+  const { page } = await fresh({ path: '/btc/?dir=e2b&amt=0.05', init: `window.__atom.bal.eth = 0n; window.__add.pending = [{ index: 4, value: 5000000n, txHash: '${hash}', depositId: null }]; window.__add.hold = true; localStorage.setItem('tacit-btc-add-eth-v1:${pub}', JSON.stringify({ v: 1, wei: '50000000000000000', from: '0x${'12'.repeat(20)}', at: Date.now(), hash: '${hash}' }));` });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Swap ETH → BTC$/.test(document.querySelector('#a-go').textContent), null, { timeout: 20000 });
+  const add = await page.evaluate(() => window.__add);
+  ok(add.finished.length === 1 && add.finished[0] === 1 && add.wraps.length === 0 && add.asked.length === 0, 'opened again, the kept deposit is finished by the relay, and the wallet is not asked again');
+  ok(!(await page.evaluate((k) => localStorage.getItem(k), `tacit-btc-add-eth-v1:${pub}`)), 'and is let go once it has landed');
+  await page.close();
+}
+
+console.log('Send BTC: the Tacit wallet\'s own bitcoin to any address');
+{
+  const { page, errs, csp } = await fresh();
+  ok(/Open your Tacit wallet above to see its Bitcoin address/.test(await text(page, '#mybtc')) && await page.isHidden('#yb-box'), 'before the wallet opens the panel says how to see it');
+  await page.click('#a-go');
+  await page.waitForFunction(() => !document.querySelector('#yb-box').hidden && /0\.5 BTC/.test(document.querySelector('#yb-bal').textContent), null, { timeout: 15000 });
+  const own = await text(page, '#yb-addr');
+  ok(/^bc1q[0-9a-z]{38}$/.test(own), `its own address and balance (${own})`);
+  await page.click('#yb-send');
+  await page.waitForFunction(() => document.querySelectorAll('#yb-tiers input:not([disabled])').length === 3 && document.querySelector('#yb-held').textContent, null, { timeout: 15000 });
+  const tiers = await text(page, '#yb-tiers');
+  ok(/Fast next block 12 sat\/vB/.test(tiers) && /Normal about 30 min 6 sat\/vB/.test(tiers) && /Slow about an hour 2 sat\/vB/.test(tiers) && (await page.$eval('input[name=yb-tier]:checked', (e) => e.value)) === 'normal', `three fee choices from the explorers' estimates, Normal chosen (${tiers})`);
+  ok(/0\.01 BTC of it is in a swap under way, and is not sent from here\./.test(await text(page, '#yb-held')), 'the coin of a swap under way is said, and left out');
+  const tryTo = async (a) => { await page.fill('#yb-to', a); await page.$eval('#yb-to', (e) => e.blur()); await sleep(150); return text(page, '#yb-to-say'); };
+  ok(/test-network/.test(await tryTo('tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx')), 'a testnet address is refused');
+  ok(/checksum/.test(await tryTo('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5')), 'a mistyped address is refused');
+  ok(/one of your own swap locks/.test(await tryTo('bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0')), 'the address of one of the key\'s own swap locks is refused');
+  ok(/this wallet’s own address/.test(await tryTo(own)), 'its own address is said, not refused');
+  await tryTo('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4');
+  await page.click('#yb-max');
+  ok((await page.inputValue('#yb-amt')) === '0.48998932' && /48,998,932 sats: all you can send, after the fee/.test(await text(page, '#yb-amt-say')), `Max: the two coins it may take, less the fee at 6 sat/vB (${await page.inputValue('#yb-amt')})`);
+  await page.click('label.yb-t:has(input[value=fast])');
+  ok((await page.inputValue('#yb-amt')) === '0.48997864', `Max follows a dearer fee (${await page.inputValue('#yb-amt')})`);
+  await page.click('label.yb-t:has(input[value=normal])');
+  await page.fill('#yb-amt', '0.1');
+  ok(/10,000,000 sats/.test(await text(page, '#yb-amt-say')) && /6 sat\/vB · 846 sats/.test(await text(page, '#yb-tiers')), 'an amount is said in sats, and each fee choice in sats for it');
+  await SHOT(page, 'send-form');
+  await page.click('#yb-review');
+  await page.waitForFunction(() => !document.querySelector('#yb-rv').hidden, null, { timeout: 15000 });
+  const rv = await text(page, '#yb-dl');
+  ok(/To bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4/.test(rv) && /Amount 0\.1 BTC \(10,000,000 sats\)/.test(rv) && /Network fee 846 sats \(6 sat\/vB, 141 vB\)/.test(rv) && /Leaves your balance 10,000,846 sats/.test(rv) && /Change back to you 19,999,154 sats/.test(rv) && /Coins spent 1/.test(rv) && /replace-by-fee/.test(rv), `the review: exactly what is signed (${rv})`);
+  await SHOT(page, 'send-review');
+  await page.click('#yb-sign');
+  await page.waitForFunction(() => document.querySelectorAll('#yb-sent li').length === 1, null, { timeout: 15000 });
+  const posted = await page.evaluate(() => window.__bit.posted);
+  ok(posted.length === 1 && SEND.outputScript(posted[0], 0) === '0014751e76e8199196d454941c45d1b3a323f1433bd6' && SEND.outputScript(posted[0], 2) === null, 'one transaction broadcast: the recipient first, then change');
+  ok(posted[0].includes('a1'.repeat(32)) && !posted[0].includes('d4'.repeat(32)) && posted[0].includes('fdffffff'), 'it spends the largest coin, never the swap\'s, and signals replacement');
+  ok(/Waiting for a confirmation/.test(await text(page, '#yb-sent')) && (await page.$$('#yb-sent a[href^="https://mempool.space/tx/"]')).length === 1 && await page.isHidden('#yb-rv') && await page.isHidden('#yb-form'), 'the send is listed with its explorer link, waiting for a confirmation; the form closes');
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.click('#yb-send');
+  await page.waitForFunction(() => document.querySelectorAll('#yb-tiers input:not([disabled])').length === 3, null, { timeout: 15000 });
+  await page.fill('#yb-to', '3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy'); await page.fill('#yb-amt', '0.02');
+  ok(!(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)), 'at 390 px the form fits, with no sideways scroll');
+  await page.$eval('#mybtc', (e) => e.scrollIntoView());
+  await SHOT(page, 'send-form-390', false);
+  await page.click('#yb-review');
+  await page.waitForFunction(() => !document.querySelector('#yb-rv').hidden, null, { timeout: 15000 });
+  ok(!(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)), 'and the review too');
+  await page.$eval('#mybtc', (e) => e.scrollIntoView());
+  await SHOT(page, 'send-review-390', false);
+  await page.evaluate(() => { window.__bit.refuse = true; });
+  await page.click('#yb-sign');
+  await page.waitForFunction(() => document.querySelector('#yb-rv-say').classList.contains('err'), null, { timeout: 60000 });
+  ok(/The explorers refused it: min relay fee not met\. Nothing was sent\./.test(await text(page, '#yb-rv-say')) && (await page.$$('#yb-sent li')).length === 1, 'a broadcast the explorers refuse is said, and nothing is listed');
+  ok(errs.length === 0 && csp.length === 0, `no page errors or CSP violations (${errs.concat(csp).join(' | ')})`);
+  // opened again: the send is still listed, and its status read
+  await page.evaluate(() => { window.__bit.confirmed = true; });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.querySelector('#a-go') && /Open your Tacit wallet/.test(document.querySelector('#a-go').textContent), null, { timeout: 30000 });
+  await page.evaluate(() => { window.__bit.confirmed = true; });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /Confirmed/.test(document.querySelector('#yb-sent').textContent), null, { timeout: 15000 });
+  ok(true, 'after a reload the send is listed again, and reads as confirmed once Bitcoin has it in a block');
   await page.close();
 }
 

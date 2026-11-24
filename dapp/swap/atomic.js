@@ -10,6 +10,9 @@
 //          (pay BTC, get ETH) or 'e2b'; amounts are in sats and in the pool's ETH unit (8 places, 1e-8 ETH).
 //   recsHost  where the swaps are listed, when the page shows them apart from the lane (the /btc/ page); else under the lane
 //   market    () -> what swap/atomic-market.js readMarket gives: the providers' limits and an estimate before the wallet is open (a test passes its own)
+//   shield    how ETH is added to the private balance from an Ethereum wallet when a swap of ETH is short of it (btc/add-eth.js makeAddEth: start, resume,
+//             pending, relayWords), or null, and the button then says the balance is short. onBal(bal) hears each read of the balances; onOpen(opened) the
+//             pair opener's answer once the key is open (its `bitcoin` is what a page sends the address's own sats with).
 //
 // A swap under way is stepped while the lane is open, the tab hidden or not (a hidden tab's timers run about once a minute, and a claim or a take that waits for the tab
 // to be seen again can miss its window); and the page asks before it is left while one is under way.
@@ -26,6 +29,11 @@ const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin'
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
 const DISMISS_KEY = 'tacit-atomic-dismissed-v1';
 const LOCK_GUESS_SATS = 3000;                                     // what Max keeps back for the Bitcoin fee until a quote has said what it is
+const SHIELD_NOTE = 'The deposit from your wallet is public. The swap and your Bitcoin address are not linked to it on chain.';
+// The ETH (pool units) to add so a lock of `amount` can be made: a lock spends one note of exactly the amount, or notes that hold it and the relay's fee of cutting
+// them, and `available` is what the notes hold less that fee. So with something available, the shortfall; with nothing available, the amount itself, deposited as
+// one note of exactly that amount, which needs no cut. (btc/add-eth.js keeps the same rule, and its tests pin both.)
+export function addUnits(amount, available) { const a = BigInt(amount), have = available == null ? 0n : BigInt(available); return a <= 0n || have >= a ? 0n : have > 0n ? a - have : a; }
 
 const tidy = (s) => s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 export const fmt = (v) => tidy(fmtUnits(v, DEC, DEC));
@@ -87,21 +95,23 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
     get pubHex() { return bitcoin?.session.unlocked ? bitcoin.session.key?.pubHex || null : null; },
     async signIn() { await load(); await bitcoin.signIn(); },
     fund(o) { bitcoin?.fund(o); },
+    // the open key, for a deposit into its private balance: its private bytes (a copy), its public key and how it was opened
+    key() { const s = bitcoin?.session; if (!s?.unlocked || !T?.wallet?.priv) return null; return { priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, mode: s.key.mode || null, address: s.key.address || null }; },
     async open() {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import('/fast/pair-wire.js?cb=fb3aae13');
+      const wire = await import('/fast/pair-wire.js?cb=0997b0ae');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },
   };
 }
 
-export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, provider = () => null, getUx = null, door = null, onState = () => {}, dir = 'b2e', now = nowSecs, recsHost = null, market = null, onRecs = () => {} }) {
+export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, provider = () => null, getUx = null, door = null, onState = () => {}, dir = 'b2e', now = nowSecs, recsHost = null, market = null, onRecs = () => {}, shield = null, onBal = () => {}, onOpen = () => {} }) {
   const D = door || bitcoinDoor({ notify, wallet, provider, getUx, onChange: () => keyChanged() });
   const L = { dir: dir === 'e2b' ? 'e2b' : 'b2e', amt: '', q: null, qErr: '', bal: { sats: null, eth: null, ethHeld: null, pending: 0n }, recs: [], busy: false, open: false, line: '', cls: '', unlocked: false, loaded: false, terms: null, mk: null, fits: null };
-  let fundAsk = null, pair = null, pairP = null, pairKey = null, gen = 0, opened = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, marketTimer = 0, recovered = false, recovering = null, lookFailed = false, reading = null, began = null;
+  let fundAsk = null, addAsk = null, pair = null, pairP = null, pairKey = null, gen = 0, opened = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, marketTimer = 0, recovered = false, recovering = null, lookFailed = false, reading = null, began = null;
   const readMarket = market || (() => import(MARKET_MODULE).then((M) => M.readMarket().then((m) => ({ ...m, estimate: (d, a) => M.estimate(m, d, a) }))));
   const known = new Map();
   const $ = (id) => host.querySelector(`#${id}`);
@@ -150,7 +160,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const g = gen;
     return (pairP ||= (pairKey = keyOf(), Promise.resolve(D.open()).then((o) => {
       if (g !== gen) throw new Error('Your Tacit wallet changed. Open it again.');
-      opened = o && o.pair ? o : null; return (pair = o && o.pair ? o.pair : o);
+      opened = o && o.pair ? o : null; pair = o && o.pair ? o.pair : o;
+      try { onOpen(opened); } catch { /* a page's hook does not stop the lane */ }
+      return pair;
     }).catch((e) => { if (g === gen) { pairP = null; pairKey = null; } throw e; })));
   };
   function dropPair() {
@@ -190,6 +202,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         if (b) L.bal = { sats: b.sats ?? null, eth: b.eth ?? null, ethHeld: b.ethHeld ?? null, pending: b.pendingSats ?? 0n };
         // a side the explorers or nodes did not answer for is said as such (the lane's refresh reads it again), not left as 'reading'
         L.unread = { btc: !b || b.sats == null, eth: !b || b.eth == null };
+        try { onBal({ ...L.bal }); } catch { /* a page's hook does not stop the lane */ }
         paint();
       }
       // (a read that throws leaves both sides unread: the button offers to read again, and the lane's refresh tries again by itself)
@@ -235,6 +248,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         L.unlocked = true;
         // the balance is read while the swaps of an earlier visit are looked for, not after: the two read the same pool history, and the button waits on the balance
         paint(); readMe(); requote(true);
+        const k0 = shield && D.key ? D.key() : null;
+        if (k0 && !L.adding && shield.pending(k0.pubHex)) resumeAdd();
         const p = pair, recs = await p.records().catch(() => L.recs);
         if (g !== gen) return;
         L.recs = recs;
@@ -287,6 +302,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (!pair) return { label: 'Loading…', off: true };
     // nothing is swapped against a balance not read yet; a read that failed is offered again (the refresh also tries again by itself)
     if (bal == null) return L.unread?.[pk] ? { label: 'Read the balance again', act: 'reread' } : { label: 'Reading your balance…', off: true };
+    // ETH on its way into the private balance: nothing of ETH is swapped until it has landed
+    if (L.adding && L.dir === 'e2b') return { label: 'Adding ETH to your private balance…', off: true };
     // an address with no BTC is not a dead end: the press opens the way to add some
     if (!L.amt) return L.dir === 'b2e' && L.bal.sats === 0n && !(L.bal.pending > 0n) ? { label: 'Add BTC', act: 'fund', fund: {} } : { label: 'Enter an amount', off: true };
     if (!amount) return { label: 'Enter a valid amount', off: true };
@@ -298,6 +315,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const held = heldOf(pk), exact = pk === 'eth' && L.fits && L.fits.amt === amount && L.fits.ok;
     if (bal != null && amount > bal && !exact) {
       if (pk === 'btc') { const need = amount + BigInt(q?.networkFeeSats ?? LOCK_GUESS_SATS); return { label: `Add ${fmt(need - bal)} BTC`, act: 'fund', fund: { sats: Number(need - bal), need: Number(need) } }; }
+      // with a way to add ETH from an Ethereum wallet, the shortfall is offered (exactly: addUnits); else the button says what is short
+      const add = shield ? addUnits(amount, bal) : 0n;
+      if (add > 0n) return { label: `Add ${fmt(add)} ETH`, act: 'shield', add };
       return { label: held != null && amount <= held ? `${fmt(held - bal)} ETH stays back for the pool’s fee` : 'Not enough ETH in your private balance', off: true };
     }
     if (L.qErr) return { label: 'No quote', off: true };
@@ -391,7 +411,10 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (q) { out.textContent = fmt(arrives); out.classList.remove('ph'); } else if (est) { out.textContent = `≈ ${tidy(fmtUnits(est.get, DEC, 6))}`; out.classList.remove('ph'); } else { out.textContent = '0'; out.classList.add('ph'); }
     paintRcpt(); paintRecs();
     const gt = gate(), go = $('a-go');
-    go.textContent = gt.label; go.disabled = !!gt.off; go.dataset.act = gt.act || ''; fundAsk = gt.fund || null;
+    go.textContent = gt.label; go.disabled = !!gt.off; go.dataset.act = gt.act || ''; fundAsk = gt.fund || null; addAsk = gt.add || null;
+    // what a deposit from the wallet shows on chain, said under the button that makes it
+    if (gt.act === 'shield' && !L.busy && (!L.line || L.cls === 'hint')) say(SHIELD_NOTE, 'hint');
+    else if (gt.act !== 'shield' && L.cls === 'hint') say('');
     if (L.qErr && !L.busy) say(esc(L.qErr), 'err');
     else if (L.q?.blocked && !L.busy) say(esc(L.q.blocked.charAt(0).toUpperCase() + L.q.blocked.slice(1) + (/[.!?]$/.test(L.q.blocked) ? '' : '.')), 'err');
     else if (L.cls === 'err' && !L.busy && !L.sticky) say('');
@@ -423,6 +446,66 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     finally { if (g === gen) { L.busy = false; paint(); } }
     if (g === gen) readMe(true);
   }
+  // ── adding ETH from an Ethereum wallet (btc/add-eth.js) ──
+  // One wallet transaction deposits the shortfall and the relay finishes it; the page then reads the balance until the swap can be made, and the button says so.
+  const ethLink = (h) => (h ? ` <a href="https://etherscan.io/tx/${esc(h)}" target="_blank" rel="noopener noreferrer">${esc(String(h).slice(0, 10))}…↗</a>` : '');
+  const ethOf = (wei) => tidy(fmtUnits(wei, 18, 8));
+  let slowTimer = 0;
+  function addStep(k, d) {
+    clearTimeout(slowTimer);
+    if (k === 'wallet') say('Finding your Ethereum wallet…');
+    else if (k === 'quote') say('Getting the relay’s fee for the deposit…');
+    else if (k === 'prepare') say('Preparing the deposit…');
+    else if (k === 'confirm') say(`Confirm in your wallet: ${esc(ethOf(d.wei))} ETH into your private balance and the relay’s fee of ${esc(ethOf(d.tip))} ETH, from ${esc(String(d.from).slice(0, 6))}…${esc(String(d.from).slice(-4))}. Your wallet adds the network fee.`);
+    else if (k === 'sent') {
+      say(`Adding ETH to your private balance… The deposit is sent${ethLink(d)} and waits for Ethereum.`);
+      slowTimer = setTimeout(() => { if (L.adding) say(`Adding ETH to your private balance… The deposit${ethLink(d)} is still waiting for Ethereum, which is slow right now. Nothing needs to be sent again: this page keeps checking.`); }, 3 * 60e3);
+    } else if (k === 'proving') say(`Adding ETH to your private balance… The deposit landed${ethLink(d)}. The relay is finishing it, about a minute.`);
+    else if (k === 'landed') say('Adding ETH to your private balance… Done. Reading your balance…');
+  }
+  async function addError(e) {
+    if (e?.html) return e.html;
+    if (e?.userStopped || e?.code === 4001) return 'Nothing was sent.';
+    if (e?.kept) return esc(`${await Promise.resolve(shield.relayWords?.(e)).catch(() => '') || plainError(e)} Your deposit is safe: this page finishes it while it is open, or on your next visit.`);
+    return esc(plainError(e));
+  }
+  // after a deposit lands, the balance is read until it covers the amount (or about two minutes pass: the lane's refresh keeps reading)
+  async function waitLanded() {
+    for (let i = 0; i < 24 && L.open && pair; i++) {
+      await readMe(true);
+      const amount = amountBase();
+      if (!amount || L.dir !== 'e2b' || (L.bal.eth != null && L.bal.eth >= amount) || (pair?.covers && (await pair.covers(amount).catch(() => false)))) break;
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+  async function addEth(units) {
+    const k = D.key ? D.key() : null;
+    if (L.adding || !units || !k || !shield) return;
+    L.adding = true; L.sticky = false; paint();
+    let kept = false;
+    try {
+      await shield.start({ key: k, units, onStep: addStep });
+      await waitLanded();
+      say('');
+    } catch (e) {
+      kept = !!e?.kept;
+      if (!kept) { say(await addError(e), 'err'); L.sticky = true; }
+    } finally { clearTimeout(slowTimer); L.adding = false; paint(); requote(true); }
+    if (kept) resumeAdd();
+  }
+  // a deposit this browser kept (a reload, or a wait that ran out) is finished while the key is open
+  async function resumeAdd() {
+    const k = D.key ? D.key() : null;
+    if (!shield || !k || L.resuming) return;
+    L.adding = true; L.resuming = true; paint();
+    try {
+      const r = await shield.resume({ key: k, onStep: addStep });
+      if (r) await waitLanded();
+      say('');
+    } catch (e) { say(await addError(e), 'err'); L.sticky = true; }
+    finally { clearTimeout(slowTimer); L.resuming = false; L.adding = false; paint(); requote(true); }
+  }
+
   // Swaps under way are stepped while the lane is open, the tab seen or hidden (hidden, less often: the browser runs a hidden tab's timers about once a minute anyway,
   // and a claim or a take that waited for the tab to be seen again could miss its window); one that ends is said once.
   function follow(wait = POLL_MS) {
@@ -460,7 +543,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const dm = t.closest('[data-dismiss]');
     if (dm) { dismiss(dm.dataset.dismiss); return; }
     const qk = t.closest('[data-quick]'); if (qk) { $('a-amt').value = qk.dataset.quick; setAmt(qk.dataset.quick); return; }
-    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'swap') swap(); else if (a === 'reread') { L.unread = null; paint(); readMe(); } else if (a === 'accept' && L.q) { L.q = { ...L.q, renewed: null }; L.sticky = false; say(''); paint(); } }
+    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'shield') addEth(addAsk); else if (a === 'swap') swap(); else if (a === 'reread') { L.unread = null; paint(); readMe(); } else if (a === 'accept' && L.q) { L.q = { ...L.q, renewed: null }; L.sticky = false; say(''); paint(); } }
   });
   recsHost?.addEventListener('click', (e) => { const dm = e.target.closest('[data-dismiss]'); if (dm) dismiss(dm.dataset.dismiss); });
 
@@ -487,6 +570,10 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     get looking() { return !D.unlocked || recovered ? null : lookFailed && !recovering ? 'failed' : 'looking'; },
     // the swaps the lane holds, and the open pair's copy of them as a file (fast/pair-keep.js), or null before the wallet is open
     records: () => L.recs.slice(),
+    // the pair opener's `bitcoin` (fast/pair-wire.js): the address's own sats, for a page that sends them; null before the wallet is open
+    bitcoin: () => opened?.bitcoin || null,
+    balances: () => ({ ...L.bal }),
+    refresh: () => readMe(true),
     keep: () => opened?.keep || null,
     // after a copy is read back: the swaps are found and stepped again
     reread: async () => { if (!pair) return; const g = gen, recs = await pair.records().catch(() => L.recs); if (g !== gen) return; L.recs = recs; paint(); follow(1000); },

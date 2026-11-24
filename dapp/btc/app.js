@@ -2,11 +2,13 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=414d0982';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=4a142715';
 import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=c19ede9d';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
 import { esc } from '/trade/util.js?cb=9c8b4133';
+import { makeAddEth } from '/btc/add-eth.js?cb=8b0ccea0';
+import { mountSendPanel } from '/btc/panel.js?cb=f2c12e0e';
 
 const $ = (id) => document.getElementById(id);
 const MARKET_MS = 60000;
@@ -94,11 +96,17 @@ function paintProviders(m) {
 // the pool module reads Ethereum through public nodes and, last, a wallet the site is already connected to; a settle the relay holds is sent from that wallet
 const getUx = async () => { const ux = await loadUx(); ux.useWallet?.(() => connectedInjected()); return ux; };
 const first = asked();
+// ETH short for a swap of ETH: added from the Ethereum wallet in one transaction (btc/add-eth.js), and the address's own BTC sent anywhere (btc/panel.js)
+let panel = null;
 const lane = makeAtomicLane({
   host: $('atomic'), recsHost: $('mine-list'), notify, wallet: () => null, provider: () => connectedInjected(), getUx, market, dir: first.dir,
+  shield: makeAddEth({ getUx }),
   onState: () => follow(lane.state()),
-  onRecs: (recs) => paintMine(recs),
+  onRecs: (recs) => { paintMine(recs); panel?.paint(); },
+  onBal: () => panel?.paint(),
+  onOpen: () => panel?.paint(),
 });
+panel = mountSendPanel({ host: $('yb'), lane, notify });
 
 // (the swaps of an earlier visit are looked for on the chains for a minute or two after the wallet opens: until that ends the list says so, never 'No swaps yet')
 function paintMine(recs) {

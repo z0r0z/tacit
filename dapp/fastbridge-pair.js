@@ -433,5 +433,14 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
 
   // whether a lock of `amount` pool units can be made now (an exact note needs no cut), for a page that shows it before the start refuses
   const covers = async (amount) => (evm.covers ? evm.covers(BigInt(amount)) : (await balances()).eth >= BigInt(amount));
-  return { providers, reference, balances, covers, quote, start, pump, records, recover, address: () => ({ btc: btc.address }), claimPub: claimPubHex };
+  // For a page that sends the address's own sats: the coins a swap under way holds ("txid:vout", never to be spent elsewhere), and this key's swap locks on Bitcoin
+  // (b2e: the lock transaction its record keeps, as hex with the lock's vout; e2b: the provider's lock script it answers), never to be paid to.
+  const holdsCoins = async () => [...(await heldCoins())];
+  async function lockOutputs() {
+    const out = [];
+    for (const r of await stores.fwd.list()) if (r.lock && r.lock.revealHex) out.push({ hex: r.lock.revealHex, vout: Number(r.lock.vout || 0) });
+    for (const p of [...(await revProviders()), RECOVERED]) for (const r of await stores.swaps(p.id).list().catch(() => [])) if (r.lockSpk) out.push({ spk: strip(r.lockSpk) });
+    return out;
+  }
+  return { providers, reference, balances, covers, quote, start, pump, records, recover, heldCoins: holdsCoins, lockOutputs, address: () => ({ btc: btc.address }), claimPub: claimPubHex };
 }

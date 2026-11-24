@@ -18,7 +18,7 @@ import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=a0280321';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=9003c49b';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=129356b4';
 import { makeLocalStore } from '/fastbridge-client.js?cb=09156465';
-import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=0c672b0c';
+import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=0b2c8c34';
 import { makeRateFeed, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
 import { discoverProviders } from '/fast/discover.js?cb=cf4a0fcc';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
@@ -101,5 +101,19 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   const copyKey = hmac(sha256, priv, enc.encode('tacit-btc-eth-swaps-copy-v1'));
   const mac = (text) => bytesToHex(hmac(sha256, copyKey, enc.encode(text)));
   const keep = { save: () => saveCopy(prefix, plainStorage, mac), load: (json) => loadCopy(json, prefix, plainStorage, mac) };
-  return { pair, address: btc.address, run, lists: list, keep };
+  // The address's own sats, for a page that sends them (btc/send.js plans and signs): its confirmed plain-sat coins, the coins a swap under way holds, the swap locks
+  // never to be paid to, the coins tacit.js finds a note on (its holdings scan, when the page has tacit.js), the explorers' fee estimates for the next block, about
+  // three and about six (the same explorers and the same reading of them as the lane's own fee), the key's signer, and a broadcast to every explorer.
+  const tiers = { fast: btc, normal: makeEsploraBtcChain({ bases, prims, builder, fetchImpl, feeTarget: '3', minFeeRate: 1 }), slow: makeEsploraBtcChain({ bases, prims, builder, fetchImpl, feeTarget: '6', minFeeRate: 1 }) };
+  const bitcoin = {
+    address: btc.address, prims,
+    coins: () => btc.satsCoins(),
+    held: () => pair.heldCoins(),
+    locks: () => pair.lockOutputs(),
+    holdings: T && typeof T.scanHoldings === 'function' ? () => T.scanHoldings() : null,
+    feeRates: async () => { const [fast, normal, slow] = await Promise.all(['fast', 'normal', 'slow'].map((k) => tiers[k].feeRate().catch(() => null))); return { fast, normal, slow }; },
+    broadcast: (hex) => btc.broadcast({ commitHex: null, revealHex: hex }),
+    status: (txid) => btc.status(txid),
+  };
+  return { pair, address: btc.address, run, lists: list, keep, bitcoin };
 }

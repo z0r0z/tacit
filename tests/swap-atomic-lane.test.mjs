@@ -6,6 +6,7 @@
 //   checks: with no provider the card is as it was (two switches, no lane code or markup, one read of the board) for a board that is empty, one with other ads, and one with an ad
 //   no key signed; with a provider the third switch appears; the lane (sign-in, balances, the minimum, a quote and its comparison with the market, a quote that must not be started,
 //   a flip, one start however many presses, the steps of a swap under way, done and returned, dismissing, found again from the key); links and the address; the front page's switch; a phone width.
+//   The card passes no way to add ETH: a lane short of ETH says so and offers no deposit (the /btc/ page's Add ETH is tested in tests/btc-page.test.mjs).
 //
 //   node tests/swap-atomic-lane.test.mjs        (SHOTS=<dir> saves screenshots; PLAYWRIGHT=<path to playwright-core>)
 import { createRequire } from 'node:module';
@@ -501,6 +502,8 @@ console.log('a phone width, and the dark scheme');
   await page.fill('#a-amt', '0.009');
   await page.waitForFunction(() => /Not enough/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
   ok(/Not enough ETH in your private balance/.test(await text(page, '#a-go')), 'more than is held still says there is not enough');
+  // the card's lane has no way to add ETH from a wallet (the /btc/ page passes one: tests/btc-page.test.mjs): no Add button, and no line about a deposit
+  ok((await page.$eval('#a-go', (e) => e.dataset.act)) === '' && !/deposit from your wallet/.test(await text(page, '#a-q')), 'on the card, a lane with no way to add ETH offers no deposit');
   await page.fill('#a-amt', '0.008');
   await page.waitForFunction(() => /^Swap/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
   ok(!(await page.$eval('#a-go', (e) => e.disabled)), 'an amount that fits can be swapped');

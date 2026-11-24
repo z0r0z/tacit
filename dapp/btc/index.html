@@ -22,8 +22,8 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=16add9aa">
-<link rel="modulepreload" href="/swap/atomic.js?cb=414d0982">
+<link rel="modulepreload" href="/btc/app.js?cb=0380555d">
+<link rel="modulepreload" href="/swap/atomic.js?cb=4a142715">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -50,6 +50,9 @@
 <link rel="modulepreload" href="/fastbridge-rate.js?cb=be7769e1">
 <link rel="modulepreload" href="/swap/atomic-probe.js?cb=590d41c3">
 <link rel="modulepreload" href="/trade/poolux.js?cb=59d125e5">
+<link rel="modulepreload" href="/btc/add-eth.js?cb=8b0ccea0">
+<link rel="modulepreload" href="/btc/panel.js?cb=f2c12e0e">
+<link rel="modulepreload" href="/btc/send.js?cb=990d748a">
 <!-- preload:end -->
 <link rel="stylesheet" href="/swap/card.css?cb=a36205be">
 <style>
@@ -149,6 +152,60 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 #mine-say:empty { display: none; }
 #mine .row { margin-top: 12px; }
 #mine-st { font-size: 12px; color: var(--mute); }
+
+/* your Bitcoin: the address, what it holds, and a send of it (btc/panel.js) */
+.sec-say { margin: 0; font-size: 13px; color: var(--mute); }
+.yb { display: grid; gap: 10px; }
+.yb-row { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; align-items: center; gap: 4px 12px; }
+.yb-row .k { font-size: 12px; color: var(--mute); }
+.yb-row b { font-weight: 500; }
+.yb-addr { min-width: 0; font: 12.5px/1.5 var(--mono); overflow-wrap: anywhere; }
+.yb-note { margin: 0; font-size: 12px; color: var(--mute); }
+.yb-form, .yb-rv { display: grid; gap: 6px; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--hair); }
+.yb-f { display: grid; gap: 4px; font-size: 12px; color: var(--mute); }
+.yb-f input { width: 100%; min-height: 44px; padding: 8px 12px; font: 14px var(--mono); color: var(--ink); background: var(--field); border: 1px solid var(--hair-2); border-radius: 10px; outline: none; }
+.yb-f input:focus { border-color: var(--ink); }
+.yb-amt { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; }
+.yb-amt i { font-style: normal; color: var(--mute); font-size: 13px; }
+.yb-say { min-height: 0; margin: 0; font-size: 12px; color: var(--mute); overflow-wrap: anywhere; }
+.yb-say:empty { display: none; }
+.yb-say.err { color: var(--err); } .yb-say.warn { color: var(--warn); }
+.yb-fee { margin: 6px 0 0; padding: 0; border: 0; min-width: 0; }
+.yb-fee legend { padding: 0; margin-bottom: 4px; font-size: 12px; color: var(--mute); }
+#yb-tiers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.yb-t { position: relative; display: block; cursor: pointer; }
+.yb-t input { position: absolute; opacity: 0; pointer-events: none; }
+.yb-t > span { display: grid; gap: 1px; min-height: 44px; padding: 8px 10px; background: var(--field); border: 1px solid var(--hair-2); border-radius: 10px; }
+.yb-t b { font-weight: 500; font-size: 13px; }
+.yb-t small { font-size: 11.5px; color: var(--mute); }
+.yb-t input:checked + span { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.yb-t input:focus-visible + span { outline: 2px solid var(--ink); outline-offset: 2px; }
+.yb-t input:disabled + span { opacity: .5; cursor: default; }
+.yb-go { margin-top: 6px; }
+.btn.main { color: var(--card); background: var(--ink); border-color: var(--ink); }
+.btn.main:disabled { color: var(--mute); background: var(--card); border-color: var(--hair-2); }
+.yb-h { margin: 0; font-size: 13px; }
+.yb-dl { display: grid; gap: 4px; margin: 0; font-size: 12.5px; }
+.yb-dl div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--mute); }
+.yb-dl dt { flex: none; }
+.yb-dl dd { min-width: 0; margin: 0; color: var(--ink); text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.yb-dl dd small { color: var(--mute); font-size: 11.5px; }
+.yb-dl dd.warn { color: var(--warn); }
+.yb-a { font-family: var(--mono); overflow-wrap: anywhere; }
+.yb-sent { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.yb-sent:empty { display: none; }
+.yb-sent li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; padding: 8px 10px; font-size: 12px; background: var(--field); border: 1px solid var(--hair); border-radius: 10px; }
+.yb-sent li > span { min-width: 0; overflow-wrap: anywhere; }
+.yb-sent .dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--orange); vertical-align: 1px; }
+.yb-sent li.ok .dot { background: var(--ok); }
+.yb-sent b { font-weight: 500; }
+@media (max-width: 480px) {
+  .yb-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .yb-row .k { grid-column: 1 / -1; }
+  #yb-tiers { grid-template-columns: 1fr; }
+  .yb-dl div { flex-direction: column; gap: 0; }
+  .yb-dl dd { text-align: left; }
+}
 
 /* providers: one row each, the two directions side by side */
 #cap { margin: 0 0 10px; font-size: 13px; }
@@ -503,6 +560,11 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
       </div>
     </section>
 
+    <section class="sec" id="mybtc" aria-labelledby="yb-h">
+      <h2 id="yb-h">Your Bitcoin</h2>
+      <div id="yb"><p class="sec-say">Open your Tacit wallet above to see its Bitcoin address.</p></div>
+    </section>
+
     <section class="sec" id="pv" aria-labelledby="pv-h">
       <h2 id="pv-h">Providers <small id="pv-at"></small></h2>
       <p id="cap" role="status">Reading the boards…</p>
@@ -586,6 +648,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/btc/app.js?cb=16add9aa"></script>
+<script type="module" src="/btc/app.js?cb=0380555d"></script>
 </body>
 </html>
