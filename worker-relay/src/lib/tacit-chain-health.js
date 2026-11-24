@@ -6,6 +6,8 @@
 //   now     seconds
 // → [{ level: 'warning' | 'critical', msg, extra }]
 export const PROVER_SEEN_S = 600;
+// Forced entries waiting at once before the monitor says so, whatever their age (a run of postings shows in the count long before the oldest one is late).
+export const QUEUE_DEPTH_WARN = 24;
 
 // The leader's `pending` counts every spend it holds, shields among them. A shield waits on its deposit and is held out of blocks until it comes (and dropped
 // after an hour), so it is no spend a block is late to take. GET /pending-notes lists the new notes of the payments held, never a shield's: with that list
@@ -36,6 +38,7 @@ export function tacitChainVerdict({ leader, chain, board, now }) {
     if (age >= open) out.push({ level: 'critical', msg: `tacit chain: ${what}: past ${min(open)} min anyone may land, so the leader has lost its turn (a spend it refused, or it is stuck)`, extra });
     else if (age >= fd * 0.75) out.push({ level: 'critical', msg: `tacit chain: ${what}: every block must take it in within ${min(fd)} min of posting, ${min(fd - age)} min left`, extra });
     else if (age >= 10 * 60) out.push({ level: 'warning', msg: `tacit chain: ${what}: the leader should take it in at its next block`, extra });
+    else if (n >= QUEUE_DEPTH_WARN) out.push({ level: 'warning', msg: `tacit chain: ${what}: more waiting at once than usual, the leader takes them a few to a block`, extra });
   }
 
   // a GPU to prove blocks: the board's machines that take tacit-block jobs and were seen lately

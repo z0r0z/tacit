@@ -26,6 +26,12 @@ assert.deepEqual(levels(forced(46 * 60)), ['critical']);
 assert.match(forced(46 * 60)[0].msg, /14 min left/);
 assert.deepEqual(levels(forced(71 * 60)), ['critical']);
 assert.match(forced(71 * 60)[0].msg, /anyone may land/);
+// many waiting at once: a warning by the count while the oldest is still young, and nothing for a few
+const deep = (n, age) => tacitChainVerdict({ leader: { height: 4, pending: 0 }, chain: chain({ queued: n, queueDone: 0, oldestQueuedAt: now - age }), board: { workers: [gpu] }, now });
+assert.deepEqual(deep(23, 60), []);
+assert.deepEqual(levels(deep(24, 60)), ['warning']);
+assert.match(deep(400, 60)[0].msg, /400 forced entries waiting.*more waiting at once than usual/);
+assert.deepEqual(levels(deep(400, 46 * 60)), ['critical']);
 
 // no prover: a warning with nothing waiting, critical with spends waiting; a machine without tacit-block, or not seen lately, does not count
 const stale = { ...gpu, lastSeenSeconds: PROVER_SEEN_S + 1 }, other = { ...gpu, programs: ['confidential'] };
