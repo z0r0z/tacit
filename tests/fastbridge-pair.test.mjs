@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { makePairClient, SATS_ASSET, rateOf, describeFwd } from '../dapp/fastbridge-pair.js';
 import { makeRateFeed } from '../dapp/fastbridge-rate.js';
 import * as X from '../dapp/adaptor-xswap.js';
+import { deriveLock } from '../dapp/adaptor-btc-lock.js';
 import { bigintToBytes32 } from '../dapp/bulletproofs.js';
 import { bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { fetched, te } from './lib/btc-sim.mjs';
@@ -179,6 +180,25 @@ test('private ETH that does not cover the amount stops an ETH-for-Bitcoin swap b
   assert.equal((await w.rev.handle({ method: 'GET', path: '/reverse/info' })).body.open, 0, 'the provider was never asked to lock');
 });
 
+test('a note of exactly the amount (one just shielded for the swap) starts an ETH-for-Bitcoin swap, though what is available keeps a cut fee back', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.uEvm.fund(UNITS, 'exact');
+  // the pool side as fastbridge-evm.js has it: `available` keeps back the fee of cutting a note, `covers` knows a note of exactly the amount needs no cut
+  const FEE = 5000n, free = () => w.uEvm.holdings.filter((h) => !h.used);
+  const sum = () => free().reduce((s, h) => s + h.amount, 0n);
+  const evm = { ...w.uEvmCtx, available: async () => (sum() > FEE ? sum() - FEE : 0n), covers: async (a) => free().some((h) => h.amount === BigInt(a)) || sum() >= BigInt(a) + FEE };
+  const before = w.makePair({ evm: { ...evm, covers: undefined } });
+  await assert.rejects(async () => before.start(await before.quote({ dir: 'e2b', amount: UNITS })), /private ETH does not cover/, 'judged by `available` alone, the exact note is refused');
+  w.pair = w.makePair({ evm });
+  const q = await w.pair.quote({ dir: 'e2b', amount: UNITS });
+  const r = await w.pair.start(q);
+  assert.ok(r && r.id, 'with `covers`, the swap starts');
+  assert.equal((await w.rev.handle({ method: 'GET', path: '/reverse/info' })).body.open, 1, 'and the provider was asked to lock');
+  assert.equal(await w.pair.covers(UNITS), true);
+  assert.equal(await w.pair.covers(UNITS - 1n), false, 'a lock of less has to be cut, and the note does not hold the fee too');
+});
+
 test('the swap is kept: a new page over the same stores shows it, and a lock whose record was lost is found again from the key and taken back on its timelock', async () => {
   const w = pairWorld();
   await w.ready();
@@ -220,7 +240,7 @@ test('of two providers the better quote wins, and one that fails to answer does 
   await assert.rejects(() => onlyDown.quote({ dir: 'e2b', amount: UNITS }), /unreachable/);
 });
 
-test('the provider holds its payout through a lock\'s confirmation only for a transaction that is a lock: one that pays the quoted amount to a Taproot output', async () => {
+test('the provider holds its payout through a lock\'s confirmation only for a transaction that is the quote\'s lock: the quoted amount to the Taproot output its terms make', async () => {
   const w = pairWorld();
   await w.ready();
   w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
@@ -228,11 +248,17 @@ test('the provider holds its payout through a lock\'s confirmation only for a tr
   const id = q.body.id;
   assert.equal((await w.fwd.handle({ method: 'POST', path: '/reserve', body: { quoteId: id } })).body.ok, true);
   const tx = (n, outs) => { const txid = bytesToHex(sha256(te('tx' + n))); w.btc.addConfirmed({ txid, esplora: { txid, vin: [{ txid: bytesToHex(sha256(te('in' + n))), vout: 0, witness: [] }], vout: outs } }); return txid; };
+  // the lock's terms: an adaptor point the user holds, the user's refund key, the provider's claim key and the quote's timelock
+  const T = X.deriveSwapSecrets({ seed: w.uKeys.seed, swapId: new Uint8Array(36).fill(7) }).T;
+  const terms = { T: bytesToHex(T.toRawBytes(true)), lockerXonly: bytesToHex(w.uBtc.wallet.xonly) };
+  const lockSpk = bytesToHex(deriveLock({ prims: w.lW.prims, claimerPub: w.lW.wallet.pub, T, lockerXonly: w.uBtc.wallet.xonly, csvBlocks: q.body.csvBlocks }).spk);
   const p2wpkh = '0014' + '11'.repeat(20), p2tr = '5120' + '22'.repeat(32);
-  const ext = async (txid) => (await w.fwd.handle({ method: 'POST', path: '/extend', body: { quoteId: id, txid } })).body;
+  const ext = async (txid, lock = terms) => (await w.fwd.handle({ method: 'POST', path: '/extend', body: { quoteId: id, txid, ...(lock ? { lock } : {}) } })).body;
   assert.match((await ext(tx(1, [{ scriptpubkey: p2wpkh, value: 100_000 }]))).why, /does not pay the quoted amount to a Taproot lock/, 'the right amount, to the wrong kind of output');
-  assert.match((await ext(tx(2, [{ scriptpubkey: p2tr, value: 99_999 }]))).why, /does not pay the quoted amount/, 'a Taproot output of another amount');
-  assert.equal((await ext(tx(3, [{ scriptpubkey: p2tr, value: 100_000 }, { scriptpubkey: '6a00', value: 0 }]))).ok, true, 'the lock: a Taproot output of exactly the amount');
+  assert.match((await ext(tx(2, [{ scriptpubkey: lockSpk, value: 99_999 }]))).why, /does not pay the quoted amount/, 'the lock\'s output with another amount');
+  assert.match((await ext(tx(3, [{ scriptpubkey: p2tr, value: 100_000 }]))).why, /does not pay the quoted amount to a Taproot lock of this quote/, 'any other Taproot output of exactly the amount (a payment to oneself) holds nothing');
+  assert.match((await ext(tx(4, [{ scriptpubkey: lockSpk, value: 100_000 }]), null)).why, /names no lock/, 'an extension without the lock\'s terms holds nothing');
+  assert.equal((await ext(tx(5, [{ scriptpubkey: lockSpk, value: 100_000 }, { scriptpubkey: '6a00', value: 0 }]))).ok, true, 'the lock: the output its terms make, of exactly the amount');
 });
 
 test('only providers of this pair are asked: a TAC provider is not offered Bitcoin for ETH, whatever its limits say', async () => {

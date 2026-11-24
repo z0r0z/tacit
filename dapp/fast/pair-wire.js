@@ -1,7 +1,7 @@
 // Bitcoin for ETH and ETH for Bitcoin for a page that holds a Tacit key: the Bitcoin and pool sides built from the key, the providers there are to swap with, the market
 // price read through the pool's RPC, and the pair client (dapp/fastbridge-pair.js) over them. No DOM. The swap tile's lane (swap/atomic.js) opens this.
 //
-//   const { pair, address, run, lists } = await openPair({ T, ux, priv, pubHex, wallet, ask })
+//   const { pair, address, run, lists, keep } = await openPair({ T, ux, priv, pubHex, wallet, ask })
 //   pair.quote({ dir, amount })  pair.start(q)  pair.pump()  pair.records()  pair.recover()  pair.balances()  pair.reference()  pair.providers()
 //
 //   T  tacit.js with the key's wallet open (its Bitcoin address must be the one the key makes)     ux  the pool module (trade/poolux.js)     priv  the key's private bytes
@@ -13,15 +13,16 @@
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=a3e28483';
-import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=17d2f6af';
-import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=66f1cfd2';
+import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, TRACE_NODES } from '/fastbridge-evm.js?cb=94c81e99';
+import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=2913bc2e';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=59160fed';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { makeLocalStore } from '/fastbridge-client.js?cb=ff9d9c02';
-import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=3b1ca701';
+import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=2bb95e84';
 import { makeRateFeed, chainlinkEthBtc } from '/fastbridge-rate.js?cb=0385e0ce';
 import { discoverProviders } from '/fast/discover.js?cb=3dc3d274';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=04e053b4';
+import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=4d1d7c96';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=ed27fde9';
 import { secp, sha256, keccak_256, hmac } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();
@@ -44,7 +45,9 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   // the lock goes out for the next block or two and not under 2 sat/vB (see fastbridge-btc.js minFeeRate)
   const btc = makeEsploraBtcChain({ bases, prims, builder, fetchImpl, feeTarget: '1', minFeeRate: 2 });
   const seed = hmac(sha256, priv, enc.encode('tacit-fastbridge-user-pair-seed'));
-  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: ETH_ASSET, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log });
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: ETH_ASSET, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)) }) });   // (the nodes the page's CSP reaches)
+  // an ETH-for-Bitcoin swap is found again from the key by its pool lock's memo (pair.recover)
+  evm.findOwnLocks = makeOwnLockFinder({ ux, hmacSha256, walletPriv: priv });
 
   const list = lists || (await loadLists(fetchImpl));
   const clock = () => (now ? now() : Math.floor(Date.now() / 1000));
@@ -55,6 +58,9 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   const feed = feedO || makeRateFeed({ sources: [chainlinkEthBtc({ call: (to, data) => ux.rpc('eth_call', [{ to, data }, 'latest']), ...(now ? { now } : {}) })], minSources: 1, maxAgeSecs: 600, ...(now ? { now } : {}) });
 
   const prefix = `tacit-fastbridge-pair-v1:mainnet:${pubHex}:`;
+  // the page's own storage is copied to IndexedDB as it is written, and what was lost is put back (fast/pair-keep.js): a swap of ETH for BTC is not found again from the key
+  const plainStorage = storage;
+  if (storage && storage === globalThis.localStorage) storage = await keptStorage(prefix, storage);
   const stores = { fwd: makeLocalStore(`${prefix}fwd:`, storage), index: makeLocalStore(`${prefix}providers:`, storage), swaps: (id) => makeLocalStore(`${prefix}${id}:swaps:`, storage), quotes: (id) => makeLocalStore(`${prefix}${id}:quotes:`, storage) };
   const reverseCallFor = (ref) => (ref && ref.kind === 'mailbox'
     ? makeMailboxCall({ board: makeBoardClient({ base: ref.boardBase, fetchImpl }), gateway: ref.gateway, claimPub: ref.claimPub || null, ...(now ? { now } : {}) })
@@ -73,5 +79,7 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
     const timer = setInterval(once, everyMs);
     return () => { stopped = true; clearInterval(timer); };
   };
-  return { pair, address: btc.address, run, lists: list };
+  // a copy of the swaps as a file, and one read back (only this key's records, only where this browser has none)
+  const keep = { save: () => saveCopy(prefix, plainStorage), load: (json) => loadCopy(json, prefix, plainStorage) };
+  return { pair, address: btc.address, run, lists: list, keep };
 }

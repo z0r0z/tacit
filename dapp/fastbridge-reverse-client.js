@@ -112,7 +112,8 @@ export function describe(rec) {
 // `confsOf(value)`: the confirmations the user wants on the provider's lock, by its value (default: TAC's). `valueCheck({ evmAmount, btcValue })`: for a pair whose two
 // sides are not the same unit (the provider pays sats for pool ETH), the judgement of the amounts that replaces the same-unit one: it throws a reason the page can show, or
 // returns { fee (in the user's units), highFee }. Both default to the TAC bridge's own rules, byte for byte.
-export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins = {}, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), confsOf = confsFor, valueCheck = null }) {
+// `admit({ id, offer })`: a reason not to answer a lock offer from what the page keeps beyond this provider's store (dapp/fastbridge-pair.js: a Bitcoin lock another swap answers), or null
+export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins = {}, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), confsOf = confsFor, valueCheck = null, admit = null }) {
   const policy = { ...REVERSE_POLICY, ...policyIn };
   const claimPub = () => bytesToHex(btc.wallet.pub);
   const pinned = (a) => (pins[a] ? strip(pins[a]) : null);
@@ -121,7 +122,7 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
   // The machine looks its quote up by id; a quote that started a swap stays good for the swap (the lock it waits on takes longer than a quote lasts)
   const quotes = { get: async (id) => { const r = await quoteStore.get(id); return r ? { ...r, validUntil: r.startedAt ? Math.max(r.validUntil, r.startedAt + policy.startGraceSecs) : r.validUntil } : null; } };
   const el = makeEthereumLocker({
-    seed, now, store, quotes, btc, evm,
+    seed, now, store, quotes, btc, evm, admit,
     counter: { publishEvmOffer: async (id, offer) => { const r = await lp.postEvmOffer(id, offer); if (r && r.ok === false) throw new Error(`the provider did not take the pool offer: ${r.why}`); } },
     policy: { minCsv: policy.minCsv, minConfsFor: confsOf, evmWindowSecs: policy.evmWindowSecs, roundSecs: policy.roundSecs, minClaimSecs: policy.minClaimSecs, claimSlackSecs: policy.claimSlackSecs, refundMarginSecs: policy.refundMarginSecs, maxOfferAgeSecs: policy.maxOfferAgeSecs, minAmount: 1n, maxAmount: 10n ** 18n, maxLockFailures: policy.maxLockFailures },
   });
@@ -163,8 +164,9 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
     if (!rec) throw new Error('unknown quote');
     if (rec.swapId) return { swapId: rec.swapId };
     if (!(Number(rec.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expired');
-    const held = await evm.available();
-    if (held < BigInt(rec.evmAmount)) throw new Error('your private TAC does not cover that amount');
+    // (a note of exactly the amount is locked as it is, with nothing kept back for a cut: `covers` says so where the pool side has it)
+    const fits = evm.covers ? await evm.covers(BigInt(rec.evmAmount)) : (await evm.available()) >= BigInt(rec.evmAmount);
+    if (!fits) throw new Error('your private TAC does not cover that amount');
     const a = await lp.start({ quoteId: rec.id });
     if (!a || a.ok === false) throw Object.assign(new Error(`the provider cannot lock that amount${a && a.why ? `: ${a.why}` : ''}`), { retry: !!(a && a.retry) });
     await quoteStore.put({ ...rec, swapId: a.swapId, startedAt: now() });

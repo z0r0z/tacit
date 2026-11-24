@@ -2,17 +2,23 @@
 // any step. The card loads this when the lane is first opened, and shows the lane's switch only when providers of the pair exist (swap/atomic-probe.js).
 // Nothing here builds or signs a transaction: the pair client does (fastbridge-pair.js, opened by fast/pair-wire.js openPair) with the Tacit key.
 //
-//   makeAtomicLane({ host, notify, wallet, provider, getUx, door, onState, dir, now }) -> { show, hide, set, state, get unlocked }
+//   makeAtomicLane({ host, notify, wallet, provider, getUx, door, onState, dir, now, recsHost, market }) -> { show, hide, set, state, get unlocked, records, keep }
 //
 //   door   how the key and the pair client are reached: { load(), unlocked, signIn(), fund(), open() -> { pair } | pair }. The page's door is made here from
 //          the trade page's Bitcoin module (the same sign-in as the Bitcoin lane); a test passes its own.
 //   pair   quote({ dir, amount }), start(q), pump(), records(), recover(), balances(), reference(): see the contract in fastbridge-pair.js. A swap is 'b2e'
 //          (pay BTC, get ETH) or 'e2b'; amounts are in sats and in the pool's ETH unit (8 places, 1e-8 ETH).
+//   recsHost  where the swaps are listed, when the page shows them apart from the lane (the /btc/ page); else under the lane
+//   market    () -> what swap/atomic-market.js readMarket gives: the providers' limits and an estimate before the wallet is open (a test passes its own)
+//
+// A swap under way is stepped while the lane is open, the tab hidden or not (a hidden tab's timers run about once a minute, and a claim or a take that waits for the tab
+// to be seen again can miss its window); and the page asks before it is left while one is under way.
 import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=a1ece943';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
-const DEC = 8, POLL_MS = 5000, QUOTE_MS = 300, REFRESH_MS = 15000, BAL_MS = 45000;
+const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000;
+const MARKET_MODULE = '/swap/atomic-market.js?cb=d970cb35';
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
 const DISMISS_KEY = 'tacit-atomic-dismissed-v1';
@@ -43,11 +49,20 @@ export const marketText = (bps) => {
   if (Math.abs(b) < 5) return 'at the market price';
   return `${(Math.abs(b) / 100).toFixed(Math.abs(b) < 995 ? 2 : 1)}% ${b < 0 ? 'less' : 'more'} than the market price`;
 };
-// An error as the lane says it: what the engine wrote when that is a sentence, else a plain line (never an exception's own words).
+// An error as the lane says it: what the engine wrote when that is a sentence, with a capital, else a plain line (never an exception's own words, nor a module's tag)
 export const plainError = (e) => {
-  const t = String((e && e.message) || e || '').trim();
+  let t = String((e && e.message) || e || '').trim();
+  if (/^fastbridge: the pool notes hold \d+, short of \d+/.test(t)) t = 'your private ETH does not cover that amount';
+  t = t.replace(/^[a-z-]+: (?=[a-z])/, '');
   if (!t || t.length > 220 || /^(TypeError|ReferenceError|SyntaxError|RangeError|Error:)|undefined|\bat\s\S+:\d+|Failed to fetch|NetworkError|\[object/i.test(t)) return 'Something did not answer just now. Nothing was sent. Try again in a moment.';
+  t = t.charAt(0).toUpperCase() + t.slice(1);
   return /[.!?]$/.test(t) ? t : `${t}.`;
+};
+// A time later today, tomorrow or on a date, in the reader's own clock, for the line that says when to be back
+export const clockText = (at, now = nowSecs()) => {
+  const d = new Date(Number(at) * 1000), n = new Date(now * 1000), hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(), diff = Math.round((day(d) - day(n)) / 86400000);
+  return diff === 0 ? `${hm} today` : diff === 1 ? `${hm} tomorrow` : `${hm} on ${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
 };
 
 // How the page reaches the key and the pair client: the trade page's Bitcoin module signs the key in (as the Bitcoin lane does), and fast/pair-wire.js opens the pair
@@ -64,22 +79,23 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
     load,
     get unlocked() { return !!bitcoin?.session.unlocked; },
     async signIn() { await load(); await bitcoin.signIn(); },
-    fund() { bitcoin?.fund(); },
+    fund(o) { bitcoin?.fund(o); },
     async open() {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import('/fast/pair-wire.js?cb=53d8174d');
+      const wire = await import('/fast/pair-wire.js?cb=f8059d50');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },
   };
 }
 
-export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, provider = () => null, getUx = null, door = null, onState = () => {}, dir = 'b2e', now = nowSecs }) {
+export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, provider = () => null, getUx = null, door = null, onState = () => {}, dir = 'b2e', now = nowSecs, recsHost = null, market = null, onRecs = () => {} }) {
   const D = door || bitcoinDoor({ notify, wallet, provider, getUx, onChange: () => { if (L.open) { L.unlocked = D.unlocked; paint(); begin(); } } });
-  const L = { dir: dir === 'e2b' ? 'e2b' : 'b2e', amt: '', q: null, qErr: '', bal: { sats: null, eth: null, ethHeld: null, pending: 0n }, recs: [], busy: false, open: false, line: '', cls: '', unlocked: false, loaded: false, terms: null };
-  let pair = null, pairP = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, recovered = false, reading = null, began = null;
+  const L = { dir: dir === 'e2b' ? 'e2b' : 'b2e', amt: '', q: null, qErr: '', bal: { sats: null, eth: null, ethHeld: null, pending: 0n }, recs: [], busy: false, open: false, line: '', cls: '', unlocked: false, loaded: false, terms: null, mk: null, fits: null };
+  let fundAsk = null, pair = null, pairP = null, opened = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, marketTimer = 0, recovered = false, reading = null, began = null;
+  const readMarket = market || (() => import(MARKET_MODULE).then((M) => M.readMarket().then((m) => ({ ...m, estimate: (d, a) => M.estimate(m, d, a) }))));
   const known = new Map();
   const $ = (id) => host.querySelector(`#${id}`);
   const dismissed = () => { try { return new Set(JSON.parse(localStorage.getItem(DISMISS_KEY) || '[]')); } catch { return new Set(); } };
@@ -110,15 +126,23 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   const balOf = (k) => (k === 'btc' ? L.bal.sats : L.bal.eth);
   const heldOf = (k) => (k === 'btc' ? L.bal.sats : (L.bal.ethHeld ?? L.bal.eth));
   // What the providers take in a direction, in the pay side's units: the least any asks and the most any can take now; null until they are read
+  // (before the wallet is open, the terms are the ones the ads name, read with the market)
   const termsFor = (d) => {
-    const ts = (L.terms || []).map((p) => p && p[d]).filter(Boolean);
+    const ts = (L.terms || L.mk?.providers || []).map((p) => p && p[d]).filter(Boolean);
     if (!ts.length) return null;
     return { min: ts.reduce((a, t) => (t.min < a ? t.min : a), ts[0].min), max: ts.reduce((a, t) => { const m = t.available != null && t.available < t.max ? t.available : t.max; return m > a ? m : a; }, 0n) };
   };
   const coin = (c) => `<svg class="tk" aria-hidden="true"><use href="#${c.mark}"/></svg>${c.sym}`;
 
   // ── the pair client and what it reads ──
-  const getPair = () => (pairP ||= Promise.resolve(D.open()).then((o) => (pair = o && o.pair ? o.pair : o)).catch((e) => { pairP = null; throw e; }));
+  const getPair = () => (pairP ||= Promise.resolve(D.open()).then((o) => { opened = o && o.pair ? o : null; return (pair = o && o.pair ? o.pair : o); }).catch((e) => { pairP = null; throw e; }));
+  // the providers and the market, read with no wallet open: limits and an estimate to show before the quote (read again each minute until the pair client has its own)
+  function readMk() {
+    clearTimeout(marketTimer);
+    if (!L.open) return;
+    Promise.resolve().then(readMarket).then((m) => { if (m) { L.mk = m; paint(); } }, () => {})
+      .finally(() => { if (L.open && !pair) marketTimer = setTimeout(readMk, MARKET_MS); });
+  }
   function readMe(quiet = false) {
     if (!pair || !D.unlocked) return Promise.resolve();
     if (reading) return reading;
@@ -159,6 +183,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const run = async () => {
       const my = ++seq, dirNow = L.dir;
       try {
+        // more than `available` says (it keeps back the fee of a cut) can still be locked from a note of exactly the amount: asked of the pool side, not guessed
+        if (dirNow === 'e2b' && pair.covers && L.bal.eth != null && amount > L.bal.eth) { const ok = await pair.covers(amount).catch(() => false); if (my !== seq) return; L.fits = { amt: amount, ok: !!ok }; }
         const q = await pair.quote({ dir: dirNow, amount });
         if (my !== seq) return;
         L.q = q; L.qErr = '';
@@ -170,31 +196,55 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   }
 
   // ── painting ──
+  // `fund` is what the Add BTC press asks the wallet for: the sats short and the total the address must hold
   function gate() {
     const amount = amountBase(), q = L.q, [pk] = SIDES[L.dir], bal = balOf(pk), c = COINS[pk];
     if (L.busy) return { label: 'Swapping…', off: true };
     if (!L.loaded) return { label: 'Loading…', off: true };
     if (!D.unlocked) return { label: 'Open your Tacit wallet', act: 'unlock' };
     if (!pair) return { label: 'Loading…', off: true };
-    if (!L.amt) return { label: 'Enter an amount', off: true };
+    // an address with no BTC is not a dead end: the press opens the way to add some
+    if (!L.amt) return L.dir === 'b2e' && L.bal.sats === 0n && !(L.bal.pending > 0n) ? { label: 'Add BTC', act: 'fund', fund: {} } : { label: 'Enter an amount', off: true };
     if (!amount) return { label: 'Enter a valid amount', off: true };
     const t = termsFor(L.dir);
     // a provider that holds less than its own minimum cannot take any swap: say so, instead of a minimum nobody can meet and then a maximum under it
     if (t && t.max < t.min) return { label: 'No provider has enough to swap right now', off: true };
     if (t && amount < t.min) return { label: `Minimum ${fmt(t.min)} ${c.sym}`, off: true };
     if (t && amount > t.max) return { label: `Most a provider takes is ${fmt(t.max)} ${c.sym}`, off: true };
-    const held = heldOf(pk);
-    if (bal != null && amount > bal) return { label: pk === 'eth' && held != null && amount <= held ? `Keep ${fmt(held - bal)} ${c.sym} for the relay fee` : `Not enough ${c.sym}${pk === 'eth' ? ' in your private balance' : ''}`, off: true };
+    const held = heldOf(pk), exact = pk === 'eth' && L.fits && L.fits.amt === amount && L.fits.ok;
+    if (bal != null && amount > bal && !exact) {
+      if (pk === 'btc') { const need = amount + BigInt(q?.networkFeeSats ?? LOCK_GUESS_SATS); return { label: `Add ${fmt(need - bal)} BTC`, act: 'fund', fund: { sats: Number(need - bal), need: Number(need) } }; }
+      return { label: held != null && amount <= held ? `${fmt(held - bal)} ETH stays back for the pool’s fee` : 'Not enough ETH in your private balance', off: true };
+    }
     if (L.qErr) return { label: 'No quote', off: true };
     if (!q) return { label: 'Getting a quote…', off: true };
     if (q.blocked) return { label: 'Not at this price', off: true };
-    if (L.dir === 'b2e' && bal != null && q.networkFeeSats != null && amount + BigInt(q.networkFeeSats) > bal) return { label: 'Add sats for the Bitcoin fee', act: 'fund' };
+    if (L.dir === 'b2e' && bal != null && q.networkFeeSats != null && amount + BigInt(q.networkFeeSats) > bal) { const need = amount + BigInt(q.networkFeeSats); return { label: 'Add sats for the Bitcoin fee', act: 'fund', fund: { sats: Number(need - bal), need: Number(need) } }; }
     return { label: `Swap ${COINS[SIDES[L.dir][0]].sym} → ${COINS[SIDES[L.dir][1]].sym}`, act: 'swap' };
+  }
+  const rows = (rs) => rs.map(([k, v, c]) => `<div><dt>${esc(k)}</dt><dd${c ? ` class="${c}"` : ''}>${esc(v)}</dd></div>`).join('');
+  // Before a quote: the market, what the providers take and hold, and who; the firm price comes once the wallet is open
+  function preview() {
+    const m = L.mk, t = termsFor(L.dir), [pk] = SIDES[L.dir], c = COINS[pk], amount = amountBase();
+    if (!m || (!m.rate && !t)) return null;
+    const ts = (m.providers || []).map((p) => p[L.dir]).filter(Boolean), now0 = ts.reduce((a, s) => { const n = s.available != null && s.available < s.max ? s.available : s.max; return n >= s.min && n > a ? n : a; }, 0n);
+    const out = [];
+    if (m.rate) out.push(['Market', L.dir === 'b2e' ? rateText(m.rate) : `1 ETH = ${tidy((1 / m.rate).toFixed(6))} BTC`, '']);
+    if (!ts.length) out.push(['Providers', 'none online this way right now', 'warn']);
+    else {
+      // the limits the ads name (what a provider holds now is the next row)
+      const lo = ts.reduce((a, x) => (x.min < a ? x.min : a), ts[0].min), hi = ts.reduce((a, x) => (x.max > a ? x.max : a), 0n);
+      out.push(['Limits', `${fmt(lo)} to ${fmt(hi)} ${c.sym}`, amount && (amount < t.min || amount > t.max) ? 'warn' : '']);
+      out.push(['Available now', now0 > 0n ? `up to ${fmt(now0)} ${c.sym}` : 'none, until a provider refills', now0 > 0n ? '' : 'warn']);
+      out.push([ts.length === 1 ? 'Provider' : 'Providers', ts.length === 1 ? (m.providers.find((p) => p[L.dir])?.name || 'Provider') : `${ts.length} online`, '']);
+    }
+    if (amount && !D.unlocked) out.push(['Firm price', 'once your wallet is open', '']);
+    return out;
   }
   function paintRcpt() {
     const rc = $('a-rcpt'), q = L.q;
-    if (!q) { rc.hidden = true; rc.innerHTML = ''; return; }
-    const mk = marketText(q.vsMarketBps), rows = [
+    if (!q) { const pv = !pair ? preview() : null; rc.hidden = !pv; rc.innerHTML = pv ? rows(pv) : ''; return; }
+    const mk = marketText(q.vsMarketBps), rows0 = [
       ['Price', L.dir === 'b2e' ? rateText(q.rate) : `1 ETH = ${tidy((1 / q.rate).toFixed(6))} BTC`, ''],
       ['Market', q.market ? (L.dir === 'b2e' ? rateText(q.market) : `1 ETH = ${tidy((1 / q.market).toFixed(6))} BTC`) : 'not available', q.market ? '' : 'warn'],
       ...(mk ? [['You get', mk, q.blocked ? 'err' : q.vsMarketBps < -100 ? 'warn' : '']] : []),
@@ -203,24 +253,31 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       ...(Number(q.networkFeeSats) > 0 ? [['Bitcoin fee', `about ${Number(q.networkFeeSats).toLocaleString('en-US')} sats`, '']] : []),
       ...(L.dir === 'e2b' && Number(q.takeFeeSats) > 0 ? [['Bitcoin fee', `about ${Number(q.takeFeeSats).toLocaleString('en-US')} sats, from the lock when you take it`, '']] : []),
       ['Time', etaText(q.etaSecs), ''],
-      ['If it stops', L.dir === 'b2e' ? 'your BTC returns to you' : 'your ETH returns to your private balance', ''],
+      ['If it stops', L.dir === 'b2e' ? 'your BTC returns to you within about a day' : 'your ETH returns to your private balance after about 4 hours', ''],
       ...(q.warnings || []).map((w) => ['Note', w, 'warn']),
     ];
     rc.hidden = false;
-    rc.innerHTML = rows.map(([k, v, c]) => `<div><dt>${esc(k)}</dt><dd${c ? ` class="${c}"` : ''}>${esc(v)}</dd></div>`).join('');
+    rc.innerHTML = rows(rows0);
   }
   function paintRecs() {
-    const box = $('a-sent'), gone = dismissed(), recs = L.recs.filter((r) => !gone.has(r.id));
+    const box = recsHost || $('a-sent'), gone = dismissed(), recs = L.recs.filter((r) => !gone.has(r.id));
+    if (recsHost) $('a-sent').hidden = true;
     box.hidden = !recs.length;
+    onRecs(recs);
     box.innerHTML = recs.map((r) => {
       const cls = r.state === 'done' ? 'ok' : r.state === 'working' ? 'wait' : 'warn', [pk, gk] = SIDES[r.dir] || SIDES.b2e;
       // (a swap found again from the key, or one whose provider has not offered yet, may not know a side: only the sides it knows are said)
       const what = r.pay > 0n && r.get > 0n ? `${fmt(r.pay)} ${COINS[pk].sym} → ${r.state === 'done' ? '' : 'about '}${fmt(r.get)} ${COINS[gk].sym}` : r.pay > 0n ? `${fmt(r.pay)} ${COINS[pk].sym}` : r.get > 0n ? `${fmt(r.get)} ${COINS[gk].sym}` : '';
       const eta = r.state === 'working' && r.etaSecs ? etaText(r.etaSecs) : '';
       const back = r.state === 'working' && r.refundAt ? `If it stops, your ${COINS[pk].sym} returns ${untilText(r.refundAt, now())} at the latest.` : '';
+      // when the page must be open again: b2e, to claim the ETH by the pool deadline (else the BTC returns, later); e2b, once its ETH is locked, to take the BTC in time
+      const locked = r.dir === 'e2b' && (r.steps || [])[1] && r.steps[1].state !== 'todo', by = r.state === 'working' && r.backBy ? clockText(r.backBy, now()) : '';
+      const stay = r.state !== 'working' ? '' : !by ? 'Keep this page open until it is done.'
+        : r.dir === 'b2e' ? `Keep this page open until it is done. If you close it, come back by ${by}: the ETH has to be claimed by then, or your BTC returns by itself after about a day.`
+          : locked ? `Keep this page open until it is done. If you close it, come back by ${by}: the BTC has to be taken in time, or the ETH you locked can be lost.` : 'Keep this page open until it is done.';
       const steps = (r.steps || []).map((s) => `<li class="${esc(s.state)}" data-step="${esc(s.key)}"><i aria-hidden="true"></i>${esc(s.title)}</li>`).join('');
       return `<div class="${cls}" data-rec="${esc(r.id)}"><span><i class="dot" aria-hidden="true"></i><b>${esc(r.title)}</b></span><span>${eta ? esc(eta) : ''}${r.state === 'working' ? '' : ` <button class="link" type="button" data-dismiss="${esc(r.id)}" aria-label="Dismiss">×</button>`}</span>
-        ${what ? `<span class="what">${esc(what)}</span>` : ''}${steps ? `<ol class="stp">${steps}</ol>` : ''}${r.detail || back ? `<small>${esc([r.detail, back].filter(Boolean).join(' '))}</small>` : ''}</div>`;
+        ${what ? `<span class="what">${esc(what)}</span>` : ''}${steps ? `<ol class="stp">${steps}</ol>` : ''}${r.detail || back ? `<small>${esc([r.detail, back].filter(Boolean).join(' '))}</small>` : ''}${stay ? `<small class="stay${by ? ' by' : ''}">${esc(stay)}</small>` : ''}</div>`;
     }).join('');
   }
   function paint() {
@@ -240,10 +297,13 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const out = $('a-out'), q = L.q;
     // what arrives is what the provider locks less the fee of the transaction that takes it (e2b), not the lock
     const arrives = q && L.dir === 'e2b' && Number(q.takeFeeSats) > 0 && q.get > BigInt(q.takeFeeSats) ? q.get - BigInt(q.takeFeeSats) : q && q.get;
-    if (q) { out.textContent = fmt(arrives); out.classList.remove('ph'); } else { out.textContent = '0'; out.classList.add('ph'); }
+    // before a quote (the wallet not open yet), what the best provider would give at the market, marked as an estimate (to six places: it is not a quote)
+    const est = !q && !pair && L.mk?.estimate && amountBase() ? L.mk.estimate(L.dir, amountBase()) : null;
+    out.classList.toggle('est', !!est);
+    if (q) { out.textContent = fmt(arrives); out.classList.remove('ph'); } else if (est) { out.textContent = `≈ ${tidy(fmtUnits(est.get, DEC, 6))}`; out.classList.remove('ph'); } else { out.textContent = '0'; out.classList.add('ph'); }
     paintRcpt(); paintRecs();
     const gt = gate(), go = $('a-go');
-    go.textContent = gt.label; go.disabled = !!gt.off; go.dataset.act = gt.act || '';
+    go.textContent = gt.label; go.disabled = !!gt.off; go.dataset.act = gt.act || ''; fundAsk = gt.fund || null;
     if (L.qErr && !L.busy) say(esc(L.qErr), 'err');
     else if (L.q?.blocked && !L.busy) say(esc(L.q.blocked.charAt(0).toUpperCase() + L.q.blocked.slice(1) + (/[.!?]$/.test(L.q.blocked) ? '' : '.')), 'err');
     else if (L.cls === 'err' && !L.busy && !L.sticky) say('');
@@ -270,27 +330,29 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     finally { L.busy = false; paint(); }
     readMe(true);
   }
-  // Swaps under way are stepped while the lane is open and the tab is seen; one that ends is said once.
+  // Swaps under way are stepped while the lane is open, the tab seen or hidden (hidden, less often: the browser runs a hidden tab's timers about once a minute anyway,
+  // and a claim or a take that waited for the tab to be seen again could miss its window); one that ends is said once.
   function follow(wait = POLL_MS) {
     clearTimeout(poll);
     if (!pair || !L.open || !L.recs.some((r) => r.state === 'working')) return;
     poll = setTimeout(async () => {
-      if (!document.hidden) {
-        try {
-          const next = await pair.pump();
-          for (const r of next) {
-            const was = known.get(r.id);
-            if (was === 'working' && r.state !== 'working') { notify(r.state === 'done' ? 'Swap done' : 'Swap returned'); readMe(true); }
-            known.set(r.id, r.state);
-          }
-          L.recs = next; paintRecs();
-        } catch { /* the next pass */ }
-      }
-      follow();
+      try {
+        const next = await pair.pump();
+        for (const r of next) {
+          const was = known.get(r.id);
+          if (was === 'working' && r.state !== 'working') { notify(r.state === 'done' ? 'Swap done' : 'Swap returned'); readMe(true); }
+          known.set(r.id, r.state);
+        }
+        L.recs = next; paintRecs();
+      } catch { /* the next pass */ }
+      follow(document.hidden ? HIDDEN_POLL_MS : POLL_MS);
     }, wait);
   }
+  // leaving the page while a swap is under way stops its steps: the browser asks first
+  globalThis.addEventListener?.('beforeunload', (e) => { if (L.recs.some((r) => r.state === 'working')) { e.preventDefault(); e.returnValue = ''; } });
 
   // ── events ──
+  function dismiss(id) { const s = dismissed(); s.add(id); try { localStorage.setItem(DISMISS_KEY, JSON.stringify([...s].slice(-50))); } catch { /* storage is a convenience */ } paintRecs(); }
   const setAmt = (v) => { L.amt = v; L.sticky = false; if (L.cls === 'err' && !L.busy) say(''); onState(); requote(); };
   host.addEventListener('input', (e) => { if (e.target.id === 'a-amt') setAmt(e.target.value.trim()); });
   host.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'a-amt' && !$('a-go').disabled) $('a-go').click(); });
@@ -298,20 +360,22 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const t = e.target;
     if (t.closest('#a-flip')) { if (L.busy) return; L.dir = L.dir === 'b2e' ? 'e2b' : 'b2e'; L.amt = ''; $('a-amt').value = ''; L.q = null; L.qErr = ''; seq++; L.sticky = false; say(''); onState(); paint(); return; }
     const dm = t.closest('[data-dismiss]');
-    if (dm) { const s = dismissed(); s.add(dm.dataset.dismiss); try { localStorage.setItem(DISMISS_KEY, JSON.stringify([...s].slice(-50))); } catch { /* storage is a convenience */ } paintRecs(); return; }
+    if (dm) { dismiss(dm.dataset.dismiss); return; }
     const qk = t.closest('[data-quick]'); if (qk) { $('a-amt').value = qk.dataset.quick; setAmt(qk.dataset.quick); return; }
-    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(); else if (a === 'swap') swap(); }
+    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'swap') swap(); }
   });
+  recsHost?.addEventListener('click', (e) => { const dm = e.target.closest('[data-dismiss]'); if (dm) dismiss(dm.dataset.dismiss); });
 
   return {
     // The lane opens: the key is looked for, and with one open the pair client is made and what is under way is shown.
     async show() {
       L.open = true; mounted = true; paint();
+      if (!pair) readMk();
       try { await D.load(); } catch (e) { say(`Could not load this lane: ${esc(plainError(e))}`, 'err'); return; }
       L.loaded = true; L.unlocked = D.unlocked; paint();
       if (D.unlocked) await begin();
     },
-    hide() { L.open = false; clearInterval(refreshTimer); clearTimeout(poll); clearTimeout(qTimer); },
+    hide() { L.open = false; clearInterval(refreshTimer); clearTimeout(poll); clearTimeout(qTimer); clearTimeout(marketTimer); },
     // the pair and amount a link names
     set({ dir: d, amt } = {}) {
       if (d && d !== L.dir && !L.busy) { L.dir = d === 'e2b' ? 'e2b' : 'b2e'; L.q = null; L.qErr = ''; seq++; }
@@ -320,5 +384,10 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     },
     state: () => ({ dir: L.dir, amt: L.amt }),
     get unlocked() { return D.unlocked; },
+    // the swaps the lane holds, and the open pair's copy of them as a file (fast/pair-keep.js), or null before the wallet is open
+    records: () => L.recs.slice(),
+    keep: () => opened?.keep || null,
+    // after a copy is read back: the swaps are found and stepped again
+    reread: async () => { if (!pair) return; L.recs = await pair.records().catch(() => L.recs); paint(); follow(1000); },
   };
 }

@@ -178,7 +178,8 @@ export function makeBitcoinLocker(ctx) {
         // the provider is asked to hold the payout through the confirmation; a provider that does not answer this is not waited on
         if (!rec.extended && counter.extend && rec.quoteId) {
           try {
-            const r = await counter.extend({ quoteId: rec.quoteId, txid: rec.lock.txid });
+            // (with the lock's terms, so the provider can see the transaction pays this lock and no other output)
+            const r = await counter.extend({ quoteId: rec.quoteId, txid: rec.lock.txid, lock: { T: hx(secrets(rec).T.toRawBytes(true)), lockerXonly: hx(btc.wallet.xonly) } });
             if (!(r && r.ok === false && r.retry)) await save(rec, { extended: !(r && r.ok === false), extendWhy: r && r.ok === false ? String(r.why || '') : null });
           } catch { /* asked again on the next step */ }
         }

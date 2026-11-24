@@ -77,6 +77,8 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `quote.minAmount`, `quote.maxAmount` | amounts in base units, both sides; set `maxAmount` below `minAmount` to stop quoting while open swaps finish |
 | `quote.feeBps`, `quote.flatFee` | the LP's fee: a share of the amount plus a flat part in base units. The flat part covers the relay's fee (for cutting a note to size) and a little more: the user already pays the Bitcoin take in sats, inside its lock (`takeSats`), so it is not part of the fee. Keep it small: a fee over 5% of the amount is quoted by the fast page with a plain warning, and the front page's Bridge tab does not prefer it, so a flat fee of F TAC keeps every bridge under about 20 × F TAC out of the tab (a fee over 90% is not quoted at all) |
 | `quote.validSecs`, `quote.rate` | how long a quote holds; `{num, den}` converts what is left after the fee (1/1 for one asset on both sides) |
+| `quote.graceSecs`, `quote.lateSecs`, `quote.lateMoveBps` | how long after `validSecs` an offer is still answered at the quote. With a fixed `rate` (the TAC provider) the grace is all there is. A provider priced from the market answers after the grace only an offer whose lock it saw before the quote ran out (named to `/extend` in time, or confirmed in a block by then), up to `lateSecs` after it (6 h), and only while the price of the moment pays no more than `lateMoveBps` over the quote (100) |
+| `traceRpcs` | the Ethereum nodes asked for a transaction's trace (`debug_traceTransaction` or `trace_transaction`), to read a claim settled through a contract other than the pool or its relayer; `FB_LP_TRACE_RPCS` (comma separated) wins. An own node goes first (the public ones that answer are the default) |
 | `policy.evmWindowSecs` | the time the user has to claim in the pool, from the Bitcoin block that confirmed its lock (4 h) |
 | `policy.minClaimSecs`, `policy.claimSlackSecs` | the least time a claim may be built with (1 h), and the gap between the pool deadline and the opening of the user's refund (2 h) |
 | `policy.confs` | `[amountFrom, confirmations]` pairs: how many Bitcoin confirmations the LP waits for, by amount |
@@ -110,7 +112,7 @@ restart, not a new image.
 | `GET /info` | the claim key, the asset pair, limits, windows, and `available`: the most it can take now |
 | `POST /quote {amount}` | what the user pays on Bitcoin and receives in the pool, fixed for `validSecs`; it holds nothing |
 | `POST /reserve {quoteId}` | holds the payout while the user builds and sends its lock |
-| `POST /extend {quoteId, txid}` | once the lock is on the network, holds the payout through its confirmation |
+| `POST /extend {quoteId, txid, lock}` | once the lock is on the network, holds the payout through its confirmation; for a lock of sats `lock` is `{T, lockerXonly}`, and the transaction must pay the quoted amount to the output those terms make |
 | `POST /offer {quoteId, offer}` | the user's lock offer; `{ok}` or `{ok: false, retry, why}`, recomputed from the chain each time |
 | `GET /swap/:id`, `GET /swap/:id/offer` | the swap's phase; the pool lock's offer once the lock is made |
 

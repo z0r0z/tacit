@@ -57,6 +57,9 @@
 .swc .snt.atm .stp li.active i { background: var(--orange); animation: swc-snt-pulse 1.8s ease-in-out infinite; }
 @media (max-width: 420px) { .swc .snt.atm .stp { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (prefers-reduced-motion: reduce) { .swc .snt.atm .stp li.active i { animation: none; } }
+/* an amount before the wallet is open is an estimate at the market, set apart from a quote; the line that says when to be back is read first */
+.swc #atomic .big.est { color: var(--mute); font-size: 34px; }
+.swc .snt.atm small.stay.by { color: var(--ink); }
 .swc .f { padding: 12px 14px 10px; background: var(--field); border: 1px solid color-mix(in srgb, var(--ink) 4%, transparent); border-radius: 16px; transition: border-color .15s, box-shadow .15s; }
 .swc .f:focus-within { border-color: color-mix(in srgb, var(--ink) 16%, transparent); }
 .swc .fh, .swc .ff { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-height: 22px; font-size: 12px; color: var(--mute); }

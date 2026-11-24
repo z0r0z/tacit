@@ -44,7 +44,7 @@ const MAX_INPUTS = 6, MAX_OFFER_BYTES = 12000, FAILURE_MEMORY_SECS = 10;
 
 export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmOffers, inventory, config, now = () => Math.floor(Date.now() / 1000), log = () => {}, alert = () => {} }) {
   const q = config.quote, min = BigInt(q.minAmount), max = BigInt(q.maxAmount), validSecs = q.validSecs ?? 600;
-  const maxOpen = config.maxOpen ?? 2, maxLocked = config.maxLocked == null ? null : BigInt(config.maxLocked);
+  const maxOpen = config.maxOpen ?? 2, maxOpenPerKey = config.maxOpenPerKey ?? Infinity, maxLocked = config.maxLocked == null ? null : BigInt(config.maxLocked);
   const refreshSecs = config.refreshSecs ?? 60, alertSecs = config.alertSecs ?? 3600;
   const pol = config.policy || {};
   const lockerPub = bytesToHex(btc.wallet.pub);
@@ -179,6 +179,10 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
       if (now() > rec.validUntil) return no('quote expired');
       const p = await picture(), btcValue = BigInt(rec.btcValue), why = roomFor(p, btcValue);
       if (why) return no(why, true);
+      // one key asks for at most `maxOpenPerKey` locks at a time (the pair provider: 1): a start costs the user nothing, and each lock holds this side's coins for its timelock
+      let mine = 0;
+      for (const r of await swaps.list()) if (!TERMINAL.has(r.phase) && strip(r.counterClaimPub || '') === strip(rec.claimPub)) mine++;
+      if (mine >= maxOpenPerKey) return no('this key already has a send under way with this provider: finish it first', true);
       // a lock of sats picks its own coins, from the address's, leaving alone those that open swaps hold; a lock of a note is built from the notes picked here
       const pick = sats ? null : pickNotes(p.free, btcValue);
       const avoid = sats ? new Set(p.feeCoins) : new Set([...p.all.map(key), ...p.feeCoins]);

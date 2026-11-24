@@ -14,12 +14,12 @@
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=a3e28483';
-import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=17d2f6af';
+import { makeFastBridgeEvm, makeTxTracer, TRACE_NODES } from '/fastbridge-evm.js?cb=94c81e99';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=ff9d9c02';
-import { makeLpService } from '/fastbridge-provider.js?cb=ebd71944';
+import { makeLpService } from '/fastbridge-provider.js?cb=0b53c49b';
 import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=59160fed';
-import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=66f1cfd2';
+import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=2913bc2e';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { adLabel } from '/fastbridge-board.js';
 import { signSchnorr } from '/bulletproofs.js';
@@ -158,7 +158,7 @@ function sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag, forNotes, w
     ...(forNotes ? { tacit: T, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]), poolAddress: ux.cfg.pool, binding: ux.chainBindingHex(), keccak256: keccak_256, secp } : {}),
   });
   const seed = hmac(sha256, priv, enc.encode(seedTag));
-  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: asset.evmAsset, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log });
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: priv, seed, asset: asset.evmAsset, poolAddress: ux.cfg.pool, selfSettle: wallet ? walletSettle({ ux, wallet, ask }) : null, log, trace: makeTxTracer({ fetchImpl, nodes: TRACE_NODES.filter((u) => !/tatum/.test(u)) }) });
   return { prims, btc, seed, evm };
 }
 

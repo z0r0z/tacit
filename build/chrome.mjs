@@ -21,7 +21,7 @@ export const CHROME_PAGES = {
   'build/index.html': '', 'etch/index.html': 'etch', 'weld/stats/index.html': '', 'relay/index.html': '',
   'splitter/index.html': '', 'sats/index.html': '', 'bridge/index.html': 'bridge',
   'discord/index.html': '', 'shop/index.html': 'shop', 'face/index.html': 'face', 'fast/index.html': 'chains', 'prove/index.html': 'prove', 'help/index.html': '', 'docs/chain/index.html': '',
-  'farm/index.html': 'defi',
+  'farm/index.html': 'defi', 'btc/index.html': 'chains',
 };
 
 // 24×24 line drawings, the lander's tabs' hand; drawn by chrome.css (stroke, round caps) unless a glyph is .fill. The assets glyph is the TAC logo's t in its ring, at the logo's proportions (slanted stem, wide high bar, foot sweeping right). The llama is DefiLlama's mark in one colour

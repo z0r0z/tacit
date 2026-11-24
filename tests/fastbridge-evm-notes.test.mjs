@@ -114,6 +114,17 @@ test('a note of the exact size is cut with no fee first, from one note or severa
   assert.equal(await evm.available(), 893n, '900 held, less the 7 a cut may cost');
   held.notes = [note(3, '5')];
   assert.equal(await evm.available(), 0n, 'never below nothing');
+  // whether a lock of an amount can be made: a note of exactly the amount needs no cut, so nothing is kept back for one (a note just shielded for a swap)
+  held.notes = [note(9, '897')];
+  assert.equal(await evm.available(), 890n, 'available keeps the cut fee back even then');
+  assert.equal(await evm.covers(897n), true, 'but a note of exactly 897 covers a lock of 897');
+  assert.equal(await evm.covers(895n), false, '895 has to be cut from it, and 897 does not hold 895 and the fee');
+  assert.equal(await evm.covers(890n), true, 'up to what it holds less the fee');
+  held.notes = [note(1, '400'), note(2, '500')];
+  assert.equal(await evm.covers(893n), true, 'notes that are cut: the amount and the fee');
+  assert.equal(await evm.covers(894n), false);
+  held.notes = [];
+  assert.equal(await evm.covers(1n), false, 'nothing held covers nothing');
   // any other failure is not papered over
   ux.transfer = async () => { throw new Error('the relay did not take the job'); };
   held.notes = [note(8, '1000')];
