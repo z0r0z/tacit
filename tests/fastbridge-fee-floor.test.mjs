@@ -27,6 +27,14 @@ test('estimates under the floor are raised to it; a real estimate above it stand
   assert.equal(await chain(busy, { feeTarget: '1', minFeeRate: 2 }).feeRate(0), 8, 'above the floor the median stands (rounded up)');
 });
 
+test('one explorer\'s estimate alone is held to a ceiling: a high rate is taken only when two explorers give it', async () => {
+  const one = { 'a.test': { 1: 4000 } };
+  assert.equal(await chain(one, { feeTarget: '1', minFeeRate: 2 }).feeRate(0), 300, 'one explorer saying 4000 sat/vB is held to 300');
+  assert.equal(await chain({ 'a.test': { 1: 40 } }, { feeTarget: '1', minFeeRate: 2 }).feeRate(0), 40, 'a usual rate from one explorer stands');
+  const two = { 'a.test': { 1: 4000 }, 'b.test': { 1: 4200 } };
+  assert.equal(await chain(two, { feeTarget: '1', minFeeRate: 2 }).feeRate(0), 4100, 'two that agree are believed');
+});
+
 test('the target is the next block and not the six-block one the estimates run low on', async () => {
   const split = { 'a.test': { 1: 5, 3: 3, 6: 1 }, 'b.test': { 1: 5, 3: 3, 6: 1 } };
   assert.equal(await chain(split, { feeTarget: '1', minFeeRate: 2 }).feeRate(0), 5);

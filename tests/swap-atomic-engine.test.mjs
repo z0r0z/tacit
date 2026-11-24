@@ -159,7 +159,8 @@ test('the lane\'s limits are the providers\': under the least a provider takes i
   await until(() => /^Minimum 0\.0002 BTC$/.test(go(m).textContent), 'the provider\'s least (20,000 sats in this world)');
   assert.equal(go(m).disabled, true);
   m.lane.set({ amt: '0.0003' });
-  await until(() => go(m).dataset.act === 'swap', 'a quote at 0.0003 BTC');
+  // (a quote that small pays a Bitcoin fee over 2% of it, which is accepted before the swap: either way the quote is there)
+  await until(() => go(m).dataset.act === 'swap' || go(m).dataset.act === 'acceptFee', 'a quote at 0.0003 BTC');
   m.lane.set({ amt: '0.002' });
   await until(() => /^Most a provider takes is 0\.001 BTC$/.test(go(m).textContent), 'the most a provider can take now (what its pool ETH backs: 100,000 sats here)');
   m.done();

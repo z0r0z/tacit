@@ -44,6 +44,8 @@ export const PAIR_POLICY = {
   // the providers asked for one quote: the best `maxAsk` by their advertised terms, those that failed or timed out lately (strikes, kept for strikeSecs) after the
   // others, and those with maxStrikes left out while any other can be asked
   maxAsk: 8, strikeSecs: 1800, maxStrikes: 3,
+  // a Bitcoin fee above this share of the amount (in basis points) is said, and a start needs it accepted (q.feeAccepted)
+  maxFeeShareBps: 200,
 };
 // The confirmations the user wants on a provider's lock of sats before it locks pool ETH against it: more for a larger amount
 export const confsForSats = (value) => { const v = BigInt(value); return v >= 100_000_000n ? 6 : v >= 10_000_000n ? 3 : v >= 1_000_000n ? 2 : 1; };
@@ -343,8 +345,11 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
         if (typeof feeFor === 'function') takeFeeSats = Number(feeFor(TAKE_VSIZE, Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5))));
       } catch { takeFeeSats = null; }
     }
+    // a Bitcoin fee that is a large share of what is swapped: the lock's (b2e, of the sats paid) or the take's (e2b, of the sats received)
+    const feeSats = dir === 'b2e' ? networkFeeSats : takeFeeSats, feeOn = dir === 'b2e' ? best.pay : best.get;
+    const highFee = feeSats != null && feeOn > 0n && BigInt(Math.ceil(Number(feeSats))) * 10000n > feeOn * BigInt(policy.maxFeeShareBps) ? { sats: Number(feeSats), bps: Number((BigInt(Math.ceil(Number(feeSats))) * 10000n) / feeOn) } : null;
     return {
-      dir, provider: { id: best.p.id, name: best.p.name }, pay: best.pay, get: best.get, takeFeeSats, rate, market: market && versus != null ? market.ethPerBtc : null, vsMarketBps: versus,
+      dir, provider: { id: best.p.id, name: best.p.name }, pay: best.pay, get: best.get, takeFeeSats, highFee, rate, market: market && versus != null ? market.ethPerBtc : null, vsMarketBps: versus,
       feeBps: versus == null ? 0 : Math.max(0, -versus), etaSecs: dir === 'b2e' ? 1500 : 1800, networkFeeSats, expiresAt: Number(best.r.validUntil), warnings, blocked, short, ref: best,
     };
   }
@@ -353,6 +358,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   const start = (q) => exclusive(() => startOnce(q));
   async function startOnce(q) {
     if (q.blocked) throw new Error(q.blocked);
+    if (q.highFee && !q.feeAccepted) throw new Error(`the Bitcoin fee is about ${q.highFee.sats} sats, ${(q.highFee.bps / 100).toFixed(1)}% of the amount: accept it to go on`);
     if (q.short) throw new Error(`your Bitcoin address holds ${q.short.have} sats and this needs ${q.short.need}, the amount and the network fee`);
     if (!(q.expiresAt > now() + policy.quoteMarginSecs)) throw new Error('the quote expired: ask again');
     if (q.dir === 'b2e') {

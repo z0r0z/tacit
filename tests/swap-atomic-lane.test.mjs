@@ -77,7 +77,7 @@ const FAKE = `
       if (S.mode === 'none') throw new Error('No provider can take that amount.');
       const b2e = dir === 'b2e', blocked = S.mode === 'blocked';
       const q = { dir, provider: { id: 'p1', name: 'Test provider' }, pay: amount, get: ((b2e ? (amount * 304n) / 10n : (amount * 10n) / 304n) * (S.cut ? 99n : 100n)) / 100n, rate: blocked ? 29.4 : 30.4, market: 30.62, vsMarketBps: blocked ? -410 : -72, feeBps: 40, etaSecs: 780,
-        networkFeeSats: b2e ? 1200 : 0, takeFeeSats: b2e ? null : 500, expiresAt: now() + (S.ttl || 300), warnings: S.warn ? ['The provider holds less than this right now.'] : [], blocked: blocked ? 'the provider quotes 4.1% under the market' : null, ref: { n: calls.quote.length } };
+        networkFeeSats: b2e ? 1200 : 0, takeFeeSats: b2e ? null : 500, expiresAt: now() + (S.ttl || 300), highFee: S.highFee ? { sats: 1200, bps: 1200 } : null, warnings: S.warn ? ['The provider holds less than this right now.'] : [], blocked: blocked ? 'the provider quotes 4.1% under the market' : null, ref: { n: calls.quote.length } };
       calls.quotes.push(q);
       return q;
     },
@@ -377,6 +377,25 @@ console.log('a provider that cannot hold its quote: a new quote is asked for and
   await page.click('#a-go');
   await page.waitForFunction((n) => window.__atom.calls.quote.length > n && /^Swap BTC → ETH$/.test(document.querySelector('#a-go').textContent.trim()), asked, { timeout: 5000 });
   ok(/a new quote is being asked for/.test(await text(page, '#a-q')) && (await atom(page, 'A.calls.start.length')) === 1, `the refusal is said, a new quote is shown, and nothing more is started (${await text(page, '#a-q')})`);
+  await page.close();
+}
+
+console.log('a Bitcoin fee that is a large share of the amount is accepted before a swap starts');
+{
+  const { page } = await fresh({ ads: [ad()] });
+  await open(page);
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__btc.unlocked && /Balance/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
+  await atom(page, '(A.highFee = true, 0)');
+  await type(page, '0.01');
+  await page.waitForFunction(() => /Accept the Bitcoin fee/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
+  ok(/The Bitcoin fee is about 1,200 sats, 12\.0% of the amount/.test(await text(page, '#a-q')), `the fee and its share are said (${await text(page, '#a-q')})`);
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Swap BTC → ETH$/.test(document.querySelector('#a-go').textContent.trim()), null, { timeout: 5000 });
+  ok((await atom(page, 'A.calls.start.length')) === 0, 'accepting it starts nothing by itself');
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__atom.calls.start.length === 1, null, { timeout: 5000 });
+  ok((await atom(page, 'A.calls.start[0].feeAccepted')) === true, 'the swap starts with the fee accepted');
   await page.close();
 }
 

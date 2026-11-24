@@ -101,7 +101,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import('/fast/pair-wire.js?cb=ce51c08a');
+      const wire = await import('/fast/pair-wire.js?cb=e9765bb2');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },
@@ -324,6 +324,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (!q) return { label: 'Getting a quote…', off: true };
     if (q.blocked) return { label: 'Not at this price', off: true };
     if (q.renewed) return { label: 'Accept the new price', act: 'accept' };
+    if (q.highFee && !q.feeAccepted) return { label: 'Accept the Bitcoin fee', act: 'acceptFee' };
     if (L.dir === 'b2e' && bal != null && q.networkFeeSats != null && amount + BigInt(q.networkFeeSats) > bal) { const need = amount + BigInt(q.networkFeeSats); return { label: 'Add sats for the Bitcoin fee', act: 'fund', fund: { sats: Number(need - bal), need: Number(need) } }; }
     return { label: `Swap ${COINS[SIDES[L.dir][0]].sym} → ${COINS[SIDES[L.dir][1]].sym}`, act: 'swap' };
   }
@@ -417,6 +418,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     else if (gt.act !== 'shield' && L.cls === 'hint') say('');
     if (L.qErr && !L.busy) say(esc(L.qErr), 'err');
     else if (L.q?.blocked && !L.busy) say(esc(L.q.blocked.charAt(0).toUpperCase() + L.q.blocked.slice(1) + (/[.!?]$/.test(L.q.blocked) ? '' : '.')), 'err');
+    else if (L.q?.highFee && !L.q.feeAccepted && !L.q.renewed && !L.busy) say(esc(`The Bitcoin fee is about ${L.q.highFee.sats.toLocaleString('en-US')} sats, ${(L.q.highFee.bps / 100).toFixed(1)}% of the amount. Accept it to go on, or swap a larger amount.`), 'warn');
     else if (L.cls === 'err' && !L.busy && !L.sticky) say('');
   }
 
@@ -549,7 +551,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const dm = t.closest('[data-dismiss]');
     if (dm) { dismiss(dm.dataset.dismiss); return; }
     const qk = t.closest('[data-quick]'); if (qk) { $('a-amt').value = qk.dataset.quick; setAmt(qk.dataset.quick); return; }
-    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'shield') addEth(addAsk); else if (a === 'swap') swap(); else if (a === 'reread') { L.unread = null; paint(); readMe(); } else if (a === 'accept' && L.q) { L.q = { ...L.q, renewed: null }; L.sticky = false; say(''); paint(); } }
+    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'shield') addEth(addAsk); else if (a === 'swap') swap(); else if (a === 'reread') { L.unread = null; paint(); readMe(); } else if (a === 'accept' && L.q) { L.q = { ...L.q, renewed: null }; L.sticky = false; say(''); paint(); } else if (a === 'acceptFee' && L.q) { L.q = { ...L.q, feeAccepted: true }; say(''); paint(); } }
   });
   recsHost?.addEventListener('click', (e) => { const dm = e.target.closest('[data-dismiss]'); if (dm) dismiss(dm.dataset.dismiss); });
 

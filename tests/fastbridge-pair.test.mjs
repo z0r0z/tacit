@@ -590,6 +590,20 @@ test('a provider that cannot hold its quote is not given up on: the page is told
   assert.equal((await w.pair.quote({ dir: 'b2e', amount: 1_000_000n })).provider.name, 'P1', 'and the provider that failed is asked after the others');
 });
 
+test('a Bitcoin fee above 2% of the amount is said with the quote, and a start needs it accepted', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  const dear = Object.assign(Object.create(Object.getPrototypeOf(w.uBtc)), w.uBtc, { feeRate: async () => 40 });
+  const pair = w.makePair({ btc: dear });
+  const q = await pair.quote({ dir: 'b2e', amount: SATS });
+  assert.ok(q.highFee && q.highFee.sats === q.networkFeeSats && q.highFee.bps > 200, JSON.stringify(q.highFee));
+  await assert.rejects(() => pair.start(q), /the Bitcoin fee is about \d+ sats, \d+\.\d% of the amount: accept it to go on/);
+  assert.equal(w.btc.broadcasts.length, 0, 'nothing was sent');
+  const cheap = await w.pair.quote({ dir: 'b2e', amount: SATS });
+  assert.equal(cheap.highFee, null, 'at the usual rate there is nothing to accept');
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   const t0 = Date.now();

@@ -18,7 +18,7 @@ const DUST = 546;
 const ZERO_AUTH = '0x' + '00'.repeat(32);
 const KNOWN = /already (in|known)|txn-already|already in block|already exists|duplicate/i;
 
-export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp, fetchImpl = fetch, timeoutMs = 20000, feeTarget = '3', minFeeRate = 1, retryMs = 1500, feeFreshMs = 60000, feeStaleMs = 2 * 3600000, feeRetryMs = 15000, nowMs = Date.now, log = () => {}, maxReads = 8, coolMs = 20000, coolMaxMs = 5 * 60000 }) {
+export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGetStorageAt, poolAddress, binding, keccak256, secp, fetchImpl = fetch, timeoutMs = 20000, feeTarget = '3', minFeeRate = 1, retryMs = 1500, feeFreshMs = 60000, feeStaleMs = 2 * 3600000, feeRetryMs = 15000, soloFeeCeiling = 300, nowMs = Date.now, log = () => {}, maxReads = 8, coolMs = 20000, coolMaxMs = 5 * 60000 }) {
   const list = bases.map((b) => b.replace(/\/$/, ''));
   const wallet = { pub: prims.wallet.pub, priv: prims.wallet.priv, xonly: prims.wallet.pub.slice(1) };
   const address = prims.wallet.address();
@@ -126,6 +126,8 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     // do when the pool is busy with transactions above that line: one sent at 1.06 sat/vB sat unconfirmed for over an hour)
     // explorers that disagree by more than this are not both right: the lower stands, since too low a rate only confirms slowly
     if (seen.length > 1 && seen[seen.length - 1] > seen[0] * FEE_RATE_SPREAD) return Math.max(1, minFeeRate, Math.ceil(seen[0]));
+    // one explorer's word alone is held to `soloFeeCeiling` (sat/vB): a rate above it is taken only when two say so
+    if (seen.length === 1) return Math.max(1, minFeeRate, Math.ceil(Math.min(seen[0], soloFeeCeiling)));
     return Math.max(1, minFeeRate, Math.ceil(seen.length % 2 ? seen[(seen.length - 1) / 2] : (seen[seen.length / 2 - 1] + seen[seen.length / 2]) / 2));
   }
   async function feeRate(maxAgeMs = feeFreshMs) {          // a caller that wants it newer than a quote needs it (the LP's tick) says so
