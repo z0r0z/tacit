@@ -1,16 +1,32 @@
 # Tacit Praxis ceremony: Phase 2 tool
 
-The Tacit Praxis ceremony extends the public Groth16 Phase-2 setup of **SP1 v6.1.0's wrapper circuit** (the one circuit
-that checks an SP1 proof of any program) with new contributions. Security needs one honest contributor anywhere in the
-chain: in Succinct's 18 or in ours. Phase 1 is the Hermez / Perpetual Powers of Tau file that Succinct's setup used.
+The Tacit Praxis ceremony adds new contributions to the public Groth16 Phase-2 setup of **SP1 v6.1.0's wrapper
+circuit** (the one circuit that checks an SP1 proof of any program), continuing from Succinct's last file, `phase2-17`.
+Phase 1 is the Hermez / Perpetual Powers of Tau file that Succinct's setup used.
+
+The ceremony produces a **new key** for that circuit (a new delta). It does not change Succinct's deployed SP1 verifier
+(`VERIFIER_HASH 0x4388a21c…`) or its key, and does not add to the setup that verifier relies on. The new key is the
+setup for future Tacit Praxis work, which is in progress and has not been reviewed, and for other Groth16 verifiers of
+this circuit. Nothing rests on it today.
+
+The key is sound only if all three hold:
+
+1. at least one of the first 54 contributors to the Perpetual Powers of Tau (Phase 1) was honest;
+2. at least one Phase 2 contributor was honest: one of Succinct's 18 contributions, or one here;
+3. the starting files (the Phase 1 commons, the initial Phase 2 file and the evaluations) were derived correctly from
+   Phase 1 and the circuit. Re-deriving them from `powersOfTau28_hez_final_24.ptau` is a separate check, not yet done
+   here.
+
+The link-by-link checks below cover (2) from `phase2-17` onward; they do not cover (1) or (3).
 
 This tool reads and writes the same files as Succinct's
 [semaphore-gnark-11](https://github.com/succinctlabs/semaphore-gnark-11), on the same gnark (`github.com/p4u/gnark`
-at `cd7874155e26`), so a contribution here is a contribution to the same chain.
+at `cd7874155e26`).
 
 ## Contribute
 
-You need Go 1.24 or later, about 16 GB of RAM, and to download and upload about 1 GB.
+You need Go 1.24 or later (release binaries are built with Go 1.27.4), about 16 GB of RAM, about 2.2 GB of free disk,
+and to download and upload about 1 GB (each file is 1,040,779,531 bytes).
 
 ```sh
 git clone https://github.com/z0r0z/tacit && cd tacit/ceremony-phase2
@@ -18,12 +34,47 @@ go build -o tacit-ceremony ./cmd/tacit-ceremony
 ./tacit-ceremony contribute --coordinator <coordinator URL> --name "<your name>" --handle @you
 ```
 
-It joins the queue, waits for your turn, downloads the current head and checks its SHA-256, adds your contribution
-with fresh randomness (dropped when the program exits: run it on a machine you trust, ideally with no swap), uploads
-it, and prints a receipt signed by the coordinator. The coordinator checks every contribution against the head before
-it is accepted.
+Leave it running. It:
 
-Post your receipt's `contribution_hash` publicly. Anyone can check it against the transcript and the files.
+- joins the queue and polls the coordinator to keep the place (a place that stops polling for a minute is given to
+  the next person; Ctrl-C gives it up and deletes the tool's files);
+- claims the slot when it is your turn (within 3 minutes; the slot then lasts at most 2 hours);
+- downloads the head, resuming after a dropped connection, and checks its SHA-256;
+- adds your contribution with fresh randomness (dropped when the program exits: run it on a machine you trust, ideally
+  with no swap) and prints your contribution hash;
+- uploads it, retrying a dropped connection while the slot lasts;
+- checks the receipt: signed by the pinned coordinator key (`--coordinator-key`, default
+  `c22b59ae8acf7a1c2b78c4da8cfd2a3e7a21f2d2809a4d35e3a71e0fd2052eb7`), for your contribution hash, built on the head you
+  downloaded; then saves it as `receipt-<n>.json` and prints a template for your attestation.
+
+Names and handles are self-declared: the coordinator does not check them. Your attestation (see
+[attestations/](attestations/)) is what ties a contribution to you.
+
+### Windows (PowerShell)
+
+Install Go from <https://go.dev/dl/> and Git from <https://git-scm.com/download/win>, then:
+
+```powershell
+git clone https://github.com/z0r0z/tacit
+cd tacit\ceremony-phase2
+go build -o tacit-ceremony.exe .\cmd\tacit-ceremony
+.\tacit-ceremony.exe contribute --coordinator <coordinator URL> --name "<your name>" --handle "@you"
+```
+
+`Get-FileHash -Algorithm SHA256 <file>` prints a file's SHA-256 where the steps below use `shasum -a 256`.
+
+### Offline
+
+To contribute on a machine with no network: download the head, contribute there, and upload from a connected machine.
+The upload joins the queue and is accepted only if the head is still the file you built on, so do this when the queue
+is quiet.
+
+```sh
+curl -s <coordinator URL>/api/head                         # {"index": N, "sha256": ..., "url": "/f/phase2-N", ...}
+curl -fO <coordinator URL>/f/phase2-N && shasum -a 256 phase2-N
+./tacit-ceremony contribute-file phase2-N phase2-N+1       # on the offline machine; prints the contribution hash
+./tacit-ceremony upload --coordinator <coordinator URL> --name "<your name>" --handle @you phase2-N phase2-N+1
+```
 
 ## Check
 
@@ -32,26 +83,62 @@ Post your receipt's `contribution_hash` publicly. Anyone can check it against th
 ./tacit-ceremony verify-chain <dir> 17 <head>             # every contribution from Succinct's last file
 ```
 
+Each contribution must carry the hash of the file before it (its challenge); a file without one is refused. Each file
+must be exactly the size its layout accounts for, checked before it is read.
+
 ## Fixed values
 
 | | |
 |---|---|
 | Circuit (`groth16_circuit.bin`, SP1 v6.1.0) | sha256 `d6a66be2702206e2b1a20bebf7096142864feac9e399a309e5e6e00353264cbc` |
 | Starting file (`phase2-17`, Succinct's last) | sha256 `bf6f7799c77a90009ae356fd0d3a69a91cf153825e6762ce344fe804cf5db2df` |
-| Phase 1 seal | drand round 1000, as in Succinct's transcript (the files depend on it) |
-| Phase 2 seal | a drand round and a Bitcoin block announced before the close: `tacit-ceremony beacon <block hash> <round>` |
+| Coordinator key (ed25519) | `c22b59ae8acf7a1c2b78c4da8cfd2a3e7a21f2d2809a4d35e3a71e0fd2052eb7` |
+| Phase 1 seal | the randomness of drand round 1000 on the League of Entropy default chain (`8990e7a9…51b2ce`), as in Succinct's transcript: `a40d3e0e7e3c71f28b7da2fd339f47f0bcf10910309f5253d7c323ec8cea3212`, a constant in `drand.go` whose signature `drand_test.go` checks |
+| Phase 2 seal | `SHA-256("tacit-praxis-beacon-v1" ‖ block hash ‖ quicknet randomness)` for a Bitcoin block and a drand quicknet round announced before the close |
+
+For the Phase 2 seal, the block hash is the 32 bytes of the hash as block explorers and `bitcoin-cli getblockhash`
+print it (display order, leading zeros first). The quicknet round is from chain
+`52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971`; its BLS signature is checked against the pinned
+public key before its randomness (SHA-256 of the signature) is used.
+
+```sh
+./tacit-ceremony beacon <block hash> <quicknet round>                       # fetches the round from api.drand.sh
+./tacit-ceremony beacon --signature <hex> <block hash> <quicknet round>     # offline, from the round's signature
+./tacit-ceremony seal <phase1> <head> <evals> <beacon hex> <out dir>        # the keys
+```
 
 ## Coordinator
 
 ```sh
 ./tacit-ceremony init <dir> <phase2-17> 17 "Tacit Praxis ceremony"
-./tacit-ceremony serve <dir> :8080
+./tacit-ceremony serve [--heartbeat 60s] [--claim-window 3m] [--slot-cap 2h] [--queue-cap 100] [--per-ip 1] \
+    [--client-ip-header X-Forwarded-For --trusted-proxies 10.0.0.0/8] [--admin 127.0.0.1:8081] <dir> :8080
+./tacit-ceremony queue                     # on the coordinator's machine: every place in the queue
+./tacit-ceremony kick <position | token prefix>
+./tacit-ceremony close                     # no more contributions (or close --dir <dir> while serve is stopped)
 ```
 
-API: `GET /api/head`, `GET /f/phase2-<n>`, `POST /api/join`, `GET /api/slot`, `PUT /api/upload`, `GET /api/transcript`.
+`<dir>` holds `state.json` (the chain and its receipts), `queue.json` (the queue, so it survives a restart),
+`coordinator.key` and the files. One place per client address (an IPv6 /64); behind a proxy, the address comes from
+`--client-ip-header`, believed only from `--trusted-proxies`. The operator's endpoints listen on a loopback address only.
+
+API (the token goes in the `X-Ceremony-Token` header, never the URL): `GET /api/head`, `GET /f/phase2-<n>` (byte
+ranges), `POST /api/join`, `GET /api/slot` (poll), `POST /api/claim`, `PUT /api/upload` (exactly the head's size),
+`DELETE /api/leave`, `GET /api/transcript`.
+
+## Release binaries
+
+```sh
+./release.sh            # dist/tacit-ceremony-{darwin-arm64,darwin-amd64,linux-amd64,linux-arm64,windows-amd64.exe} + SHA256SUMS
+```
+
+Built with Go 1.27.4, `CGO_ENABLED=0`, `-trimpath`, from a clean tree, so anyone can rebuild the same commit and get
+the same SHA-256s. `tacit-ceremony version` prints the commit and Go version a binary was built from.
 
 ## Credit
 
-Succinct and the contributors to SP1's v6.1.0 setup; the Perpetual Powers of Tau and Hermez; Worldcoin and the
-zkbnb-setup authors; gnark. Praxis (Tse, Vanjani, Vesely, ePrint 2026/2971) is a witness encryption scheme that needs an
-honest setup of the verifier it encrypts to; it needs no setup of its own and its authors are not part of this ceremony.
+Succinct, who organized SP1's v6.1.0 Groth16 setup, and its 18 Phase 2 contributions (`phase2-0` to `phase2-17`;
+L2BEAT's ZK catalog lists 18 participants from Etherealize, Polygon, OP Labs, Alpen Labs, Offchain Labs, Succinct,
+Coinbase and Across Protocol); the Perpetual Powers of Tau and Hermez; Worldcoin and the zkbnb-setup authors; gnark.
+Praxis (Tse, Vanjani, Vesely, ePrint 2026/2971) is a witness encryption scheme that needs an honest setup of the
+verifier it encrypts to; it needs no setup of its own and its authors are not part of this ceremony.
