@@ -21,7 +21,7 @@ import { makeLocalStore } from '/fastbridge-client.js?cb=ff9d9c02';
 import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=3b1ca701';
 import { makeRateFeed, chainlinkEthBtc } from '/fastbridge-rate.js?cb=0385e0ce';
 import { discoverProviders } from '/fast/discover.js?cb=eddb0eb0';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=2b21b75d';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=bcaf6e49';
 import { secp, sha256, keccak_256, hmac } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();

@@ -23,7 +23,7 @@ import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
-import { p2trAddress } from '/crossout-notes.js?cb=c8534a8d';
+import { p2trAddress } from '/crossout-notes.js?cb=63153972';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=eddb0eb0';
 import { splitAmount, assignNotes } from '/fast/sweep.js?cb=713466b3';

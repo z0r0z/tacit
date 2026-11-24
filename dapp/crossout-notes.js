@@ -74,7 +74,7 @@ export function amountFromSpent(P, value) {
   return null;
 }
 
-const MAX_LOOKUPS = 8;
+const MAX_LOOKUPS = 8, LOG_SPAN = 9000;
 export function makeCrossoutNotes({ secp, hmac, sha256, pool, evmLog, rpc, poolAddress, deployBlock = 0, chainJson, chainHex, workerJson, hrp = 'bc', maxAmountBits = 26, spentValues = null } = {}) {
   for (const [k, v] of Object.entries({ secp, hmac, sha256, pool, evmLog, rpc, chainJson, chainHex, workerJson })) if (v == null) throw new Error(`crossout-notes: deps.${k} required`);
 
@@ -99,8 +99,10 @@ export function makeCrossoutNotes({ secp, hmac, sha256, pool, evmLog, rpc, poolA
   async function eventOfUncached(claimId) {
     if (!poolAddress) return null;
     const head = Number(BigInt(await rpc('eth_blockNumber', [])));
-    for (let to = head; to >= deployBlock; to -= 50000) {
-      const from = Math.max(deployBlock, to - 49999);
+    // 9,000 blocks a read: the widest range the public nodes agree to serve (publicnode 9,999, buidlguidl 10,000; a 50,000-block range was over every one of their caps, so the
+    // reads left to answer were nodes that cap a range at 10 blocks and a bridged note could not be opened without a record of it in this browser)
+    for (let to = head; to >= deployBlock; to -= LOG_SPAN) {
+      const from = Math.max(deployBlock, to - LOG_SPAN + 1);
       const logs = await rpc('eth_getLogs', [{ address: poolAddress, topics: [evmLog.TOPIC0.CrossOutRecorded, withHex(claimId)], fromBlock: '0x' + from.toString(16), toBlock: '0x' + to.toString(16) }]);
       for (const l of logs || []) { const ev = evmLog.decodeLog(l); if (ev && ev.type === 'CrossOutRecorded' && lc(ev.claimId) === lc(claimId)) return ev; }
     }

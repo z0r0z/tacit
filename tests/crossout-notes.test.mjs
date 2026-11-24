@@ -104,7 +104,8 @@ function makeWorld(bridges) {
     if (method === 'eth_getLogs') {
       reads.logs++;
       const f = params[0], from = Number(BigInt(f.fromBlock)), to = Number(BigInt(f.toBlock));
-      if (to - from > 50000) throw new Error('range too wide');
+      reads.spans = Math.max(reads.spans || 0, to - from + 1);
+      if (to - from + 1 > 9999) throw new Error('range too wide');    // the widest the public nodes serve (publicnode 9,999): a 50,000-block read was refused by every one
       return logs.filter((l) => { const b = Number(BigInt(l.blockNumber)); return b >= from && b <= to && l.topics[1].toLowerCase() === (f.topics[1] || l.topics[1]).toLowerCase(); });
     }
     throw new Error('world: rpc ' + method);
@@ -163,6 +164,7 @@ const makeNotes = (world, extra = {}) => makeCrossoutNotes({ secp, hmac: (h, k, 
   world.logs[0] = crossOutLog({ claimId: B1.claimId, destCommitment: B1.destCommitment, nullifier: B1.nullifier, assetId: TETH, block: 25_450_000 });
   const found = await makeNotes(world).discover({ walletPriv: WALLET_PRIV, assetIds: [TETH] });
   ok(found.length === 1 && found[0].amount === 400_000n && world.reads.logs > 1, 'an event far back is found across pages');
+  ok(world.reads.spans <= 9999, `no log read is wider than the public nodes serve (the widest was ${world.reads.spans} blocks)`);
 }
 
 {
