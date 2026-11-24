@@ -10,3 +10,9 @@ export const feeOf = (terms, amount) => (BigInt(amount) * BigInt(terms.feeBps ??
 // Whether a provider with these terms meets a want's price: it keeps no more of the amount than the most the want names. A want that names none, or one
 // whose price cannot be read, is met by any provider (an unreadable price is no price).
 export const meetsPrice = (terms, want) => !Number.isInteger(want.maxFeeBps) || want.maxFeeBps < 0 || feeOf(terms, want.amount) * 10000n <= BigInt(want.amount) * BigInt(want.maxFeeBps);
+
+// Whether quote `q` is no worse for the holder than quote `than`, which the holder confirmed: no less paid out, no more kept on Bitcoin, no longer
+// a timelock, and no warning that `than` did not carry. A press starts only a quote that is no worse than the one it confirmed.
+export const noWorse = (q, than) => BigInt(q.evmAmount) >= BigInt(than.evmAmount) && Number(q.takeSats ?? 0) <= Number(than.takeSats ?? 0)
+  && Number(q.csvBlocks ?? 0) <= Number(than.csvBlocks ?? 0)
+  && ['highFee', 'highTake', 'takeAbove', 'aboveTerms', 'aboveWant'].every((k) => !q[k] || !!than[k]);

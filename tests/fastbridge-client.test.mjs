@@ -9,7 +9,7 @@ import { bigintToBytes32 } from '../dapp/bulletproofs.js';
 import { bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import * as X from '../dapp/adaptor-xswap.js';
 import { makeHttpCounter } from '../dapp/fastbridge-http.js';
-import { makeFastBridgeClient, makeFastBridgeMarket, makeLocalStore, describe, termsOf, QUOTE_WAIT_MS, fairTakeAt, TAKE_FLAG } from '../dapp/fastbridge-client.js';
+import { makeFastBridgeClient, makeFastBridgeMarket, makeLocalStore, describe, termsOf, QUOTE_WAIT_MS, fairTakeAt, TAKE_FLAG, TAKE_FAIR, noWorse } from '../dapp/fastbridge-client.js';
 import { takeSatsAt } from '../dapp/fastbridge-provider.js';
 import { fetched } from './lib/btc-sim.mjs';
 import { pool, ASSET } from './lib/chain-sim.mjs';
@@ -96,6 +96,66 @@ test('a take far above its cost at the page\'s own fee rate is flagged and sorts
   const providers = Object.keys(fakes).map((id) => ({ id, name: id, ref: { kind: 'http', id, claimPub: id } }));
   const got = await market.quoteAll(providers, 1000n, { timeoutMs: 30 });
   assert.deepEqual(got.quotes.map((x) => x.provider.id), ['fairer', 'fair', 'greedy'], 'none is dropped, and the flagged one is last although it pays most');
+});
+
+test('a take above fair is ranked after every fair one, a fee above the provider\'s own terms or the want\'s price likewise, and a rate read before stands in for one that cannot be read', async () => {
+  const { w } = httpWorld();
+  const rate = await w.uBtc.feeRate(), fair = fairTakeAt(rate);
+  const q = async (take, btc = w.uBtc) => clientFor(w, fakeLp(w, { takeSats: take }), { btc, policy: { maxTakeSats: 10_000_000 } }).quote(VALUE);
+  assert.equal((await q(fair)).takeAbove, false);
+  assert.equal((await q(Math.floor(fair * TAKE_FAIR))).takeAbove, false, 'up to the tolerance is fair');
+  assert.equal((await q(Math.floor(fair * TAKE_FAIR) + 1)).takeAbove, true, 'above it is not');
+  // the same reader, its rate gone for a moment: the last rate read is used
+  let up = true; const flaky = { ...w.uBtc, feeRate: async () => { if (up) return w.uBtc.feeRate(); throw new Error('no rate'); } };
+  await q(fair, flaky); up = false;
+  const later = await q(Math.floor(fair * TAKE_FAIR) + 1, flaky);
+  assert.deepEqual([later.takeAbove, later.takeUnjudged], [true, false], 'judged at the rate read before');
+  const never = await q(30_000, { ...w.uBtc, feeRate: async () => { throw new Error('no rate'); } });
+  assert.deepEqual([never.highTake, never.takeAbove, never.takeUnjudged], [false, false, true], 'never read: not judged, only ranked after');
+  // ranking: fair takes first, then terms kept, then the payout
+  const fakes = {
+    bait: { quote: async (a) => ({ id: 'q-bait', btcValue: BigInt(a), evmAmount: BigInt(a) - 1n, fee: 1n, btcAsset: 'aa', evmAsset: 'aa', takeAbove: true }) },
+    over: { quote: async (a) => ({ id: 'q-over', btcValue: BigInt(a), evmAmount: BigInt(a) - 40n, fee: 40n, btcAsset: 'aa', evmAsset: 'aa' }) },
+    fair: { quote: async (a) => ({ id: 'q-fair', btcValue: BigInt(a), evmAmount: BigInt(a) - 50n, fee: 50n, btcAsset: 'aa', evmAsset: 'aa' }) },
+  };
+  const market = makeFastBridgeMarket({ btc: {}, evm: {}, store: memStore(), seed: new Uint8Array(32), counterFor: () => null, makeClient: ({ provider }) => fakes[provider.id] });
+  const terms = { over: { feeBps: 0, flatFee: 10n }, fair: { feeBps: 500, flatFee: 0n }, bait: { feeBps: 10, flatFee: 0n } };
+  const providers = Object.keys(fakes).map((id) => ({ id, name: id, ref: { kind: 'http', id, claimPub: id }, terms: terms[id] }));
+  const got = await market.quoteAll(providers, 1000n, { timeoutMs: 30 });
+  assert.deepEqual(got.quotes.map((x) => x.provider.id), ['fair', 'over', 'bait']);
+  assert.deepEqual(got.quotes.map((x) => x.quote.aboveTerms), [false, true, false], 'a fee above the listed terms is marked');
+  const noTerms = await market.quoteAll(providers.map(({ terms: _, ...p }) => p), 1000n, { timeoutMs: 30 });
+  assert.ok(noTerms.quotes.every((x) => !x.quote.aboveTerms), 'a provider that lists no terms is judged as before');
+  const priced = await market.quoteAll(providers, 1000n, { timeoutMs: 30, maxFeeBps: 450 });
+  assert.deepEqual(priced.quotes.map((x) => [x.provider.id, x.quote.aboveWant]), [['over', false], ['fair', true], ['bait', false]], 'a want\'s price ranks the quote above it after');
+});
+
+test('a press starts only what was confirmed: a fallback that pays less, keeps more on Bitcoin, has a longer timelock or a new warning is not started', async () => {
+  const base = { evmAmount: 990n, takeSats: 3000, csvBlocks: 144 };
+  assert.ok(noWorse({ ...base }, base));
+  assert.ok(noWorse({ ...base, evmAmount: 995n, takeSats: 2000 }, base), 'better on both is fine');
+  assert.ok(!noWorse({ ...base, evmAmount: 989n }, base));
+  assert.ok(!noWorse({ ...base, takeSats: 3001 }, base));
+  assert.ok(!noWorse({ ...base, csvBlocks: 288 }, base));
+  assert.ok(!noWorse({ ...base, highFee: true }, base));
+  assert.ok(noWorse({ ...base, highFee: true }, { ...base, highFee: true }), 'a warning the holder already saw');
+  const log = [];
+  const fakes = {
+    bait: { start: async () => { log.push('bait'); throw new Error('the provider cannot hold that amount'); } },
+    dear: { start: async () => { log.push('dear'); return { id: 'swap-dear' }; } },
+    same: { start: async () => { log.push('same'); return { id: 'swap-same' }; } },
+  };
+  const market = makeFastBridgeMarket({ btc: {}, evm: {}, store: memStore(), seed: new Uint8Array(32), counterFor: () => null, makeClient: ({ provider }) => fakes[provider.id] });
+  const P = (id) => ({ id, name: id, ref: { kind: 'http', id, claimPub: id } });
+  const confirmed = { id: 'q-bait', ...base };
+  const dear = { provider: P('dear'), quote: { id: 'q-dear', ...base, evmAmount: 950n } };
+  await assert.rejects(() => market.start({ quotes: [{ provider: P('bait'), quote: confirmed }, dear], notes: [], confirmed }), /cannot hold that amount/);
+  assert.deepEqual(log, ['bait'], 'the dearer fallback is not started');
+  await assert.rejects(() => market.start({ quotes: [dear], notes: [], confirmed }), (e) => e.code === 'quote-changed');
+  log.length = 0;
+  const same = { provider: P('same'), quote: { id: 'q-same', ...base } };
+  const r = await market.start({ quotes: [{ provider: P('bait'), quote: confirmed }, dear, same], notes: [], confirmed });
+  assert.deepEqual([log, r.provider.id], [['bait', 'same'], 'same'], 'one that is no worse is started');
 });
 
 test('a provider has 12 seconds to quote when the page does not say otherwise: room over the slowest quotes seen through a board, and one that never answers is given up on then', async () => {

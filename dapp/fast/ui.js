@@ -1,9 +1,9 @@
 
-import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId, highFee, highTake, keyTag, lineageText } from './fmt.js';
+import { DEC, ONE, esc, fmtTac, parseTac, slowNet, pairId, highFee, highTake, keyTag, lineageText, timelockText } from './fmt.js';
 import { minutesFor } from './route.js';
 import { sweepRoom } from './sweep.js';
 import { costBySize, waitLevels } from './ladder.js';
-import { feeOf, meetsPrice } from '../fastbridge-price.js';
+import { feeOf, meetsPrice, noWorse } from '../fastbridge-price.js';
 export { fmtTac, parseTac, slowNet, lineageText };
 const pct = (fee, of) => (of > 0n ? `${(Number((fee * 1000000n) / of) / 10000).toFixed(2)}%` : '');
 // a price in hundredths of a percent, as the page says it
@@ -55,7 +55,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
       <p class="note">A private balance is not an Ethereum wallet. To hold the TAC in a wallet, withdraw it afterwards: <a href="${WITHDRAW}">Withdraw to Ethereum</a>.</p>
       <p class="note">Use this when the regular bridge cannot take your TAC (a long history, or TAC that came out of Bitcoin’s shielded pool). The regular bridge has no provider fee but takes about 4 hours.</p>
       <p class="note">When no one provider can take an amount, the page splits it across several. Each part is a bridge of its own, locked from notes of its own with its own fee on Bitcoin, so it needs a note and a coin for each part.</p>
-      <p class="note">Keep this page open until it says Done: it claims your TAC at the end. If a bridge cannot finish, your lock returns to your Bitcoin address after about a day, and this page sends it back: open it with your wallet then.</p>
+      <p class="note">Keep this page open until it says Done: it claims your TAC at the end. If a bridge cannot finish, your lock returns to your Bitcoin address when its timelock ends (12 to 48 hours, shown before you press), and this page sends it back: open it with your wallet then.</p>
       <p class="note">Closed the page mid-bridge, or cleared your browser? Open your wallet here: the page finds your lock from your key and, once its timelock has passed, sends your TAC back.</p>
       <p class="note">Your Bitcoin address needs a few thousand sats for the Bitcoin fee. The quote shows how many.</p>
     </details>
@@ -144,7 +144,9 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
         : q.takeSats ? `<div class="kv"><span>Bitcoin fee</span><b class="num">${esc(q.takeSats.toLocaleString('en-US'))} sats<small>for the provider's take, and your own transaction's fee</small></b></div>` : '';
       recv.innerHTML = `${sm && sm.count > 1 && S.best ? `<div class="kv"><span>Provider</span><b>${face(S.best.id)}${esc(S.best.name || 'Provider')}<small class="num">${esc(keyTag(S.best.id))}</small></b></div>` : ''}<div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(q.fee))} TAC<small>${esc(pct(q.fee, q.btcValue))}</small></b></div>${btc}
         <div class="kv"><span>Time</span><b class="num">about ${minutesFor(q.minConfs)} minutes<small>${Math.max(1, Number(q.minConfs) || 1)} Bitcoin confirmation${(Number(q.minConfs) || 1) > 1 ? 's' : ''}, then a pool settle</small></b></div>${highTake(q) ? `
-        <p class="status err" role="alert" id="fx-high-take">High Bitcoin fee: this provider asks ${esc(Number(q.takeSats).toLocaleString('en-US'))} sats for its take, well above what it costs at the current rate. Other providers may ask less.</p>` : ''}${highFee(q) ? `
+        <p class="status err" role="alert" id="fx-high-take">High Bitcoin fee: this provider asks ${esc(Number(q.takeSats).toLocaleString('en-US'))} sats for its take, well above what it costs at the current rate. Other providers may ask less.</p>` : ''}${q.aboveTerms || q.aboveWant ? `
+        <p class="status err" role="alert" id="fx-above">${q.aboveTerms ? 'This quote keeps more than the fee this provider lists.' : ''}${q.aboveTerms && q.aboveWant ? ' ' : ''}${q.aboveWant && S.want && S.want.maxFeeBps != null ? `It keeps more than the ${esc(bpsText(S.want.maxFeeBps))} you set.` : ''}</p>` : ''}${S.pinNote ? `
+        <p class="status" id="fx-pin">${esc(S.pinNote)}</p>` : ''}${highFee(q) ? `
         <p class="status err" role="alert" id="fx-high">High fee: this provider keeps ${esc(fmtTac(q.fee))} TAC (${esc(pct(q.fee, q.btcValue))}) of your ${esc(fmtTac(q.btcValue))} TAC, and you receive ${esc(fmtTac(q.evmAmount))}. A smaller bridge costs more in proportion, a larger one less, and the regular bridge may cost less.</p>` : ''}`;
     }
     go.textContent = S.busy ? 'Working…' : S.checking ? 'Checking…' : S.sure ? 'Press again to bridge' : sp ? `Bridge in ${sp.legs.length} parts` : 'Bridge';
@@ -226,7 +228,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
       else if (first != null) {
         const h = (first - now) / 3600, when = h >= 1.5 ? `about ${Math.round(h)} hours` : h >= 0.75 ? 'about an hour' : 'under an hour';
         html = `${what} The first is due in ${when}. This page sends it back, so open it then with your wallet. <a href="${reminder(first)}" download="tacit-take-back.ics">Add a reminder</a>`;
-      } else html = `${what} This page sends ${n === 1 ? 'it' : 'them'} back when the timelock ends, about a day after the lock confirmed: open it then with your wallet.`;
+      } else html = `${what} This page sends ${n === 1 ? 'it' : 'them'} back when the timelock ends, 12 to 48 hours after the lock confirmed: open it then with your wallet.`;
     } else if (!S.sess) {
       const held = localPending();
       if (held.length) {
@@ -363,10 +365,26 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     if (!S.sess && !S.opening) openSession(); else paint();
   });
 
-  const pinFirst = (quotes) => { const pin = pinned(); return pin ? quotes.slice().sort((a, b) => (pairId(b.provider.id) === pin) - (pairId(a.provider.id) === pin)) : quotes; };
+  // A provider paired by a link (#with=) is put first only while its quote is about as good as the best: within PIN_SLACK_BPS of the best payout,
+  // with a fair take and a fee within its own terms. Otherwise the best quote stays first and the page says the paired provider asks more.
+  const PIN_SLACK_BPS = 10n;
+  const pinFirst = (quotes) => {
+    const pin = pinned();
+    S.pinNote = '';
+    if (!pin || !quotes.length) return quotes;
+    const at = quotes.findIndex((x) => pairId(x.provider.id) === pin);
+    if (at <= 0) return quotes;
+    const p = quotes[at].quote, best = quotes[0].quote;
+    const close = BigInt(p.evmAmount) * 10000n >= BigInt(best.evmAmount) * (10000n - PIN_SLACK_BPS);
+    if (close && !p.takeAbove && !p.highTake && !p.highFee && !p.aboveTerms && !p.aboveWant) return [quotes[at], ...quotes.filter((_, k) => k !== at)];
+    S.pinNote = `The provider you paired with asks more than the best quote now, so the best is shown: it pays ${fmtTac(BigInt(best.evmAmount) - BigInt(p.evmAmount) > 0n ? BigInt(best.evmAmount) - BigInt(p.evmAmount) : 0n)} TAC more.`;
+    return quotes;
+  };
+  // a kept want's price, for the amount it waits for
+  const wantPrice = (units) => (S.want && S.want.maxFeeBps != null && units === S.want.amount ? { maxFeeBps: S.want.maxFeeBps } : {});
   function typed() {
     readProviders();
-    S.amt = $('fx-amt').value; S.quotes = []; S.quote = null; S.best = null; S.note = ''; S.cost = null; S.sure = null; S.checking = false; S.anyOnly = null; S.split = null;
+    S.amt = $('fx-amt').value; S.quotes = []; S.quote = null; S.best = null; S.note = ''; S.cost = null; S.sure = null; S.checking = false; S.anyOnly = null; S.split = null; S.pinNote = '';
     clearTimeout(S.timer); const seq = ++S.seq;
     const units = parseTac(S.amt);
     paintForm();
@@ -379,7 +397,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
           if (seq === S.seq) note(problem(units) || 'No provider can take that amount right now.', !wants);
           return;
         }
-        const r = await S.sess.quoteAll(eligible, units);
+        const r = await S.sess.quoteAll(eligible, units, wantPrice(units));
         if (seq !== S.seq) return;
         if (!r.quotes.length) { note(r.failed[0] ? wording(r.failed[0].error) : 'No provider can take that amount right now.', true); return; }
         S.quotes = pinFirst(r.quotes); S.quote = S.quotes[0].quote; S.best = S.quotes[0].provider; paintForm();
@@ -501,7 +519,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     const sure = () => {
       const who = S.best && S.best.name ? `${S.best.name} (${keyTag(S.best.id)})` : 'the provider';
       S.sure = { key: `${S.quote.id}|${S.quote.btcValue}`, at: Date.now() };
-      note(`${highTake(S.quote) ? `High Bitcoin fee: ${who} asks ${Number(S.quote.takeSats).toLocaleString('en-US')} sats for its take, well above what it costs at the current rate. ` : ''}${highFee(S.quote) ? `High fee: ${who} keeps ${fmtTac(S.quote.fee)} TAC (${pct(S.quote.fee, S.quote.btcValue)}). ` : ''}This locks ${fmtTac(S.quote.btcValue)} TAC on Bitcoin until ${who} has paid you ${fmtTac(S.quote.evmAmount)} private TAC in the pool, in about ${minutesFor(S.quote.minConfs)} minutes. If it does not, the lock returns to your address after about a day. Press again to bridge.`);
+      note(`${highTake(S.quote) ? `High Bitcoin fee: ${who} asks ${Number(S.quote.takeSats).toLocaleString('en-US')} sats for its take, well above what it costs at the current rate. ` : ''}${highFee(S.quote) ? `High fee: ${who} keeps ${fmtTac(S.quote.fee)} TAC (${pct(S.quote.fee, S.quote.btcValue)}). ` : ''}${S.quote.aboveTerms ? `${who} quotes more than the fee it lists. ` : ''}This locks ${fmtTac(S.quote.btcValue)} TAC on Bitcoin until ${who} has paid you ${fmtTac(S.quote.evmAmount)} private TAC in the pool, in about ${minutesFor(S.quote.minConfs)} minutes. If it does not, the lock returns to your address after ${timelockText(S.quote.csvBlocks)}. Press again to bridge.`);
     };
     if (!(S.sure && S.sure.key === `${S.quote.id}|${S.quote.btcValue}` && Date.now() - S.sure.at < 180e3)) { sure(); paintForm(); return; }
     S.sure = null;
@@ -510,14 +528,14 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
     try {
       const soon = Math.floor(Date.now() / 1000) + 150;
       if (quotes.some((x) => Number(x.quote.validUntil) <= soon)) {
-        const r = await S.sess.quoteAll(quotes.map((x) => x.provider), S.quote.btcValue);
+        const r = await S.sess.quoteAll(quotes.map((x) => x.provider), S.quote.btcValue, wantPrice(S.quote.btcValue));
         if (!r.quotes.length) throw new Error('the quote expired');
         quotes = pinFirst(r.quotes);
       }
-      const floor = BigInt(S.quote.evmAmount);
       if (!quotes.length) throw new Error('the quote expired');
-      if (BigInt(quotes[0].quote.evmAmount) < floor) { S.quotes = quotes; S.quote = quotes[0].quote; S.best = quotes[0].provider; again = true; return; }
-      fits = quotes.filter((x) => BigInt(x.quote.evmAmount) >= floor || (!highFee(x.quote) && !highTake(x.quote)));
+      // only quotes no worse than the one confirmed are started: one that pays less or asks more is shown, and needs another press
+      fits = quotes.filter((x) => noWorse(x.quote, S.quote));
+      if (!fits.length) { S.quotes = quotes; S.quote = quotes[0].quote; S.best = quotes[0].provider; again = true; return; }
       await S.sess.start({ quotes: fits });
       if (S.want) { const pub = S.pub; S.want = null; S.told = false; clearInterval(S.watch); wants.stop(pub).catch(() => {}); }
       S.recs = await S.sess.records(); S.quotes = []; S.quote = null; S.best = null; S.amt = ''; $('fx-amt').value = '';
@@ -542,7 +560,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
   const sureSplit = (o) => {
     const names = o.legs.map((l) => l.provider.name || 'a provider').join(', ');
     S.sure = { key: o.legs.map((l) => `${l.quote.id}|${l.quote.btcValue}`).join(','), at: Date.now() };
-    note(`${o.high.take ? 'High Bitcoin fee: a provider asks well above what its take costs at the current rate. ' : ''}${o.high.fee ? 'High fee: a provider keeps over 5% of its part. ' : ''}This locks ${fmtTac(o.amount)} TAC on Bitcoin in ${o.legs.length} separate locks, one for each of ${names}, until each has paid you its part: ${fmtTac(o.receive)} private TAC in all, in about ${minutesFor(o.minConfs)} minutes. A part that does not go through returns its lock to your address after about a day, and the others carry on. Press again to bridge.`);
+    note(`${o.high.take ? 'High Bitcoin fee: a provider asks well above what its take costs at the current rate. ' : ''}${o.high.fee ? 'High fee: a provider keeps over 5% of its part. ' : ''}This locks ${fmtTac(o.amount)} TAC on Bitcoin in ${o.legs.length} separate locks, one for each of ${names}, until each has paid you its part: ${fmtTac(o.receive)} private TAC in all, in about ${minutesFor(o.minConfs)} minutes. A part that does not go through returns its lock to your address after ${timelockText(Math.max(...o.legs.map((l) => Number(l.quote.csvBlocks) || 0)))}, and the others carry on. Press again to bridge.`);
   };
   async function goSplit() {
     const o = S.split, n = o.legs.length, sess = S.sess;
@@ -557,7 +575,11 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, fa
       if (offer.legs.some((l) => Number(l.quote.validUntil) <= Math.floor(Date.now() / 1000) + 150)) {
         const fresh = await sess.sweepOffer(others(), offer.amount);
         if (!fresh.ok) throw new Error(splitWhy(fresh, offer.amount));
-        if (fresh.receive < offer.receive || (fresh.cost && fresh.cost.short)) { S.split = fresh; again = 'The quote changed.'; return; }
+        const takeOf = (x) => x.legs.reduce((s, l) => s + Number(l.quote.takeSats ?? 0), 0);
+        const flagged = (x, k) => x.legs.some((l) => !!l.quote[k]);
+        const worse = fresh.receive < offer.receive || takeOf(fresh) > takeOf(offer) || ['highFee', 'highTake', 'takeAbove', 'aboveTerms'].some((k) => flagged(fresh, k) && !flagged(offer, k))
+          || Math.max(...fresh.legs.map((l) => Number(l.quote.csvBlocks) || 0)) > Math.max(...offer.legs.map((l) => Number(l.quote.csvBlocks) || 0));
+        if (worse || (fresh.cost && fresh.cost.short)) { S.split = fresh; again = 'The quote changed.'; return; }
         offer = fresh;
       }
       const r = await sess.startSweep(offer);

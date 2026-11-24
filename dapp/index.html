@@ -9657,7 +9657,13 @@ async function hxFastGo({ st, pub, n, F }) {
   const fr = await fastRoute();
   const fresh = F.quotes.every((x) => Number(x.quote.validUntil) > Date.now() / 1000 + 150) ? F : await hxFastOffer(n, true);
   if (!fresh?.ok) throw new Error('The provider cannot take it right now. Try again, or use the regular bridge.');
-  await fr.start(fresh, n);
+  // only what was confirmed is started: a quote that now pays less or asks more is shown, and needs another press
+  try { await fr.start(fresh, n, F); } catch (e) {
+    if (e?.code !== 'quote-changed' || fresh.provider == null) throw e;
+    HX.xoSure = { key: `fast|${pub}|${brId(n)}|${fresh.quote.id}`, at: Date.now() };
+    say(st, `The quote changed. ${FASTR.route.confirmText(fresh, amt)}`);
+    return;
+  }
   FASTR.offers.clear(); BR.pick = null; BR.at = 0;
   hxFastTend();
   const latest = (await fr.records().catch(() => []))[0];

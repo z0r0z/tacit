@@ -2,6 +2,9 @@
 import { makeBitcoinLocker } from './fastbridge-bl.js';
 import { makeHttpCounter } from './fastbridge-http.js';
 import * as X from './adaptor-xswap.js';
+import { feeOf, noWorse } from './fastbridge-price.js';
+
+export { noWorse };
 import { bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
@@ -17,6 +20,11 @@ export const DEFAULT_POLICY = {
 
 export const TAKE_VB = 750, TAKE_DUST = 546, TAKE_FLAG = 2;
 export const fairTakeAt = (feeRate) => TAKE_DUST + Math.ceil(TAKE_VB * feeRate * 2);
+// A take up to this many times its cost at the current rate is a fair one; a quote that asks more is ranked below every quote with a fair take.
+export const TAKE_FAIR = 1.25;
+// The last fee rate each Bitcoin reader gave, so a quote read while the rate cannot be is still judged against a rate.
+const lastRates = new WeakMap();
+
 
 // The notes a lock for `amount` spends from `notes`: the smallest one that covers it, else the largest ones together (up to MAX_INPUTS), with
 // what is left over returning to the key as change. null when they do not cover it.
@@ -66,11 +74,18 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     if (!(Number(q.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expires too soon to use');
     const takeSats = Number(q.takeSats ?? 0);
     if (!Number.isInteger(takeSats) || (takeSats !== 0 && (takeSats < 546 || takeSats > policy.maxTakeSats))) throw new Error('the quote\'s Bitcoin fee is out of range');
-    let highTake = false;
-    if (takeSats > 0 && btc && typeof btc.feeRate === 'function') {
-      try { highTake = takeSats > TAKE_FLAG * fairTakeAt(await btc.feeRate()); } catch { }
+    // the take is judged at the rate read now, else at the last one read; with no rate at all it cannot be judged, and is ranked after the takes that can
+    let highTake = false, takeAbove = false, takeUnjudged = false;
+    if (takeSats > 0) {
+      let rate = null;
+      if (btc && typeof btc.feeRate === 'function') {
+        try { rate = Number(await btc.feeRate()); if (Number.isFinite(rate) && rate > 0 && btc && typeof btc === 'object') lastRates.set(btc, rate); else rate = null; } catch { }
+      }
+      if (rate == null && btc && typeof btc === 'object') rate = lastRates.get(btc) ?? null;
+      if (rate == null) takeUnjudged = true;
+      else { const fair = fairTakeAt(rate); highTake = takeSats > TAKE_FLAG * fair; takeAbove = takeSats > TAKE_FAIR * fair; }
     }
-    return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks, takeSats, highFee, highTake };
+    return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks, takeSats, highFee, highTake, takeAbove, takeUnjudged };
   }
 
   const outpointsOf = (ns) => new Set(ns.map((n) => `${n.txid}:${n.vout}`));
@@ -191,14 +206,29 @@ export function makeFastBridgeMarket({ btc, evm, store, seed, pins = {}, policy,
   }
   const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('the provider did not answer in time')), ms))]);
 
-  async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS } = {}) {
+  // Each quote is also checked against the provider's own terms (`aboveTerms`: it keeps more than its ad says) and against the most the holder said
+  // it will pay (`maxFeeBps`, a kept want's price: `aboveWant`). Quotes are ranked by what they cost the holder: one with a take above fair or a fee
+  // above its word comes after every one without, then the most paid out first.
+  async function quoteAll(providers, amount, { timeoutMs = QUOTE_WAIT_MS, maxFeeBps = null } = {}) {
     const got = await Promise.all(providers.map(async (provider) => {
-      try { return { provider, quote: await withTimeout(clientFor(provider.ref).quote(amount), timeoutMs) }; } catch (error) { return { provider, error }; }
+      try {
+        const q = await withTimeout(clientFor(provider.ref).quote(amount), timeoutMs);
+        let aboveTerms = false;
+        // (for one asset on both sides the fee is what is not paid out; a provider that lists no terms is judged as before)
+        try { aboveTerms = !!provider.terms && q.btcAsset === q.evmAsset && q.fee > feeOf(provider.terms, q.btcValue); } catch { }
+        const aboveWant = Number.isInteger(maxFeeBps) && maxFeeBps >= 0 && q.fee * 10000n > q.btcValue * BigInt(maxFeeBps);
+        return { provider, quote: { ...q, aboveTerms, aboveWant } };
+      } catch (error) { return { provider, error }; }
     }));
-    const quotes = got.filter((r) => r.quote).sort((a, b) => (a.quote.highTake ? 1 : 0) - (b.quote.highTake ? 1 : 0) || (a.quote.evmAmount > b.quote.evmAmount ? -1 : a.quote.evmAmount < b.quote.evmAmount ? 1 : 0));
+    const worse = (q) => (q.highTake || q.takeAbove || q.takeUnjudged ? 2 : 0) + (q.aboveTerms || q.aboveWant ? 1 : 0);
+    const quotes = got.filter((r) => r.quote).sort((a, b) => worse(a.quote) - worse(b.quote) || (a.quote.evmAmount > b.quote.evmAmount ? -1 : a.quote.evmAmount < b.quote.evmAmount ? 1 : 0));
     return { quotes, failed: got.filter((r) => r.error) };
   }
-  async function start({ quotes, notes }) {
+  // `confirmed`: the quote the holder pressed for. Only quotes no worse than it are tried, so a provider that cannot hold its payout is passed over
+  // only for one that pays as much on the same terms.
+  async function start({ quotes: all, notes, confirmed = null }) {
+    const quotes = confirmed ? all.filter((x) => noWorse(x.quote, confirmed)) : all;
+    if (confirmed && all.length && !quotes.length) throw Object.assign(new Error('the quote changed'), { code: 'quote-changed' });
     let last = null;
     for (const { provider, quote } of quotes) {
       try { return { rec: await clientFor(provider.ref).start({ quote, notes }), provider }; } catch (e) {

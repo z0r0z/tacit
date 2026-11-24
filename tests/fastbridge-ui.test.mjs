@@ -286,7 +286,7 @@ test('the amount: checked against the providers\' limits and the balance, quoted
   assert.equal(m.$('fx-amt').value, '500');
 });
 
-test('the best of several quotes is shown with its provider, every provider that can take the amount is asked, and all the quotes go to the press', async () => {
+test('the best of several quotes is shown with its provider, every provider that can take the amount is asked, and only quotes no worse than the one confirmed go to the press', async () => {
   const ps = [provider('Slow', { feeBps: 50 }), provider('Cheap', { feeBps: 20 }), provider('Small', { feeBps: 10, maxAmount: String(80n * TAC) }), provider('Down', { feeBps: 5 })];
   const m = mount({ providers: ps, session: sessionStub({ failFor: new Set(['Down']) }) });
   await signIn(m);
@@ -295,7 +295,22 @@ test('the best of several quotes is shown with its provider, every provider that
   assert.match(text(m.$('fx-recv')), /Provider Cheap/); assert.equal(m.$('fx-big').textContent, '98.8');
   await press(m);
   await until(() => m.st.calls.starts.length === 1, 'the start');
-  assert.deepEqual(m.st.calls.starts[0].quotes.map((x) => x.provider.name), ['Cheap', 'Slow'], 'the best first, then the next to try');
+  assert.deepEqual(m.st.calls.starts[0].quotes.map((x) => x.provider.name), ['Cheap'], 'the confirmed quote; one that pays less is not tried without another press');
+});
+
+test('the confirmed provider cannot hold the payout: one that pays less is shown with its terms and needs another press, and is not started', async () => {
+  const st = sessionStub(), start = st.session.start;
+  st.session.start = async (a) => { if (a.quotes[0].provider.name === 'Cheap') throw new Error('the provider cannot hold that amount'); return start(a); };
+  const m = mount({ providers: [provider('Slow', { feeBps: 500 }), provider('Cheap', { feeBps: 20 })], session: st });
+  await signIn(m);
+  typeIn(m, '100'); await until(() => !m.$('fx-recv').hidden, 'the quote');
+  await press(m);
+  await until(() => /The quote changed/.test(m.$('fx-st').textContent), 'the new terms said');
+  assert.equal(st.calls.starts.length, 0, 'nothing locked on the dearer quote');
+  assert.match(text(m.$('fx-recv')), /Provider Slow/);
+  m.$('fx-go').click();
+  await until(() => st.calls.starts.length === 1, 'the start once pressed again');
+  assert.equal(st.calls.starts[0].quotes[0].provider.name, 'Slow');
 });
 
 test('a quote asked again at the press that pays less than the one confirmed is shown, not locked: the next press locks on it', async () => {
@@ -322,8 +337,13 @@ test('a quote asked again at the press that pays less than the one confirmed is 
   assert.equal(st.calls.starts[0].quotes[0].quote.evmAmount, 97n * TAC);
 });
 
-test('a bridger who came by a provider\'s link is paired with it when it quotes, even when another is cheaper, and with the best when it does not', async () => {
-  const ps = [provider('Linked', { feeBps: 50 }), provider('Cheap', { feeBps: 20 })];
+test('a bridger who came by a provider\'s link is paired with it when its quote is about as good as the best, and with the best when it is not or does not quote', async () => {
+  const dear = mount({ providers: [provider('Linked', { feeBps: 50 }), provider('Cheap', { feeBps: 20 })], pinned: () => pairId('Linked') });
+  await signIn(dear);
+  typeIn(dear, '100'); await until(() => !dear.$('fx-recv').hidden, 'the quote');
+  assert.match(text(dear.$('fx-recv')), /Provider Cheap/, 'a paired provider that asks more is not put first');
+  assert.match(text(dear.$('fx-recv')), /The provider you paired with asks more than the best quote now/);
+  const ps = [provider('Linked', { feeBps: 25 }), provider('Cheap', { feeBps: 20 })];
   const m = mount({ providers: ps, pinned: () => pairId('Linked') });
   await signIn(m);
   typeIn(m, '100'); await until(() => !m.$('fx-recv').hidden, 'the quote');
