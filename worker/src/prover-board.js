@@ -584,7 +584,11 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
     if (client) w.client = client;
     w.lastSeen = clock();
     if (community) {
-      const crowd = Object.entries(ws).filter(([, x]) => x.community).sort((a, b) => b[1].lastSeen - a[1].lastSeen);
+      // The machines with a standing (a proof taken, a turn, a mark) are kept before those that have only asked, and then the most recently seen. By when a machine was last
+      // seen alone, a machine proving a batch (it asks for nothing for tens of minutes) was the first dropped once more than communityKept machines were asking, and with it
+      // its record, so no machine kept a record, and a batch went to the first address in order every time.
+      const standing = (x) => ((x.proved || 0) + (x.failed || 0) + (x.bad || 0) + (x.lapsed || 0) + (x.turns || 0) + (x.batches || 0) + (x.blocks || 0) + (x.draws || 0) + (x.drawMissed || 0) > 0 ? 1 : 0);
+      const crowd = Object.entries(ws).filter(([, x]) => x.community).sort((a, b) => standing(b[1]) - standing(a[1]) || b[1].lastSeen - a[1].lastSeen);
       for (const [n] of crowd.slice(PROVER_BOARD.communityKept)) delete ws[n];
     }
     await storage.putWorkers(ws);

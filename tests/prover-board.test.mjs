@@ -879,6 +879,32 @@ test('community batch: a handed-on turn that gives up late drops out without a s
   assert.equal((await b.summary()).workers.find((x) => x.name === next.name).racing, 'btc-state');
 });
 
+test('community records: a machine that proves a batch while more than communityKept others keep asking keeps its record, and the next batch goes round', async () => {
+  t = 90_000_000;
+  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, bestPct: 0 } }), batch = batchOn(b);
+  const hex = (i) => i.toString(16).padStart(40, '0');
+  const crowd = Array.from({ length: PROVER_BOARD.communityKept + 40 }, (_, i) => ({ name: 'c-0x' + hex(i + 1), classes: ['public'], community: true, client: `place-${i + 1}` }));
+  const ask = (w) => b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });
+  const round = async (skip = null) => { let got = null; for (const w of crowd) if (w !== skip) { const r = await ask(w); if (r) got = [w, r]; } return got; };
+  await round();
+  // everyone asks (nothing waits), the batch is posted, everyone asks again: the turn is the board's pick among all of them
+  const turn = async () => { await round(); const j = await batch(); await round(); const row = (await b.summary()).workers.find((x) => x.racing === 'btc-state'); return [j, row && crowd.find((w) => w.name === row.name)]; };
+  const [j1, first] = await turn();
+  assert.ok(first, 'a machine has the turn');
+  // it proves for ten minutes (asking nothing) while the others go on asking every five seconds
+  for (let k = 0; k < 120; k++) { t += 5000; await round(first); }
+  assert.deepEqual(await answer(b, first, j1.jobId), { ok: true, status: 'proved' });
+  for (let k = 0; k < 12; k++) { t += 5000; await round(); }
+  const row = (await b.summary()).workers.find((x) => x.name === first.name);
+  assert.deepEqual([row.proved, row.turns, row.batches], [1, 1, 1], 'its record is kept');
+  assert.ok(row.lastSeenSeconds != null);
+  // the next batch is another machine's turn: the one longest since its turn, not the first address again
+  const [, second] = await turn();
+  assert.ok(second && second.name !== first.name, 'the batch goes round');
+  const kept = (await b.summary()).workers.filter((x) => x.community).length;
+  assert.ok(kept <= crowd.length, 'and the rows are still bounded by who asked');
+});
+
 test('community batch: PROVER_BOARD_TURN_LATE=0 refuses the late proof and says its turn ended; an ended job and another network are each named', async () => {
   const off = await lateRig({ turnLate: 0 });
   assert.deepEqual(await off.b.result({ worker: off.fast, jobId: off.job.jobId, publicValues: pv, proof: pf }), { ok: false, code: 'turn_over', error: 'this machine\'s turn on the batch ended and the batch went on to another machine' });
