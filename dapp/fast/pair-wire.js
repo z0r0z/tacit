@@ -18,7 +18,7 @@ import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=a0280321';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=9003c49b';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=129356b4';
 import { makeLocalStore } from '/fastbridge-client.js?cb=09156465';
-import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=ffad0229';
+import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=0c672b0c';
 import { makeRateFeed, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
 import { discoverProviders } from '/fast/discover.js?cb=cf4a0fcc';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
@@ -74,7 +74,21 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   };
   // the last good market reading, kept across visits: one far from it is not taken until it holds (fastbridge-pair.js maxMarketJumpBps)
   const memo = storage ? { get: () => JSON.parse(storage.getItem('tacit-pair-market-v1') || 'null'), put: (m) => storage.setItem('tacit-pair-market-v1', JSON.stringify(m)) } : null;
-  const pair = makePairClient({ btc, evm, seed, stores, discover, counterFor: (ref) => counterFor(ref, { fetchImpl }), reverseCallFor, feed, ...(now ? { now } : {}), tend, memo });
+  // one start at a time for the key, across its tabs: a Web Lock where there is one, else a short lease in localStorage that a second tab finds and waits out
+  const exclusive = async (work) => {
+    const name = `tacit-fastbridge-pair-start:${pubHex}`;
+    const locks = typeof navigator !== 'undefined' ? navigator.locks : null;
+    if (locks && typeof locks.request === 'function') return locks.request(name, () => work());
+    const ls = plainStorage, read = () => { try { return JSON.parse(ls.getItem(name) || 'null'); } catch { return null; } };
+    if (!ls) return work();
+    const was = read();
+    if (was && Date.now() - Number(was.at) < 120000) throw new Error('a swap of this wallet is being started in another tab: try again in a moment');
+    const me = Math.random().toString(36).slice(2);
+    ls.setItem(name, JSON.stringify({ at: Date.now(), me }));
+    if ((read() || {}).me !== me) throw new Error('a swap of this wallet is being started in another tab: try again in a moment');
+    try { return await work(); } finally { if ((read() || {}).me === me) ls.removeItem(name); }
+  };
+  const pair = makePairClient({ btc, evm, seed, stores, discover, counterFor: (ref) => counterFor(ref, { fetchImpl }), reverseCallFor, feed, ...(now ? { now } : {}), tend, exclusive, memo });
   const run = ({ everyMs = 15000, onChange = () => {} } = {}) => {
     let busy = false, stopped = false;
     const once = async () => { if (busy || stopped) return; busy = true; try { onChange(await pair.pump()); } catch { /* the next pass */ } finally { busy = false; } };

@@ -137,6 +137,28 @@ test('one tab at a time takes the steps: a pass that finds the lock held by anot
   } finally { if (had) Object.defineProperty(globalThis, 'navigator', had); else delete globalThis.navigator; }
 });
 
+test('a start takes the key\'s own start lock, waiting for it; a browser with no Web Locks keeps a short lease, and a second tab within it is told to wait', async () => {
+  const priv = key(36), pubHex = bytesToHex(secp.getPublicKey(priv, true));
+  openWallet(priv);
+  const asked = [];
+  const had = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const opts = { T, ux: uxFor(chainlinkRpc), priv, pubHex, hrp: 'tb', storage, lists: { providers: [], boards: [] }, discover: async () => [] };
+  try {
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: { request: async (name, a, b) => { asked.push([name, typeof a === 'function' ? null : a]); return (typeof a === 'function' ? a : b)({}); } } } });
+    const { pair } = await openPair(opts);
+    await assert.rejects(() => pair.start({ blocked: 'not at this price' }), /not at this price/);
+    assert.deepEqual(asked, [[`tacit-fastbridge-pair-start:${pubHex}`, null]], 'the key\'s own lock, waited for (no ifAvailable)');
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {} });
+    const lease = `tacit-fastbridge-pair-start:${pubHex}`;
+    storage.setItem(lease, JSON.stringify({ at: Date.now(), me: 'other' }));
+    const again = (await openPair(opts)).pair;
+    await assert.rejects(() => again.start({ blocked: 'not at this price' }), /being started in another tab/);
+    storage.setItem(lease, JSON.stringify({ at: Date.now() - 10 * 60e3, me: 'other' }));
+    await assert.rejects(() => again.start({ blocked: 'not at this price' }), /not at this price/, 'an old lease is not waited on');
+    assert.equal(storage.getItem(lease), null, 'and the start\'s own lease is let go');
+  } finally { if (had) Object.defineProperty(globalThis, 'navigator', had); else delete globalThis.navigator; }
+});
+
 test('the lists are the ones the fast page names, and a file that cannot be read leaves no provider to ask rather than an error', async () => {
   assert.deepEqual(await loadLists(async () => json({ providers: [{ base: 'https://x' }], boards: ['https://b'] })), { providers: [{ base: 'https://x' }], boards: ['https://b'] });
   assert.deepEqual(await loadLists(async () => json({}, 404)), { providers: [], boards: [] });

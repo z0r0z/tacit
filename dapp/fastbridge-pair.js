@@ -21,6 +21,7 @@
 //   counterFor(ref)   -> the b2e counter (dapp/fastbridge-http.js makeCounter over a transport)   reverseCallFor(ref) -> a (method, path, body) transport for e2b
 //   feed              dapp/fastbridge-rate.js makeRateFeed: { refresh(), current() }
 //   tend(work, passive)   runs `work` (a pass that steps the swaps) when this page is the one that tends the key's swaps (one tab at a time), else `passive` (the records only). Default: always work
+//   exclusive(work)   runs a start with no other start of the key's under way, in any tab (fast/pair-wire.js: a Web Lock per key), so two never lock the same coin. Default: as it is
 //   memo              { get(), put({ ethPerBtc, at }) }: the last good market reading, kept across visits (a page's localStorage); default: this client's own
 
 import { makeBitcoinLocker } from './fastbridge-bl.js';
@@ -152,7 +153,7 @@ const said = (e, fallback) => {
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('the provider did not answer in time')), ms))]);
 
 // `ethAsset` is the pool's asset for ETH (a test's pool has a stand-in)
-export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), ethAsset = ETH_ASSET, memo = null }) {
+export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), exclusive = (work) => work(), ethAsset = ETH_ASSET, memo = null }) {
   const policy = { ...PAIR_POLICY, ...policyIn };
   const ETH = strip(ethAsset);
   const isPairProvider = (p) => !!p && !!p.assets && strip(p.assets.btcAsset || '') === SATS_ASSET && strip(p.assets.evmAsset || '') === ETH;
@@ -324,7 +325,9 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     };
   }
 
-  async function start(q) {
+  // one start of the key's at a time: the coins and notes a swap holds are read inside, so a second start picks others or stops
+  const start = (q) => exclusive(() => startOnce(q));
+  async function startOnce(q) {
     if (q.blocked) throw new Error(q.blocked);
     if (q.short) throw new Error(`your Bitcoin address holds ${q.short.have} sats and this needs ${q.short.need}, the amount and the network fee`);
     if (!(q.expiresAt > now() + policy.quoteMarginSecs)) throw new Error('the quote expired: ask again');

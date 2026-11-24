@@ -525,6 +525,24 @@ test('a provider\'s refusal is said in the page\'s own words: what its answer sa
   assert.equal(r, 'the provider cannot hold that amount just now');
 });
 
+test('two pages of one key that start at the same moment take turns: one start runs at a time, and each locks a coin of its own', async () => {
+  const w = pairWorld({ userSats: [300_000, 300_000] });
+  await w.ready();
+  for (let i = 0; i < 4; i++) w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount * 2n, 'inv' + i);       // (a provider holds a payout it is not yet backed for up to half of what it has)
+  // (the coins are read as an explorer reads them, a moment behind: a start that ran beside another would read the other's coin as free)
+  const btc = Object.assign(Object.create(Object.getPrototypeOf(w.uBtc)), w.uBtc, { satsUtxos: async (...a) => { const r = await w.uBtc.satsUtxos(...a); await new Promise((x) => setTimeout(x, 30)); return r; } });
+  let queue = Promise.resolve(), inside = 0, most = 0;
+  const exclusive = (work) => { const r = queue.then(async () => { most = Math.max(most, ++inside); try { return await work(); } finally { inside--; } }); queue = r.catch(() => {}); return r; };
+  const a = w.makePair({ btc, exclusive }), b = w.makePair({ btc, exclusive });
+  const [qa, qb] = [await a.quote({ dir: 'b2e', amount: SATS }), await b.quote({ dir: 'b2e', amount: SATS })];
+  const got = await Promise.allSettled([a.start(qa), b.start(qb)]);
+  assert.equal(most, 1, 'the two starts did not run side by side');
+  assert.equal(got.filter((g) => g.status === 'fulfilled').length, 2, JSON.stringify(got.map((g) => g.reason && g.reason.message)));
+  const ins = (await w.mems.get('fwd').list()).map((r) => (r.feeInputs || []).map((i) => `${i.txid}:${i.vout}`).join(','));
+  assert.equal(ins.length, 2);
+  assert.notEqual(ins[0], ins[1], 'each start locked a coin of its own');
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   const t0 = Date.now();
