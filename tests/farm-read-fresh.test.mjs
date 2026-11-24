@@ -47,7 +47,7 @@ const E18 = 10n ** 18n;
 // lists it (`lightState`). What the other nodes say when asked for the newest block: `fresh` 'ok' = block 101, 'stale' = behind like the light node, 'down' = they all error. What a read of a numbered block gives:
 // `pinned` 'ok' = the state at that block (from a node that has it), 'refused' = every node errors, 'old' = a node that ignores the tag and answers from block 100.
 function world({ lightState = { block: 100, staked: 5n * E18, earned: 3n * E18 }, state = { staked: 0, earned: 0 }, head = 101, fresh = 'ok', pinned = 'ok', load = false } = {}) {
-  const clock = { t: 1_800_000_000_000 }, log = { reads: 0, asks: [], sleeps: [] };
+  const clock = { t: 1_800_000_000_000 }, log = { reads: 0, asks: [], sleeps: [] }, timers = [];
   const FakeDate = { now: () => clock.t };
   const RPCS = ETH_NODES;
   const multicall = async (calls, block = 'latest', urls = RPCS) => {
@@ -78,13 +78,15 @@ function world({ lightState = { block: 100, staked: 5n * E18, earned: 3n * E18 }
   };
   const scope = {
     Date: FakeDate, sleep: async (ms) => { log.sleeps.push(ms); clock.t += ms; },
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },   // a timer fires only when the test says so (`fire`): the deadline of a read
     RPCS, ETHN, SEL, ADDR, multicall, S: { address: ME, wallet: ME, acct: null }, FARM: {}, TACB: {}, PUBX: {}, CLOCK: {},
     addrWord: (a) => a.toLowerCase().replace(/^0x/, '').padStart(64, '0'),
     wordAt: (h, i) => BigInt('0x' + String(h).replace(/^0x/, '').slice(i * 64, i * 64 + 64)),
     gasNow: async () => 1n, now: () => Math.floor(clock.t / 1000), dashSoon: () => {},
   };
   const fns = run(helperSrc + (load ? '\n' + loadSrc : ''), scope, `SEEN, blockOf, sawBlock, seenFloor, notLight, readFrom${load ? ', loadPrecision' : ''}`);
-  return { ...fns, scope, clock, log };
+  const fire = () => { for (const t of timers.splice(0)) { clock.t += t.ms; t.fn(); } };
+  return { ...fns, scope, clock, log, fire };
 }
 const T = (n) => '0x' + n.toString(16);
 
@@ -171,6 +173,30 @@ test('readFrom: a node that never catches up costs eight tries, then the last an
   assert.equal(n, 9, 'the first read and eight more');
   assert.equal(got.n, 9, 'the last answer');
   assert.equal(w.log.sleeps.length, 6);
+});
+
+test('readFrom: a retry that hangs (nodes that never answer) is given up on at the deadline, and the last answer comes back instead of holding the page for minutes', async () => {
+  const w = world();
+  let asked = 0;
+  const p = w.readFrom(101, () => { asked++; return asked === 1 ? Promise.resolve({ at: 100, n: 1 }) : new Promise(() => {}); });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(asked, 2, 'the first retry is out and does not answer');
+  w.fire();                                              // the deadline passes
+  const got = await p;
+  assert.equal(got.n, 1, 'the answer it already had');
+  assert.equal(asked, 2, 'and it does not go on asking');
+  assert.equal(w.log.sleeps.length, 0);
+});
+
+test('readFrom: the retries add at most `within` ms to the first answer, however many tries are left', async () => {
+  const w = world();
+  let n = 0;
+  const got = await w.readFrom(101, async () => ({ at: 100, n: ++n }), { within: 3000 });
+  assert.equal(n, 5, 'the first read, two retries at once, two after a moment each');
+  assert.deepEqual(w.log.sleeps, [1500, 1500]);
+  assert.equal(got.n, 5);
+  const defaults = between('async function readFrom(', 'async function multicall(');
+  assert.match(defaults, /within = 12e3/, 'twelve seconds by default');
 });
 
 test('readFrom: an answer whose block is not known is taken as it is (nothing to compare)', async () => {
