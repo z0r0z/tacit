@@ -16,6 +16,16 @@ export const AUTO_CLAIM_KEY = 'tacit-auto-claim-v1';
 
 // `read(key)` gives what the browser holds for a key (it may throw: a private window has no storage).
 export const autoClaimOff = (read) => { try { return read(AUTO_CLAIM_KEY) === 'off'; } catch { return false; } };
+// The wallet sheet's switch: 'off' kept in the browser's storage, or taken away. false when the browser would not keep it (a private window has no storage; `store` may be null).
+export function autoClaimSet(store, off) {
+  try { if (off) store.setItem(AUTO_CLAIM_KEY, 'off'); else store.removeItem(AUTO_CLAIM_KEY); return true; } catch { return false; }
+}
+// Whether the note of a payment claimed unasked should also say that claiming is automatic and where to stop it: the first time in this browser, never again (and never
+// where the browser keeps nothing, which would repeat it every time).
+export const AUTO_CLAIM_TOLD = 'tacit-auto-claim-told-v1';
+export function autoClaimHint(store) {
+  try { if (store.getItem(AUTO_CLAIM_TOLD)) return false; store.setItem(AUTO_CLAIM_TOLD, '1'); return true; } catch { return false; }
+}
 
 const key = (l) => String(l.leaf).toLowerCase();
 

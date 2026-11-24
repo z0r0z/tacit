@@ -88,5 +88,5 @@ test('one loop at a time: a later claim restarts it and the earlier loop stops',
 test('how it is reached: each payment is told as it goes through, and a claim that went through starts the looks after its scan', () => {
   assert.match(sheets, /ok\+\+;\n {6}try \{ onDone\?\.\(due, self \|\| lpP \? 0n : fee\); \} catch \{ \/\* telling is not worth stopping a claim \*\/ \}/, 'told per payment, and a failure to tell stops nothing');
   assert.match(sheets, /const pub = S\.key\?\.pubHex;\n {2}await scanPrivate\(true\)\.catch\(\(\) => \{\}\);\n {2}if \(ok && pub\) readAfterClaim\(pub\)\.catch\(\(\) => \{\}\);/, 'the looks follow the scan, only when something went through, and are not waited for');
-  assert.match(sheets, /const told = \(l, f\) => toast\(html`Claimed \$\{lockWhat\(\[l\]\)\} sent to you\$\{f > 0n \? ', less the relay fee' : ''\}\.`\);/, 'auto-claim says so as each payment lands');
+  assert.match(sheets, /const told = \(l, f\) => \{ hint \?\?= autoClaimHint\(acStore\(\)\); toast\(html`Claimed \$\{lockWhat\(\[l\]\)\} sent to you\$\{f > 0n \? ', less the relay fee' : ''\}\./, 'auto-claim says so as each payment lands');
 });
