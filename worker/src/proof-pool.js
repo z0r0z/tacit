@@ -689,7 +689,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       // pp:pend:<deposit> until a look at the pool (check) finds it there, and lapses after landMs. A deposit whose status could not be read waits too.
       const waiting = landing && !!dep && points > 0 && !(onPool >= 1);
       if (points > 0 && !waiting) { mr.credited++; mr.points += points; rec.points += points; if (landing) rec.landed = (rec.landed || 0) + 1; }
-      if (waiting) { await write(K.pend(dep), { miner: l.miner, points, at: t }, Math.ceil(cfg.landMs / 1000) + 3600); await enqueue(dep, 0, t, t); }
+      if (waiting) { rec.pended = (rec.pended || 0) + 1; await write(K.pend(dep), { miner: l.miner, points, at: t }, Math.ceil(cfg.landMs / 1000) + 3600); await enqueue(dep, 0, t, t); }
       await write(K.day(d), rec, cfg.daySecs);
       const extra = waited > secs ? { waited } : {};
       if (!again) await made({ miner: l.miner, points, ...extra }, waiting ? { miner: l.miner, points: 0, pending: points, ...extra } : undefined);
@@ -711,15 +711,16 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
   }
 
   // A deposit is looked for at each of landChecks' ages after its proof: `n` is the look, `at` the proof's time. The looks are kept by the minute they fall due
-  // (pp:chk:<minute>), never earlier than `delay` from now. Under the lock.
+  // (pp:chk:<minute>), never earlier than `delay` from now. Under the lock. False when there is no such look left (the deposit has lapsed).
   async function enqueue(dep, n, at, now, delay = 1000) {
-    if (n >= cfg.landChecks.length) return;
+    if (n >= cfg.landChecks.length) return false;
     const due = Math.max(at + cfg.landChecks[n], now + delay);
-    if (due - at > cfg.landMs) return;
+    if (due - at > cfg.landMs) return false;
     if (await read(K.chkAt, null) == null) await write(K.chkAt, Math.floor(now / 60_000) - 1);
     const key = K.chk(Math.floor(due / 60_000)), list = await read(key, []);
     list.push([dep, n]);
     await write(key, list, Math.ceil(cfg.landMs / 1000) + 7200);
+    return true;
   }
 
   // The proofs whose deposits have landed, each paid on the day this runs (a day that is over never changes), if it has not lapsed and its address still earns that
@@ -766,16 +767,26 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
     if (!slots.length) return;
     const entries = lists.flat(), deps = entries.map(([dep]) => dep);
     const st = await statusesOf(deps, cfg.landWaitMs * 4);
+    // What the last look found, for stats: whether the chain answered for all of them, some, or none.
+    if (deps.length) reg.look = { at: clock(), n: deps.length, how: st.every((x) => x === null) ? 'failed' : st.some((x) => x === null) ? 'partial' : 'ok' };
     if (deps.length && st.every((x) => x === null)) return;
     await exclusive(async () => {
       const now = clock();
       await land(deps.filter((_, i) => st[i] >= 1), now);
+      let lapsed = 0;
       for (let i = 0; i < entries.length; i++) {
         if (st[i] >= 1) continue;
         const [dep, k] = entries[i], p = await read(K.pend(dep), null);
         if (!p) continue;
-        if (st[i] === null) await enqueue(dep, k, p.at, now, 120_000);
-        else await enqueue(dep, k + 1, p.at, now);
+        if (!(st[i] === null ? await enqueue(dep, k, p.at, now, 120_000) : await enqueue(dep, k + 1, p.at, now))) lapsed++;
+      }
+      // The day's counts of deposits looked for and of waiting proofs with no look left (after land, which writes the day's record itself).
+      const seen = st.filter((x) => x !== null).length;
+      if (seen || lapsed) {
+        const d = dayOf(now), rec = await dayRec(d);
+        rec.looked = (rec.looked || 0) + seen;
+        rec.lapsedLand = (rec.lapsedLand || 0) + lapsed;
+        await write(K.day(d), rec, cfg.daySecs);
       }
       for (const s of slots) await kv.delete(K.chk(s));
       await write(K.chkAt, slots[slots.length - 1]);
@@ -839,7 +850,11 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       // proofs Tacit's own prover made today (the backstop: nobody else took the job in time) and the leases it took over from a miner that sat on them
       houseToday: rec.house || 0, takeoversToday: rec.takeovers || 0,
       // proofs paid today because their deposit landed on the pool (they may be earlier days' proofs)
-      ...(landing ? { landedToday: rec.landed || 0 } : {}),
+      // Whether the landing check is running and what it finds, so a day with nothing landed can be told from a check that is not looking: proofs that waited for
+      // their deposit, deposits looked for on the pool, proofs with no look left, and this process's last sweep and last look (`how`: the chain answered for all,
+      // some or none of them).
+      ...(landing ? { landedToday: rec.landed || 0, pendedToday: rec.pended || 0, lookedToday: rec.looked || 0, lapsedLandToday: rec.lapsedLand || 0,
+        lastSweep: reg.landAt || null, lastLook: reg.look ? { at: reg.look.at, n: reg.look.n, how: reg.look.how } : null } : {}),
       // who is asking for work as this process sees it, for the last `turnMs` (the pool keeps it in memory, per process): places and addresses registered, how many
       // tickets they count for once an address is held to `ticketsPerAddress`, and the addresses with the most places (an address is already public on the board)
       askers: askerView(t),

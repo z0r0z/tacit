@@ -1428,3 +1428,36 @@ test('minimum config: floors are named by ticker in whole tokens, or by asset id
   assert.deepEqual(proofPoolConfig({ POOL_MIN_LAND: 'none' }).minLand, {});
   assert.equal(Object.keys(proofPoolConfig({ POOL_MIN_LAND: '' }).minLand).length, 5, 'an empty value is the default');
 });
+
+// ── landing health: stats say whether the check is looking, so a day with nothing landed can be told from a check that does not run ──
+
+test('landing health: stats count the proofs that waited, the deposits looked for and the proofs with no look left, and say when the check last swept and looked', async () => {
+  const chain = fakeChain(), h = harness({ chain });
+  const sumDays = (f) => [...h.store.m.entries()].filter(([k]) => k.startsWith('pp:day:')).reduce((s, [, v]) => s + (JSON.parse(v)[f] || 0), 0);
+  let s = (await h.pool.stats()).body;
+  assert.deepEqual([s.pendedToday, s.lookedToday, s.lapsedLandToday, s.lastLook], [0, 0, 0, null], 'nothing has waited and no look has been made');
+  assert.equal(s.lastSweep, h.t, 'but the sweep has run, and says when');
+  const a = wrapJob(0), b = wrapJob(1), depA = depOf(a.expect);
+  await proveFor(h, a); await proveFor(h, b);
+  assert.equal((await h.pool.stats()).body.pendedToday, 2, 'two proofs waited for their deposits');
+  chain.down = true;                                                     // the chain does not answer: the check is seen to try, and nothing counts as looked at
+  h.t += 111_000; await h.pool.credits(DAY0);
+  s = (await h.pool.stats()).body;
+  assert.deepEqual([s.lastLook.how, s.lastLook.n, s.lastLook.at, s.lookedToday, s.landedToday], ['failed', 2, h.t, 0, 0]);
+  chain.down = false; chain.status[depA] = 1; chain.partial.add(depOf(b.expect));
+  await lookNow(h);                                                      // one of the two cannot be read alone
+  s = (await h.pool.stats()).body;
+  assert.deepEqual([s.lastLook.how, s.lastLook.n, s.lookedToday, s.landedToday], ['partial', 2, 1, 1], 'a look that read some of them says so, and counts those');
+  chain.partial.clear();
+  for (const age of PROOF_POOL.landChecks.slice(1)) { h.t = T0 + age + 70_000; await lookNow(h); }
+  assert.equal(sumDays('looked'), 1 + PROOF_POOL.landChecks.length, 'every look that read the chain counts: one for A, one at each age for B, none for the failed read');
+  assert.equal(sumDays('lapsedLand'), 1, 'B has no look left once the last age has passed');
+  assert.equal(sumDays('landed'), 1);
+  assert.equal(sumDays('pended'), 2);
+  s = (await h.pool.stats()).body;
+  assert.equal(s.lastLook.how, 'ok');
+  assert.equal(typeof s.lastSweep, 'number');
+  // with landing off the answers say nothing of it
+  const off = (await harness().pool.stats()).body;
+  assert.deepEqual(['pendedToday', 'lookedToday', 'lapsedLandToday', 'lastSweep', 'lastLook'].filter((k) => k in off), [], 'no landing, none of these');
+});
