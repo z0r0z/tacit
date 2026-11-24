@@ -592,6 +592,29 @@ export function openStore(dbPath, { excluded = [] } = {}) {
   });
   const depositorOfStmt = db.prepare(`SELECT depositor FROM deposits WHERE tx_hash = ?`);
   const depositorOfTx = (txHash) => depositorOfStmt.get(txHash)?.depositor ?? null;
+  // Takes back rows that were credited in error (an exploit found after the fact): each row goes and its address's totals
+  // come down by it. Only rows of a day that has not settled: a settled day's rewards are already in the ledger and a root's
+  // amounts never go down, so those are reported and left as they are. Returns what was taken back and what was left.
+  const getDepositStmt = db.prepare(`SELECT tx_hash AS txHash, depositor, amount_wei AS amountWei, points, block_time AS blockTime FROM deposits WHERE tx_hash = ?`);
+  const deleteDepositStmt = db.prepare(`DELETE FROM deposits WHERE tx_hash = ?`);
+  const lowerTotalsStmt = db.prepare(`UPDATE totals SET points = MAX(points - @points, 0), deposit_count = deposit_count - 1, amount_wei = @amountWei WHERE address = @address`);
+  const dropEmptyTotalsStmt = db.prepare(`DELETE FROM totals WHERE address = ? AND deposit_count <= 0`);
+  const voidDeposits = db.transaction((txHashes) => {
+    const settled = loadSettleStateStmt.get()?.last_settled_day;
+    const voided = [], settledDay = [];
+    for (const hash of txHashes) {
+      const row = getDepositStmt.get(String(hash).toLowerCase());
+      if (!row) continue;
+      if (settled != null && Math.floor(row.blockTime / 86400) <= settled) { settledDay.push(row); continue; }
+      const prior = BigInt(totalAmountStmt.get(row.depositor)?.amount_wei ?? '0');
+      const left = prior > BigInt(row.amountWei) ? prior - BigInt(row.amountWei) : 0n;
+      deleteDepositStmt.run(row.txHash);
+      lowerTotalsStmt.run({ address: row.depositor, points: row.points, amountWei: left.toString() });
+      dropEmptyTotalsStmt.run(row.depositor);
+      voided.push(row);
+    }
+    return { voided, settledDay };
+  });
   const insertHoldingEventStmt = db.prepare(`INSERT OR IGNORE INTO holding_events (chain_id, block, log_index, first_index, out_leaf0, out_leaf1, nf0, nf1, new_root) VALUES (@chainId, @block, @logIndex, @firstIndex, @outLeaf0, @outLeaf1, @nf0, @nf1, @newRoot)`);
   const saveHoldingEvents = db.transaction((chainId, events) => {
     let n = 0;
@@ -845,7 +868,7 @@ export function openStore(dbPath, { excluded = [] } = {}) {
   }
 
   return {
-    db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor, countByActivity,
+    db, recordDeposit, voidDeposits, loadCursor, saveCursor, leaderboard, totalFor, depositsFor, countByActivity,
     dayPointsByAddress, dayActivityPoints, dayAmountsByAddress, weekActivityPoints, lateDays, creditedWithPrefix, saveTaskQuote, taskQuotes, latestTaskQuote, saveTaskClaim, taskClaim, taskClaims, pendingTaskClaims, creditTaskClaim, commitDay, saveHoldingEvents, holdingEvents, holdingEventsIter, loadHoldingCursor, saveHoldingCursor, saveHoldingSnapshot, holdingSnapshots, recordHoldingClaim, holdingClaimFor, loadHoldingVerified, saveHoldingVerified, rewindHolding, depositorOfTx, getMeta, setMeta, saveBondRef, bondPairsBefore, bondsToCheck, saveBondCheck, applyDayRewards, applyAdjustment, listAdjustments: () => listAdjustmentsStmt.all(), allRewards, rewardFor,
     savePoolSnapshot, poolSnapshots: (fromDay) => poolSnapshotsStmt.all(fromDay), poolDepositWeiByDay, recent,
     loadSettleState, saveSettleState, savePublishedClaims, publishedAmounts, claimFor,

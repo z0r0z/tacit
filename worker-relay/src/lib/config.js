@@ -897,6 +897,9 @@ export const CFG = {
   // One-off add-only ledger credits as a JSON array of { id, address, wei } (lib/points-adjustments.js). Each id is
   // applied once; empty means none.
   pointsLedgerAdjustments: opt('POINTS_LEDGER_ADJUSTMENTS', ''),
+  // Transactions whose scored rows were credited in error and are taken back, as 0x transaction hashes separated by commas
+  // or spaces (the store's voidDeposits). Rows of a day that has settled are left as they are; empty means none.
+  pointsVoidTxs: opt('POINTS_VOID_TXS', ''),
   // Task rewards (lib/points-tasks.js): TAC for doing a listed job's step, credited as ledger adjustments outside the daily pot.
   // Off unless the budget (the most that can ever be credited, in wei; raise it with each top-up of the distributor) and the end
   // time (UTC seconds; no later than the distributor's root deadline) are both set. A step pays its gas at a slow-mode price in

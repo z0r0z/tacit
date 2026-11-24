@@ -50,6 +50,7 @@ import { openStore } from './lib/points-store.js';
 import { parseBoostTiers, openTacBoost, scanTacTransfers } from './lib/tac-holder-boost.js';
 import { build as buildMerkleTree, formatTac, rewardEntries } from './lib/points-merkle.js';
 import { factoryListsPool } from './lib/pool-registry.js';
+import { wethPaidIntoPool } from './lib/pool-swap-input.js';
 import { makeTtlCache } from './lib/ttl-cache.js';
 import { withReadCache } from './lib/read-cache-front.js';
 import { parseUrl, badRequest } from './lib/safe-url.js';
@@ -773,6 +774,8 @@ const POOL_REGISTRY_CHECK = process.env.POINTS_POOL_REGISTRY_CHECK !== '0';
 const unlistedLogged = new Set();
 const poolReadUnanswered = (e) => { for (let x = e; x; x = x.cause) if (x.name === 'HttpRequestError' || x.name === 'TimeoutError') return true; return false; };
 const FACTORY_FN_ABI = [{ type: 'function', name: 'factory', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] }];
+const POOL_TOKEN_ABI = ['token0', 'token1'].map((name) => ({ type: 'function', name, stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] }));
+const washLogged = new Set();
 const IS_POOL_FN_ABI = [{ type: 'function', name: 'isPool', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'bool' }] }];
 const ERC20_TRANSFER_EVENT = {
   type: 'event', name: 'Transfer',
@@ -858,14 +861,27 @@ async function zRouterVerifiedSwapAmount(client, chainId, wethAddr, txHash, zRou
     return ok;
   }
 
+  // Which side of a pool WETH is (0 or 1), or -1 when it is neither: stray WETH sent to a pair of two other tokens is no ETH swap.
+  const sideCache = new Map();
+  async function wethSide(pool) {
+    const addr = pool.toLowerCase();
+    if (sideCache.has(addr)) return sideCache.get(addr);
+    // A pool that got this far already answered token0 and token1 for its factory check, so a failed read here is the
+    // node's, not the pool's: it throws and the cycle tries again, rather than count a real swap as nothing.
+    const [t0, t1] = await Promise.all(['token0', 'token1'].map((functionName) => client.readContract({ address: pool, abi: POOL_TOKEN_ABI, functionName })));
+    const side = t0.toLowerCase() === wethAddr.toLowerCase() ? 0 : t1.toLowerCase() === wethAddr.toLowerCase() ? 1 : -1;
+    sideCache.set(addr, side);
+    return side;
+  }
+
   let total = 0n;
+  const sentToPool = new Map();   // a known pool -> the WETH zRouter sent it
   for (const entry of receipt.logs) {
     if (entry.address.toLowerCase() === wethAddr.toLowerCase()) {
       let decoded;
       try { decoded = decodeEventLog({ abi: [ERC20_TRANSFER_EVENT], data: entry.data, topics: entry.topics }); } catch { continue; }
-      if (decoded.args.from.toLowerCase() === zRouter.toLowerCase() && await isKnownPool(decoded.args.to)) {
-        total += decoded.args.value;
-      }
+      const to = decoded.args.to.toLowerCase();
+      if (decoded.args.from.toLowerCase() === zRouter.toLowerCase() && await isKnownPool(to)) sentToPool.set(to, (sentToPool.get(to) ?? 0n) + decoded.args.value);
       continue;
     }
     if (await isPrecisionPool(entry.address)) {
@@ -905,6 +921,19 @@ async function zRouterVerifiedSwapAmount(client, chainId, wethAddr, txHash, zRou
         log(`zRouter V4 settlement check still unresolved 30+ min after block time for ${txHash}, crediting nothing for that leg:`, err?.message || err);
       }
     }
+  }
+  // WETH zRouter sent a V2/V3-style pool counts only as far as the pool's own Swap events show it paid in (see
+  // lib/pool-swap-input.js).
+  for (const [pool, sent] of sentToPool) {
+    const side = await wethSide(pool);
+    if (side < 0) continue;
+    const paidIn = wethPaidIntoPool(receipt.logs, pool, side === 0);
+    const counted = sent < paidIn ? sent : paidIn;
+    if (counted < sent && !washLogged.has(`${txHash}:${pool}`)) {
+      washLogged.add(`${txHash}:${pool}`);
+      log(`zRouter sent ${pool} ${sent} WETH wei in ${txHash} but its swaps took in ${paidIn}: counted ${counted}`);
+    }
+    total += counted;
   }
   return total;
 }
@@ -2146,9 +2175,22 @@ function setupMine(store) {
   return m;
 }
 
+// POINTS_VOID_TXS: scored rows credited in error are taken back at start, once; a
+// row already gone is skipped, so the list can stay in place. A settled day's rows are left, and said so.
+function voidListedRows(store) {
+  const entries = CFG.pointsVoidTxs.split(/[\s,]+/).filter(Boolean);
+  const hashes = entries.filter((h) => /^0x[0-9a-fA-F]{64}$/.test(h));
+  for (const h of entries) if (!hashes.includes(h)) log(`POINTS_VOID_TXS: "${h}" is not a transaction hash, ignored`);
+  if (!hashes.length) return;
+  const { voided, settledDay } = store.voidDeposits(hashes);
+  for (const r of voided) log(`voided ${r.txHash}: ${r.points.toFixed(1)} points of ${r.depositor} taken back`);
+  for (const r of settledDay) log(`not voided ${r.txHash}: its day has settled`);
+}
+
 async function main() {
   if (!CFG.pointsStartBlock) throw new Error('missing required env POINTS_START_BLOCK');
   const store = openStore(CFG.pointsDbPath, { excluded: CFG.evmPoolPointsExclude });
+  voidListedRows(store);
   if (CFG.tacBoostTiers) {
     if (!CFG.tacBoostStartBlock) throw new Error('TAC_BOOST_TIERS needs TAC_BOOST_START_BLOCK');
     tacBoost = openTacBoost(new Database(CFG.pointsDbPath), {
