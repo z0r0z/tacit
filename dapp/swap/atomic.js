@@ -147,7 +147,13 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (!pair || !D.unlocked) return Promise.resolve();
     if (reading) return reading;
     reading = (async () => {
-      try { const b = await pair.balances(); if (b) L.bal = { sats: b.sats ?? null, eth: b.eth ?? null, ethHeld: b.ethHeld ?? null, pending: b.pendingSats ?? 0n }; paint(); }
+      try {
+        const b = await pair.balances();
+        if (b) L.bal = { sats: b.sats ?? null, eth: b.eth ?? null, ethHeld: b.ethHeld ?? null, pending: b.pendingSats ?? 0n };
+        // a side the explorers or nodes did not answer for is said as such (the lane's refresh reads it again), not left as 'reading'
+        L.unread = { btc: !b || b.sats == null, eth: !b || b.eth == null };
+        paint();
+      }
       catch (e) { if (!quiet) say(esc(plainError(e)), 'err'); }
       finally { reading = null; }
     })();
@@ -290,7 +296,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const bp = balOf(pk), bg = balOf(gk), hp = heldOf(pk), hg = heldOf(gk);
     // sats that have reached the address and wait for a block are said, so a deposit that has not confirmed yet is not mistaken for a balance that is not there
     const confirming = (k) => (k === 'btc' && L.bal.pending > 0n ? ` · ${fmt(L.bal.pending)} BTC confirming` : '');
-    $('a-bal').textContent = !D.unlocked || !pair ? '' : hp == null ? 'Reading your balance…' : `Balance ${fmt(hp)} ${p.sym}${confirming(pk)}`;
+    const unread = (k) => (k === 'btc' ? L.unread?.btc : L.unread?.eth);
+    $('a-bal').textContent = !D.unlocked || !pair ? '' : hp == null ? (unread(pk) ? `${p.sym} balance not read yet: trying again` : 'Reading your balance…') : `Balance ${fmt(hp)} ${p.sym}${confirming(pk)}`;
     $('a-get-bal').textContent = !D.unlocked || !pair || hg == null ? '' : `Balance ${fmt(hg)} ${g.sym}${confirming(gk)}`;
     const max = bp != null && bp > 0n ? (pk === 'btc' ? bp - BigInt(L.q?.networkFeeSats ?? LOCK_GUESS_SATS) : bp) : 0n;
     $('a-quick').innerHTML = max > 0n ? [25, 50, 100].map((n) => `<button type="button" data-quick="${tidy(plain((max * BigInt(n)) / 100n, DEC))}">${n === 100 ? 'Max' : `${n}%`}</button>`).join('') : '';

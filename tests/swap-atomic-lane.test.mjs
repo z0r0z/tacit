@@ -467,6 +467,20 @@ console.log('a phone width, and the dark scheme');
   await page.close();
 }
 
+// a balance the explorers do not answer for is said, and read again
+{
+  console.log('\na balance that cannot be read');
+  const { page } = await fresh({ ads: [ad()] });
+  await laneUp(page);
+  await page.evaluate(() => { const A = window.__atom; A.bal = { sats: null, eth: 400000000n }; });
+  await page.click('[data-mode=atomic]');
+  await page.waitForFunction(() => document.querySelector('#a-go'));
+  await page.click('#a-go');
+  await page.waitForFunction(() => /not read yet/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
+  ok(/BTC balance not read yet: trying again/.test(await text(page, '#a-bal')), `an unanswered Bitcoin balance is said, not left reading (${await text(page, '#a-bal')})`);
+  await page.close();
+}
+
 await b.close();
 server.close();
 console.log(`\n${n} checks passed${fails ? `, ${fails} FAILED` : ''}`);
