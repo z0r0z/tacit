@@ -28,7 +28,10 @@
 // With VAULTS set, it reads each vault's borrowers from its Borrowed events (in chunks, remembering them) and:
 //   - calls `liquidate` on a vault with debt that is below the liquidation line (not while the owner has paused
 //     auctions), and `cancel` on an auction whose vault has recovered;
-//   - once an auction has run AUCTION_DURATION, calls `absorb` when it can, and otherwise reports the vault.
+//   - once an auction has run AUCTION_DURATION, calls `absorb` when it can and when the vault's TAC is worth less than its debt at the dearest of the liquidation
+//     view, the offer view and the venues' spot (the views are medians of past intervals), and otherwise reports the vault. The keeper holds
+//     no SYNTH and sends none to a vault: what `absorb` burns is the reserve the vault already holds.
+//   - says when a vault's owner, fee recipient, TAC sink or pauser changes, and when a term of the vault or a further minter of its synth is announced.
 //
 // Every call is simulated first and sent only if it would succeed, with a gas limit 30% above the estimate. Vault
 // actions pay at most ACTION_MAX_GWEI, since a liquidation must not wait out a gas spike. A transaction that mines
@@ -45,8 +48,10 @@
 //
 // Lines starting ALERT report what an operator may want to act on: an auction opened on a vault (its owner can repay
 // or add TAC until the owner window ends), a venue's price more than 40% under its longest window's upper median or
-// 60% over its lower one, an oracle the vault's owner has announced or put in place whose venues are not recorded
-// here, and intervals that could not be recorded. With ALERT_WEBHOOK set, each is also posted there as {"text": "..."}.
+// 60% over its lower one, TAC trading REDEEM_GAP_BPS (200) over the price a vault's redemptions and bids use, an oracle the
+// vault's owner has announced or put in place whose venues are not recorded here, a term or minter announced, a change of
+// owner, fee recipient, TAC sink or pauser, SYNTH held by a vault, a vault's ETH price feed close to the age at which it refuses actions, and intervals that could
+// not be recorded. With ALERT_WEBHOOK set, each is also posted there as {"text": "..."}.
 //
 // Usage:
 //   KEEPER_ACCOUNT=<cast keystore name> [KEEPER_PASSWORD_FILE=..] RPC=<archive endpoint>
@@ -54,7 +59,7 @@
 //   [RPC_FALLBACKS=https://...,https://...] [RPC_COOLDOWN_SECONDS=120] [START_TRIES=30] [START_RETRY_SECONDS=20]
 //   [MAX_GWEI=1] [RECORD_TIP_GWEI=0.001] [URGENT_MAX_GWEI=25] [URGENT_TIP_GWEI=0.1] [URGENT_AFTER_BLOCKS=5]
 //   [ACTION_MAX_GWEI=100] [ACTION_TIP_GWEI=0.1] [RECORD_POLL_SECONDS=12] [FULL_SWEEP_SECONDS=300] [SCAN_SECONDS=60]
-//   [LOG_CHUNK=5000] [ALERT_WEBHOOK=https://...] [ONCE=1] [FEE_HEADROOM=3] [RECORD_MODE=always|demand] [RISK_COVER_BPS=28000]
+//   [LOG_CHUNK=5000] [ALERT_WEBHOOK=https://...] [ONCE=1] [FEE_HEADROOM=3] [RECORD_MODE=always|demand] [RISK_COVER_BPS=28000] [REDEEM_GAP_BPS=200] [PAUSE_GAP_BPS=0 PAUSE_SECONDS=1500]
 //   node tools/tac-vault-keeper.mjs
 // KEEPER_PRIV=0x.. works too, but the key is then visible to every local process in the command line of each send.
 
@@ -100,6 +105,12 @@ if (!['always', 'demand'].includes(RECORD_MODE)) {
   process.exit(2);
 }
 const RISK_COVER_BPS = BigInt(process.env.RISK_COVER_BPS || 28000);
+// How far over the price a vault's redemptions and bids use the venues' spot may be before the keeper says so, in basis points.
+const REDEEM_GAP_BPS = BigInt(process.env.REDEEM_GAP_BPS || 200);
+// With PAUSE_GAP_BPS above 0 and the keeper's wallet named the vault's pauser, a gap that wide pauses the vault for PAUSE_SECONDS (a pause stops redemptions, outside
+// bids and absorb; the next one waits as long as this one ran, so a short pause is a short wait). Off when 0.
+const PAUSE_GAP_BPS = BigInt(process.env.PAUSE_GAP_BPS || 0);
+const PAUSE_SECONDS = Number(process.env.PAUSE_SECONDS || 1500);
 const RECORD_POLL = Number(process.env.RECORD_POLL_SECONDS || 12);
 const FULL_SWEEP = Number(process.env.FULL_SWEEP_SECONDS || 300);
 const SCAN_SECONDS = Number(process.env.SCAN_SECONDS || 60);
@@ -188,6 +199,15 @@ function alertOnce(key, msg) {
     .catch((e) => log('alert webhook failed:', String(e.message || e)));
 }
 const clearAlert = (key) => alerted.delete(key);
+
+// A line for the log that is said once until it is cleared, for what is waiting and not worth an alert.
+const noted = new Set();
+function noteOnce(key, msg) {
+  if (noted.has(key)) return;
+  noted.add(key);
+  log(msg);
+}
+const clearNote = (key) => noted.delete(key);
 
 // A cast keystore account keeps the key out of the process list; KEEPER_PRIV passes it as an argument.
 const signer = KEEPER_ACCOUNT
@@ -573,6 +593,117 @@ function checkVaultOracles() {
   }
 }
 
+// What a vault's owner can change, watched from the first look: a change of owner, fee recipient, TAC sink or pauser is an alert (the first reading is the baseline,
+// so a restart says nothing about what it finds standing), and so is a term or a further minter of the synth that is announced, with the time it may take effect.
+// An announcement that was cancelled or carried out is forgotten, so announcing it again alerts again.
+const TERMS = ['depth share (bps)', 'mint ratio (bps)', 'liquidation ratio (bps)', 'liquidation bonus (bps)', 'owner window (s)', 'auction duration (s)', 'minimum debt'];
+const standing = new Map();
+const isoOf = (secs) => new Date(Number(secs) * 1000).toISOString();
+function forget(prefix, keep) {
+  for (const k of [...alerted]) if (k.startsWith(prefix) && k !== keep) clearAlert(k);
+}
+function checkGovernance() {
+  for (const vault of VAULTS) {
+    try {
+      const first = !standing.has(`${vault}:owner()(address)`);
+      for (const [name, sig] of [['owner', 'owner()(address)'], ['fee recipient', 'feeTo()(address)'], ['TAC sink', 'tacSink()(address)'], ['pauser', 'pauser()(address)']]) {
+        const now = call(vault, sig).toLowerCase();
+        const key = `${vault}:${sig}`;
+        const was = standing.get(key);
+        standing.set(key, now);
+        if (was !== undefined && was !== now) alertOnce(`gov:${key}:${now}`, `${vault}: the ${name} is now ${now} (it was ${was})`);
+      }
+      if (first) log(vault, 'watching the owner, fee recipient, TAC sink and pauser');
+      for (let i = 0; i < TERMS.length; i++) {
+        const [value, eta] = call(vault, 'queuedParam(uint8)(uint192,uint64)', String(i)).split('\n').map(num);
+        const key = `term:${vault}:${i}`;
+        forget(`${key}:`, `${key}:${value}:${eta}`);
+        if (eta !== 0n) alertOnce(`${key}:${value}:${eta}`, `${vault}: the ${TERMS[i]} is announced to become ${value} from ${isoOf(eta)}`);
+      }
+      const synth = call(vault, 'SYNTH()(address)');
+      const minter = call(synth, 'pendingMinter()(address)');
+      const mkey = `minter:${synth}`;
+      if (/^0x0+$/.test(minter)) {
+        forget(`${mkey}:`, '');
+      } else {
+        const eta = num(call(synth, 'pendingMinterEta()(uint256)'));
+        forget(`${mkey}:`, `${mkey}:${minter}:${eta}`);
+        alertOnce(`${mkey}:${minter}:${eta}`, `${vault}: ${minter} is announced as a further minter of ${synth} from ${isoOf(eta)}`);
+      }
+      const held = num(call(synth, 'balanceOf(address)(uint256)', vault));
+      if (held !== 0n) alertOnce(`reserve:${vault}`, `${vault}: holds ${Number(held) / 1e18} of its synth, which absorb burns against debt`);
+      else clearAlert(`reserve:${vault}`);
+      const count = num(call(synth, 'minterCount()(uint256)'));
+      const ckey = `${vault}:minters`;
+      const had = standing.get(ckey);
+      standing.set(ckey, count);
+      if (had !== undefined && had !== count) alertOnce(`gov:${ckey}:${count}`, `${vault}: ${synth} now has ${count} further minter${count === 1n ? '' : 's'} (it had ${had})`);
+    } catch (e) {
+      log(vault, 'governance check failed:', errLine(e));
+    }
+  }
+}
+
+// Pauses the vault for PAUSE_SECONDS when the keeper's wallet is its owner or pauser, and says so once until the gap has closed; otherwise it says the keeper cannot.
+function pauseForGap(vault) {
+  const roles = [call(vault, 'owner()(address)'), call(vault, 'pauser()(address)')].map((a) => a.toLowerCase());
+  if (!roles.includes(sender.toLowerCase())) {
+    alertOnce(`pause-role:${vault}`, `${vault}: the keeper ${sender} is not its pauser, so it cannot pause on a price gap`);
+    return;
+  }
+  clearAlert(`pause-role:${vault}`);
+  if (call(vault, 'paused()(bool)') === 'true' || !simulate(vault, 'pauseAuctions(uint256)', String(PAUSE_SECONDS)).ok) return;
+  const tx = send(vault, 'pauseAuctions(uint256)', [String(PAUSE_SECONDS)], ACTION_CAP, ACTION_TIP);
+  log(vault, 'pause', PAUSE_SECONDS, tx);
+  alertOnce(`pause:${vault}`, `${vault}: paused for ${PAUSE_SECONDS} s while TAC trades over the price its redemptions and bids use`);
+}
+
+// A vault's redemptions and bids price TAC at the offer view, which follows the venues by a few minutes: said while the venues' spot is more than REDEEM_GAP_BPS over it
+// and the vault has debt, and cleared once the gap closes. A vault whose oracle has no offer price (nothing recorded) has nothing to compare.
+function checkRedemptionGap() {
+  for (const vault of VAULTS) {
+    const key = `gap:${vault}`;
+    try {
+      if (num(call(vault, 'totalDebt()(uint256)')) === 0n) {
+        clearAlert(key);
+        continue;
+      }
+      const offer = num(call(vault, 'offerPrice()(uint256)'));
+      const spots = spotsOf(vault);
+      if (!spots.length || offer === 0n) {
+        clearAlert(key);
+        continue;
+      }
+      const spot = inUnit(vault, spots.reduce((a, b) => (b < a ? b : a)));
+      if (spot * 10000n > offer * (10000n + REDEEM_GAP_BPS)) alertOnce(key, `${vault}: TAC trades ${Number(((spot - offer) * 10000n) / offer) / 100}% above the price its redemptions and bids use`);
+      else clearAlert(key);
+      if (PAUSE_GAP_BPS > 0n && spot * 10000n > offer * (10000n + PAUSE_GAP_BPS)) pauseForGap(vault);
+      else clearAlert(`pause:${vault}`);
+    } catch (e) {
+      noteAfford(e);
+      if (answered(e)) clearAlert(key);
+      else log(vault, 'price gap check failed:', errLine(e));
+    }
+  }
+}
+
+// A vault refuses every action once its ETH price feed is FEED_MAX_STALENESS old: said while the feed is within a tenth of that.
+function checkFeed() {
+  for (const vault of VAULTS) {
+    const key = `feed:${vault}`;
+    try {
+      const feed = call(vault, 'ETH_USD()(address)');
+      const updated = num(call(feed, 'latestRoundData()(uint80,int256,uint256,uint256,uint80)').split('\n')[3]);
+      const limit = num(call(vault, 'FEED_MAX_STALENESS()(uint256)'));
+      const age = num(rd(['block', 'latest', '--field', 'timestamp'])) - updated;
+      if (age * 10n >= limit * 9n) alertOnce(key, `${vault}: its price feed is ${age} s old and it refuses actions at ${limit} s`);
+      else clearAlert(key);
+    } catch (e) {
+      log(vault, 'feed check failed:', errLine(e));
+    }
+  }
+}
+
 // Per vault: borrowers seen in Borrowed(address indexed owner, address to, uint256 amount, uint256 fee) and the
 // next block to read. Only a real borrow of at least MIN_DEBT puts an owner here.
 const seen = new Map(VAULTS.map((v) => [v, { owners: new Set(), next: BigInt(process.env.FROM_BLOCK || 0) }]));
@@ -604,6 +735,48 @@ function readOwners(vault) {
 }
 
 const act = (vault, sig, owner) => send(vault, sig, [owner], ACTION_CAP, ACTION_TIP);
+
+// The venues' spot prices (ETH per TAC) that the vault's oracle answers now: its own and, when it has venues, each venue's. A venue that gives no spot is left out; a read
+// that failed the way a provider does is thrown, so that nothing is judged on part of the answer.
+function spotsOf(vault) {
+  const pair = call(vault, 'ORACLE()(address)');
+  const asked = [pair];
+  try {
+    asked.push(call(pair, 'A()(address)'), call(pair, 'B()(address)'));
+  } catch (e) {
+    if (!answered(e)) throw e;
+  }
+  const out = [];
+  for (const v of new Set(asked.map((a) => a.toLowerCase()))) {
+    try {
+      out.push(num(call(v, 'spot()(uint256)')));
+    } catch (e) {
+      if (!answered(e)) throw e;
+    }
+  }
+  return out;
+}
+
+// ETH per TAC in the vault's unit, through its own feed.
+function inUnit(vault, ethPerTac) {
+  const feed = call(vault, 'ETH_USD()(address)');
+  const answer = num(call(feed, 'latestRoundData()(uint80,int256,uint256,uint256,uint80)').split('\n')[1]);
+  return (ethPerTac * answer) / 10n ** num(call(feed, 'decimals()(uint8)'));
+}
+
+// What TAC is worth in the vault's unit at the dearest price that can be read now: the liquidation view `absorb` judges by, the offer view (lifted by the newest recorded
+// price) and the highest spot of the vault's venues.
+function dearestPerTac(vault) {
+  const liq = num(call(vault, 'liquidationPrice()(uint256)'));
+  const offer = num(call(vault, 'offerPrice()(uint256)'));
+  let price = offer > liq ? offer : liq;
+  const spots = spotsOf(vault);
+  if (spots.length) {
+    const top = inUnit(vault, spots.reduce((a, b) => (b > a ? b : a)));
+    if (top > price) price = top;
+  }
+  return price;
+}
 
 // Whether a borrower is close enough to the liquidation line, or in an auction, that prices should be on the record: the cover is the TAC held at the
 // lower of the venues' spot and the newest recorded price (the cautious one), in the vault's unit through its own feed, over the debt. Reads only what an
@@ -682,12 +855,14 @@ function scan(vault) {
   if (paused) log(vault, 'auctions paused until', new Date(Number(pausedUntil) * 1000).toISOString(), ': not liquidating or absorbing');
   for (const owner of list) {
     try {
-      const [, debt, start] = call(vault, 'vaults(address)(uint256,uint256,uint256)', owner).split('\n').map(num);
+      const [collateral, debt, start] = call(vault, 'vaults(address)(uint256,uint256,uint256)', owner).split('\n').map(num);
       const key = `auction:${vault}:${owner}`;
+      const waitKey = `absorb-wait:${vault}:${owner}`;
       if (start !== 0n) {
         alertOnce(key, `auction on ${vault} for ${owner}: its owner can repay or add TAC until ${new Date((Number(now) + Number(start + window) - Number(clock)) * 1000).toISOString()}`);
       } else {
         clearAlert(key);
+        clearNote(waitKey);
       }
       if (debt === 0n) continue;
       if (start === 0n) {
@@ -698,8 +873,15 @@ function scan(vault) {
       } else if (simulate(vault, 'cancel(address)', owner).ok) {
         log(vault, 'cancel', owner, act(vault, 'cancel(address)', owner));
       } else if (clock - start >= duration && !paused) {
-        if (simulate(vault, 'absorb(address)', owner).ok) log(vault, 'absorb', owner, act(vault, 'absorb(address)', owner));
-        else log(vault, owner, 'auction unsold and not absorbable (vault worth its debt, or the reserve is empty)');
+        if (simulate(vault, 'absorb(address)', owner).ok) {
+          // `absorb` reads the liquidation view alone: the reserve is spent on a vault that is short at every price read now.
+          if ((collateral * dearestPerTac(vault)) / 10n ** 18n >= debt) {
+            noteOnce(waitKey, `${vault} ${owner}: absorb waits, the vault's TAC is worth its debt at today's price`);
+          } else {
+            clearNote(waitKey);
+            log(vault, 'absorb', owner, act(vault, 'absorb(address)', owner));
+          }
+        } else log(vault, owner, 'auction unsold and not absorbable (vault worth its debt, or the reserve is empty)');
       }
     } catch (e) {
       noteAfford(e);
@@ -772,6 +954,9 @@ async function main() {
         for (const v of VAULTS) scan(v);
         checkVenues();
         checkVaultOracles();
+        checkGovernance();
+        checkRedemptionGap();
+        checkFeed();
         checkBalance();
         lastScan = Date.now();
       }

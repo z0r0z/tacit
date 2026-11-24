@@ -28,3 +28,9 @@ wallet of 0.01 to 0.02 ETH lasts through several events. While recording is off 
 
 Funding: the keeper alerts once when the wallet holds under `LOW_BALANCE_ETH` (0.004 ETH, about 40 records at 0.06 gwei) and again when it cannot pay for a send;
 a dry wallet stops recording, and borrowing pauses once an interval is late (anyone can still record it for about 21 hours, from the dapp). Set `ALERT_WEBHOOK`.
+
+Watching the vaults. With `VAULTS` set the keeper also says (ALERT lines, and the webhook) when a vault's owner, fee recipient, TAC sink or pauser changes, when a term of
+the vault or a further minter of its synth is announced (with the time it can take effect), when a vault holds SYNTH, when its ETH price feed is within a tenth of the age at
+which it refuses actions, and when TAC trades more than `REDEEM_GAP_BPS` (200) over the price the vault's redemptions and bids use. It calls `absorb` only on a vault that is
+short at the liquidation view, the offer view and the venues' spot alike. Optional: `PAUSE_GAP_BPS` (off at 0) with the keeper wallet named the vault's pauser pauses the
+vault for `PAUSE_SECONDS` (1500) while the gap is that wide; the next pause waits as long as the last one ran.
