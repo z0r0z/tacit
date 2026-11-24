@@ -32,6 +32,9 @@
   "inventory": {
     "refreshSecs": 60
   },
+  "refill": {
+    "minShieldTac": 10
+  },
   "quote": {
     "minAmount": "1000000000",
     "maxAmount": "100000000000",
