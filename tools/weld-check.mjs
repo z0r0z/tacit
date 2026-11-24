@@ -209,6 +209,7 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { hmac } from '@noble/hashes/hmac';
 import { depositIdOf } from '../worker-relay/src/lib/spent-precheck.js';
 import { makeConfidentialPool as makePoolForStubs } from '../dapp/confidential-pool.js';
+import { btcAddressOf } from '../dapp/pub-address.js';
 import { sha256 } from '@noble/hashes/sha256';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
@@ -6748,6 +6749,15 @@ await step('activity', async () => {
     await openActivity(r.page);
     ok(/Made in another Tacit wallet/.test((await row('job:j-mint')).text) && !/another Tacit wallet/.test((await row('job:j-old')).text),
       `activity: an entry another key made says so (${(await row('job:j-mint')).text.slice(-60)})`);
+    // It names that wallet by its Bitcoin address (the one an explorer shows) and says how to reach it; the open wallet's sheet says it too.
+    const mintPub = await r.page.evaluate(() => JSON.parse(localStorage.getItem('tacit-lite-activity-v1')).items.find((x) => x.id === 'job:j-mint')?.pub);
+    const mintAddr = btcAddressOf(mintPub), mintShort = mintAddr ? `${mintAddr.slice(0, 10)}…${mintAddr.slice(-8)}` : '@@', mintRow = (await row('job:j-mint')).text;
+    ok(!!mintAddr && mintRow.includes(`(${mintShort})`) && /Lock this one and sign in/.test(mintRow) && !/Open it to act on it/.test(mintRow),
+      `activity: that entry names the other wallet by its Bitcoin address and says how to reach it (${mintRow.slice(-170)})`);
+    await r.page.evaluate(() => { location.hash = ''; location.hash = '#wallet'; });
+    await r.page.waitForSelector('#w-lock');
+    const elseSay = await r.page.$eval('#w-else', (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
+    ok(elseSay.includes(`(${mintShort})`) && /not in this one/.test(elseSay) && /Lock this one and sign in/.test(elseSay), `activity: the open wallet's sheet says Activity lists moves another wallet made (${elseSay.slice(0, 200)})`);
     // At most twenty entries are kept, newest first.
     for (let i = 0; i < 22; i++) await fire({ jobId: `j-n${i}`, type: 'transfer', status: 'settled', txHash: H('ab') });
     await sleep(600);
