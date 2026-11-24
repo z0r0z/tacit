@@ -590,7 +590,7 @@ test('discovering providers on a board: one that sells the other way too is list
   const ads = [ad(3, { reverse }), ad(4)];
   const fetchImpl = async (url) => (String(url) === 'https://board.example/ads' ? json({ ads }) : json({ error: 'no' }, 404));
   const found = await discoverProviders({ providers: [], boards: ['https://board.example'], fetchImpl });
-  const both = found.find((p) => p.name === 'p3'), one = found.find((p) => p.name === 'p4');
+  const both = found.find((p) => p.id === ads[0].claimPub), one = found.find((p) => p.id === ads[1].claimPub);
   assert.deepEqual(both.reverse, { feeBps: 45, flatFee: 20000000n, minAmount: 2000000000n, maxAmount: 9000000000n, available: null, csvBlocks: 72, evmWindowSecs: 14400 }, 'its own terms, as numbers the page can compare (null: it could not say what it can take)');
   assert.equal(both.terms.feeBps, 30, 'the forward terms are the ad\'s own');
   assert.equal('reverse' in one, false, 'a provider that sells one way has no reverse entry');

@@ -39,13 +39,13 @@ test('a provider of Bitcoin for ETH on the same board is not listed on the TAC b
   const ads = [ad(3), pairAd(4, { reverse }), pairAd(5)];
   const fetchImpl = async (url) => (String(url) === 'https://board.example/ads' ? json({ ads }) : json({ error: 'no' }, 404));
   const tac = await discoverProviders({ providers: [], boards: ['https://board.example'], fetchImpl });
-  assert.deepEqual(tac.map((p) => p.name), ['p3'], 'the bridge page, by default, sees TAC providers only');
+  assert.deepEqual(tac.map((p) => p.id), [ads[0].claimPub], 'the bridge page, by default, sees TAC providers only');
   assert.deepEqual(tac[0].assets, { btcAsset: TAC, evmAsset: TAC });
   const pair = await discoverProviders({ providers: [], boards: ['https://board.example'], fetchImpl, assets: { btcAsset: SATS_ASSET, evmAsset: ETH_ASSET } });
-  assert.deepEqual(pair.map((p) => p.name).sort(), ['p4', 'p5']);
-  assert.deepEqual(pair.find((p) => p.name === 'p4').assets, { btcAsset: SATS_ASSET, evmAsset: ETH_ASSET });
-  assert.equal(pair.find((p) => p.name === 'p4').reverse.minAmount, 1000000n);
-  assert.equal('reverse' in pair.find((p) => p.name === 'p5'), false);
+  assert.deepEqual(pair.map((p) => p.id).sort(), [ads[1].claimPub, ads[2].claimPub].sort());
+  assert.deepEqual(pair.find((p) => p.id === ads[1].claimPub).assets, { btcAsset: SATS_ASSET, evmAsset: ETH_ASSET });
+  assert.equal(pair.find((p) => p.id === ads[1].claimPub).reverse.minAmount, 1000000n);
+  assert.equal('reverse' in pair.find((p) => p.id === ads[2].claimPub), false);
 });
 
 test('the same for a provider that serves HTTP, and an ad that names its assets with 0x and capitals is still the same asset', async () => {
@@ -78,7 +78,7 @@ test('openPair: the page\'s own price is Chainlink read through the pool\'s RPC,
   assert.ok(Math.abs(ref.ethPerBtc - 1 / 0.02807678) < 1e-9);
   assert.equal(ref.source, '1 source');
   const ps = await pair.providers();
-  assert.deepEqual(ps.map((p) => [p.name, p.dirs, p.minSats, p.maxSats]), [['p4', ['b2e', 'e2b'], 50000n, 5000000n]], 'the TAC provider on the same board is not offered Bitcoin for ETH');
+  assert.deepEqual(ps.map((p) => [p.id, p.dirs, p.minSats, p.maxSats]), [[pairAd(4).claimPub, ['b2e', 'e2b'], 50000n, 5000000n]], 'the TAC provider on the same board is not offered Bitcoin for ETH');
   assert.deepEqual(await pair.records(), [], 'a key that has swapped nothing has nothing to show');
 });
 

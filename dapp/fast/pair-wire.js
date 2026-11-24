@@ -57,7 +57,7 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
   const prefix = `tacit-fastbridge-pair-v1:mainnet:${pubHex}:`;
   const stores = { fwd: makeLocalStore(`${prefix}fwd:`, storage), index: makeLocalStore(`${prefix}providers:`, storage), swaps: (id) => makeLocalStore(`${prefix}${id}:swaps:`, storage), quotes: (id) => makeLocalStore(`${prefix}${id}:quotes:`, storage) };
   const reverseCallFor = (ref) => (ref && ref.kind === 'mailbox'
-    ? makeMailboxCall({ board: makeBoardClient({ base: ref.boardBase, fetchImpl }), gateway: ref.gateway, ...(now ? { now } : {}) })
+    ? makeMailboxCall({ board: makeBoardClient({ base: ref.boardBase, fetchImpl }), gateway: ref.gateway, claimPub: ref.claimPub || null, ...(now ? { now } : {}) })
     : makeHttpCall({ base: ref && ref.base, fetchImpl }));
   // one page at a time takes the steps of a key's swaps (the others show what is kept): a pass that finds the lock held by another tab only reads
   const tend = (work, passive) => {

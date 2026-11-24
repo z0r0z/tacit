@@ -107,7 +107,7 @@ export function lineageScreen(vet) {
 // The counter of a provider from the reference kept with its swaps: one that serves HTTP, or one reached through a board.
 export function counterFor(ref, { fetchImpl = (...a) => fetch(...a), call = {} } = {}) {
   if (ref && ref.kind === 'http') return makeHttpCounter({ base: ref.base, fetchImpl });
-  if (ref && ref.kind === 'mailbox') return makeMailboxCounter({ board: makeBoardClient({ base: ref.boardBase, fetchImpl }), gateway: ref.gateway, ...call });
+  if (ref && ref.kind === 'mailbox') return makeMailboxCounter({ board: makeBoardClient({ base: ref.boardBase, fetchImpl }), gateway: ref.gateway, claimPub: ref.claimPub || null, ...call });
   return makeCounter(async () => ({ status: 503, body: { error: 'the provider is not reachable from here' } }));
 }
 
@@ -293,7 +293,7 @@ export async function openReverse({ T, withKey, ux, priv, pubHex, pins = {}, wal
   const { btc, seed, evm } = sides({ T, ux, priv, hrp, bases, fetchImpl, asset, seedTag: 'tacit-fastbridge-user-reverse-seed', forNotes: true, wallet, ask });
   const prefix = `tacit-fastbridge-reverse-v1:mainnet:${pubHex}:`;
   const callOf = (ref) => (ref && ref.kind === 'mailbox'
-    ? makeMailboxCall({ board: makeBoardClient({ base: ref.boardBase, fetchImpl }), gateway: ref.gateway, ...(now ? { now } : {}), ...call })
+    ? makeMailboxCall({ board: makeBoardClient({ base: ref.boardBase, fetchImpl }), gateway: ref.gateway, claimPub: ref.claimPub || null, ...(now ? { now } : {}), ...call })
     : makeHttpCall({ base: ref && ref.base, fetchImpl }));
   const readIndex = () => { try { const j = JSON.parse(storage.getItem(prefix + 'providers') || '[]'); return Array.isArray(j) ? j.filter((p) => p && typeof p.id === 'string' && p.ref && typeof p.ref === 'object') : []; } catch { return []; } };
   const writeIndex = (list) => { try { storage.setItem(prefix + 'providers', JSON.stringify(list)); } catch { /* not kept: the swap is still in its own store */ } };
