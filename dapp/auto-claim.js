@@ -29,6 +29,19 @@ export function autoClaimHint(store) {
 
 const key = (l) => String(l.leaf).toLowerCase();
 
+// Whether the relay's fee takes more of a payment than the share that is claimed unasked (`fee` in the payment's own units, null when not known). A fee that is the whole
+// payment or more is not offered at all, so it is not held here; one that is not known is not said.
+export function autoClaimHeldByFee(amount, fee, share = AUTO_CLAIM_SHARE) {
+  if (fee == null) return false;
+  const a = BigInt(amount), f = BigInt(fee);
+  return a > 0n && f < a && f * 100n > a * BigInt(share);
+}
+// The fee as a share of the payment, in whole percent for a banner: the nearest, but never the limit itself for a payment it holds back ('15%' beside a limit of 15%).
+export function autoClaimFeeShare(amount, fee, share = AUTO_CLAIM_SHARE) {
+  const a = BigInt(amount), f = BigInt(fee);
+  return a > 0n ? Math.max(Math.round(Number((f * 10000n) / a) / 100), share + 1) : 0;
+}
+
 // Which of `locks` ([{ leaf, amount, asset, deadline }], those offered to claim) to claim now.
 //   fee(lock)   the relay's fee for it in the lock's own units: 0n where the claim costs nothing, null where it is not known
 //   tried       leaves already tried in this sitting (a failed one is left to the Claim button, never run again unasked)
@@ -42,7 +55,7 @@ export function autoClaimPick({ locks, fee, tried = new Set(), max = AUTO_CLAIM_
     if (tried.has(key(l))) held.push({ lock: l, why: 'tried' });
     else if (f == null) held.push({ lock: l, why: 'unknown' });
     else if (BigInt(f) >= amount) held.push({ lock: l, why: 'small' });
-    else if (BigInt(f) * 100n > amount * BigInt(share)) held.push({ lock: l, why: 'fee' });
+    else if (autoClaimHeldByFee(amount, f, share)) held.push({ lock: l, why: 'fee' });
     else if (claim.length >= max) held.push({ lock: l, why: 'limit' });
     else claim.push(l);
   }

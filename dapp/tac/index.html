@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-nkZfXziya94yvja2wv8C/qAaaUizt91jurugJXcL6aA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-pudFv5krSgFIJXppEzXKY/+fW9BOjx0a/6Gd0fQuJg4=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -64,7 +64,7 @@
 <link rel="modulepreload" href="/bridge-all.js?cb=45f85325">
 <link rel="modulepreload" href="/lp-zap.js?cb=1cc6342a">
 <link rel="modulepreload" href="/lockmint-auto.js?cb=596b11e2">
-<link rel="modulepreload" href="/auto-claim.js?cb=37f6f63d">
+<link rel="modulepreload" href="/auto-claim.js?cb=85ec772b">
 <link rel="modulepreload" href="/farm-ops.js?cb=c5192cc4">
 <link rel="modulepreload" href="/relay-outcome.js?cb=ad7c898d">
 <link rel="modulepreload" href="/btc-borrow.js?cb=2a2d543f">
@@ -2992,7 +2992,7 @@ import { portfolio, byAsset } from '/portfolio.js?cb=fcadbdb8';
 import { PXS_KEY, PX_CALLS, pxFigures, paintPx, pxState, pxEarly } from '/px-strip.js?cb=9ec0c08d';
 import { zapPlan, zapPlanFor, zapCalldata, zapSettleCalldata, zapSplitSearch, zapPlanExt, zapPlanExtFor, addRoute, zapWorth, foundingPlan, zapEntry, farmPick, offMarket, ackFor, pairCost, payback, streamDays } from '/lp-zap.js?cb=1cc6342a';
 import { newIntent, autoNext, afterStep, stageOf, autoLine } from '/lockmint-auto.js?cb=596b11e2';
-import { autoClaimPick, autoClaimOff, autoClaimSet, autoClaimHint } from '/auto-claim.js?cb=37f6f63d';
+import { autoClaimPick, autoClaimOff, autoClaimSet, autoClaimHint, autoClaimHeldByFee, autoClaimFeeShare, AUTO_CLAIM_SHARE } from '/auto-claim.js?cb=85ec772b';
 import { rewardPop } from '/reward-pop.js?cb=88973dac';
 import * as GR from '/gas-relay.js?cb=d87b3b06';
 import { netPicker } from '/net-pick.js?cb=9229f173';
@@ -6185,7 +6185,17 @@ function inDays(deadline) {
 }
 function lockLine(ls, kind) {
   const n = ls.length, what = lockWhat(ls), of = what ? ` of ${what}` : '';
-  if (kind === 'claim') return `${n === 1 ? 'A private payment' : `${n} private payments`}${of} ${n === 1 ? 'was' : 'were'} sent to you. Claim ${n === 1 ? 'it' : 'them'} within ${inDays(Math.min(...ls.map((l) => Number(l.deadline))))}.`;
+  if (kind === 'claim') {
+    // a payment the relay's fee takes more than the share of (dapp/auto-claim.js) is not claimed for the key: said, with the fee, so the wait for the Claim button is not a mystery
+    const t = SP.ux, feeOfLock = (l) => LK.feeBy?.[String(l.leaf).toLowerCase()];
+    const held = autoClaimOff((k) => localStorage.getItem(k)) ? [] : ls.filter((l) => autoClaimHeldByFee(l.amount, feeOfLock(l)));
+    const feeSays = (l) => `${t ? `${fmt(BigInt(feeOfLock(l)), lockDec(t, l.asset), 6)} ${unitOf(t, l.asset)}, ` : ''}${autoClaimFeeShare(l.amount, feeOfLock(l))}% of it`;
+    const hold = !held.length ? ''
+      : held.length > 1 ? ` ${held.length} of them have a relay fee over ${AUTO_CLAIM_SHARE}% of the payment, so they wait for your press.`
+      : n === 1 ? ` The relay’s fee to claim it is ${feeSays(held[0])}: over the ${AUTO_CLAIM_SHARE}% that is claimed for you without a press, so press Claim to take it, or wait for the fee to fall.`
+      : ` The relay’s fee for one of them is ${feeSays(held[0])}: over the ${AUTO_CLAIM_SHARE}% that is claimed for you without a press, so it waits for your press.`;
+    return `${n === 1 ? 'A private payment' : `${n} private payments`}${of} ${n === 1 ? 'was' : 'were'} sent to you. Claim ${n === 1 ? 'it' : 'them'} within ${inDays(Math.min(...ls.map((l) => Number(l.deadline))))}.${hold}`;
+  }
   if (kind === 'small') {
     const t = SP.ux, by = dayFmt(Math.min(...ls.map((l) => Number(l.deadline)))), feeAt = (l) => (t ? ` (${fmt(BigInt(l.fee), lockDec(t, l.asset), 6)} ${unitOf(t, l.asset)})` : '');
     return n === 1 ? `A private payment${of} was sent to you, but it is less than the relay’s fee to claim it${feeAt(ls[0])}, so it is not offered. It is offered again if the fee falls, or if you prove on your own device, which has no relay fee. It stays open until ${by}.`
@@ -6290,7 +6300,7 @@ load.eth = async () => {
   else if (S.key) await (DEV.tok ? tokenSync() : deviceSync());
 };
 
-const LK = { at: 0, since: 0, pub: null, mine: [], back: [], wait: [], small: [], smallBack: [], root: null, sentRoot: null, scanning: null, failed: null };
+const LK = { at: 0, since: 0, pub: null, mine: [], back: [], wait: [], small: [], smallBack: [], feeBy: {}, root: null, sentRoot: null, scanning: null, failed: null };
 // Payments sent to the open key are claimed for it, without a press (dapp/auto-claim.js says which, sheets.js autoClaim does it): asked for when they have been read.
 // 'off' under tacit-auto-claim-v1 in this browser's storage turns it off.
 let autoClaimT = 0;
@@ -6312,7 +6322,7 @@ function loadLocks(force = false) {
     // note in one is (scanPrivate): unnamed, it would be dropped below, and the holder never shown it to claim.
     { const unnamed = [...new Set([...r.mine, ...s.sent].filter((l) => l.spent !== true && !tickerOf(t, l.asset)).map((l) => String(l.asset).toLowerCase()))].filter((id) => !XT.ids.has(id));
       if (unnamed.length) await xtFind(t, unnamed).catch(() => {}); }
-    const fees = {}, worth = async (l) => {
+    const fees = {}, feeBy = {}, worth = async (l) => {
       const tk = tickerOf(t, l.asset);
       if (!tk) return !!(await lpPoolFor(l.asset));
       if (ownNow(['stealthclaim'])) return true;
@@ -6322,7 +6332,7 @@ function loadLocks(force = false) {
     const at = BigInt(chainNow()), mine = [], back = [], wait = [], small = [], smallBack = [];
     for (const l of r.mine) {
       if (l.spent === true || BigInt(l.deadline) <= at + 900n) continue;
-      if (await worth(l)) mine.push(l);
+      if (await worth(l)) { mine.push(l); const tk = tickerOf(t, l.asset); if (tk && fees[tk] != null) feeBy[String(l.leaf).toLowerCase()] = fees[tk]; }      // the relay's fee for it, kept beside the record (the record itself goes to the claim as it is)
       // A payment the relay's claim fee takes whole is not offered; it is listed apart, with the fee, so it does not look lost (the fee follows the gas price and can pass what it was when they sent).
       else if (tickerOf(t, l.asset) && fees[tickerOf(t, l.asset)] != null) small.push({ ...l, fee: fees[tickerOf(t, l.asset)] });
     }
@@ -6335,7 +6345,7 @@ function loadLocks(force = false) {
     // Sends still inside their time to be claimed: listed so the sender can see until when they stay out, and from which day they can come back.
     for (const l of s.sent) if (l.spent !== true && BigInt(l.deadline) >= at) wait.push(l);
     if (S.key?.pubHex !== pub) return null;
-    Object.assign(LK, { at: Date.now(), since, pub, mine, back, wait, small, smallBack, root: r.lockSetRoot, sentRoot: s.lockSetRoot, failed: null });
+    Object.assign(LK, { at: Date.now(), since, pub, mine, back, wait, small, smallBack, feeBy, root: r.lockSetRoot, sentRoot: s.lockSetRoot, failed: null });
     runsPrune();
     autoClaimSoon();
     return LK;

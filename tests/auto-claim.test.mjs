@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { autoClaimPick, autoClaimOff, autoClaimSet, autoClaimHint, AUTO_CLAIM_SHARE, AUTO_CLAIM_MAX, AUTO_CLAIM_KEY, AUTO_CLAIM_TOLD } from '../dapp/auto-claim.js';
+import { autoClaimPick, autoClaimOff, autoClaimSet, autoClaimHint, autoClaimHeldByFee, autoClaimFeeShare, AUTO_CLAIM_SHARE, AUTO_CLAIM_MAX, AUTO_CLAIM_KEY, AUTO_CLAIM_TOLD } from '../dapp/auto-claim.js';
 const HINT = ' Claiming is automatic: you can stop it in your wallet.';
 
 const page = readFileSync(new URL('../dapp/index.html', import.meta.url), 'utf8'), sheets = readFileSync(new URL('../dapp/front/sheets.js', import.meta.url), 'utf8');
@@ -226,8 +226,80 @@ test('the wallet row: it names the state, offers the other, and presses through 
   assert.match(sheets, /if \(ACLAIM\.busy \|\| !S\.key \|\| claimingOff\(\)\) return;/, 'the claim follows the same switch');
 });
 
+test('a payment is held by its fee when the fee is over the share and under the payment, and the share is said in whole percent that never reads as the limit', () => {
+  assert.equal(autoClaimHeldByFee(200000n, 30000n), false, 'exactly 15% is not held');
+  assert.equal(autoClaimHeldByFee(200000n, 30001n), true, 'a hair over is');
+  assert.equal(autoClaimHeldByFee('200000', '40000'), true, 'strings as the lock records carry them');
+  assert.equal(autoClaimHeldByFee(200000n, 200000n), false, 'a fee that is the whole payment is not offered, so not held');
+  assert.equal(autoClaimHeldByFee(200000n, 900000n), false);
+  assert.equal(autoClaimHeldByFee(200000n, null), false, 'a fee not known is not said');
+  assert.equal(autoClaimHeldByFee(200000n, undefined), false);
+  assert.equal(autoClaimHeldByFee(0n, 1n), false, 'nothing to take a share of');
+  assert.equal(autoClaimHeldByFee(200000n, 20000n, 5), true, 'the share is a setting');
+  assert.equal(autoClaimFeeShare(200000n, 40000n), 20);
+  assert.equal(autoClaimFeeShare(160000n, 31000n), 19, '19.4% reads 19%');
+  assert.equal(autoClaimFeeShare(200000n, 30008n), 16, 'a hair over 15% is held, and reads 16% not the limit itself');
+  assert.equal(autoClaimFeeShare(0n, 5n), 0);
+  // the one rule: what the picker holds for its fee is what the banner says it holds
+  for (const [amount, share] of [[200000n, 15], [57n, 7], [1234567n, 15], [999n, 33], [100n, 15]]) {
+    for (let f = 0n; f <= amount + 2n; f += amount > 5000n ? amount / 997n + 1n : 1n) {
+      const picked = autoClaimPick({ locks: [lock(1, amount)], fee: () => f, share });
+      assert.equal(picked.held.some((x) => x.why === 'fee'), autoClaimHeldByFee(amount, f, share), `amount ${amount}, fee ${f}, share ${share}`);
+    }
+  }
+});
+
+// the banner line, the real lockLine cut out of the page and run against stand-ins
+function banner({ feeBy = {}, off = false, ux = {} } = {}) {
+  const ctx = {
+    lockWhat: (ls) => ls.map((l) => `${Number(l.amount) / 1e8} tETH`).join(' and '), inDays: () => '91 days', SP: { ux }, LK: { feeBy },
+    fmt: (v, d) => String(Number(v) / 10 ** d), lockDec: () => 8, unitOf: () => 'tETH', dayFmt: () => '1 Dec',
+    autoClaimOff: () => off, autoClaimHeldByFee, autoClaimFeeShare, AUTO_CLAIM_SHARE, localStorage: { getItem: () => null },
+  };
+  const src = cut(page, 'function lockLine(ls, kind) {', 'function waitingText(ps) {');
+  const names = Object.keys(ctx);
+  return new Function(...names, `${src}\nreturn lockLine;`)(...names.map((k) => ctx[k]));
+}
+const feeKey = (l) => l.leaf.toLowerCase();
+
+test('the banner for a payment the fee takes much of says the fee and its share, and why it waits for the Claim button', () => {
+  const a = lock(1, 150000n), line = banner({ feeBy: { [feeKey(a)]: 30000n } });
+  assert.equal(line([a], 'claim'),
+    'A private payment of 0.0015 tETH was sent to you. Claim it within 91 days. The relay’s fee to claim it is 0.0003 tETH, 20% of it: over the 15% that is claimed for you without a press, so press Claim to take it, or wait for the fee to fall.');
+});
+
+test('a payment claimed for the key, or one with no fee known, or the key claiming by press, gets the plain line', () => {
+  const plain = 'A private payment of 0.002 tETH was sent to you. Claim it within 91 days.';
+  const a = lock(1, 200000n);
+  assert.equal(banner({ feeBy: { [feeKey(a)]: 23000n } })([a], 'claim'), plain, 'an 11.5% fee is claimed for the key: nothing to explain');
+  assert.equal(banner({ feeBy: { [feeKey(a)]: 30000n } })([a], 'claim'), plain, 'exactly 15% is claimed too');
+  assert.equal(banner({ feeBy: {} })([a], 'claim'), plain, 'no fee kept for it (the key proves on its own device, or it is liquidity shares): plain');
+  assert.equal(banner({ feeBy: { [feeKey(a)]: 90000n }, off: true })([a], 'claim'), plain, 'with claiming switched off every payment waits for the press, so the share is not an explanation');
+});
+
+test('several payments: one held says its fee; more than one say how many', () => {
+  const a = lock(1, 200000n), b = lock(2, 150000n), c = lock(3, 150000n);
+  const one = banner({ feeBy: { [feeKey(a)]: 23000n, [feeKey(b)]: 30000n } })([a, b], 'claim');
+  assert.equal(one, '2 private payments of 0.002 tETH and 0.0015 tETH were sent to you. Claim them within 91 days. The relay’s fee for one of them is 0.0003 tETH, 20% of it: over the 15% that is claimed for you without a press, so it waits for your press.');
+  const two = banner({ feeBy: { [feeKey(a)]: 23000n, [feeKey(b)]: 30000n, [feeKey(c)]: 40000n } })([a, b, c], 'claim');
+  assert.match(two, /^3 private payments of .* were sent to you\. Claim them within 91 days\. 2 of them have a relay fee over 15% of the payment, so they wait for your press\.$/);
+});
+
+test('with the sheets not loaded yet the share is still said, without the amount', () => {
+  const a = lock(1, 150000n);
+  const line = banner({ feeBy: { [feeKey(a)]: 30000n }, ux: null })([a], 'claim');
+  assert.match(line, /The relay’s fee to claim it is 20% of it: over the 15%/);
+});
+
+test('loadLocks keeps the relay fee beside each payment it offers, and not on the record that goes to the claim', () => {
+  assert.match(page, /const fees = \{\}, feeBy = \{\}, worth = async \(l\) => \{/, 'a map of fees by payment');
+  assert.match(page, /if \(await worth\(l\)\) \{ mine\.push\(l\); const tk = tickerOf\(t, l\.asset\); if \(tk && fees\[tk\] != null\) feeBy\[String\(l\.leaf\)\.toLowerCase\(\)\] = fees\[tk\]; \}/, 'set for each payment offered, the record pushed as it is');
+  assert.match(page, /Object\.assign\(LK, \{ at: Date\.now\(\), since, pub, mine, back, wait, small, smallBack, feeBy, root:/, 'and kept in LK');
+  assert.match(page, /const LK = \{ at: 0, since: 0, pub: null, mine: \[\], back: \[\], wait: \[\], small: \[\], smallBack: \[\], feeBy: \{\},/, 'empty to begin with');
+});
+
 test('the wiring: the page asks when payments have been read, the sheets module claims only the picked ones, and both lists of names carry what it needs', () => {
-  assert.match(page, /import \{ autoClaimPick, autoClaimOff, autoClaimSet, autoClaimHint \} from '\/auto-claim\.js\?cb=/, 'the page imports the decision and the switch');
+  assert.match(page, /import \{ autoClaimPick, autoClaimOff, autoClaimSet, autoClaimHint, autoClaimHeldByFee, autoClaimFeeShare, AUTO_CLAIM_SHARE \} from '\/auto-claim\.js\?cb=/, 'the page imports the decision, the switch and the fee share');
   assert.match(page, /<!-- preload-roots:[^>]* \/lockmint-auto\.js \/auto-claim\.js /, 'and preloads it');
   const ask = cut(page, 'let autoClaimT = 0;', 'const isRwd');
   assert.match(ask, /if \(!S\.key \|\| LK\.pub !== S\.key\.pubHex \|\| !LK\.mine\.length \|\| autoClaimOff\(\(k\) => localStorage\.getItem\(k\)\)\) return;/, 'it asks only for the open key, with payments waiting, and not when switched off');
