@@ -6,10 +6,12 @@
 //   const board = makeBoard({ now })
 //   board.putAd(ad)                     a signed ad (signAd) for a provider's key; replaces that provider's earlier one
 //   board.ads()                         the ads still running
-//   board.post(gateway, bytes)          a sealed request for the provider whose live ad names that gateway key -> { id, seq }
+//   board.post(gateway, bytes, { claimPub?, client? })
+//                                       a sealed request for the provider whose live ad names that gateway key (for the one of `claimPub`, when named) -> { id, seq }
 //   board.inbox(gateway, after)         the requests after a cursor -> { boot, next, items: [{ seq, id, bytes }] }; `boot` names this run of the board,
 //                                       whose cursors start again after a restart, so a reader that sees it change reads from the start
 //   board.putReply(id, bytes, sig)      the provider's sealed answer, with its signature over it (replySignature)
+//   board.drop(id, sig)                 the provider sets aside a request it cannot open, signed over dropDigest(id), so it waits in the queue no longer
 //   board.reply(id)                     the answer, or null
 //   board.putWant(want)                 a user waiting for a provider: a signed want (signWant) under a one-time key; amount 0 takes it down
 //   board.wants()                       the wants still standing, so a provider sees what is waiting
@@ -22,11 +24,18 @@ import { signSchnorr, verifySchnorr, bigintToBytes32 } from './bulletproofs.js';
 
 export class BoardError extends Error { constructor(status, message) { super(message); this.status = status; } }
 
-export const LIMITS = { adSecs: 600, skewSecs: 120, msgSecs: 600, replySecs: 600, maxAds: 200, maxQueue: 64, maxPosted: 512, maxMsg: 70000, minMsg: 4000, maxReply: 70000, maxName: 40, wantSecs: 86400, maxWants: 500, maxAd: 2048 };
+export const LIMITS = {
+  adSecs: 600, skewSecs: 120, msgSecs: 600, replySecs: 600, maxAds: 200, maxQueue: 64, maxPosted: 512, maxMsg: 70000, minMsg: 4000, maxReply: 70000, maxName: 40, wantSecs: 86400, maxWants: 500, maxAd: 2048,
+  // one address's share of a provider's queue, the bytes a provider's queue and its answers may hold, the answers' bytes on the whole board, and how much one inbox read returns
+  maxQueueFrom: 24, maxQueueBytes: 1 << 20, maxReplyBytes: 2 << 20, maxRepliesBytes: 128 << 20, maxInboxItems: 32, maxInboxBytes: 1 << 20,
+};
 
 const te = new TextEncoder();
 const hex = (n) => new RegExp(`^[0-9a-f]{${n}}$`);
 const uint = /^\d{1,30}$/;
+const isStr = (v) => typeof v === 'string';
+// an amount is digits in a string, or a whole number written as one; nothing else (a list holding one, a fraction) reads as an amount
+const isAmount = (v) => (isStr(v) && uint.test(v)) || (Number.isSafeInteger(v) && v >= 0);
 const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 // own members only, whatever their names: `a[k] = v` for a member called __proto__ would set a prototype and leave the member out of what is signed
 const canonical = (o) => JSON.stringify(Object.fromEntries(Object.keys(o).sort().map((k) => [k, o[k]])));
@@ -37,8 +46,8 @@ const canonical = (o) => JSON.stringify(Object.fromEntries(Object.keys(o).sort()
 export const AD_MEMBERS = ['v', 'claimPub', 'gateway', 'btcAsset', 'evmAsset', 'minAmount', 'maxAmount', 'available', 'feeBps', 'flatFee', 'csvBlocks', 'evmWindowSecs', 'anyTac', 'reverse', 'name', 'at', 'until', 'sig'];
 export const REVERSE_MEMBERS = ['minAmount', 'maxAmount', 'available', 'feeBps', 'flatFee', 'csvBlocks', 'evmWindowSecs'];
 export const WANT_MEMBERS = ['v', 'pub', 'btcAsset', 'amount', 'maxFeeBps', 'at', 'until', 'sig'];
-// a name is shown as it is written: no markup brackets and no control, line or paragraph separator characters
-const NAME_OK = /^[^<>\p{Cc}\p{Zl}\p{Zp}]*$/u;
+// a name is shown as it is written: no markup brackets, no control, line or paragraph separator characters, and no marks that turn the direction of text
+const NAME_OK = /^[^<>\p{Cc}\p{Zl}\p{Zp}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]*$/u;
 const onlyMembers = (o, allowed, what, bad) => {
   for (const k of Object.keys(o)) if (!allowed.includes(k)) bad(`${what} has a member it does not take${/^\w{1,24}$/.test(k) ? `: ${k}` : ''}`);
 };
@@ -48,6 +57,7 @@ export const adDigest = (ad) => { const { sig, ...body } = ad; return sha256(con
 export const wantDigest = (w) => { const { sig, ...body } = w; return sha256(concatBytes(te.encode('tacit-fast-want-v1'), te.encode(canonical(body)))); };
 export const replyDigest = (id, bytes) => sha256(concatBytes(te.encode('tacit-fast-reply-v1'), te.encode(id), sha256(bytes)));
 export const messageId = (bytes) => bytesToHex(sha256(bytes)).slice(0, 32);
+export const dropDigest = (id) => sha256(concatBytes(te.encode('tacit-fast-drop-v1'), te.encode(id)));
 export const adLabel = (ad) => `Provider ${bytesToHex(sha256(te.encode(`${String(ad.claimPub || '').replace(/^0x/, '').toLowerCase()}:${String(ad.name || '')}`))).slice(0, 6)}`;
 
 const xonly = (pub33) => hexToBytes(pub33).slice(1);
@@ -63,17 +73,18 @@ export function signAd(ad, claimPriv) {
 export function checkAd(ad, now) {
   const bad = (m) => { throw new BoardError(400, m); };
   if (!ad || typeof ad !== 'object' || ad.v !== 1) bad('not an ad');
-  for (const k of ['claimPub', 'gateway']) if (!hex(66).test(String(ad[k]))) bad(`the ad's ${k} is not a key`);
-  for (const k of ['btcAsset', 'evmAsset']) if (!hex(64).test(strip(ad[k] || ''))) bad(`the ad's ${k} is not an asset`);
-  for (const k of ['minAmount', 'maxAmount', 'flatFee']) if (!uint.test(String(ad[k]))) bad(`the ad's ${k} is not an amount`);
-  if (ad.available != null && !uint.test(String(ad.available))) bad('the ad\'s available is not an amount');
+  for (const k of ['claimPub', 'gateway']) if (!isStr(ad[k]) || !hex(66).test(ad[k])) bad(`the ad's ${k} is not a key`);
+  for (const k of ['btcAsset', 'evmAsset']) if (!isStr(ad[k]) || !hex(64).test(strip(ad[k]))) bad(`the ad's ${k} is not an asset`);
+  for (const k of ['minAmount', 'maxAmount', 'flatFee']) if (!isAmount(ad[k])) bad(`the ad's ${k} is not an amount`);
+  if (ad.available != null && !isAmount(ad.available)) bad('the ad\'s available is not an amount');
+  if (ad.anyTac != null && typeof ad.anyTac !== 'boolean') bad('the ad\'s anyTac is not true or false');
   for (const [k, max] of [['feeBps', 10000], ['csvBlocks', 4032], ['evmWindowSecs', 86400 * 7]]) if (!Number.isInteger(ad[k]) || ad[k] < 0 || ad[k] > max) bad(`the ad's ${k} is out of range`);
   // A provider that also sells the other way (TAC on Bitcoin for private TAC in the pool) says so with the terms of that direction. The assets are the ad's own.
   if (ad.reverse != null) {
     const r = ad.reverse;
     if (!r || typeof r !== 'object' || Array.isArray(r)) bad('the ad\'s reverse terms are not terms');
-    for (const k of ['minAmount', 'maxAmount', 'flatFee']) if (!uint.test(String(r[k]))) bad(`the ad's reverse ${k} is not an amount`);
-    if (r.available != null && !uint.test(String(r.available))) bad('the ad\'s reverse available is not an amount');
+    for (const k of ['minAmount', 'maxAmount', 'flatFee']) if (!isAmount(r[k])) bad(`the ad's reverse ${k} is not an amount`);
+    if (r.available != null && !isAmount(r.available)) bad('the ad\'s reverse available is not an amount');
     for (const [k, max] of [['feeBps', 10000], ['csvBlocks', 4032], ['evmWindowSecs', 86400 * 7]]) if (!Number.isInteger(r[k]) || r[k] < 0 || r[k] > max) bad(`the ad's reverse ${k} is out of range`);
   }
   if (JSON.stringify(ad).length > LIMITS.maxAd) bad('the ad is too large');
@@ -105,9 +116,9 @@ export function checkWant(w, now, wantSecs = LIMITS.wantSecs) {
   const bad = (m) => { throw new BoardError(400, m); };
   if (!w || typeof w !== 'object' || w.v !== 1) bad('not a want');
   onlyMembers(w, WANT_MEMBERS, 'the want', bad);
-  if (!hex(66).test(String(w.pub))) bad('the want\'s pub is not a key');
-  if (!hex(64).test(strip(w.btcAsset || ''))) bad('the want\'s btcAsset is not an asset');
-  if (!uint.test(String(w.amount))) bad('the want\'s amount is not an amount');
+  if (!isStr(w.pub) || !hex(66).test(w.pub)) bad('the want\'s pub is not a key');
+  if (!isStr(w.btcAsset) || !hex(64).test(strip(w.btcAsset))) bad('the want\'s btcAsset is not an asset');
+  if (!isAmount(w.amount)) bad('the want\'s amount is not an amount');
   if (w.maxFeeBps != null && (!Number.isInteger(w.maxFeeBps) || w.maxFeeBps < 0 || w.maxFeeBps > 10000)) bad('the want\'s maxFeeBps is out of range');
   if (!Number.isInteger(w.at) || !Number.isInteger(w.until) || w.until <= w.at || w.until - w.at > wantSecs) bad('the want\'s time is not valid');
   if (w.until <= now) bad('the want has run out');
@@ -122,16 +133,32 @@ export function checkWant(w, now, wantSecs = LIMITS.wantSecs) {
 export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = {} } = {}) {
   const L = { ...LIMITS, ...limits };
   const adsBy = new Map();                 // claimPub -> ad
-  const queues = new Map();                // gateway -> [{ seq, id, bytes, until }]
+  const queues = new Map();                // gateway -> [{ seq, id, bytes, until, from }]
   const byId = new Map();                  // message id -> { gateway, claimPub, until }
-  const replies = new Map();               // message id -> { bytes, until }
+  const replies = new Map();               // message id -> { bytes, until, gateway }
+  const replyBytes = new Map();            // gateway -> bytes of its answers still kept
   const wantsBy = new Map();               // want pub -> want
   const goneBy = new Map();                // want pub -> { at, until } of a want taken down, so the original cannot be put back
   const boot = bytesToHex(crypto.getRandomValues(new Uint8Array(8)));
-  let seq = 0;
+  let seq = 0, repliesTotal = 0, pruned = null;
 
+  const forgetReply = (id) => {
+    const r = replies.get(id);
+    if (!r) return;
+    replies.delete(id);
+    repliesTotal -= r.bytes.length;
+    const left = (replyBytes.get(r.gateway) || 0) - r.bytes.length;
+    if (left > 0) replyBytes.set(r.gateway, left); else replyBytes.delete(r.gateway);
+  };
+  const unqueue = (gateway, id) => {
+    const q = queues.get(gateway);
+    if (q) { const rest = q.filter((x) => x.id !== id); if (rest.length) queues.set(gateway, rest); else queues.delete(gateway); }
+  };
+  // once a second at most: every call prunes, and what runs out does so by the second
   function prune() {
     const t = now();
+    if (t === pruned) return;
+    pruned = t;
     for (const [k, ad] of adsBy) if (ad.until <= t) adsBy.delete(k);
     for (const [k, w] of wantsBy) if (w.until <= t) wantsBy.delete(k);
     for (const [k, g] of goneBy) if (g.until <= t) goneBy.delete(k);
@@ -140,9 +167,17 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       if (live.length) queues.set(g, live); else queues.delete(g);
     }
     for (const [id, m] of byId) if (m.until <= t) byId.delete(id);
-    for (const [id, r] of replies) if (r.until <= t) replies.delete(id);
+    for (const [id, r] of replies) if (r.until <= t) forgetReply(id);
   }
-  const adForGateway = (gateway) => { for (const ad of adsBy.values()) if (ad.gateway === gateway) return ad; return null; };
+  // The ad a request is for. A user's page names the provider it chose (`claimPub`), and the request is for that provider's ad alone. A page that
+  // names none reaches the ad that has named the gateway longest, as it always did. More than one key may name a gateway: each ad is signed by
+  // its own key, and the request is answered only under the key it is for, so a second ad that names a gateway reaches no request of the first.
+  const adFor = (gateway, claimPub) => {
+    if (claimPub != null) { const ad = adsBy.get(claimPub); return ad && ad.gateway === gateway ? ad : null; }
+    let first = null;
+    for (const ad of adsBy.values()) if (ad.gateway === gateway && (!first || ad.since < first.since)) first = ad;
+    return first;
+  };
 
   return {
     putAd(ad) {
@@ -150,17 +185,19 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       checkAd(ad, now());
       const have = adsBy.get(ad.claimPub);
       if (have && have.at >= ad.at) return { ok: true, kept: true };
-      for (const other of adsBy.values()) if (other.gateway === ad.gateway && other.claimPub !== ad.claimPub) throw new BoardError(400, 'that gateway key belongs to another provider');
       if (!have && adsBy.size >= L.maxAds) throw new BoardError(503, 'the board has all the ads it takes');
-      adsBy.set(ad.claimPub, ad);
+      // `since`: when this key first named this gateway in an ad that has stood since, which orders the ads of one gateway for a page that names no key
+      const since = have && have.gateway === ad.gateway ? have.since : now();
+      adsBy.set(ad.claimPub, Object.defineProperty({ ...ad }, 'since', { value: since, enumerable: false }));
       return { ok: true };
     },
     ads() { prune(); return [...adsBy.values()].sort((a, b) => b.at - a.at); },
-    post(gateway, bytes) {
+    post(gateway, bytes, { claimPub = null, client = null } = {}) {
       prune();
       if (!hex(66).test(String(gateway))) throw new BoardError(400, 'not a gateway key');
+      if (claimPub != null && !hex(66).test(String(claimPub))) throw new BoardError(400, 'not a provider key');
       if (!(bytes instanceof Uint8Array) || bytes.length < L.minMsg || bytes.length > L.maxMsg) throw new BoardError(413, 'the message is not a sealed request');
-      const ad = adForGateway(gateway);
+      const ad = adFor(gateway, claimPub);
       if (!ad) throw new BoardError(404, 'no provider here has that gateway key');
       const id = messageId(bytes);
       if (byId.has(id)) return { id, seq: byId.get(id).seq, kept: true };
@@ -170,15 +207,25 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       if (posted >= L.maxPosted) throw new BoardError(503, 'the provider has all the requests it takes');
       const q = queues.get(gateway) || [];
       if (q.length >= L.maxQueue) throw new BoardError(503, 'the provider has all the requests it takes');
-      const m = { seq: ++seq, id, bytes, until: now() + L.msgSecs };
+      // and no one address takes the whole of it, nor large requests all of its room
+      if (client != null && q.filter((m) => m.from === client).length >= L.maxQueueFrom) throw new BoardError(503, 'the provider has all the requests it takes from this address');
+      if (q.reduce((n, m) => n + m.bytes.length, 0) + bytes.length > L.maxQueueBytes) throw new BoardError(503, 'the provider has all the requests it takes');
+      const m = { seq: ++seq, id, bytes, until: now() + L.msgSecs, from: client };
       q.push(m); queues.set(gateway, q);
       byId.set(id, { gateway, claimPub: ad.claimPub, seq: m.seq, until: m.until });
       return { id, seq: m.seq };
     },
+    // the requests after a cursor, a page at a time: `next` is the last one returned, so a reader that goes on from it reads the rest
     inbox(gateway, after = 0) {
       prune();
-      const q = (queues.get(gateway) || []).filter((m) => m.seq > after);
-      return { boot, next: q.length ? q[q.length - 1].seq : after, items: q.map(({ seq: s, id, bytes }) => ({ seq: s, id, bytes })) };
+      const items = [];
+      let size = 0;
+      for (const m of queues.get(gateway) || []) {
+        if (m.seq <= after) continue;
+        if (items.length >= L.maxInboxItems || (items.length && size + m.bytes.length > L.maxInboxBytes)) break;
+        items.push({ seq: m.seq, id: m.id, bytes: m.bytes }); size += m.bytes.length;
+      }
+      return { boot, next: items.length ? items[items.length - 1].seq : after, items };
     },
     putReply(id, bytes, sig) {
       prune();
@@ -189,12 +236,25 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       let ok = false;
       try { ok = verifySchnorr(hexToBytes(String(sig)), replyDigest(id, bytes), xonly(m.claimPub)); } catch { ok = false; }
       if (!ok) throw new BoardError(403, 'the answer is not signed by the provider');
-      replies.set(id, { bytes, until: now() + L.replySecs });
+      if ((replyBytes.get(m.gateway) || 0) + bytes.length > L.maxReplyBytes || repliesTotal + bytes.length > L.maxRepliesBytes) throw new BoardError(503, 'the board has all the answers it keeps just now');
+      replies.set(id, { bytes, until: now() + L.replySecs, gateway: m.gateway });
+      replyBytes.set(m.gateway, (replyBytes.get(m.gateway) || 0) + bytes.length);
+      repliesTotal += bytes.length;
       // an answered request no longer waits for the provider: it left in the queue it counted against `maxQueue` for the full ten minutes, and a
       // dozen pages polling the house provider filled the queue with requests it had already answered, so the board turned new ones away with a 503
       // although the provider was keeping up (2026-11-12). The request stays known (`byId`), so the same one posted again is still one request.
-      const q = queues.get(m.gateway);
-      if (q) { const rest = q.filter((x) => x.id !== id); if (rest.length) queues.set(m.gateway, rest); else queues.delete(m.gateway); }
+      unqueue(m.gateway, id);
+      return { ok: true };
+    },
+    // A request the provider could not open leaves the queue, as an answered one does, and stays known, so the same bytes posted again are not queued again.
+    drop(id, sig) {
+      prune();
+      const m = byId.get(id);
+      if (!m) throw new BoardError(404, 'no such request');
+      let ok = false;
+      try { ok = verifySchnorr(hexToBytes(String(sig)), dropDigest(id), xonly(m.claimPub)); } catch { ok = false; }
+      if (!ok) throw new BoardError(403, 'not signed by the provider');
+      unqueue(m.gateway, id);
       return { ok: true };
     },
     reply(id) { prune(); const r = replies.get(id); return r ? r.bytes : null; },
@@ -214,6 +274,6 @@ export function makeBoard({ now = () => Math.floor(Date.now() / 1000), limits = 
       return { ok: true };
     },
     wants() { prune(); return [...wantsBy.values()].sort((a, b) => b.at - a.at); },
-    stats() { prune(); return { ads: adsBy.size, queued: [...queues.values()].reduce((s, q) => s + q.length, 0), replies: replies.size, wants: wantsBy.size }; },
+    stats() { prune(); return { ads: adsBy.size, queued: [...queues.values()].reduce((s, q) => s + q.length, 0), replies: replies.size, replyBytes: repliesTotal, wants: wantsBy.size }; },
   };
 }

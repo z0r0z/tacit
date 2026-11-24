@@ -15,8 +15,8 @@ import assert from 'node:assert/strict';
 import { realFetch } from './lib/real-fetch.mjs';
 import { secp, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { signSchnorr, verifySchnorr } from '../dapp/bulletproofs.js';
-import { sealRequest } from '../dapp/sealed-request.js';
-import { makeBoard, signAd, checkAd, signWant, checkWant, adDigest, wantDigest, replyDigest, messageId, adLabel, LIMITS, AD_MEMBERS, REVERSE_MEMBERS } from '../dapp/fastbridge-board.js';
+import { sealRequest, openRequest, SealedError } from '../dapp/sealed-request.js';
+import { makeBoard, signAd, checkAd, signWant, checkWant, adDigest, wantDigest, replyDigest, dropDigest, messageId, adLabel, LIMITS, AD_MEMBERS, REVERSE_MEMBERS } from '../dapp/fastbridge-board.js';
 import { gatewayOf, makeMailboxCall, makeMailboxServer, makeAdPublisher, makeProvider, readProviders, defaultAdName } from '../dapp/fastbridge-mailbox.js';
 import { makeFastBridgeClient } from '../dapp/fastbridge-client.js';
 import { makeBoardClient } from '../dapp/fastbridge-board-client.js';
@@ -40,6 +40,8 @@ const adOf = (n, t, over = {}) => {
 };
 const clock = (start = T0) => { const c = { t: start, now: () => c.t, advance: (s) => { c.t += s; } }; return c; };
 const bytesOf = (n, seed = 1) => Uint8Array.from({ length: n }, (_, i) => (i * 31 + seed) & 255);
+// what a page shows for a provider of that name
+const lab = (name) => adLabel({ name });
 const thrown = (fn) => { try { fn(); } catch (e) { return e; } return null; };
 
 // ── wants ──
@@ -93,7 +95,7 @@ test('wants over HTTP, and fast/want.js: kept in the browser, posted under a one
   assert.deepEqual(await w.takers(1000n), [], 'nobody online');
   board.putAd(adOf(7, T0, { btcAsset: asset, minAmount: '500', maxAmount: '5000', available: '800' }));
   assert.deepEqual(await w.takers(1000n), [], 'a provider that can take only 800 now does not take 1,000');
-  assert.deepEqual((await w.takers(700n)).map((p) => p.name), ['p7']);
+  assert.deepEqual((await w.takers(700n)).map((p) => p.name), [lab('p7')]);
   board.putAd(adOf(8, T0 + 1, { btcAsset: 'ee'.repeat(32), minAmount: '1', maxAmount: '5000', available: null }));
   assert.deepEqual(await w.takers(1000n), [], 'a provider of another asset does not count');
   c.advance(1);
@@ -173,7 +175,7 @@ test('priced wants through fast/want.js: kept and posted with the price, listed 
   const none = await w.start(user, 1000n);
   assert.equal(none.maxFeeBps, null);
   assert.ok(!('maxFeeBps' in board.wants()[0]), 'nothing of a price on the board');
-  assert.deepEqual((await w.takers(1000n)).map((p) => p.name).sort(), ['Http LP', 'p7', 'p8']);
+  assert.deepEqual((await w.takers(1000n)).map((p) => p.name).sort(), ['Http LP', lab('p7'), lab('p8')].sort());
   assert.equal((await w.waiting()).items[0].maxFeeBps, null);
   // priced: 2.00% of 1,000 is 20; p7 keeps 10, the http provider 5, p8 30
   const k = await w.start(user, 1000n, { maxFeeBps: 200 });
@@ -185,8 +187,8 @@ test('priced wants through fast/want.js: kept and posted with the price, listed 
   assert.equal(checkWant(posted[0], T0), posted[0]);
   const waits = await w.waiting();
   assert.deepEqual(waits.items.map((i) => [i.amount, i.maxFeeBps]), [[1000n, 200]], 'listed with it');
-  assert.deepEqual((await w.takers(1000n, { maxFeeBps: 200 })).map((p) => p.name).sort(), ['Http LP', 'p7'], 'p8 keeps 3%: not told of, for a holder who pays 2% at most');
-  assert.deepEqual((await w.takers(1000n, { maxFeeBps: 100 })).map((p) => p.name).sort(), ['Http LP', 'p7'], 'exactly 1% is met');
+  assert.deepEqual((await w.takers(1000n, { maxFeeBps: 200 })).map((p) => p.name).sort(), ['Http LP', lab('p7')].sort(), 'p8 keeps 3%: not told of, for a holder who pays 2% at most');
+  assert.deepEqual((await w.takers(1000n, { maxFeeBps: 100 })).map((p) => p.name).sort(), ['Http LP', lab('p7')].sort(), 'exactly 1% is met');
   assert.deepEqual((await w.takers(1000n, { maxFeeBps: 99 })).map((p) => p.name), ['Http LP'], 'a provider that serves HTTP is judged by its /info');
   assert.deepEqual(await w.takers(1000n, { maxFeeBps: 10 }), [], 'none that keep so little');
   assert.deepEqual((await w.takers(1000n, { maxFeeBps: null })).length, 3, 'a want with no price takes all');
@@ -236,7 +238,6 @@ test('the board keeps one ad for each provider, the newest, lets it run out, and
   board.putAd(adOf(2, T0 + 100));
   assert.deepEqual(board.ads().map((a) => a.name), ['p2', 'p1'], 'newest first');
   assert.equal(thrown(() => board.putAd(adOf(3, T0 + 10))).status, 503, 'the board is full');
-  assert.match(thrown(() => board.putAd(adOf(9, T0 + 10, { gateway: adOf(1, T0).gateway }))).message, /belongs to another provider/);
   assert.equal(thrown(() => board.putAd(adOf(4, T0 - 1000))).status, 400);
   c.advance(185);
   assert.deepEqual(board.ads().map((a) => a.name), ['p2'], 'the first ad has run out, the second has not');
@@ -379,7 +380,7 @@ test('an ad has only the members it defines: one signed with a member of its own
   assert.deepEqual((await handle({ method: 'GET', path: '/ads' })).body.ads.map((a) => a.name), ['p1']);
   // a page does not take a board's word for it: an ad a board lists anyway is not shown
   const found = await readProviders({ board: { ads: async () => [probes.__proto__, probes.zzz, clean, good] }, now: () => T0 });
-  assert.deepEqual(found.map((p) => p.name).sort(), ['p1', 'p2']);
+  assert.deepEqual(found.map((p) => p.name).sort(), [lab('p1'), lab('p2')].sort());
   // a member named with markup is refused without its name in the answer
   assert.equal(thrown(() => checkAd(signAd({ ...body, '<img src=x onerror=probe5>': 1 }, priv(1)), T0)).message, 'the ad has a member it does not take');
   assert.equal(thrown(() => checkAd(signAd({ ...body, ['x'.repeat(30)]: 1 }, priv(1)), T0)).message, 'the ad has a member it does not take', 'nor a long one');
@@ -560,11 +561,11 @@ test('the ads: a provider posts its terms and what it can take now; a user reads
   await ads.publish();
   assert.equal(board.ads()[0].available, '2000', 'the newer ad replaces the older');
   const found = await readProviders({ board, now: c.now });
-  assert.deepEqual(found.map((p) => [p.name, p.kind, p.id === P.claimPub]), [['Fast one', 'mailbox', true]]);
+  assert.deepEqual(found.map((p) => [p.name, p.kind, p.id === P.claimPub]), [[lab('Fast one'), 'mailbox', true]]);
   // a board that makes an ad up, or changes one, offers a user nothing
   const lying = { ads: async () => [{ ...board.ads()[0], maxAmount: '1' }, adOf(5, T0 + 60, { gateway: P.gateway }), { v: 1 }] };
   const some = await readProviders({ board: lying, now: c.now });
-  assert.deepEqual(some.map((p) => p.name), ['p5'], 'only the ad that is signed by its own key stands (it names a gateway key that is not its own, which only costs its user a call that is not answered)');
+  assert.deepEqual(some.map((p) => p.name), [lab('p5')], 'only the ad that is signed by its own key stands (it names a gateway key that is not its own, which only costs its user a call that is not answered)');
   info = null;
   assert.equal(await makeAdPublisher({ board, handle: async () => ({ status: 503, body: null }), claimPriv: P.p, claimPub: P.claimPub, keys: P.keys, now: c.now }).publish(), null);
   void ads;
@@ -696,7 +697,7 @@ test('the board over HTTP: a provider and a user on sockets of their own, the sa
   assert.equal((await userBoard.ads())[0].claimPub, ad.claimPub);
   const server = makeMailboxServer({ board: providerBoard, keys: P.keys, handle: P.handle, signReply: P.signReply, now });
   const [found] = await readProviders({ board: userBoard, now, call: { pollMs: 1, sleep: async () => { await server.pump(); } } });
-  assert.equal(found.name, 'p1');
+  assert.equal(found.name, lab('p1'));
   const r = await found.counter.quote(5000);
   assert.deepEqual(r.got, { amount: '5000' });
   assert.equal(await userBoard.reply('0'.repeat(32)), null, 'no answer yet is null, not an error');
@@ -747,7 +748,7 @@ test('a whole swap over the board: quote, reservation, offer, the pool lock\'s o
   w.lpTick = async () => { await svc.tick(); await provider.ads.publish(); await provider.mail.pump(); };    // a minute of the provider's life: its tick, its ad, its mailbox
   await provider.ads.publish();
   const [p] = await readProviders({ board, now: w.clock.now, call: { pollMs: 1, sleep: async () => { await provider.mail.pump(); } } });
-  assert.equal(p.name, 'Tab provider');
+  assert.equal(p.name, lab('Tab provider'));
   const fb = makeFastBridgeClient({ lp: p.counter, btc: w.uBtc, evm: w.uEvmCtx, store: w.userStore, seed: w.uKeys.seed, now: w.clock.now, pins: { claimPub: p.ad.claimPub, btcAsset: p.ad.btcAsset, evmAsset: ASSET } });
   w.userTick = () => fb.tick();
   assert.equal((await fb.terms()).available, VALUE);
@@ -762,6 +763,94 @@ test('a whole swap over the board: quote, reservation, offer, the pool lock\'s o
     const raw = Buffer.from(bytes).toString('latin1');
     for (const word of [rec.id, q.id, 'sTilde', 'presign', 'quoteId', 'claimPub']) assert.ok(!raw.includes(word), `the board never carried "${word}"`);
   }
+});
+
+// ── the board's bounds ──
+
+test('an ad and a want are taken only with the types their members are written in', () => {
+  const ok = adOf(1, T0);
+  const resigned = (over) => signAd({ ...Object.fromEntries(Object.entries(ok).filter(([k]) => k !== 'sig' && k !== 'v')), ...over }, priv(1));
+  for (const [k, v] of [['gateway', [ok.gateway]], ['claimPub', 7], ['btcAsset', ['ab'.repeat(32)]], ['minAmount', ['1000']], ['maxAmount', { n: '100000' }], ['flatFee', 1.5], ['available', [5000]], ['anyTac', 'yes']]) {
+    assert.equal(thrown(() => checkAd(resigned({ [k]: v }), T0)).status, 400, k);
+  }
+  assert.equal(checkAd(resigned({ anyTac: true }), T0).anyTac, true);
+  for (const name of ['a‮b', 'a⁦b', 'a‏b']) assert.match(thrown(() => checkAd(resigned({ name }), T0)).message, /characters a name may not/, JSON.stringify(name));
+  assert.equal(checkAd(resigned({ name: 'Provider é \u{1F680}' }), T0).name, 'Provider é \u{1F680}', 'other text is kept as it is');
+  const w = (over) => signWant({ pub: pubOf(priv(5)), btcAsset: 'ab'.repeat(32), amount: '100', at: T0, until: T0 + 600, ...over }, priv(5));
+  for (const [k, v] of [['btcAsset', ['ab'.repeat(32)]], ['amount', ['100']]]) assert.equal(thrown(() => checkWant(w({ [k]: v }), T0)).status, 400, k);
+});
+
+test('a gateway named by a second key: both ads stand, and a request that names its provider is that provider\'s alone', () => {
+  const c = clock(), board = makeBoard({ now: c.now });
+  const first = adOf(9, T0, { gateway: adOf(1, T0).gateway }), own = adOf(1, T0 + 5);
+  board.putAd(first);
+  c.advance(5);
+  assert.deepEqual(board.putAd(own), { ok: true }, 'the key the gateway was made from is not turned away');
+  assert.equal(board.ads().length, 2);
+  const sign = (p, id, b) => bytesToHex(signSchnorr(replyDigest(id, b), p));
+  const named = board.post(own.gateway, bytesOf(4100, 1), { claimPub: own.claimPub });
+  const reply = bytesOf(1200, 7);
+  assert.equal(thrown(() => board.putReply(named.id, reply, sign(priv(9), named.id, reply))).status, 403, 'the other key cannot answer it');
+  assert.deepEqual(board.putReply(named.id, reply, sign(priv(1), named.id, reply)), { ok: true });
+  assert.equal(thrown(() => board.post(own.gateway, bytesOf(4100, 2), { claimPub: pubOf(priv(3)) })).status, 404, 'a key with no ad for that gateway');
+  // a page that names no key reaches the ad that has named the gateway longest, as before
+  const plain = board.post(own.gateway, bytesOf(4100, 3));
+  assert.equal(thrown(() => board.putReply(plain.id, reply, sign(priv(1), plain.id, reply))).status, 403);
+});
+
+test('one address takes part of a provider\'s queue, not all of it; large requests are bounded by bytes; a request set aside leaves the queue', () => {
+  const c = clock(), board = makeBoard({ now: c.now, limits: { maxQueue: 6, maxQueueFrom: 2, maxQueueBytes: 20000 } });
+  const ad = adOf(1, T0), gw = ad.gateway;
+  board.putAd(ad);
+  board.post(gw, bytesOf(4100, 1), { client: 'a' }); board.post(gw, bytesOf(4100, 2), { client: 'a' });
+  assert.equal(thrown(() => board.post(gw, bytesOf(4100, 3), { client: 'a' })).status, 503, 'that address has its share');
+  board.post(gw, bytesOf(4100, 4), { client: 'b' }); board.post(gw, bytesOf(4100, 5), { client: 'c' });
+  assert.equal(thrown(() => board.post(gw, bytesOf(4100, 6), { client: 'd' })).status, 503, 'the queue\'s bytes are used up');
+  const { id } = board.post(gw, bytesOf(4100, 1), { client: 'a' });
+  assert.equal(thrown(() => board.drop(id, bytesToHex(signSchnorr(dropDigest(id), priv(2))))).status, 403, 'only the provider sets one aside');
+  assert.deepEqual(board.drop(id, bytesToHex(signSchnorr(dropDigest(id), priv(1)))), { ok: true });
+  assert.deepEqual(board.inbox(gw, 0).items.map((m) => m.seq), [2, 3, 4]);
+  assert.equal(board.post(gw, bytesOf(4100, 1), { client: 'a' }).kept, true, 'and it does not come back');
+  board.post(gw, bytesOf(4100, 3), { client: 'a' });
+});
+
+test('answers are bounded by bytes for each provider and on the whole board; an inbox read returns a page at a time', () => {
+  const c = clock(), board = makeBoard({ now: c.now, limits: { maxReplyBytes: 3000, maxRepliesBytes: 4000, maxInboxItems: 2 } });
+  const a = adOf(1, T0), b = adOf(2, T0);
+  board.putAd(a); board.putAd(b);
+  const answer = (ad, p, n) => { const { id } = board.post(ad.gateway, bytesOf(4100, n)); const r = bytesOf(1200, n); return () => board.putReply(id, r, bytesToHex(signSchnorr(replyDigest(id, r), p))); };
+  answer(a, priv(1), 1)(); answer(a, priv(1), 2)();
+  assert.equal(thrown(answer(a, priv(1), 3)).status, 503, 'the provider\'s answers are at their bytes');
+  answer(b, priv(2), 4)();
+  assert.equal(thrown(answer(b, priv(2), 5)).status, 503, 'the board\'s answers are at their bytes');
+  c.advance(601);
+  board.putAd(adOf(2, c.t));
+  answer(adOf(2, c.t), priv(2), 6)();
+  const g = adOf(2, c.t).gateway;
+  for (let n = 10; n < 15; n++) board.post(g, bytesOf(4100, n));
+  const p1 = board.inbox(g, 0), p2 = board.inbox(g, p1.next), p3 = board.inbox(g, p2.next);
+  assert.deepEqual([p1.items.length, p2.items.length, p3.items.length], [2, 2, 1]);
+});
+
+test('a mailbox answer is never opened compressed, and a compressed one opens only up to a bound', async () => {
+  const keys = gatewayOf(priv(1));
+  const sealed = await sealRequest(bytesToHex(keys.pub), { method: 'GET', path: '/info', body: null }, { now: () => T0 });
+  const req = await openRequest(keys, sealed.bytes, { now: () => T0 });
+  const big = new Uint8Array(3 << 20);
+  const zipped = new Uint8Array(await new Response(new Blob([big]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+  const reply = await req.reply(200, {}, zipped, { gzip: true });
+  await assert.rejects(sealed.open(reply, { inflate: false }), SealedError);
+  await assert.rejects(sealed.open(reply, { inflate: 1 << 20 }), /too large/);
+  assert.equal((await sealed.open(reply)).body.length, 3 << 20, 'the private route\'s own bound is wide');
+});
+
+test('a provider sets aside a request it cannot open, so it does not wait in its queue', async () => {
+  const c = clock(), board = makeBoard({ now: c.now });
+  const ad = adOf(1, T0); board.putAd(ad);
+  const server = makeMailboxServer({ board, keys: gatewayOf(priv(1)), handle: async () => ({ status: 200, body: {} }), signReply: (d) => signSchnorr(d, priv(1)), now: c.now });
+  board.post(ad.gateway, bytesOf(4100, 1));
+  await server.pump();
+  assert.deepEqual(board.inbox(ad.gateway, 0).items, []);
 });
 
 let passed = 0, ran = 0;
