@@ -17,9 +17,17 @@
 //   BATCH_WAIT_SECS but no longer than this (default 90): a payer is told "Sent" once the leader holds its spend, so the wait is its settling's
 //   LEADER_CHAIN_SEED  the leader's chain keys (32 bytes, hex): every spend then pays it a fee as a note to its chain address, quoted on
 //                   GET /fee and checked before a block takes the spend (fees.mjs has the terms, FEE_*); with none, no fee is asked
+//   BLOB_URLS       where the data of a block another leader landed in blobs is read from, comma apart, each a URL with {hash} for the blob's versioned
+//                   hash (default https://api.blobscan.com/blobs/{hash}; empty for none), tried in order after the block's own ARCHIVE_DIR file
+//   BEACON_URL      a beacon node's REST address, tried after BLOB_URLS (its blob sidecars, found by the slot the block landed in; BEACON_GENESIS is
+//                   the chain's genesis time, default mainnet's)                       BLOB_FETCH_SECS  one request's limit (default 20)
+//   BLOB_RETRY_SECS the first wait before a block's blobs are read again after no source held them (default 15, doubling to 10 minutes)
+//   FORCED_PER_BLOCK  the most forced entries a block takes beyond those the contract needs it to (default 4; 0 takes up to 16 at once)
+//   FORCED_SOFT_SECS  an entry is left this long (default 30) before a block that has no other use for it takes it
 //
 // A block's data goes in calldata here; blob mode is built into the program, the contract and the node (`POST /build {blobs: true}`) and is
-// switched on once the sender of blob transactions is.
+// switched on once the sender of blob transactions is. A block another leader landed with its data in blobs is read back from BLOB_URLS or
+// BEACON_URL, and checked against the block's own public values before the node is told of it.
 
 import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
@@ -27,13 +35,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { keccak_256 } from '../dapp/vendor/tacit-deps.min.js';
 import { decode, decodeLand, landInputFromTrace, landCalldata, selector, encode, hexOf, bytesOf } from './abi.mjs';
-import { makeRpc, send as sendTx, addressOf, num, suggestedTip } from './rpc.mjs';
+import { makeRpc, send as sendTx, addressOf, num, suggestedTip, seedTip } from './rpc.mjs';
 import { feeTerms, readPrice, makeFeeDesk, admitPaying, blockReady, landCover } from './fees.mjs';
 import { archiveEntry, loadArchive } from './archive.mjs';
 import { hopsIn, hopKey, makeHopLedger, sweepHops } from './hops.mjs';
 import { makeLooks, pickLooks } from './look.mjs';
 import { nodeEnv } from './node-env.mjs';
 import { makeBoardProver } from '../worker-relay/src/lib/board-prover.js';
+import { blobLists, makeBlobReader, makeRetries, MAINNET_GENESIS } from './blobs.mjs';
+import { queueTake, backlogged } from './queue.mjs';
 
 // one transaction at a time from the leader's key, so the seed's, a sweep's, a landing's and the hops' never take the same nonce
 let txLock = Promise.resolve();
@@ -90,6 +100,16 @@ const MEMO_LEN = 1152;
 const MAX_FORCED = 16;
 const CHAIN_SEED = env.LEADER_CHAIN_SEED || '';
 const FEE_REFRESH = Number(env.FEE_REFRESH_SECS || 60) * 1000;
+const FORCED_PER_BLOCK = Number(env.FORCED_PER_BLOCK ?? 4);
+const FORCED_SOFT = Number(env.FORCED_SOFT_SECS ?? 30);
+// the blob sources and the wait between tries (blobs.mjs): a block's blobs are read for as long as it takes, the leader taking no step meanwhile
+const blobReader = makeBlobReader({
+  urls: (env.BLOB_URLS ?? 'https://api.blobscan.com/blobs/{hash}').split(',').map((u) => u.trim()).filter(Boolean),
+  beaconUrl: (env.BEACON_URL || '').replace(/\/$/, ''),
+  genesis: Number(env.BEACON_GENESIS || MAINNET_GENESIS),
+  timeoutMs: Number(env.BLOB_FETCH_SECS || 20) * 1000,
+});
+const blobRetry = makeRetries({ firstMs: Number(env.BLOB_RETRY_SECS || 15) * 1000 });
 
 const rpc = makeRpc(RPC_URL);
 const me = addressOf(KEY);
@@ -204,8 +224,26 @@ async function logs(address, topics, from, to) {
   return out;
 }
 
+/// The lists of a block that landed with its data in blobs and has no file here: read from the blob sources and checked against its public values.
+/// When none holds them the block is looked for again after a wait that doubles, and the error that stops this step says nothing more (it was logged here).
+async function readBlobBlock(height, call, lg) {
+  try {
+    const slotOf = async () => num((await rpc.call('eth_getBlockByNumber', [lg.blockNumber, false])).timestamp);
+    const r = await blobLists({ openings: call.lists.blobs, publicValues: call.publicValues, reader: blobReader, slotOf });
+    blobRetry.clear(height);
+    log({ blobsRead: height, blobs: r.blobs, outputs: r.leaves.length / 32, via: r.via });
+    return { leaves: r.leaves, memos: r.memos, nullifiers: r.nullifiers };
+  } catch (e) {
+    const wait = blobRetry.failed(height);
+    log({ blobsUnread: height, error: String(e?.message || e).slice(0, 160), ...(e?.attempts ? { sources: e.attempts } : {}), retryInSecs: Math.ceil(wait / 1000) });
+    throw Object.assign(new Error(`block ${height} keeps its data in blobs and they are not read yet`), { quiet: true });
+  }
+}
+
 /// Reads the blocks that landed since the last look and replays them into the node, and the forced queue's entries.
 async function sync() {
+  // a block whose blobs no source held is looked for again after its wait, and the leader takes no step until it is read
+  if (blobRetry.pending() > 0) throw Object.assign(new Error('waiting to read a block\'s blobs again'), { quiet: true });
   let head = num(await rpc.call('eth_blockNumber'));
   if (head <= syncedTo) return;
   // up to the head; a public RPC answers from several nodes, and one a block behind refuses logs up to another's head, so the read steps back a
@@ -244,9 +282,10 @@ async function sync() {
     let lists = call.lists;
     if (lists.blobs.length) {
       const f = join(ARCHIVE, `${height}.json`);
-      if (!existsSync(f)) throw new Error(`block ${height} carries its data in blobs and this leader has no archive of it (${f})`);
-      const a = JSON.parse(readFileSync(f, 'utf8'));
-      lists = { ...lists, leaves: bytesOf(a.lists.leaves), memos: bytesOf(a.lists.memos), nullifiers: a.lists.nullifiers };
+      if (existsSync(f)) {
+        const a = JSON.parse(readFileSync(f, 'utf8'));
+        lists = { ...lists, leaves: bytesOf(a.lists.leaves), memos: bytesOf(a.lists.memos), nullifiers: a.lists.nullifiers };
+      } else lists = { ...lists, ...(await readBlobBlock(height, call, lg)) };
     }
     // owed before anything that can fail below, and left to its own leader for a while: it sends its hops on itself, right after landing
     try { hopLedger.owe(hopsIn(call.lists.hops), { at: Date.now() + HOP_GRACE, height }); } catch (e) { log({ hopsNotKept: height, error: String(e.message || e) }); }
@@ -347,9 +386,12 @@ async function keepSeed() {
   if (BigInt(seats) === 0n || BigInt(lead) !== 0n || b - e * len >= BigInt(seedBlocks) || Number(e) === seedKeptFor) return;
   seedSending = true;
   try {
-    const receipt = await send(rpc, KEY, turns, selector('turn()'), { chainId: num(await rpc.call('eth_chainId')), tip: 1_000_000_000n });
+    // the call has a few blocks to land in: its tip follows the going rate, from 1 gwei (a landing is paid more by the call's cost than this)
+    const receipt = await send(rpc, KEY, turns, selector('turn()'), { chainId: num(await rpc.call('eth_chainId')), tip: seedTip(await suggestedTip(rpc)) });
     seedKeptFor = Number(e);
-    log({ seedKept: Number(e), tx: receipt.transactionHash });
+    // a call mined after the epoch's first SEED_BLOCKS goes through without keeping the seed: what the contract holds is what is logged
+    const [kept] = await view('seedAt(uint256)', ['bytes32'], [e], turns);
+    log(BigInt(kept) !== 0n ? { seedKept: Number(e), tx: receipt.transactionHash } : { seedMissed: Number(e), tx: receipt.transactionHash, block: num(receipt.blockNumber) });
   } finally {
     seedSending = false;
   }
@@ -392,6 +434,16 @@ async function replayArchive() {
   }
   syncedTo = num(await rpc.call('eth_blockNumber'));
   log({ replayedFromArchive: seq.blocks.length, syncedTo });
+}
+
+// When each waiting queue entry was posted (the contract's `queuedAt`, fixed once written): read once, kept until the queue has passed the entry.
+const queuedAtOf = new Map();
+async function queuedAts(from, n) {
+  for (const k of [...queuedAtOf.keys()]) if (k < from) queuedAtOf.delete(k);
+  const need = [];
+  for (let i = from; i < from + n; i++) if (!queuedAtOf.has(i)) need.push(i);
+  await Promise.all(need.map(async (i) => queuedAtOf.set(i, Number((await view('queuedAt(uint256)', ['uint256'], [i]))[0]))));
+  return queuedAtOf;
 }
 
 // what waited when the node last stopped (its TACIT_NODE_MEMPOOL file) is admitted again once, after the first sync has replayed the chain
@@ -455,19 +507,30 @@ async function step() {
     log({ dropped: stale.length });
   }
   const waiting = pool.spends.filter((s) => !exclude.includes(s.id) && (!fees.only || fees.only.includes(s.id))).length + pool.settles.length;
+  // the queue's entries this block takes: a few at a time as they come, oldest first, and always the ones the contract needs it to (queue.mjs)
   const entries = [];
-  for (let i = done; i < Math.min(queued, done + MAX_FORCED); i++) {
-    if (!forced.has(i)) throw new Error(`queue entry ${i} is not among the events read`);
-    entries.push(forced.get(i));
+  let blk = null, plan = null, late = false;
+  if (queued > done) {
+    blk = await rpc.call('eth_getBlockByNumber', ['latest', false]);
+    const at = await queuedAts(done, Math.min(queued - done, MAX_FORCED));
+    const queuedAt = (i) => at.get(i);
+    const now = num(blk.timestamp);
+    const margin = Number(env.LAND_MARGIN_SECS ?? BOARD_WAIT / 1000 + 120);
+    plan = queueTake({ done, queued, queuedAt, now, forceDelay, maxForced: MAX_FORCED, perBlock: FORCED_PER_BLOCK, softAge: FORCED_SOFT, margin });
+    late = backlogged({ done, queued, queuedAt, now, forceDelay, window: window_ });
+    for (let i = done; i < done + plan.take; i++) {
+      if (!forced.has(i)) throw new Error(`queue entry ${i} is not among the events read`);
+      entries.push(forced.get(i));
+    }
   }
   if (!waiting && !entries.length) { firstSeen = null; return; }
   firstSeen ??= Date.now();
   // at once while gas is cheap; when it is dear, a short wait for other spends to share the block (fees.mjs blockReady)
-  const blk = await rpc.call('eth_getBlockByNumber', ['latest', false]);
+  blk ??= await rpc.call('eth_getBlockByNumber', ['latest', false]);
   if (!blockReady({ waiting, forced: entries.length, firstSeen, now: Date.now(), baseFee: BigInt(blk.baseFeePerGas || 0), minSpends: MIN_SPENDS, maxWaitMs: MAX_WAIT, batchGwei: BATCH_GWEI, target: BATCH_TARGET, waitMs: BATCH_WAIT })) return;
-  // whose turn it is: the leader, or anyone once the window has passed with no block
+  // whose turn it is: the leader, or anyone once the window has passed with no block, or once the queue has waited past FORCE_DELAY + WINDOW
   const now = num(blk.timestamp);
-  if (now < lastLanded + window_) {
+  if (now < lastLanded + window_ && !late) {
     const [lead] = await view('turn()', ['address'], [], (await view('TURNS()', ['address']))[0]);
     if (BigInt(lead) !== 0n && lead.toLowerCase() !== me.toLowerCase()) { log({ waiting: 'not this leader\'s turn', lead }); return; }
   }
@@ -479,7 +542,7 @@ async function step() {
     return;
   }
   const built = await node('POST', '/build', { time: now, queue: entries.map((e) => hexOf(e)), max: MAX_SPENDS, exclude, ...fees });
-  log({ built: nodeHeight + 1, spends: built.includes.length, queueTaken: built.queueTaken });
+  log({ built: nodeHeight + 1, spends: built.includes.length, queueTaken: built.queueTaken, queueOffered: entries.length, queueDue: plan?.overdue ?? 0, queueLeft: queued - done - entries.length, ...(late ? { backlogged: true } : {}) });
   const proof = await prove(built);
   const pv = bytesOf(built.publicValues);
   const l = built.lists;
@@ -539,7 +602,7 @@ async function main() {
   // the epoch's seed has a window of a few blocks: watched on its own, not between a block's proving and landing
   setInterval(() => keepSeed().catch((e) => log({ seedNotKept: String(e.message || e) })), 4000);
   for (;;) {
-    try { await step(); } catch (e) { log({ error: String(e.message || e), ...(e && e.attempts && e.attempts.length > 1 ? { endpoints: e.attempts } : {}) }); }
+    try { await step(); } catch (e) { if (!e?.quiet) log({ error: String(e.message || e), ...(e && e.attempts && e.attempts.length > 1 ? { endpoints: e.attempts } : {}) }); }
     // between steps the node's mempool is looked at each second (a local read): a spend that arrives starts the next step at once, so a payment
     // is built into a block within a second of the leader taking it, not up to POLL later
     const since = Date.now(), had = await node('GET', '/mempool').then((m) => (m.spends || []).length + (m.settles || []).length, () => 0);

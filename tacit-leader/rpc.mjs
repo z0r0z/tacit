@@ -58,6 +58,12 @@ export function addressOf(priv) {
 
 /// Signs and sends a call to `to` with `data` from `priv`, waits for its receipt: → the receipt.
 /// The priority fee to offer: the node's suggestion (eth_maxPriorityFeePerGas), kept within [0.01, 2] gwei, 0.1 gwei if it has none.
+/// The tip of the call that keeps an epoch's seed, which must be mined within a few blocks: twice the going rate, from 1 gwei to 5.
+export function seedTip(going) {
+  const t = 2n * BigInt(going);
+  return t < 1_000_000_000n ? 1_000_000_000n : t > 5_000_000_000n ? 5_000_000_000n : t;
+}
+
 export async function suggestedTip(rpc) {
   const t = await rpc.call('eth_maxPriorityFeePerGas').then((x) => BigInt(x), () => 100_000_000n);
   return t < 10_000_000n ? 10_000_000n : t > 2_000_000_000n ? 2_000_000_000n : t;

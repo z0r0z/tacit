@@ -2,7 +2,7 @@
 // try another for what is the call's own answer.
 //   node tests/tacit-leader-rpc.test.mjs
 import assert from 'node:assert';
-import { makeRpc } from '../tacit-leader/rpc.mjs';
+import { makeRpc, seedTip } from '../tacit-leader/rpc.mjs';
 
 const seen = [];
 const answers = { 'https://a': (m) => ({ error: { code: -32602, message: 'Archive requests require a personal token' } }), 'https://b': (m) => ({ result: '0xb' }), 'https://c': (m) => ({ result: '0xc' }) };
@@ -46,4 +46,11 @@ await assert.rejects(rpc.call('eth_blockNumber'), /down|fetch failed/);
   assert.ok(!/KEY(ONE|TWO|THREE)/.test(JSON.stringify(err.attempts) + err.message), 'no path or key in what is reported');
 }
 assert.throws(() => makeRpc(' , '), /required/);
+
+// the seed call's tip: twice the going rate, from 1 gwei to 5
+assert.equal(seedTip(10_000_000n), 1_000_000_000n, 'a quiet network: 1 gwei');
+assert.equal(seedTip(0), 1_000_000_000n);
+assert.equal(seedTip(1_500_000_000n), 3_000_000_000n, 'twice the going rate');
+assert.equal(seedTip(2_000_000_000n), 4_000_000_000n);
+assert.equal(seedTip(9_000_000_000n), 5_000_000_000n, 'at most 5 gwei');
 console.log('leader rpc: all passed');

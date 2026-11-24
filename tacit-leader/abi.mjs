@@ -65,6 +65,8 @@ const LIST_DOMAIN = te.encode('tacit-block-list-v1'), MEMO_DOMAIN = te.encode('t
 const MEMO_LEN = 1152, HOP_LEN = 96;
 const u64 = (n) => { const o = new Uint8Array(8); let v = BigInt(n); for (let i = 7; i >= 0; i--) { o[i] = Number(v & 0xffn); v >>= 8n; } return o; };
 export const listHash = (tag, count, items) => hexOf(sha256(concatBytes(LIST_DOMAIN, new Uint8Array([tag]), u64(count), items)));
+/// A memo's hash as the block program commits it in the outputs list.
+export const memoHash = (memo) => sha256(concatBytes(MEMO_DOMAIN, memo));
 
 /// Whether a land call's lists are the ones its public values commit (what land() itself checks): the outputs (leaf ‖ memo hash) and
 /// nullifiers when they are in calldata (word 15 zero), and the hops always.
@@ -77,7 +79,7 @@ export function listsMatch(publicValues, l) {
     const leaves = bytesOf(l.leaves), memos = bytesOf(l.memos), n = leaves.length / 32;
     if (leaves.length % 32 !== 0 || memos.length !== n * MEMO_LEN) return false;
     const items = new Uint8Array(64 * n);
-    for (let i = 0; i < n; i++) { items.set(leaves.subarray(32 * i, 32 * i + 32), 64 * i); items.set(sha256(concatBytes(MEMO_DOMAIN, memos.subarray(MEMO_LEN * i, MEMO_LEN * (i + 1)))), 64 * i + 32); }
+    for (let i = 0; i < n; i++) { items.set(leaves.subarray(32 * i, 32 * i + 32), 64 * i); items.set(memoHash(memos.subarray(MEMO_LEN * i, MEMO_LEN * (i + 1))), 64 * i + 32); }
     if (listHash(1, n, items) !== w(4)) return false;
     return listHash(2, l.nullifiers.length, concatBytes(...l.nullifiers.map((x) => bytesOf(x)))) === w(5);
   } catch { return false; }

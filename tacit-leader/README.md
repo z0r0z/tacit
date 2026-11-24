@@ -45,8 +45,15 @@ is skipped: the spend goes to the house leader as before, and waits for its turn
 the front page's `connect-src`: `node tools/tacit-chain-seat-host.mjs https://your-leader.example.com` checks it is a seat holder's latest announcement, adds it and rebuilds; the change is
 committed and pushed with the dapp. The endpoint must be `https` on a DNS name and answer cross-origin reads and posts as the house leader does.
 
-Not built yet: sending blocks whose data is in blobs (the program, contract and node do it; the sender must use the post-Fusaka blob transaction
-format) and replaying blob blocks another leader landed (needs a beacon node's blob sidecars).
+**Blocks with their data in blobs.** Another leader's block that keeps its lists in blobs is read back from `BLOB_URLS` (templates with `{hash}`, the blob's
+versioned hash; default `https://api.blobscan.com/blobs/{hash}`) and then `BEACON_URL`'s blob sidecars (`BEACON_GENESIS` locates the slot), after the block's own file in
+`ARCHIVE_DIR` if there is one. What a source gives is checked against the block's public values before the node is told, and a block no source holds is looked for
+again after `BLOB_RETRY_SECS` (doubling to 10 minutes), the leader taking no other step meanwhile. Sending blocks of its own in blobs is not built yet (the program,
+contract and node do it; the sender must use the post-Fusaka blob transaction format).
+
+**The forced queue.** A block takes the queue's entries a few at a time, oldest first (`FORCED_PER_BLOCK`, default 4, once an entry has waited `FORCED_SOFT_SECS`,
+default 30), and always every entry the contract needs it to; `FORCED_PER_BLOCK=0` takes up to 16 at once. Once an entry has waited `FORCE_DELAY` + `WINDOW`
+the leader lands whoever's turn it is.
 
 **Restarts.** A restart rebuilds the node, from the blocks kept in `ARCHIVE_DIR` when they are the whole chain (every block from 1 to the contract's height is there, each starts where the one before ended, the last ends at the contract's `state`, and no forced entry waits), else from the logs of `BLOCKS` from `FROM_BLOCK`. Every block this leader builds or reads is kept there. `RPC_URL` may list several endpoints, comma apart (`https://a,https://b`): the first that answers is used, and one that refuses, rate-limits or has dropped old logs is passed over. Keep `ARCHIVE_DIR` on the persistent disk.
 
