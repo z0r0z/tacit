@@ -285,6 +285,14 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const fee = sum > 0n ? await cutReserve(sum) : 0n;
     return sum > fee ? sum - fee : 0n;
   };
+  // whether a lock of `amount` can be made from the free notes: a note of exactly that amount is locked as it is (prepare cuts nothing, so nothing is kept back for a
+  // cut), else the notes must hold the amount and the fee of cutting it. A note just shielded for a swap is of exactly its amount.
+  const covers = async (amount) => {
+    const a = BigInt(amount), free = (await heldNotes()).filter((n) => !reserved.has(lc(n.leaf)));
+    if (free.some((n) => BigInt(n.value) === a)) return true;
+    const sum = free.reduce((s, n) => s + BigInt(n.value), 0n);
+    return sum > 0n && sum >= a + (await cutReserve(sum));
+  };
 
   const refundKey = async (id) => ({ xonly: xonlyOf(derive('evm-refund', id)) });
   const prepare = ({ rec }) => serial(async () => {
@@ -384,7 +392,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     try { return BigInt(await ux.rpc('eth_getBalance', [ownAccount.address, 'latest'])); } catch { return null; }
   }
 
-  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, heldFree, cutReserve, recipient, claimOp, ownEth };
+  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, covers, heldFree, cutReserve, recipient, claimOp, ownEth };
 }
 
 // ── what the pool ran: a transaction's calls, from a node that traces ──

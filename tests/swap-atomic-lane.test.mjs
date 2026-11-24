@@ -50,7 +50,7 @@ const BTC_STUB = `
 const W = window.__btc = { unlocked: false, signIns: 0, funds: 0 };
 const T = { wallet: { priv: new Uint8Array(32).fill(7), address: () => 'bc1qtestaddress0000000000000000000000000' } };
 const session = { get unlocked() { return W.unlocked; }, get key() { return W.unlocked ? { pubHex: '02' + 'ab'.repeat(32) } : null; }, get T() { return T; }, load: async () => T, turn: async (fn) => fn() };
-export function makeBitcoin({ onChange }) { return { session, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: () => { W.funds++; } }; }`;
+export function makeBitcoin({ onChange }) { return { session, signIn: async () => { W.unlocked = true; W.signIns++; onChange?.(); }, fund: (o) => { W.funds++; W.fundAsk = o || null; } }; }`;
 const WIRE_STUB = `export async function openPair(o) { window.__atom.opened.push({ pubHex: o.pubHex, priv: o.priv instanceof Uint8Array && o.priv.length === 32, hasT: !!(o.T && o.T.wallet && typeof o.T.wallet.address === 'function'), hasUx: !!o.ux, walletIsGetter: typeof o.wallet }); return { pair: window.__atom.pair, address: () => ({ btc: 'bc1qtest' }), run: () => () => {} }; }`;
 // the pair client, as fastbridge-pair.js shapes it
 const FAKE = `
@@ -210,7 +210,9 @@ console.log('a provider: the switch appears, and the lane opens');
 
   console.log('the lane: more than is held, the fee, flipping');
   await type(page, '0.6');
-  ok(/Not enough BTC/.test(await text(page, '#a-go')) && await page.$eval('#a-go', (e) => e.disabled), 'more than the balance says so');
+  ok(/^Add 0\.100012 BTC$/.test(await text(page, '#a-go')) && !(await page.$eval('#a-go', (e) => e.disabled)), `more than the balance offers to add what is short, the quote's Bitcoin fee with it (${await text(page, '#a-go')})`);
+  await page.click('#a-go');
+  ok(await page.evaluate(() => window.__btc.funds === 1 && window.__btc.fundAsk && window.__btc.fundAsk.sats === 10001200 && window.__btc.fundAsk.need === 60001200), 'and pressing it asks the wallet for that many sats, and the total the address must hold');
   await page.fill('#a-amt', '');
   await page.click('#a-quick button:last-child');
   const mx = parseFloat(await page.inputValue('#a-amt'));
@@ -394,7 +396,7 @@ console.log('the words: durations, the market, errors, the probe');
   ok(JSON.stringify(r.until) === JSON.stringify(['in 5 h 7 min', 'in 40 min', 'now', 'in 3 days']), `refund times in words (${JSON.stringify(r.until)})`);
   ok(JSON.stringify(r.market) === JSON.stringify(['0.72% less than the market price', 'at the market price', '1.50% more than the market price', '12.0% less than the market price', null]), `the market comparison (${JSON.stringify(r.market)})`);
   ok(JSON.stringify(r.rate) === JSON.stringify(['1 BTC = 30.4 ETH', '1 BTC = 304 ETH', '1 BTC = 30.123 ETH']), `rates (${JSON.stringify(r.rate)})`);
-  ok(r.err[0] === 'Something did not answer just now. Nothing was sent. Try again in a moment.' && r.err[1] === 'No provider can take that amount.' && r.err[2] === r.err[0] && r.err[3] === 'the quote ran out.' && r.err[4] === r.err[0] && r.err[5] === r.err[0] && r.err[6] === r.err[0], `errors: an engine sentence stays, an exception's own words never show (${JSON.stringify(r.err)})`);
+  ok(r.err[0] === 'Something did not answer just now. Nothing was sent. Try again in a moment.' && r.err[1] === 'No provider can take that amount.' && r.err[2] === r.err[0] && r.err[3] === 'The quote ran out.' && r.err[4] === r.err[0] && r.err[5] === r.err[0] && r.err[6] === r.err[0], `errors: an engine sentence stays, an exception's own words never show (${JSON.stringify(r.err)})`);
   ok(JSON.stringify(r.fmt) === JSON.stringify(['0.00000001', '1', '0.304']), `amounts have eight places and no trailing zeros (${JSON.stringify(r.fmt)})`);
   ok(r.probe.none === false && r.probe.other === false && r.probe.otherToken === false && r.probe.signed === true && r.probe.down === false && r.probe.bad === false && r.probe.http === true && r.probe.httpOther === false, `the probe: no list, another pair, sats against another token, a signed ad of the pair, a board down, a board that errs, and a provider that serves its own terms ${JSON.stringify(r.probe)}`);
   ok(r.probe.insecure === false, 'a board or provider that is not https is not read');
@@ -436,8 +438,8 @@ console.log('a phone width, and the dark scheme');
   await page.click('#a-flip');
   ok((await text(page, '#a-bal')) === 'Balance 0.00847639 ETH', `the balance is what the wallet holds, not what is left after the relay fee (${await text(page, '#a-bal')})`);
   await page.fill('#a-amt', '0.0083');
-  await page.waitForFunction(() => /Keep/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
-  ok((await text(page, '#a-go')) === 'Keep 0.00028 ETH for the relay fee' && await page.$eval('#a-go', (e) => e.disabled), `more than can be locked, but less than is held, says what to keep back (${await text(page, '#a-go')})`);
+  await page.waitForFunction(() => /stays back/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok((await text(page, '#a-go')) === '0.00028 ETH stays back for the pool’s fee' && await page.$eval('#a-go', (e) => e.disabled), `more than can be locked, but less than is held, says what stays back (${await text(page, '#a-go')})`);
   await page.fill('#a-amt', '0.009');
   await page.waitForFunction(() => /Not enough/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
   ok(/Not enough ETH in your private balance/.test(await text(page, '#a-go')), 'more than is held still says there is not enough');

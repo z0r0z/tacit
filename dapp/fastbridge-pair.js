@@ -95,6 +95,8 @@ export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000)) {
     id: rec.id, dir: 'b2e', state, title, detail: rec.phase === 'refund-wait' && rec.why ? `${detail} ${String(rec.why).replace(/\.$/, '')}.` : detail,
     pay: BigInt(rec.amount), get: BigInt(rec.evmAmount || 0), steps: stepsOf('b2e', at, state), etaSecs: state === 'working' ? eta : 0, at: rec.created,
     refundAt: state === 'working' && lockAt ? lockAt + rec.csvBlocks * 600 : null, lockTxid: rec.lock ? rec.lock.txid : null, error: rec.lastError || null, provider: rec.providerName || null,
+    // the ETH has to be claimed by the pool deadline of the provider's lock; missed, nothing is lost, and the BTC returns at refundAt
+    backBy: state === 'working' && rec.evmOffer && Number(rec.evmOffer.deadline) > 0 ? Number(rec.evmOffer.deadline) : null,
   };
 }
 export function describeRev(rec) {
@@ -105,6 +107,9 @@ export function describeRev(rec) {
     pay: rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: rec.offer ? BigInt(rec.offer.btc.value) : 0n, steps: stepsOf('e2b', at, state), etaSecs: state === 'working' ? eta : 0, at: rec.created,
     // (once the provider has claimed, the ETH is not coming back: the BTC is taken instead, so no return time is given)
     refundAt: state === 'working' && rec.deadline && rec.phase !== 'taking' ? rec.deadline : null, lockTxid: rec.lockTxid || null, error: rec.lastError || null, provider: rec.providerName || null,
+    // the page has to be back by the pool deadline: a claim by the provider then gives the BTC, which must be taken before the provider's own refund opens (at least
+    // claimSlackSecs after the deadline, checked when the ETH is locked); with no claim, the ETH comes back after it
+    backBy: state === 'working' && rec.deadline ? rec.deadline : null,
   };
 }
 
@@ -284,8 +289,9 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       if (b.sats != null && b.sats < q.pay) throw new Error('your Bitcoin address does not hold that many sats');
       return startFwd(q);
     }
-    const b = await balances();
-    if (b.eth != null && b.eth < q.pay) throw new Error('your private ETH does not cover that amount');
+    // a note of exactly the amount is locked as it is: what `available` keeps back for a cut is not needed then (evm.covers)
+    if (evm.covers) { if (!(await evm.covers(q.pay))) throw new Error('your private ETH does not cover that amount'); }
+    else { const b = await balances(); if (b.eth != null && b.eth < q.pay) throw new Error('your private ETH does not cover that amount'); }
     const a = await revFor(q.ref.p).start({ quote: q.ref.r });
     const index = stores.index;
     if (!(await index.get(q.ref.p.id))) await index.put({ id: q.ref.p.id, name: q.ref.p.name, ref: q.ref.p.ref });
@@ -351,5 +357,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     return n;
   }
 
-  return { providers, reference, balances, quote, start, pump, records, recover, address: () => ({ btc: btc.address }), claimPub: claimPubHex };
+  // whether a lock of `amount` pool units can be made now (an exact note needs no cut), for a page that shows it before the start refuses
+  const covers = async (amount) => (evm.covers ? evm.covers(BigInt(amount)) : (await balances()).eth >= BigInt(amount));
+  return { providers, reference, balances, covers, quote, start, pump, records, recover, address: () => ({ btc: btc.address }), claimPub: claimPubHex };
 }

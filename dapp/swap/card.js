@@ -2763,6 +2763,7 @@ async function readFarms() {
 
 function params() {
   if (S.atomic) return atomicParams();
+  if (ATOM.waitP && ASKED?.p === ATOM.waitP) return new URLSearchParams(ATOM.waitP);      // a link for the lane, kept while the boards are read
   const p = new URLSearchParams(), sym = (k) => { const t = tokenOf(k); return t?.custom || (t?.addr && listed().filter((x) => nameIs(x, lc(t.sym))).length > 1) ? t.addr : t?.sym; };
   if (S.btc && !moving()) return p;
   if (S.pay !== lc(R.ZERO)) p.set('from', sym(S.pay));
@@ -2774,10 +2775,12 @@ function params() {
   return p;
 }
 function applyParams(p) {
-  // a link that names BTC and ETH opens the Bitcoin and Ethereum lane when providers of it exist; until the boards have been read it is kept, and with none it is read as it always was
+  // a link that names BTC and ETH opens the Bitcoin and Ethereum lane when providers of it exist; until the boards have been read it is kept, and with none it is read as it always was.
+  // While it waits the card stays on its default pair: the lane's own link says from-at=btc, which read as a place would open the TAC-on-Bitcoin lane in its stead.
   const ax = atomicAsk(p);
   if (ax && ATOM.avail && $('#atomic')) { enterAtomic(ax); return; }
-  ATOM.waitP = ax ? p : null;
+  ATOM.waitP = ax && !ATOM.done ? p : null;
+  if (ATOM.waitP) { probeAtomic(); return; }
   const find = (v) => { if (!v) return null; const x = linkName(v); return x === 'teth' ? 'teth' : (listed().find((t) => nameIs(t, x) || t.addr === x)?.addr) || null; };
   const pv = p.get('private'), f = find(p.get('from')), t = find(p.get('to'));
   const fa = p.get('from-at'), ta = p.get('to-at');
@@ -2891,7 +2894,7 @@ function setBtc(on) {
 }
 // The Bitcoin and Ethereum lane (swap/atomic.js): BTC for ETH and back, swapped with a provider. Its switch stays hidden until the boards show a provider of the pair
 // (swap/atomic-probe.js, read once when the card is idle and kept), so a page with none is the page it was. A link that names BTC and ETH opens it once it is there.
-const ATOM = { avail: false, probing: null, ask: null, waitP: null };
+const ATOM = { avail: false, done: false, probing: null, ask: null, waitP: null };
 let atomic = null, atomicP = null;
 function atomicAsk(p) {
   const f = String(p.get('from') || '').toUpperCase(), t = String(p.get('to') || '').toUpperCase(), a = p.get('amt') || '';
@@ -2917,14 +2920,16 @@ function paintAtomic() {
 }
 async function openAtomic() {
   try {
-    atomicP ||= import('/swap/atomic.js?cb=752538fa').then((mod) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir })));
+    atomicP ||= import('/swap/atomic.js?cb=55082d48').then((mod) => (atomic = mod.makeAtomicLane({ host: $('#atomic'), notify: (m) => live(m), wallet: pageWallet, provider: () => (W.account && W.prov ? W.prov : null), getUx, onState: () => changed(), dir: ATOM.ask?.dir })));
     await atomicP;
     if (S.atomic) { if (ATOM.ask) { atomic.set(ATOM.ask); ATOM.ask = null; } await atomic.show(); }
   } catch (e) { $('#atomic').innerHTML = `<p class="q err">Could not load the Bitcoin and Ethereum lane: ${esc(e?.message || e)}</p>`; atomic = atomicP = null; }
 }
 function setAtomic(on) {
   if (S.atomic === on || !$('#atomic') || (on && !ATOM.avail)) return;
-  if (on && S.btc) { if (moving()) return; setBtc(false); }
+  // a card whose places put it on the TAC-on-Bitcoin lane leaves those places first (as its Ethereum switch does), unless a move is under way
+  if (on && S.btc) { if (moving()) { if (S.busy || !load(new URLSearchParams())) return; } else setBtc(false); }
+  if (on && S.btc) return;
   S.atomic = on; changed(); paint();
   if (on) openAtomic(); else atomic?.hide();
 }
@@ -2932,14 +2937,20 @@ function enterAtomic(ax) {
   ATOM.ask = ax;
   if (S.atomic) { atomic?.set(ax); ATOM.ask = null; changed(); } else setAtomic(true);
 }
+// A link that names the pair reads the boards at once (any other card reads them when idle). When they have answered, a link kept meanwhile opens the lane, or, with no
+// provider, is read as an ordinary link, if the card is still on it.
 function probeAtomic() {
-  if (ATOM.probing || !$('.mode') || (typeof navigator !== 'undefined' && navigator.connection?.saveData)) return;
-  ATOM.probing = import('/swap/atomic-probe.js?cb=2b75f090').then((m) => m.probeAtomic()).catch(() => false).then((yes) => {
-    if (!yes) return;
-    ATOM.avail = true; paintAtomic();
-    // a link that named the pair before the boards were read: opened now, if the card is still on that link
-    if (ATOM.waitP && ASKED?.p === ATOM.waitP && !S.busy && !S.atomic) { const ax = atomicAsk(ATOM.waitP); ATOM.waitP = null; if (ax) enterAtomic(ax); }
-  });
+  if (ATOM.probing || ATOM.done) return;
+  const kept = () => (ATOM.waitP && ASKED?.p === ATOM.waitP && !S.busy && !S.atomic ? ATOM.waitP : null);
+  const settle = (yes) => {
+    ATOM.done = true;
+    if (yes) { ATOM.avail = true; paintAtomic(); }
+    const p = kept(); ATOM.waitP = null;
+    if (!p) return;
+    if (yes && $('#atomic')) enterAtomic(atomicAsk(p)); else load(p, { fresh: true });
+  };
+  if (!$('.mode') || (typeof navigator !== 'undefined' && navigator.connection?.saveData)) { settle(false); return; }
+  ATOM.probing = import('/swap/atomic-probe.js?cb=2b75f090').then((m) => m.probeAtomic()).catch(() => false).then(settle);
 }
 function arrows(box, attr) {
   box.addEventListener('keydown', (e) => {

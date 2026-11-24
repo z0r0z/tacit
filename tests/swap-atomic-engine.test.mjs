@@ -32,7 +32,8 @@ function mount(w, { dir = 'b2e' } = {}) {
   document.body.append(host);
   const calls = { signIn: 0, fund: 0 };
   const door = { load: async () => {}, get unlocked() { return true; }, signIn: async () => { calls.signIn++; }, fund() { calls.fund++; }, open: async () => ({ pair: w.pair }) };
-  const lane = makeAtomicLane({ host, door, dir, now: w.clock.now });
+  // (the market read before a wallet opens goes to the boards and public nodes: none here, the door is open from the start)
+  const lane = makeAtomicLane({ host, door, dir, now: w.clock.now, market: async () => null });
   const $ = (id) => host.querySelector(`#${id}`);
   const text = (id) => ($(id)?.textContent || '').replace(/\s+/g, ' ').trim();
   return { host, lane, door, calls, $, text, done: () => { lane.hide(); host.remove(); } };
@@ -63,7 +64,7 @@ test('Bitcoin for ETH on the page, from the real engine: the balance, the quote 
   assert.equal(r.Provider, 'Test provider', 'the provider, and no fee it did not name');
   assert.match(r['Bitcoin fee'], /^about \d+ sats$/);
   assert.match(r.Time, /^about \d+ minutes$/);
-  assert.equal(r['If it stops'], 'your BTC returns to you');
+  assert.equal(r['If it stops'], 'your BTC returns to you within about a day');
   go(m).click();
   const sent = await until(() => !m.$('a-sent').hidden && m.text('a-sent'), 'the swap under way');
   assert.match(sent, /0\.001 BTC → about 0\.0353152 ETH/);
@@ -100,7 +101,7 @@ test('ETH for Bitcoin on the page, from the real engine: a flip, the provider lo
   assert.equal(r.Market, '1 ETH = 0.02809 BTC');
   assert.equal(r['You get'], '0.58% less than the market price');
   // (the provider pays for its own lock; the user's take comes out of it, and its fee is the row above)
-  assert.equal(r['If it stops'], 'your ETH returns to your private balance');
+  assert.equal(r['If it stops'], 'your ETH returns to your private balance after about 4 hours');
   go(m).click();
   await until(() => !m.$('a-sent').hidden, 'the swap under way');
   await w.run(async () => (await w.pair.records()).some((r) => r.dir === 'e2b' && r.state === 'done'));

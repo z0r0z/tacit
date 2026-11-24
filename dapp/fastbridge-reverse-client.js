@@ -164,8 +164,9 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
     if (!rec) throw new Error('unknown quote');
     if (rec.swapId) return { swapId: rec.swapId };
     if (!(Number(rec.validUntil) > now() + policy.quoteMarginSecs)) throw new Error('the quote expired');
-    const held = await evm.available();
-    if (held < BigInt(rec.evmAmount)) throw new Error('your private TAC does not cover that amount');
+    // (a note of exactly the amount is locked as it is, with nothing kept back for a cut: `covers` says so where the pool side has it)
+    const fits = evm.covers ? await evm.covers(BigInt(rec.evmAmount)) : (await evm.available()) >= BigInt(rec.evmAmount);
+    if (!fits) throw new Error('your private TAC does not cover that amount');
     const a = await lp.start({ quoteId: rec.id });
     if (!a || a.ok === false) throw Object.assign(new Error(`the provider cannot lock that amount${a && a.why ? `: ${a.why}` : ''}`), { retry: !!(a && a.retry) });
     await quoteStore.put({ ...rec, swapId: a.swapId, startedAt: now() });

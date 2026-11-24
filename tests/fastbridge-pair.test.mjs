@@ -180,6 +180,25 @@ test('private ETH that does not cover the amount stops an ETH-for-Bitcoin swap b
   assert.equal((await w.rev.handle({ method: 'GET', path: '/reverse/info' })).body.open, 0, 'the provider was never asked to lock');
 });
 
+test('a note of exactly the amount (one just shielded for the swap) starts an ETH-for-Bitcoin swap, though what is available keeps a cut fee back', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.uEvm.fund(UNITS, 'exact');
+  // the pool side as fastbridge-evm.js has it: `available` keeps back the fee of cutting a note, `covers` knows a note of exactly the amount needs no cut
+  const FEE = 5000n, free = () => w.uEvm.holdings.filter((h) => !h.used);
+  const sum = () => free().reduce((s, h) => s + h.amount, 0n);
+  const evm = { ...w.uEvmCtx, available: async () => (sum() > FEE ? sum() - FEE : 0n), covers: async (a) => free().some((h) => h.amount === BigInt(a)) || sum() >= BigInt(a) + FEE };
+  const before = w.makePair({ evm: { ...evm, covers: undefined } });
+  await assert.rejects(async () => before.start(await before.quote({ dir: 'e2b', amount: UNITS })), /private ETH does not cover/, 'judged by `available` alone, the exact note is refused');
+  w.pair = w.makePair({ evm });
+  const q = await w.pair.quote({ dir: 'e2b', amount: UNITS });
+  const r = await w.pair.start(q);
+  assert.ok(r && r.id, 'with `covers`, the swap starts');
+  assert.equal((await w.rev.handle({ method: 'GET', path: '/reverse/info' })).body.open, 1, 'and the provider was asked to lock');
+  assert.equal(await w.pair.covers(UNITS), true);
+  assert.equal(await w.pair.covers(UNITS - 1n), false, 'a lock of less has to be cut, and the note does not hold the fee too');
+});
+
 test('the swap is kept: a new page over the same stores shows it, and a lock whose record was lost is found again from the key and taken back on its timelock', async () => {
   const w = pairWorld();
   await w.ready();
