@@ -685,7 +685,23 @@ render.eth = () => {
   $('#eth-dev').hidden = TAB.eth !== 'dev';
   if (TAB.eth === 'v1') renderV1($('#eth-v1')); else renderDevice($('#eth-dev'));
 };
-async function settleLocks(run, kind, status, only = null) {
+// A claimed note can be a moment behind in the read (the index follows the chain), and a scan, once made, is kept: nothing asks again for a long while. So after a claim the pool's
+// leaf count is looked at again 10 s, 30 s and 90 s later, and the key is read again while the pool has more leaves than the scan covered; each new read repaints the sheets that show it.
+const CLAIM_REREAD = [10e3, 30e3, 90e3], BALANCE_SHEETS = ['eth', 'tac', 'usdt', 'borrow', 'wallet'];
+let claimRead = 0;
+async function readAfterClaim(pub) {
+  const me = ++claimRead;                                                          // one loop at a time: a later claim restarts it
+  for (const wait of CLAIM_REREAD) {
+    await sleep(wait);
+    if (me !== claimRead || !S.key || S.key.pubHex !== pub) return;
+    const before = P.scan;
+    try { await scanIfNew(); } catch { continue; }
+    if (P.scan === before) return;                                                 // the scan covers every leaf the pool has: nothing was missing
+    for (const n of BALANCE_SHEETS) rerender(n);
+  }
+}
+// `onDone(lock, fee)` is told of each payment as it goes through, before the scan that ends the run.
+async function settleLocks(run, kind, status, only = null, onDone = null) {
   const t = await getUx(), priv = walletPriv(), tried = new Set(), mine = lockList(kind).filter((l) => !only || only.has(String(l.leaf).toLowerCase())), sid = status.id;
   if (!mine.length) return { ok: 0, offered: false };
   run.take(...mine.map(kLock));
@@ -716,12 +732,15 @@ async function settleLocks(run, kind, status, only = null) {
           catch (e0) { if (!lpP && /fee below the current floor/i.test(e0?.message || '') && fee * 2n < BigInt(due.amount)) await call(fee * 2n, { waitOpts: run.wait(what, 15 * 60e3) }); else throw e0; }
         } });
       ok++;
+      try { onDone?.(due, self || lpP ? 0n : fee); } catch { /* telling is not worth stopping a claim */ }
     } catch (e) {
       if (e?.offered) { offered = true; break; }
       if (run.away) run.fail(status, e); else err ||= e;
     }
   }
+  const pub = S.key?.pubHex;
   await scanPrivate(true).catch(() => {});
+  if (ok && pub) readAfterClaim(pub).catch(() => {});
   if (offered) return { ok, offered };
   if (err && run.away) toast(html`${run.to.label}: one did not start: ${errText(err)}`, true, 9000);
   else if (err) throw ok ? new Error(`${ok} went through; another did not: ${errText(err)}`) : err;
@@ -3552,11 +3571,10 @@ async function autoClaim() {
     for (const l of claim) ACLAIM.tried.add(String(l.leaf).toLowerCase());
     const status = autoStatus(), run = newRun('eth');
     run.away = true; run.release = () => {};                                                    // nobody is watching a sheet: progress is in Activity, a failure is a note
-    let r = null;
-    try { r = await settleLocks(run, 'claim', status, new Set(claim.map((l) => String(l.leaf).toLowerCase()))); }
+    const told = (l, f) => toast(html`Claimed ${lockWhat([l])} sent to you${f > 0n ? ', less the relay fee' : ''}.`);
+    try { await settleLocks(run, 'claim', status, new Set(claim.map((l) => String(l.leaf).toLowerCase())), told); }
     catch (e) { run.fail(status, e); }
     finally { endRun(run); }
-    if (r?.ok && !r.offered) toast(html`Claimed ${lockWhat(claim)} sent to you${self || claim.every((l) => fee.get(l.leaf) === 0n) ? '' : ', less the relay fee'}.`);
     rerender('eth');
   } finally { ACLAIM.busy = false; }
 }

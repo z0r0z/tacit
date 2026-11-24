@@ -65,7 +65,12 @@ function harness({ locks = [lock(1)], fee = 23000n, self = false, off = false, l
     autoClaimPick, autoClaimOff: (read) => (off ? true : autoClaimOff(read)),
     document: { getElementById: () => null, createElement: () => ({ setAttribute() {} }), body: { append() {} } }, localStorage: { getItem: () => null },
   };
-  const settleStub = async (run, kind, status, only) => { log.settle.push({ run, kind, only: [...only] }); if (settle) return settle(run); return { ok: only.size, offered: false }; };
+  const settleStub = async (run, kind, status, only, onDone) => {
+    log.settle.push({ run, kind, only: [...only], told: typeof onDone });
+    if (settle) return settle(run, onDone);
+    for (const l of locks.filter((x) => only.has(String(x.leaf).toLowerCase()))) onDone?.(l, self || lp ? 0n : BigInt(fee));       // each payment is told as it goes through
+    return { ok: only.size, offered: false };
+  };
   const src = cut(sheets, 'const ACLAIM = { busy: false, tried: new Set() };', 'return { renderProve, renderAct, autoClaim };');
   const names = Object.keys(ctx);
   const fn = new Function(...names, 'settleLocksReal', `const settleLocks = settleLocksReal;\n${src}\nreturn { autoClaim, ACLAIM };`)(...names.map((k) => ctx[k]), settleStub);
@@ -135,6 +140,16 @@ test('autoClaim: a claim that fails says so once, ends its run, and is not run a
   assert.equal(offered.log.ended, 1);
 });
 
+test('autoClaim: each payment is told the moment it goes through, so a later step that fails does not leave it unsaid', async () => {
+  const h = harness({ settle: (run, onDone) => { onDone(lock(1), 23000n); throw new Error('the rescan failed'); } });
+  await h.autoClaim();
+  assert.deepEqual(h.log.toasts, ['Claimed 0.002 tETH sent to you, less the relay fee.'], 'told before the failure');
+  assert.deepEqual(h.log.fails, ['the rescan failed']);
+  const ok = harness();
+  await ok.autoClaim();
+  assert.equal(ok.log.settle[0].told, 'function', 'the claim is handed the callback');
+});
+
 test('autoClaim: one at a time', async () => {
   let release; const gate = new Promise((r) => { release = r; });
   const h = harness({ settle: async () => { await gate; return { ok: 1, offered: false }; } });
@@ -154,7 +169,7 @@ test('the wiring: the page asks when payments have been read, the sheets module 
   assert.match(ask, /Promise\.resolve\(autoClaim\(\)\)/, 'the page asks its autoClaim');
   assert.match(page, /function autoClaim\(\.\.\.a\) \{ if \(SHEET_CODE\) return SHEET_CODE\.autoClaim\(\.\.\.a\); return withSheets\(\(\) => SHEET_CODE\?\.autoClaim\?\.\(\.\.\.a\)\); \}/, 'which is the sheets module\'s once it is loaded');
   assert.match(page, /runsPrune\(\);\n {4}autoClaimSoon\(\);\n {4}return LK;/, 'asked for each time payments are read');
-  assert.match(sheets, /async function settleLocks\(run, kind, status, only = null\) \{/, 'the claim can be limited to some payments');
+  assert.match(sheets, /async function settleLocks\(run, kind, status, only = null, onDone = null\) \{/, 'the claim can be limited to some payments and tells each as it goes');
   assert.match(sheets, /mine = lockList\(kind\)\.filter\(\(l\) => !only \|\| only\.has\(String\(l\.leaf\)\.toLowerCase\(\)\)\)/);
   assert.match(sheets, /return \{ renderProve, renderAct, autoClaim \};/, 'and autoClaim is offered to the page');
   const names = 'newRun, endRun, autoClaimPick, autoClaimOff, lockWhat';
