@@ -9,7 +9,7 @@
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=a3e28483';
-import { makeLocalStore } from '/fastbridge-client.js?cb=ff9d9c02';
+import { makeLocalStore } from '/fastbridge-client.js?cb=a1e57f54';
 import { makeBtcSwapHolder, holderDone } from '/btcswap-holder.js?cb=ec8dc7eb';
 import { deskClient } from '/btcswap-desk.js?cb=e511951b';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';

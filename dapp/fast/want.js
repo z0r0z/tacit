@@ -11,8 +11,8 @@
 //   w.waiting()             what is waiting on the boards: { count, total, items: [{ pub, amount, maxFeeBps }] smallest first } (maxFeeBps null when none)
 
 import { signWant, checkWant, checkAd, adLabel } from '/fastbridge-board.js';
-import { meetsPrice } from '/fastbridge-price.js?cb=418ffe25';
-import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
+import { meetsPrice } from '/fastbridge-price.js?cb=ab195d5c';
+import { makeBoardClient } from '/fastbridge-board-client.js?cb=129356b4';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';

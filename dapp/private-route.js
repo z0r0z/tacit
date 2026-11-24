@@ -25,7 +25,7 @@ export const available = () => !!(ROUTE.gateway && ROUTE.forwarders.length);
 export const enabled = available;
 
 let made = null;
-const sealedModule = () => import('/sealed-request.js?cb=3f065b4d');
+const sealedModule = () => import('/sealed-request.js?cb=381c7733');
 // The sealed fetch, with Nostr behind the forwarders when the page names relays and this browser has a WebSocket. The Nostr carrier loads only here, so a
 // page that never needs it never fetches it.
 const sealed = () => (made ||= Promise.all([
