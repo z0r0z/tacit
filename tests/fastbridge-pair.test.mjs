@@ -5,7 +5,7 @@
 //   node tests/fastbridge-pair.test.mjs        (Node 22)
 
 import assert from 'node:assert/strict';
-import { makePairClient, SATS_ASSET, ETH_ASSET, rateOf, describeFwd } from '../dapp/fastbridge-pair.js';
+import { makePairClient, SATS_ASSET, ETH_ASSET, rateOf, describeFwd, describeRev } from '../dapp/fastbridge-pair.js';
 import { saveCopy, loadCopy, signed } from '../dapp/fast/pair-keep.js';
 import { makeLocalStore } from '../dapp/fastbridge-client.js';
 import { secp, hmac, sha256 as sha256h } from '../dapp/vendor/tacit-deps.min.js';
@@ -308,6 +308,16 @@ test('only providers of this pair are asked: a TAC provider is not offered Bitco
 test('the pair\'s numbers: ETH per BTC from a quote, and the market comparison for each side of a swap', () => {
   assert.equal(rateOf(3_531_520n, 100_000n), 35.3152);
   assert.equal(describeFwd({ id: 'x', phase: 'broadcast', amount: '100000', evmAmount: '3531520', csvBlocks: 144, created: 5, lockAt: 1000 }).refundAt, 1000 + 144 * 600);
+});
+
+test('a swap that has waited ten minutes on Ethereum nodes that do not agree says so in plain words, and one that has not says nothing of it', () => {
+  const fwd = { id: 'x', phase: 'claimed', amount: '100000', evmAmount: '3531520', csvBlocks: 144, created: 5, lockAt: 1000 };
+  assert.match(describeFwd({ ...fwd, nodesSince: 1000 }, () => 1700).detail, /Ethereum nodes this page reads have not agreed/);
+  assert.doesNotMatch(describeFwd({ ...fwd, nodesSince: 1000 }, () => 1300).detail, /Ethereum nodes/);
+  assert.doesNotMatch(describeFwd(fwd, () => 1700).detail, /Ethereum nodes/);
+  const rev = { id: 'y', phase: 'offered', created: 5, deadline: 9000, offer: { evm: { amount: '1' }, btc: { value: '2' } } };
+  assert.match(describeRev({ ...rev, nodesSince: 1000 }, () => 1700).detail, /a refund still goes out at its time/);
+  assert.doesNotMatch(describeRev({ ...rev, phase: 'done', nodesSince: 1000 }, () => 1700).detail, /Ethereum nodes/);
 });
 
 // ── a swap found again from the key is listed as the chains show it, from the first list after recover() (before any pump) ──

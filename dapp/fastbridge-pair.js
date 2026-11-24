@@ -99,6 +99,10 @@ const REV_SAYS = {
   lost: [0, 'Needs a look', 'The provider claimed with a signature that does not give your BTC. Do not close this page.', null],
 };
 
+// A swap that has waited ten minutes or more on Ethereum nodes that do not agree (dapp/fastbridge-el.js and -bl.js `nodesSince`), said after the detail
+const NODES_WAIT = 'The Ethereum nodes this page reads have not agreed on this swap for a while, so it is read again until two of them do. Nothing is decided on one node’s word, and a refund still goes out at its time.';
+const nodesWait = (rec, nowSecs) => rec.nodesSince != null && !['done', 'refunded', 'aborted', 'lost', 'counter-took'].includes(rec.phase) && nowSecs - rec.nodesSince >= 600;
+const andNodes = (detail, rec, nowSecs) => (nodesWait(rec, nowSecs) ? [detail, NODES_WAIT].filter(Boolean).join(' ') : detail);
 // A reason kept on a record, as a sentence of its own after the detail
 const sentenceOf = (why) => { const w = String(why || '').trim().replace(/[.\s]*$/, ''); return !w ? '' : /^found from the key$/i.test(w) ? 'It was found again from your key.' : w.charAt(0).toUpperCase() + w.slice(1) + '.'; };
 const withWhy = (detail, why) => [detail, sentenceOf(why)].filter(Boolean).join(' ');
@@ -116,19 +120,19 @@ export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000)) {
   const state = FWD_DONE.has(rec.phase) ? 'done' : rec.phase === 'refunded' ? 'returned' : 'working';
   const lockAt = rec.lockAt || rec.confirmedAt || null;
   return {
-    id: rec.id, dir: 'b2e', state, title, detail: rec.phase === 'refund-wait' ? withWhy(detail, rec.why) : detail,
+    id: rec.id, dir: 'b2e', state, title, detail: andNodes(rec.phase === 'refund-wait' ? withWhy(detail, rec.why) : detail, rec, now()),
     pay: BigInt(rec.amount), get: BigInt(rec.evmAmount || 0), steps: stepsOf('b2e', at, state), etaSecs: state === 'working' ? eta : 0, at: rec.created,
     refundAt: state === 'working' && lockAt ? lockAt + rec.csvBlocks * 600 : null, lockTxid: rec.lock ? rec.lock.txid : null, error: rec.lastError || null, provider: rec.providerName || null,
     // the ETH has to be claimed by the pool deadline of the provider's lock; missed, nothing is lost, and the BTC returns at refundAt
     backBy: state === 'working' && rec.evmOffer && Number(rec.evmOffer.deadline) > 0 ? Number(rec.evmOffer.deadline) : null,
   };
 }
-export function describeRev(rec) {
+export function describeRev(rec, now = () => Math.floor(Date.now() / 1000)) {
   if (rec.checking) return checking('e2b', rec, rec.providerName || null);
   const [at, title, detail, eta] = REV_SAYS[rec.phase] || [0, rec.phase, '', null];
   const state = rec.phase === 'done' ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' || rec.phase === 'lost' ? 'stopped' : 'working';
   return {
-    id: rec.id, dir: 'e2b', state, title, detail: rec.phase === 'aborted' ? withWhy(detail, rec.why) : detail,
+    id: rec.id, dir: 'e2b', state, title, detail: andNodes(rec.phase === 'aborted' ? withWhy(detail, rec.why) : detail, rec, now()),
     pay: rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: rec.offer ? BigInt(rec.offer.btc.value) : 0n, steps: stepsOf('e2b', at, state), etaSecs: state === 'working' ? eta : 0, at: rec.created,
     // (once the provider has claimed, the ETH is not coming back: the BTC is taken instead, so no return time is given)
     refundAt: state === 'working' && rec.deadline && rec.phase !== 'taking' ? rec.deadline : null, lockTxid: rec.lockTxid || null, error: rec.lastError || null, provider: rec.providerName || null,
@@ -413,7 +417,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
         try { await revFor(p).pump(); } catch { /* a provider that cannot be reached: the next pass tries again */ }
         for (const r of await stores.swaps(p.id).list().catch(() => [])) if (r.checking && !r.lastError) await stores.swaps(p.id).put({ ...r, checking: false });
       }
-      try { out.push(...(await stores.swaps(p.id).list()).map((r) => describeRev({ ...r, providerName: p.name }))); } catch { /* a store that cannot be read shows nothing */ }
+      try { out.push(...(await stores.swaps(p.id).list()).map((r) => describeRev({ ...r, providerName: p.name }, now))); } catch { /* a store that cannot be read shows nothing */ }
       try { out.push(...(await asked(p))); } catch { /* none */ }
     }
     return out.sort(newest);

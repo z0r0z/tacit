@@ -269,6 +269,11 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
       }
       if (next.lastError && next.lastError !== rec.lastError) log({ level: 'warn', msg: 'reverse swap step failed', id: next.id, phase: next.phase, error: next.lastError });
       const every = alertSecs, k = next.id + '|' + next.phase, t = now();
+      // (the Ethereum nodes have not agreed on this swap for ten minutes: it waits and is read again; said every quarter hour while it lasts)
+      if (next.nodesSince != null && t - next.nodesSince >= 600 && t - (lastAlert.get(next.id + '|nodes') ?? -Infinity) >= 900) {
+        lastAlert.set(next.id + '|nodes', t);
+        alert({ level: 'alert', msg: 'the Ethereum nodes have not agreed on a reverse swap for a while: it waits and is read again', id: next.id, phase: next.phase, since: next.nodesSince, error: next.lastError || null });
+      }
       if ((next.phase === 'claiming' || next.phase === 'claimed') && t - (next.updated || next.created) > every && t - (lastAlert.get(k) ?? -Infinity) >= every) {
         lastAlert.set(k, t);
         alert({ level: 'alert', msg: 'a reverse swap has waited long in ' + next.phase, id: next.id, error: next.lastError || null });

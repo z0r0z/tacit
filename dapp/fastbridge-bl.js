@@ -279,12 +279,15 @@ export function makeBitcoinLocker(ctx) {
         const spent = await btc.outspend(rec.lock.txid, rec.lock.vout);
         if (spent) return save(rec, { phase: 'done', takenBy: spent });
         if ((await lockState(rec)) !== 'due') return rec;
-        // the claim the pool shows is this side's own (its kernel is the one this claim was built with), read once it is final (64 blocks deep)
+        // the claim the pool shows is this side's own (its kernel is the one this claim was built with), read once it is final (64 blocks deep) and as the
+        // Ethereum nodes agree on it. Nodes that do not agree hold back no refund: the timelock has run, and the refund is the default.
         const ownS = rec.claim && rec.claim.op && rec.claim.op.op && rec.claim.op.op.kernelS, mine = ownS ? (z) => BigInt(z) === BigInt(ownS) : null;
-        const zs = await evm.findClaim(evm.lockNullifier(rec.evmOffer.lockLeaf), { sinceSecs: rec.claimStartedAt || 0, final: policy.finalDepth ?? 64, ...(mine ? { check: mine } : {}) });
+        let zs = null, held = null;
+        try { zs = await evm.findClaim(evm.lockNullifier(rec.evmOffer.lockLeaf), { sinceSecs: rec.claimStartedAt || 0, final: policy.finalDepth ?? 64, ...(mine ? { check: mine } : {}) }); } catch (e) { if (!(e && e.quorum)) throw e; held = e; }
         if (zs && zs.length && (!mine || zs.some(mine))) return save(rec, { phase: 'done', why: 'paid on Ethereum; the Bitcoin lock is the counterparty\'s to take' });
         const r = await maybeRefund(rec);
         if (r) return save(rec, { phase: 'done', takenBy: r });
+        if (held) throw held;
         return rec;
       }
       case 'refund-wait': {
@@ -312,15 +315,17 @@ export function makeBitcoinLocker(ctx) {
     }
   }
 
-  // One step; a failing adapter call is recorded and the phase kept, so the next tick tries again.
+  // One step; a failing adapter call is recorded and the phase kept, so the next tick tries again. `nodesSince`: since when the swap waits on Ethereum nodes
+  // that do not agree (or too few answer).
   function step(rec) {
     return serial(rec.id, async () => {
       const cur = (await store.get(rec.id)) || rec;
       try {
         // the reason a swap ends without its trade is in `why`: an error from before a phase moved on is not kept
         const before = cur.phase, out = await advance(cur);
+        if (out && out.nodesSince != null) await save(out, { nodesSince: null });
         return out && out.lastError && out.phase !== before ? await save(out, { lastError: null }) : out;
-      } catch (e) { return save(cur, { lastError: String((e && e.message) || e).slice(0, 300) }); }
+      } catch (e) { return save(cur, { lastError: String((e && e.message) || e).slice(0, 300), nodesSince: e && e.quorum ? (cur.nodesSince ?? ctx.now()) : null }); }
     });
   }
 

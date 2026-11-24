@@ -97,9 +97,11 @@ const SAYS = {
   aborted: [0, 'Stopped', 'This swap was stopped before anything was lost.'],
   lost: [0, 'Needs a look', 'The provider claimed with a signature that does not give your Bitcoin. Do not close this page.'],
 };
-export function describe(rec) {
-  const [at, title, detail] = SAYS[rec.phase] || [0, rec.phase, ''];
+export function describe(rec, nowSecs = Math.floor(Date.now() / 1000)) {
+  const [at, title, said] = SAYS[rec.phase] || [0, rec.phase, ''];
   const ended = TERMINAL.has(rec.phase);
+  // (a swap that has waited ten minutes or more on Ethereum nodes that do not agree says so)
+  const detail = !ended && rec.nodesSince != null && nowSecs - rec.nodesSince >= 600 ? `${said} The Ethereum nodes this page reads have not agreed on this swap for a while, so it is read again until two of them do. Nothing is decided on one node’s word, and a refund still goes out at its time.` : said;
   return {
     id: rec.id, phase: rec.phase, title, detail: rec.phase === 'aborted' && rec.why ? `${detail} ${String(rec.why).replace(/\.$/, '')}.` : detail, at, steps: STEPS, ended,
     returned: rec.phase === 'refunded', amount: rec.offer ? String(rec.offer.evm.amount) : '0', receive: rec.offer ? String(rec.offer.btc.value) : '0', created: rec.created,
@@ -192,9 +194,9 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
     }
     const out = [];
     for (const rec of await store.list()) out.push(TERMINAL.has(rec.phase) ? rec : await el.step(rec));
-    return out.sort((a, b) => b.created - a.created).map(describe);
+    return out.sort((a, b) => b.created - a.created).map((r) => describe(r));
   }
 
-  const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map(describe);
+  const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map((r) => describe(r));
   return { quote, start, pump, records, describe, el };
 }

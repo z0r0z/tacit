@@ -153,8 +153,8 @@ export function makeEthereumLocker(ctx) {
     const T = secretsOf(rec).T;
     const tOf = (z) => { const t = adaptor.evmKernelExtract(sTilde, BigInt(z)); return t !== 0n && adaptor.adaptorPoint(t).equals(T) ? t : null; };
     // `check`: a kernel read from anything but the pool's own record of the settle is taken only if it opens this swap
-    // (the spend is read once it is a few blocks deep)
-    const zs = await evm.findClaim(rec.lock.lockNu, { sinceSecs: rec.created, final: policy.claimDepth ?? 12, ...(sTilde != null ? { check: (z) => tOf(z) != null } : {}) });
+    // (the spend is read once it is a few blocks deep; a kernel that gives t stands on its own, anything else on what the nodes agree on)
+    const zs = await evm.findClaim(rec.lock.lockNu, { sinceSecs: rec.created, final: policy.claimDepth ?? 12, ...(sTilde != null ? { check: (z) => tOf(z) != null, proves: true } : {}) });
     if (!zs) return null;
     if (!zs.length) return { refunded: true };
     if (sTilde == null) return { lost: true };
@@ -286,9 +286,12 @@ export function makeEthereumLocker(ctx) {
       }
       case 'offered': {
         if (waiting(rec)) return rec;
-        const r = await readLock(rec);
+        // (nodes that do not agree hold no swap past its deadline: the refund that follows is what the pool decides on)
+        let r = null, held = null;
+        try { r = await readLock(rec); } catch (e) { if (!(e && e.quorum)) throw e; held = e; }
         if (r) return afterRead(rec, r);
         if ((await evm.now()) > rec.deadline + margin) return save(rec, { phase: 'refunding' });
+        if (held) throw held;
         return rec;
       }
       case 'taking': {
@@ -435,39 +438,52 @@ export function makeEthereumLocker(ctx) {
       }
       case 'refunding': {
         if (waiting(rec)) return rec;
-        const r = await readLock(rec);
+        // While the nodes do not agree on what became of the lock, the refund goes on: the pool takes it only for a lock that is still unspent. The wait is the
+        // step's error, so it is seen.
+        let r = null, held = null;
+        try { r = await readLock(rec); } catch (e) { if (!(e && e.quorum)) throw e; held = e; }
         if (r && (r.t || r.lost)) return afterRead(rec, r);
         if (r && r.refunded) return save(rec, { phase: 'refunded' });
-        if (!rec.refund) {
-          const position = await evm.lockPosition(rec.lock.lockLeaf);
-          if (!position) {
-            if ((await evm.now()) > rec.deadline + margin + 3600) return save(rec, { phase: 'aborted', why: 'the lock never reached the pool' });
-            return rec;
-          }
-          return save(rec, { refund: { op: await evm.refundOp({ rec, position }) } });
-        }
-        if (!rec.refund.jobId) {
-          const { jobId } = await evm.submit('adaptorrefund', rec.refund.op);
-          return save(rec, { refund: { ...rec.refund, jobId } });
-        }
-        const st = await evm.jobStatus(rec.refund.jobId, { type: 'adaptorrefund', bundle: rec.refund.op });
-        if (st === 'settled') return save(rec, { phase: 'refunded' });
-        if (st === 'failed') return save(rec, { refund: { ...rec.refund, jobId: null } });
-        return rec;
+        const out = await refundStep(rec);
+        if (held && out.phase === 'refunding') throw held;
+        return out;
       }
       default:
         return rec;
     }
   }
 
+  async function refundStep(rec) {
+    if (!rec.refund) {
+      const position = await evm.lockPosition(rec.lock.lockLeaf);
+      if (!position) {
+        // (given up only once the nodes agree the pool holds no such lock)
+        if ((await evm.now()) > rec.deadline + margin + 3600 && (!evm.lockAbsent || (await evm.lockAbsent(rec.lock.lockLeaf)))) return save(rec, { phase: 'aborted', why: 'the lock never reached the pool' });
+        return rec;
+      }
+      return save(rec, { refund: { op: await evm.refundOp({ rec, position }) } });
+    }
+    if (!rec.refund.jobId) {
+      const { jobId } = await evm.submit('adaptorrefund', rec.refund.op);
+      return save(rec, { refund: { ...rec.refund, jobId } });
+    }
+    const st = await evm.jobStatus(rec.refund.jobId, { type: 'adaptorrefund', bundle: rec.refund.op });
+    // the relay's word, and the pool's: the lock spent, as the nodes agree a few blocks down
+    if (st === 'settled') return !evm.spentAgreed || (await evm.spentAgreed(rec.lock.lockNu, { final: policy.claimDepth ?? 12 })) ? save(rec, { phase: 'refunded' }) : rec;
+    if (st === 'failed') return save(rec, { refund: { ...rec.refund, jobId: null } });
+    return rec;
+  }
+
   const KEEPS_ERROR = new Set(['aborted', 'rejected', 'lost']);
+  // `nodesSince`: since when the swap waits on Ethereum nodes that do not agree (or too few answer); the page and the provider say so once it is long
   function step(rec) {
     return serial(rec.id, async () => {
       const cur = (await store.get(rec.id)) || rec;
       try {
         const before = cur.phase, out = await advance(cur);
+        if (out && out.nodesSince != null) await save(out, { nodesSince: null });
         return out && out.lastError && out.phase !== before && !KEEPS_ERROR.has(out.phase) ? await save(out, { lastError: null }) : out;
-      } catch (e) { return save(cur, { lastError: String((e && e.message) || e).slice(0, 300) }); }
+      } catch (e) { return save(cur, { lastError: String((e && e.message) || e).slice(0, 300), nodesSince: e && e.quorum ? (cur.nodesSince ?? ctx.now()) : null }); }
     });
   }
 

@@ -1,9 +1,10 @@
 // How a pool lock's claim is read: from the settle call that ran. A relayer transaction's calls are taken as run only when its Relayed event says all of them
 // landed; a kernel is taken for a lock only when it is that lock's own; a kernel that does not open the swap is read again while the Bitcoin lock can still be
-// taken; and a claim is this side's own only when its kernel is the one this side built.
+// taken; and a claim is this side's own only when its kernel is the one this side built. With several nodes, a swap ends only on what two or more show alike
+// (a kernel that gives t excepted), and the refunds go on at their time whatever the nodes say.
 //   node tests/fastbridge-claim-read.test.mjs
 const S = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
-const { makeFastBridgeEvm } = await import(`${S}/dapp/fastbridge-evm.js`);
+const { makeFastBridgeEvm, makeNodeQuorum } = await import(`${S}/dapp/fastbridge-evm.js`);
 const { makeEthereumLocker } = await import(`${S}/dapp/fastbridge-el.js`);
 const { makeBitcoinLocker } = await import(`${S}/dapp/fastbridge-bl.js`);
 const { makeConfidentialLockScan } = await import(`${S}/dapp/confidential-lock-scan.js`);
@@ -89,6 +90,57 @@ function makeEvm(txs, { relayStatus = null } = {}) {
   return { evm, traced: () => traced };
 }
 
+// The same reads where the swap ends on what two nodes or more agree on (makeNodeQuorum). `views`: each node's chain, { spent, txs, count, down } ('a' is also the
+// node the swap reads first); `traceViews`: the nodes asked for a trace, each a function of the hash (null for none).
+function makeWorld(views, { first = 'a', firstView: own = null, relayStatus = null, traceViews = null, lockSet = null } = {}) {
+  const answer = (v, m, p) => {
+    const byHash = new Map((v.txs || []).map((x) => [x.hash, x]));
+    if (m === 'eth_getStorageAt') return '0x' + word(p[1] === '0x54' ? (v.count ?? 0) : v.spent ? 1 : 0);
+    if (m === 'eth_getTransactionByHash') { const x = byHash.get(p[0]); return x ? { input: x.input, to: x.to } : null; }
+    if (m === 'eth_getTransactionReceipt') {
+      const x = byHash.get(p[0]);
+      if (!x) return null;
+      const toRelayer = x.to === RELAYER.toLowerCase(), n = toRelayer ? lockScan.decodeSettleCalls(x.input).calls.length : 0;
+      return { status: '0x1', blockNumber: '0x30', logs: toRelayer ? [{ address: RELAYER, topics: ['0x' + RELAYED, '0x' + word(0), '0x' + word(0)], data: '0x' + word(n) + word(x.landed ?? n) }] : [] };
+    }
+    if (m === 'eth_blockNumber') return '0x100';
+    if (m === 'eth_getBlockByNumber') return { timestamp: '0x' + (1_700_000_000 + (p[0] === 'latest' ? 256 : parseInt(p[0], 16)) * 12).toString(16) };
+    throw new Error('stub: ' + m);
+  };
+  const fetchImpl = async (url, o) => {
+    const v = views[url], { method, params } = JSON.parse(o.body);
+    if (!v || v.down) throw new Error('unreachable');
+    let result;
+    try { result = answer(v, method, params); } catch (e) { return { json: async () => ({ error: { message: e.message } }) }; }
+    return { json: async () => ({ result }) };
+  };
+  const quorum = makeNodeQuorum({ nodes: Object.keys(views), fetchImpl });
+  const firstView = () => own || views[first];
+  const ux = {
+    pool, lockScan,
+    rpc: async (m, p) => answer(firstView(), m, p),
+    fetchEvents: async () => (firstView().txs || []).map((x, i) => ({ type: 'NullifiersSpent', txHash: x.hash, blockNumber: 30 + i, logIndex: 1 })),
+    identity: () => ({ pubHex: '0x00' }), chainBindingHex: () => '0x' + '00'.repeat(32),
+    relay: { status: async () => ({ status: relayStatus }) },
+    stealthLockPosition: async () => null,
+    ...(lockSet ? { scanLockSet: async () => lockSet } : {}),
+  };
+  const callsOf = (x) => (x && x.traceCalls ? x.traceCalls : x ? [{ to: x.to, input: x.input }] : null);
+  const trace = async (h) => callsOf((firstView().txs || []).find((x) => x.hash === h));
+  trace.all = async (h) => (traceViews || []).map((f) => f(h));
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256: (k, m) => hmac(sha256, k, m), walletPriv: new Uint8Array(32).fill(7), seed: new Uint8Array(32).fill(9), asset: '0x' + 'f0'.repeat(32), poolAddress: POOL, trace, quorum });
+  return { evm, ux, callsOf };
+}
+const elOf = (evm, over = {}, { tip = 120, now = 1_700_000_100 } = {}) => {
+  const recs = new Map();
+  const rec = { id: 'aa'.repeat(36), role: 'el', phase: 'offered', created: 1_700_000_000, lock: { lockLeaf: '0x' + '11'.repeat(32), lockNu }, deadline: 4_000_000_000, evmOffer: { presign: { sTilde: '0x' + sTilde.toString(16).padStart(64, '0') } }, offer: { T: hex(T.toRawBytes(true)), btc: {} }, csvBlocks: 144, lockHeight: 100, lockTxid: '55'.repeat(32), ...over };
+  recs.set(rec.id, rec);
+  const store = { get: async (id) => recs.get(id) || null, put: async (r) => { recs.set(r.id, r); } };
+  const btc = { status: async () => ({ confirmations: 20, height: 100 }), tip: async () => tip };
+  const el = makeEthereumLocker({ seed: new Uint8Array(32), store, policy: { minCsv: 72, refundMarginSecs: 600 }, quotes: { get: async () => null }, btc, evm: { now: async () => now, ...evm }, counter: {}, now: () => now });
+  return { step: () => el.step(recs.get(rec.id)), rec: () => recs.get(rec.id) };
+};
+
 // one step of the Ethereum locker at 'offered' (`tip`: the Bitcoin tip; the lock is at height 100 with a 144-block timelock)
 async function elStep(txs, { tip = 120, rec: over = {} } = {}) {
   const { evm, traced } = makeEvm(txs);
@@ -166,6 +218,134 @@ expect('claim status: this side\'s claim landed through the relayer -> settled',
     const got = after.phase === 'done' && !tried ? 'done' : tried ? 'refund' : after.phase;
     expect(`Bitcoin locker claimed and due, ${label} -> ${want}`, got === want, `phase=${after.phase}, why=${after.why || ''}, err=${(after.lastError || '').slice(0, 60)}`);
   }
+}
+
+// ── a swap's end, read from more than one node ──
+{
+  const tHex = '0x' + t.toString(16).padStart(64, '0');
+  const truth = (txs, more = {}) => ({ spent: true, txs, ...more });
+  const unspent = () => ({ spent: false, txs: [] });
+  // the Ethereum locker: a lock spent by a refund, as one node shows it while the others show the lock unspent
+  {
+    const { evm } = makeWorld({ a: truth([refundTx]), b: unspent(), c: unspent() });
+    const after = await elOf(evm).step();
+    expect('two nodes: one shows the lock refunded, two show it unspent -> no end, the swap waits on the nodes', after.phase === 'offered' && after.nodesSince != null && /nodes/.test(after.lastError || ''), `phase=${after.phase}, err=${(after.lastError || '').slice(0, 60)}`);
+  }
+  {
+    // the node read first shows a refund that the others do not have, while all show the lock spent (a claim spent it)
+    const { evm } = makeWorld({ a: truth([refundTx]), b: truth([claimTx]), c: truth([claimTx]) });
+    const after = await elOf(evm).step();
+    expect('two nodes: a refund only the first node has -> no end', after.phase === 'offered' && after.nodesSince != null, `phase=${after.phase}, err=${(after.lastError || '').slice(0, 60)}`);
+  }
+  {
+    const { evm } = makeWorld({ a: truth([refundTx]), b: truth([refundTx]), c: truth([refundTx]) });
+    const after = await elOf(evm).step();
+    expect('two nodes: every node shows the lock refunded -> it ends', after.phase === 'done' && after.nodesSince == null, `phase=${after.phase}, err=${(after.lastError || '').slice(0, 60)}`);
+  }
+  {
+    // a kernel that does not give t, shown by one node only: not 'lost', even with the refund near
+    const oddTx = { hash: '0x' + '07'.repeat(32), to: POOL.toLowerCase(), input: settle({ ...realClaim, publicValues: publicValues({ lockNullifiers: [lockNu], adaptorClaimS: ['0x' + '08'.repeat(32)] }) }) };
+    const { evm } = makeWorld({ a: truth([oddTx]), b: unspent(), c: unspent() });
+    const after = await elOf(evm, {}, { tip: 240 }).step();
+    expect('two nodes: a claim without t shown by one node, the refund near -> not lost', after.phase === 'offered' && after.nodesSince != null, `phase=${after.phase}`);
+    const both = makeWorld({ a: truth([oddTx]), b: truth([oddTx]), c: truth([oddTx]) });
+    const late = await elOf(both.evm, {}, { tip: 240 }).step();
+    expect('two nodes: the same claim on every node, the refund near -> lost', late.phase === 'lost', `phase=${late.phase}`);
+  }
+  {
+    // one node reachable: the swap waits; once a second answers, it ends
+    const views = { a: truth([refundTx]), b: { ...truth([refundTx]), down: true }, c: { ...truth([refundTx]), down: true } };
+    const { evm } = makeWorld(views);
+    const el = elOf(evm);
+    const first = await el.step();
+    expect('two nodes: only one node answers -> waits', first.phase === 'offered' && first.nodesSince != null && /too few/.test(first.lastError || ''), `phase=${first.phase}, err=${(first.lastError || '').slice(0, 60)}`);
+    views.c.down = false;
+    const second = await el.step();
+    expect('two nodes: a second node answers -> it ends', second.phase === 'done' && second.nodesSince == null, `phase=${second.phase}, err=${(second.lastError || '').slice(0, 60)}`);
+  }
+  {
+    // a claim with t is taken from any node: t opens the swap on its own
+    const { evm } = makeWorld({ a: truth([claimTx]), b: { down: true }, c: { down: true } });
+    const after = await elOf(evm).step();
+    expect('two nodes: only one node answers, its claim gives t -> takes with t', after.phase === 'taking' && after.t === tHex, `phase=${after.phase}, err=${(after.lastError || '').slice(0, 60)}`);
+  }
+  {
+    // past the deadline the refund goes on while the nodes disagree
+    const { evm } = makeWorld({ a: truth([refundTx]), b: unspent(), c: unspent() });
+    const after = await elOf(evm, { deadline: 1_700_000_000 - 7200 }).step();
+    expect('two nodes: nodes disagree past the deadline -> on to the refund', after.phase === 'refunding', `phase=${after.phase}`);
+    let sent = 0;
+    const el = elOf({ ...evm, submit: async () => { sent++; return { jobId: 'job-r' }; } }, { phase: 'refunding', deadline: 1_700_000_000 - 7200, refund: { op: { op: {} } } });
+    const r = await el.step();
+    expect('two nodes: nodes disagree while refunding -> the refund is still sent', sent === 1 && r.phase === 'refunding' && r.refund.jobId === 'job-r' && r.nodesSince != null, `phase=${r.phase}, sent=${sent}`);
+  }
+  {
+    // the relay says the refund settled: refunded once the nodes agree the lock is spent
+    // (the node the swap reads first is behind: it shows the lock unspent)
+    const { evm } = makeWorld({ b: truth([]), c: truth([]) }, { firstView: unspent() });
+    const over = { phase: 'refunding', deadline: 1_700_000_000 - 7200, refund: { op: { op: {} }, jobId: 'job-r' } };
+    const ok1 = await elOf({ ...evm, jobStatus: async () => 'settled' }, over).step();
+    expect('two nodes: refund settled at the relay, the nodes agree the lock is spent -> refunded', ok1.phase === 'refunded', `phase=${ok1.phase}, err=${(ok1.lastError || '').slice(0, 60)}`);
+    const thin = makeWorld({ b: truth([]), c: { down: true } }, { firstView: unspent() });
+    const no1 = await elOf({ ...thin.evm, jobStatus: async () => 'settled' }, over).step();
+    expect('two nodes: refund settled at the relay, one node answers -> waits', no1.phase === 'refunding' && no1.nodesSince != null, `phase=${no1.phase}`);
+  }
+  {
+    // a lock never found: given up only when the lock set read holds as many locks as the nodes count
+    const over = { phase: 'refunding', deadline: 1_700_000_000 - 7200 };
+    const short = makeWorld({ a: { spent: false, txs: [], count: 0 }, b: { spent: false, count: 3 }, c: { spent: false, count: 3 } }, { lockSet: { lockLeaves: [] } });
+    const kept = await elOf(short.evm, over).step();
+    expect('two nodes: the lock set read is short of what the nodes count -> not given up', kept.phase === 'refunding' && kept.nodesSince != null, `phase=${kept.phase}`);
+    const full = makeWorld({ a: { spent: false, txs: [], count: 3 }, b: { spent: false, count: 3 }, c: { spent: false, count: 3 } }, { lockSet: { lockLeaves: ['0x' + '21'.repeat(32), '0x' + '22'.repeat(32), '0x' + '23'.repeat(32)] } });
+    const gone = await elOf(full.evm, over).step();
+    expect('two nodes: the lock set holds every lock the nodes count, not this one -> given up', gone.phase === 'aborted', `phase=${gone.phase}`);
+  }
+
+  // whether this side's claim landed (the relay lost the job)
+  const landedOf = async (views) => { const { evm } = makeWorld(views, { relayStatus: 'unknown' }); try { return await evm.jobStatus('job1', { type: 'adaptorclaim', bundle: { op: { lockNullifier: lockNu, kernelS: ownS } }, sinceSecs: 1_700_000_000 }); } catch (e) { return e.quorum ? 'waits' : 'error: ' + e.message; } };
+  expect('two nodes: one node shows this side\'s claim landed, two show the lock unspent -> waits', (await landedOf({ a: truth([ownClaimTx]), b: unspent(), c: unspent() })) === 'waits');
+  expect('two nodes: every node shows this side\'s claim landed -> settled', (await landedOf({ a: truth([ownClaimTx]), b: truth([ownClaimTx]), c: truth([ownClaimTx]) })) === 'settled');
+  expect('two nodes: the lock unspent on the node read first -> failed (the claim is sent again)', (await landedOf({ a: unspent(), b: truth([ownClaimTx]), c: truth([ownClaimTx]) })) === 'failed');
+
+  // the Bitcoin locker's 'claimed' phase with its timelock run
+  const blClaimed = async (views, opts = {}) => {
+    const { evm } = makeWorld(views, opts);
+    let refundTried = false;
+    const recs = new Map();
+    const rec = { v: 1, role: 'bl', id: 'bb'.repeat(36), phase: 'claimed', created: 1, asset: '00'.repeat(32), amount: '120000', csvBlocks: 144, counterClaimPub: '02' + '33'.repeat(32), lock: { txid: '44'.repeat(32), vout: 0, value: 120000 }, evmOffer: { lockLeaf: '11'.repeat(32) }, claimStartedAt: 1_700_000_000, claim: { op: { op: { lockNullifier: lockNu, kernelS: ownS } }, jobId: 'job1' } };
+    recs.set(rec.id, rec);
+    const store = { get: async (id) => recs.get(id) || null, put: async (r) => { recs.set(r.id, r); } };
+    const btc = { status: async () => ({ confirmations: 300, height: 100 }), outspend: async () => null, tip: async () => 400, feeRate: async () => { refundTried = true; throw new Error('stop: the refund was being built'); } };
+    const bl = makeBitcoinLocker({ seed: new Uint8Array(32).fill(5), store, policy: {}, btc, evm: { ...evm, lockNullifier: () => lockNu }, counter: {}, now: () => 1_800_000_000 });
+    // (the stubbed btc has no wallet: reaching the refund's build throws, which is how a refund being made is seen here)
+    const after = await bl.step(rec);
+    if (/xonly|refund was being built/.test(after.lastError || '')) refundTried = true;
+    return after.phase === 'done' && !refundTried ? 'done' : refundTried ? 'refund' : after.phase;
+  };
+  expect('two nodes: Bitcoin locker due, one node shows this side\'s claim, two show the lock unspent -> refund', (await blClaimed({ a: truth([ownClaimTx]), b: unspent(), c: unspent() })) === 'refund');
+  expect('two nodes: Bitcoin locker due, only one node answers -> refund (the timelock has run)', (await blClaimed({ a: truth([ownClaimTx]), b: { down: true }, c: { down: true } })) === 'refund');
+  expect('two nodes: Bitcoin locker due, every node shows this side\'s claim -> done', (await blClaimed({ a: truth([ownClaimTx]), b: truth([ownClaimTx]), c: truth([ownClaimTx]) })) === 'done');
+  // this side's claim sent through a forwarder: read from a trace, which two trace nodes must give alike
+  const fwdClaimTx = { ...claimTx, hash: '0x' + '0a'.repeat(32) };
+  const all = { a: truth([fwdClaimTx]), b: truth([fwdClaimTx]), c: truth([fwdClaimTx]) };
+  const traced = (h) => (h === fwdClaimTx.hash ? fwdClaimTx.traceCalls : null);
+  expect('two nodes: this side\'s claim through a forwarder, two trace nodes alike -> done', (await blClaimed(all, { traceViews: [traced, traced] })) === 'done');
+  expect('two nodes: this side\'s claim through a forwarder, one trace node -> refund', (await blClaimed(all, { traceViews: [traced, () => null] })) === 'refund');
+  expect('two nodes: this side\'s claim through a forwarder, trace nodes differ -> refund', (await blClaimed(all, { traceViews: [traced, () => [{ to: FORWARDER.toLowerCase(), input: fwdClaimTx.input }]] })) === 'refund');
+}
+
+// the agreement itself: two or more answers, all alike, at one block under the nodes' heads
+{
+  const mk = (answers) => makeNodeQuorum({ nodes: Object.keys(answers), fetchImpl: async (url, o) => { const f = answers[url], { method } = JSON.parse(o.body); if (!f) throw new Error('unreachable'); const r = f(method); return { json: async () => (r instanceof Error ? { error: { message: r.message } } : { result: r }) }; } });
+  const ok = (v) => () => v;
+  const q1 = mk({ a: ok('0x1'), b: ok('0x1'), c: ok('0x1') });
+  expect('quorum: three alike -> the answer', (await q1.agree('eth_getStorageAt', [])) === '0x1');
+  const q2 = mk({ a: ok('0x1'), b: ok('0x0'), c: ok('0x1') });
+  expect('quorum: one differs -> no answer', await q2.agree('eth_getStorageAt', []).then(() => false, (e) => e.quorum === true));
+  const q3 = mk({ a: ok('0x1'), b: () => new Error('limited'), c: () => null });
+  expect('quorum: one answer -> no answer', await q3.agree('eth_getStorageAt', []).then(() => false, (e) => e.quorum === true && /too few/.test(e.message)));
+  const q4 = mk({ a: (m) => (m === 'eth_blockNumber' ? '0x64' : null), b: (m) => (m === 'eth_blockNumber' ? '0x66' : null), c: (m) => (m === 'eth_blockNumber' ? '0x70' : null) });
+  expect('quorum: the block read is the median head less two', (await q4.head()) === 0x66 - 2);
 }
 if (fails) { console.error(`${fails} expectation(s) failed`); process.exit(1); }
 console.log('all claim reads hold');
