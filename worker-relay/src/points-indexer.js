@@ -41,7 +41,7 @@ import { mayPublishRoot } from './lib/points-publish-gate.js';
 import { makeCirculating, uncirculatedWallets, parseExcluded, plainValue } from './lib/tac-circulating.js';
 import { makeClient as holdingClient } from './lib/evm-pool-snapshot-chain.js';
 import { decideBondHolds, accrueBondHolds } from './lib/points-bond-hold.js';
-import { parseCategoryWeights, parseAddressDayCaps, parseCategoryShareCaps, parseEngagementSchedule } from './lib/points-engagement.js';
+import { parseCategoryWeights, parseAddressDayCaps, parseCategoryShareCaps, parseNetOfPayouts, parseEngagementSchedule } from './lib/points-engagement.js';
 import { dayPot, dayBoard, dayHistory, dayShares, splitDayBudget } from './lib/points-day-board.js';
 import { makeTtlMemo } from './lib/ttl-memo.js';
 import { parseBudgets, budgetsForDay, nextBudgets, allocateDay, groupResult, settledBudgets, checkSettledBudgets } from './lib/points-budgets.js';
@@ -200,10 +200,11 @@ const categoryWeights = parseCategoryWeights(CFG.pointsCategoryWeights, log);
 const engagementSchedule = parseEngagementSchedule(CFG.pointsEngagement, log);
 const addressDayCaps = parseAddressDayCaps(CFG.pointsAddressDayCaps, log);
 const shareCaps = parseCategoryShareCaps(CFG.pointsCategoryShareCaps, log);
+const netOfPayouts = parseNetOfPayouts(CFG.pointsNetOfPayouts, log);
 const budgetSchedule = parseBudgets(CFG.pointsBudgets, log);
 const groupsFor = (day) => budgetsForDay(budgetSchedule, day);
 // The rows each UTC day is split by: settlement and every read of a day go through this one.
-const countedFor = (store, onTime = false) => makeCounted({ store, weightSchedule: categoryWeights, engagementSchedule, addressDayCaps, shareCapSchedule: shareCaps, budgetSchedule, potFor: (d) => ({ budgetWei: dayBudgetWei(d - Math.floor(CFG.pointsProgramStartSec / 86400)), maxWeiPerPoint: rateCapForDay(rateCapSchedule, d) }), bondHoldFromDay: CFG.pointsBondHoldFromDay, onTime });
+const countedFor = (store, onTime = false) => makeCounted({ store, weightSchedule: categoryWeights, engagementSchedule, addressDayCaps, shareCapSchedule: shareCaps, netOfPayoutsSchedule: netOfPayouts, budgetSchedule, potFor: (d) => ({ budgetWei: dayBudgetWei(d - Math.floor(CFG.pointsProgramStartSec / 86400)), maxWeiPerPoint: rateCapForDay(rateCapSchedule, d) }), bondHoldFromDay: CFG.pointsBondHoldFromDay, onTime });
 
 const WRAP_EVENT = {
   type: 'event',

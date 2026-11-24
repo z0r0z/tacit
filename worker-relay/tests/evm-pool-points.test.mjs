@@ -72,8 +72,8 @@ function world() {
   return { store, state, chain, explorer, ctx, cleanup };
 }
 
-function transact(chain, { hash, block, logIndex = 0, extAmount }) {
-  chain.logs.push({ address: POOL, event: 'Transact', transactionHash: hash, blockNumber: block, logIndex, args: { extAmount } });
+function transact(chain, { hash, block, logIndex = 0, extAmount, recipient }) {
+  chain.logs.push({ address: POOL, event: 'Transact', transactionHash: hash, blockNumber: block, logIndex, args: recipient ? { extAmount, recipient } : { extAmount } });
 }
 function boxCompleted(chain, { hash, block, logIndex = 1, box = BOX, completer = KEEPER }) {
   chain.logs.push({ address: ROUTER, event: 'DepositBoxCompleted', transactionHash: hash, blockNumber: block, logIndex, args: { box, completer } });
@@ -586,6 +586,30 @@ await test('a box completion paid out again in the same transaction waits for no
   assert.equal(w.state.countPending(8453), 0, 'nothing is held for the explorer');
   await resolvePendingBoxes(w.ctx);
   assert.equal(creditedWei(w.store, ALICE), 0n);
+  w.cleanup();
+});
+
+// A withdrawal names who it paid; the scan keeps each one so an address's deposits can be counted net of what the pool paid it that day.
+await test('every withdrawal that names a recipient is kept once, by who it paid', async () => {
+  const w = world();
+  const ZERO = '0x0000000000000000000000000000000000000000';
+  transact(w.chain, { hash: h(90), block: 200n, extAmount: 2n * ETH });
+  w.chain.txs.set(h(90), { from: ALICE, to: POOL, typeHex: '0x2' });
+  transact(w.chain, { hash: h(91), block: 201n, logIndex: 4, extAmount: -2n * ETH, recipient: ALICE });
+  transact(w.chain, { hash: h(92), block: 202n, logIndex: 2, extAmount: -ETH, recipient: BOB });
+  transact(w.chain, { hash: h(92), block: 202n, logIndex: 3, extAmount: -ETH, recipient: BOB });
+  transact(w.chain, { hash: h(93), block: 203n, extAmount: -ETH, recipient: ZERO });   // a transfer inside the pool names no one
+  transact(w.chain, { hash: h(94), block: 204n, extAmount: -ETH });                    // no recipient at all
+  await scanEvmPoolChain(w.ctx);
+  const day = Math.floor(1_700_000_200 / 86400) * 86400;
+  const paid = w.store.dayPayoutsByAddress(day, day + 86400);
+  assert.equal(paid.get(ALICE), 2n * ETH);
+  assert.equal(paid.get(BOB), 2n * ETH, 'two withdrawals in one transaction are two payouts');
+  assert.equal(paid.size, 2, 'a zero recipient and a missing one are not kept');
+  assert.equal(creditedWei(w.store, ALICE), 2n * ETH, 'the deposit itself is still credited here: netting happens when the day is counted');
+  w.state.saveCursor(8453, 99n);   // read the same blocks again
+  await scanEvmPoolChain(w.ctx);
+  assert.equal(w.store.dayPayoutsByAddress(day, day + 86400).get(BOB), 2n * ETH, 'a chunk read again adds nothing');
   w.cleanup();
 });
 

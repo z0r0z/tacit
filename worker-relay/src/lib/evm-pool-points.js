@@ -330,6 +330,13 @@ export async function scanEvmPoolChain(ctx) {
         (ctx.log || (() => {}))(`EVM pool getLogs on chain ${chainId} is answering again; trying ${span} per call`);
       }
     }
+    // A withdrawal names who it paid. Each one is kept, once (a chunk read again adds nothing), so that an address's deposits can be
+    // counted net of what the pool paid it that day (POINTS_NET_OF_PAYOUTS).
+    for (const l of txLogs) {
+      const to = l.args.recipient;
+      if (l.args.extAmount >= 0n || !to || /^0x0*$/i.test(to)) continue;
+      ctx.store.recordPoolPayout({ txHash: l.transactionHash, logIndex: l.logIndex, chainId, recipient: to, blockTime: Number(await blockTime(l.blockNumber)), wei: -l.args.extAmount });
+    }
     const boxLogs = [...completedLogs, ...receivedLogs];
     const deposits = txLogs
       .filter((l) => l.args.extAmount > 0n)

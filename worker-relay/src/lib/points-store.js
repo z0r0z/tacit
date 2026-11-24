@@ -240,6 +240,20 @@ export function openStore(dbPath, { excluded = [] } = {}) {
     );
     CREATE INDEX IF NOT EXISTS idx_pp_recipients_address ON pp_recipients(address);
 
+    -- ETH the EVM pool paid out, by who it paid: a pool withdrawal names its recipient in its own event. One row per
+    -- withdrawal (tx and log), kept so that an address's deposits can be counted net of what it was paid back that day.
+    CREATE TABLE IF NOT EXISTS evm_pool_payouts (
+      tx_hash    TEXT NOT NULL,
+      log_index  INTEGER NOT NULL,
+      chain_id   INTEGER NOT NULL,
+      recipient  TEXT NOT NULL,
+      block_time INTEGER NOT NULL,
+      wei        TEXT NOT NULL,
+      late       INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (tx_hash, log_index)
+    );
+    CREATE INDEX IF NOT EXISTS idx_evm_pool_payouts_time ON evm_pool_payouts(block_time);
+
     -- Separate cursor from the wrap-event scan above: a different contract, a different starting block
     -- (Privacy Pools' Entrypoint deploy block, not pointsStartBlock), scanned on its own schedule.
     CREATE TABLE IF NOT EXISTS pp_cursor (
@@ -667,6 +681,22 @@ export function openStore(dbPath, { excluded = [] } = {}) {
     for (const r of (onTime ? onTimeDayAmountsStmt : dayAmountsStmt).all(activity, dayStartSec, dayEndSec)) out.set(r.address, (out.get(r.address) ?? 0n) + BigInt(r.wei || 0));
     return out;
   }
+  // A pool withdrawal, by who it paid. Idempotent per withdrawal (tx and log), and marked late the way a deposit row is when its
+  // day had already settled, so a settled day's split can be reproduced from the on-time rows alone.
+  const insertPayoutStmt = db.prepare(`INSERT OR IGNORE INTO evm_pool_payouts (tx_hash, log_index, chain_id, recipient, block_time, wei, late) VALUES (@txHash, @logIndex, @chainId, @recipient, @blockTime, @wei, @late)`);
+  function recordPoolPayout(p) {
+    const settled = loadSettleStateStmt.get()?.last_settled_day;
+    const late = settled != null && Math.floor(Number(p.blockTime) / 86400) <= settled ? 1 : 0;
+    return insertPayoutStmt.run({ ...p, recipient: String(p.recipient).toLowerCase(), wei: String(p.wei), late }).changes > 0;
+  }
+  const dayPayoutsStmt = db.prepare(`SELECT recipient AS address, wei FROM evm_pool_payouts WHERE block_time >= ? AND block_time < ?`);
+  const onTimeDayPayoutsStmt = db.prepare(`SELECT recipient AS address, wei FROM evm_pool_payouts WHERE block_time >= ? AND block_time < ? AND late = 0`);
+  // The ETH (wei) the pool paid each address over a day, summed as BigInts.
+  function dayPayoutsByAddress(dayStartSec, dayEndSec, { onTime = false } = {}) {
+    const out = new Map();
+    for (const r of (onTime ? onTimeDayPayoutsStmt : dayPayoutsStmt).all(dayStartSec, dayEndSec)) out.set(r.address, (out.get(r.address) ?? 0n) + BigInt(r.wei || 0));
+    return out;
+  }
   function weekActivityPoints(fromSec, toSec, { onTime = false } = {}) {
     return (onTime ? onTimeWeekActivityStmt : weekActivityStmt).all(fromSec, toSec);
   }
@@ -869,7 +899,7 @@ export function openStore(dbPath, { excluded = [] } = {}) {
 
   return {
     db, recordDeposit, voidDeposits, loadCursor, saveCursor, leaderboard, totalFor, depositsFor, countByActivity,
-    dayPointsByAddress, dayActivityPoints, dayAmountsByAddress, weekActivityPoints, lateDays, creditedWithPrefix, saveTaskQuote, taskQuotes, latestTaskQuote, saveTaskClaim, taskClaim, taskClaims, pendingTaskClaims, creditTaskClaim, commitDay, saveHoldingEvents, holdingEvents, holdingEventsIter, loadHoldingCursor, saveHoldingCursor, saveHoldingSnapshot, holdingSnapshots, recordHoldingClaim, holdingClaimFor, loadHoldingVerified, saveHoldingVerified, rewindHolding, depositorOfTx, getMeta, setMeta, saveBondRef, bondPairsBefore, bondsToCheck, saveBondCheck, applyDayRewards, applyAdjustment, listAdjustments: () => listAdjustmentsStmt.all(), allRewards, rewardFor,
+    dayPointsByAddress, dayActivityPoints, dayAmountsByAddress, recordPoolPayout, dayPayoutsByAddress, weekActivityPoints, lateDays, creditedWithPrefix, saveTaskQuote, taskQuotes, latestTaskQuote, saveTaskClaim, taskClaim, taskClaims, pendingTaskClaims, creditTaskClaim, commitDay, saveHoldingEvents, holdingEvents, holdingEventsIter, loadHoldingCursor, saveHoldingCursor, saveHoldingSnapshot, holdingSnapshots, recordHoldingClaim, holdingClaimFor, loadHoldingVerified, saveHoldingVerified, rewindHolding, depositorOfTx, getMeta, setMeta, saveBondRef, bondPairsBefore, bondsToCheck, saveBondCheck, applyDayRewards, applyAdjustment, listAdjustments: () => listAdjustmentsStmt.all(), allRewards, rewardFor,
     savePoolSnapshot, poolSnapshots: (fromDay) => poolSnapshotsStmt.all(fromDay), poolDepositWeiByDay, recent,
     loadSettleState, saveSettleState, savePublishedClaims, publishedAmounts, claimFor,
     recordPpWithdrawal, hasEarlierPpWithdrawal, loadPpCursor, savePpCursor,

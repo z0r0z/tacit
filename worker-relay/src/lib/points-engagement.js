@@ -102,6 +102,46 @@ export function addressDayCapsForDay(schedule, day) {
 // What share of an address's day of `activity` counts: all of it up to the limit, then the limit's share of it.
 export const capFactor = (totalWei, limitWei) => (limitWei == null || totalWei <= limitWei ? 1 : Number((limitWei * 1_000_000n) / totalWei) / 1e6);
 
+// The activities whose ETH an address counts only net of what the pool paid that address the same UTC day ("20782:evmpooldeposit"):
+// ETH that comes out of the pool and goes back in is not new ETH put in, and the pool's own payout events name who it paid.
+// An address that deposits 6 ETH and is paid 6 ETH back counts 0; one paid nothing counts what it deposited.
+export function parseNetOfPayouts(raw, log = () => {}) {
+  const out = [];
+  for (const part of entries(raw)) {
+    try {
+      const m = part.match(/^(\d+):(.+)$/);
+      if (!m) throw new Error('expected <day>:<activity>,… or <day>:off');
+      const acts = new Set();
+      if (m[2].trim().toLowerCase() !== 'off') {
+        for (const a of m[2].split(',').map((x) => x.trim()).filter(Boolean)) {
+          if (!/^[a-z0-9_]+$/.test(a)) throw new Error(`"${a}" is not an activity name`);
+          acts.add(a);
+        }
+      }
+      out.push({ fromDay: Number(m[1]), acts });
+    } catch (err) {
+      log(`ignoring POINTS_NET_OF_PAYOUTS entry "${part}": ${err.message}`);
+    }
+  }
+  return bySchedule(out);
+}
+
+// The activities counted net of payouts on `day` (a Set, empty when none).
+export function netOfPayoutsForDay(schedule, day) {
+  let acts = new Set();
+  for (const e of schedule) if (e.fromDay <= day) acts = e.acts;
+  return acts;
+}
+
+// What share of an address's day of `activity` counts: no more than the ETH it put in net of what the pool paid it, and no more than its limit.
+export function countedShare(totalWei, { limitWei = null, paidWei = null } = {}) {
+  if (totalWei <= 0n) return 1;
+  let allowed = totalWei;
+  if (paidWei != null) allowed = totalWei > paidWei ? totalWei - paidWei : 0n;
+  if (limitWei != null && limitWei < allowed) allowed = limitWei;
+  return allowed >= totalWei ? 1 : Number((allowed * 1_000_000n) / totalWei) / 1e6;
+}
+
 export function parseCategoryShareCaps(raw, log = () => {}) {
   const out = [];
   for (const part of entries(raw)) {
