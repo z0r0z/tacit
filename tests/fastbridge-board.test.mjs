@@ -614,7 +614,7 @@ test('a provider nobody named is called by its key: two such providers on one bo
   const A = providerOf(1, async () => ({ status: 200, body: info }), c), B = providerOf(2, async () => ({ status: 200, body: info }), c);
   for (const P of [A, B]) await makeAdPublisher({ board, handle: P.handle, claimPriv: P.p, claimPub: P.claimPub, keys: P.keys, now: c.now }).publish();
   const names = (await readProviders({ board, now: c.now })).map((p) => p.name).sort();
-  assert.deepEqual(names, [A, B].map((P) => adLabel({ name: defaultAdName(P.claimPub) })).sort());
+  assert.deepEqual(names, [A, B].map((P) => adLabel({ claimPub: P.claimPub, name: defaultAdName(P.claimPub) })).sort());
   assert.equal(new Set(names).size, 2);
   assert.equal(defaultAdName('02' + 'ab'.repeat(32)), 'Provider ababab', 'the first six hex digits after the key\'s prefix byte');
   // a name that was chosen is kept as it is

@@ -43,7 +43,7 @@ function world({ funded = true, maxOpen = 2, maxLocked = null, confs = 1, notes 
   const uBtc = btc.adapter({ prims: uW.prims, builder: makeAdaptorBtcTx({ prims: uW.prims, kit }), sats });
   const lBtc = btc.adapter({ prims: lW.prims, builder: makeAdaptorBtcTx({ prims: lW.prims, kit }), sats });
   const base = { now: evm.now, lockPosition: evm.lockPosition, jobStatus: evm.jobStatus, submit: evm.submit, lockSpent: evm.lockSpentFn, findClaim: evm.findClaim, lockNullifier: pool.nullifier };
-  const lBlEvm = { now: evm.now, lockPosition: evm.lockPosition, recipient: lEvm.recipient, claimOp: lEvm.claimOp, submit: evm.submit, claimStatus: evm.jobStatus };
+  const lBlEvm = { now: evm.now, lockPosition: evm.lockPosition, recipient: lEvm.recipient, claimOp: lEvm.claimOp, submit: evm.submit, claimStatus: evm.jobStatus , findClaim: evm.findClaim, lockNullifier: pool.nullifier };
   const uElEvm = { ...base, lockOp: uEvm.lockOp, refundOp: uEvm.refundOp, refundKey: uEvm.refundKey, available: uEvm.available };
   const w = { clock, btc, evm, etch, uW, lW, uKeys, lKeys, uEvm, lEvm, uBtc, lBtc, inventory, stores: {} };
   const mk = () => ({ swaps: w.stores.swaps ||= memStore(), quotes: w.stores.quotes ||= memStore(), offers: w.stores.offers ||= memStore(), evmOffers: w.stores.evmOffers ||= memStore() });

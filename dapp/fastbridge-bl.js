@@ -14,8 +14,8 @@
 //     misses the deadline still publishes t
 //   - the Bitcoin refund is taken once the timelock has run and the lock is still unspent
 //
-// From the moment the timelock has run, a lock that is still unspent is refunded whatever the phase, so no stuck
-// step (a claim job that never answers, an offer that cannot be read) holds the note; steps of one record run one at a time.
+// From the moment the timelock has run, a lock that is still unspent is refunded in any phase before the pool shows this side's claim, so
+// no stuck step (a claim job that never answers, an offer that cannot be read) holds the note; steps of one record run one at a time.
 //
 // Phases:  built -> broadcast -> offered -> claiming -> claimed(-> done)       refund path from any phase before claimed:
 //          ... -> refund-wait -> refunded            counter-took  (the lock was spent by the counterparty with t)
@@ -28,7 +28,8 @@
 //   evm      { now(), lockPosition(leaf) -> { lIndex, lPath, lockSetRoot } | null,
 //              recipient(swapIdHex) -> { xonly, priv }, claimOp({ rec, evmOffer, sec, position }) -> an op the adapter sends as it is,
 //              submit(type, op) -> { jobId }, claimStatus(jobId, { type, bundle, sinceSecs? }) -> 'pending' | 'settled' | 'failed'
-//              (a claim the relay calls failed is settled when the pool shows its lock spent by a claim, read from sinceSecs on) }
+//              (a claim the relay calls failed is settled when the pool shows its lock spent by a claim, read from sinceSecs on),
+//              lockNullifier(leaf), findClaim(lockNu, { sinceSecs }) -> null (unspent) | [] (refunded) | [z, ...] (claimed); throws while unreadable }
 //   counter  { sendOffer({ quoteId, offer }) -> { ok, retry?, why? }, getEvmOffer(swapIdHex) -> evmOffer | null,
 //              extend?({ quoteId, txid }) -> { ok, retry?, why? } }
 
@@ -56,8 +57,8 @@ export function makeBitcoinLocker(ctx) {
   // Builds the lock and stores it; sends nothing. `notes` are the wallet's own notes to lock from, `counterClaimPub` the
   // 33-byte Bitcoin key the counterparty committed to before this call, `takeSats` the fee of its take, which the lock pays
   // to that key's address so a counterparty needs no coins of its own on Bitcoin.
-  async function build({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0, avoid = null }) {
-    if (X.isSats(asset)) return buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId, avoid });
+  async function build({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0, avoid = null, validUntil = null }) {
+    if (X.isSats(asset)) return buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId, avoid, validUntil });
     if (!notes.length) throw new Error('fastbridge: no note to lock');
     const swapId = X.swapIdOf(notes[0].txid, notes[0].vout), id = hx(swapId);
     const sec = X.deriveSwapSecrets({ seed, swapId });
@@ -69,7 +70,7 @@ export function makeBitcoinLocker(ctx) {
     const coins = (await btc.satsUtxos()).filter((u) => !avoid || !avoid.has(`${u.txid}:${u.vout}`));
     const pair = btc.tx.lockTransfer({ asset, notes, lock, lockAmount: amount, rLock: sec.rLock, hint, pay, satsUtxos: coins, feeRate: await btc.feeRate() });
     const rec = {
-      v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId,
+      v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId, validUntil,
       asset: hx(asset), amount: String(amount), evmAsset: strip(evmAsset), evmAmount: String(evmAmount),
       counterClaimPub: hx(counterClaimPub), csvBlocks, takeSats,
       lock: { txid: pair.revealTxid, vout: 0, value: pair.revealTx.outputs[0].value, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex },
@@ -82,7 +83,7 @@ export function makeBitcoinLocker(ctx) {
   // The same lock for plain sats (asset X.SATS_ASSET): the wallet's own coins, picked here, go into the lock output of one ordinary
   // transaction, and the first coin's outpoint is the swap id. No note, no commit, no coin kept for the fee of the counterparty's
   // take: a take or a refund pays its fee out of the lock output.
-  async function buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId = null, avoid = null }) {
+  async function buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId = null, avoid = null, validUntil = null }) {
     const feeRate = await btc.feeRate();
     const coins = (await btc.satsUtxos()).filter((u) => !avoid || !avoid.has(`${u.txid}:${u.vout}`));
     const picked = btc.tx.pickSats({ amount, satsUtxos: coins, feeRate });
@@ -94,7 +95,7 @@ export function makeBitcoinLocker(ctx) {
     const hint = X.lockHintScript({ seed, swapId, claimerPub: counterClaimPub, csvBlocks, value: amount, bare: true });
     const pair = btc.tx.lockSats({ lock, amount, hint, coins: picked, feeRate });
     const rec = {
-      v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId,
+      v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId, validUntil,
       asset: hx(asset), amount: String(amount), evmAsset: strip(evmAsset), evmAmount: String(evmAmount),
       counterClaimPub: hx(counterClaimPub), csvBlocks, takeSats: 0,
       lock: { txid: pair.revealTxid, vout: 0, value: pair.revealTx.outputs[0].value, commitTxid: null, commitHex: null, revealHex: pair.revealHex },
@@ -155,14 +156,22 @@ export function makeBitcoinLocker(ctx) {
   }
 
   async function advance(rec) {
+    let state = null;
     if (rec.phase === 'broadcast' || rec.phase === 'offered' || rec.phase === 'claiming') {
-      const state = await lockState(rec);
-      if (state === 'spent') return save(rec, { phase: rec.phase === 'claiming' ? 'done' : 'counter-took', why: 'the lock was spent' });
+      state = await lockState(rec);
+      // while claiming, a spent lock is not yet a claim that landed (t can be out before the claim is in), so the claim is carried on below
+      if (state === 'spent' && rec.phase !== 'claiming') return save(rec, { phase: 'counter-took', why: 'the lock was spent' });
       if (state === 'due') return save(rec, { phase: 'refund-wait', why: 'the timelock has run' });
     }
     switch (rec.phase) {
       case 'built': {
-        await btc.broadcast(rec.lock, null);
+        // A lock already on the network moves on, whatever an earlier send was told. One that never went out is not sent once its quote has
+        // run out (and a few minutes more), since the counterparty no longer holds the payout for it; its notes stay where they are.
+        const seen = (await btc.status(rec.lock.txid)).confirmations > 0 || (btc.fetchTx ? !!(await btc.fetchTx(rec.lock.txid)) : false);
+        if (!seen) {
+          if (rec.validUntil && ctx.now() > Number(rec.validUntil) + 600) return save(rec, { phase: 'aborted', why: 'the lock was not sent before the quote ran out' });
+          await btc.broadcast(rec.lock, null);
+        }
         return save(rec, { phase: 'broadcast', broadcastAt: ctx.now() });
       }
       case 'broadcast': {
@@ -214,7 +223,8 @@ export function makeBitcoinLocker(ctx) {
         return save(rec, { phase: 'claiming', evmOffer, position, claimStartedAt: nowSecs });
       }
       case 'claiming': {
-        const tooLate = async () => rec.evmOffer.deadline - (await evm.now()) < policy.minClaimSecs;
+        // Held back near the deadline, a claim keeps t to this side. Once the lock is spent t is out already, so the claim is sent while any time is left.
+        const tooLate = async () => { const left = rec.evmOffer.deadline - (await evm.now()); return state === 'spent' ? left <= 0 : left < policy.minClaimSecs; };
         if (!rec.claim) {
           if (await tooLate()) return save(rec, { phase: 'refund-wait', why: 'too little time left to claim safely' });
           const position = (await evm.lockPosition(rec.evmOffer.lockLeaf)) || rec.position;
@@ -235,10 +245,14 @@ export function makeBitcoinLocker(ctx) {
         return rec;
       }
       case 'claimed': {
-        // The Ethereum leg is done. The Bitcoin lock is the counterparty's to take; if it never does, the timelock
-        // returns the note here.
+        // The Ethereum leg is done and the Bitcoin lock is the counterparty's, to take by its key path at any time. It is never refunded once the
+        // pool shows the Ethereum lock spent by a claim: only a claim the pool does not show (none landed, or the counterparty refunded) lets the
+        // timelock return the note here. A spend that cannot be read yet is read again; it is not taken for either.
         const spent = await btc.outspend(rec.lock.txid, rec.lock.vout);
         if (spent) return save(rec, { phase: 'done', takenBy: spent });
+        if ((await lockState(rec)) !== 'due') return rec;
+        const zs = await evm.findClaim(evm.lockNullifier(rec.evmOffer.lockLeaf), { sinceSecs: rec.claimStartedAt || 0 });
+        if (zs && zs.length) return save(rec, { phase: 'done', why: 'paid on Ethereum; the Bitcoin lock is the counterparty\'s to take' });
         const r = await maybeRefund(rec);
         if (r) return save(rec, { phase: 'done', takenBy: r });
         return rec;

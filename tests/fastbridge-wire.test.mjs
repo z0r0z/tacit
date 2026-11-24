@@ -451,7 +451,7 @@ test('a provider can tell whether bridgers see it: `listed` while its ad stands,
     st = await provider.status();
     assert.equal(st.taking, true);
     assert.equal(st.adError, null);
-    assert.equal(st.listed.name, adLabel({ name: `Provider ${provider.claimPub.slice(2, 8)}` }), 'it is listed under the label its ad gives');
+    assert.equal(st.listed.name, adLabel({ claimPub: provider.claimPub, name: `Provider ${provider.claimPub.slice(2, 8)}` }), 'it is listed under the label its ad gives');
     assert.ok(st.listed.until > Math.floor(Date.now() / 1000), 'for as long as the ad stands');
     assert.equal(listeners.size, 1, 'it listens for the tab coming back while it runs');
 

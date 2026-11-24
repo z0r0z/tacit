@@ -118,7 +118,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     policy.csvBlocks = q.csvBlocks;
     const rec = await bl.start({
       asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub),
-      evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0, avoid: avoid || outpointsOf(all),
+      evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0, avoid: avoid || outpointsOf(all), validUntil: Number(q.validUntil) || null,
     });
     if (provider || (meta && meta.sweep)) {
       if (provider) rec.provider = provider;

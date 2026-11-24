@@ -273,7 +273,7 @@ function world(tag, { value = AMOUNT, self = null } = {}) {
   w.user = makeBitcoinLocker({
     seed: userSeed, now: clock.now, store: w.userStore, btc: uBtc, counter: toLp,
     policy: { csvBlocks: 144, minClaimSecs: 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600 },
-    evm: { now: evmU.now, lockPosition: evmU.lockPosition, recipient: evmU.recipient, claimOp: evmU.claimOp, submit: evmU.submit, claimStatus: evmU.claimStatus },
+    evm: { now: evmU.now, lockPosition: evmU.lockPosition, recipient: evmU.recipient, claimOp: evmU.claimOp, submit: evmU.submit, claimStatus: evmU.claimStatus, findClaim: evmU.findClaim, lockNullifier: evmU.lockNullifier },
   });
   w.lp = makeEthereumLocker({
     seed: lpSeed, now: clock.now, store: w.lpStore, quotes: { get: async (id) => (id === quote.id ? quote : null) }, btc: lBtc, counter: toUser,

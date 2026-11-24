@@ -39,7 +39,7 @@ export function world({ lpConfs = 1, lp: lpPolicyOver = {}, user: userPolicyOver
   const uBtc = btc.adapter({ prims: uW.prims, builder: makeAdaptorBtcTx({ prims: uW.prims, kit }), sats });
   const lBtc = btc.adapter({ prims: lW.prims, builder: makeAdaptorBtcTx({ prims: lW.prims, kit }), sats });
   const base = { now: evm.now, lockPosition: evm.lockPosition, jobStatus: evm.jobStatus, submit: evm.submit, lockSpent: evm.lockSpentFn, findClaim: evm.findClaim, lockNullifier: pool.nullifier };
-  const uEvmCtx = { now: evm.now, lockPosition: evm.lockPosition, recipient: uEvm.recipient, claimOp: uEvm.claimOp, submit: evm.submit, claimStatus: evm.jobStatus };
+  const uEvmCtx = { now: evm.now, lockPosition: evm.lockPosition, recipient: uEvm.recipient, claimOp: uEvm.claimOp, submit: evm.submit, claimStatus: evm.jobStatus, findClaim: evm.findClaim, lockNullifier: pool.nullifier };
   const lEvmCtx = { ...base, now: async () => clock.now() + lpNowSkew, lockOp: lEvm.lockOp, refundOp: lEvm.refundOp, refundKey: lEvm.refundKey, available: lEvm.available };
 
   const quotes = new Map();

@@ -57,7 +57,7 @@ function satsWorld({ confs = 1, lp: lpOver = {} } = {}) {
   }
 
   const base = { now: evm.now, lockPosition: evm.lockPosition, jobStatus: evm.jobStatus, submit: evm.submit, lockSpent: evm.lockSpentFn, findClaim: evm.findClaim, lockNullifier: pool.nullifier };
-  const uEvmCtx = { now: evm.now, lockPosition: evm.lockPosition, recipient: uEvm.recipient, claimOp: uEvm.claimOp, submit: evm.submit, claimStatus: evm.jobStatus };
+  const uEvmCtx = { now: evm.now, lockPosition: evm.lockPosition, recipient: uEvm.recipient, claimOp: uEvm.claimOp, submit: evm.submit, claimStatus: evm.jobStatus, findClaim: evm.findClaim, lockNullifier: pool.nullifier };
   const lEvmCtx = { ...base, lockOp: lEvm.lockOp, refundOp: lEvm.refundOp, refundKey: lEvm.refundKey, available: lEvm.available };
 
   const quote = { id: 'q1', btcAsset: X.SATS_ASSET, btcValue: SATS, evmAsset: ASSET, evmAmount: OUT, validUntil: clock.now() + 3600 };
@@ -347,17 +347,20 @@ test('the fee a take may pay is capped, and the bumping stops there instead of s
   assert.notEqual((await w.lp()).phase, 'done');
 });
 
-test('the user\'s refund lands first because the LP could not send its take for hours: the LP is told it lost, not that it took', async () => {
+test('the LP could not send its take for hours: the user, paid on the pool, leaves the lock alone past its timelock, and the LP takes it once it can', async () => {
   const w = satsWorld();
   const rec = await w.start();
   await w.run(async () => (await w.lp())?.phase === 'taking');
   w.down.lp = true;                                                        // every explorer refuses the LP until long after the timelock
-  await w.run(async () => (await w.lp())?.phase === 'lost');
-  const lp = await w.lp(), user = await w.user();
-  assert.match(lp.why, /spent by another transaction/);
-  assert.equal(w.btc.spends.get(`${rec.lock.txid}:0`), user.refund?.txid ?? user.takenBy, 'the lock went back to the user, who had also claimed on the pool');
-  assert.ok(!lp.takes.includes(w.btc.spends.get(`${rec.lock.txid}:0`)));
-  assert.equal(w.evm.lockSpent.size, 1, 'and the pool lock was claimed: this is the loss a stuck take costs, which is why it is replaced and watched');
+  await w.run(async () => (await w.user())?.phase === 'done');
+  const user = await w.user();
+  assert.equal(user.refund, undefined, 'no refund is built once the pool shows the claim');
+  assert.equal(w.btc.spends.get(`${rec.lock.txid}:0`), undefined, 'the lock is still there for the LP');
+  assert.equal(w.evm.lockSpent.size, 1, 'the pool lock was claimed');
+  w.down.lp = false;
+  await w.run(async () => (await w.lp())?.phase === 'done');
+  const lp = await w.lp();
+  assert.ok(lp.takes.includes(w.btc.spends.get(`${rec.lock.txid}:0`)), 'the LP took the lock');
 });
 
 test('a sats lock the browser has no record of is found again from the key, and taken back on its timelock', async () => {
