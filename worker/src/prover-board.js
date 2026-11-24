@@ -108,6 +108,9 @@ export const PROVER_BOARD = Object.freeze({
   bestRecordMin: 1,                                    // batches taken before a machine has a record
   turnLeaseFactor: 3,
   turnLeaseMinMs: 5 * 60_000,
+  // A batch's first machine, once its turn has run out and the batch has gone on to the next, may still answer: its proof is taken while the batch is open, as any sound proof is
+  // (0: refused, as before). PROVER_BOARD_TURN_LATE
+  turnLate: 1,
   // Community machines get first pick of public work: while one that proves a job's program is ready (asked lately, racing nothing else) or
   // is already racing the job, Tacit's own workers leave the job for this long after it was posted, then take it as before (a press keeps a
   // bound on its wait: Tacit's GPU still proves it if no community proof has come by then). Private work is never held.
@@ -149,6 +152,7 @@ export function proverBoardConfig(env = {}) {
     drawSeats: Math.min(50, n(env.PROVER_BOARD_BLOCK_DRAW_SEATS, PROVER_BOARD.drawSeats, 1)),
     drawFreshMs: Math.min(PROVER_BOARD.turnSeenMs, n(env.PROVER_BOARD_BLOCK_DRAW_FRESH_MS, PROVER_BOARD.drawFreshMs, 1000)),
     communityFast: n(env.PROVER_BOARD_COMMUNITY_FAST, PROVER_BOARD.communityFast) === 0 ? 0 : 1,
+    turnLate: n(env.PROVER_BOARD_TURN_LATE, PROVER_BOARD.turnLate) === 0 ? 0 : 1,
     communityViewMs: n(env.PROVER_BOARD_VIEW_MS, PROVER_BOARD.communityViewMs),
   });
 }
@@ -301,6 +305,7 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
   const id = hash || ((s) => 'pb_' + s.length.toString(36) + '_' + Array.from(s).reduce((a, c) => ((a * 33) ^ c.charCodeAt(0)) >>> 0, 5381).toString(36));
   const fast = (cfg.communityFast ?? PROVER_BOARD.communityFast) !== 0;
   const viewMs = cfg.communityViewMs ?? PROVER_BOARD.communityViewMs;
+  const turnLate = (cfg.turnLate ?? PROVER_BOARD.turnLate) !== 0;
   // The stored records with the community machines' latest sightings laid over them, so every reader sees a machine as seen when it last asked.
   const workers = async () => seen((await storage.getWorkers()) || {});
   function seen(ws) {
@@ -781,10 +786,13 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
           await storage.putWorkers(ws);
         }
         j.racers = [...racers, worker.name];
-        j.racedAt = Object.fromEntries([...racers, worker.name].map((r) => [r, r === worker.name ? clock() : since[r]]));
-        j.racedBy = Object.fromEntries(j.racers.map((r) => [r, r === worker.name ? worker.client : placeOf(j, r)]).filter(([, p]) => p != null));
         if (turnMs != null) j.racerLease = { [worker.name]: turnMs };
         j.raced = [...(j.raced || []), worker.name].slice(-4 * PROVER_BOARD.communityRacers);
+        // when and from where each machine took the job, kept for every machine that raced it: a turn that has gone on to another machine is still timed and placed
+        // when its late answer comes
+        const tookIt = new Set(j.raced), ofThose = (o) => Object.fromEntries(Object.entries(o).filter(([r]) => tookIt.has(r)));
+        j.racedAt = ofThose({ ...since, [worker.name]: clock() });
+        j.racedBy = ofThose({ ...(j.racedBy || {}), ...(worker.client != null ? { [worker.name]: worker.client } : {}) });
         await storage.putJob(j.id, j);
         return { jobId: j.id, class: j.class, program: j.program || 'confidential', mode: 'groth16', stdin: await inputOf(j), sealed: null, cycleLimit: j.cycleLimit, gasLimit: j.gasLimit,
           deadline: j.deadline, leaseUntil: turnMs != null ? Math.min(j.deadline * 1000, clock() + turnMs) : j.deadline * 1000, label: j.label, race: true };
@@ -867,12 +875,30 @@ export function makeProverBoard({ storage: raw, hash, now, lock, memory, cfg = P
       if (!j) return { ok: false, error: 'no such job' };
       if (worker.community) {
         // a racer's answer, from the place that claimed the race: kept beside the open job for the relay to check; one that could not prove it
-        // simply drops out
-        if (!(j.racers || []).includes(worker.name) || placeOf(j, worker.name, worker.client) !== worker.client) return { ok: false, error: 'not racing this job' };
-        if (!['queued', 'claimed'].includes(j.status)) return { ok: false, error: `job is ${j.status}` };
-        j.racers = j.racers.filter((x) => x !== worker.name);
-        // a turn given back: the next machine's, and this place waits behind the others for a while
-        if (error != null && PROVER_BOARD.turnPrograms.includes(j.program)) { await mark(worker.name, 'lapsed'); await troubled(worker.client); }
+        // simply drops out. Each way an answer is turned away says which it is: 'not racing this job' is only for a machine the job was never given to.
+        const name = worker.name, turnJob = PROVER_BOARD.turnPrograms.includes(j.program), slot = (j.racers || []).includes(name);
+        if (!slot && !(j.raced || []).includes(name)) return { ok: false, error: 'not racing this job' };
+        if (placeOf(j, name, worker.client) !== worker.client) {
+          return { ok: false, code: 'other_place', error: 'this job was claimed from a different network address than this answer came from: answer from the connection that claimed it (a changed IP, a VPN or a line that switches between IPv4 and IPv6 does this)' };
+        }
+        // an answer sent again (the first one's reply lost on the way) is told what the first was told
+        const held = (j.race || []).find((c) => c.worker === name);
+        if (error == null && held && typeof proof === 'string' && held.proof === proof.toLowerCase()) return { ok: true, status: 'candidate', duplicate: true };
+        if (j.status === 'proved' && j.worker === name) return { ok: true, status: 'proved', duplicate: true };
+        if (!['queued', 'claimed'].includes(j.status)) return { ok: false, code: `job_${j.status}`, error: `job is ${j.status}` };
+        // A batch is one machine's turn at a time, and a turn that ran past its time goes on to the next machine. Its first machine's proof, made late, is still a
+        // sound proof of the same batch, and the relay takes the first sound proof: the work is kept (its answer is read like any racer's) while the batch is open and
+        // it has not answered. (`turnLate` 0 returns to refusing it.) A race's racer that is no longer in the race is as before: not racing.
+        const late = !slot;
+        if (late) {
+          if (!turnJob) return { ok: false, error: 'not racing this job' };
+          if ((j.answered || []).includes(name)) return { ok: false, code: 'answered', error: 'this machine has already answered this job' };
+          if (!turnLate) return { ok: false, code: 'turn_over', error: 'this machine\'s turn on the batch ended and the batch went on to another machine' };
+        }
+        j.racers = (j.racers || []).filter((x) => x !== name);
+        j.answered = [...(j.answered || []).filter((x) => x !== name), name].slice(-4 * PROVER_BOARD.communityRacers);
+        // a turn given back: the next machine's, and this place waits behind the others for a while (a turn that had already ended was counted when it did)
+        if (error != null && turnJob && !late) { await mark(worker.name, 'lapsed'); await troubled(worker.client); }
         // a drawn block given back: the race's at once, and this place waits behind the others for a while
         if (error != null && j.drawn === worker.name && !j.drawOpen) { openDraw(j); await mark(worker.name, 'lapsed'); await troubled(worker.client); }
         if (error == null) {

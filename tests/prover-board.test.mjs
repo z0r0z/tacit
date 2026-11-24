@@ -349,7 +349,7 @@ test('routes: a community machine claims and answers with only an address; the r
   const two = (await (await call('/prover/community/claim', post({ miner: MINER }, from('203.0.113.5')))).json()).job;
   assert.equal(two.jobId, pub2.jobId);
   const cand = { miner: MINER, jobId: pub2.jobId, publicValues: '0x' + 'ab'.repeat(64), proof: '0x' + 'cd'.repeat(260) };
-  assert.deepEqual(await (await call('/prover/community/result', post(cand, from('198.51.100.9')))).json(), { ok: false, error: 'not racing this job' });
+  assert.deepEqual(await (await call('/prover/community/result', post(cand, from('198.51.100.9')))).json(), { ok: false, code: 'other_place', error: 'this job was claimed from a different network address than this answer came from: answer from the connection that claimed it (a changed IP, a VPN or a line that switches between IPv4 and IPv6 does this)' }, 'the same address from another network is told why, not "not racing"');
   assert.deepEqual(await (await call('/prover/community/result', post(cand, from('203.0.113.77')))).json(), { ok: true, status: 'candidate' });
   // the taken proof is credited to the address for today, open to any page
   const today = Math.floor(Date.now() / 86400e3);
@@ -403,7 +403,7 @@ test('points: each proof the relay takes from a community machine counts for its
 });
 
 test('points config: env sets the points and a count a day, 0 points pays nothing, no count or 0 is no count, nonsense keeps the default', () => {
-  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3, drawPct: 0, drawNew: 15, drawSeats: 3, drawFreshMs: 6000, communityFast: 1, communityViewMs: 1000 });
+  const btc = (n, k = 100, f = 20_000, fb = 120_000) => ({ pointsByProgram: { 'btc-state': n, 'tacit-block': k }, communityFirstMs: { confidential: f, 'tacit-block': fb }, bestPct: 50, bestOf: 3, drawPct: 0, drawNew: 15, drawSeats: 3, drawFreshMs: 6000, communityFast: 1, turnLate: 1, communityViewMs: 1000 });
   assert.deepEqual(proverBoardConfig({}),{ pointsPerProof: 20, proofsPerMinerDay: Infinity, ...btc(1000) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '50', POINTS_BOARD_DAILY_CAP: '10', POINTS_BOARD_BTC_PER_PROOF: '800' }), { pointsPerProof: 50, proofsPerMinerDay: 10, ...btc(800) });
   assert.deepEqual(proverBoardConfig({ POINTS_BOARD_PER_PROOF: '0', POINTS_BOARD_DAILY_CAP: '0', POINTS_BOARD_BTC_PER_PROOF: '0' }), { pointsPerProof: 0, proofsPerMinerDay: Infinity, ...btc(0) });
@@ -416,6 +416,7 @@ test('points config: env sets the points and a count a day, 0 points pays nothin
   assert.deepEqual(['5', '0', 'few', '500'].map((v) => proverBoardConfig({ PROVER_BOARD_BLOCK_DRAW_SEATS: v }).drawSeats), [5, 3, 3, 50], 'the newcomers\' seats: at least one, nonsense keeps the default, no more than fifty');
   assert.deepEqual(['3000', '0', '500', 'soon', '40000', '999999'].map((v) => proverBoardConfig({ PROVER_BOARD_BLOCK_DRAW_FRESH_MS: v }).drawFreshMs), [3000, 6000, 6000, 6000, 30_000, 6000], 'how recently a machine must have asked to be drawn: a second at least, nonsense or out of range keeps the default, never past the seen window');
   assert.deepEqual(['0', '1', '', 'off', '7'].map((v) => proverBoardConfig({ PROVER_BOARD_COMMUNITY_FAST: v }).communityFast), [0, 1, 1, 1, 1], 'only 0 turns the fast ask off');
+  assert.deepEqual(['0', '1', '', 'off', '7'].map((v) => proverBoardConfig({ PROVER_BOARD_TURN_LATE: v }).turnLate), [0, 1, 1, 1, 1], 'only 0 turns the late answer of a handed-on turn off');
   assert.deepEqual(['250', '0', 'long', '999999'].map((v) => proverBoardConfig({ PROVER_BOARD_VIEW_MS: v }).communityViewMs), [250, 0, 1000, 1000], 'how long a look at the open jobs answers asks: 0 is none, nonsense or out of range keeps the default');
 });
 
@@ -669,8 +670,10 @@ test('community: a race is answered only from the place that claimed it, and an 
   const home = gpu('ab'), away = gpu('ab', 'place-elsewhere');
   assert.equal((await b.claim({ worker: home, classes: ['public'] })).jobId, j1.jobId);
   const cand = { publicValues: '0x' + 'ab'.repeat(64), proof: '0x' + 'cd'.repeat(260) };
-  assert.deepEqual(await b.result({ worker: away, jobId: j1.jobId, error: 'gave up' }), { ok: false, error: 'not racing this job' });
-  assert.deepEqual(await b.result({ worker: away, jobId: j1.jobId, ...cand }), { ok: false, error: 'not racing this job' });
+  const otherPlace = { ok: false, code: 'other_place', error: 'this job was claimed from a different network address than this answer came from: answer from the connection that claimed it (a changed IP, a VPN or a line that switches between IPv4 and IPv6 does this)' };
+  assert.deepEqual(await b.result({ worker: away, jobId: j1.jobId, error: 'gave up' }), otherPlace);
+  assert.deepEqual(await b.result({ worker: away, jobId: j1.jobId, ...cand }), otherPlace);
+  assert.deepEqual(await b.result({ worker: gpu('cd'), jobId: j1.jobId, ...cand }), { ok: false, error: 'not racing this job' }, 'a machine the job was never given to is not racing it');
   assert.equal((await b.claim({ worker: away, classes: ['public'] })).jobId, j2.jobId, 'the same address from another place races the next job');
   assert.equal(await b.claim({ worker: home, classes: ['public'] }), null, 'one job at a time from one place');
   assert.deepEqual(await b.result({ worker: home, jobId: j1.jobId, ...cand }), { ok: true, status: 'candidate' });
@@ -809,7 +812,11 @@ test('batches by record: a machine with a record has three times its usual time 
   assert.equal((await ask(other)).jobId, job.jobId, 'past three times its usual time, the batch goes to the next machine');
   const s = await b.summary();
   assert.equal(s.workers.find((x) => x.name === fast.name).lapsed, 1, 'the unanswered turn counts against it');
-  assert.equal((await b.result({ worker: fast, jobId: job.jobId, publicValues: '0x' + '11'.repeat(64 * 8), proof: '0x' + '22'.repeat(260) })).error, 'not racing this job', 'its late answer is not taken');
+  const lateAnswer = { publicValues: '0x' + '11'.repeat(64 * 8), proof: '0x' + '22'.repeat(260) };
+  assert.deepEqual(await b.result({ worker: fast, jobId: job.jobId, ...lateAnswer }), { ok: true, status: 'candidate' }, 'its late answer is still a sound proof of the open batch: taken as a candidate');
+  assert.deepEqual(await b.result({ worker: fast, jobId: job.jobId, ...lateAnswer }), { ok: true, status: 'candidate', duplicate: true }, 'and sent again it is told the same');
+  assert.equal((await b.status(job.jobId)).race.length, 1, 'once, not twice');
+  assert.equal((await b.summary()).workers.find((x) => x.name === fast.name).lapsed, 1, 'the late answer does not count its lapse a second time');
   // its place now waits behind the others, under any address: a fresh machine with no record takes the next batch, and keeps it past 450 s
   t += 1000;
   await ask(fast); await ask(fresh);
@@ -821,6 +828,92 @@ test('batches by record: a machine with a record has three times its usual time 
   t += 30 * 60_000;
   await ask(fresh);
   assert.equal(await ask(other), null, 'half an hour on, still the new machine\'s turn');
+});
+
+// A turn that ran past its time goes on to the next machine; the first machine's proof, made late, is a sound proof of the same open batch.
+const lateRig = async (cfg = {}) => {
+  t = 60_000_000;
+  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, bestPct: 100, bestOf: 1, ...cfg } }), batch = sizedBatches(b);
+  const fast = gpu('a1'), next = gpu('e5');
+  await recordOf(b, batch, fast, 150);                 // 450 s to answer a turn
+  const ask = (w) => b.claim({ worker: w, classes: ['public'], programs: ['btc-state'] });
+  t += PROVER_BOARD.turnSeenMs + 1;
+  await ask(next); await ask(fast);
+  const job = await batch();
+  assert.equal((await ask(fast)).jobId, job.jobId);
+  t += 451_000;
+  await ask(fast);
+  assert.equal((await ask(next)).jobId, job.jobId, 'past its time the batch went on');
+  return { b, ask, job, fast, next };
+};
+const pv = '0x' + '11'.repeat(64 * 8), pf = '0x' + '22'.repeat(260);
+
+test('community batch: a handed-on turn\'s late proof is taken while the batch is open, judged like any, and the next machine is told plainly when it was first', async () => {
+  const { b, job, fast, next } = await lateRig();
+  assert.deepEqual(await b.result({ worker: fast, jobId: job.jobId, publicValues: pv, proof: pf }), { ok: true, status: 'candidate' });
+  assert.deepEqual(await b.raceVerdict({ jobId: job.jobId, worker: fast.name, ok: true }), { ok: true, status: 'proved' });
+  assert.equal((await b.status(job.jobId)).worker, fast.name, 'the batch is its proof');
+  // the answer sent again after the relay took it (the reply lost on the way): still told it was taken
+  assert.deepEqual(await b.result({ worker: fast, jobId: job.jobId, publicValues: pv, proof: pf }), { ok: true, status: 'proved', duplicate: true });
+  // the machine that had the batch next is told why its proof is not wanted
+  assert.deepEqual(await b.result({ worker: next, jobId: job.jobId, publicValues: pv, proof: pf }), { ok: false, code: 'job_proved', error: 'job is proved' });
+});
+
+test('community batch: a late proof that does not pass counts against the machine that made it, and the next machine goes on', async () => {
+  const { b, job, fast, next } = await lateRig();
+  assert.equal((await b.result({ worker: fast, jobId: job.jobId, publicValues: pv, proof: pf })).status, 'candidate');
+  assert.deepEqual(await b.raceVerdict({ jobId: job.jobId, worker: fast.name, ok: false }), { ok: true, status: 'queued' });
+  assert.equal((await b.summary()).workers.find((x) => x.name === fast.name).bad, 1);
+  assert.equal((await b.status(job.jobId)).status, 'queued', 'the batch is still open for the next machine');
+  assert.deepEqual(await b.result({ worker: next, jobId: job.jobId, publicValues: pv, proof: pf }), { ok: true, status: 'candidate' });
+  assert.deepEqual(await b.result({ worker: fast, jobId: job.jobId, publicValues: pv, proof: '0x' + '33'.repeat(260) }), { ok: false, code: 'answered', error: 'this machine has already answered this job' }, 'one answer a turn');
+});
+
+test('community batch: a handed-on turn that gives up late drops out without a second mark, and its place keeps the one it had', async () => {
+  const { b, job, fast, next } = await lateRig();
+  const lapsedOf = async (w) => (await b.summary()).workers.find((x) => x.name === w.name).lapsed;
+  assert.equal(await lapsedOf(fast), 1, 'counted when the turn ran out');
+  assert.deepEqual(await b.result({ worker: fast, jobId: job.jobId, error: 'ran out of memory' }), { ok: true, status: 'dropped' });
+  assert.equal(await lapsedOf(fast), 1, 'not counted again');
+  assert.equal((await b.status(job.jobId)).status, 'queued', 'the next machine\'s turn goes on');
+  assert.equal((await b.summary()).workers.find((x) => x.name === next.name).racing, 'btc-state');
+});
+
+test('community batch: PROVER_BOARD_TURN_LATE=0 refuses the late proof and says its turn ended; an ended job and another network are each named', async () => {
+  const off = await lateRig({ turnLate: 0 });
+  assert.deepEqual(await off.b.result({ worker: off.fast, jobId: off.job.jobId, publicValues: pv, proof: pf }), { ok: false, code: 'turn_over', error: 'this machine\'s turn on the batch ended and the batch went on to another machine' });
+  assert.equal((await off.b.status(off.job.jobId)).race.length, 0);
+  // the late answer is placed by where the machine took the batch from, as ever
+  const on = await lateRig();
+  const elsewhere = { ...on.fast, client: 'place-elsewhere' };
+  assert.equal((await on.b.result({ worker: elsewhere, jobId: on.job.jobId, publicValues: pv, proof: pf })).code, 'other_place');
+  // the relay gave the batch up: said so, not 'not racing'
+  assert.deepEqual(await on.b.cancel({ jobId: on.job.jobId }), { ok: true, status: 'cancelled' });
+  assert.deepEqual(await on.b.result({ worker: on.fast, jobId: on.job.jobId, publicValues: pv, proof: pf }), { ok: false, code: 'job_cancelled', error: 'job is cancelled' });
+  assert.deepEqual(await on.b.result({ worker: on.next, jobId: on.job.jobId, error: 'gave up' }), { ok: false, code: 'job_cancelled', error: 'job is cancelled' });
+});
+
+test('community batch: a proof sent again after its first reply was lost is told the same; a race\'s racer that has answered is not racing any more', async () => {
+  t = 70_000_000;
+  const b = makeProverBoard({ storage: store(), now, cfg: { ...PROVER_BOARD, bestPct: 0 } }), batch = sizedBatches(b);
+  const w = gpu('b2'), v = gpu('c3');
+  const ask = (x) => b.claim({ worker: x, classes: ['public'], programs: ['btc-state'] });
+  t += PROVER_BOARD.turnSeenMs + 1;
+  await ask(w); await ask(v);
+  const job = await batch();
+  const turn = (await ask(w)) || (await ask(v));
+  const holder = turn ? (await b.summary()).workers.find((x) => x.racing === 'btc-state').name : null;
+  const mine = holder === w.name ? w : v;
+  assert.equal(turn.jobId, job.jobId);
+  assert.deepEqual(await b.result({ worker: mine, jobId: job.jobId, publicValues: pv, proof: pf }), { ok: true, status: 'candidate' });
+  assert.deepEqual(await b.result({ worker: mine, jobId: job.jobId, publicValues: pv, proof: pf.toUpperCase().replace('0X', '0x') }), { ok: true, status: 'candidate', duplicate: true }, 'the same proof in other letters is the same proof');
+  assert.equal((await b.status(job.jobId)).race.length, 1);
+  // a race's racer (not a batch) that has answered is not racing it any more, as before
+  const race = await b.post({ class: 'public', stdin: Buffer.from('a plain race').toString('base64'), cycleLimit: 1e6, gasLimit: 1e8, deadline: now() / 1000 + 600 });
+  const r = gpu('d4');
+  assert.equal((await b.claim({ worker: r, classes: ['public'] })).jobId, race.jobId);
+  assert.equal((await b.result({ worker: r, jobId: race.jobId, publicValues: pv, proof: pf })).status, 'candidate');
+  assert.deepEqual(await b.result({ worker: r, jobId: race.jobId, publicValues: pv, proof: '0x' + '44'.repeat(260) }), { ok: false, error: 'not racing this job' });
 });
 
 test('batches by record: a machine is timed per MB of input, so a bigger batch gives it longer to answer and a big one proved does not make it look slow', async () => {
