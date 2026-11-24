@@ -10,7 +10,8 @@
 ///   queuedAt(i)  when entry i was posted (seconds; the contract's `queuedAt`, which never decreases with i)
 ///   forceDelay   the contract's FORCE_DELAY
 ///   margin       how far past `now` the block may land (its proving time): an entry that turns FORCE_DELAY old by then counts as due
-///   perBlock     the most a block takes beyond what is due; 0 takes everything up to maxForced, as a leader without this pacing would
+///   perBlock     the most a block takes beyond what is due while the queue is no longer than a block holds (a longer queue is taken a block at
+///                a time: an entry costs a block little, and the entries behind it wait for every block it does not clear); 0 takes everything up to maxForced
 ///   softAge      an entry younger than this (seconds) is left for the next block unless it is due
 export function queueTake({ done, queued, queuedAt, now, forceDelay, maxForced = 16, perBlock = 4, softAge = 30, margin = 0 }) {
   const avail = Math.max(0, Math.min(queued - done, maxForced));
@@ -19,7 +20,8 @@ export function queueTake({ done, queued, queuedAt, now, forceDelay, maxForced =
   while (overdue < avail && queuedAt(done + overdue) + forceDelay <= now + margin) overdue++;
   let ready = 0;
   while (ready < avail && now - queuedAt(done + ready) >= softAge) ready++;
-  return { take: Math.min(avail, Math.max(overdue, Math.min(ready, perBlock))), overdue, ready, avail };
+  const per = queued - done > maxForced ? maxForced : perBlock;
+  return { take: Math.min(avail, Math.max(overdue, Math.min(ready, per))), overdue, ready, avail };
 }
 
 /// Whether anyone may land now whatever the turn: an entry has waited FORCE_DELAY + WINDOW (the contract's `backlogged`).

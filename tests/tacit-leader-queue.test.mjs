@@ -33,7 +33,7 @@ assert.equal(queueTake({ done: 4, queued: 4, queuedAt: at([]), now: 10_000, forc
       assert.ok(!overdueRule({ done: 0, queued: 30, queuedAt: at(t), at: now, take: r.take }), `lands at ${now}, takes ${r.take}: the overdue rule holds`);
     }
   }
-  assert.equal(queueTake({ done: 0, queued: 30, queuedAt: at(t), now: 100 + DELAY + 5, forceDelay: DELAY }).take, 6, 'six are overdue: all six, more than a block\'s few');
+  assert.equal(queueTake({ done: 0, queued: 12, queuedAt: at(t), now: 100 + DELAY + 5, forceDelay: DELAY }).take, 6, 'six are overdue: all six, more than a block\'s few');
   assert.equal(queueTake({ done: 0, queued: 30, queuedAt: at(t), now: 100 + DELAY + 500, forceDelay: DELAY }).take, MAX, 'a long overdue run: the contract\'s limit');
 }
 
@@ -47,6 +47,18 @@ assert.equal(queueTake({ done: 4, queued: 4, queuedAt: at([]), now: 10_000, forc
   assert.equal(margin.take, 3, 'entry 2 is due by the time the block lands');
   assert.ok(!overdueRule({ done: 0, queued: 5, queuedAt: at(t), at: now + 120, take: margin.take }), 'so the landing, 120 s later, is not refused');
   assert.ok(overdueRule({ done: 0, queued: 5, queuedAt: at(t), at: now + 120, take: bare.take }), 'where without the margin it would have been');
+}
+
+// a queue longer than a block holds is taken a block at a time; one a block holds keeps the few-at-a-time pace
+{
+  const t = Array.from({ length: 60 }, () => 1000);
+  const q = (queued, o = {}) => queueTake({ done: 0, queued, queuedAt: at(t), now: 1040, forceDelay: DELAY, ...o }).take;
+  assert.equal(q(16), 4, 'exactly a block: the few-at-a-time pace');
+  assert.equal(q(17), MAX, 'one more than a block: a block at a time');
+  assert.equal(q(60), MAX, 'a long queue: a block at a time');
+  assert.equal(q(60, { perBlock: 2 }), MAX, 'whatever the pace set');
+  assert.equal(queueTake({ done: 0, queued: 60, queuedAt: at(Array(60).fill(1000)), now: 1010, forceDelay: DELAY }).take, 0, 'still left for the soft age while young');
+  assert.equal(queueTake({ done: 50, queued: 60, queuedAt: at(t), now: 1040, forceDelay: DELAY }).take, 4, 'from the middle: what is left counts, not what was posted');
 }
 
 // from the middle of the queue

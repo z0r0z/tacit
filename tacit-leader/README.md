@@ -52,7 +52,7 @@ again after `BLOB_RETRY_SECS` (doubling to 10 minutes), the leader taking no oth
 contract and node do it; the sender must use the post-Fusaka blob transaction format).
 
 **The forced queue.** A block takes the queue's entries a few at a time, oldest first (`FORCED_PER_BLOCK`, default 4, once an entry has waited `FORCED_SOFT_SECS`,
-default 30), and always every entry the contract needs it to; `FORCED_PER_BLOCK=0` takes up to 16 at once. Once an entry has waited `FORCE_DELAY` + `WINDOW`
+default 30), and always every entry the contract needs it to; a queue longer than a block holds (16) is taken a block at a time; `FORCED_PER_BLOCK=0` takes up to 16 at once. Once an entry has waited `FORCE_DELAY` + `WINDOW`
 the leader lands whoever's turn it is.
 
 **Restarts.** A restart rebuilds the node, from the blocks kept in `ARCHIVE_DIR` when they are the whole chain (every block from 1 to the contract's height is there, each starts where the one before ended, the last ends at the contract's `state`, and no forced entry waits), else from the logs of `BLOCKS` from `FROM_BLOCK`. Every block this leader builds or reads is kept there. `RPC_URL` may list several endpoints, comma apart (`https://a,https://b`): the first that answers is used, and one that refuses, rate-limits or has dropped old logs is passed over. Keep `ARCHIVE_DIR` on the persistent disk.

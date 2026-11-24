@@ -22,7 +22,8 @@
 //   BEACON_URL      a beacon node's REST address, tried after BLOB_URLS (its blob sidecars, found by the slot the block landed in; BEACON_GENESIS is
 //                   the chain's genesis time, default mainnet's)                       BLOB_FETCH_SECS  one request's limit (default 20)
 //   BLOB_RETRY_SECS the first wait before a block's blobs are read again after no source held them (default 15, doubling to 10 minutes)
-//   FORCED_PER_BLOCK  the most forced entries a block takes beyond those the contract needs it to (default 4; 0 takes up to 16 at once)
+//   FORCED_PER_BLOCK  the most forced entries a block takes beyond those the contract needs it to while the queue is no longer than a block holds (default 4;
+//                   a longer queue is taken 16 at a time; 0 takes up to 16 at once)
 //   FORCED_SOFT_SECS  an entry is left this long (default 30) before a block that has no other use for it takes it
 //
 // A block's data goes in calldata here; blob mode is built into the program, the contract and the node (`POST /build {blobs: true}`) and is
