@@ -93,3 +93,37 @@ func Contribute(in, out string) (string, error) {
 
 // Verify that next is a valid contribution on top of prev.
 func Verify(prev, next *mpcsetup.Phase2) error { return prev.Verify(next) }
+
+// Seal extracts the proving and verifying keys: the Phase 1 file sealed with its own beacon (for a chain that extends
+// Succinct's transcript, the transcript's Phase 1 beacon, so the commons are the ones every Phase 2 file was built on),
+// then the head sealed with the ceremony's beacon.
+func Seal(phase1Path, headPath, evalsPath string, phase1Beacon, phase2Beacon []byte) (pk, vk interface {
+	WriteTo(io.Writer) (int64, error)
+}, err error) {
+	p1 := &mpcsetup.Phase1{}
+	f, err := os.Open(phase1Path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := p1.ReadFrom(bufio.NewReaderSize(f, 1<<20)); err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	f.Close()
+	head, err := Read(headPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	ef, err := os.Open(evalsPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer ef.Close()
+	evals, err := ReadPhase2Evaluations(ef)
+	if err != nil {
+		return nil, nil, err
+	}
+	commons := p1.Seal(phase1Beacon)
+	p, v := head.Seal(&commons, evals, phase2Beacon)
+	return p, v, nil
+}

@@ -6,10 +6,16 @@
 //	tacit-ceremony verify-chain <dir> <from> <to>                                check phase2-<from> .. phase2-<to> link by link
 //	tacit-ceremony init <dir> <base-file> <base-index> <label>                   coordinator: start a chain from a transcript's last file
 //	tacit-ceremony serve <dir> <addr>                                            coordinator: run the queue and API
+//	tacit-ceremony beacon <bitcoin-block-hash> <drand-round>                     the ceremony's beacon: SHA-256("tacit-praxis-beacon-v1" || block hash || drand randomness)
+//	tacit-ceremony seal <phase1> <head> <evals> <phase1-drand-round> <beacon-hex> <out-dir>   extract the keys (pk, vk)
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
+	"strings"
 	"flag"
 	"fmt"
 	"net/http"
@@ -118,6 +124,60 @@ func main() {
 		}
 		fmt.Println("serving on", os.Args[3])
 		die("%v", http.ListenAndServe(os.Args[3], c.Handler()))
+	case "beacon":
+		if len(os.Args) != 4 {
+			die("usage: tacit-ceremony beacon <bitcoin-block-hash> <drand-round>")
+		}
+		bh, err := hex.DecodeString(strings.TrimPrefix(os.Args[2], "0x"))
+		if err != nil || len(bh) != 32 {
+			die("the Bitcoin block hash is 32 bytes of hex")
+		}
+		round, err := strconv.ParseUint(os.Args[3], 10, 64)
+		if err != nil {
+			die("drand round: %v", err)
+		}
+		rnd, err := ceremony.DrandRandomness(round)
+		if err != nil {
+			die("%v", err)
+		}
+		h := sha256.New()
+		h.Write([]byte("tacit-praxis-beacon-v1"))
+		h.Write(bh)
+		h.Write(rnd)
+		fmt.Println(hex.EncodeToString(h.Sum(nil)))
+	case "seal":
+		if len(os.Args) != 8 {
+			die("usage: tacit-ceremony seal <phase1> <head> <evals> <phase1-drand-round> <beacon-hex> <out-dir>")
+		}
+		r1, err := strconv.ParseUint(os.Args[5], 10, 64)
+		if err != nil {
+			die("phase1 drand round: %v", err)
+		}
+		b1, err := ceremony.DrandRandomness(r1)
+		if err != nil {
+			die("%v", err)
+		}
+		b2, err := hex.DecodeString(os.Args[6])
+		if err != nil || len(b2) != 32 {
+			die("the beacon is 32 bytes of hex")
+		}
+		pk, vk, err := ceremony.Seal(os.Args[2], os.Args[3], os.Args[4], b1, b2)
+		if err != nil {
+			die("%v", err)
+		}
+		_ = os.MkdirAll(os.Args[7], 0o755)
+		for name, k := range map[string]interface{ WriteTo(io.Writer) (int64, error) }{"groth16_pk.bin": pk, "groth16_vk.bin": vk} {
+			f, err := os.Create(filepath.Join(os.Args[7], name))
+			if err != nil {
+				die("%v", err)
+			}
+			if _, err := k.WriteTo(f); err != nil {
+				die("%v", err)
+			}
+			f.Close()
+			sum, _ := ceremony.FileSHA256(filepath.Join(os.Args[7], name))
+			fmt.Printf("%s sha256 %s\n", name, sum)
+		}
 	default:
 		die("unknown command %q", os.Args[1])
 	}
