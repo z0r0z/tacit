@@ -152,10 +152,11 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     }
     return out;
   }
-  // The lock as two explorers that answer both see it, before this side locks anything against it: the transaction (its inputs and outputs), the block
-  // it is in, the tip, and whether the lock output is spent. Ordinary reads take the first explorer that answers; this one does not, since a transaction or a
-  // confirmation that one explorer alone shows is not yet one to pay against. With one explorer configured, that one is the source. Throws (to be asked
-  // again) while fewer than two agree.
+  // The lock as the explorers see it, before this side locks anything against it: the transaction (its inputs and outputs), the block it is in, the tip, and
+  // whether the lock output is spent. Ordinary reads take the first explorer that answers; this one asks them all. Two that show the same lock agree. An
+  // explorer that does not answer (a refusal for too many requests, a timeout) is silent, which is not a contradiction: one explorer that answers alone
+  // gives `thin: true`, and the caller waits a while for a second before it goes on. An explorer that says the lock is not there or not in a block, or two
+  // that show it differently, is a contradiction: it throws (to be asked again). With one explorer configured, that one is the source.
   async function lockAgreed(txid, vout) {
     need(txid);
     const want = Math.min(2, list.length);
@@ -165,10 +166,11 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
         if (!r.ok) throw Object.assign(new Error(`${p} -> ${r.status}`), { status: r.status });
         return (await r.text()).trim();
       };
-      const tx = JSON.parse(await get(`/tx/${txid}`));
-      if (!tx || tx.txid !== txid || !tx.status || !tx.status.confirmed) return null;
+      let tx;
+      try { tx = JSON.parse(await get(`/tx/${txid}`)); } catch (e) { if (e && e.status === 404) return { deny: true }; throw e; }
+      if (!tx || tx.txid !== txid || !tx.status || !tx.status.confirmed) return { deny: true };
       const out = (tx.vout || [])[vout];
-      if (!out) return null;
+      if (!out) return { deny: true };
       const tipH = Number(await get('/blocks/tip/height'));
       const sp = JSON.parse(await get(`/tx/${txid}/outspend/${Number(vout) >>> 0}`));
       const spent = !!(sp && sp.spent);
@@ -177,13 +179,15 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
         height: tx.status.block_height, tip: tipH, value: out.value, scriptpubkey: out.scriptpubkey, spent,
       };
     };
-    const seen = (await Promise.all(list.map((b) => one(b).catch(() => null)))).filter(Boolean);
+    const results = (await Promise.all(list.map((b) => one(b).catch(() => null)))).filter(Boolean);
+    const denied = results.filter((r) => r.deny).length, seen = results.filter((r) => !r.deny);
     const groups = new Map();
     for (const s of seen) groups.set(s.key, [...(groups.get(s.key) || []), s]);
     const best = [...groups.values()].sort((a, b) => b.length - a.length)[0] || [];
-    if (best.length < want) throw Object.assign(new Error(`the lock is not yet seen alike by ${want} explorers (${seen.length} answered, ${groups.size} views)`), { transient: true });
+    const thin = best.length > 0 && best.length < want && groups.size === 1 && denied === 0;
+    if (best.length < want && !thin) throw Object.assign(new Error(`the lock is not yet seen alike by ${want} explorers (${seen.length} answered, ${groups.size} views, ${denied} say it is not there)`), { transient: true });
     const tipH = Math.min(...best.map((s) => s.tip));
-    return { confirmations: tipH - best[0].height + 1, height: best[0].height, value: best[0].value, scriptpubkey: best[0].scriptpubkey, spent: best[0].spent, agreed: best.length };
+    return { confirmations: tipH - best[0].height + 1, height: best[0].height, value: best[0].value, scriptpubkey: best[0].scriptpubkey, spent: best[0].spent, agreed: best.length, ...(thin ? { thin: true } : {}) };
   }
 
   // plain-sat coins only: a coin of dust size may carry a note

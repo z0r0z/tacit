@@ -185,14 +185,23 @@ export function makeEthereumLocker(ctx) {
           return rec;
         }
         if (await btc.outspend(rec.lockTxid, rec.lockVout)) return save(rec, { phase: 'aborted', why: 'the lock output was spent before it could be answered' });
-        // Before anything is locked against it, the lock is read again from every explorer, and two that answer must show the same transaction in the
-        // same block, its output unspent; the height they agree on is the one the windows count from. Until they agree, the swap waits.
+        // Before anything is locked against it, the lock is read again from every explorer: two that answer show the same transaction in the same block,
+        // its output unspent, or one answers alone and none says otherwise, in which case a second is waited for a while (`thinGraceSecs`, five minutes: the
+        // explorers of a busy host often refuse most requests). One that says the lock is not there, or two that differ, keep the swap waiting. The height they
+        // agree on is the one the windows count from. This is asked at most every `agreeEverySecs`, so a wait does not add to the refusals it is waiting out.
         let height = st.height;
         if (btc.lockAgreed) {
-          const a = await btc.lockAgreed(rec.lockTxid, rec.lockVout);
+          if (rec.agreeAt && ctx.now() - rec.agreeAt < (policy.agreeEverySecs ?? 45)) return rec;
+          await save(rec, { agreeAt: ctx.now() });
+          let a;
+          try { a = await btc.lockAgreed(rec.lockTxid, rec.lockVout); } catch (err) { if (rec.thinSince != null) await save(rec, { thinSince: null }); throw err; }   // (a contradiction starts the wait again)
           if (a.spent) return save(rec, { phase: 'aborted', why: 'the lock output was spent before it could be answered' });
           if (a.value !== rec.lockValue || (rec.lockSpk && strip(a.scriptpubkey) !== strip(rec.lockSpk))) return save(rec, { phase: 'aborted', why: 'the explorers do not show the lock this offer named' });
           if (a.confirmations < need) return rec;
+          if (a.thin) {
+            if (rec.thinSince == null) await save(rec, { thinSince: ctx.now() });
+            if (ctx.now() - rec.thinSince < (policy.thinGraceSecs ?? 300)) return rec;
+          }
           height = a.height;
         }
         const consumed = X.isSats(rec.offer.btc.asset) ? null : await btc.crossLaneBlocked(await btc.fetchTx(rec.lockTxid));

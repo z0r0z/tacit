@@ -8,6 +8,7 @@ import { makeBtcWallet } from '../dapp/bitcoin-taproot-wallet.js';
 import { bigintToBytes32 } from '../dapp/bulletproofs.js';
 import { memStore } from './lib/fastbridge-world.mjs';
 import { pairWorld, SATS } from './lib/pair-world.mjs';
+import { world } from './lib/fastbridge-world.mjs';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -76,6 +77,45 @@ test('an offer whose lock does not pay the take is refused before the history of
   const r2 = await mk(noTake, now - 7200).receive({ quoteId: 'q1', offer });
   assert.match(r2.why, /arrived too late/);
   assert.equal(walked, 0, 'no history was walked for either');
+});
+
+test('the lock that one explorer shows alone is waited on for a few minutes, not for the explorers of a busy host to agree: it goes on after the grace, and a contradiction starts the wait again', async () => {
+  const w = world();
+  const rec = await w.start();
+  const real = w.lBtc.lockAgreed;
+  let mode = 'thin', calls = 0;
+  w.lBtc.lockAgreed = async (txid, vout) => {
+    calls++;
+    const [tx, st] = [await w.lBtc.fetchTx(txid), await w.lBtc.status(txid)];
+    if (mode === 'contradict') throw Object.assign(new Error('the lock is not yet seen alike by 2 explorers (1 answered, 1 views, 1 say it is not there)'), { transient: true });
+    const o = tx.vout[vout];
+    return { confirmations: st.confirmations, height: st.height, value: o.value, scriptpubkey: o.scriptpubkey, spent: false, agreed: 1, thin: true };
+  };
+  assert.equal(real, undefined, 'the simulated chain has no such read of its own');
+  // minutes pass until the lock is confirmed and the provider has looked at it
+  await w.run(async () => { const r = await w.lp(); return !!(r && r.thinSince != null); }, 400);
+  const first = (await w.lp()).thinSince, firstPhase = (await w.lp()).phase;
+  assert.equal(firstPhase, 'accepted', 'it waits at the first thin look');
+  await w.run(async () => (await w.lp()).phase !== 'accepted', 400);
+  const lp = await w.lp();
+  assert.ok(w.clock.now() - first >= 300, `it went on only after the grace (${w.clock.now() - first} s)`);
+  assert.equal(lp.phase === 'aborted', false);
+  // asked at most every 45 s, not every tick
+  assert.ok(calls <= Math.ceil((w.clock.now() - first) / 45) + 3, `the explorers were asked ${calls} times`);
+
+  // a contradiction after a thin look: the wait starts again from the next thin look
+  const v = world();
+  await v.start();
+  let vmode = 'thin';
+  v.lBtc.lockAgreed = async (txid, vout) => {
+    if (vmode === 'contradict') throw Object.assign(new Error('the lock is not yet seen alike by 2 explorers (1 answered, 2 views, 0 say it is not there)'), { transient: true });
+    const [tx, st] = [await v.lBtc.fetchTx(txid), await v.lBtc.status(txid)]; const o = tx.vout[vout];
+    return { confirmations: st.confirmations, height: st.height, value: o.value, scriptpubkey: o.scriptpubkey, spent: false, agreed: 1, thin: true };
+  };
+  await v.run(async () => { const r = await v.lp(); return !!(r && r.thinSince != null); }, 400);
+  vmode = 'contradict';
+  await v.run(async () => (await v.lp()).thinSince == null, 400);
+  assert.equal((await v.lp()).thinSince, null, 'the wait is cleared by a contradiction');
 });
 
 let passed = 0, ran = 0;

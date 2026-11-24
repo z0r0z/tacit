@@ -221,6 +221,19 @@ test('lockAgreed: a lock that only one explorer shows is not agreed (it is asked
   const three = chainOf(Object.keys(unconfirmed), (u) => explorer(unconfirmed[u.hostname])(u));
   await assert.rejects(() => three.btc.lockAgreed(tid(60), 0), /not yet seen alike/, 'a lock in no block is not one to pay against');
 });
+test('lockAgreed: one explorer that answers alone, with the rest refusing or silent, is thin, not refused; one that says the lock is not there, or none, is', async () => {
+  const busy = () => json('slow down', 429);
+  const lone = { 'a.test': { tx: agreeTx(tid(60)) } };
+  const silent = chainOf(['a.test', 'b.test', 'c.test'], (u) => (u.hostname === 'a.test' ? explorer(lone['a.test'])(u) : busy()));
+  const t = await silent.btc.lockAgreed(tid(60), 0);
+  assert.deepEqual([t.thin, t.agreed, t.confirmations], [true, 1, 3], 'it is the one answer there is');
+  const denied = chainOf(['a.test', 'b.test', 'c.test'], (u) => (u.hostname === 'a.test' ? explorer(lone['a.test'])(u) : u.hostname === 'b.test' ? gone() : busy()));
+  await assert.rejects(() => denied.btc.lockAgreed(tid(60), 0), /not yet seen alike/, 'one that says it is not there is a contradiction');
+  const none = chainOf(['a.test', 'b.test'], () => busy());
+  await assert.rejects(() => none.btc.lockAgreed(tid(60), 0), /not yet seen alike by 2 explorers \(0 answered/, 'no answer at all is asked again');
+  const two = chainOf(['a.test', 'b.test', 'c.test'], (u) => explorer({ tx: agreeTx(tid(60)) })(u));
+  assert.equal((await two.btc.lockAgreed(tid(60), 0)).thin, undefined, 'two that agree are not thin');
+});
 test('lockAgreed: with one explorer configured, that one is the source', async () => {
   const { btc } = chainOf(['own.test'], (u) => explorer({ tx: agreeTx(tid(60)), spent: true })(u));
   const a = await btc.lockAgreed(tid(60), 0);
