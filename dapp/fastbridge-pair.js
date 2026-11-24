@@ -52,6 +52,8 @@ export const vsMarketBps = (dir, rate, market) => Math.round((dir === 'b2e' ? ra
 
 // ── the words ──
 
+const TAKE_VSIZE = 110;                                          // a key-path take of one Taproot lock to one P2WPKH output (99 vB measured, with room)
+
 const STEP_TITLES = {
   b2e: ['Lock your BTC', 'Provider locks ETH', 'You claim the ETH', 'Provider takes BTC'],
   e2b: ['Provider locks BTC', 'You lock your ETH', 'Provider claims ETH', 'You take your BTC'],
@@ -239,8 +241,17 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       if (c && c.short) { short = c.short; networkFeeSats = Number(c.short.need - best.pay); }
       else if (c) networkFeeSats = c.fee;
     }
+    // e2b: the user takes the sats from the provider's lock with a transaction that pays its own fee out of the lock (a rate above the estimate, as fastbridge-el.js sets it), so what
+    // arrives is the lock less that fee
+    let takeFeeSats = null;
+    if (dir === 'e2b') {
+      try {
+        const feeFor = btc.prims && btc.prims.feeFor;
+        if (typeof feeFor === 'function') takeFeeSats = Number(feeFor(TAKE_VSIZE, Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5))));
+      } catch { takeFeeSats = null; }
+    }
     return {
-      dir, provider: { id: best.p.id, name: best.p.name }, pay: best.pay, get: best.get, rate, market: market ? market.ethPerBtc : null, vsMarketBps: versus,
+      dir, provider: { id: best.p.id, name: best.p.name }, pay: best.pay, get: best.get, takeFeeSats, rate, market: market ? market.ethPerBtc : null, vsMarketBps: versus,
       feeBps: versus == null ? 0 : Math.max(0, -versus), etaSecs: dir === 'b2e' ? 1500 : 1800, networkFeeSats, expiresAt: Number(best.r.validUntil), warnings, blocked, short, ref: best,
     };
   }

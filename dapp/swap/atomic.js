@@ -69,7 +69,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import('/fast/pair-wire.js?cb=2c52f062');
+      const wire = await import('/fast/pair-wire.js?cb=4971c0b9');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },
@@ -201,6 +201,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       // (what a quote costs against the market is the row above: the engine's feeBps is that, not a fee the provider named, so it is not called one here)
       ['Provider', q.provider?.name || 'Provider', ''],
       ...(Number(q.networkFeeSats) > 0 ? [['Bitcoin fee', `about ${Number(q.networkFeeSats).toLocaleString('en-US')} sats`, '']] : []),
+      ...(L.dir === 'e2b' && Number(q.takeFeeSats) > 0 ? [['Bitcoin fee', `about ${Number(q.takeFeeSats).toLocaleString('en-US')} sats, from the lock when you take it`, '']] : []),
       ['Time', etaText(q.etaSecs), ''],
       ['If it stops', L.dir === 'b2e' ? 'your BTC returns to you' : 'your ETH returns to your private balance', ''],
       ...(q.warnings || []).map((w) => ['Note', w, 'warn']),
@@ -237,7 +238,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const max = bp != null && bp > 0n ? (pk === 'btc' ? bp - BigInt(L.q?.networkFeeSats ?? LOCK_GUESS_SATS) : bp) : 0n;
     $('a-quick').innerHTML = max > 0n ? [25, 50, 100].map((n) => `<button type="button" data-quick="${tidy(plain((max * BigInt(n)) / 100n, DEC))}">${n === 100 ? 'Max' : `${n}%`}</button>`).join('') : '';
     const out = $('a-out'), q = L.q;
-    if (q) { out.textContent = fmt(q.get); out.classList.remove('ph'); } else { out.textContent = '0'; out.classList.add('ph'); }
+    // what arrives is what the provider locks less the fee of the transaction that takes it (e2b), not the lock
+    const arrives = q && L.dir === 'e2b' && Number(q.takeFeeSats) > 0 && q.get > BigInt(q.takeFeeSats) ? q.get - BigInt(q.takeFeeSats) : q && q.get;
+    if (q) { out.textContent = fmt(arrives); out.classList.remove('ph'); } else { out.textContent = '0'; out.classList.add('ph'); }
     paintRcpt(); paintRecs();
     const gt = gate(), go = $('a-go');
     go.textContent = gt.label; go.disabled = !!gt.off; go.dataset.act = gt.act || '';

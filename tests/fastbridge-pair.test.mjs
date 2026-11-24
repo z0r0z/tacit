@@ -66,6 +66,7 @@ test('ETH for Bitcoin, all the way: the provider locks sats first, the user lock
   assert.ok(q.vsMarketBps < 0 && q.vsMarketBps > -100);
   assert.equal(q.blocked, null);
   assert.equal(q.networkFeeSats, null, 'the provider pays for its own lock, and the take comes out of it');
+  assert.ok(q.takeFeeSats >= 500 && q.takeFeeSats < 3000, `the fee of taking the sats is in the quote, so what arrives can be said (${q.takeFeeSats})`);
   assert.equal((await w.pair.balances()).eth, UNITS);
   const { id } = await w.pair.start(q);
   assert.match(id, /^[0-9a-f]{72}$/);

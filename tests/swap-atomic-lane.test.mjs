@@ -72,7 +72,7 @@ const FAKE = `
       if (S.mode === 'none') throw new Error('No provider can take that amount.');
       const b2e = dir === 'b2e', blocked = S.mode === 'blocked';
       const q = { dir, provider: { id: 'p1', name: 'Test provider' }, pay: amount, get: b2e ? (amount * 304n) / 10n : (amount * 10n) / 304n, rate: blocked ? 29.4 : 30.4, market: 30.62, vsMarketBps: blocked ? -410 : -72, feeBps: 40, etaSecs: 780,
-        networkFeeSats: b2e ? 1200 : 0, expiresAt: now() + 300, warnings: S.warn ? ['The provider holds less than this right now.'] : [], blocked: blocked ? 'the provider quotes 4.1% under the market' : null, ref: { n: calls.quote.length } };
+        networkFeeSats: b2e ? 1200 : 0, takeFeeSats: b2e ? null : 500, expiresAt: now() + 300, warnings: S.warn ? ['The provider holds less than this right now.'] : [], blocked: blocked ? 'the provider quotes 4.1% under the market' : null, ref: { n: calls.quote.length } };
       calls.quotes.push(q);
       return q;
     },
@@ -222,7 +222,9 @@ console.log('a provider: the switch appears, and the lane opens');
   await type(page, '1');
   const q2 = (await atom(page, 'A.calls.quote')).at(-1);
   ok(q2.dir === 'e2b' && q2.amount === '100000000', `a quote for e2b is asked in pool units (1 ETH = 100,000,000) (${JSON.stringify(q2)})`);
-  ok(/Price\s*1 ETH = 0\.032895 BTC/.test(await text(page, '#a-rcpt')) && /If it stops\s*your ETH returns to your private balance/.test(await text(page, '#a-rcpt')) && !/Bitcoin fee/.test(await text(page, '#a-rcpt')), 'ETH to BTC is priced per ETH, says where the ETH goes if it stops, and has no Bitcoin fee row');
+  ok(/Price\s*1 ETH = 0\.032895 BTC/.test(await text(page, '#a-rcpt')) && /If it stops\s*your ETH returns to your private balance/.test(await text(page, '#a-rcpt')) && /Bitcoin fee\s*about 500 sats, from the lock when you take it/.test(await text(page, '#a-rcpt')), 'ETH to BTC is priced per ETH, says where the ETH goes if it stops, and names the fee of taking the Bitcoin');
+  const getNow = parseFloat(await text(page, '#a-out')), want = Number((await atom(page, 'A.calls.quotes.at(-1).get')) - 500n) / 1e8;
+  ok(Math.abs(getNow - want) < 1e-9, `the amount shown is what arrives, the lock less the fee of taking it (${getNow} = ${want})`);
   await page.click('#a-flip');
 
   console.log('starting: once, with the quote shown');

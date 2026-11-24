@@ -92,12 +92,14 @@ test('ETH for Bitcoin on the page, from the real engine: a flip, the provider lo
   m.lane.set({ amt: '0.036' });
   await until(() => go(m).dataset.act === 'swap', 'a quote the lane will start');
   assert.equal(go(m).textContent, 'Swap ETH → BTC');
-  assert.equal(m.text('a-out'), '0.00100539');
+  // the provider locks 100,539 sats; the user takes them with a transaction that pays its own fee out of the lock (550 sats in this world), so 99,989 arrive and that is what is shown
+  assert.equal(m.text('a-out'), '0.00099989');
   const r = rows(m);
+  assert.match(r['Bitcoin fee'], /^about 550 sats, from the lock when you take it$/);
   assert.equal(r.Price, '1 ETH = 0.027928 BTC');
   assert.equal(r.Market, '1 ETH = 0.02809 BTC');
   assert.equal(r['You get'], '0.58% less than the market price');
-  assert.equal('Bitcoin fee' in r, false, 'the provider pays for the lock, and the take comes out of it');
+  // (the provider pays for its own lock; the user's take comes out of it, and its fee is the row above)
   assert.equal(r['If it stops'], 'your ETH returns to your private balance');
   go(m).click();
   await until(() => !m.$('a-sent').hidden, 'the swap under way');
