@@ -154,6 +154,37 @@ function hopsFromArchive(upTo) {
   return n;
 }
 
+// Exits landed are paid out to their addresses (TacitBlocks.withdraw, which anyone may send): a holder needs no ETH to withdraw, and a payment to an
+// address is not tied to any wallet of the payer's by a transaction of its own. Each item is asset ‖ amount ‖ address, 96 bytes. An address stays on the
+// list until the contract owes it nothing: the one pass made right after a landing skipped an exit for good when a node a block behind read 0 owed (a
+// holder's 151.9 TAC waited two days). A zero read is believed only EXIT_REST seconds after the address was listed. (PAY_OUT_EXITS=0 leaves them to the holders.)
+const exitList = new Map();
+const EXIT_REST = Number(env.EXIT_REST_SECS || 300) * 1000, EXIT_RECENT = Number(env.EXIT_ARCHIVE_BLOCKS || 1000);
+function exitsOwe(exitBytes) {
+  let n = 0;
+  for (let i = 0; i + 96 <= exitBytes.length; i += 96) { const to = hexOf(exitBytes.subarray(i + 76, i + 96)); if (!exitList.has(to)) { exitList.set(to, Date.now()); n++; } }
+  return n;
+}
+async function payExits() {
+  for (const [to, at] of [...exitList]) {
+    try {
+      const [owedTo] = await view('owed(address)', ['uint256'], [to]);
+      if (!(BigInt(owedTo) > 0n)) { if (Date.now() - at >= EXIT_REST) exitList.delete(to); continue; }   // paid out already (anyone may), or a node not yet at the block
+      const chainId = num(await rpc.call('eth_chainId'));
+      const r = await send(rpc, KEY, BLOCKS, new Uint8Array([...selector('withdraw(address)'), ...encode(['address'], [to])]), { chainId });
+      log({ paidOut: to, tx: r.transactionHash });
+      exitList.delete(to);
+    } catch (e) { log({ payOutFailed: to, error: String(e.message || e) }); }
+  }
+}
+function exitsFromArchive(upTo) {
+  let n = 0;
+  for (let h = Math.max(1, upTo - EXIT_RECENT + 1); h <= upTo; h++) {
+    try { n += exitsOwe(bytesOf(JSON.parse(readFileSync(join(ARCHIVE, `${h}.json`), 'utf8')).lists?.exits || '0x')); } catch { /* no file, or not one that reads */ }
+  }
+  return n;
+}
+
 // TacitBlocks.sweep for a deposit record (asset ‖ shares ‖ cx ‖ cy ‖ body ‖ amount) whose inbox holds its TAC, or, with a holder's
 // permit for the inbox, TacitBlocks.sweepWithPermit, which pulls it (the leader pays the gas and takes the permit's fee); false if
 // neither can be done yet.
@@ -452,6 +483,7 @@ let restored = false, lowGasAt = 0;
 async function step() {
   await sync();
   await sweepOwed();
+  await payExits();
   if (!restored) { restored = true; log({ restored: await node('POST', '/restore', {}).catch((e) => ({ error: String(e.message || e) })) }); }
   const [done, queued, lastLanded, window_, forceDelay] = await Promise.all([
     view('queueDone()', ['uint256']), view('queued()', ['uint256']), view('lastLanded()', ['uint256']), view('WINDOW()', ['uint256']), view('FORCE_DELAY()', ['uint256']),
@@ -566,19 +598,8 @@ async function step() {
   firstSeen = null;
   log({ landed: nodeHeight, tx: receipt.transactionHash, gas: num(receipt.gasUsed) });
   await sweepOwed();
-  // exits landed are paid out to their addresses (TacitBlocks.withdraw, which anyone may send): a holder needs no ETH to withdraw, and a payment to
-  // an address is not tied to any wallet of the payer's by a transaction of its own. Each item is asset ‖ amount ‖ address, 96 bytes.
-  // (PAY_OUT_EXITS=0 leaves them for the holders to send)
-  const exitBytes = env.PAY_OUT_EXITS === '0' ? new Uint8Array() : bytesOf(l.exits), tos = new Set();
-  for (let i = 0; i + 96 <= exitBytes.length; i += 96) tos.add(hexOf(exitBytes.subarray(i + 76, i + 96)));
-  for (const to of tos) {
-    try {
-      const [owedTo] = await view('owed(address)', ['uint256'], [to]);
-      if (!(BigInt(owedTo) > 0n)) continue;                               // already paid out (anyone may)
-      const r = await send(rpc, KEY, BLOCKS, new Uint8Array([...selector('withdraw(address)'), ...encode(['address'], [to])]), { chainId });
-      log({ paidOut: to, tx: r.transactionHash });
-    } catch (e) { log({ payOutFailed: to, error: String(e.message || e) }); }
-  }
+  if (env.PAY_OUT_EXITS !== '0') exitsOwe(bytesOf(l.exits));
+  await payExits();
 }
 
 async function main() {
@@ -599,7 +620,8 @@ async function main() {
     setInterval(() => quoteFee().catch((e) => log({ feeNotQuoted: String(e.message || e) })), FEE_REFRESH);
   } else await node('POST', '/fee', { fee: '0', shieldCap: String(SHIELD_CAP) });
   await replayArchive().catch((e) => log({ archiveReplayFailed: String(e.message || e) }));        // (never fatal: the logs are read for what it did not give)
-  try { const [h] = await view('height()', ['uint256']); log({ hopsOwedFromArchive: hopsFromArchive(Number(h)), owed: hopLedger.items().length }); } catch (e) { log({ hopsArchiveUnread: String(e.message || e) }); }
+  try { const [h] = await view('height()', ['uint256']); log({ hopsOwedFromArchive: hopsFromArchive(Number(h)), owed: hopLedger.items().length });
+    if (env.PAY_OUT_EXITS !== '0') log({ exitsFromArchive: exitsFromArchive(Number(h)) }); } catch (e) { log({ hopsArchiveUnread: String(e.message || e) }); }
   // the epoch's seed has a window of a few blocks: watched on its own, not between a block's proving and landing
   setInterval(() => keepSeed().catch((e) => log({ seedNotKept: String(e.message || e) })), 4000);
   for (;;) {
