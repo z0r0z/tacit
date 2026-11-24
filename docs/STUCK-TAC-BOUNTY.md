@@ -6,7 +6,7 @@ work, or to price it so providers can take it safely.
 
 | | |
 |---|---|
-| **Reward** | **600 TAC** (about $490 at today's $0.82: the same dollar value as the [design bounty](DESIGN-BOUNTY.md)), to the Ethereum address you name in your pull request, once the entry is merged. Community pledges add to it (section 6). |
+| **Reward** | **300 TAC** (about $245 at today's $0.82), to the Ethereum address you name in your pull request, once the entry is merged. Community pledges add to it (section 6). |
 | **Closes** | 2026-12-16 |
 | **Enter by** | a pull request to [`z0r0z/tacit`](https://github.com/z0r0z/tacit) titled `stuck TAC: <your name>` |
 | **Questions** | an issue on the same repo titled `stuck TAC: question`, so every entrant sees the answer |
