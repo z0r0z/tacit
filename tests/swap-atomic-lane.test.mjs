@@ -84,6 +84,7 @@ const FAKE = `
     start: async (q) => {
       calls.start.push(q);
       await new Promise((r) => setTimeout(r, 200));
+      if (S.failStart === 'requote') throw Object.assign(new Error('The provider cannot hold that amount just now: a new quote is being asked for.'), { requote: true });
       if (S.failStart) throw new Error('The provider cannot hold that amount.');
       const id = 'sw' + calls.start.length;
       S.recs = [{ id, dir: q.dir, state: 'working', title: q.dir === 'b2e' ? 'Waiting for Bitcoin' : 'Waiting for the Bitcoin lock', detail: 'The lock needs a confirmation.', pay: q.pay, get: q.get, steps: steps(q.dir, 0, 'working'), etaSecs: 780, at: now(), refundAt: now() + 86400 }, ...S.recs];
@@ -361,6 +362,21 @@ console.log('a quote near its end is renewed before a press, and a renewed quote
   await page.click('#a-go');
   await page.waitForFunction(() => window.__atom.calls.start.length === 1, null, { timeout: 5000 });
   ok((await atom(page, 'String(A.calls.start[0].get)')) === '30096000', 'the next press starts the accepted quote');
+  await page.close();
+}
+
+console.log('a provider that cannot hold its quote: a new quote is asked for and shown before anything starts');
+{
+  const { page } = await fresh({ ads: [ad()] });
+  await open(page);
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__btc.unlocked && /Balance/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
+  await type(page, '0.01');
+  await atom(page, '(A.failStart = "requote", 0)');
+  const asked = (await atom(page, 'A.calls.quote')).length;
+  await page.click('#a-go');
+  await page.waitForFunction((n) => window.__atom.calls.quote.length > n && /^Swap BTC → ETH$/.test(document.querySelector('#a-go').textContent.trim()), asked, { timeout: 5000 });
+  ok(/a new quote is being asked for/.test(await text(page, '#a-q')) && (await atom(page, 'A.calls.start.length')) === 1, `the refusal is said, a new quote is shown, and nothing more is started (${await text(page, '#a-q')})`);
   await page.close();
 }
 

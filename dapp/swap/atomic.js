@@ -101,7 +101,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import('/fast/pair-wire.js?cb=0997b0ae');
+      const wire = await import('/fast/pair-wire.js?cb=ce51c08a');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },
@@ -442,7 +442,13 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       known.set(r.id, 'working');
       onState();
       follow(POLL_MS);
-    } catch (e) { if (g === gen) { say(esc(plainError(e)), 'err'); L.sticky = true; } }
+    } catch (e) {
+      if (g === gen) {
+        say(esc(plainError(e)), 'err'); L.sticky = true;
+        // a provider that could not hold its quote: the next best is asked for, and shown before anything is started
+        if (e && e.requote) { L.q = null; requote(true); }
+      }
+    }
     finally { if (g === gen) { L.busy = false; paint(); } }
     if (g === gen) readMe(true);
   }

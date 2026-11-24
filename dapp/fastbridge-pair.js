@@ -22,6 +22,7 @@
 //   feed              dapp/fastbridge-rate.js makeRateFeed: { refresh(), current() }
 //   tend(work, passive)   runs `work` (a pass that steps the swaps) when this page is the one that tends the key's swaps (one tab at a time), else `passive` (the records only). Default: always work
 //   exclusive(work)   runs a start with no other start of the key's under way, in any tab (fast/pair-wire.js: a Web Lock per key), so two never lock the same coin. Default: as it is
+//   strikes           { get(), put(map) }: the providers that failed lately ({ [id]: { n, at } }), kept across visits (a page's localStorage); default: this client's own
 //   memo              { get(), put({ ethPerBtc, at }) }: the last good market reading, kept across visits (a page's localStorage); default: this client's own
 
 import { makeBitcoinLocker } from './fastbridge-bl.js';
@@ -40,6 +41,9 @@ export const PAIR_POLICY = {
   // the market reading a quote is judged against: from at least this many sources that agree, and no further than maxMarketJumpBps from the last good reading of
   // the past marketMemoSecs (ETH / BTC does not move that far in a day; a reading that does is taken for a wrong one until it holds for that long)
   minMarketSources: 2, maxMarketJumpBps: 1500, marketMemoSecs: 86400,
+  // the providers asked for one quote: the best `maxAsk` by their advertised terms, those that failed or timed out lately (strikes, kept for strikeSecs) after the
+  // others, and those with maxStrikes left out while any other can be asked
+  maxAsk: 8, strikeSecs: 1800, maxStrikes: 3,
 };
 // The confirmations the user wants on a provider's lock of sats before it locks pool ETH against it: more for a larger amount
 export const confsForSats = (value) => { const v = BigInt(value); return v >= 100_000_000n ? 6 : v >= 10_000_000n ? 3 : v >= 1_000_000n ? 2 : 1; };
@@ -153,7 +157,7 @@ const said = (e, fallback) => {
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('the provider did not answer in time')), ms))]);
 
 // `ethAsset` is the pool's asset for ETH (a test's pool has a stand-in)
-export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), exclusive = (work) => work(), ethAsset = ETH_ASSET, memo = null }) {
+export function makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), tend = (work) => work(), exclusive = (work) => work(), ethAsset = ETH_ASSET, memo = null, strikes: strikeStore = null }) {
   const policy = { ...PAIR_POLICY, ...policyIn };
   const ETH = strip(ethAsset);
   const isPairProvider = (p) => !!p && !!p.assets && strip(p.assets.btcAsset || '') === SATS_ASSET && strip(p.assets.evmAsset || '') === ETH;
@@ -177,10 +181,19 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     memoPut({ ethPerBtc: market.ethPerBtc, at: now() });
     return null;
   }
+  // ── providers that failed lately ──
+  let struck = {};
+  const strikesNow = () => { try { const m = strikeStore ? strikeStore.get() : struck; return m && typeof m === 'object' ? m : {}; } catch { return struck; } };
+  const strikesPut = (m) => { struck = m; try { if (strikeStore) strikeStore.put(m); } catch { /* kept in this client */ } };
+  const strikesOf = (id) => { const k = strikesNow()[id]; return k && now() - Number(k.at) < policy.strikeSecs ? Number(k.n) || 0 : 0; };
+  const strike = (id) => { const m = { ...strikesNow() }; for (const [k, v] of Object.entries(m)) if (!(now() - Number(v.at) < policy.strikeSecs)) delete m[k]; m[id] = { n: strikesOf(id) + 1, at: now() }; strikesPut(m); };
+  const cleared = (id) => { const m = strikesNow(); if (m[id]) { const c = { ...m }; delete c[id]; strikesPut(c); } };
+
   async function providers() {
     const all = (await discover()).filter(isPairProvider);
     return all.map((p) => ({
       id: p.id, name: p.name || 'Provider', ref: p.ref, dirs: ['b2e', ...(p.reverse ? ['e2b'] : [])],
+      fees: { b2e: { feeBps: Number(p.terms.feeBps) || 0, flatFee: BigInt(p.terms.flatFee ?? 0) }, e2b: p.reverse ? { feeBps: Number(p.reverse.feeBps) || 0, flatFee: BigInt(p.reverse.flatFee ?? 0) } : null },
       minSats: BigInt(p.terms.minAmount), maxSats: BigInt(p.terms.maxAmount), b2e: { min: BigInt(p.terms.minAmount), max: BigInt(p.terms.maxAmount), available: p.terms.available == null ? null : BigInt(p.terms.available) },
       e2b: p.reverse ? { min: BigInt(p.reverse.minAmount), max: BigInt(p.reverse.maxAmount), available: p.reverse.available == null ? null : BigInt(p.reverse.available) } : null,
     }));
@@ -211,7 +224,8 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   };
 
   async function quoteFwd(p, sats) {
-    const counter = counterFor(p.ref);
+    // (asked with the quote's own wait: a provider reached through a board is not asked for longer than that)
+    const counter = counterFor(p.ref, { timeoutMs: policy.askMs });
     const r = await withTimeout(counter.quote(sats), policy.askMs);
     if (!r || typeof r.id !== 'string' || !isHex(r.claimPub || '', 66) || !isHex(r.btcAsset || '', 64) || !isHex(r.evmAsset || '', 64)) throw new Error('the provider\'s quote is not readable');
     if (strip(r.btcAsset) !== SATS_ASSET || strip(r.evmAsset) !== ETH) throw new Error('the provider\'s quote is not for Bitcoin and ETH');
@@ -241,7 +255,9 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   async function startFwd(q) {
     const r = q.ref.r, bl = blFor(q.ref.p.ref);
     const held = await counterFor(q.ref.p.ref).reserve({ quoteId: r.id });
-    if (!held || held.ok === false) throw new Error('the provider cannot hold that amount just now');
+    // (a provider that cannot hold its own quote is asked after the others for a while, and the page asks for a new quote: the next best, whose numbers are shown again)
+    if (!held || held.ok === false) { strike(q.ref.p.id); throw Object.assign(new Error('the provider cannot hold that amount just now: a new quote is being asked for'), { requote: true }); }
+    cleared(q.ref.p.id);
     policy.csvBlocks = r.csvBlocks;
     const rec = await bl.start({ asset: hexToBytes(SATS_ASSET), amount: r.btcValue, counterClaimPub: hexToBytes(r.claimPub), evmAsset: r.evmAsset, evmAmount: r.evmAmount, quoteId: r.id, avoid: await heldCoins() });
     rec.provider = q.ref.p.ref; rec.providerName = q.ref.p.name;
@@ -292,8 +308,16 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     const eligible = all.filter((p) => (dir === 'b2e' ? p.b2e : p.e2b) && want >= (dir === 'b2e' ? p.b2e : p.e2b).min && want <= (dir === 'b2e' ? p.b2e : p.e2b).max);
     if (!all.length) throw new Error('no provider is offering Bitcoin for ETH right now');
     if (!eligible.length) throw new Error('no provider takes that amount');
-    const got = await Promise.all(eligible.map(async (p) => { try { return await (dir === 'b2e' ? quoteFwd(p, want) : quoteRev(p, want)); } catch (error) { return { p, error }; } }));
-    const good = got.filter((g) => !g.error).sort((a, b) => (a.get > b.get ? -1 : a.get < b.get ? 1 : 0));
+    // the best few by what they advertise, those that failed lately after the rest (and left out while three or more are struck and others can be asked)
+    const feeAt = (p) => { const f = p.fees && p.fees[dir]; return f ? (want * BigInt(f.feeBps)) / 10000n + f.flatFee : 0n; };
+    const ok = eligible.filter((p) => strikesOf(p.id) < policy.maxStrikes);
+    const asked = (ok.length ? ok : eligible).map((p) => ({ p, k: strikesOf(p.id), fee: feeAt(p) }))
+      .sort((a, b) => a.k - b.k || (a.fee < b.fee ? -1 : a.fee > b.fee ? 1 : 0)).slice(0, policy.maxAsk).map((x) => x.p);
+    const got = await Promise.all(asked.map(async (p) => {
+      try { return await (dir === 'b2e' ? quoteFwd(p, want) : quoteRev(p, want)); } catch (error) { strike(p.id); return { p, error }; }
+    }));
+    // (the best quote of a provider that has not failed lately wins: one that could not hold its last quote is taken only when no other quotes)
+    const good = got.filter((g) => !g.error).sort((a, b) => (strikesOf(a.p.id) > 0) - (strikesOf(b.p.id) > 0) || (a.get > b.get ? -1 : a.get < b.get ? 1 : 0));
     if (!good.length) throw new Error(said(got[0] && got[0].error, 'no provider could quote that amount just now'));
     const best = good[0], rate = rateOf(dir === 'b2e' ? best.get : best.pay, dir === 'b2e' ? best.pay : best.get);
     const warnings = [];
@@ -342,8 +366,10 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     let a;
     try { a = await revFor(q.ref.p).start({ quote: q.ref.r }); } catch (e) {
       // (the reverse client words a refusal with the provider's reason after it: the page says its own sentence)
-      throw new Error(/^the provider cannot lock that amount/.test(String(e && e.message)) ? 'the provider cannot lock that amount just now' : said(e, 'the provider did not answer just now'));
+      strike(q.ref.p.id);
+      throw Object.assign(new Error(/^the provider cannot lock that amount/.test(String(e && e.message)) ? 'the provider cannot lock that amount just now: a new quote is being asked for' : said(e, 'the provider did not answer just now')), { requote: true });
     }
+    cleared(q.ref.p.id);
     const index = stores.index;
     if (!(await index.get(q.ref.p.id))) await index.put({ id: q.ref.p.id, name: q.ref.p.name, ref: q.ref.p.ref });
     return { id: a.swapId };

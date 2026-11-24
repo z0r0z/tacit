@@ -522,7 +522,7 @@ test('a provider\'s refusal is said in the page\'s own words: what its answer sa
   const q = await held.quote({ dir: 'b2e', amount: 1_000_000n });
   assert.equal(q.blocked, null);
   const r = await held.start(q).then(() => null, (x) => x.message);
-  assert.equal(r, 'the provider cannot hold that amount just now');
+  assert.match(r, /^the provider cannot hold that amount just now/);
 });
 
 test('two pages of one key that start at the same moment take turns: one start runs at a time, and each locks a coin of its own', async () => {
@@ -541,6 +541,53 @@ test('two pages of one key that start at the same moment take turns: one start r
   const ins = (await w.mems.get('fwd').list()).map((r) => (r.feeInputs || []).map((i) => `${i.txid}:${i.vout}`).join(','));
   assert.equal(ins.length, 2);
   assert.notEqual(ins[0], ins[1], 'each start locked a coin of its own');
+});
+
+// ── which providers are asked ──
+const manyWorld = (n, { behave = () => ({}), strikes = null } = {}) => {
+  const NOW = Math.floor(Date.now() / 1000), asked = [];
+  const keyOf = (i) => '02' + i.toString(16).padStart(2, '0').repeat(32);
+  const ps = Array.from({ length: n }, (_, i) => ({ id: keyOf(i), name: `P${i}`, ref: { kind: 'http', base: `https://p${i}.example`, claimPub: keyOf(i) }, assets: { btcAsset: SATS_ASSET, evmAsset: ETH_ASSET }, terms: { minAmount: 10000n, maxAmount: 100000000n, feeBps: 10 * (i + 1), flatFee: 0n } }));
+  const counterFor = (ref) => {
+    const i = ps.findIndex((x) => x.ref === ref), b = behave(i) || {};
+    return {
+      quote: async (sats) => { asked.push(i); if (b.quote) return b.quote(sats); return { id: `q${i}`, claimPub: ps[i].ref.claimPub, btcAsset: SATS_ASSET, evmAsset: ETH_ASSET, btcValue: String(sats), evmAmount: String((sats * (3500n - BigInt(i))) / 100n), csvBlocks: 144, validUntil: NOW + 600 }; },
+      reserve: async () => (b.reserve ? b.reserve() : { ok: true }),
+    };
+  };
+  const feed = makeRateFeed({ sources: [async () => 35, async () => 35] });
+  const pair = makePairClient({ btc: { wallet: { pub: new Uint8Array(33).fill(2) }, satsUtxos: async () => [{ txid: 'ab'.repeat(32), vout: 0, value: 50_000_000 }] }, evm: {}, seed: new Uint8Array(32), stores: { fwd: memStore() }, discover: async () => ps, counterFor, reverseCallFor: () => null, feed, ...(strikes ? { strikes } : {}) });
+  return { pair, asked, ps };
+};
+
+test('a quote asks the best eight providers by their advertised terms, not every provider there is', async () => {
+  const w = manyWorld(11);
+  const q = await w.pair.quote({ dir: 'b2e', amount: 1_000_000n });
+  assert.deepEqual([...w.asked].sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.equal(q.provider.name, 'P0');
+});
+
+test('a provider that fails is asked after the others for a while, and one that keeps failing is left out; what failed is kept across visits', async () => {
+  let kept = {};
+  const strikes = { get: () => kept, put: (m) => { kept = m; } };
+  const down = (i) => (i === 0 ? { quote: async () => { throw Object.assign(new Error('down'), { status: 503 }); } } : {});
+  const w = manyWorld(5, { behave: down, strikes });
+  for (let i = 0; i < 3; i++) { w.asked.length = 0; assert.equal((await w.pair.quote({ dir: 'b2e', amount: 1_000_000n })).provider.name, 'P1'); }
+  assert.equal(kept[w.ps[0].id].n, 3);
+  const again = manyWorld(5, { behave: down, strikes });
+  await again.pair.quote({ dir: 'b2e', amount: 1_000_000n });
+  assert.ok(!again.asked.includes(0), 'struck three times: not asked while others can be');
+  assert.deepEqual([...again.asked].sort((a, b) => a - b), [1, 2, 3, 4]);
+});
+
+test('a provider that cannot hold its quote is not given up on: the page is told to ask again, and the next quote is the next best provider\'s', async () => {
+  const w = manyWorld(2, { behave: (i) => (i === 0 ? { reserve: () => ({ ok: false, why: 'no' }) } : {}) });
+  const q = await w.pair.quote({ dir: 'b2e', amount: 1_000_000n });
+  assert.equal(q.provider.name, 'P0');
+  const e = await w.pair.start(q).then(() => null, (x) => x);
+  assert.ok(e && e.requote, 'the start says to ask again');
+  assert.match(e.message, /a new quote is being asked for/);
+  assert.equal((await w.pair.quote({ dir: 'b2e', amount: 1_000_000n })).provider.name, 'P1', 'and the provider that failed is asked after the others');
 });
 
 let passed = 0;

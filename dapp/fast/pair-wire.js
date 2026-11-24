@@ -18,7 +18,7 @@ import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=a0280321';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=9003c49b';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=129356b4';
 import { makeLocalStore } from '/fastbridge-client.js?cb=09156465';
-import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=0b2c8c34';
+import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=614c8263';
 import { makeRateFeed, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
 import { discoverProviders } from '/fast/discover.js?cb=cf4a0fcc';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
@@ -88,7 +88,10 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
     if ((read() || {}).me !== me) throw new Error('a swap of this wallet is being started in another tab: try again in a moment');
     try { return await work(); } finally { if ((read() || {}).me === me) ls.removeItem(name); }
   };
-  const pair = makePairClient({ btc, evm, seed, stores, discover, counterFor: (ref) => counterFor(ref, { fetchImpl }), reverseCallFor, feed, ...(now ? { now } : {}), tend, exclusive, memo });
+  // the providers that failed lately, kept across visits so that one that does not answer is asked after the others (fastbridge-pair.js strikes)
+  const strikes = storage ? { get: () => JSON.parse(storage.getItem('tacit-pair-provider-strikes-v1') || '{}'), put: (m) => storage.setItem('tacit-pair-provider-strikes-v1', JSON.stringify(m)) } : null;
+  const counterOf = (ref, o = {}) => counterFor(ref, { fetchImpl, ...(o.timeoutMs ? { call: { timeoutMs: o.timeoutMs } } : {}) });
+  const pair = makePairClient({ btc, evm, seed, stores, discover, counterFor: counterOf, reverseCallFor, feed, ...(now ? { now } : {}), tend, exclusive, memo, strikes });
   const run = ({ everyMs = 15000, onChange = () => {} } = {}) => {
     let busy = false, stopped = false;
     const once = async () => { if (busy || stopped) return; busy = true; try { onChange(await pair.pump()); } catch { /* the next pass */ } finally { busy = false; } };
