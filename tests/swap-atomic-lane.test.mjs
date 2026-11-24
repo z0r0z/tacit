@@ -446,6 +446,23 @@ console.log('a phone width, and the dark scheme');
   await page.close();
 }
 
+// a provider that holds less than its own minimum
+{
+  console.log('\nno provider has enough to swap');
+  const { page } = await fresh({ ads: [ad()] });
+  await laneUp(page);
+  await page.evaluate(() => { const A = window.__atom; A.providers[0].b2e.available = 1000n; });
+  await page.click('[data-mode=atomic]');
+  await page.waitForFunction(() => document.querySelector('#a-go'));
+  await page.click('#a-go');
+  await page.waitForFunction(() => /Balance/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
+  await page.fill('#a-amt', '0.001');
+  await page.waitForFunction(() => /No provider has enough/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(await page.$eval('#a-go', (e) => e.disabled), 'a provider with less than its minimum says so, and the button is off');
+  ok(!/Minimum|Most a provider/.test(await text(page, '#a-go')), 'it does not name a minimum nobody can meet');
+  await page.close();
+}
+
 await b.close();
 server.close();
 console.log(`\n${n} checks passed${fails ? `, ${fails} FAILED` : ''}`);

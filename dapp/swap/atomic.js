@@ -179,6 +179,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (!L.amt) return { label: 'Enter an amount', off: true };
     if (!amount) return { label: 'Enter a valid amount', off: true };
     const t = termsFor(L.dir);
+    // a provider that holds less than its own minimum cannot take any swap: say so, instead of a minimum nobody can meet and then a maximum under it
+    if (t && t.max < t.min) return { label: 'No provider has enough to swap right now', off: true };
     if (t && amount < t.min) return { label: `Minimum ${fmt(t.min)} ${c.sym}`, off: true };
     if (t && amount > t.max) return { label: `Most a provider takes is ${fmt(t.max)} ${c.sym}`, off: true };
     const held = heldOf(pk);

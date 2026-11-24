@@ -32,10 +32,10 @@
     "refreshSecs": 60
   },
   "quote": {
-    "minAmount": "50000",
-    "maxAmount": "300000",
-    "feeBps": 30,
-    "flatFee": "1000",
+    "minAmount": "120000",
+    "maxAmount": "1000000",
+    "feeBps": 20,
+    "flatFee": "800",
     "validSecs": 300,
     "graceSecs": 21600
   },
@@ -64,13 +64,13 @@
   },
   "reverse": {
     "enabled": false,
-    "minAmount": "780000",
-    "maxAmount": "850000",
-    "feeBps": 30,
-    "flatFee": "20000",
-    "maxOpen": 1,
-    "maxSats": "300000",
-    "lockFeeReserve": "1500"
+    "minAmount": "4000000",
+    "maxAmount": "25000000",
+    "feeBps": 20,
+    "flatFee": "30000",
+    "maxOpen": 2,
+    "maxSats": "1000000",
+    "lockFeeReserve": "2000"
   },
   "mailboxPollSecs": 1
 }

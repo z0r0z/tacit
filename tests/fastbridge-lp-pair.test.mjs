@@ -22,18 +22,24 @@ test('the example config is a valid pair config, and the assets are the sats ass
   assert.equal(isPair({ pair: 'tac' }), false);
 });
 
-test('the Render config is a valid pair config on the Render disk, canary-sized, with the reverse side off until it is switched on', () => {
+test('the Render config is a valid pair config on the Render disk, priced from what a swap costs the provider, with the reverse side off until it is switched on', () => {
   const R = JSON.parse(readFileSync(new URL('../fastbridge-lp/config.btc-eth.render.json', import.meta.url), 'utf8'));
   const C = pairConfig(R);
   assert.equal(C.btcAsset, SATS_ASSET); assert.equal(C.evmAsset, ETH_ASSET); assert.equal(C.refill, false);
   assert.equal(C.dataDir, '/var/lib/tacit-fastbridge-pair', 'a disk of its own, not the house provider\'s');
   assert.equal(C.port, 10000);
-  assert.deepEqual([C.quote.minAmount, C.quote.maxAmount], ['50000', '300000'], 'a canary: 0.0005 to 0.003 BTC');
+  assert.deepEqual([C.quote.minAmount, C.quote.maxAmount, C.quote.feeBps, C.quote.flatFee], ['120000', '1000000', 20, '800']);
   assert.equal(C.reverse.enabled, false);
-  assert.deepEqual([C.reverse.maxSats, C.reverse.maxOpen], ['300000', 1]);
-  // reverse terms are in pool ETH units (1e-8 ETH): 0.0078 to 0.0085 ETH, from a few thousand sats of coins
+  // reverse terms are in pool ETH units (1e-8 ETH)
   const rv = pairConfig({ ...R, reverse: { ...R.reverse, enabled: true } }).reverse;
-  assert.deepEqual([rv.minAmount, rv.maxAmount, rv.lockFeeReserve], ['780000', '850000', '1500']);
+  assert.deepEqual([rv.minAmount, rv.maxAmount, rv.feeBps, rv.flatFee, rv.maxOpen, rv.maxSats, rv.lockFeeReserve], ['4000000', '25000000', 20, '30000', 2, '1000000', '2000']);
+  // the smallest swap each way stays under the 1% at which a page warns of a price below the market (a fee of F sats and B bps on X sats, X the least taken)
+  const RATE = 35.5;                                                      // pool ETH units per sat (about 35.5 ETH per BTC)
+  const fwd = (Number(C.quote.flatFee) + Number(C.quote.minAmount) * C.quote.feeBps / 10000) / Number(C.quote.minAmount);
+  const rev = (Number(rv.flatFee) + Number(rv.minAmount) * rv.feeBps / 10000) / Number(rv.minAmount);
+  assert.ok(fwd < 0.01, `forward minimum costs ${(fwd * 100).toFixed(2)}%`);
+  assert.ok(rev < 0.01, `reverse minimum costs ${(rev * 100).toFixed(2)}%`);
+  assert.ok(Number(rv.minAmount) / RATE >= 20000, 'the reverse minimum buys more sats than the least a lock may hold');
   assert.deepEqual(applyEnv(R, { FB_LP_REVERSE: 'on' }).reverse.enabled, true, 'switched on by the environment, without a new image');
   assert.equal(applyEnv(R, { FB_LP_MAX_AMOUNT: '0' }).quote.maxAmount, '0', 'and stopped the way the TAC provider is');
   // not the house provider's: its config names TAC and no pair
