@@ -492,6 +492,87 @@ test('reservations with no transaction behind them hold only a share of the pool
   assert.equal((await post(tight, '/reserve', { quoteId: q2.id })).body.ok, false, 'a quarter of 6,000 is 1,500: two thousand do not fit');
 });
 
+test('one client holds a few reservations with no lock named at once: a new one lets go of its oldest, other clients are not touched, and a lock named frees its place', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(100_000n, 'inv'); manyCoins(w);
+  const { svc } = await service(w, { config: configFor(w, { reserve: { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 1, perClient: 2, perBoard: 3 } }) });
+  const ask = async (body, client) => (await svc.handle({ method: 'POST', path: '/quote', body, client })).body;
+  const reserve = async (q, client) => (await svc.handle({ method: 'POST', path: '/reserve', body: { quoteId: q.id }, client })).body;
+  const A = '198.51.100.1', B = '198.51.100.2';
+  const a = [];
+  for (let i = 0; i < 3; i++) a.push(await ask({ amount: '1000' }, A));
+  assert.equal((await reserve(a[0], A)).ok, true);
+  assert.equal((await reserve(a[1], A)).ok, true);
+  const b1 = await ask({ amount: '1000' }, B);
+  assert.equal((await reserve(b1, B)).ok, true);
+  assert.equal((await reserve(a[2], A)).ok, true, 'a third from the same client is answered');
+  assert.deepEqual([svc.reservations.has(a[0].id), svc.reservations.has(a[1].id), svc.reservations.has(a[2].id)], [false, true, true], 'and its oldest is let go');
+  assert.ok(svc.reservations.has(b1.id), 'another client\'s stays');
+  assert.equal((await reserve(a[2], A)).ok, true, 'the same reservation asked again is the same one, and lets nothing go');
+  assert.ok(svc.reservations.has(a[1].id));
+  // a hold with a lock named for it is the lock's, and no longer counts toward the client's allowance
+  svc.reservations.get(a[1].id).txid = 'e'.repeat(64);
+  const a4 = await ask({ amount: '1000' }, A);
+  assert.equal((await reserve(a4, A)).ok, true);
+  assert.deepEqual([svc.reservations.has(a[1].id), svc.reservations.has(a[2].id), svc.reservations.has(a4.id)], [true, true, true]);
+  // the holds run out by themselves: the client's place is back after reserveSecs
+  w.clock.advance(301);
+  const fresh = [await ask({ amount: '1000' }, A), await ask({ amount: '1000' }, A)];
+  for (const q of fresh) assert.equal((await reserve(q, A)).ok, true);
+  assert.ok(fresh.every((q) => svc.reservations.has(q.id)), 'expired holds take no place');
+  // requests through a board name no address: they share the board's allowance
+  const viaBoard = [];
+  for (let i = 0; i < 4; i++) { const q = await ask({ amount: '1000' }); viaBoard.push(q); assert.equal((await reserve(q)).ok, true); }
+  assert.deepEqual(viaBoard.map((q) => svc.reservations.has(q.id)), [false, true, true, true]);
+});
+
+test('a reservation that cannot be made keeps the client\'s older ones', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(3000n, 'inv'); manyCoins(w);
+  const { svc } = await service(w, { config: configFor(w, { reserve: { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 1, perClient: 1 } }) });
+  const handle = (path, body, client) => svc.handle({ method: 'POST', path, body, client });
+  const quote = async (amount, client) => (await handle('/quote', { amount }, client)).body;
+  const small = await quote('1000', 'x'), big = await quote('3000', 'x'), other = await quote('1000', 'z'), again = await quote('1000', 'y');
+  assert.equal((await handle('/reserve', { quoteId: small.id }, 'x')).body.ok, true);
+  assert.equal((await handle('/reserve', { quoteId: big.id }, 'y')).body.ok, false, 'another client: no room for three thousand while one is held');
+  assert.equal((await handle('/reserve', { quoteId: big.id }, 'x')).body.ok, true, 'the same client: its own hold makes way for its new one');
+  assert.ok(!svc.reservations.has(small.id));
+  assert.equal((await handle('/reserve', { quoteId: other.id }, 'z')).body.ok, false);
+  assert.equal(svc.reservations.size, 1);
+  assert.equal((await handle('/reserve', { quoteId: again.id }, 'y')).body.ok, false);
+  assert.ok(svc.reservations.has(big.id), 'a hold is let go only for one of its own client that is made');
+});
+
+test('a user who reserved twice and locked on the third quote is answered all the way: reserve, lock, extend, offer and claim, with clients told apart behind a proxy', async () => {
+  const { w, ref } = httpWorld();
+  for (const n of ['a', 'b', 'c', 'd']) w.lEvm.fund(VALUE, `same-size-${n}`);
+  const s = await serve(w, { trustProxy: true, config: configFor(w, { reserve: { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 1, perClient: 2 } }) });
+  ref.base = s.base;
+  const via = (xff) => makeHttpCounter({ base: s.base, fetchImpl: (u, o = {}) => realFetch(u, { ...o, headers: { ...(o.headers || {}), 'x-forwarded-for': xff } }) });
+  const me = via('203.0.113.20, 104.23.160.162'), other = via('203.0.113.21, 172.71.81.243');
+  const theirs = await other.quote(VALUE);
+  assert.equal((await other.reserve({ quoteId: theirs.id })).ok, true);
+  const tries = [await me.quote(VALUE), await me.quote(VALUE)];
+  for (const q of tries) assert.equal((await me.reserve({ quoteId: q.id })).ok, true);
+  const q = await me.quote(VALUE);
+  assert.equal((await me.reserve({ quoteId: q.id })).ok, true);
+  assert.ok(!s.svc.reservations.has(tries[0].id) && s.svc.reservations.has(theirs.id), 'its own first hold made way; the other user\'s did not');
+  const rec = await startSwap(w, q);
+  await w.userBl.step(rec); await w.userBl.step(rec);
+  assert.equal(s.svc.reservations.get(q.id).txid, rec.lock.txid, 'the hold is extended for the lock');
+  await w.run(async () => !!(await w.lp()));
+  await w.run(bothDone(w));
+  assert.equal((await w.lp()).phase, 'done');
+});
+
+test('/quote takes an amount written plainly', async () => {
+  const { w } = httpWorld();
+  w.lEvm.fund(10_000n, 'inv'); manyCoins(w);
+  const s = await serve(w);
+  for (const amount of ['1000', 1000]) assert.equal((await post(s, '/quote', { amount })).status, 200, JSON.stringify(amount));
+  for (const amount of ['01000', ['1000'], '1000.0', ' 1000', '1e3', -1000, 1000.5, null, '9'.repeat(31)]) assert.equal((await post(s, '/quote', { amount })).status, 400, JSON.stringify(amount));
+});
+
 test('an offer whose checks take long is answered "ask again" within the budget while they go on, and asked again it joins them: one check, not one for every try', async () => {
   const { w } = httpWorld();
   w.lEvm.fund(1500n, 'inv'); manyCoins(w);

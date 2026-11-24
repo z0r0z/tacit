@@ -636,29 +636,51 @@ async function boardServer({ limits } = {}) {
   return { board, base: `http://127.0.0.1:${server.address().port}`, close };
 }
 
-test('the client is the address the proxy\'s edge saw: True-Client-IP when it sets one, else the last forwarded address; the rest of a list is the client\'s own', async () => {
+async function echoServer(opts) {
   const seen = [];
-  const server = makeHttpServer({ handle: async ({ client }) => { seen.push(client); return { status: 200, body: { client } }; }, trustProxy: true, kindOf: () => 'default', limits: { default: [3, 3600] } });
+  const server = makeHttpServer({ handle: async ({ client }) => { seen.push(client); return { status: 200, body: { client } }; }, kindOf: () => 'default', limits: { default: [3, 3600] }, ...opts });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   closers.push(() => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }));
   const base = `http://127.0.0.1:${server.address().port}`;
   const get = async (headers) => (await realFetch(base + '/x', { headers })).status;
-  const A = { 'true-client-ip': '203.0.113.5', 'x-forwarded-for': '9.9.9.9, 104.23.0.1' }, B = { 'true-client-ip': '203.0.113.6', 'x-forwarded-for': '9.9.9.9, 104.23.0.1' };
-  assert.deepEqual([await get(A), await get(A), await get(A), await get(A)], [200, 200, 200, 429], 'one client\'s fourth request in its window is refused');
-  assert.equal(await get(B), 200, 'another client behind the same edge is not held to it');
-  assert.equal(await get({ 'x-forwarded-for': '1.1.1.1, 2.2.2.2' }), 200);
-  assert.equal(seen.at(-1), '2.2.2.2', 'with no True-Client-IP the last forwarded address is the client, as before');
-  await get({ 'true-client-ip': 'not an ip!', 'x-forwarded-for': '1.1.1.1, 2.2.2.3' });
-  assert.equal(seen.at(-1), '2.2.2.3', 'a True-Client-IP that is not an address is ignored');
-  await get({ 'true-client-ip': '2001:db8:1:2:aaaa:bbbb:cccc:dddd' });
-  const v6a = seen.at(-1);
-  await get({ 'true-client-ip': '2001:0db8:0001:0002:1111::4444' });
-  assert.equal(seen.at(-1), v6a); assert.equal(v6a, '2001:db8:1:2::/64', 'an IPv6 client is one client by its /64');
-  const plain = makeHttpServer({ handle: async ({ client }) => ({ status: 200, body: { client } }), trustProxy: false, kindOf: () => 'default' });
-  await new Promise((r) => plain.listen(0, '127.0.0.1', r));
-  closers.push(() => new Promise((r) => { plain.closeAllConnections?.(); plain.close(r); }));
-  const r = await (await realFetch(`http://127.0.0.1:${plain.address().port}/x`, { headers: { 'true-client-ip': '203.0.113.5' } })).json();
-  assert.notEqual(r.client, '203.0.113.5', 'with no trusted proxy the header is not believed');
+  const who = async (headers) => { await get(headers); return seen.at(-1); };
+  return { seen, get, who };
+}
+
+test('behind Render the client is the address its Cloudflare edge added to the forwarded list, the one before the edge\'s own', async () => {
+  const { get, who } = await echoServer({ trustProxy: true });
+  // as Render passes a request on: what the client sent (if anything), the address the edge accepted, the edge's own address
+  assert.equal(await who({ 'x-forwarded-for': '203.0.113.5, 104.23.160.162' }), '203.0.113.5');
+  assert.equal(await who({ 'x-forwarded-for': '1.1.1.1, 9.9.9.9,203.0.113.5, 172.71.81.243' }), '203.0.113.5', 'entries before the ones the proxies added are not read');
+  const A = (i) => ({ 'x-forwarded-for': `10.0.0.${i}, 198.51.100.7, 162.158.162.137`, 'true-client-ip': `192.0.2.${i}` });
+  assert.deepEqual([await get(A(1)), await get(A(2)), await get(A(3)), await get(A(4))], [200, 200, 200, 429], 'one client has one bucket, whatever else its requests carry');
+  assert.equal(await get({ 'x-forwarded-for': '198.51.100.8, 162.158.162.137' }), 200, 'another client behind the same edge has its own');
+  assert.equal(await who({ 'true-client-ip': '192.0.2.50', 'x-forwarded-for': '198.51.100.9, 104.23.0.1' }), '198.51.100.9', 'True-Client-IP is not read unless named');
+  // a request that did not come through the edge: the last entry is the address that connected, and it is the client
+  assert.equal(await who({ 'x-forwarded-for': '192.0.2.77, 198.51.100.10' }), '198.51.100.10');
+  assert.equal(await who({ 'x-forwarded-for': '198.51.100.11' }), '198.51.100.11');
+  assert.equal(await who({ 'x-forwarded-for': '2001:db8:1:2:aaaa:bbbb:cccc:dddd, 2a06:98c0:3600::103' }), '2001:db8:1:2::/64', 'an IPv6 client is one client by its /64');
+  assert.equal(await who({ 'x-forwarded-for': '2001:0db8:0001:0002:1111::4444, 2606:4700::1' }), '2001:db8:1:2::/64');
+  assert.equal(await who({ 'x-forwarded-for': 'not an ip!, 104.23.0.1' }), '127.0.0.1', 'an entry that is not an address is not a client: the socket\'s is used');
+  assert.equal(await who({}), '127.0.0.1');
+});
+
+test('the client address rule can be named: hops from the right, the proxies passed over, or one header a proxy sets itself', async () => {
+  const one = await echoServer({ clientIp: { header: 'x-forwarded-for', hops: 1 } });
+  assert.equal(await one.who({ 'x-forwarded-for': '192.0.2.1, 198.51.100.1' }), '198.51.100.1', 'one proxy: the last entry');
+  const two = await echoServer({ clientIp: { header: 'x-forwarded-for', hops: 2 } });
+  assert.equal(await two.who({ 'x-forwarded-for': '192.0.2.1, 198.51.100.1, 10.1.1.1' }), '198.51.100.1', 'two proxies named by count');
+  assert.equal(await two.who({ 'x-forwarded-for': '198.51.100.2' }), '198.51.100.2', 'a shorter list gives its first entry');
+  const own = await echoServer({ clientIp: { header: 'x-forwarded-for', hops: 3, proxies: ['10.0.0.0/8', 'fd00::/8'] } });
+  assert.equal(await own.who({ 'x-forwarded-for': '192.0.2.1, 198.51.100.3, 10.0.0.9, fd00::1' }), '198.51.100.3');
+  assert.equal(await own.who({ 'x-forwarded-for': '192.0.2.1, 198.51.100.3, 10.0.0.9, 203.0.113.4' }), '203.0.113.4', 'a last entry not of the proxies is the client');
+  const named = await echoServer({ clientIp: { header: 'CF-Connecting-IP' } });
+  assert.equal(await named.who({ 'cf-connecting-ip': '198.51.100.5', 'x-forwarded-for': '192.0.2.9' }), '198.51.100.5');
+  assert.equal(await named.who({ 'cf-connecting-ip': '198.51.100.5, 192.0.2.9' }), '127.0.0.1', 'a header named for one address holds one');
+  assert.throws(() => makeHttpServer({ handle: async () => ({}), clientIp: { hops: 0 } }), /hops/);
+  assert.throws(() => makeHttpServer({ handle: async () => ({}), clientIp: { proxies: ['10.0.0.0'] } }), /address range/);
+  const plain = await echoServer({ trustProxy: false });
+  assert.equal(await plain.who({ 'true-client-ip': '203.0.113.5', 'x-forwarded-for': '203.0.113.5' }), '127.0.0.1', 'with no proxy named no header is read');
 });
 
 test('one client address may have only a few provider keys on the board at once, and gets them back as the ads run out', async () => {

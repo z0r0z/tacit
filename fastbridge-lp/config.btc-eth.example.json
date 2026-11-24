@@ -7,6 +7,7 @@
   "boards": ["https://tacit-fast-board.onrender.com"],
   "origins": ["https://tacit.finance"],
   "trustProxy": true,
+  "clientIp": { "header": "x-forwarded-for", "hops": 2, "proxies": "cloudflare" },
   "tickSecs": 15,
   "alertSecs": 3600,
   "lowFreeEth": "0.05",
@@ -15,7 +16,7 @@
   "btcBases": ["https://mempool.space/api", "https://blockstream.info/api"],
   "poolAddress": "0x000000000Ed1eabD231Be41d93b719056F7febFC",
   "csvBlocks": 144,
-  "reserve": { "reserveSecs": 300, "extendSecs": 7200, "maxUnbackedShare": 0.5 },
+  "reserve": { "reserveSecs": 300, "extendSecs": 7200, "maxUnbackedShare": 0.5, "perClient": 2, "perBoard": 4 },
   "inventory": { "refreshSecs": 60 },
   "quote": {
     "minAmount": "50000",

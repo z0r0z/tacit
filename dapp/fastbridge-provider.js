@@ -65,7 +65,10 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const sats = isSats(config.quote.btcAsset);
   const takeSats = btc.feeRate && !sats ? async () => takeSatsAt(await btc.feeRate()) : null;
   const quoter = makeQuoter({ store: quoteStore, now, params: { ...config.quote, claimPub: config.claimPub, csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minConfsFor: config.policy.minConfsFor, takeSats } });
-  const hold = { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 0.5, ...(config.reserve || {}) };
+  // `perClient`: the reservations with no lock named yet that one client address holds at once (`perBoard` for the requests that come through a board,
+  // which name no address); a new one past that lets go of the client's oldest, so a user who asks again is answered and one address holds a few at most
+  const hold = { reserveSecs: 300, extendSecs: 7200, maxUnbackedShare: 0.5, perClient: 2, perBoard: 4, ...(config.reserve || {}) };
+  let holdSeq = 0;
   const refreshSecs = config.inventory?.refreshSecs ?? 60;
   const reservations = new Map();
   const pending = new Map();
@@ -336,7 +339,10 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     } finally { if (held) pending.delete(sid); }
   }
 
-  async function handle({ method, path, body }) {
+  // a whole number of base units, written plainly: a decimal string with no leading zeros, or a safe integer
+  const amountOk = (a) => (typeof a === 'string' && /^(0|[1-9]\d{0,29})$/.test(a)) || (Number.isSafeInteger(a) && a >= 0);
+
+  async function handle({ method, path, body, client = null }) {
     try {
       if (method === 'GET' && path === '/health') return reply({ ok: health.ok, lastTick: health.lastTick, error: health.lastError }, health.ok ? 200 : 503);
       if (method === 'GET' && path === '/info') {
@@ -344,7 +350,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
         return reply({ v: 1, claimPub: config.claimPub, btcAsset: q.btcAsset, evmAsset: q.evmAsset, minAmount: String(q.minAmount), maxAmount: String(q.maxAmount), available: a == null ? null : String(a), feeBps: q.feeBps, flatFee: String(q.flatFee ?? 0), csvBlocks: config.csvBlocks, evmWindowSecs: config.policy.evmWindowSecs, minClaimSecs: config.policy.minClaimSecs, reserveSecs: hold.reserveSecs, anyTac: config.anyTac !== false });
       }
       if (method === 'POST' && path === '/quote') {
-        if (!body || !/^\d+$/.test(String(body.amount))) return reply({ error: 'amount must be a whole number' }, 400);
+        if (!body || !amountOk(body.amount)) return reply({ error: 'amount must be a whole number' }, 400);
         if (quotesHeld !== null && quotesHeld >= maxQuotes) return reply({ error: 'the provider holds too many open quotes just now: ask again shortly' }, 503);
         return reply(await exclusive(async () => { await capacity(quoter.price(body.amount).evmAmount); const made = await quoter.quote(body.amount); if (quotesHeld !== null) quotesHeld++; return made; }));
       }
@@ -355,9 +361,19 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           if (!q) return no('unknown quote');
           if (have && have.until > now()) return reply({ ok: true, until: have.until });
           if (now() > q.validUntil) return no('quote expired');
-          try { await capacity(BigInt(q.evmAmount)); if (!(await unbackedFits(BigInt(q.evmAmount)))) throw cannotTake(); } catch (e) { if (e.status) return no(e.message); throw e; }
+          // the client's oldest holds past its allowance make room for this one, and are kept if this one cannot be made
+          const who = client ? `ip:${client}` : 'board', cap = Number(client ? hold.perClient : hold.perBoard) || 0;
+          const mine = [...reservations].filter(([, r]) => r.who === who && !r.txid && r.until > now()).sort((a, b) => a[1].seq - b[1].seq);
+          const out = cap > 0 ? mine.slice(0, Math.max(0, mine.length - cap + 1)) : [];
+          for (const [id] of out) reservations.delete(id);
+          try { await capacity(BigInt(q.evmAmount)); if (!(await unbackedFits(BigInt(q.evmAmount)))) throw cannotTake(); } catch (e) {
+            for (const [id, r] of out) reservations.set(id, r);
+            if (e.status) return no(e.message);
+            throw e;
+          }
           const until = now() + hold.reserveSecs;
-          reservations.set(q.id, { amount: BigInt(q.evmAmount), until, txid: null });
+          reservations.set(q.id, { amount: BigInt(q.evmAmount), until, txid: null, who, seq: ++holdSeq });
+          for (const [id] of out) await keep(id);
           await keep(q.id);
           return reply({ ok: true, until });
         });

@@ -217,7 +217,7 @@ else if (ropts) {
   handle = routed(service.handle, reverse.handle);
   log({ level: 'info', msg: 'the reverse side is on: the TAC and the sats at this Bitcoin address are what it sells and what it pays fees from', reverseAddress: rbtc.address, maxOpen: ropts.maxOpen, maxTac: String(ropts.maxLocked), csvBlocks: ropts.csvBlocks, feeBps: ropts.quote.feeBps });
 }
-const server = makeHttpServer({ handle, origins: C.origins || [], trustProxy: !!C.trustProxy });
+const server = makeHttpServer({ handle, origins: C.origins || [], trustProxy: !!C.trustProxy, clientIp: C.clientIp || null });
 server.listen(C.port ?? 8787, () => log({ level: 'info', msg: 'listening', port: C.port ?? 8787 }));
 
 // Boards the LP is on as well: its ad is posted there and the requests left for it are answered, so a user finds it without its URL.

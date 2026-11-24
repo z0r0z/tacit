@@ -10,6 +10,7 @@
     "https://tacit.finance"
   ],
   "trustProxy": true,
+  "clientIp": { "header": "x-forwarded-for", "hops": 2, "proxies": "cloudflare" },
   "tickSecs": 15,
   "alertSecs": 3600,
   "lowFreeTac": 2000,
@@ -27,7 +28,9 @@
   "reserve": {
     "reserveSecs": 300,
     "extendSecs": 7200,
-    "maxUnbackedShare": 0.5
+    "maxUnbackedShare": 0.5,
+    "perClient": 2,
+    "perBoard": 4
   },
   "inventory": {
     "refreshSecs": 60

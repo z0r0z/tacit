@@ -73,6 +73,7 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `btcBases` | esplora bases, asked in order for reads; a broadcast goes to every one |
 | `csvBlocks` | the Bitcoin refund timelock the user's lock must carry (at least `policy.minCsv`) |
 | `reserve.reserveSecs`, `reserve.extendSecs`, `reserve.maxUnbackedShare` | how long a reservation holds the payout while the user builds and sends its lock (5 min), for how long once the lock is on the network (2 h), and the share of the pool balance that reservations with no transaction behind them may hold together (half; one alone may hold more) |
+| `reserve.perClient`, `reserve.perBoard` | how many reservations with no lock named yet one client address holds at once (2), and the requests that come through a board together (4, as they name no address). A new one past that lets go of that client's oldest, so a user asking again is always answered; 0 for no limit |
 | `inventory.refreshSecs` | how often the pool wallet's balance and the Bitcoin coins are read again (60 s) |
 | `quote.minAmount`, `quote.maxAmount` | amounts in base units, both sides; set `maxAmount` below `minAmount` to stop quoting while open swaps finish |
 | `quote.feeBps`, `quote.flatFee` | the LP's fee: a share of the amount plus a flat part in base units. The flat part covers the relay's fee (for cutting a note to size) and a little more: the user already pays the Bitcoin take in sats, inside its lock (`takeSats`), so it is not part of the fee. Keep it small: a fee over 5% of the amount is quoted by the fast page with a plain warning, and the front page's Bridge tab does not prefer it, so a flat fee of F TAC keeps every bridge under about 20 × F TAC out of the tab (a fee over 90% is not quoted at all) |
@@ -88,7 +89,26 @@ run on the same machine can be tried at `http://localhost:<port>/fast/?lp=<url>&
 | `lowEth` | the same for the ETH of its own address, in ETH (`"0.002"`): when the relay is not sending settles each one this address sends costs about 0.0002 ETH, and with none left the provider stops taking bridges. Unset for no alert |
 | `mailboxPollSecs` | how often the board is read for requests left for this provider (3 s unless set; `config.render.json` sets 1): a request waits for the next read |
 | `name`, `boards` | the name shown in the LP's ad (`Provider` and the first six hex digits of the claim key when there is none: two providers never share a name by default), and the boards it is on (URLs of `fastbridge-lp/board.mjs`): it posts its ad there every minute and answers the requests left for it, so a user finds it without its own URL |
-| `alertSecs`, `tickSecs`, `port`, `origins`, `trustProxy` | alert interval, tick length, the HTTP face; `trustProxy` reads the client from `X-Forwarded-For`, only behind a proxy you control |
+| `alertSecs`, `tickSecs`, `port`, `origins` | alert interval, tick length, the HTTP face. `origins` names the pages that may call it (`https://tacit.finance`); never `["*"]` on a public provider |
+| `trustProxy`, `clientIp` | where the client's address (its request allowance, below) is read. Off, it is the address that connected. Behind a proxy, `clientIp` says where the proxy puts it (`trustProxy` alone is the rule for Render, below) |
+
+#### The client's address behind a proxy
+
+Each proxy in front of the provider adds the address that connected to it to the end of `X-Forwarded-For`; anything before those entries is what the
+client sent, and is not read. `clientIp: { "header": "x-forwarded-for", "hops": N, "proxies": … }` takes the entry `N` from the right, and with `proxies`
+(`"cloudflare"`, or a list of address ranges such as `["10.0.0.0/8"]`) passes over an entry only when it is one of those proxies' addresses, so a request that
+reached the server some other way is counted by the address that connected.
+
+- **Render** (behind Cloudflare): Cloudflare adds the address it accepted, then Render adds the Cloudflare address it came from, so the client is 2 from the
+  right: `{ "header": "x-forwarded-for", "hops": 2, "proxies": "cloudflare" }`, which is also what `trustProxy: true` alone means. The `config.*.json` files set it.
+- **Your own proxy** (nginx, Caddy, a load balancer): it must add the connecting address to `X-Forwarded-For` (nginx `proxy_set_header X-Forwarded-For
+  $proxy_add_x_forwarded_for;`, Caddy does by default) or replace it outright; the provider must not be reachable except through it. One proxy is `hops: 1`;
+  the Render rule above gives the same answer behind one proxy that is not Cloudflare.
+- **One header**: `{ "header": "cf-connecting-ip" }` reads a single address from a header the proxy always sets itself, replacing any a client sent. Name one
+  only when that holds for every path to the server. `True-Client-IP` and `X-Real-IP` are not read unless named.
+
+`GET /health` sixty-one times in a minute from one machine answers 429 on the last, whatever headers the requests carry; a provider that never answers 429 is
+reading the wrong entry.
 
 ## Running it on Render
 
@@ -110,8 +130,8 @@ restart, not a new image.
 |---|---|
 | `GET /health` | 200 while the last tick succeeded, 503 with the error otherwise |
 | `GET /info` | the claim key, the asset pair, limits, windows, and `available`: the most it can take now |
-| `POST /quote {amount}` | what the user pays on Bitcoin and receives in the pool, fixed for `validSecs`; it holds nothing |
-| `POST /reserve {quoteId}` | holds the payout while the user builds and sends its lock |
+| `POST /quote {amount}` | (`amount` a whole number of base units, as a decimal string) what the user pays on Bitcoin and receives in the pool, fixed for `validSecs`; it holds nothing |
+| `POST /reserve {quoteId}` | holds the payout while the user builds and sends its lock (`reserve.perClient` at once for one client) |
 | `POST /extend {quoteId, txid, lock}` | once the lock is on the network, holds the payout through its confirmation; for a lock of sats `lock` is `{T, lockerXonly}`, and the transaction must pay the quoted amount to the output those terms make |
 | `POST /offer {quoteId, offer}` | the user's lock offer; `{ok}` or `{ok: false, retry, why}`, recomputed from the chain each time |
 | `GET /swap/:id`, `GET /swap/:id/offer` | the swap's phase; the pool lock's offer once the lock is made |
