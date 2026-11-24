@@ -1,0 +1,21 @@
+{
+  "label": "Tacit Praxis ceremony: an extension of SP1 v6.1.0 Groth16 setup",
+  "base_index": 17,
+  "base_sha256": "bf6f7799c77a90009ae356fd0d3a69a91cf153825e6762ce344fe804cf5db2df",
+  "head_index": 18,
+  "head_sha256": "b027d931c74e1f0175b3f51d54df92dd8f79a152d0efe5ea3783205b7e8f33af",
+  "coordinator_pubkey": "c22b59ae8acf7a1c2b78c4da8cfd2a3e7a21f2d2809a4d35e3a71e0fd2052eb7",
+  "receipts": [
+    {
+      "index": 18,
+      "name": "Tacit",
+      "handle": "@tacitfinance",
+      "contribution_hash": "b027d931c74e1f0175b3f51d54df92dd8f79a152d0efe5ea3783205b7e8f33af",
+      "file_sha256": "b027d931c74e1f0175b3f51d54df92dd8f79a152d0efe5ea3783205b7e8f33af",
+      "prev_file_sha256": "bf6f7799c77a90009ae356fd0d3a69a91cf153825e6762ce344fe804cf5db2df",
+      "at": "2026-11-24T12:41:29Z",
+      "signature": "c5d81af59a422bfbbe17cf392ce5ea34ef76b950513f509e74021f853ceeb06612fc9534edfb2e7690bb4e5a46f27139b3d63a664754d6553ddb68763e4f3908"
+    }
+  ],
+  "closed": false
+}
