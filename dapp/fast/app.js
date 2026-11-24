@@ -4,13 +4,14 @@ import { makeKeySession, signInSheet } from '/trade/key.js?cb=04a214c9';
 import { makeTacitSession } from '/tacit-session.js?cb=4636e436';
 import { getUx as loadUx, forgetUx } from '/trade/poolux.js?cb=59d125e5';
 import { onMainnet, connectedInjected } from '/eth-nodes.js';
-import { mountFast } from '/fast/ui.js?cb=2a73d1e3';
+import { mountFast } from '/fast/ui.js?cb=d64e9419';
 import { mountProvide } from '/fast/provide.js?cb=f205b95a';
 import { mountBound } from '/fast/bound.js?cb=f0f32804';
 import { mountReverse } from '/fast/reverse.js?cb=d5210257';
 import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=3dc3d274';
 import { makeWants } from '/fast/want.js?cb=e4c31a6d';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
+import { invaderSvg } from '/prove/invader.js';
 
 // The fast bridge page: TAC held on Bitcoin goes to the key's private balance through a provider, and any key can be a provider
 // (docs/FAST-BRIDGE.md). The providers are the ones /fast/lp.json names, each with the key it signs for, and the ones that post
@@ -91,7 +92,15 @@ const notify = (text) => {
 // /fast/#with=<id>: a provider's pairing link (fast/fmt.js pairId), kept for this visit
 const PIN = (/^#with=([0-9a-f]{16})$/i.exec(location.hash) || [])[1]?.toLowerCase() || null;
 const signIn = () => signInSheet(keyS, { why: 'Open your Tacit wallet to bridge or provide TAC.' });
+const faces = new Map();
+const face = (id) => {
+  try {
+    if (!faces.has(id)) faces.set(id, `data:image/svg+xml;base64,${btoa(invaderSvg(BigInt('0x' + String(id).replace(/^0x/, '')), 64))}`);
+    return `<img class="inv" src="${faces.get(id)}" width="18" height="18" alt="">`;
+  } catch { return ''; }
+};
 ui = mountFast({
+  face,
   root: document.getElementById('gate'), keyS, wants, notify, pinned: () => PIN, signIn,
   discover: async () => discoverProviders(await LISTS),
   open: async () => {

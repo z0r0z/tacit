@@ -21,7 +21,7 @@ const hasRoom = (p) => capOf(p) >= p.terms.minAmount && capOf(p) > 0n;
 const feeLine = (t) => `${(t.feeBps / 100).toFixed(2)}%${t.flatFee > 0n ? ` + ${fmtTac(t.flatFee)} TAC` : ''}`;
 const range = (a, b) => `${fmtTac(a, 2)} to ${fmtTac(b, 2)} TAC`;
 
-export function mountFast({ root, keyS, signIn, open, discover, wants = null, notify = () => {}, pinned = () => null, quoteDelayMs = 350, refreshMs = 30000, retryMs = 15000, say = () => {} }) {
+export function mountFast({ root, keyS, signIn, open, discover, wants = null, face = () => '', notify = () => {}, pinned = () => null, quoteDelayMs = 350, refreshMs = 30000, retryMs = 15000, say = () => {} }) {
   const doc = root.ownerDocument;
   const S = { providers: [], empties: 0, loaded: false, termsAt: 0, sess: null, pub: null, bal: null, amt: '', quotes: [], quote: null, best: null, seq: 0, busy: false, note: '', bad: false, recs: [], stop: null, timer: 0, opening: null, want: null, told: false, watch: 0, cost: null, sure: null, checking: false, anyOnly: null, split: null, waits: null, depthTimer: 0 };
   let kept = 0;
@@ -142,7 +142,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
       $('fx-big').textContent = fmtTac(q.evmAmount);
       const btc = c && c.total ? `<div class="kv"><span>Bitcoin fee</span><b class="num">≈ ${esc(c.total.toLocaleString('en-US'))} sats${c.take ? `<small>${esc(c.take.toLocaleString('en-US'))} of it is the provider's take</small>` : ''}</b></div>`
         : q.takeSats ? `<div class="kv"><span>Bitcoin fee</span><b class="num">${esc(q.takeSats.toLocaleString('en-US'))} sats<small>for the provider's take, and your own transaction's fee</small></b></div>` : '';
-      recv.innerHTML = `${sm && sm.count > 1 && S.best ? `<div class="kv"><span>Provider</span><b>${esc(S.best.name || 'Provider')}<small class="num">${esc(keyTag(S.best.id))}</small></b></div>` : ''}<div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(q.fee))} TAC<small>${esc(pct(q.fee, q.btcValue))}</small></b></div>${btc}
+      recv.innerHTML = `${sm && sm.count > 1 && S.best ? `<div class="kv"><span>Provider</span><b>${face(S.best.id)}${esc(S.best.name || 'Provider')}<small class="num">${esc(keyTag(S.best.id))}</small></b></div>` : ''}<div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(q.fee))} TAC<small>${esc(pct(q.fee, q.btcValue))}</small></b></div>${btc}
         <div class="kv"><span>Time</span><b class="num">about ${minutesFor(q.minConfs)} minutes<small>${Math.max(1, Number(q.minConfs) || 1)} Bitcoin confirmation${(Number(q.minConfs) || 1) > 1 ? 's' : ''}, then a pool settle</small></b></div>${highTake(q) ? `
         <p class="status err" role="alert" id="fx-high-take">High Bitcoin fee: this provider asks ${esc(Number(q.takeSats).toLocaleString('en-US'))} sats for its take, well above what it costs at the current rate. Other providers may ask less.</p>` : ''}${highFee(q) ? `
         <p class="status err" role="alert" id="fx-high">High fee: this provider keeps ${esc(fmtTac(q.fee))} TAC (${esc(pct(q.fee, q.btcValue))}) of your ${esc(fmtTac(q.btcValue))} TAC, and you receive ${esc(fmtTac(q.evmAmount))}. A smaller bridge costs more in proportion, a larger one less, and the regular bridge may cost less.</p>` : ''}`;
@@ -176,7 +176,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     const n = sp.legs.length, c = sp.cost, sats = (v) => `${Number(v).toLocaleString('en-US')} sats`;
     $('fx-big').textContent = fmtTac(sp.receive);
     $('fx-recv').innerHTML = `<div class="kv"><span>Split</span><b class="num">${n} parts<small>no one provider takes it whole</small></b></div>`
-      + sp.legs.map((l) => `<div class="kv"><span>${esc(l.provider.name || 'Provider')}</span><b class="num">${esc(fmtTac(l.amount))} TAC<small>fee ${esc(fmtTac(l.quote.fee))} (${esc(pct(l.quote.fee, l.quote.btcValue))}) · ${esc(keyTag(l.provider.id))}</small></b></div>`).join('')
+      + sp.legs.map((l) => `<div class="kv"><span>${face(l.provider.id)}${esc(l.provider.name || 'Provider')}</span><b class="num">${esc(fmtTac(l.amount))} TAC<small>fee ${esc(fmtTac(l.quote.fee))} (${esc(pct(l.quote.fee, l.quote.btcValue))}) · ${esc(keyTag(l.provider.id))}</small></b></div>`).join('')
       + `<div class="kv"><span>Fee</span><b class="num">${esc(fmtTac(sp.fee))} TAC<small>${esc(pct(sp.fee, sp.amount))}</small></b></div>`
       + (c && c.total ? `<div class="kv"><span>Bitcoin fee</span><b class="num">≈ ${esc(sats(c.total))}<small>${n} locks, each with its own fee${c.take ? `; ${esc(sats(c.take))} of it is the providers' take` : ''}</small></b></div>` : '')
       + `<div class="kv"><span>Time</span><b class="num">about ${minutesFor(sp.minConfs)} minutes<small>${Math.max(1, Number(sp.minConfs) || 1)} Bitcoin confirmation${(Number(sp.minConfs) || 1) > 1 ? 's' : ''} for the slowest part, then a pool settle</small></b></div>`
@@ -268,7 +268,7 @@ export function mountFast({ root, keyS, signIn, open, discover, wants = null, no
     e.hidden = !show;
     e.innerHTML = show ? `<p class="eyebrow"><span>Providers online</span><span class="who num">${ps.length}</span></p>
       <div class="lp-grid">${ps.map((p) => `<div class="lp-tile${p.id === me ? ' mine' : ''}">
-        <div class="lp-top"><b>${esc(p.name || 'Provider')}</b><small class="num lp-key">${esc(keyTag(p.id))}</small>${p.id === me ? '<span class="lp-tag">You</span>' : ''}</div>
+        <div class="lp-top"><b>${face(p.id)}${esc(p.name || 'Provider')}</b><small class="num lp-key">${esc(keyTag(p.id))}</small>${p.id === me ? '<span class="lp-tag">You</span>' : ''}</div>
         <div class="kv"><span>Fee</span><b class="num">${esc(feeLine(p.terms))}</b></div>
         <div class="kv"><span>Takes</span><b class="num">${hasRoom(p) ? esc(range(p.terms.minAmount, capOf(p))) : 'full right now'}</b></div>
       </div>`).join('')}</div>` : '';
