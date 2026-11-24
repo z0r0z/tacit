@@ -171,6 +171,17 @@ const isA = (_, tag) => tag === A_CALL;
   const rw = await keeper({ RPC: w.url, RPC_FALLBACKS: '', START_RETRY_SECONDS: '1' });
   ok(rw.code === 0 && /start check: the endpoint is failing[^\n]*maximum proof window/.test(rw.out) && !/does not serve eth_getProof/.test(rw.out), `a proof window that one node refuses and the next serves does not end the start (exit ${rw.code})`);
   w.server.close();
+  // A window that stays shorter than the oldest proof asked for: the start goes on with the depth it is served and says so, and ends only when no depth is served.
+  const tip = Number(BigInt(await rpc('eth_blockNumber')));
+  const WINDOW_ERR = { error: { code: 4444, message: 'distance to target block exceeds maximum proof window' } };
+  const s = await endpoint({ fail: (j) => (j.method === 'eth_getProof' && Number(BigInt(j.params[2])) < tip - 100 ? WINDOW_ERR : null) });
+  const rs = await keeper({ RPC: s.url, RPC_FALLBACKS: '', START_RETRY_SECONDS: '1', PROOF_WINDOW_TRIES: '2' });
+  ok(rs.code === 0 && alerts(rs.out).some((l) => /RPC proves \d+ of the \d+ blocks back/.test(l)) && !/does not serve eth_getProof/.test(rs.out), `a window shorter than the oldest proof goes on with the depth it serves and says how far (exit ${rs.code}; ${alerts(rs.out).join(' | ') || 'no alert'})`);
+  s.server.close();
+  const z = await endpoint({ fail: (j) => (j.method === 'eth_getProof' ? WINDOW_ERR : null) });
+  const rz = await keeper({ RPC: z.url, RPC_FALLBACKS: '', START_RETRY_SECONDS: '1', PROOF_WINDOW_TRIES: '2' });
+  ok(rz.code === 2 && /does not serve eth_getProof for old blocks/.test(rz.out), `a window that serves no depth still ends the start (exit ${rz.code})`);
+  z.server.close();
   const q = await endpoint({ fail: (j) => (j.method === 'eth_getProof' ? { error: { code: -32000, message: 'missing trie node' } } : null) });
   const r2 = await keeper({ RPC: q.url, RPC_FALLBACKS: '', START_RETRY_SECONDS: '1' });
   ok(r2.code === 2 && /does not serve eth_getProof for old blocks/.test(r2.out) && !/start check: the endpoint is failing/.test(r2.out), `an endpoint that cannot serve the proof still ends the start (exit ${r2.code})`);

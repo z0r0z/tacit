@@ -56,7 +56,7 @@
 // Usage:
 //   KEEPER_ACCOUNT=<cast keystore name> [KEEPER_PASSWORD_FILE=..] RPC=<archive endpoint>
 //   [ORACLE=0xvenue1,0xvenue2] [PROVEN=0xoracle PROOF_URL=https://... | PROOF_CMD='...' [PROOF_TIMEOUT_SECONDS=1800]] [VAULTS=0xusd,0xeth FROM_BLOCK=<vault deploy block>] [SEND_RPC=https://...]
-//   [RPC_FALLBACKS=https://...,https://...] [RPC_COOLDOWN_SECONDS=120] [START_TRIES=30] [START_RETRY_SECONDS=20]
+//   [RPC_FALLBACKS=https://...,https://...] [RPC_COOLDOWN_SECONDS=120] [START_TRIES=30] [START_RETRY_SECONDS=20] [PROOF_WINDOW_TRIES=6]
 //   [MAX_GWEI=1] [RECORD_TIP_GWEI=0.001] [URGENT_MAX_GWEI=25] [URGENT_TIP_GWEI=0.1] [URGENT_AFTER_BLOCKS=5]
 //   [ACTION_MAX_GWEI=100] [ACTION_TIP_GWEI=0.1] [RECORD_POLL_SECONDS=12] [FULL_SWEEP_SECONDS=300] [SCAN_SECONDS=60]
 //   [LOG_CHUNK=5000] [ALERT_WEBHOOK=https://...] [ONCE=1] [FEE_HEADROOM=3] [RECORD_MODE=always|demand] [RISK_COVER_BPS=28000] [REDEEM_GAP_BPS=200] [PAUSE_GAP_BPS=0 PAUSE_SECONDS=1500]
@@ -90,6 +90,8 @@ const READ_RPCS = [RPC, ...(process.env.RPC_FALLBACKS === undefined ? [SEND_RPC]
 const RPC_COOLDOWN = Number(process.env.RPC_COOLDOWN_SECONDS || 120) * 1000;
 const START_TRIES = Number(process.env.START_TRIES || 30);
 const START_RETRY = Number(process.env.START_RETRY_SECONDS || 20);
+// How many times the start check asks again when the endpoint refuses the oldest proof as beyond its window, before it goes on with the depth it does serve.
+const PROOF_WINDOW_TRIES = Number(process.env.PROOF_WINDOW_TRIES || 6);
 const gwei = (x) => BigInt(Math.round(Number(x) * 1e9));
 const RECORD_CAP = gwei(process.env.MAX_GWEI || 1);
 const RECORD_TIP = gwei(process.env.RECORD_TIP_GWEI || 0.001);
@@ -905,22 +907,49 @@ function checkBalance() {
   }
 }
 
+// How far back (in blocks) RPC proves, tried at fractions of `dist`: 0n when it proves none of them (or answers something other than a window).
+function provenReach(pool, dist) {
+  const tip = head();
+  for (const [n, d] of [[3n, 4n], [1n, 2n], [1n, 4n], [1n, 8n], [1n, 16n]]) {
+    const back = (dist * n) / d;
+    if (back < 1n) continue;
+    try {
+      rd(['proof', pool, '0', '-B', String(tip - back)]);
+      return back;
+    } catch (e) {
+      if (!(proofWindow(e) || troubled(e))) return 0n;
+    }
+  }
+  return 0n;
+}
+
 async function main() {
   for (const oracle of ORACLES) {
     for (let tries = 1; ; tries++) {
+      let pool = '', dist = 0n;
       try {
         // The oldest block the keeper reads: its longest window of intervals back.
         const step = num(call(oracle, 'STEP()(uint256)'));
         const reach = (num(call(oracle, 'MAX_WINDOW()(uint256)')) / (step * 12n) + 3n) * step;
         const oldest = head() > reach ? head() - reach : 1n;
-        rd(['proof', call(oracle, 'POOL()(address)'), '0', '-B', String(oldest)]);
+        pool = call(oracle, 'POOL()(address)');
+        dist = head() - oldest;
+        rd(['proof', pool, '0', '-B', String(oldest)]);
+        clearAlert(`proof-reach:${oracle}`);
         break;
       } catch (e) {
+        const windowed = proofWindow(e);
         // A provider in trouble says nothing about what it serves: wait and ask again, as the restart that an exit brings would.
-        if ((troubled(e) || proofWindow(e)) && tries < START_TRIES) {
-          log('start check: the endpoint is failing (', quiet(e), '); trying again in', String(START_RETRY), 's (', String(tries), 'of', String(START_TRIES), ')');
+        if ((troubled(e) || windowed) && tries < (windowed ? PROOF_WINDOW_TRIES : START_TRIES)) {
+          log('start check: the endpoint is failing (', quiet(e), '); trying again in', String(START_RETRY), 's (', String(tries), 'of', String(windowed ? PROOF_WINDOW_TRIES : START_TRIES), ')');
           await sleep(START_RETRY * 1000);
           continue;
+        }
+        // An endpoint whose window is shorter than the longest one still serves the newer intervals: the keeper goes on with what it reaches and says how far that is.
+        const back = windowed && pool ? provenReach(pool, dist) : 0n;
+        if (back > 0n) {
+          alertOnce(`proof-reach:${oracle}`, `${oracle}: RPC proves ${back} of the ${dist} blocks back that its longest window reads; older intervals are recorded once an endpoint with a deeper window is set`);
+          break;
         }
         console.error('RPC does not serve eth_getProof for old blocks; use an archive endpoint:', errLine(e));
         process.exit(2);
