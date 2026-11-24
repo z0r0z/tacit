@@ -3,6 +3,7 @@ import { getConfidentialDeployment, activeNetwork, syncProtectedOutpoints, shown
 import { bodyType } from './rpc-body.js';
 import { hedgedRpc, nodeHealth, QUOTA } from './trade/rpc.js';
 import { walletNode, connectedInjected, logSpan, refuses, isShared } from './eth-nodes.js';
+import * as ethNodes from './eth-nodes.js';   // (a namespace: eth-nodes.js has no cache token, and a browser may hold an older one without batchSize)
 import { pace, once } from './rpc-pace.js';
 import { makeEvmAccount } from './evm-account.js';
 import { makeConfidentialIndexer } from './confidential-indexer.js';
@@ -329,6 +330,57 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
     throw Object.assign(new Error(`Ethereum's public nodes did not answer (${String(lastErr?.message || 'no answer').slice(0, 80)})`), { kind: 'transport', unreachable: true, cause: lastErr });
   }
 
+  // Transactions by hash, many at once → Map(lowercase hash → { hash, input, to } | null). They go as JSON-RPC batches to the nodes that take them (eth-nodes.js
+  // batchSize), a few batches at a time, each to the first such node in health order that answers it; a transaction is taken only when the node names it by the
+  // hash asked for. What no batch gave (a node down, an error or a null for one of them) is read one by one through rpc(), as it always was. A first look for a
+  // key's swaps reads the ~380 lock transactions and a window of settles: one request each took 12 to 14 s from the public nodes, batches of 25 take about 2 s
+  // (measured from a browser's network, 2026-11-25).
+  const TX_BATCH_AT_ONCE = 3, TX_BATCH_MS = 12e3, TX_SINGLE_AT_ONCE = 6;
+  async function readTxs(hashes) {
+    const want = [...new Set((hashes || []).map((h) => String(h).toLowerCase()).filter((h) => /^0x[0-9a-f]{64}$/.test(h)))];
+    const out = new Map();
+    const batchOf = (u) => Number(ethNodes.batchSize?.(u)) || 0;
+    const nodes = want.length > 1 && _fetch ? (cfg.rpcs || []).filter((u) => typeof u === 'string' && batchOf(u) > 1) : [];
+    if (nodes.length) {
+      const size = Math.min(...nodes.map(batchOf)), groups = [];
+      for (let i = 0; i < want.length; i += size) groups.push(want.slice(i, i + size));
+      let next = 0;
+      const one = async (group) => {
+        for (const url of _health.order(nodes)) {
+          if (_health.quotaRest(url)) continue;
+          const ask = group.filter((h) => !out.has(h));
+          if (!ask.length) return;
+          try {
+            const signal = AbortSignal.timeout(TX_BATCH_MS);
+            const body = JSON.stringify(ask.map((h, id) => ({ jsonrpc: '2.0', id, method: 'eth_getTransactionByHash', params: [h] })));
+            const r = await pace(url, 'eth_getTransactionByHash', () => _fetch(url, { method: 'POST', headers: { 'content-type': bodyType(url) }, body, signal }), signal);
+            let j = null; try { j = await r.json(); } catch { }
+            if (!Array.isArray(j)) {
+              const msg = String((j && j.error && j.error.message) || `rpc ${r.status}`);
+              _health.fail(url, QUOTA.test(msg) ? 'quota' : r.status === 429 || /rate.?limit|too many/i.test(msg) ? 'limited' : 'down');
+              continue;
+            }
+            _health.ok(url);
+            for (const x of j) {
+              const h = x && Number.isInteger(x.id) ? ask[x.id] : null, t = x && x.result;
+              if (h && t && String(t.hash || '').toLowerCase() === h && typeof t.input === 'string') out.set(h, { hash: h, input: t.input, to: t.to == null ? null : String(t.to).toLowerCase() });
+            }
+          } catch (e) { _health.fail(url, e && (e.name === 'TimeoutError' || e.name === 'AbortError') ? 'slow' : 'down'); }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(TX_BATCH_AT_ONCE, groups.length) }, async () => { while (next < groups.length) await one(groups[next++]); }));
+    }
+    const rest = want.filter((h) => !out.has(h));
+    let k = 0;
+    await Promise.all(Array.from({ length: Math.min(TX_SINGLE_AT_ONCE, rest.length) }, async () => {
+      while (k < rest.length) {
+        const h = rest[k++];
+        try { const t = await rpc('eth_getTransactionByHash', [h]); out.set(h, t && typeof t.input === 'string' ? { hash: h, input: t.input, to: t.to == null ? null : String(t.to).toLowerCase() } : null); } catch { /* left out: the caller reads it again */ }
+      }
+    }));
+    return out;
+  }
+
   function ethCall(to, data) { return rpc('eth_call', [{ to: String(to).toLowerCase(), data }, 'latest']); }
 
   function _narrower(e, span) {
@@ -438,10 +490,10 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       const keys = [...held.keys()], draws = new Set(), r = new Uint32Array(Math.min(3, keys.length));
       (globalThis.crypto || {}).getRandomValues ? globalThis.crypto.getRandomValues(r) : r.forEach((_, i) => { r[i] = Math.floor(Math.random() * 2 ** 32); });
       for (const x of r) draws.add(keys[x % keys.length]);
+      // (the draws are asked together: the page's first read of the pool waits on them)
+      const said = await Promise.all([...draws].map((h) => rpc('eth_getTransactionByHash', [h]).then((t) => [h, t], () => [h, null])));
       let proved = 0;
-      for (const h of draws) {
-        let t = null;
-        try { t = await rpc('eth_getTransactionByHash', [h]); } catch { continue; }
+      for (const [h, t] of said) {
         if (!t || !t.input) continue;
         if (String(t.input).toLowerCase() !== held.get(h)) return 0;
         proved++;
@@ -1043,7 +1095,8 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
       byAsset[id].notes.push(n);
     }
     const ctac = assetByTicker.cTAC;
-    if (ctac && ctac.assetId && o.fromBlock == null && o.toBlock == null) {
+    // (a scan that left out the bridge-mint walk may not hold all of the key's cTAC: the holder tier is set only from a whole one)
+    if (ctac && ctac.assetId && o.fromBlock == null && o.toBlock == null && o.bridge !== false) {
       const held = byAsset[String(ctac.assetId).toLowerCase()];
       _privateTacWei = held ? held.value * BigInt(ctac.unitScale || '1') : 0n;
       if (ctac.underlying) {
@@ -2819,6 +2872,9 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   }
   async function _readLockSet(opts, head) {
     const events = (opts && opts.events) || await fetchEvents({ ...opts, toBlock: head });
+    // the lock transactions not held yet (from the snapshot, or an earlier scan) are read together first, so the scan below finds them all here
+    const need = [...new Set(events.filter((e) => e && e.type === 'LockLeavesInserted' && e.txHash).map((e) => String(e.txHash).toLowerCase()))].filter((h) => !_txInputs.has(h));
+    if (need.length > 1) { try { for (const [h, t] of await readTxs(need)) if (t && t.input) _txInputs.set(h, t.input); } catch { /* the scan reads them one by one */ } }
     const getTxInput = async (txHash) => {
       const k = String(txHash).toLowerCase();
       if (_txInputs.has(k)) return _txInputs.get(k);
@@ -4011,7 +4067,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
   });
 
   return { cfg, assets: _poolAssets, assetByTicker, addAsset, externalAsset, externalAssets, readAsset, registerTokenCall, tokenTicker, registeredTokens, pooledTokens, lpShareId: (poolId) => String(_lp.lpShareId(poolId)).toLowerCase(), account, identity, rpc, useWallet: (get) => { _walletGet = typeof get === 'function' ? get : null; }, ethCall, fetchEvents, balance, poolStatsFromEvents, tickerOf, poolTickerOf,
-    deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
+    deriveOutput, receiveCode, parseReceiveCode, buildWrap, buildShareWrap, nextShareIndex, releaseShareIndex, shareDeposits, nextWrapIndex, warmWrapLogs, releaseWrapIndex, wrap, submitWrapSettle, buildRouterWrap, routerWrap, routerConfigured, buildWrapTransferOp, wrapAndSend, wrapAndMintCusdCall, resumeWrapAndSend, proveWrap, wrapProofFits, wrapSettleCall, sendPreparedTx, buildTransferOp, transfer, stealthSend, scanStealthLocks, scanLockSet, readTxs, stealthClaim, stealthRefund, stealthLockPosition, crossOut, payInvoice, quoteUnwrapFee, ladderFee: _ladderFee, poolLeafCount, refreshFarmPending, holderFeeBps, setPublicTacHeld, quoteTransferFee, quoteOpFee: gasAwareMinFee, feeUsdFor, relayFeeEligible, buildUnwrap, unwrap, sendUnwrap, sendUnwrapExitOp: _sendUnwrapExit, exitAhead, exitAheadSend, exitForAnyone, watchSpent, cutForAnyone, lockForAnyone, addBridgeAmountHint, buildAttestMeta, chainBindingHex,
     settleFromAccount, erc2612Nonce: _erc2612Nonce, waitReceipt: _waitReceipt, poolReserves, poolFeeApr, poolCurrentRoot, sameRoot, routePoolId, quoteRoute, route, routeMoved, swapRetry, routeAhead, routeAheadSend, transferAhead, transferAheadSend, stealthSendAhead, stealthSendAheadSend, swapBatched, swapBatchPending, swapBatchFlush, lpBondPosition, buildLpBondOp, lpBond, farmProgram, farmBond, farmPositions, importFarmPosition, lpBondRecord, keepFarmPosition, recoverSoloFarmPositions, decodeCdpMints: (pv) => recovery().decodeCdpFields(pv).mints, recover, recoverCdpPositions, scanSentLocks, farmHarvest, farmUnbond, farmRedeem, buildFastlaneExitOp, fastlaneExit, lpAdd, lpRemove, quoteLpAdd, wrapLp, wrapSwap, buildWrapSwap, submitWrapSwap, proveWrapSwap, ensureExactNote, mintCbtc, defiActions, cdp: _cdp, cdpPositionTree, submitSettle, settleCalldata,
     cbtcLockState, syncCbtcLockReservations, cbtcBonds, forgetKeys: forget,
     relay, indexer, evmLog, evmTx, pool, memo, router: _router, stealth: _stealth, bridgeMint: _bridgeMint, bridgeBurn: _bridgeBurn, bridgeBurnToPool, airdrop: _airdrop, tacAirdrop: _tacAirdrop, lockScan: _lockScan };

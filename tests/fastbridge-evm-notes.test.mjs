@@ -174,6 +174,49 @@ test('a take of a note that waits is replaced from the same coins at a rate that
   assert.equal(built.length, 1, 'a replacement waits takeBumpSecs before the next');
 });
 
+test('the balance and the free amount asked together share one note scan; for ETH it leaves out the TAC and cBTC walks, for TAC it does not', async () => {
+  const scans = [];
+  const mk = (ticker) => {
+    const ux = {
+      pool: { nullifier: (l) => l, leaf: () => '0x00' }, rpc: async () => '0x0', identity: () => ({ pubHex: '03' }), chainBindingHex: () => '0x00',
+      poolTickerOf: () => ticker, quoteOpFee: async () => 0n, ladderFee: () => 0n,
+      balance: (priv, opts) => { scans.push(opts || null); return new Promise((r) => setTimeout(() => r({ byAsset: { ['0x' + ASSET]: { notes: [note(1, '700')] } } }), 20)); },
+    };
+    return makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256: (k, m) => hmac(sha256, k, m), walletPriv: new Uint8Array(32).fill(1), seed: new Uint8Array(32), asset: ASSET, poolAddress: '0x' + '11'.repeat(20) });
+  };
+  const eth = mk('cETH');
+  const [held, again] = await Promise.all([eth.heldFree(), eth.heldFree()]);
+  assert.equal(held, 700n); assert.equal(again, 700n);
+  assert.equal(scans.length, 1, 'one scan for both');
+  assert.deepEqual(scans[0], { bridge: false, cbtc: false });
+  await eth.heldFree();
+  assert.equal(scans.length, 2, 'a read after the first ended scans again (nothing is kept past it)');
+  scans.length = 0;
+  await mk('cTAC').heldFree(); await mk(null).heldFree();
+  assert.deepEqual(scans, [null, null], 'TAC, and an asset the module cannot name, get the whole scan');
+});
+
+test('a claim\'s window is read in batches where the pool module offers them, and what a batch left out is read one by one', async () => {
+  const POOL = '0x' + '11'.repeat(20), nu = '0x' + 'aa'.repeat(32);
+  const txs = { '0xa1': { input: '0xdead', to: POOL }, '0xa2': { input: '0xcafe', to: POOL }, '0xa3': { input: '0xbeef', to: POOL } };
+  const single = [], batched = [];
+  const ux = {
+    pool: { nullifier: (l) => l, leaf: () => '0x00' },
+    rpc: async (m, a) => { if (m === 'eth_getTransactionByHash') { single.push(a[0]); return txs[a[0]] || null; } return m === 'eth_getStorageAt' ? '0x01' : null; },
+    readTxs: async (hs) => { batched.push(...hs); return new Map(hs.filter((h) => h !== '0xa3').map((h) => [h, { hash: h, ...txs[h] }])); },
+    identity: () => ({}), chainBindingHex: () => '0x00',
+    fetchEvents: async () => Object.keys(txs).map((txHash) => ({ txHash, type: 'NullifiersSpent' })),
+    lockScan: {
+      decodeSettleCalls: (input) => ({ calls: [{ publicValues: input }], direct: true }),
+      decodePublicValuesAdaptorFields: (pv) => ({ lockNullifiers: pv === '0xcafe' ? [nu] : [], adaptorClaimS: ['0x07'] }),
+    },
+  };
+  const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256: (k, m) => hmac(sha256, k, m), walletPriv: new Uint8Array(32).fill(1), seed: new Uint8Array(32), asset: ASSET, poolAddress: POOL });
+  assert.deepEqual(await evm.findClaim(nu), ['0x07']);
+  assert.deepEqual(batched, ['0xa1', '0xa2', '0xa3']);
+  assert.deepEqual(single, ['0xa3'], 'only the one the batch did not give');
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

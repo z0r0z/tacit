@@ -4,7 +4,7 @@
 //   node tests/eth-nodes-refuses.test.mjs
 
 import assert from 'node:assert/strict';
-import { refuses, logSpan, isShared, ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES, BASE_NODES, ROBINHOOD_NODES } from '../dapp/eth-nodes.js';
+import { refuses, logSpan, isShared, batchSize, ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES, BASE_NODES, ROBINHOOD_NODES } from '../dapp/eth-nodes.js';
 import { hedgedRpc } from '../dapp/trade/rpc.js';
 import { jsonRpc } from '../dapp/evm-pool-wallet.js';
 import { bodyType } from '../dapp/rpc-body.js';
@@ -135,7 +135,15 @@ await test('BuidlGuidl\'s node (measured: logs complete over 600,000 blocks in 1
   for (const list of [ETH_NODES, ETH_LOG_NODES, ETH_ARCHIVE_NODES]) {
     assert.ok(list.includes(BUIDLGUIDL));
     assert.ok(list.indexOf(BUIDLGUIDL) < list.indexOf(NODEREAL));
+    // its quota is the whole site's (per origin) and is used up for hours at a time: every node with a quota of its own is asked first
+    assert.equal(list.indexOf(BUIDLGUIDL), list.indexOf(NODEREAL) - 1, 'last but the shared key');
   }
+});
+
+await test('reads go in JSON-RPC batches only to the nodes measured to take them, at their size; the light node (no history) and the rest get none', () => {
+  assert.equal(batchSize('https://ethereum-rpc.publicnode.com'), 50);
+  assert.equal(batchSize('https://rpc.mevblocker.io'), 25);
+  for (const u of [BUIDLGUIDL, NODEREAL, 'https://tacit-node-gw.onrender.com/eth', 'https://eth.drpc.org', 'https://1rpc.io/eth', 'https://example.org']) assert.equal(batchSize(u), 0, u);
 });
 
 await test('the cBTC history reads (45,000-block ranges) are not turned away from the node that has served them', () => {

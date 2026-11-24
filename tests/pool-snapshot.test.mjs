@@ -148,14 +148,15 @@ test('the record is read from the WNS text record', () => {
 });
 
 // The page, its nodes and gateways stood in for. `chain`: every log on chain; `snap`: what the snapshot holds (up to snapTo); `storage`: the pool's words.
-function page({ chain, head, snap, snapTo, storage, lie = false, txs = null }) {
-  const asked = [], txAsked = [];
+// A JSON-RPC batch is answered item by item (`batches` counts them); `swap(h)` → the transaction a lying node hands back in a batch in place of h.
+function page({ chain, head, snap, snapTo, storage, lie = false, txs = null, swap = null }) {
+  const asked = [], txAsked = [], batches = [];
   const record = snap ? (() => { const v = enc.encode(JSON.stringify({ v: 1, cid: snap.cid, to: snapTo })); return '0x' + W(32) + W(v.length) + hex(v).padEnd(Math.ceil(v.length / 32) * 64, '0'); })() : '0x' + W(32) + W(0);
   const node = (method, params) => {
     if (method === 'eth_blockNumber') return '0x' + head.toString(16);
     if (method === 'eth_call' && String(params[0].to).toLowerCase() === SNAPSHOT.wns.toLowerCase()) return record;
     if (method === 'eth_call') return '0x' + W(treesFor(chain).note.count);
-    if (method === 'eth_getStorageAt') return storage[params[1]] ?? '0x' + W(0);
+    if (method === 'eth_getStorageAt') return storage['0x' + W(BigInt(params[1]))] ?? '0x' + W(0);   // (a slot as the lock scan names it, 0x54, or as a word)
     if (method === 'eth_getTransactionByHash') { txAsked.push(params[0]); const i = txs && txs(params[0]); return i ? { hash: params[0], input: i } : null; }
     if (method === 'eth_getLogs') {
       const a = parseInt(params[0].fromBlock, 16), b = parseInt(params[0].toBlock, 16);
@@ -168,12 +169,18 @@ function page({ chain, head, snap, snapTo, storage, lie = false, txs = null }) {
   const fetchImpl = async (url, opts) => {
     if (/\/ipfs\//.test(url)) return gatewayFetch(files, { lie: lie ? new Set(SNAPSHOT.gateways.map((g) => new URL(g).host)) : new Set() })(url);
     if (/\/pool\/snapshot$/.test(url)) return new Response('no', { status: 503 });
-    const { method, params } = JSON.parse(opts.body);
+    const body = JSON.parse(opts.body);
+    if (Array.isArray(body)) {
+      batches.push(body.length);
+      const outs = body.map((b) => { const h = swap && b.method === 'eth_getTransactionByHash' ? swap(b.params[0]) : null; return { jsonrpc: '2.0', id: b.id, result: h ? node(b.method, [h]) : node(b.method, b.params) }; });
+      return new Response(JSON.stringify(outs), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    const { method, params } = body;
     const out = node(method, params);
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: out }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet', fetchImpl, logStore: null, snapshotOpts: { auditMs: 0 } });
-  return { ux, asked, txAsked };
+  return { ux, asked, txAsked, batches };
 }
 const settle = () => new Promise((r) => setTimeout(r, 50));
 
@@ -511,4 +518,44 @@ test('one draw that disagrees with a node stops the inputs of the snapshot being
     await p.ux.scanStealthLocks({ walletPriv: new Uint8Array(32).fill(7) }).catch(() => {});
     assert.equal(new Set(p.txAsked).size, lockTxs(chain).length, 'two draws agreed and one did not: nothing taken, every lock transaction read from the nodes');
   } finally { if (was) Object.defineProperty(globalThis, 'crypto', was); }
+});
+
+test('the lock transactions are read in JSON-RPC batches; an answer that names another transaction is not taken, and that one is read on its own', async () => {
+  mem.clear();
+  const chain = history(150), head = Number(BigInt(chain[chain.length - 1].blockNumber)) + 500;
+  const all = lockTxs(chain), liar = all[7], other = all[8];
+  const p = page({ chain, head, snap: null, snapTo: 0, storage: storageFor(treesFor(chain)), txs: inputFor, swap: (h) => (h === liar ? other : null) });
+  const got = await p.ux.readTxs(all);
+  assert.ok(p.batches.length >= Math.ceil(all.length / 50) && p.batches.every((n) => n <= 50), `batches of the nodes' size (${p.batches.join(',')})`);
+  for (const h of all) assert.equal(got.get(h).input, inputFor(h), `the input of ${h} is its own`);
+  assert.equal(p.txAsked.filter((h) => h === liar).length, 1, 'the one a batch answered wrongly was asked again on its own');
+  assert.ok(p.txAsked.filter((h) => h !== liar && h !== other).every((h, i, a) => a.indexOf(h) === i), 'the others were asked once');
+  const before = p.batches.length, asked = p.txAsked.length;
+  const set = await p.ux.scanLockSet();
+  assert.equal(set.lockLeaves.length, chain.filter((l) => l.topics[0] === T.LockLeavesInserted).length, 'the lock set checks out against the pool');
+  assert.ok(p.batches.length - before >= 2, 'the lock set reads its transactions in batches too');
+  assert.ok(p.txAsked.length - asked <= all.length + 4, `and reads each about once (${p.txAsked.length - asked} for ${all.length})`);
+});
+
+test('the own-lock finder reads the pool module\'s lock set: a snapshot\'s inputs are taken after the spot check, only the later ones reach the nodes, and they come in batches', async () => {
+  const { makeOwnLockFinder } = await import('../dapp/fastbridge-evm.js');
+  const hmacSha256 = (k, m) => hmac(nobleSha256, k, m);
+  mem.clear();
+  const chain = history(120), head = Number(BigInt(chain[chain.length - 1].blockNumber)) + 500;
+  const snapTo = Number(BigInt(chain[Math.floor(chain.length * 0.7)].blockNumber));
+  const onSnap = chain.filter((l) => Number(BigInt(l.blockNumber)) <= snapTo);
+  const snap = await snapshotOf(onSnap, snapTo, rowsOf(onSnap));
+  const inSnap = new Set(lockTxs(onSnap)), tail = lockTxs(chain).filter((h) => !inSnap.has(h));
+  const p = page({ chain, head, snap, snapTo, storage: storageFor(treesFor(chain)), txs: inputFor });
+  assert.deepEqual(await makeOwnLockFinder({ ux: p.ux, hmacSha256, walletPriv: new Uint8Array(32).fill(7) })(), [], 'no lock of this key');
+  const fromSnap = p.txAsked.filter((h) => inSnap.has(h));
+  assert.ok(fromSnap.length >= 1 && fromSnap.length <= 3, `only the spot check reads the snapshot's set (${fromSnap.length} of ${inSnap.size})`);
+  assert.ok(tail.every((h) => p.txAsked.includes(h)) && p.batches.length >= 1, 'the later ones are read from the nodes, in a batch');
+  // a pool module without the shared lock set: the finder reads every lock transaction itself, still in batches
+  mem.clear();
+  const q = page({ chain, head, snap: null, snapTo: 0, storage: storageFor(treesFor(chain)), txs: inputFor });
+  const bare = { ...q.ux, scanLockSet: undefined };
+  assert.deepEqual(await makeOwnLockFinder({ ux: bare, hmacSha256, walletPriv: new Uint8Array(32).fill(7) })(), []);
+  assert.equal(new Set(q.txAsked).size, lockTxs(chain).length);
+  assert.ok(q.batches.length >= 1, 'in batches');
 });

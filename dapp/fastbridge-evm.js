@@ -117,8 +117,13 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     // settles to read, one request each, which one at a time took over a minute (2026-11-25). A read that fails here is made again in the walk, as before.
     const hashes = [...new Set(events.filter((e) => e.txHash && (e.type === 'LeavesInserted' || e.type === 'NullifiersSpent')).map((e) => e.txHash))];
     const got = new Map();
+    // (in batches first, where the pool module reads them so: what that leaves out is read below as before)
+    const unread = hashes.filter((h) => !inputs.has(h));
+    if (unread.length > 1 && typeof ux.readTxs === 'function') {
+      try { const m = await ux.readTxs(unread); for (const h of unread) { const t = m.get(String(h).toLowerCase()); if (t && t.input) got.set(h, { input: t.input, to: String(t.to || '').toLowerCase() }); } } catch { /* read one by one below */ }
+    }
     let next = 0;
-    const reader = async () => { while (next < hashes.length) { const h = hashes[next++]; try { got.set(h, await txOf(h)); } catch { /* read again in the walk */ } } };
+    const reader = async () => { while (next < hashes.length) { const h = hashes[next++]; if (got.has(h)) continue; try { got.set(h, await txOf(h)); } catch { /* read again in the walk */ } } };
     await Promise.all(Array.from({ length: TX_READS_AT_ONCE }, reader));
     const seen = new Set();
     const found = [], loose = [], others = []; let named = false;
@@ -276,8 +281,17 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return r;
   }
 
+  // The key's notes of this asset. Reads asked while one is under way share it: `available` and `heldFree` are asked together (fastbridge-pair.js balances), and each
+  // started a whole note scan of its own. For an asset the TAC bridge-mint and cBTC walks never find (they look for TAC, cTAC and cBTC only), those walks are left out:
+  // on a browser that had not seen the key they were about 10 s of a first scan's 18 (2026-11-25). An asset the pool module cannot name gets the whole scan.
+  const walked = /^(c?TAC|cBTC)$/;
+  let heldRun = null;
   async function heldNotes() {
-    const { byAsset } = await ux.balance(privBytes);
+    if (!heldRun) {
+      const ticker = typeof ux.poolTickerOf === 'function' ? ux.poolTickerOf(assetId) : null;
+      heldRun = Promise.resolve(ux.balance(privBytes, ticker && !walked.test(ticker) ? { bridge: false, cbtc: false } : undefined)).finally(() => { heldRun = null; });
+    }
+    const { byAsset } = await heldRun;
     return (byAsset[assetId] && byAsset[assetId].notes) || [];
   }
 
@@ -490,8 +504,19 @@ export function makeOwnLockFinder({ ux, hmacSha256, walletPriv }) {
     if (t && t.input) inputs.set(h, t.input);
     return t && t.input;
   };
+  // The pool module's own lock set is read first (ux.scanLockSet): one read the page shares with the lock positions, its inputs taken from the pool snapshot once a
+  // node has vouched for a few and the rest read in batches, and checked against the lock tree's count and root on chain. A module without it, or a set that does not
+  // check out, is read here as before.
+  const shared = async () => { try { return typeof ux.scanLockSet === 'function' ? await ux.scanLockSet() : null; } catch { return null; } };
   return async ({ events = null } = {}) => {
-    const set = await ux.lockScan.scanLockLeaves({ events: events || (await ux.fetchEvents({ toBlock: 'latest' })), getTxInput });
+    const set = (!events && (await shared())) || await (async () => {
+      const evs = events || (await ux.fetchEvents({ toBlock: 'latest' }));
+      const need = [...new Set(evs.filter((e) => e && e.type === 'LockLeavesInserted' && e.txHash).map((e) => e.txHash))].filter((h) => !inputs.has(h));
+      if (need.length > 1 && typeof ux.readTxs === 'function') {
+        try { const m = await ux.readTxs(need); for (const h of need) { const t = m.get(String(h).toLowerCase()); if (t && t.input) inputs.set(h, t.input); } } catch { /* one by one in the scan */ }
+      }
+      return ux.lockScan.scanLockLeaves({ events: evs, getTxInput });
+    })();
     const out = [];
     set.lockLeaves.forEach((leaf, i) => {
       const c = set.lockMemoCandidates && set.lockMemoCandidates[i];

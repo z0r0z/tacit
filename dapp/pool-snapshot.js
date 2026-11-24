@@ -205,13 +205,13 @@ const b32 = (h) => Uint8Array.from(String(h).replace(/^0x/, '').padStart(64, '0'
 export const treesOfFrontiers = (fr) => Object.fromEntries(Object.entries(fr).map(([k, t]) => [k, { count: t.count, root: t.root }]));
 
 // The same, as the pool's storage holds it. getStorageAt(slotHex) → a 32-byte word.
+// (all six words are asked together: the page's first read of the pool waits on them)
 export async function poolTrees(getStorageAt) {
-  const out = {};
-  for (const [k, [count, root]] of Object.entries(TREE_SLOTS)) {
+  const got = await Promise.all(Object.entries(TREE_SLOTS).map(async ([k, [count, root]]) => {
     const [c, r] = await Promise.all([getStorageAt('0x' + word(count)), getStorageAt('0x' + word(root))]);
-    out[k] = { count: Number(BigInt(c)), root: '0x' + word(BigInt(r)) };
-  }
-  return out;
+    return [k, { count: Number(BigInt(c)), root: '0x' + word(BigInt(r)) }];
+  }));
+  return Object.fromEntries(got);
 }
 export const sameTrees = (a, b) => Object.keys(TREE_SLOTS).every((k) => a?.[k] && b?.[k] && a[k].count === b[k].count && lc(a[k].root) === lc(b[k].root));
 

@@ -1,16 +1,18 @@
 // a namespace import, and `?.`: this file and wallet-prompts.js are served without a cache token, so for a few minutes after a change a visit can hold one of them new and the other old
 import * as prompts from './wallet-prompts.js';
 
+// BuidlGuidl sits last but the shared key: its cap is per ORIGIN (every visitor of tacit.finance together: 4,000 units an hour, then 40,000 a day), and it was
+// used up when read on 2026-11-14 and again on 2026-11-25 ("retry in 17997 s"), so each new browser met it as a failure before the health record learned it.
 export const ETH_NODES = [
   'https://ethereum-rpc.publicnode.com',
   'https://rpc.mevblocker.io',
   'https://tacit-node-gw.onrender.com/eth',
-  'https://mainnet.rpc.buidlguidl.com',
   'https://eth.drpc.org',
   'https://1.rpc.thirdweb.com',
   'https://eth-mainnet.public.blastapi.io',
   'https://ethereum-json-rpc.stakely.io',
   'https://1rpc.io/eth',
+  'https://mainnet.rpc.buidlguidl.com',
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
 ];
 export const ETH_LOG_NODES = [
@@ -25,10 +27,10 @@ export const ETH_LOG_NODES = [
 ];
 export const ETH_ARCHIVE_NODES = [
   'https://rpc.mevblocker.io',
-  'https://mainnet.rpc.buidlguidl.com',
   'https://eth.drpc.org',
   'https://eth-mainnet.public.blastapi.io',
   'https://1.rpc.thirdweb.com',
+  'https://mainnet.rpc.buidlguidl.com',
   'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7',
 ];
 
@@ -45,8 +47,8 @@ export const ROBINHOOD_NODES = [
 ];
 
 const LIMITS = {
-  'ethereum-rpc.publicnode.com': { logs: 9999, back: 9999, state: true },
-  'rpc.mevblocker.io': { logs: 45000 },
+  'ethereum-rpc.publicnode.com': { logs: 9999, back: 9999, state: true, batch: 50 },
+  'rpc.mevblocker.io': { logs: 45000, batch: 25 },
   'mainnet.rpc.buidlguidl.com': { logs: 10000 },
   'tacit-node-gw.onrender.com/eth': { logs: 512, state: true },
   'eth-mainnet.nodereal.io': { logs: 49999, shared: true },
@@ -67,6 +69,9 @@ const limitsOf = (url) => {
   return null;
 };
 export const logSpan = (url) => limitsOf(url)?.logs || Infinity;
+// How many reads a node takes in one JSON-RPC batch, 0 for one that is not sent batches (not measured, or no history: the light node answers an old transaction
+// with null). Measured 2026-11-25 with Origin tacit.finance, 377 eth_getTransactionByHash: publicnode 100 a batch fine (0.5 s for all), mevblocker 25 (3.7 s).
+export const batchSize = (url) => limitsOf(url)?.batch || 0;
 export const isShared = (url) => !!limitsOf(url)?.shared;
 const blockNo = (t) => (typeof t === 'string' && /^0x[0-9a-f]+$/i.test(t) ? parseInt(t, 16) : null);
 const STATE_BLOCK = { eth_call: 1, eth_getBalance: 1, eth_getCode: 1, eth_getStorageAt: 2, eth_getTransactionCount: 1 };
