@@ -14,14 +14,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"io"
-	"strings"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	ceremony "tacit.finance/ceremony"
@@ -166,7 +166,9 @@ func main() {
 			die("%v", err)
 		}
 		_ = os.MkdirAll(os.Args[7], 0o755)
-		for name, k := range map[string]interface{ WriteTo(io.Writer) (int64, error) }{"groth16_pk.bin": pk, "groth16_vk.bin": vk} {
+		for name, k := range map[string]interface {
+			WriteTo(io.Writer) (int64, error)
+		}{"groth16_pk.bin": pk, "groth16_vk.bin": vk} {
 			f, err := os.Create(filepath.Join(os.Args[7], name))
 			if err != nil {
 				die("%v", err)

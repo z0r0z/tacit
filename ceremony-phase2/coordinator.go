@@ -19,7 +19,7 @@ import (
 // Receipt of an accepted contribution, signed by the coordinator. A contributor shares it; anyone checks it against the
 // published transcript and the files.
 type Receipt struct {
-	Index            int    `json:"index"`             // the file this contribution produced: phase2-<index>
+	Index            int    `json:"index"` // the file this contribution produced: phase2-<index>
 	Name             string `json:"name"`
 	Handle           string `json:"handle"`
 	ContributionHash string `json:"contribution_hash"` // SHA-256 of the serialized accumulator (as Succinct's tool prints it)
@@ -38,14 +38,14 @@ func (r Receipt) signedBytes() []byte {
 
 // State of the chain: the file it continues from, the head, and every receipt.
 type State struct {
-	Label        string    `json:"label"`
-	BaseIndex    int       `json:"base_index"` // the last file of the transcript this chain extends (Succinct's phase2-17)
-	BaseSHA256   string    `json:"base_sha256"`
-	HeadIndex    int       `json:"head_index"`
-	HeadSHA256   string    `json:"head_sha256"`
-	CoordPubKey  string    `json:"coordinator_pubkey"`
-	Receipts     []Receipt `json:"receipts"`
-	Closed       bool      `json:"closed"`
+	Label       string    `json:"label"`
+	BaseIndex   int       `json:"base_index"` // the last file of the transcript this chain extends (Succinct's phase2-17)
+	BaseSHA256  string    `json:"base_sha256"`
+	HeadIndex   int       `json:"head_index"`
+	HeadSHA256  string    `json:"head_sha256"`
+	CoordPubKey string    `json:"coordinator_pubkey"`
+	Receipts    []Receipt `json:"receipts"`
+	Closed      bool      `json:"closed"`
 }
 
 type ticket struct {
