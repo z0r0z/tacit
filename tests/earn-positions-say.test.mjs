@@ -36,7 +36,7 @@ test('Exit says in figures what came back, and what it gave up', () => {
   assert.match(exit, /Out: your liquidity\$\{worth != null \? ` \(\$\{aboutEth\(worth\)\}\)` : ''\} is private \$\{pairName\(r\.p\.pair\)\} notes again/, 'the liquidity\'s worth, as the row showed it, is in the line');
   assert.match(exit, /run\.left > 0n \? html` The \$\{unclaimed\} TAC it had earned was too small to collect, so it stayed in the farm\.`/, 'rewards under the relay fee are named, not dropped without a word');
   assert.match(exit, /const worth = [^\n]*unclaimed = r\.pos\.pendingTac;\n\s*const out = await exitPosition/, 'both are read before the exit changes the position');
-  assert.match(exit, /Unbonded\.<\/span> The liquidity note has not shown up yet\./, 'the unseen case is still said');
+  assert.match(exit, /Unbonded\.<\/span> Its liquidity note is still being found: in a minute this row reads LP only, and Take out gives you both coins\./, 'the unseen case is still said, and says what comes next');
 });
 
 test('Withdraw all says how much ETH and TAC it sent to the wallet, and the TAC it earned', () => {
