@@ -122,7 +122,7 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
   // The machine looks its quote up by id; a quote that started a swap stays good for the swap (the lock it waits on takes longer than a quote lasts)
   const quotes = { get: async (id) => { const r = await quoteStore.get(id); return r ? { ...r, validUntil: r.startedAt ? Math.max(r.validUntil, r.startedAt + policy.startGraceSecs) : r.validUntil } : null; } };
   const el = makeEthereumLocker({
-    seed, now, store, quotes, btc, evm, admit,
+    seed, now, store, quotes, btc, evm, admit, requireChecked: true,
     counter: { publishEvmOffer: async (id, offer) => { const r = await lp.postEvmOffer(id, offer); if (r && r.ok === false) throw new Error(`the provider did not take the pool offer: ${r.why}`); } },
     policy: { minCsv: policy.minCsv, minConfsFor: confsOf, evmWindowSecs: policy.evmWindowSecs, roundSecs: policy.roundSecs, minClaimSecs: policy.minClaimSecs, claimSlackSecs: policy.claimSlackSecs, refundMarginSecs: policy.refundMarginSecs, maxOfferAgeSecs: policy.maxOfferAgeSecs, minAmount: 1n, maxAmount: 10n ** 18n, maxLockFailures: policy.maxLockFailures },
   });

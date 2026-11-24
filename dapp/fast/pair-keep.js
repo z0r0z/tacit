@@ -54,21 +54,57 @@ export async function keptStorage(prefix, storage = globalThis.localStorage) {
   };
 }
 
-export function saveCopy(prefix, storage = globalThis.localStorage) {
+// A copy is signed by the key that made it: `mac(text) -> hex` is a MAC under a key only the Tacit key derives (fast/pair-wire.js), over the copy as `signed` writes it.
+// A file is read back only when its MAC is this key's: the prefix names the key's PUBLIC key, which anyone can write, so it says nothing of who made the file.
+const KIND = 'tacit-btc-eth-swaps';
+export const signed = (c) => JSON.stringify([c.v, c.kind, c.prefix, c.at, Object.keys(c.items).sort().map((k) => [k, c.items[k]])]);
+const sameHex = (a, b) => {
+  const x = String(a || '').toLowerCase(), y = String(b || '').toLowerCase();
+  if (x.length !== y.length || !x.length) return false;
+  let d = 0;
+  for (let i = 0; i < x.length; i++) d |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return d === 0;
+};
+
+export function saveCopy(prefix, storage = globalThis.localStorage, mac) {
+  if (typeof mac !== 'function') throw new Error('A copy is signed by the key: open your Tacit wallet first.');
   const items = {};
   for (let i = 0; i < storage.length; i++) { const k = storage.key(i); if (k && k.startsWith(prefix)) items[k] = storage.getItem(k); }
-  return { v: 1, kind: 'tacit-btc-eth-swaps', prefix, at: Math.floor(Date.now() / 1000), items };
+  const c = { v: 2, kind: KIND, prefix, at: Math.floor(Date.now() / 1000), items };
+  return { ...c, mac: mac(signed(c)) };
 }
 
-// Only records of this key are read back (the prefix names it), and only where this browser has none.
-export function loadCopy(json, prefix, storage = globalThis.localStorage) {
+// What a copy puts back, of what it holds (each item a [suffix, record] under the prefix): the swaps of Bitcoin for ETH, and the swaps of ETH for Bitcoin whose ETH is
+// already locked, which only need the chains from there (their next steps read the pool and take the BTC, or take the ETH back). The list of providers asked and
+// the quotes are not put back, nor a swap of ETH for Bitcoin before its ETH is locked: those are what would lock ETH, and nothing of the key's is held by them.
+// Such a swap is kept as one found again from the key (fastbridge-pair.js RECOVERED: no provider to ask, and none needed).
+const LOCKED = new Set(['offered', 'taking', 'refunding', 'done', 'refunded', 'lost', 'aborted']);
+const restored = (suffix, v) => {
+  if (suffix.startsWith('fwd:')) return suffix;
+  const m = /^(.*):swaps:([0-9a-f]+)$/.exec(suffix);
+  if (!m) return null;
+  const rec = JSON.parse(v);
+  return rec && rec.role === 'el' && LOCKED.has(rec.phase) && rec.lock && rec.lock.lockLeaf ? `recovered:swaps:${m[2]}` : null;
+};
+
+// Only records of this key are read back (the prefix names it, the MAC says the key made the copy), and only where this browser has none.
+export function loadCopy(json, prefix, storage = globalThis.localStorage, mac) {
+  if (typeof mac !== 'function') throw new Error('Open your Tacit wallet first.');
   const j = typeof json === 'string' ? JSON.parse(json) : json;
-  if (!j || j.kind !== 'tacit-btc-eth-swaps' || j.prefix !== prefix || !j.items || typeof j.items !== 'object') throw new Error('This file is not a copy of this wallet’s swaps.');
-  let n = 0;
+  if (!j || j.kind !== KIND || j.prefix !== prefix || !j.items || typeof j.items !== 'object') throw new Error('This file is not a copy of this wallet’s swaps.');
+  if (!j.mac) throw new Error('This copy was saved before copies were signed by the key, so it is not read. Your swaps are found again from your key on the chains.');
+  if (!sameHex(j.mac, mac(signed(j)))) throw new Error('This file was not saved by this wallet, so it is not read.');
+  let n = 0, rec = false;
   for (const [k, v] of Object.entries(j.items)) {
-    if (!k.startsWith(prefix) || typeof v !== 'string' || storage.getItem(k) != null) continue;
-    try { JSON.parse(v); } catch { continue; }
-    storage.setItem(k, v); write(k, v); n++;
+    if (!k.startsWith(prefix) || typeof v !== 'string') continue;
+    let to;
+    try { to = restored(k.slice(prefix.length), v); } catch { continue; }
+    if (!to || storage.getItem(prefix + to) != null || storage.getItem(k) != null) continue;
+    storage.setItem(prefix + to, v); write(prefix + to, v); n++;
+    if (to.startsWith('recovered:')) rec = true;
   }
+  // the swaps put back as found from the key are listed and stepped under that name
+  const idx = `${prefix}providers:recovered`;
+  if (rec && storage.getItem(idx) == null) { const v = JSON.stringify({ id: 'recovered', name: 'Found from your key', ref: { kind: 'recovered' } }); storage.setItem(idx, v); write(idx, v); }
   return n;
 }

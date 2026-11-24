@@ -5,7 +5,10 @@
 //   node tests/fastbridge-pair.test.mjs        (Node 22)
 
 import assert from 'node:assert/strict';
-import { makePairClient, SATS_ASSET, rateOf, describeFwd } from '../dapp/fastbridge-pair.js';
+import { makePairClient, SATS_ASSET, ETH_ASSET, rateOf, describeFwd } from '../dapp/fastbridge-pair.js';
+import { saveCopy, loadCopy, signed } from '../dapp/fast/pair-keep.js';
+import { makeLocalStore } from '../dapp/fastbridge-client.js';
+import { secp, hmac, sha256 as sha256h } from '../dapp/vendor/tacit-deps.min.js';
 import { makeRateFeed } from '../dapp/fastbridge-rate.js';
 import * as X from '../dapp/adaptor-xswap.js';
 import { deriveLock } from '../dapp/adaptor-btc-lock.js';
@@ -386,6 +389,87 @@ test('found again from the key while the chains cannot be read: listed as being 
   w.uBtc.outspend = outspend;
   await fresh.pump();
   assert.deepEqual((await fresh.records()).map((x) => [x.state, x.title]), [['done', 'Done']]);
+});
+
+// ── a copy of the swaps read back from a file ──
+// The copy's prefix names the key's public key, so a file that carries it may come from anywhere: only a copy the key signed is read, and a swap is locked only once checked here.
+const copyWorld = () => {
+  const mem = new Map();
+  const storage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k), key: (i) => [...mem.keys()][i] ?? null, get length() { return mem.size; } };
+  const priv = secp.utils.randomPrivateKey(), pub = secp.getPublicKey(priv, true), pubHex = bytesToHex(pub);
+  const prefix = `tacit-fastbridge-pair-v1:mainnet:${pubHex}:`;
+  const macOf = (k) => { const key = hmac(sha256h, k, new TextEncoder().encode('tacit-btc-eth-swaps-copy-v1')); return (t) => bytesToHex(hmac(sha256h, key, new TextEncoder().encode(t))); };
+  const NOW = Math.floor(Date.now() / 1000), t = 0x1234567890abcdefn, Tpt = secp.ProjectivePoint.BASE.multiply(t);
+  const id = 'ab'.repeat(36), other = 'elsewhere', payee = '07'.repeat(32);
+  const foreignItems = {
+    [`${prefix}providers:${other}`]: JSON.stringify({ id: other, name: 'Tacit', ref: { kind: 'mailbox', boardBase: 'https://board.example', gateway: '02' + 'ee'.repeat(32), claimPub: '03' + 'ee'.repeat(32) } }),
+    [`${prefix}${other}:quotes:q1`]: JSON.stringify({ id: 'q1', swapId: 'cd'.repeat(36), btcValue: '1000', evmAmount: '150000000', validUntil: NOW + 9999, lockerXonly: 'dd'.repeat(32), startedAt: NOW }),
+    [`${prefix}${other}:swaps:${id}`]: JSON.stringify({
+      v: 1, role: 'el', id, phase: 'locking', created: NOW - 60, updated: NOW - 60, quoteId: null, csvBlocks: 144, deadline: NOW + 4 * 3600, checked: 'ff'.repeat(32),
+      lockTxid: 'cc'.repeat(32), lockVout: 0, lockValue: 1000,
+      offer: { v: 1, swapId: id, T: bytesToHex(Tpt.toRawBytes(true)), claimerPub: pubHex,
+        btc: { asset: SATS_ASSET, value: '1000', txid: 'cc'.repeat(32), vout: 0, csvBlocks: 144, lockerXonly: 'dd'.repeat(32) },
+        evm: { asset: ETH_ASSET, amount: '150000000', recipient: payee, rOut: '09'.repeat(32) } },
+    }),
+  };
+  const did = { locks: [], submits: [], calls: [] };
+  let leaf = null, locked = false;
+  const evm = {
+    now: async () => NOW, refundKey: async () => ({ xonly: new Uint8Array(32).fill(5) }),
+    lockNullifier: (l) => { leaf = l; return '0x' + 'cd'.repeat(32); }, lockPosition: async () => (locked ? 1 : null),
+    lockOp: async (args) => { did.locks.push({ amount: args.rec.offer.evm.amount, recipient: args.recipient }); return { op: { amount: args.rec.offer.evm.amount }, lockLeaf: leaf }; },
+    submit: async (kind, op) => { did.submits.push({ kind, op }); locked = true; return { jobId: 'job1' }; },
+    jobStatus: async () => 'done', available: async () => 200000000n, findClaim: async () => null,
+  };
+  const stores = { fwd: makeLocalStore(`${prefix}fwd:`, storage), index: makeLocalStore(`${prefix}providers:`, storage), swaps: (i) => makeLocalStore(`${prefix}${i}:swaps:`, storage), quotes: (i) => makeLocalStore(`${prefix}${i}:quotes:`, storage) };
+  const pair = makePairClient({
+    btc: { wallet: { pub } }, evm, seed: new Uint8Array(32).fill(1), stores, discover: async () => [], counterFor: () => ({}),
+    reverseCallFor: (ref) => async (method, path, body) => { did.calls.push({ ref, method, path, body }); return { status: 200, body: { ok: true } }; },
+    feed: { current: () => null, refresh: async () => null },
+  });
+  return { mem, storage, priv, prefix, macOf, foreignItems, did, pair, id, NOW };
+};
+const lockedNothing = (did) => { assert.deepEqual(did.locks, []); assert.deepEqual(did.submits, []); assert.ok(!did.calls.some((c) => /evm-offer$/.test(c.path)), 'no pre-signature is sent'); };
+
+test('a copy of the swaps that this key did not save is not read: no MAC, a MAC under another key, or the wallet not open; nothing is put back and nothing is locked', async () => {
+  const w = copyWorld();
+  const file = { v: 2, kind: 'tacit-btc-eth-swaps', prefix: w.prefix, at: w.NOW, items: w.foreignItems };
+  assert.throws(() => loadCopy(JSON.stringify(file), w.prefix, w.storage), /Open your Tacit wallet/);
+  assert.throws(() => loadCopy(JSON.stringify(file), w.prefix, w.storage, w.macOf(w.priv)), /saved before copies were signed/);
+  const otherKey = secp.utils.randomPrivateKey();
+  const signedByOther = { v: 2, kind: 'tacit-btc-eth-swaps', prefix: w.prefix, at: w.NOW, items: w.foreignItems };
+  assert.throws(() => loadCopy(JSON.stringify({ ...signedByOther, mac: w.macOf(otherKey)(signed(signedByOther)) }), w.prefix, w.storage, w.macOf(w.priv)), /not saved by this wallet/);
+  assert.equal(w.mem.size, 0);
+  for (let i = 0; i < 3; i++) await w.pair.pump();
+  lockedNothing(w.did);
+});
+
+test('a swap record that was not checked on this page (one written into storage, with a made-up check) is never locked against: it stops before anything is locked', async () => {
+  const w = copyWorld();
+  for (const [k, v] of Object.entries(w.foreignItems)) w.storage.setItem(k, v);
+  for (let i = 0; i < 4; i++) await w.pair.pump();
+  lockedNothing(w.did);
+  const rec = JSON.parse(w.storage.getItem(`${w.prefix}elsewhere:swaps:${w.id}`));
+  assert.equal(rec.phase, 'aborted');
+  assert.match(rec.why, /not checked on this page/);
+});
+
+test('a copy this key saved is read back: swaps whose ETH is locked come back as found from the key, and the providers asked, the quotes and a swap before its ETH is locked do not', async () => {
+  const w = copyWorld(), mac = w.macOf(w.priv);
+  const offered = { ...JSON.parse(w.foreignItems[`${w.prefix}elsewhere:swaps:${w.id}`]), id: 'ef'.repeat(36), phase: 'offered', lock: { lockLeaf: '0x' + '11'.repeat(32), lockNu: '0x' + '22'.repeat(32) } };
+  const fwd = { v: 1, role: 'bl', id: '33'.repeat(36), phase: 'done', created: w.NOW, amount: '1000', evmAmount: '5000', csvBlocks: 144 };
+  const src = new Map(Object.entries({ ...w.foreignItems, [`${w.prefix}elsewhere:swaps:${offered.id}`]: JSON.stringify(offered), [`${w.prefix}fwd:${fwd.id}`]: JSON.stringify(fwd) }));
+  const srcStorage = { getItem: (k) => src.get(k) ?? null, key: (i) => [...src.keys()][i] ?? null, get length() { return src.size; } };
+  const copy = saveCopy(w.prefix, srcStorage, mac);
+  assert.equal(loadCopy(JSON.stringify(copy), w.prefix, w.storage, mac), 2);
+  assert.deepEqual([...w.mem.keys()].sort(), [`${w.prefix}fwd:${fwd.id}`, `${w.prefix}providers:recovered`, `${w.prefix}recovered:swaps:${offered.id}`].sort());
+  assert.equal(JSON.parse(w.storage.getItem(`${w.prefix}providers:recovered`)).ref.kind, 'recovered');
+  // a copy whose items were changed after it was signed is not read
+  const changed = { ...copy, items: { ...copy.items, [`${w.prefix}fwd:${fwd.id}`]: JSON.stringify({ ...fwd, phase: 'built' }) } };
+  assert.throws(() => loadCopy(JSON.stringify(changed), w.prefix, copyWorld().storage, mac), /not saved by this wallet/);
+  for (let i = 0; i < 3; i++) await w.pair.pump();
+  lockedNothing(w.did);
+  assert.ok((await w.pair.records()).some((r) => r.id === offered.id && r.provider === 'Found from your key'));
 });
 
 let passed = 0;

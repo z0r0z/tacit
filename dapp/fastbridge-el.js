@@ -2,7 +2,7 @@
 import * as X from './adaptor-xswap.js';
 import * as adaptor from './adaptor-signature.js';
 import { deriveLock, claimSecret } from './adaptor-btc-lock.js';
-import { secp, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
+import { secp, bytesToHex, hexToBytes, hmac, sha256 } from './vendor/tacit-deps.min.js';
 import { pedersenCommit } from './bulletproofs.js';
 
 const hx = bytesToHex;
@@ -38,8 +38,22 @@ export function recordFromLockMemo({ memo, seed, refundXonly, claimerPub, btcAss
   };
 }
 
+// The terms of a swap this side checked (receiveOnce: the offer against its own quote and the Bitcoin lock on the chain), sealed with a MAC under the seed. With
+// `ctx.requireChecked`, a lock is built and sent only for a record that carries it: a record that came from anywhere else (a file read back, storage written by
+// something other than this machine) is never locked against. The page's user side sets it; a record that lacks it stops before anything of its own is locked.
+const enc = new TextEncoder();
+export function checkedTag(seed, rec) {
+  const o = rec.offer || {}, b = o.btc || {}, e = o.evm || {};
+  const terms = JSON.stringify(['tacit-el-checked-v1', strip(rec.id), rec.quoteId ?? null, strip(o.T || ''), strip(o.claimerPub || ''),
+    strip(b.asset || ''), String(b.value), strip(b.txid || ''), Number(b.vout), Number(b.csvBlocks), strip(b.lockerXonly || ''),
+    strip(e.asset || ''), String(e.amount), strip(e.recipient || ''), strip(e.rOut || ''), strip(rec.lockTxid || ''), Number(rec.lockVout), Number(rec.lockValue)]);
+  return hx(hmac(sha256, seed, enc.encode(terms)));
+}
+
 export function makeEthereumLocker(ctx) {
   const { seed, store, policy, quotes, btc, evm, counter } = ctx;
+  const checked = (rec) => !ctx.requireChecked || (typeof rec.checked === 'string' && rec.checked === checkedTag(seed, rec));
+  const unchecked = (rec) => save(rec, { phase: 'aborted', why: 'this swap was not checked on this page, so nothing was locked' });
   const margin = policy.refundMarginSecs ?? 600;
   const maxOfferAge = policy.maxOfferAgeSecs ?? 3600;
   const save = async (rec, patch) => {
@@ -124,6 +138,7 @@ export function makeEthereumLocker(ctx) {
       lockTxid: offer.btc.txid, lockVout: offer.btc.vout, lockValue: out.value, lockSpk: strip(out.scriptpubkey), csvBlocks: offer.btc.csvBlocks,
       ...(takeSats > 0 && !paidDirect ? { takeVout: lockedAt, takeValue: tx.vout[lockedAt].value } : {}),
     };
+    rec.checked = checkedTag(seed, rec);
     await store.put(rec);
     return { ok: true, rec };
   }
@@ -161,6 +176,7 @@ export function makeEthereumLocker(ctx) {
     }
     switch (rec.phase) {
       case 'accepted': {
+        if (!checked(rec)) return unchecked(rec);
         const st = await btc.status(rec.lockTxid);
         const need = policy.minConfsFor(BigInt(rec.offer.btc.value));
         if (st.confirmations < need) {
@@ -206,6 +222,7 @@ export function makeEthereumLocker(ctx) {
           }));
           const lockNu = evm.lockNullifier(expected);
           if (await evm.lockPosition(expected)) return save(rec, { lock: { lockLeaf: expected, lockNu }, phase: 'locked' });
+          if (!checked(rec)) return unchecked(rec);
           if (rec.buildRetryAt && ctx.now() < rec.buildRetryAt) return rec;
           const nowSecs = await evm.now();
           if (rec.deadline - nowSecs < policy.minClaimSecs) return save(rec, { phase: 'aborted', why: 'too late to lock' });
@@ -223,6 +240,7 @@ export function makeEthereumLocker(ctx) {
         }
         if (await evm.lockPosition(rec.lock.lockLeaf)) return save(rec, { phase: 'locked' });
         if (!rec.lock.jobId) {
+          if (!checked(rec)) return unchecked(rec);
           const nowSecs = await evm.now();
           if (rec.deadline - nowSecs < policy.minClaimSecs) return save(rec, { phase: 'offered', noOffer: true });
           const { jobId } = await evm.submit('adaptorlock', rec.lock.op);

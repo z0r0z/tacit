@@ -14,16 +14,16 @@ import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=f83053ce';
 import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, TRACE_NODES } from '/fastbridge-evm.js?cb=381416cc';
-import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=2913bc2e';
+import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=a0280321';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=9003c49b';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=129356b4';
 import { makeLocalStore } from '/fastbridge-client.js?cb=09156465';
 import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=cb9ccc3c';
 import { makeRateFeed, chainlinkEthBtc } from '/fastbridge-rate.js?cb=0385e0ce';
 import { discoverProviders } from '/fast/discover.js?cb=cf4a0fcc';
-import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=4d1d7c96';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=7769c408';
-import { secp, sha256, keccak_256, hmac } from '/vendor/tacit-deps.min.js';
+import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=daa23abc';
+import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();
 const hmacSha256 = (k, m) => hmac(sha256, k, m);
@@ -79,7 +79,10 @@ export async function openPair({ T, ux, priv, pubHex, wallet = null, ask, fetchI
     const timer = setInterval(once, everyMs);
     return () => { stopped = true; clearInterval(timer); };
   };
-  // a copy of the swaps as a file, and one read back (only this key's records, only where this browser has none)
-  const keep = { save: () => saveCopy(prefix, plainStorage), load: (json) => loadCopy(json, prefix, plainStorage) };
+  // a copy of the swaps as a file, and one read back (only a copy this key saved, only this key's records, only where this browser has none)
+  // (signed with a MAC under a key the Tacit key derives: a file read back is one this key saved, not one anyone who knows the public key could write)
+  const copyKey = hmac(sha256, priv, enc.encode('tacit-btc-eth-swaps-copy-v1'));
+  const mac = (text) => bytesToHex(hmac(sha256, copyKey, enc.encode(text)));
+  const keep = { save: () => saveCopy(prefix, plainStorage, mac), load: (json) => loadCopy(json, prefix, plainStorage, mac) };
   return { pair, address: btc.address, run, lists: list, keep };
 }
