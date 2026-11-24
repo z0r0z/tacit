@@ -18,6 +18,7 @@ import { parseAdjustments } from './lib/points-adjustments.js';
 import { creditLateDays } from './lib/points-late-credit.js';
 import { makeBlockAtOrBefore } from './lib/block-at-time.js';
 import { fundingStatus, fundingVerdict } from './lib/points-funding.js';
+import { rootProblems, parseSent, withSent, parseAccept, SENT_ROOTS_KEY } from './lib/points-root-guard.js';
 import { tvlSeries } from './lib/points-tvl.js';
 import { programTerms } from './lib/points-program.js';
 import { makeCounted } from './lib/points-counted.js';
@@ -134,6 +135,8 @@ async function blockscoutBackfillBoost(boost, token, confirmedTip) {
 const DISTRIBUTOR_ABI = [
   { type: 'function', name: 'updateRoot', stateMutability: 'nonpayable', inputs: [{ name: 'newRoot', type: 'bytes32' }, { name: 'newTotalAllocated', type: 'uint256' }], outputs: [] },
   { type: 'function', name: 'totalClaimed', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'totalAllocated', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'root', stateMutability: 'view', inputs: [], outputs: [{ type: 'bytes32' }] },
 ];
 const ERC20_BALANCEOF_ABI = [
   { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] },
@@ -1370,6 +1373,7 @@ export function buildRewardTree(rewards) {
 const scanOkAt = {};
 let lastGateLogSec = 0;
 let lastFundingAlertSec = 0;
+let lastRootHoldAlertSec = 0;
 const rootPublished = { atSec: 0, throughDay: -Infinity };   // this process's last publish: when, and the last settled day it covered
 const PAGED_SCANNERS = () => ['pp', 'ce', 'pm', ...(CFG.weinameEnabled ? ['weiname'] : [])];
 async function ran(name, fn) {
@@ -1588,6 +1592,24 @@ export async function settleCycle(store, coverage = null) {
 
   const call = { address: ADDR.pointsDistributor, abi: DISTRIBUTOR_ABI, functionName: 'updateRoot', args: [tree.root, totalWei] };
 
+  // Held, with a line for the operator, when the root is not a step on from the one this service published or the distributor holds a root it did not send.
+  const sentRoots = parseSent(store.getMeta(SENT_ROOTS_KEY));
+  const [onchainRoot, onchainTotal] = await Promise.all([
+    publicClient.readContract({ address: ADDR.pointsDistributor, abi: DISTRIBUTOR_ABI, functionName: 'root' }),
+    publicClient.readContract({ address: ADDR.pointsDistributor, abi: DISTRIBUTOR_ABI, functionName: 'totalAllocated' }),
+  ]);
+  const held = rootProblems({
+    tree, publishedAmounts: store.publishedAmounts(), publishedTotalWei: state.publishedTotalWei, publishedRoot: state.publishedRoot,
+    onchain: { root: onchainRoot, totalAllocated: onchainTotal }, known: [...sentRoots, ...parseAccept(CFG.pointsRootAccept)],
+  });
+  if (held.length) {
+    if (nowSec - lastRootHoldAlertSec > 600) {
+      lastRootHoldAlertSec = nowSec;
+      log(`ALERT: points root not published: ${held.join('; ')}`);
+    }
+    return;
+  }
+
   // Same EIP-1559 sizing as header-relay's submitAdvance: base fee doubled plus a real tip, rather than
   // leaving the fee to the client's own default (which reserves several times what this actually costs).
   // Checked once up front against the wallet's own balance — a genuine shortfall should defer to next cycle
@@ -1614,6 +1636,8 @@ export async function settleCycle(store, coverage = null) {
     const maxFeePerGas = (block.baseFeePerGas ?? 0n) * 2n + maxPriorityFeePerGas;
     return rootSetterWallet.writeContract({ ...call, gas, maxFeePerGas, maxPriorityFeePerGas });
   }, { log });
+
+  store.setMeta(SENT_ROOTS_KEY, JSON.stringify(withSent(sentRoots, tree.root)));
 
   // Bounded, not left to hang: settleCycle runs last in main()'s loop, so an unconfirmed wait here would
   // otherwise stall every scanner's next cycle behind it. A timeout isn't a failure — the send went through
@@ -1951,6 +1975,7 @@ function startHttp(store, evmState) {
           publishingConfigured: Boolean(ADDR.pointsDistributor && CFG.pointsRootSetterKey),
           publishedRoot: state?.publishedRoot ?? null,
           publishedTotalWei: state?.publishedTotalWei ?? null,
+          rootsSent: parseSent(store.getMeta(SENT_ROOTS_KEY)),
           totalLedgerWei,
           ...lpFundingFields(await readFunding(state, BigInt(totalLedgerWei))),
           adjustments: store.listAdjustments().map((a) => ({ id: a.id, address: a.address, wei: a.wei, appliedAt: a.appliedAt })),

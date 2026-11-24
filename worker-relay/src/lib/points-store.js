@@ -433,6 +433,7 @@ export function openStore(dbPath, { excluded = [] } = {}) {
   const insertPublishedClaimStmt = db.prepare(`
     INSERT INTO published_claims (address, cumulative_amount, proof_json) VALUES (@address, @cumulativeAmount, @proofJson)
   `);
+  const allPublishedStmt = db.prepare(`SELECT address, cumulative_amount AS cumulativeAmount FROM published_claims`);
   const claimForStmt = db.prepare(`SELECT cumulative_amount AS cumulativeAmount, proof_json AS proofJson FROM published_claims WHERE address = ?`);
 
   const insertPpRecipientStmt = db.prepare(`
@@ -759,6 +760,11 @@ export function openStore(dbPath, { excluded = [] } = {}) {
     }
   });
 
+  // [[address, cumulativeAmount]] of the tree whose root is on the distributor.
+  function publishedAmounts() {
+    return allPublishedStmt.all().map((r) => [r.address, r.cumulativeAmount]);
+  }
+
   function claimFor(address) {
     const row = claimForStmt.get(address.toLowerCase());
     if (!row) return null;
@@ -842,7 +848,7 @@ export function openStore(dbPath, { excluded = [] } = {}) {
     db, recordDeposit, loadCursor, saveCursor, leaderboard, totalFor, depositsFor, countByActivity,
     dayPointsByAddress, dayActivityPoints, dayAmountsByAddress, weekActivityPoints, lateDays, creditedWithPrefix, saveTaskQuote, taskQuotes, latestTaskQuote, saveTaskClaim, taskClaim, taskClaims, pendingTaskClaims, creditTaskClaim, commitDay, saveHoldingEvents, holdingEvents, holdingEventsIter, loadHoldingCursor, saveHoldingCursor, saveHoldingSnapshot, holdingSnapshots, recordHoldingClaim, holdingClaimFor, loadHoldingVerified, saveHoldingVerified, rewindHolding, depositorOfTx, getMeta, setMeta, saveBondRef, bondPairsBefore, bondsToCheck, saveBondCheck, applyDayRewards, applyAdjustment, listAdjustments: () => listAdjustmentsStmt.all(), allRewards, rewardFor,
     savePoolSnapshot, poolSnapshots: (fromDay) => poolSnapshotsStmt.all(fromDay), poolDepositWeiByDay, recent,
-    loadSettleState, saveSettleState, savePublishedClaims, claimFor,
+    loadSettleState, saveSettleState, savePublishedClaims, publishedAmounts, claimFor,
     recordPpWithdrawal, hasEarlierPpWithdrawal, loadPpCursor, savePpCursor,
     loadCeCursor, saveCeCursor, loadZrouterCursor, saveZrouterCursor,
     loadPmCursor, savePmCursor, recordPmMarket, getPmMarket, markPmCreatorAwarded,

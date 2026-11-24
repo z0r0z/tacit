@@ -977,6 +977,8 @@ export const CFG = {
   // PointsDistributor.sol's header: a leak only exposes whatever is currently funded into the distributor,
   // and keeping it separate from the higher-value relay/settle keys keeps that bound meaningful.
   pointsRootSetterKey: opt('POINTS_ROOT_SETTER_KEY', ''),
+  // Roots (comma apart) the service treats as its own when it reads the distributor's, for one it did not send itself.
+  pointsRootAccept: opt('POINTS_ROOT_ACCEPT', ''),
 };
 
 // Measured settle gas per op-type. Used by the fee math.
