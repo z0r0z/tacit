@@ -9,7 +9,7 @@
 import { createPublicClient, createWalletClient, fallback, http } from 'viem';
 import { mainnet } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
-import { maxBuyFor, chooseBuy, cooldownLeft, VENUE_TACIT, VENUE_PRECISION } from './lib/buyback-plan.js';
+import { maxBuyFor, chooseBuy, cooldownLeft, quotesFit, VENUE_TACIT, VENUE_PRECISION } from './lib/buyback-plan.js';
 import { privateSettleUrl } from './lib/config.js';
 
 const log = (...a) => console.log(`[buyback ${new Date().toISOString()}]`, ...a);
@@ -20,6 +20,8 @@ const SLIPPAGE_BPS = Number(env.BUYBACK_SLIPPAGE_BPS || 50);
 const MIN_BUY_WEI = BigInt(env.BUYBACK_MIN_BUY_WEI || '1000000000000000'); // 0.001 ETH: below this the gas isn't worth it
 const DEADLINE_SECS = Number(env.BUYBACK_DEADLINE_SECS || 300);
 const DRY_RUN = env.BUYBACK_DRY_RUN === '1';
+const REF_ORACLE = env.BUYBACK_REF_ORACLE ?? '0x000000cE58D7d49319252DaFB0ABdB3F02101271';   // a pair oracle's latest(): ETH per TAC (none: skipped)
+const MAX_DEV_BPS = Number(env.BUYBACK_MAX_DEV_BPS || 1000), MAX_GAP_BPS = Number(env.BUYBACK_MAX_GAP_BPS || 1000);
 const READ_RPCS = [env.RPC_URL, ...(env.RPC_URLS_FALLBACK || 'https://ethereum-rpc.publicnode.com').split(',')].filter(Boolean);
 // SETTLE_RPC_URLS is shared with the settle service, which runs every entry through privateSettleUrl; read
 // raw here it would use the same hosts in their searcher-visible mode, so a buyback could be front-run for
@@ -87,6 +89,13 @@ async function main() {
   }
 
   for (const q of quotes) log(`quote venue=${q.venue} ${q.amountIn} wei -> ${q.tacOut} TAC-wei`);
+  let refEthPerTac = 0n;
+  if (REF_ORACLE) {
+    try { refEthPerTac = await read('latest', REF_ORACLE, [{ type: 'function', name: 'latest', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }]); }
+    catch (e) { log(`no reference price: ${e.shortMessage || e.message}`); }
+  }
+  const fit = quotesFit(quotes, { refEthPerTac, maxDevBps: MAX_DEV_BPS, maxGapBps: MAX_GAP_BPS });
+  if (!fit.ok) { log(`no buy: ${fit.why}`); return; }
   const plan = chooseBuy(quotes, { minBuyWei: MIN_BUY_WEI, slippageBps: SLIPPAGE_BPS });
   if (!plan) { log(`no buy: nothing sized above ${MIN_BUY_WEI} wei on either venue (holds ${balance} wei)`); return; }
   const deadline = BigInt(now + DEADLINE_SECS);

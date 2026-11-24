@@ -2,7 +2,7 @@
 //   node worker-relay/tests/buyback-plan.test.mjs
 
 import assert from 'node:assert/strict';
-import { maxBuyFor, chooseBuy, cooldownLeft, VENUE_TACIT, VENUE_PRECISION } from '../src/lib/buyback-plan.js';
+import { maxBuyFor, chooseBuy, cooldownLeft, quotesFit, VENUE_TACIT, VENUE_PRECISION } from '../src/lib/buyback-plan.js';
 
 const E = 10n ** 18n;
 const UNIT = 10n ** 10n;
@@ -48,6 +48,22 @@ test('cooldown mirrors the contract', () => {
   assert.equal(cooldownLeft({ lastBuyAt: 0n, cooldown: 21600n, now: 1_800_000_000 }), 0);
   assert.equal(cooldownLeft({ lastBuyAt: 1_800_000_000n, cooldown: 21600n, now: 1_800_000_100 }), 21500);
   assert.equal(cooldownLeft({ lastBuyAt: 1_800_000_000n, cooldown: 21600n, now: 1_800_021_600 }), 0);
+});
+
+test('quotes fit while the venues agree and the rate sits near the reference; no reference skips that check', () => {
+  const q = [{ venue: VENUE_TACIT, amountIn: E / 100n, tacOut: 100n * E }, { venue: VENUE_PRECISION, amountIn: E / 10n, tacOut: 1000n * E }]; // 0.0001 ETH per TAC both
+  assert.equal(quotesFit(q).ok, true);
+  assert.equal(quotesFit(q, { refEthPerTac: E / 10_000n }).ok, true);
+  assert.equal(quotesFit(q, { refEthPerTac: 0n }).ok, true);
+  assert.equal(quotesFit([]).ok, true);
+});
+
+test('quotes do not fit when the venues stand far apart, or the cheapest is far dearer than the reference', () => {
+  const apart = [{ venue: VENUE_TACIT, amountIn: E / 100n, tacOut: 50n * E }, { venue: VENUE_PRECISION, amountIn: E / 10n, tacOut: 1000n * E }];
+  assert.equal(quotesFit(apart).ok, false);
+  const one = [{ venue: VENUE_TACIT, amountIn: E / 100n, tacOut: 100n * E }];
+  assert.equal(quotesFit(one, { refEthPerTac: E / 20_000n }).ok, false);   // reference is half this price
+  assert.equal(quotesFit(one, { refEthPerTac: E / 10_500n }).ok, true);    // within 10%
 });
 
 console.log(`\n${n} passed`);

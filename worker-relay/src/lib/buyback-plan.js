@@ -34,3 +34,17 @@ export function cooldownLeft({ lastBuyAt, cooldown, now }) {
   const next = Number(lastBuyAt) + Number(cooldown);
   return next > now ? next - now : 0;
 }
+
+// ETH per TAC (1e18-scaled) a quote implies.
+export const ethPerTac = (q) => (q.amountIn * 10n ** 18n) / q.tacOut;
+
+// Whether the quotes are fit to buy on: the venues stand within `maxGapBps` of one another, and the dearest-to-buy rate is within
+// `maxDevBps` of a reference price (ETH per TAC, 0 when none is readable, which skips that check).
+export function quotesFit(quotes, { refEthPerTac = 0n, maxDevBps = 1000, maxGapBps = 1000 } = {}) {
+  const prices = quotes.filter((q) => q.amountIn > 0n && q.tacOut > 0n).map(ethPerTac);
+  if (!prices.length) return { ok: true };
+  const lo = prices.reduce((a, b) => (b < a ? b : a)), hi = prices.reduce((a, b) => (b > a ? b : a));
+  if (prices.length > 1 && lo > 0n && ((hi - lo) * 10_000n) / lo > BigInt(maxGapBps)) return { ok: false, why: `the venues price TAC ${((hi - lo) * 10_000n) / lo} bps apart` };
+  if (refEthPerTac > 0n && lo > (refEthPerTac * BigInt(10_000 + maxDevBps)) / 10_000n) return { ok: false, why: `TAC costs more here than the reference price by over ${maxDevBps} bps` };
+  return { ok: true };
+}
