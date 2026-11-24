@@ -132,7 +132,7 @@ console.log('the page: the marks, the line, the lane');
   const live = await text(page, '#live');
   ok(/1 BTC = 30\.62 ETH/.test(live) && /1 provider online/.test(live) && /up to 0\.3 BTC or 2 ETH now/.test(live), `the line under the heading: the market, who is online, what can be swapped now (${live})`);
   const row = await text(page, '#pv-list li');
-  ok(/Test provider/.test(row) && /BTC → ETH 0\.0005 to 1 BTC 0\.3 BTC available now fee 0\.4% \+ 800 sats \(2\.0% at the minimum\)/.test(row), `the forward terms: limits, available, the fee and what it is at the minimum (${row})`);
+  ok(/Provider [0-9a-f]{6}/.test(row) && /BTC → ETH 0\.0005 to 1 BTC 0\.3 BTC available now fee 0\.4% \+ 800 sats \(2\.0% at the minimum\)/.test(row), `the forward terms: limits, available, the fee and what it is at the minimum (${row})`);
   ok(/ETH → BTC 0\.01 to 30 ETH 2 ETH available now fee 0\.2% \+ 0\.0003 ETH \(3\.2% at the minimum\)/.test(row), 'the reverse terms, in ETH');
   ok(/up to 0\.3 BTC for ETH, and up to 2 ETH for BTC/.test(await text(page, '#cap')), `the totals (${await text(page, '#cap')})`);
 
