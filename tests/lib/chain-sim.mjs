@@ -52,7 +52,7 @@ export function makeBitcoinSim(clock, { baseHeight = 800_000 } = {}) {
   sim.outspend = async (txid, vout) => sim.spends.get(`${txid}:${vout}`) || null;
   const esploraOf = (pair) => ({
     txid: pair.revealTxid,
-    vin: pair.revealTx.inputs.map((i) => ({ txid: i.txid, vout: i.vout, witness: i.witness.map(bytesToHex) })),
+    vin: pair.revealTx.inputs.map((i) => ({ txid: i.txid, vout: i.vout, witness: i.witness.map(bytesToHex), sequence: i.sequence })),
     vout: pair.revealTx.outputs.map((o) => ({ scriptpubkey: bytesToHex(o.script), value: o.value })),
   });
   sim.broadcast = async (pair) => {

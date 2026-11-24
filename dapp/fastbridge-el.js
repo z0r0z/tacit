@@ -142,7 +142,8 @@ export function makeEthereumLocker(ctx) {
   }
   const afterRead = (rec, r) => {
     if (r.t) return save(rec, { phase: 'taking', t: r.t });
-    if (r.refunded) return save(rec, { phase: rec.refund ? 'refunded' : 'done', why: 'the lock was spent by a refund' });
+    // (a lock is refunded only by its locker: a record found again from the key, which kept no refund of its own, was refunded by this key)
+    if (r.refunded) return save(rec, { phase: rec.refund || rec.recovered ? 'refunded' : 'done', why: 'the lock was spent by a refund' });
     return save(rec, { phase: 'lost', why: 'the lock was claimed with a kernel that does not reveal t' });
   };
 
@@ -254,6 +255,11 @@ export function makeEthereumLocker(ctx) {
           // the lock spent by a transaction that is none of ours, and confirmed: the user's refund won the race. Said as it is, not as a take that landed.
           const spent = await btc.outspend(rec.lockTxid, rec.lockVout).catch(() => null);
           if (spent && !(rec.takes || []).includes(spent) && ((await btc.status(spent).catch(() => null)) || {}).confirmations) {
+            // A spend that is not the refund (the script path, with the timelock as its sequence) is a take by this key (only t opens the key path): one sent from
+            // another page or an earlier visit, which this record never saw. The swap is done.
+            const tx = btc.fetchTx ? await btc.fetchTx(spent).catch(() => null) : null;
+            const input = tx && (tx.vin || []).find((i) => i.txid === rec.lockTxid && Number(i.vout) === Number(rec.lockVout));
+            if (input && input.sequence != null && Number(input.sequence) !== Number(rec.csvBlocks)) return save(rec, { phase: 'done', takenBy: spent });
             return save(rec, { phase: 'lost', why: 'the lock was spent by another transaction (its refund, once the timelock had run) before a take confirmed' });
           }
         }

@@ -216,6 +216,7 @@ test('the swap is kept: a new page over the same stores shows it, and a lock who
   assert.deepEqual(await fresh.records(), []);
   assert.equal(await fresh.recover(), 1);
   assert.equal((await fresh.records())[0].title, 'Returning your BTC');
+  assert.match((await fresh.records())[0].detail, /ends\. It was found again from your key\.$/, 'the reason is a sentence of its own');
   w.btc.mine(143);
   for (let i = 0; i < 60 && (await fresh.records())[0].state !== 'returned'; i++) { await fresh.pump(); w.btc.mine(1); w.clock.advance(60); }
   assert.equal((await fresh.records())[0].state, 'returned');
@@ -275,6 +276,98 @@ test('only providers of this pair are asked: a TAC provider is not offered Bitco
 test('the pair\'s numbers: ETH per BTC from a quote, and the market comparison for each side of a swap', () => {
   assert.equal(rateOf(3_531_520n, 100_000n), 35.3152);
   assert.equal(describeFwd({ id: 'x', phase: 'broadcast', amount: '100000', evmAmount: '3531520', csvBlocks: 144, created: 5, lockAt: 1000 }).refundAt, 1000 + 144 * 600);
+});
+
+// ── a swap found again from the key is listed as the chains show it, from the first list after recover() (before any pump) ──
+const freshStores = () => { const m = new Map(), named = (n) => { if (!m.has(n)) m.set(n, memStore()); return m.get(n); }; return { fwd: named('fwd'), index: named('index'), swaps: (id) => named('swaps:' + id), quotes: (id) => named('quotes:' + id) }; };
+async function stepWorld(w, pairs, { lp = true } = {}) {
+  await w.providerFeed.refresh().catch(() => {}); await w.clientFeed.refresh().catch(() => {});
+  if (lp) { await w.fwd.tick(); await w.rev.tick(); }
+  for (const p of pairs) await p.pump();
+  w.evm.process();
+}
+async function e2bUntil(w, pair, phase) {
+  const recOf = async () => (await w.mems.get('swaps:lp1').list())[0];
+  for (let i = 0; i < 400 && (await recOf())?.phase !== phase; i++) { await stepWorld(w, [pair]); w.clock.advance(60); if (i % 10 === 9) w.btc.mine(1, { advance: false }); }
+  assert.equal((await recOf()).phase, phase);
+  return recOf();
+}
+
+test('found again from the key: a Bitcoin-for-ETH swap that completed is listed as done at once, never as returning', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  await w.pair.start(await w.pair.quote({ dir: 'b2e', amount: SATS }));
+  await w.run(async () => (await w.first())?.state === 'done');
+  const fresh = w.makePair({ stores: freshStores() });
+  assert.equal(await fresh.recover(), 1);
+  const [r] = await fresh.records();
+  assert.deepEqual([r.dir, r.state, r.title], ['b2e', 'done', 'Done']);
+  assert.equal(r.detail, 'The ETH is in your private balance. The provider took the Bitcoin lock.');
+  assert.equal(r.refundAt, null);
+});
+
+test('found again from the key: an ETH-for-Bitcoin swap whose BTC was taken on another page is listed as done at once', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.uEvm.fund(UNITS, 'inv0');
+  await w.pair.start(await w.pair.quote({ dir: 'e2b', amount: UNITS }));
+  await w.run(async () => (await w.pair.records()).some((r) => r.dir === 'e2b' && r.state === 'done'));
+  const sent = w.btc.broadcasts.length;
+  w.uBtc.feeRate = async () => 7;                                   // fees moved since: a take built now is not the one that was sent
+  const fresh = w.makePair({ stores: freshStores() });
+  assert.equal(await fresh.recover(), 1);
+  const [r] = await fresh.records();
+  assert.deepEqual([r.dir, r.state, r.title, r.refundAt, r.backBy], ['e2b', 'done', 'Done', null, null]);
+  assert.equal(w.btc.broadcasts.length, sent, 'nothing was sent again');
+});
+
+test('found again from the key: an ETH-for-Bitcoin swap the provider claimed is listed as taking the BTC, with no return of the ETH promised', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.uEvm.fund(UNITS, 'inv0');
+  await w.pair.start(await w.pair.quote({ dir: 'e2b', amount: UNITS }));
+  const old = await e2bUntil(w, w.pair, 'offered');
+  for (let i = 0; i < 60 && !w.evm.lockSpent.has(old.lock.lockNu); i++) { await stepWorld(w, []); w.clock.advance(60); }
+  assert.ok(w.evm.lockSpent.has(old.lock.lockNu), 'the provider claimed; the old page is gone before it took the BTC');
+  const fresh = w.makePair({ stores: freshStores() });
+  assert.equal(await fresh.recover(), 1);
+  const [r] = await fresh.records();
+  assert.deepEqual([r.dir, r.state, r.title, r.refundAt], ['e2b', 'working', 'Taking your BTC', null]);
+});
+
+test('found again from the key: an ETH-for-Bitcoin swap whose ETH was refunded is listed as returned at once', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.uEvm.fund(UNITS, 'inv0');
+  await w.pair.start(await w.pair.quote({ dir: 'e2b', amount: UNITS }));
+  const old = await e2bUntil(w, w.pair, 'offered');
+  w.up.lp = false;                                                  // the provider never claims
+  w.clock.advance(old.deadline - w.clock.now() + 700);
+  for (let i = 0; i < 30 && (await w.mems.get('swaps:lp1').list())[0].phase !== 'refunded'; i++) { await stepWorld(w, [w.pair], { lp: false }); w.clock.advance(60); }
+  assert.equal((await w.mems.get('swaps:lp1').list())[0].phase, 'refunded');
+  const fresh = w.makePair({ stores: freshStores() });
+  assert.equal(await fresh.recover(), 1);
+  const [r] = await fresh.records();
+  assert.deepEqual([r.dir, r.state, r.title], ['e2b', 'returned', 'Returned']);
+});
+
+test('found again from the key while the chains cannot be read: listed as being checked, never as returning or waiting, and resolved by the next pass', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv0');
+  await w.pair.start(await w.pair.quote({ dir: 'b2e', amount: SATS }));
+  await w.run(async () => (await w.first())?.state === 'done');
+  const outspend = w.uBtc.outspend;
+  w.uBtc.outspend = async () => { throw new Error('explorer down'); };
+  const fresh = w.makePair({ stores: freshStores() });
+  assert.equal(await fresh.recover(), 1);
+  const [r] = await fresh.records();
+  assert.deepEqual([r.state, r.title, r.refundAt, r.backBy], ['working', 'Checking', null, null]);
+  assert.ok(r.steps.every((s) => s.state === 'todo'));
+  w.uBtc.outspend = outspend;
+  await fresh.pump();
+  assert.deepEqual((await fresh.records()).map((x) => [x.state, x.title]), [['done', 'Done']]);
 });
 
 let passed = 0;

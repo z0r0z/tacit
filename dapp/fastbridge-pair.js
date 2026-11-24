@@ -87,12 +87,24 @@ const REV_SAYS = {
   lost: [0, 'Needs a look', 'The provider claimed with a signature that does not give your BTC. Do not close this page.', null],
 };
 
+// A reason kept on a record, as a sentence of its own after the detail
+const sentenceOf = (why) => { const w = String(why || '').trim().replace(/[.\s]*$/, ''); return !w ? '' : /^found from the key$/i.test(w) ? 'It was found again from your key.' : w.charAt(0).toUpperCase() + w.slice(1) + '.'; };
+const withWhy = (detail, why) => [detail, sentenceOf(why)].filter(Boolean).join(' ');
+// A swap found again from the key is listed as being checked until its first step has read the chains: never as returning or waiting on a guess
+const checking = (dir, rec, providerName = null) => ({
+  id: rec.id, dir, state: 'working', title: 'Checking', detail: 'This swap was found again from your key. What became of it is being read from the chains.',
+  pay: dir === 'b2e' ? BigInt(rec.amount || 0) : rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: dir === 'b2e' ? BigInt(rec.evmAmount || 0) : rec.offer ? BigInt(rec.offer.btc.value) : 0n,
+  steps: stepsOf(dir, -1, 'checking'), etaSecs: 0, at: rec.created, refundAt: null, lockTxid: dir === 'b2e' ? (rec.lock ? rec.lock.txid : null) : rec.lockTxid || null,
+  error: null, provider: providerName, backBy: null, checking: true,
+});
+
 export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000)) {
+  if (rec.checking) return checking('b2e', rec, rec.providerName || null);
   const [at, title, detail, eta] = FWD_SAYS[rec.phase] || [0, rec.phase, '', null];
   const state = FWD_DONE.has(rec.phase) ? 'done' : rec.phase === 'refunded' ? 'returned' : 'working';
   const lockAt = rec.lockAt || rec.confirmedAt || null;
   return {
-    id: rec.id, dir: 'b2e', state, title, detail: rec.phase === 'refund-wait' && rec.why ? `${detail} ${String(rec.why).replace(/\.$/, '')}.` : detail,
+    id: rec.id, dir: 'b2e', state, title, detail: rec.phase === 'refund-wait' ? withWhy(detail, rec.why) : detail,
     pay: BigInt(rec.amount), get: BigInt(rec.evmAmount || 0), steps: stepsOf('b2e', at, state), etaSecs: state === 'working' ? eta : 0, at: rec.created,
     refundAt: state === 'working' && lockAt ? lockAt + rec.csvBlocks * 600 : null, lockTxid: rec.lock ? rec.lock.txid : null, error: rec.lastError || null, provider: rec.providerName || null,
     // the ETH has to be claimed by the pool deadline of the provider's lock; missed, nothing is lost, and the BTC returns at refundAt
@@ -100,10 +112,11 @@ export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000)) {
   };
 }
 export function describeRev(rec) {
+  if (rec.checking) return checking('e2b', rec, rec.providerName || null);
   const [at, title, detail, eta] = REV_SAYS[rec.phase] || [0, rec.phase, '', null];
   const state = rec.phase === 'done' ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' || rec.phase === 'lost' ? 'stopped' : 'working';
   return {
-    id: rec.id, dir: 'e2b', state, title, detail: rec.phase === 'aborted' && rec.why ? `${detail} ${String(rec.why).replace(/\.$/, '')}.` : detail,
+    id: rec.id, dir: 'e2b', state, title, detail: rec.phase === 'aborted' ? withWhy(detail, rec.why) : detail,
     pay: rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: rec.offer ? BigInt(rec.offer.btc.value) : 0n, steps: stepsOf('e2b', at, state), etaSecs: state === 'working' ? eta : 0, at: rec.created,
     // (once the provider has claimed, the ETH is not coming back: the BTC is taken instead, so no return time is given)
     refundAt: state === 'working' && rec.deadline && rec.phase !== 'taking' ? rec.deadline : null, lockTxid: rec.lockTxid || null, error: rec.lastError || null, provider: rec.providerName || null,
@@ -321,11 +334,15 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     for (const rec of await stores.fwd.list()) {
       let r = rec;
       if (step && !FWD_END.has(rec.phase)) { try { r = await blFor(rec.provider || null).step(rec); } catch { /* the next pass */ } }
+      if (step && r.checking && !r.lastError) { r = { ...r, checking: false }; await stores.fwd.put(r); }
       out.push(describeFwd(r, now));
     }
     for (const p of await revProviders()) {
       // the reverse client words its swaps for TAC, so a pass is taken through it and the swaps are then described here from their own records
-      if (step) { try { await revFor(p).pump(); } catch { /* a provider that cannot be reached: the next pass tries again */ } }
+      if (step) {
+        try { await revFor(p).pump(); } catch { /* a provider that cannot be reached: the next pass tries again */ }
+        for (const r of await stores.swaps(p.id).list().catch(() => [])) if (r.checking && !r.lastError) await stores.swaps(p.id).put({ ...r, checking: false });
+      }
       try { out.push(...(await stores.swaps(p.id).list()).map((r) => describeRev({ ...r, providerName: p.name }))); } catch { /* a store that cannot be read shows nothing */ }
       try { out.push(...(await asked(p))); } catch { /* none */ }
     }
@@ -335,7 +352,23 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   const pump = () => tend(() => view(true), () => view(false));
   async function recover() {
     const c = makeFastBridgeClient({ lp: noCounter(), btc, evm, store: stores.fwd, seed, pins: { btcAsset: SATS_ASSET, evmAsset: ETH }, policy, now });
-    return (await c.recover()).length + (await recoverRev());
+    const fwd = await c.recover();
+    // (the client hands back its records in words: the record itself is read from the store)
+    for (const d of fwd) { const rec = await stores.fwd.get(d.id); if (rec) await settle({ ...rec, checking: true }, stores.fwd, (r) => blFor(null).step(r)); }
+    return fwd.length + (await recoverRev());
+  }
+  // A record found again from the key is stepped until the chains have said what became of it (a lock the provider took, a take made from another page,
+  // a refund, a claim whose BTC is still to take) before it is listed. A step that cannot read the chains leaves it 'Checking' for the next pass.
+  async function settle(rec, store, step) {
+    await store.put(rec);
+    let r = rec;
+    for (let i = 0; i < 6; i++) {
+      const before = r.phase;
+      try { r = await step(r); } catch { return; }
+      if (!r || r.lastError) return;
+      if (r.phase === before) break;
+    }
+    await store.put({ ...r, checking: false });
   }
   // e2b: each pool lock of this key carries a memo sealed to it (dapp/fastbridge-evm.js makeOwnLockFinder): a lock no record here holds is made a record again, and its
   // next step reads what became of it (the provider's claim gives t and the BTC is taken; with no claim by the deadline, the ETH is refunded)
@@ -350,7 +383,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       if (known.has(id)) continue;
       const rec = recordFromLockMemo({ memo: m, seed, refundXonly: (await evm.refundKey(id)).xonly, claimerPub: btc.wallet.pub, btcAsset: SATS_ASSET, evmAsset: ETH, lockNullifier: evm.lockNullifier, now: now() });
       if (!rec) continue;
-      await stores.swaps(RECOVERED.id).put(rec);
+      await settle({ ...rec, checking: true }, stores.swaps(RECOVERED.id), (r) => revFor(RECOVERED).el.step(r));
       known.add(id); n++;
     }
     if (n && !(await stores.index.get(RECOVERED.id))) await stores.index.put(RECOVERED);
