@@ -18,7 +18,7 @@ import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 const BTC_MODULE = '/trade/btc.js?cb=a1ece943';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000;
-const MARKET_MODULE = '/swap/atomic-market.js?cb=7cdacc1c';
+const MARKET_MODULE = '/swap/atomic-market.js?cb=f3732fda';
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
 const DISMISS_KEY = 'tacit-atomic-dismissed-v1';
@@ -84,7 +84,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import('/fast/pair-wire.js?cb=fe59fdae');
+      const wire = await import('/fast/pair-wire.js?cb=2ecd4820');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },

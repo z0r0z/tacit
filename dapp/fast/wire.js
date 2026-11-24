@@ -16,8 +16,8 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=f83053ce';
 import { makeFastBridgeEvm, makeTxTracer, TRACE_NODES } from '/fastbridge-evm.js?cb=94c81e99';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=30c90184';
-import { makeLpService } from '/fastbridge-provider.js?cb=c040f74a';
+import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=09156465';
+import { makeLpService } from '/fastbridge-provider.js?cb=f1c4cf4d';
 import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=9003c49b';
 import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=2913bc2e';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=129356b4';
@@ -26,9 +26,9 @@ import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=63153972';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=397285a2';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=cf4a0fcc';
 import { splitAmount, assignNotes } from '/fast/sweep.js?cb=713466b3';
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=397285a2';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=cf4a0fcc';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 // four explorers, tried in turn: one busy or rate-limited explorer does not stop a swap (every page that uses this allows all four)
