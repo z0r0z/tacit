@@ -29,7 +29,7 @@
 //              recipient(swapIdHex) -> { xonly, priv }, claimOp({ rec, evmOffer, sec, position }) -> an op the adapter sends as it is,
 //              submit(type, op) -> { jobId }, claimStatus(jobId, { type, bundle, sinceSecs? }) -> 'pending' | 'settled' | 'failed'
 //              (a claim the relay calls failed is settled when the pool shows its lock spent by a claim, read from sinceSecs on),
-//              lockNullifier(leaf), findClaim(lockNu, { sinceSecs }) -> null (unspent) | [] (refunded) | [z, ...] (claimed); throws while unreadable }
+//              lockNullifier(leaf), findClaim(lockNu, { sinceSecs, check?, final? }) -> null (unspent) | [] (refunded) | [z, ...] (claimed); throws while unreadable }
 //   counter  { sendOffer({ quoteId, offer }) -> { ok, retry?, why? }, getEvmOffer(swapIdHex) -> evmOffer | null,
 //              extend?({ quoteId, txid }) -> { ok, retry?, why? } }
 
@@ -279,8 +279,10 @@ export function makeBitcoinLocker(ctx) {
         const spent = await btc.outspend(rec.lock.txid, rec.lock.vout);
         if (spent) return save(rec, { phase: 'done', takenBy: spent });
         if ((await lockState(rec)) !== 'due') return rec;
-        const zs = await evm.findClaim(evm.lockNullifier(rec.evmOffer.lockLeaf), { sinceSecs: rec.claimStartedAt || 0 });
-        if (zs && zs.length) return save(rec, { phase: 'done', why: 'paid on Ethereum; the Bitcoin lock is the counterparty\'s to take' });
+        // the claim the pool shows is this side's own (its kernel is the one this claim was built with), read once it is final (64 blocks deep)
+        const ownS = rec.claim && rec.claim.op && rec.claim.op.op && rec.claim.op.op.kernelS, mine = ownS ? (z) => BigInt(z) === BigInt(ownS) : null;
+        const zs = await evm.findClaim(evm.lockNullifier(rec.evmOffer.lockLeaf), { sinceSecs: rec.claimStartedAt || 0, final: policy.finalDepth ?? 64, ...(mine ? { check: mine } : {}) });
+        if (zs && zs.length && (!mine || zs.some(mine))) return save(rec, { phase: 'done', why: 'paid on Ethereum; the Bitcoin lock is the counterparty\'s to take' });
         const r = await maybeRefund(rec);
         if (r) return save(rec, { phase: 'done', takenBy: r });
         return rec;

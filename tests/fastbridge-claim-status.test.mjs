@@ -47,9 +47,10 @@ const z = (sTilde + t) % SECP_N;                          // what the user's hon
 const zHex = '0x' + z.toString(16).padStart(64, '0');
 const lockNu = '0x' + 'ab'.repeat(32);                    // the lock's nullifier (pool.nullifier(lockLeaf))
 const RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
+const RELAYED = [...keccak_256(new TextEncoder().encode('Relayed(address,address,uint256,uint256)'))].map((x) => x.toString(16).padStart(2, '0')).join('');
 const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 
-const CLAIM = { type: 'adaptorclaim', bundle: { op: { lockNullifier: lockNu } } };       // what the swap passes: the dapp's claim op carries its own lock nullifier
+const CLAIM = { type: 'adaptorclaim', bundle: { op: { lockNullifier: lockNu, kernelS: zHex } } };       // what the swap passes: the dapp's claim op carries its own lock nullifier and kernel
 const claimSettle = relaySettle([{ publicValues: publicValues({ lockNullifiers: [lockNu], adaptorClaimS: [zHex] }), proof: '0x' + 'cc'.repeat(32), memos: [] }]);
 const refundSettle = relaySettle([{ publicValues: publicValues({ lockNullifiers: [lockNu], adaptorClaimS: [] }), proof: '0x' + 'cc'.repeat(32), memos: [] }]);
 
@@ -61,6 +62,8 @@ function adapter({ status, spent = true, calldata = claimSettle, events = true }
       reads.push(m);
       if (m === 'eth_getStorageAt') return spent ? '0x' + '00'.repeat(31) + '01' : '0x' + '00'.repeat(32);
       if (m === 'eth_getTransactionByHash') return { input: calldata, to: RELAYER };
+      // (the relayer's receipt: its one call landed)
+      if (m === 'eth_getTransactionReceipt') return { status: '0x1', logs: [{ address: RELAYER, topics: ['0x' + RELAYED], data: '0x' + word(1) + word(1) }] };
       if (m === 'eth_blockNumber') return '0x20';
       if (m === 'eth_getBlockByNumber') return { timestamp: '0x' + (1_700_000_000 + parseInt(p[0], 16) * 12).toString(16) };
       throw new Error('stub: ' + m);

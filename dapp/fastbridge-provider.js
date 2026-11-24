@@ -279,12 +279,13 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       for (const p of (swaps.problems && swaps.problems()) || []) if (!reported.has(p.id)) { reported.add(p.id); alert({ level: 'alert', msg: 'a swap record cannot be read', id: p.id, error: p.error }); }
       for (const rec of recs) {
         if (TERMINAL.has(rec.phase)) continue;
-        const before = rec.phase, hadLock = !!rec.lock;
+        const before = rec.phase, hadLock = !!rec.lock, unreadBefore = rec.unread || 0;
         let next;
         try { next = await el.step(rec); } catch (e) { log({ level: 'error', msg: 'swap step threw', id: rec.id, error: String((e && e.message) || e).slice(0, 200) }); continue; }
         if (next.phase !== before) log({ level: 'info', msg: 'swap', id: next.id, from: before, to: next.phase, why: next.why });
         if (next.phase !== before || (!hadLock && next.lock)) stale();
         if (next.phase === 'lost') alert({ level: 'alert', msg: 'a lock was claimed without revealing t', id: next.id });
+        else if (next.unread && next.unread !== unreadBefore && (next.unread === 1 || next.unread % 8 === 0)) alert({ level: 'alert', msg: 'a pool lock was spent and its claim reads without t so far: read again until the Bitcoin lock\'s refund nears', id: next.id, lockTxid: next.lockTxid, looks: next.unread });
         // The pool lock was spent and the claim that spent it cannot be read (a settle sent in a way this side cannot read yet): t is in that claim, and the user's
         // Bitcoin lock must be taken with it before the user's refund opens. Said after a few minutes (the events may only be late), and again every quarter hour.
         if (/lock is spent, and the settle that spent it is not found/.test(next.lastError || '')) {

@@ -45,6 +45,7 @@ const z = (sTilde + t) % SECP_N;                          // what the user's hon
 const zHex = '0x' + z.toString(16).padStart(64, '0');
 const lockNu = '0x' + 'ab'.repeat(32);                    // the lock's nullifier (pool.nullifier(lockLeaf))
 const RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
+const RELAYED = hex(keccak_256(new TextEncoder().encode('Relayed(address,address,uint256,uint256)')));
 const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';
 
 function makeLp(txInput, txTo) {
@@ -53,6 +54,10 @@ function makeLp(txInput, txTo) {
     rpc: async (m, p) => {
       if (m === 'eth_getStorageAt') return '0x' + '00'.repeat(31) + '01';            // the pool says the lock is spent
       if (m === 'eth_getTransactionByHash') return { input: txInput, to: txTo };
+      if (m === 'eth_getTransactionReceipt') {                                        // the relayer's receipt: every call landed
+        const n = lockScan.decodeSettleCalls(txInput).calls.length;
+        return { status: '0x1', logs: [{ address: RELAYER, topics: ['0x' + RELAYED], data: '0x' + word(n) + word(n) }] };
+      }
       if (m === 'eth_blockNumber') return '0x20';
       if (m === 'eth_getBlockByNumber') return { timestamp: '0x' + (1_700_000_000 + parseInt(p[0], 16) * 12).toString(16) };
       throw new Error('stub: ' + m);

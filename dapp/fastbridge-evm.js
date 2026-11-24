@@ -61,9 +61,9 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return pos;
   }
 
-  async function mappingFlag(slot, key) {
+  async function mappingFlag(slot, key, tag = 'latest') {
     const k = hex(keccak256(cat(bytes(key), bytes('0x' + slot.toString(16).padStart(64, '0')))));
-    return BigInt((await rpc('eth_getStorageAt', [poolAddress, '0x' + k, 'latest'])) || '0x0') !== 0n;
+    return BigInt((await rpc('eth_getStorageAt', [poolAddress, '0x' + k, tag])) || '0x0') !== 0n;
   }
   const blocks = new Map();
   async function blockTs(n) {
@@ -80,18 +80,38 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     if (!inputs.has(h)) { const t = await rpc('eth_getTransactionByHash', [h]); inputs.set(h, t && t.input ? { input: t.input, to: String(t.to || '').toLowerCase() } : null); cap(inputs, 256); }
     return inputs.get(h);
   }
-  const trustedTo = new Set([poolAddress, relayerAddress].map((a) => String(a).toLowerCase()));
-  const poolTo = String(poolAddress).toLowerCase();
-  const claims = new Map(), traced = new Map();
-  // what the settle calls among `calls` say of the lock `key`: whether one spent it, and the claim kernels they carry
+  const poolTo = String(poolAddress).toLowerCase(), relayerTo = String(relayerAddress).toLowerCase();
+  const RELAYED_TOPIC = '0x' + hex(keccak256(te.encode('Relayed(address,address,uint256,uint256)')));
+  const claims = new Map(), traced = new Map(), ran = new Map();
+  // What the settle calls among `calls` say of the lock `key`: whether one spends it, and the claim kernel that is its own. A call's lock spends and its kernels are in
+  // the order its ops ran, and only a claim carries a kernel: when every spend in the call is a claim, the lock's kernel is the one at its place. A call that also
+  // refunds does not say which kernel is whose (`mixed`): each is then only a candidate.
   const naming = (calls, key) => {
-    const r = { named: false, s: [] };
+    const r = { named: false, s: [], mixed: false };
     for (const call of calls || []) {
       let f; try { f = ux.lockScan.decodePublicValuesAdaptorFields(call.publicValues); } catch { continue; }
-      if (f.lockNullifiers.map(lc).includes(key)) { r.named = true; r.s.push(...f.adaptorClaimS); }
+      const nus = f.lockNullifiers.map(lc), i = nus.indexOf(key);
+      if (i < 0) continue;
+      r.named = true;
+      if (f.adaptorClaimS.length === nus.length) r.s.push(f.adaptorClaimS[i]);
+      else if (f.adaptorClaimS.length) { r.mixed = true; r.s.push(...f.adaptorClaimS); }
     }
     return r;
   };
+  // Whether every settle call of a relayer transaction ran: the relayer passes over a call the pool refused, and its Relayed event says how many of how many landed.
+  // A receipt that cannot be read yet is asked for again.
+  async function allRan(txHash, n) {
+    if (!ran.has(txHash)) {
+      let r;
+      try { r = await rpc('eth_getTransactionReceipt', [txHash]); } catch { return false; }
+      if (!r || r.status == null) return false;
+      const ev = (r.logs || []).find((l) => String(l.address || '').toLowerCase() === relayerTo && String((l.topics || [])[0] || '').toLowerCase() === RELAYED_TOPIC);
+      const d = ev ? strip(ev.data || '') : '';
+      ran.set(txHash, Number(r.status) === 1 && d.length >= 128 && BigInt('0x' + d.slice(0, 64)) === BigInt(n) && BigInt('0x' + d.slice(64, 128)) === BigInt(n));
+      cap(ran, 4096);
+    }
+    return ran.get(txHash);
+  }
   // the settles the pool itself ran in a transaction, read from its trace (a call that reverted, or sits under one that did, ran nothing)
   async function pooledSettles(txHash) {
     if (!traced.has(txHash)) {
@@ -104,14 +124,32 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     }
     return traced.get(txHash);
   }
-  // The claim kernels of the settle that spent a lock: [] for a refund, null while the lock is unspent. A settle sent straight to the pool or through its relayer is read
-  // from the transaction's input. One sent through another contract (a forwarder, a contract wallet) is read from that contract's input when it carries the settle as it
-  // is, and a kernel found that way is taken only when `check(s)` says it opens the swap (it is what someone wrote, not what the pool ran); else from the pool's own call
-  // in the transaction's trace (`trace`), which is what the pool ran.
-  async function findClaim(lockNu, { sinceSecs = 0, check = null } = {}) {
+  // The claim kernels of the settle that spent a lock: [] for a refund, null while the lock is unspent; throws while the settle is not found (or, with `final`, a number
+  // of blocks, while the spend is not that many blocks deep: read at a block number, which every node keeps the state of for the last 128).
+  // The settle is read from the call that ran: a settle sent straight to the pool, or a relayer call whose transaction says all its calls landed. A relayer transaction
+  // that says otherwise, and one sent through another contract (a forwarder, a contract wallet), are read from the pool's own call in the transaction's trace (`trace`),
+  // or from their input when it carries the settle as it is; a kernel read from an input is taken only when `check(s)` says it opens the swap (it is what someone wrote,
+  // not what the pool ran). With `check`, a kernel of the call that ran that does not pass is not taken while another read may still find one that does; it is
+  // handed back last, as what the pool shows.
+  async function findClaim(lockNu, { sinceSecs = 0, check = null, final = null } = {}) {
     if (!(await mappingFlag(LOCK_SPENT_SLOT, lockNu))) return null;
+    if (final) {
+      const at = parseInt(await rpc('eth_blockNumber', []), 16) - final;
+      if (!(at > 0 && (await mappingFlag(LOCK_SPENT_SLOT, lockNu, '0x' + at.toString(16))))) throw new Error('the lock is spent, and the spend is not deep enough yet');
+    }
     const key = lc(lockNu);
-    if (claims.has(key)) return claims.get(key);
+    const ok = (s) => { try { return !!check(s); } catch { return false; } };
+    // what a call that ran says, judged: undefined while it does not settle the question (a kernel that does not pass the check)
+    const judge = (r) => {
+      if (!r.s.length) return [];
+      if (!check) return r.s;
+      const good = r.s.filter(ok);
+      if (good.length) return good;
+      return r.mixed ? [] : undefined;                    // (a call that also refunds, with no kernel that opens this swap, refunded it)
+    };
+    const known = claims.get(key);
+    if (known) { const j = judge(known); if (j !== undefined) return j; }
+    const keep = (r) => { claims.set(key, { s: r.s, mixed: r.mixed }); cap(claims, 1024); };
     const events = await ux.fetchEvents({ fromBlock: sinceSecs ? await blockAtOrAfter(Math.max(0, sinceSecs - 3600)) : undefined, toBlock: 'latest' });
     // The window's transactions are read a few at a time before they are walked in order: a swap found again from the key a day after its lock has a day of the pool's
     // settles to read, one request each, which one at a time took over a minute (2026-11-25). A read that fails here is made again in the walk, as before.
@@ -126,24 +164,28 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const reader = async () => { while (next < hashes.length) { const h = hashes[next++]; if (got.has(h)) continue; try { got.set(h, await txOf(h)); } catch { /* read again in the walk */ } } };
     await Promise.all(Array.from({ length: TX_READS_AT_ONCE }, reader));
     const seen = new Set();
-    const found = [], loose = [], others = []; let named = false;
+    const loose = [], others = []; let landed = null;
     for (const e of events) {
       if (!e.txHash || seen.has(e.txHash) || (e.type !== 'LeavesInserted' && e.type !== 'NullifiersSpent')) continue;
       seen.add(e.txHash);
       const tx = got.has(e.txHash) ? got.get(e.txHash) : await txOf(e.txHash);
       const decoded = tx && ux.lockScan.decodeSettleCalls(tx.input);
-      if (decoded && decoded.direct && trustedTo.has(tx.to)) {
+      if (decoded && decoded.direct && (tx.to === poolTo || tx.to === relayerTo)) {
         const r = naming(decoded.calls, key);
-        if (r.named) { named = true; found.push(...r.s); }
-        continue;
+        if (!r.named) continue;
+        if (tx.to === poolTo || (await allRan(e.txHash, decoded.calls.length))) { if (!landed) landed = r; continue; }
       }
       others.push(e.txHash);
       if (decoded) loose.push(...naming(decoded.calls, key).s);
     }
-    if (named) { claims.set(key, found); cap(claims, 1024); return found; }
+    if (landed) {
+      keep(landed);
+      const j = judge(landed);
+      if (j !== undefined) return j;
+    }
     if (check) {
-      const hit = loose.find((s) => { try { return check(s); } catch { return false; } });
-      if (hit) { claims.set(key, [hit]); cap(claims, 1024); return [hit]; }
+      const hit = loose.find(ok);
+      if (hit) return [hit];
     }
     if (trace) {
       // the newest first, a few new traces a look (a trace read once is kept), so a long window is read over several looks
@@ -153,11 +195,12 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
         const r = naming(await pooledSettles(h), key);
         if (!r.named) continue;
         // (a trace is a node's word: with a check, only a kernel that opens the swap is taken from it)
-        const s = check ? r.s.filter((x) => { try { return check(x); } catch { return false; } }) : r.s;
-        if (check && !s.length) continue;
-        claims.set(key, s); cap(claims, 1024); return s;
+        if (!check) { keep(r); return judge(r); }
+        const good = r.s.filter(ok);
+        if (good.length) return good;
       }
     }
+    if (landed) return landed.s;
     throw new Error('the lock is spent, and the settle that spent it is not found yet');
   }
 
@@ -205,7 +248,9 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   async function claimLanded(again) {
     const nu = again && again.type === 'adaptorclaim' && again.bundle && again.bundle.op && again.bundle.op.lockNullifier;
     if (!nu) return false;
-    try { const found = await findClaim(nu, { sinceSecs: again.sinceSecs || 0 }); return !!(found && found.length); } catch { return false; }
+    // the claim that landed is this one: its own kernel (the one the claim was built with), not any kernel the pool shows for the lock
+    const ownS = again.bundle.op.kernelS, mine = ownS ? (z) => BigInt(z) === BigInt(ownS) : null;
+    try { const found = await findClaim(nu, { sinceSecs: again.sinceSecs || 0, ...(mine ? { check: mine } : {}) }); return !!(found && found.length && (!mine || found.some(mine))); } catch { return false; }
   }
   async function jobStatus(id, again = null) {
     if (isOwnJob(id)) {

@@ -153,7 +153,8 @@ export function makeEthereumLocker(ctx) {
     const T = secretsOf(rec).T;
     const tOf = (z) => { const t = adaptor.evmKernelExtract(sTilde, BigInt(z)); return t !== 0n && adaptor.adaptorPoint(t).equals(T) ? t : null; };
     // `check`: a kernel read from anything but the pool's own record of the settle is taken only if it opens this swap
-    const zs = await evm.findClaim(rec.lock.lockNu, { sinceSecs: rec.created, ...(sTilde != null ? { check: (z) => tOf(z) != null } : {}) });
+    // (the spend is read once it is a few blocks deep)
+    const zs = await evm.findClaim(rec.lock.lockNu, { sinceSecs: rec.created, final: policy.claimDepth ?? 12, ...(sTilde != null ? { check: (z) => tOf(z) != null } : {}) });
     if (!zs) return null;
     if (!zs.length) return { refunded: true };
     if (sTilde == null) return { lost: true };
@@ -163,12 +164,21 @@ export function makeEthereumLocker(ctx) {
     }
     return { lost: true };
   }
-  const afterRead = (rec, r) => {
-    if (r.t) return save(rec, { phase: 'taking', t: r.t });
+  const afterRead = async (rec, r) => {
+    if (r.t) return save(rec, { phase: 'taking', t: r.t, unread: null, lookAt: null });
     // (a lock is refunded only by its locker: a record found again from the key, which kept no refund of its own, was refunded by this key)
     if (r.refunded) return save(rec, { phase: rec.refund || rec.recovered ? 'refunded' : 'done', why: 'the lock was spent by a refund' });
+    // A claim read so far without t is read again (each look reads more of the window's traces), less often each time, for as long as the Bitcoin lock can still be
+    // taken: only once its refund is a few blocks away is the swap given up.
+    const height = rec.lockHeight ?? ((await btc.status(rec.lockTxid).catch(() => null)) || {}).height;
+    const left = height == null ? null : height + rec.csvBlocks - 1 - (await btc.tip());
+    if (left == null || left > (policy.unreadGiveUpBlocks ?? 6)) {
+      const n = (rec.unread || 0) + 1;
+      return save(rec, { unread: n, lookAt: ctx.now() + Math.min(policy.unreadMaxWaitSecs ?? 900, 30 * 2 ** Math.min(n - 1, 10)), why: 'the lock was spent: its claim is read again for t' });
+    }
     return save(rec, { phase: 'lost', why: 'the lock was claimed with a kernel that does not reveal t' });
   };
+  const waiting = (rec) => rec.lookAt != null && ctx.now() < rec.lookAt;
 
   async function advance(rec) {
     if (rec.lock && (rec.phase === 'locking' || rec.phase === 'locked') && (await evm.now()) > rec.deadline) {
@@ -275,6 +285,7 @@ export function makeEthereumLocker(ctx) {
         return save(rec, { phase: 'offered', evmOffer });
       }
       case 'offered': {
+        if (waiting(rec)) return rec;
         const r = await readLock(rec);
         if (r) return afterRead(rec, r);
         if ((await evm.now()) > rec.deadline + margin) return save(rec, { phase: 'refunding' });
@@ -423,6 +434,7 @@ export function makeEthereumLocker(ctx) {
         return rec;
       }
       case 'refunding': {
+        if (waiting(rec)) return rec;
         const r = await readLock(rec);
         if (r && (r.t || r.lost)) return afterRead(rec, r);
         if (r && r.refunded) return save(rec, { phase: 'refunded' });
