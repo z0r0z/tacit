@@ -74,6 +74,8 @@ test('a long note history gives the event loop a real turn between its reads, an
       seen.push([...set.keys()]);
       const before = turns;
       for (let i = 0; i < 12; i++) await fetchTx(`${i.toString(16).repeat(64).slice(0, 64)}`);
+      // the walk reads the transactions it proves (only what a walk read is kept as proved)
+      await fetchTx('ee'.repeat(32)); await fetchTx(txid);
       seen.at(-1).turns = turns - before;
       set.set('ee'.repeat(32) + ':0', true); set.set(`${txid}:${vout}`, true);
       return true;
@@ -82,7 +84,7 @@ test('a long note history gives the event loop a real turn between its reads, an
     getParentEnvelopeData: async () => ({ assetIdHex: 'ab'.repeat(32), commitment: new Uint8Array(33) }),
   };
   const prev = globalThis.fetch;
-  globalThis.fetch = async () => json(TX);
+  globalThis.fetch = async (u) => { const id = String(u).match(/\/tx\/([0-9a-f]{64})/); return json(id ? { ...TX, txid: id[1] } : TX); };
   const chain = makeEsploraBtcChain({ bases: ['http://esplora.test'], prims, builder: null, fetchImpl: (...a) => globalThis.fetch(...a), tacit: fake });
   try {
     assert.ok(await chain.resolveNote('11'.repeat(32), 0));
