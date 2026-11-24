@@ -51,6 +51,7 @@ import { boardVerdict, runpodVerdict, vastVerdict } from './lib/board-health.js'
 import { publicClient, relayWallet, watchedWallets, ERC20_ABI, PROVE, readPool, readReflectionDigest, HEADER_RELAY, RELAY_ABI, POOL } from './lib/chain.js';
 import { safeErr } from './lib/safe-err.js';
 import { tacitChainVerdict, paymentsWaiting } from './lib/tacit-chain-health.js';
+import { peripheryVerdict } from './lib/periphery-guards.js';
 
 const log = (...a) => console.log(`[monitor ${new Date().toISOString()}]`, ...a);
 
@@ -229,6 +230,30 @@ async function checkPointsFunding() {
   } else if (funding.verdict === 'warning') {
     await alert('warning', `PointsDistributor covers ${funding.daysCovered} more day(s): send TAC to ${funding.distributor} before ${new Date(funding.topUpBeforeSec * 1000).toISOString()}`, extra);
   }
+}
+
+// Contract states the periphery relies on: ProofMarket's claim bond, TacFarmFunder's balance, and the PointsDistributor's root against the ones the points service
+// reports sending (GET /rewards). Each read that fails is skipped, not alerted: it says nothing about the contract.
+const PROOF_MARKET = process.env.PROOF_MARKET_ADDR || '0x0000000033Dd45B1686Ba37e5F6e4ABDdaC17609';
+const FARM_FUNDER = process.env.TAC_FARM_FUNDER_ADDR || '0x7fc40b13c7a99a1d2c41f8b5382978363d18525a';
+const PERIPHERY_ABI = parseAbi(['function claimBond() view returns (uint256)', 'function WTAC() view returns (address)', 'function root() view returns (bytes32)']);
+async function checkPeripheryGuards() {
+  const rd = (address, functionName) => publicClient.readContract({ address, abi: PERIPHERY_ABI, functionName }).catch(() => null);
+  const bal = (token, who) => publicClient.readContract({ address: token, abi: ERC20_ABI, functionName: 'balanceOf', args: [who] }).catch(() => null);
+  const claimBond = await rd(PROOF_MARKET, 'claimBond');
+  const wtac = await rd(FARM_FUNDER, 'WTAC');
+  const [tac, w] = wtac ? await Promise.all([bal(CFG.tacToken, FARM_FUNDER), bal(wtac, FARM_FUNDER)]) : [null, null];
+  let points = null;
+  try {
+    const res = await fetch(`${CFG.pointsApiBase}/rewards`, { signal: AbortSignal.timeout(15000) });
+    const j = res.ok ? await res.json() : null;
+    const dist = j?.funding?.distributor;
+    const onchainRoot = dist ? await rd(dist, 'root') : null;
+    if (j && onchainRoot) points = { onchainRoot, publishedRoot: j.publishedRoot ?? null, rootsSent: j.rootsSent || [] };
+  } catch { points = null; }
+  const v = peripheryVerdict({ claimBond, funder: tac != null && w != null ? { tac, wtac: w } : null, points });
+  log(`periphery = ${v.level}: ${v.why.join('; ')}`);
+  if (v.level !== 'ok') await alert(v.level, v.why.join('; '));
 }
 
 // The tacit chain's leader (tacit-leader on Render): its wallet pays to land every block, so one that cannot pay for the next stops the chain
@@ -773,7 +798,7 @@ async function checkVast() {
 
 async function main() {
   log(`monitor run — worker=${CFG.workerBase} relay=${relayWallet ? relayWallet.account.address : '(no key on this service — watching by address)'}`);
-  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkVast(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkBtcKeepers(), checkProverBoard(), checkTacitChain(), checkPoolReplay()]);
+  const results = await Promise.allSettled([checkProve(), checkEth(), checkReflectionLag(), checkProverKinds(), checkRunPod(), checkVast(), checkSnapshotCapacity(), checkFarmHealth(), checkPointsFunding(), checkReflectionStall(), checkBurnsAwaitingBundle(), checkQueue(), checkEthStatePending(), checkCrossOutFold(), checkEvmPoolKeepers(), checkTacSupply(), checkBitcoinScan(), checkBtcKeepers(), checkProverBoard(), checkTacitChain(), checkPoolReplay(), checkPeripheryGuards()]);
   for (const r of results) if (r.status === 'rejected') log('check threw:', r.reason?.message || r.reason);
   log(`monitor done — ${criticals} critical${criticals === 1 ? '' : 's'}`);
   // Exit non-zero so the cron run is marked failed even with no webhook configured. A check that THREW is
