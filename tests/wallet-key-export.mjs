@@ -103,6 +103,9 @@ try {
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   ok(/^[0-9a-f]{64}$/.test(copied), 'the second press puts the 64-character key on the clipboard');
   ok(await text('#w-backup') === 'Copy key', 'and the button goes back to Copy key');
+  ok(/cleared from the clipboard in a minute/.test(await page.evaluate(() => document.body.textContent)), 'the page says the copy is cleared from the clipboard in a minute');
+  await page.waitForTimeout(61000);
+  ok((await page.evaluate(() => navigator.clipboard.readText())) === '', 'a minute later the key is no longer on the clipboard');
 
   // ── Show key: the same key on screen, so it never has to pass through the clipboard ──
   const secretHidden = () => page.$eval('#w-secret', (e) => e.hidden && !e.textContent);

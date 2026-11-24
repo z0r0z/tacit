@@ -250,8 +250,25 @@ function secretControls({ copyBtn, showBtn, box, value, direct, label = 'Key', e
     box.hidden = true; box.textContent = '';
     showBtn.textContent = showName; showBtn.setAttribute('aria-expanded', 'false');
   };
+  // A copied secret is taken off the clipboard after a minute: where the page may read the clipboard, only while it still holds the secret; elsewhere only
+  // while this page has the focus and nothing else was copied in it since (a copy made in another app is not overwritten from a page that is not in front).
+  let wipe = 0;
+  const wipeLater = (text) => {
+    clearTimeout(wipe);
+    let copiedSince = false;
+    const mark = () => { copiedSince = true; };
+    document.addEventListener('copy', mark, { once: true }); document.addEventListener('cut', mark, { once: true });
+    wipe = setTimeout(async () => {
+      document.removeEventListener('copy', mark); document.removeEventListener('cut', mark);
+      try {
+        const p = await navigator.permissions?.query?.({ name: 'clipboard-read' }).catch(() => null);
+        if (p && p.state === 'granted') { if ((await navigator.clipboard.readText()) === text) await navigator.clipboard.writeText(''); return; }
+        if (!copiedSince && document.hasFocus()) await navigator.clipboard.writeText('');
+      } catch { /* the clipboard is the browser's to refuse */ }
+    }, 60000);
+  };
   const copyNow = () => {
-    const done = (text) => navigator.clipboard.writeText(text).then(async () => { const more = await extra(); toast(`${label} copied. Keep it somewhere private.${more ? ' ' + more : ''}`); }, () => toast('Could not copy the key: the browser refused clipboard access.', true));
+    const done = (text) => navigator.clipboard.writeText(text).then(async () => { wipeLater(text); const more = await extra(); toast(`${label} copied. Keep it somewhere private: it is cleared from the clipboard in a minute.${more ? ' ' + more : ''}`); }, () => toast('Could not copy the key: the browser refused clipboard access.', true));
     const fail = () => toast(`Could not make the ${label.toLowerCase()}.`, true);
     let v;
     try { v = value(); } catch { return fail(); }

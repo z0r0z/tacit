@@ -149,6 +149,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 /* your swaps: the lane's own list, moved here */
 #mine .snt { margin: 0; }
 #mine-say { margin: 0; font-size: 13px; color: var(--mute); }
+.keep-note { flex-basis: 100%; font-size: 12px; color: var(--mute); }
 #mine-say:empty { display: none; }
 #mine .row { margin-top: 12px; }
 #mine-st { font-size: 12px; color: var(--mute); }
@@ -557,6 +558,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <label class="btn" for="keep-file">Read a copy</label>
         <input class="sr" type="file" id="keep-file" accept="application/json,.json">
         <span id="mine-st" role="status"></span>
+        <small class="keep-note">Read only a copy you saved yourself. Never load a file, or paste a key, that someone sends you.</small>
       </div>
     </section>
 
