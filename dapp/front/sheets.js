@@ -728,6 +728,7 @@ function renderV1(el) {
     ${depositCallout('eth', 'v1-finish')}
     ${LK.pub === S.key.pubHex && lockList('claim').length ? html`<div class="callout"><span>${lockLine(lockList('claim'), 'claim')}</span><button class="btn ghost" type="button" id="v1-claim">Claim</button></div>` : ''}
     ${LK.pub === S.key.pubHex && lockList('refund').length ? html`<div class="callout"><span>${lockLine(lockList('refund'), 'refund')}</span><button class="btn ghost" type="button" id="v1-back">Take back</button></div>` : ''}
+    ${LK.pub === S.key.pubHex && lockList('small').length ? html`<div class="callout"><span>${lockLine(lockList('small'), 'small')}</span></div>` : ''}
     ${LK.failed?.pub === S.key.pubHex && LK.pub !== S.key.pubHex && !LK.scanning ? html`<div class="callout"><span>Could not check for payments sent to you.</span><button class="btn ghost" type="button" id="v1-locks">Try again</button></div>` : ''}
     ${segSub('v1', V1.mode, [['wrap', 'Shield'], ['send', 'Send'], ['swap', 'Swap'], ['out', 'Withdraw'], ...(xoShown(S.key.pubHex) ? [['btc', xoJournal(S.key.pubHex, XA.teth).length || brJournal(S.key.pubHex, 'tETH').some((r) => !BR_DONE.includes(r.stage) && r.stage !== 'recovered') ? html`Bitcoin<i class="dot live" aria-hidden="true"></i><span class="sr">, under way</span>` : 'Bitcoin']] : [])])}
     <div id="v1-form"></div>

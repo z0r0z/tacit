@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-CrDJqDushaN1RdfiDwBvg19eCrVBGH6es+y9BDTHgo8=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-GXwjiuxR5GIKN/I3TVdhOUBjsS7Bv4+JHxHaFt+1yiA=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -21,7 +21,7 @@
 <link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-<script defer src="/front-route.js?cb=f86601ce"></script>
+<script defer src="/front-route.js?cb=9b392ce1"></script>
 <title>tacit SPX</title>
 <link rel="canonical" href="https://tacit.finance/spx/">
 <meta name="description" content="SPX6900, privately: shield $SPX into the Tacit DeFi pool, send it, take it out or bridge it to Bitcoin.">
@@ -4814,7 +4814,7 @@ for (const t of ['pointerover', 'focusin']) document.addEventListener(t, tacWarm
 const sheetsCtx = () => ({ $, $$, OWNNODE, ACT, ADDR, ASSET_SEND_SATS, BASE_NODES, BF, BR_DONE, BTC, BTC_NOTE_ASSETS, BTC_TOKENS, BWB, BWX, CETH_ID, CHAIN_ASSETS, CHAIN_META, CSEND, CS_ASSETS, DEV, DEVICE_CHAINS, DEV_JOB, DEV_PREF, DISTRIBUTOR, E10, ETHERSCAN, ETH_DP, ETH_LOG_NODES, EVM_POOL, EVM_ROUTER, EXIT_AHEAD, FARM, FLASH, HARVEST_WORTH, HOLD, HOLD_CONSENT, HX, HX_FLIGHT, JOBS, JOIN, KEEP_READY, KEPT, L2BAL, LK, LOCAL, LOCK, LOGO, farmIcons, icoHtml, LP_KEEP_ETH, MEMPOOL, NOTIFY_KEY, OFFERED, OPENISH, OPEN_OFFERED, OUT, P, PGM, POOL_TK, PTS, PTS_BOARD, REDEEM, RETRY, REVERTS, REWARD_PAID, RS, RUNS, Raw, S, SATS_DUST, SEALED, SEL, SELF, SELFDO, SP, SP_PREF, SP_SEAL, SWAP_ASSETS, TAB, TAC_BTC_ID, TAC_DP, TK, TOKEN_POOLS, US, V1, VOUCH, WAIT_WHY, WAL, WNS, WTAC, XA, XA_REDEEM, XO_AT, XO_STEPS, ZAP_SETTLE_GAS, ZROUTER, ZSWAP, aFor, aboutEth, acked, actBridge, actBtc, actDone, actGet, actSave, addrFlat, addrWord, addressFor, addressId, ago, alts, aprLong, aprOf, aprShort, assetById, assetSendForm, bFor, badStatus, big, bondAck, bondDue, bondElsewhere, bondFunds, bondNoWallet, bondNotes, bondVia, bondsNow, brJournal, btcQr, btcRouteM, btcSendNow, busy, bwCanWst, byValue, bytesToHex, chainFull, chainMark, chainMarks, chainNow, chainRpc, chainTag, clearField, clock, concatBytes, connect, copy, cutAhead, dashGo, dashSoon, dayFmt, dayShort, deadline, debounce, depositCallout, devBal, devDepositSend, devNow, devOn, devOutSend, devProver, devResolve, devSaid, deviceSync, deviceWallet, dfmt, earnRows, earnedNow, ended, errText, etaWords, ethBalance, ethBase, ethCall, ethKeep, ethOfTac, evm, exitAheadFor, exitGo, exitKind, exitPosition, failText, farmLinkOf, feeRoom, feesLine, fmt, freeNotes, getDeviceMods, getUx, heldLabel, hexToBytes, hmac, holdBehind, holdConsented, holdPayTo, holderTier, holdingRound, html, hxBwInflight, hxDraft, hxLive, hxPts, hxWarmWrap, idRow, inUse, joinAhead, joinMax, joinNow, joinOnePlan, joinPairPlan, joinSides, joinTerms, kLock, kNote, kOfAsset, kPos, keccak_256, keep, keepKey, keepReady, keepSizes, keeperDown, keeperRead, keeperTrouble, keeperTx, keyRow, knownWallet, lastEnd, lastSeen, leftWords, linkNote, linked, listed, loadBonds, loadBorrow, loadBtc, loadFarms, loadHeld, loadLocks, loadPoints, loadPositions, loadUnified, loadUsdtBal, lockAhead, lockId, lockLine, lockList, lockNext, lossGate, lossOk, lpCost, lpKeep, lpPoolFor, lpSays, lpSendNow, lpShare, lpTicker, lsKv, maxAria, lockWallet, midAction, mine, mount, multicall, needKey, nfmt, noRelayFee, noteFor, noteKeep, now, offerMore, offerSelf, okStatus, onEdit, onTheWay, opParts, openLink, openOf, openProve, openSheet, openerOn, otherKey, otherSelf, otherWallet, overBalance, ownAccount, ownJob, ownNow, ownOn, ownWord, paceOf, paintAct, paintProve, paintSp, paintWallet, paintWalletBal, pairName, parseUnits, payFrom, payFromTok, payer, payingAccount, pct, pctFmt, pendingFor, pendingSent, perProof, permitSig, plain, pointsWho, poolLine, poolMaking, poolVsMarket, poolWorth, potTac, precisionApr, privateOf, proofsBusy, proofsFor, proveAhead, proveFmt, proveFor, proveOr, proveOwn, prover, provingNote, ptChain, ptsDays, ptsEnd, ptsFmt, ptsWhy, pubExitSend, pubOutData, pubPreview, pubSend, quoteErr, rankRows, rateStr, reProve, readOutlook, readPublicTac, readRow, readWrapTip, recipientOf, redeemBuild, redeemOn, redeemRefresh, redeemSend, redeemSent, redeemStep, refreshAll, refreshFarm, refreshWalletBal, relayDeposit, relayProving, relayWhy, render, rerender, resetPrivate, resolveToM, revertText, rewardPop, rewardWorth, rpc, running, samePos, say, sayErr, sayLive, scanIfNew, scanPrivate, scanShielded, scheduled, sealOn, secp, segSub, selfDo, selfOffer, selfWork, sendTx, setDeviceChain, setNotify, setPayer, settleBorrow, shLookingNote, sha256, sharePct, sharesEth, sheetOf, shieldedApr, short, shown, shownAs, sig, signIn, sizesNow, sleep, spApply, spMod, spOn, spRead, spSaid, spendable, stealthSendNow, stepBond, stepHarvest, stepLi, stepOf, stepRedeem, stepTakeOut, stepUnbond, store, strip, swapAsset, syncAccount, syncLink, tacOf, tacShort, tacitShort, takeBond, takeDraft, takenByOther, tickerOf, lockDec, tkPin, toSelf, toast, tokDepositSend, tokRecipient, tokenSync, tokenWallet, tooFine, txFail, txLink, txMark, txSite, txUrl, unharvested, unitOf, unwrapNow, usdtExitFee, usdtOwner, usdtWrapNow, utcDay, viaText, viewAddr, vouchers, waitRanOut, waitTx, walletBalances, walletPriv, warn, wireAck, wireFinish, wireSignIn, wireSub, withKey, word, wordAt, wrapMax, wrapNow, wtacHere, xaOf, xbHeld, xbOf, xoCovered, xoDue, xoErr, xoFundRow, xoJournal, xoKeyOpen, xoLink, xoNoteText, xoOut, xoRecords, xoShown, your, zapAhead, zapNow, zapQuote, zapUnit, zapsFinish, zapsMine, zapsRead, offMarket, offSay, offRow, offBetter, get PTSINFO() { return PTSINFO; }, get T() { return T; }, get UNI() { return UNI; } });
 // front-sheets:end
 let SHEET_CODE = null;
-const sheetsReady = lazy(() => import('/front/sheets.js?cb=7b5df4a6').then((m) => { SHEET_CODE ||= m.default(sheetsCtx()); }));
+const sheetsReady = lazy(() => import('/front/sheets.js?cb=79a9fcff').then((m) => { SHEET_CODE ||= m.default(sheetsCtx()); }));
 const withSheets = (f) => (SHEET_CODE ? f() : sheetsReady().then(f, () => {}));
 for (const k of ["wallet","eth","usdt","btc","pts","farm","borrow"]) render[k] = () => { if (!SHEET_CODE) withSheets(() => rerender(k)); };
 function renderProve(...a) { if (SHEET_CODE) return SHEET_CODE.renderProve(...a); withSheets(() => { if ($('#sheet-prove').open) reProve(); }); }
@@ -6217,7 +6217,7 @@ function depositOf(t, d) {
     shown: shownAs(meta?.ticker), sheet: DEPOSIT_SHEET[meta?.ticker] || 'eth' };
 }
 const pendingFor = (sheet) => (S.key && P.scan?.pending || []).filter((p) => p.sheet === sheet && !taken(kDep(p)));
-const lockList = (kind) => (kind === 'claim' ? LK.mine : kind === 'wait' ? LK.wait : LK.back).filter((l) => !taken(kLock(l)));
+const lockList = (kind) => (kind === 'claim' ? LK.mine : kind === 'wait' ? LK.wait : kind === 'small' ? LK.small : LK.back).filter((l) => !taken(kLock(l)));
 const lpPoolOf = (asset) => (FARM.program?.pools || []).find((p) => String(p.lpAsset).toLowerCase() === String(asset).toLowerCase()) || null;
 const lpPoolFor = async (asset) => lpPoolOf(asset) || (FARM.program ? null : await loadProgram().then(() => lpPoolOf(asset), () => null));
 const lpSays = (p, shares) => { const w = sharesEth(p, shares); return w ? `${aboutEth(w).replace(/^≈ /, '')} of ${pairName(p.pair)} LP` : `${BigInt(shares).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')} ${pairName(p.pair)} LP shares`; };
@@ -6237,6 +6237,11 @@ function inDays(deadline) {
 function lockLine(ls, kind) {
   const n = ls.length, what = lockWhat(ls), of = what ? ` of ${what}` : '';
   if (kind === 'claim') return `${n === 1 ? 'A private payment' : `${n} private payments`}${of} ${n === 1 ? 'was' : 'were'} sent to you. Claim ${n === 1 ? 'it' : 'them'} within ${inDays(Math.min(...ls.map((l) => Number(l.deadline))))}.`;
+  if (kind === 'small') {
+    const t = SP.ux, by = dayFmt(Math.min(...ls.map((l) => Number(l.deadline)))), feeAt = (l) => (t ? ` (${fmt(BigInt(l.fee), lockDec(t, l.asset), 6)} ${unitOf(t, l.asset)})` : '');
+    return n === 1 ? `A private payment${of} was sent to you, but it is less than the relay’s fee to claim it${feeAt(ls[0])}, so it is not offered. It is offered again if the fee falls, or if you prove on your own device, which has no relay fee. It stays open until ${by}.`
+      : `${n} private payments${of} were sent to you, each less than the relay’s fee to claim it, so they are not offered. They are offered again if the fee falls, or if you prove on your own device, which has no relay fee. The first stays open until ${by}.`;
+  }
   if (kind === 'wait') return `${n === 1 ? 'A private send' : `${n} private sends`}${of} ${n === 1 ? 'has' : 'have'} not been claimed yet. ${n === 1 ? 'If it stays' : 'If they stay'} unclaimed, ${n === 1 ? 'it' : 'the first'} can come back to you from ${dayFmt(Math.min(...ls.map((l) => Number(l.deadline))))}.`;
   return `${n === 1 ? 'A private send' : `${n} private sends`}${of} ${n === 1 ? 'was' : 'were'} never claimed. ${n === 1 ? 'It' : 'They'} can come back to you.`;
 }
@@ -6331,7 +6336,7 @@ load.eth = async () => {
   else if (S.key) await (DEV.tok ? tokenSync() : deviceSync());
 };
 
-const LK = { at: 0, since: 0, pub: null, mine: [], back: [], wait: [], root: null, sentRoot: null, scanning: null, failed: null };
+const LK = { at: 0, since: 0, pub: null, mine: [], back: [], wait: [], small: [], root: null, sentRoot: null, scanning: null, failed: null };
 function loadLocks(force = false) {
   if (!S.key) return Promise.resolve(null);
   if (LK.scanning && !force) return LK.scanning;
@@ -6352,13 +6357,18 @@ function loadLocks(force = false) {
       fees[tk] ??= await t.quoteOpFee(tk, 'stealthclaim').then(BigInt, () => null);
       return fees[tk] != null && BigInt(l.amount) > fees[tk];
     };
-    const at = BigInt(chainNow()), mine = [], back = [], wait = [];
-    for (const l of r.mine) if (l.spent !== true && BigInt(l.deadline) > at + 900n && await worth(l)) mine.push(l);
+    const at = BigInt(chainNow()), mine = [], back = [], wait = [], small = [];
+    for (const l of r.mine) {
+      if (l.spent === true || BigInt(l.deadline) <= at + 900n) continue;
+      if (await worth(l)) mine.push(l);
+      // A payment the relay's claim fee takes whole is not offered; it is listed apart, with the fee, so it does not look lost (the fee follows the gas price and can pass what it was when they sent).
+      else if (tickerOf(t, l.asset) && fees[tickerOf(t, l.asset)] != null) small.push({ ...l, fee: fees[tickerOf(t, l.asset)] });
+    }
     for (const l of s.sent) if (l.spent !== true && BigInt(l.deadline) < at && await worth(l)) back.push(l);
     // Sends still inside their time to be claimed: listed so the sender can see until when they stay out, and from which day they can come back.
     for (const l of s.sent) if (l.spent !== true && BigInt(l.deadline) >= at) wait.push(l);
     if (S.key?.pubHex !== pub) return null;
-    Object.assign(LK, { at: Date.now(), since, pub, mine, back, wait, root: r.lockSetRoot, sentRoot: s.lockSetRoot, failed: null });
+    Object.assign(LK, { at: Date.now(), since, pub, mine, back, wait, small, root: r.lockSetRoot, sentRoot: s.lockSetRoot, failed: null });
     runsPrune();
     return LK;
   }).catch((e) => { LK.failed = { pub, at: Date.now() }; throw e; }).finally(() => { if (LK.scanning === p) LK.scanning = null; });
@@ -12935,6 +12945,7 @@ function paintDash0() {
   if (k && LK.pub === k && lm) due.push([lockLine(lockList('claim'), 'claim'), 'claim', 'Claim']);
   if (k && LK.pub === k && lb) due.push([lockLine(lockList('refund'), 'refund'), 'back', 'Take back']);
   if (k && LK.pub === k && lockList('wait').length) due.push([lockLine(lockList('wait'), 'wait'), null, null]);
+  if (k && LK.pub === k && lockList('small').length) due.push([lockLine(lockList('small'), 'small'), null, null]);
   if (k) {
     loadBonds().catch(() => {});
     const notes = bondNotes(), ack = new Set(store.get(bondAck())?.ids || []);
