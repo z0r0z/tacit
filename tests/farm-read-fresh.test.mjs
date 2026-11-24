@@ -2,9 +2,10 @@
 // receipt and then reads the farm again at 'latest', and that read goes to the project's own light node first (dapp/trade/rpc.js: cheap reads of the newest state), which runs a block or two behind the chain
 // (measured that day over 70 s against the page's ten nodes: behind in every sample, two blocks behind in a quarter of them), while the receipt came from a node that is not. So the first read after a
 // transaction showed the state from before it.
-// Now the block a transaction of ours was mined in is kept for two minutes (dapp/index.html: receipt() -> sawBlock), and the farm read (loadPrecision) asks Multicall3 for the block it was answered from;
-// an answer from before that block is read again AT that block, which the light node takes no read of (so a node that has the block answers, at once), and if no node takes a numbered-block read the
-// newest block is asked for again, a moment apart (readFrom). Pinned here by running the page's own functions against stand-in nodes.
+// Now the block a transaction of ours was mined in is kept for two minutes (dapp/index.html: receipt() -> sawBlock), and the farm read (loadPrecision) asks Multicall3 for the block it was answered from.
+// An answer from before that block is read again (readFrom): first the newest block from the nodes that are not the light one (publicnode and the others keep up: one more round trip), then block `floor`
+// itself (a node still short of it errors and the read goes on; the light node and publicnode take no read of a numbered block), then those two again a moment apart. Pinned here by running the page's
+// own functions against stand-in nodes.
 //   node --test tests/farm-read-fresh.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,8 +16,10 @@ import { keccak_256 } from '@noble/hashes/sha3';
 
 const store = new Map();
 Object.defineProperty(globalThis, 'localStorage', { value: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) }, configurable: true });
-const { ETH_NODES } = await import('../dapp/eth-nodes.js');
+const ETHN = await import('../dapp/eth-nodes.js');
+const { ETH_NODES } = ETHN;
 const { hedgedRpc } = await import('../dapp/trade/rpc.js');
+const LIGHT = ETH_NODES.find((u) => u.includes('tacit-node-gw'));
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const page = readFileSync(path.join(here, '..', 'dapp', 'index.html'), 'utf8');
@@ -38,22 +41,25 @@ const addr = (n) => '0x' + n.toString(16).padStart(40, '0');
 const ME = addr(0xabc);
 const ADDR = { precisionPool: addr(1), precisionFarm: addr(2), multicall: addr(3), tac: addr(4), tacbtc: addr(5), tacusd: addr(6), tacd: addr(7), tace: addr(8) };
 const HELD = { [ADDR.tac]: 7, [ADDR.tacbtc]: 8, [ADDR.tacusd]: 9, [ADDR.tacd]: 10, [ADDR.tace]: 11 };
-const T = (n) => '0x' + n.toString(16);
+const E18 = 10n ** 18n;
 
-// The page's own helpers (and, with `load`, its farm read) on a stand-in clock and stand-in nodes.
-//   `answers`: what each successive read of the NEWEST block gives (the last repeating), { block, staked, earned }: the light node, a block or two behind.
-//   `pinned`:  what a read of a numbered block gives: 'ok' = the state at that block (`state`, taken from a node that has it), 'refused' = every node errors, 'old' = a node that ignores the tag and answers from block 100.
-function world({ answers = [{ block: 100, staked: 0 }], pinned = 'ok', state = { staked: 0, earned: 0 }, load = false } = {}) {
-  const clock = { t: 1_800_000_000_000 }, log = { reads: 0, tags: [], sleeps: [] };
+// The page's own helpers (and, with `load`, its farm read) on a stand-in clock and stand-in nodes. The chain is at block 101 and the stake is gone from it (`state`); the light node is a block behind and still
+// lists it (`lightState`). What the other nodes say when asked for the newest block: `fresh` 'ok' = block 101, 'stale' = behind like the light node, 'down' = they all error. What a read of a numbered block gives:
+// `pinned` 'ok' = the state at that block (from a node that has it), 'refused' = every node errors, 'old' = a node that ignores the tag and answers from block 100.
+function world({ lightState = { block: 100, staked: 5n * E18, earned: 3n * E18 }, state = { staked: 0, earned: 0 }, head = 101, fresh = 'ok', pinned = 'ok', load = false } = {}) {
+  const clock = { t: 1_800_000_000_000 }, log = { reads: 0, asks: [], sleeps: [] };
   const FakeDate = { now: () => clock.t };
-  let latest = 0;
-  const multicall = async (calls, block = 'latest') => {
-    log.reads++; log.tags.push(block);
+  const RPCS = ETH_NODES;
+  const multicall = async (calls, block = 'latest', urls = RPCS) => {
+    const withLight = urls.includes(LIGHT);
+    log.reads++; log.asks.push({ block, light: withLight });
     let a;
-    if (block === 'latest') a = answers[Math.min(latest++, answers.length - 1)];
-    else if (pinned === 'refused') throw new Error('no RPC answered');
-    else if (pinned === 'old') a = { block: 100, staked: 5n * 10n ** 18n };
-    else a = { ...state, block: parseInt(block, 16) };
+    if (block !== 'latest') {
+      if (pinned === 'refused') throw new Error('no RPC answered');
+      a = pinned === 'old' ? lightState : { ...state, block: parseInt(block, 16) };
+    } else if (withLight) a = lightState;               // the light node is first for a read of the newest block
+    else if (fresh === 'down') throw new Error('no RPC answered');
+    else a = fresh === 'stale' ? lightState : { ...state, block: head };
     return calls.map(({ to, data }) => {
       const sel = data.slice(0, 8);
       if (sel === SEL.blockNumber) return a.block == null ? null : hex(a.block);
@@ -61,79 +67,101 @@ function world({ answers = [{ block: 100, staked: 0 }], pinned = 'ok', state = {
       if (sel === SEL.earned) return hex(a.earned ?? 0);
       if (sel === SEL.timestamp) return hex(1_800_000_000 + (a.block || 0) * 12);
       if (sel === SEL.totalSupply) return hex(1000);
-      if (sel === SEL.reserve0) return hex(10n ** 18n);
-      if (sel === SEL.reserve1) return hex(2n * 10n ** 18n);
-      if (sel === SEL.sqrtPrice) return hex(10n ** 18n);
+      if (sel === SEL.reserve0) return hex(E18);
+      if (sel === SEL.reserve1) return hex(2n * E18);
+      if (sel === SEL.sqrtPrice) return hex(E18);
       if (sel === SEL.periodFinish) return hex(2_000_000_000);
       if (sel === SEL.balanceOf && HELD[to.toLowerCase()]) return hex(HELD[to.toLowerCase()]);
-      if (data.startsWith('4d2301cc')) return hex(10n ** 18n);
+      if (data.startsWith('4d2301cc')) return hex(E18);
       return hex(0);
     });
   };
   const scope = {
     Date: FakeDate, sleep: async (ms) => { log.sleeps.push(ms); clock.t += ms; },
-    SEL, ADDR, multicall, S: { address: ME, wallet: ME, acct: null }, FARM: {}, TACB: {}, PUBX: {}, CLOCK: {},
+    RPCS, ETHN, SEL, ADDR, multicall, S: { address: ME, wallet: ME, acct: null }, FARM: {}, TACB: {}, PUBX: {}, CLOCK: {},
     addrWord: (a) => a.toLowerCase().replace(/^0x/, '').padStart(64, '0'),
     wordAt: (h, i) => BigInt('0x' + String(h).replace(/^0x/, '').slice(i * 64, i * 64 + 64)),
     gasNow: async () => 1n, now: () => Math.floor(clock.t / 1000), dashSoon: () => {},
   };
-  const fns = run(helperSrc + (load ? '\n' + loadSrc : ''), scope, `SEEN, blockOf, sawBlock, seenFloor, readFrom${load ? ', loadPrecision' : ''}`);
+  const fns = run(helperSrc + (load ? '\n' + loadSrc : ''), scope, `SEEN, blockOf, sawBlock, seenFloor, notLight, readFrom${load ? ', loadPrecision' : ''}`);
   return { ...fns, scope, clock, log };
 }
-const E18 = 10n ** 18n;
+const T = (n) => '0x' + n.toString(16);
 
 test('Multicall3 getBlockNumber() is the selector the page asks with', () => {
   assert.equal(SEL.blockNumber, Buffer.from(keccak_256('getBlockNumber()')).subarray(0, 4).toString('hex'));
 });
 
-test('ethCall and multicall read the newest block unless they are given another, and pass it on', () => {
-  assert.match(page, /const ethCall = \(to, data, extra = \{\}, block = 'latest'\) => rpc\('eth_call', \[\{ to, data: '0x' \+ strip\(data\), \.\.\.extra \}, block\]\);/);
-  assert.match(page, /async function multicall\(calls, block = 'latest'\) \{/);
-  assert.match(page, /await ethCall\(ADDR\.multicall, SEL\.aggregate3 \+ word\(0x20\) \+ word\(calls\.length\) \+ heads\.join\(''\) \+ bodies\.join\(''\), \{\}, block\)/);
+test('ethCall and multicall read the newest block from every node unless told otherwise, and pass the block and the nodes on', () => {
+  assert.match(page, /const ethCall = \(to, data, extra = \{\}, block = 'latest', urls = RPCS\) => rpc\('eth_call', \[\{ to, data: '0x' \+ strip\(data\), \.\.\.extra \}, block\], urls\);/);
+  assert.match(page, /async function multicall\(calls, block = 'latest', urls = RPCS\) \{/);
+  assert.match(page, /await ethCall\(ADDR\.multicall, SEL\.aggregate3 \+ word\(0x20\) \+ word\(calls\.length\) \+ heads\.join\(''\) \+ bodies\.join\(''\), \{\}, block, urls\)/);
+  assert.match(page, /import \* as ETHN from '\/eth-nodes\.js';/, 'the node list module is also imported as a namespace (a stale cached copy of it must not break the page)');
 });
 
-test('the premise: a read of the newest state goes to the light node first, a read of a numbered block never does (nor to the other node that has no old state)', async () => {
-  const OURS = ETH_NODES.find((u) => u.includes('tacit-node-gw'));
-  const asked = async (block) => {
+test('the premise: the light node is first for a read of the newest block; the other nodes (publicnode first) are the ones notLight() leaves; a numbered block is asked of neither the light node nor publicnode', async () => {
+  const w = world();
+  const asked = async (hosts, block) => {
     const hits = [];
     const fetchImpl = async (u) => { hits.push(u); return { status: 200, json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x1' }) }; };
-    await hedgedRpc(ETH_NODES, 'eth_call', [{ to: addr(3), data: '0x42cbb15c' }, block], { fetchImpl, hedgeMs: 0 });
+    await hedgedRpc(hosts, 'eth_call', [{ to: addr(3), data: '0x42cbb15c' }, block], { fetchImpl, hedgeMs: 0 });
     return hits;
   };
-  assert.equal((await asked('latest'))[0], OURS, 'newest block: the light node is the first node asked');
-  const numbered = await asked('0x1940877');
-  assert.ok(!numbered.includes(OURS), 'a numbered block is not asked of the light node');
+  assert.equal((await asked(ETH_NODES, 'latest'))[0], LIGHT, 'newest block: the light node is the first node asked');
+  const others = w.notLight();
+  assert.ok(!others.includes(LIGHT), 'notLight() leaves the light node out');
+  assert.equal(others.length, ETH_NODES.length - 1, 'and only that one');
+  assert.ok(others.some((u) => u.includes('publicnode')), 'publicnode stays');
+  assert.ok(others.length > 3, 'with several nodes to go to');
+  assert.ok(others.includes(ETH_NODES.find((u) => u.includes('publicnode'))));
+  assert.ok(!(await asked(others, 'latest')).includes(LIGHT) && (await asked(others, 'latest'))[0].includes('publicnode'), 'a read of the newest block over them goes to publicnode first');
+  const numbered = await asked(ETH_NODES, '0x1940877');
+  assert.ok(!numbered.includes(LIGHT), 'a numbered block is not asked of the light node');
   assert.ok(!numbered.some((u) => u.includes('publicnode')), 'nor of publicnode, which has no old state');
-  assert.ok(numbered[0], 'and some other node is asked');
+});
+
+test('notLight() with an older node list module that has no logSpan: every node stays (no throw, the retry is then a plain second read)', () => {
+  const w = world();
+  const old = run(helperSrc, { ...w.scope, ETHN: {} }, 'notLight');
+  assert.deepEqual(old.notLight(), ETH_NODES);
 });
 
 test('readFrom: no block to reach, one read of the newest block and no wait', async () => {
   const w = world();
-  const tags = [];
-  const got = await w.readFrom(0, async (b) => { tags.push(b); return { at: 50 }; });
+  const asks = [];
+  const got = await w.readFrom(0, async (b, f) => { asks.push([b, f]); return { at: 50 }; });
   assert.equal(got.at, 50);
-  assert.deepEqual(tags, ['latest']);
+  assert.deepEqual(asks, [['latest', false]]);
   assert.deepEqual(w.log.sleeps, []);
 });
 
-test('readFrom: an answer from before the block is read again AT that block, at once, and that answer is taken', async () => {
+test('readFrom: an answer from before the block is read again at once from the nodes that are not the light one, and that answer is taken', async () => {
   const w = world();
-  const tags = [];
-  const got = await w.readFrom(101, async (b) => { tags.push(b); return { at: b === 'latest' ? 100 : 101, b }; });
+  const asks = [];
+  const got = await w.readFrom(101, async (b, f) => { asks.push([b, f]); return { at: f ? 101 : 100, f }; });
   assert.equal(got.at, 101);
-  assert.equal(got.b, '0x65', 'block 101, lower-case hex');
-  assert.deepEqual(tags, ['latest', '0x65']);
-  assert.deepEqual(w.log.sleeps, [], 'no wait: a node that has the block answers now');
+  assert.deepEqual(asks, [['latest', false], ['latest', true]]);
+  assert.deepEqual(w.log.sleeps, []);
 });
 
-test('readFrom: when no node takes a read of a numbered block it asks for the newest again, a moment apart, until one answers from the block', async () => {
+test('readFrom: if those nodes are behind too, the next read is AT the block itself, still at once', async () => {
   const w = world();
-  const tags = [], latest = [100, 100, 101];
-  let n = 0;
-  const got = await w.readFrom(101, async (b) => { tags.push(b); if (b !== 'latest') throw new Error('no RPC answered'); return { at: latest[n++] }; });
+  const asks = [];
+  const got = await w.readFrom(101, async (b, f) => { asks.push([b, f]); return { at: b === T(101) ? 101 : 100 }; });
   assert.equal(got.at, 101);
-  assert.deepEqual(tags, ['latest', '0x65', 'latest', 'latest'], 'once the numbered read is refused it is not tried again');
-  assert.deepEqual(w.log.sleeps, [1500, 1500]);
+  assert.deepEqual(asks, [['latest', false], ['latest', true], ['0x65', false]], 'block 101, lower-case hex, from every node (the light node and publicnode refuse it by themselves)');
+  assert.deepEqual(w.log.sleeps, []);
+});
+
+test('readFrom: when neither kind of read is taken it goes on a moment apart, the two in turn, until one answers from the block', async () => {
+  const w = world();
+  const asks = [];
+  let n = 0;
+  // the first read is behind; the next two (the other nodes, then the block itself) error; after a moment the other nodes are still behind; then the block itself answers
+  const got = await w.readFrom(101, async (b, f) => { asks.push(b + (f ? '*' : '')); n++; if (n === 2 || n === 3) throw new Error('no RPC answered'); return { at: n === 5 ? 101 : 100 }; });
+  assert.equal(got.at, 101);
+  assert.deepEqual(asks, ['latest', 'latest*', '0x65', 'latest*', '0x65'], '* = the nodes that are not the light one');
+  assert.deepEqual(w.log.sleeps, [1500, 1500], 'the first two retries are at once, the rest a moment apart');
 });
 
 test('readFrom: a node that never catches up costs eight tries, then the last answer comes back (nothing throws, the card still draws)', async () => {
@@ -142,7 +170,7 @@ test('readFrom: a node that never catches up costs eight tries, then the last an
   const got = await w.readFrom(101, async () => ({ at: 100, n: ++n }));
   assert.equal(n, 9, 'the first read and eight more');
   assert.equal(got.n, 9, 'the last answer');
-  assert.equal(w.log.sleeps.length, 7, 'the first retry is at once, the rest a moment apart');
+  assert.equal(w.log.sleeps.length, 6);
 });
 
 test('readFrom: an answer whose block is not known is taken as it is (nothing to compare)', async () => {
@@ -158,7 +186,7 @@ test('readFrom: a failure on the first read is the caller\'s; one on a retry kee
   await assert.rejects(w.readFrom(101, async () => { throw new Error('unreachable'); }), /unreachable/);
   let n = 0;
   const got = await w.readFrom(101, async () => { n++; if (n === 2) throw new Error('node down'); return { at: 100, n }; });
-  assert.equal(got.n, 9, 'the failed numbered read left the earlier answer, and the newest block was asked again to the end');
+  assert.equal(got.n, 9, 'the failed retry left the earlier answer, and the reads went on to the end');
 });
 
 test('sawBlock keeps the newest block of a mined transaction for two minutes, and ignores a receipt without one', () => {
@@ -198,36 +226,36 @@ test('receipt() records the block of a mined mainnet transaction, and only a mai
   assert.equal(seenFloor(), 101);
 });
 
-test('the farm read after a withdrawal: the light node still at the block before it is not believed, the stake that comes back is the one after it', async () => {
-  const w = world({ load: true, answers: [{ block: 100, staked: 5n * E18, earned: 3n * E18 }], state: { staked: 0, earned: 0 } });
+test('the farm read after a withdrawal: the light node, a block behind, is not believed; the next read is from the other nodes and the stake that comes back is the one after the withdrawal', async () => {
+  const w = world({ load: true });
   w.sawBlock({ blockNumber: '0x65' });                  // the withdrawal was mined in block 101
   const x = await w.loadPrecision();
   assert.equal(x.staked, 0n, 'the stake is gone');
   assert.equal(x.earned, 0n);
   assert.equal(w.scope.FARM.precision, x, 'and that is what the card is drawn from');
-  assert.deepEqual(w.log.tags, ['latest', '0x65'], 'the second read is at the block the withdrawal was mined in');
+  assert.deepEqual(w.log.asks, [{ block: 'latest', light: true }, { block: 'latest', light: false }], 'the second read is of the newest block, with the light node left out');
   assert.deepEqual(w.log.sleeps, [], 'and it did not wait');
 });
 
-test('the farm read, before this page has sent anything: one read of the newest block, no wait (a page opening is not slowed)', async () => {
-  const w = world({ load: true, answers: [{ block: 100, staked: 5n * E18 }] });
-  const x = await w.loadPrecision();
-  assert.equal(x.staked, 5n * E18);
-  assert.deepEqual(w.log.tags, ['latest']);
-  assert.deepEqual(w.log.sleeps, []);
-});
-
-test('the farm read when no node takes a numbered-block read: it asks for the newest again and draws from the first answer that is not behind', async () => {
-  const w = world({ load: true, pinned: 'refused', answers: [{ block: 100, staked: 5n * E18 }, { block: 100, staked: 5n * E18 }, { block: 101, staked: 0 }] });
+test('the farm read when the other nodes are behind too: it is asked again at the block itself', async () => {
+  const w = world({ load: true, fresh: 'stale' });
   w.sawBlock({ blockNumber: '0x65' });
   const x = await w.loadPrecision();
   assert.equal(x.staked, 0n);
-  assert.deepEqual(w.log.tags, ['latest', '0x65', 'latest', 'latest']);
-  assert.deepEqual(w.log.sleeps, [1500, 1500]);
+  assert.deepEqual(w.log.asks, [{ block: 'latest', light: true }, { block: 'latest', light: false }, { block: '0x65', light: true }]);
+  assert.deepEqual(w.log.sleeps, []);
 });
 
-test('the farm read when nothing reaches the block: it draws from the last answer after the tries rather than failing', async () => {
-  const w = world({ load: true, pinned: 'old', answers: [{ block: 100, staked: 5n * E18 }] });
+test('the farm read, before this page has sent anything: one read of the newest block, light node first, no wait (a page opening is not slowed)', async () => {
+  const w = world({ load: true });
+  const x = await w.loadPrecision();
+  assert.equal(x.staked, 5n * E18);
+  assert.deepEqual(w.log.asks, [{ block: 'latest', light: true }]);
+  assert.deepEqual(w.log.sleeps, []);
+});
+
+test('the farm read when nothing but the light node answers: it draws from the last answer after the tries rather than failing', async () => {
+  const w = world({ load: true, fresh: 'down', pinned: 'refused' });
   w.sawBlock({ blockNumber: '0x65' });
   const x = await w.loadPrecision();
   assert.equal(x.staked, 5n * E18);
@@ -235,7 +263,7 @@ test('the farm read when nothing reaches the block: it draws from the last answe
 });
 
 test('the farm read when the block cannot be read: it is not held up', async () => {
-  const w = world({ load: true, answers: [{ block: null, staked: 5n * E18 }] });
+  const w = world({ load: true, lightState: { block: null, staked: 5n * E18 } });
   w.sawBlock({ blockNumber: '0x65' });
   const x = await w.loadPrecision();
   assert.equal(x.staked, 5n * E18);
@@ -253,7 +281,7 @@ test('the block call is the last one in the batch, so the token balances the rea
   assert.equal(PUBX.tace, 11n);
   const body = loadSrc.slice(loadSrc.indexOf('const balAt ='), loadSrc.indexOf('const w = (i)'));
   assert.ok(body.indexOf('const blkAt = calls.push(') > body.indexOf('const balAt =') && body.indexOf('readFrom(seenFloor()') > body.indexOf('const blkAt'), 'blkAt is pushed after balAt, then read');
-  assert.match(body, /readFrom\(seenFloor\(\), async \(block\) => \{ const r = await multicall\(calls, block\);/, 'and the block the read is asked at reaches the node');
+  assert.match(body, /readFrom\(seenFloor\(\), async \(block, fresh\) => \{ const r = await multicall\(calls, block, fresh \? notLight\(\) : RPCS\);/, 'and the block and the choice of nodes reach the read');
 });
 
 test('Claim, Withdraw all and the stake button read the farm again only after the receipt that sets the floor', () => {
