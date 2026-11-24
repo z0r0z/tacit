@@ -18,6 +18,9 @@ import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 const BTC_MODULE = '/trade/btc.js?cb=f4f79584';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
+// A swap starts only on a quote with more than two minutes left (fastbridge-pair.js quoteMarginSecs): the lane renews the quote it shows before then, and a press on
+// one too near its end asks for a new one first
+const RENEW_SECS = 150, START_SECS = 125;
 const MARKET_MODULE = '/swap/atomic-market.js?cb=c19ede9d';
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
@@ -238,7 +241,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         p.providers().then((ps) => { if (g === gen) { L.terms = ps; paint(); } }, () => {});
         paint();
         clearInterval(refreshTimer);
-        refreshTimer = setInterval(() => { if (!document.hidden && L.open) { readMe(true); if (!recovered) findPast(); if (L.q && !L.busy && L.q.expiresAt - now() < 30) requote(true, true); } }, REFRESH_MS);
+        refreshTimer = setInterval(() => { if (!document.hidden && L.open) { readMe(true); if (!recovered) findPast(); if (L.q && !L.busy && L.q.expiresAt - now() < RENEW_SECS) requote(true, true); } }, REFRESH_MS);
         if (recovered) follow(1000); else await findPast();
       } catch (e) { if (g === gen) say(esc(plainError(e)), 'err'); }
       finally { if (g === gen) began = null; }
@@ -262,7 +265,11 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         if (dirNow === 'e2b' && p.covers && L.bal.eth != null && amount > L.bal.eth) { const ok = await p.covers(amount).catch(() => false); if (my !== seq) return; L.fits = { amt: amount, ok: !!ok }; }
         const q = await p.quote({ dir: dirNow, amount });
         if (my !== seq) return;
-        L.q = q; L.qErr = '';
+        // a renewed quote that gives less than the one shown (or costs more on Bitcoin) is not swapped on unseen: the button asks for the new numbers to be accepted
+        const was = keep ? L.q : null;
+        const worse = was && was.dir === q.dir && was.pay === q.pay && !q.blocked && (q.get < was.get || Number(q.networkFeeSats ?? 0) > Number(was.networkFeeSats ?? 0) * 1.1 + 100 || Number(q.takeFeeSats ?? 0) > Number(was.takeFeeSats ?? 0) * 1.1 + 100);
+        L.q = worse ? { ...q, renewed: { get: was.get } } : (was && was.renewed && q.dir === was.dir && q.pay === was.pay && !q.blocked && q.get < was.renewed.get ? { ...q, renewed: was.renewed } : q); L.qErr = '';
+        if (L.q.renewed) { L.sticky = true; say(esc(`The quote was renewed and gives less: ${fmt(L.q.renewed.get)} → ${fmt(q.get)} ${COINS[SIDES[q.dir][1]].sym}${q.dir === 'b2e' && Number(q.networkFeeSats) > 0 ? `, Bitcoin fee about ${Number(q.networkFeeSats).toLocaleString('en-US')} sats` : ''}. Accept the new price to go on.`), 'warn'); }
       } catch (e) { if (my !== seq) return; L.q = null; L.qErr = plainError(e); }
       paint();
     };
@@ -296,6 +303,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (L.qErr) return { label: 'No quote', off: true };
     if (!q) return { label: 'Getting a quote…', off: true };
     if (q.blocked) return { label: 'Not at this price', off: true };
+    if (q.renewed) return { label: 'Accept the new price', act: 'accept' };
     if (L.dir === 'b2e' && bal != null && q.networkFeeSats != null && amount + BigInt(q.networkFeeSats) > bal) { const need = amount + BigInt(q.networkFeeSats); return { label: 'Add sats for the Bitcoin fee', act: 'fund', fund: { sats: Number(need - bal), need: Number(need) } }; }
     return { label: `Swap ${COINS[SIDES[L.dir][0]].sym} → ${COINS[SIDES[L.dir][1]].sym}`, act: 'swap' };
   }
@@ -396,7 +404,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   }
   async function swap() {
     const q = L.q; if (!q || q.blocked || L.busy) return;
-    if (q.expiresAt - now() < 5) { say('That quote has run out. Getting a new one.'); requote(true); return; }
+    if (q.renewed) return;
+    if (q.expiresAt - now() < START_SECS) { say('That quote is about to run out. Getting a new one.'); requote(true, true); return; }
     L.busy = true; L.sticky = false; say('Starting the swap…'); paint();
     const g = gen, p = pair;
     try {
@@ -451,7 +460,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const dm = t.closest('[data-dismiss]');
     if (dm) { dismiss(dm.dataset.dismiss); return; }
     const qk = t.closest('[data-quick]'); if (qk) { $('a-amt').value = qk.dataset.quick; setAmt(qk.dataset.quick); return; }
-    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'swap') swap(); else if (a === 'reread') { L.unread = null; paint(); readMe(); } }
+    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'swap') swap(); else if (a === 'reread') { L.unread = null; paint(); readMe(); } else if (a === 'accept' && L.q) { L.q = { ...L.q, renewed: null }; L.sticky = false; say(''); paint(); } }
   });
   recsHost?.addEventListener('click', (e) => { const dm = e.target.closest('[data-dismiss]'); if (dm) dismiss(dm.dataset.dismiss); });
 

@@ -75,8 +75,8 @@ const FAKE = `
       calls.quote.push({ dir, amount: String(amount) });
       if (S.mode === 'none') throw new Error('No provider can take that amount.');
       const b2e = dir === 'b2e', blocked = S.mode === 'blocked';
-      const q = { dir, provider: { id: 'p1', name: 'Test provider' }, pay: amount, get: b2e ? (amount * 304n) / 10n : (amount * 10n) / 304n, rate: blocked ? 29.4 : 30.4, market: 30.62, vsMarketBps: blocked ? -410 : -72, feeBps: 40, etaSecs: 780,
-        networkFeeSats: b2e ? 1200 : 0, takeFeeSats: b2e ? null : 500, expiresAt: now() + 300, warnings: S.warn ? ['The provider holds less than this right now.'] : [], blocked: blocked ? 'the provider quotes 4.1% under the market' : null, ref: { n: calls.quote.length } };
+      const q = { dir, provider: { id: 'p1', name: 'Test provider' }, pay: amount, get: ((b2e ? (amount * 304n) / 10n : (amount * 10n) / 304n) * (S.cut ? 99n : 100n)) / 100n, rate: blocked ? 29.4 : 30.4, market: 30.62, vsMarketBps: blocked ? -410 : -72, feeBps: 40, etaSecs: 780,
+        networkFeeSats: b2e ? 1200 : 0, takeFeeSats: b2e ? null : 500, expiresAt: now() + (S.ttl || 300), warnings: S.warn ? ['The provider holds less than this right now.'] : [], blocked: blocked ? 'the provider quotes 4.1% under the market' : null, ref: { n: calls.quote.length } };
       calls.quotes.push(q);
       return q;
     },
@@ -336,6 +336,30 @@ console.log('the wallet locks, and another key opens in the same tab');
   await page.evaluate(() => window.__btc.openAs('02' + 'ef'.repeat(32)));
   await page.waitForFunction(() => window.__atom.opened.length === 3, null, { timeout: 8000 });
   ok((await atom(page, 'A.opened.at(-1).pubHex')) === '02' + 'ef'.repeat(32), 'a key that replaces the open one without a lock gets its own pair client too');
+  await page.close();
+}
+
+console.log('a quote near its end is renewed before a press, and a renewed quote that gives less is accepted first');
+{
+  const { page } = await fresh({ ads: [ad()] });
+  await open(page);
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__btc.unlocked && /Balance 0\.5 BTC/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
+  await atom(page, '(A.ttl = 120, 0)');
+  await type(page, '0.01');
+  ok((await text(page, '#a-out')) === '0.304', 'a quote with two minutes left is shown');
+  const asked = (await atom(page, 'A.calls.quote')).length;
+  await atom(page, '(A.ttl = 300, A.cut = true, 0)');
+  await page.click('#a-go');
+  await page.waitForFunction(() => /Accept the new price/.test(document.querySelector('#a-go').textContent), null, { timeout: 5000 });
+  ok((await atom(page, 'A.calls.start.length')) === 0 && (await atom(page, 'A.calls.quote')).length === asked + 1, 'a press on it asks for a new quote first, and starts nothing');
+  ok(/The quote was renewed and gives less: 0\.304 → 0\.30096 ETH/.test(await text(page, '#a-q')) && (await text(page, '#a-out')) === '0.30096', `the new numbers are shown and said (${await text(page, '#a-q')})`);
+  await page.click('#a-go');
+  await page.waitForFunction(() => /^Swap BTC → ETH$/.test(document.querySelector('#a-go').textContent.trim()), null, { timeout: 5000 });
+  ok((await atom(page, 'A.calls.start.length')) === 0, 'accepting them starts nothing by itself');
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__atom.calls.start.length === 1, null, { timeout: 5000 });
+  ok((await atom(page, 'String(A.calls.start[0].get)')) === '30096000', 'the next press starts the accepted quote');
   await page.close();
 }
 
