@@ -151,10 +151,14 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     return out;
   }
   // plain-sat coins only: a coin of dust size may carry a note
-  async function satsUtxos() {
+  async function satsCoins() {
     const all = await getJson(`/address/${address}/utxo`);
-    return all.filter((u) => u.status && u.status.confirmed && u.value > DUST).sort((a, b) => b.value - a.value).map((u) => ({ txid: u.txid, vout: u.vout, value: u.value }));
+    const coins = all.filter((u) => u.status && u.status.confirmed && u.value > DUST).sort((a, b) => b.value - a.value).map((u) => ({ txid: u.txid, vout: u.vout, value: u.value }));
+    // what has reached the address and is not yet in a block: not spendable (a lock builds on confirmed coins), but a person who just paid it should see it is coming
+    const pending = all.filter((u) => !(u.status && u.status.confirmed) && u.value > DUST).reduce((s, u) => s + u.value, 0);
+    return { coins, pending };
   }
+  const satsUtxos = async () => (await satsCoins()).coins;
   // The plain-sat coins a confirmed transaction pays to this address that are still unspent. A lock leaves one for the take of it (`takeSats`, paid to the
   // claimer's address), so the take can be funded from that one transaction, read by its id, instead of listing the whole address: explorers refuse that
   // list for an address with over 500 outputs and rate limit it harder than any other read. A coin whose spend cannot be read is left out, not guessed.
@@ -243,5 +247,5 @@ export function makeEsploraBtcChain({ bases, tacit, prims, builder, pool, ethGet
     return null;
   }
 
-  return { prims, wallet, tx: builder, address, satsUtxos, coinsIn, feeRate, broadcast, fetchTx, status, tip, blockTime, outspend, history, resolveNote, crossLaneBlocked };
+  return { prims, wallet, tx: builder, address, satsUtxos, satsCoins, coinsIn, feeRate, broadcast, fetchTx, status, tip, blockTime, outspend, history, resolveNote, crossLaneBlocked };
 }

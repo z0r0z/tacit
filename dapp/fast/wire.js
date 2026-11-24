@@ -13,8 +13,8 @@
 
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
-import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=791b85e5';
-import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=a360394a';
+import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=a3e28483';
+import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=17d2f6af';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=ff9d9c02';
 import { makeLpService } from '/fastbridge-provider.js?cb=ebd71944';

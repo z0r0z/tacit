@@ -69,7 +69,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import('/fast/pair-wire.js?cb=5499d4f0');
+      const wire = await import('/fast/pair-wire.js?cb=2c52f062');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },
@@ -78,7 +78,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
 
 export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, provider = () => null, getUx = null, door = null, onState = () => {}, dir = 'b2e', now = nowSecs }) {
   const D = door || bitcoinDoor({ notify, wallet, provider, getUx, onChange: () => { if (L.open) { L.unlocked = D.unlocked; paint(); begin(); } } });
-  const L = { dir: dir === 'e2b' ? 'e2b' : 'b2e', amt: '', q: null, qErr: '', bal: { sats: null, eth: null }, recs: [], busy: false, open: false, line: '', cls: '', unlocked: false, loaded: false, terms: null };
+  const L = { dir: dir === 'e2b' ? 'e2b' : 'b2e', amt: '', q: null, qErr: '', bal: { sats: null, eth: null, ethHeld: null, pending: 0n }, recs: [], busy: false, open: false, line: '', cls: '', unlocked: false, loaded: false, terms: null };
   let pair = null, pairP = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, recovered = false, reading = null, began = null;
   const known = new Map();
   const $ = (id) => host.querySelector(`#${id}`);
@@ -106,7 +106,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   const say = (h, cls = '') => { L.line = h; L.cls = cls; const q = $('a-q'); q.className = `q${cls ? ` ${cls}` : ''}`; q.innerHTML = h; };
   const sides = () => SIDES[L.dir].map((k) => COINS[k]);
   const amountBase = () => { const v = parseUnits(L.amt, DEC); return v && v > 0n ? v : null; };
+  // what can go into a swap (confirmed coins; notes less the relay fee to cut one), and what the wallet holds, which is what the balance line says
   const balOf = (k) => (k === 'btc' ? L.bal.sats : L.bal.eth);
+  const heldOf = (k) => (k === 'btc' ? L.bal.sats : (L.bal.ethHeld ?? L.bal.eth));
   // What the providers take in a direction, in the pay side's units: the least any asks and the most any can take now; null until they are read
   const termsFor = (d) => {
     const ts = (L.terms || []).map((p) => p && p[d]).filter(Boolean);
@@ -121,7 +123,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (!pair || !D.unlocked) return Promise.resolve();
     if (reading) return reading;
     reading = (async () => {
-      try { const b = await pair.balances(); if (b) L.bal = { sats: b.sats ?? null, eth: b.eth ?? null }; paint(); }
+      try { const b = await pair.balances(); if (b) L.bal = { sats: b.sats ?? null, eth: b.eth ?? null, ethHeld: b.ethHeld ?? null, pending: b.pendingSats ?? 0n }; paint(); }
       catch (e) { if (!quiet) say(esc(plainError(e)), 'err'); }
       finally { reading = null; }
     })();
@@ -179,7 +181,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const t = termsFor(L.dir);
     if (t && amount < t.min) return { label: `Minimum ${fmt(t.min)} ${c.sym}`, off: true };
     if (t && amount > t.max) return { label: `Most a provider takes is ${fmt(t.max)} ${c.sym}`, off: true };
-    if (bal != null && amount > bal) return { label: `Not enough ${c.sym}${pk === 'eth' ? ' in your private balance' : ''}`, off: true };
+    const held = heldOf(pk);
+    if (bal != null && amount > bal) return { label: pk === 'eth' && held != null && amount <= held ? `Keep ${fmt(held - bal)} ${c.sym} for the relay fee` : `Not enough ${c.sym}${pk === 'eth' ? ' in your private balance' : ''}`, off: true };
     if (L.qErr) return { label: 'No quote', off: true };
     if (!q) return { label: 'Getting a quote…', off: true };
     if (q.blocked) return { label: 'Not at this price', off: true };
@@ -224,9 +227,11 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     $('a-pay-coin').setAttribute('aria-label', `Pay with ${p.sym}`); $('a-get-coin').setAttribute('aria-label', `Get ${g.sym}`);
     $('a-pay-at').innerHTML = `<svg class="tk xs" aria-hidden="true"><use href="#${p.at}"/></svg>${esc(p.where)}`;
     $('a-get-at').innerHTML = `<svg class="tk xs" aria-hidden="true"><use href="#${g.at}"/></svg>${esc(g.where)}`;
-    const bp = balOf(pk), bg = balOf(gk);
-    $('a-bal').textContent = !D.unlocked || !pair ? '' : bp == null ? 'Reading your balance…' : `Balance ${fmt(bp)} ${p.sym}`;
-    $('a-get-bal').textContent = !D.unlocked || !pair || bg == null ? '' : `Balance ${fmt(bg)} ${g.sym}`;
+    const bp = balOf(pk), bg = balOf(gk), hp = heldOf(pk), hg = heldOf(gk);
+    // sats that have reached the address and wait for a block are said, so a deposit that has not confirmed yet is not mistaken for a balance that is not there
+    const confirming = (k) => (k === 'btc' && L.bal.pending > 0n ? ` · ${fmt(L.bal.pending)} BTC confirming` : '');
+    $('a-bal').textContent = !D.unlocked || !pair ? '' : hp == null ? 'Reading your balance…' : `Balance ${fmt(hp)} ${p.sym}${confirming(pk)}`;
+    $('a-get-bal').textContent = !D.unlocked || !pair || hg == null ? '' : `Balance ${fmt(hg)} ${g.sym}${confirming(gk)}`;
     const max = bp != null && bp > 0n ? (pk === 'btc' ? bp - BigInt(L.q?.networkFeeSats ?? LOCK_GUESS_SATS) : bp) : 0n;
     $('a-quick').innerHTML = max > 0n ? [25, 50, 100].map((n) => `<button type="button" data-quick="${tidy(plain((max * BigInt(n)) / 100n, DEC))}">${n === 100 ? 'Max' : `${n}%`}</button>`).join('') : '';
     const out = $('a-out'), q = L.q;

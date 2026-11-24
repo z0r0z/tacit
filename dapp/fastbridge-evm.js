@@ -230,8 +230,10 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     if (clock() - cutFee.at > 600000) { cutFee.fee = await refundFee(sum + 1n); cutFee.at = clock(); }
     return cutFee.fee;
   }
+  // what the key holds free, and what of it can be locked: a note is cut to the exact amount of a lock and the cut costs a relay fee, which `available` keeps back
+  const heldFree = async () => (await heldNotes()).filter((n) => !reserved.has(lc(n.leaf))).reduce((s, n) => s + BigInt(n.value), 0n);
   const available = async () => {
-    const sum = (await heldNotes()).filter((n) => !reserved.has(lc(n.leaf))).reduce((s, n) => s + BigInt(n.value), 0n);
+    const sum = await heldFree();
     const fee = sum > 0n ? await cutReserve(sum) : 0n;
     return sum > fee ? sum - fee : 0n;
   };
@@ -330,5 +332,5 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     try { return BigInt(await ux.rpc('eth_getBalance', [ownAccount.address, 'latest'])); } catch { return null; }
   }
 
-  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, cutReserve, recipient, claimOp, ownEth };
+  return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, heldFree, cutReserve, recipient, claimOp, ownEth };
 }

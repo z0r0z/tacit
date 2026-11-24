@@ -53,8 +53,8 @@ export const vsMarketBps = (dir, rate, market) => Math.round((dir === 'b2e' ? ra
 // ── the words ──
 
 const STEP_TITLES = {
-  b2e: ['Lock your BTC', 'Provider locks ETH', 'You claim the ETH', 'Provider takes the BTC'],
-  e2b: ['Provider locks BTC', 'You lock your ETH', 'Provider claims the ETH', 'You take your BTC'],
+  b2e: ['Lock your BTC', 'Provider locks ETH', 'You claim the ETH', 'Provider takes BTC'],
+  e2b: ['Provider locks BTC', 'You lock your ETH', 'Provider claims ETH', 'You take your BTC'],
 };
 const KEYS = ['lock', 'match', 'claim', 'take'];
 const stepsOf = (dir, at, state) => STEP_TITLES[dir].map((title, i) => ({
@@ -128,12 +128,15 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       e2b: p.reverse ? { min: BigInt(p.reverse.minAmount), max: BigInt(p.reverse.maxAmount), available: p.reverse.available == null ? null : BigInt(p.reverse.available) } : null,
     }));
   }
+  // `sats` and `eth` are what can be put into a swap (confirmed coins; notes less the relay fee to cut one); `ethHeld` is what the key holds, `pendingSats` what has reached
+  // the address and is waiting for a block
   async function balances() {
-    const [sats, eth] = await Promise.all([
-      btc.satsUtxos().then((cs) => cs.reduce((s, c) => s + BigInt(c.value), 0n), () => null),
+    const [coins, eth, ethHeld] = await Promise.all([
+      (btc.satsCoins ? btc.satsCoins() : btc.satsUtxos().then((cs) => ({ coins: cs, pending: 0 }))).catch(() => null),
       evm.available ? Promise.resolve(evm.available()).then((v) => BigInt(v), () => null) : null,
+      evm.heldFree ? Promise.resolve(evm.heldFree()).then((v) => BigInt(v), () => null) : null,
     ]);
-    return { sats, eth };
+    return { sats: coins ? coins.coins.reduce((s, c) => s + BigInt(c.value), 0n) : null, eth, ethHeld, pendingSats: coins ? BigInt(coins.pending || 0) : 0n };
   }
 
   // ── b2e: the user locks sats ──

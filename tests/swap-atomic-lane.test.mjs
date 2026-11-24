@@ -59,14 +59,14 @@ const FAKE = `
   const now = () => Math.floor(Date.now() / 1000);
   const S = window.__atom = { calls, opened: [], mode: 'ok', recs: [], bal: { sats: 50000000n, eth: 400000000n }, failStart: false, warn: false, providers: [{ id: 'p1', name: 'Test provider', dirs: ['b2e', 'e2b'], minSats: 50000n, maxSats: 100000000n,
     b2e: { min: 50000n, max: 100000000n, available: null }, e2b: { min: 1000000n, max: 3000000000n, available: 2000000000n } }] };
-  const TITLES = { b2e: ['Lock your BTC', 'Provider locks ETH', 'You claim the ETH', 'Provider takes the BTC'], e2b: ['Provider locks BTC', 'You lock your ETH', 'Provider claims the ETH', 'You take your BTC'] };
+  const TITLES = { b2e: ['Lock your BTC', 'Provider locks ETH', 'You claim the ETH', 'Provider takes BTC'], e2b: ['Provider locks BTC', 'You lock your ETH', 'Provider claims ETH', 'You take your BTC'] };
   const steps = (dir, at, state) => TITLES[dir].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: state === 'done' ? 'done' : i < at ? 'done' : i === at && state === 'working' ? 'active' : 'todo' }));
   const set = (id, patch) => { S.recs = S.recs.map((r) => (r.id === id ? { ...r, ...patch } : r)); };
   S.advance = (id, at, state, title) => { const r = S.recs.find((x) => x.id === id); set(id, { state, title: title || r.title, steps: steps(r.dir, at, state), refundAt: state === 'working' ? r.refundAt : null, detail: state === 'returned' ? 'Your coins came back.' : '' }); };
   S.pair = {
     providers: async () => { calls.providers++; return S.providers; },
     reference: async () => ({ ethPerBtc: 30.62, at: now(), source: 'test' }),
-    balances: async () => { calls.balances++; return { sats: S.bal.sats, eth: S.bal.eth }; },
+    balances: async () => { calls.balances++; return { sats: S.bal.sats, eth: S.bal.eth, ethHeld: S.bal.ethHeld, pendingSats: S.bal.pendingSats }; },
     quote: async ({ dir, amount }) => {
       calls.quote.push({ dir, amount: String(amount) });
       if (S.mode === 'none') throw new Error('No provider can take that amount.');
@@ -416,6 +416,33 @@ console.log('a phone width, and the dark scheme');
   const st = await page.$eval('#a-sent .stp', (e) => getComputedStyle(e).gridTemplateColumns.split(' ').length);
   ok(st === 2, `the four steps fall into two columns on a phone (${st})`);
   await SHOT(page, 'lane-phone-dark');
+  await page.close();
+}
+
+// what the wallet holds against what it can put in, and coins that have not confirmed
+{
+  console.log('\nbalances: held and spendable, and sats that are confirming');
+  const { page } = await fresh({ ads: [ad()] });
+  await laneUp(page);
+  await page.evaluate(() => { const A = window.__atom; A.bal = { sats: 0n, eth: 819639n, ethHeld: 847639n, pendingSats: 29162n }; A.providers[0].e2b.min = 100000n; });
+  await page.click('[data-mode=atomic]');
+  await page.waitForFunction(() => document.querySelector('#a-go'));
+  await page.click('#a-go');
+  await page.waitForFunction(() => /Balance/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
+  ok((await text(page, '#a-bal')) === 'Balance 0 BTC · 0.00029162 BTC confirming', `a deposit that waits for a block is said, not hidden (${await text(page, '#a-bal')})`);
+  ok(/Balance 0\.00847639 ETH/.test(await text(page, '#a-get-bal')), `what the wallet holds is the balance shown on the receiving side (${await text(page, '#a-get-bal')})`);
+  await page.click('#a-flip');
+  ok((await text(page, '#a-bal')) === 'Balance 0.00847639 ETH', `the balance is what the wallet holds, not what is left after the relay fee (${await text(page, '#a-bal')})`);
+  await page.fill('#a-amt', '0.0083');
+  await page.waitForFunction(() => /Keep/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok((await text(page, '#a-go')) === 'Keep 0.00028 ETH for the relay fee' && await page.$eval('#a-go', (e) => e.disabled), `more than can be locked, but less than is held, says what to keep back (${await text(page, '#a-go')})`);
+  await page.fill('#a-amt', '0.009');
+  await page.waitForFunction(() => /Not enough/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(/Not enough ETH in your private balance/.test(await text(page, '#a-go')), 'more than is held still says there is not enough');
+  await page.fill('#a-amt', '0.008');
+  await page.waitForFunction(() => /^Swap/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(!(await page.$eval('#a-go', (e) => e.disabled)), 'an amount that fits can be swapped');
+  await SHOT(page, 'lane-held-confirming');
   await page.close();
 }
 
