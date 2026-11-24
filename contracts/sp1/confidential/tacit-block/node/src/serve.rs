@@ -59,7 +59,8 @@ const MAX_SHIELDS: usize = 128;
 const MAX_READERS: usize = 64;
 /// Directory writes allowed per client address per hour.
 const DIRECTORY_PER_HOUR: u32 = 30;
-/// Spends and settles a client address may send in an hour (each one is checked, proof and all, before it can be refused): TACIT_NODE_SUBMITS_PER_HOUR.
+/// Spends, settles and requests for a spend's bytes for Ethereum a client address may send in an hour (each one is checked, proof and all,
+/// before it can be refused): TACIT_NODE_SUBMITS_PER_HOUR.
 const SUBMITS_PER_HOUR: u32 = 120;
 /// How many bodies one client address may have being read at once, so no one address holds all the readers: TACIT_NODE_READERS_PER_CLIENT.
 const READERS_PER_CLIENT: usize = 4;
@@ -593,7 +594,6 @@ impl Leader {
     #[allow(clippy::type_complexity)]
     fn check_spend(&self, publics: &[u8], proof: &[u8], data: &SpendData, b: &Value) -> Result<(Vec<u8>, Vec<Vec<u8>>, Vec<Vec<u8>>), String> {
         let p = tacit_block_agg_publics(publics)?;
-        let hints = self.keys.check(&p, proof).ok_or("the spend's proof does not verify")?;
         let memos: Vec<Vec<u8>> = b["memos"].as_array().ok_or("memos")?.iter().map(hexv).collect::<Result<_, _>>()?;
         let op_memos: Vec<Vec<u8>> = b["opMemos"].as_array().map(|a| a.iter().map(hexv).collect::<Result<_, _>>()).transpose()?.unwrap_or_default();
         let spend = blk::Spend::from_publics(&p);
@@ -612,6 +612,8 @@ impl Leader {
         if op_memos.len() != receivers.len() || op_memos.iter().zip(&receivers).any(|(m, r)| m.len() != MEMO_LEN || blk::memo_hash(m) != r.memo) {
             return Err("a memo for each note the operation makes".into());
         }
+        // the proof last: it is the one check that costs
+        let hints = self.keys.check(&p, proof).ok_or("the spend's proof does not verify")?;
         Ok((hints, memos, op_memos))
     }
 
@@ -838,7 +840,8 @@ impl Leader {
         let q = |k: &str| query.split('&').find_map(|kv| kv.split_once('=').filter(|(a, _)| *a == k).map(|(_, v)| v.to_string()));
         let bad = |e: String| (400u16, e);
         // a spend or a settle is checked in full before it can be refused, so a client address is held to so many an hour, whatever they carry
-        if method == "POST" && matches!(path, "/spend" | "/settle") {
+        // (the bytes a wallet asks for to post a spend to Ethereum are checked the same way, and count the same)
+        if method == "POST" && matches!(path, "/spend" | "/settle" | "/forced") {
             if let Some(ip) = ip.filter(|_| !admin) {
                 let cap = std::env::var("TACIT_NODE_SUBMITS_PER_HOUR").ok().and_then(|v| v.parse().ok()).unwrap_or(SUBMITS_PER_HOUR);
                 let w = self.submits.entry(ip).or_insert((now, 0));
