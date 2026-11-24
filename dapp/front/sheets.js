@@ -3349,7 +3349,7 @@ render.borrow = () => {
               : shortEth && payer() === 'tacit' ? html`<button class="btn" type="button" id="bw-topup">Top up from wallet and post bond</button>` : html`<button class="btn" type="button" id="bw-bond" data-bw-bond="eth" ${shortEth ? 'disabled' : ''}>${bondNoWallet() ? 'Connect wallet and post bond' : st.have ? 'Top up bond' : 'Post bond'}</button>`}
             <div class="status" role="status" id="bw-s2"></div>` : html`<div class="d err">The BTC price feed is updating; the bond can be sized again in a few minutes.</div>`) : ''}
           ${s1 && !s3 && !bondFlight ? (st.have ? html`<p class="note">To take the BTC back instead, take its bond back first, under Your bonds.</p>`
-            : html`<p class="note"><button class="link" type="button" id="bw-unlock">${LOCK.unlockAsk === lockId(rec) ? 'Take it back' : 'Changed your mind? Take the BTC back'}</button></p><div class="status" role="status" id="bw-s2u"></div>`) : ''}
+            : html`<p class="note"><button class="link" type="button" id="bw-unlock">${LOCK.unlockAsk === lockId(rec) ? 'Send the BTC back to your address' : 'Changed your mind? Take the BTC back'}</button></p><div class="status" role="status" id="bw-s2u"></div>`) : ''}
         </div>
       </li>
       <li class="${stepCls(s3, s2 && !s3)}">
