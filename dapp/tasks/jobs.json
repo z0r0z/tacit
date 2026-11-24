@@ -1089,6 +1089,84 @@
           "href": "https://discord.gg/VxYx9XSBrM"
         }
       ]
+    },
+    {
+      "id": "stuck-tac",
+      "chainId": 1,
+      "opensAt": 1795552685,
+      "title": "Bring stuck TAC back into use",
+      "tagline": "Build one way for providers to put TAC that cannot go home back to work: 300 TAC to the entry that is merged.",
+      "verified": false,
+      "created": [],
+      "hint": "Open the brief and pick one of its four options. Open a pull request titled “stuck TAC: your name”, then come back here and claim with its number.",
+      "reviewVia": {
+        "label": "the brief",
+        "href": "https://github.com/z0r0z/tacit/blob/main/docs/STUCK-TAC-BOUNTY.md"
+      },
+      "steps": [
+        {
+          "id": "01-entry",
+          "kind": "review",
+          "to": "0x0000000000000000000000000000000000000000",
+          "gas": 22000,
+          "approved": [],
+          "minWei": "300000000000000000000",
+          "maxWei": "300000000000000000000",
+          "evidence": {
+            "text": true,
+            "pattern": "^PR[0-9]{1,6}$"
+          },
+          "label": "Entry",
+          "detail": "Opens a pull request that does one of the options in the brief, with tests.",
+          "action": {
+            "label": "Open the brief",
+            "href": "https://github.com/z0r0z/tacit/blob/main/docs/STUCK-TAC-BOUNTY.md"
+          },
+          "ask": "The number of your pull request (like PR123). It is paid to the wallet you claim from.",
+          "input": {
+            "placeholder": "Pull request number, like PR123",
+            "pattern": "^PR[0-9]{1,6}$",
+            "text": true,
+            "error": "That is not a pull request number (it looks like PR123)."
+          }
+        }
+      ],
+      "about": [
+        {
+          "h": "What it is",
+          "p": "Fast bridge providers lend private TAC on Ethereum and take TAC on Bitcoin in return, and they carry it home over the regular bridge to lend it again. Two kinds of TAC on Bitcoin cannot take that road: TAC that came out of Bitcoin’s shielded pool, and TAC with more than 255 transfers behind it. A provider that takes them cannot lend that value again. This job is for a way to put that TAC back to work, or to price it so providers can take it safely."
+        },
+        {
+          "h": "What to do",
+          "p": "Read the brief, pick one of its options (a desk for stuck TAC, a rebalance loop for the provider daemon, a pricing rule, or a design for a new proof rule) and open a pull request titled “stuck TAC: your name” with the code, the tests and a short write-up. Mixed entries are welcome. Nothing deployed changes, and pages and providers already running keep working."
+        },
+        {
+          "h": "Paid",
+          "p": "300 TAC once, to the wallet you claim from, for the entry that is merged. A person reads the claim first: the pull request is open and does what the brief asks. Community pledges can add to it, and the brief closes on 16 December 2026."
+        },
+        {
+          "h": "Claiming",
+          "p": "You claim with a transaction from your wallet to itself that names your pull request number, which this page sends. It costs a few cents of gas on Ethereum, and the reward is then claimed on the Rewards page like any other."
+        }
+      ],
+      "links": [
+        {
+          "label": "The brief",
+          "href": "https://github.com/z0r0z/tacit/blob/main/docs/STUCK-TAC-BOUNTY.md"
+        },
+        {
+          "label": "How the fast bridge works",
+          "href": "https://github.com/z0r0z/tacit/blob/main/docs/FAST-BRIDGE.md"
+        },
+        {
+          "label": "Rewards",
+          "href": "/rewards/"
+        },
+        {
+          "label": "Discord",
+          "href": "https://discord.gg/VxYx9XSBrM"
+        }
+      ]
     }
   ]
 }
