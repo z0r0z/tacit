@@ -31,7 +31,8 @@ import { splitAmount, assignNotes } from '/fast/sweep.js?cb=713466b3';
 export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=ca8a6601';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
-export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api'];
+// four explorers, tried in turn: one busy or rate-limited explorer does not stop a swap (every page that uses this allows all four)
+export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api'];
 const enc = new TextEncoder();
 const hmacSha256 = (k, m) => hmac(sha256, k, m);
 const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');

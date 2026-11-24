@@ -597,8 +597,13 @@ test('discovering providers on a board: one that sells the other way too is list
   assert.equal(both.terms.available, 2000000000n);
 });
 
-test('the explorers the page reads are the two it lists for the bridge page', () => {
-  assert.deepEqual(EXPLORERS, ['https://mempool.space/api', 'https://blockstream.info/api']);
+test('the explorers the page reads: the two main ones first, then two mirrors, all allowed by the pages that read them', async () => {
+  assert.deepEqual(EXPLORERS, ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api']);
+  const { readFileSync } = await import('node:fs');
+  for (const page of ['dapp/index.html', 'dapp/fast/index.html', 'dapp/btc/index.html']) {
+    const csp = (readFileSync(new URL(`../${page}`, import.meta.url), 'utf8').match(/connect-src[^;"]*/g) || []).join(' ');
+    for (const e of EXPLORERS) assert.ok(csp.includes(new URL(e).origin), `${page} allows ${new URL(e).origin}`);
+  }
   assert.equal(TAC_ASSET, 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b');
 });
 
