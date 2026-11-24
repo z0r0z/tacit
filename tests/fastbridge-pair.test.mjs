@@ -307,6 +307,24 @@ test('found again from the key: a Bitcoin-for-ETH swap that completed is listed 
   assert.equal(r.refundAt, null);
 });
 
+test('found again from the key: while the swaps found are read one by one, each is listed as being checked, never first as returning', async () => {
+  const w = pairWorld({ userSats: [200_000, 200_000] });
+  await w.ready();
+  for (let i = 0; i < 2; i++) {
+    w.lEvm.fund(w.fwd.quoter.price(SATS).evmAmount, 'inv' + i);
+    await w.pair.start(await w.pair.quote({ dir: 'b2e', amount: SATS }));
+    await w.run(async () => (await w.pair.records()).filter((r) => r.state === 'done').length === i + 1);
+  }
+  // what a page listing the swaps would show when the first step of the first one is written
+  const st = freshStores(), put = st.fwd.put;
+  let shown = null;
+  st.fwd.put = async (r) => { if (!shown && r.phase !== 'refund-wait') shown = (await st.fwd.list()).map((x) => describeFwd(x).title); return put(r); };
+  const fresh = w.makePair({ stores: st });
+  assert.equal(await fresh.recover(), 2);
+  assert.deepEqual(shown, ['Checking', 'Checking'], 'the second swap is listed as being checked while the first is read');
+  assert.deepEqual((await fresh.records()).map((r) => [r.state, r.title]), [['done', 'Done'], ['done', 'Done']]);
+});
+
 test('found again from the key: an ETH-for-Bitcoin swap whose BTC was taken on another page is listed as done at once', async () => {
   const w = pairWorld();
   await w.ready();

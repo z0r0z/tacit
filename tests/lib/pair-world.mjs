@@ -21,7 +21,7 @@ export const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 export const SATS = 100_000n;
 export const UNITS = 3_600_000n;                                         // 0.036 ETH in pool units
 
-// `fwdQuote`, `revConfig`: what a test sets over the forward provider's quote terms and the reverse provider's config
+// `fwdQuote`, `revConfig`: what a test sets over the forward provider's quote terms and the reverse provider's config (`userSats`: the user's one coin, or a list of coins)
 export function pairWorld({ providerMarket = 35.6, clientMarket = 35.6, confs = 1, userSats = 200_000, fwdQuote = {}, fwdPolicy = {}, fwdQuoteStore = null, revConfig = {}, revCoins = [2_000_000] } = {}) {
   const clock = makeClock(), btc = makeBitcoinSim(clock), evm = makeEvmSim(clock);
   const wallet = (name) => makeBtcWallet({ priv: bigintToBytes32(scalar(name + '/btc-wallet')), hrp: 'tb', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('offline'); }, fetchFeeRate: async () => 3 });
@@ -30,7 +30,7 @@ export function pairWorld({ providerMarket = 35.6, clientMarket = 35.6, confs = 
   const uEvm = makeEvmParty({ evm, keys: uKeys, clock }), lEvm = makeEvmParty({ evm, keys: lKeys, clock });
   // stable coins, gone from the lists once a transaction spends them
   const coinsOf = (tag, values) => values.map((v, i) => ({ txid: bytesToHex(sha256(te(`${tag}/${i}`))), vout: 0, value: v }));
-  const uCoins = coinsOf('user', userSats ? [userSats] : []), rCoins = coinsOf('reverse', revCoins);
+  const uCoins = coinsOf('user', Array.isArray(userSats) ? userSats : userSats ? [userSats] : []), rCoins = coinsOf('reverse', revCoins);
   const unspent = (cs) => () => cs.filter((c) => !btc.spends.has(`${c.txid}:${c.vout}`));
   const uBtc = btc.adapter({ prims: uW.prims, builder: makeAdaptorBtcTx({ prims: uW.prims }), sats: unspent(uCoins) });
   const lBtc = btc.adapter({ prims: lW.prims, builder: makeAdaptorBtcTx({ prims: lW.prims }), sats: unspent([]) });
