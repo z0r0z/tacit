@@ -154,9 +154,13 @@ test('what the quote says of the wait: the provider\'s lock needs more Bitcoin c
   }
 });
 
-test('the press: the provider and the quote are the ones shown, the amount clears, the swap is listed, and a refusal is said and keeps the quote', async () => {
+test('the press: the first says what is sent and what arrives, the second goes; the provider and the quote are the ones shown, the amount clears, the swap is listed, and a refusal is said and keeps the quote', async () => {
   const t = await ready({ providers: [seller('A')] });
   await t.type('100'); await until(() => !t.$('rv-go').disabled, 'a quote is there');
+  t.$('rv-go').click();
+  await until(() => /Press again to send/.test(t.$('rv-st').textContent), 'the first press says what is sent and what arrives');
+  assert.match(t.$('rv-st').textContent, /This sends 100 private TAC/); assert.equal(t.$('rv-go').textContent, 'Press again to send');
+  assert.equal(t.sess.calls.starts.length, 0, 'the first press sends nothing');
   t.$('rv-go').click();
   await until(() => t.sess.calls.starts.length === 1, 'started');
   assert.equal(t.sess.calls.starts[0].provider, 'A'); assert.equal(t.sess.calls.starts[0].quote.evmAmount, 100n * TAC);
@@ -167,7 +171,7 @@ test('the press: the provider and the quote are the ones shown, the amount clear
   // a provider that refuses
   const r = await ready({ providers: [seller('A')], sess: sessionStub({ startError: Object.assign(new Error('the provider cannot lock that amount: it has all the sends it takes at once'), { retry: true }) }) });
   await r.type('100'); await until(() => !r.$('rv-go').disabled, 'quoted');
-  r.$('rv-go').click(); await until(() => /all the sends it takes at once/.test(r.$('rv-st').textContent), 'the refusal is shown');
+  r.$('rv-go').click(); r.$('rv-go').click(); await until(() => /all the sends it takes at once/.test(r.$('rv-st').textContent), 'the refusal is shown');
   assert.match(r.$('rv-st').className, /err/); assert.equal(r.$('rv-amt').value, '100', 'what was typed stays so it can be tried again');
   await until(() => !r.$('rv-go').disabled, 'the quote is still there to press'); assert.equal(r.panel.busy(), false);
 });

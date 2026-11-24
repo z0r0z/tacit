@@ -30,6 +30,11 @@ export const FEE_WARN_BPS = 500n;
 export const highTake = (q) => !!q.highTake;
 // the end of a provider's key, shown beside the name it chose for itself
 export const keyTag = (id) => { const h = String(id || '').replace(/^0x/, '').toLowerCase(); return h.length >= 12 ? `${h.slice(2, 8)}…${h.slice(-4)}` : h; };
+// How long a lock waits before it can come back, from its timelock in Bitcoin blocks (about ten minutes each).
+export const timelockText = (csvBlocks) => {
+  const h = Math.round((Number(csvBlocks) || 144) / 6);
+  return h === 24 ? 'about a day' : h % 24 === 0 ? `about ${h / 24} days` : `about ${h} hours`;
+};
 export const highFee = (q) => (q.highFee != null ? !!q.highFee : BigInt(q.fee) * 10000n > BigInt(q.btcValue) * FEE_WARN_BPS);
 
 // Why a lock was not built: no provider online takes TAC whose history passes through something the bridge's proof does not follow.

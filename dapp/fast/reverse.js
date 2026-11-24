@@ -77,7 +77,7 @@ export function mountReverse({ root, keyS, open, providers, signIn = () => {}, q
     root.hidden = !any;
     $('rv-bal').textContent = !keyS.unlocked ? '' : S.bal == null ? (S.loading ? 'Reading your private balance…' : '') : `Private TAC you can send now: ${fmtTac(S.bal)}`;
     const units = parseTac($('rv-amt').value), go = $('rv-go');
-    go.textContent = S.busy ? 'Working…' : keyS.unlocked ? 'Send' : 'Open your wallet';
+    go.textContent = S.busy ? 'Working…' : !keyS.unlocked ? 'Open your wallet' : S.sure ? 'Press again to send' : 'Send';
     go.disabled = S.busy || (keyS.unlocked && (!S.sess || !S.quote || units == null || S.quoting));
     paintList();
   }
@@ -109,7 +109,7 @@ export function mountReverse({ root, keyS, open, providers, signIn = () => {}, q
 
   async function requote() {
     const my = ++S.seq, units = parseTac($('rv-amt').value);
-    S.quote = null; say('rv-quote', ''); S.quoting = false;
+    S.quote = null; S.sure = null; say('rv-quote', ''); S.quoting = false;
     if (!S.sess) { paint(); return; }
     const bad = problem(units);
     if (bad) { say('rv-quote', bad, true); paint(); return; }
@@ -130,12 +130,22 @@ export function mountReverse({ root, keyS, open, providers, signIn = () => {}, q
     say('rv-quote', last ? `${String((last && last.message) || last).slice(0, 160)}` : 'No provider gave a quote.', true);
     paint();
   }
-  const requoteSoon = () => { clearTimeout(S.qtimer); S.quote = null; say('rv-quote', ''); paint(); S.qtimer = setTimeout(requote, quoteDelayMs); };
+  const requoteSoon = () => { clearTimeout(S.qtimer); S.quote = null; S.sure = null; say('rv-quote', ''); paint(); S.qtimer = setTimeout(requote, quoteDelayMs); };
 
   async function go() {
     if (!keyS.unlocked) { signIn(); return; }
     const q = S.quote;
     if (!S.sess || S.busy || !q) return;
+    // the first press says what is sent, what arrives and what the provider keeps; the same press again, within three minutes, sends it
+    const key = `${q.p.id}|${q.q.id}`;
+    if (!(S.sure && S.sure.key === key && Date.now() - S.sure.at < 180e3)) {
+      S.sure = { key, at: Date.now() };
+      const pct = Number((q.q.fee * 10000n) / q.q.evmAmount) / 100;
+      note(`${q.q.highFee ? `High fee: ${q.p.name} keeps ${fmtTac(q.q.fee)} TAC (${pct}%). ` : ''}This sends ${fmtTac(q.q.evmAmount)} private TAC once ${q.p.name}'s Bitcoin lock has confirmed, for ${fmtTac(q.q.btcValue)} TAC on Bitcoin. Press again to send.`, !!q.q.highFee);
+      paint();
+      return;
+    }
+    S.sure = null;
     S.busy = true; note('Asking the provider to lock its Bitcoin…'); paint();
     try {
       await S.sess.start({ provider: q.p, quote: q.q });
@@ -145,7 +155,7 @@ export function mountReverse({ root, keyS, open, providers, signIn = () => {}, q
     } catch (e) { note(String((e && e.message) || e).slice(0, 200), true); } finally { S.busy = false; paint(); refreshSoon(); }
   }
 
-  $('rv-amt').addEventListener('input', () => { note(''); requoteSoon(); });
+  $('rv-amt').addEventListener('input', () => { note(''); S.sure = null; requoteSoon(); });
   $('rv-go').addEventListener('click', go);
   root.addEventListener('toggle', () => { if (root.open) { if (keyS.unlocked) load(); } });
   keyS.onChange(() => {

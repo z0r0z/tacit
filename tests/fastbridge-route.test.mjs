@@ -116,6 +116,24 @@ test('providers gone: one empty read keeps the list (a board may not have answer
   assert.equal((await fr.offer(100n * TAC)).provider.name, 'B', 'a provider back is offered at once');
 });
 
+test('the bridge starts only what was confirmed: a re-quote or a fallback that pays less or keeps more on Bitcoin needs another press, and a take above fair or a fee above the listed terms is left to the fast page', async () => {
+  const s = session();
+  const fr = routeOf([provider('A', { feeBps: 20 }), provider('B', { feeBps: 50 })], s);
+  const o = await fr.offer(100n * TAC);
+  assert.deepEqual(o.quotes.map((x) => x.quote.id), ['qA', 'qB']);
+  await fr.start(o, note);
+  assert.deepEqual(s.calls.starts[0].quotes.map((x) => x.quote.id), ['qA'], 'B pays less, so it is not a fallback for A');
+  const fresh = { ...o, quotes: o.quotes.map((x) => ({ ...x, quote: { ...x.quote, evmAmount: x.quote.evmAmount - TAC } })) };
+  await assert.rejects(() => fr.start(fresh, note, o), (e) => e.code === 'quote-changed', 'a re-quote that pays less is not started');
+  const dearTake = { ...o, quotes: o.quotes.map((x) => ({ ...x, quote: { ...x.quote, takeSats: 30000 } })) };
+  await assert.rejects(() => fr.start(dearTake, note, o), (e) => e.code === 'quote-changed', 'nor one that keeps more on Bitcoin');
+  assert.equal(s.calls.starts.length, 1);
+  const flagged = session(), sq = flagged.quoteAll;
+  flagged.quoteAll = async (ps, u) => { const r = await sq(ps, u); r.quotes[0].quote.takeAbove = true; r.quotes[1].quote.aboveTerms = true; return r; };
+  const none = await routeOf([provider('A', { feeBps: 20 }), provider('B', { feeBps: 50 })], flagged).offer(100n * TAC);
+  assert.deepEqual([none.ok, none.why], [false, 'dear']);
+});
+
 test('the lock\'s cost and the bridge itself are for exactly the note picked, with the provider that was quoted', async () => {
   const s = session();
   const fr = routeOf([provider('A')], s);

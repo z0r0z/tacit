@@ -13,11 +13,13 @@
 //   fr.cost(offer, note)    -> { fee, take, total, have, short, need } what the lock costs on Bitcoin, and whether the address can pay it
 //   fr.fit(offer, note)     -> the offer led by the first of its providers that takes this note, with its `cost`; { ok: false, why:
 //                              'lineage' } when every one of them turns the note's history away
-//   fr.start(offer, note)   -> the bridge, begun with that note and the best provider that will hold the payout
+//   fr.start(offer, note, confirmed?) -> the bridge, begun with that note and the best provider that will hold the payout, among the quotes no
+//                              worse than the confirmed offer's (a throw with code 'quote-changed' when there is none)
 //   fr.records()            -> the bridges, newest first, in words (fastbridge-client.js describe)
 //   fr.run(onChange)        -> stop(): the steps taken while the page is open
 
-import { fmtTac, highFee, highTake, lineageText } from './fmt.js';
+import { fmtTac, highFee, highTake, lineageText, timelockText } from './fmt.js';
+import { noWorse } from '../fastbridge-price.js';
 import { sweepRoom } from './sweep.js';
 
 // What a provider takes now: its most, or less when it says so.
@@ -56,7 +58,8 @@ export function makeFastRoute({ discover, open, ownId = () => null, refreshMs = 
       return { ok: false, why: dear ? 'dear' : r.failed.length ? 'busy' : 'size', min, max, error: r.failed[0] && r.failed[0].error };
     }
     // a quote with a high fee is not a reason to leave the regular bridge: the fast page quotes it, with a warning, for whoever wants it
-    const fair = r.quotes.filter((x) => !highFee(x.quote) && !highTake(x.quote));
+    // nor is a take above what it costs, or a fee above the provider's own terms: the form has no room for those warnings, the fast page does
+    const fair = r.quotes.filter((x) => !highFee(x.quote) && !highTake(x.quote) && !x.quote.takeAbove && !x.quote.aboveTerms);
     if (!fair.length) return { ok: false, why: 'dear', min, max };
     const best = fair[0];
     return { ok: true, quotes: fair, quote: best.quote, provider: best.provider, minutes: minutesFor(best.quote.minConfs), min, max };
@@ -80,9 +83,12 @@ export function makeFastRoute({ discover, open, ownId = () => null, refreshMs = 
     }
     return { ok: false, why: 'lineage', min: o.min, max: o.max };
   }
-  async function start(o, note) {
+  // Only quotes no worse than the one the holder confirmed are started: a re-quote or another provider that asks more needs another press.
+  async function start(o, note, confirmed = o) {
+    const quotes = o.quotes.filter((x) => noWorse(x.quote, confirmed.quote));
+    if (!quotes.length) throw Object.assign(new Error('the quote changed'), { code: 'quote-changed' });
     const s = await open();
-    return s.start({ quotes: o.quotes, only: [{ txid: note.txid, vout: note.vout }] });
+    return s.start({ quotes, only: [{ txid: note.txid, vout: note.vout }] });
   }
   // which providers could take a lock for this much of the key's TAC: 'all', 'any' (only one that takes any TAC) or 'none' (fast/wire.js reach)
   async function reach(units) { const s = await open(); return typeof s.reach === 'function' ? s.reach(BigInt(units)) : 'all'; }
@@ -112,7 +118,7 @@ export function shown(o) {
     out: fmtTac(q.evmAmount), go: 'Bridge fast', fast: true, warn: !!(c && c.short), line: c && c.short ? shortText(c) : '',
     rc: [['Arrives', `${fmtTac(q.evmAmount)} private TAC on Ethereum`], ['Provider fee', `${fmtTac(q.fee)} TAC (${pct(q.fee, q.btcValue)})`, '', (o.provider && o.provider.name) || ''],
       ['Bitcoin fee', c && c.total ? `≈ ${sats(c.total)}` : 'in sats', '', c && c.take ? `${sats(c.take)} of it is the provider’s take` : ''],
-      ['Time', `about ${o.minutes} minutes`], ['If it stalls', 'the lock returns to your address after about a day']],
+      ['Time', `about ${o.minutes} minutes`], ['If it stalls', `the lock returns to your address after ${timelockText(q.csvBlocks)}`]],
   };
 }
 
@@ -127,7 +133,7 @@ export function whyRow(o) {
 // the first press of the bridge: what it does, what it costs and what happens if the provider stops
 export function confirmText(o, amt) {
   const who = (o.provider && o.provider.name) || 'the provider', c = o.cost;
-  return `Bridging ${amt} locks it on Bitcoin until ${who} has paid you ${fmtTac(o.quote.evmAmount)} private TAC in the pool, in about ${o.minutes} minutes${c && c.total ? `, for about ${sats(c.total)} in Bitcoin fees` : ''}. If it does not, the lock returns to your address after about a day. Press again to bridge.`;
+  return `Bridging ${amt} locks it on Bitcoin until ${who} has paid you ${fmtTac(o.quote.evmAmount)} private TAC in the pool, in about ${o.minutes} minutes${c && c.total ? `, for about ${sats(c.total)} in Bitcoin fees` : ''}. If it does not, the lock returns to your address after ${timelockText(o.quote.csvBlocks)}. Press again to bridge.`;
 }
 
 // a failure of the bridge, in the page's words
