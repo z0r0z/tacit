@@ -4383,7 +4383,7 @@ await step('clearedfind', async () => {
     await r.page.goto(r.url + '#wallet');
     if (seed) await r.page.evaluate(([p]) => {
       localStorage.setItem('tacit-lite-shielded-deep-v1', JSON.stringify({ [p]: Date.now() }));
-      localStorage.setItem('tacit-lite-bridged-look-v1', JSON.stringify({ [p]: { tac: Date.now(), teth: Date.now() } }));
+      localStorage.setItem('tacit-lite-bridged-look-v1', JSON.stringify({ [p]: Object.fromEntries(['tac', 'teth', 'cbtc', 'cusd', 'cusdt'].map((k) => [k, Date.now()])) }));   // every asset the page looks for (XA)
     }, [pub]);
     if (before) await before(r.page);
     await pasteWay(r.page, '#wallet-body');
@@ -4406,6 +4406,29 @@ await step('clearedfind', async () => {
     const { r, seen } = await run('c1eb'.padEnd(64, '7'), true);
     await new Promise((res) => setTimeout(res, 30000));
     ok(seen.deep === 0 && seen.taproot === 0, `clearedfind: a browser that has looked for the key does not look again (${seen.deep} index, ${seen.taproot} Taproot reads)`);
+    await r.browser.close();
+  }
+  // Opening the Bitcoin sheet looks again for shielded TAC sent to a key that has had its first look: quietly, once in ten minutes, not on every open.
+  {
+    const { r, seen } = await run('c1ed'.padEnd(64, '7'), true);
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const reads = async (n, ms) => { for (let t = 0; t < ms && seen.deep < n; t += 500) await sleep(500); return seen.deep; };
+    const open = () => r.page.evaluate(() => { location.hash = ''; location.hash = '#btc'; });
+    await r.page.evaluate(() => { const d = Date.now.bind(Date); window.__skew = 0; Date.now = () => d() + window.__skew; });   // a clock the test can move on
+    await open();
+    const first = await reads(1, 90000);
+    ok(first >= 1, `clearedfind: opening the Bitcoin sheet looks through TAC's transfer index again for a key that has had its first look (${first} read)`);
+    ok(!/Looking for shielded/.test(await text(r.page, '#btc-status')), 'clearedfind: and says nothing while it does');
+    await sleep(8000);
+    const base = seen.deep;
+    await open();
+    await sleep(15000);
+    ok(seen.deep === base, `clearedfind: opening it again within ten minutes does not look again (${seen.deep - base} more reads)`);
+    await r.page.evaluate(() => { window.__skew = 11 * 60e3; });
+    await open();
+    const later = await reads(base + 1, 90000);
+    ok(later > base, `clearedfind: and once ten minutes have passed it does (${later - base} more reads)`);
+    if (r.errors.length) { fails++; console.log('FAIL clearedfind page errors: ' + r.errors.slice(0, 3).join(' | ')); }
     await r.browser.close();
   }
   // TAC notes the scan found but could not count: those whose history it could not read are named as such, a just-sent one as arriving.
