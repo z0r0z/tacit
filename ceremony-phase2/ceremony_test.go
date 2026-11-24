@@ -1,9 +1,12 @@
 package ceremony
 
 import (
+	"context"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,46 +29,72 @@ func (c *cube) Define(api frontend.API) error {
 	return nil
 }
 
-func TestCeremonyEndToEnd(t *testing.T) {
+type fixture struct {
+	dir, base string
+	ccs       *cs.R1CS
+	commons   mpcsetup.SrsCommons
+	evals     mpcsetup.Phase2Evaluations
+}
+
+// newFixture: Phase 1 (standing for the inherited powers of tau) sealed with its beacon, then the initial Phase 2 with
+// one contribution (standing for the transcript's earlier ones): the base file.
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
 	ccsI, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &cube{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ccs := ccsI.(*cs.R1CS)
-	// Phase 1 (stands for the inherited powers of tau), sealed with its beacon, then the initial Phase 2: the base file
+	f := &fixture{dir: t.TempDir(), ccs: ccsI.(*cs.R1CS)}
 	var p1 mpcsetup.Phase1
-	p1.Initialize(ecc.NextPowerOfTwo(uint64(ccs.GetNbConstraints())))
+	p1.Initialize(ecc.NextPowerOfTwo(uint64(f.ccs.GetNbConstraints())))
 	p1.Contribute()
-	commons := p1.Seal([]byte("phase1 beacon"))
+	f.commons = p1.Seal([]byte("phase1 beacon"))
 	var p2 mpcsetup.Phase2
-	evals := p2.Initialize(ccs, &commons)
-	p2.Contribute() // stands for the transcript's earlier contributions
-	dir := t.TempDir()
-	base := filepath.Join(dir, "base")
-	if err := Write(&p2, base); err != nil {
+	f.evals = p2.Initialize(f.ccs, &f.commons)
+	p2.Contribute()
+	f.base = filepath.Join(f.dir, "base")
+	if err := Write(&p2, f.base); err != nil {
 		t.Fatal(err)
 	}
+	return f
+}
 
-	c, err := Init(filepath.Join(dir, "chain"), base, 17, "Tacit Praxis ceremony (test)")
+func (f *fixture) chain(t *testing.T) *Coordinator {
+	t.Helper()
+	c, err := Init(filepath.Join(f.dir, "chain"), f.base, 17, "Tacit Praxis ceremony (test)")
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.Logf = t.Logf
+	return c
+}
+
+func TestCeremonyEndToEnd(t *testing.T) {
+	f := newFixture(t)
+	dir, base := f.dir, f.base
+	c := f.chain(t)
 	if _, err := Init(filepath.Join(dir, "chain"), base, 17, "again"); err == nil {
 		t.Fatal("a second chain in the same directory must be refused")
 	}
 	srv := httptest.NewServer(c.Handler())
 	defer srv.Close()
+	key := c.State().CoordPubKey
 
 	// two contributors through the HTTP coordinator, one after the other
 	var receipts []*Receipt
 	for _, who := range []string{"alice", "bob"} {
 		wd := t.TempDir()
-		r, err := ContributeRemote(srv.URL, who, "@"+who, wd, 10*time.Millisecond, nil)
+		cl := NewClient(ClientOptions{Coordinator: srv.URL, CoordinatorKey: key, Name: who, Handle: "@" + who, Workdir: wd, Poll: 10 * time.Millisecond, Log: func(s string) { t.Log(who + ": " + s) }})
+		r, hash, err := cl.Contribute(context.Background())
+		cl.Cleanup()
 		if err != nil {
 			t.Fatalf("%s: %v", who, err)
 		}
-		if !VerifyReceipt(*r, c.State().CoordPubKey) {
-			t.Fatalf("%s: the receipt's signature does not verify", who)
+		if r.ContributionHash != hash || !VerifyReceipt(*r, key) {
+			t.Fatalf("%s: the receipt is not for this contribution, or not signed", who)
+		}
+		if left, _ := os.ReadDir(wd); len(left) != 0 {
+			t.Fatalf("%s: files left in the work directory: %v", who, left)
 		}
 		receipts = append(receipts, r)
 	}
@@ -74,9 +103,16 @@ func TestCeremonyEndToEnd(t *testing.T) {
 	}
 	forged := *receipts[1]
 	forged.Name = "mallory"
-	if VerifyReceipt(forged, c.State().CoordPubKey) {
+	if VerifyReceipt(forged, key) {
 		t.Fatal("a changed receipt must not verify")
 	}
+
+	// a client that pins another coordinator key does not accept the receipt
+	cl := NewClient(ClientOptions{Coordinator: srv.URL, CoordinatorKey: PinnedCoordinatorKey, Name: "carol", Workdir: t.TempDir(), Poll: 10 * time.Millisecond})
+	if _, _, err := cl.Contribute(context.Background()); err == nil || !strings.Contains(err.Error(), "not signed by the coordinator key") {
+		t.Fatalf("a receipt under another key must be refused by the client: %v", err)
+	}
+	cl.Cleanup()
 
 	// a stale contribution (built on the base, not on the head) is refused, and the head stays
 	stale := filepath.Join(dir, "stale")
@@ -99,12 +135,12 @@ func TestCeremonyEndToEnd(t *testing.T) {
 
 	// the state survives a restart, and the whole chain verifies link by link from the base
 	c2, err := Open(filepath.Join(dir, "chain"))
-	if err != nil || c2.State().HeadIndex != 19 || len(c2.State().Receipts) != 2 {
+	if err != nil || c2.State().HeadIndex != 20 || len(c2.State().Receipts) != 3 {
 		t.Fatalf("reopen: %v %+v", err, c2.State())
 	}
 	prev, _ := Read(base)
-	for i := 18; i <= 19; i++ {
-		next, err := Read(filepath.Join(dir, "chain", "phase2-"+itoa(i)))
+	for i := 18; i <= 20; i++ {
+		next, err := Read(filepath.Join(dir, "chain", fmt.Sprintf("phase2-%d", i)))
 		if err != nil || Verify(prev, next) != nil {
 			t.Fatalf("link %d does not verify", i)
 		}
@@ -112,9 +148,9 @@ func TestCeremonyEndToEnd(t *testing.T) {
 	}
 
 	// seal with the beacon and use the keys: a real Groth16 proof verifies under them
-	pk, vk := prev.Seal(&commons, &evals, []byte("tacit beacon"))
+	pk, vk := prev.Seal(&f.commons, &f.evals, []byte("tacit beacon"))
 	w, _ := frontend.NewWitness(&cube{X: 3, Y: 35}, ecc.BN254.ScalarField())
-	proof, err := groth16.Prove(ccs, pk, w)
+	proof, err := groth16.Prove(f.ccs, pk, w)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,5 +163,3 @@ func TestCeremonyEndToEnd(t *testing.T) {
 		t.Fatal("and must not verify for another statement")
 	}
 }
-
-func itoa(i int) string { return string(rune('0'+i/10)) + string(rune('0'+i%10)) }

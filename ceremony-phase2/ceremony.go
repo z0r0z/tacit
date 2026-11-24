@@ -1,15 +1,15 @@
 // Package ceremony runs Tacit's Phase-2 trusted-setup ceremony for a Groth16 circuit (the Tacit Praxis ceremony extends
-// Succinct's SP1 v6.1.0 wrapper transcript). It uses gnark's mpcsetup as Succinct's tool does, so a contribution here is a
-// contribution to the same chain: each file is a Phase2 accumulator, each contribution is checked against the one
-// before it with Phase2.Verify, and the contribution hash is SHA-256 of the serialized accumulator, as Succinct's tool
-// prints it, so receipts read the same way in both.
+// Succinct's SP1 v6.1.0 wrapper transcript from its last file, phase2-17). It uses gnark's mpcsetup as Succinct's tool
+// does, so the files are the same format and each contribution is checked against the one before it with
+// Phase2.Verify; the contribution hash is SHA-256 of the serialized accumulator, as Succinct's tool prints it. Extending
+// the transcript yields a new key (a new delta): it does not change Succinct's deployed SP1 verifier or its key.
 package ceremony
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,8 +17,12 @@ import (
 	mpcsetup "github.com/consensys/gnark/backend/groth16/bn254/mpcsetup"
 )
 
-// Read a Phase2 accumulator from a file.
+// Read a Phase2 accumulator from a file. The file's layout is checked against its size first (CheckShape), so a length
+// prefix that claims more points than the file holds is refused before anything is allocated for them.
 func Read(path string) (*mpcsetup.Phase2, error) {
+	if _, err := CheckShape(path); err != nil {
+		return nil, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -26,12 +30,12 @@ func Read(path string) (*mpcsetup.Phase2, error) {
 	defer f.Close()
 	p := &mpcsetup.Phase2{}
 	if _, err := p.ReadFrom(bufio.NewReaderSize(f, 1<<20)); err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, fmt.Errorf("%w: %v", ErrNotAccumulator, err)
 	}
 	return p, nil
 }
 
-// Write a Phase2 accumulator to a file (atomically: a temporary file renamed into place).
+// Write a Phase2 accumulator to a file (atomically: a temporary file, synced, renamed into place).
 func Write(p *mpcsetup.Phase2, path string) error {
 	tmp := path + ".tmp"
 	f, err := os.Create(tmp)
@@ -41,13 +45,21 @@ func Write(p *mpcsetup.Phase2, path string) error {
 	w := bufio.NewWriterSize(f, 1<<20)
 	if _, err := p.WriteTo(w); err != nil {
 		f.Close()
+		os.Remove(tmp)
 		return err
 	}
 	if err := w.Flush(); err != nil {
 		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -55,12 +67,15 @@ func Write(p *mpcsetup.Phase2, path string) error {
 
 // Hash is the contribution hash: SHA-256 of the serialized accumulator (as semaphore-gnark-11 computes it).
 func Hash(p *mpcsetup.Phase2) (string, error) {
-	var buf bytes.Buffer
-	if _, err := p.WriteTo(&buf); err != nil {
+	h := sha256.New()
+	w := bufio.NewWriterSize(h, 1<<20)
+	if _, err := p.WriteTo(w); err != nil {
 		return "", err
 	}
-	h := sha256.Sum256(buf.Bytes())
-	return hex.EncodeToString(h[:]), nil
+	if err := w.Flush(); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // FileSHA256 of a file on disk.
@@ -91,8 +106,15 @@ func Contribute(in, out string) (string, error) {
 	return Hash(p)
 }
 
-// Verify that next is a valid contribution on top of prev.
-func Verify(prev, next *mpcsetup.Phase2) error { return prev.Verify(next) }
+// Verify that next is a valid contribution on top of prev. next must carry its challenge (the hash of prev): gnark's
+// Phase2.Verify accepts a file without one and fills it in, which would leave a file on disk that the link after it
+// cannot be checked against.
+func Verify(prev, next *mpcsetup.Phase2) error {
+	if len(next.Challenge) != sha256.Size {
+		return errors.New("the contribution does not carry the hash of the file it builds on")
+	}
+	return prev.Verify(next)
+}
 
 // Seal extracts the proving and verifying keys: the Phase 1 file sealed with its own beacon (for a chain that extends
 // Succinct's transcript, the transcript's Phase 1 beacon, so the commons are the ones every Phase 2 file was built on),

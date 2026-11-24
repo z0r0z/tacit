@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
+	"log"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -48,26 +50,84 @@ type State struct {
 	Closed      bool      `json:"closed"`
 }
 
+// Config of the queue. Zero values take the defaults below.
+type Config struct {
+	Heartbeat   time.Duration // a place is dropped when its client has not polled for this long (60 s)
+	ClaimWindow time.Duration // at the head, the time to claim the slot (3 min)
+	SlotCap     time.Duration // from the claim, the time to download, contribute and upload (2 h)
+	QueueCap    int           // places in the queue (100)
+	PerIP       int           // places one client address may hold (1; negative: no limit)
+	// The client's address is the socket's unless the connection comes from one of TrustedProxies, in which case it is
+	// the last address in ClientIPHeader (e.g. X-Forwarded-For).
+	ClientIPHeader string
+	TrustedProxies []netip.Prefix
+	Logf           func(format string, a ...any)
+}
+
+func (c Config) heartbeat() time.Duration { return orDur(c.Heartbeat, 60*time.Second) }
+func (c Config) claimWindow() time.Duration {
+	return orDur(c.ClaimWindow, 3*time.Minute)
+}
+func (c Config) slotCap() time.Duration { return orDur(c.SlotCap, 2*time.Hour) }
+func (c Config) queueCap() int {
+	if c.QueueCap > 0 {
+		return c.QueueCap
+	}
+	return 100
+}
+func (c Config) perIP() int {
+	if c.PerIP == 0 {
+		return 1
+	}
+	return c.PerIP
+}
+
+func orDur(d, def time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return def
+}
+
+// a place in the queue; persisted in queue.json (the poll time and the upload flag live in memory only)
 type ticket struct {
-	Token, Name, Handle string
-	Joined, SlotSince   time.Time
+	Token     string    `json:"token"`
+	Name      string    `json:"name"`
+	Handle    string    `json:"handle,omitempty"`
+	IP        string    `json:"ip"`
+	Joined    time.Time `json:"joined"`
+	HeadSince time.Time `json:"head_since,omitzero"`
+	Claimed   time.Time `json:"claimed,omitzero"`
+	lastSeen  time.Time
+	uploading bool
 }
 
 // Coordinator: one contributor at a time, first come first served; an upload becomes the head only if it verifies
 // against the current head.
 type Coordinator struct {
-	Dir     string
-	SlotTTL time.Duration
-	mu      sync.Mutex
-	state   State
-	queue   []*ticket
-	key     ed25519.PrivateKey
-	now     func() time.Time
+	Dir string
+	Config
+	mu       sync.Mutex
+	state    State
+	headSize int64
+	queue    []*ticket
+	key      ed25519.PrivateKey
+	now      func() time.Time
+	// tests: runs after an upload is verified and before it is committed
+	beforeCommit func()
 }
 
 var nameRe = regexp.MustCompile(`^[\x20-\x7e]{1,64}$`)
 
 func (c *Coordinator) path(i int) string { return filepath.Join(c.Dir, fmt.Sprintf("phase2-%d", i)) }
+
+func (c *Coordinator) logf(f string, a ...any) {
+	if c.Logf != nil {
+		c.Logf(f, a...)
+		return
+	}
+	log.Printf(f, a...)
+}
 
 // Init a chain from a base file (copied into the directory as phase2-<baseIndex>).
 func Init(dir, base string, baseIndex int, label string) (*Coordinator, error) {
@@ -83,19 +143,7 @@ func Init(dir, base string, baseIndex int, label string) (*Coordinator, error) {
 	c := &Coordinator{Dir: dir}
 	dst := c.path(baseIndex)
 	if base != dst {
-		in, err := os.Open(base)
-		if err != nil {
-			return nil, err
-		}
-		out, err := os.Create(dst)
-		if err != nil {
-			in.Close()
-			return nil, err
-		}
-		_, err = io.Copy(out, in)
-		in.Close()
-		out.Close()
-		if err != nil {
+		if err := copyFile(base, dst); err != nil {
 			return nil, err
 		}
 	}
@@ -107,21 +155,28 @@ func Init(dir, base string, baseIndex int, label string) (*Coordinator, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "coordinator.key"), priv, 0o600); err != nil {
+	if err := writeFileSync(filepath.Join(dir, "coordinator.key"), priv, 0o600); err != nil {
 		return nil, err
 	}
 	c.key = priv
-	c.state = State{Label: label, BaseIndex: baseIndex, BaseSHA256: sum, HeadIndex: baseIndex, HeadSHA256: sum, CoordPubKey: hex.EncodeToString(pub)}
-	return c, c.save()
+	st := State{Label: label, BaseIndex: baseIndex, BaseSHA256: sum, HeadIndex: baseIndex, HeadSHA256: sum, CoordPubKey: hex.EncodeToString(pub)}
+	if err := c.saveState(st); err != nil {
+		return nil, err
+	}
+	c.state = st
+	return c, c.loadHeadSize()
 }
 
-// Open an existing chain.
-func Open(dir string) (*Coordinator, error) {
+// Open an existing chain, and its queue if one was saved. Every place gets a fresh poll window; a head that had not
+// claimed its slot gets a fresh claim window; a claimed slot keeps its time.
+func Open(dir string) (*Coordinator, error) { return open(dir, nil) }
+
+func open(dir string, now func() time.Time) (*Coordinator, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "state.json"))
 	if err != nil {
 		return nil, err
 	}
-	c := &Coordinator{Dir: dir}
+	c := &Coordinator{Dir: dir, now: now}
 	if err := json.Unmarshal(b, &c.state); err != nil {
 		return nil, err
 	}
@@ -129,17 +184,59 @@ func Open(dir string) (*Coordinator, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(k) != ed25519.PrivateKeySize {
+		return nil, errors.New("coordinator.key is not an ed25519 private key")
+	}
 	c.key = ed25519.PrivateKey(k)
+	if hex.EncodeToString(c.key.Public().(ed25519.PublicKey)) != c.state.CoordPubKey {
+		return nil, errors.New("coordinator.key does not match the key in state.json")
+	}
+	if err := c.loadHeadSize(); err != nil {
+		return nil, err
+	}
+	q, err := os.ReadFile(filepath.Join(dir, "queue.json"))
+	if err == nil {
+		var saved struct {
+			Tickets []*ticket `json:"tickets"`
+		}
+		if err := json.Unmarshal(q, &saved); err != nil {
+			return nil, fmt.Errorf("queue.json: %w", err)
+		}
+		now := c.clock()
+		for i, t := range saved.Tickets {
+			t.lastSeen = now
+			if i == 0 && t.Claimed.IsZero() {
+				t.HeadSince = now
+			}
+		}
+		c.queue = saved.Tickets
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	return c, nil
 }
 
-func (c *Coordinator) save() error {
-	b, _ := json.MarshalIndent(c.state, "", "  ")
-	tmp := filepath.Join(c.Dir, "state.json.tmp")
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
+func (c *Coordinator) loadHeadSize() error {
+	st, err := os.Stat(c.path(c.state.HeadIndex))
+	if err != nil {
+		return fmt.Errorf("the head file: %w", err)
 	}
-	return os.Rename(tmp, filepath.Join(c.Dir, "state.json"))
+	c.headSize = st.Size()
+	return nil
+}
+
+func (c *Coordinator) saveState(s State) error {
+	b, _ := json.MarshalIndent(s, "", "  ")
+	return writeFileAtomic(filepath.Join(c.Dir, "state.json"), b, 0o644)
+}
+
+func (c *Coordinator) saveQueueL() {
+	b, _ := json.MarshalIndent(struct {
+		Tickets []*ticket `json:"tickets"`
+	}{c.queue}, "", "  ")
+	if err := writeFileAtomic(filepath.Join(c.Dir, "queue.json"), b, 0o600); err != nil {
+		c.logf("queue: could not save queue.json: %v", err)
+	}
 }
 
 func (c *Coordinator) clock() time.Time {
@@ -149,62 +246,411 @@ func (c *Coordinator) clock() time.Time {
 	return time.Now()
 }
 
-func (c *Coordinator) ttl() time.Duration {
-	if c.SlotTTL > 0 {
-		return c.SlotTTL
+func short(tok string) string {
+	if len(tok) > 8 {
+		return tok[:8]
 	}
-	return 90 * time.Minute
+	return tok
 }
 
-// expire drops a head-of-queue ticket whose slot ran out, and starts the next one's clock (lock held).
-func (c *Coordinator) expire() {
+// expireL drops places whose client stopped polling, a head that did not claim in time, and a slot past its cap; it
+// starts the claim window of each new head (lock held).
+func (c *Coordinator) expireL() {
+	now := c.clock()
+	changed := false
+	kept := c.queue[:0]
+	for _, t := range c.queue {
+		if !t.uploading && now.Sub(t.lastSeen) > c.heartbeat() {
+			c.logf("queue: %s (%s) left: no poll for %s", short(t.Token), t.Name, now.Sub(t.lastSeen).Round(time.Second))
+			changed = true
+			continue
+		}
+		kept = append(kept, t)
+	}
+	c.queue = kept
 	for len(c.queue) > 0 {
 		t := c.queue[0]
-		if t.SlotSince.IsZero() {
-			t.SlotSince = c.clock()
+		if t.HeadSince.IsZero() {
+			t.HeadSince = now
+			changed = true
 		}
-		if c.clock().Sub(t.SlotSince) < c.ttl() {
-			return
+		if t.Claimed.IsZero() && now.Sub(t.HeadSince) > c.claimWindow() {
+			c.logf("queue: %s (%s) left: slot not claimed in %s", short(t.Token), t.Name, c.claimWindow())
+		} else if !t.Claimed.IsZero() && now.Sub(t.Claimed) > c.slotCap() {
+			c.logf("queue: %s (%s) left: slot ran past %s", short(t.Token), t.Name, c.slotCap())
+		} else {
+			break
 		}
 		c.queue = c.queue[1:]
+		changed = true
+	}
+	if changed {
+		c.saveQueueL()
 	}
 }
 
-// Accept verifies an uploaded file against the head and, if it verifies, makes it the head and returns the receipt.
-func (c *Coordinator) Accept(upload, name, handle string) (*Receipt, error) {
+func (c *Coordinator) findL(tok string) (*ticket, int) {
+	if tok == "" {
+		return nil, -1
+	}
+	for i, t := range c.queue {
+		if t.Token == tok {
+			return t, i
+		}
+	}
+	return nil, -1
+}
+
+func (c *Coordinator) removeL(t *ticket) {
+	for i, x := range c.queue {
+		if x == t {
+			c.queue = append(c.queue[:i:i], c.queue[i+1:]...)
+			c.saveQueueL()
+			return
+		}
+	}
+}
+
+// refusal is an error a client may see; its detail goes to the log only.
+type refusal struct {
+	Code   int
+	Msg    string
+	detail error
+}
+
+func (r *refusal) Error() string {
+	if r.detail != nil {
+		return r.Msg + ": " + r.detail.Error()
+	}
+	return r.Msg
+}
+func (r *refusal) Unwrap() error { return r.detail }
+
+func refuse(code int, msg string, detail error) error { return &refusal{code, msg, detail} }
+
+// ipKey groups addresses for the per-address limit: an IPv6 client by its /64.
+func ipKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap()
+	if a.Is6() {
+		p, _ := a.Prefix(64)
+		return p.String()
+	}
+	return a.String()
+}
+
+// Status of a place in the queue, as the client sees it.
+type Status struct {
+	Ahead       int    `json:"ahead"`
+	State       string `json:"state"` // "waiting", "claim" (yours: claim it), "active" (claimed)
+	ClaimBy     string `json:"claim_by,omitempty"`
+	Expires     string `json:"expires,omitempty"`
+	PollSeconds int    `json:"poll_seconds"`
+}
+
+func (c *Coordinator) pollSeconds() int {
+	s := int(c.heartbeat() / 4 / time.Second)
+	return max(s, 1)
+}
+
+func (c *Coordinator) statusL(t *ticket, i int) Status {
+	s := Status{Ahead: i, State: "waiting", PollSeconds: c.pollSeconds()}
+	if i == 0 {
+		if t.Claimed.IsZero() {
+			s.State = "claim"
+			s.ClaimBy = t.HeadSince.Add(c.claimWindow()).UTC().Format(time.RFC3339)
+		} else {
+			s.State = "active"
+			s.Expires = t.Claimed.Add(c.slotCap()).UTC().Format(time.RFC3339)
+		}
+	}
+	return s
+}
+
+// Join the queue.
+func (c *Coordinator) Join(name, handle, ip string) (string, Status, error) {
+	if !nameRe.MatchString(name) || (handle != "" && !nameRe.MatchString(handle)) {
+		return "", Status{}, refuse(400, "a name (and handle) of 1 to 64 printable characters", nil)
+	}
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", Status{}, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.state.Closed {
-		return nil, errors.New("the ceremony is closed")
+		return "", Status{}, refuse(403, "the ceremony is closed", nil)
 	}
-	prev, err := Read(c.path(c.state.HeadIndex))
-	if err != nil {
+	c.expireL()
+	if len(c.queue) >= c.queueCap() {
+		return "", Status{}, refuse(429, "the queue is full; try again later", nil)
+	}
+	if lim := c.perIP(); lim > 0 {
+		k, n := ipKey(ip), 0
+		for _, t := range c.queue {
+			if ipKey(t.IP) == k {
+				n++
+			}
+		}
+		if n >= lim {
+			return "", Status{}, refuse(429, "this address already holds a place in the queue", nil)
+		}
+	}
+	now := c.clock()
+	t := &ticket{Token: hex.EncodeToString(b), Name: name, Handle: handle, IP: ip, Joined: now, lastSeen: now}
+	c.queue = append(c.queue, t)
+	c.expireL() // starts the claim window if this is the head
+	c.saveQueueL()
+	c.logf("queue: %s (%s) joined from %s, %d ahead", short(t.Token), name, ip, len(c.queue)-1)
+	return t.Token, c.statusL(t, len(c.queue)-1), nil
+}
+
+// Poll: the client is still there; its place in the queue.
+func (c *Coordinator) Poll(tok string) (Status, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.expireL()
+	t, i := c.findL(tok)
+	if t == nil {
+		return Status{}, refuse(404, "no such place in the queue (it may have run out)", nil)
+	}
+	t.lastSeen = c.clock()
+	return c.statusL(t, i), nil
+}
+
+// Slot is what a claimed slot works on: the head, and when the slot ends.
+type Slot struct {
+	Index   int    `json:"index"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+	URL     string `json:"url"`
+	Expires string `json:"expires"`
+}
+
+// Claim the slot at the head of the queue.
+func (c *Coordinator) Claim(tok string) (Slot, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.expireL()
+	t, i := c.findL(tok)
+	if t == nil {
+		return Slot{}, refuse(404, "no such place in the queue (it may have run out)", nil)
+	}
+	if i != 0 {
+		return Slot{}, refuse(409, "it is not your turn yet", nil)
+	}
+	now := c.clock()
+	t.lastSeen = now
+	if t.Claimed.IsZero() {
+		t.Claimed = now
+		c.saveQueueL()
+		c.logf("queue: %s (%s) claimed the slot on phase2-%d", short(t.Token), t.Name, c.state.HeadIndex)
+	}
+	return Slot{Index: c.state.HeadIndex, SHA256: c.state.HeadSHA256, Size: c.headSize, URL: fmt.Sprintf("/f/phase2-%d", c.state.HeadIndex),
+		Expires: t.Claimed.Add(c.slotCap()).UTC().Format(time.RFC3339)}, nil
+}
+
+// Leave the queue.
+func (c *Coordinator) Leave(tok string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t, _ := c.findL(tok)
+	if t == nil {
+		return refuse(404, "no such place in the queue", nil)
+	}
+	c.removeL(t)
+	c.logf("queue: %s (%s) left", short(t.Token), t.Name)
+	return nil
+}
+
+// Kick drops a place by its position (0 is the head) or by a token prefix of at least 6 characters.
+func (c *Coordinator) Kick(position int, tokenPrefix string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var t *ticket
+	switch {
+	case tokenPrefix != "":
+		if len(tokenPrefix) < 6 {
+			return "", errors.New("give at least 6 characters of the token")
+		}
+		for _, x := range c.queue {
+			if len(x.Token) >= len(tokenPrefix) && x.Token[:len(tokenPrefix)] == tokenPrefix {
+				if t != nil {
+					return "", errors.New("the prefix matches more than one place")
+				}
+				t = x
+			}
+		}
+	case position >= 0 && position < len(c.queue):
+		t = c.queue[position]
+	}
+	if t == nil {
+		return "", errors.New("no such place in the queue")
+	}
+	c.removeL(t)
+	c.expireL()
+	c.logf("queue: %s (%s) removed by the operator", short(t.Token), t.Name)
+	return fmt.Sprintf("%s (%s)", short(t.Token), t.Name), nil
+}
+
+// QueueEntry is the operator's view of a place.
+type QueueEntry struct {
+	Position  int    `json:"position"`
+	Token     string `json:"token"` // a prefix
+	Name      string `json:"name"`
+	Handle    string `json:"handle,omitempty"`
+	IP        string `json:"ip"`
+	Joined    string `json:"joined"`
+	Claimed   string `json:"claimed,omitempty"`
+	LastPoll  string `json:"last_poll"`
+	Uploading bool   `json:"uploading,omitempty"`
+}
+
+// Queue as the operator sees it.
+func (c *Coordinator) Queue() []QueueEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.expireL()
+	out := make([]QueueEntry, 0, len(c.queue))
+	for i, t := range c.queue {
+		e := QueueEntry{Position: i, Token: short(t.Token), Name: t.Name, Handle: t.Handle, IP: t.IP, Joined: t.Joined.UTC().Format(time.RFC3339),
+			LastPoll: t.lastSeen.UTC().Format(time.RFC3339), Uploading: t.uploading}
+		if !t.Claimed.IsZero() {
+			e.Claimed = t.Claimed.UTC().Format(time.RFC3339)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// beginUpload: the slot is the caller's, claimed, not already uploading, and the upload is exactly the head's size.
+func (c *Coordinator) beginUpload(tok string, length int64) (*ticket, time.Time, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state.Closed {
+		return nil, time.Time{}, refuse(403, "the ceremony is closed", nil)
+	}
+	c.expireL()
+	t, i := c.findL(tok)
+	if t == nil || i != 0 {
+		return nil, time.Time{}, refuse(409, "it is not your turn (or your slot ran out)", nil)
+	}
+	if t.Claimed.IsZero() {
+		return nil, time.Time{}, refuse(409, "claim the slot before uploading", nil)
+	}
+	if t.uploading {
+		return nil, time.Time{}, refuse(409, "an upload for this slot is already in progress", nil)
+	}
+	if length != c.headSize {
+		return nil, time.Time{}, refuse(400, fmt.Sprintf("the upload must be exactly %d bytes (the size of the head)", c.headSize), nil)
+	}
+	t.uploading = true
+	t.lastSeen = c.clock()
+	return t, t.Claimed.Add(c.slotCap()), nil
+}
+
+func (c *Coordinator) endUpload(t *ticket) {
+	c.mu.Lock()
+	t.uploading = false
+	t.lastSeen = c.clock()
+	c.mu.Unlock()
+}
+
+// Accept verifies a file against the head and, if it verifies, makes it the head and returns the receipt (the
+// operator's path; contributions over HTTP go through the queue).
+func (c *Coordinator) Accept(upload, name, handle string) (*Receipt, error) {
+	return c.accept(upload, name, handle, nil)
+}
+
+// accept: the files are read and verified without the lock; the head (and, for an upload, the slot) is checked again
+// under the lock before the file is committed.
+func (c *Coordinator) accept(upload, name, handle string, owner *ticket) (*Receipt, error) {
+	owns := func() error {
+		if c.state.Closed {
+			return refuse(403, "the ceremony is closed", nil)
+		}
+		if owner != nil {
+			c.expireL()
+			if len(c.queue) == 0 || c.queue[0] != owner || owner.Claimed.IsZero() {
+				return refuse(409, "your slot ran out before the upload was checked", nil)
+			}
+		}
+		return nil
+	}
+	c.mu.Lock()
+	if err := owns(); err != nil {
+		c.mu.Unlock()
 		return nil, err
+	}
+	headIdx, headSHA, size := c.state.HeadIndex, c.state.HeadSHA256, c.headSize
+	c.mu.Unlock()
+
+	if st, err := os.Stat(upload); err != nil || st.Size() != size {
+		return nil, refuse(400, fmt.Sprintf("the upload must be exactly %d bytes (the size of the head)", size), err)
+	}
+	prev, err := Read(c.path(headIdx))
+	if err != nil {
+		return nil, refuse(500, "the coordinator could not read its head", err)
 	}
 	next, err := Read(upload)
 	if err != nil {
-		return nil, fmt.Errorf("the upload does not read as a Phase2 accumulator: %w", err)
+		return nil, refuse(400, "the upload is not a Phase2 accumulator of this circuit", err)
 	}
 	if err := Verify(prev, next); err != nil {
-		return nil, fmt.Errorf("the contribution does not verify against the head: %w", err)
+		return nil, refuse(400, fmt.Sprintf("the contribution does not verify against the head, phase2-%d", headIdx), err)
 	}
+	prev = nil
 	hash, err := Hash(next)
 	if err != nil {
-		return nil, err
+		return nil, refuse(500, "the coordinator could not hash the contribution", err)
 	}
-	idx := c.state.HeadIndex + 1
-	if err := os.Rename(upload, c.path(idx)); err != nil {
-		return nil, err
-	}
-	sum, err := FileSHA256(c.path(idx))
+	next = nil
+	sum, err := FileSHA256(upload)
 	if err != nil {
+		return nil, refuse(500, "the coordinator could not hash the upload", err)
+	}
+	if sum != hash {
+		return nil, refuse(400, "the upload is not in the canonical encoding (its SHA-256 is not its contribution hash)", nil)
+	}
+	if c.beforeCommit != nil {
+		c.beforeCommit()
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := owns(); err != nil {
 		return nil, err
 	}
-	r := Receipt{Index: idx, Name: name, Handle: handle, ContributionHash: hash, FileSHA256: sum, PrevFileSHA256: c.state.HeadSHA256, At: c.clock().UTC().Format(time.RFC3339)}
+	if c.state.HeadIndex != headIdx || c.state.HeadSHA256 != headSHA {
+		return nil, refuse(409, "the head moved on while the upload was checked", nil)
+	}
+	idx := headIdx + 1
+	dst := c.path(idx)
+	if err := os.Rename(upload, dst); err != nil {
+		return nil, refuse(500, "the coordinator could not store the contribution", err)
+	}
+	syncDir(c.Dir)
+	r := Receipt{Index: idx, Name: name, Handle: handle, ContributionHash: hash, FileSHA256: sum, PrevFileSHA256: headSHA, At: c.clock().UTC().Format(time.RFC3339)}
 	r.Signature = hex.EncodeToString(ed25519.Sign(c.key, r.signedBytes()))
-	c.state.Receipts = append(c.state.Receipts, r)
-	c.state.HeadIndex, c.state.HeadSHA256 = idx, sum
-	return &r, c.save()
+	ns := c.state
+	ns.Receipts = append(append([]Receipt(nil), c.state.Receipts...), r)
+	ns.HeadIndex, ns.HeadSHA256 = idx, sum
+	if err := c.saveState(ns); err != nil {
+		_ = os.Rename(dst, upload) // memory and disk stay at the old head
+		return nil, refuse(500, "the coordinator could not store the contribution", err)
+	}
+	c.state = ns
+	c.headSize = size
+	if owner != nil {
+		owner.uploading = false
+		c.removeL(owner)
+		c.expireL()
+	}
+	c.logf("chain: phase2-%d accepted from %s, contribution %s", idx, name, hash)
+	return &r, nil
 }
 
 // VerifyReceipt checks a receipt's signature against a coordinator public key (hex).
@@ -226,117 +672,81 @@ func (c *Coordinator) State() State {
 	return c.state
 }
 
-// Close the chain (no more contributions; the beacon comes next).
+// Close the chain (no more contributions; the beacon comes next). The queue is emptied.
 func (c *Coordinator) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.state.Closed = true
-	return c.save()
+	ns := c.state
+	ns.Closed = true
+	if err := c.saveState(ns); err != nil {
+		return err
+	}
+	c.state = ns
+	c.queue = nil
+	c.saveQueueL()
+	return nil
 }
 
-// ── HTTP ──
+// ── files ──
 
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-var fileRe = regexp.MustCompile(`^phase2-\d+$`)
-
-// Handler serves the ceremony API:
-//
-//	GET  /api/head                      the head: index, sha256, file url
-//	GET  /f/phase2-<n>                  a file of the chain
-//	POST /api/join   {name, handle}     a place in the queue -> {token}
-//	GET  /api/slot?token=               {yours, ahead, expires}
-//	PUT  /api/upload?token=             the contribution (only in your slot) -> the receipt, or why it was refused
-//	GET  /api/transcript                the state: base, head, receipts, coordinator key
-func (c *Coordinator) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/head", func(w http.ResponseWriter, r *http.Request) {
-		s := c.State()
-		writeJSON(w, 200, map[string]any{"index": s.HeadIndex, "sha256": s.HeadSHA256, "url": fmt.Sprintf("/f/phase2-%d", s.HeadIndex), "closed": s.Closed})
-	})
-	mux.HandleFunc("GET /f/{name}", func(w http.ResponseWriter, r *http.Request) {
-		n := r.PathValue("name")
-		if !fileRe.MatchString(n) {
-			http.NotFound(w, r)
-			return
-		}
-		http.ServeFile(w, r, filepath.Join(c.Dir, n))
-	})
-	mux.HandleFunc("POST /api/join", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Name, Handle string }
-		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil || !nameRe.MatchString(body.Name) || (body.Handle != "" && !nameRe.MatchString(body.Handle)) {
-			writeJSON(w, 400, map[string]string{"error": "a name of 1 to 64 printable characters"})
-			return
-		}
-		b := make([]byte, 16)
-		_, _ = rand.Read(b)
-		t := &ticket{Token: hex.EncodeToString(b), Name: body.Name, Handle: body.Handle, Joined: c.clock()}
-		c.mu.Lock()
-		c.expire()
-		c.queue = append(c.queue, t)
-		ahead := len(c.queue) - 1
-		c.mu.Unlock()
-		writeJSON(w, 200, map[string]any{"token": t.Token, "ahead": ahead})
-	})
-	mux.HandleFunc("GET /api/slot", func(w http.ResponseWriter, r *http.Request) {
-		tok := r.URL.Query().Get("token")
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.expire()
-		for i, t := range c.queue {
-			if t.Token == tok {
-				resp := map[string]any{"yours": i == 0, "ahead": i}
-				if i == 0 {
-					resp["expires"] = t.SlotSince.Add(c.ttl()).UTC().Format(time.RFC3339)
-				}
-				writeJSON(w, 200, resp)
-				return
-			}
-		}
-		writeJSON(w, 404, map[string]string{"error": "no such place in the queue (it may have run out)"})
-	})
-	mux.HandleFunc("PUT /api/upload", func(w http.ResponseWriter, r *http.Request) {
-		tok := r.URL.Query().Get("token")
-		c.mu.Lock()
-		c.expire()
-		var t *ticket
-		if len(c.queue) > 0 && c.queue[0].Token == tok {
-			t = c.queue[0]
-		}
-		c.mu.Unlock()
-		if t == nil {
-			writeJSON(w, 409, map[string]string{"error": "it is not your turn (or your slot ran out)"})
-			return
-		}
-		f, err := os.CreateTemp(c.Dir, "upload-*")
-		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
-			return
-		}
-		_, err = io.Copy(f, io.LimitReader(r.Body, 8<<30))
+func writeFileSync(path string, b []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
 		f.Close()
-		if err != nil {
-			os.Remove(f.Name())
-			writeJSON(w, 400, map[string]string{"error": "the upload did not complete"})
-			return
-		}
-		rc, err := c.Accept(f.Name(), t.Name, t.Handle)
-		if err != nil {
-			os.Remove(f.Name())
-			writeJSON(w, 400, map[string]string{"error": err.Error()})
-			return
-		}
-		c.mu.Lock()
-		if len(c.queue) > 0 && c.queue[0] == t {
-			c.queue = c.queue[1:]
-		}
-		c.mu.Unlock()
-		writeJSON(w, 200, rc)
-	})
-	mux.HandleFunc("GET /api/transcript", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, c.State()) })
-	return mux
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// writeFileAtomic: a synced temporary file renamed over the old one, then the directory synced.
+func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := writeFileSync(tmp, b, mode); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	syncDir(filepath.Dir(path))
+	return nil
+}
+
+func syncDir(dir string) {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
