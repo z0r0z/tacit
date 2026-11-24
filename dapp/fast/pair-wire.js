@@ -15,13 +15,13 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=a3e28483';
 import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=17d2f6af';
 import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=66f1cfd2';
-import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=b27bb787';
+import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=59160fed';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 import { makeLocalStore } from '/fastbridge-client.js?cb=ff9d9c02';
 import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=3b1ca701';
 import { makeRateFeed, chainlinkEthBtc } from '/fastbridge-rate.js?cb=0385e0ce';
-import { discoverProviders } from '/fast/discover.js?cb=eddb0eb0';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=bcaf6e49';
+import { discoverProviders } from '/fast/discover.js?cb=3dc3d274';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=04e053b4';
 import { secp, sha256, keccak_256, hmac } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();

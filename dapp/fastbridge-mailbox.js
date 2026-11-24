@@ -13,7 +13,7 @@
 
 import { sealRequest, openRequest, gatewayKeys } from './sealed-request.js';
 import { makeCounter } from './fastbridge-http.js';
-import { checkAd, messageId, replyDigest, signAd } from './fastbridge-board.js';
+import { checkAd, messageId, replyDigest, signAd, adLabel } from './fastbridge-board.js';
 import { signSchnorr, bigintToBytes32 } from './bulletproofs.js';
 import { hmac, sha256, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 
@@ -53,7 +53,7 @@ export async function readProviders({ board, now = () => Math.floor(Date.now() /
   const out = [];
   for (const ad of await board.ads()) {
     try { checkAd(ad, now()); } catch { continue; }
-    out.push({ id: ad.claimPub, kind: 'mailbox', name: ad.name || 'Provider', ad, counter: makeMailboxCounter({ board, gateway: ad.gateway, now, ...call }) });
+    out.push({ id: ad.claimPub, kind: 'mailbox', name: adLabel(ad), ad, counter: makeMailboxCounter({ board, gateway: ad.gateway, now, ...call }) });
   }
   return out;
 }

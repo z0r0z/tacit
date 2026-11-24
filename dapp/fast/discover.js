@@ -5,7 +5,7 @@
 
 import { makeHttpCounter } from '/fastbridge-http.js';
 import { termsOf } from '/fastbridge-client.js?cb=ff9d9c02';
-import { readProviders } from '/fastbridge-mailbox.js?cb=b27bb787';
+import { readProviders } from '/fastbridge-mailbox.js?cb=59160fed';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
 
 // The terms of the other direction (private TAC sent for TAC on Bitcoin), from an ad that has them. A provider that sells only the one way has no `reverse`.

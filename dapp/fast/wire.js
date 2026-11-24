@@ -18,16 +18,17 @@ import { makeFastBridgeEvm } from '/fastbridge-evm.js?cb=17d2f6af';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
 import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=ff9d9c02';
 import { makeLpService } from '/fastbridge-provider.js?cb=ebd71944';
-import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=b27bb787';
+import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=59160fed';
 import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=66f1cfd2';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=850e1c5e';
+import { adLabel } from '/fastbridge-board.js';
 import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=63153972';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=eddb0eb0';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=3dc3d274';
 import { splitAmount, assignNotes } from '/fast/sweep.js?cb=713466b3';
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=eddb0eb0';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=3dc3d274';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 export const EXPLORERS = ['https://mempool.space/api', 'https://blockstream.info/api'];
@@ -574,7 +575,7 @@ export async function openProvider({ T, withKey, ux, priv, pubHex, boards = [], 
         const board = makeBoardClient({ base, fetchImpl });
         // the ad's own board client records each post, so the panel can say whether bridgers see this provider (and the board's reason when they do not)
         const adBoard = { ...board, async putAd(ad) {
-          try { const r = await board.putAd(ad); posted.set(base, { at: ad.at, until: ad.until, name: ad.name }); return r; }
+          try { const r = await board.putAd(ad); posted.set(base, { at: ad.at, until: ad.until, name: adLabel(ad) }); return r; }
           catch (e) { posted.set(base, { error: String((e && e.message) || e).slice(0, 120) }); throw e; }
         } };
         const mail = makeMailboxServer({ board, keys, handle, signReply: (d) => signSchnorr(d, priv), now, pollMs, log: note });

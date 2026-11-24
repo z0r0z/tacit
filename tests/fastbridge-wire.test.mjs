@@ -13,7 +13,7 @@ export async function resolve(spec, ctx, next) {
 import assert from 'node:assert/strict';
 import { tacit as T, fetched } from './lib/btc-sim.mjs';
 import { secp, bytesToHex } from '../dapp/vendor/tacit-deps.min.js';
-import { makeBoard } from '../dapp/fastbridge-board.js';
+import { makeBoard, adLabel } from '../dapp/fastbridge-board.js';
 import { termsOf, makeLocalStore } from '../dapp/fastbridge-client.js';
 import { makeBoardHandler } from '../fastbridge-lp/lib/board-http.mjs';
 
@@ -451,7 +451,7 @@ test('a provider can tell whether bridgers see it: `listed` while its ad stands,
     st = await provider.status();
     assert.equal(st.taking, true);
     assert.equal(st.adError, null);
-    assert.equal(st.listed.name, `Provider ${provider.claimPub.slice(2, 8)}`, 'it is listed under the name its ad carries');
+    assert.equal(st.listed.name, adLabel({ name: `Provider ${provider.claimPub.slice(2, 8)}` }), 'it is listed under the label its ad gives');
     assert.ok(st.listed.until > Math.floor(Date.now() / 1000), 'for as long as the ad stands');
     assert.equal(listeners.size, 1, 'it listens for the tab coming back while it runs');
 

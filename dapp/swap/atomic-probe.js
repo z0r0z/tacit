@@ -36,7 +36,7 @@ export async function probeAtomic({ fetchImpl = (...a) => fetch(...a), lists = n
     const named = boardHits.filter(Boolean);
     if (!named.length) return false;
     // the ads already read are the ones checked: the board is not asked again
-    const mailbox = await import('/fastbridge-mailbox.js?cb=b27bb787');
+    const mailbox = await import('/fastbridge-mailbox.js?cb=59160fed');
     for (const ads of named) {
       try {
         const ps = await mailbox.readProviders({ board: { ads: async () => ads }, now });

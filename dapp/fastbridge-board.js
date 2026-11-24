@@ -48,6 +48,7 @@ export const adDigest = (ad) => { const { sig, ...body } = ad; return sha256(con
 export const wantDigest = (w) => { const { sig, ...body } = w; return sha256(concatBytes(te.encode('tacit-fast-want-v1'), te.encode(canonical(body)))); };
 export const replyDigest = (id, bytes) => sha256(concatBytes(te.encode('tacit-fast-reply-v1'), te.encode(id), sha256(bytes)));
 export const messageId = (bytes) => bytesToHex(sha256(bytes)).slice(0, 32);
+export const adLabel = (ad) => `Provider ${bytesToHex(sha256(te.encode(String(ad.name || ad.claimPub || '')))).slice(0, 6)}`;
 
 const xonly = (pub33) => hexToBytes(pub33).slice(1);
 const scalar32 = (priv) => (priv instanceof Uint8Array ? priv : typeof priv === 'bigint' ? bigintToBytes32(priv) : hexToBytes(strip(priv)));

@@ -16,7 +16,7 @@ import { realFetch } from './lib/real-fetch.mjs';
 import { secp, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { signSchnorr, verifySchnorr } from '../dapp/bulletproofs.js';
 import { sealRequest } from '../dapp/sealed-request.js';
-import { makeBoard, signAd, checkAd, signWant, checkWant, adDigest, wantDigest, replyDigest, messageId, LIMITS, AD_MEMBERS, REVERSE_MEMBERS } from '../dapp/fastbridge-board.js';
+import { makeBoard, signAd, checkAd, signWant, checkWant, adDigest, wantDigest, replyDigest, messageId, adLabel, LIMITS, AD_MEMBERS, REVERSE_MEMBERS } from '../dapp/fastbridge-board.js';
 import { gatewayOf, makeMailboxCall, makeMailboxServer, makeAdPublisher, makeProvider, readProviders, defaultAdName } from '../dapp/fastbridge-mailbox.js';
 import { makeFastBridgeClient } from '../dapp/fastbridge-client.js';
 import { makeBoardClient } from '../dapp/fastbridge-board-client.js';
@@ -614,7 +614,7 @@ test('a provider nobody named is called by its key: two such providers on one bo
   const A = providerOf(1, async () => ({ status: 200, body: info }), c), B = providerOf(2, async () => ({ status: 200, body: info }), c);
   for (const P of [A, B]) await makeAdPublisher({ board, handle: P.handle, claimPriv: P.p, claimPub: P.claimPub, keys: P.keys, now: c.now }).publish();
   const names = (await readProviders({ board, now: c.now })).map((p) => p.name).sort();
-  assert.deepEqual(names, [A, B].map((P) => `Provider ${P.claimPub.slice(2, 8)}`).sort());
+  assert.deepEqual(names, [A, B].map((P) => adLabel({ name: defaultAdName(P.claimPub) })).sort());
   assert.equal(new Set(names).size, 2);
   assert.equal(defaultAdName('02' + 'ab'.repeat(32)), 'Provider ababab', 'the first six hex digits after the key\'s prefix byte');
   // a name that was chosen is kept as it is
