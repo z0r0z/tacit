@@ -16,7 +16,7 @@ import { realFetch } from './lib/real-fetch.mjs';
 import { secp, bytesToHex, hexToBytes } from '../dapp/vendor/tacit-deps.min.js';
 import { signSchnorr, verifySchnorr } from '../dapp/bulletproofs.js';
 import { sealRequest, openRequest, SealedError } from '../dapp/sealed-request.js';
-import { makeBoard, signAd, checkAd, signWant, checkWant, adDigest, wantDigest, replyDigest, dropDigest, messageId, adLabel, LIMITS, AD_MEMBERS, REVERSE_MEMBERS } from '../dapp/fastbridge-board.js';
+import { makeBoard, signAd, checkAd, signWant, checkWant, adDigest, wantDigest, replyDigest, dropDigest, messageId, adLabel, OWN_PROVIDERS, LIMITS, AD_MEMBERS, REVERSE_MEMBERS } from '../dapp/fastbridge-board.js';
 import { gatewayOf, makeMailboxCall, makeMailboxServer, makeAdPublisher, makeProvider, readProviders, defaultAdName } from '../dapp/fastbridge-mailbox.js';
 import { makeFastBridgeClient } from '../dapp/fastbridge-client.js';
 import { makeBoardClient } from '../dapp/fastbridge-board-client.js';
@@ -832,6 +832,17 @@ test('answers are bounded by bytes for each provider and on the whole board; an 
   for (let n = 10; n < 15; n++) board.post(g, bytesOf(4100, n));
   const p1 = board.inbox(g, 0), p2 = board.inbox(g, p1.next), p3 = board.inbox(g, p2.next);
   assert.deepEqual([p1.items.length, p2.items.length, p3.items.length], [2, 2, 1]);
+});
+
+test('a provider is shown by a label of its key and name; only the site\'s own keys are shown by name, whatever name another key gives', () => {
+  const own = Object.keys(OWN_PROVIDERS);
+  assert.ok(own.length >= 1 && own.every((k) => /^0[23][0-9a-f]{64}$/.test(k)), 'the own keys are compressed public keys, in lower case');
+  for (const k of own) {
+    assert.equal(adLabel({ claimPub: k, name: 'Bitcoin and ETH' }), 'Tacit');
+    assert.equal(adLabel({ claimPub: `0x${k.toUpperCase()}`, name: 'anything' }), 'Tacit', 'with 0x and capitals, the same key');
+  }
+  assert.match(adLabel({ claimPub: pubOf(priv(9)), name: 'Tacit' }), /^Provider [0-9a-f]{6}$/, 'another key that names itself Tacit gets a label');
+  assert.notEqual(adLabel({ claimPub: pubOf(priv(9)), name: 'Tacit' }), adLabel({ claimPub: pubOf(priv(9)), name: 'Other' }));
 });
 
 test('a mailbox answer is never opened compressed, and a compressed one opens only up to a bound', async () => {

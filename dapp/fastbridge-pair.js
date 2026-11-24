@@ -55,9 +55,10 @@ export const vsMarketBps = (dir, rate, market) => Math.round((dir === 'b2e' ? ra
 
 const TAKE_VSIZE = 110;                                          // a key-path take of one Taproot lock to one P2WPKH output (99 vB measured, with room)
 
+// short enough to sit side by side on one line each, four to a row (two on a phone); 'they' is the provider
 const STEP_TITLES = {
-  b2e: ['Lock your BTC', 'Provider locks ETH', 'You claim the ETH', 'Provider takes BTC'],
-  e2b: ['Provider locks BTC', 'You lock your ETH', 'Provider claims ETH', 'You take your BTC'],
+  b2e: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'],
+  e2b: ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'],
 };
 const KEYS = ['lock', 'match', 'claim', 'take'];
 const stepsOf = (dir, at, state) => STEP_TITLES[dir].map((title, i) => ({
@@ -68,9 +69,9 @@ const FWD_SAYS = {
   broadcast: [0, 'Waiting for Bitcoin', 'The lock needs a confirmation, about ten minutes.', 800],
   offered: [1, 'The provider is locking ETH for you', 'It locks the ETH in the pool against your lock, then you can claim it.', 300],
   claiming: [2, 'Claiming your ETH', 'Your claim is being settled in the pool.', 120],
-  claimed: [3, 'Finishing', 'The ETH is yours in the pool. The provider takes the Bitcoin lock.', 0],
+  claimed: [3, 'Finishing', 'The ETH is yours in the pool. The provider collects the BTC next.', 0],
   done: [4, 'Done', 'The ETH is in your private balance.', 0],
-  'counter-took': [4, 'Done', 'The ETH is in your private balance. The provider took the Bitcoin lock.', 0],
+  'counter-took': [4, 'Done', 'The ETH is in your private balance, and the provider collected the BTC.', 0],
   'refund-wait': [0, 'Returning your BTC', 'The lock returns to your Bitcoin address when its timelock ends.', null],
   refunded: [4, 'Returned', 'Your BTC came back to your Bitcoin address.', 0],
 };

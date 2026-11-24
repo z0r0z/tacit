@@ -59,7 +59,7 @@ const FAKE = `
   const now = () => Math.floor(Date.now() / 1000);
   const S = window.__atom = { calls, opened: [], mode: 'ok', recs: [], bal: { sats: 50000000n, eth: 400000000n }, failStart: false, warn: false, providers: [{ id: 'p1', name: 'Test provider', dirs: ['b2e', 'e2b'], minSats: 50000n, maxSats: 100000000n,
     b2e: { min: 50000n, max: 100000000n, available: null }, e2b: { min: 1000000n, max: 3000000000n, available: 2000000000n } }] };
-  const TITLES = { b2e: ['Lock your BTC', 'Provider locks ETH', 'You claim the ETH', 'Provider takes BTC'], e2b: ['Provider locks BTC', 'You lock your ETH', 'Provider claims ETH', 'You take your BTC'] };
+  const TITLES = { b2e: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'], e2b: ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'] };
   const steps = (dir, at, state) => TITLES[dir].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: state === 'done' ? 'done' : i < at ? 'done' : i === at && state === 'working' ? 'active' : 'todo' }));
   const set = (id, patch) => { S.recs = S.recs.map((r) => (r.id === id ? { ...r, ...patch } : r)); };
   S.advance = (id, at, state, title) => { const r = S.recs.find((x) => x.id === id); set(id, { state, title: title || r.title, steps: steps(r.dir, at, state), refundAt: state === 'working' ? r.refundAt : null, detail: state === 'returned' ? 'Your coins came back.' : '' }); };
@@ -478,6 +478,33 @@ console.log('a phone width, and the dark scheme');
   await page.click('#a-go');
   await page.waitForFunction(() => /not read yet/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
   ok(/BTC balance not read yet: trying again/.test(await text(page, '#a-bal')), `an unanswered Bitcoin balance is said, not left reading (${await text(page, '#a-bal')})`);
+  await page.fill('#a-amt', '0.001');
+  await page.waitForFunction(() => /Read the balance again/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(!(await page.$eval('#a-go', (e) => e.disabled)), `with an amount, the button offers to read the balance again, not to swap (${await text(page, '#a-go')})`);
+  await page.evaluate(() => { window.__atom.bal = { sats: 50000000n, eth: 400000000n }; });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /Swap BTC → ETH/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(/Balance 0\.5 BTC/.test(await text(page, '#a-bal')), `the press reads it again, and the swap is offered once it is known (${await text(page, '#a-bal')})`);
+  await page.close();
+}
+
+// a balance still being read: the button waits for it, and no swap is offered against an amount not known to be there
+{
+  console.log('\na balance still being read');
+  const { page } = await fresh({ ads: [ad()] });
+  await laneUp(page);
+  await page.evaluate(() => { const A = window.__atom, real = A.pair.balances; A.pair.balances = () => new Promise((r) => { A.release = () => { A.pair.balances = real; r({ sats: 50000000n, eth: 400000000n }); }; }); });
+  await page.click('[data-mode=atomic]');
+  await page.waitForFunction(() => document.querySelector('#a-go'));
+  await page.click('#a-go');
+  await page.waitForFunction(() => /Reading your balance/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
+  await page.fill('#a-amt', '0.001');
+  await page.waitForFunction(() => window.__atom.calls.quote.length > 0, null, { timeout: 8000 });
+  await page.waitForTimeout(500);
+  ok(/Reading your balance/.test(await text(page, '#a-go')) && (await page.$eval('#a-go', (e) => e.disabled)), `with a quote in and the balance not read, the button waits (${await text(page, '#a-go')})`);
+  await page.evaluate(() => window.__atom.release());
+  await page.waitForFunction(() => /Swap BTC → ETH/.test(document.querySelector('#a-go').textContent), null, { timeout: 8000 });
+  ok(!(await page.$eval('#a-go', (e) => e.disabled)), 'once the balance is read, the swap is offered');
   await page.close();
 }
 

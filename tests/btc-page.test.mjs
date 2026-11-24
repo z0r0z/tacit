@@ -61,7 +61,7 @@ const FAKE = `
 (() => {
   const now = () => Math.floor(Date.now() / 1000);
   const calls = { quote: [], start: [], pump: 0, records: 0, recover: 0 };
-  const TITLES = { b2e: ['Lock your BTC', 'Provider locks ETH', 'You claim the ETH', 'Provider takes BTC'], e2b: ['Provider locks BTC', 'You lock your ETH', 'Provider claims ETH', 'You take your BTC'] };
+  const TITLES = { b2e: ['You lock BTC', 'They lock ETH', 'You claim ETH', 'They take BTC'], e2b: ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'] };
   const steps = (dir, at, state) => TITLES[dir].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: state === 'done' ? 'done' : i < at ? 'done' : i === at && state === 'working' ? 'active' : 'todo' }));
   const S = window.__atom = { calls, opened: [], bal: { sats: 50000000n, eth: 400000000n },
     recs: [
@@ -130,7 +130,8 @@ console.log('the page: the marks, the line, the lane');
   console.log('providers, read with no wallet open');
   await listed(page);
   const live = await text(page, '#live');
-  ok(/1 BTC = 30\.62 ETH/.test(live) && /1 provider online/.test(live) && /up to 0\.3 BTC or 2 ETH now/.test(live), `the line under the heading: the market, who is online, what can be swapped now (${live})`);
+  ok(/1 BTC = 30\.62 ETH/.test(live) && /1 provider online/.test(live) && /up to 0\.30 BTC or 2\.0 ETH now/.test(live), `the line under the heading: the market, who is online, what can be swapped now, to two figures (${live})`);
+  ok(await page.$$eval('#live > span', (ss) => ss.length === 3 && ss.every((s) => s.getClientRects().length === 1)), 'each part of that line is kept whole');
   const row = await text(page, '#pv-list li');
   ok(/Provider [0-9a-f]{6}/.test(row) && /BTC → ETH 0\.0005 to 1 BTC 0\.3 BTC available now fee 0\.4% \+ 800 sats \(2\.0% at the minimum\)/.test(row), `the forward terms: limits, available, the fee and what it is at the minimum (${row})`);
   ok(/ETH → BTC 0\.01 to 30 ETH 2 ETH available now fee 0\.2% \+ 0\.0003 ETH \(3\.2% at the minimum\)/.test(row), 'the reverse terms, in ETH');
@@ -175,8 +176,23 @@ console.log('the page: the marks, the line, the lane');
   ok((await atom(page, 'A.calls.pump')) > before, `with the tab hidden the swap under way is stepped (${before} → ${await atom(page, 'A.calls.pump')} passes)`);
   ok(await page.evaluate(() => { const e = new Event('beforeunload', { cancelable: true }); dispatchEvent(e); return e.defaultPrevented; }), 'leaving the page while a swap is under way is asked about');
 
-  console.log('the address follows the lane');
+  console.log('both amounts of each swap; the steps on one line each');
   await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); });
+  // a swap of BTC found again from the key: only its Bitcoin lock is seen, so its ETH amount is not known
+  await page.evaluate(() => { const A = window.__atom, r = A.recs.find((x) => x.dir === 'b2e'); A.recs.push({ ...r, id: 'sw2', state: 'done', title: 'Done', detail: 'The ETH is in your private balance, and the provider collected the BTC.', pay: 150000n, get: 0n, steps: r.steps.map((s) => ({ ...s, state: 'done' })), refundAt: null, backBy: null }); });
+  await page.waitForFunction(() => document.querySelectorAll('#mine-list > div').length === 3, null, { timeout: 12000 });
+  const rows = await page.$$eval('#mine-list .what', (ws) => ws.map((w) => w.textContent));
+  ok(rows.includes('0.01 BTC → about 0.304 ETH') && rows.includes('0.05 ETH → 0.0016 BTC') && rows.includes('0.0015 BTC → ETH'), `each way names both sides, with the amounts it knows (${rows.join(' | ')})`);
+  for (const width of [540, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    const lines = await page.$$eval('#mine-list .stp li', (ls) => ls.map((li) => { const r = document.createRange(); r.selectNodeContents(li.lastChild); return [li.textContent, r.getClientRects().length, li.scrollWidth <= li.clientWidth + 1]; }));
+    ok(lines.length === 12 && lines.every(([, n, fits]) => n === 1 && fits), `at ${width} px each step is one line and stays in its column (${lines.map(([t, n]) => `${t}:${n}`).join(', ')})`);
+    await page.$eval('#mine', (e) => e.scrollIntoView());
+    await SHOT(page, `swaps-${width}`, false);
+  }
+  await page.setViewportSize({ width: 1200, height: 1000 });
+
+  console.log('the address follows the lane');
   await page.click('#a-flip');
   ok(/\?dir=e2b/.test(page.url()) && /From.*Ethereum, private/.test(await text(page, '#a-pay')), `the flip turns the lane and the address (${page.url()})`);
   ok(errs.length === 0 && csp.length === 0, `no page errors or CSP violations (${errs.concat(csp).join(' | ')})`);

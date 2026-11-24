@@ -303,7 +303,7 @@ test('found again from the key: a Bitcoin-for-ETH swap that completed is listed 
   assert.equal(await fresh.recover(), 1);
   const [r] = await fresh.records();
   assert.deepEqual([r.dir, r.state, r.title], ['b2e', 'done', 'Done']);
-  assert.equal(r.detail, 'The ETH is in your private balance. The provider took the Bitcoin lock.');
+  assert.equal(r.detail, 'The ETH is in your private balance, and the provider collected the BTC.');
   assert.equal(r.refundAt, null);
 });
 

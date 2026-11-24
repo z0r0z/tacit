@@ -15,7 +15,7 @@
 // to be seen again can miss its window); and the page asks before it is left while one is under way.
 import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 
-const BTC_MODULE = '/trade/btc.js?cb=a1ece943';
+const BTC_MODULE = '/trade/btc.js?cb=f4f79584';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
 const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000;
 const MARKET_MODULE = '/swap/atomic-market.js?cb=f3732fda';
@@ -84,7 +84,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import('/fast/pair-wire.js?cb=2ecd4820');
+      const wire = await import('/fast/pair-wire.js?cb=d822a810');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },
@@ -154,7 +154,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         L.unread = { btc: !b || b.sats == null, eth: !b || b.eth == null };
         paint();
       }
-      catch (e) { if (!quiet) say(esc(plainError(e)), 'err'); }
+      // (a read that throws leaves both sides unread: the button offers to read again, and the lane's refresh tries again by itself)
+      catch (e) { L.unread = { btc: L.bal.sats == null, eth: L.bal.eth == null }; paint(); if (!quiet) say(esc(plainError(e)), 'err'); }
       finally { reading = null; }
     })();
     return reading;
@@ -167,10 +168,12 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         say('');
         await getPair();
         L.unlocked = true;
+        // the balance is read while the swaps of an earlier visit are looked for, not after: the two read the same pool history, and the button waits on the balance
+        paint(); readMe(); requote(true);
         if (!recovered) { recovered = true; await pair.recover().catch(() => 0); }
         L.recs = await pair.records().catch(() => []);
         pair.providers().then((ps) => { L.terms = ps; paint(); }, () => {});
-        paint(); readMe(); requote(true); follow(1000);
+        paint(); follow(1000);
         clearInterval(refreshTimer);
         refreshTimer = setInterval(() => { if (!document.hidden && L.open) { readMe(true); if (L.q && !L.busy && L.q.expiresAt - now() < 30) requote(true, true); } }, REFRESH_MS);
       } catch (e) { say(esc(plainError(e)), 'err'); }
@@ -209,6 +212,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     if (!L.loaded) return { label: 'Loading…', off: true };
     if (!D.unlocked) return { label: 'Open your Tacit wallet', act: 'unlock' };
     if (!pair) return { label: 'Loading…', off: true };
+    // nothing is swapped against a balance not read yet; a read that failed is offered again (the refresh also tries again by itself)
+    if (bal == null) return L.unread?.[pk] ? { label: 'Read the balance again', act: 'reread' } : { label: 'Reading your balance…', off: true };
     // an address with no BTC is not a dead end: the press opens the way to add some
     if (!L.amt) return L.dir === 'b2e' && L.bal.sats === 0n && !(L.bal.pending > 0n) ? { label: 'Add BTC', act: 'fund', fund: {} } : { label: 'Enter an amount', off: true };
     if (!amount) return { label: 'Enter a valid amount', off: true };
@@ -272,8 +277,10 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     onRecs(recs);
     box.innerHTML = recs.map((r) => {
       const cls = r.state === 'done' ? 'ok' : r.state === 'working' ? 'wait' : 'warn', [pk, gk] = SIDES[r.dir] || SIDES.b2e;
-      // (a swap found again from the key, or one whose provider has not offered yet, may not know a side: only the sides it knows are said)
-      const what = r.pay > 0n && r.get > 0n ? `${fmt(r.pay)} ${COINS[pk].sym} → ${r.state === 'done' ? '' : 'about '}${fmt(r.get)} ${COINS[gk].sym}` : r.pay > 0n ? `${fmt(r.pay)} ${COINS[pk].sym}` : r.get > 0n ? `${fmt(r.get)} ${COINS[gk].sym}` : '';
+      // both sides, each way; a swap found again from the key, or one whose provider has not offered yet, may not know an amount: that side is named without one
+      // (a swap of BTC found again from the key sees only its Bitcoin lock, so its ETH amount is not known)
+      const side = (v, k) => (v > 0n ? `${fmt(v)} ${COINS[k].sym}` : COINS[k].sym);
+      const what = r.pay > 0n || r.get > 0n ? `${side(r.pay, pk)} → ${r.pay > 0n && r.get > 0n && r.state !== 'done' ? 'about ' : ''}${side(r.get, gk)}` : '';
       const eta = r.state === 'working' && r.etaSecs ? etaText(r.etaSecs) : '';
       const back = r.state === 'working' && r.refundAt ? `If it stops, your ${COINS[pk].sym} returns ${untilText(r.refundAt, now())} at the latest.` : '';
       // when the page must be open again: b2e, to claim the ETH by the pool deadline (else the BTC returns, later); e2b, once its ETH is locked, to take the BTC in time
@@ -369,7 +376,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const dm = t.closest('[data-dismiss]');
     if (dm) { dismiss(dm.dataset.dismiss); return; }
     const qk = t.closest('[data-quick]'); if (qk) { $('a-amt').value = qk.dataset.quick; setAmt(qk.dataset.quick); return; }
-    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'swap') swap(); }
+    if (t.closest('#a-go')) { const a = $('a-go').dataset.act; if (a === 'unlock') unlock(); else if (a === 'fund') D.fund(fundAsk || {}); else if (a === 'swap') swap(); else if (a === 'reread') { L.unread = null; paint(); readMe(); } }
   });
   recsHost?.addEventListener('click', (e) => { const dm = e.target.closest('[data-dismiss]'); if (dm) dismiss(dm.dataset.dismiss); });
 

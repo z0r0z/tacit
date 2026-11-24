@@ -2,7 +2,7 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=d7cf4c63';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=90c0be1b';
 import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=f3732fda';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
@@ -58,6 +58,12 @@ const feeTxt = (s, dir) => {
   const at = feeAtMin(s);
   return `${[share, flat].filter(Boolean).join(' + ') || 'no fee'}${flat && at != null ? ` (${pctTxt(at)} at the minimum)` : ''}`;
 };
+// an amount of 8 places to its first two figures, rounded down, so it never says more than there is: 0.00753023 -> 0.0075, 0.07043193 -> 0.070, 1.53 -> 1.5
+const twoFigures = (v) => {
+  const s = BigInt(v).toString(), cut = Math.max(0, s.length - 2), dec = Math.max(0, 8 - cut);
+  const kept = ((BigInt(v) / 10n ** BigInt(cut)) * 10n ** BigInt(cut)).toString().padStart(9, '0');
+  return dec ? `${kept.slice(0, -8)}.${kept.slice(-8, -8 + dec || undefined)}` : kept.slice(0, -8);
+};
 const SYM = { b2e: 'BTC', e2b: 'ETH' };
 function side(s, dir) {
   const head = dir === 'b2e' ? '<b><svg class="tk" aria-hidden="true"><use href="#tk-btc"/></svg>BTC → ETH</b>' : '<b><svg class="tk" aria-hidden="true"><use href="#tk-eth"/></svg>ETH → BTC</b>';
@@ -75,11 +81,13 @@ function paintProviders(m) {
   cap.innerHTML = !ps.length ? 'No provider is online right now. A swap waits for one; anyone can become one, below.'
     : `Now, in one swap: ${nowB ? `up to <b class="num">${esc(nowB)}</b> for ETH` : 'no BTC for ETH'}, and ${nowE ? `up to <b class="num">${esc(nowE)}</b> for BTC` : 'no ETH for BTC'}.`;
   list.innerHTML = ps.length ? ps.map((p) => `<li data-pv="${esc(p.id)}"><span class="nm"><b>${esc(p.name)}</b><span class="num">${esc(String(p.id).slice(0, 10))}…</span></span>${side(p.b2e, 'b2e')}${side(p.e2b, 'e2b')}</li>`).join('') : '';
+  // the line at the top: each part kept whole (the line breaks between them), and what can be swapped now to two figures, rounded down
   const bits = [];
   if (m.rate) bits.push(`<b class="num">1 BTC = ${esc(m.rate.toLocaleString('en-US', { maximumFractionDigits: m.rate >= 100 ? 1 : 3 }))} ETH</b>`);
   bits.push(ps.length ? `${ps.length} provider${ps.length === 1 ? '' : 's'} online` : 'no provider online');
-  if (nowB || nowE) bits.push(`up to ${[nowB, nowE].filter(Boolean).map(esc).join(' or ')} now`);
-  live.innerHTML = bits.join(' · ');
+  const upB = tb && tb.now > 0n ? `${twoFigures(tb.now)} BTC` : null, upE = te && te.now > 0n ? `${twoFigures(te.now)} ETH` : null;
+  if (upB || upE) bits.push(`up to ${[upB, upE].filter(Boolean).map(esc).join(' or ')} now`);
+  live.innerHTML = bits.map((b) => `<span>${b}</span>`).join(' · ');
 }
 
 // ── the lane ──

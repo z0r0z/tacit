@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://fast.tacit.finance https://tacit-fast-board.onrender.com https://api.tacit.finance https://tacit-btc-pool-mainnet.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://fast.tacit.finance https://tacit-fast-board.onrender.com https://api.tacit.finance https://tacit-btc-pool-mainnet.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://rpc.flashbots.net https://eth-mainnet.public.blastapi.io https://ethereum-json-rpc.stakely.io https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit btc</title>
 <meta name="description" content="Swap BTC and ETH with a provider. Private on the Ethereum side.">
@@ -22,8 +22,8 @@
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
 <!-- preload-roots: /btc/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/btc/app.js?cb=58c638e8">
-<link rel="modulepreload" href="/swap/atomic.js?cb=d7cf4c63">
+<link rel="modulepreload" href="/btc/app.js?cb=641d68c4">
+<link rel="modulepreload" href="/swap/atomic.js?cb=90c0be1b">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/rpc.js">
 <link rel="modulepreload" href="/rpc-body.js">
@@ -125,6 +125,7 @@ button, select, input { font: inherit; color: inherit; letter-spacing: inherit; 
 .hero .sub { margin: 0 auto; max-width: 30em; font: 400 clamp(18px, 2.4vw, 21px)/1.3 var(--serif); color: color-mix(in srgb, var(--ink) 72%, var(--mute)); text-wrap: balance; }
 .live { min-height: 20px; margin: 14px 0 0; font-size: 12.5px; color: var(--mute); }
 .live b { font-weight: 500; color: var(--ink); }
+.live span { white-space: nowrap; }      /* each part of the line whole: it breaks between them */
 
 /* the lane, drawn by swap/atomic.js in the card's own styles */
 .lane { margin: 26px 0 0; padding: 16px; background: var(--card); border: 1px solid var(--hair); border-radius: 20px; box-shadow: 0 30px 60px -48px rgba(0,0,0,.5); }
@@ -585,6 +586,6 @@ docker run -d --restart unless-stopped -v tacit-lp:/var/lib/tacit-fastbridge-lp 
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/btc/app.js?cb=58c638e8"></script>
+<script type="module" src="/btc/app.js?cb=641d68c4"></script>
 </body>
 </html>

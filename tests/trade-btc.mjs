@@ -186,7 +186,7 @@ try {
   await p.click('.bsheet .bm [data-act="unlock"]');
   await p.waitForSelector('.bsheet.top .opts');
   const opts = (await text(p, '.bsheet.top .opts')).replace(/\s+/g, ' ');
-  ok(/Ethereum wallet/.test(opts) && /Bitcoin wallet.*None found in this browser/.test(opts) && !/Paste a key|Saved in this browser/.test(opts), 'the sign-in offers the Ethereum wallet, a Bitcoin wallet (none here) and no way that needs a passphrase');
+  ok(/Ethereum wallet/.test(opts) && /Bitcoin wallet.*once one is added to this browser/.test(opts) && !/Paste a key|Saved in this browser/.test(opts), 'the sign-in offers the Ethereum wallet, a Bitcoin wallet (none here) and no way that needs a passphrase');
   await p.click('.bsheet.top [data-in="eth"]');
   await until(p, () => !document.querySelector('.bsheet.top') && /Balance/.test(document.querySelector('.bsheet .bm')?.textContent || ''), null, 120000);
   ok(r.walletLog.signs >= 1, `the wallet signed the Tacit identity message (${r.walletLog.signs}×) and nothing else (${[...new Set(r.walletLog.requests)].join(', ')})`);

@@ -71,7 +71,7 @@ export function signInSheet(session, { pick = pickWalletSheet, why = WHY, first 
         <div class="ways">${tiles.join('')}${pk ? way('passkey', 'key', 'Passkey', 'Touch ID, Windows Hello or a security key') : ''}</div>`;
     } else {
       const eth = opt('eth', `${mark('eth')}Ethereum wallet`, here ? `${esc(short(here.address))} is connected here. Sign to open its Tacit wallet.` : sole ? `Continue with ${sole.named ? esc(sole.name) : 'your browser wallet'}.` : 'MetaMask, Rabby, Rainbow, or WalletConnect.', here || (sole && first !== 'btc') ? 'main' : '');
-      const btc = canBtc ? opt('btc', `${mark('btc')}Bitcoin wallet`, `Xverse, Leather or UniSat.${session.btcSeen && !session.btcSeen() ? ' None found in this browser.' : ''}`, first === 'btc' ? 'main' : '') : '';
+      const btc = canBtc ? opt('btc', `${mark('btc')}Bitcoin wallet`, `Xverse, Leather or UniSat${session.btcSeen && !session.btcSeen() ? ', once one is added to this browser' : ''}.`, first === 'btc' ? 'main' : '') : '';
       rows = `${first === 'btc' ? btc + eth : eth + btc}
         ${pk ? opt('passkey', `${mark('key')}Passkey`, 'Already made one? Touch ID, Windows Hello or a security key.') : ''}
         ${pk ? opt('new', `${mark('key')}No wallet yet? Create one`, 'Touch ID, Face ID or Windows Hello. Nothing to install.') : ''}`;

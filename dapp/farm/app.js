@@ -635,7 +635,7 @@ const ownSender = (t) => walletSettle(t, wallet, async () => W.account || (await
 let keyP = null, key = null, K = null, mineUi = null, mineP = null, uxP = null, ownP = null, runner = null;
 const getUx = () => (uxP ||= import('/trade/poolux.js?cb=59d125e5').then((m) => m.getUx()).catch((e) => { uxP = null; throw e; }));
 function session() {
-  return keyP ||= import('/trade/key.js?cb=04a214c9').then((m) => {
+  return keyP ||= import('/trade/key.js?cb=efcc4e71').then((m) => {
     K = m;
     key = m.makeKeySession({ moved: (why) => { mineUi ? mineUi.forget(why) : key.lock(); statusEl.innerHTML = `<span class="err">${esc(why)}</span>`; }, busy: busyNow });
     key.onChange(onKey);
@@ -836,7 +836,7 @@ $('#pz-loose').addEventListener('click', async (e) => {
 
 // the key's positions in the private farms: the rewards page's panel, on this page's key
 function mountMine() {
-  return mineP ||= import('/rewards/farms.js?cb=d3e1799c').then((m) => {
+  return mineP ||= import('/rewards/farms.js?cb=bc6f1449').then((m) => {
     mineUi = m.mountFarms($('#pf-mine'), { pick: pickProvider, session: key, wallet, W, connect: () => connect.connect(), program: () => S.prog,
       names: () => new Map(S.priv.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = S.priv.find((x) => String(x.pid) === String(pid))?.icons; return icons ? pairIcons(icons) : ''; },
       onRead: (list) => { S.mine = new Map(list.map((p) => [Number(p.pid), p])); paint(); },

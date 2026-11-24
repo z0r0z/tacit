@@ -58,7 +58,13 @@ export const wantDigest = (w) => { const { sig, ...body } = w; return sha256(con
 export const replyDigest = (id, bytes) => sha256(concatBytes(te.encode('tacit-fast-reply-v1'), te.encode(id), sha256(bytes)));
 export const messageId = (bytes) => bytesToHex(sha256(bytes)).slice(0, 32);
 export const dropDigest = (id) => sha256(concatBytes(te.encode('tacit-fast-drop-v1'), te.encode(id)));
-export const adLabel = (ad) => `Provider ${bytesToHex(sha256(te.encode(`${String(ad.claimPub || '').replace(/^0x/, '').toLowerCase()}:${String(ad.name || '')}`))).slice(0, 6)}`;
+// A provider is shown by a label made from its key and the name it gives, never by that name as written; the site's own providers (their claim keys, which sign
+// their ads, so no other ad can wear them) are shown by the site's name for them.
+export const OWN_PROVIDERS = Object.freeze({
+  '0328522a56ebeba820c4bcf23ed102026702b711caea618e32f8a050e4b25b7d84': 'Tacit',      // TAC for TAC (fastbridge-lp/config.render.json)
+  '028bfd499e1c84805a3d8ceaf671e6bb46507fb13c02102f27f65f1682a2cf4171': 'Tacit',      // Bitcoin and ETH (fastbridge-lp/config.btc-eth.render.json)
+});
+export const adLabel = (ad) => OWN_PROVIDERS[String(ad.claimPub || '').replace(/^0x/, '').toLowerCase()] || `Provider ${bytesToHex(sha256(te.encode(`${String(ad.claimPub || '').replace(/^0x/, '').toLowerCase()}:${String(ad.name || '')}`))).slice(0, 6)}`;
 
 const xonly = (pub33) => hexToBytes(pub33).slice(1);
 const scalar32 = (priv) => (priv instanceof Uint8Array ? priv : typeof priv === 'bigint' ? bigintToBytes32(priv) : hexToBytes(strip(priv)));
