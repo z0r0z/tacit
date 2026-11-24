@@ -2,7 +2,7 @@ import { secp, keccak_256 } from '/vendor/tacit-deps.min.js';
 import { makeConfidentialNames, makeMainnetCall, MAINNET_RPCS, NameError } from '/confidential-names.js?cb=c7e1989f';
 import { bodyType } from '/rpc-body.js';
 import { makeTacAirdrop } from '/tac-airdrop.js';
-import { makeConnect, UserStopped } from '/trade/connect.js?cb=41394526';
+import { makeConnect, UserStopped } from '/trade/connect.js?cb=ece074e4';
 import { rpc as readRpc } from '/trade/util.js?cb=9c8b4133';
 import { nodeHealth } from '/trade/rpc.js';
 import { batchReads } from '/trade/batch.js';
@@ -442,9 +442,9 @@ function paintPrivate(list) {
 }
 // The holder's own private positions (rewards/farms.js): loaded on the first press, so the page reads nothing more until then
 // with no wallet connected here, the visitor chooses among the browser's wallets (the sign-in sheet's own picker)
-const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : import('/trade/key.js?cb=04a214c9').then((m) => m.pickWalletSheet(list)); };
+const pickProvider = (list) => { const mine = wallet.available().find((w) => w.provider === W.prov)?.info?.uuid; return mine && list.some((x) => x.uuid === mine) ? mine : import('/trade/key.js?cb=33a567fa').then((m) => m.pickWalletSheet(list)); };
 let farmsP = null;
-const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=d3e1799c').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
+const openFarms = () => (farmsP ||= import('/rewards/farms.js?cb=4f9c1379').then((m) => { const f = m.mountFarms($('#pf-mine'), { pick: pickProvider, names: () => new Map(PRIV.map((x) => [x.pid, x.name])), pair: (pid) => { const icons = PRIV.find((x) => String(x.pid) === String(pid))?.icons || []; return icons.length ? pairIcons(icons) : ''; }, program: () => PROG, wallet, W, connect: () => connect.connect() }); $('#pf-mine [data-pf="open"]')?.click(); return f; })
   .catch((err) => { farmsP = null; console.warn('your positions:', err?.message || err); }));
 $('#pf-mine').addEventListener('click', (e) => {
   if (farmsP || !e.target.closest('[data-pf="open"]')) return;

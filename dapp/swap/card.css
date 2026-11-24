@@ -447,15 +447,17 @@
   .swc button, .swc a { touch-action: manipulation; }
 }
 
-/* ───────────────────────────── Graphite: the card's own parts ─────────────────────────────
-   Each side of a move is a plain plate with a breath of its asset's colour behind its coin (--tone). The private side wears a
-   dashed outline, carrying the site's own lock mark through to the whole side, and takes --cipher as its texture when the page
-   provides one. Facts under the fields are tiles: the question small, its answer large. A fallback follows each token the
-   swap page (/swap/) does not define, so the card keeps its shape there on that page's own colours. */
+/* ───────────────────────────── Twin glow: the card's own parts ─────────────────────────────
+   Each side of a move is a rounded pane of frosted white (a breath of smoke at night) with a breath of its asset's colour behind its coin (--tone).
+   The coins are pills that float on a soft violet shadow; the flip between the sides is the two colours in a ring; the button that acts is the
+   gradient. The private side wears a dashed outline, carrying the site's own lock mark through to the whole side, and takes --cipher as its texture
+   when the page provides one. Facts under the fields are tiles: the question small, its answer large. Each skin token has a fallback, so the card
+   keeps its shape on a page that does not define it. */
 html:not([data-page="spx"]) {
-  & .swc .f { --tone: transparent; position: relative; isolation: isolate; padding: 14px 16px 12px; border: 0; border-radius: 14px; }
-  & .swc .f:focus-within { box-shadow: inset 0 0 0 1px var(--hair-2); }
-  & .swc .f::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none; background: radial-gradient(20rem 9rem at 100% 42%, color-mix(in srgb, var(--tone) 20%, transparent), transparent 72%); }
+  & .swc .f { --tone: transparent; position: relative; isolation: isolate; padding: 14px 16px 12px; border: 1px solid var(--hair); border-radius: 24px;
+    transition: border-color .2s, box-shadow .3s var(--spring); }
+  & .swc .f:focus-within { border-color: color-mix(in srgb, var(--violet, var(--ink)) 45%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--violet, var(--ink)) 12%, transparent); }
+  & .swc .f::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none; background: radial-gradient(20rem 9rem at 100% 42%, color-mix(in srgb, var(--tone) 22%, transparent), transparent 72%); }
   & .swc .f:has(.coin use[href*="eth"]) { --tone: #627EEA; }
   & .swc .f:has(.coin use[href*="btc"]), & .swc .f:has(.coin use[href*="tac"]) { --tone: #F7931A; }
   & .swc .f:has(.coin use[href*="usdc"]) { --tone: #2775CA; }
@@ -464,27 +466,39 @@ html:not([data-page="spx"]) {
   & .swc .f:has(.where.priv)::after, & .swc .f.priv::after { content: ''; position: absolute; inset: 1px; z-index: -1; border-radius: inherit; pointer-events: none; background: var(--cipher, none) 4px 3px / 220px 126px; opacity: .5;
     -webkit-mask-image: linear-gradient(90deg, rgba(0,0,0,.1), #000 70%); mask-image: linear-gradient(90deg, rgba(0,0,0,.1), #000 70%); }
   & .swc .fh, & .swc .ff { font-size: 13px; }
-  & .swc .fm .amt, & .swc .fm .big { font: 400 38px/1.15 var(--mono); letter-spacing: -.04em; }
+  & .swc .fm .amt, & .swc .fm .big { font: 500 38px/1.15 var(--sans, var(--mono)); letter-spacing: -.045em; }
   & .swc .fm .say { font: 400 15px/1.4 var(--sans, inherit); }
   & .swc .ff .link, & .swc .where { font-family: var(--sans, inherit); }
-  & .swc .coin { border-color: var(--hair-2); font-family: var(--sans, inherit); box-shadow: 0 1px 0 color-mix(in srgb, #fff 6%, transparent) inset, 0 6px 16px -10px #000; }
-  & .swc .quick button { border-radius: 8px; border-color: var(--hair); }
-  & .swc .mid .flip { width: 40px; height: 40px; margin: -20px 0 0 -20px; border-color: var(--hair-2); box-shadow: 0 0 0 4px var(--card); }
-  & .swc .mode { background: var(--field); font-family: var(--sans, inherit); }
-  & .swc .mode { border-radius: 10px; }
-  & .swc .mode button { border-radius: 8px; font-family: var(--sans, inherit); font-weight: 500; }
-  & .swc .mode button[aria-checked="true"] { background: var(--raise, var(--card)); }
+  & .swc .coin { border-color: var(--hair); border-radius: 999px; background: var(--raise, var(--card)); font-family: var(--sans, inherit); font-weight: 600;
+    box-shadow: 0 8px 22px -12px color-mix(in srgb, var(--violet, #000) 70%, transparent), inset 0 1px 0 rgba(255,255,255,.08); transition: transform .3s var(--spring), border-color .15s; }
+  @media (hover: hover) { & .swc .coin:not(.one):hover { border-color: color-mix(in srgb, var(--violet, var(--ink)) 55%, transparent); } }
+  & .swc .quick button { border-radius: 999px; border-color: var(--hair-2); }
+  @media (hover: hover) { & .swc .quick button:hover { color: var(--ink); border-color: color-mix(in srgb, var(--violet, var(--ink)) 55%, transparent); } }
+  & .swc .mid .flip { width: 44px; height: 44px; margin: -22px 0 0 -22px; color: #fff; border: 0; background: var(--glow-pill, var(--ink));
+    box-shadow: 0 0 0 5px var(--card), 0 8px 24px -6px var(--violet, transparent); transition: transform .45s var(--spring), box-shadow .2s; }
+  @media (hover: hover) { & .swc .flip:hover { border-color: transparent; } }
+  & .swc .mid .arr { border-radius: 999px; box-shadow: 0 0 0 5px var(--card); }
+  & .swc .mode { background: var(--field); font-family: var(--sans, inherit); box-shadow: inset 0 0 0 1px var(--hair); }
+  & .swc .mode button { border-radius: 999px; font-family: var(--sans, inherit); font-weight: 500; transition: background-color .25s var(--spring), color .2s; }
+  & .swc .mode button[aria-checked="true"] { background: var(--raise, var(--card)); box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--violet, #000) 70%, transparent); }
   /* a row of choices (where a move goes, what a lock gives): its name in the grotesk, like every other word on the card */
   & .swc .rows .rt b { font: 500 15px/1.25 var(--sans, inherit); letter-spacing: 0; }
   & .swc .rcpt:not(.hx-pts .rcpt) { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 14px 0 0; }
-  & .swc .rcpt:not(.hx-pts .rcpt) > div { display: grid; gap: 4px; align-content: start; padding: 10px 12px 11px; border-radius: 12px; background: var(--field); }
+  & .swc .rcpt:not(.hx-pts .rcpt) > div { display: grid; gap: 4px; align-content: start; padding: 10px 12px 11px; border-radius: 16px; background: var(--field); box-shadow: inset 0 0 0 1px var(--hair); }
   & .swc .rcpt:not(.hx-pts .rcpt) > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
   & .swc .rcpt:not(.hx-pts .rcpt) dt { font-size: 11.5px; line-height: 1.2; color: var(--faint, var(--mute)); white-space: normal; }
   & .swc .rcpt:not(.hx-pts .rcpt) dd { text-align: left; font-size: 13.5px; font-weight: 500; line-height: 1.3; }
-  & .swc .go { border-radius: 12px; font-size: 15.5px; }
-  & .swc .go:disabled { color: var(--faint, var(--mute)); background: var(--field); border-color: transparent; }
-  & .swc .to input { border-radius: 10px; border-color: var(--hair); background: var(--card); }
-  & .swc .slip button[aria-pressed="true"] { background: var(--raise, color-mix(in srgb, var(--ink) 12%, transparent)); }
+  /* the button: the gradient with white words (the stops are deep enough for them to read), lifting a little on a pointer; one that cannot be pressed
+     yet is a pale wash of it with words in the muted ink, so it reads as waiting rather than gone */
+  & .swc .go { color: #fff; background: var(--glow-go, var(--ink)); border: 0; border-radius: 22px; font: 600 16px/1.2 var(--sans, inherit); box-shadow: var(--glow-shadow, none);
+    transition: transform .3s var(--spring), box-shadow .2s, filter .2s; }
+  & .swc .go:hover:not(:disabled) { color: #fff; background: var(--glow-go, var(--ink)); transform: translateY(-2px); box-shadow: var(--glow-shadow, none), 0 0 0 4px color-mix(in srgb, var(--violet, var(--ink)) 18%, transparent); }
+  & .swc .go:active:not(:disabled) { transform: scale(.985); }
+  & .swc .go:disabled { color: var(--mute); background: var(--glow-off, var(--field)); box-shadow: inset 0 0 0 1px var(--hair); }
+  & .swc .btn { border-radius: 18px; }
+  & .swc .to input { border-radius: 16px; border-color: var(--hair); background: var(--raise, var(--card)); }
+  & .swc .slip button { font-family: var(--mono); }
+  & .swc .slip button[aria-pressed="true"] { color: var(--ink); background: var(--raise, color-mix(in srgb, var(--ink) 12%, transparent)); box-shadow: 0 4px 12px -6px color-mix(in srgb, var(--violet, #000) 60%, transparent); }
   /* the line under the button (a quote, a note, what went wrong) sits centred under it, as the steps do; the copy-link button keeps its place on the
      right, and an empty gutter as wide on the left keeps the line centred whether that button shows or not */
   & .swc .act { grid-template-columns: 36px minmax(0, 1fr) 36px; }

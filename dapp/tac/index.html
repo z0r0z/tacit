@@ -7,7 +7,7 @@
 <!-- One page, one inline module. The module's sha256 is pinned in script-src (build/build.mjs recomputes it and
      the ?cb= tokens on every build), so nothing else can run on this origin from here.
      The tacit chain's leader origin (TACIT_CHAIN_PAGE.leader in the module) is put in connect-src by tools/tacit-chain-golive.mjs. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-5k4DcGLGel5hW7rg/fODr8582yoYudq7yme3kndBWy0=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-FGwqGlWAH0oaz+kEovQww9G1zIyO9ReImz3IcOAHWVI=' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://ipfs.filebase.io https://trustless-gateway.link https://ipfs.orbitor.dev https://gateway.pinata.cloud http://127.0.0.1:47815 http://127.0.0.1:8545 https://api.tacit.finance https://aggregator-api.kyberswap.com https://api.zfi.wei.is https://api.paraswap.io https://rpc.mainnet.succinct.xyz https://tacit-points.onrender.com wss://relay.walletconnect.org https://verify.walletconnect.org https://verify.walletconnect.com https://ethereum-rpc.publicnode.com https://eth.drpc.org https://1rpc.io https://mainnet.gateway.tenderly.co https://rpc.mevblocker.io https://mainnet.rpc.buidlguidl.com https://tacit-node-gw.onrender.com https://eth-mainnet.public.blastapi.io https://base-rpc.publicnode.com https://base-mainnet.public.blastapi.io https://rpc.flashbots.net https://mainnet.base.org https://base.drpc.org https://rpc.mainnet.chain.robinhood.com https://robinhood.drpc.org https://robinhood-rpc.publicnode.com https://tacit-evm-pool-keepers.onrender.com https://tacit-evm-pool-forwarder.onrender.com https://tacit-evm-pool-forwarder-2.onrender.com https://tacit-btc-pool-mainnet.onrender.com https://tacit-btc-pool-relay-mainnet.onrender.com https://tacit-fast-board.onrender.com https://fast.tacit.finance https://mempool.space https://*.mempool.space https://blockstream.info https://mempool.emzy.de https://mempool.bitaroo.net https://slipstream.mara.com https://eth-mainnet.nodereal.io https://1.rpc.thirdweb.com https://ethereum-json-rpc.stakely.io wss://relay.damus.io wss://nos.lol wss://relay.primal.net wss://offchain.pub https://eth.rpc.blxrbdn.com https://tacit-chain-leader.onrender.com; frame-src 'self' https://verify.walletconnect.org https://verify.walletconnect.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="preconnect" href="https://api.tacit.finance" crossorigin>
 <link rel="preconnect" href="https://ethereum-rpc.publicnode.com" crossorigin>
@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://tacit-evm-pool-keepers.onrender.com" crossorigin>
 <script async src="/front-guard.js?cb=51f5d28b"></script>
 <script type="module" src="/px-strip.js?cb=9ec0c08d" async fetchpriority="high"></script>
-<link rel="preload" href="/swap/card.css?cb=633be730" as="style">
+<link rel="preload" href="/swap/card.css?cb=0d50f494" as="style">
 <link rel="preload" href="/fonts/newsreader-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/newsreader-400i-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -32,8 +32,8 @@
 <meta property="og:description" content="The Tacit chain: stake TAC privately, earn from every payment and pay in about a minute. A zk-rollup settled on Ethereum, connected to Bitcoin by proof.">
 <meta property="og:image" content="https://tacit.finance/tacit-card.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#E8E0CC" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#15130E" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F4F1FB" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#07060D" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /storage-fallback.js /vendor/tacit-deps.min.js /prf-wallet.js /tacit-wallet-known.js /tab-key.js /tacit-address.js /bip352.js /evm-wallet.js /walletconnect.js /evm-account.js /evm-tx.js /tac-airdrop.js /evm-trade-venues.js /confidential-payout.js /address-id.js /address-view.js /wallet-balances.js /portfolio.js /trade/farm-read.js /bridge-all.js /lp-zap.js /lockmint-auto.js /auto-claim.js /farm-ops.js /relay-outcome.js /btc-borrow.js /bridge-out.js /bridge/track.js /bridge/runtime.js /bridge-in.js /bridge-tick.js /tacit-session.js /activity.js /pool-hint.js /own-node.js /swap/card.js | /weld/stats/read.js /trade/lp-campaign.js /tacit-chain-config.js | /confidential-pool-ux.js /confidential-deployments.js -->
 <!-- preload:begin -->
@@ -151,21 +151,33 @@
     color-scheme: dark;
   }
 }
-/* Graphite: grey ground and cards, a raised plate for what is chosen, the serif Newsreader and the grotesk Schibsted for words (figures stay in the mono) */
+/* Twin glow: a pale violet ground (near black at night) lit by two soft lights, Bitcoin's orange and a violet, with a breath of Ethereum's indigo at the foot.
+   What is chosen or pressed wears the two colours as one gradient; everything else is glass, ink and hairlines. Words are in the grotesk Schibsted, the
+   lead lines in Newsreader's italic, figures stay in the mono. The --glow-* names are the skin's own: the rim of a glass surface, the chosen pill, the main button. */
 :root {
-  --paper: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --raise: #FFFFFF;
-  --ink: #17181B; --mute: #5C5D62; --faint: #636468; --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24);
-  --scrim: rgba(23,24,27,.36); --lift: 0 22px 44px -28px rgba(23,24,27,.45); --skel: rgba(23,24,27,.08); --skel-hi: rgba(23,24,27,.02); --bar: #8B8C91;
-  --float: 0 1px 2px rgba(23,24,27,.05), 0 30px 70px -50px rgba(23,24,27,.45);
+  --paper: #F4F1FB; --card: #FDFCFF; --field: #F2EEFA; --raise: #FFFFFF; --soft: rgba(255,255,255,.62);
+  --ink: #15121F; --mute: #575170; --faint: #686282; --hair: rgba(21,18,31,.09); --hair-2: rgba(21,18,31,.22);
+  --scrim: rgba(21,18,31,.38); --lift: 0 22px 44px -28px rgba(46,26,110,.45); --skel: rgba(21,18,31,.07); --skel-hi: rgba(21,18,31,.02); --bar: #8A84A0;
+  --float: 0 1px 2px rgba(21,18,31,.05), 0 40px 90px -50px rgba(76,46,160,.5);
   --serif: 'Newsreader', 'Newsreader Fallback', 'Newsreader Fallback T', Georgia, serif;
   --sans: 'Schibsted Grotesk', 'Schibsted Grotesk Fallback', system-ui, sans-serif;
+  --violet: #8B5CF6; --focus: #6D3FE0;
+  --glass: color-mix(in srgb, var(--card) 58%, transparent);
+  --glow-rim: linear-gradient(140deg, color-mix(in srgb, var(--orange) 80%, transparent), rgba(255,255,255,.3) 45%, color-mix(in srgb, var(--violet) 80%, transparent));
+  /* the stops are deepened from the marks' own colours, so white words on them read (4.5:1 or more where the words sit) */
+  --glow-pill: linear-gradient(120deg, #D9690B, #7C3AED);
+  --glow-go: linear-gradient(110deg, #DE6C0C, #7C3AED 52%, #4D5DD3);
+  --glow-off: linear-gradient(110deg, color-mix(in srgb, var(--orange) 16%, var(--field)), color-mix(in srgb, var(--violet) 16%, var(--field)) 52%, color-mix(in srgb, var(--blue) 16%, var(--field)));
+  --glow-shadow: 0 16px 36px -16px color-mix(in srgb, var(--violet) 85%, transparent), 0 6px 18px -12px var(--orange);
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #131417; --card: #1A1B1F; --field: #15161A; --raise: #2A2B31;
-    --ink: #E4E4E1; --mute: #9A9BA1; --faint: #86878D; --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22);
-    --skel: rgba(228,228,225,.07); --skel-hi: rgba(228,228,225,.15); --bar: #66676D;
-    --float: 0 0 0 1px rgba(228,228,225,.04), 0 40px 90px -50px #000;
+    --paper: #07060D; --card: #16131F; --field: #100E19; --raise: #2A2440; --soft: rgba(255,255,255,.05);
+    --ink: #F1EEFA; --mute: #A9A2C0; --faint: #8F88A8; --hair: rgba(241,238,250,.09); --hair-2: rgba(241,238,250,.22);
+    --skel: rgba(241,238,250,.07); --skel-hi: rgba(241,238,250,.15); --bar: #6A6484;
+    --float: 0 0 0 1px rgba(241,238,250,.04), 0 40px 100px -40px rgba(0,0,0,.95);
+    --focus: #B9A2FF; --glass: color-mix(in srgb, var(--card) 55%, transparent);
+    --glow-rim: linear-gradient(140deg, color-mix(in srgb, var(--orange) 75%, transparent), rgba(255,255,255,.12) 45%, color-mix(in srgb, var(--violet) 80%, transparent));
   }
 }
 /* the SPX page (made from this one, with a look of its own) keeps its own face where Graphite names the grotesk */
@@ -183,7 +195,7 @@ body { font: 14px/1.6 var(--sans); background-image: none; }
 a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
 @media (hover: hover) { a:hover { text-decoration-thickness: 2px; } }
 button { font: inherit; color: inherit; letter-spacing: inherit; }
-:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--focus, var(--ink)); outline-offset: 2px; }
 [hidden] { display: none !important; }
 .num { font-variant-numeric: tabular-nums; }
 .skip { position: absolute; left: 16px; top: -64px; z-index: 100; padding: 10px 16px; background: var(--ink); color: var(--paper); border-radius: 8px; text-decoration: none; font-size: 13px; transition: top .15s; }
@@ -288,7 +300,7 @@ main:focus { outline: none; }
 .dash-go button b { font: 500 13px var(--mono); color: var(--ink); }
 .dash-go button.all { color: var(--ink); border-color: var(--ink); }
 @media (hover: hover) { .dash-go button:hover { border-color: var(--ink); } }
-.dash-go button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.dash-go button:focus-visible { outline: 2px solid var(--focus, var(--ink)); outline-offset: 2px; }
 .pf-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 20px 0 0; padding-bottom: 7px; border-bottom: 1px solid var(--hair); font-size: 12px; color: var(--mute); scroll-margin-top: 72px; }
 .pf-h b { font: 500 13px var(--mono); color: var(--ink); }
 .wbal .wb-k .pair { display: inline-flex; flex: none; }
@@ -393,7 +405,7 @@ main:focus { outline: none; }
 @media (hover: hover) { .fms a:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); } .fms a:hover small { color: var(--ink); } }
 @media (hover: none) { .fms a { border-color: color-mix(in srgb, var(--hair) 40%, transparent); } }
 .fms a:active { transform: scale(.98); }
-.fms a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.fms a:focus-visible { outline: 2px solid var(--focus, var(--ink)); outline-offset: 2px; }
 /* where the quick starts can be wider than the page, a row fades at the edge it runs off (the fade lies over the row's own padding while the row still fits) */
 @media (max-width: 1100px) { .hints, .fms { padding-right: 28px; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); } }
 @media (max-width: 640px) {
@@ -441,11 +453,9 @@ main:focus { outline: none; }
 @media (max-width: 370px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 560px; } }
 @media (max-width: 356px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 585px; } }
 @media (max-width: 334px) { .hx:has(#hx-body:empty), .hx:has(#hx-body > .hx-sk) { min-height: 604px; } }
-:where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 580px; }
-@media (max-width: 640px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 370px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 356px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 577px; } }
-@media (max-width: 338px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 602px; } }
+:where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 598px; }
+/* (on a phone the card is one height down to 320 px: the steps under the button close up on a narrow card rather than wrap, see .hx-path below) */
+@media (max-width: 640px) { :where(:root:not([data-page="spx"])) .hx:has(#hx-body:empty), :where(:root:not([data-page="spx"])) .hx:has(#hx-body > .hx-sk) { min-height: 595px; } }
 /* Until the script draws it the card is the places of its tabs, its two fields, the block under them and its button, in quiet blocks of its own colours (the script's first draw
    replaces them), so the card is there from the first paint and nothing in it moves when its parts arrive. */
 .hx-sk { display: grid; gap: 8px; padding: 12px 16px 16px; }
@@ -853,7 +863,7 @@ html.hx-pin .hw:not(:has(#hw-p:not([hidden]))) { opacity: 0; visibility: hidden;
 .pw-n { font: 400 28px/1.1 var(--serif); letter-spacing: -.01em; text-wrap: balance; }
 .pw-m i { display: inline-block; margin-left: 4px; font-style: normal; transition: transform .3s var(--spring), color .15s; }
 @media (hover: hover) { .pw-a:hover .pw-m i { transform: translate(2px, -2px); color: var(--ink); } .pw-a:hover .pw-i { transform: translateY(-2px); } }
-.pw-a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.pw-a:focus-visible { outline: 2px solid var(--focus, var(--ink)); outline-offset: 2px; }
 @media (max-width: 640px) {
   .pw { padding-top: 88px; }
   .pw-a { grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 16px 0; }
@@ -906,7 +916,7 @@ html.hx-pin .hw:not(:has(#hw-p:not([hidden]))) { opacity: 0; visibility: hidden;
 @media (prefers-color-scheme: dark) { .ig-lg { filter: brightness(.88); } }
 .ig-go { font-size: 16px; color: var(--mute); transition: transform .3s var(--spring), color .15s; }
 @media (hover: hover) { .ig-l a:hover .ig-go { transform: translate(2px, -2px); color: var(--ink); } .ig-l a:hover .ig-n small { color: var(--ink); } .ig-l a:hover .ig-lg { transform: translateY(-2px); } }
-.ig-l a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.ig-l a:focus-visible { outline: 2px solid var(--focus, var(--ink)); outline-offset: 2px; }
 @media (max-width: 640px) {
   .ig { padding-top: 88px; }
   .ig-l { grid-template-columns: minmax(0, 1fr); }
@@ -2131,32 +2141,62 @@ dialog.layer { width: min(460px, calc(100vw - 32px)); }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .sk { background: var(--skel); }
 }
-/* ───────────────────────────── Graphite, the default skin: the hero and the card's frame ─────────────────────────────
-   Built around privacy. One light thing on a screen: the button. What is chosen is a raised grey plate, not a
-   highlight. Words are in the grotesk, figures in the mono, the headline in the serif with its second word in quiet italics.
-   The rules here restyle the ones above (the tab strip's sliding line is put away, not removed: the strip is a plate now). */
+/* ───────────────────────────── Twin glow, the default skin: the ground, the hero and the card ─────────────────────────────
+   Two soft lights sit behind the card, Bitcoin's orange to its left and a violet to its right, with Ethereum's indigo low on the page. The card is
+   frosted glass on them with a rim that runs from one colour to the other. What is chosen is a pill in the two colours, and the one button that acts
+   is the gradient itself. The rules here restyle the ones above at a higher weight (the tab strip's sliding line becomes the sliding pill). */
 html:not([data-page="spx"]) {
-  & .hero h1 { font: 400 clamp(44px, 12vw, 68px)/1.02 var(--serif); letter-spacing: -.025em; }
-  & .hero h1 .hero-w2 { font-style: italic; color: var(--mute); }
+  /* the ground: the lights are on <html> (the glyph field lies over them, chrome.css), fixed to the window so the card always sits between them */
+  background: radial-gradient(520px 520px at calc(50% - 330px) 330px, color-mix(in srgb, var(--orange) 46%, transparent), transparent 70%),
+    radial-gradient(560px 560px at calc(50% + 330px) 470px, color-mix(in srgb, var(--violet) 42%, transparent), transparent 70%),
+    radial-gradient(900px 520px at 50% 110%, color-mix(in srgb, var(--blue) 22%, transparent), transparent 70%), var(--paper);
+  background-attachment: fixed;
+  @media (max-width: 640px) {
+    background: radial-gradient(300px 300px at 0 300px, color-mix(in srgb, var(--orange) 42%, transparent), transparent 70%),
+      radial-gradient(320px 340px at 100% 560px, color-mix(in srgb, var(--violet) 40%, transparent), transparent 70%),
+      radial-gradient(520px 360px at 50% 105%, color-mix(in srgb, var(--blue) 18%, transparent), transparent 70%), var(--paper);
+    background-attachment: fixed;
+  }
+  & .hero h1 { font: 400 clamp(44px, 12vw, 70px)/1.02 var(--serif); letter-spacing: -.035em; }
+  & .hero h1 .hero-w2 { font-style: italic; color: var(--violet); background: linear-gradient(100deg, var(--orange), var(--violet) 60%, var(--blue)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; padding-right: .06em; }
   & .hero .sub { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
   & .hero .sub b { font: 400 .88em var(--mono); color: var(--ink); }
   & .hero-t { margin-bottom: 26px; }
-  & .hx { border-radius: 20px; border-color: var(--hair); background: linear-gradient(180deg, color-mix(in srgb, var(--card) 93%, #fff) 0, var(--card) 140px); }
-  /* the tabs: one plate, the chosen tab raised on it */
-  & .hx-h { margin: 12px 12px 4px; padding: 3px; border: 0; border-radius: 12px; background: var(--field); }
-  & .hx-h::after { display: none; }
-  & .hx-h button { padding: 10px 0; border-radius: 9px; font: 500 14px/1 var(--sans); letter-spacing: 0; transition: background-color .2s, color .2s; }
-  & .hx-h button[aria-selected="true"] { background: var(--raise); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
-  & .hx-sk .t { height: 40px; margin: 0 -4px 6px; }
+  /* the card: glass over the lights, its rim the two colours (the rim's gradient lies under the whole card and tints the glass a little, as light does) */
+  & .hx { border: 1px solid transparent; border-radius: 36px; background: linear-gradient(var(--glass), var(--glass)) padding-box, var(--glow-rim) border-box;
+    -webkit-backdrop-filter: blur(30px) saturate(1.5); backdrop-filter: blur(30px) saturate(1.5);
+    box-shadow: 0 40px 100px -44px color-mix(in srgb, var(--violet) 65%, transparent), -30px 0 80px -54px var(--orange), inset 0 1px 0 rgba(255,255,255,.3); }
+  /* the tabs: a pill track, the chosen tab a gradient pill that springs from tab to tab (its place is the line's old --bl and --bw: the line sat at
+     30% of its tab and was 40% of it wide, so the tab itself starts .75 of a width to its left and is 2.5 widths wide) */
+  & .hx-h { --hp: 5px; margin: 12px 12px 4px; padding: 5px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--field) 72%, transparent); box-shadow: inset 0 0 0 1px var(--hair); }
+  & .hx-h::after { top: 5px; bottom: 5px; height: auto; z-index: 0; border-radius: 999px; background: var(--glow-pill);
+    box-shadow: 0 10px 24px -8px color-mix(in srgb, var(--violet) 75%, transparent), 0 4px 14px -8px var(--orange);
+    width: calc((100% - 2 * var(--hp)) * var(--bw, calc(.4 / var(--n))) * 2.5);
+    left: calc(var(--hp) + (100% - 2 * var(--hp)) * (var(--bl, calc((var(--i) + .3) / var(--n))) - .75 * var(--bw, calc(.4 / var(--n))))); }
+  & .hx-h:not(:has(> button[aria-selected="true"]))::after { opacity: 0; }
+  & .hx-h button { position: relative; z-index: 1; padding: 12px 0; border-radius: 999px; font: 600 15px/1 var(--sans); letter-spacing: -.005em; transition: color .25s var(--spring); }
+  & .hx-h button[aria-selected="true"] { color: #fff; }
+  @media (hover: hover) { & .hx-h button[aria-selected="true"]:hover { color: #fff; } }
+  & .hx-h button:focus-visible { outline-offset: 1px; }
+  & .hx-h button[data-due] .w::after { box-shadow: 0 0 0 2px var(--paper); }
+  & .hx-sk .t { height: 44px; margin: 0 -4px 6px; border-radius: 999px; }
+  & .hx-sk i { border-radius: 24px; }
+  & .hx-sk .g { border-radius: 22px; background: color-mix(in srgb, var(--violet) 14%, transparent); }
+  & .hx-lead { margin: 2px 4px 12px; font: italic 400 16px/1.35 var(--serif); letter-spacing: 0; color: var(--mute); }
   & .hx-path { font-family: var(--sans); font-size: 12.5px; }
-  /* a choice of two in the card (Send or Request, Farm or LP only, from the wallet or from Bitcoin): the tab strip's plate, smaller */
-  & .hx-mode { background: var(--field); border-radius: 10px; }
-  & .hx-mode button { border-radius: 8px; font: 500 13px var(--sans); }
-  & .hx-mode button[aria-checked="true"] { background: var(--raise); }
-  /* Bridge and Borrow: two words with a rule under the chosen one, not a second row of plates */
+  /* a narrow card: the steps close up so they stay one row (wrapped, they would make the card taller than the skeleton that holds its place) */
+  @media (max-width: 360px) { & .hx-path { gap: 6px 10px; font-size: 12px; } & .hx-path li { gap: 5px; } }
+  @media (max-width: 335px) { & .hx-path { gap: 6px 7px; font-size: 11.5px; } & .hx-path li { gap: 4px; } & .hx-path li::before { width: 16px; height: 16px; } }
+  & .hx-path li.on::before { color: #fff; background: var(--glow-pill); border-color: transparent; }
+  /* a choice of two in the card (Send or Request, Farm or LP only, from the wallet or from Bitcoin): the tab strip's track, smaller, the choice raised */
+  & .hx-mode { background: color-mix(in srgb, var(--field) 72%, transparent); box-shadow: inset 0 0 0 1px var(--hair); }
+  & .hx-mode button { font: 500 13px var(--sans); transition: background-color .25s var(--spring), color .2s; }
+  & .hx-mode button[aria-checked="true"] { color: var(--ink); background: var(--raise); box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--violet) 70%, transparent); }
+  /* Bridge and Borrow: two words with the two colours under the chosen one */
   & .hx-more { display: flex; gap: 18px; margin: 6px 4px 12px; padding: 0; background: none; border-bottom: 1px solid var(--hair); border-radius: 0; }
-  & .hx-more button { flex: none; margin-bottom: -1px; padding: 8px 2px 10px; border-bottom: 2px solid transparent; border-radius: 0; font: 500 14px var(--sans); }
-  & .hx-more button[aria-selected="true"] { background: none; box-shadow: none; border-bottom-color: var(--ink); }
+  & .hx-more button { flex: none; margin-bottom: -1px; padding: 8px 2px 10px; border: 0; border-radius: 0; font: 500 14px var(--sans);
+    background: linear-gradient(90deg, var(--orange), var(--violet)) bottom / 0 2px no-repeat; transition: background-size .3s var(--spring), color .15s; }
+  & .hx-more button[aria-selected="true"] { color: var(--ink); background-size: 100% 2px; box-shadow: none; }
   /* a bridge's steps: a rail that runs from one chain's colour to the other's, a ring at each step between its ends */
   & .hx-brs { margin: 18px 4px 4px; font: 400 12px/1.35 var(--sans); }
   & .hx-brs li { padding-top: 22px; }
@@ -2165,16 +2205,28 @@ html:not([data-page="spx"]) {
   & .hx-brs .dot { box-sizing: border-box; width: 14px; height: 14px; background: var(--card); border: 2px solid color-mix(in srgb, var(--from) calc(100% - var(--i, 0) * 33%), var(--to)); }
   & .hx-brs li:first-child .dot { background: var(--from); }
   & .hx-brs li:last-child .dot { background: var(--to); border-color: var(--to); }
+  /* Borrow's panel and its steps */
+  & .hx-bw-p { border-radius: 20px; background: var(--soft); }
+  & .hx-st li.now span { color: #fff; background: var(--glow-pill); border-color: transparent; }
+  & .hx-bw-m i { background: linear-gradient(90deg, var(--orange), var(--violet)); }
   /* the two ways on from a bridge, as chips */
   & #hx-brl { gap: 8px; margin-top: 14px; }
-  & .hx #hx-brl a { padding: 7px 13px; border: 1px solid var(--hair); border-radius: 999px; font: 400 12.5px var(--sans); text-decoration: none; }
-  @media (hover: hover) { & .hx #hx-brl a:hover { border-color: var(--hair-2); } }
-  & .hx .lede-s, & .hx .hx-hv, & .hx-lead { font-family: var(--sans); }
+  & .hx #hx-brl a { padding: 7px 13px; border: 1px solid var(--hair); border-radius: 999px; font: 400 12.5px var(--sans); text-decoration: none; background: var(--soft); }
+  @media (hover: hover) { & .hx #hx-brl a:hover { border-color: color-mix(in srgb, var(--violet) 55%, transparent); } }
+  & .hx .lede-s, & .hx .hx-hv { font-family: var(--sans); }
+  /* the card's buttons: the main one is the gradient and lifts a little on a pointer; one that cannot be pressed yet is a pale wash of it with words that read */
+  & .hx .btn:not(.ghost) { color: #fff; background: var(--glow-go); border-color: transparent; border-radius: 22px; font: 600 16px/1.2 var(--sans); box-shadow: var(--glow-shadow); }
+  @media (hover: hover) { & .hx .btn:not(.ghost):hover:not(:disabled) { color: #fff; background: var(--glow-go); transform: translateY(-2px); box-shadow: var(--glow-shadow), 0 0 0 4px color-mix(in srgb, var(--violet) 18%, transparent); } }
+  & .hx .btn:not(.ghost):disabled { color: var(--mute); background: var(--glow-off); box-shadow: inset 0 0 0 1px var(--hair); }
+  & .hx .btn.ghost { border-radius: 22px; }
+  /* the hints under the card: glass pills */
+  & .hint { border-radius: 999px; background: var(--glass); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); border-color: var(--hair); }
+  & .hint:focus-visible { outline-color: var(--focus); }
   /* the page under the card: every section it had, quieter, so the card stays the page's subject. Less air between sections, smaller headings, the
      line under a heading in the grotesk, the asset tabs and figures in the card's own hands (grotesk for names, mono for numbers), the coin smaller */
   & .sx { padding-top: 88px; }
   & .sx-h { margin-bottom: 32px; }
-  & .sx-h h2 { font-size: clamp(28px, 3.4vw, 38px); }
+  & .sx-h h2 { font-size: clamp(28px, 3.4vw, 38px); letter-spacing: -.03em; }
   & .sx-h p { font: 400 16px/1.5 var(--sans); letter-spacing: 0; color: var(--mute); }
   & .tc .sx-h { margin-bottom: 20px; }
   & .tc-stage { height: 112px; margin-bottom: 8px; }
@@ -2186,7 +2238,24 @@ html:not([data-page="spx"]) {
   @media (min-width: 641px) { & .tc-facts { gap: 14px 48px; } }
   @media (max-width: 640px) { & .tc-facts dd { font-size: clamp(13px, 4.1vw, 17px); } }   /* three figures to a row on a phone: the mono is wider than the serif was, so it is set to fit its column */
   & .tc-links { margin-top: 26px; }
-  & .tc-links .btn { border-radius: 12px; }
+  & .tc-links .btn { border-radius: 999px; }
+  /* the sheets: the same glass family, opaque enough to read, with the card's rim and a rounder corner; their switch is the card's pill track */
+  & dialog.sheet { border: 1px solid transparent; border-radius: 28px; background: linear-gradient(var(--card), var(--card)) padding-box, var(--glow-rim) border-box; }
+  & dialog.sheet::backdrop { -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+  & .sheet-head h2 { font-style: italic; letter-spacing: -.02em; }
+  & .seg { border-radius: 999px; background: var(--field); box-shadow: inset 0 0 0 1px var(--hair); }
+  & .seg button { border-radius: 999px; transition: background-color .25s var(--spring), color .2s; }
+  & .seg button:is([aria-selected="true"], [aria-checked="true"]) { background: var(--raise); box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--violet) 70%, transparent); }
+  & .seg.sub, & .seg.sub button { border-radius: 999px; }
+  & .opt, & .way { border-radius: 20px; }
+  & .opt.main { border-color: color-mix(in srgb, var(--violet) 60%, transparent); }
+  @media (hover: hover) { & .opt:hover:not(:disabled) { border-color: color-mix(in srgb, var(--violet) 60%, transparent); } }
+  & .amt { border-radius: 18px; }
+  & .amt:focus-within { border-color: var(--violet); }
+  & .btn { border-radius: 18px; }
+  & .btn:not(.ghost):not(:disabled) { color: #fff; background: var(--glow-go); border-color: transparent; }
+  @media (hover: hover) { & .btn:not(.ghost):hover:not(:disabled) { box-shadow: 0 0 0 4px color-mix(in srgb, var(--violet) 22%, transparent); } }
+  @media (max-width: 640px) { & dialog.sheet { border-width: 1px 0 0; border-radius: 28px 28px 0 0; } }
   /* the glyph layer (glyphs.js). The field is fixed behind the whole page (chrome.css), which is why the page's ground is on <html> and <body> is clear; the stamp
      lies behind its side's own words; and a rule of glyphs thins out to dots between the headline and the card. */
   & body { background: transparent; }
@@ -2196,19 +2265,19 @@ html:not([data-page="spx"]) {
   & #sheet-wallet .sheet-in { position: relative; isolation: isolate; }
   & #sheet-wallet canvas.gx-stamp { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: .34; pointer-events: none; transition: opacity .15s ease; }
   & #sheet-wallet .sheet-in:not(:has(#ws-in)) canvas.gx-stamp { display: none; }
-  & #ws-in .opt { --tone: transparent; background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), color-mix(in srgb, var(--field) 58%, transparent); }
+  & #ws-in .opt { --tone: transparent; background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 16%, transparent), transparent 72%), color-mix(in srgb, var(--field) 58%, transparent); }
   & #ws-in .opt:has(use[href="#tk-eth"]) { --tone: #627EEA; }
   & #ws-in .opt:has(use[href="#tk-btc"]), & #ws-in .opt:has(use[href="#i-key"]) { --tone: #F7931A; }
   /* a way pointed at or focused carries its own mark, struck across its row alone (glyphs.js), as the card's "To" side carries its asset's; the
      row is solid while it does, so the sheet's own mark does not show through it */
   & #ws-in .opt { position: relative; isolation: isolate; }
   & #ws-in .opt canvas.gx-way { border-radius: inherit; opacity: .4; }
-  & #ws-in .opt:has(> canvas.gx-way) { background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 13%, transparent), transparent 72%), var(--field); }
+  & #ws-in .opt:has(> canvas.gx-way) { background: radial-gradient(15rem 7rem at 0 34%, color-mix(in srgb, var(--tone) 16%, transparent), transparent 72%), var(--field); }
   @media (prefers-reduced-motion: reduce) { & #sheet-wallet canvas.gx-stamp { transition: none; } }
 }
 </style>
 <!-- the hero tile is drawn with the swap card's parts (swap/card.js, which the Swap tab mounts): its styles, after the page's own -->
-<link rel="stylesheet" href="/swap/card.css?cb=633be730" media="print">
+<link rel="stylesheet" href="/swap/card.css?cb=0d50f494" media="print">
 <!-- chrome:head:begin inline -->
 <style>
 /* The header's page links and the footer, as every page that wears them draws them. The markup is made by build/chrome.mjs and stamped
@@ -2245,9 +2314,11 @@ header.top .sm > summary::before, header.top .sm > summary::after { content: non
 .sn > a { display: none; }
 .sn > a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .sn > a[aria-current="page"], .sn summary.here, .sm[open] > summary { color: var(--ink); background: var(--hair); }
+.sn > a, .sn summary { border-radius: 999px; }
+.sn > a[aria-current="page"], .sn summary.here { background: color-mix(in srgb, var(--violet, var(--ink)) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--violet, var(--ink)) 22%, transparent); }
 @media (hover: hover) { .sn > a:hover, .sn summary:hover { color: var(--ink); background: var(--hair); } }
 .sn > a:active, .sn summary:active { transform: scale(.93); }
-.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+.sn a:focus-visible, .sn summary:focus-visible, .sf a:focus-visible { outline: 2px solid var(--focus, var(--orange)); outline-offset: 1px; }
 @container top (min-width: 540px) { .sn > a { display: inline-flex; } }
 .sn > a[href="/rewards/"], .sn .sm > summary { position: relative; }
 .sn[data-owed] > a[href="/rewards/"]::after, .sn[data-owed] .sm > summary::after { content: ''; position: absolute; top: 8px; left: 26px; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 2px var(--paper, transparent); }
@@ -2279,7 +2350,7 @@ header.top .chip {
   font: 500 12.5px/1 var(--mono); white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
   transition: border-color .15s, background-color .15s, transform .25s var(--spring, ease);
 }
-header.top .chip { background: var(--card, transparent); border-radius: 10px; font: 500 14px/1 var(--sans, var(--mono)); }
+header.top .chip { background: color-mix(in srgb, var(--card, transparent) 70%, transparent); border-radius: 999px; font: 500 14px/1 var(--sans, var(--mono)); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
 header.top .chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 header.top .chip .dot { width: 7px; height: 7px; margin: 0; border-radius: 50%; background: var(--hair-2, var(--hair-strong, var(--hair))); flex: none; vertical-align: 0; }
 header.top .chip .dot.on { background: var(--ok); }
@@ -2289,7 +2360,7 @@ header.top .chip.act { background: transparent; }
 header.top .chip.act[aria-expanded="true"], header.top .chip.act:hover { color: var(--ink); }
 @media (hover: hover) { header.top .chip:hover { border-color: var(--mute); background: var(--hair); } header.top .chip.act:hover { border-color: transparent; } }
 header.top .chip:active { transform: scale(.97); }
-header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+header.top .chip:focus-visible { outline: 2px solid var(--focus, var(--orange)); outline-offset: 2px; }
 @container top (max-width: 480px) { header.top .chip { padding: 0 12px 0 11px; } header.top .chip.act { padding: 0; } }
 @media (pointer: coarse) { .sn > a, .sn summary, header.top .chip, footer.sf nav a { height: var(--tap, 44px); } }
 /* Touch, on every page that wears this: a quick double tap on a control does not zoom the page, and a text button takes a press a thumb can land (its box does not
@@ -2310,8 +2381,9 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
     background: color-mix(in srgb, var(--paper, var(--bg, #fff)) 92%, transparent); border-top: 1px solid var(--hair); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
   .bn a { display: grid; justify-items: center; gap: 3px; min-height: 44px; padding: 5px 2px 3px; border-radius: 12px; color: var(--mute); font: 500 10.5px/1.1 var(--mono); text-decoration: none; -webkit-tap-highlight-color: transparent; }
   .bn a svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-  .bn a[aria-current="page"] { color: var(--ink); background: var(--hair); }
-  .bn a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+  .bn a[aria-current="page"] { color: var(--ink); background: color-mix(in srgb, var(--violet, var(--ink)) 14%, transparent); }
+  .bn a { border-radius: 16px; }
+  .bn a:focus-visible { outline: 2px solid var(--focus, var(--orange)); outline-offset: -2px; }
   footer.sf { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
   #hw { bottom: calc(76px + env(safe-area-inset-bottom)) !important; }      /* the help button, clear of the bar */
   /* what a page pins to the foot of the window stands on the bar (57 px: its padding and a 44 px row), not under it: the buy bar of cBTC, tETH and
@@ -2329,7 +2401,7 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh-t { display: inline-grid; grid-auto-flow: column; grid-auto-columns: minmax(96px, 1fr); gap: 2px; margin: 18px auto 0; padding: 3px; max-width: 100%; border-radius: 15px; background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .sh-t a { display: flex; align-items: center; justify-content: center; min-height: 38px; padding: 6px 16px; border-radius: 12px; color: var(--mute); font: 500 13px/1.2 var(--mono); text-decoration: none; white-space: nowrap; transition: background-color .15s, color .15s; }
 .sh-t a[aria-current="page"] { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent); }
-.sh-t a:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+.sh-t a:focus-visible { outline: 2px solid var(--focus, var(--orange)); outline-offset: 1px; }
 /* the pill under the current tab: chrome.js places it and, between two views of one document, slides it; unplaced, the tab wears it itself */
 .sh-t { position: relative; }
 .sh-t a { position: relative; }
@@ -2347,10 +2419,10 @@ header.top .chip:focus-visible { outline: 2px solid var(--orange); outline-offse
 .sh-more a b { grid-column: 2; font-weight: 500; } .sh-more a small { grid-column: 2; font-size: 12px; color: var(--mute); } .sh-more a i { grid-column: 3; grid-row: 1 / span 2; font-style: normal; color: var(--mute); }
 /* in Graphite the sections' words are set in the grotesk, as the header's are; a page that has no --sans keeps its own face */
 .sh p, .sh-t a, .sh-more a, .bn a { font-family: var(--sans, var(--mono)); }
-.sh-t { border-radius: 10px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); }
-.sh-t a { border-radius: 8px; }
+.sh-t { border-radius: 999px; background: var(--field, color-mix(in srgb, var(--ink) 6%, transparent)); box-shadow: inset 0 0 0 1px var(--hair); }
+.sh-t a { border-radius: 999px; }
 .sh-t a[aria-current="page"] { background: var(--raise, var(--card)); }
-.sh-t .sh-i { border-radius: 8px; background: var(--raise, var(--card)); }
+.sh-t .sh-i { border-radius: 999px; background: var(--raise, var(--card)); box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--violet, #000) 70%, transparent); transition-timing-function: var(--spring, cubic-bezier(.2,.7,.2,1)); }
 /* each page of its own, as the view of its section: its own heading (and the switch the section's tabs now are) gives way to the section's head; everything
    else the page has stays, its notes, explainers and status lines included, and what belongs to the other view is out of the way */
 /* (the vault is stamped with its section alone, data-sec="borrow", until chrome.js names the side from the address; the page's own rules already keep
@@ -2372,16 +2444,16 @@ html[data-sec="rewards/"] #find-h { display: none !important; }
 .sm-p {
   position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: grid; gap: 1px; box-sizing: border-box;
   width: max-content; min-width: 220px; max-width: calc(100vw - 32px); padding: 6px;
-  background: var(--card); border: 1px solid var(--hair-2, var(--hair)); border-radius: 16px;
-  box-shadow: 0 24px 48px -26px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.06);
+  border: 1px solid transparent; border-radius: 22px; background: linear-gradient(var(--card), var(--card)) padding-box, var(--glow-rim, var(--hair-2, var(--hair))) border-box;
+  box-shadow: 0 30px 60px -30px color-mix(in srgb, var(--violet, #000) 50%, rgba(0,0,0,.5)), 0 2px 8px rgba(0,0,0,.06);
   transform-origin: 100% 0; animation: sm-in .16s ease-out;
 }
 @keyframes sm-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 .sm-p a { display: flex; align-items: center; gap: 12px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border-radius: 10px; color: var(--ink); font: 400 13px/1 var(--mono); text-decoration: none; }
-.sm-p a { font: 400 14px/1 var(--sans, var(--mono)); }
+.sm-p a { font: 400 14px/1 var(--sans, var(--mono)); border-radius: 14px; }
 .sm-p a svg { width: 18px; height: 18px; color: var(--mute); }
 .sm-p a[aria-current="page"] { background: var(--hair); }
-.sm-p a:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+.sm-p a:focus-visible { outline: 2px solid var(--focus, var(--orange)); outline-offset: -2px; }
 .sm-p hr { margin: 4px 8px; border: 0; border-top: 1px solid var(--hair); }
 .sm-p .pr { display: flex; }
 @container top (min-width: 540px) { .sm-p .pr { display: none; } }
@@ -2402,7 +2474,8 @@ canvas.gx-field { position: fixed; top: 0; left: 0; z-index: -1; max-width: 100%
    places that have a mark of their own are that mark; in a narrow one every place is an icon that says its name on hover and to a screen reader (they narrow a little on a small
    phone before they would run off the page) */
 footer.sf { container: foot / inline-size; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 20px; margin-top: 56px; padding: 10px 0 22px; border-top: 1px solid var(--hair); color: var(--mute); font: 400 12px/1.4 var(--mono); }
-footer.sf { font: 400 13px/1.4 var(--sans, var(--mono)); }
+footer.sf { font: 400 13px/1.4 var(--sans, var(--mono)); border-image: linear-gradient(90deg, color-mix(in srgb, var(--orange) 45%, var(--hair)), var(--hair) 30% 70%, color-mix(in srgb, var(--violet, var(--orange)) 45%, var(--hair))) 1; }
+footer.sf nav a { border-radius: 999px; }
 footer.sf nav { display: flex; align-items: center; max-width: 100%; margin: 0 -10px 0 auto; }
 footer.sf nav a { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: 0 1 40px; min-width: 28px; height: 40px; border-radius: 12px; color: var(--mute); text-decoration: none; transition: color .15s, background-color .15s, transform .25s var(--spring, ease); }
 footer.sf nav a:active { transform: scale(.92); }
@@ -2426,22 +2499,31 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 .sf-x a { display: inline-flex; align-items: center; min-height: 32px; color: var(--mute); text-decoration: underline; text-decoration-color: var(--hair-2, var(--hair)); text-underline-offset: 3px; }
 @media (hover: hover) { .sf-x a:hover { color: var(--ink); text-decoration-color: currentColor; } }
 
-/* Graphite's palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
+/* Twin glow's palette, for every page that wears the header: each page names its ground, card, field, ink and hairlines the same way and this sheet comes last in
    its head, so the one block recolours them all and a page's own styles are untouched. The values are the front page's (index.html keeps them with the rest of its
-   tokens). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and are left out: the SPX page, by
-   its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the build gives it. */
+   tokens, with the skin's gradients beside them). --bg and --hair-strong are the two names /sats/ has for --paper and --hair-2. Two pages have a ground of their own and
+   are left out: the SPX page, by its mark on <html>, and FACE (black, white and one orange), told by its own link in the menu being the current one, the only mark the
+   build gives it. */
 :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-  --paper: #E6E6E4; --bg: #E6E6E4; --card: #F1F1EF; --field: #E9E9E7; --ink: #17181B; --mute: #5C5D62;
-  --hair: rgba(23,24,27,.10); --hair-2: rgba(23,24,27,.24); --hair-strong: rgba(23,24,27,.24); --skel: rgba(23,24,27,.08);
+  --paper: #F4F1FB; --bg: #F4F1FB; --card: #FDFCFF; --field: #F2EEFA; --ink: #15121F; --mute: #575170;
+  --hair: rgba(21,18,31,.09); --hair-2: rgba(21,18,31,.22); --hair-strong: rgba(21,18,31,.22); --skel: rgba(21,18,31,.07);
+  --violet: #8B5CF6; --focus: #6D3FE0;
+  --glow-pill: linear-gradient(120deg, #D9690B, #7C3AED);
+  --glow-go: linear-gradient(110deg, #DE6C0C, #7C3AED 52%, #4D5DD3);
+  --glow-off: linear-gradient(110deg, color-mix(in srgb, #F7931A 16%, var(--field)), color-mix(in srgb, #8B5CF6 16%, var(--field)) 52%, color-mix(in srgb, #627EEA 16%, var(--field)));
+  --glow-shadow: 0 16px 36px -16px color-mix(in srgb, #8B5CF6 85%, transparent), 0 6px 18px -12px #F7931A;
+  --glow-rim: linear-gradient(140deg, color-mix(in srgb, #F7931A 80%, transparent), rgba(255,255,255,.3) 45%, color-mix(in srgb, #8B5CF6 80%, transparent));
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-page="spx"], :has(.sm-p a[href="/face/"][aria-current="page"])) {
-    --paper: #131417; --bg: #131417; --card: #1A1B1F; --field: #15161A; --ink: #E4E4E1; --mute: #9A9BA1;
-    --hair: rgba(228,228,225,.09); --hair-2: rgba(228,228,225,.22); --hair-strong: rgba(228,228,225,.22); --skel: rgba(228,228,225,.07);
+    --paper: #07060D; --bg: #07060D; --card: #16131F; --field: #100E19; --ink: #F1EEFA; --mute: #A9A2C0;
+    --hair: rgba(241,238,250,.09); --hair-2: rgba(241,238,250,.22); --hair-strong: rgba(241,238,250,.22); --skel: rgba(241,238,250,.07);
+    --focus: #B9A2FF;
+    --glow-rim: linear-gradient(140deg, color-mix(in srgb, #F7931A 75%, transparent), rgba(255,255,255,.12) 45%, color-mix(in srgb, #8B5CF6 80%, transparent));
   }
 }
 
-/* Graphite's grotesk, for the header, the menu and the footer of every page that wears them (the front page names it in its own head as well, for its first paint), and a
+/* The skin's grotesk, for the header, the menu and the footer of every page that wears them (the front page names it in its own head as well, for its first paint), and a
    local face scaled to its width and line metrics that shows until it arrives; the same for Newsreader, the front page's serif. Measured against each font's own
    advances. */
 @font-face { font-family: 'Schibsted Grotesk'; font-weight: 400 600; font-display: swap; src: url('/fonts/schibsted-grotesk-latin.woff2') format('woff2'); }
@@ -16971,7 +17053,7 @@ function swcBar(k) {
   const s = SWC_SECS[k];
   if (s) proveBar(q, typeof s === 'function' ? s() : s);
 }
-const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=c69aab93').catch((e) => { SWC.p = null; throw e; }));
+const swcLoad = () => (SWC.p ||= import('/swap/card.js?cb=b985fbce').catch((e) => { SWC.p = null; throw e; }));
 const LBT = { p: null, at: 0 };
 const lbToday = () => {
   if (!LBT.p || Date.now() - LBT.at > 60e3) {
@@ -17601,7 +17683,7 @@ async function hxBtcMarket(addr) {
   const r = xtOf(addr), b = r && xtBridge(r);
   if (!b) return;
   try {
-    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=a1ece943')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
+    if (!BTC_MKT.has(b.hex)) BTC_MKT.set(b.hex, (await import('/trade/btc.js?cb=b7447bbe')).makeBitcoin({ notify: (m, kind, ms) => toast(String(m), kind === 'error', ms), asset: { id: b.hex, title: `${b.name} on Bitcoin`, ticker: b.name, decimals: r.tdec, bound: true, after: '' } }));
     await BTC_MKT.get(b.hex).open();
   } catch (e) { toast(`The ${b.name} market on Bitcoin did not open: ${errText(e)}`, true); }
 }

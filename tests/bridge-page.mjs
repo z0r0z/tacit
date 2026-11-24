@@ -263,7 +263,7 @@ try {
     await page.waitForTimeout(800);
     ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no sideways scroll on a phone');
     const [bg, skin] = await page.evaluate(() => [(() => { const b = getComputedStyle(document.body).backgroundColor; return b === 'rgba(0, 0, 0, 0)' ? getComputedStyle(document.documentElement).backgroundColor : b; })(), document.documentElement.dataset.skin || 'graphite']);
-    ok(bg === { classic: 'rgb(21, 19, 14)', graphite: 'rgb(19, 20, 23)' }[skin], `dark paper, its skin's (${skin}: ${bg})`);
+    ok(bg === { classic: 'rgb(21, 19, 14)', graphite: 'rgb(7, 6, 13)' }[skin], `dark paper, its skin's (${skin}: ${bg})`);
     await shot(page, 'phone-dark');
     await shot(page, 'phone-dark-full', true);
     for (const [id, name] of [['#rf', 'phone-reflection'], ['#mv-h', 'phone-moves']]) {

@@ -162,8 +162,8 @@ for (const scheme of ['light', 'dark']) {
   const m = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth, bg: (() => { const b = getComputedStyle(document.body).backgroundColor; return b === 'rgba(0, 0, 0, 0)' ? getComputedStyle(document.documentElement).backgroundColor : b; })(), skin: document.documentElement.dataset.skin || 'graphite', tap: [...document.querySelectorAll('#go, #eg button')].map((e) => Math.round(e.getBoundingClientRect().height)) }));
   ok(m.sw <= m.iw, `${scheme}: no sideways scroll at 375 px (${m.sw} <= ${m.iw})`);
   ok(m.tap.every((h) => h >= 34), `${scheme}: the buttons are tall enough to press (${m.tap.join(', ')} px)`);
-  // each skin's own paper: Classic's warm one, or Graphite's grey (#E6E6E4, #131417)
-  const paper = { classic: { dark: /^rgb\(2[0-9], 1[0-9], 1[0-9]\)$/, light: /^rgb\(23\d, 22\d, 20\d\)$/ }, graphite: { dark: /^rgb\(19, 20, 23\)$/, light: /^rgb\(230, 230, 228\)$/ } }[m.skin][scheme];
+  // each skin's own paper: Classic's warm one, or the default skin's (Twin glow: #F4F1FB, #07060D; it keeps the name graphite here, the default's name)
+  const paper = { classic: { dark: /^rgb\(2[0-9], 1[0-9], 1[0-9]\)$/, light: /^rgb\(23\d, 22\d, 20\d\)$/ }, graphite: { dark: /^rgb\(7, 6, 13\)$/, light: /^rgb\(244, 241, 251\)$/ } }[m.skin][scheme];
   ok(paper.test(m.bg), `${scheme}: the page wears the ${scheme} paper of its skin, ${m.skin} (${m.bg})`);
   ok(errs.length === 0 && csp.length === 0, `${scheme}: no page error, no CSP violation`);
   await shot(page, `help-phone-${scheme}`);
@@ -177,7 +177,7 @@ for (const scheme of ['light', 'dark']) {
   await page.waitForSelector('#out .a');
   await page.waitForTimeout(400);
   const bg = await page.locator('#go').evaluate((e) => getComputedStyle(e).backgroundColor), skin = await page.evaluate(() => document.documentElement.dataset.skin || 'graphite');
-  const ink = { classic: 'rgb(26, 26, 26)', graphite: 'rgb(23, 24, 27)' }[skin];   // filled with its skin's ink
+  const ink = { classic: 'rgb(26, 26, 26)', graphite: 'rgb(21, 18, 31)' }[skin];   // filled with its skin's ink
   ok(!(await page.evaluate(() => matchMedia('(hover: hover)').matches)) && bg === ink, `after a tap the Ask button is still filled with ${skin}'s ink (${bg})`);
   await ctx.close();
 }
