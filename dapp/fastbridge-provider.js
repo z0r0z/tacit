@@ -212,13 +212,19 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const held = async () => (await promised()).sum;
   const free = async () => { const i = await readInventory(), p = await promised(); return i.held == null ? null : i.held > p.sum ? i.held - p.sum : 0n; };
 
-  let lastPrune = 0;
+  let lastPrune = 0, quotesHeld = null;
+  const maxQuotes = Number(config.policy?.maxQuotes) || 20000;
   async function prune() {
-    if (!quoteStore.del || now() - lastPrune < 3600) return;
+    const full = quotesHeld !== null && quotesHeld >= maxQuotes;
+    if (!quoteStore.del || now() - lastPrune < (full ? 300 : 3600)) return;
     lastPrune = now();
     for (const [id, r] of reservations) if (r.until <= now()) reservations.delete(id);
     const used = new Set((await swaps.list()).map((r) => r.quoteId));
-    for (const q of await quoteStore.list()) if (q.validUntil + 2 * DAY < now() && !used.has(q.id) && !reservations.has(q.id)) await quoteStore.del(q.id);
+    // a quote no swap uses is of no use once the longest an offer is answered after it has passed: that is kept for a day when the store is not full
+    const dead = full ? Math.max(graceSecs, lateSecs) + 3600 : 2 * DAY;
+    let kept = 0;
+    for (const q of await quoteStore.list()) { if (q.validUntil + dead < now() && !used.has(q.id) && !reservations.has(q.id)) await quoteStore.del(q.id); else kept++; }
+    quotesHeld = kept;
   }
 
   let feeWarned = false;
@@ -337,7 +343,8 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       }
       if (method === 'POST' && path === '/quote') {
         if (!body || !/^\d+$/.test(String(body.amount))) return reply({ error: 'amount must be a whole number' }, 400);
-        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount).evmAmount); return quoter.quote(body.amount); }));
+        if (quotesHeld !== null && quotesHeld >= maxQuotes) return reply({ error: 'the provider holds too many open quotes just now: ask again shortly' }, 503);
+        return reply(await exclusive(async () => { await capacity(quoter.price(body.amount).evmAmount); const made = await quoter.quote(body.amount); if (quotesHeld !== null) quotesHeld++; return made; }));
       }
       if (method === 'POST' && path === '/reserve') {
         if (!body || !isId(body.quoteId)) return reply({ error: 'quoteId is required' }, 400);
@@ -355,7 +362,12 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       }
       if (method === 'POST' && path === '/extend') {
         if (!body || !isId(body.quoteId) || !/^[0-9a-f]{64}$/.test(String(body.txid))) return reply({ error: 'quoteId and txid are required' }, 400);
-        if (!reservations.has(body.quoteId)) return no('no reservation');
+        const held = reservations.get(body.quoteId);
+        if (!held || held.until <= now()) return no('no reservation');
+        if (held.txid === body.txid) return reply({ ok: true, until: held.until });
+        if (held.txid) return no('this reservation is held for another transaction');
+        // each transaction looked at is a read from the explorers, so a reservation looks at a few, not at any number
+        if ((held.looks = (held.looks || 0) + 1) > (hold.maxLooks ?? 20)) return no('this reservation has looked at enough transactions');
         const tx = await btc.fetchTx(body.txid).catch(() => null);
         return await exclusive(async () => {
           const r = reservations.get(body.quoteId);
@@ -390,7 +402,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
         if (!body || typeof body.quoteId !== 'string' || !body.offer || typeof body.offer !== 'object') return reply({ error: 'quoteId and offer are required' }, 400);
         const q = isId(body.quoteId) ? await quoter.get(body.quoteId) : null;
         const sid = String(body.offer.swapId || '').toLowerCase().replace(/^0x/, '');
-        const said = (r) => { log({ level: r.ok ? 'info' : 'warn', msg: r.ok ? 'offer accepted' : 'offer declined', id: sid, ...(r.ok ? {} : { retry: !!r.retry, why: String(r.why || '').slice(0, 200) }) }); return r; };
+        const said = (r) => { log({ level: r.ok ? 'info' : 'warn', msg: r.ok ? 'offer accepted' : 'offer declined', id: sid.slice(0, 80), ...(r.ok ? {} : { retry: !!r.retry, why: String(r.why || '').slice(0, 200) }) }); return r; };
         if (!/^[0-9a-f]{72}$/.test(sid)) return reply(said(await judgeOffer(body, q, sid)));
         for (const [k, c] of checking) if (c.done && now() - c.at > 600) checking.delete(k);
         let c = checking.get(sid);

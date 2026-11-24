@@ -57,12 +57,12 @@ export function makeBitcoinLocker(ctx) {
   // Builds the lock and stores it; sends nothing. `notes` are the wallet's own notes to lock from, `counterClaimPub` the
   // 33-byte Bitcoin key the counterparty committed to before this call, `takeSats` the fee of its take, which the lock pays
   // to that key's address so a counterparty needs no coins of its own on Bitcoin.
-  async function build({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0, avoid = null, validUntil = null }) {
-    if (X.isSats(asset)) return buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId, avoid, validUntil });
+  async function build({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0, avoid = null, validUntil = null, csvBlocks: csvIn = null }) {
+    if (X.isSats(asset)) return buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId, avoid, validUntil, csvBlocks: csvIn });
     if (!notes.length) throw new Error('fastbridge: no note to lock');
     const swapId = X.swapIdOf(notes[0].txid, notes[0].vout), id = hx(swapId);
     const sec = X.deriveSwapSecrets({ seed, swapId });
-    const csvBlocks = policy.csvBlocks;
+    const csvBlocks = csvIn ?? policy.csvBlocks;
     const lock = deriveLock({ prims: btc.prims, claimerPub: counterClaimPub, T: sec.T, lockerXonly: btc.wallet.xonly, csvBlocks });
     const hint = X.lockHintScript({ seed, swapId, claimerPub: counterClaimPub, csvBlocks, value: amount });
     const pay = takeSats > 0 ? { value: takeSats, script: btc.prims.p2wpkhScript(counterClaimPub) } : null;
@@ -83,13 +83,13 @@ export function makeBitcoinLocker(ctx) {
   // The same lock for plain sats (asset X.SATS_ASSET): the wallet's own coins, picked here, go into the lock output of one ordinary
   // transaction, and the first coin's outpoint is the swap id. No note, no commit, no coin kept for the fee of the counterparty's
   // take: a take or a refund pays its fee out of the lock output.
-  async function buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId = null, avoid = null, validUntil = null }) {
+  async function buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId = null, avoid = null, validUntil = null, csvBlocks: csvIn = null }) {
     const feeRate = await btc.feeRate();
     const coins = (await btc.satsUtxos()).filter((u) => !avoid || !avoid.has(`${u.txid}:${u.vout}`));
     const picked = btc.tx.pickSats({ amount, satsUtxos: coins, feeRate });
     const swapId = X.swapIdOf(picked[0].txid, picked[0].vout), id = hx(swapId);
     const sec = X.deriveSwapSecrets({ seed, swapId });
-    const csvBlocks = policy.csvBlocks;
+    const csvBlocks = csvIn ?? policy.csvBlocks;
     const lock = deriveLock({ prims: btc.prims, claimerPub: counterClaimPub, T: sec.T, lockerXonly: btc.wallet.xonly, csvBlocks });
     // (the hint carries no fixed marker: nothing in the transaction says it is a Tacit lock)
     const hint = X.lockHintScript({ seed, swapId, claimerPub: counterClaimPub, csvBlocks, value: amount, bare: true });
@@ -130,12 +130,15 @@ export function makeBitcoinLocker(ctx) {
     if (!rec.refund) {
       const lock = lockOf(rec), sec = secrets(rec);
       const lockOut = { txid: rec.lock.txid, vout: rec.lock.vout, value: rec.lock.value ?? 546 };
+      // A refund never pays more than a ceiling, whatever rate the explorers gave: a share of the lock for plain sats (the fee comes out of the lock),
+      // a fixed amount for a note (it comes out of the fee coins). Over it, the refund waits for the next rate; the timelock does not run out.
       const pair = X.isSats(rec.asset)
-        ? btc.tx.refundSats({ lockOut, lock, dLocker: btc.wallet.priv, feeRate: await btc.feeRate() })
+        ? btc.tx.refundSats({ lockOut, lock, dLocker: btc.wallet.priv, feeRate: await btc.feeRate(), maxFee: Math.floor(Number(lockOut.value) * (policy.refundMaxFeeShare ?? 0.25)) })
         : btc.tx.refundTransfer({
           asset: hexToBytes(rec.asset), lockOut, lock, dLocker: btc.wallet.priv,
           amount: BigInt(rec.amount), rLock: sec.rLock, satsUtxos: await btc.satsUtxos(), feeRate: await btc.feeRate(),
         });
+      if (!X.isSats(rec.asset) && pair.commitFee + pair.revealFee > (policy.refundMaxFeeSats ?? 200000)) throw new Error(`the refund would cost ${pair.commitFee + pair.revealFee} sats at the current rate, more than this side pays; asked again with the next rate`);
       await save(rec, { refund: { txid: pair.revealTxid, commitHex: pair.commitHex, revealHex: pair.revealHex, commitTxid: pair.commitTxid, at: ctx.now() } });
     }
     try { await btc.broadcast(rec.refund, null); } catch (e) {

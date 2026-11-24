@@ -11,6 +11,7 @@ const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 const isHex = (h, n) => new RegExp(`^[0-9a-f]{${n}}$`).test(strip(h));
 const big = (v, what) => { try { const b = BigInt(v); if (b < 0n) throw 0; return b; } catch { throw new Error(`the provider's ${what} is not a number`); } };
 const TERMINAL = new Set(['done', 'refunded', 'counter-took']);
+const locked = (name, fn) => (typeof navigator !== 'undefined' && navigator.locks && navigator.locks.request ? navigator.locks.request(name, fn) : fn());
 const MAX_INPUTS = 6;
 
 export const DEFAULT_POLICY = {
@@ -61,7 +62,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
 
   async function quote(amount) {
     const q = await counter.quote(amount);
-    if (!q || typeof q.id !== 'string' || !isHex(q.claimPub, 66) || !isHex(q.btcAsset, 64) || !isHex(q.evmAsset, 64)) throw new Error('the provider\'s quote is not readable');
+    if (!q || typeof q.id !== 'string' || q.id.length > 128 || !isHex(q.claimPub, 66) || !isHex(q.btcAsset, 64) || !isHex(q.evmAsset, 64)) throw new Error('the provider\'s quote is not readable');
     for (const k of ['claimPub', 'btcAsset', 'evmAsset']) if (pinned(k) && pinned(k) !== strip(q[k])) throw new Error(`the provider's ${k === 'claimPub' ? 'key' : 'asset'} is not the one this page expects`);
     const btcValue = big(q.btcValue, 'amount'), evmAmount = big(q.evmAmount, 'payout');
     if (btcValue !== BigInt(amount)) throw new Error('the quote is for a different amount');
@@ -128,19 +129,23 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     const notes = await freeNotes(all);
     const pick = pickNotes(notes, q.btcValue);
     if (!pick) throw new Error(notes.length < all.length ? 'fastbridge: this note is already part of a swap' : 'these notes do not cover the amount');
-    if (await store.get(bytesToHex(X.swapIdOf(pick.notes[0].txid, pick.notes[0].vout)))) throw new Error('fastbridge: this note is already part of a swap');
-    if (!reserved) await reserve(q);
-    policy.csvBlocks = q.csvBlocks;
-    const rec = await bl.start({
-      asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub),
-      evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0, avoid: avoid || outpointsOf(all), validUntil: Number(q.validUntil) || null,
+    const swapId = bytesToHex(X.swapIdOf(pick.notes[0].txid, pick.notes[0].vout));
+    // One start of a note at a time across this browser's tabs: a second tab that presses the same note waits here, then finds the first one's record.
+    return locked(`tacit-fast-start:${swapId}`, async () => {
+      if (await store.get(swapId)) throw new Error('fastbridge: this note is already part of a swap');
+      if (!reserved) await reserve(q);
+      policy.csvBlocks = q.csvBlocks;
+      const rec = await bl.start({
+        asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub),
+        evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0, avoid: avoid || outpointsOf(all), validUntil: Number(q.validUntil) || null, csvBlocks: q.csvBlocks,
+      });
+      if (provider || (meta && meta.sweep)) {
+        if (provider) rec.provider = provider;
+        if (meta && meta.sweep) rec.sweep = meta.sweep;
+        await store.put(rec);
+      }
+      return bl.step(rec);
     });
-    if (provider || (meta && meta.sweep)) {
-      if (provider) rec.provider = provider;
-      if (meta && meta.sweep) rec.sweep = meta.sweep;
-      await store.put(rec);
-    }
-    return bl.step(rec);
   }
 
   async function tick() {
@@ -163,7 +168,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
 
   const records = async () => (await store.list()).sort((a, b) => b.created - a.created).map((r) => describe(r, now));
 
-  async function recover({ pages = 4 } = {}) {
+  async function recover({ pages = 12 } = {}) {
     const known = new Set((await store.list()).map((r) => r.id)), found = [];
     for (const tx of await btc.history(btc.address, pages)) {
       if (!tx.vin || !tx.vin.length || !tx.status?.confirmed) continue;

@@ -54,7 +54,7 @@ test('terms and quote: the provider\'s numbers, the fee in base units, and a ref
 test('a quote the page will not show: unreadable, for another amount, a payout above the amount, a fee over the limit, a timelock out of range, too little time', async () => {
   const { w } = httpWorld();
   const cases = [
-    [{ id: 7 }, /not readable/], [{ claimPub: 'zz' }, /not readable/], [{ btcValue: String(VALUE + 1n) }, /different amount/],
+    [{ id: 7 }, /not readable/], [{ id: 'q'.repeat(200) }, /not readable/], [{ claimPub: 'zz' }, /not readable/], [{ btcValue: String(VALUE + 1n) }, /different amount/],
     [{ evmAmount: String(VALUE + 1n) }, /payout is out of range/], [{ evmAmount: '0' }, /payout is out of range/], [{ evmAmount: '12' }, /fee is above the limit/],
     [{ csvBlocks: 10 }, /timelock is out of range/], [{ csvBlocks: 5000 }, /timelock is out of range/], [{ validUntil: w.clock.now() + 30 }, /expires too soon/],
     [{ btcValue: 'ten' }, /not a number/],
@@ -240,6 +240,28 @@ test('a note held by a swap that is not over is not offered to another: the seco
   await fb.start({ quote: q, notes: [w.note] });
   await assert.rejects(() => fb.start({ quote: q, notes: [w.note] }), /already part of a swap/);
   assert.deepEqual(await fb.cost({ quote: q, notes: [w.note] }), { short: false, noNotes: true }, 'nothing to price while the note is held');
+});
+
+test('two tabs pressing the same note at once: one starts it, the other waits and finds the first one\'s swap', async () => {
+  const { w, ref } = httpWorld();
+  w.lEvm.fund(NET, 'net');
+  const s = await serve(w, { config: feeConfig(w) });
+  ref.base = s.base;
+  const tails = new Map();
+  const locks = { request: (name, fn) => { const run = (tails.get(name) || Promise.resolve()).then(fn); tails.set(name, run.catch(() => {})); return run; } };
+  const had = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { value: { locks }, configurable: true, writable: true });
+  try {
+    // both starts have the provider's answer to their reserve before either goes on (a start waiting for the lock is not there to meet, so that one is let through after a moment)
+    let arrived = 0, meet; const both = new Promise((r) => { meet = r; });
+    const slow = (c) => ({ ...c, reserve: async (a) => { const r = await c.reserve(a); if (++arrived === 2) meet(); await Promise.race([both, new Promise((x) => setTimeout(x, 80))]); return r; } });
+    const one = clientFor(w, slow(counterAt(s.base))), two = clientFor(w, slow(counterAt(s.base)));
+    const q = await one.quote(VALUE);
+    const [a, b] = await Promise.allSettled([one.start({ quote: q, notes: [w.note] }), two.start({ quote: q, notes: [w.note] })]);
+    assert.equal([a, b].filter((x) => x.status === 'fulfilled').length, 1, 'one of the two started it');
+    assert.match(String([a, b].find((x) => x.status === 'rejected').reason.message), /already part of a swap/);
+    assert.equal((await w.userStore.list()).length, 1, 'and there is one record of it');
+  } finally { if (had) Object.defineProperty(globalThis, 'navigator', had); else delete globalThis.navigator; }
 });
 
 test('a new instance on the same store carries a swap on: the page closed and opened again mid-swap', async () => {

@@ -279,8 +279,8 @@ export function makeAdaptorBtcTx({ prims, kit }) {
   }
 
   // REFUND: by the script path, once the output is `lock.csvBlocks` old.
-  function refundSats({ lockOut, lock, dLocker, feeRate }) {
-    return sweepSats({ lockOut, lock, sequence: lock.csvBlocks, witnessSizes: [64, lock.leaf.length, lock.controlBlock.length], sign: refundSigner(dLocker, lock), feeRate });
+  function refundSats({ lockOut, lock, dLocker, feeRate, maxFee = null }) {
+    return sweepSats({ lockOut, lock, sequence: lock.csvBlocks, witnessSizes: [64, lock.leaf.length, lock.controlBlock.length], sign: refundSigner(dLocker, lock), feeRate, maxFee });
   }
 
   // Commit first, then the reveal, which retries while the commit propagates. `onStage` hears 'commit' then 'reveal'. A pair

@@ -93,8 +93,11 @@ export function makeEthereumLocker(ctx) {
     // and the swap is named by the first coin the lock spends. Which of the two it is is this side's own quote, not the offer's word
     // (an offer that names the other is refused below, as the Bitcoin side differing from the quote)
     const sats = X.isSats(quote.btcAsset);
-    const note = sats ? null : await btc.resolveNote(offer.btc.txid, offer.btc.vout);
+    // what is settled by the transaction and the block alone comes first: the walk of a note's history (resolveNote) is the longest read there is
     if (st.confirmations > 0 && ctx.now() - (await btc.blockTime(st.height)) > maxOfferAge) return reject('the offer arrived too late to be answered');
+    const takeSats = Number(quote.takeSats ?? 0), own = hx(btc.prims.p2wpkhScript(btc.wallet.pub));
+    if (takeSats > 0 && !tx.vout.some((o) => strip(o.scriptpubkey) === own && o.value >= takeSats)) return reject('the lock does not pay the fee of the take');
+    const note = sats ? null : await btc.resolveNote(offer.btc.txid, offer.btc.vout);
     if (policy.screen && !sats) {
       let s;
       try { s = await policy.screen(tx.vin.slice(1).map((i) => ({ txid: i.txid, vout: i.vout }))); } catch { return reject('the history of the notes could not be read just now', true); }
@@ -110,8 +113,6 @@ export function makeEthereumLocker(ctx) {
       chain, minConfs: 0, minCsv: policy.minCsv,
     });
     if (!v.ok) return reject(v.reasons.join('; '));
-    const takeSats = Number(quote.takeSats ?? 0), own = hx(btc.prims.p2wpkhScript(btc.wallet.pub));
-    if (takeSats > 0 && !tx.vout.some((o) => strip(o.scriptpubkey) === own && o.value >= takeSats)) return reject('the lock does not pay the fee of the take');
     const consumed = sats ? null : await btc.crossLaneBlocked(tx);
     if (consumed) return reject('a spent note is already consumed on Ethereum: ' + consumed);
     const rec = {

@@ -22,7 +22,7 @@ export const SATS = 100_000n;
 export const UNITS = 3_600_000n;                                         // 0.036 ETH in pool units
 
 // `fwdQuote`, `revConfig`: what a test sets over the forward provider's quote terms and the reverse provider's config
-export function pairWorld({ providerMarket = 35.6, clientMarket = 35.6, confs = 1, userSats = 200_000, fwdQuote = {}, revConfig = {}, revCoins = [2_000_000] } = {}) {
+export function pairWorld({ providerMarket = 35.6, clientMarket = 35.6, confs = 1, userSats = 200_000, fwdQuote = {}, fwdPolicy = {}, fwdQuoteStore = null, revConfig = {}, revCoins = [2_000_000] } = {}) {
   const clock = makeClock(), btc = makeBitcoinSim(clock), evm = makeEvmSim(clock);
   const wallet = (name) => makeBtcWallet({ priv: bigintToBytes32(scalar(name + '/btc-wallet')), hrp: 'tb', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('offline'); }, fetchFeeRate: async () => 3 });
   const uW = wallet('user'), lW = wallet('lp'), rW = wallet('lp-reverse');
@@ -49,11 +49,11 @@ export function pairWorld({ providerMarket = 35.6, clientMarket = 35.6, confs = 
 
   const w = { uEvmCtx, lEvmCtx, lBtc, clock, btc, evm, uW, lW, rW, uKeys, lKeys, uEvm, lEvm, uBtc, rBtc, uCoins, rCoins, market, providerFeed, clientFeed, up: { lp: true, offers: true }, stores: { lp: memStore(), rv: { swaps: memStore(), quotes: memStore(), offers: memStore(), evmOffers: memStore() } } };
   w.fwd = makeLpService({
-    seed: lKeys.seed, btc: lBtc, evm: lEvmCtx, swaps: w.stores.lp, quoteStore: memStore(), now: clock.now,
+    seed: lKeys.seed, btc: lBtc, evm: lEvmCtx, swaps: w.stores.lp, quoteStore: fwdQuoteStore || memStore(), now: clock.now,
     config: {
       claimPub: bytesToHex(lW.wallet.pub), csvBlocks: 144,
       quote: { btcAsset: SATS_ASSET, evmAsset: ASSET, minAmount: 20_000, maxAmount: 10_000_000, feeBps: 30, flatFee: 500, validSecs: 600, rate: () => providerFeed.rate(), ...fwdQuote },
-      policy: { minCsv: 72, minConfsFor: () => confs, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, roundSecs: 600, refundMarginSecs: 600, maxOfferAgeSecs: 3600, minAmount: 20_000, maxAmount: 10_000_000 },
+      policy: { minCsv: 72, minConfsFor: () => confs, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, roundSecs: 600, refundMarginSecs: 600, maxOfferAgeSecs: 3600, minAmount: 20_000, maxAmount: 10_000_000, ...fwdPolicy },
     },
   });
   w.rev = makeReverseService({
