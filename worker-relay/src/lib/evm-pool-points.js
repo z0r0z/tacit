@@ -349,6 +349,20 @@ export async function scanEvmPoolChain(ctx) {
       byTx.get(d.transactionHash).deposits.push(d);
     }
     for (const b of boxLogs) byTx.get(b.transactionHash)?.boxes.push(b);
+    // ETH the pool pays out in the same transaction takes back what a deposit put in: a flash-loaned deposit spent again before
+    // the call returns leaves nothing in the pool. The withdrawn amount comes off the transaction's deposits, earliest first,
+    // and only what stays is credited. A deposit and a withdrawal in different transactions are not touched.
+    const withdrawnIn = new Map();
+    for (const l of txLogs) if (l.args.extAmount < 0n) withdrawnIn.set(l.transactionHash, (withdrawnIn.get(l.transactionHash) ?? 0n) - l.args.extAmount);
+    const keptOf = new Map(); // deposit log -> wei that stays in the pool
+    for (const { deposits: ds } of byTx.values()) {
+      let take = withdrawnIn.get(ds[0].transactionHash) ?? 0n;
+      for (const d of ds) {
+        const cut = take < d.args.extAmount ? take : d.args.extAmount;
+        take -= cut;
+        keptOf.set(d, d.args.extAmount - cut);
+      }
+    }
     const completionOf = new Map(); // deposit log -> { box, completer, ordinal }
     for (const { deposits: ds, boxes } of byTx.values()) {
       boxes.sort((a, b) => a.logIndex - b.logIndex);
@@ -364,6 +378,8 @@ export async function scanEvmPoolChain(ctx) {
     }
 
     for (const d of deposits) {
+      const kept = keptOf.get(d);
+      if (kept === 0n) continue;   // paid out again in the same transaction
       const group = byTx.get(d.transactionHash).deposits;
       const base = group.length === 1 ? d.transactionHash : `${d.transactionHash}:${d.logIndex}`;
       const time = await blockTime(d.blockNumber);
@@ -371,7 +387,7 @@ export async function scanEvmPoolChain(ctx) {
       if (completion) {
         state.addPending({
           chainId, txHash: d.transactionHash, logIndex: d.logIndex, box: completion.box, completer: completion.completer,
-          ordinal: completion.ordinal, rowKey: base, amountWei: d.args.extAmount.toString(),
+          ordinal: completion.ordinal, rowKey: base, amountWei: kept.toString(),
           blockNumber: Number(d.blockNumber), blockTime: Number(time),
         });
         continue;
@@ -379,7 +395,7 @@ export async function scanEvmPoolChain(ctx) {
       const tx = await client.getTransaction({ hash: d.transactionHash });
       const depositor = creditFor(tx, { hops: hops.direct, excluded: ctx.excluded });
       if (!depositor) continue;
-      await credit(ctx, { key: base, blockNumber: d.blockNumber, blockTime: time, depositor, amountWei: d.args.extAmount });
+      await credit(ctx, { key: base, blockNumber: d.blockNumber, blockTime: time, depositor, amountWei: kept });
     }
 
     cursor = to;

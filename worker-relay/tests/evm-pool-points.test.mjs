@@ -514,3 +514,94 @@ await test('a throttle keeps the span and the cursor; only a span cap narrows it
   assert.equal(w.ctx.spans.get(8453), 2000, 'the span is back at the configured chunk');
   w.cleanup();
 });
+
+// ETH the pool pays out in the same transaction takes back what a deposit put in (a flash-loaned deposit spent again before the
+// call returns). On Base and Ethereum a helper did exactly that with 79,700 ETH, twice a day, for points.
+await test('a deposit paid out again in the same transaction is credited nothing', async () => {
+  const w = world();
+  transact(w.chain, { hash: h(80), block: 200n, logIndex: 3, extAmount: 79700n * ETH });
+  transact(w.chain, { hash: h(80), block: 200n, logIndex: 4, extAmount: -79700n * ETH });
+  w.chain.txs.set(h(80), { from: ALICE, to: BOB, typeHex: '0x2' });
+  await scanEvmPoolChain(w.ctx);
+  assert.equal(rows(w.store, ALICE).length, 0, 'no row at all');
+  assert.equal(w.store.totalFor(ALICE), null);
+  assert.equal(w.state.loadCursor(8453), 1000n, 'the scan still moves on');
+  w.cleanup();
+});
+
+await test('a part paid out in the same transaction comes off, the rest stays credited', async () => {
+  const w = world();
+  transact(w.chain, { hash: h(81), block: 200n, logIndex: 3, extAmount: 5n * ETH });
+  transact(w.chain, { hash: h(81), block: 200n, logIndex: 4, extAmount: -2n * ETH });
+  w.chain.txs.set(h(81), { from: ALICE, to: POOL, typeHex: '0x2' });
+  await scanEvmPoolChain(w.ctx);
+  assert.equal(creditedWei(w.store, ALICE), 3n * ETH);
+  w.cleanup();
+});
+
+await test('a deposit and a withdrawal in different transactions are both left alone', async () => {
+  const w = world();
+  transact(w.chain, { hash: h(82), block: 200n, extAmount: 5n * ETH });
+  transact(w.chain, { hash: h(83), block: 201n, extAmount: -5n * ETH });
+  w.chain.txs.set(h(82), { from: ALICE, to: POOL, typeHex: '0x2' });
+  w.chain.txs.set(h(83), { from: ALICE, to: POOL, typeHex: '0x2' });
+  await scanEvmPoolChain(w.ctx);
+  assert.equal(creditedWei(w.store, ALICE), 5n * ETH, 'the deposit keeps its full credit');
+  w.cleanup();
+});
+
+await test('a withdrawal on its own credits nothing and breaks nothing', async () => {
+  const w = world();
+  transact(w.chain, { hash: h(84), block: 200n, extAmount: -3n * ETH });
+  w.chain.txs.set(h(84), { from: ALICE, to: POOL, typeHex: '0x2' });
+  await scanEvmPoolChain(w.ctx);
+  assert.equal(rows(w.store, ALICE).length, 0);
+  assert.equal(w.state.loadCursor(8453), 1000n);
+  w.cleanup();
+});
+
+await test('several deposits in one transaction: the payout comes off the earliest first, each row keeps its own key', async () => {
+  const w = world();
+  transact(w.chain, { hash: h(85), block: 200n, logIndex: 2, extAmount: 3n * ETH });
+  transact(w.chain, { hash: h(85), block: 200n, logIndex: 4, extAmount: 4n * ETH });
+  transact(w.chain, { hash: h(85), block: 200n, logIndex: 6, extAmount: -5n * ETH });
+  w.chain.txs.set(h(85), { from: ALICE, to: POOL, typeHex: '0x2' });
+  await scanEvmPoolChain(w.ctx);
+  const r = rows(w.store, ALICE);
+  assert.equal(r.length, 1, 'the first deposit is wholly paid out, so only the second is a row');
+  assert.equal(r[0].amount_wei, String(2n * ETH));
+  assert.equal(r[0].tx_hash, `${h(85)}:4`);
+  w.cleanup();
+});
+
+await test('a box completion paid out again in the same transaction waits for no one', async () => {
+  const w = world();
+  topFunding(w.explorer, { hash: h(86), block: 150n, from: ALICE, value: ETH });
+  transact(w.chain, { hash: h(87), block: 400n, logIndex: 3, extAmount: ETH });
+  boxCompleted(w.chain, { hash: h(87), block: 400n, logIndex: 4 });
+  transact(w.chain, { hash: h(87), block: 400n, logIndex: 5, extAmount: -ETH });
+  w.chain.txs.set(h(86), { from: ALICE, to: BOX, typeHex: '0x2' });
+  w.chain.txs.set(h(87), { from: KEEPER, to: ROUTER, typeHex: '0x2' });
+  await scanEvmPoolChain(w.ctx);
+  assert.equal(w.state.countPending(8453), 0, 'nothing is held for the explorer');
+  await resolvePendingBoxes(w.ctx);
+  assert.equal(creditedWei(w.store, ALICE), 0n);
+  w.cleanup();
+});
+
+await test('a box completion partly paid out in the same transaction credits its funder only what stays', async () => {
+  const w = world();
+  topFunding(w.explorer, { hash: h(88), block: 150n, from: ALICE, value: 3n * ETH });
+  transact(w.chain, { hash: h(89), block: 400n, logIndex: 3, extAmount: 3n * ETH });
+  boxCompleted(w.chain, { hash: h(89), block: 400n, logIndex: 4 });
+  transact(w.chain, { hash: h(89), block: 400n, logIndex: 5, extAmount: -ETH });
+  internal(w.explorer, { hash: h(89), block: 400n, index: 2, from: BOX, to: ROUTER, value: 3n * ETH });
+  w.chain.txs.set(h(88), { from: ALICE, to: BOX, typeHex: '0x2' });
+  w.chain.txs.set(h(89), { from: KEEPER, to: ROUTER, typeHex: '0x2' });
+  await scanEvmPoolChain(w.ctx);
+  assert.equal(w.state.countPending(8453), 1);
+  await resolvePendingBoxes(w.ctx);
+  assert.equal(creditedWei(w.store, ALICE), 2n * ETH, 'the funder is credited for what stayed in the pool, not the 3 ETH deposited');
+  assert.equal(rows(w.store, KEEPER).length, 0);
+  w.cleanup();
+});
