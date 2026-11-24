@@ -95,8 +95,12 @@ export function makeEthereumLocker(ctx) {
     const sats = X.isSats(quote.btcAsset);
     // what is settled by the transaction and the block alone comes first: the walk of a note's history (resolveNote) is the longest read there is
     if (st.confirmations > 0 && ctx.now() - (await btc.blockTime(st.height)) > maxOfferAge) return reject('the offer arrived too late to be answered');
-    const takeSats = Number(quote.takeSats ?? 0), own = hx(btc.prims.p2wpkhScript(btc.wallet.pub));
-    if (takeSats > 0 && !tx.vout.some((o) => strip(o.scriptpubkey) === own && o.value >= takeSats)) return reject('the lock does not pay the fee of the take');
+    // the fee of the take is paid to this address, or locked with the lock: a second output of the lock's own script (only this key with t opens it, and the
+    // user's refund opens it too). The lock's script itself is checked below against the terms; here only that the output is the same script and is not the lock.
+    const takeSats = Number(quote.takeSats ?? 0), own = hx(btc.prims.p2wpkhScript(btc.wallet.pub)), lockSpk = strip(out.scriptpubkey);
+    const paidDirect = tx.vout.some((o) => strip(o.scriptpubkey) === own && o.value >= takeSats);
+    const lockedAt = tx.vout.findIndex((o, i) => i !== offer.btc.vout && strip(o.scriptpubkey) === lockSpk && o.value >= takeSats);
+    if (takeSats > 0 && !paidDirect && lockedAt < 0) return reject('the lock does not pay the fee of the take');
     const note = sats ? null : await btc.resolveNote(offer.btc.txid, offer.btc.vout);
     if (policy.screen && !sats) {
       let s;
@@ -118,6 +122,7 @@ export function makeEthereumLocker(ctx) {
     const rec = {
       v: 1, role: 'el', id, phase: 'accepted', created: ctx.now(), updated: ctx.now(), quoteId, offer,
       lockTxid: offer.btc.txid, lockVout: offer.btc.vout, lockValue: out.value, lockSpk: strip(out.scriptpubkey), csvBlocks: offer.btc.csvBlocks,
+      ...(takeSats > 0 && !paidDirect ? { takeVout: lockedAt, takeValue: tx.vout[lockedAt].value } : {}),
     };
     await store.put(rec);
     return { ok: true, rec };
@@ -277,6 +282,37 @@ export function makeEthereumLocker(ctx) {
             return save(rec, { phase: 'lost', why: 'the lock was spent by another transaction (its refund, once the timelock had run) before a take confirmed' });
           }
         }
+        // A take that was locked with the lock is swept to this address first, by the key path now that t is known (a transaction that pays its fee out of
+        // the output): the coin it leaves funds the commit of the take of the note, so this side needs no coin of its own. A sweep that waits is replaced like
+        // a take of sats. If the output is gone (the user's refund opened it) or too small, the take of the note is funded as it always was.
+        if (!satsTake && rec.takeVout != null && !rec.take && !rec.sweepSkipped) {
+          const lock = deriveLock({ prims: btc.prims, claimerPub: btc.wallet.pub, T: secretsOf(rec).T, lockerXonly: hexToBytes(strip(rec.offer.btc.lockerXonly)), csvBlocks: rec.csvBlocks });
+          const sk = claimSecret({ dClaimer: btc.wallet.priv, t: BigInt(rec.t), lock });
+          const sweepAt = (feeRate) => btc.tx.claimSats({ lockOut: { txid: rec.lockTxid, vout: rec.takeVout, value: rec.takeValue }, lock, sk, feeRate, maxFee: Math.floor(rec.takeValue * (policy.sweepMaxFeeShare ?? 0.5)) });
+          if (!rec.sweep) {
+            const feeRate = Math.ceil((await btc.feeRate()) * (policy.takeFeeFactor ?? 1.5));
+            let pair = null;
+            try { pair = sweepAt(feeRate); } catch (err) { if (!/does not cover the fee|no spendable amount/.test(String((err && err.message) || err))) throw err; }
+            if (!pair) return save(rec, { sweepSkipped: true });
+            await save(rec, { sweep: takeRecord(pair, feeRate, 0), sweeps: [pair.revealTxid] });
+          }
+          let landed = null;
+          for (const id of rec.sweeps || [rec.sweep.txid]) if (((await btc.status(id).catch(() => null)) || {}).confirmations) landed = id;
+          if (!landed) {
+            const gone = await btc.outspend(rec.lockTxid, rec.takeVout).catch(() => null);
+            if (gone && !(rec.sweeps || []).includes(gone)) return save(rec, { sweepSkipped: true });
+            try { await btc.broadcast(rec.sweep, null); } catch (err) { if (!(await btc.outspend(rec.lockTxid, rec.takeVout).catch(() => null))) throw err; }
+            if ((rec.sweep.bumps || 0) < (policy.takeMaxBumps ?? 8) && ctx.now() - rec.sweep.at > (policy.takeBumpSecs ?? 1200)) {
+              const prev = rec.sweep.feeRate, vsize = rec.sweep.vsize || 100;
+              const feeRate = Math.max(Math.ceil(prev * 1.5), prev + 2, Math.ceil(await btc.feeRate()), Math.ceil((rec.sweep.fee + vsize + 1) / vsize));
+              const pair = sweepAt(feeRate);
+              if (pair.revealFee > rec.sweep.fee) { await save(rec, { sweep: takeRecord(pair, feeRate, (rec.sweep.bumps || 0) + 1), sweeps: [...(rec.sweeps || []), pair.revealTxid] }); await btc.broadcast(rec.sweep, null); }
+              else await save(rec, { sweep: { ...rec.sweep, bumps: policy.takeMaxBumps ?? 8 } });
+            }
+            return rec;
+          }
+          if (landed !== rec.sweep.txid) await save(rec, { sweep: { ...rec.sweep, txid: landed } });
+        }
         // A take of a note is a commit (funded from this address's coins) and a reveal that spends the lock. Its record keeps the coins the commit spent,
         // its rate and fee, so a take that waits can be replaced by a pair spending the same coins at a higher rate (below).
         const claim = (coins, feeRate) => {
@@ -296,7 +332,7 @@ export function makeEthereumLocker(ctx) {
           const feeRate = await btc.feeRate();
           // The lock paid the fee of this take to this address: that coin is read from the lock's own transaction and tried first, so the take does not wait
           // on the address's whole coin list (which explorers refuse for a busy address and rate limit hardest). The list is asked for only when it is not enough.
-          const own = typeof btc.coinsIn === 'function' ? await btc.coinsIn(rec.lockTxid).catch(() => []) : [];
+          const own = typeof btc.coinsIn === 'function' ? await btc.coinsIn(rec.sweep && !rec.sweepSkipped ? rec.sweep.txid : rec.lockTxid).catch(() => []) : [];
           let pair = null, used = own;
           if (own.length) {
             try { pair = claim(own, feeRate); } catch (e) { if (!/not enough sats to fund the commit/.test(String((e && e.message) || e))) throw e; }

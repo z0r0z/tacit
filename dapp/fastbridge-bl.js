@@ -57,7 +57,7 @@ export function makeBitcoinLocker(ctx) {
   // Builds the lock and stores it; sends nothing. `notes` are the wallet's own notes to lock from, `counterClaimPub` the
   // 33-byte Bitcoin key the counterparty committed to before this call, `takeSats` the fee of its take, which the lock pays
   // to that key's address so a counterparty needs no coins of its own on Bitcoin.
-  async function build({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0, avoid = null, validUntil = null, csvBlocks: csvIn = null }) {
+  async function build({ asset, amount, notes, counterClaimPub, evmAsset, evmAmount, quoteId = null, takeSats = 0, takeInLock = false, avoid = null, validUntil = null, csvBlocks: csvIn = null }) {
     if (X.isSats(asset)) return buildSats({ asset, amount, counterClaimPub, evmAsset, evmAmount, quoteId, avoid, validUntil, csvBlocks: csvIn });
     if (!notes.length) throw new Error('fastbridge: no note to lock');
     const swapId = X.swapIdOf(notes[0].txid, notes[0].vout), id = hx(swapId);
@@ -65,14 +65,18 @@ export function makeBitcoinLocker(ctx) {
     const csvBlocks = csvIn ?? policy.csvBlocks;
     const lock = deriveLock({ prims: btc.prims, claimerPub: counterClaimPub, T: sec.T, lockerXonly: btc.wallet.xonly, csvBlocks });
     const hint = X.lockHintScript({ seed, swapId, claimerPub: counterClaimPub, csvBlocks, value: amount });
-    const pay = takeSats > 0 ? { value: takeSats, script: btc.prims.p2wpkhScript(counterClaimPub) } : null;
+    // The take is paid to the counterparty's own address, or (takeInLock) locked as a second output of the lock's own script: only the counterparty's key
+    // with t opens it, and this side's refund opens it too, so a take is paid when the swap is done and comes back when it is not.
+    const pay = takeSats > 0 ? { value: takeSats, script: takeInLock ? lock.spk : btc.prims.p2wpkhScript(counterClaimPub) } : null;
     // a coin the wallet knows to carry a note is never a fee coin, whatever sats it holds
     const coins = (await btc.satsUtxos()).filter((u) => !avoid || !avoid.has(`${u.txid}:${u.vout}`));
     const pair = btc.tx.lockTransfer({ asset, notes, lock, lockAmount: amount, rLock: sec.rLock, hint, pay, satsUtxos: coins, feeRate: await btc.feeRate() });
+    const takeVout = takeSats > 0 && takeInLock ? pair.revealTx.outputs.findIndex((o, i) => i !== 0 && o.value === takeSats && hx(o.script) === hx(lock.spk)) : -1;
+    if (takeSats > 0 && takeInLock && takeVout < 0) throw new Error('fastbridge: the take is not among the lock\'s outputs');
     const rec = {
       v: 1, role: 'bl', id, phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId, validUntil,
       asset: hx(asset), amount: String(amount), evmAsset: strip(evmAsset), evmAmount: String(evmAmount),
-      counterClaimPub: hx(counterClaimPub), csvBlocks, takeSats,
+      counterClaimPub: hx(counterClaimPub), csvBlocks, takeSats, ...(takeVout >= 0 ? { takeInLock: true, takeVout, takeValue: takeSats } : {}),
       lock: { txid: pair.revealTxid, vout: 0, value: pair.revealTx.outputs[0].value, commitTxid: pair.commitTxid, commitHex: pair.commitHex, revealHex: pair.revealHex },
       noteInputs: notes.map((n) => ({ txid: n.txid, vout: n.vout })),
       // the plain-sat coins that paid for the lock's commit: a bridge started right after this one (the parts of one split bridge) leaves them alone
@@ -119,6 +123,25 @@ export function makeBitcoinLocker(ctx) {
     return rec;
   }
 
+  // A take that was locked with the lock goes back with it, by the same refund path and a transaction of its own (its fee comes out of the output). It is
+  // tended apart from the note's refund, which it never holds up: what goes wrong here is kept in `takeWhy` and tried again.
+  async function refundTake(rec) {
+    if (rec.takeVout == null || rec.takeSettled) return;
+    const out = { txid: rec.lock.txid, vout: rec.takeVout, value: Number(rec.takeValue) };
+    try {
+      if (await btc.outspend(out.txid, out.vout)) { await save(rec, { takeSettled: true }); return; }
+      if (!rec.takeRefund) {
+        let pair;
+        try { pair = btc.tx.refundSats({ lockOut: out, lock: lockOf(rec), dLocker: btc.wallet.priv, feeRate: await btc.feeRate(), maxFee: Math.floor(out.value * (policy.takeRefundMaxFeeShare ?? 0.5)) }); } catch (e) {
+          if (/does not cover the fee/.test(String((e && e.message) || e))) { await save(rec, { takeSettled: true, takeWhy: 'too small to return' }); return; }
+          throw e;
+        }
+        await save(rec, { takeRefund: { txid: pair.revealTxid, commitHex: null, revealHex: pair.revealHex, commitTxid: null, at: ctx.now() } });
+      }
+      await btc.broadcast(rec.takeRefund, null);
+    } catch (e) { await save(rec, { takeWhy: String((e && e.message) || e).slice(0, 200) }); }
+  }
+
   // The Bitcoin refund, once the lock is old enough and still unspent.
   async function maybeRefund(rec) {
     const st = await btc.status(rec.lock.txid);
@@ -147,6 +170,7 @@ export function makeBitcoinLocker(ctx) {
       if (rec.refund.commitTxid && rec.refund.at != null && ctx.now() - rec.refund.at > 600 && (rec.refundRebuilds || 0) < 5 && btc.fetchTx && !(await btc.fetchTx(rec.refund.commitTxid).catch(() => true))) await save(rec, { refund: null, refundRebuilds: (rec.refundRebuilds || 0) + 1 });
       throw e;
     }
+    await refundTake(rec);
     return null;
   }
 
@@ -270,6 +294,11 @@ export function makeBitcoinLocker(ctx) {
             const tx = await btc.fetchTx(taken);
             if (!tx) throw new Error('the spend of the lock could not be read just now');
             home = (tx.vin || []).some((i) => i.txid === rec.lock.txid && Number(i.vout) === Number(rec.lock.vout) && Number(i.sequence) === Number(rec.csvBlocks));
+          }
+          // a take locked with the lock is not the counterparty's if the lock came home: it is tended until it is back (or for three days), then the swap is over
+          if (home && rec.takeVout != null && !rec.takeSettled) {
+            await refundTake(rec);
+            if (!rec.takeSettled && ctx.now() - (rec.refund?.at ?? ctx.now()) < 3 * 86400) return rec;
           }
           return save(rec, { phase: home ? 'refunded' : 'counter-took', takenBy: taken });
         }

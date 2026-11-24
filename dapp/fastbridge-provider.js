@@ -38,6 +38,8 @@ export function makeQuoter({ store, now, params }) {
       claimPub: p.claimPub, csvBlocks: p.csvBlocks, evmWindowSecs: p.evmWindowSecs, minConfs: p.minConfsFor(btcValue),
       takeSats: p.takeSats ? await p.takeSats() : 0, created: now(), validUntil: now() + (p.validSecs ?? 600),
     };
+    // a provider that takes the fee of its take from a second output of the lock's own script says so; a page that does not know the word locks as it always did
+    if (p.takeInLock === true && q.takeSats > 0) q.takeInLock = true;
     await store.put(q);
     return q;
   }
@@ -380,7 +382,11 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           const q = await quoter.get(body.quoteId), take = Number((q && q.takeSats) || 0);
           if (take > 0 && btc.prims && btc.wallet) {
             const own = [...btc.prims.p2wpkhScript(btc.wallet.pub)].map((b) => b.toString(16).padStart(2, '0')).join('');
-            if (!(tx.vout || []).some((o) => String(o.scriptpubkey || '').toLowerCase() === own && o.value >= take)) return no('that transaction does not pay the fee of the take');
+            // the fee of the take is paid to this address, or locked with the lock: an output of the lock's own script (the one the extension names)
+            let inLock = null;
+            if (!sats) { try { inLock = lockSpkOf(body.lock, q); } catch { inLock = null; } }
+            const pays = (tx.vout || []).some((o) => { const s = String(o.scriptpubkey || '').toLowerCase(); return (s === own || (inLock && s === inLock)) && o.value >= take; });
+            if (!pays) return no('that transaction does not pay the fee of the take');
           }
           // a hold of up to two hours is for a lock, so the transaction must pay the quoted amount to the lock of this quote: the Taproot output its terms make
           // (`lock`: the adaptor point and the refund key, with this side's claim key and the quote's timelock); any other output would hold the payout for nothing

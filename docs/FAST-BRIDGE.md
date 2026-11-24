@@ -14,9 +14,14 @@ Bitcoin, the pool's lock set on Ethereum. The only thing that links them is a se
    `546 + 750 vB × 2 × the fee rate`, which the user's client accepts up to 30,000 sats).
 2. The user picks a note, derives `t` and `T = t·G` from its key and the note's outpoint, and moves the amount into a
    Taproot output keyed `P_LP + T` with a refund leaf `<csv> OP_CHECKSEQUENCEVERIFY OP_DROP <user> OP_CHECKSIG`. A
-   sealed OP_RETURN in the same transaction lets the user find the lock again from its key, and a plain output of
-   `takeSats` to the LP's own address pays for the take, so a provider needs no Bitcoin of its own: by the time it takes,
-   that output is confirmed with the lock. The LP refuses a lock that does not pay it, and keeps it if the user refunds.
+   sealed OP_RETURN in the same transaction lets the user find the lock again from its key, and an output of `takeSats`
+   pays for the take, so a provider needs no Bitcoin of its own: by the time it takes, that output is confirmed with the
+   lock. The LP refuses a lock that does not pay it. The output is one of two kinds. A provider that says `takeInLock` in its
+   quote (`FB_LP_TAKE_IN_LOCK=on`) is paid by a second output of the lock's own script: only its key with `t` opens it (it
+   sweeps it to its own address first and takes the note with that coin), and the user's refund leaf opens it too, so the
+   take is the provider's when the swap is done and the user's when it is not. Any other provider is paid by a plain output
+   to its own address, which it keeps if the user refunds; a page uses the first kind only when the quote asks for it, and a
+   provider answers either kind.
 3. The user sends the LP its lock offer. The LP reads the lock from the chain: the transaction and the notes it
    spends, the note the validator derives, its asset and commitment, its confirmations, and whether a spent note is
    already consumed on Ethereum.

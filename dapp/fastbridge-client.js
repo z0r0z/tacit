@@ -86,7 +86,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
       if (rate == null) takeUnjudged = true;
       else { const fair = fairTakeAt(rate); highTake = takeSats > TAKE_FLAG * fair; takeAbove = takeSats > TAKE_FAIR * fair; }
     }
-    return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks, takeSats, highFee, highTake, takeAbove, takeUnjudged };
+    return { ...q, claimPub: strip(q.claimPub), btcAsset: strip(q.btcAsset), evmAsset: strip(q.evmAsset), btcValue, evmAmount, fee, csvBlocks, takeSats, takeInLock: takeSats > 0 && q.takeInLock === true, highFee, highTake, takeAbove, takeUnjudged };
   }
 
   const outpointsOf = (ns) => new Set(ns.map((n) => `${n.txid}:${n.vout}`));
@@ -105,9 +105,9 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
     const take = Number(q.takeSats ?? 0);
     policy.csvBlocks = q.csvBlocks;
     try {
-      const { rec, pair } = await bl.build({ asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub), evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: take, avoid: avoid || outpointsOf(notes) });
+      const { rec, pair } = await bl.build({ asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub), evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: take, takeInLock: q.takeInLock === true, avoid: avoid || outpointsOf(notes) });
       const fee = pair.commitFee + pair.revealFee;
-      return { short: false, fee, take, total: fee + take, coins: rec.feeInputs };
+      return { short: false, fee, take, total: fee + take, coins: rec.feeInputs, ...(q.takeInLock === true && take > 0 ? { takeInLock: true } : {}) };
     } catch (e) {
       const m = /not enough sats to fund the commit \(need (\d+), have (\d+)\)/.exec(String((e && e.message) || e));
       if (m) return { short: true, need: Number(m[1]), have: Number(m[2]), take };
@@ -137,7 +137,7 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
       policy.csvBlocks = q.csvBlocks;
       const rec = await bl.start({
         asset: hexToBytes(q.btcAsset), amount: q.btcValue, notes: pick.notes, counterClaimPub: hexToBytes(q.claimPub),
-        evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0, avoid: avoid || outpointsOf(all), validUntil: Number(q.validUntil) || null, csvBlocks: q.csvBlocks,
+        evmAsset: q.evmAsset, evmAmount: q.evmAmount, quoteId: q.id, takeSats: q.takeSats ?? 0, takeInLock: q.takeInLock === true, avoid: avoid || outpointsOf(all), validUntil: Number(q.validUntil) || null, csvBlocks: q.csvBlocks,
       });
       if (provider || (meta && meta.sweep)) {
         if (provider) rec.provider = provider;
@@ -182,7 +182,11 @@ export function makeFastBridgeClient({ lp, btc, evm, store, seed, pins = {}, pol
         if (known.has(id)) continue;
         const lock = X.recoverBtcLock({ prims: btc.prims, seed, swapId, lockerXonly: btc.wallet.xonly, outputs: tx.vout });
         if (!lock) continue;
+        // a take locked with the lock (an output of the lock's own script besides the lock) is found with it, so the refund brings it home too
+        const lockSpk = String(tx.vout[lock.vout].scriptpubkey || '').toLowerCase();
+        const takeAt = sats ? -1 : tx.vout.findIndex((o, k) => k !== lock.vout && String(o.scriptpubkey || '').toLowerCase() === lockSpk && o.value > 546);
         const rec = {
+          ...(takeAt >= 0 ? { takeInLock: true, takeVout: takeAt, takeValue: tx.vout[takeAt].value } : {}),
           v: 1, role: 'bl', id, phase: 'refund-wait', why: 'found from the key', created: now(), updated: now(), quoteId: null,
           asset: sats ? X.SATS_ASSET : pinned('btcAsset') || '', amount: String(lock.value), evmAsset: pinned('evmAsset') || '', evmAmount: '0',
           counterClaimPub: lock.claimerPub, csvBlocks: lock.csvBlocks, lock: { txid: tx.txid, vout: lock.vout, value: tx.vout[lock.vout].value },

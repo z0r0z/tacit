@@ -117,7 +117,7 @@ export function shown(o) {
   return {
     out: fmtTac(q.evmAmount), go: 'Bridge fast', fast: true, warn: !!(c && c.short), line: c && c.short ? shortText(c) : '',
     rc: [['Arrives', `${fmtTac(q.evmAmount)} private TAC on Ethereum`], ['Provider fee', `${fmtTac(q.fee)} TAC (${pct(q.fee, q.btcValue)})`, '', (o.provider && o.provider.name) || ''],
-      ['Bitcoin fee', c && c.total ? `≈ ${sats(c.total)}` : 'in sats', '', c && c.take ? `${sats(c.take)} of it is the provider’s take` : ''],
+      ['Bitcoin fee', c && c.total ? `≈ ${sats(c.total)}` : 'in sats', '', c && c.take ? `${sats(c.take)} of it is the provider’s take${c.takeInLock ? ', and it comes back to you if the bridge does not go through' : ''}` : ''],
       ['Time', `about ${o.minutes} minutes`], ['If it stalls', `the lock returns to your address after ${timelockText(q.csvBlocks)}`]],
   };
 }
