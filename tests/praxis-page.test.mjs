@@ -35,7 +35,7 @@ const b = await chromium.launch();
 const text = async (page, sel) => ((await page.innerText(sel).catch(() => '')) || '').replace(/\s+/g, ' ').trim();
 const SHOT = async (page, name) => { if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/${name}.png`, fullPage: true }); };
 
-async function fresh({ viewport = { width: 1280, height: 900 }, scheme = 'light', transcript } = {}) {
+async function fresh({ viewport = { width: 1280, height: 900 }, scheme = 'light', transcript, live } = {}) {
   const ctx = await b.newContext({ viewport, colorScheme: scheme });
   await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE });
   const page = await ctx.newPage();
@@ -43,6 +43,7 @@ async function fresh({ viewport = { width: 1280, height: 900 }, scheme = 'light'
   page.on('pageerror', (e) => errs.push(e.message));
   page.on('console', (m) => { const t = m.text(); if (/Content Security Policy|Refused to/i.test(t)) csp.push(t.slice(0, 200)); });
   await page.route(/^https?:\/\/(?!127\.0\.0\.1)/, (route) => route.abort());
+  if (live !== undefined) await page.route('https://tacit-praxis-ceremony.onrender.com/api/transcript', (route) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(live) }));
   if (transcript !== undefined) await page.route(/\/praxis\/transcript\.json/, (route) => (transcript === 404 ? route.fulfill({ status: 404, body: 'not found' }) : route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(transcript) })));
   await page.goto(`${BASE}/praxis/`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !/Reading the transcript/.test(document.querySelector('#receipts').textContent), null, { timeout: 20000 });
@@ -150,6 +151,16 @@ for (const scheme of ['light', 'dark']) {
 {
   const { ctx, page } = await fresh({ scheme: 'dark' });
   await SHOT(page, 'desktop-dark');
+  await ctx.close();
+}
+
+// the live transcript through the ceremony's HTTPS window, when it answers
+{
+  const t = JSON.parse(readFileSync(new URL('../dapp/praxis/transcript.json', import.meta.url), 'utf8'));
+  const { ctx, page, errs, csp } = await fresh({ live: t });
+  ok(/Read live from the coordinator/.test(await page.textContent('#src')), 'the page says it read the transcript live');
+  ok(/signed by the coordinator/.test(await page.textContent('#receipts')), 'and still checks each receipt against the coordinator key');
+  ok(!errs.length && !csp.length, `the live read raises no page or CSP errors (${[...errs, ...csp].join(' | ')})`);
   await ctx.close();
 }
 

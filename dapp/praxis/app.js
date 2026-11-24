@@ -81,11 +81,23 @@ function drawShare() {
 }
 
 const repaint = drawShare();
-try {
+// the live transcript through the ceremony's HTTPS window (each receipt's signature is still checked below against the
+// coordinator key); this site's copy if the window does not answer
+const LIVE = 'https://tacit-praxis-ceremony.onrender.com/api/transcript';
+async function readTranscript() {
+  try {
+    const r = await fetch(LIVE, { cache: 'no-cache', signal: AbortSignal.timeout(6000) });
+    if (r.ok) { const t = await r.json(); if (Array.isArray(t.receipts) || t.receipts === null) return { t: { ...t, receipts: t.receipts || [] }, live: true }; }
+  } catch { /* the copy below */ }
   const res = await fetch('/praxis/transcript.json', { cache: 'no-cache' });
   if (!res.ok) throw new Error(String(res.status));
-  const t = await res.json();
+  return { t: await res.json(), live: false };
+}
+try {
+  const { t, live } = await readTranscript();
   if (!Array.isArray(t.receipts)) throw new Error('no receipts');
+  const src = document.getElementById('src');
+  if (src) src.textContent = live ? 'Read live from the coordinator.' : 'A copy of the coordinator\'s transcript.';
   receipts = t.receipts;
   drawChain(t);
   await drawReceipts(t);

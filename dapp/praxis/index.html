@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://tacit-praxis-ceremony.onrender.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="color-scheme" content="light dark">
 <title>tacit praxis</title>
 <meta name="description" content="The Tacit Praxis ceremony: a public Groth16 setup for the SP1 verifier that Tacit Praxis locks keys to. Safe if one contributor was honest. Take part in about 20 minutes.">
@@ -21,7 +21,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <!-- preload-roots: /praxis/app.js -->
 <!-- preload:begin -->
-<link rel="modulepreload" href="/praxis/app.js?cb=05fd0d99">
+<link rel="modulepreload" href="/praxis/app.js?cb=56a6667b">
 <link rel="modulepreload" href="/praxis/receipt.js?cb=53d90e6b">
 <!-- preload:end -->
 <style>
@@ -469,7 +469,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
         <h3>Contributions here</h3>
         <ul class="receipts" id="receipts"><li class="empty">Reading the transcript…</li></ul>
         <p class="note" id="link"></p>
-        <p class="note">A copy of the coordinator's transcript. The <a id="live" href="http://143.55.45.86:53874/api/transcript" target="_blank" rel="noopener noreferrer">live transcript</a> is on the coordinator (plain HTTP).</p>
+        <p class="note"><span id="src">A copy of the coordinator's transcript.</span> The <a id="live" href="http://143.55.45.86:53874/api/transcript" target="_blank" rel="noopener noreferrer">live transcript</a> is on the coordinator (plain HTTP).</p>
       </section>
 
       <section class="panel" id="join" aria-labelledby="h-join">
@@ -555,6 +555,6 @@ shasum -a 256 phase2-*</pre></div>
   </nav>
   <!-- chrome:foot:end -->
 </div>
-<script type="module" src="/praxis/app.js?cb=05fd0d99"></script>
+<script type="module" src="/praxis/app.js?cb=56a6667b"></script>
 </body>
 </html>
