@@ -83,9 +83,9 @@
 <link rel="modulepreload" href="/trade/wallet.js?cb=ff74eb58">
 <link rel="modulepreload" href="/trade/util.js?cb=9c8b4133">
 <link rel="modulepreload" href="/trade/fmt.js?cb=172824e5">
-<link rel="modulepreload" href="/swap/route.js?cb=0affad24">
+<link rel="modulepreload" href="/swap/route.js?cb=c4135f43">
 <link rel="modulepreload" href="/swap/slip.js?cb=b2233769">
-<link rel="modulepreload" href="/swap/aggregate.js?cb=a9b9592c">
+<link rel="modulepreload" href="/swap/aggregate.js?cb=aebb2ecc">
 <link rel="modulepreload" href="/swap/solvers.js?cb=669b2617">
 <link rel="modulepreload" href="/swap/link.js?cb=00bf0557">
 <link rel="modulepreload" href="/swap/route-name.js?cb=2a0317f3">
@@ -3028,7 +3028,7 @@ footer.sf nav a span { position: absolute; width: 1px; height: 1px; overflow: hi
 for (const u of ["/weld/stats/read.js?cb=1df039da","/trade/lp-campaign.js?cb=8da1c942","/trade/batch.js","/tacit-chain-config.js?cb=74171404"]) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u }));
 // preload-later:end
 // preload-intent:begin
-const WARM_MODULES = ["/confidential-pool-ux.js?cb=79f6c6a9","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/confidential-tree-core.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-memo-probe.js","/confidential-memo-workers.js","/worker-start.js","/confidential-bridge-workers.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-tree-workers-shared.js","/confidential-tree-workers.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-bridge-walk.js","/point-multiples.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
+const WARM_MODULES = ["/confidential-pool-ux.js?cb=981bef7c","/confidential-deployments.js","/confidential-deployments.generated.js","/confidential-indexer.js","/confidential-pool.js","/confidential-tree-core.js","/evm-confidential.js","/bulletproofs.js","/bulletproofs-plus.js","/burn-deposit-bitcoin.js","/burn-deposit-provenance.js","/burn-deposit-assembler.js","/confidential-memo.js","/confidential-memo-probe.js","/confidential-memo-workers.js","/worker-start.js","/confidential-bridge-workers.js","/confidential-evm-log.js","/confidential-relay.js","/confidential-invoice.js","/confidential-recovery-guard.js","/confidential-router.js","/confidential-transfer.js","/confidential-route.js","/confidential-swap.js","/confidential-swap-coordinator.js","/confidential-lp.js","/confidential-cdp.js","/confidential-farm.js","/confidential-farm-program.js","/confidential-defi-actions.js","/confidential-stealth.js","/confidential-airdrop.js","/confidential-lock-scan.js","/confidential-bridge-mint.js","/bridge-burn-broadcast.js","/pool-snapshot.js","/confidential-tree-workers-shared.js","/confidential-tree-workers.js","/confidential-recovery.js","/bridge-mint-recovery.js","/confidential-bridge-walk.js","/point-multiples.js","/confidential-secret-store.js","/confidential-recovery-btc.js","/bitcoin-taproot-wallet.js","/cbtc-note-recovery.js"];
 // preload-intent:end
 import '/storage-fallback.js';
 import * as OWNNODE from '/own-node.js?cb=ed1de110';
@@ -3328,6 +3328,9 @@ const REVERTS = {
   '29b3c833': 'The pool moved while it was being proved. Press again for a fresh quote.',
   '2763eb74': 'The note did not match its proof. Try again.',
   'a6226dc5': 'That proof was built for a different deployment.',
+  '3c8046cf': 'Another entry for this deposit is already waiting in the chain’s queue. Try again once it has been taken.',
+  'ecdd1c29': 'It is too late to post this one. Take the deposit back instead.',
+  '6fed7d85': 'It is not old enough to take back yet.',
 };
 function revertText(e) {
   for (const d of [e?.data, e?.data?.data, e?.error?.data, e?.info?.error?.data]) if (typeof d === 'string' && /^0x[0-9a-f]{8}/i.test(d)) return REVERTS[d.slice(2, 10).toLowerCase()];
@@ -6153,7 +6156,7 @@ function wireSub(el, name, set) { $$(`[data-${name}]`, el).forEach((b) => b.oncl
 const warmPool = (() => { let on = false; return () => { if (on) return; on = true; for (const u of WARM_MODULES) document.head.append(Object.assign(document.createElement('link'), { rel: 'modulepreload', href: u })); }; })();
 const getUx = lazy(async () => {
   warmPool();
-  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=79f6c6a9'), import('/confidential-deployments.js')]);
+  const [{ makeConfidentialPoolUx, setExternalTacHolders }, dep] = await Promise.all([import('/confidential-pool-ux.js?cb=981bef7c'), import('/confidential-deployments.js')]);
   dep.setActiveNetwork('mainnet');
   setExternalTacHolders(() => (S.wallet ? [S.wallet] : []));
   const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, network: 'mainnet' });

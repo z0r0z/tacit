@@ -5,9 +5,9 @@ import { declinedWords } from '/wallet-prompts.js';
 import * as WP from '/wallet-prompts.js';   // a namespace, and `?.` below: wallet-prompts.js has no cache token, so a visit can hold it older than this file
 import { rpc, API, api, esc, fmtUnits, parseUnits, plain, usd, sig, E10, E18, ago } from '/trade/util.js?cb=9c8b4133';
 import { nodeHealth, hedgeDelay } from '/trade/rpc.js';
-import * as R from '/swap/route.js?cb=0affad24';
+import * as R from '/swap/route.js?cb=c4135f43';
 import { poolSlipBps, netOfFees, floorOf } from '/swap/slip.js?cb=b2233769';
-import * as A from '/swap/aggregate.js?cb=a9b9592c';
+import * as A from '/swap/aggregate.js?cb=aebb2ecc';
 import * as SV from '/swap/solvers.js?cb=669b2617';
 import { linkName, linkSides } from '/swap/link.js?cb=00bf0557';
 import { routeLine } from '/swap/route-name.js?cb=2a0317f3';
@@ -781,7 +781,7 @@ const PK = new Proxy({ teth: 'eth', [lc(R.TAC)]: 'tac', [lc(R.CUSD)]: 'cusd', [l
 const POOL_TK = new Proxy({ eth: 'cETH', tac: 'cTAC', cbtc: 'cBTC', cusd: 'cUSD' }, { get: (o, k) => (k in o ? o[k] : ownPool(k)?.ticker) });
 let uxP = null;
 const getUx = () => (H.getUx ? H.getUx() : uxP ||= (async () => {
-  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=79f6c6a9'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
+  const [{ makeConfidentialPoolUx }, dep, d] = await Promise.all([import('/confidential-pool-ux.js?cb=981bef7c'), import('/confidential-deployments.js'), import('/vendor/tacit-deps.min.js')]);
   dep.setActiveNetwork('mainnet');
   return makeConfidentialPoolUx({ secp: d.secp, keccak256: d.keccak_256, sha256: d.sha256, network: 'mainnet' });
 })().catch((e) => { uxP = null; throw e; }));
@@ -1628,7 +1628,7 @@ function depositSoon(q) {
   clearTimeout(depTimer);
   depTimer = setTimeout(ask, 0);
 }
-const ltLoad = () => (LTP ||= import('/swap/later.js?cb=7492665b').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
+const ltLoad = () => (LTP ||= import('/swap/later.js?cb=b30ed6a8').then((m) => { LT = m.makeLater({ keyHex: async () => (await pvLoad()).keyHex(), signer: pageSigner, ethCall, venues, ux: getUx, sendPrivate: async (o) => (await pvLoad()).sendPrivate(o), gasPrice, now: () => (S.chainT ? (S.chainT + (now() - S.chainAt)) * 1000 : Date.now()) }); LT.mod = m; return LT; }).catch((e) => { LTP = null; throw e; }));
 const laterPay = (k) => isEth(k) || k === lc(R.TAC) || (isListed(k) && !tacitKey(k) && k !== lc(R.WETH));
 const laterPair = (kind, pay = S.pay, get = S.get) => laterPay(pay)
   && (isEth(pay) ? kind === 'agg' || (kind === 'tac' && get === lc(R.TAC)) : (kind === 'agg' && get !== lc(R.WETH)) || kind === 'any' || kind === 'out' || kind === 'tac');

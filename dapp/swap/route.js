@@ -85,8 +85,11 @@ export function encMulticall(calls) {
 }
 const encRouteFromWeth = ({ pools, amountIn, minOut, to }) =>
   '0x' + SEL.routeFromWETH + word(160) + addr(TAC) + word(amountIn) + word(minOut) + addr(to) + word(pools.length) + pools.map(addr).join('');
-const encSwapPublic = ({ assetIn, assetOut, feeBps = AMM_FEE, amountIn, minOut, deadline, to }) =>
-  '0x' + SEL.swapPublic + b32(assetIn) + b32(assetOut) + word(feeBps) + word(amountIn) + word(minOut) + word(deadline) + addr(to);
+const PUBLIC_ASSETS = new Set(Object.values(POOL_ID).map((id) => id.toLowerCase()));
+const encSwapPublic = ({ assetIn, assetOut, feeBps = AMM_FEE, amountIn, minOut, deadline, to }) => {
+  if (![assetIn, assetOut].every((a) => PUBLIC_ASSETS.has(String(a).toLowerCase()))) throw new Error('swap: this pair is not offered here');
+  return '0x' + SEL.swapPublic + b32(assetIn) + b32(assetOut) + word(feeBps) + word(amountIn) + word(minOut) + word(deadline) + addr(to);
+};
 const encAmmRoute = ({ assetOut, minOut, deadline, to }) => '0x' + SEL.ammRoute + b32(assetOut) + word(AMM_FEE) + word(minOut) + word(deadline) + addr(to);
 
 const MC3 = '0xcA11bde05977b3631167028862bE2a173976CA11';

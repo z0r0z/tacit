@@ -43,6 +43,19 @@ import { makeCbtcNoteRecovery } from './cbtc-note-recovery.js';
 let _externalTacHolders = () => [];
 export function setExternalTacHolders(fn) { _externalTacHolders = typeof fn === 'function' ? fn : () => []; }
 
+// The pool-minted tokens (TAC, cBTC, cUSD) are listed under their shared ids only: the same token registered again under its own id is not an asset of its own.
+const POOL_MINTED = {
+  1: {
+    '0xa1313eb9f3a445606d9583bcac3ebeb56a858279': '0xf0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b',
+    '0xdf1d99148beb7a9aff1d95c49b3d22b7ed90d696': '0x62a20d98fc1cd20289621d1315294cb8772f934d822e404b71e1f471cf0679c8',
+    '0x23cacffac2674514a6d4f6cd420b4cc2ac921564': '0x8f4490dd3728b0ee904d7a67c11b37ffd463a5c7f08b79810006995ee8a9679d',
+  },
+};
+export function withoutShadowRegistrations(chainId, list) {
+  const shared = POOL_MINTED[Number(chainId)] || {};
+  return (list || []).filter((x) => { const id = shared[String(x?.underlying).toLowerCase()]; return !id || id === String(x.assetId).toLowerCase(); });
+}
+
 let _logDb = null;
 function browserLogStore() {
   if (typeof indexedDB === 'undefined') return null;
@@ -250,7 +263,7 @@ export function makeConfidentialPoolUx({ secp, keccak256, sha256, fetchImpl, net
         const id = lc(l.topics?.[1]), u = '0x' + lc(l.topics?.[2]).slice(26);
         if (/^0x[0-9a-f]{64}$/.test(id) && /^0x[0-9a-f]{40}$/.test(u) && !/^0x0{40}$/.test(u)) all.set(id, { assetId: id, underlying: u, block: _blockOf(l) });
       }
-      const list = [...all.values()];
+      const list = withoutShadowRegistrations(cfg.chainId, [...all.values()]);
       try { _store?.setItem(_REG_KEY, JSON.stringify({ through: head, list })); } catch { }
       return list;
     })().catch((e) => { _regP = null; throw e; }));
