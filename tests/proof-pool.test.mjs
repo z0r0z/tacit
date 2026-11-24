@@ -54,11 +54,13 @@ const MINER = '0x' + '11'.repeat(20), MINER2 = '0x' + '22'.repeat(20), MINER3 = 
 const kv = () => { const m = new Map(); return { m, async get(k) { return m.has(k) ? m.get(k) : null; }, async put(k, v) { m.set(k, String(v)); }, async delete(k) { m.delete(k); } }; };
 const T0 = Date.UTC(2026, 9, 26, 1), DAY0 = Math.floor(T0 / 86_400_000);
 
-// A pool on a fake KV and clock, with a verifier that answers `verdict` (default: takes every proof) and counts its calls.
-function harness({ cfg = {}, verdict = () => ({ ok: true }), chain } = {}) {
-  const h = { t: T0, calls: 0, store: kv(), verdict };
+// A pool on a fake KV and clock, with a verifier that answers `verdict` (default: takes every proof) and counts its calls. The pool's own
+// split of a proof's points (a share for the work, the rest at the landing, a budget, a back pay) is off unless a test sets it: the landing
+// tests below are about the pure landing rule, and the work share has its own section.
+function harness({ cfg = {}, verdict = () => ({ ok: true }), chain, store } = {}) {
+  const h = { t: T0, calls: 0, store: store || kv(), verdict };
   let n = 0;
-  h.pool = makeProofPool({ kv: h.store, cfg: { ...PROOF_POOL, turnMs: 0, ...cfg }, now: () => h.t, random: () => `lease-${++n}`, verify: async (p) => { h.calls++; return h.verdict(p); }, chain });
+  h.pool = makeProofPool({ kv: h.store, cfg: { ...PROOF_POOL, turnMs: 0, workPct: 0, workBudget: 0, backpay: false, ...cfg }, now: () => h.t, random: () => `lease-${++n}`, verify: async (p) => { h.calls++; return h.verdict(p); }, chain });
   return h;
 }
 
@@ -566,7 +568,7 @@ test('routes: open to any origin; a page requests, a miner leases and submits (t
     r = await call('/prover/pool/lease', post({ miner: MINER2 }), '198.51.100.10');
     assert.equal(r.status, 204); assert.equal(r.headers.get('access-control-allow-origin'), '*');
     r = await call('/prover/pool/submit', post({ id: a.id, lease: l.lease, publicValues: pvFor(a.expect), proof: PROOF }), '198.51.100.9');
-    assert.deepEqual(await r.json(), { ok: true, points: 20, pending: true }, 'its deposit is not on the pool: the proof waits for it');
+    assert.deepEqual(await r.json(), { ok: true, points: 20, pending: true, paid: 5 }, 'its deposit is not on the pool: a quarter is paid for the work and the rest waits for it');
     assert.ok(seen.some((s) => s.method === 'eth_call' && String(s.call?.to).toLowerCase() === '0xca11bde05977b3631167028862be2a173976ca11' && String(s.call?.data).includes('7da9874f' + depOf(a.expect).slice(2))), 'the pool was asked about the proof\'s deposit, through Multicall3');
     assert.equal([...env.REGISTRY_KV.m.keys()].filter((k) => k.startsWith('pp:chk:')).length, 1, 'and a look at it is waiting');
     // A board worker's token leases as Tacit's own prover; any other token is refused.
@@ -1460,4 +1462,220 @@ test('landing health: stats count the proofs that waited, the deposits looked fo
   // with landing off the answers say nothing of it
   const off = (await harness().pool.stats()).body;
   assert.deepEqual(['pendedToday', 'lookedToday', 'lapsedLandToday', 'lastSweep', 'lastLook'].filter((k) => k in off), [], 'no landing, none of these');
+});
+
+// ── the work share: a share of a proof's points is paid when it is proved, the rest when its deposit lands ──
+
+const credited = async (h, day = DAY0) => (await h.pool.credits(day)).body;
+
+test('work share: a proof pays its work share at once and the rest when its deposit lands; the tally, the feed, the answer and the stats agree, and nothing is paid twice', async () => {
+  const chain = fakeChain(), h = harness({ chain, cfg: { workPct: 25 } });
+  const a = wrapJob(0), dep = depOf(a.expect);
+  const r = await proveFor(h, a);
+  assert.deepEqual(r, { status: 200, body: { ok: true, points: 20, pending: true, paid: 5 } }, 'the answer says the most it earns, that the rest waits, and what is paid now');
+  assert.deepEqual((await credited(h)).miners, [{ miner: MINER, proofs: 1, points: 5 }], 'a quarter is in the day\'s tally at once');
+  let feed = (await h.pool.recent()).body.proofs;
+  assert.deepEqual({ points: feed[0].points, pending: feed[0].pending }, { points: 5, pending: 15 }, 'the feed shows what is paid and what waits');
+  assert.deepEqual(await h.pool.minedBy([a.expect.leaf]), { [a.expect.leaf.toLowerCase()]: { miner: MINER, points: 20 } }, 'the note names its prover and what the proof can earn');
+  assert.equal(JSON.parse(h.store.m.get(`pp:pend:${dep}`)).work, 5, 'the waiting record says what was paid');
+  let st = (await h.pool.stats()).body;
+  assert.deepEqual([st.landedToday, st.workToday, st.terms.work], [0, 5, { pct: 25 }], 'the stats count the work and say the terms (no budget set here)');
+  chain.status[dep] = 2;
+  await lookNow(h, 90_000);
+  assert.deepEqual((await credited(h)).miners, [{ miner: MINER, proofs: 1, points: 20 }], 'the landing pays the other three quarters: the whole is what the proof earns');
+  feed = (await h.pool.recent()).body.proofs;
+  assert.deepEqual({ points: feed[0].points, pending: feed[0].pending }, { points: 20, pending: undefined });
+  st = (await h.pool.stats()).body;
+  assert.deepEqual([st.landedToday, st.workToday], [1, 5]);
+  assert.equal(pendKeys(h).length + chkKeys(h).length, 0);
+  await lookNow(h, 600_000);
+  assert.deepEqual((await credited(h)).miners, [{ miner: MINER, proofs: 1, points: 20 }], 'and not twice');
+});
+
+test('work share: a proof that earned less for being slow is paid its share of that; one whose deposit is there already, or a work share of all of it, waits for nothing', async () => {
+  const chain = fakeChain(), h = harness({ chain, cfg: { workPct: 25 } });
+  const a = wrapJob(0), b = wrapJob(1), c = wrapJob(2);
+  await h.pool.request({ type: 'wrap', stdin: a.stdin, expect: a.expect, client: 'pa' });
+  const l = (await h.pool.lease({ miner: MINER, client: 'm1' })).body;
+  h.t += 900_000;                                                          // fifteen minutes: half pay, ten points
+  const slow = await h.pool.submit({ id: l.id, lease: l.lease, publicValues: pvFor(a.expect), proof: PROOF });
+  assert.deepEqual(slow.body, { ok: true, points: 10, pending: true, paid: 3 }, 'a quarter of ten, rounded: three now, seven when it lands');
+  chain.status[depOf(b.expect)] = 2;
+  assert.deepEqual((await proveFor(h, b, MINER2, 'm2')).body, { ok: true, points: 20 }, 'a deposit that is there pays in full at once');
+  assert.deepEqual((await credited(h)).miners.map((m) => [m.miner, m.points]), [[MINER, 3], [MINER2, 20]]);
+  const all = harness({ chain: fakeChain(), cfg: { workPct: 100 } });
+  assert.deepEqual((await proveFor(all, c)).body, { ok: true, points: 20 }, 'a work share of all of it is paid at the proof as before');
+  assert.equal(pendKeys(all).length + chkKeys(all).length, 0, 'and nothing waits');
+  assert.equal((await all.pool.stats()).body.landedToday, 0, 'nor counts as landed');
+  assert.deepEqual((await credited(all)).miners, [{ miner: MINER, proofs: 1, points: 20 }]);
+});
+
+test('work share: a day\'s work shares are bounded by its budget and scaled pro rata when it is read; the landed shares are not scaled', async () => {
+  const chain = fakeChain(), h = harness({ chain, cfg: { workPct: 25, workBudget: 8 } });
+  const jobs = [wrapJob(0), wrapJob(1), wrapJob(2)], who = [MINER, MINER2, MINER3];
+  for (let i = 0; i < 3; i++) await proveFor(h, jobs[i], who[i], `m${i}`);
+  let c = await credited(h);
+  assert.equal(c.workScale, 0.533, 'fifteen points of work against a budget of eight');
+  assert.deepEqual(c.miners.map((m) => m.points), [2, 2, 2], 'each is scaled and rounded down: never more than the budget in all');
+  assert.ok(c.miners.reduce((s, m) => s + m.points, 0) <= 8);
+  assert.equal((await h.pool.stats()).body.workToday, 15, 'the stats count the work as it was paid, before the scale');
+  assert.deepEqual((await h.pool.stats()).body.terms.work, { pct: 25, budget: 8 });
+  chain.status[depOf(jobs[0].expect)] = 2;
+  await lookNow(h, 90_000);
+  c = await credited(h);
+  assert.deepEqual(c.miners.map((m) => [m.miner, m.points]), [[MINER, 2 + 15], [MINER2, 2], [MINER3, 2]], 'the three quarters that landed are paid whole on top of the scaled work');
+  const under = harness({ chain: fakeChain(), cfg: { workPct: 25, workBudget: 8 } });
+  await proveFor(under, wrapJob(3));
+  const u = await credited(under);
+  assert.equal(u.workScale, undefined, 'a day inside its budget is not scaled');
+  assert.deepEqual(u.miners, [{ miner: MINER, proofs: 1, points: 5 }]);
+});
+
+test('work share: the day\'s cap on proofs counts a proof once, at its work share, and does not hold back its landing', async () => {
+  const chain = fakeChain(), h = harness({ chain, cfg: { workPct: 25, proofsPerMinerDay: 2 } });
+  const jobs = [wrapJob(0), wrapJob(1), wrapJob(2)];
+  assert.equal((await proveFor(h, jobs[0], MINER, 'a1')).body.paid, 5);
+  assert.equal((await proveFor(h, jobs[1], MINER, 'a2')).body.paid, 5);
+  assert.deepEqual((await proveFor(h, jobs[2], MINER, 'a3')).body, { ok: true, points: 0 }, 'the third is past the cap: kept, and earns nothing');
+  chain.status[depOf(jobs[0].expect)] = 2; chain.status[depOf(jobs[1].expect)] = 1;
+  await lookNow(h, 90_000);
+  assert.deepEqual((await credited(h)).miners, [{ miner: MINER, proofs: 3, points: 40 }], 'both landings are paid in full: their place under the cap was taken at their work');
+});
+
+test('work share: a day that is over stays as it was; the rest is paid on the day the deposit lands', async () => {
+  const chain = fakeChain(), h = harness({ chain, cfg: { workPct: 25 } });
+  h.t = (DAY0 + 1) * 86_400_000 - 30_000;
+  const a = wrapJob(0);
+  await proveFor(h, a);
+  chain.status[depOf(a.expect)] = 2;
+  await lookNow(h, 120_000);
+  const [d0, d1] = [await credited(h, DAY0), await credited(h, DAY0 + 1)];
+  assert.deepEqual([d0.over, d0.miners], [true, [{ miner: MINER, proofs: 1, points: 5 }]], 'the work stays on the day it was done');
+  assert.deepEqual(d1.miners, [{ miner: MINER, proofs: 0, points: 15 }], 'the rest is the day the landing was found');
+});
+
+test('back pay: proofs waiting under the pure landing rule are paid their work share once, on the day it runs; their rest still waits for the deposit', async () => {
+  const store = kv(), chain = fakeChain();
+  const old = harness({ chain, store, cfg: {} });                         // the pure rule: nothing paid for the work
+  const a = wrapJob(0), b = wrapJob(1), c = wrapJob(2);
+  await proveFor(old, a, MINER, 'm1'); await proveFor(old, b, MINER2, 'm2');
+  assert.deepEqual((await credited(old)).miners, [], 'nothing is credited');
+  const next = harness({ chain, store, cfg: { workPct: 25, backpay: true } });
+  next.t = T0 + 86_400_000 + 3_600_000;                                   // the next day, an hour in
+  await proveFor(next, c, MINER3, 'm3');                                  // made under the new rule: paid at the proof, not paid again
+  let st = (await next.pool.stats()).body;                                // the first sweep
+  assert.deepEqual(st.backpaid && [st.backpaid.proofs, st.backpaid.points], [2, 10], 'two proofs, five points each');
+  assert.deepEqual((await credited(next, DAY0 + 1)).miners.map((m) => [m.miner, m.points]), [[MINER, 5], [MINER2, 5], [MINER3, 5]], 'on the day it ran; the proof made under the new rule is not paid twice');
+  assert.deepEqual((await credited(next, DAY0)).miners, [], 'the day they were made on is over and untouched');
+  assert.equal(JSON.parse(store.m.get(`pp:pend:${depOf(a.expect)}`)).work, 5, 'the waiting record says what was paid');
+  const feed = (await next.pool.recent()).body.proofs.find((x) => x.miner === MINER);
+  assert.deepEqual({ points: feed.points, pending: feed.pending }, { points: 5, pending: 15 }, 'and so does the feed');
+  next.t += 600_000; await next.pool.stats(); await next.pool.credits(DAY0 + 1);
+  assert.deepEqual((await credited(next, DAY0 + 1)).miners.map((m) => m.points), [5, 5, 5], 'it is made once');
+  chain.status[depOf(a.expect)] = 2;
+  await lookNow(next, 600_000);
+  assert.deepEqual((await credited(next, DAY0 + 1)).miners.map((m) => [m.miner, m.points]), [[MINER, 20], [MINER2, 5], [MINER3, 5]], 'a deposit that lands pays the rest, on that day');
+});
+
+test('back pay: off, it pays nothing, and a waiting proof from before still pays all its points when its deposit lands', async () => {
+  const store = kv(), chain = fakeChain();
+  const old = harness({ chain, store });
+  const a = wrapJob(0);
+  await proveFor(old, a);
+  const next = harness({ chain, store, cfg: { workPct: 25, backpay: false } });
+  next.t = T0 + 600_000;
+  await next.pool.stats();
+  assert.deepEqual((await credited(next)).miners, [], 'no back pay');
+  assert.equal((await next.pool.stats()).body.backpaid, undefined);
+  chain.status[depOf(a.expect)] = 2;
+  await lookNow(next, 600_000);
+  assert.deepEqual((await credited(next)).miners, [{ miner: MINER, proofs: 1, points: 20 }], 'the whole, as the pure rule paid it');
+});
+
+test('back pay: a failure part-way pays too little and never twice; it is made again, and the stamped proofs are skipped', async () => {
+  const store = kv(), chain = fakeChain();
+  const old = harness({ chain, store });
+  const jobs = [wrapJob(0), wrapJob(1), wrapJob(2)];
+  for (let i = 0; i < 3; i++) await proveFor(old, jobs[i], MINER, `m${i}`);
+  const next = harness({ chain, store, cfg: { workPct: 25, backpay: true } });
+  next.t = T0 + 600_000;
+  const put = store.put; let fail = true;
+  store.put = async (k, v, o) => { if (fail && k === 'pp:backpay') { throw new Error('store down'); } return put.call(store, k, v, o); };
+  await next.pool.stats();                                                // the batch is paid, the mark that it is done cannot be written
+  assert.equal((await credited(next)).miners[0].points, 15);
+  fail = false;
+  next.t += 60_000; await next.pool.stats();
+  assert.equal((await credited(next)).miners[0].points, 15, 'made again: every record was stamped, so none is paid twice');
+  const mark = JSON.parse(store.m.get('pp:backpay'));
+  assert.deepEqual([mark.proofs, mark.points], [0, 0], 'the second run paid nothing and wrote the mark that it is done');
+  assert.equal((await next.pool.stats()).body.backpaid, undefined, 'and the stats say nothing of a back pay that paid nothing');
+});
+
+test('work share config: each term is read within its bounds and the defaults are a quarter, a budget and a back pay', () => {
+  const d = proofPoolConfig({});
+  assert.deepEqual([d.workPct, d.workBudget, d.backpay], [25, 25_000, true]);
+  assert.deepEqual([PROOF_POOL.workPct, PROOF_POOL.workBudget, PROOF_POOL.backpay], [25, 25_000, true]);
+  assert.equal(proofPoolConfig({ POOL_WORK_PCT: '0' }).workPct, 0, '0 is the pure landing rule');
+  assert.equal(proofPoolConfig({ POOL_WORK_PCT: '100' }).workPct, 100, '100 pays all at the proof');
+  assert.equal(proofPoolConfig({ POOL_WORK_PCT: '101' }).workPct, 25);
+  assert.equal(proofPoolConfig({ POOL_WORK_PCT: 'half' }).workPct, 25);
+  assert.equal(proofPoolConfig({ POOL_WORK_BUDGET: '0' }).workBudget, 0, '0 is no bound');
+  assert.equal(proofPoolConfig({ POOL_WORK_BUDGET: '40000' }).workBudget, 40_000);
+  assert.equal(proofPoolConfig({ POOL_WORK_BUDGET: '-1' }).workBudget, 25_000);
+  for (const off of ['off', '0', 'no', 'false', 'OFF']) assert.equal(proofPoolConfig({ POOL_BACKPAY: off }).backpay, false, off);
+  assert.equal(proofPoolConfig({ POOL_BACKPAY: 'on' }).backpay, true);
+});
+
+test('work share: with no landing rule or no chain, the work share changes nothing: a proof pays all at the proof', async () => {
+  const h = harness({ cfg: { workPct: 25 } });                            // no chain
+  const a = wrapJob(0);
+  assert.deepEqual((await proveFor(h, a)).body, { ok: true, points: 20 });
+  assert.deepEqual((await credited(h)).miners, [{ miner: MINER, proofs: 1, points: 20 }]);
+  const off = harness({ chain: fakeChain(), cfg: { workPct: 25, landMs: 0 } });
+  assert.deepEqual((await proveFor(off, wrapJob(1))).body, { ok: true, points: 20 });
+  assert.equal((await off.pool.stats()).body.terms.work, undefined, 'and the stats do not name terms that are not in force');
+});
+
+test('work share: a landing does not use up a second place under the day\'s cap: the proofs after it are still paid', async () => {
+  const chain = fakeChain(), h = harness({ chain, cfg: { workPct: 25, proofsPerMinerDay: 3 } });
+  const jobs = [wrapJob(0), wrapJob(1), wrapJob(2), wrapJob(3)];
+  await proveFor(h, jobs[0], MINER, 'a1'); await proveFor(h, jobs[1], MINER, 'a2');
+  chain.status[depOf(jobs[0].expect)] = 2;
+  await lookNow(h, 90_000);                                               // the first lands: its place was taken at its work, two of three are used
+  assert.equal((await proveFor(h, jobs[2], MINER, 'a3')).body.paid, 5, 'the third proof is paid');
+  assert.deepEqual((await proveFor(h, jobs[3], MINER, 'a4')).body, { ok: true, points: 0 }, 'the fourth is past the cap of three');
+  assert.deepEqual((await credited(h)).miners, [{ miner: MINER, proofs: 4, points: 20 + 5 + 5 }]);
+});
+
+test('back pay: once it has been made, a sweep does not scan the looks to come again', async () => {
+  const store = kv(), chain = fakeChain();
+  const old = harness({ chain, store });
+  await proveFor(old, wrapJob(0));
+  const next = harness({ chain, store, cfg: { workPct: 25, backpay: true } });
+  next.t = T0 + 600_000;
+  await next.pool.stats();                                                // the back pay
+  assert.ok(store.m.has('pp:backpay'));
+  const get = store.get; let chkReads = 0;
+  store.get = async (k) => { if (String(k).startsWith('pp:chk:')) chkReads++; return get.call(store, k); };
+  next.t += 60_000; await next.pool.stats();
+  assert.ok(chkReads < 100, `only the looks that are due are read (${chkReads})`);
+});
+
+test('back pay: it is not part of the day\'s work budget, so it neither is scaled nor scales the day\'s own proofs', async () => {
+  const store = kv(), chain = fakeChain();
+  const old = harness({ chain, store });
+  await proveFor(old, wrapJob(0), MINER, 'm1'); await proveFor(old, wrapJob(1), MINER2, 'm2');
+  const next = harness({ chain, store, cfg: { workPct: 25, workBudget: 6, backpay: true } });
+  next.t = T0 + 600_000;
+  const put = store.put, marks = [];
+  store.put = async (k, v, o) => { if (k === 'pp:backpay') marks.push(o); return put.call(store, k, v, o); };
+  await next.pool.stats();
+  assert.deepEqual(marks, [undefined], 'the mark that it was made is written once, with no expiry: it must not lapse and run again');
+  let c = await credited(next);
+  assert.equal(c.workScale, undefined, 'ten points paid back against a budget of six: not scaled');
+  assert.deepEqual(c.miners.map((m) => m.points), [5, 5]);
+  assert.equal((await next.pool.stats()).body.workToday, undefined, 'and not counted as the day\'s work');
+  await proveFor(next, wrapJob(2), MINER3, 'm3');
+  c = await credited(next);
+  assert.deepEqual([c.workScale, c.miners.map((m) => m.points)], [undefined, [5, 5, 5]], 'the day\'s own proof is within its budget of six whatever was paid back');
 });

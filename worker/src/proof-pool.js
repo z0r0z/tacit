@@ -10,9 +10,10 @@
 // prover could prove it.
 // Each proof is checked before it is kept: its public values must be exactly this input's (the deposit it consumes, the leaf it inserts,
 // the chain it is bound to and its memo root, every one read from the input itself, so a page cannot name a deposit its input does
-// not prove, and nothing else: no root, no payment), and the live SP1 verifier must take it. A proof that passes is kept for the page and earns its miner's address points
-// once its deposit has landed on the pool (the points are for the UTC day the landing is seen, and a proof whose deposit has not landed within landMs earns none),
-// for every proof it makes (no count a day unless one is set: the campaign's daily pot already bounds what is paid, and
+// not prove, and nothing else: no root, no payment), and the live SP1 verifier must take it. A proof that passes is kept for the page and earns its miner's address points:
+// workPct of them at once, for the work, and the rest once its deposit has landed on the pool (those are for the UTC day the landing is seen, and a proof whose
+// deposit has not landed within landMs earns none of the rest). The work shares of a day are bounded by workBudget: a day that earns more is scaled down pro rata
+// when the day is read, the landed shares are not. A proof pays for every one it makes (no count a day unless one is set: the campaign's daily pot already bounds what is paid, and
 // a count per address only holds back the provers who give the most, since anyone may name more addresses); the points service's mining campaign pays those points in TAC from a pocket of its
 // own once the day is over, reading the day's tally from GET /prover/pool/credits. A proof that fails goes back to the queue for
 // someone else and, when the answer is certain, is a strike against the client that leased it; three strikes in a day and that client
@@ -78,6 +79,13 @@ export const PROOF_POOL = Object.freeze({
   landMs: 7 * 86_400_000,            // POOL_LAND_MS
   landSweepMs: 20_000,               // POOL_LAND_SWEEP_MS: how often the looks that are due are made
   landChecks: Object.freeze([45_000, 180_000, 600_000, 1_800_000, 7_200_000, 21_600_000, 86_400_000, 259_200_000]),
+  // The share of a proof's points paid when it is proved (the work), as a percentage: the rest waits for the deposit (landMs). 0 pays only on landing, 100 pays all at the
+  // proof as before (and nothing is waited for). The work shares of one UTC day add up to at most workBudget points (0: no bound): a day that earns more is scaled down
+  // pro rata when the day is read (credits), so a surge of proofs for deposits that never come cannot take more than the budget. `backpay`: once, the proofs still waiting
+  // when this was first run (made under the pure landing rule) are paid their work share, on the day it runs.
+  workPct: 25,                       // POOL_WORK_PCT
+  workBudget: 25_000,                // POOL_WORK_BUDGET: points a day
+  backpay: true,                     // POOL_BACKPAY: 'off' skips it
   landPerSweep: 600,                 // looks made in one sweep at most
   landWaitMs: 6000,                  // POOL_LAND_WAIT_MS: the longest a request waits on the chain for this
   minLand: Object.freeze({}),        // POOL_MIN_LAND: the least a wrap can be, per asset id, for its proof to earn points (see parseMinLand); none unless set here or by proofPoolConfig
@@ -126,6 +134,9 @@ export function proofPoolConfig(env = {}) {
     keepMs: n(env.POOL_KEEP_MS, PROOF_POOL.keepMs, 60_000, 30 * 86_400_000),
     landMs: n(env.POOL_LAND_MS, PROOF_POOL.landMs, 0, 30 * 86_400_000),
     landSweepMs: n(env.POOL_LAND_SWEEP_MS, PROOF_POOL.landSweepMs, 1000, 600_000),
+    workPct: n(env.POOL_WORK_PCT, PROOF_POOL.workPct, 0, 100),
+    workBudget: n(env.POOL_WORK_BUDGET, PROOF_POOL.workBudget, 0, 100_000_000),
+    backpay: !/^(off|0|no|false)$/i.test(String(env.POOL_BACKPAY ?? '').trim()) && PROOF_POOL.backpay,
     landWaitMs: n(env.POOL_LAND_WAIT_MS, PROOF_POOL.landWaitMs, 500, 60_000),
     pointsPerProof: n(env.POINTS_MINE_PER_PROOF, PROOF_POOL.pointsPerProof, 0, 100_000),
     proofsPerMinerDay: n(env.POINTS_MINE_DAILY_CAP, PROOF_POOL.proofsPerMinerDay, 1, 100_000),
@@ -338,12 +349,17 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
   const clock = now || (() => Date.now());
   const exclusive = lock || makeLock();
   const token = random || (() => bytesToHex(crypto.getRandomValues(new Uint8Array(16))));
-  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, urg: (d, c) => `pp:urg:${d}:${c}`, minerSeen: 'pp:miner-seen', hold: 'pp:hold', mined: (leaf) => `pp:mined:${leaf}`, paid: (dep) => `pp:paid:${dep}`, recent: 'pp:recent', pend: (dep) => `pp:pend:${dep}`, got: (dep) => `pp:got:${dep}`, chk: (slot) => `pp:chk:${slot}`, chkAt: 'pp:chkat' };
+  const K = { queue: 'pp:queue', leases: 'pp:leases', job: (id) => `pp:job:${id}`, day: (d) => `pp:day:${d}`, req: (d, c) => `pp:req:${d}:${c}`, urg: (d, c) => `pp:urg:${d}:${c}`, minerSeen: 'pp:miner-seen', hold: 'pp:hold', mined: (leaf) => `pp:mined:${leaf}`, paid: (dep) => `pp:paid:${dep}`, recent: 'pp:recent', pend: (dep) => `pp:pend:${dep}`, got: (dep) => `pp:got:${dep}`, chk: (slot) => `pp:chk:${slot}`, chkAt: 'pp:chkat', backpay: 'pp:backpay' };
   const read = async (key, dflt) => { const s = await kv.get(key); if (s == null) return dflt; try { return JSON.parse(s); } catch { return dflt; } };
   const write = (key, v, ttlSecs) => kv.put(key, JSON.stringify(v), ttlSecs ? { expirationTtl: ttlSecs } : undefined);
   const dayRec = async (d) => { const r = await read(K.day(d), null); return { done: 0, points: 0, miners: {}, clients: {}, ...(r && typeof r === 'object' ? r : {}) }; };
   const minerIn = (rec, m) => rec.miners[m] || (rec.miners[m] = { proofs: 0, credited: 0, points: 0 });
   const earns = (rec, m) => ((rec.miners[m]?.credited || 0) < cfg.proofsPerMinerDay ? cfg.pointsPerProof : 0);
+  // Of a proof's `points`, the part paid when it is proved while its deposit is waited for: workPct of them, whole points, at least one. Never all of them (a proof that
+  // would be paid in full at the proof is not waited for, see `waiting`), and none when there is no landing rule or no work share.
+  const workOf = (points) => (landing && cfg.workPct > 0 && points > 0 ? Math.max(1, Math.round((points * cfg.workPct) / 100)) : 0);
+  // The share of a day's work points that stand once the day is read: all of them up to the budget, and the budget's part of them beyond it.
+  const workScale = (rec) => (cfg.workBudget > 0 && (rec.work || 0) > cfg.workBudget ? cfg.workBudget / rec.work : 1);
   // Whether a job's wrap is smaller than the least that earns points for its asset (cfg.minLand): by the asset and value its request kept, or read from the input of a job
   // posted before requests kept them. An asset with no floor, or an input that cannot be read, is not below one.
   function belowMinimum(job) {
@@ -685,15 +701,22 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       const waited = (l.tries || 0) > 0 ? Math.max(0, Math.round((t - l.at) / 1000)) : 0, paySecs = Math.max(secs, waited);
       const small = belowMinimum(job), mr = minerIn(rec, l.miner), points = !again && !small && earns(rec, l.miner) > 0 ? payFor(paySecs, cfg) : 0;
       mr.proofs++;
-      // A proof pays when its deposit has landed on the pool (see PROOF_POOL.landMs): one whose deposit is there already pays now, any other waits in
-      // pp:pend:<deposit> until a look at the pool (check) finds it there, and lapses after landMs. A deposit whose status could not be read waits too.
-      const waiting = landing && !!dep && points > 0 && !(onPool >= 1);
-      if (points > 0 && !waiting) { mr.credited++; mr.points += points; rec.points += points; if (landing) rec.landed = (rec.landed || 0) + 1; }
-      if (waiting) { rec.pended = (rec.pended || 0) + 1; await write(K.pend(dep), { miner: l.miner, points, at: t }, Math.ceil(cfg.landMs / 1000) + 3600); await enqueue(dep, 0, t, t); }
+      // A proof pays in two parts (see PROOF_POOL.workPct and landMs): the work share now, the rest when its deposit has landed on the pool. One whose deposit is there
+      // already pays all now; any other waits for the rest in pp:pend:<deposit> until a look at the pool (check) finds it there, and the rest lapses after landMs. A
+      // deposit whose status could not be read waits too. With no work share (workPct 0) all of it waits; with all of it as work share nothing does.
+      const work = dep ? workOf(points) : 0, waiting = landing && !!dep && points > 0 && !(onPool >= 1) && work < points;
+      if (points > 0 && !waiting) { mr.credited++; mr.points += points; rec.points += points; if (landing && onPool >= 1) rec.landed = (rec.landed || 0) + 1; }
+      if (waiting) {
+        // the record that says what was paid goes down first: a failure between the two writes pays too little, never twice
+        rec.pended = (rec.pended || 0) + 1;
+        await write(K.pend(dep), { miner: l.miner, points, work, at: t }, Math.ceil(cfg.landMs / 1000) + 3600);
+        await enqueue(dep, 0, t, t);
+        if (work > 0) { mr.credited++; mr.points += work; mr.work = (mr.work || 0) + work; rec.points += work; rec.work = (rec.work || 0) + work; }
+      }
       await write(K.day(d), rec, cfg.daySecs);
       const extra = waited > secs ? { waited } : {};
-      if (!again) await made({ miner: l.miner, points, ...extra }, waiting ? { miner: l.miner, points: 0, pending: points, ...extra } : undefined);
-      return reply(200, { ok: true, points, ...(waiting ? { pending: true } : {}), ...(small ? { belowMinimum: true } : {}) });
+      if (!again) await made({ miner: l.miner, points, ...extra }, waiting ? { miner: l.miner, points: work, pending: points - work, ...extra } : undefined);
+      return reply(200, { ok: true, points, ...(waiting ? { pending: true, ...(work > 0 ? { paid: work } : {}) } : {}), ...(small ? { belowMinimum: true } : {}) });
     });
   }
 
@@ -736,12 +759,16 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       clear.push(dep);
       if (t - p.at > cfg.landMs) continue;
       rec = rec || await dayRec(d);
-      if (earns(rec, p.miner) <= 0) continue;
+      // what is left to pay: the work share was paid at the proof (or by the back pay), and counted as its proof's credit then, so the day's cap was asked of it
+      // then and is not asked again; a proof with no work share is counted, and held to the cap, now
+      const worked = Number.isFinite(p.work) && p.work > 0 ? p.work : 0, rest = Math.max(0, p.points - worked);
+      if (!worked && earns(rec, p.miner) <= 0) continue;
       const mr = minerIn(rec, p.miner);
-      mr.credited++; mr.points += p.points; rec.points += p.points; rec.landed = (rec.landed || 0) + 1; paid.push(dep);
+      if (!worked) mr.credited++;
+      mr.points += rest; rec.points += rest; rec.landed = (rec.landed || 0) + 1; paid.push(dep);
       feed = feed || await read(K.recent, []);
       const e = feed.find((x) => x.at === p.at && x.miner === p.miner && x.pending != null);
-      if (e) { e.points = e.pending; delete e.pending; }
+      if (e) { e.points = worked + rest; delete e.pending; }
     }
     if (rec) await write(K.day(d), rec, cfg.daySecs);
     if (feed) await write(K.recent, feed);
@@ -793,10 +820,62 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
     });
   }
 
-  // Make the looks that are due, at most every landSweepMs. Nothing here throws: a store or chain that cannot be reached just now leaves the looks for the next time.
+  // The proofs still waiting when the work share began (made under the pure landing rule, so their records say nothing was paid for the work), paid that share, once: on
+  // the day this runs, since the days they were made on are over and paid (outside the day's work budget). The waiting proofs are found in the looks still to come (pp:chk:<minute>, each waiting
+  // deposit is in exactly one), read with no lock, and paid in batches, each under the lock. A waiting record is stamped with what it was paid BEFORE the day's tally is
+  // written, so a failure part-way pays a batch too little and never twice, and the same records are skipped when this runs again; the mark that it is done is written last.
+  async function backpayOnce(t) {
+    if (!landing || !cfg.backpay || !(cfg.workPct > 0) || reg.backpaying) return;
+    if ((await read(K.backpay, null)) != null) return;
+    reg.backpaying = true;
+    try {
+      const cur = await read(K.chkAt, null), nowSlot = Math.floor(t / 60_000);
+      const from = Number.isSafeInteger(cur) ? cur + 1 : nowSlot;
+      const to = nowSlot + Math.ceil(cfg.landChecks[cfg.landChecks.length - 1] / 60_000) + 180;
+      const deps = new Set();
+      for (let s0 = from; s0 <= to; s0 += 64) {
+        const lists = await Promise.all(Array.from({ length: Math.min(64, to - s0 + 1) }, (_, i) => read(K.chk(s0 + i), [])));
+        for (const list of lists) for (const e of list) if (Array.isArray(e) && B32.test(String(e[0]))) deps.add(e[0]);
+      }
+      const all = [...deps];
+      let proofs = 0, points = 0;
+      for (let i = 0; i < all.length; i += 100) {
+        await exclusive(async () => {
+          const now = clock(), d = dayOf(now), stamped = [];
+          let rec = null, feed = null;
+          for (const dep of all.slice(i, i + 100)) {
+            const p = await read(K.pend(dep), null);
+            // a record with no work share (none was ever written, or a zero) is the one to pay; one that has it was paid
+            if (!p || typeof p.miner !== 'string' || p.work > 0 || !(p.points > 0) || now - p.at > cfg.landMs) continue;
+            const work = workOf(p.points);
+            if (work <= 0 || work >= p.points) continue;
+            rec = rec || await dayRec(d);
+            if (earns(rec, p.miner) <= 0) continue;
+            await write(K.pend(dep), { ...p, work }, Math.ceil(cfg.landMs / 1000) + 3600);
+            const mr = minerIn(rec, p.miner);
+            // not counted in the day's work shares (mr.work, rec.work): the budget is for a day's own proofs, and what is paid back is bounded by what was waiting
+            mr.credited++; mr.points += work; rec.points += work;
+            stamped.push([p, work]); proofs++; points += work;
+          }
+          if (rec) await write(K.day(d), rec, cfg.daySecs);
+          if (stamped.length) {
+            feed = await read(K.recent, []);
+            let changed = false;
+            for (const [p, work] of stamped) { const e = feed.find((x) => x.at === p.at && x.miner === p.miner && x.pending != null); if (e) { e.points = work; e.pending = p.points - work; changed = true; } }
+            if (changed) await write(K.recent, feed);
+          }
+        });
+      }
+      await write(K.backpay, { at: clock(), proofs, points });                // kept for good: it is made once
+    } finally { reg.backpaying = false; }
+  }
+
+  // Make the looks that are due, at most every landSweepMs (and, the first time, the back pay). Nothing here throws: a store or chain that cannot be reached just now
+  // leaves the looks for the next time.
   async function sweep() {
     if (!landing || clock() - (reg.landAt || 0) < cfg.landSweepMs) return;
     reg.landAt = clock();
+    try { await backpayOnce(clock()); } catch { /* it is made next time */ }
     try { await check(clock()); } catch { /* the same looks are made next time */ }
   }
 
@@ -836,7 +915,7 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
     const t = clock(), q = await read(K.queue, []), L = await read(K.leases, {}), rec = await dayRec(dayOf(t));
     const live = Object.values(L).filter((l) => l.until > t).length;
     const miners = Object.entries(rec.miners).filter(([, m]) => m.proofs > 0);
-    const day = await lastDay(t);
+    const day = await lastDay(t), back = landing ? await read(K.backpay, null) : null;
     const secs = (ms) => Math.max(0, Math.round(ms / 1000));
     return reply(200, {
       // today is inside the last 24 hours, so never fewer than today's (the hours count only from when this began keeping them)
@@ -853,8 +932,10 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
       // Whether the landing check is running and what it finds, so a day with nothing landed can be told from a check that is not looking: proofs that waited for
       // their deposit, deposits looked for on the pool, proofs with no look left, and this process's last sweep and last look (`how`: the chain answered for all,
       // some or none of them).
+      // The day's work shares paid at the proofs (before the budget's scale), and what the one-time back pay paid.
       ...(landing ? { landedToday: rec.landed || 0, pendedToday: rec.pended || 0, lookedToday: rec.looked || 0, lapsedLandToday: rec.lapsedLand || 0,
-        lastSweep: reg.landAt || null, lastLook: reg.look ? { at: reg.look.at, n: reg.look.n, how: reg.look.how } : null } : {}),
+        lastSweep: reg.landAt || null, lastLook: reg.look ? { at: reg.look.at, n: reg.look.n, how: reg.look.how } : null,
+        ...(rec.work ? { workToday: rec.work } : {}), ...(back && back.points > 0 ? { backpaid: { proofs: back.proofs, points: back.points, at: back.at } } : {}) } : {}),
       // who is asking for work as this process sees it, for the last `turnMs` (the pool keeps it in memory, per process): places and addresses registered, how many
       // tickets they count for once an address is held to `ticketsPerAddress`, and the addresses with the most places (an address is already public on the board)
       askers: askerView(t),
@@ -864,6 +945,8 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
         pay: { fullSecs: cfg.payFullSecs, floorSecs: cfg.payFloorSecs, floorPct: cfg.payFloorPct }, takeoverSecs: Math.round(cfg.houseTakeoverMs / 1000), ticketsPerAddress: cfg.ticketsPerAddress,
         // a proof earns its points when its deposit lands on the pool, if that is within windowSecs of the proof (absent: it earns them at the proof)
         ...(landing ? { landing: { windowSecs: Math.round(Math.min(cfg.landMs, cfg.landChecks[cfg.landChecks.length - 1]) / 1000) } } : {}),
+        // of a proof's points, the share paid when it is proved, and the most the day's shares add up to (absent: nothing is paid until the deposit lands)
+        ...(landing && cfg.workPct > 0 ? { work: { pct: cfg.workPct, ...(cfg.workBudget > 0 ? { budget: cfg.workBudget } : {}) } } : {}),
         // the least a wrap can be, per asset, for its proof to earn points (absent: no floors)
         ...(Object.keys(cfg.minLandView || {}).length ? { minLand: cfg.minLandView } : {}) },
     });
@@ -875,10 +958,13 @@ export function makeProofPool({ kv, cfg = PROOF_POOL, verify, now, lock, random,
     const t = clock();
     if (!Number.isSafeInteger(day) || day < 0 || day > dayOf(t)) return reply(400, { ok: false, error: 'day must be a UTC day number, today or before' });
     await within(cfg.landWaitMs, sweep());
-    const rec = await dayRec(day);
-    const miners = Object.entries(rec.miners).filter(([, m]) => m.points > 0).map(([miner, m]) => ({ miner, proofs: m.proofs, points: m.points }))
+    const rec = await dayRec(day), scale = workScale(rec);
+    // An address's points are its work shares, scaled to the day's budget, and its landed shares as they came (the whole points it was credited: whole, rounded down,
+    // so the scaled work shares never add up to more than the budget).
+    const pointsOf = (m) => (scale < 1 && m.work ? Math.floor(m.work * scale) + (m.points - m.work) : m.points);
+    const miners = Object.entries(rec.miners).map(([miner, m]) => ({ miner, proofs: m.proofs, points: pointsOf(m) })).filter((m) => m.points > 0)
       .sort((a, b) => (a.miner < b.miner ? -1 : 1));
-    return reply(200, { day, over: t >= (day + 1) * DAY_MS, pointsPerProof: cfg.pointsPerProof, miners });
+    return reply(200, { day, over: t >= (day + 1) * DAY_MS, pointsPerProof: cfg.pointsPerProof, ...(scale < 1 ? { workScale: Math.round(scale * 1000) / 1000 } : {}), miners });
   }
 
   // The leaves a pool proof inserted, each with who made it: { [leaf]: { miner, points } } for a community prover, { house: true } for Tacit's own.
