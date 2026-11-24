@@ -63,7 +63,9 @@ test('the same for a provider that serves HTTP, and an ad that names its assets 
 // the pool's RPC answers Chainlink's ETH / BTC aggregator with a real round (see tests/fastbridge-rate.test.mjs)
 const REAL_ROUND = '0x000000000000000000000000000000000000000000000002000000000000637e00000000000000000000000000000000000000000000000000000000002ad77e000000000000000000000000000000000000000000000000000000006b042d18000000000000000000000000000000000000000000000000000000006b042d2f000000000000000000000000000000000000000000000002000000000000637e';
 const uxFor = (rpc) => ({ cfg: { pool: POOL }, chainBindingHex: () => '0x' + '11'.repeat(32), rpc, pool: {}, balance: async () => ({ byAsset: {} }) });
-const chainlinkRpc = async (m, p) => (m === 'eth_call' ? (p[0].data === '0x313ce567' ? '0x' + '0'.repeat(63) + '8' : REAL_ROUND) : '0x0');
+// (its round, answer and round answered as read; its two times moved to a minute ago, so the round is never stale under the aggregator's 26 h whenever the test runs)
+const freshRound = () => { const t = (Math.floor(Date.now() / 1000) - 60).toString(16).padStart(64, '0'); return REAL_ROUND.slice(0, 2 + 128) + t + t + REAL_ROUND.slice(2 + 256); };
+const chainlinkRpc = async (m, p) => (m === 'eth_call' ? (p[0].data === '0x313ce567' ? '0x' + '0'.repeat(63) + '8' : freshRound()) : '0x0');
 const mem = new Map();
 const storage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => { mem.set(k, String(v)); }, removeItem: (k) => { mem.delete(k); }, key: (i) => [...mem.keys()][i] ?? null, get length() { return mem.size; } };
 

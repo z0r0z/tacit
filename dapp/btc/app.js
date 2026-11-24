@@ -2,7 +2,7 @@
 // pair with what each takes and holds (swap/atomic-market.js, read with no wallet open), the visitor's own swaps with a copy of them to keep, and how to become a provider.
 //
 // A link names the way and the amount: /btc/?dir=e2b&amt=0.05 (or ?from=ETH&to=BTC&amt=0.05, as the front page's card writes it); the address follows the lane.
-import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=90c0be1b';
+import { makeAtomicLane, fmt } from '/swap/atomic.js?cb=6b5bd1b8';
 import { readMarket, estimate, takeable, feeAtMin } from '/swap/atomic-market.js?cb=f3732fda';
 import { getUx as loadUx } from '/trade/poolux.js?cb=59d125e5';
 import { connectedInjected } from '/eth-nodes.js';
@@ -100,9 +100,13 @@ const lane = makeAtomicLane({
   onRecs: (recs) => paintMine(recs),
 });
 
+// (the swaps of an earlier visit are looked for on the chains for a minute or two after the wallet opens: until that ends the list says so, never 'No swaps yet')
 function paintMine(recs) {
-  const open = lane.unlocked;
-  $('mine-say').textContent = !open ? 'Open your Tacit wallet above to see your swaps.' : recs.length ? '' : 'No swaps yet. A swap you start shows here, with its steps.';
+  const open = lane.unlocked, look = lane.looking;
+  $('mine-say').textContent = !open ? 'Open your Tacit wallet above to see your swaps.'
+    : look === 'failed' ? `Your ${recs.length ? 'other ' : ''}past swaps could not be looked for just now. Trying again.`
+      : look ? (recs.length ? 'Looking for more of your past swaps…' : 'Looking for your past swaps on Bitcoin and Ethereum. This can take a minute or two.')
+        : recs.length ? '' : 'No swaps yet. A swap you start shows here, with its steps.';
   $('mine-keep').hidden = !open;
 }
 // a copy of the swaps as a file: a swap of ETH for BTC is found again from this copy or this browser's storage, not from the key alone

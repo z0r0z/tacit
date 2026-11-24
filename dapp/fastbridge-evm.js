@@ -12,6 +12,7 @@ const lc = (h) => '0x' + strip(h);
 const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
 const SETTLE_SELECTOR = '717fd7f2';
 const TRACE_PER_LOOK = 24;
+const TX_READS_AT_ONCE = 4;                              // findClaim's reads of the window's transactions, at once
 
 // `trace(txHash)` -> the calls a transaction made, [{ to, input }] (makeTxTracer): how a claim settled through another contract is read when its calldata does not show it
 export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, ownAccount = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {}, trace = null }) {
@@ -112,12 +113,19 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     const key = lc(lockNu);
     if (claims.has(key)) return claims.get(key);
     const events = await ux.fetchEvents({ fromBlock: sinceSecs ? await blockAtOrAfter(Math.max(0, sinceSecs - 3600)) : undefined, toBlock: 'latest' });
+    // The window's transactions are read a few at a time before they are walked in order: a swap found again from the key a day after its lock has a day of the pool's
+    // settles to read, one request each, which one at a time took over a minute (2026-11-25). A read that fails here is made again in the walk, as before.
+    const hashes = [...new Set(events.filter((e) => e.txHash && (e.type === 'LeavesInserted' || e.type === 'NullifiersSpent')).map((e) => e.txHash))];
+    const got = new Map();
+    let next = 0;
+    const reader = async () => { while (next < hashes.length) { const h = hashes[next++]; try { got.set(h, await txOf(h)); } catch { /* read again in the walk */ } } };
+    await Promise.all(Array.from({ length: TX_READS_AT_ONCE }, reader));
     const seen = new Set();
     const found = [], loose = [], others = []; let named = false;
     for (const e of events) {
       if (!e.txHash || seen.has(e.txHash) || (e.type !== 'LeavesInserted' && e.type !== 'NullifiersSpent')) continue;
       seen.add(e.txHash);
-      const tx = await txOf(e.txHash);
+      const tx = got.has(e.txHash) ? got.get(e.txHash) : await txOf(e.txHash);
       const decoded = tx && ux.lockScan.decodeSettleCalls(tx.input);
       if (decoded && decoded.direct && trustedTo.has(tx.to)) {
         const r = naming(decoded.calls, key);

@@ -2,7 +2,7 @@
 // any step. The card loads this when the lane is first opened, and shows the lane's switch only when providers of the pair exist (swap/atomic-probe.js).
 // Nothing here builds or signs a transaction: the pair client does (fastbridge-pair.js, opened by fast/pair-wire.js openPair) with the Tacit key.
 //
-//   makeAtomicLane({ host, notify, wallet, provider, getUx, door, onState, dir, now, recsHost, market }) -> { show, hide, set, state, get unlocked, records, keep }
+//   makeAtomicLane({ host, notify, wallet, provider, getUx, door, onState, dir, now, recsHost, market }) -> { show, hide, set, state, get unlocked, get looking, records, keep }
 //
 //   door   how the key and the pair client are reached: { load(), unlocked, signIn(), fund(), open() -> { pair } | pair }. The page's door is made here from
 //          the trade page's Bitcoin module (the same sign-in as the Bitcoin lane); a test passes its own.
@@ -17,7 +17,7 @@ import { esc, fmtUnits, parseUnits, plain } from '/trade/util.js?cb=9c8b4133';
 
 const BTC_MODULE = '/trade/btc.js?cb=f4f79584';
 const TETH_ID = '3cba71e1114af183cdeacc6b8457a474d17529fd28704480ca799d0d03126f34';
-const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000;
+const DEC = 8, POLL_MS = 5000, HIDDEN_POLL_MS = 20000, QUOTE_MS = 300, REFRESH_MS = 15000, MARKET_MS = 60000, PEEK_MS = 3000;
 const MARKET_MODULE = '/swap/atomic-market.js?cb=f3732fda';
 const COINS = { btc: { sym: 'BTC', mark: 'tk-btc', at: 'c-btc', where: 'Bitcoin' }, eth: { sym: 'ETH', mark: 'tk-teth', at: 'c-eth', where: 'Ethereum, private' } };
 const SIDES = { b2e: ['btc', 'eth'], e2b: ['eth', 'btc'] };
@@ -84,7 +84,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import('/fast/pair-wire.js?cb=d822a810');
+      const wire = await import('/fast/pair-wire.js?cb=7d4d123b');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },
@@ -94,7 +94,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
 export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, provider = () => null, getUx = null, door = null, onState = () => {}, dir = 'b2e', now = nowSecs, recsHost = null, market = null, onRecs = () => {} }) {
   const D = door || bitcoinDoor({ notify, wallet, provider, getUx, onChange: () => { if (L.open) { L.unlocked = D.unlocked; paint(); begin(); } } });
   const L = { dir: dir === 'e2b' ? 'e2b' : 'b2e', amt: '', q: null, qErr: '', bal: { sats: null, eth: null, ethHeld: null, pending: 0n }, recs: [], busy: false, open: false, line: '', cls: '', unlocked: false, loaded: false, terms: null, mk: null, fits: null };
-  let fundAsk = null, pair = null, pairP = null, opened = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, marketTimer = 0, recovered = false, reading = null, began = null;
+  let fundAsk = null, pair = null, pairP = null, opened = null, mounted = false, seq = 0, qTimer = 0, poll = 0, refreshTimer = 0, marketTimer = 0, recovered = false, recovering = null, lookFailed = false, reading = null, began = null;
   const readMarket = market || (() => import(MARKET_MODULE).then((M) => M.readMarket().then((m) => ({ ...m, estimate: (d, a) => M.estimate(m, d, a) }))));
   const known = new Map();
   const $ = (id) => host.querySelector(`#${id}`);
@@ -160,7 +160,26 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     })();
     return reading;
   }
-  // The key is open: the pair client is made, swaps from an earlier visit are found again, and what is under way is shown.
+  // The swaps of an earlier visit, or of another browser, are found again from the key (pair.recover: the key's Bitcoin locks and its pool locks, each then read
+  // to its end on the chains), which can take a minute or two. Meanwhile what is found is listed as it is found (a swap still being read says 'Checking'), the
+  // page says it is still looking rather than that there are none, and a look that fails is made again by the lane's refresh. Swaps are stepped once it ends.
+  function findPast() {
+    if (recovered || !pair) return Promise.resolve();
+    if (recovering) return recovering;
+    lookFailed = false;
+    let live = true;
+    const peek = setInterval(() => { pair.records().then((rs) => { if (live && Array.isArray(rs)) { L.recs = rs; paintRecs(); } }, () => {}); }, PEEK_MS);
+    recovering = (async () => {
+      try { await pair.recover(); recovered = true; } catch { lookFailed = true; }
+      finally { live = false; clearInterval(peek); }
+      L.recs = await pair.records().catch(() => L.recs);
+      recovering = null;
+      paint(); follow(1000);
+    })();
+    paint();
+    return recovering;
+  }
+  // The key is open: the pair client is made, the swaps this browser keeps are listed, those of an earlier visit are looked for, and what is under way is shown.
   function begin() {
     if (!D.unlocked || !L.open) return Promise.resolve();
     return (began ||= (async () => {
@@ -170,12 +189,12 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
         L.unlocked = true;
         // the balance is read while the swaps of an earlier visit are looked for, not after: the two read the same pool history, and the button waits on the balance
         paint(); readMe(); requote(true);
-        if (!recovered) { recovered = true; await pair.recover().catch(() => 0); }
-        L.recs = await pair.records().catch(() => []);
+        L.recs = await pair.records().catch(() => L.recs);
         pair.providers().then((ps) => { L.terms = ps; paint(); }, () => {});
-        paint(); follow(1000);
+        paint();
         clearInterval(refreshTimer);
-        refreshTimer = setInterval(() => { if (!document.hidden && L.open) { readMe(true); if (L.q && !L.busy && L.q.expiresAt - now() < 30) requote(true, true); } }, REFRESH_MS);
+        refreshTimer = setInterval(() => { if (!document.hidden && L.open) { readMe(true); if (!recovered) findPast(); if (L.q && !L.busy && L.q.expiresAt - now() < 30) requote(true, true); } }, REFRESH_MS);
+        if (recovered) follow(1000); else await findPast();
       } catch (e) { say(esc(plainError(e)), 'err'); }
       finally { began = null; }
     })());
@@ -336,7 +355,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       const r = await pair.start(q);
       L.amt = ''; $('a-amt').value = ''; L.q = null; L.qErr = '';
       say('');
-      L.recs = await pair.pump().catch(async () => pair.records().catch(() => L.recs));
+      L.recs = await (recovering ? Promise.reject() : pair.pump()).catch(async () => pair.records().catch(() => L.recs));
       known.set(r.id, 'working');
       onState();
       follow(POLL_MS);
@@ -350,6 +369,8 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     clearTimeout(poll);
     if (!pair || !L.open || !L.recs.some((r) => r.state === 'working')) return;
     poll = setTimeout(async () => {
+      // (a look for earlier swaps steps what it finds itself: the two do not step the same swap at once, so a pass waits for it to end)
+      if (recovering) { follow(POLL_MS); return; }
       try {
         const next = await pair.pump();
         for (const r of next) {
@@ -398,6 +419,9 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     },
     state: () => ({ dir: L.dir, amt: L.amt }),
     get unlocked() { return D.unlocked; },
+    // whether the swaps of an earlier visit are still being looked for: 'looking' from the key's opening until the look ends, 'failed' while one that failed waits
+    // to be made again, else null (a page that lists the swaps says 'looking' then, not that there are none)
+    get looking() { return !D.unlocked || recovered ? null : lookFailed && !recovering ? 'failed' : 'looking'; },
     // the swaps the lane holds, and the open pair's copy of them as a file (fast/pair-keep.js), or null before the wallet is open
     records: () => L.recs.slice(),
     keep: () => opened?.keep || null,

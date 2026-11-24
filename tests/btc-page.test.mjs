@@ -77,7 +77,8 @@ const FAKE = `
     start: async (q) => { calls.start.push(q); return { id: 'sw9' }; },
     pump: async () => { calls.pump++; return S.recs; },
     records: async () => { calls.records++; return S.recs; },
-    recover: async () => { calls.recover++; return 0; },
+    // (recoverHold: the look for earlier swaps waits for S.release(); recoverFail: that many looks fail first)
+    recover: async () => { calls.recover++; if (S.recoverFail > 0) { S.recoverFail--; throw new Error('the explorers did not answer'); } if (S.recoverHold) await new Promise((r) => { S.release = r; }); return 0; },
   };
 })();`;
 
@@ -101,13 +102,14 @@ async function wire(page, { ads, boardDelayMs = 0 }) {
     return route.abort();
   });
 }
-async function fresh({ path = '/btc/', ads = [ad()], viewport = { width: 1200, height: 1000 }, scheme = 'light' } = {}) {
+async function fresh({ path = '/btc/', ads = [ad()], viewport = { width: 1200, height: 1000 }, scheme = 'light', init = '' } = {}) {
   const page = await b.newPage({ viewport, colorScheme: scheme, acceptDownloads: true });
   const errs = [], csp = [];
   page.on('pageerror', (e) => errs.push(e.message));
   page.on('console', (m) => { const t = m.text(); if (/Content Security Policy|Refused to/i.test(t)) csp.push(t.slice(0, 200)); });
   await wire(page, { ads });
   await page.addInitScript(FAKE);
+  if (init) await page.addInitScript(init);
   await page.route(/\/trade\/btc\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: BTC_STUB }));
   await page.route(/\/fast\/pair-wire\.js/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: WIRE_STUB }));
   await page.goto(`${BASE}${path}`, { waitUntil: 'domcontentloaded' });
@@ -196,6 +198,40 @@ console.log('the page: the marks, the line, the lane');
   await page.click('#a-flip');
   ok(/\?dir=e2b/.test(page.url()) && /From.*Ethereum, private/.test(await text(page, '#a-pay')), `the flip turns the lane and the address (${page.url()})`);
   ok(errs.length === 0 && csp.length === 0, `no page errors or CSP violations (${errs.concat(csp).join(' | ')})`);
+  await page.close();
+}
+
+console.log('a new browser: the swaps of an earlier visit are looked for, listed as found, and the list never says there are none meanwhile');
+{
+  const { page, errs, csp } = await fresh({ init: 'window.__atom.recs = []; window.__atom.recoverHold = true;' });
+  await page.click('#a-go');
+  await page.waitForFunction(() => window.__btc.unlocked && window.__atom.calls.recover === 1, null, { timeout: 15000 });
+  await sleep(400);
+  ok(/^Looking for your past swaps on Bitcoin and Ethereum\. This can take a minute or two\.$/.test(await text(page, '#mine-say')) && await page.isHidden('#mine-list'), `while the look runs it says so, not "No swaps yet" (${await text(page, '#mine-say')})`);
+  await page.waitForFunction(() => /Balance 0\.5 BTC/.test(document.querySelector('#a-bal').textContent), null, { timeout: 8000 });
+  ok(true, 'the balance is read while the look runs');
+  // a swap found partway (the look has stored it and still reads what became of it): listed at once, as being checked
+  await page.evaluate(() => {
+    const A = window.__atom, steps = ['They lock BTC', 'You lock ETH', 'They claim ETH', 'You take BTC'].map((title, i) => ({ key: ['lock', 'match', 'claim', 'take'][i], title, state: 'todo' }));
+    A.recs = [{ id: 'swF', dir: 'e2b', state: 'working', title: 'Checking', detail: 'This swap was found again from your key. What became of it is being read from the chains.', pay: 4500000n, get: 125898n, steps, etaSecs: 0, at: Math.floor(Date.now() / 1000) - 86400, refundAt: null, backBy: null }];
+  });
+  await page.waitForFunction(() => document.querySelectorAll('#mine-list > div').length === 1, null, { timeout: 8000 });
+  ok(/Checking/.test(await text(page, '#mine-list')) && /^Looking for more of your past swaps…$/.test(await text(page, '#mine-say')), `a swap found partway is listed while the look goes on (${await text(page, '#mine-say')})`);
+  ok((await atom(page, 'A.calls.pump')) === 0, 'nothing is stepped by the lane while the look steps what it finds');
+  // the look ends: the swap as the chains say, and the line goes
+  await page.evaluate(() => { const A = window.__atom; A.recs = [{ ...A.recs[0], state: 'done', title: 'Done', detail: 'The BTC is at your Bitcoin address.', steps: A.recs[0].steps.map((s) => ({ ...s, state: 'done' })) }]; A.release(); });
+  await page.waitForFunction(() => document.querySelector('#mine-say').textContent === '' && /Done/.test(document.querySelector('#mine-list').textContent), null, { timeout: 8000 });
+  ok(/0\.045 ETH → 0\.00125898 BTC/.test(await text(page, '#mine-list .ok')), 'when the look ends the list is painted again: the swap is done, with both amounts');
+  ok(errs.length === 0 && csp.length === 0, `no page errors or CSP violations (${errs.concat(csp).join(' | ')})`);
+  await page.close();
+}
+{
+  const { page } = await fresh({ init: 'window.__atom.recoverFail = 1;' });
+  await page.click('#a-go');
+  await page.waitForFunction(() => /could not be looked for just now\. Trying again\./.test(document.querySelector('#mine-say').textContent), null, { timeout: 15000 });
+  ok((await page.$$('#mine-list > div')).length === 2 && /^Your other past swaps could not/.test(await text(page, '#mine-say')), 'a look that fails says so, and the swaps this browser keeps are still listed');
+  await page.waitForFunction(() => window.__atom.calls.recover === 2 && document.querySelector('#mine-say').textContent === '', null, { timeout: 25000 });
+  ok(true, 'the lane\'s refresh looks again, and once that look ends the line goes');
   await page.close();
 }
 
