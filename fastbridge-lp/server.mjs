@@ -35,7 +35,7 @@ const { makeConfidentialPoolUx } = await import('../dapp/confidential-pool-ux.js
 const { setActiveNetwork } = await import('../dapp/confidential-deployments.js');
 const { makeBtcWallet } = await import('../dapp/bitcoin-taproot-wallet.js');
 const { makeAdaptorBtcTx, tacitKit } = await import('../dapp/adaptor-btc-tx.js');
-const { makeFastBridgeEvm } = await import('../dapp/fastbridge-evm.js');
+const { makeFastBridgeEvm, makeTxTracer, TRACE_NODES } = await import('../dapp/fastbridge-evm.js');
 const { makeFileStore, makeFileLogStore, makeMemoryStore } = await import('./lib/store.mjs');
 const { makeNodeBtcChain } = await import('./lib/btc-chain.mjs');
 const { makeLpService } = await import('./lib/service.mjs');
@@ -77,7 +77,10 @@ const selfSettle = (x) => turn(async () => {
   await ux.rpc('eth_call', [{ from: acct.address, to: ux.cfg.pool, data: ux.settleCalldata(x) }, 'latest']);
   return ux.settleFromAccount({ settlerPriv: key, publicValues: x.publicValues, proof: x.proof, memos: x.memos || [] });
 });
-const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs }, selfSettle, ownAccount: { address: acct.address }, selfRetryMs: 60000, log });
+// the nodes asked for a transaction's trace, to read a claim settled through a contract other than the pool or its relayer (README `traceRpcs`)
+const traceNodes = String(process.env.FB_LP_TRACE_RPCS || '').split(',').map((s) => s.trim()).filter(Boolean);
+if (!traceNodes.length) traceNodes.push(...(Array.isArray(C.traceRpcs) && C.traceRpcs.length ? C.traceRpcs : TRACE_NODES));
+const evm = makeFastBridgeEvm({ ux, secp, keccak256: keccak_256, hmacSha256, walletPriv: key, seed, asset: C.evmAsset, poolAddress: C.poolAddress, policy: { minClaimSecs: C.policy.minClaimSecs }, selfSettle, ownAccount: { address: acct.address }, selfRetryMs: 60000, log, trace: makeTxTracer({ nodes: traceNodes }) });
 const btc = makeNodeBtcChain({
   bases: C.btcBases, tacit, prims, builder, pool: ux.pool, ethGetStorageAt: (to, slot, tag) => ux.rpc('eth_getStorageAt', [to, slot, tag]),
   poolAddress: C.poolAddress, binding: ux.chainBindingHex(), keccak256: keccak_256, secp, log,

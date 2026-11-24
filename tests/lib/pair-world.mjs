@@ -21,7 +21,8 @@ export const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 export const SATS = 100_000n;
 export const UNITS = 3_600_000n;                                         // 0.036 ETH in pool units
 
-export function pairWorld({ providerMarket = 35.6, clientMarket = 35.6, confs = 1, userSats = 200_000 } = {}) {
+// `fwdQuote`, `revConfig`: what a test sets over the forward provider's quote terms and the reverse provider's config
+export function pairWorld({ providerMarket = 35.6, clientMarket = 35.6, confs = 1, userSats = 200_000, fwdQuote = {}, revConfig = {}, revCoins = [2_000_000] } = {}) {
   const clock = makeClock(), btc = makeBitcoinSim(clock), evm = makeEvmSim(clock);
   const wallet = (name) => makeBtcWallet({ priv: bigintToBytes32(scalar(name + '/btc-wallet')), hrp: 'tb', fetchUtxos: async () => [], broadcastTx: async () => { throw new Error('offline'); }, fetchFeeRate: async () => 3 });
   const uW = wallet('user'), lW = wallet('lp'), rW = wallet('lp-reverse');
@@ -29,7 +30,7 @@ export function pairWorld({ providerMarket = 35.6, clientMarket = 35.6, confs = 
   const uEvm = makeEvmParty({ evm, keys: uKeys, clock }), lEvm = makeEvmParty({ evm, keys: lKeys, clock });
   // stable coins, gone from the lists once a transaction spends them
   const coinsOf = (tag, values) => values.map((v, i) => ({ txid: bytesToHex(sha256(te(`${tag}/${i}`))), vout: 0, value: v }));
-  const uCoins = coinsOf('user', userSats ? [userSats] : []), rCoins = coinsOf('reverse', [2_000_000]);
+  const uCoins = coinsOf('user', userSats ? [userSats] : []), rCoins = coinsOf('reverse', revCoins);
   const unspent = (cs) => () => cs.filter((c) => !btc.spends.has(`${c.txid}:${c.vout}`));
   const uBtc = btc.adapter({ prims: uW.prims, builder: makeAdaptorBtcTx({ prims: uW.prims }), sats: unspent(uCoins) });
   const lBtc = btc.adapter({ prims: lW.prims, builder: makeAdaptorBtcTx({ prims: lW.prims }), sats: unspent([]) });
@@ -39,26 +40,26 @@ export function pairWorld({ providerMarket = 35.6, clientMarket = 35.6, confs = 
   const base = { now: evm.now, lockPosition: evm.lockPosition, jobStatus: evm.jobStatus, submit: evm.submit, lockSpent: evm.lockSpentFn, findClaim: evm.findClaim, lockNullifier: pool.nullifier };
   const lEvmCtx = { ...base, lockOp: lEvm.lockOp, refundOp: lEvm.refundOp, refundKey: lEvm.refundKey, available: lEvm.available };
   const rBlEvm = { now: evm.now, lockPosition: evm.lockPosition, recipient: lEvm.recipient, claimOp: lEvm.claimOp, submit: evm.submit, claimStatus: evm.jobStatus };
-  const uEvmCtx = { ...base, recipient: uEvm.recipient, claimOp: uEvm.claimOp, claimStatus: evm.jobStatus, lockOp: uEvm.lockOp, refundOp: uEvm.refundOp, refundKey: uEvm.refundKey, available: uEvm.available };
+  const uEvmCtx = { ...base, recipient: uEvm.recipient, claimOp: uEvm.claimOp, claimStatus: evm.jobStatus, lockOp: uEvm.lockOp, refundOp: uEvm.refundOp, refundKey: uEvm.refundKey, available: uEvm.available, findOwnLocks: uEvm.findOwnLocks };
 
   // the market, as the provider reads it and as the user's page does
   const market = { provider: providerMarket, client: clientMarket, providerDown: false };
   const feedOf = (read) => makeRateFeed({ sources: [async () => read(), async () => read()], now: clock.now, maxAgeSecs: 3600 });
   const providerFeed = feedOf(() => { if (market.providerDown) throw new Error('down'); return market.provider; }), clientFeed = feedOf(() => market.client);
 
-  const w = { clock, btc, evm, uW, lW, rW, uKeys, lKeys, uEvm, lEvm, uBtc, rBtc, uCoins, rCoins, market, providerFeed, clientFeed, up: { lp: true, offers: true }, stores: { lp: memStore(), rv: { swaps: memStore(), quotes: memStore(), offers: memStore(), evmOffers: memStore() } } };
+  const w = { uEvmCtx, lEvmCtx, lBtc, clock, btc, evm, uW, lW, rW, uKeys, lKeys, uEvm, lEvm, uBtc, rBtc, uCoins, rCoins, market, providerFeed, clientFeed, up: { lp: true, offers: true }, stores: { lp: memStore(), rv: { swaps: memStore(), quotes: memStore(), offers: memStore(), evmOffers: memStore() } } };
   w.fwd = makeLpService({
     seed: lKeys.seed, btc: lBtc, evm: lEvmCtx, swaps: w.stores.lp, quoteStore: memStore(), now: clock.now,
     config: {
       claimPub: bytesToHex(lW.wallet.pub), csvBlocks: 144,
-      quote: { btcAsset: SATS_ASSET, evmAsset: ASSET, minAmount: 20_000, maxAmount: 10_000_000, feeBps: 30, flatFee: 500, validSecs: 600, rate: () => providerFeed.rate() },
+      quote: { btcAsset: SATS_ASSET, evmAsset: ASSET, minAmount: 20_000, maxAmount: 10_000_000, feeBps: 30, flatFee: 500, validSecs: 600, rate: () => providerFeed.rate(), ...fwdQuote },
       policy: { minCsv: 72, minConfsFor: () => confs, evmWindowSecs: 4 * 3600, minClaimSecs: 3600, claimSlackSecs: 7200, roundSecs: 600, refundMarginSecs: 600, maxOfferAgeSecs: 3600, minAmount: 20_000, maxAmount: 10_000_000 },
     },
   });
   w.rev = makeReverseService({
     seed: lKeys.seed, btc: rBtc, evm: rBlEvm, ...w.stores.rv, now: clock.now,
     inventory: { notes: async () => unspent(rCoins)().map((c) => ({ ...c, amount: BigInt(c.value) })) },
-    config: { quote: { btcAsset: SATS_ASSET, evmAsset: ASSET, minAmount: 1_000_000n, maxAmount: 50_000_000n, feeBps: 30, flatFee: 10_000n, validSecs: 600, rate: () => providerFeed.rate() }, csvBlocks: 96, evmWindowSecs: 4 * 3600, maxOpen: 2, minConfsFor: () => confs, refreshSecs: 0 },
+    config: { quote: { btcAsset: SATS_ASSET, evmAsset: ASSET, minAmount: 1_000_000n, maxAmount: 50_000_000n, feeBps: 30, flatFee: 10_000n, validSecs: 600, rate: () => providerFeed.rate() }, csvBlocks: 96, evmWindowSecs: 4 * 3600, maxOpen: 2, minConfsFor: () => confs, refreshSecs: 0, ...revConfig },
   });
   w.provider = { id: 'lp1', name: 'Test provider', ref: { kind: 'http', base: 'http://lp', claimPub: bytesToHex(lW.wallet.pub) } };
   w.discover = async () => {

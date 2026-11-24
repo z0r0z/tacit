@@ -13,6 +13,31 @@ export function lockDeadline({ blockTime, windowSecs, roundSecs = 600 }) {
   return Math.ceil((blockTime + windowSecs) / roundSecs) * roundSecs;
 }
 
+// A swap's record built again from its pool lock's memo (dapp/fastbridge-evm.js openLockMemo) and the key, for a key whose records are gone. It is at 'offered': the lock is
+// in the pool, so the next step reads what became of it (the claim gives t and the Bitcoin lock is taken; past the deadline the lock is refunded). Null when the memo
+// does not make the lock it was found on. `lockValue`: the Bitcoin lock output's sats as the chain shows them (a lock of sats holds the amount itself).
+export function recordFromLockMemo({ memo, seed, refundXonly, claimerPub, btcAsset, evmAsset, lockNullifier, lockValue = null, now }) {
+  const id = strip(memo.swapId), T = secp.ProjectivePoint.fromHex(strip(memo.T));
+  const rEvmLock = X.evmLockBlinding({ seed, swapId: hexToBytes(id), T });
+  const amount = BigInt(memo.evm.amount), locker = hx(refundXonly), sats = X.isSats(btcAsset);
+  const evmOffer = X.makeEvmOffer({ asset: strip(evmAsset), amount, rEvmLock, T, deadline: memo.deadline, recipient: memo.evm.recipient, locker, rOut: BigInt('0x' + strip(memo.evm.rOut)) });
+  if (strip(evmOffer.lockLeaf) !== strip(memo.lockLeaf)) return null;
+  const L = pedersenCommit(amount, rEvmLock).toRawBytes(false), Tu = T.toRawBytes(false), w = (b) => '0x' + hx(b);
+  const lockLeaf = '0x' + strip(memo.lockLeaf);
+  return {
+    v: 1, role: 'el', id, phase: 'offered', created: Math.max(0, memo.deadline - 8 * 3600), updated: now, quoteId: null, recovered: true,
+    offer: {
+      v: 1, swapId: id, T: strip(memo.T), claimerPub: hx(claimerPub),
+      btc: { asset: strip(btcAsset), value: String(memo.btc.value), ...(sats ? {} : { rLock: memo.btc.rLock }), txid: memo.btc.txid, vout: memo.btc.vout, csvBlocks: memo.btc.csvBlocks, lockerXonly: memo.btc.lockerXonly },
+      evm: { asset: strip(evmAsset), amount: String(amount), recipient: strip(memo.evm.recipient), rOut: strip(memo.evm.rOut) },
+    },
+    lockTxid: memo.btc.txid, lockVout: memo.btc.vout, lockValue: lockValue ?? Number(memo.btc.value), csvBlocks: memo.btc.csvBlocks, deadline: memo.deadline,
+    // (the lock's terms as its refund reads them)
+    lock: { lockLeaf, lockNu: lockNullifier(lockLeaf), op: { amount: String(amount), lCx: w(L.slice(1, 33)), lCy: w(L.slice(33, 65)), tx: w(Tu.slice(1, 33)), ty: w(Tu.slice(33, 65)), deadline: memo.deadline, recipient: '0x' + strip(memo.evm.recipient), refundPub: '0x' + locker } },
+    evmOffer,
+  };
+}
+
 export function makeEthereumLocker(ctx) {
   const { seed, store, policy, quotes, btc, evm, counter } = ctx;
   const margin = policy.refundMarginSecs ?? 600;
@@ -44,7 +69,11 @@ export function makeEthereumLocker(ctx) {
     const known = await store.get(id);
     if (known) return { ok: true, rec: known };
     const reject = (why, retry = false) => ({ ok: false, retry, why });
-    const quote = await quotes.get(quoteId);
+    // `admit({ id, offer })`: a reason this side will not answer the offer, from what it keeps beyond this store (a Bitcoin lock that another swap of the
+    // same key already answers), or null
+    if (ctx.admit) { const why = await ctx.admit({ id, offer }); if (why) return reject(why); }
+    // (the offer goes with the ask: a quote past its time may still stand for a lock that was made in time)
+    const quote = await quotes.get(quoteId, { offer });
     if (!quote) return reject('unknown quote');
     if (ctx.now() > quote.validUntil) return reject('quote expired');
     let value, amount;
@@ -97,15 +126,17 @@ export function makeEthereumLocker(ctx) {
   };
 
   async function readLock(rec) {
-    const zs = await evm.findClaim(rec.lock.lockNu, { sinceSecs: rec.created });
+    const sTilde = rec.evmOffer ? BigInt('0x' + strip(rec.evmOffer.presign.sTilde)) : null;
+    const T = secretsOf(rec).T;
+    const tOf = (z) => { const t = adaptor.evmKernelExtract(sTilde, BigInt(z)); return t !== 0n && adaptor.adaptorPoint(t).equals(T) ? t : null; };
+    // `check`: a kernel read from anything but the pool's own record of the settle is taken only if it opens this swap
+    const zs = await evm.findClaim(rec.lock.lockNu, { sinceSecs: rec.created, ...(sTilde != null ? { check: (z) => tOf(z) != null } : {}) });
     if (!zs) return null;
     if (!zs.length) return { refunded: true };
-    if (!rec.evmOffer) return { lost: true };
-    const sTilde = BigInt('0x' + strip(rec.evmOffer.presign.sTilde));
-    const T = secretsOf(rec).T;
+    if (sTilde == null) return { lost: true };
     for (const z of zs) {
-      const t = adaptor.evmKernelExtract(sTilde, BigInt(z));
-      if (t !== 0n && adaptor.adaptorPoint(t).equals(T)) return { t: '0x' + t.toString(16).padStart(64, '0') };
+      const t = tOf(z);
+      if (t != null) return { t: '0x' + t.toString(16).padStart(64, '0') };
     }
     return { lost: true };
   }

@@ -76,7 +76,7 @@ export function pairReverseOptions(C, feed) {
   if (!r || r.enabled !== true) return null;
   return {
     quote: { btcAsset: SATS_ASSET, evmAsset: ETH_ASSET, minAmount: String(r.minAmount), maxAmount: String(r.maxAmount), feeBps: r.feeBps, flatFee: String(r.flatFee), validSecs: r.validSecs ?? 300, rate: () => feed.rate() },
-    csvBlocks: r.csvBlocks ?? 96, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, maxOpen: r.maxOpen, maxLocked: BigInt(r.maxSats), minConfsFor: (v) => confsForSats(v), lockFeeReserve: String(r.lockFeeReserve),
+    csvBlocks: r.csvBlocks ?? 96, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, maxOpen: r.maxOpen, maxOpenPerKey: r.maxOpenPerKey ?? 1, maxLocked: BigInt(r.maxSats), minConfsFor: (v) => confsForSats(v), lockFeeReserve: String(r.lockFeeReserve),
     alertSecs: C.alertSecs ?? 3600, refreshSecs: r.refreshSecs ?? 60, policy: { minClaimSecs: C.policy.minClaimSecs ?? 3600, offerWaitSecs: 2 * 3600, maxEvmWindowSecs: 6 * 3600 },
   };
 }

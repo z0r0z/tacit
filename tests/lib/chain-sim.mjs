@@ -14,7 +14,9 @@ import { makeNoteResolver } from '../../dapp/btc-pool-zap.js';
 import * as X from '../../dapp/adaptor-xswap.js';
 import * as adaptor from '../../dapp/adaptor-signature.js';
 import { G, SECP_N, modN, pedersenCommit, bigintToBytes32, signSchnorr, verifySchnorr } from '../../dapp/bulletproofs.js';
-import { bytesToHex, hexToBytes, sha256 as dappSha256 } from '../../dapp/vendor/tacit-deps.min.js';
+import { bytesToHex, hexToBytes, sha256 as dappSha256, hmac } from '../../dapp/vendor/tacit-deps.min.js';
+import { lockMemoKey, sealLockMemo, openLockMemo } from '../../dapp/fastbridge-evm.js';
+const hmacSha256 = (k, m) => hmac(dappSha256, k, m);
 import { tacit } from './btc-sim.mjs';
 
 export const sha256 = (b) => new Uint8Array(createHash('sha256').update(Buffer.from(b)).digest());
@@ -137,7 +139,7 @@ function recordingBuilder(builder) {
 export function makeEvmSim(clock) {
   const sim = {
     notes: new pool.Tree(), noteRoots: new Set(), spentNotes: new Set(), locks: new pool.Tree(), lockRoots: new Set(), lockSpent: new Set(),
-    claims: new Map(), jobs: new Map(), submitted: [], inventory: new Map(), paused: false,
+    claims: new Map(), jobs: new Map(), submitted: [], inventory: new Map(), paused: false, lockMemos: [],
   };
   sim.noteRoots.add(sim.notes.root());
   sim.addNote = (leaf) => { const i = sim.notes.insert(leaf); sim.noteRoots.add(sim.notes.root()); return i; };
@@ -156,6 +158,7 @@ export function makeEvmSim(clock) {
     if (clock.now() > op.deadline) throw new Error('Expired');
     sim.spentNotes.add(nu);
     sim.locks.insert(op.lockLeaf);
+    sim.lockMemos.push(op.lockMemo ?? null);                         // the memo the lock's settle carried, as the pool's calldata holds it
     sim.lockRoots.add(sim.locks.root());
   };
   const pt = (cx, cy) => rootSecp.ProjectivePoint.fromHex('04' + strip(cx).padStart(64, '0') + strip(cy).padStart(64, '0'));
@@ -260,8 +263,16 @@ export function makeEvmParty({ evm, keys, clock }) {
       nNote: { cx: h.cx, cy: h.cy, owner: h.owner, blinding: h.blinding, leafIndex: h.leafIndex, path, secret: h.nk },
       amount, lBlinding: scalarHex(rEvmLock), T: aff(T), deadline, recipient: '0x' + strip(recipient), refundPub: '0x' + bytesToHex(refundXonly),
     });
+    // the lock's memo, sealed to the party's key as dapp/fastbridge-evm.js lockOp seals it
+    op.lockMemo = sealLockMemo({ hmacSha256, key: lockMemoKey({ hmacSha256, walletPriv: keys.seed }), swapId: rec.id, offer: rec.offer, deadline });
     h.used = true;
     return { op, lockLeaf: op.lockLeaf, lockNu: pool.nullifier(op.lockLeaf) };
+  };
+  // every lock of the pool whose memo this party sealed (dapp/fastbridge-evm.js makeOwnLockFinder over the sim's lock set)
+  party.findOwnLocks = async () => {
+    const key = lockMemoKey({ hmacSha256, walletPriv: keys.seed }), out = [];
+    evm.locks.leaves.forEach((leaf, i) => { const f = openLockMemo({ hmacSha256, key, memo: evm.lockMemos[i] }); if (f) out.push({ ...f, lockLeaf: '0x' + bytesToHex(leaf) }); });
+    return out;
   };
   party.refundOp = async ({ rec, position }) => {
     const { op } = rec.lock;

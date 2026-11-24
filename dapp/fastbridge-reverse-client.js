@@ -112,7 +112,8 @@ export function describe(rec) {
 // `confsOf(value)`: the confirmations the user wants on the provider's lock, by its value (default: TAC's). `valueCheck({ evmAmount, btcValue })`: for a pair whose two
 // sides are not the same unit (the provider pays sats for pool ETH), the judgement of the amounts that replaces the same-unit one: it throws a reason the page can show, or
 // returns { fee (in the user's units), highFee }. Both default to the TAC bridge's own rules, byte for byte.
-export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins = {}, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), confsOf = confsFor, valueCheck = null }) {
+// `admit({ id, offer })`: a reason not to answer a lock offer from what the page keeps beyond this provider's store (dapp/fastbridge-pair.js: a Bitcoin lock another swap answers), or null
+export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins = {}, policy: policyIn = {}, now = () => Math.floor(Date.now() / 1000), confsOf = confsFor, valueCheck = null, admit = null }) {
   const policy = { ...REVERSE_POLICY, ...policyIn };
   const claimPub = () => bytesToHex(btc.wallet.pub);
   const pinned = (a) => (pins[a] ? strip(pins[a]) : null);
@@ -121,7 +122,7 @@ export function makeReverseClient({ lp, btc, evm, store, quoteStore, seed, pins 
   // The machine looks its quote up by id; a quote that started a swap stays good for the swap (the lock it waits on takes longer than a quote lasts)
   const quotes = { get: async (id) => { const r = await quoteStore.get(id); return r ? { ...r, validUntil: r.startedAt ? Math.max(r.validUntil, r.startedAt + policy.startGraceSecs) : r.validUntil } : null; } };
   const el = makeEthereumLocker({
-    seed, now, store, quotes, btc, evm,
+    seed, now, store, quotes, btc, evm, admit,
     counter: { publishEvmOffer: async (id, offer) => { const r = await lp.postEvmOffer(id, offer); if (r && r.ok === false) throw new Error(`the provider did not take the pool offer: ${r.why}`); } },
     policy: { minCsv: policy.minCsv, minConfsFor: confsOf, evmWindowSecs: policy.evmWindowSecs, roundSecs: policy.roundSecs, minClaimSecs: policy.minClaimSecs, claimSlackSecs: policy.claimSlackSecs, refundMarginSecs: policy.refundMarginSecs, maxOfferAgeSecs: policy.maxOfferAgeSecs, minAmount: 1n, maxAmount: 10n ** 18n, maxLockFailures: policy.maxLockFailures },
   });

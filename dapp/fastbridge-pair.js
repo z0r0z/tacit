@@ -25,6 +25,7 @@
 import { makeBitcoinLocker } from './fastbridge-bl.js';
 import { makeFastBridgeClient } from './fastbridge-client.js';
 import { makeReverseClient, makeReverseCounter } from './fastbridge-reverse-client.js';
+import { recordFromLockMemo } from './fastbridge-el.js';
 import * as X from './adaptor-xswap.js';
 import { bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 
@@ -102,10 +103,14 @@ export function describeRev(rec) {
   return {
     id: rec.id, dir: 'e2b', state, title, detail: rec.phase === 'aborted' && rec.why ? `${detail} ${String(rec.why).replace(/\.$/, '')}.` : detail,
     pay: rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: rec.offer ? BigInt(rec.offer.btc.value) : 0n, steps: stepsOf('e2b', at, state), etaSecs: state === 'working' ? eta : 0, at: rec.created,
-    refundAt: state === 'working' && rec.deadline ? rec.deadline : null, lockTxid: rec.lockTxid || null, error: rec.lastError || null, provider: rec.providerName || null,
+    // (once the provider has claimed, the ETH is not coming back: the BTC is taken instead, so no return time is given)
+    refundAt: state === 'working' && rec.deadline && rec.phase !== 'taking' ? rec.deadline : null, lockTxid: rec.lockTxid || null, error: rec.lastError || null, provider: rec.providerName || null,
   };
 }
 
+// the e2b swaps found again from the key are kept as one provider's: they have none to ask, and need none (a recovered swap is past the point where the provider is told anything)
+const RECOVERED = { id: 'recovered', name: 'Found from your key', ref: { kind: 'recovered' } };
+const noCall = async () => { throw new Error('this swap was found again from the key: it has no provider to ask'); };
 const noCounter = () => { const no = async () => { throw new Error('this swap was found again from the key: it has no provider to ask, and needs none to return'); }; return { sendOffer: no, getEvmOffer: no, extend: no, reserve: no, quote: no, info: no }; };
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('the provider did not answer in time')), ms))]);
 
@@ -200,14 +205,28 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   const revFor = (p) => {
     if (!revClients.has(p.id)) {
       revClients.set(p.id, makeReverseClient({
-        lp: makeReverseCounter(reverseCallFor(p.ref)), btc, evm, seed, now, store: stores.swaps(p.id), quoteStore: stores.quotes(p.id),
+        lp: makeReverseCounter(p.ref && p.ref.kind === 'recovered' ? noCall : reverseCallFor(p.ref)), btc, evm, seed, now, store: stores.swaps(p.id), quoteStore: stores.quotes(p.id),
         pins: { btcAsset: SATS_ASSET, evmAsset: ETH }, confsOf: confsForSats,
         // the two sides are different units: the price is judged against the market (below), so here only that the payout is something and the fee is not the amount
         valueCheck: () => ({ fee: 0n, highFee: false }),
+        admit: (o) => lockInUse(p.id, o),
       }));
     }
     return revClients.get(p.id);
   };
+  // The e2b swaps are kept a store per provider, so what one Bitcoin lock already answers is looked up across all of them: a lock (or a swap id) that a swap of
+  // any provider answers is not answered again, so one lock of sats never has two locks of ETH against it.
+  async function lockInUse(pid, { id, offer }) {
+    const txid = strip((offer && offer.btc && offer.btc.txid) || ''), vout = offer && offer.btc ? Number(offer.btc.vout) : -1;
+    const ids = new Set([pid, RECOVERED.id, ...(await revProviders()).map((p) => p.id)]);
+    for (const q of ids) {
+      for (const r of await stores.swaps(q).list()) {
+        if (r.id === id && q !== pid) return 'this swap is already answered for another provider';
+        if (r.id !== id && strip(r.lockTxid || '') === txid && Number(r.lockVout) === vout) return 'this Bitcoin lock is already answered by another swap';
+      }
+    }
+    return null;
+  }
   async function quoteRev(p, units) {
     const q = await withTimeout(revFor(p).quote(units), policy.askMs);
     return { p, r: q, pay: q.evmAmount, get: q.btcValue };
@@ -310,7 +329,26 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   const pump = () => tend(() => view(true), () => view(false));
   async function recover() {
     const c = makeFastBridgeClient({ lp: noCounter(), btc, evm, store: stores.fwd, seed, pins: { btcAsset: SATS_ASSET, evmAsset: ETH }, policy, now });
-    return (await c.recover()).length;
+    return (await c.recover()).length + (await recoverRev());
+  }
+  // e2b: each pool lock of this key carries a memo sealed to it (dapp/fastbridge-evm.js makeOwnLockFinder): a lock no record here holds is made a record again, and its
+  // next step reads what became of it (the provider's claim gives t and the BTC is taken; with no claim by the deadline, the ETH is refunded)
+  async function recoverRev() {
+    if (typeof evm.findOwnLocks !== 'function') return 0;
+    const found = await evm.findOwnLocks();
+    const known = new Set();
+    for (const p of [...(await revProviders()), RECOVERED]) for (const r of await stores.swaps(p.id).list()) known.add(r.id);
+    let n = 0;
+    for (const m of found) {
+      const id = strip(m.swapId);
+      if (known.has(id)) continue;
+      const rec = recordFromLockMemo({ memo: m, seed, refundXonly: (await evm.refundKey(id)).xonly, claimerPub: btc.wallet.pub, btcAsset: SATS_ASSET, evmAsset: ETH, lockNullifier: evm.lockNullifier, now: now() });
+      if (!rec) continue;
+      await stores.swaps(RECOVERED.id).put(rec);
+      known.add(id); n++;
+    }
+    if (n && !(await stores.index.get(RECOVERED.id))) await stores.index.put(RECOVERED);
+    return n;
   }
 
   return { providers, reference, balances, quote, start, pump, records, recover, address: () => ({ btc: btc.address }), claimPub: claimPubHex };

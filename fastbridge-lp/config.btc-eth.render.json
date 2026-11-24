@@ -37,7 +37,9 @@
     "feeBps": 20,
     "flatFee": "800",
     "validSecs": 300,
-    "graceSecs": 21600
+    "graceSecs": 900,
+    "lateSecs": 21600,
+    "lateMoveBps": 100
   },
   "rate": {
     "sources": ["chainlink", "coinbase", "kraken"],

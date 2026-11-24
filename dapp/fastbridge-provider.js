@@ -5,6 +5,8 @@ const FEE_WARM_MS = 30000;
 
 import { makeEthereumLocker } from './fastbridge-el.js';
 import { isSats } from './adaptor-xswap.js';
+import { deriveLock } from './adaptor-btc-lock.js';
+import { secp, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 
 const randomHex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -71,10 +73,39 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
   const counter = { publishEvmOffer: async (id, offer) => { published.set(id, offer); } };
   const graceSecs = Number(config.quote?.graceSecs) || 0;
-  const quotes = { get: async (id) => { const q = await quoter.get(id); if (!q) return q; const r = reservations.get(id); const until = Math.max(q.validUntil + graceSecs, r ? r.until : 0); return until > q.validUntil ? { ...q, validUntil: until } : q; } };
+  // A quote priced from the market (`quote.rate` a function) is not answered at its old price for long after its time: past `graceSecs` (and any hold) an offer
+  // is answered only for a lock this side saw before the quote ran out (named to /extend in time, or confirmed in a block by then), up to `lateSecs` after it, and
+  // only while the price today pays no more than `lateMoveBps` over the quote's. A fixed price (the TAC provider's) keeps its grace as it was.
+  const priced = typeof config.quote?.rate === 'function';
+  const lateSecs = Number(config.quote?.lateSecs ?? 21600), lateMoveBps = BigInt(config.quote?.lateMoveBps ?? 100);
+  const marketHolds = (q) => BigInt(q.evmAmount) * 10000n <= quoter.price(q.btcValue).evmAmount * (10000n + lateMoveBps);
+  async function seenInTime(q, offer) {
+    const txid = offer && offer.btc && String(offer.btc.txid || '').toLowerCase(), by = q.validUntil + graceSecs;
+    if (!txid) return false;
+    if (q.seenTxid === txid && q.seenAt <= by) return true;
+    if (!btc.status || !btc.blockTime) return false;
+    const st = await btc.status(txid);
+    return st.confirmations > 0 && (await btc.blockTime(st.height)) <= by;
+  }
+  const quotes = {
+    get: async (id, { offer = null } = {}) => {
+      const q = await quoter.get(id);
+      if (!q) return q;
+      const r = reservations.get(id);
+      const until = Math.max(q.validUntil + graceSecs, r ? r.until : 0);
+      if (!priced) return until > q.validUntil ? { ...q, validUntil: until } : q;
+      const t = now();
+      if (t <= q.validUntil) return q;
+      if (t <= q.validUntil + graceSecs) return { ...q, validUntil: until };
+      // (a price that cannot be read now is a reason to ask again, not to refuse: the error is the caller's retry)
+      if (t <= until && marketHolds(q)) return { ...q, validUntil: until };
+      if (t <= q.validUntil + lateSecs && (await seenInTime(q, offer)) && marketHolds(q)) return { ...q, validUntil: t };
+      return q;
+    },
+  };
   const el = makeEthereumLocker({ seed, now, store: swaps, quotes, btc, evm, counter, policy: config.policy });
   const health = { ok: true, lastTick: 0, lastError: null };
-  const reported = new Set(), lastAlert = new Map();
+  const reported = new Set(), lastAlert = new Map(), unreadSince = new Map();
 
   let chain = Promise.resolve();
   const exclusive = (fn) => { const run = chain.then(fn, fn); chain = run.catch(() => {}); return run; };
@@ -126,7 +157,8 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     const i = await readInventory();
     if (i.held == null) return true;
     let unbacked = 0n;
-    for (const r of reservations.values()) if (!r.txid && r.until > now()) unbacked += r.amount;
+    // (a hold for a lock of sats that has not confirmed is not yet backed by it: such a lock can still be replaced by a payment elsewhere)
+    for (const r of reservations.values()) if ((!r.txid || (sats && !lockTimes.has(r.txid))) && r.until > now()) unbacked += r.amount;
     return unbacked === 0n || unbacked + payout <= (i.held * BigInt(Math.round(hold.maxUnbackedShare * 100))) / 100n;
   }
   async function availableAmount() {
@@ -137,9 +169,16 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
       return quoter.maxAmountFor(i.held > p.sum ? i.held - p.sum : 0n);
     } catch { return null; }
   }
-  const keep = async (id) => {
+  // the output a quote's lock pays: { T, lockerXonly } from the user, this side's claim key, the quote's timelock (hex scriptPubKey, or null without the terms)
+  const hex64 = (h) => /^[0-9a-f]{64}$/.test(String(h || '').replace(/^0x/, '').toLowerCase());
+  const lockSpkOf = (lock, q) => {
+    if (!lock || !q || !btc.prims || !btc.wallet || !hex64(lock.lockerXonly) || !/^0[23][0-9a-f]{64}$/i.test(String(lock.T || '').replace(/^0x/, ''))) return null;
+    const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
+    return bytesToHex(deriveLock({ prims: btc.prims, claimerPub: btc.wallet.pub, T: secp.ProjectivePoint.fromHex(strip(lock.T)), lockerXonly: hexToBytes(strip(lock.lockerXonly)), csvBlocks: Number(q.csvBlocks) }).spk);
+  };
+  const keep = async (id, also = {}) => {
     const q = await quoter.get(id), r = reservations.get(id);
-    if (q) await quoteStore.put({ ...q, reservedUntil: r ? r.until : 0, reservedTxid: r ? r.txid : null });
+    if (q) await quoteStore.put({ ...q, reservedUntil: r ? r.until : 0, reservedTxid: r ? r.txid : null, ...also });
   };
 
   async function start() {
@@ -235,6 +274,16 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
         if (next.phase !== before) log({ level: 'info', msg: 'swap', id: next.id, from: before, to: next.phase, why: next.why });
         if (next.phase !== before || (!hadLock && next.lock)) stale();
         if (next.phase === 'lost') alert({ level: 'alert', msg: 'a lock was claimed without revealing t', id: next.id });
+        // The pool lock was spent and the claim that spent it cannot be read (a settle sent in a way this side cannot read yet): t is in that claim, and the user's
+        // Bitcoin lock must be taken with it before the user's refund opens. Said after a few minutes (the events may only be late), and again every quarter hour.
+        if (/lock is spent, and the settle that spent it is not found/.test(next.lastError || '')) {
+          const t = now(), since = unreadSince.get(next.id) ?? t;
+          unreadSince.set(next.id, since);
+          if (t - since >= 600 && t - (lastAlert.get(next.id + '|unread') ?? -Infinity) >= 900) {
+            lastAlert.set(next.id + '|unread', t);
+            alert({ level: 'alert', msg: 'a pool lock was spent and the claim that spent it cannot be read: the Bitcoin lock must be taken before its refund opens', id: next.id, lockNu: next.lock && next.lock.lockNu, lockTxid: next.lockTxid, refundOpensAtHeight: next.lockHeight != null ? next.lockHeight + next.csvBlocks - 1 : null });
+          }
+        } else unreadSince.delete(next.id);
         if (next.lastError && next.lastError !== rec.lastError) log({ level: 'warn', msg: 'swap step failed', id: next.id, phase: next.phase, error: next.lastError });
         if (next.phase === 'taking' || next.phase === 'refunding') {
           const every = config.alertSecs ?? 3600, key = next.id + '|' + next.phase, t = now();
@@ -321,12 +370,19 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
             const own = [...btc.prims.p2wpkhScript(btc.wallet.pub)].map((b) => b.toString(16).padStart(2, '0')).join('');
             if (!(tx.vout || []).some((o) => String(o.scriptpubkey || '').toLowerCase() === own && o.value >= take)) return no('that transaction does not pay the fee of the take');
           }
-          // a hold of up to two hours is for a lock, so the transaction must pay the quoted amount to a Taproot output (any other would hold the payout for nothing)
-          if (sats && !(tx.vout || []).some((o) => /^5120[0-9a-f]{64}$/i.test(String(o.scriptpubkey || '')) && q && o.value === Number(q.btcValue))) return no('that transaction does not pay the quoted amount to a Taproot lock');
+          // a hold of up to two hours is for a lock, so the transaction must pay the quoted amount to the lock of this quote: the Taproot output its terms make
+          // (`lock`: the adaptor point and the refund key, with this side's claim key and the quote's timelock); any other output would hold the payout for nothing
+          if (sats) {
+            let spk = null;
+            try { spk = lockSpkOf(body.lock, q); } catch { spk = null; }
+            if (!spk) return no('that transaction does not pay the quoted amount to a Taproot lock: the extension names no lock');
+            if (!(tx.vout || []).some((o) => String(o.scriptpubkey || '').toLowerCase() === spk && q && o.value === Number(q.btcValue))) return no('that transaction does not pay the quoted amount to a Taproot lock of this quote');
+          }
           for (const [id, other] of reservations) if (id !== body.quoteId && other.txid === body.txid) return no('that transaction already holds another reservation');
           for (const rec of await swaps.list()) if (rec.lockTxid === body.txid) return no('that transaction is already a swap');
           r.txid = body.txid; r.until = Math.max(r.until, now() + hold.extendSecs);
-          await keep(body.quoteId);
+          // when the lock was first seen: a late offer for it is weighed by this (quotes.get)
+          await keep(body.quoteId, { seenTxid: body.txid, seenAt: now() });
           return reply({ ok: true, until: r.until });
         });
       }

@@ -10,8 +10,11 @@ const strip = (h) => String(h).replace(/^0x/, '').toLowerCase();
 const lc = (h) => '0x' + strip(h);
 
 const MAINNET_RELAYER = '0x000000009C28617AC88B52Eae5EFaAcdD4aC34c3';
+const SETTLE_SELECTOR = '717fd7f2';
+const TRACE_PER_LOOK = 24;
 
-export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, ownAccount = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {} }) {
+// `trace(txHash)` -> the calls a transaction made, [{ to, input }] (makeTxTracer): how a claim settled through another contract is read when its calldata does not show it
+export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv, seed, asset, poolAddress, relayerAddress = MAINNET_RELAYER, policy = {}, adaptor = null, selfSettle = null, ownAccount = null, openGraceMs = 45000, selfRetryMs = 120000, clock = () => Date.now(), log = () => {}, trace = null }) {
   const te = new TextEncoder();
   const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
   const bytes = (h) => Uint8Array.from(strip(h).match(/../g).map((x) => parseInt(x, 16)));
@@ -77,26 +80,71 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
     return inputs.get(h);
   }
   const trustedTo = new Set([poolAddress, relayerAddress].map((a) => String(a).toLowerCase()));
-  const claims = new Map();
-  async function findClaim(lockNu, { sinceSecs = 0 } = {}) {
+  const poolTo = String(poolAddress).toLowerCase();
+  const claims = new Map(), traced = new Map();
+  // what the settle calls among `calls` say of the lock `key`: whether one spent it, and the claim kernels they carry
+  const naming = (calls, key) => {
+    const r = { named: false, s: [] };
+    for (const call of calls || []) {
+      let f; try { f = ux.lockScan.decodePublicValuesAdaptorFields(call.publicValues); } catch { continue; }
+      if (f.lockNullifiers.map(lc).includes(key)) { r.named = true; r.s.push(...f.adaptorClaimS); }
+    }
+    return r;
+  };
+  // the settles the pool itself ran in a transaction, read from its trace (a call that reverted, or sits under one that did, ran nothing)
+  async function pooledSettles(txHash) {
+    if (!traced.has(txHash)) {
+      let calls = null;
+      try { calls = await trace(txHash); } catch (e) { log({ level: 'warn', msg: 'a transaction could not be traced', tx: txHash, error: String((e && e.message) || e).slice(0, 160) }); }
+      if (!calls) return null;                           // asked again on a later look
+      traced.set(txHash, calls.filter((c) => String(c.to || '').toLowerCase() === poolTo && strip(c.input || '').startsWith(SETTLE_SELECTOR))
+        .map((c) => { try { return ux.lockScan.decodeSettleCalls(c.input); } catch { return null; } }).filter(Boolean).flatMap((d) => d.calls));
+      cap(traced, 4096);
+    }
+    return traced.get(txHash);
+  }
+  // The claim kernels of the settle that spent a lock: [] for a refund, null while the lock is unspent. A settle sent straight to the pool or through its relayer is read
+  // from the transaction's input. One sent through another contract (a forwarder, a contract wallet) is read from that contract's input when it carries the settle as it
+  // is, and a kernel found that way is taken only when `check(s)` says it opens the swap (it is what someone wrote, not what the pool ran); else from the pool's own call
+  // in the transaction's trace (`trace`), which is what the pool ran.
+  async function findClaim(lockNu, { sinceSecs = 0, check = null } = {}) {
     if (!(await mappingFlag(LOCK_SPENT_SLOT, lockNu))) return null;
     const key = lc(lockNu);
     if (claims.has(key)) return claims.get(key);
     const events = await ux.fetchEvents({ fromBlock: sinceSecs ? await blockAtOrAfter(Math.max(0, sinceSecs - 3600)) : undefined, toBlock: 'latest' });
     const seen = new Set();
-    const found = []; let named = false;
+    const found = [], loose = [], others = []; let named = false;
     for (const e of events) {
       if (!e.txHash || seen.has(e.txHash) || (e.type !== 'LeavesInserted' && e.type !== 'NullifiersSpent')) continue;
       seen.add(e.txHash);
       const tx = await txOf(e.txHash);
       const decoded = tx && ux.lockScan.decodeSettleCalls(tx.input);
-      if (!decoded || !decoded.direct || !trustedTo.has(tx.to)) continue;
-      for (const call of decoded.calls) {
-        let f; try { f = ux.lockScan.decodePublicValuesAdaptorFields(call.publicValues); } catch { continue; }
-        if (f.lockNullifiers.map(lc).includes(key)) { named = true; found.push(...f.adaptorClaimS); }
+      if (decoded && decoded.direct && trustedTo.has(tx.to)) {
+        const r = naming(decoded.calls, key);
+        if (r.named) { named = true; found.push(...r.s); }
+        continue;
       }
+      others.push(e.txHash);
+      if (decoded) loose.push(...naming(decoded.calls, key).s);
     }
     if (named) { claims.set(key, found); cap(claims, 1024); return found; }
+    if (check) {
+      const hit = loose.find((s) => { try { return check(s); } catch { return false; } });
+      if (hit) { claims.set(key, [hit]); cap(claims, 1024); return [hit]; }
+    }
+    if (trace) {
+      // the newest first, a few new traces a look (a trace read once is kept), so a long window is read over several looks
+      let fresh = 0;
+      for (const h of others.reverse()) {
+        if (!traced.has(h) && fresh++ >= TRACE_PER_LOOK) break;
+        const r = naming(await pooledSettles(h), key);
+        if (!r.named) continue;
+        // (a trace is a node's word: with a check, only a kernel that opens the swap is taken from it)
+        const s = check ? r.s.filter((x) => { try { return check(x); } catch { return false; } }) : r.s;
+        if (check && !s.length) continue;
+        claims.set(key, s); cap(claims, 1024); return s;
+      }
+    }
     throw new Error('the lock is spent, and the settle that spent it is not found yet');
   }
 
@@ -284,8 +332,12 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
       recipient: lc(recipient), refundPub: '0x' + hex(refundXonly),
       nNote: { cx: note.cx, cy: note.cy, owner: note.owner, blinding: note.blinding, leafIndex: note.leafIndex, path: note.path, secret: note.secret },
     });
+    // the lock's memo holds what this key needs to finish the swap with nothing else kept (makeOwnLockFinder)
+    // (a record that cannot be sealed still locks: it is only not found again from the key, and that is said)
+    let memo = '0x';
+    try { memo = sealLockMemo({ hmacSha256, key: lockMemoKey({ hmacSha256, walletPriv: privBytes }), swapId: rec.id, offer: rec.offer, deadline }); } catch (e) { log({ level: 'warn', msg: 'the lock carries no memo: it is not found again from the key alone', error: String((e && e.message) || e).slice(0, 120) }); }
     reserved.add(lc(note.leaf));
-    return { op: { op, leaves: [], lockMemos: ['0x'] }, lockLeaf: op.lockLeaf, noteLeaf: lc(note.leaf) };
+    return { op: { op, leaves: [], lockMemos: [memo] }, lockLeaf: op.lockLeaf, noteLeaf: lc(note.leaf) };
   });
   async function refundFee(amount) {
     try {
@@ -333,4 +385,105 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   }
 
   return { now, lockNullifier, lockPosition, findClaim, jobStatus, claimStatus: jobStatus, submit, ready, prepare, lockOp, refundOp, refundKey, reserve, release, available, heldFree, cutReserve, recipient, claimOp, ownEth };
+}
+
+// ── what the pool ran: a transaction's calls, from a node that traces ──
+// The public nodes that answered debug_traceTransaction (callTracer) or trace_transaction for a pool settle (2026-11-24). A settle sent through a contract that does not
+// carry it as it is (any other forwarder or wallet) is read from here; `nodes` is the operator's to set (an own node first).
+export const TRACE_NODES = ['https://eth.drpc.org', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7', 'https://ethereum-mainnet.gateway.tatum.io', 'https://ethereum-json-rpc.stakely.io'];
+// -> trace(txHash) -> [{ to, input }]: every call that ran (one that reverted, or sits under one that did, is left out), in order
+export function makeTxTracer({ nodes = TRACE_NODES, fetchImpl = (...a) => fetch(...a), timeoutMs = 20000 } = {}) {
+  const post = async (url, method, params) => {
+    const r = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(timeoutMs) });
+    const j = await r.json();
+    if (!j || j.error || j.result == null) throw new Error(`${method}: ${String((j && j.error && j.error.message) || r.status).slice(0, 80)}`);
+    return j.result;
+  };
+  const fromCallTracer = (root) => {
+    const out = [];
+    const walk = (f) => { if (!f || f.error) return; out.push({ to: f.to, input: f.input }); for (const c of f.calls || []) walk(c); };
+    walk(root);
+    return out;
+  };
+  const fromParity = (list) => {
+    const at = (t) => (t.traceAddress || []).join('.');
+    const failed = list.filter((t) => t.error).map(at);
+    const ran = (a) => !failed.some((b) => b === '' || a === b || a.startsWith(b + '.'));
+    return list.filter((t) => t.type === 'call' && t.action && ran(at(t))).map((t) => ({ to: t.action.to, input: t.action.input }));
+  };
+  return async (txHash) => {
+    const why = [];
+    for (const url of nodes) {
+      try { return fromCallTracer(await post(url, 'debug_traceTransaction', [txHash, { tracer: 'callTracer' }])); } catch (e) { why.push(String((e && e.message) || e)); }
+      try { const r = await post(url, 'trace_transaction', [txHash]); if (Array.isArray(r)) return fromParity(r); } catch (e) { why.push(String((e && e.message) || e)); }
+    }
+    throw new Error('no node traced the transaction: ' + why.join('; ').slice(0, 240));
+  };
+}
+
+// ── the lock's memo ──
+// A pool lock made here carries a memo sealed to the key: the swap id, the Bitcoin lock it answers (outpoint, timelock, value, refund key, and a note's blinding), the
+// adaptor point, the deadline, the amount, and the recipient and output blinding the other side asked for. That is all of a swap the key does not derive, so the swap is
+// built again from the key and the chain alone (dapp/fastbridge-el.js recordFromLockMemo). 322 bytes (the size of a stealth lock's memo with its sender's tail): a point,
+// the sealed fields, and 16 bytes that authenticate them under the key.
+const LOCK_MEMO_PLAIN = 273, LOCK_MEMO_BYTES = 33 + LOCK_MEMO_PLAIN + 16;
+const memoTe = new TextEncoder();
+const hexOf = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+const bytesOf = (h) => Uint8Array.from((strip(h).match(/../g) || []).map((x) => parseInt(x, 16)));
+const catOf = (...a) => { const o = new Uint8Array(a.reduce((s, x) => s + x.length, 0)); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
+const beOf = (v, n) => { let x = BigInt(v); if (x < 0n || x >> BigInt(8 * n)) throw new Error('lock memo: a field does not fit'); const o = new Uint8Array(n); for (let i = n - 1; i >= 0; i--) { o[i] = Number(x & 0xffn); x >>= 8n; } return o; };
+const fromBeOf = (b) => b.reduce((a, x) => (a << 8n) | BigInt(x), 0n);
+const fixed = (h, n, what) => { const b = bytesOf(h); if (b.length !== n) throw new Error(`lock memo: ${what} is not ${n} bytes`); return b; };
+export const lockMemoKey = ({ hmacSha256, walletPriv }) => hmacSha256(walletPriv instanceof Uint8Array ? walletPriv : bytesOf(walletPriv), memoTe.encode('tacit-fastbridge-lock-memo-v1'));
+const memoStream = (hmacSha256, key, P) => { const out = []; for (let i = 0; out.length < LOCK_MEMO_PLAIN; i++) out.push(...hmacSha256(key, catOf(memoTe.encode('stream'), P, Uint8Array.of(i)))); return out.slice(0, LOCK_MEMO_PLAIN); };
+const memoMac = (hmacSha256, key, P, ct) => hmacSha256(key, catOf(memoTe.encode('mac'), P, ct)).slice(0, 16);
+export function sealLockMemo({ hmacSha256, key, swapId, offer, deadline }) {
+  const b = offer.btc, e = offer.evm, sid = fixed(swapId, 36, 'the swap id');
+  const body = catOf(Uint8Array.of(1), sid, fixed(b.txid, 32, 'the lock txid'), beOf(b.vout, 2), beOf(b.csvBlocks, 2), beOf(b.value, 8), fixed(b.lockerXonly, 32, 'the refund key'),
+    fixed(offer.T, 33, 'T'), beOf(deadline, 8), beOf(e.amount, 8), fixed(e.recipient, 32, 'the recipient'), fixed(e.rOut, 32, 'the output blinding'), b.rLock ? fixed(b.rLock, 32, 'the lock blinding') : new Uint8Array(32));
+  const plain = new Uint8Array(LOCK_MEMO_PLAIN); plain.set(body);
+  let k = 0n;
+  for (let i = 0; !k; i++) k = fromBeOf(hmacSha256(key, catOf(memoTe.encode('point'), sid, Uint8Array.of(i)))) % SECP_N;
+  const P = G.multiply(k).toRawBytes(true), s = memoStream(hmacSha256, key, P);
+  const ct = plain.map((x, i) => x ^ s[i]);
+  return '0x' + hexOf(catOf(P, ct, memoMac(hmacSha256, key, P, ct)));
+}
+// -> the fields sealLockMemo sealed, or null for a memo that is not this key's
+export function openLockMemo({ hmacSha256, key, memo }) {
+  try {
+    const m = bytesOf(memo || '');
+    if (m.length !== LOCK_MEMO_BYTES) return null;
+    const P = m.slice(0, 33), ct = m.slice(33, 33 + LOCK_MEMO_PLAIN);
+    if (hexOf(memoMac(hmacSha256, key, P, ct)) !== hexOf(m.slice(33 + LOCK_MEMO_PLAIN))) return null;
+    const s = memoStream(hmacSha256, key, P), p = ct.map((x, i) => x ^ s[i]);
+    if (p[0] !== 1) return null;
+    let o = 1;
+    const take = (n) => { const x = p.slice(o, o + n); o += n; return x; };
+    const swapId = hexOf(take(36)), txid = hexOf(take(32)), vout = Number(fromBeOf(take(2))), csvBlocks = Number(fromBeOf(take(2))), value = fromBeOf(take(8)).toString();
+    const lockerXonly = hexOf(take(32)), T = hexOf(take(33)), deadline = Number(fromBeOf(take(8))), amount = fromBeOf(take(8)).toString(), recipient = hexOf(take(32)), rOut = hexOf(take(32)), rLock = hexOf(take(32));
+    return { swapId, btc: { txid, vout, csvBlocks, value, lockerXonly, rLock: /^0+$/.test(rLock) ? null : rLock }, T, deadline, evm: { amount, recipient, rOut } };
+  } catch { return null; }
+}
+// -> find() -> [{ ...opened memo, lockLeaf }]: every pool lock whose memo this key sealed, read from the pool's lock set (its events and the settles' calldata)
+export function makeOwnLockFinder({ ux, hmacSha256, walletPriv }) {
+  const key = lockMemoKey({ hmacSha256, walletPriv });
+  const inputs = new Map();
+  const getTxInput = async (h) => {
+    if (inputs.has(h)) return inputs.get(h);
+    const t = await ux.rpc('eth_getTransactionByHash', [h]);
+    if (t && t.input) inputs.set(h, t.input);
+    return t && t.input;
+  };
+  return async ({ events = null } = {}) => {
+    const set = await ux.lockScan.scanLockLeaves({ events: events || (await ux.fetchEvents({ toBlock: 'latest' })), getTxInput });
+    const out = [];
+    set.lockLeaves.forEach((leaf, i) => {
+      const c = set.lockMemoCandidates && set.lockMemoCandidates[i];
+      for (const m of c && c.length ? c : [set.lockMemos[i]]) {
+        const f = m ? openLockMemo({ hmacSha256, key, memo: m }) : null;
+        if (f) { out.push({ ...f, lockLeaf: lc(leaf) }); break; }
+      }
+    });
+    return out;
+  };
 }
