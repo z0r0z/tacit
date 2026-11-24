@@ -490,6 +490,11 @@ export const CFG = {
   // proves it, as before. Off until BTC_STATE_BOARD=1, once a worker with the btc-state program is running.
   btcStateBoard: opt('BTC_STATE_BOARD', '0') === '1',
   btcStateBoardWaitSecs: num('BTC_STATE_BOARD_WAIT_SECS', 60 * 60),
+  // The wait grows with the batch: BTC_STATE_BOARD_SECS_PER_MB seconds a megabyte of input, never under BTC_STATE_BOARD_WAIT_SECS and never over
+  // BTC_STATE_BOARD_MAX_WAIT_SECS (the board's own lease for a batch is two hours). A batch's proving time follows its input, and a flat hour cut off
+  // a large one a good machine was still proving. 0 seconds a megabyte is the flat wait.
+  btcStateBoardSecsPerMB: num('BTC_STATE_BOARD_SECS_PER_MB', 300),
+  btcStateBoardMaxWaitSecs: num('BTC_STATE_BOARD_MAX_WAIT_SECS', 2 * 60 * 60),
   // The board's limit on a btc-state input (worker/src/prover-board.js maxStdinBytesByProgram). A batch over it is asked for again
   // with fewer blocks (lib/block-cap.js), unless someone waits on the attest; 0 sends it to the network as before.
   btcStateBoardMaxBytes: num('BTC_STATE_BOARD_MAX_BYTES', 16 * 1024 * 1024),

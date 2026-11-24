@@ -32,7 +32,15 @@ export function btcCheck({ priorDigest, newDigest, verify }) {
   };
 }
 
-export function makeBtcBoard({ capable, buildInput, lane, verify, cycleLimit, gasLimit, waitMs, maxBytes = 0, now = Date.now, log = () => {} } = {}) {
+// How long the board is given for a batch of `bytes` of input: a batch's proving time follows its input (more Bitcoin blocks, more input), so a large one is given
+// more than a small one. `perMBSecs` seconds a megabyte, never less than `minMs` (the flat wait this was) and never more than `maxMs` (the board's own lease for a
+// batch); `perMBSecs` 0, or no `maxMs` past `minMs`, is the flat wait.
+export function btcWaitMs({ bytes, minMs, maxMs = 0, perMBSecs = 0 }) {
+  if (!(perMBSecs > 0) || !(maxMs > minMs) || !(bytes > 0)) return minMs;
+  return Math.min(maxMs, Math.max(minMs, Math.ceil((bytes / 1e6) * perMBSecs * 1000)));
+}
+
+export function makeBtcBoard({ capable, buildInput, lane, verify, cycleLimit, gasLimit, waitMs, maxWaitMs = 0, perMBSecs = 0, maxBytes = 0, now = Date.now, log = () => {} } = {}) {
   // → { ok: true, publicValues, proofBytes, worker, jobId, ms }, or { ok: false, reason, ms } for the network to take over. An input
   // over the board's `maxBytes` is not posted (the board would refuse it) and also carries `tooBig: { bytes, maxBytes }`, so the
   // caller can ask for a smaller batch instead.
@@ -46,9 +54,10 @@ export function makeBtcBoard({ capable, buildInput, lane, verify, cycleLimit, ga
     if (maxBytes > 0 && stdin.length > maxBytes) {
       return { ...out(`the input (${stdin.length} bytes) is over the board's ${maxBytes}-byte limit`), tooBig: { bytes: stdin.length, maxBytes } };
     }
-    log(`btc-state: input built (${stdin.length} bytes); asking the board`);
+    const budgetMs = btcWaitMs({ bytes: stdin.length, minMs: waitMs, maxMs: maxWaitMs, perMBSecs });
+    log(`btc-state: input built (${stdin.length} bytes); asking the board, which has up to ${Math.round(budgetMs / 60_000)} min for it`);
     try {
-      const r = await lane.prove({ stdin, cycleLimit, gasLimit, cls: 'public', program: 'btc-state', mode: 'groth16', label: 'btc-state', timeoutMs: waitMs,
+      const r = await lane.prove({ stdin, cycleLimit, gasLimit, cls: 'public', program: 'btc-state', mode: 'groth16', label: 'btc-state', timeoutMs: budgetMs,
         check: btcCheck({ priorDigest, newDigest, verify }) });
       return { ok: true, publicValues: r.publicValues, proofBytes: r.proof, worker: r.worker, jobId: r.jobId, ms: now() - t0 };
     } catch (e) {

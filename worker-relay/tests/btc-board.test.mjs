@@ -6,7 +6,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { makeBtcBoard, btcCheck, PV_WORD } from '../src/lib/btc-board.js';
+import { makeBtcBoard, btcCheck, btcWaitMs, PV_WORD } from '../src/lib/btc-board.js';
+import { makeBoardProver } from '../src/lib/board-prover.js';
 
 const FX = JSON.parse(readFileSync(new URL('../../contracts/test/fixtures/reflection_burn_deposit_groth16.json', import.meta.url), 'utf8'));
 const pv = FX.publicValues, proof = FX.proofBytes;
@@ -80,4 +81,33 @@ test('an input over the board\'s limit is not posted, and says how big it was so
   const off = sized(5000, 0);
   assert.equal((await off.board.prove({ priorDigest: PRIOR, newDigest: NEW })).ok, true, 'no limit: posted as before');
   assert.equal((await rig().board.prove({})).tooBig, undefined);
+});
+
+test('the board\'s wait grows with the batch: a megabyte is given its seconds, never under the flat wait nor over the board\'s lease', () => {
+  const o = { minMs: 3600_000, maxMs: 7200_000, perMBSecs: 300 };
+  assert.equal(btcWaitMs({ ...o, bytes: 2e6 }), 3600_000, 'a small batch keeps the flat hour');
+  assert.equal(btcWaitMs({ ...o, bytes: 12e6 }), 3600_000, 'twelve MB at 300 s each is exactly the hour');
+  assert.equal(btcWaitMs({ ...o, bytes: 16e6 }), 4800_000, 'the largest the board takes gets 80 minutes');
+  assert.equal(btcWaitMs({ ...o, bytes: 40e6 }), 7200_000, 'never past the two-hour lease');
+  assert.equal(btcWaitMs({ ...o, perMBSecs: 0, bytes: 16e6 }), 3600_000, '0 s a MB is the flat wait');
+  assert.equal(btcWaitMs({ minMs: 3600_000, bytes: 16e6, perMBSecs: 300 }), 3600_000, 'no ceiling past the floor is the flat wait');
+  assert.equal(btcWaitMs({ ...o, bytes: 0 }), 3600_000);
+});
+
+test('a large batch is posted with its longer wait, and the lane gives it that long before it goes to the network', async () => {
+  let clock = 1_700_000_000_000;
+  const posts = [], cancels = [];
+  const lane = makeBoardProver({
+    post: async (j) => { posts.push(j); return { ok: true, jobId: 'pb_big' }; },
+    status: async () => ({ status: 'queued', race: [] }), cancel: async (id, why) => { cancels.push([id, why, clock]); },
+    verify: () => false, waitMs: 7200_000, pollMs: 60_000, now: () => clock, sleep: async (ms) => { clock += ms; },
+  });
+  const board = makeBtcBoard({ capable: async () => true, buildInput: async () => new Uint8Array(16e6), lane, verify: async () => true, cycleLimit: 1e11, gasLimit: 1e11,
+    waitMs: 3600_000, maxWaitMs: 7200_000, perMBSecs: 300 });
+  const t0 = clock;
+  const r = await board.prove({ priorDigest: PRIOR, newDigest: NEW });
+  assert.equal(r.ok, false);
+  assert.equal(posts[0].deadline, Math.floor(t0 / 1000) + 4800 + 60, 'the job\'s deadline sits a minute past the longer wait');
+  assert.deepEqual([cancels[0][0], cancels[0][1], cancels[0][2] - t0], ['pb_big', 'timeout', 4800_000], 'it gave up at 80 minutes, not at the flat hour');
+  assert.match(r.reason, /within 4800 s/);
 });

@@ -332,13 +332,14 @@ function btcBoardLane() {
     },
     lane: makeBoardProver({
       post: boardPost, cancel: boardCancel, status: (id) => within(boardStatus(id), 30_000, 'a board status read'),
-      verify: () => false, race: boardRace, waitMs: CFG.btcStateBoardWaitSecs * 1000, pollMs: 5000, log: boardLog,
+      verify: () => false, race: boardRace, waitMs: Math.max(CFG.btcStateBoardWaitSecs, CFG.btcStateBoardMaxWaitSecs) * 1000, pollMs: 5000, log: boardLog,
     }),
     verify: async ({ publicValues, proof }) => {
       try { await publicClient.call({ to: SP1_VERIFIER, data: encodeFunctionData({ abi: VERIFY_ABI, functionName: 'verifyProof', args: [BITCOIN_RELAY_VKEY, publicValues, proof] }) }); return true; }
       catch (e) { return /revert|execution|invalid/i.test(String(e && (e.shortMessage || e.message))) ? false : 'unchecked'; }
     },
-    cycleLimit: CFG.reflectCycleLimit, gasLimit: CFG.reflectGasLimit, waitMs: CFG.btcStateBoardWaitSecs * 1000, maxBytes: CFG.btcStateBoardMaxBytes, log: boardLog,
+    cycleLimit: CFG.reflectCycleLimit, gasLimit: CFG.reflectGasLimit, waitMs: CFG.btcStateBoardWaitSecs * 1000, maxWaitMs: CFG.btcStateBoardMaxWaitSecs * 1000,
+    perMBSecs: CFG.btcStateBoardSecsPerMB, maxBytes: CFG.btcStateBoardMaxBytes, log: boardLog,
   });
   return btcBoard;
 }
