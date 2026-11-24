@@ -8,7 +8,7 @@ import { mountFast } from '/fast/ui.js?cb=bc0e8c8c';
 import { mountProvide } from '/fast/provide.js?cb=f205b95a';
 import { mountBound } from '/fast/bound.js?cb=f0f32804';
 import { mountReverse } from '/fast/reverse.js?cb=826337bd';
-import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=ca8a6601';
+import { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=397285a2';
 import { makeWants } from '/fast/want.js?cb=4c56ebdc';
 import { secp, bytesToHex, hexToBytes } from '/vendor/tacit-deps.min.js';
 import { invaderSvg } from '/prove/invader.js';
@@ -21,7 +21,7 @@ const TACIT_URL = '/tacit.js?cb=35e43051';
 // the bridge itself (the lock, the settle, the key's own provider) loads when a key opens; a touch on the page fetches its modules ahead
 let warmed = false;
 const warm = () => { if (warmed) return; warmed = true; const t = document.getElementById('warm'); if (t) document.head.append(t.content.cloneNode(true)); };
-const wire = () => { warm(); return import('/fast/wire.js?cb=02a99838'); };
+const wire = () => { warm(); return import('/fast/wire.js?cb=c0a21206'); };
 for (const ev of ['pointerdown', 'focusin']) document.querySelector('main')?.addEventListener(ev, warm, { once: true });
 
 async function lists() {
