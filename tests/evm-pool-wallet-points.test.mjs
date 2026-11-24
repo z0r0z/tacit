@@ -203,6 +203,20 @@ await check('a point whose edge folds to a root the pool never held is not used'
   assert.equal(s.balance, 107n);
 });
 
+await check('a point whose edge holds an entry at or above the field size is passed over for the one before it', async () => {
+  const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+  const pool = fakePool();
+  for (let i = 1; i <= 6; i++) pay(pool, i === 4 ? self : other, i === 4 ? 100n : 1n);
+  const e0 = pool.edge(); pool.post(e0.size, pool.tip, e0.filled);          // a good point at block 6 (12 leaves)
+  for (let i = 7; i <= 30; i++) pay(pool, i === 25 ? self : other, i === 25 ? 7n : 1n);
+  const e = pool.edge();
+  e.filled[1] += FIELD;                                                     // the same field element, written unreduced
+  pool.post(e.size, pool.tip, e.filled);
+  const W = wallet(pool, { history: false }), s = await W.sync();
+  assert.deepEqual(s.behind, { size: 12, block: 6 }, 'the point before it');
+  assert.equal(s.balance, 7n);
+});
+
 await check('historyFrom: the point while the history behind it is unread, kept once it is read and holds nothing of the key\'s, else the first block', async () => {
   const mk = (mineBefore) => {
     const pool = fakePool();

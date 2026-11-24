@@ -48,6 +48,8 @@ const MAX_RELAY_FEE = { 1: 5n * 10n ** 16n, 8453: 2n * 10n ** 15n, 4663: 2n * 10
 const ETH_POOL = '0x000000c2a20657ce25f2ba99737933d031afbee9', CHECKPOINTS = '0x00000000C3267616ED5E0DAA6F6490D109d6844D';
 // One read of the history behind a point at a time for each saved state, however many wallets on the page share it.
 const BACKFILLS = new Map();
+// A point's edge holds field elements: an entry at or above the field's size is not one the pool's own tree has.
+const FIELD_R = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
 // Where a read of the keeper's history feed starts. A wallet that has been away, its place more than ten minutes behind
 // the tip, asks from the start of the cell its place falls in (a range of blocks counted from the pool's first block: a day
@@ -730,7 +732,9 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
         if (typeof r !== 'string' || r.length < 2 + 64 * 34) return null;
         const w = (k) => BigInt('0x' + r.slice(2 + 64 * k, 66 + 64 * k)), block = Number(w(0)), prev = Number(w(1));
         if (!badPoints.has(size) && size % 2 === 0 && block >= Number(chain.deployBlock ?? 0) && block <= safe) {
-          const filled = Array.from({ length: 32 }, (_, k) => w(2 + k)), root = fold(size, filled);
+          const filled = Array.from({ length: 32 }, (_, k) => w(2 + k));
+          if (filled.some((x) => x >= FIELD_R)) { badPoints.add(size); size = prev; continue; }
+          const root = fold(size, filled);
           const [held, had] = await Promise.all([
             view32('rootSize(bytes32)', ['bytes32'], [root]).then((x) => BigInt(x) === BigInt(size), () => false),
             chain.rpc('eth_call', [{ to: chain.pool, data: calldata('nextIndex()', [], []) }, '0x' + block.toString(16)]).then((x) => BigInt(x), () => null),
