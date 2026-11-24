@@ -214,8 +214,9 @@ names the sats asset and the pool's ETH, which is how the swap tile finds it (`c
 own; the TAC provider is not changed by it.
 
 - **Forward, ETH for sats** (always on): a user locks sats in one ordinary transaction, the provider locks pool ETH for it, the user claims, the provider takes the
-  sats. Its terms are in SATS (`quote.minAmount`, `maxAmount`, `flatFee`; `feeBps` of the amount). What it lends is its private ETH in the pool: shield ETH for the
-  key and that is the inventory (`lowFreeEth` alerts before it runs short). A lock waits for the confirmations in `policy.confs`, a schedule in sats.
+  sats. Its terms are in SATS (`quote.minAmount`, `maxAmount`, `flatFee`; `feeBps` of the amount). What it lends is its private ETH in the pool: send ETH to the `poolAccount` it prints, then
+  `FB_LP_KEY=<key> node tools/fastbridge-lp-shield.mjs <ETH> --eth --index 0 --send` puts it into the pool as notes of the key (a little ETH stays at the address for gas;
+  the first deposit of a key is index 0), and that is the inventory (`lowFreeEth` alerts before it runs short). A lock waits for the confirmations in `policy.confs`, a schedule in sats.
 - **Reverse, sats for ETH** (`reverse.enabled`, off until switched on): the provider locks sats first from an address of its own, derived from the key, and the user
   locks pool ETH. Its terms are in pool ETH units (1e-8 ETH): the amount a user locks. Fund the address it prints with the plain coins it may sell
   (`maxSats` caps what is out at once, `maxOpen` the sends under way, `lockFeeReserve` what its coins must hold beyond an amount for the lock's fee).

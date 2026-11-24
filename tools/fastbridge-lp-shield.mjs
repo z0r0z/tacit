@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Puts TAC that the fast bridge provider's Ethereum address holds into the Ethereum pool as private notes of the same key: the TAC it
-// lends. It is the funding step of fastbridge-lp/README.md ("Fund it"), and the way to top the provider up later.
+// lends. It is the funding step of fastbridge-lp/README.md ("Fund it"), and the way to top the provider up later. With --eth it puts
+// plain ETH of the address into the pool instead: the ETH a Bitcoin-for-ETH provider (pair mode) lends.
 //
 //   FB_LP_KEY=<64 hex> node tools/fastbridge-lp-shield.mjs <TAC> [--index N] [--send]
+//   FB_LP_KEY=<64 hex> node tools/fastbridge-lp-shield.mjs <ETH> --eth [--index N] [--send]
 //
-//   <TAC>       the amount, up to 8 places (the pool's notes have 8)
+//   <TAC>       the amount, up to 8 places (the pool's notes have 8); with --eth, ETH, and some more ETH stays at the address for gas
 //   --index N   the wrap index of this key's deposit. The first deposit of a key is 0, the next 1, and so on; without it the pool's
 //               history is read to find the next free one, which takes minutes. A used index is refused before anything is sent.
 //   --send      send it. Without it, only checks: the balances, the permit, the deposit built and run as a call (nothing is sent)
@@ -19,13 +21,17 @@ import { join } from 'node:path';
 
 const args = process.argv.slice(2);
 const SEND = args.includes('--send');
+const ETH = args.includes('--eth');
+const UNIT = ETH ? 'ETH' : 'TAC';
+const TICKER = ETH ? 'cETH' : 'TAC';
+const GAS_KEPT = 5n * 10n ** 14n;                                              // an ETH deposit leaves at least this much for the deposit's gas and a settle
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
 const amountText = args.find((a) => /^\d+(\.\d{1,8})?$/.test(a));
 const die = (m) => { console.error(m); process.exit(1); };
 
 const keyHex = String(process.env.FB_LP_KEY || '').trim().replace(/^0x/, '');
 if (!/^[0-9a-f]{64}$/i.test(keyHex)) die('FB_LP_KEY must be 64 hex characters (set it in the environment)');
-if (!amountText) die('usage: FB_LP_KEY=<64 hex> node tools/fastbridge-lp-shield.mjs <TAC, up to 8 places> [--index N] [--send]');
+if (!amountText) die('usage: FB_LP_KEY=<64 hex> node tools/fastbridge-lp-shield.mjs <amount, up to 8 places> [--eth] [--index N] [--send]');
 const indexArg = flag('--index');
 if (indexArg != null && !/^\d+$/.test(indexArg)) die('--index must be a whole number');
 const FORK = process.env.FORK || null;
@@ -56,20 +62,21 @@ const ux = makeConfidentialPoolUx({ secp, keccak256: keccak_256, sha256, fetchIm
 const key = Uint8Array.from(keyHex.match(/../g).map((x) => parseInt(x, 16)));
 const acct = ux.account(key);
 if (process.env.EXPECT_ADDRESS && process.env.EXPECT_ADDRESS.toLowerCase() !== acct.address.toLowerCase()) die(`this key's address is ${acct.address}, not ${process.env.EXPECT_ADDRESS}: nothing was done`);
-const meta = ux.assetByTicker.TAC;
-if (!meta || !meta.underlying) die('this build of the pool module has no TAC token to wrap (assetByTicker.TAC.underlying)');
+const meta = ux.assetByTicker[TICKER];
+if (!meta || !(ETH ? meta.assetId : meta.underlying)) die(`this build of the pool module has no ${UNIT} to wrap (assetByTicker.${TICKER})`);
 const hexq = (v) => '0x' + BigInt(v).toString(16);
 const word = (a) => String(a).toLowerCase().replace(/^0x/, '').padStart(64, '0');
-const tacOf = async (a) => BigInt(await ux.rpc('eth_call', [{ to: meta.underlying, data: '0x70a08231' + word(a) }, 'latest']));
-const show = (wei) => `${(Number(wei / 10n ** 10n) / 1e8).toLocaleString('en-US', { maximumFractionDigits: 8 })} TAC`;
+const ethOf = async (a) => BigInt(await ux.rpc('eth_getBalance', [a, 'latest']));
+const tacOf = async (a) => (ETH ? ethOf(a) : BigInt(await ux.rpc('eth_call', [{ to: meta.underlying, data: '0x70a08231' + word(a) }, 'latest'])));
+const show = (wei) => `${(Number(wei / 10n ** 10n) / 1e8).toLocaleString('en-US', { maximumFractionDigits: 8 })} ${UNIT}`;
 
-console.log(JSON.stringify({ address: acct.address, token: meta.underlying, amount: amountText + ' TAC', fork: FORK || null, send: SEND }));
-const [eth, tac] = [BigInt(await ux.rpc('eth_getBalance', [acct.address, 'latest'])), await tacOf(acct.address)];
-console.log(`holds ${show(tac)} and ${(Number(eth) / 1e18).toFixed(6)} ETH`);
-if (tac < amountWei) die(`the address holds ${show(tac)}, short of the ${amountText} TAC asked: nothing was done`);
+console.log(JSON.stringify({ address: acct.address, token: ETH ? 'ETH' : meta.underlying, amount: amountText + ' ' + UNIT, fork: FORK || null, send: SEND }));
+const [eth, tac] = [await ethOf(acct.address), await tacOf(acct.address)];
+console.log(`holds ${ETH ? '' : show(tac) + ' and '}${(Number(eth) / 1e18).toFixed(6)} ETH`);
+if (tac < amountWei + (ETH ? GAS_KEPT : 0n)) die(`the address holds ${show(tac)}, short of the ${amountText} ${UNIT} asked${ETH ? ` and ${show(GAS_KEPT)} for gas` : ''}: nothing was done`);
 
 const index = indexArg != null ? BigInt(indexArg) : undefined;
-const built = await ux.buildRouterWrap({ walletPriv: key, amountWei, ticker: 'TAC', ...(index != null ? { index } : {}) });
+const built = await ux.buildRouterWrap({ walletPriv: key, amountWei, ticker: TICKER, ...(index != null ? { index } : {}) });
 console.log(JSON.stringify({ permit: built.permitType, router: built.to, index: String(built.index ?? index ?? ''), needsPermit2Approval: !!built.needsPermit2Approval, calldataBytes: built.calldata ? (built.calldata.length - 2) / 2 : 0 }));
 if (!built.needsPermit2Approval) {
   const call = { from: acct.address, to: built.to, value: hexq(built.value || 0), data: built.calldata };
@@ -78,12 +85,12 @@ if (!built.needsPermit2Approval) {
 }
 if (!SEND) { console.log('checked only; add --send to send it'); process.exit(0); }
 
-const sent = await ux.routerWrap({ walletPriv: key, amountWei, ticker: 'TAC', ...(index != null ? { index } : {}) });
+const sent = await ux.routerWrap({ walletPriv: key, amountWei, ticker: TICKER, ...(index != null ? { index } : {}) });
 console.log('deposit sent:', sent.txHash);
 let receipt = null;
 for (let i = 0; i < 90 && !receipt; i++) { receipt = await ux.rpc('eth_getTransactionReceipt', [sent.txHash]).catch(() => null); if (!receipt) await new Promise((r) => setTimeout(r, 4000)); }
 if (!receipt || receipt.status !== '0x1') die(`the deposit did not succeed (${receipt ? 'reverted' : 'no receipt in 6 minutes'}): ${sent.txHash}`);
-console.log(`deposit mined in block ${Number(receipt.blockNumber)}; the address now holds ${show(await tacOf(acct.address))}`);
+console.log(`deposit mined in block ${Number(receipt.blockNumber)}; the address now holds ${show(await tacOf(acct.address))}${ETH ? ' (the rest of it is for gas)' : ''}`);
 if (FORK) { console.log('fork: the relay is not asked, so the notes are not settled here'); process.exit(0); }
 
 // A relay that is not sending settles (its sender is under its gas floor) only proves: this address then sends the settle itself, as
@@ -99,6 +106,7 @@ console.log(own ? `the relay is ${relayState}: it proves, and this address sends
 const settled = await ux.submitWrapSettle({ built: sent, depositTx: sent.txHash, ...(selfSettle ? { selfSettle } : {}) }).catch((e) => die(`the deposit is on the chain (${sent.txHash}, index ${String(sent.index ?? index ?? '')}) but its settle did not go through: ${String((e && e.message) || e).slice(0, 300)}`));
 console.log('settle:', settled.status, settled.txHash || settled.jobId || '');
 const bal = await ux.balance(key);
-const tacNotes = Object.entries(bal.byAsset || {}).find(([k]) => k.toLowerCase().endsWith('f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'));
-console.log('private TAC in the pool for this key:', tacNotes ? `${tacNotes[1].notes.length} note(s), ${show(tacNotes[1].notes.reduce((s, n) => s + BigInt(n.value), 0n) * 10n ** 10n)}` : 'none found yet');
+const idTail = ETH ? String(meta.assetId).toLowerCase().replace(/^0x/, '').slice(-64) : 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
+const tacNotes = Object.entries(bal.byAsset || {}).find(([k]) => k.toLowerCase().endsWith(idTail));
+console.log(`private ${UNIT} in the pool for this key:`, tacNotes ? `${tacNotes[1].notes.length} note(s), ${show(tacNotes[1].notes.reduce((s, n) => s + BigInt(n.value), 0n) * 10n ** 10n)}` : 'none found yet');
 process.exit(0);
