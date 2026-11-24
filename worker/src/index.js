@@ -4193,6 +4193,7 @@ async function poolSnapshotTick(env) {
       fetchImpl: fetch, sha256, keccak256: keccak_256, decodeLogs: evmLog.decodeLogs,
       pool: d.pool, manager: d.farm && d.farm.manager, deployBlock: Number(d.deployBlock) || 0,
       topics: [T.LeavesInserted, T.NullifiersSpent, T.LockLeavesInserted, T.Wrap, T.CdpPositionInserted, T.CrossOutRecorded, ...(d.farm && d.farm.manager ? [T.Bonded, T.Harvested] : [])],
+      lockTopic: T.LockLeavesInserted,   // the lock transactions' calldata as pieces of their own (manifest `txInputs`): a page's first look for its swaps reads them from here
       checkpoint: (to) => poolCheckpoint(env, d, to),
     });
   }
