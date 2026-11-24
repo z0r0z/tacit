@@ -55,6 +55,8 @@ export const plainError = (e) => {
   if (/^fastbridge: the pool notes hold \d+, short of \d+/.test(t)) t = 'your private ETH does not cover that amount';
   t = t.replace(/^[a-z-]+: (?=[a-z])/, '');
   if (!t || t.length > 220 || /^(TypeError|ReferenceError|SyntaxError|RangeError|Error:)|undefined|\bat\s\S+:\d+|Failed to fetch|NetworkError|\[object/i.test(t)) return 'Something did not answer just now. Nothing was sent. Try again in a moment.';
+  // (the page's sentences name no address, link, key or markup: a line that does came from elsewhere, and is not said)
+  if (/[<>]|https?:|\b(?:bc1|tb1)[a-z0-9]{6,}|\b0x[0-9a-f]{6,}|[0-9a-f]{16,}|[13][a-km-zA-HJ-NP-Z1-9]{25,}/i.test(t)) return 'The provider could not do that just now. Nothing was sent. Try again in a moment.';
   t = t.charAt(0).toUpperCase() + t.slice(1);
   return /[.!?]$/.test(t) ? t : `${t}.`;
 };
@@ -86,7 +88,7 @@ export function bitcoinDoor({ notify, wallet, provider, getUx, onChange }) {
       await load();
       const s = bitcoin.session;
       if (!s.unlocked) throw new Error('Open your Tacit wallet first.');
-      const wire = await import('/fast/pair-wire.js?cb=64be4be3');
+      const wire = await import('/fast/pair-wire.js?cb=71c18487');
       if (typeof wire.openPair !== 'function') throw new Error('Bitcoin and Ethereum swaps are not offered by this version of the page.');
       return wire.openPair({ T, ux: await getUx(), priv: Uint8Array.from(T.wallet.priv), pubHex: s.key.pubHex, wallet: provider, ask: () => {} });
     },

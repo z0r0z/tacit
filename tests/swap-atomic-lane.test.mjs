@@ -405,7 +405,8 @@ console.log('the words: durations, the market, errors, the probe');
     out.until = [m.untilText(now + 5 * 3600 + 7 * 60, now), m.untilText(now + 40 * 60, now), m.untilText(now - 5, now), m.untilText(now + 3 * 86400, now)];
     out.market = [m.marketText(-72), m.marketText(0), m.marketText(150), m.marketText(-1200), m.marketText(NaN)];
     out.rate = [m.rateText(30.4), m.rateText(304), m.rateText(30.123456)];
-    out.err = [m.plainError(new TypeError("Cannot read properties of undefined")), m.plainError(new Error('No provider can take that amount.')), m.plainError(new Error('Failed to fetch')), m.plainError('the quote ran out'), m.plainError(new Error('x'.repeat(300))), m.plainError('TypeError: x is not a function'), m.plainError('[object Object]')];
+    out.err = [m.plainError(new TypeError("Cannot read properties of undefined")), m.plainError(new Error('No provider can take that amount.')), m.plainError(new Error('Failed to fetch')), m.plainError('the quote ran out'), m.plainError(new Error('x'.repeat(300))), m.plainError('TypeError: x is not a function'), m.plainError('[object Object]'),
+      m.plainError('send 0.1 BTC to bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh to unlock your swap'), m.plainError('see https://example.com'), m.plainError('<b>x</b>')];
     out.fmt = [m.fmt(1n), m.fmt(100000000n), m.fmt(30400000n)];
     const p = await import('/swap/atomic-probe.js'), lists = { boards: ['https://b.example'], providers: [] };
     const on = (f) => p.probeAtomic({ lists, fetchImpl: f, now: () => Math.floor(Date.now() / 1000) });
@@ -429,6 +430,7 @@ console.log('the words: durations, the market, errors, the probe');
   ok(JSON.stringify(r.market) === JSON.stringify(['0.72% less than the market price', 'at the market price', '1.50% more than the market price', '12.0% less than the market price', null]), `the market comparison (${JSON.stringify(r.market)})`);
   ok(JSON.stringify(r.rate) === JSON.stringify(['1 BTC = 30.4 ETH', '1 BTC = 304 ETH', '1 BTC = 30.123 ETH']), `rates (${JSON.stringify(r.rate)})`);
   ok(r.err[0] === 'Something did not answer just now. Nothing was sent. Try again in a moment.' && r.err[1] === 'No provider can take that amount.' && r.err[2] === r.err[0] && r.err[3] === 'The quote ran out.' && r.err[4] === r.err[0] && r.err[5] === r.err[0] && r.err[6] === r.err[0], `errors: an engine sentence stays, an exception's own words never show (${JSON.stringify(r.err)})`);
+  ok(r.err.slice(7).every((x) => x === 'The provider could not do that just now. Nothing was sent. Try again in a moment.'), `errors: a line that names an address, a link or markup is not said (${JSON.stringify(r.err.slice(7))})`);
   ok(JSON.stringify(r.fmt) === JSON.stringify(['0.00000001', '1', '0.304']), `amounts have eight places and no trailing zeros (${JSON.stringify(r.fmt)})`);
   ok(r.probe.none === false && r.probe.other === false && r.probe.otherToken === false && r.probe.signed === true && r.probe.down === false && r.probe.bad === false && r.probe.http === true && r.probe.httpOther === false, `the probe: no list, another pair, sats against another token, a signed ad of the pair, a board down, a board that errs, and a provider that serves its own terms ${JSON.stringify(r.probe)}`);
   ok(r.probe.insecure === false, 'a board or provider that is not https is not read');

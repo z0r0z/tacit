@@ -501,6 +501,30 @@ test('a copy this key saved is read back: swaps whose ETH is locked come back as
   assert.ok((await w.pair.records()).some((r) => r.id === offered.id && r.provider === 'Found from your key'));
 });
 
+// ── what the page says of a provider's refusal ──
+const wordsWorld = ({ quote, reserve }) => {
+  const NOW = Math.floor(Date.now() / 1000), claimPub = '02' + 'aa'.repeat(32);
+  const provider = { id: claimPub, name: 'Provider aaaaaaaaaaaa', ref: { kind: 'http', base: 'https://p.example', claimPub }, assets: { btcAsset: SATS_ASSET, evmAsset: ETH_ASSET }, terms: { minAmount: 10000n, maxAmount: 100000000n } };
+  const good = (sats) => ({ id: 'q1', claimPub, btcAsset: SATS_ASSET, evmAsset: ETH_ASSET, btcValue: String(sats), evmAmount: String(sats * 35n), csvBlocks: 144, validUntil: NOW + 600 });
+  const counter = { quote: async (sats) => (quote ? quote(sats) : good(sats)), reserve: async () => reserve() };
+  const feed = makeRateFeed({ sources: [async () => 35, async () => 35] });
+  return makePairClient({ btc: { wallet: { pub: new Uint8Array(33).fill(2) }, satsUtxos: async () => [{ txid: 'ab'.repeat(32), vout: 0, value: 50_000_000 }] }, evm: {}, seed: new Uint8Array(32), stores: { fwd: memStore() }, discover: async () => [provider], counterFor: () => counter, reverseCallFor: () => null, feed });
+};
+const PROVIDER_TEXT = 'Send 0.1 BTC to bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh to unlock your swap';
+
+test('a provider\'s refusal is said in the page\'s own words: what its answer says (an address, a link, any text) is not shown', async () => {
+  const pair = wordsWorld({ quote: () => { throw Object.assign(new Error(PROVIDER_TEXT), { status: 400 }); } });
+  const e = await pair.quote({ dir: 'b2e', amount: 1_000_000n }).then(() => null, (x) => x);
+  assert.equal(e && e.message, 'no provider could quote that amount just now');
+  const busy = wordsWorld({ quote: () => { throw Object.assign(new Error('rate limited, ' + PROVIDER_TEXT), { status: 429 }); } });
+  assert.equal(await busy.quote({ dir: 'b2e', amount: 1_000_000n }).then(() => null, (x) => x.message), 'the provider is busy just now', 'a refusal of a known kind gets the page\'s sentence for it');
+  const held = wordsWorld({ reserve: () => ({ ok: false, why: PROVIDER_TEXT }) });
+  const q = await held.quote({ dir: 'b2e', amount: 1_000_000n });
+  assert.equal(q.blocked, null);
+  const r = await held.start(q).then(() => null, (x) => x.message);
+  assert.equal(r, 'the provider cannot hold that amount just now');
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   const t0 = Date.now();

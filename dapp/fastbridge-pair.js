@@ -135,6 +135,20 @@ export function describeRev(rec) {
 const RECOVERED = { id: 'recovered', name: 'Found from your key', ref: { kind: 'recovered' } };
 const noCall = async () => { throw new Error('this swap was found again from the key: it has no provider to ask'); };
 const noCounter = () => { const no = async () => { throw new Error('this swap was found again from the key: it has no provider to ask, and needs none to return'); }; return { sendOffer: no, getEvmOffer: no, extend: no, reserve: no, quote: no, info: no }; };
+// What the page says of a provider's refusal: this side's own words, never the provider's. An error the provider's answer carries (one with its HTTP status) is said
+// as one of a few fixed sentences picked by what it is about, or as `fallback`; the page's own checks of a quote and its transports are worded here and kept.
+const REMOTE_WORDS = [
+  [/no price/i, 'the provider has no price for this pair right now'],
+  [/busy|rate.?limit|too many/i, 'the provider is busy just now'],
+  [/expired|too late/i, 'the quote expired: ask again'],
+  [/amount|available|hold|limit|liquidity|funds/i, 'the provider cannot take that amount right now'],
+];
+const said = (e, fallback) => {
+  if (!e || typeof e.message !== 'string' || !e.message) return fallback;
+  if (e.status == null && !e.remote) return e.message;
+  const hit = REMOTE_WORDS.find(([re]) => re.test(e.message));
+  return hit ? hit[1] : fallback;
+};
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('the provider did not answer in time')), ms))]);
 
 // `ethAsset` is the pool's asset for ETH (a test's pool has a stand-in)
@@ -226,7 +240,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   async function startFwd(q) {
     const r = q.ref.r, bl = blFor(q.ref.p.ref);
     const held = await counterFor(q.ref.p.ref).reserve({ quoteId: r.id });
-    if (!held || held.ok === false) throw new Error(`the provider cannot hold that amount${held && held.why ? `: ${held.why}` : ''}`);
+    if (!held || held.ok === false) throw new Error('the provider cannot hold that amount just now');
     policy.csvBlocks = r.csvBlocks;
     const rec = await bl.start({ asset: hexToBytes(SATS_ASSET), amount: r.btcValue, counterClaimPub: hexToBytes(r.claimPub), evmAsset: r.evmAsset, evmAmount: r.evmAmount, quoteId: r.id, avoid: await heldCoins() });
     rec.provider = q.ref.p.ref; rec.providerName = q.ref.p.name;
@@ -279,7 +293,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     if (!eligible.length) throw new Error('no provider takes that amount');
     const got = await Promise.all(eligible.map(async (p) => { try { return await (dir === 'b2e' ? quoteFwd(p, want) : quoteRev(p, want)); } catch (error) { return { p, error }; } }));
     const good = got.filter((g) => !g.error).sort((a, b) => (a.get > b.get ? -1 : a.get < b.get ? 1 : 0));
-    if (!good.length) throw new Error(String((got[0] && got[0].error && got[0].error.message) || 'no provider could quote that amount'));
+    if (!good.length) throw new Error(said(got[0] && got[0].error, 'no provider could quote that amount just now'));
     const best = good[0], rate = rateOf(dir === 'b2e' ? best.get : best.pay, dir === 'b2e' ? best.pay : best.get);
     const warnings = [];
     let blocked = unusable(market), versus = null;
@@ -322,7 +336,11 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     // a note of exactly the amount is locked as it is: what `available` keeps back for a cut is not needed then (evm.covers)
     if (evm.covers) { if (!(await evm.covers(q.pay))) throw new Error('your private ETH does not cover that amount'); }
     else { const b = await balances(); if (b.eth != null && b.eth < q.pay) throw new Error('your private ETH does not cover that amount'); }
-    const a = await revFor(q.ref.p).start({ quote: q.ref.r });
+    let a;
+    try { a = await revFor(q.ref.p).start({ quote: q.ref.r }); } catch (e) {
+      // (the reverse client words a refusal with the provider's reason after it: the page says its own sentence)
+      throw new Error(/^the provider cannot lock that amount/.test(String(e && e.message)) ? 'the provider cannot lock that amount just now' : said(e, 'the provider did not answer just now'));
+    }
     const index = stores.index;
     if (!(await index.get(q.ref.p.id))) await index.put({ id: q.ref.p.id, name: q.ref.p.name, ref: q.ref.p.ref });
     return { id: a.swapId };
