@@ -372,6 +372,31 @@ test('with a quorum, a lock\'s position counts only when the lock set it comes f
   await assert.rejects(() => fake.lockPosition(leaf), (e) => e.quorum === true && /lock root/.test(e.message), 'a lock set one node made up is not built on');
 });
 
+// ── 6. The work one settle's calldata asks of a claim read ──
+test('one 128 KB calldata that carries the settle selector at hundreds of places is read for at most sixteen settles, and a larger one is not searched', async () => {
+  const { MAX_NESTED_SETTLES, MAX_NESTED_INPUT_BYTES } = await import('../dapp/confidential-lock-scan.js');
+  const build = (K, total) => {
+    const M = Math.floor((total - K * 100 - 2000) / 32);
+    const head = Array.from({ length: 21 }, () => word(0));
+    for (const f of [3, 4, 18, 19]) head[f] = word(21 * 32);
+    let arr = word(M); for (let i = 0; i < M; i++) arr += word(i + 1);
+    const pv = word(32) + head.join('') + arr, pvBytes = pv.length / 2, start = 4 + K * 100;
+    let out = 'deadbeef';
+    for (let k = 0; k < K; k++) { const rel = start - (4 + k * 100 + 4); out += '717fd7f2' + word(rel) + word(rel + 32 + pvBytes) + word(rel + 32 + pvBytes + 32); }
+    return '0x' + out + word(pvBytes) + pv + word(0) + word(0);
+  };
+  const t0 = Date.now();
+  const d = lockScan.decodeSettleCalls(build(600, 131072));
+  assert.equal(MAX_NESTED_SETTLES, 16);
+  assert.equal(d.calls.length, MAX_NESTED_SETTLES, 'no more than the cap of settles from one input');
+  assert.ok(Date.now() - t0 < 5000, `read in ${Date.now() - t0} ms`);
+  assert.equal(lockScan.decodeSettleCalls(build(20, MAX_NESTED_INPUT_BYTES + 4096)), null, 'an input over the size cap is not searched');
+  assert.equal(lockScan.decodeSettleCalls(hidden), null);
+  // a settle carried as it is by a forwarder is still read
+  const fwd = '0x' + 'c0ffee00' + word(32) + strip(settle(realClaim));
+  assert.equal(lockScan.decodeSettleCalls(fwd).calls.length, 1);
+});
+
 let passed = 0, ran = 0;
 for (const [name, fn] of tests) {
   ran++;

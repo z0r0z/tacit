@@ -114,13 +114,25 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
   const poolTo = String(poolAddress).toLowerCase(), relayerTo = String(relayerAddress).toLowerCase();
   const RELAYED_TOPIC = '0x' + hex(keccak256(te.encode('Relayed(address,address,uint256,uint256)')));
   const claims = new Map(), traced = new Map(), ran = new Map();
+  // A transaction's settle calls, and a call's adaptor fields, are decoded once and kept: every look at a long window reads the same transactions again
+  const decodes = new Map(), fields = new WeakMap();
+  const decodedOf = (h, input) => {
+    if (!decodes.has(h)) { let d = null; try { d = ux.lockScan.decodeSettleCalls(input); } catch { d = null; } decodes.set(h, d); cap(decodes, 4096); }
+    return decodes.get(h);
+  };
+  const fieldsOf = (call) => {
+    if (!call || typeof call !== 'object') return null;
+    if (!fields.has(call)) { let f = null; try { f = ux.lockScan.decodePublicValuesAdaptorFields(call.publicValues); } catch { f = null; } fields.set(call, f); }
+    return fields.get(call);
+  };
   // What the settle calls among `calls` say of the lock `key`: whether one spends it, and the claim kernel that is its own. A call's lock spends and its kernels are in
   // the order its ops ran, and only a claim carries a kernel: when every spend in the call is a claim, the lock's kernel is the one at its place. A call that also
   // refunds does not say which kernel is whose (`mixed`): each is then only a candidate.
   const naming = (calls, key) => {
     const r = { named: false, s: [], mixed: false };
     for (const call of calls || []) {
-      let f; try { f = ux.lockScan.decodePublicValuesAdaptorFields(call.publicValues); } catch { continue; }
+      const f = fieldsOf(call);
+      if (!f) continue;
       const nus = f.lockNullifiers.map(lc), i = nus.indexOf(key);
       if (i < 0) continue;
       r.named = true;
@@ -275,7 +287,7 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
       if (!e.txHash || seen.has(e.txHash) || (e.type !== 'LeavesInserted' && e.type !== 'NullifiersSpent')) continue;
       seen.add(e.txHash);
       const tx = got.has(e.txHash) ? got.get(e.txHash) : await txOf(e.txHash);
-      const decoded = tx && ux.lockScan.decodeSettleCalls(tx.input);
+      const decoded = tx && decodedOf(e.txHash, tx.input);
       if (decoded && decoded.direct && (tx.to === poolTo || tx.to === relayerTo)) {
         const r = naming(decoded.calls, key);
         if (!r.named) continue;
