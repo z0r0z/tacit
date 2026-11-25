@@ -1,6 +1,7 @@
 import { bodyType } from '../rpc-body.js';
 import { refuses, logSpan } from '../eth-nodes.js';
 import { pace } from '../rpc-pace.js';
+import { communityTail } from '../community-nodes.js';
 export { bodyType };
 export const hedgeDelay = (fallback = 2500) => { try { const v = localStorage.getItem('tacit-trade-hedge-ms'); return v == null || v === '' || !Number.isFinite(Number(v)) ? fallback : Math.max(0, Number(v)); } catch { return fallback; } };
 const idOf = (h) => (typeof h === 'string' ? h.replace(/^https?:\/\//, '') : h.id);
@@ -48,7 +49,8 @@ const sendVia = (h, method, params, signal) => new Promise((resolve, reject) => 
 });
 export function hedgedRpc(hosts, method, params, { hedgeMs = hedgeDelay(), timeoutMs = 12e3, lastTimeoutMs = 30e3, fetchImpl = (...a) => fetch(...a), health = null } = {}) {
   return new Promise((resolve, reject) => {
-    const usable = hosts.filter((h) => typeof h === 'string' || !h.usable || h.usable(method, params));
+    // community nodes are appended last, for fee reads only and only once a pinned key has verified a list (community-nodes.js); no money-gating read reaches them
+    const usable = [...hosts, ...communityTail(method, params)].filter((h) => typeof h === 'string' || !h.usable || h.usable(method, params));
     if (!usable.length) return reject(new Error('no RPC answered'));
     const ordered = health ? health.order(lightFirst(usable, method)) : lightFirst(usable, method);
     const urls = ordered.filter((h) => typeof h === 'string'), fine = urls.filter((h) => !refuses(h, method, params));

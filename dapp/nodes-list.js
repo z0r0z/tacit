@@ -7,15 +7,12 @@
 //   ethPublic(method, params) / btcPublic(path)                  the public-data reads a community node is given; anything else is refused
 //   independent(nodes)                                           nodes grouped so that one operator, one /24 or one ASN counts once
 //
-// PROBER_PUBS is the key the pages believe. It is empty until the prober's key is made and pinned here: with none pinned no list ever
-// verifies, the pages keep their built-in lists and never ask the prober for anything.
+// PROBER_PUBS (nodes-pin.js) is the key the pages believe: empty until the prober's key is made and pinned, and with none pinned no list ever verifies.
 
 import { sha256, concatBytes, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 import { signSchnorr, verifySchnorr } from './bulletproofs.js';
-
-export const PROBER_PUBS = Object.freeze([]);
-// where the pages reach the signed list and the allowlisted relay: the site's API origin, which every page's connect-src already names
-export const NODES_API = 'https://api.tacit.finance/nodes';
+import { PROBER_PUBS, NODES_API } from './nodes-pin.js';
+export { PROBER_PUBS, NODES_API };
 
 export const ROLES = Object.freeze(['eth-reads', 'eth-logs', 'eth-proofs', 'eth-archive', 'btc-esplora', 'btc-index']);
 export const KIND_OF = Object.freeze({ 'eth-reads': 'eth', 'eth-logs': 'eth', 'eth-proofs': 'eth', 'eth-archive': 'eth', 'btc-esplora': 'btc', 'btc-index': 'btc' });
