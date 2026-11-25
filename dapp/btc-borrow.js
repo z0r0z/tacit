@@ -94,7 +94,7 @@ const notLock = (txid) => { notLocks().add(txid); try { localStorage.setItem(NOT
 const sentence = (s) => `${s.charAt(0).toUpperCase()}${s.slice(1)}.`;
 
 export function makeLoans({ sha256, hmac, secp, bytesToHex, hexToBytes, pubHex, noteRecovery = () => import('/cbtc-note-recovery.js'), redeemModule = () => import('/cbtc-redeem.js?cb=6a65bb1a'),
-  lockModule = () => import('/cbtc-lock-mint.js?cb=6083caf9'), deployments = () => import('/confidential-deployments.js') }) {
+  lockModule = () => import('/cbtc-lock-mint.js?cb=c5c09eae'), deployments = () => import('/confidential-deployments.js') }) {
   async function positions() {
     const { makeCdpPositionStore } = await import('/confidential-secret-store.js');
     return makeCdpPositionStore({ sha256, hmac, secp, curveOrder: secp.CURVE.n });

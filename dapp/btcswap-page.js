@@ -16,7 +16,7 @@ import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.m
 
 // The desk's URL. None is running yet, so the page offers no swap and asks nothing until this is set.
 export const DESK = null;
-const EXPLORERS = ['https://mempool.space/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api', 'https://blockstream.info/api'];
+const EXPLORERS = ['https://mempool.space/api', 'https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api', 'https://mempool.ninja/api', 'https://btcscan.org/api', 'https://blockstream.info/api'];
 const enc = new TextEncoder();
 
 export function openBtcSwap({ T, withKey, ux, priv, pubHex, desk = DESK || 'http://localhost:0', fetchImpl = (...a) => fetch(...a), bases = EXPLORERS, hrp = 'bc' }) {

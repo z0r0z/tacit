@@ -22,6 +22,8 @@ function makeEsplora(bases = [
   'https://blockstream.info/api',
   'https://mempool.emzy.de/api',
   'https://mempool.bitaroo.net/api',
+  'https://mempool.ninja/api',
+  'https://btcscan.org/api',
 ]) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   async function req(path, opts) {

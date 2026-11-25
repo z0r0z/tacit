@@ -2042,6 +2042,8 @@ const _CANDIDATE_BASES = {
   mainnet: [
     'https://mempool.emzy.de/api',
     'https://mempool.bitaroo.net/api',
+    'https://mempool.ninja/api',
+    'https://btcscan.org/api',
     'https://mempool.fra.mempool.space/api',
     'https://mempool.tk7.mempool.space/api',
     'https://mempool.va1.mempool.space/api',
