@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 COPY dapp/package.json /app/dapp/package.json
 COPY dapp/vendor/tacit-deps.min.js /app/dapp/vendor/tacit-deps.min.js
-COPY dapp/bulletproofs.js dapp/bulletproofs-plus.js dapp/nodes-list.js /app/dapp/
+COPY dapp/bulletproofs.js dapp/bulletproofs-plus.js dapp/nodes-list.js dapp/nodes-pin.js /app/dapp/
 COPY node-prober/src /app/node-prober/src
 RUN node -e "import('/app/node-prober/src/service.mjs').then((m) => { if (typeof m.makeService !== 'function') process.exit(1); console.log('node-prober ok'); })"
 ENV NODE_ENV=production PORT=10000 POINTS_ENABLED=0
