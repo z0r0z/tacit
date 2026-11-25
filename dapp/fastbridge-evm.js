@@ -611,7 +611,8 @@ export function makeFastBridgeEvm({ ux, secp, keccak256, hmacSha256, walletPriv,
 
 // ── reads that two nodes or more must agree on ──
 // Public nodes of separate operators that the pages' CSP reaches and that serve the pool's state at a recent block number (checked 2026-11-25)
-export const AGREE_NODES = Object.freeze(['https://rpc.mevblocker.io', 'https://eth.drpc.org', 'https://eth-mainnet.public.blastapi.io', 'https://1.rpc.thirdweb.com', 'https://ethereum-rpc.publicnode.com']);
+// our own light node first: it checks state over P2P rather than trusting an operator (it holds recent state only, so an older read simply gets no answer from it)
+export const AGREE_NODES = Object.freeze(['https://tacit-node-gw.onrender.com/eth', 'https://rpc.mevblocker.io', 'https://eth.drpc.org', 'https://eth-mainnet.public.blastapi.io', 'https://1.rpc.thirdweb.com', 'https://ethereum-rpc.publicnode.com']);
 const wordOf = (v) => { const s = strip(v || '0'); return BigInt('0x' + (s || '0')).toString(16); };
 const txOfNode = (t) => [String(t.to || '').toLowerCase(), strip(t.input || '')];
 const receiptOf = (r) => [Number(r.status), Number(r.blockNumber), (r.logs || []).map((l) => [String(l.address || '').toLowerCase(), (l.topics || []).map(strip), strip(l.data || '')])];

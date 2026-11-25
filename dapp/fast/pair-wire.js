@@ -13,7 +13,7 @@
 import { makeBtcWallet } from '/bitcoin-taproot-wallet.js';
 import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=7410374b';
-import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=0125d1fa';
+import { makeFastBridgeEvm, makeTxTracer, makeOwnLockFinder, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=23680804';
 import { makeHttpCall } from '/fastbridge-reverse-client.js?cb=514bfcc8';
 import { makeMailboxCall } from '/fastbridge-mailbox.js?cb=9003c49b';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=129356b4';
@@ -22,7 +22,7 @@ import { makePairClient, ETH_ASSET, SATS_ASSET } from '/fastbridge-pair.js?cb=d1
 import { makeRateFeed, chainlinkNodes, PRICE_NODES } from '/fastbridge-rate.js?cb=be7769e1';
 import { discoverProviders } from '/fast/discover.js?cb=4a1bb265';
 import { keptStorage, saveCopy, loadCopy } from '/fast/pair-keep.js?cb=b7885472';
-import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=121a94fe';
+import { walletSettle, counterFor, EXPLORERS } from '/fast/wire.js?cb=7685c97f';
 import { secp, sha256, keccak_256, hmac, bytesToHex } from '/vendor/tacit-deps.min.js';
 
 const enc = new TextEncoder();
