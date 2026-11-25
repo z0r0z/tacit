@@ -3320,7 +3320,7 @@ render.borrow = () => {
     const ratio = usd && debt ? Number(usd * 10000n / debt) / 100 : null, liqAt = debt && sats ? Number(debt) * Number(st.liq) / (1e4 * Number(sats)) : null;
     return html`<div class="kv"><span>${fmt(debt, 8, 2)} cUSD against ${fmt(sats, 8, 8)} cBTC</span><b class="${ratio == null ? '' : ratio < Number(st.ratio) / 100 ? 'err' : ratio < 175 ? 'warn' : ''}">${ratio == null ? '' : `${Math.round(ratio)}%`}</b></div>
       ${liqAt ? html`<div class="kv"><span>Liquidated below</span><b>$${Math.round(liqAt).toLocaleString('en-US')} a bitcoin</b></div>` : ''}
-      <button class="btn ghost" type="button" ${i === 0 ? new Raw('id="bw-repay" ') : ''}data-repay="${i}">${LOCK.repayOver ? 'Repay anyway' : 'Repay'}</button>`;
+      <button class="btn ghost" type="button" ${i === 0 ? new Raw('id="bw-repay" ') : ''}data-repay="${i}">${LOCK.repayOver ? 'Repay anyway' : 'Repay in full'}</button>`;
   };
   const cusdHeld = P.scan?.cusd, cusdNote = cusdHeld ? freeNotes(cusdHeld.notes).sort(byValue).at(-1) : null;
   const holdBlock = !holdOn ? '' : html`<div class="blk" id="bw-hold">
@@ -3336,7 +3336,7 @@ render.borrow = () => {
       <button class="btn" type="button" id="bw-borrow">Borrow cUSD</button>` : ''}
     ${st.loans === null ? html`<p class="note err">Your loans could not be read. <button class="link" type="button" data-retry="loan">Try again</button></p>` : ''}
     ${loans.length ? html`<div class="lbl"><span>Your loans</span></div>${loans.map(loanRow)}
-      <p class="note">Repaying burns the cUSD you hold privately and returns the cBTC as a private note. tacUSD withdrawn to an account is made private again under Send, below.</p>` : ''}
+      <p class="note">A loan is repaid whole, not in parts: repaying burns the cUSD you hold privately and returns the cBTC as a private note. tacUSD withdrawn to an account is made private again under Send, below.</p>` : ''}
     ${cusdNote ? html`<div class="kv"><span>Private cUSD</span><b>${fmt(cusdHeld.value, 8, 2)}</b></div><button class="btn ghost" type="button" id="bw-out">Withdraw ${fmt(BigInt(cusdNote.value), 8, 2)} as tacUSD</button>
       <button class="link" type="button" data-farm-with="cusd">Or farm it for TAC →</button>` : ''}
     <div class="status" role="status" id="bw-s4"></div>
@@ -3395,7 +3395,7 @@ render.borrow = () => {
             <button class="link" type="button" data-farm-with="cusd">Or farm it for TAC →</button>` : ''; })()}` : ''}
           ${s4 && !holdOn ? html`<button class="btn" type="button" id="bw-repay">${LOCK.repayOver ? 'Repay anyway' : 'Repay and close'}</button>
             <div class="status" role="status" id="bw-s4"></div>
-            <p class="note">Repaying burns ${fmt(st.borrowed, 8, 2)} cUSD you hold privately and returns the cBTC as a private note. tacUSD withdrawn to an account is made private again under Send, below.</p>` : ''}
+            <p class="note">A loan is repaid whole, not in parts: repaying burns ${fmt(st.borrowed, 8, 2)} cUSD you hold privately and returns the cBTC as a private note. tacUSD withdrawn to an account is made private again under Send, below.</p>` : ''}
         </div>
       </li>`}
     </ol>${holdOn ? new Raw('</details>') : ''}
