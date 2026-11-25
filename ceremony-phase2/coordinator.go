@@ -151,16 +151,17 @@ type ticket struct {
 type Coordinator struct {
 	Dir string
 	Config
-	mu       sync.Mutex
-	state    State
-	headSize int64
-	queue    []*ticket
-	bans     []netip.Prefix
-	accepted map[string]int // contributions accepted per client address key (accepted.json)
-	key      ed25519.PrivateKey
-	verifyMu sync.Mutex // one check of a contribution at a time (each holds several GB)
-	files    fileLimiter
-	now      func() time.Time
+	mu        sync.Mutex
+	state     State
+	headSize  int64
+	queue     []*ticket
+	bans      []netip.Prefix
+	accepted  map[string]int // contributions accepted per client address key (accepted.json)
+	key       ed25519.PrivateKey
+	finishRes map[string]*finishResult // the outcome of a finish call, by token (parts.go)
+	verifyMu  sync.Mutex               // one check of a contribution at a time (each holds several GB)
+	files     fileLimiter
+	now       func() time.Time
 	// tests: runs after an upload is verified and before it is committed
 	beforeCommit func()
 }

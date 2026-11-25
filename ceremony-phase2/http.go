@@ -165,6 +165,7 @@ func (c *Coordinator) Handler() http.Handler {
 		writeJSON(w, 200, map[string]bool{"left": true})
 	})
 	mux.HandleFunc("PUT /api/upload", c.handleUpload)
+	c.partRoutes(mux)
 	mux.HandleFunc("GET /api/transcript", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, c.State()) })
 	return c.logRequests(oldClients(mux))
 }
