@@ -1,0 +1,25 @@
+# The prober as a Render web service (NOT deployed from here). Add it to the account by hand or paste under `services:` of the blueprint in use.
+# The key: `node tools/nodes-keygen.mjs`; the private half is PROBER_KEY below (a secret), the public half is pinned in dapp/nodes-list.js PROBER_PUBS.
+services:
+  - type: web
+    name: tacit-nodes
+    runtime: docker
+    dockerfilePath: ./node-prober/Dockerfile
+    dockerContext: .
+    plan: starter            # one process, a few thousand small probes a day; needs the disk below
+    region: oregon
+    healthCheckPath: /healthz
+    autoDeploy: false
+    disk:
+      name: nodes-state
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: PROBER_KEY
+        sync: false          # secret: 32-byte hex private key
+      - key: STATE_PATH
+        value: /data/state.json
+      - key: POINTS_ENABLED
+        value: "0"           # the leaderboard only; see node-prober/README.md before turning on
+      - key: PROBE_INTERVAL_SECS
+        value: "1200"
