@@ -125,8 +125,8 @@ relay priced close to the gas cost is used most. A relay that has not answered a
 
 ```
 cd worker-relay && npm ci
-RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/evm-pool/keeper --owner 0x<an address of yours>            # every check, nothing sent
-RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/evm-pool/keeper --owner 0x<an address of yours> --send     # list the relay
+RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/1/evm-pool/keeper --owner 0x<an address of yours>            # every check, nothing sent
+RELAY_KEY=0x… node scripts/register-relay.mjs --url https://relay.example/1/evm-pool/keeper --owner 0x<an address of yours> --send     # list the relay
 ```
 
 It is one transaction: the relay's key permits the registry to take the stake and lists the relay in the same call (`--two-step` approves first and lists after).
@@ -152,6 +152,8 @@ ending `/evm-pool/keeper` on a public name, one entry for each relay), draws a f
 all), and asks each for a quote, through the private route: a forwarder fetches each relay's key document, the wallet checks its signature against the address
 the registry lists, and seals the request to that key. A relay is used only if its quote names the address it was listed under and its fee is within what the user was shown.
 Nothing else about a relay is trusted, and the page does not rank relays: price does. The page that lives on chain as `anon.wei` does not read the registry.
+
+For a token pool, the page projects a chain's native multi-keeper URL to that pool's ID: `/1/evm-pool/keeper` becomes `/1-tac/evm-pool/keeper`, or `/1-x…/evm-pool/keeper` for a dynamic token pool. The same registry entry and relayer address pin the projected route, so no per-token registry entries are needed. A relay must actually serve and quote that pool; an unsupported route is ignored. Token support is an operator configuration choice, not a registry capability claim.
 
 ## Keeping it
 

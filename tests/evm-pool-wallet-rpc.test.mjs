@@ -1348,6 +1348,37 @@ const sentTo = (s) => s.calls.filter((c) => c.endsWith('/relay'));
 const withRandom = async (v, fn) => { const r = Math.random; Math.random = () => v; try { return await fn(); } finally { Math.random = r; } };
 const lc = (x) => String(x).toLowerCase();
 
+await check('a displayed spend quote uses the withdrawal selector, while the service quote stays with the built-in relay', async () => {
+  const s = twoRelays(82);
+  await s.ready();
+  const q = await s.w.spendQuote();
+  assert.equal(q.fee, '1000000000000');
+  assert.equal(q.relay.url, K2URL);
+  assert.equal(q.relay.relayer, RELAYER2);
+  assert.equal((await s.w.quote()).fee, '2000000000000', 'receive and deposit metadata still comes from the built-in relay');
+  let h;
+  await quickly(async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); });
+  assert.match(h, /^0x[0-9a-f]{64}$/);
+  assert.deepEqual(sentTo(s), [K2 + '/relay']);
+  assert.equal(lc(s.bodies[K2][0].tx.relayer), lc(RELAYER2));
+});
+
+await check('a displayed spend quote and its withdrawal both fall back to a community relay when the built-in cannot quote', async () => {
+  const s = twoRelays(83);
+  s.quote = () => [503, { error: 'the built-in relay is down' }];
+  await s.ready();
+  const q = await s.w.spendQuote();
+  assert.equal(q.fee, '1000000000000');
+  assert.equal(q.relay.url, K2URL);
+  await assert.rejects(() => s.w.quote(), /the built-in relay is down/);
+  let h;
+  await quickly(async () => { h = await s.w.withdraw({ to: TO, amount: 10n ** 15n, via: 'relay' }); });
+  assert.match(h, /^0x[0-9a-f]{64}$/);
+  assert.deepEqual(sentTo(s), [K2 + '/relay']);
+  assert.equal(lc(s.bodies[K2][0].tx.relayer), lc(RELAYER2));
+  assert.equal(String(s.bodies[K2][0].tx.fee), q.fee);
+});
+
 await check('two relays: the spend goes through the cheaper one, and the proof names that relay\'s address and fee', async () => {
   const s = twoRelays(61);
   await s.ready();

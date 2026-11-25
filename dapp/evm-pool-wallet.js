@@ -1352,8 +1352,10 @@ export function makeEvmPoolWallet({ zk, keys, chain, keeper = null, prove, store
     // history behind the point is still unread (so that is not known yet); null for the pool's first block.
     historyFrom: () => (saved.from ? { size: saved.from.size, block: saved.from.block, partial: true }
       : saved.pointed && saved.first !== undefined && (saved.first === null || saved.first >= saved.pointed.size) ? { size: saved.pointed.size, block: saved.pointed.block, partial: false } : null),
-    // The relayer's quote: priced for a spend that burns `gas` (withdrawAndCall, toV1) when given, else an ordinary one.
+    // The relayer's service quote: priced for a spend that burns `gas` (withdrawAndCall, toV1) when given, else an ordinary one.
     quote: (gas = null) => keeperGet(gas ? `/quote?gas=${gas}` : '/quote'),
+    // A spend's displayed quote comes from the same selection as its submission, unlike the built-in relay's receive and deposit service metadata.
+    spendQuote: (gas = null) => quoteFor('relay', gas),
     // The receive box at `index` (0 is the private ETH address; later ones are one-time addresses, e.g. per payment
     // request, found again from the seed within the same gap as refund boxes). → address
     receiveBoxAt: (index = RECEIVE_INDEX) => boxOf(index),

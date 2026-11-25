@@ -24,7 +24,7 @@ const CARRIED = [
   ['POST', /^\/(relay|receive|deposit|wrap|rpc)$/],
 ];
 // A gateway in front of several keepers (the multi-keeper service) carries paths that name the keeper: /<id>/evm-pool/keeper/events.
-const KEEPER_PATH = /^(?:\/\d+(?:-x[0-9a-f]+)?)?\/evm-pool\/keeper(?=\/)/;
+const KEEPER_PATH = /^(?:\/\d+(?:-[a-z][a-z0-9]*)?)?\/evm-pool\/keeper(?=\/)/;
 const FORWARDED = ['cf-connecting-ip', 'x-forwarded-for'];
 const MAX_SEEN = 100_000;
 const JSON_TYPE = { 'content-type': 'application/json' };
