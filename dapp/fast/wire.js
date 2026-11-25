@@ -1,3 +1,4 @@
+import { noteRiskClass } from '../fastbridge-stuck-pricing.js';
 // The fast bridge for a page that holds a Tacit key: the Bitcoin and pool sides built from the key and tacit.js, the client over
 // them, the providers there are to bridge with, and the key's own provider. No DOM.
 //
@@ -16,8 +17,8 @@ import { makeAdaptorBtcTx, tacitKit } from '/adaptor-btc-tx.js';
 import { makeEsploraBtcChain } from '/fastbridge-btc.js?cb=397565fc';
 import { makeFastBridgeEvm, makeTxTracer, makeNodeQuorum, TRACE_NODES } from '/fastbridge-evm.js?cb=4560aa10';
 import { makeHttpCounter, makeCounter } from '/fastbridge-http.js';
-import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=8b4b5fae';
-import { makeLpService } from '/fastbridge-provider.js?cb=4e060540';
+import { makeFastBridgeMarket, makeLocalStore } from '/fastbridge-client.js?cb=e6a9971c';
+import { makeLpService } from '/fastbridge-provider.js?cb=8d7d83a7';
 import { makeMailboxCounter, makeMailboxCall, makeMailboxServer, makeAdPublisher, gatewayOf, defaultAdName } from '/fastbridge-mailbox.js?cb=9003c49b';
 import { makeReverseClient, makeReverseCounter, makeHttpCall } from '/fastbridge-reverse-client.js?cb=514bfcc8';
 import { makeBoardClient } from '/fastbridge-board-client.js?cb=129356b4';
@@ -26,9 +27,9 @@ import { signSchnorr } from '/bulletproofs.js';
 import { makeBtcBind, openBoundNote, fastLaneNote, makePoolRoots } from '/btc-bind.js?cb=b686d883';
 import { p2trAddress } from '/crossout-notes.js?cb=63153972';
 import { secp, sha256, keccak_256, hmac, hexToBytes } from '/vendor/tacit-deps.min.js';
-import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=4a1bb265';
+import { PROVIDER_DEFAULTS } from '/fast/discover.js?cb=65f2a10f';
 import { splitAmount, assignNotes } from '/fast/sweep.js?cb=713466b3';
-export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=4a1bb265';
+export { discoverProviders, PROVIDER_DEFAULTS } from '/fast/discover.js?cb=65f2a10f';
 
 export const TAC_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 // four explorers, tried in turn: one busy or rate-limited explorer does not stop a swap (every page that uses this allows all four)
@@ -205,7 +206,27 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
     if (!quotes.length || (!vet && !any)) return tiers[0];
     const client = market.clientFor(quotes[0].provider.ref), amount = quotes[0].quote.btcValue;
     const pick = async (set) => { const p = client.pickNotes(await client.freeNotes(set), amount); return p && p.notes; };
-    return followed(tiers, pick, any ? async (ns) => new Map(ns.map((n) => [noteId(n), { state: 'tracked' }])) : (ns) => vet(ns, { onProgress }));
+    const verify = async (ns) => {
+      if (any) return new Map(ns.map((n) => [noteId(n), { state: 'tracked' }]));
+      const verdicts = await vet(ns, { onProgress });
+      if (!quotes[0].quote.lineagePricing) return verdicts;
+      return new Map(ns.map((n) => {
+        const id = noteId(n), v = verdicts.get(id), kind = noteRiskClass(v);
+        return [id, kind === 'clean' || kind === 'unread' ? v : { ...v, state: 'unprovable' }];
+      }));
+    };
+    return followed(tiers, pick, verify);
+  };
+  const boundNotes = async (q, only) => {
+    const found = new Map((await notes()).map((n) => [noteId(n), n]));
+    const allowed = only ? new Set(only.map(noteId)) : null;
+    return q.noteInputs.map(noteId).filter((id) => !allowed || allowed.has(id)).map((id) => found.get(id)).filter(Boolean);
+  };
+  const selectNoteInputs = async (provider, q, only = null) => {
+    const client = market.clientFor(provider.ref);
+    const selected = client.pickNotes(await client.freeNotes(await pool([{ provider, quote: q }], only, true)), q.btcValue);
+    if (!selected) throw new Error('there are no free TAC notes for this quote');
+    return selected.notes.map(({ txid, vout }) => ({ txid, vout }));
   };
   // The quotes are tried best first, each with the notes its provider takes; one whose notes the bridge's proof cannot follow is passed
   // over for a provider that takes any TAC, and when there is none the holder is told (code 'lineage') and nothing is locked.
@@ -214,9 +235,13 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
     const planFor = (any) => { if (!plans.has(any)) plans.set(any, pool(quotes, only, any, onProgress).then((notes) => ({ notes }), (error) => ({ error }))); return plans.get(any); };
     let refused = null, last = null;
     for (const x of quotes) {
-      const plan = await planFor(takesAny(x));
+      const plan = x.quote.noteInputs
+        ? { notes: await boundNotes(x.quote, only) }
+        : x.quote.lineagePricing
+          ? await pool([x], only, false, onProgress).then((notes) => ({ notes }), (error) => ({ error }))
+          : await planFor(takesAny(x));
       if (plan.error) { if (plan.error.code === 'lineage') { refused ||= plan.error; continue; } throw plan.error; }
-      try { return await market.start({ quotes: [x], notes: plan.notes }); } catch (e) {
+      try { return await market.start({ quotes: [x], notes: plan.notes, ...(x.quote.noteInputs ? { avoid: new Set((await notes()).map(noteId)) } : {}) }); } catch (e) {
         last = e;
         if (!/cannot hold that amount/.test(String((e && e.message) || e))) throw e;
       }
@@ -263,12 +288,15 @@ export async function openFast({ T, withKey, ux, priv, pubHex, pins = {}, wallet
   const startSweep = async (offer) => market.sweep({ legs: offer.legs.map(({ provider, quote, notes: legNotes }) => ({ provider, quote, notes: legNotes })), notes: await notes() });
   return {
     address: prims.wallet.address(), notes, balance, market,
-    quoteAll: (providers, units, o) => market.quoteAll(providers, units, o),
+    quoteAll: (providers, units, o = {}) => market.quoteAll(providers, units, {
+      ...o, ...(o.allowLineage ? { selectNoteInputs: (provider, q) => selectNoteInputs(provider, q, o.only) } : {}),
+    }),
     sweepOffer, startSweep,
     // what the lock would cost on Bitcoin for a quote and whether the address can pay it (nothing is stored or sent)
     cost: async ({ quote, provider, only, onProgress }) => {
       const ref = provider ? provider.ref : null, p = provider || { ref };
-      return market.clientFor(ref).cost({ quote, notes: await pool([{ provider: p, quote }], only, takesAny({ provider: p }), onProgress) });
+      const selected = quote.noteInputs ? await boundNotes(quote, only) : await pool([{ provider: p, quote }], only, !quote.lineagePricing && takesAny({ provider: p }), onProgress);
+      return market.clientFor(ref).cost({ quote, notes: selected, ...(quote.noteInputs ? { avoid: new Set((await notes()).map(noteId)) } : {}) });
     },
     start: async ({ quotes, only, onProgress }) => begin(quotes, only, onProgress),
     // Which providers could take a lock for `units` of this key's TAC: 'all' (it can be built from notes the bridge's proof follows, so any

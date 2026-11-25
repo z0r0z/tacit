@@ -130,6 +130,78 @@ test('a note that spends a pool-exit note: the pool service that cannot be asked
   } finally { globalThis.fetch = prev; }
 });
 
+test('a real mainnet pool exit yields a shielded quote after a cold check with the current tracer', async () => {
+  const { traceBurnDepositProvenance } = await import('../worker/src/burndep-live-tracer.js');
+  const { makeBurnDepositTracer } = await import('../dapp/burn-deposit-tracer.js');
+  const { makeTacitLineageReader } = await import('../fastbridge-lp/lib/btc-chain.mjs');
+  const { makeStuckPricing } = await import('../dapp/fastbridge-stuck-pricing.js');
+  const { makeLpService } = await import('../dapp/fastbridge-provider.js');
+  const { makeMemoryStore } = await import('../fastbridge-lp/lib/store.mjs');
+  const { makeConfidentialPool } = await import('../dapp/confidential-pool.js');
+  const { secp, sha256, keccak_256, bytesToHex } = await import('../dapp/vendor/tacit-deps.min.js');
+  const pool = makeConfidentialPool({ secp, sha256, keccak256: keccak_256 });
+  const raw = JSON.parse(readFileSync(here('./fixtures/pool-exit-tx-2026-11-07.json'), 'utf8'))[TXID];
+  const note = { txid: TXID, vout: 0 };
+  const trace = makeBurnDepositTracer({ outpointKey: pool.outpointKey }).trace;
+  let traced = 0;
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (input, ...r) => {
+    const u = String(input?.url ?? input);
+    if (u.startsWith('http://esplora.test/fee-estimates')) return json({ 1: 2, 6: 2 });
+    if (u.includes('/reflection/dump')) return json({ snapshot: { height: 972152, liveTriples: [], burnNodes: [] } });
+    if (u.includes('/reflection/burndep/trace')) {
+      traced++;
+      try {
+        await traceBurnDepositProvenance({
+          env: {}, network: 'mainnet', note, leaves: [{ txid: 'ee'.repeat(32), vout: 0 }],
+          outpointKey: pool.outpointKey, sha256, trace,
+          apiText: async (_, path) => {
+            if (path === `/tx/${TXID}`) return raw.json;
+            if (path === `/tx/${TXID}/hex`) return raw.hex;
+            throw new Error('unexpected explorer lookup');
+          },
+          apiRawBytes: async () => { throw new Error('no block data needed'); },
+        });
+        assert.fail('an exit is not a transfer the regular bridge can trace');
+      } catch (e) {
+        assert.match(e.message, /not produced by a known cxfer and not a supply leaf/);
+        return json({ error: e.message }, 502);
+      }
+    }
+    return prev(input, ...r);
+  };
+  try {
+    T.clearBtcPoolExitCache();
+    const stuckPricing = makeStuckPricing({
+      longHaircutBps: 800, shieldedHaircutBps: 1500, longLimit: '5000', shieldedLimit: '5000', totalLimit: '5000',
+      openingLong: '0', openingShielded: '0',
+    }, makeTacitLineageReader({ tacit: T, btc, assetId: REC.asset }));
+    const swaps = makeMemoryStore(), errors = [];
+    const svc = makeLpService({
+      seed: new Uint8Array(32), btc, evm: { available: async () => 5000n }, swaps, quoteStore: makeMemoryStore(), log: (entry) => errors.push(entry),
+      config: {
+        claimPub: bytesToHex(prims.wallet.pub), csvBlocks: 144, stuckPricing,
+        quote: { minAmount: 1, maxAmount: 5000, btcAsset: REC.asset, evmAsset: REC.asset },
+        policy: { evmWindowSecs: 14400, minConfsFor: () => 1 },
+      },
+    });
+    const ask = (checkId) => svc.handle({ method: 'POST', path: '/quote', body: { amount: '4000', noteInputs: [note], checkId } });
+    let result = await ask();
+    assert.equal(result.status, 202, 'the first request returns without waiting for Bitcoin');
+    assert.match(result.body.checkId, /^[a-f0-9]{32}$/);
+    for (let i = 0; result.status === 202 && i < 100; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      result = await ask(result.body.checkId);
+    }
+    assert.equal(result.status, 200, JSON.stringify({ result: result.body, errors }));
+    assert.equal(result.body.noteClass, 'shielded');
+    assert.equal(result.body.evmAmount, '3400');
+    assert.deepEqual(result.body.noteInputs, [note]);
+    assert.equal(traced, 1);
+    assert.deepEqual(await swaps.list(), []);
+  } finally { globalThis.fetch = prev; }
+});
+
 let passed = 0;
 for (const [name, fn] of tests) {
   try { await fn(); passed++; console.log(`  ok - ${name}`); } catch (e) { console.log(`  FAIL - ${name}\n${e.stack}`); process.exitCode = 1; }

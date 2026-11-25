@@ -1,3 +1,4 @@
+import { sameNoteInputs } from './fastbridge-stuck-pricing.js';
 
 import * as X from './adaptor-xswap.js';
 import * as adaptor from './adaptor-signature.js';
@@ -115,6 +116,8 @@ export function makeEthereumLocker(ctx) {
     const paidDirect = tx.vout.some((o) => strip(o.scriptpubkey) === own && o.value >= takeSats);
     const lockedAt = tx.vout.findIndex((o, i) => i !== offer.btc.vout && strip(o.scriptpubkey) === lockSpk && o.value >= takeSats);
     if (takeSats > 0 && !paidDirect && lockedAt < 0) return reject('the lock does not pay the fee of the take');
+    const noteInputs = tx.vin.slice(sats ? 0 : 1).map((i) => ({ txid: i.txid, vout: i.vout }));
+    if (quote.noteInputs && !sameNoteInputs(quote.noteInputs, noteInputs)) return reject('these TAC inputs differ from the classified quote');
     const note = sats ? null : await btc.resolveNote(offer.btc.txid, offer.btc.vout);
     if (policy.screen && !sats) {
       let s;
@@ -123,7 +126,7 @@ export function makeEthereumLocker(ctx) {
     }
     const chain = {
       spk: out.scriptpubkey, commitment: note ? hx(note.commitment) : '', validNote: !!note && strip(note.assetIdHex) === strip(offer.btc.asset), value: out.value,
-      confirmations: st.confirmations, noteInputs: tx.vin.slice(sats ? 0 : 1).map((i) => ({ txid: i.txid, vout: i.vout })),
+      confirmations: st.confirmations, noteInputs,
     };
     const v = X.verifyBtcLockOffer(offer, {
       prims: btc.prims, myClaimerPub: btc.wallet.pub,
@@ -131,11 +134,18 @@ export function makeEthereumLocker(ctx) {
       chain, minConfs: 0, minCsv: policy.minCsv,
     });
     if (!v.ok) return reject(v.reasons.join('; '));
+    if (ctx.stuckPricing && !sats && !quote.noteInputs) {
+      // A legacy caller can still bridge clean TAC at the base fee.
+      try {
+        if (await ctx.stuckPricing.classify(noteInputs) !== 'clean') return reject('this TAC needs a note-specific quote before locking');
+      } catch (e) { return reject(e.status ? e.message : 'the history of the notes could not be read just now', !e.status || e.status === 503); }
+    }
     const consumed = sats ? null : await btc.crossLaneBlocked(tx);
     if (consumed) return reject('a spent note is already consumed on Ethereum: ' + consumed);
     const rec = {
       v: 1, role: 'el', id, phase: 'accepted', created: ctx.now(), updated: ctx.now(), quoteId, offer,
       lockTxid: offer.btc.txid, lockVout: offer.btc.vout, lockValue: out.value, lockSpk: strip(out.scriptpubkey), csvBlocks: offer.btc.csvBlocks,
+      ...(quote.noteClass && quote.noteClass !== 'clean' ? { stuckExposure: { kind: quote.noteClass, amount: quote.btcValue } } : {}),
       ...(takeSats > 0 && !paidDirect ? { takeVout: lockedAt, takeValue: tx.vout[lockedAt].value } : {}),
     };
     rec.checked = checkedTag(seed, rec);

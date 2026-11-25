@@ -342,18 +342,39 @@ export function makeBurnDepositUx(deps) {
   }
 
   const lineageKept = new Map();
-  async function lineage(notes, { onProgress = null } = {}) {
+  // Only note-specific quotes supply a deadline. Keep the browser’s existing
+  // reflection cache and trace pacing for callers that do not need one.
+  async function withAbort(promise, signal) {
+    if (!signal) return promise;
+    let abort;
+    try {
+      return await Promise.race([promise, new Promise((_, reject) => {
+        if (signal.aborted) { reject(signal.reason); return; }
+        abort = () => reject(signal.reason);
+        signal.addEventListener('abort', abort, { once: true });
+      })]);
+    } finally { if (abort) signal.removeEventListener('abort', abort); }
+  }
+
+  async function lineage(notes, { onProgress = null, signal, checkPoolExit } = {}) {
     const out = new Map();
+    async function directExit(verdict, note) {
+      if (!checkPoolExit || verdict.state !== 'unprovable' || verdict.through !== 'other') return verdict;
+      try {
+        return await withAbort(checkPoolExit(note), signal) ? { state: 'unprovable', through: 'shielded' } : verdict;
+      } catch { return { state: 'unread' }; }
+    }
     let r = null;
-    try { r = await reflected(); } catch { }
+    try { r = await withAbort(reflected(), signal && AbortSignal.any([signal, AbortSignal.timeout(8000)])); } catch { }
     for (const n of notes || []) {
+      signal?.throwIfAborted();
       const id = `${n.txid}:${n.vout}`, kept = lineageKept.get(recordId(n.txid, n.vout));
-      if (kept) { out.set(id, kept); continue; }
+      if (kept) { out.set(id, await directExit(kept, n)); continue; }
       const key = outpointOf(n.txid, n.vout);
       let v;
       if (r && r.live.has(key) && !r.liveBound.get(key)) v = { state: 'tracked' };
       else {
-        try { const t = await traceNote({ txid: n.txid, vout: n.vout, assetId: tacAssetId, onProgress }); v = t.hops <= MAX_HOPS_SOURCE ? { state: 'traced', hops: t.hops } : { state: 'long', hops: t.hops, max: MAX_HOPS_SOURCE }; }
+        try { const t = await traceNote({ txid: n.txid, vout: n.vout, assetId: tacAssetId, onProgress, signal }); v = t.hops <= MAX_HOPS_SOURCE ? { state: 'traced', hops: t.hops } : { state: 'long', hops: t.hops, max: MAX_HOPS_SOURCE }; }
         catch (e) {
           const m = String((e && e.message) || e), through = unprovableThrough(m), at = /burndep-live-tracer: (?:input )?([0-9a-f]{64})/i.exec(m), long = /provenance exceeded (?:maxDepth \((\d+)\)|\d+ outpoints)/.exec(m);
           v = e && e.code === 'trace_reading' ? { state: 'unread', reading: true, read: e.read, error: m }
@@ -363,7 +384,7 @@ export function makeBurnDepositUx(deps) {
         }
       }
       if (v.state !== 'unread') lineageKept.set(recordId(n.txid, n.vout), v);
-      out.set(id, v);
+      out.set(id, await directExit(v, n));
     }
     return out;
   }
@@ -429,15 +450,16 @@ export function makeBurnDepositUx(deps) {
     return null;
   }
 
-  async function traceNote({ txid, vout, assetId, onProgress = null }) {
-    const ask = () => callWorker('POST', '/reflection/burndep/trace', { note: { txid: stripHex(txid), vout }, assetId, maxDepth: MAX_HOPS_BURN_HOME });
+  async function traceNote({ txid, vout, assetId, onProgress = null, signal }) {
+    const ask = () => callWorker('POST', '/reflection/burndep/trace', { note: { txid: stripHex(txid), vout }, assetId, maxDepth: MAX_HOPS_BURN_HOME }, signal);
     const until = now() + TRACE_TOTAL_MS;
     for (let limited = 0, reading = false; ;) {
+      signal?.throwIfAborted();
       let res;
       try { res = await ask(); }
       catch (e) {
         if (Number(e && e.status) !== 429 || !(e.retryAfter > 0 && e.retryAfter <= TRACE_WAIT_MAX_S) || limited++ >= (reading ? 3 : 1) || now() > until) throw e;
-        await sleep((e.retryAfter + 1) * 1000);
+        await withAbort(sleep((e.retryAfter + 1) * 1000), signal);
         continue;
       }
       if (res && res.pending) {
@@ -446,7 +468,7 @@ export function makeBurnDepositUx(deps) {
         if (now() > until) {
           throw Object.assign(new Error('burndep-ux: this TAC’s history is long and still being read from Bitcoin; try again in a few minutes'), { code: 'trace_reading', read: Number(res.read) || 0 });
         }
-        await sleep(Math.min(10, Math.max(1, Number(res.retryAfter) || 2)) * 1000);
+        await withAbort(sleep(Math.min(10, Math.max(1, Number(res.retryAfter) || 2)) * 1000), signal);
         continue;
       }
       if (!res.ok) throw new Error(res.error || 'trace failed');
@@ -976,11 +998,11 @@ export function makeBurnDepositUx(deps) {
   async function checkTxidStatus(txid) {
     return callWorker('GET', `/reflection/burndep/status?txid=${stripHex(txid)}`);
   }
-  async function callWorker(method, path, body) {
+  async function callWorker(method, path, body, signal) {
     const f = fetchImpl || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
     if (!f) throw new Error('burndep-ux: no fetch implementation');
     const url = `${workerBase}${path}${path.includes('?') ? '&' : '?'}network=${network}`;
-    const res = await f(url, method === 'GET' ? undefined : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const res = await f(url, method === 'GET' ? undefined : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), ...(signal ? { signal } : {}) });
     if (!res.ok) {
       const j = await res.json().catch(() => null);
       const said = (j && (j.error || j.reason)) || (res.status === 404 ? 'not found' : `the service answered ${res.status}`);
