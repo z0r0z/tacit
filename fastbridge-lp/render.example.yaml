@@ -1,0 +1,37 @@
+# A Bitcoin-for-ETH swap provider on Render: a template, NOT a blueprint Render reads (the name is not render.yaml) and nothing here is deployed.
+# Copy the service into your own repository's render.yaml (a fork of this one, with the Dockerfile at worker-relay/Dockerfile.fastbridge-lp), then:
+#  1. Create the service. Set FB_LP_KEY in the dashboard (`openssl rand -hex 32`, copy kept offline), or leave it unset: setup then makes one on the disk and
+#     prints it once in the log (and never again). Either way keep the disk.
+#  2. Read the log: it prints the Ethereum pool account and the Bitcoin address, and how much to send. The service waits (up to a day) for the ETH,
+#     shields it, checks everything and starts. A restart is safe: setup picks up where it was.
+#  3. Check https://<your service>.onrender.com/info and https://tacit.finance/btc/ ("Providers online").
+# One instance only: two on one key lock the same swap twice, so never scale it.
+services:
+  - type: web
+    name: tacit-swap-provider
+    runtime: docker
+    dockerfilePath: ./worker-relay/Dockerfile.fastbridge-lp
+    dockerContext: .
+    plan: starter
+    region: oregon
+    # setup (idempotent, waits for the funds) and then run; the entrypoint passes this command through as given
+    dockerCommand: sh -c "node fastbridge-lp/setup.mjs setup --yes --no-start --wait-mins 1440 && node fastbridge-lp/setup.mjs run"
+    healthCheckPath: /health
+    autoDeploy: false
+    disk:
+      name: provider-data
+      mountPath: /var/lib/tacit-fastbridge-lp
+      sizeGB: 1
+    envVars:
+      - key: FB_LP_KEY
+        sync: false
+      - key: FB_LP_NAME
+        value: My provider
+      - key: FB_LP_FEE_BPS               # hundredths of a percent: 30 is 0.30%
+        value: "30"
+      - key: FB_LP_FLAT_FEE              # sats, on each swap
+        value: "1000"
+      - key: FB_LP_SIZE                  # small, medium or large
+        value: small
+      - key: FB_LP_ALERT_WEBHOOK
+        sync: false
