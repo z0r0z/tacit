@@ -100,6 +100,16 @@ if (PAIR) {
   log({ level: 'info', msg: 'pair provider: Bitcoin for ETH', price: rateFeed.current(), sats: { min: C.quote.minAmount, max: C.quote.maxAmount }, reverse: !!(C.reverse && C.reverse.enabled) });
 }
 
+// A pair provider's upkeep (lib/automation.mjs, README "Upkeep"): its quotes price from the market moved by the lean of the moment (lib/skew.mjs), and each quote
+// keeps the market rate it was priced from (`mkt`), which the accounting of the swap reads. The pool's own sends (a lock's note cut and lock, a merge of small
+// notes, a buyback send) take turns, so the upkeep never spends a note a lock is being built from.
+const { applySkew } = await import('./lib/skew.mjs');
+let leanBps = 0;
+const quoteRate = () => { const r = rateFeed && rateFeed.rate(); return r && leanBps ? applySkew(r, leanBps) : r; };
+const withMkt = (store) => (PAIR ? { ...store, put: async (rec) => { if (rec && rec.id && !rec.mkt) { const m = rateFeed.rate(); if (m) rec = { ...rec, mkt: { num: String(m.num), den: String(m.den) }, ...(leanBps ? { leanBps } : {}) }; } return store.put(rec); }, get: store.get.bind(store), list: store.list.bind(store), del: store.del ? store.del.bind(store) : undefined, problems: store.problems ? store.problems.bind(store) : () => [] } : store);
+const poolTurn = makeSerial();
+if (PAIR) for (const k of ['prepare', 'lockOp']) { const f = evm[k]; if (typeof f === 'function') evm[k] = (...a) => poolTurn(() => f(...a)); }
+
 const confs = (C.policy.confs || [['0', 1]]).map(([from, n]) => [BigInt(from), n]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
 // TAC with up to 8 places, as the pool's units (8 places) and as the token's wei (18)
 const tacUnits = (t) => { const [whole, frac = ''] = String(t).split('.'); return BigInt(whole) * 10n ** 8n + BigInt(frac.padEnd(8, '0').slice(0, 8)); };
@@ -107,7 +117,7 @@ const config = {
   claimPub: Buffer.from(prims.wallet.pub).toString('hex'), csvBlocks: C.csvBlocks ?? 144, alertSecs: C.alertSecs ?? 3600, reserve: C.reserve, inventory: C.inventory,
   lowFree: (PAIR ? C.lowFreeEth : C.lowFreeTac) != null ? tacUnits(PAIR ? C.lowFreeEth : C.lowFreeTac) : null,    // what is left to lend, an amount with up to 8 places (TAC, or ETH for a pair provider)
   lowEth: C.lowEth != null ? tacUnits(C.lowEth) * 10n ** 10n : null,        // an ETH amount ("0.002") in wei: the units helper reads up to 8 places
-  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(PAIR ? { rate: () => rateFeed.rate() } : {}) },
+  quote: { ...C.quote, btcAsset: C.btcAsset, evmAsset: C.evmAsset, ...(PAIR ? { rate: () => quoteRate() } : {}) },
   policy: {
     minCsv: C.policy.minCsv ?? 72, evmWindowSecs: C.policy.evmWindowSecs ?? 4 * 3600, minClaimSecs: C.policy.minClaimSecs ?? 3600, claimSlackSecs: C.policy.claimSlackSecs ?? 7200,
     roundSecs: C.policy.roundSecs ?? 600, refundMarginSecs: C.policy.refundMarginSecs ?? 600, maxOfferAgeSecs: C.policy.maxOfferAgeSecs ?? 3600, holdAgeSecs: C.policy.holdAgeSecs,
@@ -129,7 +139,8 @@ if (PAIR) {
 }
 // a dry run keeps its swaps and quotes in memory, so a later live run starts from nothing it did not choose
 const swapStore = DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'swaps'));
-const service = makeLpService({ seed, btc, evm, swaps: swapStore, quoteStore: DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'quotes')), config, log, alert });
+const quoteStore = withMkt(DRY ? makeMemoryStore() : makeFileStore(resolve(data, 'quotes')));
+const service = makeLpService({ seed, btc, evm, swaps: swapStore, quoteStore, config, log, alert });
 
 log({ level: 'info', msg: 'fast bridge LP', network, dryRun: DRY, bitcoinAddress: btc.address, claimPub: config.claimPub, poolAccount: acct.address, config: cfgPath, data });
 await service.start();
@@ -197,7 +208,8 @@ if (C.refill !== false && !DRY) {
 // is this provider's own, so what users send for it lands where the forward side lends from.
 let handle = service.handle;
 const { reverseOptions } = await import('./lib/reverse.mjs');
-const ropts = PAIR ? pairLib.pairReverseOptions(C, rateFeed) : reverseOptions(C);
+const ropts = PAIR ? pairLib.pairReverseOptions(C, { rate: () => quoteRate() }) : reverseOptions(C);
+let rside = null;
 if (ropts && DRY) log({ level: 'info', msg: 'dry run: the reverse side is not started' });
 else if (ropts) {
   const { reverseKeyOf, reverseSeedOf, makeReverseInventory, routed } = await import('./lib/reverse.mjs');
@@ -212,15 +224,22 @@ else if (ropts) {
   // the notes are read by the module's own scan of the wallet it holds: that is the reverse key's here, and nothing else of this process reads it
   // (a pair provider sells plain coins, which it lists from the address itself)
   if (!PAIR) { tacit.wallet.priv = rkey; tacit.wallet.pub = rprims.wallet.pub; }
+  const rswaps = makeFileStore(resolve(data, 'reverse/swaps')), rquotes = withMkt(makeFileStore(resolve(data, 'reverse/quotes')));
   const reverse = makeReverseService({
     seed: reverseSeedOf(key), btc: rbtc, evm, inventory: PAIR ? pairLib.satsInventory(rbtc) : makeReverseInventory({ tacit, asset: C.btcAsset, log }), config: ropts, log, alert,
-    swaps: makeFileStore(resolve(data, 'reverse/swaps')), quotes: makeFileStore(resolve(data, 'reverse/quotes')), offers: makeFileStore(resolve(data, 'reverse/offers')), evmOffers: makeFileStore(resolve(data, 'reverse/evm-offers')),
+    swaps: rswaps, quotes: rquotes, offers: makeFileStore(resolve(data, 'reverse/offers')), evmOffers: makeFileStore(resolve(data, 'reverse/evm-offers')),
   });
+  rside = { btc: rbtc, prims: rprims, swaps: rswaps, quotes: rquotes };
   await reverse.start();
   let rbusy = false;
   setInterval(async () => { if (rbusy) return; rbusy = true; try { await reverse.tick(); } catch (e) { log({ level: 'error', msg: 'reverse tick failed', error: String((e && e.message) || e).slice(0, 200) }); } finally { rbusy = false; } }, (C.tickSecs ?? 15) * 1000);
   handle = routed(service.handle, reverse.handle);
   log({ level: 'info', msg: 'the reverse side is on: the TAC and the sats at this Bitcoin address are what it sells and what it pays fees from', reverseAddress: rbtc.address, maxOpen: ropts.maxOpen, maxTac: String(ropts.maxLocked), csvBlocks: ropts.csvBlocks, feeBps: ropts.quote.feeBps });
+}
+if (PAIR && !DRY) {
+  const { wireAutomation } = await import('./lib/automation-wire.mjs');
+  const auto = await wireAutomation({ C, key, prims, btc, tacit, ux, evm, service, swapStore, quoteStore, rside, rateFeed, poolTurn, data, keccak256: keccak_256, log, alert, setLean: (b) => { leanBps = b; } });
+  if (auto) handle = auto.wrap(handle);
 }
 const server = makeHttpServer({ handle, origins: C.origins || [], trustProxy: !!C.trustProxy, clientIp: C.clientIp || null });
 server.listen(C.port ?? 8787, () => log({ level: 'info', msg: 'listening', port: C.port ?? 8787 }));

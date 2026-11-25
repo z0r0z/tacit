@@ -249,6 +249,37 @@ own; the TAC provider is not changed by it.
 - A swap's take comes out of the lock itself, and a take that is slow is replaced by one that pays more (`policy.takeFeeFactor`, `takeBumpSecs`, `takeMaxFeeShare`).
 - `--dry-run` answers `/info` and `/quote` and checks offers, sends nothing.
 
+### Upkeep (pair mode)
+
+A pair provider looks after its own inventory every `upkeep.tickSecs` (120): `lib/automation.mjs`, wired by `lib/automation-wire.mjs`. Each part has its own switch, and
+everything it does is logged; a failure is alerted (at most hourly per kind).
+
+- **Take coins to the reverse address** (`recycle`, on when the reverse side is on; `FB_LP_RECYCLE=off` stops it). The sats a BTC -> ETH take pays to the main address
+  are moved to the reverse address, so they back ETH -> BTC swaps. Only coins that a take of this provider's finished swaps paid (read by the take's txid, never by listing
+  the main address), plain P2WPKH outputs of the main key, confirmed, unspent, `minCoin`..`maxCoin` sats; never a coin a swap under way names. Several in one transaction to
+  the reverse key's own address, at a fee rate two or more explorers agree on (`maxFeeRate` 25 sat/vB: above it, it waits), at least `minBatchSats` (150,000) with a fee of
+  at most `maxFeeShareBps` (0.5%), at most `maxPerTickSats` (3,000,000) a move and `maxPerDaySats` (10,000,000) a day. RBF, replaced at a higher rate after `bumpSecs`.
+  `keepSats` keeps that much of the coins at the main address. The first move after a start is only logged (a dry run).
+- **The lean** (`skew`, on when the reverse side is on; `FB_LP_SKEW=off`). Holding much more ETH than its target share (`targetEthShare` 0.5, outside a `deadBand`
+  of 0.1), the provider raises its one rate a few basis points (a user bringing BTC gets a little more ETH, one bringing ETH a little fewer sats), and lowers it the other
+  way: at most `maxBps` (15), and never so far that a quote at the minimum, with its fee, stands more than `guardBps` (250) under the market (pages block 3%). `/info`
+  says the lean of the moment (`skewBps`).
+- **ETH notes** (`notes`; `FB_LP_NOTES_MERGE=off`). `/info` reports the free notes, their total and what one lock can draw (`usable`: the largest 16, less a cut). When
+  there are `minNotes` (8) or more, or any under `dustEth` (0.002), the smallest 16 are merged into one note of the same key, when the relay's fee is at most `maxFeeBps`
+  (0.25%), at most `maxPerDay` (3) a day, and only while no BTC -> ETH swap is under way.
+- **Accounting.** Each quote keeps the market rate it was priced from; each finished swap adds its fee over that market (sats for BTC -> ETH, pool ETH for ETH -> BTC),
+  its network costs (the Bitcoin fees of its take, lock or refund as the explorers report them; the relay's fee for a note cut or refund, estimated) and any loss.
+  Swaps that ended before the accounting began are not counted. Kept in `dataDir/upkeep/stats.json`, shown in `/info`:
+  `stats: { since, swaps, feesEarnedSats, feesEarnedEth, networkCostSats, networkCostEth, lossesSats, lossesEth, netEth, reinvestedEth, owedEth, capacity: { eth, sats, valueEth, firstValueEth, firstAt }, notes }`
+  (ETH in pool units of 1e-8 ETH), with `target` and `buyback` beside it.
+- **The target and buybacks** (`target`, `buyback`; `FB_LP_BUYBACK=on` to start, off unless set; `FB_LP_TARGET_ETH`). Under the target (`target.eth` of pool ETH, 10, and
+  Bitcoin worth `target.btcAsEth`, 10, at the market) every swap's net stays as capacity (`reinvestedEth`). At the target with buybacks on, a swap's net is owed
+  (`owedEth`) and sent to TacBuyback (`contracts/deployments/1.json`; no other address is accepted) as an unwrap of the provider's own pool ETH, only from what is over
+  the target, at least `minSendEth` (0.01), at most `maxPerSendEth` (0.25) a send and `maxPerDayEth` (0.5) a day, and only while no BTC -> ETH swap is under way. The
+  contract's keeper buys TAC with it for the reserve in its own small, spaced buys. `/info` `buyback: { on, to, startedAt, owedEth, routedEth, feesEth, sends, tacBought, lastTx, lastAt }`:
+  `routedEth` is what reached the contract, `tacBought` (TAC wei) the provider's share of the contract's buys since its first send, pro rata to its part of the
+  contract's ETH at each buy.
+
 ## Watching it
 
 `/health` for liveness. Alerts go to the log and, if `FB_LP_ALERT_WEBHOOK` is set, are POSTed there as JSON: the alert's own fields, and `text` and `content`, one readable
@@ -266,6 +297,9 @@ line for Slack and Discord incoming webhooks, so one of those can be the webhook
 | `reverse: the notes at the reverse address could not be read` in the log | (reverse side) the scan of that address failed, so `/reverse/info` answers `available: null` and quotes are refused | the explorers; it is tried again after ten seconds |
 | `the provider is running out of private TAC to lend` | the TAC held free is under `lowFreeTac` | shield more TAC to the pool account, or set up `refill` (above) |
 | `the provider is running low on ETH for the settles it sends itself` | the ETH at the pool account is under `lowEth` | send ETH to `poolAccount`; if the relay keeps not sending settles, look at its settle wallet and its limits as well |
+| `recycle: a coin of a move was spent by another transaction` | (pair upkeep) a take coin the provider was moving to its reverse address was spent elsewhere | only the main key signs for it: check what else runs on the key |
+| `stats: ... ended with nothing received` | (pair upkeep) a swap ended with the provider paid nothing for what it gave | read the swap's record and its claim or lock before anything else |
+| `buyback: a send that did not finish ... spent its note` | (pair upkeep) a buyback send was cut short and its note is spent | check the TacBuyback balance and the relay job; it was counted as sent |
 | `bridges are waiting for a provider` | a want on a board this process is on, for its asset, that it has not seen before (read every five minutes). `largest` is the biggest; when any names a price, `payUpTo` is the highest and `atYourFee` how many of them (one that names none counts) this provider's fee already meets; `amounts` and `prices` (hundredths of a percent, or null) are in the JSON | raise `quote.maxAmount` or the TAC in the pool if it is more than this process can take; if `atYourFee` is under the count, a lower `feeBps` or flat fee meets the rest |
 
 The same swap in the log: `swap` lines show each phase change (`accepted`, `locking`, `locked`, `offered`, `taking`,
@@ -298,6 +332,7 @@ node tests/fastbridge-sim.test.mjs      # both machines against a simulated Bitc
 node tests/fastbridge-lp.test.mjs       # this service: API, quotes, store, explorer adapter, and swaps through all of it
 node tests/fastbridge-reverse-service.test.mjs   # the reverse side: its service and the user's client over the same machines
 node tests/fastbridge-lp-reverse.test.mjs      # what the process puts around it: its key, options, notes and routing
+node tests/fastbridge-lp-upkeep.test.mjs       # a pair provider's upkeep: coin moves, accounting, the lean, note merges, buybacks
 node tests/fastbridge-fork.mjs          # the Ethereum side against the live pool on a mainnet fork (needs anvil, FORK, EXEC)
 ```
 
