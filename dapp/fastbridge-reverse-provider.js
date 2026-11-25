@@ -26,6 +26,7 @@
 //                      minConfsFor(value), anyTac, alertSecs, refreshSecs, policy: { minClaimSecs, offerWaitSecs, maxEvmWindowSecs } }
 
 import { makeBitcoinLocker } from './fastbridge-bl.js';
+import { makeWatchdog } from './fastbridge-watch.js';
 import { pickNotes } from './fastbridge-client.js';
 import { feeOf } from './fastbridge-price.js';
 import { takeSatsAt } from './fastbridge-provider.js';
@@ -293,6 +294,16 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
     return n;
   }
 
+  // the watchdog (fastbridge-watch.js): a swap whose step has not moved for longer than it takes is read afresh and said. The lock's wait for its block, and the
+  // wait for a user who may never lock or take, have no time of their own (the timelock ends them); a user's pool offer that is kept and not acted on has.
+  const WATCH_BL = { claiming: 600 };
+  const watchdog = makeWatchdog({
+    now, log, alert,
+    budget: (r) => (r.phase === 'broadcast' ? (r.confirmedAt ? 600 : null) : r.phase === 'offered' ? (r.hasEvmOffer ? 600 : null) : WATCH_BL[r.phase] ?? null),
+    keyOf: (r) => JSON.stringify([r.phase, !!r.confirmedAt, !!r.hasEvmOffer, !!(r.claim && r.claim.jobId)]),
+    forget: () => { if (evm.forget) evm.forget(); },
+    kick: (r) => bl.step(r),
+  });
   const lastAlert = new Map();
   async function tick() {
     await pruneQuotes().catch((e) => log({ level: 'warn', msg: 'the reverse quotes could not be pruned', error: String((e && e.message) || e).slice(0, 160) }));
@@ -307,6 +318,7 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
         if (next.phase === 'refund-wait') alert({ level: 'warn', msg: 'a reverse swap is waiting out its timelock to take its Bitcoin note back', id: next.id, why: next.why || null });
       }
       if (next.lastError && next.lastError !== rec.lastError) log({ level: 'warn', msg: 'reverse swap step failed', id: next.id, phase: next.phase, error: next.lastError });
+      if (!TERMINAL.has(next.phase)) await watchdog.look({ ...next, hasEvmOffer: next.phase === 'offered' ? !!(await evmOffers.get(next.id).catch(() => null)) : false });
       const every = alertSecs, k = next.id + '|' + next.phase, t = now();
       // (the Ethereum nodes have not agreed on this swap for ten minutes: it waits and is read again; said every quarter hour while it lasts)
       if (next.nodesSince != null && t - next.nodesSince >= 600 && t - (lastAlert.get(next.id + '|nodes') ?? -Infinity) >= 900) {

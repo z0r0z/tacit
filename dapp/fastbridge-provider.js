@@ -3,6 +3,7 @@ export const TAKE_VB = 750;
 export const takeSatsAt = (feeRate) => 546 + Math.ceil(TAKE_VB * feeRate * 2);
 const FEE_WARM_MS = 30000;
 
+import { makeWatchdog } from './fastbridge-watch.js';
 import { makeEthereumLocker } from './fastbridge-el.js';
 import { isSats } from './adaptor-xswap.js';
 import { deriveLock } from './adaptor-btc-lock.js';
@@ -336,6 +337,17 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
     }
   }
 
+  // the watchdog (fastbridge-watch.js): a swap whose step has not moved for longer than it takes is read afresh and said. 'offered' waits on the user's claim, which
+  // may rightly never come (the lock is refunded at its deadline): it is read afresh after half an hour, and alerted on only when its reads fail.
+  const WATCH_EL = { locking: 600, locked: 300, offered: 1800, taking: 2400, refunding: 900 };
+  const watchdog = makeWatchdog({
+    now, log, alert,
+    budget: (r) => (r.phase === 'accepted' ? (Number(r.lockConfs || 0) >= Math.max(1, Number(config.policy.minConfsFor(BigInt(r.offer.btc.value)))) ? 600 : null) : WATCH_EL[r.phase] ?? null),
+    keyOf: (r) => JSON.stringify([r.phase, Number(r.lockConfs || 0), !!(r.lock && r.lock.jobId), !!r.evmOffer, r.take ? r.take.txid : null, !!r.refund]),
+    quiet: (r) => r.phase === 'offered' && !r.lastError && !r.unread,
+    forget: () => { if (evm.forget) evm.forget(); },
+    kick: (r) => el.poke(r),
+  });
   async function tick() {
     warmUp();
     sayLockable().catch(() => {});
@@ -370,6 +382,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
           alert({ level: 'alert', msg: 'the Ethereum nodes have not agreed on a swap for a while: it waits and is read again', id: next.id, phase: next.phase, since: next.nodesSince, error: next.lastError || null });
         }
         if (next.lastError && next.lastError !== rec.lastError) log({ level: 'warn', msg: 'swap step failed', id: next.id, phase: next.phase, error: next.lastError });
+        if (!TERMINAL.has(next.phase)) await watchdog.look(next);
         if (next.phase === 'taking' || next.phase === 'refunding') {
           const every = config.alertSecs ?? 3600, key = next.id + '|' + next.phase, t = now();
           if (t - (next.phaseAt || next.created) > every && t - (lastAlert.get(key) ?? -Infinity) >= every) {
