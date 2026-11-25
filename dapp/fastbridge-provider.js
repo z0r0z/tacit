@@ -526,6 +526,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
             reservations.set(body.quoteId, { amount: BigInt(q.evmAmount), until, txid: body.txid, who: 'lock', seq: ++holdSeq });
             stale();
             await keep(body.quoteId, { seenTxid: body.txid, seenAt: q.seenTxid === body.txid ? q.seenAt : now() });
+            takeEarly(body, q);
             return reply({ ok: true, until });
           }
           r.txid = body.txid; r.until = Math.max(r.until, now() + hold.extendSecs);
