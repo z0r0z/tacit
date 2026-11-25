@@ -9,6 +9,10 @@
 //                         that, and what it cannot give (old proofs, wide logs) is reported "NOT PROVIDED" instead of failed, so nobody reads a
 //                         pass as covering the keeper's 8-hour-old proofs.
 //        [--btc-pruned]   the --btc-rpc node is a PRUNED bitcoind: judged on headers, fees, mempool, broadcast and recent blocks, not on history.
+//        [--eth-key https://<host>/k/<KEY>/eth]   the keyed path our services use: role eth-trace traces a recent pool transaction and one ~2 days old
+//                         (the fast-bridge providers' FB_LP_TRACE_RPCS) with the dapp's own tracer, and compares the pool calls with public tracers
+//        [--btc-index]    the --btc base is bitcoind + electrs behind the gateway's esplora reads (own-nodes/btc-index.mjs): role btc-index compares
+//                         every read shape the pages use with a public esplora; /mempool/recent is NOT PROVIDED there
 //
 // Exit 0 when every role that could be checked passed; 1 when one failed. A role whose references all failed to answer is
 // "unverified", never "pass".
@@ -17,7 +21,11 @@ import process from 'node:process';
 const DEPOSIT = '0x00000000219ab540356cBB839Cbe05303d7705Fa';   // few logs, a balance that moves every block: an anchor to compare
 const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
 const OLD_TX = { id: 'f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16', height: 170 };   // block 170, the first transfer between people
-const OLD_ADDR = '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa';          // thousands of transactions: pages and old history
+const OLD_ADDR = '1Q2TWHE3GMdB6BZKafqwxXtWAWgFt5Jvm3';          // the block-170 recipient: ~60 transactions, three pages, spent and unspent outputs
+const POOL = '0x000000000Ed1eabD231Be41d93b719056F7febFC';     // the confidential pool: its claims are what the trace path reads
+const TRACE_REFS = ['https://eth.drpc.org', 'https://ethereum-json-rpc.stakely.io', 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7'];
+const noAsm = (x) => JSON.parse(JSON.stringify(x, (k, v) => (k.endsWith('_asm') ? undefined : v)));
+const mask = (s) => String(s).replace(/\/k\/[^/]+\//g, '/k/***/');
 const ETH_REFS = ['https://ethereum-rpc.publicnode.com', 'https://rpc.mevblocker.io', 'https://mainnet.rpc.buidlguidl.com'];
 const BTC_REFS = ['https://mempool.space/api', 'https://blockstream.info/api', 'https://mempool.emzy.de/api'];
 const hex = (n) => '0x' + n.toString(16);
@@ -106,8 +114,8 @@ export async function runChecks(o) {
       } catch (e) { add(B, 'CORS', 'fail', e.message); }
       try {
         let refused = 0;
-        for (const m of ['admin_nodeInfo', 'debug_traceBlockByNumber', 'txpool_content']) { try { await rpc(o.eth, m, m.startsWith('debug') ? ['latest'] : []); } catch (e) { if (e.rpc) refused++; } }
-        add(B, 'no admin/debug/txpool API', refused === 3 ? 'pass' : 'fail', `${refused} of 3 refused`);
+        for (const m of ['admin_nodeInfo', 'debug_traceBlockByNumber', 'debug_traceTransaction', 'txpool_content']) { try { await rpc(o.eth, m, m === 'debug_traceBlockByNumber' ? ['latest'] : m === 'debug_traceTransaction' ? ['0x' + '00'.repeat(32), { tracer: 'callTracer' }] : []); } catch (e) { if (e.rpc) refused++; } }
+        add(B, 'no admin/debug/txpool API (tracing only on the keyed path)', refused === 4 ? 'pass' : 'fail', `${refused} of 4 refused`);
       } catch (e) { add(B, 'no admin/debug/txpool API', 'fail', e.message); }
       try {
         const t = []; for (let i = 0; i < 10; i++) { const a = Date.now(); await rpc(o.eth, 'eth_getBalance', [DEPOSIT, 'latest']); t.push(Date.now() - a); }
@@ -115,6 +123,67 @@ export async function runChecks(o) {
         add(B, 'latency (median of 10 reads, from here)', m <= 1500 ? 'pass' : 'warn', `${m} ms`);
       } catch (e) { add(B, 'latency', 'fail', e.message); }
     }
+  }
+
+  if (o.ethKey) {
+    const T = 'eth-trace';
+    try {
+      const { poolCallsTracer, makeTxTracer } = await import('../dapp/fastbridge-evm.js');
+      const k = o.ethKey, head = num(await rpc(k, 'eth_blockNumber'));
+      // the newest pool transaction at or below `to`, looking back up to 10,000 blocks
+      const poolTx = async (to) => {
+        for (let hi = to; hi > to - 10_000; hi -= 2000) {
+          const logs = await rpc(k, 'eth_getLogs', [{ address: POOL, fromBlock: hex(hi - 1999), toBlock: hex(hi) }]);
+          if (logs.length) return logs[logs.length - 1].transactionHash;
+        }
+        return null;
+      };
+      const norm = (calls) => JSON.stringify((calls || []).map((c) => ({ to: String(c.to).toLowerCase(), input: String(c.input).toLowerCase() })));
+      for (const [label, back] of [['a recent pool transaction', 0], ['a pool transaction ~2 days old', 14_400]]) {
+        const tx = await poolTx(head - back);
+        if (!tx) { add(T, label, 'warn', 'no pool transaction found in 10,000 blocks'); continue; }
+        try {
+          const mine = await rpc(k, 'debug_traceTransaction', [tx, { tracer: poolCallsTracer(POOL), timeout: '20s' }]);
+          const tree = await rpc(k, 'debug_traceTransaction', [tx, { tracer: 'callTracer', timeout: '20s', tracerConfig: { onlyTopCall: false, withLog: false } }]);
+          const ref = await makeTxTracer({ nodes: o.traceRefs || TRACE_REFS, pool: POOL, fetchImpl: f, timeoutMs: timeout })(tx).catch(() => null);
+          const ok = Array.isArray(mine) && mine.length > 0 && tree && typeof tree.type === 'string';
+          add(T, label, !ok ? 'fail' : !ref ? 'warn' : norm(mine) === norm(ref) ? 'pass' : 'fail', `${tx.slice(0, 12)}…: ${Array.isArray(mine) ? mine.length : 0} pool calls${ref ? ` (public: ${ref.length})` : ', no public tracer answered'}`);
+        } catch (e) { add(T, label, 'fail', mask(e.message)); }
+      }
+      try { await rpc(o.eth || k.replace(/\/k\/[^/]+\//, '/'), 'debug_traceTransaction', ['0x' + '00'.repeat(32), { tracer: poolCallsTracer(POOL) }]); add(T, 'the visitors\' path refuses tracing', 'fail', 'it traced'); }
+      catch (e) { add(T, 'the visitors\' path refuses tracing', e.rpc ? 'pass' : 'fail', mask(e.message)); }
+    } catch (e) { add(T, 'keyed path', 'fail', mask(e.message)); }
+  }
+
+  if (o.btc && o.btcIndex) {
+    const X = 'btc-index', base = o.btc.replace(/\/$/, '');
+    const refs = o.btcRefs || BTC_REFS;
+    const getJ = async (u) => { const r = await f(u, { signal: AbortSignal.timeout(timeout) }); if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); };
+    const same = async (id, path, norm = (x) => x) => {
+      try {
+        const mine = norm(await getJ(base + path));
+        const ref = await firstRef(refs, async (u) => norm(await getJ(u + path)));
+        add(X, id, !ref ? 'warn' : JSON.stringify(ref.v) === JSON.stringify(mine) ? 'pass' : 'fail', ref ? `vs ${new URL(ref.u).host}` : 'no reference answered');
+      } catch (e) { add(X, id, 'fail', e.message); }
+    };
+    await same('a transaction, whole (fee, prevouts, status)', `/tx/${OLD_TX.id}`, noAsm);
+    await same('its outspends', `/tx/${OLD_TX.id}/outspends`);
+    await same('its merkle proof', `/tx/${OLD_TX.id}/merkle-proof`);
+    await same('address stats', `/address/${OLD_ADDR}`, (j) => j.chain_stats);
+    await same('address utxo', `/address/${OLD_ADDR}/utxo`, (j) => j.map((u) => `${u.txid}:${u.vout}:${u.value}`).sort());
+    try {
+      const all = []; let page = await getJ(`${base}/address/${OLD_ADDR}/txs/chain`);
+      for (let i = 0; i < 20 && page.length; i++) { all.push(...page); if (page.length < 25) break; page = await getJ(`${base}/address/${OLD_ADDR}/txs/chain/${page[page.length - 1].txid}`); }
+      const ref = await firstRef(refs, async (u) => (await getJ(`${u}/address/${OLD_ADDR}`)).chain_stats.tx_count);
+      add(X, 'every history page, to the end', !ref ? 'warn' : ref.v === all.length && new Set(all.map((t) => t.txid)).size === all.length ? 'pass' : 'fail', `${all.length} transactions${ref ? ` (${ref.v} public)` : ''}`);
+    } catch (e) { add(X, 'every history page, to the end', 'fail', e.message); }
+    try {
+      const fr = await getJ(base + '/v1/fees/recommended');
+      const ok = ['fastestFee', 'halfHourFee', 'hourFee', 'economyFee', 'minimumFee'].every((k2) => Number(fr[k2]) >= 1) && fr.fastestFee >= fr.hourFee && fr.hourFee >= fr.economyFee;
+      add(X, 'recommended fees (mempool.space shape)', ok ? 'pass' : 'fail', JSON.stringify(fr));
+      const mp = await getJ(base + '/mempool');
+      add(X, 'mempool summary', mp.count > 0 && Array.isArray(mp.fee_histogram) ? 'pass' : 'fail', `${mp.count} transactions`);
+    } catch (e) { add(X, 'fees/mempool', 'fail', e.message); }
   }
 
   if (o.btc) {
@@ -152,9 +221,12 @@ export async function runChecks(o) {
       const fe = await (await get(`${base}/fee-estimates`)).json();
       const v = Number(fe['1'] ?? fe['2']);
       add(R, 'fee estimates', Number.isFinite(v) && v > 0 && v < 10_000 ? 'pass' : 'fail', `next-block ${v} sat/vB`);
-      const mp = await (await get(`${base}/mempool/recent`)).json();
-      add(R, 'mempool/recent', Array.isArray(mp) ? 'pass' : 'fail', `${mp.length} entries`);
-    } catch (e) { add(R, 'fees/mempool', 'fail', e.message); }
+    } catch (e) { add(R, 'fee estimates', 'fail', e.message); }
+    if (o.btcIndex) add(R, 'mempool/recent', 'skip', 'not served by bitcoind + electrs; the pages keep a public explorer for it');
+    else {
+      try { const mp = await (await get(`${base}/mempool/recent`)).json(); add(R, 'mempool/recent', Array.isArray(mp) ? 'pass' : 'fail', `${mp.length} entries`); }
+      catch (e) { add(R, 'mempool/recent', 'fail', e.message); }
+    }
     if (o.broadcastPath) {
       try {
         const r = await f(base + '/tx', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '02000000' + '00'.repeat(120), signal: AbortSignal.timeout(timeout) });
@@ -230,8 +302,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     eth: val('--eth'), btc: val('--btc'), origin: val('--origin'), btcRpc: val('--btc-rpc') || process.env.BTC_RPC,
     broadcastPath: a.includes('--broadcast-path'), fromBlock: val('--from-block') ? Number(val('--from-block')) : undefined,
     ethRefs: list('--eth-ref'), btcRefs: list('--btc-ref'), light: a.includes('--light'), btcPruned: a.includes('--btc-pruned'),
+    ethKey: val('--eth-key'), traceRefs: list('--trace-ref'), btcIndex: a.includes('--btc-index'),
   };
-  if (!o.eth && !o.btc && !o.btcRpc) { console.error('give --eth <url> and/or --btc <esplora base> and/or --btc-rpc <url> (see the header of this file)'); process.exit(2); }
+  if (!o.eth && !o.btc && !o.btcRpc && !o.ethKey) { console.error('give --eth <url> and/or --btc <esplora base> and/or --btc-rpc <url> (see the header of this file)'); process.exit(2); }
   const res = await runChecks(o);
   if (a.includes('--json')) console.log(JSON.stringify(res, null, 2));
   else {
