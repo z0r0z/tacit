@@ -177,3 +177,47 @@ func TestCeremonyEndToEnd(t *testing.T) {
 		t.Fatal("the Solidity verifier is missing its delta or its verify function")
 	}
 }
+
+// The parallel Phase 1 seal gives gnark's values exactly, in every slot (small file, many chunks, and more threads than indices).
+func TestSealPhase1MatchesGnark(t *testing.T) {
+	for _, n := range []uint64{4, 64, 1024} {
+		var a, b mpcsetup.Phase1
+		a.Initialize(n)
+		a.Contribute()
+		var buf strings.Builder
+		if _, err := a.WriteTo(&buf); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.ReadFrom(strings.NewReader(buf.String())); err != nil {
+			t.Fatal(err)
+		}
+		beacon := []byte("a beacon of moderate entropy")
+		want := a.Seal(beacon)
+		got := SealPhase1(&b, beacon)
+		if !equalCommons(&want, &got) {
+			t.Fatalf("n=%d: the parallel seal differs from gnark's", n)
+		}
+	}
+}
+
+func equalCommons(a, b *mpcsetup.SrsCommons) bool {
+	if len(a.G1.Tau) != len(b.G1.Tau) || len(a.G2.Tau) != len(b.G2.Tau) || len(a.G1.AlphaTau) != len(b.G1.AlphaTau) || len(a.G1.BetaTau) != len(b.G1.BetaTau) {
+		return false
+	}
+	for i := range a.G1.Tau {
+		if !a.G1.Tau[i].Equal(&b.G1.Tau[i]) {
+			return false
+		}
+	}
+	for i := range a.G2.Tau {
+		if !a.G2.Tau[i].Equal(&b.G2.Tau[i]) {
+			return false
+		}
+	}
+	for i := range a.G1.AlphaTau {
+		if !a.G1.AlphaTau[i].Equal(&b.G1.AlphaTau[i]) || !a.G1.BetaTau[i].Equal(&b.G1.BetaTau[i]) {
+			return false
+		}
+	}
+	return a.G2.Beta.Equal(&b.G2.Beta)
+}
