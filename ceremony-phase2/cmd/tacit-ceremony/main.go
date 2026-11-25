@@ -22,6 +22,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/hex"
@@ -40,6 +41,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	groth16bn254 "github.com/consensys/gnark/backend/groth16/bn254"
 
 	ceremony "tacit.finance/ceremony"
 )
@@ -62,7 +65,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) < 1 {
-		return usageErr("contribute|contribute-file|upload|verify|verify-chain|version|init|serve|queue|kick|ban|close|beacon|seal|solidity ...")
+		return usageErr("contribute|contribute-file|upload|verify|verify-chain|version|init|serve|queue|kick|ban|close|beacon|seal|pkdump|solidity ...")
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
@@ -128,6 +131,11 @@ func run(args []string) error {
 		return beacon(rest)
 	case "seal":
 		return seal(rest)
+	case "pkdump":
+		if len(rest) != 2 {
+			return usageErr("pkdump <compressed pk> <out>   (a proving key written by an earlier seal, in SP1's dump format)")
+		}
+		return pkDump(rest[0], rest[1])
 	case "solidity":
 		if len(rest) < 1 || len(rest) > 2 {
 			return usageErr("solidity <groth16_vk.bin> [out.sol | -]")
@@ -468,18 +476,24 @@ func seal(args []string) error {
 	if err := os.MkdirAll(args[4], 0o755); err != nil {
 		return err
 	}
+	pkTyped, ok := pk.(*groth16bn254.ProvingKey)
+	if !ok {
+		return errors.New("the sealed proving key is not a BN254 key")
+	}
+	// the proving key is written in gnark's dump format, as SP1 ships groth16_pk.bin and loads it (the verifying key in its usual one)
 	for _, k := range []struct {
-		name string
-		w    interface {
-			WriteTo(io.Writer) (int64, error)
-		}
-	}{{"groth16_pk.bin", pk}, {"groth16_vk.bin", vk}} {
+		name  string
+		write func(io.Writer) (int64, error)
+	}{
+		{"groth16_pk.bin", func(w io.Writer) (int64, error) { return 0, pkTyped.WriteDump(w) }},
+		{"groth16_vk.bin", vk.WriteTo},
+	} {
 		p := filepath.Join(args[4], k.name)
 		f, err := os.Create(p)
 		if err != nil {
 			return err
 		}
-		if _, err := k.w.WriteTo(f); err != nil {
+		if _, err := k.write(f); err != nil {
 			f.Close()
 			return err
 		}
@@ -490,6 +504,37 @@ func seal(args []string) error {
 		fmt.Printf("%s sha256 %s\n", k.name, sum)
 	}
 	return writeSolidity(filepath.Join(args[4], "groth16_vk.bin"), filepath.Join(args[4], "Groth16Verifier.sol"))
+}
+
+// pkDump rewrites a proving key from gnark's compressed encoding to the dump format of SP1's groth16_pk.bin. The input is the
+// output of this tool's own seal, so its points are not checked again.
+func pkDump(in, out string) error {
+	f, err := os.Open(in)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	pk := &groth16bn254.ProvingKey{}
+	if _, err := pk.UnsafeReadFrom(bufio.NewReaderSize(f, 1<<22)); err != nil {
+		return err
+	}
+	o, err := os.Create(out)
+	if err != nil {
+		return err
+	}
+	if err := pk.WriteDump(o); err != nil {
+		o.Close()
+		return err
+	}
+	if err := o.Close(); err != nil {
+		return err
+	}
+	sum, err := ceremony.FileSHA256(out)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s sha256 %s\n", out, sum)
+	return nil
 }
 
 func writeSolidity(vkPath, out string) error {
