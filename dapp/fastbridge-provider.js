@@ -4,7 +4,7 @@ export const takeSatsAt = (feeRate) => 546 + Math.ceil(TAKE_VB * feeRate * 2);
 const FEE_WARM_MS = 30000;
 
 import { makeWatchdog } from './fastbridge-watch.js';
-import { makeEthereumLocker } from './fastbridge-el.js';
+import { makeEthereumLocker, confValue } from './fastbridge-el.js';
 import { isSats } from './adaptor-xswap.js';
 import { deriveLock } from './adaptor-btc-lock.js';
 import { secp, sha256, hmac, bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
@@ -76,6 +76,9 @@ export function makeQuoter({ store, now, params, macKey = null }) {
     };
     // a provider that takes the fee of its take from a second output of the lock's own script says so; a page that does not know the word locks as it always did
     if (inLock(q.takeSats)) q.takeInLock = true;
+    // this side answers a lock at any output of a transaction that holds several (the swap id names the output: adaptor-xswap.js legSwapId), and weighs its confirmations by
+    // the total the transaction locks (fastbridge-el.js confValue): a page splits a swap across providers only among those that say so
+    q.legVouts = 1;
     // (sealed, it costs this side nothing to give: nothing is stored until it is used)
     const sealed = macKey ? sealedId(q) : null;
     if (sealed) { q.id = sealed; return q; }
@@ -342,7 +345,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   const WATCH_EL = { locking: 600, locked: 300, offered: 1800, taking: 2400, refunding: 900 };
   const watchdog = makeWatchdog({
     now, log, alert,
-    budget: (r) => (r.phase === 'accepted' ? (Number(r.lockConfs || 0) >= Math.max(1, Number(config.policy.minConfsFor(BigInt(r.offer.btc.value)))) ? 600 : null) : WATCH_EL[r.phase] ?? null),
+    budget: (r) => (r.phase === 'accepted' ? (Number(r.lockConfs || 0) >= Math.max(1, Number(config.policy.minConfsFor(confValue(r)))) ? 600 : null) : WATCH_EL[r.phase] ?? null),
     keyOf: (r) => JSON.stringify([r.phase, Number(r.lockConfs || 0), !!(r.lock && r.lock.jobId), !!r.evmOffer, r.take ? r.take.txid : null, !!r.refund]),
     quiet: (r) => r.phase === 'offered' && !r.lastError && !r.unread,
     forget: () => { if (evm.forget) evm.forget(); },
@@ -398,7 +401,7 @@ export function makeLpService({ seed, btc, evm, swaps, quoteStore, config, now =
   }
 
   async function lockStands(rec) {
-    try { const st = await btc.status(rec.lockTxid); return st.confirmations >= Math.max(1, Number(config.policy.minConfsFor(BigInt(rec.offer.btc.value)))); } catch { return true; }
+    try { const st = await btc.status(rec.lockTxid); return st.confirmations >= Math.max(1, Number(config.policy.minConfsFor(confValue(rec)))); } catch { return true; }
   }
   const offerOf = async (id) => published.get(id) || (await swaps.get(id))?.evmOffer || null;
   const reply = (body, status = 200) => ({ status, body });

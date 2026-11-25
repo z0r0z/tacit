@@ -58,6 +58,14 @@ export function recordFromLockMemo({ memo, seed, refundXonly, claimerPub, btcAss
 // `ctx.requireChecked`, a lock is built and sent only for a record that carries it: a record that came from anywhere else (a file read back, storage written by
 // something other than this machine) is never locked against. The page's user side sets it; a record that lacks it stops before anything of its own is locked.
 const enc = new TextEncoder();
+// The value a lock's confirmations are weighed by: the lock's own, or, when its transaction pays other Taproot outputs besides (the other locks of a split across providers,
+// dapp/fastbridge-pair.js), the whole of what the transaction locks, whichever is more. A block that reorders away a large transaction takes every lock in it, so the
+// confirmations asked for a lock are those asked for the total moved, and a leg of a split is never answered on fewer than a lone lock of that total would be (a lone
+// lock's total is its own value, so nothing changes for it). `lockTotal` is read from the transaction when the offer is taken.
+export const confValue = (rec) => { const v = BigInt(rec.offer.btc.value), t = BigInt(rec.lockTotal || 0); return t > v ? t : v; };
+const P2TR_PREFIX = '5120';
+export const lockTotalOf = (tx) => (tx.vout || []).reduce((t, o) => (String(o.scriptpubkey || '').toLowerCase().startsWith(P2TR_PREFIX) && String(o.scriptpubkey).length === 68 && Number.isSafeInteger(o.value) ? t + o.value : t), 0);
+
 export function checkedTag(seed, rec) {
   const o = rec.offer || {}, b = o.btc || {}, e = o.evm || {};
   const terms = JSON.stringify(['tacit-el-checked-v1', strip(rec.id), rec.quoteId ?? null, strip(o.T || ''), strip(o.claimerPub || ''),
@@ -162,6 +170,7 @@ export function makeEthereumLocker(ctx) {
     const rec = {
       v: 1, role: 'el', id, phase: 'accepted', created: ctx.now(), updated: ctx.now(), quoteId, offer,
       lockTxid: offer.btc.txid, lockVout: offer.btc.vout, lockValue: out.value, lockSpk: strip(out.scriptpubkey), csvBlocks: offer.btc.csvBlocks,
+      ...(sats && lockTotalOf(tx) > out.value ? { lockTotal: lockTotalOf(tx) } : {}),
       ...(takeSats > 0 && !paidDirect ? { takeVout: lockedAt, takeValue: tx.vout[lockedAt].value } : {}),
       ...(st.confirmations > 0 ? {} : { early: true }),
     };
@@ -262,7 +271,7 @@ export function makeEthereumLocker(ctx) {
       case 'accepted': {
         if (!checked(rec)) return unchecked(rec);
         const st = await btc.status(rec.lockTxid);
-        const need = policy.minConfsFor(BigInt(rec.offer.btc.value));
+        const need = policy.minConfsFor(confValue(rec));
         if (st.confirmations < need) {
           // (an early record waits `earlyConfirmWaitSecs` when the side sets it: a provider does not hold its payout for a lock that never confirms longer than it
           // holds a reservation for one)

@@ -36,6 +36,7 @@ import { makeFastBridgeClient } from './fastbridge-client.js';
 import { makeReverseClient, makeReverseCounter, coversWith } from './fastbridge-reverse-client.js';
 import { recordFromLockMemo } from './fastbridge-el.js';
 import { OWN_PROVIDERS } from './fastbridge-board.js';
+import { planSplit, RATE_ONE, feeOf, SPLIT_POLICY } from './fast/split-plan.js';
 import * as X from './adaptor-xswap.js';
 import { bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
 
@@ -56,6 +57,8 @@ export const PAIR_POLICY = {
   maxFeeShareBps: 200,
   // a lock of the user's sats that a block goes by without is bumped from its change (fastbridge-bl.js bumpLock), by at most this share of the amount (0.5%)
   lockBumpMaxBps: 50,
+  // a swap that more than one provider fills (fast/split-plan.js): at most splitLegs providers, each leg at least splitMinLegSats; `split: false` turns it off
+  splitLegs: SPLIT_POLICY.maxLegs, splitMinLegSats: SPLIT_POLICY.minLegSats, splitMinGainBps: SPLIT_POLICY.minGainBps,
 };
 // How long a swap's step may go without moving before the page reads it afresh (seconds; a wait for a Bitcoin block is not on it: it takes what it takes, and the
 // page says when a block is slow). Each is a few times what the step takes when it goes well.
@@ -161,6 +164,7 @@ export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000), tip 
     // (what is left, to the ETH in the private balance: the wait for the lock's block counts down from its send, and never says less than a minute plus what follows)
     pay: BigInt(rec.amount), get: BigInt(rec.evmAmount || 0), steps: stepsOf('b2e', at, state), etaSecs: state !== 'working' || eta == null ? 0 : rec.phase === 'broadcast' && rec.broadcastAt ? 420 + Math.max(60, 600 - Math.max(0, now() - Number(rec.broadcastAt))) : eta, at: rec.created,
     refundAt: state === 'working' && lockAt ? lockAt + rec.csvBlocks * 600 : null, lockTxid: rec.lock ? rec.lock.txid : null, error: rec.lastError || null, provider: rec.providerName || null,
+    batch: rec.batch ? { id: rec.batch.id, n: rec.batch.n, k: rec.batch.k } : null,
     // the ETH has to be claimed by the pool deadline of the provider's lock; missed, nothing is lost, and the BTC returns at refundAt
     backBy: state === 'working' && rec.evmOffer && Number(rec.evmOffer.deadline) > 0 ? Number(rec.evmOffer.deadline) : null,
   };
@@ -201,6 +205,57 @@ export function describeRev(rec, now = () => Math.floor(Date.now() / 1000), tip 
     // claimSlackSecs after the deadline, checked when the ETH is locked); with no claim, the ETH comes back after it
     backBy: state === 'working' && rec.deadline ? rec.deadline : null,
   };
+}
+
+
+// ── a swap that several providers fill: its legs as one card ──
+// Each leg is a swap of its own (describeFwd); the card says them together, with the legs inside it. It is working while any leg is, done when the legs have ended and any
+// of them is done (what came back to the private balance is the sum of the done legs'; a leg that was returned says so by itself, with the BTC that came back), returned or
+// stopped when none went through. One time left (the longest of the legs'), one page-back time (the earliest of the legs'), one refund time (the latest).
+const LEG_NOTE = 'Each part is a swap of its own with its own provider: one that does not go through returns its own BTC to your Bitcoin address when its timelock ends, and the others finish.';
+export function describeBatch(id, legs, now = () => Math.floor(Date.now() / 1000)) {
+  const n = legs.length, working = legs.filter((l) => l.state === 'working'), done = legs.filter((l) => l.state === 'done'), ended = legs.filter((l) => l.state !== 'working');
+  const state = working.length ? 'working' : done.length ? 'done' : legs.every((l) => l.state === 'stopped') ? 'stopped' : 'returned';
+  const sum = (xs, f) => xs.reduce((t, l) => t + BigInt(f(l) || 0), 0n);
+  const going = (l) => l.state === 'returned' || l.state === 'stopped' || (l.state === 'working' && l.title === 'Returning your BTC');
+  const back = legs.filter(going);
+  const word = (k) => (k === 1 ? 'one part' : `${k} parts`);
+  let title, detail;
+  if (state === 'working') {
+    title = `Swapping across ${n} providers`;
+    detail = `${n} parts from one Bitcoin transaction. ${back.length ? `${word(back.length)} ${back.length === 1 ? 'is' : 'are'} being returned: that BTC comes back to your Bitcoin address when its timelock ends. ` : ''}${LEG_NOTE}`;
+  } else if (state === 'done') {
+    const lost = n - done.length;
+    title = lost ? `Done: ${done.length} of ${n} parts` : 'Done';
+    detail = lost ? `The ETH of ${word(done.length)} is in your private balance. ${word(lost)} did not go through and the BTC of ${lost === 1 ? 'it' : 'them'} came back to your Bitcoin address.` : `The ETH from all ${n} providers is in your private balance.`;
+  } else {
+    title = state === 'stopped' ? 'Stopped' : 'Returned';
+    detail = state === 'stopped' ? `The lock was not sent before the quote ran out, so your BTC never left your Bitcoin address.` : 'No part went through. Your BTC came back to your Bitcoin address.';
+  }
+  // the steps are the ones every part still going has reached; a part that ended is not waited for
+  const live = legs.filter((l) => !going(l));
+  const titles = (legs[0].steps || []).map((s) => [s.key, s.title]);
+  const steps = titles.map(([key, t]) => ({ key, title: t, state: state === 'done' ? 'done' : state === 'working' ? (live.length && live.every((l) => (l.steps.find((s) => s.key === key) || {}).state === 'done') ? 'done' : 'todo') : key === 'lock' && state === 'returned' ? 'done' : 'todo' }));
+  if (state === 'working') { const a = steps.findIndex((s) => s.state !== 'done'); if (a >= 0) steps[a].state = 'active'; }
+  const maxOf = (xs) => xs.reduce((m, x) => (x != null && x > m ? x : m), 0), minOf = (xs) => xs.filter((x) => x != null && x > 0).sort((a, b) => a - b)[0] ?? null;
+  const stuck = working.find((l) => l.stuck);
+  return {
+    id: `batch:${id}`, dir: 'b2e', state, title, detail,
+    pay: sum(legs, (l) => l.pay), get: sum(legs.filter((l) => l.state !== 'returned' && l.state !== 'stopped'), (l) => l.get),
+    ...(state === 'done' ? { got: sum(done, (l) => (l.got != null && l.got > 0n ? l.got : l.get)) } : {}),
+    steps, etaSecs: state === 'working' ? maxOf(working.map((l) => l.etaSecs)) : 0, at: Math.min(...legs.map((l) => l.at || 0)),
+    refundAt: state === 'working' ? maxOf(working.map((l) => l.refundAt)) || null : null, lockTxid: legs[0].lockTxid, error: (legs.find((l) => l.error) || {}).error || null,
+    provider: `${n} providers`, backBy: state === 'working' ? minOf(working.map((l) => l.backBy)) : null,
+    ...(stuck ? { stuck: true, slow: stuck.slow } : {}),
+    batch: { id, n, legs: legs.map((l) => ({ id: l.id, provider: l.provider, state: l.state, title: l.title, detail: l.detail, pay: l.pay, get: l.get, got: l.got ?? null, refundAt: l.refundAt, steps: l.steps, etaSecs: l.etaSecs, k: l.batch ? l.batch.k : 0 })) },
+  };
+}
+// the descriptors of a batch's legs, set as one card each (a batch of which only one leg is known is that leg's own card)
+function groupBatches(list) {
+  const groups = new Map(), rest = [];
+  for (const d of list) { if (d.batch) { if (!groups.has(d.batch.id)) groups.set(d.batch.id, []); groups.get(d.batch.id).push(d); } else rest.push(d); }
+  for (const [id, legs] of groups) rest.push(legs.length === 1 ? legs[0] : describeBatch(id, legs.sort((a, b) => a.batch.k - b.batch.k)));
+  return rest;
 }
 
 // the e2b swaps found again from the key are kept as one provider's: they have none to ask, and need none (a recovered swap is past the point where the provider is told anything)
@@ -366,6 +421,24 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     return { id: rec.id };
   }
 
+
+  // The split's start: each provider is asked to hold its quote first (one that cannot is struck, and the page asks for a new quote without it: nothing was sent, so a split
+  // is never left short of a leg it could not hold), then the one transaction with a lock for each is built, kept as a record for each leg, and sent. From the send, each leg
+  // is its own swap: it finishes, or its own timelock returns its own BTC.
+  async function startSplit(q, paid = null) {
+    const legs = q.split.legs.map((l) => l.ref);
+    const avoid = await avoidCoins(true);
+    const held = await Promise.all(legs.map(async ({ p, r }) => { try { return await counterFor(p.ref).reserve({ quoteId: r.id }); } catch { return null; } }));
+    const bad = legs.filter((_, i) => !held[i] || held[i].ok === false);
+    if (bad.length) { for (const b of bad) strike(b.p.id); throw Object.assign(new Error('a provider of the split cannot hold its share just now: a new quote is being asked for'), { requote: true }); }
+    for (const { p } of legs) cleared(p.id);
+    policy.csvBlocks = legs[0].r.csvBlocks;
+    const recs = await blFor(legs[0].p.ref).startBatch({ legs: batchArgs(legs), avoid, validUntil: Math.min(...legs.map((l) => Number(l.r.validUntil))), ...(paid ? { first: paid } : {}) });
+    // (the first put, in startBatch, already names each leg's provider: batchArgs)
+    for (const rec of recs) await blFor(rec.provider || null).step(rec).catch(() => {});      // each lock output is stored: a send that fails is tried again by the next pass
+    return { id: recs[0].batch.id, ids: recs.map((r) => r.id) };
+  }
+
   // ── e2b: the provider locks sats first ──
   // (a quote is asked with the quote's own wait, as b2e's is: a provider reached through a board is not polled for longer than that; the rest of a swap keeps the transport's own)
   const reverseCall = (ref) => {
@@ -429,7 +502,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     const ok = others.filter((p) => strikesOf(p.id) < policy.maxStrikes), rest = ok.length ? ok : mine.length ? [] : others;
     return [...mine, ...order(rest).slice(0, Math.max(0, Math.min(policy.maxOtherAsk, policy.maxAsk - mine.length)))];
   }
-  async function quote({ dir, amount }) {
+  async function quoteOne({ dir, amount }) {
     if (dir !== 'b2e' && dir !== 'e2b') throw new Error('the direction is not one this page makes');
     const want = BigInt(amount);
     if (want <= 0n) throw new Error('enter an amount');
@@ -479,6 +552,131 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     };
   }
 
+
+  // ── Bitcoin for ETH across several providers ──
+  // The amount is above what the best provider takes, or a share to a second provider is cheaper: one Bitcoin transaction pays a lock to each provider (fastbridge-bl.js
+  // startBatch), and each lock is a swap of its own with its own provider, its own quote, hold, extension, offer and claim. The page shows the plan (what each provider is
+  // given, what comes back in all) before the press, and the swaps as one card.
+  const plannerOf = (p, rate) => ({ id: p.id, min: p.b2e.min, max: p.b2e.max, available: p.b2e.available, feeBps: p.fees.b2e.feeBps, flatFee: p.fees.b2e.flatFee, rate });
+  const rateOfQuote = (p, r) => { const net = r.btcValue - feeOf({ feeBps: p.fees.b2e.feeBps, flatFee: p.fees.b2e.flatFee }, r.btcValue); return net > 0n ? (r.evmAmount * RATE_ONE) / net : RATE_ONE; };
+  const splitPolicy = () => ({ maxLegs: policy.splitLegs, minLegSats: BigInt(policy.splitMinLegSats), minGainBps: policy.splitMinGainBps });
+  // The plan over these providers; the ones that failed lately are left out while the rest can fill the amount, and taken only when they cannot
+  const planFor = async (want, cand, rateOf2) => {
+    const feeRate = await btc.feeRate().catch(() => 1), plan = (ps) => (ps.length >= 2 ? planSplit({ amount: want, providers: ps.map((p) => plannerOf(p, rateOf2(p))), feeRate, policy: splitPolicy() }).best : null);
+    const clean = cand.filter((p) => strikesOf(p.id) === 0);
+    return (clean.length < cand.length ? plan(clean) : null) || plan(cand);
+  };
+  const splitCands = (all, out = new Set()) => all.filter((p) => p.b2e && !out.has(p.id) && strikesOf(p.id) < policy.maxStrikes);
+  // What the plan from the ads alone says: null when one provider is the answer (or none can take it), else the plan with two or more legs
+  async function adPlan(want, all) {
+    const cand = splitCands(all);
+    if (cand.length < 2) return null;
+    const best = await planFor(want, cand, () => RATE_ONE);
+    return best && best.split ? best : null;
+  }
+  // The legs of a plan quoted, each at its own amount, and the plan settled on what the quotes give (their rates replace the ads' assumption of one rate): a provider that
+  // cannot quote, or does not answer a share of a transaction (its quote does not say `legVouts`), is left out and the plan made again without it
+  async function quoteSplit(want, all, first) {
+    const out = new Set(), rates = new Map();
+    let plan = first, got = new Map();
+    for (let round = 0; round < 4 && plan; round++) {
+      const results = await Promise.all(plan.legs.map(async (leg) => {
+        const p = all.find((x) => x.id === leg.id), kept = got.get(leg.id);
+        if (kept && kept.r.btcValue === leg.amount) return { leg, p, q: kept };
+        try {
+          const q = await quoteFwd(p, leg.amount);
+          if (q.r.legVouts !== 1) throw new Error('the provider does not take a share of a transaction');
+          return { leg, p, q };
+        } catch (error) { strike(p.id); return { leg, p, error }; }
+      }));
+      for (const r of results) { if (r.q) { got.set(r.p.id, r.q); rates.set(r.p.id, rateOfQuote(r.p, r.q.r)); } else out.add(r.p.id); }
+      // the rate of a provider not quoted yet is taken as the mean of the ones that have: the plan is then made on the differences in their fees and what they hold
+      const known = [...rates.values()], mean = known.length ? known.reduce((t, x) => t + x, 0n) / BigInt(known.length) : RATE_ONE;
+      const cand = splitCands(all, out);
+      if (cand.length < 2) return null;
+      const next = await planFor(want, cand, (p) => rates.get(p.id) ?? mean);
+      if (!next || !next.split) return null;
+      const same = next.legs.length === plan.legs.length && next.legs.every((l, i) => l.id === plan.legs[i].id && l.amount === plan.legs[i].amount);
+      const done = results.every((r) => r.q);
+      plan = next;
+      if (done && same) return { plan, legs: plan.legs.map((l) => ({ ...got.get(l.id), leg: l })) };
+    }
+    // the rounds ran out with the plan still moving: quote what is missing once more, and take the last plan as it stands
+    if (!plan) return null;
+    const legs = [];
+    for (const leg of plan.legs) {
+      const p = all.find((x) => x.id === leg.id);
+      let q = got.get(leg.id);
+      if (!q || q.r.btcValue !== leg.amount) {
+        try { q = await quoteFwd(p, leg.amount); if (q.r.legVouts !== 1) throw new Error('no'); } catch { strike(p.id); return null; }
+      }
+      legs.push({ ...q, leg });
+    }
+    return { plan, legs };
+  }
+  // what the one transaction would cost on Bitcoin for these legs (nothing is stored or sent), and whether the address can pay it
+  const batchArgs = (legs) => legs.map((l) => ({ counterClaimPub: hexToBytes(l.r.claimPub), amount: l.r.btcValue, evmAsset: l.r.evmAsset, evmAmount: l.r.evmAmount, quoteId: l.r.id, csvBlocks: l.r.csvBlocks, validUntil: Number(l.r.validUntil) || null, provider: l.p.ref, providerName: l.p.name }));
+  async function batchCost(legs) {
+    try {
+      const { pair } = await blFor(legs[0].p.ref).buildBatch({ legs: batchArgs(legs), avoid: await avoidCoins(false) });
+      return { fee: pair.revealFee, short: null };
+    } catch (e) {
+      const m = /not enough sats for the lock \(need (\d+), have (\d+)\)/.exec(String((e && e.message) || e));
+      if (m) return { fee: null, short: { need: BigInt(m[1]), have: BigInt(m[2]) } };
+      throw e;
+    }
+  }
+  // The quote of a split, shaped as a single one is (the lane shows it the same way) with the plan beside it: `split.legs`, and `split.single`, what one provider would give
+  // when one can take the whole (a split is chosen over it only when it gives more by splitMinGainBps; the lane shows both)
+  async function splitQuote(want, market, made, single) {
+    const legs = made.legs.map((l) => ({ p: l.p, r: l.q ? l.q.r : l.r, pay: l.pay, get: l.get }));
+    const pay = legs.reduce((t, l) => t + l.pay, 0n), get = legs.reduce((t, l) => t + l.get, 0n);
+    if (pay !== want) throw new Error('the legs of the split do not add up to the amount');
+    const rate = rateOf(get, pay), warnings = [];
+    let blocked = unusable(market), versus = null;
+    if (!blocked) {
+      versus = vsMarketBps('b2e', rate, market.ethPerBtc);
+      // each leg is judged on its own as a lone quote is: a share at a bad price is not hidden by the others
+      const worst = Math.min(...legs.map((l) => vsMarketBps('b2e', rateOf(l.get, l.pay), market.ethPerBtc)));
+      if (worst < -policy.maxWorseBps) blocked = `a provider of the split quotes ${(-worst / 100).toFixed(1)}% under the market`;
+      else if (versus < -policy.warnWorseBps) warnings.push(`this is ${(-versus / 100).toFixed(1)}% worse than the market price`);
+    }
+    let networkFeeSats = null, short = null;
+    const c = await batchCost(legs).catch(() => null);
+    if (c && c.short) { short = c.short; networkFeeSats = Number(c.short.need - pay); } else if (c) networkFeeSats = c.fee;
+    const highFee = networkFeeSats != null && pay > 0n && BigInt(Math.ceil(Number(networkFeeSats))) * 10000n > pay * BigInt(policy.maxFeeShareBps) ? { sats: Number(networkFeeSats), bps: Number((BigInt(Math.ceil(Number(networkFeeSats))) * 10000n) / pay) } : null;
+    // the confirmations the providers ask are by the total the transaction locks (fastbridge-el.js confValue)
+    const etaSecs = FWD_SAYS.built[3] + 60 + (confsForSats(pay) - 1) * 600;
+    const expiresAt = Math.min(...legs.map((l) => Number(l.r.validUntil)));
+    return {
+      dir: 'b2e', provider: { id: 'split', name: `${legs.length} providers` }, pay, get, takeFeeSats: null, highFee, rate, market: versus != null ? market.ethPerBtc : null, vsMarketBps: versus,
+      feeBps: versus == null ? 0 : Math.max(0, -versus), etaSecs, networkFeeSats, expiresAt, warnings, blocked, short,
+      split: {
+        legs: legs.map((l) => ({ provider: { id: l.p.id, name: l.p.name }, pay: l.pay, get: l.get, ref: { p: l.p, r: l.r } })),
+        single: single ? { provider: single.provider, pay: single.pay, get: single.get, networkFeeSats: single.networkFeeSats } : null,
+      },
+      ref: { p: legs[0].p, r: legs[0].r },
+    };
+  }
+  async function quote({ dir, amount }) {
+    if (dir !== 'b2e' || policy.split === false) return quoteOne({ dir, amount });
+    const want = BigInt(amount);
+    let all = [];
+    try { all = want > 0n ? await providers() : []; } catch { all = []; }
+    const first = await adPlan(want, all).catch(() => null);
+    if (!first) return quoteOne({ dir, amount });
+    const market = await reference();
+    const [one, made] = await Promise.all([quoteOne({ dir, amount }).catch((error) => ({ error })), quoteSplit(want, all, first).catch(() => null)]);
+    const lone = one && !one.error ? one : null;
+    if (!made) { if (lone) return lone; throw one.error; }
+    const sq = await splitQuote(want, market, made, lone);
+    if (!lone) return sq;
+    // a split is shown over a lone quote only when it gives more by what is worth the added locks (net of the added output's fee), or when the lone quote is blocked
+    const extra = BigInt(Math.max(0, Math.ceil(Number(sq.networkFeeSats ?? 0)) - Math.ceil(Number(lone.networkFeeSats ?? 0))));
+    const gain = sq.get - lone.get - (extra * lone.get) / (lone.pay || 1n);
+    return !sq.blocked && (lone.blocked || gain * 10000n >= lone.get * BigInt(policy.splitMinGainBps)) ? sq : lone;
+  }
+
   // one start of the key's at a time: the coins and notes a swap holds are read inside, so a second start picks others or stops
   // `coming` (e2b): pool units of a deposit of the user's that is mined and is being settled into a note, which the lock is made from once it lands
   // `coins` (b2e): coins just paid to the address and not yet in a block (arriving, below), which the lock spends first: lock and payment then confirm
@@ -494,7 +692,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       const b = await balances();
       const more = paid ? paid.reduce((s, c) => s + BigInt(c.value), 0n) : 0n;
       if (b.sats != null && b.sats + more < q.pay) throw new Error('your Bitcoin address does not hold that many sats');
-      return startFwd(q, paid);
+      return q.split ? startSplit(q, paid) : startFwd(q, paid);
     }
     // a note of exactly the amount is locked as it is: what `available` keeps back for a cut is not needed then (evm.covers); a mined deposit counts (coversWith)
     if (!(await coversWith(evm, q.pay, coming))) throw new Error('your private ETH does not cover that amount');
@@ -593,7 +791,8 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
   async function checkAgain(id = null) {
     if (evm.forget) evm.forget();
     tipAt = -Infinity;
-    for (const rec of await stores.fwd.list()) if (!FWD_END.has(rec.phase) && (!id || rec.id === id)) { forcedAt.set(rec.id, now()); await blFor(rec.provider || null).step(rec).catch(() => {}); }
+    const inBatch = id && String(id).startsWith('batch:') ? String(id).slice(6) : null;
+    for (const rec of await stores.fwd.list()) if (!FWD_END.has(rec.phase) && (!id || rec.id === id || (inBatch && rec.batch && rec.batch.id === inBatch))) { forcedAt.set(rec.id, now()); await blFor(rec.provider || null).step(rec).catch(() => {}); }
     for (const p of await revProviders()) {
       for (const q of await stores.quotes(p.id).list().catch(() => [])) if (q.swapId && !q.settled && (!id || q.swapId === id)) await stores.quotes(p.id).put({ ...q, watchAt: null, earlyAt: null });
       for (const r of await stores.swaps(p.id).list().catch(() => [])) if (!REV_END.has(r.phase) && (!id || r.id === id)) { forcedAt.set(r.id, now()); await revFor(p).el.poke(r).catch(() => {}); }
@@ -648,10 +847,47 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       } catch { /* a store that cannot be read shows nothing */ }
       try { out.push(...(await asked(p))); } catch { /* none */ }
     }
-    return out.sort(newest);
+    return groupBatches(out).sort(newest);
   }
   const records = () => view(false);
   const pump = () => tend(() => view(true), () => view(false));
+
+  // A batch found again from the key: the locks of a transaction that holds several are named by its hint, which carries a short fingerprint of each provider's key and not
+  // the key (the OP_RETURN is too small for four keys), so they are matched to the keys this page knows: the providers it lists and has met, and the claimer keys of the
+  // swaps it kept. A leg is found only if the output holds exactly the script that key makes. Each leg is kept as a swap to refund (as a lone lock found from the key is):
+  // what became of it is read from the chain, and a lock nobody took is returned by its timelock.
+  async function candidateKeys() {
+    const keys = new Set(), add = (k) => { const h = strip(k || ''); if (/^0[23][0-9a-f]{64}$/.test(h)) keys.add(h); };
+    for (const r of await stores.fwd.list().catch(() => [])) add(r.counterClaimPub);
+    for (const p of await discover().catch(() => [])) { add(p.ref && p.ref.claimPub); add(p.id); }
+    for (const k of Object.keys(OWN_PROVIDERS)) add(k);
+    return [...keys];
+  }
+  async function recoverBatches(pages = 12) {
+    if (typeof btc.history !== 'function') return 0;
+    const known = new Set((await stores.fwd.list()).map((r) => r.id)), keys = await candidateKeys(), found = [];
+    for (const tx of await btc.history(btc.address, pages)) {
+      if (!tx.vin || !tx.vin.length || !tx.status || !tx.status.confirmed) continue;
+      const first = { txid: tx.vin[0].txid, vout: tx.vin[0].vout };
+      let b;
+      try { b = X.recoverBtcBatch({ prims: btc.prims, seed, first, lockerXonly: btc.wallet.xonly, outputs: tx.vout, claimerKeys: keys }); } catch { continue; }
+      if (!b) continue;
+      const batch = { id: bytesToHex(X.legSwapId(first.txid, first.vout, 0)), n: b.legs.length + b.unknown.length };
+      for (const leg of b.legs) {
+        if (known.has(leg.swapId)) continue;
+        const rec = {
+          v: 1, role: 'bl', id: leg.swapId, phase: 'refund-wait', why: 'found from the key', created: now(), updated: now(), quoteId: null,
+          asset: SATS_ASSET, amount: String(leg.value), evmAsset: ETH, evmAmount: '0', counterClaimPub: leg.claimerPub, csvBlocks: leg.csvBlocks, takeSats: 0,
+          lock: { txid: tx.txid, vout: leg.vout, value: Number(tx.vout[leg.vout].value) }, noteInputs: [], feeInputs: tx.vin.map((i) => ({ txid: i.txid, vout: i.vout })),
+          recovered: true, batch: { ...batch, k: leg.vout },
+        };
+        known.add(leg.swapId); found.push({ ...rec, checking: true });
+      }
+    }
+    for (const rec of found) await settle(rec, stores.fwd, (r) => blFor(null).step(r));
+    return found.length;
+  }
+
   async function recover() {
     const c = makeFastBridgeClient({ lp: noCounter(), btc, evm, store: stores.fwd, seed, pins: { btcAsset: SATS_ASSET, evmAsset: ETH }, policy, now });
     const fwd = await c.recover();
@@ -660,7 +896,7 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     const found = [];
     for (const d of fwd) { const rec = await stores.fwd.get(d.id); if (rec) { const r = { ...rec, checking: true }; await stores.fwd.put(r); found.push(r); } }
     for (const rec of found) await settle(rec, stores.fwd, (r) => blFor(null).step(r));
-    return fwd.length + (await recoverRev());
+    return fwd.length + (await recoverBatches().catch(() => 0)) + (await recoverRev());
   }
   // A record found again from the key is stepped until the chains have said what became of it (a lock the provider took, a take made from another page,
   // a refund, a claim whose BTC is still to take) before it is listed. A step that cannot read the chains leaves it 'Checking' for the next pass.

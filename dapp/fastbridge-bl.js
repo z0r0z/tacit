@@ -120,6 +120,40 @@ export function makeBitcoinLocker(ctx) {
     return { rec, pair };
   }
   // What a lock of sats paid and where its change went: what a bump from that change (bumpLock) needs
+  // SEVERAL LOCKS IN ONE TRANSACTION: one lock output for each of `legs` ([{ counterClaimPub, amount, evmAsset, evmAmount, quoteId, csvBlocks }], one provider each), built
+  // exactly as a lone lock is, each keyed to its provider's key and to a secret of its own (X.legSwapId: the swap id of output k is the first coin and k), one recovery hint for
+  // all of them. Each record is a swap on its own, the lock output of its own (`lock.vout`), and shares only the transaction. Every record's quote expires with the first one:
+  // a batch is sent whole or not at all (the 'built' step), never with some of its locks left out.
+  async function buildSatsBatch({ legs, avoid = null, validUntil = null, first = null }) {
+    const feeRate = await btc.feeRate();
+    const listed = await btc.satsUtxos(), at = (u) => `${u.txid}:${u.vout}`, early = (first || []).filter((c) => Number.isSafeInteger(c.value) && c.value > 0);
+    const coins = [...early, ...listed.filter((u) => !early.some((c) => at(c) === at(u)))].filter((u) => !avoid || !avoid.has(at(u)));
+    const picked = btc.tx.pickSatsMany({ amounts: legs.map((l) => l.amount), satsUtxos: coins, feeRate });
+    const ids = legs.map((_, k) => X.legSwapId(picked[0].txid, picked[0].vout, k));
+    const made = legs.map((l, k) => {
+      const sec = X.deriveSwapSecrets({ seed, swapId: ids[k] }), csvBlocks = l.csvBlocks ?? policy.csvBlocks;
+      return { l, csvBlocks, lock: deriveLock({ prims: btc.prims, claimerPub: l.counterClaimPub, T: sec.T, lockerXonly: btc.wallet.xonly, csvBlocks }) };
+    });
+    const hint = X.lockBatchHintScript({ seed, swapId: ids[0], legs: made.map((m) => ({ claimerPub: m.l.counterClaimPub, csvBlocks: m.csvBlocks })) });
+    const pair = btc.tx.lockSatsMany({ legs: made.map((m) => ({ lock: m.lock, amount: m.l.amount })), hint, coins: picked, feeRate });
+    const until = [validUntil, ...legs.map((l) => l.validUntil)].filter((v) => v != null && Number(v) > 0).map(Number).sort((a, b) => a - b)[0] ?? null;
+    const batch = { id: hx(ids[0]), n: legs.length, total: legs.reduce((t, l) => t + BigInt(l.amount), 0n).toString(), fee: pair.revealFee };
+    const recs = made.map((m, k) => ({
+      v: 1, role: 'bl', id: hx(ids[k]), phase: 'built', created: ctx.now(), updated: ctx.now(), quoteId: m.l.quoteId ?? null, validUntil: until,
+      asset: hx(hexToBytes(X.SATS_ASSET)), amount: String(m.l.amount), evmAsset: strip(m.l.evmAsset), evmAmount: String(m.l.evmAmount),
+      counterClaimPub: hx(m.l.counterClaimPub), csvBlocks: m.csvBlocks, takeSats: 0, batch: { ...batch, k }, ...(m.l.provider ? { provider: m.l.provider, providerName: m.l.providerName } : {}),
+      // (only the first lock keeps the change, so that one leg alone bumps the transaction: lock.change is what bumpLock spends)
+      lock: { txid: pair.revealTxid, vout: k, value: pair.revealTx.outputs[k].value, commitTxid: null, commitHex: null, revealHex: pair.revealHex, ...(k === 0 ? lockFeeOf(pair) : {}) },
+      noteInputs: [], feeInputs: picked.map((c) => ({ txid: c.txid, vout: c.vout })),
+    }));
+    return { recs, pair };
+  }
+  async function startBatch(args) {
+    const { recs } = await buildSatsBatch(args);
+    for (const r of recs) if (await store.get(r.id)) throw new Error('fastbridge: this coin is already part of a swap');
+    for (const r of recs) await store.put(r);
+    return recs;
+  }
   function lockFeeOf(pair) {
     if (!btc.tx.vsizeOf) return {};
     const own = hx(btc.prims.p2wpkhScript(btc.wallet.pub)), change = pair.revealTx.outputs.findIndex((o, i) => i > 0 && hx(o.script) === own);
@@ -399,5 +433,5 @@ export function makeBitcoinLocker(ctx) {
     });
   }
 
-  return { start, build, step };
+  return { start, build, step, startBatch, buildBatch: buildSatsBatch };
 }
