@@ -12,7 +12,8 @@
 // cannot tell cannot say a price is fair). Providers are found by their ads (an ad whose btcAsset is X.SATS_ASSET and evmAsset the pool's ETH).
 //
 //   const pair = makePairClient({ btc, evm, seed, stores, discover, counterFor, reverseCallFor, feed, policy, now, tend })
-//   await pair.providers()  await pair.reference()  await pair.balances()  await pair.quote({ dir, amount })  await pair.start(q)  await pair.pump()  await pair.records()  await pair.recover()
+//   await pair.providers()  await pair.reference()  await pair.balances()  await pair.quote({ dir, amount })  await pair.start(q, { coming })  await pair.prepare(amount)
+//   await pair.pump()  await pair.records()  await pair.recover()
 //
 //   btc, evm          the user's Bitcoin chain (dapp/fastbridge-btc.js; for e2b it also reads the provider's lock) and pool side (dapp/fastbridge-evm.js, asset ETH)
 //   stores            { fwd, index, swaps(id), quotes(id) }: fwd holds the b2e swaps; index the providers an e2b swap was asked of ({ id, name, ref }); swaps(id) and quotes(id)
@@ -27,7 +28,7 @@
 
 import { makeBitcoinLocker } from './fastbridge-bl.js';
 import { makeFastBridgeClient } from './fastbridge-client.js';
-import { makeReverseClient, makeReverseCounter } from './fastbridge-reverse-client.js';
+import { makeReverseClient, makeReverseCounter, coversWith } from './fastbridge-reverse-client.js';
 import { recordFromLockMemo } from './fastbridge-el.js';
 import * as X from './adaptor-xswap.js';
 import { bytesToHex, hexToBytes } from './vendor/tacit-deps.min.js';
@@ -87,11 +88,11 @@ const FWD_SAYS = {
   refunded: [4, 'Returned', 'Your BTC came back to your Bitcoin address.', 0],
 };
 const REV_SAYS = {
-  accepted: [0, 'Waiting for the Bitcoin lock', 'The provider’s lock is on Bitcoin and needs its confirmations before your ETH is locked.', 900],
-  locking: [1, 'Locking your ETH in the pool', 'Your private ETH is being locked in the pool for the provider.', 300],
-  locked: [1, 'Telling the provider', 'Your ETH is locked. The provider is being told.', 240],
-  offered: [2, 'Waiting for the provider to claim', 'The provider is claiming the ETH you locked. When it does, your BTC is yours to take.', 240],
-  taking: [3, 'Taking your BTC', 'Your BTC is being taken from the lock.', 600],
+  accepted: [0, 'Waiting for the Bitcoin lock', 'The provider’s lock is on Bitcoin and needs its confirmations before your ETH is locked.', 1650],
+  locking: [1, 'Locking your ETH in the pool', 'Your private ETH is being locked in the pool for the provider.', 1050],
+  locked: [1, 'Telling the provider', 'Your ETH is locked. The provider is being told.', 870],
+  offered: [2, 'Waiting for the provider to claim', 'The provider is claiming the ETH you locked. When it does, your BTC is yours to take.', 840],
+  taking: [3, 'Your BTC is on its way', 'Your BTC is sent to your Bitcoin address. It is yours to spend once Bitcoin confirms it, about ten minutes.', 600],
   done: [4, 'Done', 'The BTC is at your Bitcoin address.', 0],
   refunding: [2, 'Taking your ETH back', 'The provider did not claim in time, so the ETH you locked is coming back to your private balance.', null],
   refunded: [4, 'Returned', 'Your ETH came back to your private balance.', 0],
@@ -127,13 +128,23 @@ export function describeFwd(rec, now = () => Math.floor(Date.now() / 1000)) {
     backBy: state === 'working' && rec.evmOffer && Number(rec.evmOffer.deadline) > 0 ? Number(rec.evmOffer.deadline) : null,
   };
 }
+// What is left of an ETH-for-Bitcoin swap, in seconds: each phase's own part counts down from when it began (and never under a minute while it lasts),
+// then the parts after it. To the BTC confirmed at the user's address.
+const REV_AFTER = { accepted: 1050, locking: 840, locked: 840, offered: 600, taking: 0 };
+const revLeft = (rec, eta, nowSecs) => {
+  if (eta == null) return null;
+  const after = REV_AFTER[rec.phase] ?? 0, own = eta - after, since = rec.phaseAt != null ? Math.max(0, nowSecs - Number(rec.phaseAt)) : 0;
+  return after + Math.max(60, own - since);
+};
 export function describeRev(rec, now = () => Math.floor(Date.now() / 1000)) {
   if (rec.checking) return checking('e2b', rec, rec.providerName || null);
   const [at, title, detail, eta] = REV_SAYS[rec.phase] || [0, rec.phase, '', null];
   const state = rec.phase === 'done' ? 'done' : rec.phase === 'refunded' ? 'returned' : rec.phase === 'aborted' || rec.phase === 'lost' ? 'stopped' : 'working';
+  // what reached the user's address: the lock less the fee of the take that spent it, when this page made the take
+  const got = rec.take && rec.lockValue != null && rec.take.fee != null && !rec.takenBy && BigInt(rec.lockValue) > BigInt(rec.take.fee) ? BigInt(rec.lockValue) - BigInt(rec.take.fee) : null;
   return {
     id: rec.id, dir: 'e2b', state, title, detail: andNodes(rec.phase === 'aborted' ? withWhy(detail, rec.why) : detail, rec, now()),
-    pay: rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: rec.offer ? BigInt(rec.offer.btc.value) : 0n, steps: stepsOf('e2b', at, state), etaSecs: state === 'working' ? eta : 0, at: rec.created,
+    pay: rec.offer ? BigInt(rec.offer.evm.amount) : 0n, get: rec.offer ? BigInt(rec.offer.btc.value) : 0n, got, steps: stepsOf('e2b', at, state), etaSecs: state === 'working' ? revLeft(rec, eta, now()) : 0, at: rec.created,
     // (once the provider has claimed, the ETH is not coming back: the BTC is taken instead, so no return time is given)
     refundAt: state === 'working' && rec.deadline && rec.phase !== 'taking' ? rec.deadline : null, lockTxid: rec.lockTxid || null, error: rec.lastError || null, provider: rec.providerName || null,
     // the page has to be back by the pool deadline: a claim by the provider then gives the BTC, which must be taken before the provider's own refund opens (at least
@@ -354,13 +365,14 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     const highFee = feeSats != null && feeOn > 0n && BigInt(Math.ceil(Number(feeSats))) * 10000n > feeOn * BigInt(policy.maxFeeShareBps) ? { sats: Number(feeSats), bps: Number((BigInt(Math.ceil(Number(feeSats))) * 10000n) / feeOn) } : null;
     return {
       dir, provider: { id: best.p.id, name: best.p.name }, pay: best.pay, get: best.get, takeFeeSats, highFee, rate, market: market && versus != null ? market.ethPerBtc : null, vsMarketBps: versus,
-      feeBps: versus == null ? 0 : Math.max(0, -versus), etaSecs: dir === 'b2e' ? 1500 : 1800, networkFeeSats, expiresAt: Number(best.r.validUntil), warnings, blocked, short, ref: best,
+      feeBps: versus == null ? 0 : Math.max(0, -versus), etaSecs: dir === 'b2e' ? 1500 : REV_SAYS.accepted[3] + 120, networkFeeSats, expiresAt: Number(best.r.validUntil), warnings, blocked, short, ref: best,
     };
   }
 
   // one start of the key's at a time: the coins and notes a swap holds are read inside, so a second start picks others or stops
-  const start = (q) => exclusive(() => startOnce(q));
-  async function startOnce(q) {
+  // `coming` (e2b): pool units of a deposit of the user's that is mined and is being settled into a note, which the lock is made from once it lands
+  const start = (q, { coming = null } = {}) => exclusive(() => startOnce(q, coming));
+  async function startOnce(q, coming = null) {
     if (q.blocked) throw new Error(q.blocked);
     if (q.highFee && !q.feeAccepted) throw new Error(`the Bitcoin fee is about ${q.highFee.sats} sats, ${(q.highFee.bps / 100).toFixed(1)}% of the amount: accept it to go on`);
     if (q.short) throw new Error(`your Bitcoin address holds ${q.short.have} sats and this needs ${q.short.need}, the amount and the network fee`);
@@ -370,11 +382,10 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
       if (b.sats != null && b.sats < q.pay) throw new Error('your Bitcoin address does not hold that many sats');
       return startFwd(q);
     }
-    // a note of exactly the amount is locked as it is: what `available` keeps back for a cut is not needed then (evm.covers)
-    if (evm.covers) { if (!(await evm.covers(q.pay))) throw new Error('your private ETH does not cover that amount'); }
-    else { const b = await balances(); if (b.eth != null && b.eth < q.pay) throw new Error('your private ETH does not cover that amount'); }
+    // a note of exactly the amount is locked as it is: what `available` keeps back for a cut is not needed then (evm.covers); a mined deposit counts (coversWith)
+    if (!(await coversWith(evm, q.pay, coming))) throw new Error('your private ETH does not cover that amount');
     let a;
-    try { a = await revFor(q.ref.p).start({ quote: q.ref.r }); } catch (e) {
+    try { a = await revFor(q.ref.p).start({ quote: q.ref.r, coming }); } catch (e) {
       // (the reverse client words a refusal with the provider's reason after it: the page says its own sentence)
       strike(q.ref.p.id);
       throw Object.assign(new Error(/^the provider cannot lock that amount/.test(String(e && e.message)) ? 'the provider cannot lock that amount just now: a new quote is being asked for' : said(e, 'the provider did not answer just now')), { requote: true });
@@ -382,8 +393,13 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     cleared(q.ref.p.id);
     const index = stores.index;
     if (!(await index.get(q.ref.p.id))) await index.put({ id: q.ref.p.id, name: q.ref.p.name, ref: q.ref.p.ref });
+    // the note the lock spends is cut to the amount now, while the provider's lock waits for its block, not after it (a deposit still landing: once it has, prepare)
+    if (coming == null) prepare(q.pay).catch(() => {});
     return { id: a.swapId };
   }
+  // A note of exactly `amount` made ahead of a lock of it (fastbridge-evm.js prepare: nothing is done when one is there; else the notes are cut to it, a
+  // transfer to this key that costs the relay's fee), so the lock is built the moment the provider's lock is confirmed
+  const prepare = async (amount) => { if (evm.prepare) await evm.prepare({ rec: { offer: { evm: { amount: String(BigInt(amount)) } } } }); };
 
   // ── the swaps ──
   const newest = (a, b) => (b.at || 0) - (a.at || 0);
@@ -394,10 +410,18 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     for (const q of await stores.quotes(p.id).list()) {
       if (!q.swapId || (q.settled && !q.gaveUp) || (await swaps.get(q.swapId))) continue;
       if (q.gaveUp && now() - (q.startedAt || 0) > 7 * 86400) continue;
+      // (the provider tells its lock once a block has it: until then the swap waits on that block, counted down from the ask, or from when the lock was seen.
+      // A provider that gives its lock's txid has it shown, with the confirmations the explorers read: fastbridge-reverse-client.js watchLock)
+      const need = confsForSats(q.btcValue ?? 0), confs = Number(q.lockConfs) || 0, seen = !q.gaveUp && !!q.lockTxid;
+      const waitFor = need > 1 ? `${need} Bitcoin confirmations` : 'one Bitcoin confirmation';
       out.push({
-        id: q.swapId, dir: 'e2b', state: q.gaveUp ? 'stopped' : 'working', title: q.gaveUp ? 'Stopped' : 'Asking the provider',
-        detail: q.gaveUp ? `${String(q.gaveUp).replace(/\.$/, '')}. Nothing of yours was locked.` : 'The provider is being asked to lock its Bitcoin. Your ETH is not locked until it has.',
-        pay: BigInt(q.evmAmount ?? 0), get: BigInt(q.btcValue ?? 0), steps: stepsOf('e2b', 0, q.gaveUp ? 'returned' : 'working'), etaSecs: q.gaveUp ? 0 : 900, at: q.startedAt || 0, refundAt: null, lockTxid: null, error: null, provider: p.name,
+        id: q.swapId, dir: 'e2b', state: q.gaveUp ? 'stopped' : 'working', title: q.gaveUp ? 'Stopped' : seen ? 'The provider locked BTC for you' : 'The provider is locking BTC for you',
+        detail: q.gaveUp ? `${String(q.gaveUp).replace(/\.$/, '')}. Nothing of yours was locked.`
+          : seen ? `Waiting for ${waitFor}${confs > 0 ? ` (${confs} so far)` : ''}. A block comes about every ten minutes, some sooner, some later. Your ETH is locked after that.`
+            : `Its lock goes out first and waits for ${waitFor}, about ten minutes. Your ETH is locked only after that.`,
+        pay: BigInt(q.evmAmount ?? 0), get: BigInt(q.btcValue ?? 0), steps: stepsOf('e2b', 0, q.gaveUp ? 'returned' : 'working'),
+        etaSecs: q.gaveUp ? 0 : revLeft({ phase: 'accepted', phaseAt: seen && q.lockSeenAt ? q.lockSeenAt : q.startedAt }, REV_SAYS.accepted[3] + (seen ? 0 : 60), now()),
+        at: q.startedAt || 0, refundAt: null, lockTxid: seen ? strip(q.lockTxid) : null, error: null, provider: p.name,
       });
     }
     return out;
@@ -478,5 +502,5 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     for (const p of [...(await revProviders()), RECOVERED]) for (const r of await stores.swaps(p.id).list().catch(() => [])) if (r.lockSpk) out.push({ spk: strip(r.lockSpk) });
     return out;
   }
-  return { providers, reference, balances, covers, quote, start, pump, records, recover, heldCoins: holdsCoins, lockOutputs, address: () => ({ btc: btc.address }), claimPub: claimPubHex };
+  return { providers, reference, balances, covers, quote, start, prepare, pump, records, recover, heldCoins: holdsCoins, lockOutputs, address: () => ({ btc: btc.address }), claimPub: claimPubHex };
 }

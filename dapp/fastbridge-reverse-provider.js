@@ -242,7 +242,8 @@ export function makeReverseService({ seed, btc, evm, swaps, quotes, offers, evmO
       }
       const m = /^\/reverse\/swap\/([0-9a-f]{72})(\/offer|\/evm-offer)?$/.exec(path);
       if (m && isSwapId(m[1])) {
-        if (method === 'GET' && !m[2]) { const s = await swaps.get(m[1]); return s ? reply({ phase: s.phase, why: s.why || null }) : reply({ error: 'unknown swap' }, 404); }
+        // (the lock's txid once it is sent: the user's page shows the lock and its confirmation while it waits for the offer, which comes after the block)
+        if (method === 'GET' && !m[2]) { const s = await swaps.get(m[1]); return s ? reply({ phase: s.phase, why: s.why || null, lockTxid: s.phase !== 'built' && s.lock && /^[0-9a-f]{64}$/.test(String(s.lock.txid || '')) ? s.lock.txid : null }) : reply({ error: 'unknown swap' }, 404); }
         if (method === 'GET' && m[2] === '/offer') { const o = await offers.get(m[1]); return o ? reply(o.offer) : reply({ error: 'no offer yet' }, 404); }
         if (method === 'POST' && m[2] === '/evm-offer') return await keepEvmOffer(m[1], body);
       }

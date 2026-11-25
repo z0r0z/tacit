@@ -75,7 +75,7 @@ test('ETH for Bitcoin, all the way: the provider locks sats first, the user lock
   const { id } = await w.pair.start(q);
   assert.match(id, /^[0-9a-f]{72}$/);
   const asked = await w.pair.records();
-  assert.equal(asked[0].title === 'Asking the provider' || asked[0].dir === 'e2b', true, 'the press is followed by something on the page at once');
+  assert.equal(asked[0].title === 'The provider is locking BTC for you' || asked[0].dir === 'e2b', true, 'the press is followed by something on the page at once');
   await w.run(async () => (await w.pair.records()).some((r) => r.dir === 'e2b' && r.state === 'done'));
   const rec = (await w.pair.records()).find((r) => r.dir === 'e2b' && r.state === 'done');
   assert.deepEqual([rec.pay, rec.get, rec.title], [UNITS, 100_539n, 'Done']);
@@ -393,7 +393,7 @@ test('found again from the key: an ETH-for-Bitcoin swap the provider claimed is 
   const fresh = w.makePair({ stores: freshStores() });
   assert.equal(await fresh.recover(), 1);
   const [r] = await fresh.records();
-  assert.deepEqual([r.dir, r.state, r.title, r.refundAt], ['e2b', 'working', 'Taking your BTC', null]);
+  assert.deepEqual([r.dir, r.state, r.title, r.refundAt], ['e2b', 'working', 'Your BTC is on its way', null]);
 });
 
 test('found again from the key: an ETH-for-Bitcoin swap whose ETH was refunded is listed as returned at once', async () => {
@@ -612,6 +612,73 @@ test('a Bitcoin fee above 2% of the amount is said with the quote, and a start n
   assert.equal(w.btc.broadcasts.length, 0, 'nothing was sent');
   const cheap = await w.pair.quote({ dir: 'b2e', amount: SATS });
   assert.equal(cheap.highFee, null, 'at the usual rate there is nothing to accept');
+});
+
+test('one press: a deposit that is mined but not yet a note starts an ETH-for-Bitcoin swap; the lock waits for the note and is made once it lands, and the swap ends done', async () => {
+  const w = pairWorld();
+  await w.ready();
+  const q = await w.pair.quote({ dir: 'e2b', amount: UNITS });
+  await assert.rejects(() => w.pair.start(q), /private ETH does not cover/, 'with nothing private and nothing coming, nothing is asked');
+  await assert.rejects(() => w.pair.start(q, { coming: UNITS - 1n }), /private ETH does not cover/, 'a deposit of less than the amount does not cover it');
+  assert.equal((await w.rev.handle({ method: 'GET', path: '/reverse/info' })).body.open, 0, 'the provider was not asked');
+  const { id } = await w.pair.start(q, { coming: UNITS });
+  assert.match(id, /^[0-9a-f]{72}$/, 'a deposit of exactly the amount, mined and landing, starts the swap');
+  assert.equal((await w.rev.handle({ method: 'GET', path: '/reverse/info' })).body.open, 1, 'and the provider was asked to lock');
+  // the provider locks and the lock confirms; the note has not landed, so no lock of ETH can be made yet
+  await w.run(async () => (await w.pair.records()).some((r) => r.id === id && r.title === 'Locking your ETH in the pool'));
+  for (let i = 0; i < 4; i++) { await w.step(); w.clock.advance(30); }
+  assert.deepEqual(w.evm.submitted.filter((j) => j.type === 'adaptorlock'), [], 'nothing is locked before the note is there');
+  const waiting = (await w.pair.records()).find((r) => r.id === id);
+  assert.equal(waiting.state, 'working');
+  assert.ok(waiting.etaSecs > 600 && waiting.etaSecs <= 1050, `one overall time left, to the BTC confirmed (${waiting.etaSecs})`);
+  w.uEvm.fund(UNITS, 'landed');                                      // the relay settles the deposit: the note lands
+  await w.run(async () => (await w.pair.records()).some((r) => r.id === id && r.state === 'done'));
+  const done = (await w.pair.records()).find((r) => r.id === id);
+  assert.deepEqual(w.evm.submitted.map((j) => j.type), ['adaptorlock', 'adaptorclaim'], 'the lock was made from the note once it landed, and the provider claimed');
+  assert.ok(done.got > 100_000n && done.got < done.get, `what arrived is said: the lock less the take's fee (${done.got} of ${done.get})`);
+});
+
+test('the lane\'s words for an ETH-for-Bitcoin swap: the wait for the provider\'s lock is said, and the time left counts down within a step', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.uEvm.fund(UNITS, 'inv0');
+  const q = await w.pair.quote({ dir: 'e2b', amount: UNITS });
+  const { id } = await w.pair.start(q);
+  const first = await w.first();
+  assert.deepEqual([first.title, first.etaSecs, first.lockTxid], ['The provider is locking BTC for you', 1710, null], 'asked: the whole swap ahead');
+  w.clock.advance(300);
+  const later = (await w.pair.records()).find((r) => r.id === id);
+  assert.equal(later.etaSecs, 1710 - 300, 'five minutes on, five minutes less');
+  // the provider sends its lock and says its txid: the page shows it, and its confirmations, while the lock waits for its block
+  await w.rev.tick(); await w.pair.pump();
+  const seen = (await w.pair.records()).find((r) => r.id === id);
+  assert.equal(seen.title, 'The provider locked BTC for you');
+  assert.match(seen.lockTxid || '', /^[0-9a-f]{64}$/, 'the lock\'s txid, for a link to it');
+  assert.match(seen.detail, /Waiting for one Bitcoin confirmation\. A block comes about every ten minutes/);
+  assert.equal(seen.etaSecs, 1650, 'counted from when the lock was seen');
+  w.clock.advance(3600);
+  assert.equal((await w.pair.records()).find((r) => r.id === id).etaSecs, 1050 + 60, 'a block that is late leaves a minute for it, never none');
+  assert.equal(describeRev({ id, phase: 'taking', phaseAt: 0, offer: { evm: { amount: '1' }, btc: { value: '1' } } }, () => 120).title, 'Your BTC is on its way');
+});
+
+test('the note a lock spends is cut to its amount at the start, while the provider\'s lock waits for its block; a deposit still landing is cut for once it lands', async () => {
+  const w = pairWorld();
+  await w.ready();
+  w.uEvm.fund(UNITS * 2n, 'big');
+  const asked = [];
+  const pair = w.makePair({ evm: { ...w.uEvmCtx, prepare: async ({ rec }) => { asked.push(rec.offer.evm.amount); } } });
+  await pair.start(await pair.quote({ dir: 'e2b', amount: UNITS }));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(asked, [String(UNITS)], 'started from private ETH: the exact note is made at once');
+  const fresh = pairWorld();
+  await fresh.ready();
+  const later = [];
+  const p2 = fresh.makePair({ evm: { ...fresh.uEvmCtx, prepare: async ({ rec }) => { later.push(rec.offer.evm.amount); } } });
+  await p2.start(await p2.quote({ dir: 'e2b', amount: UNITS }), { coming: UNITS });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(later, [], 'started on a deposit still landing: nothing to cut yet');
+  await p2.prepare(UNITS);
+  assert.deepEqual(later, [String(UNITS)], 'the page asks once the deposit has landed');
 });
 
 let passed = 0;
