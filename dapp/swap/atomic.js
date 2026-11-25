@@ -527,7 +527,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
       // (a press may be cancelled only while that costs the provider nothing: before it is asked, which is before the deposit is mined, or while new numbers wait)
       const cancel = r.press && !L.chain.cancelled && (L.chain.phase === 'paused' || (L.chain.phase === 'adding' && !L.chain.mined)) ? ' <button class="link cx" type="button" data-press-cancel>Cancel</button>' : '';
       return `<div class="${cls}${r.press ? ' press' : ''}" data-rec="${esc(r.id)}"><span><i class="dot" aria-hidden="true"></i><b>${esc(r.title)}</b></span><span>${eta ? esc(eta) : ''}${r.state === 'working' || r.press ? cancel : ` <button class="link" type="button" data-dismiss="${esc(r.id)}" aria-label="Dismiss">×</button>`}</span>
-        ${what ? `<span class="what">${esc(what)}</span>` : ''}${steps ? `<ol class="stp${r.steps.length === 5 ? ' s5' : ''}">${steps}</ol>` : ''}${r.detail || back ? `<small>${esc([r.detail, back].filter(Boolean).join(' '))}${lockAt}</small>` : ''}${sure ? `<small class="sure">${esc(sure)}</small>` : ''}${stay && !r.press ? `<small class="stay${by ? ' by' : ''}">${esc(stay)}</small>` : ''}${payLine(r)}${nextSteps(r)}</div>`;
+        ${what ? `<span class="what">${esc(what)}</span>` : ''}${steps ? `<ol class="stp${r.steps.length === 5 ? ' s5' : ''}">${steps}</ol>` : ''}${r.detail || back ? `<small>${esc([r.detail, back].filter(Boolean).join(' '))}${lockAt}</small>` : ''}${sure ? `<small class="sure">${esc(sure)}</small>` : ''}${r.stuck && r.slow ? `<small class="slow">${esc(r.slow)} <button class="link" type="button" data-check-again="${esc(r.id)}">Check again</button></small>` : ''}${stay && !r.press ? `<small class="stay${by ? ' by' : ''}">${esc(stay)}</small>` : ''}${payLine(r)}${nextSteps(r)}</div>`;
     }).join('');
   }
   function paint() {
@@ -1013,6 +1013,15 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   globalThis.addEventListener?.('beforeunload', (e) => { if (L.chain || L.recs.some((r) => r.state === 'working')) { e.preventDefault(); e.returnValue = ''; } });
 
   // ── events ──
+  // 'Check again' on a swap that takes longer than usual: everything the page keeps of it is read afresh now (fastbridge-pair.js checkAgain), no reload
+  async function checkAgain(id, btn) {
+    if (!pair || L.checking) return;
+    L.checking = true;
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+    const g = gen;
+    try { const recs = await pair.checkAgain(id); if (g === gen && Array.isArray(recs)) { L.recs = recs; paintRecs(); } } catch { /* the next pass reads it again */ }
+    finally { L.checking = false; if (g === gen) { paintRecs(); follow(POLL_MS); } }
+  }
   function dismiss(id) { const s = dismissed(); s.add(id); try { localStorage.setItem(DISMISS_KEY, JSON.stringify([...s].slice(-50))); } catch { /* storage is a convenience */ } paintRecs(); }
   const setAmt = (v) => { L.amt = v; L.sticky = false; if (L.cls === 'err' && !L.busy) say(''); onState(); requote(); };
   host.addEventListener('input', (e) => { if (e.target.id === 'a-amt') { fit(e.target); setAmt(e.target.value.trim()); } });
@@ -1021,6 +1030,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
     const t = e.target;
     if (t.closest('[data-press-cancel]')) { cancelPress(); return; }
     if (t.closest('[data-pay-retry]')) { payRetry(t.closest('[data-pay-retry]').dataset.payRetry); return; }
+    const ca = t.closest('[data-check-again]'); if (ca) { checkAgain(ca.dataset.checkAgain, ca); return; }
     const cp = t.closest('[data-copy]');
     if (cp) { navigator.clipboard?.writeText(cp.dataset.copy).then(() => { cp.textContent = 'Copied'; setTimeout(() => { cp.textContent = /^bc1|^[13]/.test(cp.dataset.copy) ? 'Copy address' : 'Copy amount'; }, 1500); }, () => {}); return; }
     if (t.closest('#a-flip')) { if (L.busy || L.chain) return; L.dir = L.dir === 'b2e' ? 'e2b' : 'b2e'; L.amt = ''; $('a-amt').value = ''; L.q = null; L.qErr = ''; seq++; L.sticky = false; say(''); onState(); paint(); return; }
@@ -1032,6 +1042,7 @@ export function makeAtomicLane({ host, notify = () => {}, wallet = () => null, p
   recsHost?.addEventListener('click', (e) => {
     const dm = e.target.closest('[data-dismiss]'); if (dm) { dismiss(dm.dataset.dismiss); return; }
     if (e.target.closest('[data-press-cancel]')) { cancelPress(); return; }
+    const ca = e.target.closest('[data-check-again]'); if (ca) { checkAgain(ca.dataset.checkAgain, ca); return; }
     // a finished swap's next step: the page sends the BTC (its own panel); the links go where they say
     const nx = e.target.closest('[data-next="send"]');
     if (nx && onNext) { try { onNext({ act: 'send', sats: BigInt(nx.dataset.sats) }); } catch { /* the page's hook */ } }

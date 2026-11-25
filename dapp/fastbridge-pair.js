@@ -57,6 +57,12 @@ export const PAIR_POLICY = {
   // a lock of the user's sats that a block goes by without is bumped from its change (fastbridge-bl.js bumpLock), by at most this share of the amount (0.5%)
   lockBumpMaxBps: 50,
 };
+// How long a swap's step may go without moving before the page reads it afresh (seconds; a wait for a Bitcoin block is not on it: it takes what it takes, and the
+// page says when a block is slow). Each is a few times what the step takes when it goes well.
+export const WATCH = {
+  b2e: { built: 300, offering: 600, offered: 900, claiming: 600 },
+  e2b: { accepted: 600, locking: 600, locked: 300, offered: 1200, taking: 2400, refunding: 900 },
+};
 // The confirmations the user wants on a provider's lock of sats before it locks pool ETH against it: more for a larger amount
 export const confsForSats = (value) => { const v = BigInt(value); return v >= 100_000_000n ? 6 : v >= 10_000_000n ? 3 : v >= 1_000_000n ? 2 : 1; };
 
@@ -539,15 +545,89 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     await tipRead;
   }
   const WAITS = new Set(['broadcast', 'accepted', 'taking']);
+  // a swap's step said stuck: its words, and the lane's 'Check again'
+  const withSlow = (d, slow) => (slow ? { ...d, stuck: true, slow } : d);
+  // ── the watchdog: a swap that has not moved for longer than its step should take ──
+  // What each swap last did is kept in this page (its phase and what it waits on). One that has not moved for longer than its step's own time (WATCH below, and
+  // never a wait for a Bitcoin block, which takes what it takes and is said as such) is looked at afresh once a minute: every read this page keeps that could
+  // stand in its way is let go (fastbridge-evm.js forget) and the swap is stepped at once (fastbridge-el.js poke). Past five minutes more it says so, with what
+  // happens to the funds and when, and the lane offers 'Check again' (checkAgain), which does the same at once.
+  const moved = new Map(), forcedAt = new Map();
+  const confirmedFor = (rec) => rec.offer && Number(rec.lockConfs || 0) >= confsForSats(rec.offer.btc.value);
+  const watchOf = (dir, rec) => {
+    if (dir === 'b2e') return rec.phase === 'broadcast' ? (rec.confirmedAt ? WATCH.b2e.offering : null) : WATCH.b2e[rec.phase] ?? null;
+    if (rec.phase === 'accepted') return confirmedFor(rec) ? WATCH.e2b.accepted : null;
+    return WATCH.e2b[rec.phase] ?? null;
+  };
+  const stepKey = (rec) => JSON.stringify([rec.phase, Number(rec.lockConfs || 0), !!rec.confirmedAt, !!(rec.lock && rec.lock.jobId), !!rec.evmOffer, !!(rec.claim && rec.claim.jobId), rec.take ? rec.take.txid : null, !!rec.refund]);
+  const stillFor = (id, key) => { const m = moved.get(id); if (!m || m.key !== key) { moved.set(id, { key, at: now() }); return 0; } return now() - m.at; };
+  // what happens to the funds of a swap that takes longer than it should, and when: the page does it by itself
+  function safeWords(dir, rec) {
+    if (dir === 'b2e') {
+      const back = rec.lockAt || rec.confirmedAt ? `, about ${untilWords((rec.lockAt || rec.confirmedAt) + rec.csvBlocks * 600)}` : ', about a day after it confirmed';
+      return `Your funds are safe: if the swap does not finish, your BTC comes back to your Bitcoin address by itself after its timelock${back}.`;
+    }
+    if (rec.phase === 'accepted') return 'Your funds are safe: nothing of yours is locked yet.';
+    if (rec.phase === 'taking') return 'The BTC is yours: this page keeps sending the transaction that takes it, and raises its fee if it waits.';
+    if (rec.phase === 'refunding') return 'Your funds are safe: the refund does not depend on the provider, and this page keeps sending it.';
+    return rec.deadline ? `Your funds are safe: if the provider has not claimed by the deadline, ${untilWords(rec.deadline)}, your ETH comes back to your private balance by itself.` : 'Your funds are safe: nothing of yours is spent until this step goes through.';
+  }
+  const untilWords = (at) => { const s = Number(at) - now(); if (!(s > 0)) return 'now'; const h = Math.floor(s / 3600), m = Math.ceil((s % 3600) / 60); return h ? `in about ${h} h${m && m < 60 ? ` ${m} min` : ''}` : `in about ${Math.max(1, m)} min`; };
+  // One look at a swap: whether it is stuck, and (stepping) a fresh read for it once a minute while it is
+  async function watch(dir, rec, step, kick) {
+    const budget = watchOf(dir, rec);
+    const still = stillFor(rec.id, stepKey(rec));
+    if (budget == null || still <= budget) return null;
+    if (step && now() - (forcedAt.get(rec.id) || 0) >= 60) {
+      forcedAt.set(rec.id, now());
+      try { if (evm.forget) evm.forget(); await kick(); } catch { /* the next pass */ }
+    }
+    return still > budget + (policy.slowSayAfterSecs ?? 300) ? `Taking longer than usual. ${safeWords(dir, rec)}` : null;
+  }
+  // 'Check again': every swap under way (or only `id`) is read afresh now, and the records come back
+  async function checkAgain(id = null) {
+    if (evm.forget) evm.forget();
+    tipAt = -Infinity;
+    for (const rec of await stores.fwd.list()) if (!FWD_END.has(rec.phase) && (!id || rec.id === id)) { forcedAt.set(rec.id, now()); await blFor(rec.provider || null).step(rec).catch(() => {}); }
+    for (const p of await revProviders()) {
+      for (const q of await stores.quotes(p.id).list().catch(() => [])) if (q.swapId && !q.settled && (!id || q.swapId === id)) await stores.quotes(p.id).put({ ...q, watchAt: null, earlyAt: null });
+      for (const r of await stores.swaps(p.id).list().catch(() => [])) if (!REV_END.has(r.phase) && (!id || r.id === id)) { forcedAt.set(r.id, now()); await revFor(p).el.poke(r).catch(() => {}); }
+    }
+    return view(true);
+  }
+
+  // A swap found again from the key whose ETH lock is in the pool and that no provider has claimed: its record was rebuilt from the lock's memo, which names no
+  // provider, so the provider may never have been told of the lock (the page that made it closed between the lock landing and its telling). Its pool offer is
+  // posted to every provider that sells this way: the one whose Bitcoin lock it answers keeps it (it checks the offer against its own lock and the pool) and
+  // claims; the others do not know the swap and answer so. Until the provider claims, it is posted again every few minutes while time to claim is left.
+  async function tellRecovered() {
+    const store = stores.swaps(RECOVERED.id);
+    const recs = (await store.list().catch(() => [])).filter((r) => r.phase === 'offered' && r.evmOffer && !r.toldBy && Number(r.deadline) - now() > (policy.minClaimSecs ?? 3600) && now() - (r.tellAt || 0) >= (policy.tellEverySecs ?? 180));
+    if (!recs.length) return;
+    let ps = [];
+    try { ps = (await providers()).filter((p) => p.e2b); } catch { return; }
+    for (const r of recs) {
+      await store.put({ ...r, tellAt: now() });
+      for (const p of ps) {
+        try {
+          const a = await makeReverseCounter(reverseCall(p.ref)).postEvmOffer(r.id, r.evmOffer);
+          if (a && a.ok) { await store.put({ ...(await store.get(r.id)), toldBy: p.id, tellAt: now() }); break; }
+        } catch { /* another provider, or the next look */ }
+      }
+    }
+  }
+
   async function view(step) {
     const out = [];
+    if (step) await tellRecovered().catch(() => {});
     const waits = (await stores.fwd.list()).some((r) => WAITS.has(r.phase)) || (await Promise.all((await revProviders()).map(async (p) => [...(await stores.swaps(p.id).list().catch(() => [])), ...(await stores.quotes(p.id).list().catch(() => [])).filter((q) => q.swapId && !q.settled)]))).flat().some((r) => !r.phase || WAITS.has(r.phase));
     if (waits) await readTip();
     for (const rec of await stores.fwd.list()) {
       let r = rec;
       if (step && !FWD_END.has(rec.phase)) { try { r = await blFor(rec.provider || null).step(rec); } catch { /* the next pass */ } }
       if (step && r.checking && !r.lastError) { r = { ...r, checking: false }; await stores.fwd.put(r); }
-      out.push(describeFwd(r, now, tipSeen));
+      const slow = FWD_END.has(r.phase) ? null : await watch('b2e', r, step, () => blFor(r.provider || null).step(r));
+      out.push(withSlow(describeFwd(r, now, tipSeen), slow));
     }
     for (const p of await revProviders()) {
       // the reverse client words its swaps for TAC, so a pass is taken through it and the swaps are then described here from their own records
@@ -555,7 +635,12 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
         try { await revFor(p).pump(); } catch { /* a provider that cannot be reached: the next pass tries again */ }
         for (const r of await stores.swaps(p.id).list().catch(() => [])) if (r.checking && !r.lastError) await stores.swaps(p.id).put({ ...r, checking: false });
       }
-      try { out.push(...(await stores.swaps(p.id).list()).map((r) => describeRev({ ...r, providerName: p.name }, now, tipSeen))); } catch { /* a store that cannot be read shows nothing */ }
+      try {
+        for (const r of await stores.swaps(p.id).list()) {
+          const slow = REV_END.has(r.phase) ? null : await watch('e2b', r, step, () => revFor(p).el.poke(r));
+          out.push(withSlow(describeRev({ ...r, providerName: p.name }, now, tipSeen), slow));
+        }
+      } catch { /* a store that cannot be read shows nothing */ }
       try { out.push(...(await asked(p))); } catch { /* none */ }
     }
     return out.sort(newest);
@@ -630,5 +715,5 @@ export function makePairClient({ btc, evm, seed, stores, discover, counterFor, r
     for (const p of [...(await revProviders()), RECOVERED]) for (const r of await stores.swaps(p.id).list().catch(() => [])) if (r.lockSpk) out.push({ spk: strip(r.lockSpk) });
     return out;
   }
-  return { providers, reference, balances, covers, quote, start, prepare, arriving, pump, records, recover, heldCoins: holdsCoins, lockOutputs, address: () => ({ btc: btc.address }), claimPub: claimPubHex };
+  return { providers, reference, balances, covers, quote, start, prepare, checkAgain, arriving, pump, records, recover, heldCoins: holdsCoins, lockOutputs, address: () => ({ btc: btc.address }), claimPub: claimPubHex };
 }
