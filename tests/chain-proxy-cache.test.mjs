@@ -97,5 +97,21 @@ console.log('\nwhen every explorer refuses, the last good answer is served:');
   ok('a path never read before still reports the refusal', none.status !== 200);
 }
 
+console.log('\nwith every explorer cooling, one probe in each 1.5 s still goes out:');
+{
+  const P = 'ef'.repeat(32);
+  respond.set(new RegExp('^/tx/' + P + '/hex$'), () => new Response('{"e":1}', { status: 429, headers: { 'Retry-After': '60' } }));
+  await call('/tx/' + P + '/hex', 'signet');           // every signet explorer now cools for a minute
+  const q = 'e1'.repeat(32);
+  respond.set(new RegExp('^/tx/' + q + '/hex$'), () => new Response('00', { status: 200 }));
+  await new Promise((r) => setTimeout(r, 1600));
+  const before = upstreamCalls;
+  const first = await call('/tx/' + q + '/hex', 'signet');
+  ok('the first read after the pause is tried upstream although all are cooling', upstreamCalls - before >= 1 && first.status === 200, first.status + ' calls ' + (upstreamCalls - before));
+  const mid = upstreamCalls;
+  const second = await call('/tx/' + P + '/hex?x=1', 'signet');
+  ok('a second read inside the 1.5 s is refused at once, with no upstream call', second.status === 429 && upstreamCalls === mid, second.status + ' calls ' + (upstreamCalls - mid));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

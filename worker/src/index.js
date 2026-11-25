@@ -5068,7 +5068,7 @@ function networkApis(env, network) {
   // Extra keyless Esplora mirrors (mainnet only) — the same independent hosts the
   // prover trusts. More failover legs so a blocked/rate-limited source self-heals.
   const extra = network === 'mainnet'
-    ? ['https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api']
+    ? ['https://mempool.emzy.de/api', 'https://mempool.bitaroo.net/api', 'https://mempool.fra.mempool.space/api', 'https://mempool.tk7.mempool.space/api', 'https://mempool.va1.mempool.space/api']
     : [];
   for (const fb of [mp, bs, ...extra]) if (!list.includes(fb)) list.push(fb);
   return list.length ? list : [mp, bs];
@@ -5115,6 +5115,15 @@ function _upstreamCooldownMs(base) {
   const left = h.cooldownUntil - Date.now();
   if (left <= 0) { _upstreamHealth.delete(base); return 0; }
   return left;
+}
+// When every explorer is cooling, one request in each 1.5 s is still let through to the one that recovers soonest (the rest are refused at once): refusing
+// everything until the last cooldown ran out turned a few slow answers into a blackout for every reader, and a probe is how the cooldowns end early.
+let _chainProbeAt = 0;
+function _chainProbeSlot() {
+  const now = Date.now();
+  if (now - _chainProbeAt < 1500) return false;
+  _chainProbeAt = now;
+  return true;
 }
 function _allUpstreamsCoolingMs(bases) {
   if (!bases.length) return 0;
@@ -5170,7 +5179,7 @@ function _hedgedUpstreamFetch(bases, pathQuery, mkInit, hedgeMs, timeoutMs) {
       attempts.push(a);
       const t0 = Date.now();
       const retry = () => { if (a.ended) return; a.ended = true; active--; clearTimeout(a.hedge); launch(); };
-      a.timer = setTimeout(() => { st.lastErr = new Error('upstream timeout'); _recordUpstream(base, false); _markUpstreamCooling(base, 10_000, 'timeout'); try { ctrl.abort(); } catch {} retry(); }, timeoutMs);
+      a.timer = setTimeout(() => { st.lastErr = new Error('upstream timeout'); _recordUpstream(base, false); _markUpstreamCooling(base, 4_000, 'timeout'); try { ctrl.abort(); } catch {} retry(); }, timeoutMs);
       if (hedgeMs > 0 && next < bases.length) a.hedge = setTimeout(launch, hedgeMs);
       const { init } = mkInit(ctrl.signal);
       fetch(`${base}${pathQuery}`, init).then(async (r) => {
@@ -5182,7 +5191,7 @@ function _hedgedUpstreamFetch(bases, pathQuery, mkInit, hedgeMs, timeoutMs) {
             st.sawRateLimit = true;
             const ra = r.headers.get('retry-after'); if (ra) st.retryAfter = ra;
             _markUpstreamCooling(base, _retryAfterMs(r.headers, 30_000), 'rate-limited');
-          } else _markUpstreamCooling(base, 15_000, String(r.status));
+          } else _markUpstreamCooling(base, 6_000, String(r.status));
           try { await r.text(); } catch {}
           retry(); return;
         }
@@ -5191,7 +5200,7 @@ function _hedgedUpstreamFetch(bases, pathQuery, mkInit, hedgeMs, timeoutMs) {
       }, (e) => {
         clearTimeout(a.timer);
         if (done || a.ended) return;
-        st.lastErr = e; _recordUpstream(base, false); _markUpstreamCooling(base, 10_000, e?.name || 'network');
+        st.lastErr = e; _recordUpstream(base, false); _markUpstreamCooling(base, 4_000, e?.name || 'network');
         retry();
       });
     };
@@ -13847,7 +13856,7 @@ async function _handleChainProxyUncached(req, env, network, cors) {
   // across the hosts while keeping each path sticky for edge-cache coherence.
   const proxyUpstreamBases = proxyBases(env, network);
   const allCoolingMs = _allUpstreamsCoolingMs(proxyUpstreamBases);
-  if (allCoolingMs > 1000) {
+  if (allCoolingMs > 1000 && !_chainProbeSlot()) {
     const respHeaders = new Headers(cors);
     respHeaders.set('Content-Type', 'application/json');
     respHeaders.set('Retry-After', String(Math.max(1, Math.ceil(allCoolingMs / 1000))));
