@@ -431,7 +431,8 @@ function paintMove() {
   const lines = (q.rc || []).filter(Boolean);
   rc.hidden = !lines.length || (!S.amt && !q.fixed); rc.classList.toggle('stale', !!q.busy);
   rc.innerHTML = lines.map(([k, v, c, t]) => `<div${t ? ` title="${esc(t)}"` : ''}><dt>${k === 'TAC points' ? TAC_MARK : ''}${esc(k)}</dt><dd class="${c || ''}">${cell(v)}</dd></div>`).join('');
-  const need = !q.free && !parseUnits(S.amt, Math.min(8, tokenOf(S.pay)?.dec ?? 8));
+  // a pool amount is typed and filled in the pool's own precision (pdOf, as Max and the quote use it): checking it against the token's decimals disabled the press
+  const need = !q.free && !parseUnits(S.amt, S.inP ? pdOf(S.pay) : Math.min(8, tokenOf(S.pay)?.dec ?? 8));
   go.textContent = S.busy ? 'Working…' : need ? 'Enter an amount' : q.busy && !q.go ? 'Reading…' : q.go || 'Continue';
   go.disabled = S.busy || need || !!q.busy || !!q.failed || !!q.early;
   go.className = `go${isPrivAt(atOf('get')) ? ' priv' : ''}`;
