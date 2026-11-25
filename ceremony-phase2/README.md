@@ -28,14 +28,24 @@ at `cd7874155e26`).
 
 ## Contribute
 
-You need Go 1.24 or later (release binaries are built with Go 1.27.4), about 16 GB of RAM, about 2.2 GB of free disk,
-and to download and upload about 1 GB (each file is 1,040,779,531 bytes).
+You need about 16 GB of RAM, about 2.2 GB of free disk, and to download and upload about 1 GB (each file is
+1,040,779,531 bytes). Either download a release binary (built with Go 1.27.4; check it against `SHA256SUMS`) or build
+the tool yourself (Go 1.24 or later):
 
 ```sh
+# a release binary, for your computer (darwin-arm64, darwin-amd64, linux-amd64, linux-arm64, windows-amd64.exe)
+curl -fLO https://github.com/z0r0z/tacit/releases/download/ceremony-v1.0.0/tacit-ceremony-darwin-arm64
+chmod +x tacit-ceremony-darwin-arm64
+./tacit-ceremony-darwin-arm64 contribute --coordinator <coordinator URL> --name "<your name>" --handle @you
+
+# or from source
 git clone https://github.com/z0r0z/tacit && cd tacit/ceremony-phase2
 go build -o tacit-ceremony ./cmd/tacit-ceremony
 ./tacit-ceremony contribute --coordinator <coordinator URL> --name "<your name>" --handle @you
 ```
+
+`<coordinator URL>` is on the ceremony's page, https://tacit.finance/praxis/ (a 0x address as the handle is where the ceremony's
+points go).
 
 Leave it running. It:
 
